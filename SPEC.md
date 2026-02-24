@@ -617,7 +617,7 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] SQLite schema and CRUD (players, fleets, ships, sectors, server state)
 - [x] Stochastic combat with rapid-fire chains and ship destruction
 - [x] Zithril TUI with three views (command center, windshield, star map)
-- [x] Event log ring buffer with formatted display
+- [x] Event log ring buffer with formatted display (owns duped alert messages, safe from parse arena and status buffer lifetimes)
 - [x] Tick loop with periodic persistence (dirty tracking, batch writes every 30 ticks)
 - [x] Movement with cooldowns (speed-based, fuel consumption)
 - [x] Harvest command processing (all resources: metal/crystal/deut, density-based yield, cargo limits)
@@ -629,7 +629,7 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Leak-free memory management (server and client)
 - [x] Server sends sector state (terrain, resources, connections) per-tick and on full sync
 - [x] Windshield hex compass with fixed direction keys (1=E, 2=NE, 3=NW, 4=W, 5=SW, 6=SE)
-- [x] Client deep-copies all sector slice fields (connections, hostiles, player_fleets) to survive parse arena cleanup
+- [x] Client deep-copies all slice fields from parsed JSON (sector connections/hostiles/player_fleets, event alert messages) to survive parse arena cleanup
 - [x] Combat visual feedback (!! COMBAT !! title flash, damage numbers in event log)
 - [x] Death state handling (0 ships blocks commands client+server, DESTROYED display)
 - [x] Resource depletion (harvest accumulators per sector, density downgrades at thresholds, persisted)
