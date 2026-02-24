@@ -290,27 +290,20 @@ pub const EventLog = struct {
     }
 
     pub fn deinit(self: *EventLog) void {
+        const start = (self.head + MAX_EVENTS - self.count) % MAX_EVENTS;
         for (0..self.count) |i| {
-            const idx = (self.head + MAX_EVENTS - 1 - i) % MAX_EVENTS;
-            self.freeEventSlices(self.events[idx]);
+            self.freeSlices(self.events[(start + i) % MAX_EVENTS]);
         }
     }
 
     pub fn push(self: *EventLog, event: shared.protocol.GameEvent) !void {
         if (self.count == MAX_EVENTS) {
-            self.freeEventSlices(self.events[self.head]);
+            self.freeSlices(self.events[self.head]);
         }
 
         var owned = event;
-        switch (event.kind) {
-            .alert => |a| {
-                owned.kind = .{ .alert = .{
-                    .level = a.level,
-                    .message = try self.allocator.dupe(u8, a.message),
-                    .sector = a.sector,
-                    .fleet_id = a.fleet_id,
-                } };
-            },
+        switch (owned.kind) {
+            .alert => |a| owned.kind.alert.message = try self.allocator.dupe(u8, a.message),
             else => {},
         }
 
@@ -319,7 +312,7 @@ pub const EventLog = struct {
         if (self.count < MAX_EVENTS) self.count += 1;
     }
 
-    fn freeEventSlices(self: *EventLog, event: shared.protocol.GameEvent) void {
+    fn freeSlices(self: *EventLog, event: shared.protocol.GameEvent) void {
         switch (event.kind) {
             .alert => |a| self.allocator.free(a.message),
             else => {},
