@@ -139,8 +139,17 @@ pub const ClientState = struct {
                     // TODO: display error
                 }
             },
-            .@"error" => |_| {
-                // TODO: display error
+            .@"error" => |err| {
+                @memcpy(self.status_message[0..@min(err.message.len, self.status_message.len)], err.message[0..@min(err.message.len, self.status_message.len)]);
+                self.status_len = @min(err.message.len, self.status_message.len);
+
+                try self.event_log.push(.{
+                    .tick = self.tick,
+                    .kind = .{ .alert = .{
+                        .level = .warning,
+                        .message = self.status_message[0..self.status_len],
+                    } },
+                });
             },
         }
     }

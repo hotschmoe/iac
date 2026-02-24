@@ -177,19 +177,19 @@ pub const WorldGen = struct {
 
         if (random.intRangeAtMost(u8, 0, 100) >= presence_chance) return null;
 
-        // Scale fleet composition by distance
+        // Scale fleet composition and stats by distance
         if (dist <= 8) {
             const behavior: NpcBehaviorType = if (random.boolean()) .passive else .patrol;
-            return .{ .ship_class = .scout, .count = 1, .behavior = behavior };
+            return .{ .ship_class = .scout, .count = 1, .behavior = behavior, .stat_multiplier = 0.6 };
         } else if (dist <= 15) {
             const count = random.intRangeAtMost(u8, 3, 8);
-            return .{ .ship_class = .corvette, .count = count, .behavior = .patrol };
+            return .{ .ship_class = .corvette, .count = count, .behavior = .patrol, .stat_multiplier = 0.8 };
         } else if (dist <= 25) {
             const count = random.intRangeAtMost(u8, 5, 15);
-            return .{ .ship_class = .frigate, .count = count, .behavior = .aggressive };
+            return .{ .ship_class = .frigate, .count = count, .behavior = .aggressive, .stat_multiplier = 1.0 };
         } else {
             const count = random.intRangeAtMost(u8, 10, 30);
-            return .{ .ship_class = .cruiser, .count = count, .behavior = .swarm };
+            return .{ .ship_class = .cruiser, .count = count, .behavior = .swarm, .stat_multiplier = 1.2 };
         }
     }
 
@@ -212,6 +212,7 @@ pub const NpcTemplate = struct {
     ship_class: ShipClass,
     count: u8,
     behavior: NpcBehaviorType,
+    stat_multiplier: f32 = 1.0,
 };
 
 pub const NpcBehaviorType = enum {

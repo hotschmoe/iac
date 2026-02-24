@@ -107,6 +107,11 @@ pub const Database = struct {
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_explored_player ON explored_edges(player_id)");
 
+        // Migration: add harvest accumulator columns
+        self.db.exec("ALTER TABLE sectors_modified ADD COLUMN metal_harvested REAL DEFAULT 0") catch {};
+        self.db.exec("ALTER TABLE sectors_modified ADD COLUMN crystal_harvested REAL DEFAULT 0") catch {};
+        self.db.exec("ALTER TABLE sectors_modified ADD COLUMN deut_harvested REAL DEFAULT 0") catch {};
+
         log.info("Schema verified", .{});
     }
 
@@ -307,8 +312,9 @@ pub const Database = struct {
     pub fn saveSectorOverride(self: *Database, q: i16, r: i16, ov: engine_mod.SectorOverride) !void {
         var stmt = try self.db.prepare(
             \\INSERT OR REPLACE INTO sectors_modified
-            \\    (q, r, metal_density, crystal_density, deut_density)
-            \\VALUES (?1, ?2, ?3, ?4, ?5)
+            \\    (q, r, metal_density, crystal_density, deut_density,
+            \\     metal_harvested, crystal_harvested, deut_harvested)
+            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         );
         defer stmt.deinit();
         try stmt.bindInt(1, @as(i64, q));
@@ -316,13 +322,18 @@ pub const Database = struct {
         try stmt.bindOptionalInt(3, densityToInt(ov.metal_density));
         try stmt.bindOptionalInt(4, densityToInt(ov.crystal_density));
         try stmt.bindOptionalInt(5, densityToInt(ov.deut_density));
+        try stmt.bindInt(6, floatToStoredInt(ov.metal_harvested));
+        try stmt.bindInt(7, floatToStoredInt(ov.crystal_harvested));
+        try stmt.bindInt(8, floatToStoredInt(ov.deut_harvested));
         _ = try stmt.step();
     }
 
     pub fn loadSectorOverrides(self: *Database) !std.ArrayList(SectorOverrideRow) {
         var overrides = std.ArrayList(SectorOverrideRow).empty;
         var stmt = try self.db.prepare(
-            "SELECT q, r, metal_density, crystal_density, deut_density FROM sectors_modified",
+            \\SELECT q, r, metal_density, crystal_density, deut_density,
+            \\       metal_harvested, crystal_harvested, deut_harvested
+            \\FROM sectors_modified
         );
         defer stmt.deinit();
         while (try stmt.step()) {
@@ -333,6 +344,9 @@ pub const Database = struct {
                     .metal_density = intToDensity(stmt.columnOptionalInt(2)),
                     .crystal_density = intToDensity(stmt.columnOptionalInt(3)),
                     .deut_density = intToDensity(stmt.columnOptionalInt(4)),
+                    .metal_harvested = storedIntToFloat(stmt.columnInt(5)),
+                    .crystal_harvested = storedIntToFloat(stmt.columnInt(6)),
+                    .deut_harvested = storedIntToFloat(stmt.columnInt(7)),
                 },
             });
         }

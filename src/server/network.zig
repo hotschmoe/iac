@@ -170,21 +170,45 @@ pub const Network = struct {
         }
     }
 
-    fn routeCommand(self: *Network, _: *const ClientSession, cmd: protocol.Command) void {
+    fn routeCommand(self: *Network, session: *const ClientSession, cmd: protocol.Command) void {
         switch (cmd) {
             .move => |m| self.engine.handleMove(m.fleet_id, m.target) catch |err| {
-                log.warn("Move failed: {}", .{err});
+                self.sendCommandError(session, "Move", err);
+                return;
             },
             .harvest => |h| self.engine.handleHarvest(h.fleet_id) catch |err| {
-                log.warn("Harvest failed: {}", .{err});
+                self.sendCommandError(session, "Harvest", err);
+                return;
             },
             .recall => |r| self.engine.handleRecall(r.fleet_id) catch |err| {
-                log.warn("Recall failed: {}", .{err});
+                self.sendCommandError(session, "Recall", err);
+                return;
             },
             .attack => |_| {},
             .stop => {},
             .scan => {},
         }
+    }
+
+    fn sendCommandError(self: *Network, session: *const ClientSession, action: []const u8, err: anyerror) void {
+        const code: protocol.ErrorCode = switch (err) {
+            error.FleetNotFound => .fleet_not_found,
+            error.NoConnection => .no_connection,
+            error.InsufficientFuel => .insufficient_fuel,
+            error.OnCooldown => .on_cooldown,
+            error.NoResources => .no_resources,
+            error.CargoFull => .cargo_full,
+            error.InCombat => .on_cooldown,
+            error.NoShips => .fleet_not_found,
+            else => .invalid_command,
+        };
+
+        var buf: [128]u8 = undefined;
+        const message = std.fmt.bufPrint(&buf, "{s} failed: {s}", .{ action, @errorName(err) }) catch "Command failed";
+
+        self.sendErrorToSession(session, code, message) catch |send_err| {
+            log.warn("{s} failed: {} (also failed to notify client: {})", .{ action, err, send_err });
+        };
     }
 
     fn sendFullState(self: *Network, session: *const ClientSession, player_id: u64) !void {
@@ -283,6 +307,50 @@ pub const Network = struct {
         const neighbors = eng.world_gen.connectedNeighbors(coord);
         const override = eng.sector_overrides.get(coord.toKey());
 
+        // Collect hostile NPC fleets at this coord
+        var hostile_list = std.ArrayList(protocol.NpcFleetInfo).empty;
+
+        // Spawned NPC fleets (active in combat or otherwise present)
+        var npc_iter = eng.npc_fleets.iterator();
+        while (npc_iter.next()) |npc_entry| {
+            const npc = npc_entry.value_ptr;
+            if (npc.location.eql(coord)) {
+                var ship_info = std.ArrayList(protocol.NpcShipInfo).empty;
+                // Count ships by class
+                var class_counts: [5]u16 = .{ 0, 0, 0, 0, 0 };
+                for (npc.ships[0..npc.ship_count]) |ship| {
+                    class_counts[@intFromEnum(ship.class)] += 1;
+                }
+                for (class_counts, 0..) |count, ci| {
+                    if (count > 0) {
+                        try ship_info.append(alloc, .{
+                            .class = @enumFromInt(ci),
+                            .count = count,
+                        });
+                    }
+                }
+                try hostile_list.append(alloc, .{
+                    .id = npc.id,
+                    .ships = ship_info.items,
+                    .behavior = @enumFromInt(@intFromEnum(npc.behavior)),
+                });
+            }
+        }
+
+        // Template NPCs (not yet spawned but present in the world)
+        if (template.npc_template) |npc_tmpl| {
+            // Only show if no spawned NPC fleet already covers this sector
+            if (hostile_list.items.len == 0) {
+                var ship_info = try alloc.alloc(protocol.NpcShipInfo, 1);
+                ship_info[0] = .{ .class = npc_tmpl.ship_class, .count = npc_tmpl.count };
+                try hostile_list.append(alloc, .{
+                    .id = 0,
+                    .ships = ship_info,
+                    .behavior = @enumFromInt(@intFromEnum(npc_tmpl.behavior)),
+                });
+            }
+        }
+
         return .{
             .location = coord,
             .terrain = template.terrain,
@@ -292,6 +360,7 @@ pub const Network = struct {
                 .deuterium = if (override) |o| o.deut_density orelse template.deut_density else template.deut_density,
             },
             .connections = try alloc.dupe(shared.Hex, neighbors.slice()),
+            .hostiles = if (hostile_list.items.len > 0) hostile_list.items else null,
             .salvage = if (override) |o| o.salvage else null,
         };
     }

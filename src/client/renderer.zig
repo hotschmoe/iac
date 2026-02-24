@@ -187,6 +187,7 @@ fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
         .ship_destroyed => |e| std.fmt.bufPrint(slice, " T{d}: {s} destroyed\n", .{ event.tick, e.ship_class.label() }),
         .combat_round => |e| std.fmt.bufPrint(slice, " T{d}: Hit for {d:.0} dmg ({d:.0} absorbed)\n", .{ event.tick, e.hull_damage, e.shield_absorbed }),
         .fleet_destroyed => |e| std.fmt.bufPrint(slice, " T{d}: {s} fleet destroyed!\n", .{ event.tick, if (e.is_npc) "Enemy" else "Your" }),
+        .alert => |e| std.fmt.bufPrint(slice, " T{d}: [{s}] {s}\n", .{ event.tick, @tagName(e.level), e.message }),
         else => std.fmt.bufPrint(slice, " T{d}: Event\n", .{event.tick}),
     } catch return error.NoSpaceLeft;
     return text.len;
@@ -195,14 +196,22 @@ fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
 // -- Windshield View --------------------------------------------------------
 
 fn renderWindshield(state: *ClientState, frame: *Frame, area: Rect) void {
-    // Main area + sidebar
-    const cols = frame.layout(area, .horizontal, &.{
+    // Top section + bottom event log
+    const rows = frame.layout(area, .vertical, &.{
+        Constraint.flexible(1),
+        Constraint.len(7),
+    });
+
+    // Top: sector view + fleet sidebar
+    const cols = frame.layout(rows.get(0), .horizontal, &.{
         Constraint.flexible(1),
         Constraint.len(30),
     });
 
     renderSectorView(state, frame, cols.get(0));
     renderFleetStatus(state, frame, cols.get(1));
+
+    renderWindshieldEvents(state, frame, rows.get(1));
 }
 
 fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
@@ -262,11 +271,15 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
         }
 
         if (sector.hostiles) |hostiles| {
-            if (hostiles.len > 0) {
-                const hostile_line = std.fmt.bufPrint(buf[pos..], " HOSTILES: {d} fleet(s)\n", .{
-                    hostiles.len,
-                }) catch return;
-                pos += hostile_line.len;
+            for (hostiles) |fleet_info| {
+                for (fleet_info.ships) |ship| {
+                    const hostile_line = std.fmt.bufPrint(buf[pos..], " HOSTILE: {d}x {s} ({s})\n", .{
+                        ship.count,
+                        ship.class.label(),
+                        @tagName(fleet_info.behavior),
+                    }) catch break;
+                    pos += hostile_line.len;
+                }
             }
         }
 
@@ -362,6 +375,30 @@ fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
     }) catch return;
 
     frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
+}
+
+fn renderWindshieldEvents(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " EVENTS ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    var buf: [512]u8 = undefined;
+    var pos: usize = 0;
+    const max_lines: usize = if (inner.height > 0) inner.height else 1;
+
+    var i: usize = 0;
+    while (i < max_lines) : (i += 1) {
+        if (state.event_log.getRecent(i)) |event| {
+            const line = formatEvent(&buf, pos, event) catch break;
+            pos += line;
+        } else break;
+    }
+
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_dim }, inner);
 }
 
 fn dirKey(is_connected: bool, idx: usize) u8 {

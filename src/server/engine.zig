@@ -192,11 +192,12 @@ pub const GameEngine = struct {
             if (fleet.state != .harvesting) continue;
 
             const template = self.world_gen.generateSector(fleet.location);
-            const override = self.sector_overrides.get(fleet.location.toKey());
+            const sector_key = fleet.location.toKey();
+            const ov_ptr = self.sector_overrides.getPtr(sector_key);
 
-            const metal_density = if (override) |ov| ov.metal_density orelse template.metal_density else template.metal_density;
-            const crystal_density = if (override) |ov| ov.crystal_density orelse template.crystal_density else template.crystal_density;
-            const deut_density = if (override) |ov| ov.deut_density orelse template.deut_density else template.deut_density;
+            const metal_density = if (ov_ptr) |ov| ov.metal_density orelse template.metal_density else template.metal_density;
+            const crystal_density = if (ov_ptr) |ov| ov.crystal_density orelse template.crystal_density else template.crystal_density;
+            const deut_density = if (ov_ptr) |ov| ov.deut_density orelse template.deut_density else template.deut_density;
 
             const harvest_power = fleetHarvestPower(fleet);
             const max_cargo = fleetCargoCapacity(fleet);
@@ -215,6 +216,7 @@ pub const GameEngine = struct {
                 fleet.cargo.metal += actual;
                 remaining -= actual;
                 harvested_any = true;
+                try self.accumulateHarvest(sector_key, .metal, actual, metal_density);
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
                     .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .metal, .amount = actual } },
@@ -227,6 +229,7 @@ pub const GameEngine = struct {
                 fleet.cargo.crystal += actual;
                 remaining -= actual;
                 harvested_any = true;
+                try self.accumulateHarvest(sector_key, .crystal, actual, crystal_density);
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
                     .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .crystal, .amount = actual } },
@@ -239,6 +242,7 @@ pub const GameEngine = struct {
                 fleet.cargo.deuterium += actual;
                 remaining -= actual;
                 harvested_any = true;
+                try self.accumulateHarvest(sector_key, .deut, actual, deut_density);
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
                     .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .deuterium, .amount = actual } },
@@ -250,6 +254,43 @@ pub const GameEngine = struct {
             } else {
                 fleet.state = .idle;
             }
+        }
+    }
+
+    const ResourceType = enum { metal, crystal, deut };
+
+    fn accumulateHarvest(
+        self: *GameEngine,
+        sector_key: u32,
+        resource: ResourceType,
+        amount: f32,
+        current_density: shared.constants.Density,
+    ) !void {
+        if (current_density == .none) return;
+
+        const ov_ptr = self.sector_overrides.getPtr(sector_key) orelse blk: {
+            try self.sector_overrides.put(sector_key, .{});
+            break :blk self.sector_overrides.getPtr(sector_key).?;
+        };
+
+        const harvested_ptr = switch (resource) {
+            .metal => &ov_ptr.metal_harvested,
+            .crystal => &ov_ptr.crystal_harvested,
+            .deut => &ov_ptr.deut_harvested,
+        };
+
+        harvested_ptr.* += amount;
+
+        const threshold = current_density.depletionThreshold();
+        if (threshold > 0 and harvested_ptr.* >= threshold) {
+            harvested_ptr.* = 0;
+            const new_density = current_density.downgrade();
+            switch (resource) {
+                .metal => ov_ptr.metal_density = new_density,
+                .crystal => ov_ptr.crystal_density = new_density,
+                .deut => ov_ptr.deut_density = new_density,
+            }
+            try self.dirty_sectors.put(sector_key, {});
         }
     }
 
@@ -379,7 +420,21 @@ pub const GameEngine = struct {
 
         if (fleet.ship_count == 0) return error.NoShips;
         if (fleet.state == .in_combat) return error.InCombat;
+        if (fleet.state == .moving) return error.OnCooldown;
         if (fleet.action_cooldown > 0) return error.OnCooldown;
+
+        const template = self.world_gen.generateSector(fleet.location);
+        const override = self.sector_overrides.get(fleet.location.toKey());
+
+        const metal_d = if (override) |ov| ov.metal_density orelse template.metal_density else template.metal_density;
+        const crystal_d = if (override) |ov| ov.crystal_density orelse template.crystal_density else template.crystal_density;
+        const deut_d = if (override) |ov| ov.deut_density orelse template.deut_density else template.deut_density;
+
+        if (metal_d == .none and crystal_d == .none and deut_d == .none) return error.NoResources;
+
+        const max_cargo = fleetCargoCapacity(fleet);
+        const current_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+        if (current_cargo >= max_cargo) return error.CargoFull;
 
         fleet.state = .harvesting;
         fleet.action_cooldown = shared.constants.HARVEST_COOLDOWN;
@@ -487,16 +542,20 @@ pub const GameEngine = struct {
             };
 
             const stats = npc.ship_class.baseStats();
+            const m = npc.stat_multiplier;
             var i: u8 = 0;
             while (i < @min(npc.count, 32)) : (i += 1) {
+                const hull = stats.hull * m;
+                const shield = stats.shield * m;
+                const weapon = stats.weapon * m;
                 npc_fleet.ships[i] = Ship{
                     .id = self.nextId(),
                     .class = npc.ship_class,
-                    .hull = stats.hull,
-                    .hull_max = stats.hull,
-                    .shield = stats.shield,
-                    .shield_max = stats.shield,
-                    .weapon_power = stats.weapon,
+                    .hull = hull,
+                    .hull_max = hull,
+                    .shield = shield,
+                    .shield_max = shield,
+                    .weapon_power = weapon,
                     .speed = stats.speed,
                 };
             }
@@ -764,6 +823,9 @@ pub const SectorOverride = struct {
     metal_density: ?shared.constants.Density = null,
     crystal_density: ?shared.constants.Density = null,
     deut_density: ?shared.constants.Density = null,
+    metal_harvested: f32 = 0,
+    crystal_harvested: f32 = 0,
+    deut_harvested: f32 = 0,
     salvage: ?Resources = null,
     salvage_despawn_tick: ?u64 = null,
 };

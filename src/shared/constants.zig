@@ -53,6 +53,26 @@ pub const Density = enum(u8) {
         };
     }
 
+    pub fn depletionThreshold(self: Density) f32 {
+        return switch (self) {
+            .none => 0.0,
+            .sparse => 10.0,
+            .moderate => 20.0,
+            .rich => 30.0,
+            .pristine => 40.0,
+        };
+    }
+
+    pub fn downgrade(self: Density) Density {
+        return switch (self) {
+            .pristine => .rich,
+            .rich => .moderate,
+            .moderate => .sparse,
+            .sparse => .none,
+            .none => .none,
+        };
+    }
+
     pub fn label(self: Density) []const u8 {
         return switch (self) {
             .none => "None",
