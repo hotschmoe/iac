@@ -137,16 +137,20 @@ The server evaluates these policies each tick when no explicit command is queued
 
 ## Tech Stack
 
-- **Language:** Zig
-- **TUI Rendering:** [rich_zig](https://github.com/hotschmoe/rich_zig) + [zithril](https://github.com/hotschmoe/zithril)
-- **Database:** SQLite (via Zig bindings)
-- **Networking:** WebSocket (Zig library)
+- **Language:** Zig 0.15
+- **TUI Rendering:** [zithril](https://github.com/hotschmoe/zithril) (wraps [rich_zig](https://github.com/hotschmoe/rich_zig) internally)
+- **Database:** SQLite via [zqlite](https://github.com/hotschmoe/zqlite)
+- **Networking:** WebSocket via [webzocket](https://github.com/hotschmoe/webzocket)
 - **Reliability:** RaptorQ for state broadcast (optional/future)
 
 ## Development Milestones
 
-### M1: Core Loop (Current Target)
-Single player, client-server architecture (WebSocket from day one). One ship. Hex grid with procedural generation and dead-end pruning. Move between sectors. Encounter and fight NPC fleets with stochastic combat. Mine resources in sectors. Amber TUI rendering. JSON CLI interface for LLM agents.
+### M1: Core Loop (In Progress)
+Single player, client-server architecture over WebSocket. One ship. Hex grid with procedural generation and edge pruning. Movement, NPC combat (stochastic rapid-fire), resource harvesting. Amber TUI via zithril. JSON CLI interface for LLM agents. SQLite persistence via zqlite.
+
+**Implemented:** WebSocket networking (server accept/broadcast, client connect/poll), SQLite schema and full CRUD (players, fleets, ships, sectors, server state), stochastic combat with rapid-fire chains, zithril-based TUI with command center/windshield/star map views, event log ring buffer.
+
+**Remaining:** Hex map rendering in star map view, NPC spawning/patrol AI, movement cooldowns, resource regeneration, full state sync on reconnect.
 
 ### M2: Homeworld & Fleet Growth
 Homeworld buildings (mines, shipyard, research lab, fuel depot). Ship construction and fleet composition. Research tree. Deuterium fuel consumption and fleet range mechanics. Emergency recall.
@@ -162,13 +166,20 @@ PvP zones in the outer wandering. Corporation/alliance system. Homeworld defense
 
 ## Playing
 
-### Human (TUI)
+### Build
 ```bash
-# Start the server
-iac-server --port 7777
+zig build              # Build both server and client
+zig build server       # Build server only
+zig build client       # Build client only
+```
+
+### Run
+```bash
+# Start the server (default port 7777)
+zig-out/bin/iac-server
 
 # Connect with the TUI client
-iac-client --server localhost:7777
+zig-out/bin/iac-client
 ```
 
 ### LLM Agent (JSON/WebSocket)

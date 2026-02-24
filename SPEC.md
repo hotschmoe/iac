@@ -1,7 +1,7 @@
 # In Amber Clad — Technical Specification
 
-**Version:** 0.1.0-draft
-**Status:** Pre-development
+**Version:** 0.1.0
+**Status:** M1 in progress -- core systems implemented, integration ongoing
 
 ---
 
@@ -503,52 +503,24 @@ Supported variables (initial set, expandable):
 
 ---
 
-## 11. Database Schema (SQLite)
+## 11. Database Schema (SQLite via zqlite)
 
-### 11.1 Core Tables
+### 11.1 Core Tables (Implemented)
 
 ```sql
+CREATE TABLE server_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE players (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    token TEXT NOT NULL,
     homeworld_q INTEGER NOT NULL,
     homeworld_r INTEGER NOT NULL,
     metal REAL DEFAULT 500,
     crystal REAL DEFAULT 300,
-    deuterium REAL DEFAULT 100,
-    created_at INTEGER DEFAULT (unixepoch())
-);
-
-CREATE TABLE buildings (
-    player_id INTEGER REFERENCES players(id),
-    building_type TEXT NOT NULL,
-    level INTEGER DEFAULT 0,
-    build_start_tick INTEGER,  -- NULL if not building
-    build_end_tick INTEGER,
-    PRIMARY KEY (player_id, building_type)
-);
-
-CREATE TABLE research (
-    player_id INTEGER REFERENCES players(id),
-    tech TEXT NOT NULL,
-    level INTEGER DEFAULT 0,
-    research_start_tick INTEGER,
-    research_end_tick INTEGER,
-    PRIMARY KEY (player_id, tech)
-);
-
-CREATE TABLE ships (
-    id INTEGER PRIMARY KEY,
-    player_id INTEGER REFERENCES players(id),
-    fleet_id INTEGER REFERENCES fleets(id),
-    class TEXT NOT NULL,
-    hull REAL NOT NULL,
-    hull_max REAL NOT NULL,
-    shield REAL NOT NULL,
-    shield_max REAL NOT NULL,
-    weapon_power REAL NOT NULL,
-    speed INTEGER NOT NULL
+    deuterium REAL DEFAULT 100
 );
 
 CREATE TABLE fleets (
@@ -564,23 +536,46 @@ CREATE TABLE fleets (
     cargo_deuterium REAL DEFAULT 0
 );
 
+CREATE TABLE ships (
+    id INTEGER PRIMARY KEY,
+    fleet_id INTEGER REFERENCES fleets(id),
+    player_id INTEGER REFERENCES players(id),
+    class TEXT NOT NULL,
+    hull REAL NOT NULL,
+    hull_max REAL NOT NULL,
+    shield REAL NOT NULL,
+    shield_max REAL NOT NULL,
+    weapon_power REAL NOT NULL,
+    speed INTEGER NOT NULL
+);
+
 CREATE TABLE sectors_modified (
     q INTEGER,
     r INTEGER,
-    resources_metal REAL,
-    resources_crystal REAL,
-    resources_deuterium REAL,
-    last_cleared_tick INTEGER,
+    metal_density INTEGER,
+    crystal_density INTEGER,
+    deut_density INTEGER,
     PRIMARY KEY (q, r)
 );
 
-CREATE TABLE auto_policies (
+CREATE TABLE explored_edges (
     player_id INTEGER REFERENCES players(id),
-    priority INTEGER NOT NULL,
-    condition TEXT NOT NULL,
-    action TEXT NOT NULL,
-    PRIMARY KEY (player_id, priority)
+    q1 INTEGER NOT NULL,
+    r1 INTEGER NOT NULL,
+    q2 INTEGER NOT NULL,
+    r2 INTEGER NOT NULL,
+    discovered_tick INTEGER NOT NULL,
+    PRIMARY KEY (player_id, q1, r1, q2, r2)
 );
+```
+
+Resources are stored as `i64 * 1000` internally for f32 precision.
+
+### 11.2 Deferred Tables (M2+)
+
+```sql
+-- Buildings and research tables deferred to M2
+-- Auto-policies table deferred to M4
 ```
 
 Only modified sectors are stored. Unvisited/unmodified sectors are generated on the fly from coordinates.
@@ -591,16 +586,30 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 
 ### What's In
 - Zig server with 1 Hz tick loop
-- WebSocket server accepting connections
+- WebSocket server accepting connections (webzocket)
 - Single hex grid with procedural generation (terrain, resources, edge pruning)
 - Player spawns with 1 scout at a random inner ring hex
 - Movement between connected hexes with cooldown
-- NPC fleet generation and basic combat (stochastic, per-tick rounds)
+- NPC fleet generation and basic combat (stochastic, per-tick rounds, rapid-fire)
 - Resource harvesting in asteroid fields
-- Amber TUI client rendering: hex map, fleet status, sector info, event log
+- Amber TUI client rendering via zithril: command center, windshield, star map views
 - JSON command interface (same WebSocket, no TUI) for LLM/CLI clients
-- SQLite persistence for player state and modified sectors
-- Single player (server supports one connection — multiplayer networking exists but untested with concurrent players)
+- SQLite persistence via zqlite for player state, fleets, ships, and modified sectors
+- Single player (server supports one connection -- multiplayer networking exists but untested with concurrent players)
+
+### Implementation Status
+- [x] WebSocket networking (server accept/broadcast, client connect/poll)
+- [x] SQLite schema and CRUD (players, fleets, ships, sectors, server state)
+- [x] Stochastic combat with rapid-fire chains and ship destruction
+- [x] Zithril TUI with three views (command center, windshield, star map)
+- [x] Event log ring buffer with formatted display
+- [x] Tick loop with periodic persistence
+- [ ] Hex map rendering in star map view
+- [ ] NPC spawning and patrol AI
+- [ ] Movement cooldowns
+- [ ] Resource regeneration
+- [ ] Full state sync on reconnect
+- [ ] Harvest command processing in engine
 
 ### What's Out (Deferred)
 - Homeworld buildings, shipyard, research (M2)
