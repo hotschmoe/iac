@@ -243,13 +243,14 @@ Build times scale with level: `build_ticks = base_ticks * level * 1.5^level`.
 
 ### 5.2 Active Harvesting
 
-Fleets in resource-bearing sectors can harvest:
+Fleets in resource-bearing sectors can harvest all available resources simultaneously:
 
 ```
-harvest_per_tick = fleet_harvest_power * sector_density_multiplier
+For each resource (metal, crystal, deuterium):
+    harvest_per_tick = fleet_harvest_power * resource_density_multiplier
 ```
 
-`fleet_harvest_power` is sum of all ships' cargo-related stats (haulers are best). `sector_density_multiplier`:
+`fleet_harvest_power` is sum of all ships' harvest contribution (haulers: 5.0, scouts: 1.0, others: 0.5). Each resource is harvested independently up to remaining cargo capacity. `resource_density_multiplier`:
 - Sparse: 0.5x
 - Moderate: 1.0x
 - Rich: 2.0x
@@ -347,7 +348,7 @@ Morning Light Mountain (MLM) fleets are procedurally generated based on sector d
 
 | Distance | Fleet Composition | Behavior |
 |---|---|---|
-| 3–8 | 1–3 scouts | Passive, won't attack first |
+| 3–8 | 1 scout (30% presence) | 50% passive / 50% patrol |
 | 9–15 | 3–8 corvettes | Patrol, aggro on proximity |
 | 16–25 | 5–15 mixed corvettes/frigates | Aggressive, will pursue 1 sector |
 | 26–40 | 10–30 mixed with cruisers | Swarm tactics, pursue 2 sectors |
@@ -605,9 +606,9 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Event log ring buffer with formatted display
 - [x] Tick loop with periodic persistence (dirty tracking, batch writes every 30 ticks)
 - [x] Movement with cooldowns (speed-based, fuel consumption)
-- [x] Harvest command processing (density-based yield, cargo limits)
+- [x] Harvest command processing (all resources: metal/crystal/deut, density-based yield, cargo limits)
 - [x] Emergency recall (fuel cost, stochastic hull damage scaled by distance)
-- [x] NPC encounters on sector entry (procedural from seed, auto-combat)
+- [x] NPC encounters on sector entry (procedural from seed, auto-combat, balanced for inner ring)
 - [x] Full state sync on connect/reconnect
 - [x] Player reconnection (existing players resume by name, not re-created)
 - [x] Graceful shutdown with final state persist
@@ -615,6 +616,8 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Server sends sector state (terrain, resources, connections) per-tick and on full sync
 - [x] Windshield hex compass with fixed direction keys (1=E, 2=NE, 3=NW, 4=W, 5=SW, 6=SE)
 - [x] Client deep-copies sector connections to survive parse arena cleanup
+- [x] Combat visual feedback (!! COMBAT !! title flash, damage numbers in event log)
+- [x] Death state handling (0 ships blocks commands client+server, DESTROYED display)
 - [ ] Hex map rendering in star map view (placeholder only)
 - [ ] NPC patrol AI (spawning works, no movement/aggro behavior yet)
 - [ ] Resource regeneration
