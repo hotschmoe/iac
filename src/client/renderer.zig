@@ -233,65 +233,49 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
 
     // Hex compass + exits
     if (state.currentSector()) |sector| {
-        // Build connected-direction bitmask
-        var connected: [6]bool = .{ false, false, false, false, false, false };
         const HexDir = shared.HexDirection;
+        const loc = fleet.location;
+
+        var connected: [6]bool = .{ false, false, false, false, false, false };
+        var nbrs: [6]shared.Hex = undefined;
         for (HexDir.ALL, 0..) |dir, i| {
-            const nbr = fleet.location.neighbor(dir);
+            nbrs[i] = loc.neighbor(dir);
             for (sector.connections) |conn| {
-                if (conn.eql(nbr)) {
+                if (conn.eql(nbrs[i])) {
                     connected[i] = true;
                     break;
                 }
             }
         }
 
-        // Compass labels: index 0=E, 1=NE, 2=NW, 3=W, 4=SW, 5=SE
-        const on = "123456";
-        const off = "......";
-
-        //      2  NE
-        //   3 / \ 1  NW / \ E
-        //     |*|
-        //   4 \ / 6  W  \ / SE
-        //      5  SW
-        const c1 = std.fmt.bufPrint(buf[pos..], "        {c}  NE\n", .{
-            if (connected[1]) on[1] else off[1],
+        const compass = std.fmt.bufPrint(buf[pos..],
+            \\        {c}  NE
+            \\     {c} / \ {c}  NW / \ E
+            \\       |*|
+            \\     {c} \ / {c}  W  \ / SE
+            \\        {c}  SW
+            \\
+            \\
+        , .{
+            dirKey(connected[1], 1),
+            dirKey(connected[2], 2),
+            dirKey(connected[0], 0),
+            dirKey(connected[3], 3),
+            dirKey(connected[5], 5),
+            dirKey(connected[4], 4),
         }) catch return;
-        pos += c1.len;
+        pos += compass.len;
 
-        const c2 = std.fmt.bufPrint(buf[pos..], "     {c} / \\ {c}  NW / \\ E\n", .{
-            if (connected[2]) on[2] else off[2],
-            if (connected[0]) on[0] else off[0],
-        }) catch return;
-        pos += c2.len;
-
-        const c3 = std.fmt.bufPrint(buf[pos..], "       |*|\n", .{}) catch return;
-        pos += c3.len;
-
-        const c4 = std.fmt.bufPrint(buf[pos..], "     {c} \\ / {c}  W  \\ / SE\n", .{
-            if (connected[3]) on[3] else off[3],
-            if (connected[5]) on[5] else off[5],
-        }) catch return;
-        pos += c4.len;
-
-        const c5 = std.fmt.bufPrint(buf[pos..], "        {c}  SW\n\n", .{
-            if (connected[4]) on[4] else off[4],
-        }) catch return;
-        pos += c5.len;
-
-        // Exit coordinate list (useful for debugging / LLM agents)
         const exit_hdr = std.fmt.bufPrint(buf[pos..], " Exits:\n", .{}) catch return;
         pos += exit_hdr.len;
 
         for (HexDir.ALL, 0..) |dir, i| {
             if (connected[i]) {
-                const nbr = fleet.location.neighbor(dir);
                 const exit_line = std.fmt.bufPrint(buf[pos..], "  [{d}] {s:>2} -> [{d},{d}]\n", .{
                     i + 1,
                     dir.label(),
-                    nbr.q,
-                    nbr.r,
+                    nbrs[i].q,
+                    nbrs[i].r,
                 }) catch break;
                 pos += exit_line.len;
             }
@@ -333,6 +317,10 @@ fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
     }) catch return;
 
     frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
+}
+
+fn dirKey(is_connected: bool, idx: usize) u8 {
+    return if (is_connected) "123456"[idx] else '.';
 }
 
 // -- Star Map ---------------------------------------------------------------

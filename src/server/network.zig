@@ -91,42 +91,11 @@ pub const Network = struct {
             defer arena.deinit();
             const alloc = arena.allocator();
 
-            var fleet_updates = std.ArrayList(protocol.FleetState).empty;
+            const fleet_updates = try collectPlayerFleets(alloc, eng, player_id);
 
-            var fleet_iter = eng.fleets.iterator();
-            while (fleet_iter.next()) |f_entry| {
-                const fleet = f_entry.value_ptr;
-                if (fleet.owner_id != player_id) continue;
-
-                var ship_states = std.ArrayList(protocol.ShipState).empty;
-                for (fleet.ships[0..fleet.ship_count]) |ship| {
-                    try ship_states.append(alloc, .{
-                        .id = ship.id,
-                        .class = ship.class,
-                        .hull = ship.hull,
-                        .hull_max = ship.hull_max,
-                        .shield = ship.shield,
-                        .shield_max = ship.shield_max,
-                        .weapon_power = ship.weapon_power,
-                    });
-                }
-
-                try fleet_updates.append(alloc, .{
-                    .id = fleet.id,
-                    .location = fleet.location,
-                    .state = @enumFromInt(@intFromEnum(fleet.state)),
-                    .ships = ship_states.items,
-                    .cargo = fleet.cargo,
-                    .fuel = fleet.fuel,
-                    .fuel_max = fleet.fuel_max,
-                    .cooldown_remaining = fleet.action_cooldown,
-                });
-            }
-
-            // Build sector_update for the player's first fleet
             var sector_update: ?protocol.SectorState = null;
-            if (fleet_updates.items.len > 0) {
-                sector_update = try buildSectorState(alloc, eng, fleet_updates.items[0].location);
+            if (fleet_updates.len > 0) {
+                sector_update = try buildSectorState(alloc, eng, fleet_updates[0].location);
             }
 
             var player_events = std.ArrayList(protocol.GameEvent).empty;
@@ -139,7 +108,7 @@ pub const Network = struct {
             const update = protocol.ServerMessage{
                 .tick_update = .{
                     .tick = eng.current_tick,
-                    .fleet_updates = if (fleet_updates.items.len > 0) fleet_updates.items else null,
+                    .fleet_updates = if (fleet_updates.len > 0) fleet_updates else null,
                     .sector_update = sector_update,
                     .events = if (player_events.items.len > 0) player_events.items else null,
                 },
@@ -225,40 +194,10 @@ pub const Network = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        var fleet_states = std.ArrayList(protocol.FleetState).empty;
-
-        var fleet_iter = self.engine.fleets.iterator();
-        while (fleet_iter.next()) |entry| {
-            const fleet = entry.value_ptr;
-            if (fleet.owner_id != player_id) continue;
-
-            var ship_states = std.ArrayList(protocol.ShipState).empty;
-            for (fleet.ships[0..fleet.ship_count]) |ship| {
-                try ship_states.append(alloc, .{
-                    .id = ship.id,
-                    .class = ship.class,
-                    .hull = ship.hull,
-                    .hull_max = ship.hull_max,
-                    .shield = ship.shield,
-                    .shield_max = ship.shield_max,
-                    .weapon_power = ship.weapon_power,
-                });
-            }
-
-            try fleet_states.append(alloc, .{
-                .id = fleet.id,
-                .location = fleet.location,
-                .state = @enumFromInt(@intFromEnum(fleet.state)),
-                .ships = ship_states.items,
-                .cargo = fleet.cargo,
-                .fuel = fleet.fuel,
-                .fuel_max = fleet.fuel_max,
-                .cooldown_remaining = fleet.action_cooldown,
-            });
-        }
+        const fleet_states = try collectPlayerFleets(alloc, self.engine, player_id);
 
         var known_sectors = std.ArrayList(protocol.SectorState).empty;
-        for (fleet_states.items) |fs| {
+        for (fleet_states) |fs| {
             try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, fs.location));
         }
 
@@ -271,7 +210,7 @@ pub const Network = struct {
                     .resources = player.resources,
                     .homeworld = player.homeworld,
                 },
-                .fleets = fleet_states.items,
+                .fleets = fleet_states,
                 .homeworld = .{
                     .location = player.homeworld,
                     .buildings = &.{},
@@ -301,6 +240,42 @@ pub const Network = struct {
                 .message = message,
             },
         });
+    }
+
+    fn collectPlayerFleets(alloc: std.mem.Allocator, eng: *GameEngine, player_id: u64) ![]const protocol.FleetState {
+        var list = std.ArrayList(protocol.FleetState).empty;
+
+        var iter = eng.fleets.iterator();
+        while (iter.next()) |entry| {
+            const fleet = entry.value_ptr;
+            if (fleet.owner_id != player_id) continue;
+
+            var ship_states = std.ArrayList(protocol.ShipState).empty;
+            for (fleet.ships[0..fleet.ship_count]) |ship| {
+                try ship_states.append(alloc, .{
+                    .id = ship.id,
+                    .class = ship.class,
+                    .hull = ship.hull,
+                    .hull_max = ship.hull_max,
+                    .shield = ship.shield,
+                    .shield_max = ship.shield_max,
+                    .weapon_power = ship.weapon_power,
+                });
+            }
+
+            try list.append(alloc, .{
+                .id = fleet.id,
+                .location = fleet.location,
+                .state = @enumFromInt(@intFromEnum(fleet.state)),
+                .ships = ship_states.items,
+                .cargo = fleet.cargo,
+                .fuel = fleet.fuel,
+                .fuel_max = fleet.fuel_max,
+                .cooldown_remaining = fleet.action_cooldown,
+            });
+        }
+
+        return list.items;
     }
 
     fn buildSectorState(alloc: std.mem.Allocator, eng: *GameEngine, coord: shared.Hex) !protocol.SectorState {

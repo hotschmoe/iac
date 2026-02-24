@@ -104,15 +104,21 @@ Clients never read from or write to the database. They interact exclusively thro
 ### 2.3 Client Read Path (Memory → WebSocket → Client)
 
 ```
-1. Client connects, authenticates
+1. Client connects, sends auth with player_name
        │
-2. Server sends full_state message (serialized from memory)
+2. Server checks for existing player by name:
+   - Found → reconnect (return existing player ID + state)
+   - Not found → create new player, fleet, homeworld
        │
-3. Each tick, server sends tick_update with deltas
+3. Server sends full_state message (serialized from memory)
+       │
+4. Each tick, server sends tick_update with deltas
    (only changed fields, only entities relevant to this player)
        │
-4. Client maintains its own local state mirror (client/state.zig)
-   updated by applying server messages
+5. Client maintains its own local state mirror (client/state.zig)
+   updated by applying server messages — all slice data
+   (ships, player name, buildings) is deep-copied into
+   client-owned allocations
        │
    (Client never queries the database)
 ```
@@ -257,6 +263,26 @@ This ensures zero data loss on clean shutdown regardless of where in the 30-tick
 
 Future: broadcast "server shutting down" to connected clients before exit (requires protocol support).
 
+### 5.6 Memory Ownership
+
+JSON messages parsed via `std.json.parseFromSlice` produce a `Parsed(T)` that owns an
+arena allocator. Slice fields in the parsed value (strings, arrays) point into this arena.
+
+**Server (network.zig):** The `Parsed(ClientMessage)` is stored alongside the queued message
+and freed after `handleMessage` processes it. Any data that must outlive the parse
+(e.g., player name in `registerPlayer`) is duped into the engine's allocator before the
+arena is freed.
+
+**Client (connection.zig / state.zig):** `poll()` returns the full `Parsed(ServerMessage)`.
+The caller frees it with `defer p.deinit()` after `applyServerMessage`. Inside
+`applyServerMessage`, all slice data stored in `ClientState` (fleet ships, player name,
+homeworld buildings/docked_ships, sector connections) is deep-copied into client-owned
+allocations via `replace*` helpers. Old copies are freed on replacement and in `deinit`.
+
+**Engine (engine.zig):** Player names are duped via `allocator.dupe(u8, name)` in both
+`registerPlayer` and `loadPlayers`. `deinit` iterates the players map and frees each
+name before deiniting the map itself.
+
 ---
 
 ## 6. Schema
@@ -367,7 +393,7 @@ External tools should open the database in **read-only mode** (`SQLITE_OPEN_READ
 | Disk full | COMMIT fails, dirty state stays in memory | Alert, free space, next persist succeeds |
 | Corrupt database | Server can't start | Restore from backup |
 | Power failure during write | WAL may be incomplete | SQLite auto-recovers on next open (WAL replay) |
-| Client disconnect mid-action | Command was either applied or not (atomic) | Client reconnects, gets full state sync |
+| Client disconnect mid-action | Command was either applied or not (atomic) | Client reconnects by name, gets full state sync |
 
 ### 8.1 Backup Strategy
 

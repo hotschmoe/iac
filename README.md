@@ -137,7 +137,7 @@ The server evaluates these policies each tick when no explicit command is queued
 
 ## Tech Stack
 
-- **Language:** Zig 0.15
+- **Language:** Zig 0.15.2
 - **TUI Rendering:** [zithril](https://github.com/hotschmoe/zithril) (wraps [rich_zig](https://github.com/hotschmoe/rich_zig) internally)
 - **Database:** SQLite via [zqlite](https://github.com/hotschmoe/zqlite)
 - **Networking:** WebSocket via [webzocket](https://github.com/hotschmoe/webzocket)
@@ -148,9 +148,9 @@ The server evaluates these policies each tick when no explicit command is queued
 ### M1: Core Loop (In Progress)
 Single player, client-server architecture over WebSocket. One ship. Hex grid with procedural generation and edge pruning. Movement, NPC combat (stochastic rapid-fire), resource harvesting. Amber TUI via zithril. JSON CLI interface for LLM agents. SQLite persistence via zqlite.
 
-**Implemented:** WebSocket networking (server accept/broadcast, client connect/poll), SQLite schema and full CRUD (players, fleets, ships, sectors, server state), stochastic combat with rapid-fire chains, zithril-based TUI with command center/windshield/star map views, event log ring buffer.
+**Implemented:** WebSocket networking (server accept/broadcast, client connect/poll). SQLite schema and full CRUD (players, fleets, ships, sectors, server state). Stochastic combat with rapid-fire chains and NPC encounters on sector entry. Movement with speed-based cooldowns and fuel consumption. Resource harvesting with density-based yield and cargo limits. Emergency recall with fuel cost and stochastic hull damage. Player reconnection across sessions. Dirty state tracking with batch persistence every 30 ticks. Graceful shutdown. Zithril TUI with command center, windshield, and star map views. Event log ring buffer. Server sends sector state (terrain, resources, connections) to clients on connect and per-tick. Windshield hex compass with fixed direction keys (1=E, 2=NE, 3=NW, 4=W, 5=SW, 6=SE).
 
-**Remaining:** Hex map rendering in star map view, NPC spawning/patrol AI, movement cooldowns, resource regeneration, full state sync on reconnect.
+**Remaining:** Hex map rendering in star map view (currently placeholder). NPC patrol AI (encounters trigger on entry but NPCs don't move or aggro independently). Resource regeneration.
 
 ### M2: Homeworld & Fleet Growth
 Homeworld buildings (mines, shipyard, research lab, fuel depot). Ship construction and fleet composition. Research tree. Deuterium fuel consumption and fleet range mechanics. Emergency recall.

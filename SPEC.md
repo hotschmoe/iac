@@ -603,19 +603,25 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Stochastic combat with rapid-fire chains and ship destruction
 - [x] Zithril TUI with three views (command center, windshield, star map)
 - [x] Event log ring buffer with formatted display
-- [x] Tick loop with periodic persistence
-- [ ] Hex map rendering in star map view
-- [ ] NPC spawning and patrol AI
-- [ ] Movement cooldowns
+- [x] Tick loop with periodic persistence (dirty tracking, batch writes every 30 ticks)
+- [x] Movement with cooldowns (speed-based, fuel consumption)
+- [x] Harvest command processing (density-based yield, cargo limits)
+- [x] Emergency recall (fuel cost, stochastic hull damage scaled by distance)
+- [x] NPC encounters on sector entry (procedural from seed, auto-combat)
+- [x] Full state sync on connect/reconnect
+- [x] Player reconnection (existing players resume by name, not re-created)
+- [x] Graceful shutdown with final state persist
+- [x] Leak-free memory management (server and client)
+- [x] Server sends sector state (terrain, resources, connections) per-tick and on full sync
+- [x] Windshield hex compass with fixed direction keys (1=E, 2=NE, 3=NW, 4=W, 5=SW, 6=SE)
+- [x] Client deep-copies sector connections to survive parse arena cleanup
+- [ ] Hex map rendering in star map view (placeholder only)
+- [ ] NPC patrol AI (spawning works, no movement/aggro behavior yet)
 - [ ] Resource regeneration
-- [ ] Full state sync on reconnect
-- [ ] Harvest command processing in engine
 
 ### What's Out (Deferred)
 - Homeworld buildings, shipyard, research (M2)
 - Fleet composition beyond starting scout (M2)
-- Deuterium fuel consumption / fleet range (M2)
-- Emergency recall (M2)
 - Loot system — components, data fragments (M4)
 - Auto-action policies (M4)
 - Multiple concurrent players (M3)
