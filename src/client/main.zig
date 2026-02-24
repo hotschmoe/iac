@@ -1,7 +1,3 @@
-// src/client/main.zig
-// IAC TUI Client
-// Connects to the game server over WebSocket, renders amber terminal via zithril.
-
 const std = @import("std");
 const shared = @import("shared");
 const zithril = @import("zithril");
@@ -41,9 +37,7 @@ fn update(state: *AppState, event: zithril.Event) zithril.Action {
             }
         },
         .tick => {
-            // Poll server messages on each tick
-            var count: u32 = 0;
-            while (count < 20) : (count += 1) {
+            for (0..20) |_| {
                 const msg = state.conn.poll() catch break;
                 if (msg) |m| {
                     state.client_state.applyServerMessage(m) catch |err| {
@@ -66,7 +60,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const config = try parseArgs(allocator);
+    const config = parseArgs();
 
     var app_state = AppState{
         .client_state = ClientState.init(allocator),
@@ -95,8 +89,7 @@ const ClientConfig = struct {
     player_name: []const u8,
 };
 
-fn parseArgs(allocator: std.mem.Allocator) !ClientConfig {
-    _ = allocator;
+fn parseArgs() ClientConfig {
     return .{
         .server_host = shared.constants.DEFAULT_HOST,
         .server_port = shared.constants.DEFAULT_PORT,

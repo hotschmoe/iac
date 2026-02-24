@@ -1,7 +1,3 @@
-// src/client/connection.zig
-// WebSocket client connection to the game server via webzocket.
-// Handles JSON serialization/deserialization of protocol messages.
-
 const std = @import("std");
 const shared = @import("shared");
 const wz = @import("webzocket");
@@ -38,7 +34,6 @@ pub const Connection = struct {
         self.client.deinit();
     }
 
-    /// Send authentication request.
     pub fn sendAuth(self: *Connection, player_name: []const u8) !void {
         const msg = shared.protocol.ClientMessage{
             .auth = .{
@@ -48,7 +43,6 @@ pub const Connection = struct {
         try self.send(msg);
     }
 
-    /// Send a game command.
     pub fn sendCommand(self: *Connection, cmd: shared.protocol.Command) !void {
         const msg = shared.protocol.ClientMessage{
             .command = cmd,
@@ -56,7 +50,6 @@ pub const Connection = struct {
         try self.send(msg);
     }
 
-    /// Request full state sync from server.
     pub fn requestFullState(self: *Connection) !void {
         const msg = shared.protocol.ClientMessage{
             .request_full_state = {},
@@ -64,8 +57,6 @@ pub const Connection = struct {
         try self.send(msg);
     }
 
-    /// Non-blocking poll for server messages.
-    /// Returns null if no message available.
     pub fn poll(self: *Connection) !?shared.protocol.ServerMessage {
         if (!self.connected) return null;
 
@@ -93,7 +84,6 @@ pub const Connection = struct {
         return null;
     }
 
-    /// Serialize and send a client message as JSON over WebSocket.
     fn send(self: *Connection, msg: shared.protocol.ClientMessage) !void {
         if (!self.connected) return error.NotConnected;
 

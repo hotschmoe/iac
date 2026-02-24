@@ -1,7 +1,3 @@
-// src/server/engine.zig
-// Core game simulation. Processes one tick at a time.
-// All game logic is authoritative here — clients are dumb renderers.
-
 const std = @import("std");
 const shared = @import("shared");
 const combat = @import("combat.zig");
@@ -10,7 +6,6 @@ const Database = @import("database.zig").Database;
 const Hex = shared.Hex;
 const Resources = shared.constants.Resources;
 const ShipClass = shared.constants.ShipClass;
-const Zone = shared.constants.Zone;
 const WorldGen = shared.world.WorldGen;
 
 const log = std.log.scoped(.engine);
@@ -21,22 +16,17 @@ pub const GameEngine = struct {
     db: *Database,
     current_tick: u64,
 
-    // Live state (loaded from DB, modified in-memory, periodically persisted)
     players: std.AutoHashMap(u64, Player),
     fleets: std.AutoHashMap(u64, Fleet),
     npc_fleets: std.AutoHashMap(u64, NpcFleet),
     active_combats: std.AutoHashMap(u64, Combat),
 
-    // Modified sectors (overlay on procedural generation)
     sector_overrides: std.AutoHashMap(u32, SectorOverride),
 
-    // Events generated this tick (broadcast to clients, then cleared)
     pending_events: std.ArrayList(shared.protocol.GameEvent),
 
-    // ID generation
     next_id: u64,
 
-    // Dirty tracking for persistence
     dirty_players: std.AutoHashMap(u64, void),
     dirty_sectors: std.AutoHashMap(u32, void),
 
@@ -57,7 +47,6 @@ pub const GameEngine = struct {
             .dirty_sectors = std.AutoHashMap(u32, void).init(allocator),
         };
 
-        // Load persisted state from DB
         try engine.loadState();
 
         return engine;
@@ -78,21 +67,16 @@ pub const GameEngine = struct {
         return self.current_tick;
     }
 
-    /// Generate a unique ID for any entity.
     pub fn nextId(self: *GameEngine) u64 {
         const id = self.next_id;
         self.next_id += 1;
         return id;
     }
 
-    // ── Tick Processing ────────────────────────────────────────────
-
-    /// Advance the simulation by one tick.
     pub fn tick(self: *GameEngine) !void {
         self.current_tick += 1;
         self.pending_events.clearRetainingCapacity();
 
-        // Process each subsystem in order
         try self.processMovement();
         try self.processCombat();
         try self.processHarvesting();
@@ -101,7 +85,6 @@ pub const GameEngine = struct {
         try self.processCooldowns();
     }
 
-    /// Process fleet movement — check if moving fleets have arrived.
     fn processMovement(self: *GameEngine) !void {
         var iter = self.fleets.iterator();
         while (iter.next()) |entry| {
@@ -113,16 +96,12 @@ pub const GameEngine = struct {
                 continue;
             }
 
-            // Fleet has arrived at destination
             if (fleet.move_target) |target| {
                 fleet.location = target;
                 fleet.state = .idle;
                 fleet.move_target = null;
 
-                // Record explored edge for this player
                 try self.recordExplored(fleet.owner_id, fleet.location);
-
-                // Generate sector event
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
                     .kind = .{ .sector_entered = .{
@@ -132,13 +111,11 @@ pub const GameEngine = struct {
                     } },
                 });
 
-                // Check for NPC encounters in new sector
                 try self.checkNpcEncounter(fleet);
             }
         }
     }
 
-    /// Process active combats -- one round per tick.
     fn processCombat(self: *GameEngine) !void {
         var to_remove: std.ArrayList(u64) = .empty;
         defer to_remove.deinit(self.allocator);
@@ -189,7 +166,6 @@ pub const GameEngine = struct {
                     try self.dropSalvage(active_combat.sector, active_combat.npc_value);
                 }
 
-                // Clean up NPC fleet
                 _ = self.npc_fleets.remove(active_combat.npc_fleet_id);
             }
         }
@@ -199,18 +175,14 @@ pub const GameEngine = struct {
         }
     }
 
-    /// Process resource harvesting for fleets in harvest mode.
     fn processHarvesting(self: *GameEngine) !void {
         var iter = self.fleets.iterator();
         while (iter.next()) |entry| {
             var fleet = entry.value_ptr;
             if (fleet.state != .harvesting) continue;
 
-            // Get sector resource info
             const template = self.world_gen.generateSector(fleet.location);
             const override = self.sector_overrides.get(fleet.location.toKey());
-
-            // Calculate harvest amount
             const density = if (override) |ov| ov.metal_density orelse template.metal_density else template.metal_density;
             const harvest_amount = density.harvestMultiplier() * fleetHarvestPower(fleet);
 
@@ -219,7 +191,6 @@ pub const GameEngine = struct {
                 continue;
             }
 
-            // Check cargo capacity
             const current_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
             const max_cargo = fleetCargoCapacity(fleet);
             if (current_cargo >= max_cargo) {
@@ -241,27 +212,22 @@ pub const GameEngine = struct {
         }
     }
 
-    /// Process NPC fleet behavior (patrol, aggro checks).
     fn processNpcBehavior(self: *GameEngine) !void {
         // TODO: NPC movement, aggro detection, spawning
         _ = self;
     }
 
-    /// Process homeworld production, build queues, research.
     fn processHomeworlds(self: *GameEngine) !void {
         var iter = self.players.iterator();
         while (iter.next()) |entry| {
             var player = entry.value_ptr;
 
-            // Passive resource production from mines
             // TODO: calculate from building levels
-            player.resources.metal += 0.5; // base rate, level 1
+            player.resources.metal += 0.5;
             player.resources.crystal += 0.3;
-            // deut starts at 0 production until synth is built
         }
     }
 
-    /// Tick down cooldowns on all fleets.
     fn processCooldowns(self: *GameEngine) !void {
         var iter = self.fleets.iterator();
         while (iter.next()) |entry| {
@@ -275,13 +241,9 @@ pub const GameEngine = struct {
         }
     }
 
-    // ── Player Actions ─────────────────────────────────────────────
-
-    /// Register a new player or reconnect existing one.
     pub fn registerPlayer(self: *GameEngine, name: []const u8) !u64 {
         const player_id = self.nextId();
 
-        // Find a homeworld location in the inner ring
         const homeworld = self.findHomeworldLocation();
 
         const player = Player{
@@ -293,7 +255,6 @@ pub const GameEngine = struct {
 
         try self.players.put(player_id, player);
 
-        // Create starting scout fleet
         const fleet_id = self.nextId();
         const ship_id = self.nextId();
 
@@ -303,7 +264,7 @@ pub const GameEngine = struct {
             .owner_id = player_id,
             .location = homeworld,
             .state = .idle,
-            .ships = undefined, // initialized below
+            .ships = undefined,
             .ship_count = 1,
             .cargo = .{},
             .fuel = @floatFromInt(scout_stats.fuel),
@@ -333,14 +294,12 @@ pub const GameEngine = struct {
         return player_id;
     }
 
-    /// Handle a move command from a player.
     pub fn handleMove(self: *GameEngine, fleet_id: u64, target: Hex) !void {
         const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
 
         if (fleet.state == .in_combat) return error.InCombat;
         if (fleet.action_cooldown > 0) return error.OnCooldown;
 
-        // Validate target is a connected neighbor
         const connections = self.world_gen.connectedNeighbors(fleet.location);
         var valid = false;
         for (connections.slice()) |conn| {
@@ -351,11 +310,9 @@ pub const GameEngine = struct {
         }
         if (!valid) return error.NoConnection;
 
-        // Check fuel
         const fuel_cost = fleetFuelCost(fleet);
         if (fleet.fuel < fuel_cost) return error.InsufficientFuel;
 
-        // Execute move
         fleet.fuel -= fuel_cost;
         fleet.state = .moving;
         fleet.move_target = target;
@@ -363,7 +320,6 @@ pub const GameEngine = struct {
         fleet.action_cooldown = fleet.move_cooldown;
     }
 
-    /// Handle a harvest command.
     pub fn handleHarvest(self: *GameEngine, fleet_id: u64) !void {
         const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
 
@@ -374,20 +330,17 @@ pub const GameEngine = struct {
         fleet.action_cooldown = shared.constants.HARVEST_COOLDOWN;
     }
 
-    /// Handle emergency recall.
     pub fn handleRecall(self: *GameEngine, fleet_id: u64) !void {
         const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
         const player = self.players.getPtr(fleet.owner_id) orelse return error.PlayerNotFound;
 
         const dist = Hex.distance(fleet.location, player.homeworld);
 
-        // Fuel cost: 2x normal for the distance
         const fuel_cost = fleetFuelCost(fleet) * @as(f32, @floatFromInt(dist)) * shared.constants.RECALL_FUEL_MULTIPLIER;
         if (fleet.fuel < fuel_cost) return error.InsufficientFuel;
 
         fleet.fuel -= fuel_cost;
 
-        // Damage check for each ship
         const damage_chance = @min(
             shared.constants.RECALL_DAMAGE_CHANCE_CAP,
             shared.constants.RECALL_DAMAGE_CHANCE_PER_HEX * @as(f32, @floatFromInt(dist)),
@@ -405,7 +358,6 @@ pub const GameEngine = struct {
                 fleet.ships[i].hull -= fleet.ships[i].hull_max * damage_pct;
 
                 if (fleet.ships[i].hull <= 0) {
-                    // Ship destroyed during recall
                     try self.pending_events.append(self.allocator, .{
                         .tick = self.current_tick,
                         .kind = .{ .ship_destroyed = .{
@@ -415,38 +367,28 @@ pub const GameEngine = struct {
                             .is_npc = false,
                         } },
                     });
-                    // Remove ship from fleet (swap with last)
                     fleet.ships[i] = fleet.ships[fleet.ship_count - 1];
                     fleet.ship_count -= 1;
-                    continue; // don't increment i, check swapped ship
+                    continue;
                 }
             }
             i += 1;
         }
 
-        // Teleport to homeworld
         fleet.location = player.homeworld;
         fleet.state = if (fleet.ship_count == 0) .docked else .idle;
         fleet.move_target = null;
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────
-
     fn findHomeworldLocation(self: *GameEngine) Hex {
-        // Find an unoccupied hex in the inner ring
         var rng = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))));
         const random = rng.random();
 
         const min = shared.constants.HOMEWORLD_MIN_DIST;
         const max = shared.constants.HOMEWORLD_MAX_DIST;
 
-        // Try random positions in the ring
         for (0..100) |_| {
             const dist = random.intRangeAtMost(u16, min, max);
-            const angle_idx = random.intRangeAtMost(u16, 0, dist * 6 - 1);
-            _ = angle_idx;
-
-            // Simple: pick random q, derive r to be at correct distance
             const q: i16 = @intCast(random.intRangeAtMost(i32, -@as(i32, dist), @as(i32, dist)));
             const r_min: i16 = @intCast(@max(-@as(i32, dist), -@as(i32, q) - @as(i32, dist)));
             const r_max: i16 = @intCast(@min(@as(i32, dist), -@as(i32, q) + @as(i32, dist)));
@@ -455,7 +397,6 @@ pub const GameEngine = struct {
             const candidate = Hex{ .q = q, .r = r };
             if (candidate.distFromOrigin() < min or candidate.distFromOrigin() > max) continue;
 
-            // Check not already taken
             var taken = false;
             var player_iter = self.players.iterator();
             while (player_iter.next()) |entry| {
@@ -476,11 +417,9 @@ pub const GameEngine = struct {
         if (template.npc_template) |npc| {
             if (npc.behavior == .passive) return; // passive NPCs don't auto-aggro
 
-            // Start combat
             const combat_id = self.nextId();
             const npc_fleet_id = self.nextId();
 
-            // Create NPC fleet
             var npc_fleet = NpcFleet{
                 .id = npc_fleet_id,
                 .location = fleet.location,
@@ -505,8 +444,6 @@ pub const GameEngine = struct {
             }
 
             try self.npc_fleets.put(npc_fleet_id, npc_fleet);
-
-            // Create combat instance
             try self.active_combats.put(combat_id, Combat{
                 .id = combat_id,
                 .sector = fleet.location,
@@ -549,7 +486,6 @@ pub const GameEngine = struct {
     }
 
     fn recordExplored(self: *GameEngine, player_id: u64, coord: Hex) !void {
-        // Persist explored edges to DB for all connected neighbors
         const connections = self.world_gen.connectedNeighbors(coord);
         for (connections.slice()) |neighbor| {
             self.db.saveExploredEdge(player_id, coord, neighbor, self.current_tick) catch |err| {
@@ -559,7 +495,6 @@ pub const GameEngine = struct {
     }
 
     fn loadState(self: *GameEngine) !void {
-        // Load server state (tick, next_id)
         if (try self.db.loadServerState("current_tick")) |tick_str| {
             defer self.allocator.free(tick_str);
             self.current_tick = std.fmt.parseInt(u64, tick_str, 10) catch 0;
@@ -569,21 +504,18 @@ pub const GameEngine = struct {
             self.next_id = std.fmt.parseInt(u64, id_str, 10) catch 1;
         }
 
-        // Load players
         var players = try self.db.loadPlayers();
         defer players.deinit(self.allocator);
         for (players.items) |player| {
             try self.players.put(player.id, player);
         }
 
-        // Load fleets
         var fleets = try self.db.loadFleets();
         defer fleets.deinit(self.allocator);
         for (fleets.items) |fleet| {
             try self.fleets.put(fleet.id, fleet);
         }
 
-        // Load sector overrides
         var overrides = try self.db.loadSectorOverrides();
         defer overrides.deinit(self.allocator);
         for (overrides.items) |row| {
@@ -605,7 +537,6 @@ pub const GameEngine = struct {
     }
 
     pub fn persistDirtyState(self: *GameEngine) !void {
-        // Save server state
         var tick_buf: [20]u8 = undefined;
         const tick_str = std.fmt.bufPrint(&tick_buf, "{d}", .{self.current_tick}) catch unreachable;
         try self.db.saveServerState("current_tick", tick_str);
@@ -614,7 +545,6 @@ pub const GameEngine = struct {
         const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{self.next_id}) catch unreachable;
         try self.db.saveServerState("next_id", id_str);
 
-        // Save dirty players and their fleets
         var dirty_iter = self.dirty_players.iterator();
         while (dirty_iter.next()) |entry| {
             const player_id = entry.key_ptr.*;
@@ -623,13 +553,11 @@ pub const GameEngine = struct {
             }
         }
 
-        // Save all fleets (dirty tracking for fleets is implicit via player)
         var fleet_iter = self.fleets.iterator();
         while (fleet_iter.next()) |entry| {
             try self.db.saveFleet(entry.value_ptr.*);
         }
 
-        // Save dirty sector overrides
         var sector_iter = self.dirty_sectors.iterator();
         while (sector_iter.next()) |entry| {
             const key = entry.key_ptr.*;
@@ -648,8 +576,6 @@ pub const GameEngine = struct {
     }
 };
 
-// ── Fleet utility functions ────────────────────────────────────────
-
 fn fleetMoveCooldown(fleet: *const Fleet) u16 {
     var min_speed: u8 = 255;
     for (fleet.ships[0..fleet.ship_count]) |ship| {
@@ -662,7 +588,7 @@ fn fleetMoveCooldown(fleet: *const Fleet) u16 {
 fn fleetFuelCost(fleet: *const Fleet) f32 {
     var total_mass: f32 = 0;
     for (fleet.ships[0..fleet.ship_count]) |ship| {
-        total_mass += ship.hull_max; // hull_max as proxy for mass
+        total_mass += ship.hull_max;
     }
     return total_mass * shared.constants.FUEL_RATE_PER_MASS;
 }
@@ -687,8 +613,6 @@ fn fleetCargoCapacity(fleet: *const Fleet) f32 {
     }
     return cap;
 }
-
-// ── Internal Types ─────────────────────────────────────────────────
 
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
 pub const MAX_NPC_SHIPS: usize = 32;
@@ -755,12 +679,9 @@ pub const Combat = struct {
 };
 
 pub const SectorOverride = struct {
-    // Resource depletion overlay
     metal_density: ?shared.constants.Density = null,
     crystal_density: ?shared.constants.Density = null,
     deut_density: ?shared.constants.Density = null,
-
-    // Salvage floating in sector
     salvage: ?Resources = null,
     salvage_despawn_tick: ?u64 = null,
 };

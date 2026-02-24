@@ -1,15 +1,9 @@
-// src/client/renderer.zig
-// Amber TUI renderer using zithril widgets.
-// All output uses amber hues at varying brightness levels.
-
 const std = @import("std");
 const shared = @import("shared");
 const zithril = @import("zithril");
 const State = @import("state.zig");
 
 const ClientState = State.ClientState;
-const View = State.View;
-const Hex = shared.Hex;
 
 const Frame = zithril.Frame(zithril.App(ClientState).DefaultMaxWidgets);
 const Constraint = zithril.Constraint;
@@ -18,7 +12,6 @@ const Paragraph = zithril.Paragraph;
 const Rect = zithril.Rect;
 const Style = zithril.Style;
 const Color = zithril.Color;
-const Direction = zithril.Direction;
 
 // -- Amber color palette ----------------------------------------------------
 
@@ -74,8 +67,7 @@ fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
 
 // -- Footer -----------------------------------------------------------------
 
-fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
-    _ = state;
+fn renderFooter(_: *ClientState, frame: *Frame, area: Rect) void {
     frame.render(Paragraph{
         .text = " [Esc] Cmd Center  [w] Windshield  [m] Map  [Tab] Cycle Fleet  [q] Quit",
         .style = amber_dim,
@@ -181,20 +173,21 @@ fn renderEventPanel(state: *ClientState, frame: *Frame, area: Rect) void {
 }
 
 fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
+    const slice = buf[pos..];
     const text = switch (event.kind) {
-        .combat_started => |e| std.fmt.bufPrint(buf[pos..], " T{d}: Combat at [{d},{d}]\n", .{ event.tick, e.sector.q, e.sector.r }),
-        .combat_ended => |e| std.fmt.bufPrint(buf[pos..], " T{d}: Combat {s} at [{d},{d}]\n", .{
+        .combat_started => |e| std.fmt.bufPrint(slice, " T{d}: Combat at [{d},{d}]\n", .{ event.tick, e.sector.q, e.sector.r }),
+        .combat_ended => |e| std.fmt.bufPrint(slice, " T{d}: Combat {s} at [{d},{d}]\n", .{
             event.tick,
             if (e.player_victory) "WON" else "LOST",
             e.sector.q,
             e.sector.r,
         }),
-        .sector_entered => |e| std.fmt.bufPrint(buf[pos..], " T{d}: Entered [{d},{d}]\n", .{ event.tick, e.sector.q, e.sector.r }),
-        .resource_harvested => |e| std.fmt.bufPrint(buf[pos..], " T{d}: Harvested {d:.1} {s}\n", .{ event.tick, e.amount, @tagName(e.resource_type) }),
-        .ship_destroyed => |e| std.fmt.bufPrint(buf[pos..], " T{d}: {s} destroyed\n", .{ event.tick, e.ship_class.label() }),
-        else => std.fmt.bufPrint(buf[pos..], " T{d}: Event\n", .{event.tick}),
-    };
-    return (text catch return error.NoSpaceLeft).len;
+        .sector_entered => |e| std.fmt.bufPrint(slice, " T{d}: Entered [{d},{d}]\n", .{ event.tick, e.sector.q, e.sector.r }),
+        .resource_harvested => |e| std.fmt.bufPrint(slice, " T{d}: Harvested {d:.1} {s}\n", .{ event.tick, e.amount, @tagName(e.resource_type) }),
+        .ship_destroyed => |e| std.fmt.bufPrint(slice, " T{d}: {s} destroyed\n", .{ event.tick, e.ship_class.label() }),
+        else => std.fmt.bufPrint(slice, " T{d}: Event\n", .{event.tick}),
+    } catch return error.NoSpaceLeft;
+    return text.len;
 }
 
 // -- Windshield View --------------------------------------------------------
@@ -292,7 +285,7 @@ fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
 
 // -- Star Map ---------------------------------------------------------------
 
-fn renderStarMap(state: *ClientState, frame: *Frame, area: Rect) void {
+fn renderStarMap(_: *ClientState, frame: *Frame, area: Rect) void {
     const block = Block{
         .title = " STAR MAP ",
         .border = .rounded,
@@ -301,7 +294,6 @@ fn renderStarMap(state: *ClientState, frame: *Frame, area: Rect) void {
     frame.render(block, area);
     const inner = block.inner(area);
 
-    _ = state;
     frame.render(Paragraph{
         .text = " Star map rendering -- use arrows to scroll\n\n [Arrows] Scroll  [Tab] Cycle fleet",
         .style = amber_faint,

@@ -1,15 +1,8 @@
-// src/client/input.zig
-// Key-to-action mapping for zithril events.
-// Maps keyboard input to game actions. Used in the App update function.
-
-const std = @import("std");
 const shared = @import("shared");
 const zithril = @import("zithril");
 const State = @import("state.zig");
 
 const Key = zithril.Key;
-const KeyCode = zithril.KeyCode;
-const Action = zithril.Action;
 const ClientState = State.ClientState;
 
 pub const InputAction = union(enum) {
@@ -22,7 +15,6 @@ pub const InputAction = union(enum) {
     cycle_fleet: void,
 };
 
-/// Map a zithril Key event to an InputAction, given current state context.
 pub fn mapKey(key: Key, state: *const ClientState) InputAction {
     if (!key.isPress() and !key.isRepeat()) return .{ .none = {} };
 
@@ -52,12 +44,8 @@ fn mapChar(c: u21, state: *const ClientState) InputAction {
         // Movement keys: map 1-6 to the sector's connected exits
         '1', '2', '3', '4', '5', '6' => mapMovement(c, state),
 
-        // Actions
         'h' => mapHarvest(state),
         'r' => mapRecall(state),
-
-        // Tab mapped above, but fallthrough here
-        '\t' => .{ .cycle_fleet = {} },
 
         else => .{ .none = {} },
     };

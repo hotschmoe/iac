@@ -1,7 +1,3 @@
-// src/server/network.zig
-// WebSocket server for client connections via webzocket.
-// Handles both TUI and LLM/CLI clients over the same JSON protocol.
-//
 // Threading model:
 //   webzocket Server runs in a background thread (listenInNewThread).
 //   Handler.clientMessage pushes to a mutex-protected queue.
@@ -25,7 +21,6 @@ pub const Network = struct {
     server: wz.Server(Handler),
     server_thread: ?std.Thread,
 
-    // Shared state protected by mutex -- Handler pushes, tick thread drains
     mutex: std.Thread.Mutex,
     incoming_queue: std.ArrayList(QueuedMessage),
     sessions: std.AutoHashMap(u64, ClientSession),
@@ -53,21 +48,15 @@ pub const Network = struct {
         if (self.server_thread) |t| t.join();
         self.server.deinit();
         self.incoming_queue.deinit(self.allocator);
-
-        // Clean up session conn pointers
         self.sessions.deinit();
     }
 
-    /// Start listening for WebSocket connections in a background thread.
     pub fn startListening(self: *Network) !void {
         self.server_thread = try self.server.listenInNewThread(self);
         log.info("WebSocket server listening on {s}:{d}", .{ shared.constants.DEFAULT_HOST, self.port });
     }
 
-    /// Process all incoming messages from connected clients.
-    /// Called once per tick on the main thread.
     pub fn processIncoming(self: *Network) !void {
-        // Drain the queue under lock
         var messages: std.ArrayList(QueuedMessage) = blk: {
             self.mutex.lock();
             defer self.mutex.unlock();
@@ -84,8 +73,6 @@ pub const Network = struct {
         }
     }
 
-    /// Broadcast tick updates to all connected, authenticated clients.
-    /// Called once per tick after engine.tick().
     pub fn broadcastUpdates(self: *Network, eng: *GameEngine) !void {
         const events = eng.drainEvents();
 
@@ -99,7 +86,6 @@ pub const Network = struct {
 
             const player_id = session.player_id orelse continue;
 
-            // Build fleet updates for this player
             var fleet_updates = std.ArrayList(protocol.FleetState).empty;
             defer fleet_updates.deinit(self.allocator);
 
@@ -108,7 +94,6 @@ pub const Network = struct {
                 const fleet = f_entry.value_ptr;
                 if (fleet.owner_id != player_id) continue;
 
-                // Build ship states
                 var ship_states = std.ArrayList(protocol.ShipState).empty;
                 defer ship_states.deinit(self.allocator);
                 for (fleet.ships[0..fleet.ship_count]) |ship| {
@@ -135,7 +120,6 @@ pub const Network = struct {
                 });
             }
 
-            // Filter events relevant to this player
             var player_events = std.ArrayList(protocol.GameEvent).empty;
             defer player_events.deinit(self.allocator);
             for (events) |event| {
@@ -157,8 +141,6 @@ pub const Network = struct {
             };
         }
     }
-
-    // -- Message handling ---------------------------------------------------
 
     fn handleMessage(self: *Network, session_id: u64, msg: protocol.ClientMessage) !void {
         self.mutex.lock();
@@ -182,7 +164,6 @@ pub const Network = struct {
                 }
                 self.mutex.unlock();
 
-                // Send auth result
                 const result = protocol.ServerMessage{
                     .auth_result = .{
                         .success = true,
@@ -191,7 +172,6 @@ pub const Network = struct {
                 };
                 try self.sendToSession(sess, result);
 
-                // Send full state
                 try self.sendFullState(sess, player_id);
             },
             .command => |cmd| {
@@ -201,9 +181,7 @@ pub const Network = struct {
                 }
                 self.routeCommand(sess, cmd);
             },
-            .policy_update => |_| {
-                // Future: fleet policy support
-            },
+            .policy_update => {},
             .request_full_state => {
                 if (sess.authenticated) {
                     if (sess.player_id) |pid| {
@@ -214,8 +192,7 @@ pub const Network = struct {
         }
     }
 
-    fn routeCommand(self: *Network, session: *const ClientSession, cmd: protocol.Command) void {
-        _ = session;
+    fn routeCommand(self: *Network, _: *const ClientSession, cmd: protocol.Command) void {
         switch (cmd) {
             .move => |m| self.engine.handleMove(m.fleet_id, m.target) catch |err| {
                 log.warn("Move failed: {}", .{err});
@@ -310,16 +287,11 @@ pub const Network = struct {
         });
     }
 
-    fn isEventRelevant(event: protocol.GameEvent, player_id: u64, eng: *GameEngine) bool {
-        _ = player_id;
-        _ = eng;
-        // For M1: send all events to all players
-        _ = event;
+    fn isEventRelevant(_: protocol.GameEvent, _: u64, _: *GameEngine) bool {
+        // M1: all events visible to all players
         return true;
     }
 };
-
-// -- WebSocket Handler (per-connection, created by webzocket) ---------------
 
 const Handler = struct {
     conn: *wz.Conn,
@@ -383,8 +355,6 @@ const Handler = struct {
         _ = self.network.sessions.remove(self.session_id);
     }
 };
-
-// -- Types ------------------------------------------------------------------
 
 const QueuedMessage = struct {
     session_id: u64,

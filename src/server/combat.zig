@@ -1,9 +1,3 @@
-// src/server/combat.zig
-// Stochastic fleet combat resolution.
-// Each tick during combat = one round.
-// Ships fire at random targets, damage through shields then hull.
-// Rapid-fire mechanics from OGame.
-
 const std = @import("std");
 const shared = @import("shared");
 const engine = @import("engine.zig");
@@ -20,9 +14,6 @@ pub const CombatRoundResult = struct {
     player_won: bool,
 };
 
-/// Resolve one round of combat between a player fleet and an NPC fleet.
-/// Each living ship fires at a random enemy. Damage is stochastic.
-/// Rapid-fire allows additional shots per ship per round.
 pub fn resolveCombatRound(
     allocator: std.mem.Allocator,
     active_combat: *engine.Combat,
@@ -46,10 +37,9 @@ pub fn resolveCombatRound(
     }
 
     // Each NPC ship fires
-    var npc_i: usize = 0;
-    while (npc_i < npc_fleet.ship_count) : (npc_i += 1) {
-        if (npc_fleet.ships[npc_i].hull <= 0) continue;
-        try fireShip(&npc_fleet.ships[npc_i], player_fleet.ships[0..player_fleet.ship_count], false, player_fleet.id, tick, random, &events, allocator);
+    for (npc_fleet.ships[0..npc_fleet.ship_count]) |*attacker| {
+        if (attacker.hull <= 0) continue;
+        try fireShip(attacker, player_fleet.ships[0..player_fleet.ship_count], false, player_fleet.id, tick, random, &events, allocator);
     }
 
     // Compact destroyed ships from player fleet
@@ -64,10 +54,9 @@ pub fn resolveCombatRound(
 
     // Compact destroyed ships from NPC fleet
     write_idx = 0;
-    var read_idx: usize = 0;
-    while (read_idx < npc_fleet.ship_count) : (read_idx += 1) {
-        if (npc_fleet.ships[read_idx].hull > 0) {
-            npc_fleet.ships[write_idx] = npc_fleet.ships[read_idx];
+    for (npc_fleet.ships[0..npc_fleet.ship_count]) |ship| {
+        if (ship.hull > 0) {
+            npc_fleet.ships[write_idx] = ship;
             write_idx += 1;
         }
     }
@@ -108,7 +97,6 @@ pub fn resolveCombatRound(
     };
 }
 
-/// One ship fires at enemies, with rapid-fire chain.
 fn fireShip(
     attacker: *Ship,
     targets: []Ship,
@@ -119,16 +107,12 @@ fn fireShip(
     events: *std.ArrayList(GameEvent),
     allocator: std.mem.Allocator,
 ) !void {
-    var firing = true;
-    while (firing) {
-        firing = false;
-
+    while (true) {
         const target_idx = selectTarget(targets, targets.len, random) orelse return;
         const target = &targets[target_idx];
 
         const damage = rollDamage(attacker.weapon_power, random);
         const result = applyDamage(target, damage);
-
         const rapid = checkRapidFire(attacker.class, target.class, random);
 
         try events.append(allocator, .{
@@ -155,12 +139,10 @@ fn fireShip(
             });
         }
 
-        if (rapid) firing = true;
+        if (!rapid) break;
     }
 }
 
-/// Calculate weighted random target selection.
-/// Larger ships (higher hull_max) are more likely to be targeted.
 fn selectTarget(ships: []Ship, count: usize, rng: std.Random) ?usize {
     if (count == 0) return null;
 
@@ -181,7 +163,6 @@ fn selectTarget(ships: []Ship, count: usize, rng: std.Random) ?usize {
     return count - 1;
 }
 
-/// Apply damage to a ship: shields absorb first, remainder hits hull.
 fn applyDamage(target: *Ship, damage: f32) struct { shield_absorbed: f32, hull_damage: f32 } {
     const shield_absorbed = @min(damage, target.shield);
     target.shield -= shield_absorbed;
@@ -196,14 +177,12 @@ fn applyDamage(target: *Ship, damage: f32) struct { shield_absorbed: f32, hull_d
     };
 }
 
-/// Roll damage for an attack: base weapon power * variance.
 fn rollDamage(weapon_power: f32, rng: std.Random) f32 {
     const variance = shared.constants.DAMAGE_VARIANCE_MIN +
         rng.float(f32) * (shared.constants.DAMAGE_VARIANCE_MAX - shared.constants.DAMAGE_VARIANCE_MIN);
     return weapon_power * variance;
 }
 
-/// Check rapid-fire: returns true if the ship fires again this round.
 fn checkRapidFire(attacker_class: ShipClass, target_class: ShipClass, rng: std.Random) bool {
     const rf = attacker_class.rapidFireVs(target_class);
     if (rf == 0) return false;

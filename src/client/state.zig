@@ -1,7 +1,3 @@
-// src/client/state.zig
-// Client-side game state. Mirrors server state as received via tick updates.
-// Also tracks UI state: current view, scroll position, selected fleet, etc.
-
 const std = @import("std");
 const shared = @import("shared");
 
@@ -20,8 +16,8 @@ pub const ClientState = struct {
 
     // UI state
     current_view: View,
-    active_fleet_idx: usize, // which fleet is selected in windshield
-    map_center: Hex, // star map scroll position
+    active_fleet_idx: usize,
+    map_center: Hex,
     map_zoom: ZoomLevel,
     command_buffer: [256]u8,
     command_len: usize,
@@ -37,7 +33,7 @@ pub const ClientState = struct {
             .fleets = .empty,
             .homeworld = null,
             .known_sectors = std.AutoHashMap(u32, shared.protocol.SectorState).init(allocator),
-            .event_log = EventLog.init(allocator),
+            .event_log = EventLog.init(),
             .current_view = .command_center,
             .active_fleet_idx = 0,
             .map_center = Hex.ORIGIN,
@@ -53,17 +49,14 @@ pub const ClientState = struct {
     pub fn deinit(self: *ClientState) void {
         self.fleets.deinit(self.allocator);
         self.known_sectors.deinit();
-        self.event_log.deinit();
     }
 
-    /// Apply an incoming server message to local state.
     pub fn applyServerMessage(self: *ClientState, msg: shared.protocol.ServerMessage) !void {
         switch (msg) {
             .tick_update => |update| {
                 self.tick = update.tick;
 
                 if (update.fleet_updates) |fleets| {
-                    // Replace fleet state with updates
                     // TODO: merge rather than replace
                     self.fleets.clearRetainingCapacity();
                     for (fleets) |fleet| {
@@ -100,7 +93,6 @@ pub const ClientState = struct {
                     try self.known_sectors.put(sector.location.toKey(), sector);
                 }
 
-                // Center map on homeworld
                 self.map_center = state.player.homeworld;
             },
             .event => |event| {
@@ -117,12 +109,8 @@ pub const ClientState = struct {
         }
     }
 
-    // ── UI State Management ────────────────────────────────────────
-
     pub fn setView(self: *ClientState, view: View) void {
         self.current_view = view;
-
-        // When entering windshield, center on active fleet
         if (view == .windshield) {
             if (self.activeFleet()) |fleet| {
                 self.map_center = fleet.location;
@@ -160,7 +148,6 @@ pub const ClientState = struct {
         }
     }
 
-    /// Get the current sector state (where active fleet is).
     pub fn currentSector(self: *const ClientState) ?*const shared.protocol.SectorState {
         if (self.activeFleet()) |fleet| {
             return self.known_sectors.getPtr(fleet.location.toKey());
@@ -192,22 +179,12 @@ pub const ScrollDirection = enum {
 pub const EventLog = struct {
     const MAX_EVENTS = 100;
 
-    allocator: std.mem.Allocator,
-    events: [MAX_EVENTS]shared.protocol.GameEvent,
-    head: usize,
-    count: usize,
+    events: [MAX_EVENTS]shared.protocol.GameEvent = undefined,
+    head: usize = 0,
+    count: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator) EventLog {
-        return .{
-            .allocator = allocator,
-            .events = undefined,
-            .head = 0,
-            .count = 0,
-        };
-    }
-
-    pub fn deinit(self: *EventLog) void {
-        _ = self;
+    pub fn init() EventLog {
+        return .{};
     }
 
     pub fn push(self: *EventLog, event: shared.protocol.GameEvent) !void {
@@ -216,7 +193,6 @@ pub const EventLog = struct {
         if (self.count < MAX_EVENTS) self.count += 1;
     }
 
-    /// Get Nth most recent event (0 = newest).
     pub fn getRecent(self: *const EventLog, n: usize) ?shared.protocol.GameEvent {
         if (n >= self.count) return null;
         // head points to next write position; head-1 is most recent

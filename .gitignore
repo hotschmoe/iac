@@ -2,3 +2,5 @@
 zig-out/
 .archive/
 *.db
+*.db-shm
+*.db-wal

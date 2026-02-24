@@ -1,7 +1,3 @@
-// src/server/database.zig
-// SQLite persistence layer via zqlite.
-// Only modified state is stored -- procedural generation handles the rest.
-
 const std = @import("std");
 const shared = @import("shared");
 const zqlite = @import("zqlite");
@@ -108,8 +104,6 @@ pub const Database = struct {
         log.info("Schema verified", .{});
     }
 
-    // -- Server State -------------------------------------------------------
-
     pub fn saveServerState(self: *Database, key: []const u8, value: []const u8) !void {
         var stmt = try self.db.prepare(
             "INSERT OR REPLACE INTO server_state (key, value) VALUES (?1, ?2)",
@@ -133,8 +127,6 @@ pub const Database = struct {
         return null;
     }
 
-    // -- Player CRUD --------------------------------------------------------
-
     pub fn savePlayer(self: *Database, player: engine_mod.Player) !void {
         var stmt = try self.db.prepare(
             \\INSERT OR REPLACE INTO players
@@ -146,7 +138,6 @@ pub const Database = struct {
         try stmt.bindText(2, player.name);
         try stmt.bindInt(3, @as(i64, player.homeworld.q));
         try stmt.bindInt(4, @as(i64, player.homeworld.r));
-        // Resources are f32; store as i64 * 1000 for precision
         try stmt.bindInt(5, floatToStoredInt(player.resources.metal));
         try stmt.bindInt(6, floatToStoredInt(player.resources.crystal));
         try stmt.bindInt(7, floatToStoredInt(player.resources.deuterium));
@@ -178,8 +169,6 @@ pub const Database = struct {
         return players;
     }
 
-    // -- Fleet CRUD ---------------------------------------------------------
-
     pub fn saveFleet(self: *Database, fleet: engine_mod.Fleet) !void {
         var stmt = try self.db.prepare(
             \\INSERT OR REPLACE INTO fleets
@@ -200,12 +189,10 @@ pub const Database = struct {
         try stmt.bindInt(10, floatToStoredInt(fleet.cargo.deuterium));
         _ = try stmt.step();
 
-        // Save ships belonging to this fleet
         try self.saveShips(fleet.id, fleet.owner_id, fleet.ships[0..fleet.ship_count]);
     }
 
     fn saveShips(self: *Database, fleet_id: u64, player_id: u64, ships: []const engine_mod.Ship) !void {
-        // Clear existing ships for this fleet
         var del = try self.db.prepare("DELETE FROM ships WHERE fleet_id = ?1");
         defer del.deinit();
         try del.bindInt(1, @intCast(fleet_id));
@@ -271,7 +258,6 @@ pub const Database = struct {
                 .idle_ticks = 0,
             };
 
-            // Load ships for this fleet
             fleet.ship_count = try self.loadShipsInto(fleet_id, &fleet.ships);
             try fleets.append(self.allocator, fleet);
         }
@@ -305,8 +291,6 @@ pub const Database = struct {
         }
         return count;
     }
-
-    // -- Sector Overrides ---------------------------------------------------
 
     pub fn saveSectorOverride(self: *Database, q: i16, r: i16, ov: engine_mod.SectorOverride) !void {
         var stmt = try self.db.prepare(
@@ -342,8 +326,6 @@ pub const Database = struct {
         }
         return overrides;
     }
-
-    // -- Explored Edges -----------------------------------------------------
 
     pub fn saveExploredEdge(self: *Database, player_id: u64, from: Hex, to: Hex, tick: u64) !void {
         var stmt = try self.db.prepare(
@@ -385,8 +367,6 @@ pub const Database = struct {
     }
 };
 
-// -- Row types for bulk load ------------------------------------------------
-
 pub const SectorOverrideRow = struct {
     q: i16,
     r: i16,
@@ -398,8 +378,6 @@ pub const ExploredEdgeRow = struct {
     to: Hex,
     discovered_tick: u64,
 };
-
-// -- Conversion helpers -----------------------------------------------------
 
 fn floatToStoredInt(val: f32) i64 {
     return @intFromFloat(val * 1000.0);
@@ -420,30 +398,9 @@ fn intToDensity(v: ?i64) ?shared.constants.Density {
 }
 
 fn parseFleetStatus(s: []const u8) engine_mod.FleetStatus {
-    const map = .{
-        .{ "idle", engine_mod.FleetStatus.idle },
-        .{ "moving", engine_mod.FleetStatus.moving },
-        .{ "harvesting", engine_mod.FleetStatus.harvesting },
-        .{ "in_combat", engine_mod.FleetStatus.in_combat },
-        .{ "returning", engine_mod.FleetStatus.returning },
-        .{ "docked", engine_mod.FleetStatus.docked },
-    };
-    inline for (map) |entry| {
-        if (std.mem.eql(u8, s, entry[0])) return entry[1];
-    }
-    return .idle;
+    return std.meta.stringToEnum(engine_mod.FleetStatus, s) orelse .idle;
 }
 
 fn parseShipClass(s: []const u8) ShipClass {
-    const map = .{
-        .{ "scout", ShipClass.scout },
-        .{ "corvette", ShipClass.corvette },
-        .{ "frigate", ShipClass.frigate },
-        .{ "cruiser", ShipClass.cruiser },
-        .{ "hauler", ShipClass.hauler },
-    };
-    inline for (map) |entry| {
-        if (std.mem.eql(u8, s, entry[0])) return entry[1];
-    }
-    return .scout;
+    return std.meta.stringToEnum(ShipClass, s) orelse .scout;
 }
