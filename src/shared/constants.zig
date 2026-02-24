@@ -185,7 +185,7 @@ pub const Resources = struct {
 pub const STARTING_RESOURCES = Resources{
     .metal = 500,
     .crystal = 300,
-    .deuterium = 100,
+    .deuterium = 50000, // testing: high deut for exploration
 };
 
 /// Homeworld spawn range (cube distance from origin).
@@ -193,7 +193,7 @@ pub const HOMEWORLD_MIN_DIST: u16 = 3;
 pub const HOMEWORLD_MAX_DIST: u16 = 6;
 
 /// Cooldowns (in ticks).
-pub const MOVE_BASE_COOLDOWN: u16 = 5;
+pub const MOVE_BASE_COOLDOWN: u16 = 1; // testing: fast movement
 pub const HARVEST_COOLDOWN: u16 = 1;
 pub const SCAN_COOLDOWN: u16 = 5;
 pub const DEPLOY_COOLDOWN: u16 = 10;

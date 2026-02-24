@@ -185,6 +185,8 @@ fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
         .sector_entered => |e| std.fmt.bufPrint(slice, " T{d}: Entered [{d},{d}]\n", .{ event.tick, e.sector.q, e.sector.r }),
         .resource_harvested => |e| std.fmt.bufPrint(slice, " T{d}: Harvested {d:.1} {s}\n", .{ event.tick, e.amount, @tagName(e.resource_type) }),
         .ship_destroyed => |e| std.fmt.bufPrint(slice, " T{d}: {s} destroyed\n", .{ event.tick, e.ship_class.label() }),
+        .combat_round => |e| std.fmt.bufPrint(slice, " T{d}: Hit for {d:.0} dmg ({d:.0} absorbed)\n", .{ event.tick, e.hull_damage, e.shield_absorbed }),
+        .fleet_destroyed => |e| std.fmt.bufPrint(slice, " T{d}: {s} fleet destroyed!\n", .{ event.tick, if (e.is_npc) "Enemy" else "Your" }),
         else => std.fmt.bufPrint(slice, " T{d}: Event\n", .{event.tick}),
     } catch return error.NoSpaceLeft;
     return text.len;
@@ -204,37 +206,78 @@ fn renderWindshield(state: *ClientState, frame: *Frame, area: Rect) void {
 }
 
 fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
+    const fleet = state.activeFleet();
+    const in_combat = if (fleet) |f| f.state == .in_combat else false;
+
     const block = Block{
-        .title = " SECTOR VIEW ",
+        .title = if (in_combat) " !! COMBAT !! " else " SECTOR VIEW ",
         .border = .rounded,
-        .border_style = amber_dim,
+        .border_style = if (in_combat) amber_full else amber_dim,
     };
     frame.render(block, area);
     const inner = block.inner(area);
 
-    const fleet = state.activeFleet() orelse {
+    const f = fleet orelse {
         frame.render(Paragraph{ .text = " No active fleet", .style = amber_faint }, inner);
         return;
     };
 
-    var buf: [768]u8 = undefined;
+    // Death state: all ships destroyed
+    if (f.ships.len == 0) {
+        var buf: [256]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, " Location: [{d},{d}]\n Status: NO SHIPS AVAILABLE\n\n All ships destroyed.\n [Esc] Return to Command Center", .{
+            f.location.q, f.location.r,
+        }) catch return;
+        frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
+        return;
+    }
+
+    var buf: [1024]u8 = undefined;
     var pos: usize = 0;
 
     // Current position
     const loc_line = std.fmt.bufPrint(buf[pos..], " Location: [{d},{d}]\n", .{
-        fleet.location.q, fleet.location.r,
+        f.location.q, f.location.r,
     }) catch return;
     pos += loc_line.len;
 
-    const status_line = std.fmt.bufPrint(buf[pos..], " Status: {s}\n\n", .{
-        @tagName(fleet.state),
+    const status_line = std.fmt.bufPrint(buf[pos..], " Status: {s}\n", .{
+        @tagName(f.state),
     }) catch return;
     pos += status_line.len;
+
+    // Sector info (terrain, resources, hostiles)
+    if (state.currentSector()) |sector| {
+        const terrain_line = std.fmt.bufPrint(buf[pos..], " Terrain: {s}\n", .{
+            sector.terrain.label(),
+        }) catch return;
+        pos += terrain_line.len;
+
+        const res = sector.resources;
+        if (res.metal != .none or res.crystal != .none or res.deuterium != .none) {
+            const res_line = std.fmt.bufPrint(buf[pos..], " Resources: Fe:{s} Cr:{s} De:{s}\n", .{
+                res.metal.label(), res.crystal.label(), res.deuterium.label(),
+            }) catch return;
+            pos += res_line.len;
+        }
+
+        if (sector.hostiles) |hostiles| {
+            if (hostiles.len > 0) {
+                const hostile_line = std.fmt.bufPrint(buf[pos..], " HOSTILES: {d} fleet(s)\n", .{
+                    hostiles.len,
+                }) catch return;
+                pos += hostile_line.len;
+            }
+        }
+    }
+
+    const sep = std.fmt.bufPrint(buf[pos..], "\n", .{}) catch return;
+    pos += sep.len;
 
     // Hex compass + exits
     if (state.currentSector()) |sector| {
         const HexDir = shared.HexDirection;
-        const loc = fleet.location;
+        const loc = f.location;
 
         var connected: [6]bool = .{ false, false, false, false, false, false };
         var nbrs: [6]shared.Hex = undefined;
@@ -306,9 +349,15 @@ fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
         return;
     };
 
+    var ships_buf: [20]u8 = undefined;
+    const ships_str: []const u8 = if (fleet.ships.len == 0)
+        "0 (DESTROYED)"
+    else
+        std.fmt.bufPrint(&ships_buf, "{d}", .{fleet.ships.len}) catch "?";
+
     var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, " Ships: {d}\n Fuel:  {d:.0}/{d:.0}\n\n Cargo:\n  Fe {d:.0}\n  Cr {d:.0}\n  De {d:.0}", .{
-        fleet.ships.len,
+    const text = std.fmt.bufPrint(&buf, " Ships: {s}\n Fuel:  {d:.0}/{d:.0}\n\n Cargo:\n  Fe {d:.0}\n  Cr {d:.0}\n  De {d:.0}", .{
+        ships_str,
         fleet.fuel,
         fleet.fuel_max,
         fleet.cargo.metal,

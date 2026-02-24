@@ -150,6 +150,7 @@ pub const GameEngine = struct {
                 npc_fleet,
                 self.current_tick,
             );
+            defer self.allocator.free(result.events);
 
             for (result.events) |event| {
                 try self.pending_events.append(self.allocator, event);
@@ -194,33 +195,63 @@ pub const GameEngine = struct {
 
             const template = self.world_gen.generateSector(fleet.location);
             const override = self.sector_overrides.get(fleet.location.toKey());
-            const density = if (override) |ov| ov.metal_density orelse template.metal_density else template.metal_density;
-            const harvest_amount = density.harvestMultiplier() * fleetHarvestPower(fleet);
 
-            if (harvest_amount <= 0) {
-                fleet.state = .idle;
-                continue;
-            }
+            const metal_density = if (override) |ov| ov.metal_density orelse template.metal_density else template.metal_density;
+            const crystal_density = if (override) |ov| ov.crystal_density orelse template.crystal_density else template.crystal_density;
+            const deut_density = if (override) |ov| ov.deut_density orelse template.deut_density else template.deut_density;
 
-            const current_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+            const harvest_power = fleetHarvestPower(fleet);
             const max_cargo = fleetCargoCapacity(fleet);
-            if (current_cargo >= max_cargo) {
+            var remaining = max_cargo - (fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium);
+
+            if (remaining <= 0) {
                 fleet.state = .idle;
                 continue;
             }
 
-            const actual = @min(harvest_amount, max_cargo - current_cargo);
-            fleet.cargo.metal += actual;
-            try self.dirty_fleets.put(fleet.id, {});
+            var harvested_any = false;
 
-            try self.pending_events.append(self.allocator, .{
-                .tick = self.current_tick,
-                .kind = .{ .resource_harvested = .{
-                    .fleet_id = fleet.id,
-                    .resource_type = .metal,
-                    .amount = actual,
-                } },
-            });
+            const metal_amount = metal_density.harvestMultiplier() * harvest_power;
+            if (metal_amount > 0 and remaining > 0) {
+                const actual = @min(metal_amount, remaining);
+                fleet.cargo.metal += actual;
+                remaining -= actual;
+                harvested_any = true;
+                try self.pending_events.append(self.allocator, .{
+                    .tick = self.current_tick,
+                    .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .metal, .amount = actual } },
+                });
+            }
+
+            const crystal_amount = crystal_density.harvestMultiplier() * harvest_power;
+            if (crystal_amount > 0 and remaining > 0) {
+                const actual = @min(crystal_amount, remaining);
+                fleet.cargo.crystal += actual;
+                remaining -= actual;
+                harvested_any = true;
+                try self.pending_events.append(self.allocator, .{
+                    .tick = self.current_tick,
+                    .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .crystal, .amount = actual } },
+                });
+            }
+
+            const deut_amount = deut_density.harvestMultiplier() * harvest_power;
+            if (deut_amount > 0 and remaining > 0) {
+                const actual = @min(deut_amount, remaining);
+                fleet.cargo.deuterium += actual;
+                remaining -= actual;
+                harvested_any = true;
+                try self.pending_events.append(self.allocator, .{
+                    .tick = self.current_tick,
+                    .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .deuterium, .amount = actual } },
+                });
+            }
+
+            if (harvested_any) {
+                try self.dirty_fleets.put(fleet.id, {});
+            } else {
+                fleet.state = .idle;
+            }
         }
     }
 
@@ -275,6 +306,7 @@ pub const GameEngine = struct {
         };
 
         try self.players.put(player_id, player);
+        try self.db.savePlayer(player);
 
         const fleet_id = self.nextId();
         const ship_id = self.nextId();
@@ -288,8 +320,8 @@ pub const GameEngine = struct {
             .ships = undefined,
             .ship_count = 1,
             .cargo = .{},
-            .fuel = @floatFromInt(scout_stats.fuel),
-            .fuel_max = @floatFromInt(scout_stats.fuel),
+            .fuel = 50000, // testing: high starting fuel
+            .fuel_max = 50000,
             .move_cooldown = 0,
             .action_cooldown = 0,
             .move_target = null,
@@ -319,6 +351,7 @@ pub const GameEngine = struct {
     pub fn handleMove(self: *GameEngine, fleet_id: u64, target: Hex) !void {
         const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
 
+        if (fleet.ship_count == 0) return error.NoShips;
         if (fleet.state == .in_combat) return error.InCombat;
         if (fleet.action_cooldown > 0) return error.OnCooldown;
 
@@ -346,6 +379,7 @@ pub const GameEngine = struct {
     pub fn handleHarvest(self: *GameEngine, fleet_id: u64) !void {
         const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
 
+        if (fleet.ship_count == 0) return error.NoShips;
         if (fleet.state == .in_combat) return error.InCombat;
         if (fleet.action_cooldown > 0) return error.OnCooldown;
 
@@ -356,6 +390,7 @@ pub const GameEngine = struct {
 
     pub fn handleRecall(self: *GameEngine, fleet_id: u64) !void {
         const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
+        if (fleet.ship_count == 0) return error.NoShips;
         const player = self.players.getPtr(fleet.owner_id) orelse return error.PlayerNotFound;
 
         const dist = Hex.distance(fleet.location, player.homeworld);

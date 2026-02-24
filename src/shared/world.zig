@@ -113,9 +113,9 @@ pub const WorldGen = struct {
         return switch (zone) {
             .central_hub => .empty, // hub is special
             .inner_ring => blk: {
-                if (roll < 40) break :blk .asteroid_field;
-                if (roll < 55) break :blk .nebula;
-                if (roll < 65) break :blk .debris_field;
+                if (roll < 55) break :blk .asteroid_field; // testing: boosted
+                if (roll < 70) break :blk .nebula;
+                if (roll < 80) break :blk .debris_field;
                 break :blk .empty;
             },
             .outer_ring => blk: {
@@ -144,9 +144,9 @@ pub const WorldGen = struct {
 
         const zone_boost: u8 = switch (zone) {
             .central_hub => 0,
-            .inner_ring => 0,
-            .outer_ring => 15,
-            .wandering => 30,
+            .inner_ring => 30, // testing: boosted
+            .outer_ring => 40, // testing: boosted
+            .wandering => 50, // testing: boosted
         };
 
         return .{
@@ -171,16 +171,16 @@ pub const WorldGen = struct {
         const presence_chance: u8 = switch (zone) {
             .central_hub => 0,
             .inner_ring => 30,
-            .outer_ring => 50,
-            .wandering => 70,
+            .outer_ring => 70, // testing: boosted
+            .wandering => 80, // testing: boosted
         };
 
         if (random.intRangeAtMost(u8, 0, 100) >= presence_chance) return null;
 
         // Scale fleet composition by distance
         if (dist <= 8) {
-            const count = random.intRangeAtMost(u8, 1, 3);
-            return .{ .ship_class = .scout, .count = count, .behavior = .passive };
+            const behavior: NpcBehaviorType = if (random.boolean()) .passive else .patrol;
+            return .{ .ship_class = .scout, .count = 1, .behavior = behavior };
         } else if (dist <= 15) {
             const count = random.intRangeAtMost(u8, 3, 8);
             return .{ .ship_class = .corvette, .count = count, .behavior = .patrol };
