@@ -79,16 +79,44 @@ pub const ClientState = struct {
     fn freeOwnedSectors(self: *ClientState) void {
         var iter = self.known_sectors.iterator();
         while (iter.next()) |entry| {
-            self.allocator.free(entry.value_ptr.connections);
+            freeSectorSlices(self.allocator, entry.value_ptr.*);
+        }
+    }
+
+    fn freeSectorSlices(alloc: std.mem.Allocator, sector: shared.protocol.SectorState) void {
+        alloc.free(sector.connections);
+        if (sector.hostiles) |hostiles| {
+            for (hostiles) |h| alloc.free(h.ships);
+            alloc.free(hostiles);
+        }
+        if (sector.player_fleets) |pf| {
+            for (pf) |f| alloc.free(f.owner_name);
+            alloc.free(pf);
         }
     }
 
     fn replaceSector(self: *ClientState, sector: shared.protocol.SectorState) !void {
         if (self.known_sectors.getPtr(sector.location.toKey())) |existing| {
-            self.allocator.free(existing.connections);
+            freeSectorSlices(self.allocator, existing.*);
         }
         var owned = sector;
         owned.connections = try self.allocator.dupe(Hex, sector.connections);
+        if (sector.hostiles) |hostiles| {
+            const duped = try self.allocator.alloc(shared.protocol.NpcFleetInfo, hostiles.len);
+            for (hostiles, 0..) |h, i| {
+                duped[i] = h;
+                duped[i].ships = try self.allocator.dupe(shared.protocol.NpcShipInfo, h.ships);
+            }
+            owned.hostiles = duped;
+        }
+        if (sector.player_fleets) |pf| {
+            const duped = try self.allocator.alloc(shared.protocol.FleetBrief, pf.len);
+            for (pf, 0..) |f, i| {
+                duped[i] = f;
+                duped[i].owner_name = try self.allocator.dupe(u8, f.owner_name);
+            }
+            owned.player_fleets = duped;
+        }
         try self.known_sectors.put(sector.location.toKey(), owned);
     }
 

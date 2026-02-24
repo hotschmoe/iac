@@ -344,11 +344,19 @@ fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
     else
         std.fmt.bufPrint(&ships_buf, "{d}", .{fleet.ships.len}) catch "?";
 
+    var cargo_cap: u16 = 0;
+    for (fleet.ships) |ship| {
+        cargo_cap += ship.class.baseStats().cargo;
+    }
+    const total_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+
     var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, " Ships: {s}\n Fuel:  {d:.0}/{d:.0}\n\n Cargo:\n  Fe {d:.0}\n  Cr {d:.0}\n  De {d:.0}", .{
+    const text = std.fmt.bufPrint(&buf, " Ships: {s}\n Fuel:  {d:.0}/{d:.0}\n\n Cargo: {d:.0}/{d}\n  Fe {d:.0}\n  Cr {d:.0}\n  De {d:.0}", .{
         ships_str,
         fleet.fuel,
         fleet.fuel_max,
+        total_cargo,
+        cargo_cap,
         fleet.cargo.metal,
         fleet.cargo.crystal,
         fleet.cargo.deuterium,

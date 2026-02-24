@@ -347,7 +347,6 @@ pub const GameEngine = struct {
         try self.db.savePlayer(player);
 
         const fleet_id = self.nextId();
-        const ship_id = self.nextId();
 
         const scout_stats = ShipClass.scout.baseStats();
         var fleet = Fleet{
@@ -356,7 +355,7 @@ pub const GameEngine = struct {
             .location = homeworld,
             .state = .idle,
             .ships = undefined,
-            .ship_count = 1,
+            .ship_count = 2,
             .cargo = .{},
             .fuel = 50000, // testing: high starting fuel
             .fuel_max = 50000,
@@ -366,16 +365,18 @@ pub const GameEngine = struct {
             .idle_ticks = 0,
         };
 
-        fleet.ships[0] = Ship{
-            .id = ship_id,
-            .class = .scout,
-            .hull = scout_stats.hull,
-            .hull_max = scout_stats.hull,
-            .shield = scout_stats.shield,
-            .shield_max = scout_stats.shield,
-            .weapon_power = scout_stats.weapon,
-            .speed = scout_stats.speed,
-        };
+        for (0..2) |i| {
+            fleet.ships[i] = Ship{
+                .id = self.nextId(),
+                .class = .scout,
+                .hull = scout_stats.hull,
+                .hull_max = scout_stats.hull,
+                .shield = scout_stats.shield,
+                .shield_max = scout_stats.shield,
+                .weapon_power = scout_stats.weapon,
+                .speed = scout_stats.speed,
+            };
+        }
 
         try self.fleets.put(fleet_id, fleet);
         try self.dirty_players.put(player_id, {});
