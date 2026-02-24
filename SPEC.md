@@ -256,7 +256,16 @@ For each resource (metal, crystal, deuterium):
 - Rich: 2.0x
 - Pristine: 4.0x
 
-Harvesting depletes sector resources. Sectors regenerate slowly over real-time hours.
+Harvesting depletes sector resources. Each resource tracks a harvest accumulator per sector. When accumulated extraction exceeds a threshold, the density downgrades one level:
+
+| Density Level | Threshold (units extracted before downgrade) |
+|---|---|
+| Pristine -> Rich | 40 |
+| Rich -> Moderate | 30 |
+| Moderate -> Sparse | 20 |
+| Sparse -> None | 10 |
+
+Accumulators reset on each downgrade. Sectors regenerate slowly over real-time hours.
 
 ### 5.3 Salvage (Combat Loot)
 
@@ -346,13 +355,15 @@ Advanced research (level III+) requires data fragments in addition to resources.
 
 Morning Light Mountain (MLM) fleets are procedurally generated based on sector distance from center:
 
-| Distance | Fleet Composition | Behavior |
-|---|---|---|
-| 3–8 | 1 scout (30% presence) | 50% passive / 50% patrol |
-| 9–15 | 3–8 corvettes | Patrol, aggro on proximity |
-| 16–25 | 5–15 mixed corvettes/frigates | Aggressive, will pursue 1 sector |
-| 26–40 | 10–30 mixed with cruisers | Swarm tactics, pursue 2 sectors |
-| 41+ | Large swarms, elite variants | Relentless, may guard rare resources |
+| Distance | Fleet Composition | Behavior | Stat Multiplier |
+|---|---|---|---|
+| 3–8 | 1 scout (30% presence) | 50% passive / 50% patrol | 0.6x |
+| 9–15 | 3–8 corvettes | Patrol, aggro on proximity | 0.8x |
+| 16–25 | 5–15 mixed corvettes/frigates | Aggressive, will pursue 1 sector | 1.0x |
+| 26–40 | 10–30 mixed with cruisers | Swarm tactics, pursue 2 sectors | 1.2x |
+| 41+ | Large swarms, elite variants | Relentless, may guard rare resources | 1.2x+ |
+
+The stat multiplier scales NPC hull, shield, and weapon power relative to the ship class base stats. Speed is unaffected. Inner ring scouts at 0.6x have hull=18, shield=6, weapon=3 -- beatable by a single player scout.
 
 ### 8.2 Spawning
 
@@ -556,6 +567,9 @@ CREATE TABLE sectors_modified (
     metal_density INTEGER,
     crystal_density INTEGER,
     deut_density INTEGER,
+    metal_harvested REAL DEFAULT 0,
+    crystal_harvested REAL DEFAULT 0,
+    deut_harvested REAL DEFAULT 0,
     PRIMARY KEY (q, r)
 );
 
@@ -618,6 +632,12 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Client deep-copies sector connections to survive parse arena cleanup
 - [x] Combat visual feedback (!! COMBAT !! title flash, damage numbers in event log)
 - [x] Death state handling (0 ships blocks commands client+server, DESTROYED display)
+- [x] Resource depletion (harvest accumulators per sector, density downgrades at thresholds, persisted)
+- [x] Harvest validation (reject while moving, no-resource sectors, full cargo; errors sent to client)
+- [x] Command error feedback (server sends error messages, client displays in event log)
+- [x] Windshield event log (bottom panel shows recent events in windshield view)
+- [x] NPC stat scaling by zone (0.6x inner ring, 0.8x mid, 1.0x outer, 1.2x wandering)
+- [x] Hostile fleet info in sector state (ship class, count, behavior displayed per-fleet)
 - [ ] Hex map rendering in star map view (placeholder only)
 - [ ] NPC patrol AI (spawning works, no movement/aggro behavior yet)
 - [ ] Resource regeneration
