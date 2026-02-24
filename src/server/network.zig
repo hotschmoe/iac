@@ -306,6 +306,7 @@ pub const Network = struct {
         const template = eng.world_gen.generateSector(coord);
         const neighbors = eng.world_gen.connectedNeighbors(coord);
         const override = eng.sector_overrides.get(coord.toKey());
+        const densities = engine_mod.SectorOverride.effectiveDensities(override, template);
 
         // Collect hostile NPC fleets at this coord
         var hostile_list = std.ArrayList(protocol.NpcFleetInfo).empty;
@@ -355,9 +356,9 @@ pub const Network = struct {
             .location = coord,
             .terrain = template.terrain,
             .resources = .{
-                .metal = if (override) |o| o.metal_density orelse template.metal_density else template.metal_density,
-                .crystal = if (override) |o| o.crystal_density orelse template.crystal_density else template.crystal_density,
-                .deuterium = if (override) |o| o.deut_density orelse template.deut_density else template.deut_density,
+                .metal = densities.metal,
+                .crystal = densities.crystal,
+                .deuterium = densities.deut,
             },
             .connections = try alloc.dupe(shared.Hex, neighbors.slice()),
             .hostiles = if (hostile_list.items.len > 0) hostile_list.items else null,

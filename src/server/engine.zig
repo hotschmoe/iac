@@ -193,11 +193,10 @@ pub const GameEngine = struct {
 
             const template = self.world_gen.generateSector(fleet.location);
             const sector_key = fleet.location.toKey();
-            const ov_ptr = self.sector_overrides.getPtr(sector_key);
-
-            const metal_density = if (ov_ptr) |ov| ov.metal_density orelse template.metal_density else template.metal_density;
-            const crystal_density = if (ov_ptr) |ov| ov.crystal_density orelse template.crystal_density else template.crystal_density;
-            const deut_density = if (ov_ptr) |ov| ov.deut_density orelse template.deut_density else template.deut_density;
+            const densities = SectorOverride.effectiveDensities(self.sector_overrides.get(sector_key), template);
+            const metal_density = densities.metal;
+            const crystal_density = densities.crystal;
+            const deut_density = densities.deut;
 
             const harvest_power = fleetHarvestPower(fleet);
             const max_cargo = fleetCargoCapacity(fleet);
@@ -424,13 +423,9 @@ pub const GameEngine = struct {
         if (fleet.action_cooldown > 0) return error.OnCooldown;
 
         const template = self.world_gen.generateSector(fleet.location);
-        const override = self.sector_overrides.get(fleet.location.toKey());
+        const densities = SectorOverride.effectiveDensities(self.sector_overrides.get(fleet.location.toKey()), template);
 
-        const metal_d = if (override) |ov| ov.metal_density orelse template.metal_density else template.metal_density;
-        const crystal_d = if (override) |ov| ov.crystal_density orelse template.crystal_density else template.crystal_density;
-        const deut_d = if (override) |ov| ov.deut_density orelse template.deut_density else template.deut_density;
-
-        if (metal_d == .none and crystal_d == .none and deut_d == .none) return error.NoResources;
+        if (densities.metal == .none and densities.crystal == .none and densities.deut == .none) return error.NoResources;
 
         const max_cargo = fleetCargoCapacity(fleet);
         const current_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
@@ -828,4 +823,15 @@ pub const SectorOverride = struct {
     deut_harvested: f32 = 0,
     salvage: ?Resources = null,
     salvage_despawn_tick: ?u64 = null,
+
+    const Density = shared.constants.Density;
+
+    pub fn effectiveDensities(override: ?SectorOverride, template: shared.world.SectorTemplate) struct { metal: Density, crystal: Density, deut: Density } {
+        const ov = override orelse return .{ .metal = template.metal_density, .crystal = template.crystal_density, .deut = template.deut_density };
+        return .{
+            .metal = ov.metal_density orelse template.metal_density,
+            .crystal = ov.crystal_density orelse template.crystal_density,
+            .deut = ov.deut_density orelse template.deut_density,
+        };
+    }
 };

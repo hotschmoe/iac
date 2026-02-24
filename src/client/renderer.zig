@@ -149,27 +149,7 @@ fn renderFleetPanel(state: *ClientState, frame: *Frame, area: Rect) void {
 }
 
 fn renderEventPanel(state: *ClientState, frame: *Frame, area: Rect) void {
-    const block = Block{
-        .title = " EVENT LOG ",
-        .border = .rounded,
-        .border_style = amber_dim,
-    };
-    frame.render(block, area);
-    const inner = block.inner(area);
-
-    var buf: [1024]u8 = undefined;
-    var pos: usize = 0;
-    const max_lines = if (inner.height > 0) inner.height else 1;
-
-    var i: usize = 0;
-    while (i < max_lines) : (i += 1) {
-        if (state.event_log.getRecent(i)) |event| {
-            const line = formatEvent(&buf, pos, event) catch break;
-            pos += line;
-        } else break;
-    }
-
-    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_dim }, inner);
+    renderEventLog(state, frame, area, " EVENT LOG ");
 }
 
 fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
@@ -378,15 +358,19 @@ fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
 }
 
 fn renderWindshieldEvents(state: *ClientState, frame: *Frame, area: Rect) void {
+    renderEventLog(state, frame, area, " EVENTS ");
+}
+
+fn renderEventLog(state: *ClientState, frame: *Frame, area: Rect, title: []const u8) void {
     const block = Block{
-        .title = " EVENTS ",
+        .title = title,
         .border = .rounded,
         .border_style = amber_dim,
     };
     frame.render(block, area);
     const inner = block.inner(area);
 
-    var buf: [512]u8 = undefined;
+    var buf: [1024]u8 = undefined;
     var pos: usize = 0;
     const max_lines: usize = if (inner.height > 0) inner.height else 1;
 

@@ -140,8 +140,9 @@ pub const ClientState = struct {
                 }
             },
             .@"error" => |err| {
-                @memcpy(self.status_message[0..@min(err.message.len, self.status_message.len)], err.message[0..@min(err.message.len, self.status_message.len)]);
-                self.status_len = @min(err.message.len, self.status_message.len);
+                const len = @min(err.message.len, self.status_message.len);
+                @memcpy(self.status_message[0..len], err.message[0..len]);
+                self.status_len = len;
 
                 try self.event_log.push(.{
                     .tick = self.tick,
