@@ -1,6 +1,6 @@
 # In Amber Clad — Data & Persistence Architecture
 
-**Version:** 0.1.0-draft
+**Version:** 0.1.0
 **Audience:** Implementors working on the server engine and database layer.
 
 ---
@@ -217,48 +217,21 @@ Rationale:
 
 ### 5.2 Batch Write Pattern
 
-```zig
-pub fn persistDirtyState(self: *GameEngine) !void {
-    // Single transaction for atomicity and performance
-    try self.db.exec("BEGIN IMMEDIATE");
+See `engine.zig:persistDirtyState()` for the implementation. The pattern:
 
-    // Players
-    var player_iter = self.dirty_players.iterator();
-    while (player_iter.next()) |entry| {
-        if (self.players.get(entry.key_ptr.*)) |player| {
-            try self.db.savePlayer(player);
-        }
-    }
-
-    // Fleets + their ships
-    var fleet_iter = self.dirty_fleets.iterator();
-    while (fleet_iter.next()) |entry| {
-        if (self.fleets.get(entry.key_ptr.*)) |fleet| {
-            try self.db.saveFleet(fleet);
-        }
-    }
-
-    // Modified sectors
-    var sector_iter = self.dirty_sectors.iterator();
-    while (sector_iter.next()) |entry| {
-        if (self.sector_overrides.get(entry.key_ptr.*)) |override| {
-            const hex = shared.Hex.fromKey(entry.key_ptr.*);
-            try self.db.saveSectorOverride(hex.q, hex.r, override);
-        }
-    }
-
-    // Server state (tick counter, next_id)
-    try self.db.saveServerState("tick", self.tick);
-    try self.db.saveServerState("next_id", self.next_id);
-
-    try self.db.exec("COMMIT");
-
-    // Clear dirty tracking
-    self.dirty_players.clearRetainingCapacity();
-    self.dirty_fleets.clearRetainingCapacity();
-    self.dirty_sectors.clearRetainingCapacity();
-}
 ```
+BEGIN IMMEDIATE
+  save server_state (current_tick, next_id)
+  for each dirty player: INSERT OR REPLACE into players
+  for each dirty fleet:  INSERT OR REPLACE into fleets + DELETE/INSERT ships
+  for each dirty sector: INSERT OR REPLACE into sectors_modified
+COMMIT
+  clear dirty sets
+```
+
+On error, `errdefer` issues `ROLLBACK` -- dirty sets are preserved so the next cycle retries.
+
+World seed is persisted once at init via `persistWorldSeed()`, not on every checkpoint.
 
 ### 5.3 Why BEGIN IMMEDIATE
 
@@ -269,124 +242,66 @@ pub fn persistDirtyState(self: *GameEngine) !void {
 
 ### 5.4 Prepared Statements
 
-All SQL statements are prepared once at database initialization and reused with parameter binding. This avoids re-parsing SQL on every write.
-
-```zig
-// At Database.init():
-self.stmt_save_player = try self.db.prepare(
-    \\INSERT OR REPLACE INTO players
-    \\  (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium)
-    \\VALUES (?, ?, ?, ?, ?, ?, ?)
-);
-
-self.stmt_save_fleet = try self.db.prepare(
-    \\INSERT OR REPLACE INTO fleets
-    \\  (id, player_id, q, r, state, fuel, fuel_max,
-    \\   cargo_metal, cargo_crystal, cargo_deuterium)
-    \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-);
-
-self.stmt_save_ship = try self.db.prepare(
-    \\INSERT OR REPLACE INTO ships
-    \\  (id, player_id, fleet_id, class, hull, hull_max,
-    \\   shield, shield_max, weapon_power, speed)
-    \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-);
-
-// At write time:
-self.stmt_save_player.reset();
-self.stmt_save_player.bind(.{
-    player.id, player.name,
-    player.homeworld.q, player.homeworld.r,
-    player.resources.metal, player.resources.crystal,
-    player.resources.deuterium,
-});
-try self.stmt_save_player.step();
-```
-
-Performance impact: prepared statements skip the SQL parser and query planner on reuse. For our batch writes of potentially hundreds of entities, this saves meaningful time.
+Currently, `database.zig` prepares statements per-call (prepare, bind, step, deinit). This is correct and simple. When profiling shows statement preparation as a bottleneck, we can cache prepared statements on the Database struct and reuse them with `reset()` between calls. Not needed for M1 scale.
 
 ### 5.5 Graceful Shutdown
 
 On server shutdown signal (SIGTERM, SIGINT):
 
-1. Stop accepting new client connections.
-2. Broadcast "server shutting down" message to all clients.
+1. Signal handler sets an atomic `shutdown_requested` bool.
+2. Tick loop checks the bool each iteration and exits.
 3. Run one final `persistDirtyState()` to flush everything.
-4. Close database connection (triggers WAL checkpoint).
-5. Exit.
+4. Normal defer cleanup: `engine.deinit()`, `db.deinit()` (triggers WAL checkpoint), `network.deinit()`.
 
 This ensures zero data loss on clean shutdown regardless of where in the 30-tick cycle we are.
+
+Future: broadcast "server shutting down" to connected clients before exit (requires protocol support).
 
 ---
 
 ## 6. Schema
 
-Full schema with indexes and constraints. This is the authoritative version (supersedes SPEC.md §11 if they diverge).
+Full schema with indexes and constraints. This is the authoritative version (supersedes SPEC.md 11 if they diverge).
+
+### 6.1 M1 Schema (implemented)
 
 ```sql
--- Server metadata
 CREATE TABLE IF NOT EXISTS server_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
--- Stores: tick, next_id, world_seed
+-- Stores: current_tick, next_id, world_seed
 
--- Players
 CREATE TABLE IF NOT EXISTS players (
     id           INTEGER PRIMARY KEY,
     name         TEXT UNIQUE NOT NULL,
-    token        TEXT NOT NULL,
     homeworld_q  INTEGER NOT NULL,
     homeworld_r  INTEGER NOT NULL,
-    metal        REAL NOT NULL DEFAULT 500,
-    crystal      REAL NOT NULL DEFAULT 300,
-    deuterium    REAL NOT NULL DEFAULT 100,
-    created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    metal        REAL DEFAULT 500,
+    crystal      REAL DEFAULT 300,
+    deuterium    REAL DEFAULT 100
 );
-CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
+-- name has implicit index via UNIQUE constraint
 
--- Buildings (one row per building type per player)
-CREATE TABLE IF NOT EXISTS buildings (
-    player_id      INTEGER NOT NULL REFERENCES players(id),
-    building_type  TEXT NOT NULL,
-    level          INTEGER NOT NULL DEFAULT 0,
-    build_start_tick INTEGER,
-    build_end_tick   INTEGER,
-    PRIMARY KEY (player_id, building_type)
-);
-
--- Research (one row per tech per player)
-CREATE TABLE IF NOT EXISTS research (
-    player_id          INTEGER NOT NULL REFERENCES players(id),
-    tech               TEXT NOT NULL,
-    level              INTEGER NOT NULL DEFAULT 0,
-    research_start_tick INTEGER,
-    research_end_tick   INTEGER,
-    PRIMARY KEY (player_id, tech)
-);
-
--- Fleets
 CREATE TABLE IF NOT EXISTS fleets (
     id              INTEGER PRIMARY KEY,
-    player_id       INTEGER NOT NULL REFERENCES players(id),
+    player_id       INTEGER REFERENCES players(id),
     q               INTEGER NOT NULL,
     r               INTEGER NOT NULL,
-    state           TEXT NOT NULL DEFAULT 'idle',
+    state           TEXT DEFAULT 'idle',
     fuel            REAL NOT NULL,
     fuel_max        REAL NOT NULL,
-    cargo_metal     REAL NOT NULL DEFAULT 0,
-    cargo_crystal   REAL NOT NULL DEFAULT 0,
-    cargo_deuterium REAL NOT NULL DEFAULT 0
+    cargo_metal     REAL DEFAULT 0,
+    cargo_crystal   REAL DEFAULT 0,
+    cargo_deuterium REAL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id);
 CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r);
 
--- Ships (belong to a fleet)
 CREATE TABLE IF NOT EXISTS ships (
     id           INTEGER PRIMARY KEY,
-    player_id    INTEGER NOT NULL REFERENCES players(id),
-    fleet_id     INTEGER NOT NULL REFERENCES fleets(id) ON DELETE CASCADE,
+    fleet_id     INTEGER REFERENCES fleets(id),
+    player_id    INTEGER REFERENCES players(id),
     class        TEXT NOT NULL,
     hull         REAL NOT NULL,
     hull_max     REAL NOT NULL,
@@ -397,23 +312,17 @@ CREATE TABLE IF NOT EXISTS ships (
 );
 CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id);
 
--- Sector modifications (overlay on procedural generation)
--- Only sectors that have been modified from their base state.
 CREATE TABLE IF NOT EXISTS sectors_modified (
-    q                   INTEGER NOT NULL,
-    r                   INTEGER NOT NULL,
-    resources_metal     REAL,
-    resources_crystal   REAL,
-    resources_deuterium REAL,
-    last_cleared_tick   INTEGER,
+    q              INTEGER,
+    r              INTEGER,
+    metal_density  INTEGER,
+    crystal_density INTEGER,
+    deut_density   INTEGER,
     PRIMARY KEY (q, r)
 );
 
--- Explored edges per player (for waypoint pathfinding)
--- Stores each traversed hex-to-hex edge.
--- Normalized: q1,r1 < q2,r2 by hex key ordering.
 CREATE TABLE IF NOT EXISTS explored_edges (
-    player_id      INTEGER NOT NULL REFERENCES players(id),
+    player_id      INTEGER REFERENCES players(id),
     q1             INTEGER NOT NULL,
     r1             INTEGER NOT NULL,
     q2             INTEGER NOT NULL,
@@ -422,17 +331,18 @@ CREATE TABLE IF NOT EXISTS explored_edges (
     PRIMARY KEY (player_id, q1, r1, q2, r2)
 );
 CREATE INDEX IF NOT EXISTS idx_explored_player ON explored_edges(player_id);
-
--- Fleet auto-action policies
-CREATE TABLE IF NOT EXISTS auto_policies (
-    player_id  INTEGER NOT NULL REFERENCES players(id),
-    fleet_id   INTEGER NOT NULL,
-    priority   INTEGER NOT NULL,
-    condition  TEXT NOT NULL,
-    action     TEXT NOT NULL,
-    PRIMARY KEY (player_id, fleet_id, priority)
-);
 ```
+
+### 6.2 Future Schema (not yet implemented)
+
+These tables and columns will be added in later milestones:
+
+- `players.token` -- authentication token (multiplayer)
+- `players.created_at` -- account creation timestamp
+- `buildings` table -- per-player building levels and queues
+- `research` table -- per-player tech levels and queues
+- `auto_policies` table -- fleet auto-action rule tables
+- `ships` ON DELETE CASCADE -- requires table recreation (ships are manually deleted before re-insert for now)
 
 ---
 

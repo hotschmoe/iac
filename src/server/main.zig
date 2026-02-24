@@ -52,6 +52,7 @@ pub fn main() !void {
 
     log.info("Server ready.", .{});
 
+    const persist_every_n_ticks = 30;
     var tick_timer = try std.time.Timer.start();
 
     while (!shutdown_requested.load(.acquire)) {
@@ -61,7 +62,7 @@ pub fn main() !void {
         try engine.tick();
         try network.broadcastUpdates(&engine);
 
-        if (engine.currentTick() % 30 == 0) {
+        if (engine.currentTick() % persist_every_n_ticks == 0) {
             try engine.persistDirtyState();
         }
 

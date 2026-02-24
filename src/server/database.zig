@@ -102,7 +102,6 @@ pub const Database = struct {
             \\);
         );
 
-        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_players_name ON players(name)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id)");

@@ -50,6 +50,7 @@ pub const GameEngine = struct {
         };
 
         try engine.loadState();
+        try engine.persistWorldSeed();
 
         return engine;
     }
@@ -232,6 +233,7 @@ pub const GameEngine = struct {
             // TODO: calculate from building levels
             player.resources.metal += 0.5;
             player.resources.crystal += 0.3;
+            try self.dirty_players.put(player.id, {});
         }
     }
 
@@ -556,6 +558,12 @@ pub const GameEngine = struct {
         }
     }
 
+    fn persistWorldSeed(self: *GameEngine) !void {
+        var seed_buf: [20]u8 = undefined;
+        const seed_str = std.fmt.bufPrint(&seed_buf, "{d}", .{self.world_gen.world_seed}) catch unreachable;
+        try self.db.saveServerState("world_seed", seed_str);
+    }
+
     pub fn persistDirtyState(self: *GameEngine) !void {
         try self.db.db.exec("BEGIN IMMEDIATE");
         errdefer self.db.db.exec("ROLLBACK") catch {};
@@ -567,10 +575,6 @@ pub const GameEngine = struct {
         var id_buf: [20]u8 = undefined;
         const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{self.next_id}) catch unreachable;
         try self.db.saveServerState("next_id", id_str);
-
-        var seed_buf: [20]u8 = undefined;
-        const seed_str = std.fmt.bufPrint(&seed_buf, "{d}", .{self.world_gen.world_seed}) catch unreachable;
-        try self.db.saveServerState("world_seed", seed_str);
 
         var dirty_iter = self.dirty_players.iterator();
         while (dirty_iter.next()) |entry| {
