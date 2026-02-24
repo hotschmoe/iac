@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>In Amber Clad — Interface Views</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+
+  :root {
+    --amber-full: #FFB000;
+    --amber-bright: rgba(255, 176, 0, 0.85);
+    --amber-normal: rgba(255, 176, 0, 0.6);
+    --amber-dim: rgba(255, 176, 0, 0.3);
+    --amber-faint: rgba(255, 176, 0, 0.12);
+    --amber-glow: rgba(255, 176, 0, 0.06);
+    --bg: #0a0800;
+    --bg-panel: #0d0b02;
+    --bg-inset: #080600;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--amber-normal);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.4;
+    min-height: 100vh;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px);
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.5) 100%);
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px 16px;
+  }
+
+  h1 {
+    color: var(--amber-full);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 4px;
+    text-shadow: 0 0 20px rgba(255,176,0,0.4);
+    margin-bottom: 2px;
+  }
+
+  .subtitle {
+    color: var(--amber-dim);
+    font-size: 10px;
+    letter-spacing: 2px;
+    margin-bottom: 24px;
+  }
+
+  /* Tab navigation */
+  .tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--amber-faint);
+  }
+
+  .tab {
+    padding: 10px 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: var(--amber-dim);
+    background: transparent;
+    border: 1px solid var(--amber-faint);
+    border-bottom: none;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+    top: 1px;
+  }
+
+  .tab:hover { color: var(--amber-normal); }
+
+  .tab.active {
+    color: var(--amber-full);
+    background: var(--bg-panel);
+    border-color: var(--amber-dim);
+    text-shadow: 0 0 8px rgba(255,176,0,0.3);
+  }
+
+  .tab .key {
+    color: var(--amber-full);
+    font-weight: 700;
+  }
+
+  /* View panels */
+  .view {
+    display: none;
+    border: 1px solid var(--amber-faint);
+    border-top: none;
+    background: var(--bg-panel);
+  }
+
+  .view.active { display: block; }
+
+  /* COMMAND CENTER */
+  .cc-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 0;
+  }
+
+  .cc-panel {
+    padding: 12px 14px;
+    border: 1px solid var(--amber-faint);
+    margin: -1px 0 0 -1px;
+  }
+
+  .cc-panel.wide {
+    grid-column: 1 / -1;
+  }
+
+  .panel-title {
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: var(--amber-dim);
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--amber-faint);
+  }
+
+  pre {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre;
+  }
+
+  .full { color: var(--amber-full); text-shadow: 0 0 6px rgba(255,176,0,0.3); }
+  .bright { color: var(--amber-bright); }
+  .normal { color: var(--amber-normal); }
+  .dim { color: var(--amber-dim); }
+  .faint { color: var(--amber-faint); }
+  .glow { color: var(--amber-full); text-shadow: 0 0 10px rgba(255,176,0,0.5); }
+
+  .bar-fill { color: var(--amber-normal); }
+  .bar-empty { color: var(--amber-faint); }
+  .bar-label { color: var(--amber-dim); font-size: 11px; }
+
+  /* WINDSHIELD */
+  .ws-layout {
+    display: grid;
+    grid-template-columns: 1fr 240px;
+    grid-template-rows: 1fr auto;
+    min-height: 520px;
+  }
+
+  .ws-viewport {
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-right: 1px solid var(--amber-faint);
+    background: var(--bg-inset);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .ws-viewport::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(circle at center, transparent 40%, rgba(0,0,0,0.6) 100%);
+    pointer-events: none;
+  }
+
+  .ws-sidebar {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .ws-sidebar .cc-panel {
+    flex: 1;
+  }
+
+  .ws-footer {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--amber-faint);
+  }
+
+  /* STAR MAP */
+  .sm-layout {
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    grid-template-rows: auto 1fr auto;
+    min-height: 520px;
+  }
+
+  .sm-toolbar {
+    grid-column: 1 / -1;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--amber-faint);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .sm-toolbar .zoom-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 10px;
+    border: 1px solid var(--amber-dim);
+    background: transparent;
+    color: var(--amber-dim);
+    cursor: pointer;
+    letter-spacing: 1px;
+  }
+
+  .sm-toolbar .zoom-btn.active {
+    border-color: var(--amber-full);
+    color: var(--amber-full);
+    text-shadow: 0 0 6px rgba(255,176,0,0.3);
+  }
+
+  .sm-viewport {
+    padding: 16px;
+    background: var(--bg-inset);
+    border-right: 1px solid var(--amber-faint);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .sm-viewport::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(circle at center, transparent 50%, rgba(0,0,0,0.4) 100%);
+    pointer-events: none;
+  }
+
+  .sm-info {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sm-footer {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--amber-faint);
+    padding: 8px 14px;
+  }
+
+  /* Zoom views */
+  .zoom-view { display: none; }
+  .zoom-view.active { display: block; }
+
+  /* Annotations */
+  .note {
+    margin-top: 16px;
+    padding: 12px 14px;
+    border: 1px solid var(--amber-faint);
+    background: var(--bg-panel);
+    font-size: 10px;
+    line-height: 1.7;
+    color: var(--amber-dim);
+  }
+
+  .note strong { color: var(--amber-normal); font-weight: 500; }
+  .note em { color: var(--amber-bright); font-style: normal; }
+
+  .view-desc {
+    padding: 10px 14px;
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: var(--amber-dim);
+    border-bottom: 1px solid var(--amber-faint);
+    background: var(--bg-panel);
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>In Amber Clad</h1>
+  <div class="subtitle">INTERFACE VIEWS — THREE-MODE DESIGN</div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="showView('cc')"><span class="key">1</span> COMMAND CENTER</div>
+    <div class="tab" onclick="showView('ws')"><span class="key">2</span> WINDSHIELD</div>
+    <div class="tab" onclick="showView('sm')"><span class="key">3</span> STAR MAP</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- VIEW 1: COMMAND CENTER                      -->
+  <!-- ═══════════════════════════════════════════ -->
+  <div class="view active" id="view-cc">
+    <div class="view-desc">DEFAULT VIEW — HOMEWORLD MANAGEMENT & FLEET OVERVIEW — THE ADMIRAL'S DESK</div>
+    <div class="cc-grid">
+
+      <!-- Resources -->
+      <div class="cc-panel">
+        <div class="panel-title">RESOURCES</div>
+<pre>
+<span class="dim">Metal</span>    <span class="full">12,847</span>  <span class="dim">+38/tick</span>  <span class="bar-fill">████████████</span><span class="bar-empty">░░░░</span>
+<span class="dim">Crystal</span>  <span class="full"> 6,214</span>  <span class="dim">+21/tick</span>  <span class="bar-fill">████████</span><span class="bar-empty">░░░░░░░░</span>
+<span class="dim">Deut</span>     <span class="full"> 2,105</span>  <span class="dim">+11/tick</span>  <span class="bar-fill">█████</span><span class="bar-empty">░░░░░░░░░░░</span>
+</pre>
+      </div>
+
+      <!-- Fleet Summary -->
+      <div class="cc-panel">
+        <div class="panel-title">FLEETS</div>
+<pre>
+<span class="bright">Fleet Alpha</span>   <span class="dim">Sector</span> <span class="normal">[14,-6]</span>  <span class="full">HARVESTING</span>
+  <span class="dim">4 ships │ cargo 67% │ fuel 54%</span>
+
+<span class="bright">Fleet Beta</span>    <span class="dim">Sector</span> <span class="normal">[3,-1]</span>   <span class="normal">EN ROUTE</span>
+  <span class="dim">2 ships │ cargo  0% │ fuel 88%</span>
+
+<span class="dim">Fleet Gamma</span>   <span class="dim">Homeworld</span>        <span class="dim">DOCKED</span>
+  <span class="dim">1 ship  │ repairs 40%</span>
+</pre>
+      </div>
+
+      <!-- Build Queue -->
+      <div class="cc-panel">
+        <div class="panel-title">BUILD QUEUE</div>
+<pre>
+<span class="bright">▸ Crystal Mine Lv.5</span>   <span class="full">03:24:11</span>
+  <span class="dim">Progress</span> <span class="bar-fill">███████████</span><span class="bar-empty">░░░░░░░</span> <span class="dim">62%</span>
+
+<span class="dim">▹ Fuel Depot Lv.3</span>     <span class="dim">queued</span>
+<span class="dim">▹ Sensor Array Lv.2</span>   <span class="dim">queued</span>
+</pre>
+      </div>
+
+      <!-- Shipyard -->
+      <div class="cc-panel">
+        <div class="panel-title">SHIPYARD</div>
+<pre>
+<span class="bright">▸ Corvette</span> <span class="dim">×2</span>        <span class="full">00:12:45</span>
+  <span class="dim">Progress</span> <span class="bar-fill">██████████████</span><span class="bar-empty">░░░░</span> <span class="dim">78%</span>
+
+<span class="dim">▹ Frigate  ×1</span>         <span class="dim">queued</span>
+
+<span class="dim">Docked:</span> <span class="normal">3×Scout  2×Corvette  1×Hauler</span>
+</pre>
+      </div>
+
+      <!-- Research -->
+      <div class="cc-panel">
+        <div class="panel-title">RESEARCH LAB</div>
+<pre>
+<span class="bright">▸ Fuel Efficiency II</span>  <span class="full">01:45:00</span>
+  <span class="dim">Progress</span> <span class="bar-fill">████</span><span class="bar-empty">░░░░░░░░░░░░░░</span> <span class="dim">24%</span>
+  <span class="dim">Fragments:</span> <span class="normal">8/10 required</span>
+
+<span class="dim">Completed:</span>
+  <span class="dim">Fuel Efficiency I │ Reinforced Hulls I</span>
+  <span class="dim">Corvette Tech │ Harvesting Eff. I</span>
+</pre>
+      </div>
+
+      <!-- Alerts -->
+      <div class="cc-panel">
+        <div class="panel-title">ALERTS</div>
+<pre>
+<span class="glow">! Fleet Alpha:</span> <span class="bright">MLM patrol detected in [15,-6]</span>
+  <span class="dim">3 corvettes — adjacent sector, approaching</span>
+  <span class="dim">Policy: hold position, shields raised</span>
+
+<span class="dim">· Fleet Beta: waypoint reached [3,-1]</span>
+  <span class="dim">Awaiting orders</span>
+
+<span class="dim">· Corvette construction: 12m remaining</span>
+</pre>
+      </div>
+
+      <!-- Event Log -->
+      <div class="cc-panel wide">
+        <div class="panel-title">EVENT LOG</div>
+<pre>
+<span class="dim">4821</span> <span class="normal">Fleet Alpha harvested 24 metal, 8 crystal from [14,-6]</span>
+<span class="dim">4820</span> <span class="dim">Fleet Beta departed homeworld → waypoint [3,-1]</span>
+<span class="dim">4818</span> <span class="bright">Fleet Alpha: MLM scout destroyed — salvage: 12 metal, 3 crystal</span>
+<span class="dim">4817</span> <span class="dim">Metal Mine Lv.4 complete</span>
+<span class="dim">4815</span> <span class="normal">Fleet Alpha engaged MLM scout in [14,-6] — combat resolved 2 ticks</span>
+<span class="dim">4810</span> <span class="dim">Research complete: Harvesting Efficiency I</span>
+<span class="dim">4802</span> <span class="dim">Fleet Gamma docked for repairs — hull damage 60%</span>
+</pre>
+      </div>
+
+      <!-- Command Input -->
+      <div class="cc-panel wide">
+        <div class="panel-title">COMMAND</div>
+<pre>
+<span class="dim">[f]leet  [b]uild  [r]esearch  [s]hipyard  [m]ap  [p]olicy  [w]indshield</span>
+
+<span class="full">▸</span> <span class="bright">_</span>
+</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- VIEW 2: WINDSHIELD                          -->
+  <!-- ═══════════════════════════════════════════ -->
+  <div class="view" id="view-ws">
+    <div class="view-desc">FLEET CONTROL — DIRECT PILOTING — THE WINDSHIELD</div>
+    <div class="ws-layout">
+
+      <div class="ws-viewport">
+<pre style="position:relative;z-index:1;">
+
+
+<span class="faint">                          [</span><span class="dim">░░░</span><span class="faint">]</span>
+<span class="faint">                          13,-7</span>
+<span class="faint">                         ╱</span>
+<span class="faint">                        ╱</span>
+<span class="dim">          [</span><span class="normal">·Fe</span><span class="dim">]────────[</span><span class="bright"> ▲3</span><span class="dim">]</span>
+<span class="dim">          14,-7         15,-6</span>
+<span class="dim">              ╲        ╱</span>
+<span class="dim">               ╲      ╱</span>
+<span class="dim">                ╲    ╱</span>
+<span class="glow">          ═══════[</span><span class="glow"> ◆ </span><span class="glow">]═══════</span>
+<span class="full">                 14,-6</span>
+<span class="dim">                ╱    ╲</span>
+<span class="dim">               ╱      ╲</span>
+<span class="dim">              ╱        ╲</span>
+<span class="dim">          [</span><span class="normal">·De</span><span class="dim">]        [</span><span class="normal">·Cr</span><span class="dim">]</span>
+<span class="dim">          14,-5         15,-6</span>
+<span class="faint">              ╲</span>
+<span class="faint">               ╲</span>
+<span class="faint">          [</span><span class="dim">░░░</span><span class="faint">]</span>
+<span class="faint">          13,-4</span>
+
+
+</pre>
+      </div>
+
+      <div class="ws-sidebar">
+        <div class="cc-panel" style="border-left:none;">
+          <div class="panel-title">FLEET ALPHA — ACTIVE</div>
+<pre>
+<span class="dim">Sector</span>  <span class="full">[14, -6]</span>
+<span class="dim">Zone</span>    <span class="normal">Outer Ring</span>
+<span class="dim">Status</span>  <span class="full">IDLE</span>
+
+<span class="dim">Ships</span>
+ <span class="normal">Scout    ×1</span> <span class="dim">hull</span><span class="bar-fill">████</span><span class="bar-empty">░</span>
+ <span class="normal">Corvette ×2</span> <span class="dim">hull</span><span class="bar-fill">█████</span>
+ <span class="normal">Hauler   ×1</span> <span class="dim">hull</span><span class="bar-fill">███</span><span class="bar-empty">░░</span>
+</pre>
+        </div>
+        <div class="cc-panel" style="border-left:none;">
+          <div class="panel-title">CARGO & FUEL</div>
+<pre>
+<span class="dim">Cargo</span> <span class="normal">187</span><span class="dim">/280</span>
+ <span class="dim">Fe</span> <span class="normal"> 98</span>
+ <span class="dim">Cr</span> <span class="normal"> 61</span>
+ <span class="dim">De</span> <span class="normal"> 28</span>
+
+<span class="dim">Fuel</span>  <span class="bright">271</span><span class="dim">/500</span>
+ <span class="bar-fill">██████████</span><span class="bar-empty">░░░░░░░░░</span>
+ <span class="dim">~18 jumps remaining</span>
+</pre>
+        </div>
+        <div class="cc-panel" style="border-left:none;">
+          <div class="panel-title">SECTOR SCAN</div>
+<pre>
+<span class="dim">Terrain</span>  <span class="normal">Asteroid Field</span>
+<span class="dim">Metal</span>    <span class="bright">Rich</span>
+<span class="dim">Crystal</span>  <span class="normal">Moderate</span>
+<span class="dim">Deut</span>     <span class="dim">Sparse</span>
+
+<span class="dim">Hostile</span>  <span class="dim">None in sector</span>
+<span class="bright">! Adjacent:</span> <span class="bright">3 MLM corvettes</span>
+  <span class="dim">at [15,-6] — holding</span>
+
+<span class="dim">Exits</span>    <span class="normal">4 of 6</span>
+</pre>
+        </div>
+      </div>
+
+      <div class="ws-footer">
+        <div class="cc-panel wide" style="border-bottom:none;">
+          <div class="panel-title">HELM</div>
+<pre>
+<span class="dim">move: [1]NW  [2]NE  [3]E  [4]SE  [5]SW  ╳W</span>     <span class="dim">[h]arvest [a]ttack [r]ecall [esc]command center</span>
+
+<span class="full">▸</span> <span class="bright">_</span>
+</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- VIEW 3: STAR MAP                            -->
+  <!-- ═══════════════════════════════════════════ -->
+  <div class="view" id="view-sm">
+    <div class="view-desc">STAR MAP — STRATEGIC OVERVIEW & WAYPOINT NAVIGATION</div>
+    <div class="sm-layout">
+
+      <div class="sm-toolbar">
+        <span class="dim" style="font-size:10px;letter-spacing:1px;">ZOOM:</span>
+        <button class="zoom-btn" onclick="setZoom('close')">CLOSE</button>
+        <button class="zoom-btn active" onclick="setZoom('mid')">SECTOR</button>
+        <button class="zoom-btn" onclick="setZoom('far')">REGION</button>
+        <span style="margin-left:auto;" class="dim">
+          <span style="font-size:10px;letter-spacing:1px;">SCROLL: ARROW KEYS │ WAYPOINT: ENTER ON SECTOR │ CENTER: HOME</span>
+        </span>
+      </div>
+
+      <div class="sm-viewport">
+        <!-- Close zoom: node graph -->
+        <div class="zoom-view" id="zoom-close">
+<pre style="position:relative;z-index:1;font-size:11px;">
+<span class="faint">                                [</span><span class="dim">░░░</span><span class="faint">]</span>
+<span class="faint">                               ╱</span>
+<span class="faint">               [</span><span class="dim">░░░</span><span class="faint">]────[</span><span class="normal"> ·  </span><span class="faint">]</span>
+<span class="faint">                         ╲    ╱</span>
+<span class="dim">    [</span><span class="normal">·Fe</span><span class="dim">]─────[</span><span class="bright"> ▲3 </span><span class="dim">]     [</span><span class="dim">░░░</span><span class="faint">]</span>
+<span class="dim">                ╲  ╲    ╱</span>
+<span class="dim">                 ╲  ╲  ╱</span>
+<span class="glow">    [</span><span class="normal">·De</span><span class="glow">]═════[</span><span class="glow"> ◆  </span><span class="glow">]════[</span><span class="normal">·Cr</span><span class="glow">]</span>
+<span class="dim">     ╲       ╱  ╲</span>
+<span class="dim">      ╲     ╱    ╲</span>
+<span class="dim">    [</span><span class="dim">░░░</span><span class="faint">] [</span><span class="normal"> ·  </span><span class="dim">]    [</span><span class="normal">·Fe</span><span class="dim">]</span>
+<span class="dim">           ╲         ╲</span>
+<span class="faint">            ╲         ╲</span>
+<span class="faint">         [</span><span class="normal">·Fe</span><span class="faint">]────[</span><span class="dim">░░░</span><span class="faint">]</span>
+</pre>
+        </div>
+
+        <!-- Mid zoom: hybrid hex-cell -->
+        <div class="zoom-view active" id="zoom-mid">
+<pre style="position:relative;z-index:1;font-size:11px;">
+<span class="faint">  ╱ ░░ ╲   ╱    ╲   ╱ ░░ ╲   ╱ ░░ ╲   ╱ ░░ ╲</span>
+<span class="faint"> ╱      ╲─╱      ╲ ╱      ╲─╱      ╲ ╱      ╲</span>
+<span class="faint"> ╲      ╱ ╲      ╱ ╲      ╱ ╲      ╱ ╲      ╱</span>
+<span class="faint">  ╲ ░░ ╱   ╲    ╱   ╲ ░░ ╱   ╲ ░░ ╱   ╲ ░░ ╱</span>
+<span class="dim">     ╱ Fe ╲   ╱ </span><span class="bright">▲3</span><span class="dim"> ╲   ╱    ╲   ╱ ░░ ╲</span>
+<span class="dim">    ╱      ╲─╱      ╲─╱      ╲ ╱      ╲</span>
+<span class="dim">    ╲      ╱ ╲      ╱ ╲      ╱ ╲      ╱</span>
+<span class="dim">     ╲    ╱   ╲    ╱   ╲    ╱   ╲ ░░ ╱</span>
+<span class="dim">╱ De ╲   ╱    ╲   ╱</span><span class="glow"> ◆  </span><span class="dim">╲   ╱    ╲</span>
+<span class="dim">      ╲─╱      ╲─╱</span><span class="glow">══════</span><span class="dim">╲─╱      ╲</span>
+<span class="dim">      ╱ ╲      ╱ ╲</span><span class="glow">══════</span><span class="dim">╱ ╲      ╱</span>
+<span class="dim">╲    ╱   ╲ Fe ╱   ╲    ╱   ╲ </span><span class="bright">▲5</span><span class="dim"> ╱</span>
+<span class="faint">  ╱ ░░ ╲   ╱    ╲   ╱ Cr ╲   ╱    ╲</span>
+<span class="faint"> ╱      ╲─╱      ╲─╱      ╲ ╱      ╲</span>
+<span class="faint"> ╲      ╱ ╲      ╱ ╲      ╱ ╲      ╱</span>
+<span class="faint">  ╲ ░░ ╱   ╲  · ╱   ╲ Fe ╱   ╲    ╱</span>
+</pre>
+        </div>
+
+        <!-- Far zoom: minimal dots -->
+        <div class="zoom-view" id="zoom-far">
+<pre style="position:relative;z-index:1;font-size:11px;">
+<span class="faint">                  ·   ·   ·   ·   ·   ·</span>
+<span class="faint">                   \ / \ / \ /   / \ /</span>
+<span class="faint">                  · · · · · ·   · · ·</span>
+<span class="faint">                 / \ / \ / \ \ / \ / \</span>
+<span class="dim">                ·   ·   ·   · · ·   ·</span>
+<span class="dim">               / \ / \ / \ / \ / \ /</span>
+<span class="dim">              ·   </span><span class="bright">▲</span><span class="dim">───·   ·   ·   ·</span>
+<span class="dim">             / \ / \ / \ / \ /   /</span>
+<span class="dim">            ·   ·   </span><span class="glow">◆</span><span class="dim">───·   ·   ·</span>
+<span class="dim">           / \   \ / \ / \ / \ /</span>
+<span class="dim">          ·   ·   ·   </span><span class="bright">▲</span><span class="dim">   ·   ·</span>
+<span class="dim">         / \ / \ / \ / \ / \ /</span>
+<span class="faint">        ·   ·   ·   ·   ·   ·</span>
+<span class="faint">         \ / \ / \ / \ / \ /</span>
+<span class="faint">          ·   ·   ·   ·   ·</span>
+<span class="faint">         / \ / \ / \ / \ /</span>
+<span class="faint">        ·   ·  </span> <span class="normal">⌂</span><span class="faint">   ·   ·   ·</span>
+<span class="faint">             / \ / \ / \ /</span>
+<span class="faint">            ·   ·   ·   ·</span>
+</pre>
+        </div>
+      </div>
+
+      <div class="sm-info">
+        <div class="cc-panel" style="border-right:none;">
+          <div class="panel-title">CURSOR</div>
+<pre>
+<span class="dim">Sector</span>  <span class="full">[14, -6]</span>
+<span class="dim">Zone</span>    <span class="normal">Outer Ring</span>
+<span class="dim">Dist</span>    <span class="normal">14 from hub</span>
+
+<span class="dim">Terrain</span> <span class="normal">Asteroid Field</span>
+<span class="dim">Metal</span>   <span class="bright">Rich</span>
+<span class="dim">Crystal</span> <span class="normal">Moderate</span>
+<span class="dim">Deut</span>    <span class="dim">Sparse</span>
+
+<span class="dim">Visited</span> <span class="normal">tick 4790</span>
+<span class="dim">Threat</span>  <span class="bright">MLM patrol</span>
+</pre>
+        </div>
+        <div class="cc-panel" style="border-right:none;">
+          <div class="panel-title">WAYPOINTS</div>
+<pre>
+<span class="bright">▸ WP-1</span> <span class="normal">[14,-6]</span> <span class="dim">Rich Fe</span>
+<span class="dim">  WP-2</span> <span class="dim">[8,-2]</span>  <span class="dim">Hub gate</span>
+<span class="dim">  WP-3</span> <span class="dim">[22,-11]</span> <span class="dim">Deep recon</span>
+
+<span class="dim">Routes calculated from</span>
+<span class="dim">explored paths only.</span>
+<span class="dim">Unknown edges = no route.</span>
+</pre>
+        </div>
+        <div class="cc-panel" style="border-right:none;">
+          <div class="panel-title">FLEET POSITIONS</div>
+<pre>
+<span class="glow">◆</span> <span class="bright">Alpha</span> <span class="normal">[14,-6]</span>
+<span class="normal">◇</span> <span class="dim">Beta</span>  <span class="dim">[3,-1]</span>
+<span class="dim">⌂</span> <span class="dim">Home</span>  <span class="dim">[4,-2]</span>
+</pre>
+        </div>
+      </div>
+
+      <div class="sm-footer">
+<pre>
+<span class="dim">nav: ARROWS scroll │ +/- zoom │ ENTER set waypoint │ HOME center on fleet │ TAB cycle fleets │ ESC close</span>
+</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notes -->
+  <div class="note">
+    <strong>VIEW ARCHITECTURE</strong><br><br>
+    <em>Command Center</em> is the default — where you manage your economy, queues, and fleets at a strategic level.
+    Most LLM agent interaction happens here (build, research, dispatch fleets with policies).<br><br>
+    <em>Windshield</em> is entered per-fleet — you "drop into" a fleet and pilot it directly. The node graph shows only
+    your current sector and immediate connections. Adjacent hostiles appear as warnings. Movement is directional
+    (pick an exit). The policy system still runs but you override it with direct commands. This is the exploration
+    experience — you're charting unknown space one hop at a time.<br><br>
+    <em>Star Map</em> is an overlay opened from either view. Three zoom levels:<br>
+    &nbsp;&nbsp;<strong>Close</strong> — node graph, ~3 hex radius. Same style as windshield but scrollable.<br>
+    &nbsp;&nbsp;<strong>Sector</strong> — hybrid hex-cell, ~8 hex radius. Good for route planning.<br>
+    &nbsp;&nbsp;<strong>Region</strong> — minimal dots + lines, ~20 hex radius. Shows the big picture, fleet positions, homeworld.<br><br>
+    <strong>Waypoints</strong> can only be set on sectors you've explored. The fleet auto-navigates along your discovered edges.
+    If a route requires traversing unknown edges, no path is available — you must explore manually first via windshield.<br><br>
+    <strong>Fog of war:</strong> ░░░ sectors are unexplored. They exist (generated from seed) but you don't know their contents
+    until a fleet visits or a Sensor Array reveals them. The map only shows your personal explored territory.
+  </div>
+</div>
+
+<script>
+function showView(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('view-' + id).classList.add('active');
+  document.querySelectorAll('.tab')[{cc:0,ws:1,sm:2}[id]].classList.add('active');
+}
+
+function setZoom(level) {
+  document.querySelectorAll('.zoom-view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.zoom-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('zoom-' + {close:'close',mid:'mid',far:'far'}[level]).classList.add('active');
+  const idx = {close:0,mid:1,far:2}[level];
+  document.querySelectorAll('.zoom-btn')[idx].classList.add('active');
+}
+</script>
+
+</body>
+</html>

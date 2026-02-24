@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>In Amber Clad — Hex Grid Rendering Options</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+
+  :root {
+    --amber-full: #FFB000;
+    --amber-bright: rgba(255, 176, 0, 0.85);
+    --amber-normal: rgba(255, 176, 0, 0.6);
+    --amber-dim: rgba(255, 176, 0, 0.3);
+    --amber-faint: rgba(255, 176, 0, 0.12);
+    --amber-glow: rgba(255, 176, 0, 0.08);
+    --bg: #0a0800;
+    --bg-panel: #0d0b02;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--amber-normal);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* CRT effect overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.08) 2px,
+      rgba(0, 0, 0, 0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  /* Vignette */
+  body::after {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.5) 100%);
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 30px 20px;
+  }
+
+  h1 {
+    color: var(--amber-full);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    text-shadow: 0 0 20px rgba(255, 176, 0, 0.4), 0 0 40px rgba(255, 176, 0, 0.15);
+    margin-bottom: 4px;
+  }
+
+  .subtitle {
+    color: var(--amber-dim);
+    font-size: 11px;
+    letter-spacing: 2px;
+    margin-bottom: 30px;
+  }
+
+  .option-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .option {
+    border: 1px solid var(--amber-faint);
+    background: var(--bg-panel);
+    position: relative;
+  }
+
+  .option-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--amber-faint);
+  }
+
+  .option-number {
+    color: var(--amber-full);
+    font-weight: 700;
+    font-size: 13px;
+    text-shadow: 0 0 10px rgba(255, 176, 0, 0.3);
+  }
+
+  .option-title {
+    color: var(--amber-bright);
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 1px;
+  }
+
+  .option-tags {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+  }
+
+  .tag {
+    font-size: 9px;
+    letter-spacing: 1px;
+    padding: 2px 6px;
+    border: 1px solid var(--amber-dim);
+    color: var(--amber-dim);
+  }
+
+  .tag.good { border-color: var(--amber-normal); color: var(--amber-normal); }
+
+  .option-body {
+    display: flex;
+    gap: 0;
+  }
+
+  .option-render {
+    flex: 1;
+    padding: 16px 20px;
+    overflow-x: auto;
+    border-right: 1px solid var(--amber-faint);
+    min-width: 0;
+  }
+
+  .option-info {
+    width: 300px;
+    min-width: 300px;
+    padding: 14px 16px;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+
+  .option-info p {
+    margin-bottom: 8px;
+  }
+
+  .option-info .label {
+    color: var(--amber-bright);
+    font-size: 10px;
+    letter-spacing: 1px;
+    margin-bottom: 4px;
+  }
+
+  .pro { color: var(--amber-normal); }
+  .con { color: var(--amber-dim); }
+
+  pre {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.35;
+    white-space: pre;
+    color: var(--amber-normal);
+  }
+
+  pre .bright { color: var(--amber-full); text-shadow: 0 0 6px rgba(255, 176, 0, 0.3); }
+  pre .dim { color: var(--amber-dim); }
+  pre .faint { color: var(--amber-faint); }
+  pre .player { color: var(--amber-full); text-shadow: 0 0 8px rgba(255, 176, 0, 0.5); }
+  pre .enemy { color: var(--amber-bright); }
+  pre .resource { color: var(--amber-normal); }
+
+  .legend {
+    margin-top: 30px;
+    padding: 14px 16px;
+    border: 1px solid var(--amber-faint);
+    background: var(--bg-panel);
+    font-size: 11px;
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .legend-symbol {
+    color: var(--amber-full);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    text-shadow: 0 0 6px rgba(255, 176, 0, 0.3);
+    width: 20px;
+    text-align: center;
+  }
+
+  .legend-label {
+    color: var(--amber-dim);
+  }
+
+  .notes {
+    margin-top: 24px;
+    padding: 14px 16px;
+    border: 1px solid var(--amber-faint);
+    background: var(--bg-panel);
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--amber-dim);
+  }
+
+  .notes strong {
+    color: var(--amber-normal);
+    font-weight: 500;
+  }
+
+  @media (max-width: 800px) {
+    .option-body { flex-direction: column; }
+    .option-info { width: 100%; min-width: 0; border-top: 1px solid var(--amber-faint); }
+    .option-render { border-right: none; }
+    .option-tags { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>In Amber Clad</h1>
+  <div class="subtitle">HEX GRID RENDERING OPTIONS — TUI FEASIBILITY STUDY</div>
+
+  <div class="legend">
+    <div class="legend-item"><span class="legend-symbol">◆</span><span class="legend-label">Player fleet</span></div>
+    <div class="legend-item"><span class="legend-symbol">▲</span><span class="legend-label">MLM hostile</span></div>
+    <div class="legend-item"><span class="legend-symbol">�ite</span><span class="legend-label">Resources</span></div>
+    <div class="legend-item"><span class="legend-symbol">░</span><span class="legend-label">Unexplored</span></div>
+    <div class="legend-item"><span class="legend-symbol">·</span><span class="legend-label">Empty</span></div>
+    <div class="legend-item"><span class="legend-symbol">≡</span><span class="legend-label">No connection</span></div>
+  </div>
+
+  <div class="option-grid">
+
+    <!-- OPTION 1: Classic Flat-Top ASCII Hex -->
+    <div class="option">
+      <div class="option-header">
+        <span class="option-number">01</span>
+        <span class="option-title">CLASSIC FLAT-TOP HEX</span>
+        <div class="option-tags">
+          <span class="tag good">READABLE</span>
+          <span class="tag">WIDE</span>
+        </div>
+      </div>
+      <div class="option-body">
+        <div class="option-render">
+<pre>
+<span class="dim">    ___         ___         ___</span>
+<span class="dim">   /</span>   <span class="dim">\</span>  <span class="dim">___</span>  <span class="dim">/</span>   <span class="dim">\</span>  <span class="dim">___</span>  <span class="dim">/</span>   <span class="dim">\</span>
+<span class="dim">  /</span> <span class="faint">░░░</span> <span class="dim">\</span><span class="dim">/</span>   <span class="dim">\</span><span class="dim">/</span> <span class="resource">·Fe</span> <span class="dim">\</span><span class="dim">/</span>   <span class="dim">\</span><span class="dim">/</span> <span class="faint">░░░</span> <span class="dim">\</span>
+<span class="dim">  \</span> <span class="faint">░░░</span> <span class="dim">/\</span> <span class="enemy"> ▲ </span> <span class="dim">/\</span>     <span class="dim">/\</span> <span class="resource">·Cr</span> <span class="dim">/\</span> <span class="faint">░░░</span> <span class="dim">/</span>
+<span class="dim">   \</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>
+<span class="dim">   /</span>   <span class="dim">\</span>  <span class="dim">___</span>  <span class="dim">/</span>   <span class="dim">\</span>  <span class="dim">___</span>  <span class="dim">/</span>   <span class="dim">\</span>
+<span class="dim">  /</span> <span class="resource">·De</span> <span class="dim">\</span><span class="dim">/</span>   <span class="dim">\</span><span class="dim">/</span> <span class="player"> ◆ </span> <span class="dim">\</span><span class="dim">/</span>   <span class="dim">\</span><span class="dim">/</span>     <span class="dim">\</span>
+<span class="dim">  \</span>     <span class="dim">/\</span> <span class="resource">·Fe</span> <span class="dim">/\</span>     <span class="dim">/\</span> <span class="enemy"> ▲ </span> <span class="dim">/\</span>     <span class="dim">/</span>
+<span class="dim">   \</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>
+<span class="dim">   /</span>   <span class="dim">\</span>  <span class="dim">___</span>  <span class="dim">/</span>   <span class="dim">\</span>  <span class="dim">___</span>  <span class="dim">/</span>   <span class="dim">\</span>
+<span class="dim">  /</span> <span class="faint">░░░</span> <span class="dim">\</span><span class="dim">/</span>   <span class="dim">\</span><span class="dim">/</span>     <span class="dim">\</span><span class="dim">/</span>   <span class="dim">\</span><span class="dim">/</span> <span class="faint">░░░</span> <span class="dim">\</span>
+<span class="dim">  \</span> <span class="faint">░░░</span> <span class="dim">/\</span>  ·  <span class="dim">/\</span> <span class="resource">·Fe</span> <span class="dim">/\</span>     <span class="dim">/\</span> <span class="faint">░░░</span> <span class="dim">/</span>
+<span class="dim">   \</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>  <span class="dim">\</span><span class="dim">___/</span>
+</pre>
+        </div>
+        <div class="option-info">
+          <p class="label">DESCRIPTION</p>
+          <p>Traditional hex shapes using <code>/ \ _</code> characters. Each hex is ~7 chars wide × 4 rows tall. Looks unmistakably hex. Most literal translation of a hex grid.</p>
+          <p class="label">PROS</p>
+          <p class="pro">+ Instantly recognizable as hexagons<br>+ Room for 3-char content labels inside each hex<br>+ Missing edges clearly show dead ends</p>
+          <p class="label">CONS</p>
+          <p class="con">− Very wide — fits ~8 hexes in 80 cols<br>− Tall — 4 rows per hex limits vertical density<br>− Complex rendering logic for partial edges</p>
+          <p class="label">VERDICT</p>
+          <p>Beautiful but space-hungry. Best if the map viewport is large and other UI panels are minimal.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- OPTION 2: Compact Pointy-Top -->
+    <div class="option">
+      <div class="option-header">
+        <span class="option-number">02</span>
+        <span class="option-title">COMPACT POINTY-TOP</span>
+        <div class="option-tags">
+          <span class="tag good">DENSE</span>
+          <span class="tag good">CLEAN</span>
+        </div>
+      </div>
+      <div class="option-body">
+        <div class="option-render">
+<pre>
+<span class="dim">  / \ / \ / \ / \ / \</span>
+<span class="dim"> /</span><span class="faint">░░░</span><span class="dim">\/</span> <span class="enemy">▲</span> <span class="dim">\/</span><span class="resource">Fe</span> <span class="dim">\/</span>   <span class="dim">\/</span><span class="faint">░░░</span><span class="dim">\</span>
+<span class="dim"> \</span>   <span class="dim">/\</span>   <span class="dim">/\</span>   <span class="dim">/\</span>   <span class="dim">/\</span>   <span class="dim">/</span>
+<span class="dim">  \ / \ / \ / \ / \ /</span>
+<span class="dim">  /</span><span class="resource">De</span> <span class="dim">\/</span>   <span class="dim">\/</span><span class="player"> ◆</span> <span class="dim">\/</span>   <span class="dim">\/</span>   <span class="dim">\</span>
+<span class="dim">  \</span>   <span class="dim">/\</span><span class="resource">Fe</span> <span class="dim">/\</span>   <span class="dim">/\</span> <span class="enemy">▲</span> <span class="dim">/\</span>   <span class="dim">/</span>
+<span class="dim">   \ / \ / \ / \ / \ /</span>
+<span class="dim">   /</span><span class="faint">░░░</span><span class="dim">\/</span>   <span class="dim">\/</span>   <span class="dim">\/</span>   <span class="dim">\/</span><span class="faint">░░░</span><span class="dim">\</span>
+<span class="dim">   \</span>   <span class="dim">/\</span> · <span class="dim">/\</span><span class="resource">Fe</span> <span class="dim">/\</span>   <span class="dim">/\</span>   <span class="dim">/</span>
+<span class="dim">    \ / \ / \ / \ / \ /</span>
+</pre>
+        </div>
+        <div class="option-info">
+          <p class="label">DESCRIPTION</p>
+          <p>Pointy-top hexes using <code>/ \</code> only. Tighter packing — each hex is ~4 chars wide × 2 rows tall. Sacrifices legibility for density.</p>
+          <p class="label">PROS</p>
+          <p class="pro">+ ~2x more hexes on screen than flat-top<br>+ Still recognizable as hexagons<br>+ Simpler rendering (no <code>_</code> segments)</p>
+          <p class="label">CONS</p>
+          <p class="con">− Only 2-3 chars of content per hex<br>− Feels cramped — hard to read at a glance<br>− Dead-end edges harder to see clearly</p>
+          <p class="label">VERDICT</p>
+          <p>Good density/shape tradeoff. Works if content is minimal icons rather than text labels.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- OPTION 3: Brick Offset -->
+    <div class="option">
+      <div class="option-header">
+        <span class="option-number">03</span>
+        <span class="option-title">BRICK OFFSET GRID</span>
+        <div class="option-tags">
+          <span class="tag good">SIMPLE</span>
+          <span class="tag good">INFO-DENSE</span>
+        </div>
+      </div>
+      <div class="option-body">
+        <div class="option-render">
+<pre>
+<span class="dim">┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐</span>
+<span class="dim">│</span><span class="faint"> ░░░ </span><span class="dim">│─│</span> <span class="enemy"> ▲  </span><span class="dim">│─│</span><span class="resource"> ·Fe </span><span class="dim">│─│</span>     <span class="dim">│ │</span><span class="faint"> ░░░ </span><span class="dim">│</span>
+<span class="dim">└──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘ └─────┘</span>
+<span class="dim">   │ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ │</span>
+<span class="dim">   └─│</span><span class="resource"> ·De </span><span class="dim">│─│</span>     <span class="dim">│─│</span><span class="player">  ◆  </span><span class="dim">│─│</span>     <span class="dim">│─┘</span>
+<span class="dim">     └──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘</span>
+<span class="dim">   ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐</span>
+<span class="dim">   │</span><span class="faint"> ░░░ </span><span class="dim">│─│</span>  ·  <span class="dim">│─│</span><span class="resource"> ·Fe </span><span class="dim">│ │</span> <span class="enemy"> ▲  </span><span class="dim">│</span>
+<span class="dim">   └─────┘ └─────┘ └─────┘ └──┬──┘</span>
+<span class="dim">      │ ┌─────┐ ┌─────┐ ┌─────┐ │</span>
+<span class="dim">      └─│</span>     <span class="dim">│─│</span><span class="resource"> ·Cr </span><span class="dim">│─│</span><span class="faint"> ░░░ </span><span class="dim">│─┘</span>
+<span class="dim">        └─────┘ └─────┘ └─────┘</span>
+</pre>
+        </div>
+        <div class="option-info">
+          <p class="label">DESCRIPTION</p>
+          <p>Rectangles in a brick-wall offset pattern. Box-drawing characters for cells, explicit <code>─</code> and <code>│</code> connection lines between them. Hex adjacency is implied by the offset + visible connections.</p>
+          <p class="label">PROS</p>
+          <p class="pro">+ 5 chars of content per cell — room for labels<br>+ Box-drawing chars render perfectly everywhere<br>+ Dead ends are obvious (missing connection lines)<br>+ Simplest rendering logic by far</p>
+          <p class="label">CONS</p>
+          <p class="con">− Doesn't look like hexagons<br>− Connection lines between rows are complex<br>− May confuse players expecting a hex map</p>
+          <p class="label">VERDICT</p>
+          <p>Most practical. Best information density. Trades hex aesthetics for clarity and simplicity. Strong choice if you label it as a "tactical display" rather than a map.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- OPTION 4: Node Graph -->
+    <div class="option">
+      <div class="option-header">
+        <span class="option-number">04</span>
+        <span class="option-title">NODE GRAPH / CONSTELLATION</span>
+        <div class="option-tags">
+          <span class="tag good">AESTHETIC</span>
+          <span class="tag">SPARSE</span>
+        </div>
+      </div>
+      <div class="option-body">
+        <div class="option-render">
+<pre>
+<span class="faint">         [░░░]─────────[</span><span class="enemy">▲</span><span class="faint">]──────────[</span><span class="resource">Fe</span><span class="faint">]</span>
+<span class="faint">           \           / \           /</span>
+<span class="faint">            \         /   \         /</span>
+<span class="faint">             \       /     \       /</span>
+<span class="dim">             [</span><span class="resource">De</span><span class="dim">]────</span><span class="dim">─[</span>   <span class="dim">]──────[</span><span class="player">◆</span><span class="dim">]</span>
+<span class="dim">             / \       \         / \</span>
+<span class="dim">            /   \       \       /   \</span>
+<span class="dim">           /     \       \     /     \</span>
+<span class="faint">         [░░░]   [</span> · <span class="faint">]─────[</span><span class="resource">Fe</span><span class="faint">]     [</span><span class="enemy">▲</span><span class="faint">]</span>
+<span class="faint">                   \                 /</span>
+<span class="faint">                    \               /</span>
+<span class="faint">                     \             /</span>
+<span class="faint">                      [   ]─────[</span><span class="resource">Cr</span><span class="faint">]</span>
+</pre>
+        </div>
+        <div class="option-info">
+          <p class="label">DESCRIPTION</p>
+          <p>Each hex is a labeled node <code>[  ]</code>. Connections are drawn as lines between nodes using <code>/ \ ─</code>. Dead ends are simply missing lines. Looks like a star chart or network map.</p>
+          <p class="label">PROS</p>
+          <p class="pro">+ Gorgeous — looks like a real tactical display<br>+ Dead ends are maximally clear<br>+ Feels like a constellation chart / star map<br>+ Connection topology is the visual focus</p>
+          <p class="label">CONS</p>
+          <p class="con">− Very low density — ~5 nodes on screen<br>− Line routing between nodes is hard to compute<br>− Diagonal lines at arbitrary angles don't work in monospace — limited to <code>/ \</code> diagonals<br>− Scaling to larger viewports is awkward</p>
+          <p class="label">VERDICT</p>
+          <p>Most beautiful option. Best for small, local views (3-4 hex radius). Could pair with a denser option for zoomed-out view.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- OPTION 5: Hybrid Hex-Cell -->
+    <div class="option">
+      <div class="option-header">
+        <span class="option-number">05</span>
+        <span class="option-title">HYBRID HEX-CELL — RECOMMENDED</span>
+        <div class="option-tags">
+          <span class="tag good">BALANCED</span>
+          <span class="tag good">CLEAR</span>
+          <span class="tag good">RECOMMENDED</span>
+        </div>
+      </div>
+      <div class="option-body">
+        <div class="option-render">
+<pre>
+<span class="faint">            ╱ ░░ ╲   ╱ </span><span class="enemy">▲3</span><span class="faint"> ╲   ╱ </span><span class="resource">Fe+</span><span class="faint"> ╲   ╱    ╲</span>
+<span class="faint">           ╱      ╲─╱      ╲─╱      ╲─╱      ╲</span>
+<span class="faint">           ╲      ╱ ╲      ╱ ╲      ╱ ╲      ╱</span>
+<span class="faint">            ╲ ░░ ╱   ╲    ╱   ╲    ╱   ╲    ╱</span>
+<span class="dim">       ╱ </span><span class="resource">De </span><span class="dim">╲   ╱    ╲   ╱</span><span class="player"> ◆  </span><span class="dim">╲   ╱    ╲</span>
+<span class="dim">      ╱      ╲─╱      ╲─╱      ╲</span>  <span class="dim">╱      ╲</span>
+<span class="dim">      ╲      ╱ ╲      ╱ ╲      ╱</span>  <span class="dim">╲      ╱</span>
+<span class="dim">       ╲    ╱   ╲ </span><span class="resource">Fe </span><span class="dim">╱   ╲    ╱   ╲</span> <span class="enemy">▲5</span> <span class="dim">╱</span>
+<span class="faint">  ╱ ░░ ╲   ╱    ╲   ╱    ╲   ╱    ╲</span>
+<span class="faint"> ╱      ╲─╱      ╲─╱      ╲ ╱      ╲</span>
+<span class="faint"> ╲      ╱ ╲      ╱ ╲      ╱ ╲      ╱</span>
+<span class="faint">  ╲ ░░ ╱   ╲  · ╱   ╲ </span><span class="resource">Fe </span><span class="faint">╱   ╲    ╱</span>
+</pre>
+        </div>
+        <div class="option-info">
+          <p class="label">DESCRIPTION</p>
+          <p>Uses Unicode diagonal strokes <code>╱ ╲</code> for hex edges and <code>─</code> for connections. Each hex has room for 3-4 chars of content. Connections between hexes are explicit — missing <code>─</code> means dead end. Height: 3 rows per hex. Width: ~8 chars per hex.</p>
+          <p class="label">PROS</p>
+          <p class="pro">+ Clearly reads as hexagons<br>+ 3-4 chars of content per cell<br>+ Dead ends visible (gap where <code>─</code> would be)<br>+ Good density — ~6-7 hex radius in 80×24<br>+ Unicode diagonals are crisp in modern terminals<br>+ Brightness levels work beautifully here</p>
+          <p class="label">CONS</p>
+          <p class="con">− Requires Unicode support (╱ ╲ chars)<br>− Slightly more rendering math than brick<br>− May not render in every terminal font</p>
+          <p class="label">VERDICT</p>
+          <p>Best overall balance. Looks hex, shows connections, fits enough on screen, supports the amber brightness-as-info-hierarchy design. This is the recommendation for IAC.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="notes">
+    <strong>RENDERING NOTES FOR ZIG/ZITHRIL IMPLEMENTATION</strong><br><br>
+    All options use axial coordinates (q, r) internally. The rendering function maps (q, r) → (screen_col, screen_row) differently per option, but the game logic is identical regardless of choice.<br><br>
+    <strong>Brightness mapping:</strong> All options benefit from the 4-level amber brightness system. The examples above use: <strong>full</strong> (player fleet, alerts), <strong>bright</strong> (enemies, active content), <strong>normal</strong> (resources, labels), <strong>dim</strong> (borders, chrome), <strong>faint</strong> (unexplored, fog of war).<br><br>
+    <strong>Dead-end rendering:</strong> Options 1, 2, 5 show dead ends by omitting edge characters between hexes. Option 3 omits connection lines. Option 4 omits the line entirely. All are clear, but Options 3-5 make dead ends most visually obvious.<br><br>
+    <strong>Zoom consideration:</strong> Options 4 (node graph) and 5 (hybrid) could work as a dual-zoom system — Option 4 for close tactical view during combat, Option 5 for navigation. This would be a zithril feature: pressing a key toggles between zoom levels with different renderers.<br><br>
+    <strong>Terminal compatibility:</strong> Options 1-3 use only basic ASCII and box-drawing characters (universal support). Options 4-5 use Unicode diagonal strokes that require a modern terminal and font. For maximum compatibility, Option 3 is safest. For maximum beauty, Option 5.
+  </p>
+  </div>
+</div>
+
+</body>
+</html>

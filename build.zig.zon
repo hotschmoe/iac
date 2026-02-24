@@ -1,0 +1,19 @@
+.{
+    .name = "in-amber-clad",
+    .version = "0.1.0",
+    .minimum_zig_version = "0.13.0",
+
+    .dependencies = .{
+        // TODO: Add dependencies as they're integrated:
+        // .sqlite = .{ ... },      // zig-sqlite bindings
+        // .websocket = .{ ... },    // zig websocket library
+        // .rich_zig = .{ ... },     // https://github.com/hotschmoe/rich_zig
+        // .zithril = .{ ... },      // https://github.com/hotschmoe/zithril
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
