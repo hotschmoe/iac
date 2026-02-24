@@ -67,6 +67,7 @@ pub const Network = struct {
         defer messages.deinit(self.allocator);
 
         for (messages.items) |queued| {
+            defer queued.parsed.deinit();
             self.handleMessage(queued.session_id, queued.msg) catch |err| {
                 log.warn("Error handling message from session {d}: {}", .{ queued.session_id, err });
             };
@@ -86,8 +87,11 @@ pub const Network = struct {
 
             const player_id = session.player_id orelse continue;
 
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+
             var fleet_updates = std.ArrayList(protocol.FleetState).empty;
-            defer fleet_updates.deinit(self.allocator);
 
             var fleet_iter = eng.fleets.iterator();
             while (fleet_iter.next()) |f_entry| {
@@ -95,9 +99,8 @@ pub const Network = struct {
                 if (fleet.owner_id != player_id) continue;
 
                 var ship_states = std.ArrayList(protocol.ShipState).empty;
-                defer ship_states.deinit(self.allocator);
                 for (fleet.ships[0..fleet.ship_count]) |ship| {
-                    try ship_states.append(self.allocator, .{
+                    try ship_states.append(alloc, .{
                         .id = ship.id,
                         .class = ship.class,
                         .hull = ship.hull,
@@ -108,7 +111,7 @@ pub const Network = struct {
                     });
                 }
 
-                try fleet_updates.append(self.allocator, .{
+                try fleet_updates.append(alloc, .{
                     .id = fleet.id,
                     .location = fleet.location,
                     .state = @enumFromInt(@intFromEnum(fleet.state)),
@@ -120,11 +123,16 @@ pub const Network = struct {
                 });
             }
 
+            // Build sector_update for the player's first fleet
+            var sector_update: ?protocol.SectorState = null;
+            if (fleet_updates.items.len > 0) {
+                sector_update = try buildSectorState(alloc, eng, fleet_updates.items[0].location);
+            }
+
             var player_events = std.ArrayList(protocol.GameEvent).empty;
-            defer player_events.deinit(self.allocator);
             for (events) |event| {
                 if (isEventRelevant(event, player_id, eng)) {
-                    try player_events.append(self.allocator, event);
+                    try player_events.append(alloc, event);
                 }
             }
 
@@ -132,6 +140,7 @@ pub const Network = struct {
                 .tick_update = .{
                     .tick = eng.current_tick,
                     .fleet_updates = if (fleet_updates.items.len > 0) fleet_updates.items else null,
+                    .sector_update = sector_update,
                     .events = if (player_events.items.len > 0) player_events.items else null,
                 },
             };
@@ -212,8 +221,11 @@ pub const Network = struct {
     fn sendFullState(self: *Network, session: *const ClientSession, player_id: u64) !void {
         const player = self.engine.players.get(player_id) orelse return;
 
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
         var fleet_states = std.ArrayList(protocol.FleetState).empty;
-        defer fleet_states.deinit(self.allocator);
 
         var fleet_iter = self.engine.fleets.iterator();
         while (fleet_iter.next()) |entry| {
@@ -221,9 +233,8 @@ pub const Network = struct {
             if (fleet.owner_id != player_id) continue;
 
             var ship_states = std.ArrayList(protocol.ShipState).empty;
-            defer ship_states.deinit(self.allocator);
             for (fleet.ships[0..fleet.ship_count]) |ship| {
-                try ship_states.append(self.allocator, .{
+                try ship_states.append(alloc, .{
                     .id = ship.id,
                     .class = ship.class,
                     .hull = ship.hull,
@@ -234,7 +245,7 @@ pub const Network = struct {
                 });
             }
 
-            try fleet_states.append(self.allocator, .{
+            try fleet_states.append(alloc, .{
                 .id = fleet.id,
                 .location = fleet.location,
                 .state = @enumFromInt(@intFromEnum(fleet.state)),
@@ -244,6 +255,11 @@ pub const Network = struct {
                 .fuel_max = fleet.fuel_max,
                 .cooldown_remaining = fleet.action_cooldown,
             });
+        }
+
+        var known_sectors = std.ArrayList(protocol.SectorState).empty;
+        for (fleet_states.items) |fs| {
+            try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, fs.location));
         }
 
         const msg = protocol.ServerMessage{
@@ -261,7 +277,7 @@ pub const Network = struct {
                     .buildings = &.{},
                     .docked_ships = &.{},
                 },
-                .known_sectors = &.{},
+                .known_sectors = known_sectors.items,
             },
         };
 
@@ -285,6 +301,24 @@ pub const Network = struct {
                 .message = message,
             },
         });
+    }
+
+    fn buildSectorState(alloc: std.mem.Allocator, eng: *GameEngine, coord: shared.Hex) !protocol.SectorState {
+        const template = eng.world_gen.generateSector(coord);
+        const neighbors = eng.world_gen.connectedNeighbors(coord);
+        const override = eng.sector_overrides.get(coord.toKey());
+
+        return .{
+            .location = coord,
+            .terrain = template.terrain,
+            .resources = .{
+                .metal = if (override) |o| o.metal_density orelse template.metal_density else template.metal_density,
+                .crystal = if (override) |o| o.crystal_density orelse template.crystal_density else template.crystal_density,
+                .deuterium = if (override) |o| o.deut_density orelse template.deut_density else template.deut_density,
+            },
+            .connections = try alloc.dupe(shared.Hex, neighbors.slice()),
+            .salvage = if (override) |o| o.salvage else null,
+        };
     }
 
     fn isEventRelevant(_: protocol.GameEvent, _: u64, _: *GameEngine) bool {
@@ -339,6 +373,7 @@ const Handler = struct {
         try self.network.incoming_queue.append(self.network.allocator, .{
             .session_id = self.session_id,
             .msg = parsed.value,
+            .parsed = parsed,
         });
     }
 
@@ -359,6 +394,7 @@ const Handler = struct {
 const QueuedMessage = struct {
     session_id: u64,
     msg: protocol.ClientMessage,
+    parsed: std.json.Parsed(protocol.ClientMessage),
 };
 
 pub const ClientSession = struct {

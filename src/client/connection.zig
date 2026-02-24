@@ -57,7 +57,7 @@ pub const Connection = struct {
         try self.send(msg);
     }
 
-    pub fn poll(self: *Connection) !?shared.protocol.ServerMessage {
+    pub fn poll(self: *Connection) !?std.json.Parsed(shared.protocol.ServerMessage) {
         if (!self.connected) return null;
 
         const msg = self.client.read() catch |err| {
@@ -78,7 +78,7 @@ pub const Connection = struct {
                 log.warn("JSON parse error: {any}", .{err});
                 return null;
             };
-            return parsed.value;
+            return parsed;
         }
 
         return null;

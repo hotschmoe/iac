@@ -47,8 +47,49 @@ pub const ClientState = struct {
     }
 
     pub fn deinit(self: *ClientState) void {
+        self.freeOwnedFleets();
         self.fleets.deinit(self.allocator);
+        self.freeOwnedPlayer();
+        self.freeOwnedHomeworld();
+        self.freeOwnedSectors();
         self.known_sectors.deinit();
+    }
+
+    fn freeOwnedFleets(self: *ClientState) void {
+        for (self.fleets.items) |fleet| {
+            self.allocator.free(fleet.ships);
+        }
+    }
+
+    fn freeOwnedPlayer(self: *ClientState) void {
+        if (self.player) |player| {
+            self.allocator.free(player.name);
+            self.player = null;
+        }
+    }
+
+    fn freeOwnedHomeworld(self: *ClientState) void {
+        if (self.homeworld) |hw| {
+            self.allocator.free(hw.buildings);
+            self.allocator.free(hw.docked_ships);
+            self.homeworld = null;
+        }
+    }
+
+    fn freeOwnedSectors(self: *ClientState) void {
+        var iter = self.known_sectors.iterator();
+        while (iter.next()) |entry| {
+            self.allocator.free(entry.value_ptr.connections);
+        }
+    }
+
+    fn replaceSector(self: *ClientState, sector: shared.protocol.SectorState) !void {
+        if (self.known_sectors.getPtr(sector.location.toKey())) |existing| {
+            self.allocator.free(existing.connections);
+        }
+        var owned = sector;
+        owned.connections = try self.allocator.dupe(Hex, sector.connections);
+        try self.known_sectors.put(sector.location.toKey(), owned);
     }
 
     pub fn applyServerMessage(self: *ClientState, msg: shared.protocol.ServerMessage) !void {
@@ -57,19 +98,15 @@ pub const ClientState = struct {
                 self.tick = update.tick;
 
                 if (update.fleet_updates) |fleets| {
-                    // TODO: merge rather than replace
-                    self.fleets.clearRetainingCapacity();
-                    for (fleets) |fleet| {
-                        try self.fleets.append(self.allocator, fleet);
-                    }
+                    try self.replaceFleets(fleets);
                 }
 
                 if (update.homeworld_update) |hw| {
-                    self.homeworld = hw;
+                    try self.replaceHomeworld(hw);
                 }
 
                 if (update.sector_update) |sector| {
-                    try self.known_sectors.put(sector.location.toKey(), sector);
+                    try self.replaceSector(sector);
                 }
 
                 if (update.events) |events| {
@@ -80,20 +117,19 @@ pub const ClientState = struct {
             },
             .full_state => |state| {
                 self.tick = state.tick;
-                self.player = state.player;
-                self.homeworld = state.homeworld;
+                try self.replacePlayer(state.player);
+                try self.replaceHomeworld(state.homeworld);
+                try self.replaceFleets(state.fleets);
 
-                self.fleets.clearRetainingCapacity();
-                for (state.fleets) |fleet| {
-                    try self.fleets.append(self.allocator, fleet);
-                }
-
+                self.freeOwnedSectors();
                 self.known_sectors.clearRetainingCapacity();
                 for (state.known_sectors) |sector| {
-                    try self.known_sectors.put(sector.location.toKey(), sector);
+                    try self.replaceSector(sector);
                 }
 
-                self.map_center = state.player.homeworld;
+                if (self.player) |p| {
+                    self.map_center = p.homeworld;
+                }
             },
             .event => |event| {
                 try self.event_log.push(event);
@@ -107,6 +143,31 @@ pub const ClientState = struct {
                 // TODO: display error
             },
         }
+    }
+
+    fn replaceFleets(self: *ClientState, fleets: []const shared.protocol.FleetState) !void {
+        self.freeOwnedFleets();
+        self.fleets.clearRetainingCapacity();
+        for (fleets) |fleet| {
+            var owned = fleet;
+            owned.ships = try self.allocator.dupe(shared.protocol.ShipState, fleet.ships);
+            try self.fleets.append(self.allocator, owned);
+        }
+    }
+
+    fn replacePlayer(self: *ClientState, player: shared.protocol.PlayerState) !void {
+        self.freeOwnedPlayer();
+        var owned = player;
+        owned.name = try self.allocator.dupe(u8, player.name);
+        self.player = owned;
+    }
+
+    fn replaceHomeworld(self: *ClientState, hw: shared.protocol.HomeworldState) !void {
+        self.freeOwnedHomeworld();
+        var owned = hw;
+        owned.buildings = try self.allocator.dupe(shared.protocol.BuildingState, hw.buildings);
+        owned.docked_ships = try self.allocator.dupe(shared.protocol.ShipState, hw.docked_ships);
+        self.homeworld = owned;
     }
 
     pub fn setView(self: *ClientState, view: View) void {

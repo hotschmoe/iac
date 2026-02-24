@@ -57,13 +57,20 @@ fn mapMovement(key: u21, state: *const ClientState) InputAction {
     const fleet = state.activeFleet() orelse return .{ .none = {} };
     const sector = state.currentSector() orelse return .{ .none = {} };
 
-    const exit_idx: usize = @intCast(key - '1');
-    if (exit_idx >= sector.connections.len) return .{ .none = {} };
+    const dir_idx: usize = @intCast(key - '1');
+    const dir = shared.HexDirection.ALL[dir_idx];
+    const target = fleet.location.neighbor(dir);
 
-    return .{ .send_command = .{ .move = .{
-        .fleet_id = fleet.id,
-        .target = sector.connections[exit_idx],
-    } } };
+    for (sector.connections) |conn| {
+        if (conn.eql(target)) {
+            return .{ .send_command = .{ .move = .{
+                .fleet_id = fleet.id,
+                .target = target,
+            } } };
+        }
+    }
+
+    return .{ .none = {} };
 }
 
 fn mapHarvest(state: *const ClientState) InputAction {

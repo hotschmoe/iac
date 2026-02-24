@@ -38,9 +38,10 @@ fn update(state: *AppState, event: zithril.Event) zithril.Action {
         },
         .tick => {
             for (0..20) |_| {
-                const msg = state.conn.poll() catch break;
-                if (msg) |m| {
-                    state.client_state.applyServerMessage(m) catch |err| {
+                const parsed = state.conn.poll() catch break;
+                if (parsed) |p| {
+                    defer p.deinit();
+                    state.client_state.applyServerMessage(p.value) catch |err| {
                         log.warn("Apply message failed: {any}", .{err});
                     };
                 } else break;

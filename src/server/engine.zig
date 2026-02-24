@@ -56,6 +56,10 @@ pub const GameEngine = struct {
     }
 
     pub fn deinit(self: *GameEngine) void {
+        var player_iter = self.players.iterator();
+        while (player_iter.next()) |entry| {
+            self.allocator.free(entry.value_ptr.name);
+        }
         self.players.deinit();
         self.fleets.deinit();
         self.npc_fleets.deinit();
@@ -251,8 +255,16 @@ pub const GameEngine = struct {
     }
 
     pub fn registerPlayer(self: *GameEngine, name: []const u8) !u64 {
-        const player_id = self.nextId();
+        // Reconnect if player already exists
+        var iter = self.players.iterator();
+        while (iter.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.name, name)) {
+                log.info("Player '{s}' reconnected (id={d})", .{ name, entry.key_ptr.* });
+                return entry.key_ptr.*;
+            }
+        }
 
+        const player_id = self.nextId();
         const homeworld = self.findHomeworldLocation();
 
         const player = Player{
