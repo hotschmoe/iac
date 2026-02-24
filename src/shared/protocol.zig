@@ -72,7 +72,7 @@ pub const ServerMessage = union(enum) {
     tick_update: TickUpdate,
     full_state: GameState,
     event: GameEvent,
-    error: ErrorMessage,
+    @"error": ErrorMessage,
 };
 
 pub const AuthResult = struct {

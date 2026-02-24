@@ -19,7 +19,7 @@ pub const GameEngine = struct {
     allocator: std.mem.Allocator,
     world_gen: WorldGen,
     db: *Database,
-    tick: u64,
+    current_tick: u64,
 
     // Live state (loaded from DB, modified in-memory, periodically persisted)
     players: std.AutoHashMap(u64, Player),
@@ -45,13 +45,13 @@ pub const GameEngine = struct {
             .allocator = allocator,
             .world_gen = WorldGen.init(world_seed),
             .db = db,
-            .tick = 0,
+            .current_tick = 0,
             .players = std.AutoHashMap(u64, Player).init(allocator),
             .fleets = std.AutoHashMap(u64, Fleet).init(allocator),
             .npc_fleets = std.AutoHashMap(u64, NpcFleet).init(allocator),
             .active_combats = std.AutoHashMap(u64, Combat).init(allocator),
             .sector_overrides = std.AutoHashMap(u32, SectorOverride).init(allocator),
-            .pending_events = std.ArrayList(shared.protocol.GameEvent).init(allocator),
+            .pending_events = .empty,
             .next_id = 1,
             .dirty_players = std.AutoHashMap(u64, void).init(allocator),
             .dirty_sectors = std.AutoHashMap(u32, void).init(allocator),
@@ -69,13 +69,13 @@ pub const GameEngine = struct {
         self.npc_fleets.deinit();
         self.active_combats.deinit();
         self.sector_overrides.deinit();
-        self.pending_events.deinit();
+        self.pending_events.deinit(self.allocator);
         self.dirty_players.deinit();
         self.dirty_sectors.deinit();
     }
 
     pub fn currentTick(self: *const GameEngine) u64 {
-        return self.tick;
+        return self.current_tick;
     }
 
     /// Generate a unique ID for any entity.
@@ -89,7 +89,7 @@ pub const GameEngine = struct {
 
     /// Advance the simulation by one tick.
     pub fn tick(self: *GameEngine) !void {
-        self.tick += 1;
+        self.current_tick += 1;
         self.pending_events.clearRetainingCapacity();
 
         // Process each subsystem in order
@@ -123,8 +123,8 @@ pub const GameEngine = struct {
                 try self.recordExplored(fleet.owner_id, fleet.location);
 
                 // Generate sector event
-                try self.pending_events.append(.{
-                    .tick = self.tick,
+                try self.pending_events.append(self.allocator, .{
+                    .tick = self.current_tick,
                     .kind = .{ .sector_entered = .{
                         .fleet_id = fleet.id,
                         .sector = target,
@@ -140,27 +140,27 @@ pub const GameEngine = struct {
 
     /// Process active combats — one round per tick.
     fn processCombat(self: *GameEngine) !void {
-        var to_remove = std.ArrayList(u64).init(self.allocator);
-        defer to_remove.deinit();
+        var to_remove: std.ArrayList(u64) = .empty;
+        defer to_remove.deinit(self.allocator);
 
         var iter = self.active_combats.iterator();
         while (iter.next()) |entry| {
             const combat_id = entry.key_ptr.*;
-            var active_combat = entry.value_ptr;
+            const active_combat = entry.value_ptr;
 
             const result = try combat.resolveCombatRound(
                 self.allocator,
                 active_combat,
-                self.tick,
+                self.current_tick,
             );
 
             // Append combat events
             for (result.events) |event| {
-                try self.pending_events.append(event);
+                try self.pending_events.append(self.allocator, event);
             }
 
             if (result.concluded) {
-                try to_remove.append(combat_id);
+                try to_remove.append(self.allocator, combat_id);
 
                 // Update fleet states
                 if (self.fleets.getPtr(active_combat.player_fleet_id)) |fleet| {
@@ -168,8 +168,8 @@ pub const GameEngine = struct {
                     fleet.idle_ticks = 0;
                 }
 
-                try self.pending_events.append(.{
-                    .tick = self.tick,
+                try self.pending_events.append(self.allocator, .{
+                    .tick = self.current_tick,
                     .kind = .{ .combat_ended = .{
                         .sector = active_combat.sector,
                         .player_victory = result.player_won,
@@ -219,8 +219,8 @@ pub const GameEngine = struct {
             const actual = @min(harvest_amount, max_cargo - current_cargo);
             fleet.cargo.metal += actual;
 
-            try self.pending_events.append(.{
-                .tick = self.tick,
+            try self.pending_events.append(self.allocator, .{
+                .tick = self.current_tick,
                 .kind = .{ .resource_harvested = .{
                     .fleet_id = fleet.id,
                     .resource_type = .metal,
@@ -395,8 +395,8 @@ pub const GameEngine = struct {
 
                 if (fleet.ships[i].hull <= 0) {
                     // Ship destroyed during recall
-                    try self.pending_events.append(.{
-                        .tick = self.tick,
+                    try self.pending_events.append(self.allocator, .{
+                        .tick = self.current_tick,
                         .kind = .{ .ship_destroyed = .{
                             .ship_id = fleet.ships[i].id,
                             .ship_class = fleet.ships[i].class,
@@ -507,8 +507,8 @@ pub const GameEngine = struct {
 
             fleet.state = .in_combat;
 
-            try self.pending_events.append(.{
-                .tick = self.tick,
+            try self.pending_events.append(self.allocator, .{
+                .tick = self.current_tick,
                 .kind = .{ .combat_started = .{
                     .player_fleet_id = fleet.id,
                     .enemy_fleet_id = npc_fleet_id,
@@ -528,11 +528,11 @@ pub const GameEngine = struct {
         const key = sector.toKey();
         if (self.sector_overrides.getPtr(key)) |ov| {
             ov.salvage = salvage;
-            ov.salvage_despawn_tick = self.tick + shared.constants.SALVAGE_DESPAWN_TICKS;
+            ov.salvage_despawn_tick = self.current_tick + shared.constants.SALVAGE_DESPAWN_TICKS;
         } else {
             try self.sector_overrides.put(key, .{
                 .salvage = salvage,
-                .salvage_despawn_tick = self.tick + shared.constants.SALVAGE_DESPAWN_TICKS,
+                .salvage_despawn_tick = self.current_tick + shared.constants.SALVAGE_DESPAWN_TICKS,
             });
         }
     }

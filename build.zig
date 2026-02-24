@@ -4,6 +4,16 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // ── Dependencies ───────────────────────────────────────────────
+    const zqlite_dep = b.dependency("zqlite", .{ .target = target, .optimize = optimize });
+    const zqlite_mod = zqlite_dep.module("zqlite");
+
+    const webzocket_dep = b.dependency("webzocket", .{ .target = target, .optimize = optimize });
+    const webzocket_mod = webzocket_dep.module("webzocket");
+
+    const zithril_dep = b.dependency("zithril", .{ .target = target, .optimize = optimize });
+    const zithril_mod = zithril_dep.module("zithril");
+
     // ── Shared module (protocol, hex math, constants) ──────────────
     const shared_mod = b.addModule("shared", .{
         .root_source_file = b.path("src/shared/root.zig"),
@@ -14,25 +24,33 @@ pub fn build(b: *std.Build) void {
     // ── Server executable ──────────────────────────────────────────
     const server_exe = b.addExecutable(.{
         .name = "iac-server",
-        .root_source_file = b.path("src/server/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/server/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "shared", .module = shared_mod },
+                .{ .name = "zqlite", .module = zqlite_mod },
+                .{ .name = "webzocket", .module = webzocket_mod },
+            },
+        }),
     });
-    server_exe.root_module.addImport("shared", shared_mod);
-    // TODO: link sqlite3 system library or vendored
-    // server_exe.linkSystemLibrary("sqlite3");
-    // server_exe.linkLibC();
     b.installArtifact(server_exe);
 
     // ── Client executable ──────────────────────────────────────────
     const client_exe = b.addExecutable(.{
         .name = "iac-client",
-        .root_source_file = b.path("src/client/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/client/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "shared", .module = shared_mod },
+                .{ .name = "zithril", .module = zithril_mod },
+                .{ .name = "webzocket", .module = webzocket_mod },
+            },
+        }),
     });
-    client_exe.root_module.addImport("shared", shared_mod);
-    // TODO: integrate zithril + rich_zig modules
     b.installArtifact(client_exe);
 
     // ── Run commands ───────────────────────────────────────────────
@@ -52,17 +70,23 @@ pub fn build(b: *std.Build) void {
 
     // ── Tests ──────────────────────────────────────────────────────
     const shared_tests = b.addTest(.{
-        .root_source_file = b.path("src/shared/root.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/shared/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const server_tests = b.addTest(.{
-        .root_source_file = b.path("src/server/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/server/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "shared", .module = shared_mod },
+            },
+        }),
     });
-    server_tests.root_module.addImport("shared", shared_mod);
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&b.addRunArtifact(shared_tests).step);

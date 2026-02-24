@@ -11,23 +11,20 @@ pub const InputHandler = struct {
     original_termios: ?std.posix.termios,
 
     pub fn init() !InputHandler {
-        const stdin = std.io.getStdIn();
+        const stdin = std.fs.File.stdin();
 
         // Enter raw mode
         var raw = try std.posix.tcgetattr(stdin.handle);
         const original = raw;
 
         // Disable canonical mode, echo, signals
-        raw.lflag = raw.lflag & ~@as(
-            std.posix.system.tc_lflag_t,
-            std.posix.system.ICANON | std.posix.system.ECHO | std.posix.system.ISIG,
-        );
+        raw.lflag.ICANON = false;
+        raw.lflag.ECHO = false;
+        raw.lflag.ISIG = false;
 
         // Disable input processing
-        raw.iflag = raw.iflag & ~@as(
-            std.posix.system.tc_iflag_t,
-            std.posix.system.IXON | std.posix.system.ICRNL,
-        );
+        raw.iflag.IXON = false;
+        raw.iflag.ICRNL = false;
 
         // Read returns immediately with whatever is available
         raw.cc[@intFromEnum(std.posix.system.V.MIN)] = 0;

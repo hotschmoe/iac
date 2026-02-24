@@ -65,7 +65,7 @@ pub fn main() !void {
         const elapsed = tick_timer.read() - tick_start;
         const tick_ns = shared.constants.TICK_DURATION_NS;
         if (elapsed < tick_ns) {
-            std.time.sleep(tick_ns - elapsed);
+            std.Thread.sleep(tick_ns - elapsed);
         } else {
             log.warn("Tick {d} overran by {d}ms", .{
                 tick_count,

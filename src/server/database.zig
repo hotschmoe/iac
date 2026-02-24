@@ -30,7 +30,6 @@ pub const Database = struct {
 
     /// Create tables if they don't exist.
     fn ensureSchema(self: *Database) !void {
-        _ = self;
         // TODO: Execute schema creation SQL
         //
         // Tables needed:

@@ -77,7 +77,7 @@ pub fn main() !void {
         // 4. Frame timing
         const elapsed = frame_timer.read() - frame_start;
         if (elapsed < frame_ns) {
-            std.time.sleep(frame_ns - elapsed);
+            std.Thread.sleep(frame_ns - elapsed);
         }
     }
 

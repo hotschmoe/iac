@@ -32,7 +32,7 @@ pub const ClientState = struct {
             .allocator = allocator,
             .tick = 0,
             .player = null,
-            .fleets = std.ArrayList(shared.protocol.FleetState).init(allocator),
+            .fleets = .empty,
             .homeworld = null,
             .known_sectors = std.AutoHashMap(u32, shared.protocol.SectorState).init(allocator),
             .event_log = EventLog.init(allocator),
@@ -47,7 +47,7 @@ pub const ClientState = struct {
     }
 
     pub fn deinit(self: *ClientState) void {
-        self.fleets.deinit();
+        self.fleets.deinit(self.allocator);
         self.known_sectors.deinit();
         self.event_log.deinit();
     }
@@ -63,7 +63,7 @@ pub const ClientState = struct {
                     // TODO: merge rather than replace
                     self.fleets.clearRetainingCapacity();
                     for (fleets) |fleet| {
-                        try self.fleets.append(fleet);
+                        try self.fleets.append(self.allocator, fleet);
                     }
                 }
 
@@ -88,7 +88,7 @@ pub const ClientState = struct {
 
                 self.fleets.clearRetainingCapacity();
                 for (state.fleets) |fleet| {
-                    try self.fleets.append(fleet);
+                    try self.fleets.append(self.allocator, fleet);
                 }
 
                 self.known_sectors.clearRetainingCapacity();
@@ -107,7 +107,7 @@ pub const ClientState = struct {
                     // TODO: display error
                 }
             },
-            .error => |_| {
+            .@"error" => |_| {
                 // TODO: display error
             },
         }

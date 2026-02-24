@@ -138,9 +138,9 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 ### Toolchain
 
 - **Language**: Zig v0.15.2
-- **TUI**: rich_zig + zithril (both hotschmoe libraries)
-- **Database**: SQLite (via Zig bindings)
-- **Networking**: WebSocket (client-server, server is authoritative)
+- **TUI**: zithril (wraps rich_zig internally)
+- **Database**: zqlite (bundles SQLite amalgamation)
+- **Networking**: webzocket (WebSocket, client-server, server is authoritative)
 
 ### Architecture
 
@@ -167,6 +167,22 @@ Server (Zig)          Clients
 ### Current Milestone: M1 (Core Loop)
 
 Single player, client-server via WebSocket. One ship (scout). Hex grid with procgen and edge pruning. Movement, NPC combat, resource harvesting. Amber TUI + JSON CLI interface. SQLite persistence.
+
+### Dependencies
+
+All dependencies are **our own upstream libraries** (github.com/hotschmoe). If you encounter bugs, limitations, or API improvements needed in a dependency, do NOT work around them silently. Instead:
+
+1. Tell me what the issue is and which upstream library is affected
+2. Open a GitHub issue on that project (e.g. `gh issue create -R hotschmoe/zithril ...`)
+3. We fix upstream, bump the dependency, and keep IAC clean
+
+| Import       | Repo                              | Used By        |
+|--------------|-----------------------------------|----------------|
+| `zithril`    | hotschmoe/zithril                 | client         |
+| `webzocket`  | hotschmoe/webzocket               | server, client |
+| `zqlite`     | hotschmoe/zqlite                  | server         |
+
+Note: `rich_zig` (hotschmoe/rich_zig) is a transitive dependency of zithril -- use everything through zithril, not rich_zig directly.
 
 ### Key Files
 
