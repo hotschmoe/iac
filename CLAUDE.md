@@ -131,3 +131,45 @@ we love you, Claude! do your best today
 <!-- Add your project's toolchain, architecture, workflows here -->
 <!-- This section will not be touched by haj.sh -->
 
+### Project: In Amber Clad (IAC)
+
+Multiplayer space strategy game played through an amber terminal (TUI). Humans play via a retro amber CRT interface; LLM agents connect over WebSocket and play via JSON. Both are first-class citizens.
+
+### Toolchain
+
+- **Language**: Zig v0.15.2
+- **TUI**: rich_zig + zithril (both hotschmoe libraries)
+- **Database**: SQLite (via Zig bindings)
+- **Networking**: WebSocket (client-server, server is authoritative)
+
+### Architecture
+
+```
+Server (Zig)          Clients
+  Tick loop (1Hz) --> WebSocket --> TUI Client (zithril/rich_zig)
+  SQLite (state)  --> WebSocket --> LLM/CLI Client (JSON)
+```
+
+- Server runs authoritative simulation at 1 tick/second
+- State deltas broadcast to clients each tick
+- Only modified sectors persisted; unvisited sectors generated from seed
+
+### Key Concepts
+
+- **Hex grid**: Axial coords (q,r), flat-top. Infinite, procedurally generated from `hash(world_seed, q, r)`
+- **Zones**: Central Hub (0), Inner Ring (1-8), Outer Ring (9-20), The Wandering (21+)
+- **Edge pruning**: Connectivity decreases with distance, creating maze-like deep space
+- **Resources**: Metal, Crystal, Deuterium (passive homeworld production + active harvesting)
+- **Combat**: Fleet-based, stochastic, one round per tick. OGame-style rapid-fire mechanic
+- **NPCs**: Morning Light Mountain (MLM) faction, scales with distance from center
+- **Auto-action policies**: Condition/action rule tables evaluated server-side each tick
+
+### Current Milestone: M1 (Core Loop)
+
+Single player, client-server via WebSocket. One ship (scout). Hex grid with procgen and edge pruning. Movement, NPC combat, resource harvesting. Amber TUI + JSON CLI interface. SQLite persistence.
+
+### Key Files
+
+- `README.md` -- game design vision and overview
+- `SPEC.md` -- full technical specification (world model, combat, economy, networking, DB schema)
+
