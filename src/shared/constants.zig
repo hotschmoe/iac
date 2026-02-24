@@ -208,6 +208,8 @@ pub const STARTING_RESOURCES = Resources{
     .deuterium = 50000, // testing: high deut for exploration
 };
 
+pub const STARTING_SCOUTS: usize = 2;
+
 /// Homeworld spawn range (cube distance from origin).
 pub const HOMEWORLD_MIN_DIST: u16 = 3;
 pub const HOMEWORLD_MAX_DIST: u16 = 6;

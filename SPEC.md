@@ -173,7 +173,7 @@ Fleet {
 ### 3.4 Starting Conditions
 
 New players begin with:
-- 1 Scout ship
+- 2 Scout ships
 - Homeworld claim in the inner ring (random unoccupied hex, dist 3–6 from center)
 - Starting resources: 500 metal, 300 crystal, 100 deuterium
 - Basic mine levels (metal 1, crystal 1, deuterium 0)
@@ -603,7 +603,7 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - Zig server with 1 Hz tick loop
 - WebSocket server accepting connections (webzocket)
 - Single hex grid with procedural generation (terrain, resources, edge pruning)
-- Player spawns with 1 scout at a random inner ring hex
+- Player spawns with 2 scouts at a random inner ring hex
 - Movement between connected hexes with cooldown
 - NPC fleet generation and basic combat (stochastic, per-tick rounds, rapid-fire)
 - Resource harvesting in asteroid fields
@@ -629,7 +629,7 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Leak-free memory management (server and client)
 - [x] Server sends sector state (terrain, resources, connections) per-tick and on full sync
 - [x] Windshield hex compass with fixed direction keys (1=E, 2=NE, 3=NW, 4=W, 5=SW, 6=SE)
-- [x] Client deep-copies sector connections to survive parse arena cleanup
+- [x] Client deep-copies all sector slice fields (connections, hostiles, player_fleets) to survive parse arena cleanup
 - [x] Combat visual feedback (!! COMBAT !! title flash, damage numbers in event log)
 - [x] Death state handling (0 ships blocks commands client+server, DESTROYED display)
 - [x] Resource depletion (harvest accumulators per sector, density downgrades at thresholds, persisted)
@@ -638,13 +638,14 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Windshield event log (bottom panel shows recent events in windshield view)
 - [x] NPC stat scaling by zone (0.6x inner ring, 0.8x mid, 1.0x outer, 1.2x wandering)
 - [x] Hostile fleet info in sector state (ship class, count, behavior displayed per-fleet)
+- [x] Fleet panel cargo capacity display (used/max computed from ship stats)
 - [ ] Hex map rendering in star map view (placeholder only)
 - [ ] NPC patrol AI (spawning works, no movement/aggro behavior yet)
 - [ ] Resource regeneration
 
 ### What's Out (Deferred)
 - Homeworld buildings, shipyard, research (M2)
-- Fleet composition beyond starting scout (M2)
+- Fleet composition beyond starting scouts (M2)
 - Loot system — components, data fragments (M4)
 - Auto-action policies (M4)
 - Multiple concurrent players (M3)

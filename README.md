@@ -26,7 +26,7 @@ Not every hex edge connects. Dead-end branches, chokepoints, and isolated pocket
 
 ### Progression
 
-You start with **one ship** and a **homeworld claim** on the inner ring.
+You start with **two scout ships** and a **homeworld claim** on the inner ring.
 
 **Early game:** Mine asteroids, fight weak NPC fleets near your homeworld, learn the combat and navigation systems. The inner ring is forgiving.
 

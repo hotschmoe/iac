@@ -355,7 +355,7 @@ pub const GameEngine = struct {
             .location = homeworld,
             .state = .idle,
             .ships = undefined,
-            .ship_count = 2,
+            .ship_count = shared.constants.STARTING_SCOUTS,
             .cargo = .{},
             .fuel = 50000, // testing: high starting fuel
             .fuel_max = 50000,
@@ -365,7 +365,7 @@ pub const GameEngine = struct {
             .idle_ticks = 0,
         };
 
-        for (0..2) |i| {
+        for (0..shared.constants.STARTING_SCOUTS) |i| {
             fleet.ships[i] = Ship{
                 .id = self.nextId(),
                 .class = .scout,
