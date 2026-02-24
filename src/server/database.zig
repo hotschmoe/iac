@@ -20,6 +20,7 @@ pub const Database = struct {
         };
 
         try db.ensureSchema();
+        try db.applyPragmas();
         log.info("Database initialized: {s}", .{db_path});
         return db;
     }
@@ -101,7 +102,19 @@ pub const Database = struct {
             \\);
         );
 
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_players_name ON players(name)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_explored_player ON explored_edges(player_id)");
+
         log.info("Schema verified", .{});
+    }
+
+    fn applyPragmas(self: *Database) !void {
+        try self.db.exec("PRAGMA cache_size = -8000");
+        try self.db.exec("PRAGMA wal_autocheckpoint = 1000");
+        log.info("Pragmas applied: cache_size=8MB, wal_autocheckpoint=1000", .{});
     }
 
     pub fn saveServerState(self: *Database, key: []const u8, value: []const u8) !void {

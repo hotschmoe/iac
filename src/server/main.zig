@@ -7,6 +7,22 @@ const Database = @import("database.zig").Database;
 
 const log = std.log.scoped(.server);
 
+var shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
+fn handleSignal(_: c_int) callconv(.c) void {
+    shutdown_requested.store(true, .release);
+}
+
+fn installSignalHandlers() void {
+    const handler: std.posix.Sigaction = .{
+        .handler = .{ .handler = handleSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.INT, &handler, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &handler, null);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -31,13 +47,14 @@ pub fn main() !void {
     var network = try Network.init(allocator, config.port, &engine);
     defer network.deinit();
 
+    installSignalHandlers();
     try network.startListening();
 
     log.info("Server ready.", .{});
 
     var tick_timer = try std.time.Timer.start();
 
-    while (true) {
+    while (!shutdown_requested.load(.acquire)) {
         const tick_start = tick_timer.read();
 
         try network.processIncoming();
@@ -59,6 +76,12 @@ pub fn main() !void {
             });
         }
     }
+
+    log.info("Shutdown signal received, persisting final state...", .{});
+    engine.persistDirtyState() catch |err| {
+        log.err("Final persist failed: {}", .{err});
+    };
+    log.info("Server shutdown complete.", .{});
 }
 
 const ServerConfig = struct {

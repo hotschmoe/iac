@@ -28,6 +28,7 @@ pub const GameEngine = struct {
     next_id: u64,
 
     dirty_players: std.AutoHashMap(u64, void),
+    dirty_fleets: std.AutoHashMap(u64, void),
     dirty_sectors: std.AutoHashMap(u32, void),
 
     pub fn init(allocator: std.mem.Allocator, world_seed: u64, db: *Database) !GameEngine {
@@ -44,6 +45,7 @@ pub const GameEngine = struct {
             .pending_events = .empty,
             .next_id = 1,
             .dirty_players = std.AutoHashMap(u64, void).init(allocator),
+            .dirty_fleets = std.AutoHashMap(u64, void).init(allocator),
             .dirty_sectors = std.AutoHashMap(u32, void).init(allocator),
         };
 
@@ -60,6 +62,7 @@ pub const GameEngine = struct {
         self.sector_overrides.deinit();
         self.pending_events.deinit(self.allocator);
         self.dirty_players.deinit();
+        self.dirty_fleets.deinit();
         self.dirty_sectors.deinit();
     }
 
@@ -100,6 +103,7 @@ pub const GameEngine = struct {
                 fleet.location = target;
                 fleet.state = .idle;
                 fleet.move_target = null;
+                try self.dirty_fleets.put(fleet.id, {});
 
                 try self.recordExplored(fleet.owner_id, fleet.location);
                 try self.pending_events.append(self.allocator, .{
@@ -145,6 +149,8 @@ pub const GameEngine = struct {
             for (result.events) |event| {
                 try self.pending_events.append(self.allocator, event);
             }
+
+            try self.dirty_fleets.put(active_combat.player_fleet_id, {});
 
             if (result.concluded) {
                 try to_remove.append(self.allocator, combat_id);
@@ -200,6 +206,7 @@ pub const GameEngine = struct {
 
             const actual = @min(harvest_amount, max_cargo - current_cargo);
             fleet.cargo.metal += actual;
+            try self.dirty_fleets.put(fleet.id, {});
 
             try self.pending_events.append(self.allocator, .{
                 .tick = self.current_tick,
@@ -288,6 +295,7 @@ pub const GameEngine = struct {
 
         try self.fleets.put(fleet_id, fleet);
         try self.dirty_players.put(player_id, {});
+        try self.dirty_fleets.put(fleet_id, {});
 
         log.info("Player '{s}' registered (id={d}) at homeworld {any}", .{ name, player_id, homeworld });
 
@@ -318,6 +326,7 @@ pub const GameEngine = struct {
         fleet.move_target = target;
         fleet.move_cooldown = fleetMoveCooldown(fleet);
         fleet.action_cooldown = fleet.move_cooldown;
+        try self.dirty_fleets.put(fleet_id, {});
     }
 
     pub fn handleHarvest(self: *GameEngine, fleet_id: u64) !void {
@@ -328,6 +337,7 @@ pub const GameEngine = struct {
 
         fleet.state = .harvesting;
         fleet.action_cooldown = shared.constants.HARVEST_COOLDOWN;
+        try self.dirty_fleets.put(fleet_id, {});
     }
 
     pub fn handleRecall(self: *GameEngine, fleet_id: u64) !void {
@@ -378,6 +388,7 @@ pub const GameEngine = struct {
         fleet.location = player.homeworld;
         fleet.state = if (fleet.ship_count == 0) .docked else .idle;
         fleet.move_target = null;
+        try self.dirty_fleets.put(fleet.id, {});
     }
 
     fn findHomeworldLocation(self: *GameEngine) Hex {
@@ -503,6 +514,15 @@ pub const GameEngine = struct {
             defer self.allocator.free(id_str);
             self.next_id = std.fmt.parseInt(u64, id_str, 10) catch 1;
         }
+        if (try self.db.loadServerState("world_seed")) |seed_str| {
+            defer self.allocator.free(seed_str);
+            const stored_seed = std.fmt.parseInt(u64, seed_str, 10) catch 0;
+            if (stored_seed != self.world_gen.world_seed) {
+                log.warn("World seed mismatch: DB has {d}, config has {d}. Using config seed.", .{
+                    stored_seed, self.world_gen.world_seed,
+                });
+            }
+        }
 
         var players = try self.db.loadPlayers();
         defer players.deinit(self.allocator);
@@ -537,6 +557,9 @@ pub const GameEngine = struct {
     }
 
     pub fn persistDirtyState(self: *GameEngine) !void {
+        try self.db.db.exec("BEGIN IMMEDIATE");
+        errdefer self.db.db.exec("ROLLBACK") catch {};
+
         var tick_buf: [20]u8 = undefined;
         const tick_str = std.fmt.bufPrint(&tick_buf, "{d}", .{self.current_tick}) catch unreachable;
         try self.db.saveServerState("current_tick", tick_str);
@@ -544,6 +567,10 @@ pub const GameEngine = struct {
         var id_buf: [20]u8 = undefined;
         const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{self.next_id}) catch unreachable;
         try self.db.saveServerState("next_id", id_str);
+
+        var seed_buf: [20]u8 = undefined;
+        const seed_str = std.fmt.bufPrint(&seed_buf, "{d}", .{self.world_gen.world_seed}) catch unreachable;
+        try self.db.saveServerState("world_seed", seed_str);
 
         var dirty_iter = self.dirty_players.iterator();
         while (dirty_iter.next()) |entry| {
@@ -553,9 +580,12 @@ pub const GameEngine = struct {
             }
         }
 
-        var fleet_iter = self.fleets.iterator();
+        var fleet_iter = self.dirty_fleets.iterator();
         while (fleet_iter.next()) |entry| {
-            try self.db.saveFleet(entry.value_ptr.*);
+            const fid = entry.key_ptr.*;
+            if (self.fleets.get(fid)) |fleet| {
+                try self.db.saveFleet(fleet);
+            }
         }
 
         var sector_iter = self.dirty_sectors.iterator();
@@ -567,7 +597,10 @@ pub const GameEngine = struct {
             }
         }
 
+        try self.db.db.exec("COMMIT");
+
         self.dirty_players.clearRetainingCapacity();
+        self.dirty_fleets.clearRetainingCapacity();
         self.dirty_sectors.clearRetainingCapacity();
     }
 
