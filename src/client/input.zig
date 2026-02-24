@@ -54,8 +54,7 @@ fn mapChar(c: u21, state: *const ClientState) InputAction {
 fn mapMovement(key: u21, state: *const ClientState) InputAction {
     if (state.current_view != .windshield) return .{ .none = {} };
 
-    const fleet = state.activeFleet() orelse return .{ .none = {} };
-    if (fleet.ships.len == 0) return .{ .none = {} };
+    const fleet = activeReadyFleet(state) orelse return .{ .none = {} };
     const sector = state.currentSector() orelse return .{ .none = {} };
 
     const dir_idx: usize = @intCast(key - '1');
@@ -75,8 +74,7 @@ fn mapMovement(key: u21, state: *const ClientState) InputAction {
 }
 
 fn mapHarvest(state: *const ClientState) InputAction {
-    const fleet = state.activeFleet() orelse return .{ .none = {} };
-    if (fleet.ships.len == 0) return .{ .none = {} };
+    const fleet = activeReadyFleet(state) orelse return .{ .none = {} };
     return .{ .send_command = .{ .harvest = .{
         .fleet_id = fleet.id,
         .resource = .auto,
@@ -84,9 +82,15 @@ fn mapHarvest(state: *const ClientState) InputAction {
 }
 
 fn mapRecall(state: *const ClientState) InputAction {
-    const fleet = state.activeFleet() orelse return .{ .none = {} };
-    if (fleet.ships.len == 0) return .{ .none = {} };
+    const fleet = activeReadyFleet(state) orelse return .{ .none = {} };
     return .{ .send_command = .{ .recall = .{
         .fleet_id = fleet.id,
     } } };
+}
+
+/// Returns the active fleet only if it exists and has ships.
+fn activeReadyFleet(state: *const ClientState) ?*const shared.protocol.FleetState {
+    const fleet = state.activeFleet() orelse return null;
+    if (fleet.ships.len == 0) return null;
+    return fleet;
 }

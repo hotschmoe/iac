@@ -246,8 +246,8 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
     }) catch return;
     pos += status_line.len;
 
-    // Sector info (terrain, resources, hostiles)
     if (state.currentSector()) |sector| {
+        // Sector info
         const terrain_line = std.fmt.bufPrint(buf[pos..], " Terrain: {s}\n", .{
             sector.terrain.label(),
         }) catch return;
@@ -269,13 +269,8 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
                 pos += hostile_line.len;
             }
         }
-    }
 
-    const sep = std.fmt.bufPrint(buf[pos..], "\n", .{}) catch return;
-    pos += sep.len;
-
-    // Hex compass + exits
-    if (state.currentSector()) |sector| {
+        // Hex compass + exits
         const HexDir = shared.HexDirection;
         const loc = f.location;
 
@@ -292,6 +287,7 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
         }
 
         const compass = std.fmt.bufPrint(buf[pos..],
+            \\
             \\        {c}  NE
             \\     {c} / \ {c}  NW / \ E
             \\       |*|

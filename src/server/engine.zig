@@ -161,10 +161,8 @@ pub const GameEngine = struct {
             if (result.concluded) {
                 try to_remove.append(self.allocator, combat_id);
 
-                if (self.fleets.getPtr(active_combat.player_fleet_id)) |fleet| {
-                    fleet.state = if (fleet.ship_count == 0) .docked else .idle;
-                    fleet.idle_ticks = 0;
-                }
+                player_fleet.state = if (player_fleet.ship_count == 0) .docked else .idle;
+                player_fleet.idle_ticks = 0;
 
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
