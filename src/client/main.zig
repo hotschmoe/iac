@@ -1,88 +1,92 @@
 // src/client/main.zig
 // IAC TUI Client
-// Connects to the game server over WebSocket, renders the amber terminal interface.
+// Connects to the game server over WebSocket, renders amber terminal via zithril.
 
 const std = @import("std");
 const shared = @import("shared");
+const zithril = @import("zithril");
 
 const Connection = @import("connection.zig").Connection;
-const Renderer = @import("renderer.zig").Renderer;
-const Input = @import("input.zig").InputHandler;
-const State = @import("state.zig").ClientState;
+const renderer = @import("renderer.zig");
+const input = @import("input.zig");
+const State = @import("state.zig");
+
+const ClientState = State.ClientState;
+const App = zithril.App(AppState);
 
 const log = std.log.scoped(.client);
+
+const AppState = struct {
+    client_state: ClientState,
+    conn: Connection,
+    allocator: std.mem.Allocator,
+};
+
+fn update(state: *AppState, event: zithril.Event) zithril.Action {
+    switch (event) {
+        .key => |key| {
+            const action = input.mapKey(key, &state.client_state);
+            switch (action) {
+                .quit => return zithril.Action.quit_action,
+                .switch_view => |v| state.client_state.setView(v),
+                .send_command => |cmd| {
+                    state.conn.sendCommand(cmd) catch |err| {
+                        log.warn("Send failed: {any}", .{err});
+                    };
+                },
+                .scroll => |dir| state.client_state.scrollMap(dir),
+                .zoom => |level| state.client_state.setZoom(level),
+                .cycle_fleet => state.client_state.cycleFleet(),
+                .none => {},
+            }
+        },
+        .tick => {
+            // Poll server messages on each tick
+            var count: u32 = 0;
+            while (count < 20) : (count += 1) {
+                const msg = state.conn.poll() catch break;
+                if (msg) |m| {
+                    state.client_state.applyServerMessage(m) catch |err| {
+                        log.warn("Apply message failed: {any}", .{err});
+                    };
+                } else break;
+            }
+        },
+        else => {},
+    }
+    return zithril.Action.none_action;
+}
+
+fn appView(state: *AppState, frame: *zithril.Frame(App.DefaultMaxWidgets)) void {
+    renderer.view(&state.client_state, frame);
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Parse args
     const config = try parseArgs(allocator);
 
-    // Initialize subsystems
-    var state = State.init(allocator);
-    defer state.deinit();
-
-    var renderer = try Renderer.init(allocator);
-    defer renderer.deinit();
-
-    var input = try Input.init();
-    defer input.deinit();
-
-    var conn = try Connection.init(allocator, config.server_host, config.server_port);
-    defer conn.deinit();
+    var app_state = AppState{
+        .client_state = ClientState.init(allocator),
+        .conn = try Connection.init(allocator, config.server_host, config.server_port),
+        .allocator = allocator,
+    };
+    defer app_state.client_state.deinit();
+    defer app_state.conn.deinit();
 
     // Authenticate
-    try conn.sendAuth(config.player_name);
+    try app_state.conn.sendAuth(config.player_name);
 
-    log.info("Connected to {s}:{d} as '{s}'", .{
-        config.server_host,
-        config.server_port,
-        config.player_name,
+    var app = App.init(.{
+        .state = &app_state,
+        .update = update,
+        .view = appView,
+        .tick_rate_ms = 100, // Poll server at ~10Hz, render on change
     });
 
-    // ── Main loop ──────────────────────────────────────────────────
-    // The client loop runs faster than the server tick rate to keep
-    // the TUI responsive. We render at ~30fps, process server updates
-    // as they arrive, and handle input immediately.
-
-    var frame_timer = try std.time.Timer.start();
-    const frame_ns: u64 = 1_000_000_000 / 30; // 30 fps
-
-    var running = true;
-    while (running) {
-        const frame_start = frame_timer.read();
-
-        // 1. Process server messages
-        while (try conn.poll()) |msg| {
-            try state.applyServerMessage(msg);
-        }
-
-        // 2. Process user input
-        if (try input.poll()) |action| {
-            switch (action) {
-                .quit => running = false,
-                .switch_view => |view| state.setView(view),
-                .command => |cmd| try conn.sendCommand(cmd),
-                .scroll => |dir| state.scrollMap(dir),
-                .zoom => |level| state.setZoom(level),
-                else => {},
-            }
-        }
-
-        // 3. Render current view
-        try renderer.render(&state);
-
-        // 4. Frame timing
-        const elapsed = frame_timer.read() - frame_start;
-        if (elapsed < frame_ns) {
-            std.Thread.sleep(frame_ns - elapsed);
-        }
-    }
-
-    // Cleanup: restore terminal
-    try renderer.cleanup();
+    try app.run(allocator);
 }
 
 const ClientConfig = struct {
@@ -93,7 +97,6 @@ const ClientConfig = struct {
 
 fn parseArgs(allocator: std.mem.Allocator) !ClientConfig {
     _ = allocator;
-    // TODO: proper arg parsing
     return .{
         .server_host = shared.constants.DEFAULT_HOST,
         .server_port = shared.constants.DEFAULT_PORT,

@@ -1,13 +1,20 @@
 // src/server/network.zig
-// WebSocket server for client connections.
-// Handles both TUI and LLM/CLI clients over the same protocol.
-// All messages are JSON-serialized shared.protocol types.
+// WebSocket server for client connections via webzocket.
+// Handles both TUI and LLM/CLI clients over the same JSON protocol.
+//
+// Threading model:
+//   webzocket Server runs in a background thread (listenInNewThread).
+//   Handler.clientMessage pushes to a mutex-protected queue.
+//   processIncoming() drains the queue on the main tick thread.
+//   broadcastUpdates() sends to all sessions from the tick thread.
 
 const std = @import("std");
 const shared = @import("shared");
 const engine_mod = @import("engine.zig");
+const wz = @import("webzocket");
 
 const GameEngine = engine_mod.GameEngine;
+const protocol = shared.protocol;
 
 const log = std.log.scoped(.network);
 
@@ -15,6 +22,12 @@ pub const Network = struct {
     allocator: std.mem.Allocator,
     port: u16,
     engine: *GameEngine,
+    server: wz.Server(Handler),
+    server_thread: ?std.Thread,
+
+    // Shared state protected by mutex -- Handler pushes, tick thread drains
+    mutex: std.Thread.Mutex,
+    incoming_queue: std.ArrayList(QueuedMessage),
     sessions: std.AutoHashMap(u64, ClientSession),
     next_session_id: u64,
 
@@ -23,126 +36,185 @@ pub const Network = struct {
             .allocator = allocator,
             .port = port,
             .engine = _engine,
+            .server = try wz.Server(Handler).init(allocator, .{
+                .port = port,
+                .address = shared.constants.DEFAULT_HOST,
+            }),
+            .server_thread = null,
+            .mutex = .{},
+            .incoming_queue = std.ArrayList(QueuedMessage).empty,
             .sessions = std.AutoHashMap(u64, ClientSession).init(allocator),
             .next_session_id = 1,
         };
     }
 
     pub fn deinit(self: *Network) void {
+        self.server.stop();
+        if (self.server_thread) |t| t.join();
+        self.server.deinit();
+        self.incoming_queue.deinit(self.allocator);
+
+        // Clean up session conn pointers
         self.sessions.deinit();
     }
 
-    /// Process all incoming messages from connected clients.
-    /// Called once per tick.
-    pub fn processIncoming(self: *Network) !void {
-        _ = self;
-        // TODO: WebSocket integration
-        //
-        // For each connected client:
-        //   1. Read any pending WebSocket frames
-        //   2. Deserialize JSON to shared.protocol.ClientMessage
-        //   3. Route to appropriate engine handler:
-        //      - auth → engine.registerPlayer() or reconnect
-        //      - command.move → engine.handleMove()
-        //      - command.harvest → engine.handleHarvest()
-        //      - command.attack → engine.handleAttack()
-        //      - command.recall → engine.handleRecall()
-        //      - policy_update → engine.updatePolicy()
-        //      - request_full_state → queue full state sync
-        //   4. On errors, send ErrorMessage back to client
+    /// Start listening for WebSocket connections in a background thread.
+    pub fn startListening(self: *Network) !void {
+        self.server_thread = try self.server.listenInNewThread(self);
+        log.info("WebSocket server listening on {s}:{d}", .{ shared.constants.DEFAULT_HOST, self.port });
     }
 
-    /// Broadcast tick updates to all connected clients.
+    /// Process all incoming messages from connected clients.
+    /// Called once per tick on the main thread.
+    pub fn processIncoming(self: *Network) !void {
+        // Drain the queue under lock
+        var messages: std.ArrayList(QueuedMessage) = blk: {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            const tmp = self.incoming_queue;
+            self.incoming_queue = std.ArrayList(QueuedMessage).empty;
+            break :blk tmp;
+        };
+        defer messages.deinit(self.allocator);
+
+        for (messages.items) |queued| {
+            self.handleMessage(queued.session_id, queued.msg) catch |err| {
+                log.warn("Error handling message from session {d}: {}", .{ queued.session_id, err });
+            };
+        }
+    }
+
+    /// Broadcast tick updates to all connected, authenticated clients.
     /// Called once per tick after engine.tick().
     pub fn broadcastUpdates(self: *Network, eng: *GameEngine) !void {
-        _ = self;
         const events = eng.drainEvents();
-        _ = events;
 
-        // TODO: For each connected session:
-        //
-        // 1. Build a TickUpdate message with:
-        //    - Current tick number
-        //    - Fleet state updates (for fleets this player owns)
-        //    - Sector state (for the sector(s) this player's fleets are in)
-        //    - Homeworld state updates
-        //    - Filtered events (only events relevant to this player)
-        //
-        // 2. Serialize to JSON
-        // 3. Send over WebSocket
-        //
-        // Optimization: only send deltas (fields that changed since last tick).
-        // Full state sync available on request_full_state.
-    }
+        self.mutex.lock();
+        defer self.mutex.unlock();
 
-    /// Handle a new WebSocket connection.
-    fn onConnect(self: *Network) !u64 {
-        const session_id = self.next_session_id;
-        self.next_session_id += 1;
+        var iter = self.sessions.iterator();
+        while (iter.next()) |entry| {
+            const session = entry.value_ptr;
+            if (!session.authenticated) continue;
 
-        try self.sessions.put(session_id, .{
-            .id = session_id,
-            .player_id = null,
-            .authenticated = false,
-            .client_type = .unknown,
-            .last_active_tick = self.engine.currentTick(),
-        });
+            const player_id = session.player_id orelse continue;
 
-        log.info("Client connected (session {d})", .{session_id});
-        return session_id;
-    }
+            // Build fleet updates for this player
+            var fleet_updates = std.ArrayList(protocol.FleetState).empty;
+            defer fleet_updates.deinit(self.allocator);
 
-    /// Handle a WebSocket disconnection.
-    fn onDisconnect(self: *Network, session_id: u64) void {
-        if (self.sessions.get(session_id)) |session| {
-            log.info("Client disconnected (session {d}, player {?})", .{
-                session_id,
-                session.player_id,
-            });
+            var fleet_iter = eng.fleets.iterator();
+            while (fleet_iter.next()) |f_entry| {
+                const fleet = f_entry.value_ptr;
+                if (fleet.owner_id != player_id) continue;
+
+                // Build ship states
+                var ship_states = std.ArrayList(protocol.ShipState).empty;
+                defer ship_states.deinit(self.allocator);
+                for (fleet.ships[0..fleet.ship_count]) |ship| {
+                    try ship_states.append(self.allocator, .{
+                        .id = ship.id,
+                        .class = ship.class,
+                        .hull = ship.hull,
+                        .hull_max = ship.hull_max,
+                        .shield = ship.shield,
+                        .shield_max = ship.shield_max,
+                        .weapon_power = ship.weapon_power,
+                    });
+                }
+
+                try fleet_updates.append(self.allocator, .{
+                    .id = fleet.id,
+                    .location = fleet.location,
+                    .state = @enumFromInt(@intFromEnum(fleet.state)),
+                    .ships = ship_states.items,
+                    .cargo = fleet.cargo,
+                    .fuel = fleet.fuel,
+                    .fuel_max = fleet.fuel_max,
+                    .cooldown_remaining = fleet.action_cooldown,
+                });
+            }
+
+            // Filter events relevant to this player
+            var player_events = std.ArrayList(protocol.GameEvent).empty;
+            defer player_events.deinit(self.allocator);
+            for (events) |event| {
+                if (isEventRelevant(event, player_id, eng)) {
+                    try player_events.append(self.allocator, event);
+                }
+            }
+
+            const update = protocol.ServerMessage{
+                .tick_update = .{
+                    .tick = eng.current_tick,
+                    .fleet_updates = if (fleet_updates.items.len > 0) fleet_updates.items else null,
+                    .events = if (player_events.items.len > 0) player_events.items else null,
+                },
+            };
+
+            self.sendToSession(session, update) catch |err| {
+                log.warn("Failed to send update to session {d}: {}", .{ session.id, err });
+            };
         }
-        _ = self.sessions.remove(session_id);
     }
 
-    /// Route a deserialized client message to the appropriate handler.
-    fn handleMessage(self: *Network, session_id: u64, msg: shared.protocol.ClientMessage) !void {
-        const session = self.sessions.getPtr(session_id) orelse return;
+    // -- Message handling ---------------------------------------------------
+
+    fn handleMessage(self: *Network, session_id: u64, msg: protocol.ClientMessage) !void {
+        self.mutex.lock();
+        const session = self.sessions.getPtr(session_id);
+        self.mutex.unlock();
+
+        const sess = session orelse return;
 
         switch (msg) {
             .auth => |auth| {
-                if (session.authenticated) {
-                    try self.sendError(session_id, .already_authenticated, "Already authenticated");
+                if (sess.authenticated) {
+                    try self.sendErrorToSession(sess, .already_authenticated, "Already authenticated");
                     return;
                 }
-                // Register or reconnect
                 const player_id = try self.engine.registerPlayer(auth.player_name);
-                session.player_id = player_id;
-                session.authenticated = true;
-                session.client_type = if (auth.token != null) .llm_agent else .tui_human;
+                self.mutex.lock();
+                if (self.sessions.getPtr(session_id)) |s| {
+                    s.player_id = player_id;
+                    s.authenticated = true;
+                    s.client_type = if (auth.token != null) .llm_agent else .tui_human;
+                }
+                self.mutex.unlock();
 
-                // Send auth result + full state sync
-                // TODO: serialize and send
+                // Send auth result
+                const result = protocol.ServerMessage{
+                    .auth_result = .{
+                        .success = true,
+                        .player_id = player_id,
+                    },
+                };
+                try self.sendToSession(sess, result);
+
+                // Send full state
+                try self.sendFullState(sess, player_id);
             },
             .command => |cmd| {
-                if (!session.authenticated) {
-                    try self.sendError(session_id, .auth_failed, "Not authenticated");
+                if (!sess.authenticated) {
+                    try self.sendErrorToSession(sess, .auth_failed, "Not authenticated");
                     return;
                 }
-                try self.routeCommand(session, cmd);
+                self.routeCommand(sess, cmd);
             },
             .policy_update => |_| {
-                if (!session.authenticated) {
-                    try self.sendError(session_id, .auth_failed, "Not authenticated");
-                    return;
-                }
-                // TODO: update fleet policy
+                // Future: fleet policy support
             },
             .request_full_state => {
-                // TODO: build and send full GameState
+                if (sess.authenticated) {
+                    if (sess.player_id) |pid| {
+                        try self.sendFullState(sess, pid);
+                    }
+                }
             },
         }
     }
 
-    fn routeCommand(self: *Network, session: *ClientSession, cmd: shared.protocol.Command) !void {
+    fn routeCommand(self: *Network, session: *const ClientSession, cmd: protocol.Command) void {
         _ = session;
         switch (cmd) {
             .move => |m| self.engine.handleMove(m.fleet_id, m.target) catch |err| {
@@ -154,34 +226,178 @@ pub const Network = struct {
             .recall => |r| self.engine.handleRecall(r.fleet_id) catch |err| {
                 log.warn("Recall failed: {}", .{err});
             },
-            .attack => |_| {
-                // TODO: engine.handleAttack()
-            },
-            .stop => {
-                // TODO: cancel current fleet action
-            },
-            .scan => {
-                // TODO: engine.handleScan()
-            },
+            .attack => |_| {},
+            .stop => {},
+            .scan => {},
         }
     }
 
-    fn sendError(self: *Network, session_id: u64, code: shared.protocol.ErrorCode, message: []const u8) !void {
-        _ = self;
-        _ = session_id;
-        _ = code;
-        _ = message;
-        // TODO: serialize ErrorMessage and send over WebSocket
+    fn sendFullState(self: *Network, session: *const ClientSession, player_id: u64) !void {
+        const player = self.engine.players.get(player_id) orelse return;
+
+        var fleet_states = std.ArrayList(protocol.FleetState).empty;
+        defer fleet_states.deinit(self.allocator);
+
+        var fleet_iter = self.engine.fleets.iterator();
+        while (fleet_iter.next()) |entry| {
+            const fleet = entry.value_ptr;
+            if (fleet.owner_id != player_id) continue;
+
+            var ship_states = std.ArrayList(protocol.ShipState).empty;
+            defer ship_states.deinit(self.allocator);
+            for (fleet.ships[0..fleet.ship_count]) |ship| {
+                try ship_states.append(self.allocator, .{
+                    .id = ship.id,
+                    .class = ship.class,
+                    .hull = ship.hull,
+                    .hull_max = ship.hull_max,
+                    .shield = ship.shield,
+                    .shield_max = ship.shield_max,
+                    .weapon_power = ship.weapon_power,
+                });
+            }
+
+            try fleet_states.append(self.allocator, .{
+                .id = fleet.id,
+                .location = fleet.location,
+                .state = @enumFromInt(@intFromEnum(fleet.state)),
+                .ships = ship_states.items,
+                .cargo = fleet.cargo,
+                .fuel = fleet.fuel,
+                .fuel_max = fleet.fuel_max,
+                .cooldown_remaining = fleet.action_cooldown,
+            });
+        }
+
+        const msg = protocol.ServerMessage{
+            .full_state = .{
+                .tick = self.engine.current_tick,
+                .player = .{
+                    .id = player.id,
+                    .name = player.name,
+                    .resources = player.resources,
+                    .homeworld = player.homeworld,
+                },
+                .fleets = fleet_states.items,
+                .homeworld = .{
+                    .location = player.homeworld,
+                    .buildings = &.{},
+                    .docked_ships = &.{},
+                },
+                .known_sectors = &.{},
+            },
+        };
+
+        try self.sendToSession(session, msg);
     }
+
+    fn sendToSession(self: *Network, session: *const ClientSession, msg: protocol.ServerMessage) !void {
+        const conn = session.conn orelse return;
+        const json = try std.json.Stringify.valueAlloc(self.allocator, msg, .{});
+        defer self.allocator.free(json);
+        conn.writeText(json) catch |err| {
+            log.warn("Write failed for session {d}: {}", .{ session.id, err });
+            return err;
+        };
+    }
+
+    fn sendErrorToSession(self: *Network, session: *const ClientSession, code: protocol.ErrorCode, message: []const u8) !void {
+        try self.sendToSession(session, .{
+            .@"error" = .{
+                .code = code,
+                .message = message,
+            },
+        });
+    }
+
+    fn isEventRelevant(event: protocol.GameEvent, player_id: u64, eng: *GameEngine) bool {
+        _ = player_id;
+        _ = eng;
+        // For M1: send all events to all players
+        _ = event;
+        return true;
+    }
+};
+
+// -- WebSocket Handler (per-connection, created by webzocket) ---------------
+
+const Handler = struct {
+    conn: *wz.Conn,
+    network: *Network,
+    session_id: u64,
+
+    pub fn init(_: *wz.Handshake, conn: *wz.Conn, ctx: *Network) !Handler {
+        ctx.mutex.lock();
+        defer ctx.mutex.unlock();
+
+        const session_id = ctx.next_session_id;
+        ctx.next_session_id += 1;
+
+        try ctx.sessions.put(session_id, .{
+            .id = session_id,
+            .conn = conn,
+            .player_id = null,
+            .authenticated = false,
+            .client_type = .unknown,
+            .last_active_tick = ctx.engine.currentTick(),
+        });
+
+        log.info("Client connected (session {d})", .{session_id});
+
+        return .{
+            .conn = conn,
+            .network = ctx,
+            .session_id = session_id,
+        };
+    }
+
+    pub fn clientMessage(self: *Handler, data: []u8) !void {
+        const parsed = std.json.parseFromSlice(
+            protocol.ClientMessage,
+            self.network.allocator,
+            data,
+            .{ .ignore_unknown_fields = true },
+        ) catch |err| {
+            log.warn("JSON parse error from session {d}: {}", .{ self.session_id, err });
+            return;
+        };
+
+        self.network.mutex.lock();
+        defer self.network.mutex.unlock();
+        try self.network.incoming_queue.append(self.network.allocator, .{
+            .session_id = self.session_id,
+            .msg = parsed.value,
+        });
+    }
+
+    pub fn close(self: *Handler) void {
+        self.network.mutex.lock();
+        defer self.network.mutex.unlock();
+
+        if (self.network.sessions.get(self.session_id)) |session| {
+            log.info("Client disconnected (session {d}, player {?})", .{
+                self.session_id,
+                session.player_id,
+            });
+        }
+        _ = self.network.sessions.remove(self.session_id);
+    }
+};
+
+// -- Types ------------------------------------------------------------------
+
+const QueuedMessage = struct {
+    session_id: u64,
+    msg: protocol.ClientMessage,
 };
 
 pub const ClientSession = struct {
     id: u64,
+    conn: ?*wz.Conn,
     player_id: ?u64,
     authenticated: bool,
     client_type: ClientType,
     last_active_tick: u64,
-    // TODO: WebSocket connection handle
 };
 
 pub const ClientType = enum {

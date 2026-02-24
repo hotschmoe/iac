@@ -84,6 +84,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "shared", .module = shared_mod },
+                .{ .name = "zqlite", .module = zqlite_mod },
+                .{ .name = "webzocket", .module = webzocket_mod },
             },
         }),
     });

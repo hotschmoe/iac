@@ -37,9 +37,12 @@ pub fn main() !void {
     var network = try Network.init(allocator, config.port, &engine);
     defer network.deinit();
 
-    log.info("Server ready. Listening on {s}:{d}", .{ shared.constants.DEFAULT_HOST, config.port });
+    // Start WebSocket listener in background thread
+    try network.startListening();
 
-    // ── Main tick loop ─────────────────────────────────────────────
+    log.info("Server ready.", .{});
+
+    // -- Main tick loop -------------------------------------------------
     var tick_timer = try std.time.Timer.start();
     var tick_count: u64 = engine.currentTick();
 

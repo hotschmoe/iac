@@ -1,310 +1,309 @@
 // src/client/renderer.zig
-// Amber TUI renderer.
-// Renders game state to the terminal using ANSI escape codes.
-// All output uses a single amber hue at varying brightness levels.
-//
-// TODO: This will be replaced/augmented with zithril
-// once those libraries mature. For now, raw ANSI is the bootstrap.
+// Amber TUI renderer using zithril widgets.
+// All output uses amber hues at varying brightness levels.
 
 const std = @import("std");
 const shared = @import("shared");
+const zithril = @import("zithril");
 const State = @import("state.zig");
 
 const ClientState = State.ClientState;
 const View = State.View;
 const Hex = shared.Hex;
 
-pub const Renderer = struct {
-    allocator: std.mem.Allocator,
-    file: std.fs.File,
-    term_width: u16,
-    term_height: u16,
+const Frame = zithril.Frame(zithril.App(ClientState).DefaultMaxWidgets);
+const Constraint = zithril.Constraint;
+const Block = zithril.Block;
+const Paragraph = zithril.Paragraph;
+const Rect = zithril.Rect;
+const Style = zithril.Style;
+const Color = zithril.Color;
+const Direction = zithril.Direction;
 
-    pub fn init(allocator: std.mem.Allocator) !Renderer {
-        const stdout = std.fs.File.stdout();
+// -- Amber color palette ----------------------------------------------------
 
-        // Enter alternate screen, hide cursor
-        try stdout.writeAll("\x1b[?1049h"); // alternate screen
-        try stdout.writeAll("\x1b[?25l"); // hide cursor
+pub const amber_faint = Style.init().fg(Color.fromRgb(30, 21, 0));
+pub const amber_dim = Style.init().fg(Color.fromRgb(77, 53, 0));
+pub const amber = Style.init().fg(Color.fromRgb(153, 106, 0));
+pub const amber_bright = Style.init().fg(Color.fromRgb(217, 150, 0));
+pub const amber_full = Style.init().fg(Color.fromRgb(255, 176, 0));
 
-        // Query terminal size
-        // TODO: use ioctl or SIGWINCH. Hardcode for now.
-        const width: u16 = 120;
-        const height: u16 = 40;
+// -- View dispatch ----------------------------------------------------------
 
-        return .{
-            .allocator = allocator,
-            .file = stdout,
-            .term_width = width,
-            .term_height = height,
-        };
+pub fn view(state: *ClientState, frame: *Frame) void {
+    const area = frame.size();
+    if (area.width < 10 or area.height < 5) return;
+
+    // Header (2 rows) + body + footer (1 row)
+    const rows = frame.layout(area, .vertical, &.{
+        Constraint.len(2),
+        Constraint.flexible(1),
+        Constraint.len(1),
+    });
+
+    renderHeader(state, frame, rows.get(0));
+
+    switch (state.current_view) {
+        .command_center => renderCommandCenter(state, frame, rows.get(1)),
+        .windshield => renderWindshield(state, frame, rows.get(1)),
+        .star_map => renderStarMap(state, frame, rows.get(1)),
     }
 
-    pub fn deinit(self: *Renderer) void {
-        _ = self;
-    }
+    renderFooter(state, frame, rows.get(2));
+}
 
-    pub fn cleanup(self: *Renderer) !void {
-        try self.file.writeAll("\x1b[?25h"); // show cursor
-        try self.file.writeAll("\x1b[?1049l"); // exit alternate screen
-        try self.file.writeAll("\x1b[0m"); // reset colors
-    }
+// -- Header -----------------------------------------------------------------
 
-    // ── Output Helpers ──────────────────────────────────────────────
-
-    fn out(self: *Renderer, bytes: []const u8) !void {
-        try self.file.writeAll(bytes);
-    }
-
-    fn outFmt(self: *Renderer, comptime fmt: []const u8, args: anytype) !void {
-        var buf: [1024]u8 = undefined;
-        const slice = std.fmt.bufPrint(&buf, fmt, args) catch |err| switch (err) {
-            error.NoSpaceLeft => {
-                try self.file.writeAll("[fmt overflow]");
-                return;
-            },
-        };
-        try self.file.writeAll(slice);
-    }
-
-    fn outByte(self: *Renderer, byte: u8) !void {
-        try self.file.writeAll(&.{byte});
-    }
-
-    /// Render the current game state.
-    pub fn render(self: *Renderer, state: *const ClientState) !void {
-        try self.out("\x1b[2J\x1b[H");
-        try self.renderHeader(state);
-
+fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
+    var buf: [256]u8 = undefined;
+    const header_text = std.fmt.bufPrint(&buf, " IN AMBER CLAD v0.1 | TICK: {d} | {s} | {s}", .{
+        state.tick,
+        if (state.player) |p| p.name else "---",
         switch (state.current_view) {
-            .command_center => try self.renderCommandCenter(state),
-            .windshield => try self.renderWindshield(state),
-            .star_map => try self.renderStarMap(state),
-        }
-    }
-
-    // ── Header ─────────────────────────────────────────────────────
-
-    fn renderHeader(self: *Renderer, state: *const ClientState) !void {
-        try self.setAmber(.full);
-        try self.out("=== IN AMBER CLAD v0.1.0 ");
-        try self.setAmber(.dim);
-
-        try self.outFmt("| TICK: {d} | ", .{state.tick});
-
-        if (state.player) |player| {
-            try self.outFmt("{s} | ", .{player.name});
-        }
-
-        const view_label: []const u8 = switch (state.current_view) {
             .command_center => "COMMAND CENTER",
             .windshield => "WINDSHIELD",
             .star_map => "STAR MAP",
-        };
-        try self.setAmber(.bright);
-        try self.outFmt("{s}", .{view_label});
+        },
+    }) catch " IN AMBER CLAD v0.1";
 
-        try self.setAmber(.dim);
-        try self.out("\n");
-        try self.repeatChar('-', self.term_width);
-        try self.out("\n");
+    frame.render(Paragraph{
+        .text = header_text,
+        .style = amber_full,
+    }, area);
+}
+
+// -- Footer -----------------------------------------------------------------
+
+fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
+    _ = state;
+    frame.render(Paragraph{
+        .text = " [Esc] Cmd Center  [w] Windshield  [m] Map  [Tab] Cycle Fleet  [q] Quit",
+        .style = amber_dim,
+    }, area);
+}
+
+// -- Command Center ---------------------------------------------------------
+
+fn renderCommandCenter(state: *ClientState, frame: *Frame, area: Rect) void {
+    // Split into top panels and bottom event log
+    const rows = frame.layout(area, .vertical, &.{
+        Constraint.len(8),
+        Constraint.flexible(1),
+    });
+
+    // Top: resources + fleets side by side
+    const top_cols = frame.layout(rows.get(0), .horizontal, &.{
+        Constraint.flexible(1),
+        Constraint.flexible(1),
+    });
+
+    renderResourcePanel(state, frame, top_cols.get(0));
+    renderFleetPanel(state, frame, top_cols.get(1));
+
+    renderEventPanel(state, frame, rows.get(1));
+}
+
+fn renderResourcePanel(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " RESOURCES ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    if (state.player) |player| {
+        var buf: [128]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, " Metal   {d:>8.0}\n Crystal {d:>8.0}\n Deut    {d:>8.0}", .{
+            player.resources.metal,
+            player.resources.crystal,
+            player.resources.deuterium,
+        }) catch return;
+        frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
+    } else {
+        frame.render(Paragraph{ .text = " No player data", .style = amber_faint }, inner);
+    }
+}
+
+fn renderFleetPanel(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " FLEETS ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    if (state.fleets.items.len == 0) {
+        frame.render(Paragraph{ .text = " No fleets", .style = amber_faint }, inner);
+        return;
     }
 
-    // ── Command Center View ────────────────────────────────────────
+    var buf: [512]u8 = undefined;
+    var pos: usize = 0;
+    for (state.fleets.items, 0..) |fleet, i| {
+        const marker: []const u8 = if (i == state.active_fleet_idx) ">" else " ";
+        const line = std.fmt.bufPrint(buf[pos..], " {s}Fleet {d} [{d},{d}] {s}\n", .{
+            marker,
+            fleet.id,
+            fleet.location.q,
+            fleet.location.r,
+            @tagName(fleet.state),
+        }) catch break;
+        pos += line.len;
+    }
 
-    fn renderCommandCenter(self: *Renderer, state: *const ClientState) !void {
-        try self.renderPanel("RESOURCES", 0, 2, 40, 6);
-        if (state.player) |player| {
-            try self.moveTo(2, 3);
-            try self.setAmber(.dim);
-            try self.out("Metal   ");
-            try self.setAmber(.full);
-            try self.outFmt("{d:>8.0}", .{player.resources.metal});
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber }, inner);
+}
 
-            try self.moveTo(2, 4);
-            try self.setAmber(.dim);
-            try self.out("Crystal ");
-            try self.setAmber(.full);
-            try self.outFmt("{d:>8.0}", .{player.resources.crystal});
+fn renderEventPanel(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " EVENT LOG ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
 
-            try self.moveTo(2, 5);
-            try self.setAmber(.dim);
-            try self.out("Deut    ");
-            try self.setAmber(.full);
-            try self.outFmt("{d:>8.0}", .{player.resources.deuterium});
+    var buf: [1024]u8 = undefined;
+    var pos: usize = 0;
+    const max_lines = if (inner.height > 0) inner.height else 1;
+
+    var i: usize = 0;
+    while (i < max_lines) : (i += 1) {
+        if (state.event_log.getRecent(i)) |event| {
+            const line = formatEvent(&buf, pos, event) catch break;
+            pos += line;
+        } else break;
+    }
+
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_dim }, inner);
+}
+
+fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
+    const text = switch (event.kind) {
+        .combat_started => |e| std.fmt.bufPrint(buf[pos..], " T{d}: Combat at [{d},{d}]\n", .{ event.tick, e.sector.q, e.sector.r }),
+        .combat_ended => |e| std.fmt.bufPrint(buf[pos..], " T{d}: Combat {s} at [{d},{d}]\n", .{
+            event.tick,
+            if (e.player_victory) "WON" else "LOST",
+            e.sector.q,
+            e.sector.r,
+        }),
+        .sector_entered => |e| std.fmt.bufPrint(buf[pos..], " T{d}: Entered [{d},{d}]\n", .{ event.tick, e.sector.q, e.sector.r }),
+        .resource_harvested => |e| std.fmt.bufPrint(buf[pos..], " T{d}: Harvested {d:.1} {s}\n", .{ event.tick, e.amount, @tagName(e.resource_type) }),
+        .ship_destroyed => |e| std.fmt.bufPrint(buf[pos..], " T{d}: {s} destroyed\n", .{ event.tick, e.ship_class.label() }),
+        else => std.fmt.bufPrint(buf[pos..], " T{d}: Event\n", .{event.tick}),
+    };
+    return (text catch return error.NoSpaceLeft).len;
+}
+
+// -- Windshield View --------------------------------------------------------
+
+fn renderWindshield(state: *ClientState, frame: *Frame, area: Rect) void {
+    // Main area + sidebar
+    const cols = frame.layout(area, .horizontal, &.{
+        Constraint.flexible(1),
+        Constraint.len(30),
+    });
+
+    renderSectorView(state, frame, cols.get(0));
+    renderFleetStatus(state, frame, cols.get(1));
+}
+
+fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " SECTOR VIEW ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    const fleet = state.activeFleet() orelse {
+        frame.render(Paragraph{ .text = " No active fleet", .style = amber_faint }, inner);
+        return;
+    };
+
+    var buf: [512]u8 = undefined;
+    var pos: usize = 0;
+
+    // Current position
+    const loc_line = std.fmt.bufPrint(buf[pos..], " Location: [{d},{d}]\n", .{
+        fleet.location.q, fleet.location.r,
+    }) catch return;
+    pos += loc_line.len;
+
+    const status_line = std.fmt.bufPrint(buf[pos..], " Status: {s}\n\n", .{
+        @tagName(fleet.state),
+    }) catch return;
+    pos += status_line.len;
+
+    // Exits
+    if (state.currentSector()) |sector| {
+        const exit_hdr = std.fmt.bufPrint(buf[pos..], " Exits:\n", .{}) catch return;
+        pos += exit_hdr.len;
+
+        for (sector.connections, 0..) |conn, i| {
+            const exit_line = std.fmt.bufPrint(buf[pos..], "  [{d}] -> [{d},{d}]\n", .{
+                i + 1,
+                conn.q,
+                conn.r,
+            }) catch break;
+            pos += exit_line.len;
         }
-
-        try self.renderPanel("FLEETS", 42, 2, 40, 6);
-        for (state.fleets.items, 0..) |fleet, i| {
-            try self.moveTo(44, @intCast(3 + i));
-            try self.setAmber(.bright);
-            try self.outFmt("Fleet {d}", .{fleet.id});
-            try self.setAmber(.dim);
-            try self.outFmt("  {any} ", .{fleet.location});
-            try self.setAmber(switch (fleet.state) {
-                .idle => .dim,
-                .in_combat => .full,
-                .harvesting => .normal,
-                else => .normal,
-            });
-            try self.outFmt("{s}", .{@tagName(fleet.state)});
-        }
-
-        try self.renderPanel("EVENT LOG", 0, 10, 82, 8);
-
-        try self.renderPanel("COMMAND", 0, 19, 82, 4);
-        try self.moveTo(2, 20);
-        try self.setAmber(.dim);
-        try self.out("[m]ap  [w]indshield  [f]leet  [b]uild  [r]esearch  [q]uit");
-        try self.moveTo(2, 21);
-        try self.setAmber(.full);
-        try self.out("> ");
-        try self.setAmber(.bright);
-        try self.out("_");
+    } else {
+        const no_sec = std.fmt.bufPrint(buf[pos..], " Sector data pending...\n", .{}) catch return;
+        pos += no_sec.len;
     }
 
-    // ── Windshield View ────────────────────────────────────────────
+    // Keybinds
+    const keys = std.fmt.bufPrint(buf[pos..], "\n [1-6] Move  [h] Harvest  [r] Recall", .{}) catch return;
+    pos += keys.len;
 
-    fn renderWindshield(self: *Renderer, state: *const ClientState) !void {
-        const fleet = state.activeFleet() orelse {
-            try self.setAmber(.dim);
-            try self.out("  No active fleet. Press [esc] to return.");
-            return;
-        };
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber }, inner);
+}
 
-        const center_row: u16 = 12;
-        const center_col: u16 = 30;
+fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " FLEET ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
 
-        try self.moveTo(center_col - 2, center_row);
-        try self.setAmber(.full);
-        try self.out("=[ * ]=");
+    const fleet = state.activeFleet() orelse {
+        frame.render(Paragraph{ .text = " ---", .style = amber_faint }, inner);
+        return;
+    };
 
-        try self.moveTo(center_col - 1, center_row + 1);
-        try self.setAmber(.bright);
-        try self.outFmt("{any}", .{fleet.location});
+    var buf: [256]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, " Ships: {d}\n Fuel:  {d:.0}/{d:.0}\n\n Cargo:\n  Fe {d:.0}\n  Cr {d:.0}\n  De {d:.0}", .{
+        fleet.ships.len,
+        fleet.fuel,
+        fleet.fuel_max,
+        fleet.cargo.metal,
+        fleet.cargo.crystal,
+        fleet.cargo.deuterium,
+    }) catch return;
 
-        if (state.currentSector()) |sector| {
-            if (sector.connections.len > 0) {
-                try self.moveTo(center_col + 12, center_row - 2);
-                try self.setAmber(.dim);
-                try self.out("Exits:");
-                for (sector.connections, 0..) |conn, i| {
-                    try self.moveTo(center_col + 12, @intCast(center_row - 1 + i));
-                    try self.setAmber(.normal);
-                    try self.outFmt("  {any} ", .{conn});
+    frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
+}
 
-                    if (state.known_sectors.get(conn.toKey())) |nbr| {
-                        try self.setAmber(.dim);
-                        try self.outFmt("{s}", .{nbr.terrain.label()});
-                    } else {
-                        try self.setAmber(.faint);
-                        try self.out("unexplored");
-                    }
-                }
-            }
-        }
+// -- Star Map ---------------------------------------------------------------
 
-        try self.renderPanel("FLEET STATUS", 70, 2, 30, 10);
-        try self.moveTo(72, 3);
-        try self.setAmber(.dim);
-        try self.out("Ships: ");
-        try self.setAmber(.normal);
-        try self.outFmt("{d}", .{fleet.ships.len});
+fn renderStarMap(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " STAR MAP ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
 
-        try self.moveTo(72, 4);
-        try self.setAmber(.dim);
-        try self.out("Fuel:  ");
-        try self.setAmber(if (fleet.fuel / fleet.fuel_max < 0.25) .full else .normal);
-        try self.outFmt("{d:.0}/{d:.0}", .{ fleet.fuel, fleet.fuel_max });
-
-        try self.moveTo(72, 6);
-        try self.setAmber(.dim);
-        try self.out("Cargo:");
-        try self.moveTo(72, 7);
-        try self.outFmt(" Fe {d:.0}", .{fleet.cargo.metal});
-        try self.moveTo(72, 8);
-        try self.outFmt(" Cr {d:.0}", .{fleet.cargo.crystal});
-        try self.moveTo(72, 9);
-        try self.outFmt(" De {d:.0}", .{fleet.cargo.deuterium});
-
-        try self.moveTo(0, self.term_height - 3);
-        try self.setAmber(.dim);
-        try self.out("  [1-6] move to exit  [h]arvest  [a]ttack  [r]ecall  [esc] command center");
-    }
-
-    // ── Star Map View ──────────────────────────────────────────────
-
-    fn renderStarMap(self: *Renderer, state: *const ClientState) !void {
-        _ = state;
-
-        try self.setAmber(.dim);
-        try self.out("  ZOOM: ");
-        try self.out("[1]CLOSE  [2]SECTOR  [3]REGION");
-        try self.out("  |  ARROWS: scroll  |  ENTER: waypoint  |  TAB: cycle fleet\n");
-
-        try self.moveTo(10, 10);
-        try self.setAmber(.dim);
-        try self.out("[ Star Map renderer -- TODO ]");
-        try self.moveTo(10, 12);
-        try self.setAmber(.faint);
-        try self.out("Node graph (close), hybrid hex (sector), dot map (region)");
-    }
-
-    // ── Drawing Primitives ─────────────────────────────────────────
-
-    const AmberLevel = enum { faint, dim, normal, bright, full };
-
-    fn setAmber(self: *Renderer, level: AmberLevel) !void {
-        const rgb: struct { r: u8, g: u8, b: u8 } = switch (level) {
-            .faint => .{ .r = 30, .g = 21, .b = 0 },
-            .dim => .{ .r = 77, .g = 53, .b = 0 },
-            .normal => .{ .r = 153, .g = 106, .b = 0 },
-            .bright => .{ .r = 217, .g = 150, .b = 0 },
-            .full => .{ .r = 255, .g = 176, .b = 0 },
-        };
-        try self.outFmt("\x1b[38;2;{d};{d};{d}m", .{ rgb.r, rgb.g, rgb.b });
-    }
-
-    fn moveTo(self: *Renderer, col: u16, row: u16) !void {
-        try self.outFmt("\x1b[{d};{d}H", .{ row + 1, col + 1 });
-    }
-
-    fn repeatChar(self: *Renderer, char: u8, count: u16) !void {
-        var i: u16 = 0;
-        while (i < count) : (i += 1) {
-            try self.outByte(char);
-        }
-    }
-
-    fn renderPanel(self: *Renderer, title: []const u8, x: u16, y: u16, w: u16, h: u16) !void {
-        try self.setAmber(.dim);
-
-        try self.moveTo(x, y);
-        try self.out("+");
-        try self.setAmber(.dim);
-        try self.out("- ");
-        try self.setAmber(.normal);
-        try self.outFmt("{s}", .{title});
-        try self.setAmber(.dim);
-        try self.out(" ");
-
-        const title_len: u16 = @intCast(title.len + 4);
-        if (w > title_len + 1) {
-            try self.repeatChar('-', w - title_len - 1);
-        }
-        try self.out("+");
-
-        var row: u16 = 1;
-        while (row < h - 1) : (row += 1) {
-            try self.moveTo(x, y + row);
-            try self.out("|");
-            try self.moveTo(x + w - 1, y + row);
-            try self.out("|");
-        }
-
-        try self.moveTo(x, y + h - 1);
-        try self.out("+");
-        try self.repeatChar('-', w - 2);
-        try self.out("+");
-    }
-};
+    _ = state;
+    frame.render(Paragraph{
+        .text = " Star map rendering -- use arrows to scroll\n\n [Arrows] Scroll  [Tab] Cycle fleet",
+        .style = amber_faint,
+    }, inner);
+}

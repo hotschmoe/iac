@@ -1,57 +1,41 @@
 // src/client/connection.zig
-// WebSocket client connection to the game server.
+// WebSocket client connection to the game server via webzocket.
 // Handles JSON serialization/deserialization of protocol messages.
 
 const std = @import("std");
 const shared = @import("shared");
+const wz = @import("webzocket");
 
 const log = std.log.scoped(.connection);
 
 pub const Connection = struct {
     allocator: std.mem.Allocator,
-    host: []const u8,
-    port: u16,
+    client: wz.Client,
     connected: bool,
-    // TODO: WebSocket handle from zig websocket library
 
     pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16) !Connection {
-        var conn = Connection{
-            .allocator = allocator,
+        var client = try wz.Client.init(allocator, .{
             .host = host,
             .port = port,
-            .connected = false,
+        });
+        try client.handshake("/", .{});
+        try client.readTimeout(1);
+
+        log.info("Connected to {s}:{d}", .{ host, port });
+
+        return .{
+            .allocator = allocator,
+            .client = client,
+            .connected = true,
         };
-
-        try conn.connect();
-
-        return conn;
     }
 
     pub fn deinit(self: *Connection) void {
         if (self.connected) {
-            self.disconnect();
+            self.client.close(.{}) catch {};
+            self.connected = false;
         }
-    }
-
-    fn connect(self: *Connection) !void {
-        // TODO: Establish WebSocket connection
-        //
-        // 1. TCP connect to host:port
-        // 2. WebSocket handshake
-        // 3. Set connected = true
-        //
-        // Using zig WebSocket library:
-        //   const ws = try websocket.connect(self.host, self.port, "/");
-        //   self.ws_handle = ws;
-
-        log.info("Connecting to {s}:{d}...", .{ self.host, self.port });
-        self.connected = true;
-        log.info("Connected.", .{});
-    }
-
-    fn disconnect(self: *Connection) void {
-        // TODO: close WebSocket gracefully
-        self.connected = false;
+        self.client.deinit();
     }
 
     /// Send authentication request.
@@ -72,17 +56,6 @@ pub const Connection = struct {
         try self.send(msg);
     }
 
-    /// Send a policy update.
-    pub fn sendPolicyUpdate(self: *Connection, fleet_id: u64, rules: []const shared.protocol.PolicyRule) !void {
-        const msg = shared.protocol.ClientMessage{
-            .policy_update = .{
-                .fleet_id = fleet_id,
-                .rules = rules,
-            },
-        };
-        try self.send(msg);
-    }
-
     /// Request full state sync from server.
     pub fn requestFullState(self: *Connection) !void {
         const msg = shared.protocol.ClientMessage{
@@ -96,21 +69,26 @@ pub const Connection = struct {
     pub fn poll(self: *Connection) !?shared.protocol.ServerMessage {
         if (!self.connected) return null;
 
-        // TODO: Read from WebSocket non-blocking
-        //
-        // 1. Check if data available (non-blocking read)
-        // 2. If frame complete, deserialize JSON → ServerMessage
-        // 3. Return parsed message
-        //
-        // const frame = try self.ws_handle.readNonBlocking();
-        // if (frame) |f| {
-        //     return try std.json.parseFromSlice(
-        //         shared.protocol.ServerMessage,
-        //         self.allocator,
-        //         f.data,
-        //         .{},
-        //     );
-        // }
+        const msg = self.client.read() catch |err| {
+            if (err == error.WouldBlock) return null;
+            log.warn("Read error: {any}", .{err});
+            self.connected = false;
+            return null;
+        };
+
+        if (msg) |m| {
+            defer self.client.done(m);
+            const parsed = std.json.parseFromSlice(
+                shared.protocol.ServerMessage,
+                self.allocator,
+                m.data,
+                .{ .ignore_unknown_fields = true },
+            ) catch |err| {
+                log.warn("JSON parse error: {any}", .{err});
+                return null;
+            };
+            return parsed.value;
+        }
 
         return null;
     }
@@ -119,13 +97,12 @@ pub const Connection = struct {
     fn send(self: *Connection, msg: shared.protocol.ClientMessage) !void {
         if (!self.connected) return error.NotConnected;
 
-        // TODO: JSON serialization and WebSocket send
-        //
-        // var buf = std.ArrayList(u8).init(self.allocator);
-        // defer buf.deinit();
-        // try std.json.stringify(msg, .{}, buf.writer());
-        // try self.ws_handle.send(.text, buf.items);
+        const json = try std.json.Stringify.valueAlloc(self.allocator, msg, .{});
+        defer self.allocator.free(json);
 
-        _ = msg;
+        // webzocket client write needs mutable slice for masking
+        const buf = try self.allocator.dupe(u8, json);
+        defer self.allocator.free(buf);
+        try self.client.write(buf);
     }
 };

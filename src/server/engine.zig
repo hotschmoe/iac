@@ -138,7 +138,7 @@ pub const GameEngine = struct {
         }
     }
 
-    /// Process active combats — one round per tick.
+    /// Process active combats -- one round per tick.
     fn processCombat(self: *GameEngine) !void {
         var to_remove: std.ArrayList(u64) = .empty;
         defer to_remove.deinit(self.allocator);
@@ -148,13 +148,23 @@ pub const GameEngine = struct {
             const combat_id = entry.key_ptr.*;
             const active_combat = entry.value_ptr;
 
+            const player_fleet = self.fleets.getPtr(active_combat.player_fleet_id) orelse {
+                try to_remove.append(self.allocator, combat_id);
+                continue;
+            };
+            const npc_fleet = self.npc_fleets.getPtr(active_combat.npc_fleet_id) orelse {
+                try to_remove.append(self.allocator, combat_id);
+                continue;
+            };
+
             const result = try combat.resolveCombatRound(
                 self.allocator,
                 active_combat,
+                player_fleet,
+                npc_fleet,
                 self.current_tick,
             );
 
-            // Append combat events
             for (result.events) |event| {
                 try self.pending_events.append(self.allocator, event);
             }
@@ -162,9 +172,8 @@ pub const GameEngine = struct {
             if (result.concluded) {
                 try to_remove.append(self.allocator, combat_id);
 
-                // Update fleet states
                 if (self.fleets.getPtr(active_combat.player_fleet_id)) |fleet| {
-                    fleet.state = .idle;
+                    fleet.state = if (fleet.ship_count == 0) .docked else .idle;
                     fleet.idle_ticks = 0;
                 }
 
@@ -176,10 +185,12 @@ pub const GameEngine = struct {
                     } },
                 });
 
-                // Drop salvage if player won
                 if (result.player_won) {
                     try self.dropSalvage(active_combat.sector, active_combat.npc_value);
                 }
+
+                // Clean up NPC fleet
+                _ = self.npc_fleets.remove(active_combat.npc_fleet_id);
             }
         }
 
@@ -317,7 +328,7 @@ pub const GameEngine = struct {
         try self.fleets.put(fleet_id, fleet);
         try self.dirty_players.put(player_id, {});
 
-        log.info("Player '{s}' registered (id={d}) at homeworld {}", .{ name, player_id, homeworld });
+        log.info("Player '{s}' registered (id={d}) at homeworld {any}", .{ name, player_id, homeworld });
 
         return player_id;
     }
@@ -382,7 +393,7 @@ pub const GameEngine = struct {
             shared.constants.RECALL_DAMAGE_CHANCE_PER_HEX * @as(f32, @floatFromInt(dist)),
         );
 
-        var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.time.nanoTimestamp())));
+        var rng = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))));
         const random = rng.random();
 
         var i: usize = 0;
@@ -423,7 +434,7 @@ pub const GameEngine = struct {
 
     fn findHomeworldLocation(self: *GameEngine) Hex {
         // Find an unoccupied hex in the inner ring
-        var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.time.nanoTimestamp())));
+        var rng = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))));
         const random = rng.random();
 
         const min = shared.constants.HOMEWORLD_MIN_DIST;
@@ -538,20 +549,96 @@ pub const GameEngine = struct {
     }
 
     fn recordExplored(self: *GameEngine, player_id: u64, coord: Hex) !void {
-        _ = self;
-        _ = player_id;
-        _ = coord;
-        // TODO: store in explored_edges table
+        // Persist explored edges to DB for all connected neighbors
+        const connections = self.world_gen.connectedNeighbors(coord);
+        for (connections.slice()) |neighbor| {
+            self.db.saveExploredEdge(player_id, coord, neighbor, self.current_tick) catch |err| {
+                log.warn("Failed to save explored edge: {}", .{err});
+            };
+        }
     }
 
     fn loadState(self: *GameEngine) !void {
-        _ = self;
-        // TODO: load players, fleets, sector overrides from SQLite
-        log.info("State loaded (empty — fresh world)", .{});
+        // Load server state (tick, next_id)
+        if (try self.db.loadServerState("current_tick")) |tick_str| {
+            defer self.allocator.free(tick_str);
+            self.current_tick = std.fmt.parseInt(u64, tick_str, 10) catch 0;
+        }
+        if (try self.db.loadServerState("next_id")) |id_str| {
+            defer self.allocator.free(id_str);
+            self.next_id = std.fmt.parseInt(u64, id_str, 10) catch 1;
+        }
+
+        // Load players
+        var players = try self.db.loadPlayers();
+        defer players.deinit(self.allocator);
+        for (players.items) |player| {
+            try self.players.put(player.id, player);
+        }
+
+        // Load fleets
+        var fleets = try self.db.loadFleets();
+        defer fleets.deinit(self.allocator);
+        for (fleets.items) |fleet| {
+            try self.fleets.put(fleet.id, fleet);
+        }
+
+        // Load sector overrides
+        var overrides = try self.db.loadSectorOverrides();
+        defer overrides.deinit(self.allocator);
+        for (overrides.items) |row| {
+            const key = (Hex{ .q = row.q, .r = row.r }).toKey();
+            try self.sector_overrides.put(key, row.override);
+        }
+
+        const player_count = self.players.count();
+        const fleet_count = self.fleets.count();
+        if (player_count > 0) {
+            log.info("State loaded: {d} players, {d} fleets, tick {d}", .{
+                player_count,
+                fleet_count,
+                self.current_tick,
+            });
+        } else {
+            log.info("State loaded (empty -- fresh world)", .{});
+        }
     }
 
     pub fn persistDirtyState(self: *GameEngine) !void {
-        // TODO: write dirty players and sectors to SQLite
+        // Save server state
+        var tick_buf: [20]u8 = undefined;
+        const tick_str = std.fmt.bufPrint(&tick_buf, "{d}", .{self.current_tick}) catch unreachable;
+        try self.db.saveServerState("current_tick", tick_str);
+
+        var id_buf: [20]u8 = undefined;
+        const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{self.next_id}) catch unreachable;
+        try self.db.saveServerState("next_id", id_str);
+
+        // Save dirty players and their fleets
+        var dirty_iter = self.dirty_players.iterator();
+        while (dirty_iter.next()) |entry| {
+            const player_id = entry.key_ptr.*;
+            if (self.players.get(player_id)) |player| {
+                try self.db.savePlayer(player);
+            }
+        }
+
+        // Save all fleets (dirty tracking for fleets is implicit via player)
+        var fleet_iter = self.fleets.iterator();
+        while (fleet_iter.next()) |entry| {
+            try self.db.saveFleet(entry.value_ptr.*);
+        }
+
+        // Save dirty sector overrides
+        var sector_iter = self.dirty_sectors.iterator();
+        while (sector_iter.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (self.sector_overrides.get(key)) |ov| {
+                const hex_val = Hex.fromKey(key);
+                try self.db.saveSectorOverride(hex_val.q, hex_val.r, ov);
+            }
+        }
+
         self.dirty_players.clearRetainingCapacity();
         self.dirty_sectors.clearRetainingCapacity();
     }

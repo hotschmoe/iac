@@ -26,6 +26,8 @@ pub const ClientState = struct {
     command_buffer: [256]u8,
     command_len: usize,
     command_mode: bool,
+    status_message: [128]u8,
+    status_len: usize,
 
     pub fn init(allocator: std.mem.Allocator) ClientState {
         return .{
@@ -43,6 +45,8 @@ pub const ClientState = struct {
             .command_buffer = undefined,
             .command_len = 0,
             .command_mode = false,
+            .status_message = undefined,
+            .status_len = 0,
         };
     }
 
@@ -212,11 +216,11 @@ pub const EventLog = struct {
         if (self.count < MAX_EVENTS) self.count += 1;
     }
 
-    /// Get events in reverse chronological order (newest first).
-    pub fn recentEvents(self: *const EventLog, max: usize) []const shared.protocol.GameEvent {
-        _ = max;
-        // TODO: return slice view over ring buffer
-        _ = self;
-        return &.{};
+    /// Get Nth most recent event (0 = newest).
+    pub fn getRecent(self: *const EventLog, n: usize) ?shared.protocol.GameEvent {
+        if (n >= self.count) return null;
+        // head points to next write position; head-1 is most recent
+        const idx = (self.head + MAX_EVENTS - 1 - n) % MAX_EVENTS;
+        return self.events[idx];
     }
 };
