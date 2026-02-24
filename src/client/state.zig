@@ -33,7 +33,7 @@ pub const ClientState = struct {
             .fleets = .empty,
             .homeworld = null,
             .known_sectors = std.AutoHashMap(u32, shared.protocol.SectorState).init(allocator),
-            .event_log = EventLog.init(),
+            .event_log = EventLog.init(allocator),
             .current_view = .command_center,
             .active_fleet_idx = 0,
             .map_center = Hex.ORIGIN,
@@ -53,6 +53,7 @@ pub const ClientState = struct {
         self.freeOwnedHomeworld();
         self.freeOwnedSectors();
         self.known_sectors.deinit();
+        self.event_log.deinit();
     }
 
     fn freeOwnedFleets(self: *ClientState) void {
@@ -275,26 +276,58 @@ pub const ScrollDirection = enum {
 };
 
 /// Ring buffer for event log entries (keeps last N events).
+/// Owns duped copies of any heap-allocated slices in events (AlertEvent.message).
 pub const EventLog = struct {
     const MAX_EVENTS = 100;
 
+    allocator: std.mem.Allocator,
     events: [MAX_EVENTS]shared.protocol.GameEvent = undefined,
     head: usize = 0,
     count: usize = 0,
 
-    pub fn init() EventLog {
-        return .{};
+    pub fn init(allocator: std.mem.Allocator) EventLog {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *EventLog) void {
+        for (0..self.count) |i| {
+            const idx = (self.head + MAX_EVENTS - 1 - i) % MAX_EVENTS;
+            self.freeEventSlices(self.events[idx]);
+        }
     }
 
     pub fn push(self: *EventLog, event: shared.protocol.GameEvent) !void {
-        self.events[self.head] = event;
+        if (self.count == MAX_EVENTS) {
+            self.freeEventSlices(self.events[self.head]);
+        }
+
+        var owned = event;
+        switch (event.kind) {
+            .alert => |a| {
+                owned.kind = .{ .alert = .{
+                    .level = a.level,
+                    .message = try self.allocator.dupe(u8, a.message),
+                    .sector = a.sector,
+                    .fleet_id = a.fleet_id,
+                } };
+            },
+            else => {},
+        }
+
+        self.events[self.head] = owned;
         self.head = (self.head + 1) % MAX_EVENTS;
         if (self.count < MAX_EVENTS) self.count += 1;
     }
 
+    fn freeEventSlices(self: *EventLog, event: shared.protocol.GameEvent) void {
+        switch (event.kind) {
+            .alert => |a| self.allocator.free(a.message),
+            else => {},
+        }
+    }
+
     pub fn getRecent(self: *const EventLog, n: usize) ?shared.protocol.GameEvent {
         if (n >= self.count) return null;
-        // head points to next write position; head-1 is most recent
         const idx = (self.head + MAX_EVENTS - 1 - n) % MAX_EVENTS;
         return self.events[idx];
     }
