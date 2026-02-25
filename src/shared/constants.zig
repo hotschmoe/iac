@@ -132,6 +132,14 @@ pub const ShipClass = enum(u8) {
     cruiser,
     hauler,
 
+    pub const COUNT = @typeInfo(ShipClass).@"enum".fields.len;
+    pub const ALL = blk: {
+        const fields = @typeInfo(ShipClass).@"enum".fields;
+        var arr: [fields.len]ShipClass = undefined;
+        for (fields, 0..) |f, i| arr[i] = @enumFromInt(f.value);
+        break :blk arr;
+    };
+
     pub fn baseStats(self: ShipClass) ShipStats {
         return switch (self) {
             .scout => .{ .hull = 30, .shield = 10, .weapon = 5, .speed = 10, .cargo = 20, .fuel = 60 },

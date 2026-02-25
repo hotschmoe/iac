@@ -393,7 +393,7 @@ The server is authoritative. Clients are thin renderers + input devices.
     "tick": 4821,
     "fleet_state": { ... },
     "sector_state": { ... },
-    "homeworld_state": { ... },
+    "homeworld_state": { "buildings": [...], "research": [...], ... },
     "events": [
         {"type": "combat_round", "details": { ... }},
         {"type": "resource_harvested", "details": { ... }},
@@ -511,7 +511,20 @@ Supported variables (initial set, expandable):
 
 **Single-key commands** for common actions (roguelike style). Modal sub-screens for complex actions (build menu, research tree, policy editor, inventory).
 
-**Command input line** at bottom-right for typed commands — same commands an LLM agent would send, making the TUI a superset of the CLI interface.
+**Command input line** at bottom-right for typed commands -- same commands an LLM agent would send, making the TUI a superset of the CLI interface.
+
+**Homeworld view** uses a tab-based card selection system:
+
+```
+Tab       Cycle panel (Buildings / Shipyard / Research)
+Arrows    Navigate card grid (2-column layout)
+Enter     Build selected item (if unlocked and not maxed)
+x/X/z     Cancel active building/ship/research queue
+t         Toggle tech tree overlay (read-only prerequisite view)
+?         Keybinds help
+```
+
+Each card shows: current level, prerequisite status with `[OK]`/`[--]` indicators, cost for next level, and build time. Locked items show what prerequisite is missing. The status bar at the bottom displays active queue progress and production rates per tick.
 
 ---
 

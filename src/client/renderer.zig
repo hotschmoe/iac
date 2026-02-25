@@ -827,23 +827,13 @@ fn renderCard(
 
             if (level < scaling.MAX_BUILDING_LEVEL) {
                 const cost = scaling.buildingCost(bt, level + 1);
-                const l = std.fmt.bufPrint(content_buf[cpos..], " {d:.0} Fe  {d:.0} Cr", .{ cost.metal, cost.crystal }) catch return;
-                cpos += l.len;
-                if (cost.deuterium > 0) {
-                    const d = std.fmt.bufPrint(content_buf[cpos..], "  {d:.0} De", .{cost.deuterium}) catch return;
-                    cpos += d.len;
-                }
-                const nl = std.fmt.bufPrint(content_buf[cpos..], "\n", .{}) catch return;
-                cpos += nl.len;
-                const time = scaling.buildingTime(bt, level + 1);
-                const tl = std.fmt.bufPrint(content_buf[cpos..], " {d} ticks\n", .{time}) catch return;
-                cpos += tl.len;
+                cpos += fmtCostLine(content_buf[cpos..], cost, scaling.buildingTime(bt, level + 1));
             }
 
             renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, level >= scaling.MAX_BUILDING_LEVEL);
         },
         .shipyard => {
-            const classes = [_]shared.constants.ShipClass{ .scout, .corvette, .frigate, .cruiser, .hauler };
+            const classes = shared.constants.ShipClass.ALL;
             if (idx >= classes.len) return;
             const sc = classes[idx];
             const unlocked = scaling.shipClassUnlocked(sc, res_levels);
@@ -872,19 +862,8 @@ fn renderCard(
             }
 
             const cost = sc.buildCost();
-            const cl = std.fmt.bufPrint(content_buf[cpos..], " {d:.0} Fe  {d:.0} Cr", .{ cost.metal, cost.crystal }) catch return;
-            cpos += cl.len;
-            if (cost.deuterium > 0) {
-                const d = std.fmt.bufPrint(content_buf[cpos..], "  {d:.0} De", .{cost.deuterium}) catch return;
-                cpos += d.len;
-            }
-            const nl = std.fmt.bufPrint(content_buf[cpos..], "\n", .{}) catch return;
-            cpos += nl.len;
-
             const sy_level = bldg_levels.get(.shipyard);
-            const time = scaling.shipBuildTime(sc, sy_level);
-            const tl = std.fmt.bufPrint(content_buf[cpos..], " {d} ticks\n", .{time}) catch return;
-            cpos += tl.len;
+            cpos += fmtCostLine(content_buf[cpos..], cost, scaling.shipBuildTime(sc, sy_level));
 
             renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, false);
         },
@@ -927,22 +906,25 @@ fn renderCard(
 
             if (!maxed) {
                 const cost = scaling.researchCost(rt, level + 1);
-                const cl = std.fmt.bufPrint(content_buf[cpos..], " {d:.0} Fe  {d:.0} Cr", .{ cost.metal, cost.crystal }) catch return;
-                cpos += cl.len;
-                if (cost.deuterium > 0) {
-                    const d = std.fmt.bufPrint(content_buf[cpos..], "  {d:.0} De", .{cost.deuterium}) catch return;
-                    cpos += d.len;
-                }
-                const nl = std.fmt.bufPrint(content_buf[cpos..], "\n", .{}) catch return;
-                cpos += nl.len;
-                const time = scaling.researchTime(rt, level + 1);
-                const tl = std.fmt.bufPrint(content_buf[cpos..], " {d} ticks\n", .{time}) catch return;
-                cpos += tl.len;
+                cpos += fmtCostLine(content_buf[cpos..], cost, scaling.researchTime(rt, level + 1));
             }
 
             renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, maxed);
         },
     }
+}
+
+fn fmtCostLine(buf: []u8, cost: shared.constants.Resources, ticks: u64) usize {
+    var pos: usize = 0;
+    const cl = std.fmt.bufPrint(buf[pos..], " {d:.0} Fe  {d:.0} Cr", .{ cost.metal, cost.crystal }) catch return pos;
+    pos += cl.len;
+    if (cost.deuterium > 0) {
+        const dl = std.fmt.bufPrint(buf[pos..], "  {d:.0} De", .{cost.deuterium}) catch return pos;
+        pos += dl.len;
+    }
+    const tl = std.fmt.bufPrint(buf[pos..], "\n {d} ticks\n", .{ticks}) catch return pos;
+    pos += tl.len;
+    return pos;
 }
 
 fn renderCardBox(
@@ -958,8 +940,6 @@ fn renderCardBox(
         amber_full
     else if (is_locked)
         amber_faint
-    else if (is_maxed)
-        amber_dim
     else
         amber_dim;
 
@@ -1100,8 +1080,7 @@ fn renderTechTree(state: *ClientState, frame: *Frame, area: Rect) void {
         const ship_hdr = std.fmt.bufPrint(buf[pos..], "\n SHIPS\n ─────────────────────────────\n", .{}) catch "";
         pos += ship_hdr.len;
 
-        const ship_classes = [_]shared.constants.ShipClass{ .scout, .corvette, .frigate, .cruiser, .hauler };
-        for (ship_classes) |sc| {
+        for (shared.constants.ShipClass.ALL) |sc| {
             const unlocked = scaling.shipClassUnlocked(sc, res_levels);
             const status: []const u8 = if (unlocked) "UNLOCKED" else "LOCKED";
             const sl = std.fmt.bufPrint(buf[pos..], " {s: <20} {s}\n", .{ sc.label(), status }) catch break;

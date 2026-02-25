@@ -18,18 +18,11 @@ pub const HomeworldTab = enum {
         };
     }
 
-    pub fn prev(self: HomeworldTab) HomeworldTab {
-        return switch (self) {
-            .buildings => .research,
-            .shipyard => .buildings,
-            .research => .shipyard,
-        };
-    }
-
     pub fn itemCount(self: HomeworldTab) usize {
+
         return switch (self) {
             .buildings => scaling.BuildingType.COUNT,
-            .shipyard => 5, // ShipClass count
+            .shipyard => shared.constants.ShipClass.COUNT,
             .research => scaling.ResearchType.COUNT,
         };
     }
@@ -330,7 +323,7 @@ pub const ClientState = struct {
                         return .{ .research = .{ .tech = rt } };
                     },
                     .shipyard => {
-                        const classes = [_]shared.constants.ShipClass{ .scout, .corvette, .frigate, .cruiser, .hauler };
+                        const classes = shared.constants.ShipClass.ALL;
                         if (self.homeworld_cursor >= classes.len) return null;
                         const sc = classes[self.homeworld_cursor];
                         if (!scaling.shipClassUnlocked(sc, res_levels)) return null;
