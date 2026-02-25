@@ -376,6 +376,17 @@ pub const Database = struct {
         _ = try stmt.step();
     }
 
+    pub fn hasExploredSector(self: *Database, player_id: u64, coord: Hex) !bool {
+        var stmt = try self.db.prepare(
+            "SELECT 1 FROM explored_edges WHERE player_id = ?1 AND q1 = ?2 AND r1 = ?3 LIMIT 1",
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(player_id));
+        try stmt.bindInt(2, @as(i64, coord.q));
+        try stmt.bindInt(3, @as(i64, coord.r));
+        return try stmt.step();
+    }
+
     pub fn loadExploredEdges(self: *Database, player_id: u64) !std.ArrayList(ExploredEdgeRow) {
         var edges = std.ArrayList(ExploredEdgeRow).empty;
         var stmt = try self.db.prepare(

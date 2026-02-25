@@ -91,6 +91,7 @@ pub const GameEngine = struct {
         try self.processSectorRegen();
         try self.processNpcBehavior();
         try self.processHomeworlds();
+        try self.processSalvageDespawn();
         try self.processCooldowns();
     }
 
@@ -111,17 +112,20 @@ pub const GameEngine = struct {
                 fleet.move_target = null;
                 try self.dirty_fleets.put(fleet.id, {});
 
+                const first_visit = !(self.db.hasExploredSector(fleet.owner_id, target) catch false);
                 try self.recordExplored(fleet.owner_id, fleet.location);
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
                     .kind = .{ .sector_entered = .{
                         .fleet_id = fleet.id,
                         .sector = target,
-                        .first_visit = true, // TODO: check explored set
+                        .first_visit = first_visit,
                     } },
                 });
 
+                try self.checkHomeworldDocking(fleet);
                 try self.checkNpcEncounter(fleet);
+                try self.collectSalvage(fleet);
             }
         }
     }
@@ -352,6 +356,19 @@ pub const GameEngine = struct {
         return true;
     }
 
+    fn processSalvageDespawn(self: *GameEngine) !void {
+        var iter = self.sector_overrides.iterator();
+        while (iter.next()) |entry| {
+            const ov = entry.value_ptr;
+            const despawn_tick = ov.salvage_despawn_tick orelse continue;
+            if (self.current_tick >= despawn_tick) {
+                ov.salvage = null;
+                ov.salvage_despawn_tick = null;
+                try self.dirty_sectors.put(entry.key_ptr.*, {});
+            }
+        }
+    }
+
     fn processNpcBehavior(self: *GameEngine) !void {
         // Respawn check: clear npc_cleared_tick after zone-based delay
         var sector_iter = self.sector_overrides.iterator();
@@ -407,9 +424,10 @@ pub const GameEngine = struct {
         while (iter.next()) |entry| {
             var player = entry.value_ptr;
 
-            // TODO: calculate from building levels
+            // TODO: calculate from building levels (M2)
             player.resources.metal += 0.5;
             player.resources.crystal += 0.3;
+            player.resources.deuterium += 0.1;
             try self.dirty_players.put(player.id, {});
         }
     }
@@ -423,6 +441,15 @@ pub const GameEngine = struct {
             }
             if (fleet.state == .idle) {
                 fleet.idle_ticks += 1;
+
+                if (fleet.idle_ticks >= shared.constants.SHIELD_REGEN_IDLE_TICKS) {
+                    for (fleet.ships[0..fleet.ship_count]) |*ship| {
+                        if (ship.shield < ship.shield_max) {
+                            ship.shield = @min(ship.shield + ship.shield_max * 0.1, ship.shield_max);
+                            try self.dirty_fleets.put(fleet.id, {});
+                        }
+                    }
+                }
             }
         }
     }
@@ -541,6 +568,32 @@ pub const GameEngine = struct {
         try self.dirty_fleets.put(fleet_id, {});
     }
 
+    pub fn handleAttack(self: *GameEngine, fleet_id: u64, target_fleet_id: u64) !void {
+        const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
+        if (fleet.ship_count == 0) return error.NoShips;
+        if (fleet.state == .in_combat) return error.InCombat;
+        if (fleet.state == .moving) return error.OnCooldown;
+
+        const npc = self.npc_fleets.getPtr(target_fleet_id) orelse {
+            // Target might be a template NPC not yet spawned -- check sector
+            const sector_key = fleet.location.toKey();
+            if (self.sector_overrides.get(sector_key)) |ov| {
+                if (ov.npc_cleared_tick != null) return error.InvalidTarget;
+            }
+            const template = self.world_gen.generateSector(fleet.location);
+            if (template.npc_template) |npc_tmpl| {
+                const spawned = try self.spawnNpcFleet(fleet.location, npc_tmpl);
+                try self.startCombat(fleet, spawned);
+                return;
+            }
+            return error.InvalidTarget;
+        };
+
+        if (!npc.location.eql(fleet.location)) return error.InvalidTarget;
+        if (npc.in_combat) return error.InCombat;
+        try self.startCombat(fleet, npc);
+    }
+
     pub fn handleRecall(self: *GameEngine, fleet_id: u64) !void {
         const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
         if (fleet.ship_count == 0) return error.NoShips;
@@ -623,6 +676,26 @@ pub const GameEngine = struct {
 
         // Fallback
         return Hex{ .q = @intCast(min), .r = 0 };
+    }
+
+    fn checkHomeworldDocking(self: *GameEngine, fleet: *Fleet) !void {
+        const player = self.players.getPtr(fleet.owner_id) orelse return;
+        if (!fleet.location.eql(player.homeworld)) return;
+
+        // Transfer cargo to player resources
+        if (fleet.cargo.metal > 0 or fleet.cargo.crystal > 0 or fleet.cargo.deuterium > 0) {
+            player.resources.metal += fleet.cargo.metal;
+            player.resources.crystal += fleet.cargo.crystal;
+            player.resources.deuterium += fleet.cargo.deuterium;
+            fleet.cargo = .{};
+            try self.dirty_players.put(player.id, {});
+        }
+
+        // Refuel to max
+        if (fleet.fuel < fleet.fuel_max) {
+            fleet.fuel = fleet.fuel_max;
+            try self.dirty_fleets.put(fleet.id, {});
+        }
     }
 
     fn checkNpcEncounter(self: *GameEngine, fleet: *Fleet) !void {
@@ -709,6 +782,40 @@ pub const GameEngine = struct {
                 .player_fleet_id = fleet.id,
                 .enemy_fleet_id = npc.id,
                 .sector = fleet.location,
+            } },
+        });
+    }
+
+    fn collectSalvage(self: *GameEngine, fleet: *Fleet) !void {
+        const key = fleet.location.toKey();
+        const ov = self.sector_overrides.getPtr(key) orelse return;
+        const salvage = ov.salvage orelse return;
+
+        const max_cargo = fleetCargoCapacity(fleet);
+        var remaining = max_cargo - (fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium);
+        if (remaining <= 0) return;
+
+        var collected = Resources{};
+        collected.metal = @min(salvage.metal, remaining);
+        remaining -= collected.metal;
+        collected.crystal = @min(salvage.crystal, remaining);
+        remaining -= collected.crystal;
+        collected.deuterium = @min(salvage.deuterium, remaining);
+
+        fleet.cargo.metal += collected.metal;
+        fleet.cargo.crystal += collected.crystal;
+        fleet.cargo.deuterium += collected.deuterium;
+
+        ov.salvage = null;
+        ov.salvage_despawn_tick = null;
+        try self.dirty_fleets.put(fleet.id, {});
+        try self.dirty_sectors.put(key, {});
+
+        try self.pending_events.append(self.allocator, .{
+            .tick = self.current_tick,
+            .kind = .{ .salvage_collected = .{
+                .fleet_id = fleet.id,
+                .resources = collected,
             } },
         });
     }

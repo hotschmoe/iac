@@ -184,7 +184,10 @@ pub const Network = struct {
                 self.sendCommandError(session, "Recall", err);
                 return;
             },
-            .attack => |_| {},
+            .attack => |a| self.engine.handleAttack(a.fleet_id, a.target_fleet_id) catch |err| {
+                self.sendCommandError(session, "Attack", err);
+                return;
+            },
             .stop => {},
             .scan => {},
         }
@@ -199,6 +202,7 @@ pub const Network = struct {
             error.NoResources => .no_resources,
             error.CargoFull => .cargo_full,
             error.InCombat => .on_cooldown,
+            error.InvalidTarget => .invalid_target,
             error.NoShips => .fleet_not_found,
             else => .invalid_command,
         };
