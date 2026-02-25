@@ -1,7 +1,7 @@
 # In Amber Clad — Technical Specification
 
 **Version:** 0.3.0
-**Status:** M2 in progress -- economy and progression implemented, pending playtesting
+**Status:** M2 complete. M3 in progress -- multiplayer (concurrent players, shared state, co-op combat)
 
 ---
 
@@ -601,10 +601,39 @@ CREATE TABLE explored_edges (
 
 Resources are stored as `i64 * 1000` internally for f32 precision.
 
-### 11.2 Deferred Tables (M2+)
+### 11.2 M2 Tables (Implemented)
 
 ```sql
--- Buildings and research tables deferred to M2
+CREATE TABLE buildings (
+    player_id INTEGER REFERENCES players(id),
+    building_type INTEGER NOT NULL,
+    level INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (player_id, building_type)
+);
+
+CREATE TABLE research (
+    player_id INTEGER REFERENCES players(id),
+    tech_type INTEGER NOT NULL,
+    level INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (player_id, tech_type)
+);
+
+CREATE TABLE build_queue (
+    player_id INTEGER REFERENCES players(id),
+    queue_type TEXT NOT NULL,
+    item_type INTEGER NOT NULL,
+    target_level INTEGER,
+    count INTEGER,
+    built INTEGER DEFAULT 0,
+    start_tick INTEGER NOT NULL,
+    end_tick INTEGER NOT NULL,
+    PRIMARY KEY (player_id, queue_type)
+);
+```
+
+### 11.3 Deferred Tables (M4+)
+
+```sql
 -- Auto-policies table deferred to M4
 ```
 
@@ -672,17 +701,110 @@ A human player can connect via TUI, see the amber hex map, navigate between sect
 
 ---
 
+## 13. Milestone 3 Detailed Scope: Multiplayer
+
+**Note:** Authentication, registration, and login are specified and implemented separately.
+
+### 13.1 Concurrent Player Support
+
+The server already handles multiple sessions, per-player data filtering, and unique player IDs. M3 closes the gaps for true concurrent play.
+
+**Homeworld placement:** Minimum 2-hex separation between homeworlds. `findHomeworldLocation()` must reject candidates that are within 1 hop of any existing homeworld (not just exact coordinate collision). The 100-attempt fallback must also respect this constraint -- if it cannot find a valid location after 100 attempts, reject the registration with an error rather than placing at a fixed coordinate.
+
+**Fleet cap:** Maximum 3 deployed fleets per player (server-enforced). Ships built at the shipyard dock at homeworld. When a deployed fleet returns to homeworld, all docked ships auto-merge into that fleet. If a player attempts to deploy a 4th fleet, the server rejects with an error indicating the cap has been reached and that a commander (existing fleet) must return to pick up new ships.
+
+TODO: Fleet manager UI for assigning docked ships to specific fleets. Defer to M4+.
+
+**Sector updates for multiple fleets:** The tick broadcast must include sector state for ALL of a player's fleet locations, not just the first fleet. Combined with sensor-revealed sectors from the homeworld, each player's sector update set is: `union(all fleet locations) + sensor_range(homeworld)`.
+
+### 13.2 Shared Sector State
+
+Sector state is already global (`sector_overrides` is a shared map). Harvesting depletion, NPC kills, salvage drops, and density changes are visible to all players whose sector update set includes that coordinate. No additional work needed for basic shared state -- the architecture is already correct.
+
+### 13.3 Player Visibility
+
+When building sector state for a tick, the server must populate `player_fleets` with a `FleetBrief` for every player fleet in that sector (excluding the receiving player's own fleets, which are sent separately via `fleet_updates`).
+
+**`FleetBrief` expansion:** Add ship class breakdown alongside the existing fields:
+
+```
+FleetBrief {
+    id: u64,
+    owner_name: []const u8,
+    ship_count: u16,
+    ship_classes: {scout: u16, corvette: u16, frigate: u16, cruiser: u16, hauler: u16}
+}
+```
+
+The server sends full detail. TUI clients display a summary line (e.g., "hotschmoe -- 4 ships"). JSON/LLM clients receive all fields and can use as much detail as they want.
+
+**Star map rendering:** Other players' fleets in a sector should be distinguishable from NPCs and the player's own fleets. Use a distinct symbol (e.g., `A` for allied fleet) on the hex map.
+
+### 13.4 Co-op Combat
+
+When multiple player fleets share a sector with hostile NPCs (or hostile NPCs enter a sector with multiple player fleets), combat resolves as a single engagement: all allied ships pooled on one side, all enemy ships on the other.
+
+**Mechanics:**
+- All player fleets in the sector are automatically allied (no PvP in M3).
+- Allied ships from all player fleets form a single attacker pool. Targeting follows the existing OGame rapid-fire mechanic -- each allied ship picks a random enemy target from the full enemy pool.
+- Enemy ships similarly target randomly across all allied ships.
+- Damage, destruction, and rapid-fire chains work identically to the existing single-fleet combat.
+- If an NPC patrol enters a sector during ongoing combat, it joins the enemy side immediately.
+
+**Salvage:** One salvage drop per destroyed enemy fleet, placed in the sector. First fleet to harvest collects it (no duplication).
+
+**Event reporting:** Combat events use collective language: "Allied forces destroyed 4 enemy scouts" rather than per-player attribution. All players with a fleet in the combat sector receive the event.
+
+### 13.5 Event Visibility
+
+Replace the `isEventRelevant` stub with scoped filtering:
+
+A player receives an event if **any** of the following are true:
+- The event involves the player's own fleet (combat, harvest, movement, ship destruction)
+- The event involves the player's homeworld (building completed, research completed, ship built)
+- The event occurs in a sector where the player has a fleet physically present (co-op combat, NPC patrol arrival, another player's harvest depletion)
+
+Events in sensor-revealed sectors (but without a fleet present) are NOT shown. Sensor range provides map visibility, not event visibility.
+
+Future: Global broadcast channel for major events (e.g., "[player] destroyed a level 3 fortress!") -- deferred.
+
+### 13.6 What's In (M3)
+
+- Homeworld minimum 2-hex separation
+- 3-fleet cap per player (server-enforced, error on exceeded)
+- Docked ship auto-merge on fleet return to homeworld
+- Sector updates for all fleet locations (not just first fleet)
+- `player_fleets` populated in sector state with expanded `FleetBrief` (ship class breakdown)
+- Other-player fleet rendering on star map and in sector info
+- Co-op combat (pooled allied ships vs pooled enemies, single engagement per sector)
+- Scoped event visibility (own fleet/homeworld + physically present sectors)
+
+### 13.7 What's Out (Deferred)
+
+- Chat (M3.5 or M4)
+- Fleet splitting / fleet manager UI (M4+)
+- Resource trade between players (M4+)
+- PvP combat (M5)
+- Sensor array active scan action with cooldown (M4+)
+- Global event broadcast for major achievements (M4+)
+
+### 13.8 Definition of Done (M3)
+
+Two or more human players can connect simultaneously via TUI, see each other's fleets on the star map when in the same sector, fight NPCs cooperatively in shared combat, and observe shared sector state (resource depletion, NPC kills). A JSON/LLM client can do the same. The server correctly scopes events, enforces the 3-fleet cap, and places homeworlds with minimum separation.
+
+---
+
 ## Appendix A: Open Questions
 
 1. **Hex rendering in terminal** — resolved: star map uses single-character symbols on an axial grid (`@`=fleet, `H`=home, `!`=hostile, terrain glyphs for resources, `-`=inner/outer ring boundary, `~`=outer/wandering boundary). Zone boundary rings are visible in fog and unexplored space as navigation aids. Windshield uses a node graph with the current sector at center and 6 direction slots connected by `/` `\` `-` lines, showing coordinates, exploration state, and resource summaries.
 
 2. **Policy condition language** — how expressive should this be? A simple enum of conditions with AND/OR might be enough. A mini expression language adds power but also parser complexity.
 
-3. **Fleet splitting** — can a player split a fleet into two? This adds tactical depth (send scouts ahead, keep main fleet back) but complicates the UI and state management. Defer to M3+?
+3. **Fleet splitting** — resolved: deferred to M4+. M3 enforces a 3-fleet cap with docked ship auto-merge. Fleet manager UI for assigning docked ships to specific fleets deferred to M4+.
 
 4. **Fog of war** — resolved: sectors you haven't visited are unexplored. The Sensor Array building reveals a BFS radius around the homeworld (range = building level hops, following connected edges). Revealed sectors appear on the star map with full terrain/resource/hostile info. Without a sensor array, players only see sectors where their fleets are located.
 
-5. **Resource trade** — can players trade resources with each other at the hub? This is a natural multiplayer feature but needs economic balancing.
+5. **Resource trade** — deferred to M4+. Natural multiplayer feature, needs economic balancing first.
 
 6. **Time acceleration** — for testing and development, should the server support variable tick rates? Useful for simulating long build times.
 

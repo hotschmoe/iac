@@ -148,13 +148,13 @@ The server evaluates these policies each tick when no explicit command is queued
 ### M1: Core Loop (Complete)
 Single player, client-server architecture over WebSocket. Hex grid with procedural generation and edge pruning. Movement, NPC combat (stochastic rapid-fire), resource harvesting. Amber TUI via zithril. JSON CLI interface for LLM agents. SQLite persistence via zqlite. Windshield hex node graph, star map with zoom levels, event log, NPC patrol AI, resource regeneration, emergency recall.
 
-### M2: Economy & Progression (In Progress)
+### M2: Economy & Progression (Complete)
 Homeworld buildings with leveled production (metal mine, crystal mine, deut synthesizer, shipyard, research lab, fuel depot, sensor array, defense grid). Ship construction via shipyard queue. 12-technology research tree gating ship classes and providing stat modifiers. All balance formulas centralized in `scaling.zig`.
 
 **Implemented:** `scaling.zig` as single source of truth for all production rates, build costs/times, prerequisites, research costs/times/prerequisites, and modifier functions. Building levels with `production_per_tick = base_rate * level * 1.1^level`. Research modifiers: fuel efficiency (-10%/lvl), extended tanks (+15%/lvl), reinforced hulls/shields/weapons (+10%/lvl), navigation (-1 tick cooldown/lvl), harvesting efficiency (+20%/lvl), emergency jump damage reduction (-5%/lvl). Ship stats baked at creation time with research bonuses (OGame model). Three independent queues (building, ship, research) processed each tick. Prerequisite chains enforced server-side. Cancel refunds 50% of remaining cost. DB persistence for buildings, research, and queues. Tab-based homeworld UI with card selection grid (Buildings/Shipyard/Research panels), prerequisite indicators, cost/time display, tech tree overlay, and queue status bar. Research levels wired from server to client. Full command routing for build/research/build_ship/cancel_build via WebSocket.
 
 ### M3: Multiplayer
-Multiple players in a shared universe. Shared sector state. Chat. Player visibility (see other fleets in your sector).
+Multiple players in a shared universe. Homeworld minimum 2-hex separation. 3-fleet cap with docked ship auto-merge. Shared sector state (depletion, NPC kills visible to all). Player visibility (see other fleets in your sector with ship class breakdown). Co-op combat (pooled allied ships vs pooled enemies). Scoped event visibility (own fleet/homeworld + sectors where fleet is present). Auth/registration handled separately.
 
 ### M4: Deep Systems
 Loot system (salvage, components, data fragments). Morning Light Mountain faction with scaling difficulty. Auto-action policy system. LLM agent reference implementation.
