@@ -205,6 +205,15 @@ pub const FleetBrief = struct {
     id: u64,
     owner_name: []const u8,
     ship_count: u16,
+    ship_classes: ShipClassCounts = .{},
+
+    pub const ShipClassCounts = struct {
+        scout: u16 = 0,
+        corvette: u16 = 0,
+        frigate: u16 = 0,
+        cruiser: u16 = 0,
+        hauler: u16 = 0,
+    };
 };
 
 pub const HomeworldState = struct {
@@ -332,16 +341,19 @@ pub const FleetArrivedEvent = struct {
 pub const BuildingCompletedEvent = struct {
     building_type: BuildingType,
     new_level: u8,
+    player_id: ?u64 = null,
 };
 
 pub const ResearchCompletedEvent = struct {
     tech: ResearchType,
     new_level: u8,
+    player_id: ?u64 = null,
 };
 
 pub const ShipBuiltEvent = struct {
     ship_class: ShipClass,
     count: u16,
+    player_id: ?u64 = null,
 };
 
 pub const AlertEvent = struct {
@@ -378,6 +390,7 @@ pub const ErrorCode = enum(u16) {
     ship_locked = 1012,
     no_shipyard = 1013,
     no_research_lab = 1014,
+    fleet_limit_reached = 1015,
     auth_failed = 2000,
     already_authenticated = 2001,
     server_error = 5000,

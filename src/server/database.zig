@@ -350,6 +350,18 @@ pub const Database = struct {
         return count;
     }
 
+    pub fn deleteFleet(self: *Database, fleet_id: u64) !void {
+        var del_ships = try self.db.prepare("DELETE FROM ships WHERE fleet_id = ?1");
+        defer del_ships.deinit();
+        try del_ships.bindInt(1, @intCast(fleet_id));
+        _ = try del_ships.step();
+
+        var del_fleet = try self.db.prepare("DELETE FROM fleets WHERE id = ?1");
+        defer del_fleet.deinit();
+        try del_fleet.bindInt(1, @intCast(fleet_id));
+        _ = try del_fleet.step();
+    }
+
     pub fn saveSectorOverride(self: *Database, q: i16, r: i16, ov: engine_mod.SectorOverride) !void {
         var stmt = try self.db.prepare(
             \\INSERT OR REPLACE INTO sectors_modified
