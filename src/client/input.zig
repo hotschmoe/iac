@@ -16,6 +16,10 @@ pub const InputAction = union(enum) {
     center_fleet: void,
     toggle_info: void,
     toggle_keybinds: void,
+    homeworld_build: shared.protocol.BuildingType,
+    homeworld_research: shared.protocol.ResearchType,
+    homeworld_ship: shared.constants.ShipClass,
+    homeworld_cancel: shared.scaling.QueueType,
 };
 
 pub fn mapKey(key: Key, state: *const ClientState) InputAction {
@@ -38,10 +42,13 @@ pub fn mapKey(key: Key, state: *const ClientState) InputAction {
 }
 
 fn mapChar(c: u21, state: *const ClientState) InputAction {
+    if (state.current_view == .homeworld) return mapHomeworldChar(c);
+
     return switch (c) {
         'q' => .{ .quit = {} },
         'w' => .{ .switch_view = .windshield },
         'm' => .{ .switch_view = .star_map },
+        'b' => .{ .switch_view = .homeworld },
         '`' => .{ .switch_view = .command_center },
 
         // Movement keys: map 1-6 to the sector's connected exits
@@ -57,6 +64,49 @@ fn mapChar(c: u21, state: *const ClientState) InputAction {
         'z' => mapZoomOut(state),
         'x' => mapZoomIn(state),
         'c' => .{ .center_fleet = {} },
+
+        else => .{ .none = {} },
+    };
+}
+
+fn mapHomeworldChar(c: u21) InputAction {
+    return switch (c) {
+        'q' => .{ .quit = {} },
+        'w' => .{ .switch_view = .windshield },
+        'm' => .{ .switch_view = .star_map },
+        '`' => .{ .switch_view = .command_center },
+        '?' => .{ .toggle_keybinds = {} },
+
+        // Building hotkeys: 1-8 map to BuildingType enum values
+        '1' => .{ .homeworld_build = .metal_mine },
+        '2' => .{ .homeworld_build = .crystal_mine },
+        '3' => .{ .homeworld_build = .deuterium_synthesizer },
+        '4' => .{ .homeworld_build = .shipyard },
+        '5' => .{ .homeworld_build = .research_lab },
+        '6' => .{ .homeworld_build = .fuel_depot },
+        '7' => .{ .homeworld_build = .sensor_array },
+        '8' => .{ .homeworld_build = .defense_grid },
+
+        // Ship build: s + class letter
+        'S' => .{ .homeworld_ship = .scout },
+        'C' => .{ .homeworld_ship = .corvette },
+        'F' => .{ .homeworld_ship = .frigate },
+        'R' => .{ .homeworld_ship = .cruiser },
+        'H' => .{ .homeworld_ship = .hauler },
+
+        // Research
+        'r' => .{ .homeworld_research = .fuel_efficiency },
+        'e' => .{ .homeworld_research = .extended_fuel_tanks },
+        'h' => .{ .homeworld_research = .reinforced_hulls },
+        'a' => .{ .homeworld_research = .advanced_shields },
+        'p' => .{ .homeworld_research = .weapons_research },
+        'n' => .{ .homeworld_research = .navigation },
+        'v' => .{ .homeworld_research = .harvesting_efficiency },
+
+        // Cancel queues
+        'x' => .{ .homeworld_cancel = .building },
+        'X' => .{ .homeworld_cancel = .ship },
+        'z' => .{ .homeworld_cancel = .research },
 
         else => .{ .none = {} },
     };

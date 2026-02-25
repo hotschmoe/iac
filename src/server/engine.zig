@@ -7,6 +7,9 @@ const Hex = shared.Hex;
 const Resources = shared.constants.Resources;
 const ShipClass = shared.constants.ShipClass;
 const WorldGen = shared.world.WorldGen;
+const scaling = shared.scaling;
+const BuildingType = scaling.BuildingType;
+const ResearchType = scaling.ResearchType;
 
 const log = std.log.scoped(.engine);
 
@@ -91,6 +94,7 @@ pub const GameEngine = struct {
         try self.processSectorRegen();
         try self.processNpcBehavior();
         try self.processHomeworlds();
+        try self.processBuildQueues();
         try self.processSalvageDespawn();
         try self.processCooldowns();
     }
@@ -204,7 +208,9 @@ pub const GameEngine = struct {
             const sector_key = fleet.location.toKey();
             const densities = SectorOverride.effectiveDensities(self.sector_overrides.get(sector_key), template);
 
-            const harvest_power = fleetHarvestPower(fleet);
+            const player_data = self.players.get(fleet.owner_id);
+            const research = if (player_data) |p| p.research else null;
+            const harvest_power = fleetHarvestPower(fleet, research);
             const max_cargo = fleetCargoCapacity(fleet);
             var remaining = max_cargo - (fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium);
 
@@ -402,11 +408,73 @@ pub const GameEngine = struct {
         while (iter.next()) |entry| {
             var player = entry.value_ptr;
 
-            // TODO: calculate from building levels (M2)
-            player.resources.metal += 0.5;
-            player.resources.crystal += 0.3;
-            player.resources.deuterium += 0.1;
+            player.resources.metal += scaling.productionPerTick(.metal_mine, player.buildings.metal_mine);
+            player.resources.crystal += scaling.productionPerTick(.crystal_mine, player.buildings.crystal_mine);
+            player.resources.deuterium += scaling.productionPerTick(.deuterium_synthesizer, player.buildings.deuterium_synthesizer);
             try self.dirty_players.put(player.id, {});
+        }
+    }
+
+    fn processBuildQueues(self: *GameEngine) !void {
+        var iter = self.players.iterator();
+        while (iter.next()) |entry| {
+            var player = entry.value_ptr;
+
+            // Building queue
+            if (player.building_queue) |q| {
+                if (self.current_tick >= q.end_tick) {
+                    player.buildings.set(q.building, q.target_level);
+                    player.building_queue = null;
+                    try self.dirty_players.put(player.id, {});
+                    try self.pending_events.append(self.allocator, .{
+                        .tick = self.current_tick,
+                        .kind = .{ .building_completed = .{
+                            .building_type = q.building,
+                            .new_level = q.target_level,
+                        } },
+                    });
+                }
+            }
+
+            // Ship queue
+            if (player.ship_queue) |*q| {
+                if (self.current_tick >= q.end_tick) {
+                    try self.addShipToHomeworld(player, q.ship_class);
+                    q.built += 1;
+                    try self.dirty_players.put(player.id, {});
+                    try self.pending_events.append(self.allocator, .{
+                        .tick = self.current_tick,
+                        .kind = .{ .ship_built = .{
+                            .ship_class = q.ship_class,
+                            .count = 1,
+                        } },
+                    });
+
+                    if (q.built >= q.count) {
+                        player.ship_queue = null;
+                    } else {
+                        // Advance end_tick for next ship
+                        const per_ship = scaling.shipBuildTime(q.ship_class, player.buildings.shipyard);
+                        q.end_tick = self.current_tick + per_ship;
+                    }
+                }
+            }
+
+            // Research queue
+            if (player.research_queue) |q| {
+                if (self.current_tick >= q.end_tick) {
+                    player.research.set(q.tech, q.target_level);
+                    player.research_queue = null;
+                    try self.dirty_players.put(player.id, {});
+                    try self.pending_events.append(self.allocator, .{
+                        .tick = self.current_tick,
+                        .kind = .{ .research_completed = .{
+                            .tech = q.tech,
+                            .new_level = q.target_level,
+                        } },
+                    });
+                }
+            }
         }
     }
 
@@ -457,7 +525,8 @@ pub const GameEngine = struct {
 
         const fleet_id = self.nextId();
 
-        const scout_stats = ShipClass.scout.baseStats();
+        const scout_base = ShipClass.scout.baseStats();
+        const scout_stats = scaling.applyResearchToStats(scout_base, player.research);
         var fleet = Fleet{
             .id = fleet_id,
             .owner_id = player_id,
@@ -513,13 +582,15 @@ pub const GameEngine = struct {
         }
         if (!valid) return error.NoConnection;
 
-        const fuel_cost = fleetFuelCost(fleet);
+        const player = self.players.get(fleet.owner_id);
+        const research = if (player) |p| p.research else null;
+        const fuel_cost = fleetFuelCost(fleet, research);
         if (fleet.fuel < fuel_cost) return error.InsufficientFuel;
 
         fleet.fuel -= fuel_cost;
         fleet.state = .moving;
         fleet.move_target = target;
-        fleet.move_cooldown = fleetMoveCooldown(fleet);
+        fleet.move_cooldown = fleetMoveCooldown(fleet, research);
         fleet.action_cooldown = fleet.move_cooldown;
         try self.dirty_fleets.put(fleet_id, {});
     }
@@ -592,14 +663,16 @@ pub const GameEngine = struct {
 
         const dist = Hex.distance(fleet.location, player.homeworld);
 
-        const fuel_cost = fleetFuelCost(fleet) * @as(f32, @floatFromInt(dist)) * shared.constants.RECALL_FUEL_MULTIPLIER;
+        const fuel_cost = fleetFuelCost(fleet, player.research) * @as(f32, @floatFromInt(dist)) * shared.constants.RECALL_FUEL_MULTIPLIER;
         if (fleet.fuel < fuel_cost) return error.InsufficientFuel;
 
         fleet.fuel -= fuel_cost;
 
+        const base_damage_chance = shared.constants.RECALL_DAMAGE_CHANCE_PER_HEX * @as(f32, @floatFromInt(dist));
+        const ej_reduction = scaling.recallDamageReduction(player.research.emergency_jump);
         const damage_chance = @min(
             shared.constants.RECALL_DAMAGE_CHANCE_CAP,
-            shared.constants.RECALL_DAMAGE_CHANCE_PER_HEX * @as(f32, @floatFromInt(dist)),
+            @max(0, base_damage_chance - ej_reduction),
         );
 
         var rng = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))));
@@ -636,6 +709,180 @@ pub const GameEngine = struct {
         fleet.move_target = null;
 
         try self.dockFleet(fleet, player);
+    }
+
+    pub fn handleBuild(self: *GameEngine, player_id: u64, building_type: BuildingType) !void {
+        const player = self.players.getPtr(player_id) orelse return error.PlayerNotFound;
+
+        if (player.building_queue != null) return error.QueueFull;
+
+        const current_level = player.buildings.get(building_type);
+        if (current_level >= scaling.MAX_BUILDING_LEVEL) return error.MaxLevelReached;
+
+        if (!scaling.buildingPrerequisitesMet(building_type, player.buildings)) return error.PrerequisitesNotMet;
+
+        const target_level = current_level + 1;
+        const cost = scaling.buildingCost(building_type, target_level);
+        if (!player.resources.canAfford(cost)) return error.InsufficientResources;
+
+        player.resources = player.resources.sub(cost);
+        const duration = scaling.buildingTime(building_type, target_level);
+        player.building_queue = .{
+            .building = building_type,
+            .target_level = target_level,
+            .start_tick = self.current_tick,
+            .end_tick = self.current_tick + duration,
+        };
+        try self.dirty_players.put(player_id, {});
+    }
+
+    pub fn handleResearch(self: *GameEngine, player_id: u64, tech: ResearchType) !void {
+        const player = self.players.getPtr(player_id) orelse return error.PlayerNotFound;
+
+        if (player.research_queue != null) return error.QueueFull;
+        if (player.buildings.research_lab == 0) return error.NoResearchLab;
+
+        const current_level = player.research.get(tech);
+        if (current_level >= scaling.researchMaxLevel(tech)) return error.MaxLevelReached;
+
+        if (!scaling.researchPrerequisitesMet(tech, player.buildings, player.research)) return error.PrerequisitesNotMet;
+
+        const target_level = current_level + 1;
+        const cost = scaling.researchCost(tech, target_level);
+        if (!player.resources.canAfford(cost)) return error.InsufficientResources;
+
+        player.resources = player.resources.sub(cost);
+        const duration = scaling.researchTime(tech, target_level);
+        player.research_queue = .{
+            .tech = tech,
+            .target_level = target_level,
+            .start_tick = self.current_tick,
+            .end_tick = self.current_tick + duration,
+        };
+        try self.dirty_players.put(player_id, {});
+    }
+
+    pub fn handleBuildShip(self: *GameEngine, player_id: u64, ship_class: ShipClass, count: u16) !void {
+        const player = self.players.getPtr(player_id) orelse return error.PlayerNotFound;
+
+        if (player.ship_queue != null) return error.QueueFull;
+        if (player.buildings.shipyard == 0) return error.NoShipyard;
+
+        if (!scaling.shipClassUnlocked(ship_class, player.research)) return error.ShipLocked;
+
+        const unit_cost = ship_class.buildCost();
+        const total_cost = Resources{
+            .metal = unit_cost.metal * @as(f32, @floatFromInt(count)),
+            .crystal = unit_cost.crystal * @as(f32, @floatFromInt(count)),
+            .deuterium = unit_cost.deuterium * @as(f32, @floatFromInt(count)),
+        };
+        if (!player.resources.canAfford(total_cost)) return error.InsufficientResources;
+
+        player.resources = player.resources.sub(total_cost);
+        const per_ship = scaling.shipBuildTime(ship_class, player.buildings.shipyard);
+        player.ship_queue = .{
+            .ship_class = ship_class,
+            .count = count,
+            .built = 0,
+            .start_tick = self.current_tick,
+            .end_tick = self.current_tick + per_ship,
+        };
+        try self.dirty_players.put(player_id, {});
+    }
+
+    pub fn handleCancelBuild(self: *GameEngine, player_id: u64, queue_type: scaling.QueueType) !void {
+        const player = self.players.getPtr(player_id) orelse return error.PlayerNotFound;
+
+        switch (queue_type) {
+            .building => {
+                const q = player.building_queue orelse return error.NoResources;
+                const cost = scaling.buildingCost(q.building, q.target_level);
+                player.resources = player.resources.add(scaleResources(cost, scaling.CANCEL_REFUND_FRACTION));
+                player.building_queue = null;
+            },
+            .ship => {
+                const q = player.ship_queue orelse return error.NoResources;
+                const unit_cost = q.ship_class.buildCost();
+                const remaining: f32 = @floatFromInt(q.count - q.built);
+                const refund_cost = Resources{
+                    .metal = unit_cost.metal * remaining,
+                    .crystal = unit_cost.crystal * remaining,
+                    .deuterium = unit_cost.deuterium * remaining,
+                };
+                player.resources = player.resources.add(scaleResources(refund_cost, scaling.CANCEL_REFUND_FRACTION));
+                player.ship_queue = null;
+            },
+            .research => {
+                const q = player.research_queue orelse return error.NoResources;
+                const cost = scaling.researchCost(q.tech, q.target_level);
+                player.resources = player.resources.add(scaleResources(cost, scaling.CANCEL_REFUND_FRACTION));
+                player.research_queue = null;
+            },
+        }
+        try self.dirty_players.put(player_id, {});
+    }
+
+    fn addShipToHomeworld(self: *GameEngine, player: *Player, ship_class: ShipClass) !void {
+        // Find existing docked fleet at homeworld, or create one
+        var docked_fleet: ?*Fleet = null;
+        var fleet_iter = self.fleets.iterator();
+        while (fleet_iter.next()) |f_entry| {
+            const fleet = f_entry.value_ptr;
+            if (fleet.owner_id == player.id and fleet.location.eql(player.homeworld)) {
+                docked_fleet = fleet;
+                break;
+            }
+        }
+
+        if (docked_fleet == null) {
+            const fleet_id = self.nextId();
+            const new_fleet = Fleet{
+                .id = fleet_id,
+                .owner_id = player.id,
+                .location = player.homeworld,
+                .state = .idle,
+                .ships = undefined,
+                .ship_count = 0,
+                .cargo = .{},
+                .fuel = 0,
+                .fuel_max = 0,
+                .move_cooldown = 0,
+                .action_cooldown = 0,
+                .move_target = null,
+                .idle_ticks = 0,
+            };
+            try self.fleets.put(fleet_id, new_fleet);
+            docked_fleet = self.fleets.getPtr(fleet_id);
+        }
+
+        const fleet = docked_fleet.?;
+        if (fleet.ship_count >= MAX_SHIPS_PER_FLEET) return;
+
+        const base_stats = ship_class.baseStats();
+        const stats = scaling.applyResearchToStats(base_stats, player.research);
+
+        fleet.ships[fleet.ship_count] = Ship{
+            .id = self.nextId(),
+            .class = ship_class,
+            .hull = stats.hull,
+            .hull_max = stats.hull,
+            .shield = stats.shield,
+            .shield_max = stats.shield,
+            .weapon_power = stats.weapon,
+            .speed = stats.speed,
+        };
+        fleet.ship_count += 1;
+
+        // Update fleet fuel capacity
+        var total_fuel: f32 = 0;
+        for (fleet.ships[0..fleet.ship_count]) |ship| {
+            total_fuel += @floatFromInt(ship.class.baseStats().fuel);
+        }
+        const fuel_cap = scaling.fuelCapacityModifier(player.research.extended_fuel_tanks);
+        fleet.fuel_max = total_fuel * fuel_cap;
+        fleet.fuel = fleet.fuel_max;
+
+        try self.dirty_fleets.put(fleet.id, {});
     }
 
     fn findHomeworldLocation(self: *GameEngine) Hex {
@@ -856,7 +1103,14 @@ pub const GameEngine = struct {
         var players = try self.db.loadPlayers();
         defer players.deinit(self.allocator);
         for (players.items) |player| {
-            try self.players.put(player.id, player);
+            var p = player;
+            p.buildings = try self.db.loadBuildings(player.id);
+            p.research = try self.db.loadResearch(player.id);
+            const queues = try self.db.loadBuildQueues(player.id);
+            p.building_queue = queues.building;
+            p.ship_queue = queues.ship;
+            p.research_queue = queues.research;
+            try self.players.put(p.id, p);
         }
 
         var fleets = try self.db.loadFleets();
@@ -908,6 +1162,9 @@ pub const GameEngine = struct {
             const player_id = entry.key_ptr.*;
             if (self.players.get(player_id)) |player| {
                 try self.db.savePlayer(player);
+                try self.db.saveBuildings(player_id, player.buildings);
+                try self.db.saveResearch(player_id, player.research);
+                try self.db.saveBuildQueue(player_id, player);
             }
         }
 
@@ -940,24 +1197,33 @@ pub const GameEngine = struct {
     }
 };
 
-fn fleetMoveCooldown(fleet: *const Fleet) u16 {
+fn fleetMoveCooldown(fleet: *const Fleet, research: ?scaling.ResearchLevels) u16 {
     var min_speed: u8 = 255;
     for (fleet.ships[0..fleet.ship_count]) |ship| {
         if (ship.speed < min_speed) min_speed = ship.speed;
     }
     if (min_speed == 0) return shared.constants.MOVE_BASE_COOLDOWN;
-    return @intCast(@as(u32, shared.constants.MOVE_BASE_COOLDOWN) * 10 / @as(u32, min_speed));
+    const base: u16 = @intCast(@as(u32, shared.constants.MOVE_BASE_COOLDOWN) * 10 / @as(u32, min_speed));
+    if (research) |r| {
+        const reduction = scaling.navigationCooldownReduction(r.navigation);
+        return base -| reduction;
+    }
+    return base;
 }
 
-fn fleetFuelCost(fleet: *const Fleet) f32 {
+fn fleetFuelCost(fleet: *const Fleet, research: ?scaling.ResearchLevels) f32 {
     var total_mass: f32 = 0;
     for (fleet.ships[0..fleet.ship_count]) |ship| {
         total_mass += ship.hull_max;
     }
-    return total_mass * shared.constants.FUEL_RATE_PER_MASS;
+    const base = total_mass * shared.constants.FUEL_RATE_PER_MASS;
+    if (research) |r| {
+        return base * scaling.fuelRateModifier(r.fuel_efficiency);
+    }
+    return base;
 }
 
-fn fleetHarvestPower(fleet: *const Fleet) f32 {
+fn fleetHarvestPower(fleet: *const Fleet, research: ?scaling.ResearchLevels) f32 {
     var power: f32 = 0;
     for (fleet.ships[0..fleet.ship_count]) |ship| {
         power += switch (ship.class) {
@@ -966,7 +1232,18 @@ fn fleetHarvestPower(fleet: *const Fleet) f32 {
             else => 0.5,
         };
     }
+    if (research) |r| {
+        return power * scaling.harvestRateModifier(r.harvesting_efficiency);
+    }
     return power;
+}
+
+fn scaleResources(res: Resources, fraction: f32) Resources {
+    return .{
+        .metal = res.metal * fraction,
+        .crystal = res.crystal * fraction,
+        .deuterium = res.deuterium * fraction,
+    };
 }
 
 fn fleetCargoCapacity(fleet: *const Fleet) f32 {
@@ -986,7 +1263,33 @@ pub const Player = struct {
     name: []const u8,
     resources: Resources,
     homeworld: Hex,
-    // TODO: building levels, research levels
+    buildings: scaling.BuildingLevels = .{},
+    research: scaling.ResearchLevels = .{},
+    building_queue: ?BuildQueueEntry = null,
+    ship_queue: ?ShipQueueEntry = null,
+    research_queue: ?ResearchQueueEntry = null,
+};
+
+pub const BuildQueueEntry = struct {
+    building: BuildingType,
+    target_level: u8,
+    start_tick: u64,
+    end_tick: u64,
+};
+
+pub const ShipQueueEntry = struct {
+    ship_class: ShipClass,
+    count: u16,
+    built: u16 = 0,
+    start_tick: u64,
+    end_tick: u64,
+};
+
+pub const ResearchQueueEntry = struct {
+    tech: ResearchType,
+    target_level: u8,
+    start_tick: u64,
+    end_tick: u64,
 };
 
 pub const Fleet = struct {

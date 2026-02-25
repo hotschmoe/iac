@@ -11,6 +11,7 @@ const wz = @import("webzocket");
 
 const GameEngine = engine_mod.GameEngine;
 const protocol = shared.protocol;
+const scaling = shared.scaling;
 
 const log = std.log.scoped(.network);
 
@@ -98,6 +99,12 @@ pub const Network = struct {
                 sector_update = try buildSectorState(alloc, eng, fleet_updates[0].location);
             }
 
+            const player_data = eng.players.get(player_id);
+            const hw_update: ?protocol.HomeworldState = if (player_data) |p|
+                try buildHomeworldState(alloc, eng, &p)
+            else
+                null;
+
             var player_events = std.ArrayList(protocol.GameEvent).empty;
             for (events) |event| {
                 if (isEventRelevant(event, player_id, eng)) {
@@ -110,6 +117,7 @@ pub const Network = struct {
                     .tick = eng.current_tick,
                     .fleet_updates = if (fleet_updates.len > 0) fleet_updates else null,
                     .sector_update = sector_update,
+                    .homeworld_update = hw_update,
                     .events = if (player_events.items.len > 0) player_events.items else null,
                 },
             };
@@ -192,6 +200,34 @@ pub const Network = struct {
                 self.sendCommandError(session, "Attack", err);
                 return;
             },
+            .build => |b| {
+                const pid = session.player_id orelse return;
+                self.engine.handleBuild(pid, b.building_type) catch |err| {
+                    self.sendCommandError(session, "Build", err);
+                    return;
+                };
+            },
+            .research => |r| {
+                const pid = session.player_id orelse return;
+                self.engine.handleResearch(pid, r.tech) catch |err| {
+                    self.sendCommandError(session, "Research", err);
+                    return;
+                };
+            },
+            .build_ship => |bs| {
+                const pid = session.player_id orelse return;
+                self.engine.handleBuildShip(pid, bs.ship_class, bs.count) catch |err| {
+                    self.sendCommandError(session, "BuildShip", err);
+                    return;
+                };
+            },
+            .cancel_build => |cb| {
+                const pid = session.player_id orelse return;
+                self.engine.handleCancelBuild(pid, cb.queue_type) catch |err| {
+                    self.sendCommandError(session, "Cancel", err);
+                    return;
+                };
+            },
             .stop => {},
             .scan => {},
         }
@@ -208,6 +244,13 @@ pub const Network = struct {
             error.InCombat => .on_cooldown,
             error.InvalidTarget => .invalid_target,
             error.NoShips => .fleet_not_found,
+            error.PrerequisitesNotMet => .prerequisites_not_met,
+            error.MaxLevelReached => .max_level_reached,
+            error.QueueFull => .queue_full,
+            error.ShipLocked => .ship_locked,
+            error.NoShipyard => .no_shipyard,
+            error.NoResearchLab => .no_research_lab,
+            error.InsufficientResources => .no_resources,
             else => .invalid_command,
         };
 
@@ -233,6 +276,8 @@ pub const Network = struct {
             try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, fs.location));
         }
 
+        const hw_state = try buildHomeworldState(alloc, self.engine, &player);
+
         const msg = protocol.ServerMessage{
             .full_state = .{
                 .tick = self.engine.current_tick,
@@ -243,11 +288,7 @@ pub const Network = struct {
                     .homeworld = player.homeworld,
                 },
                 .fleets = fleet_states,
-                .homeworld = .{
-                    .location = player.homeworld,
-                    .buildings = &.{},
-                    .docked_ships = &.{},
-                },
+                .homeworld = hw_state,
                 .known_sectors = known_sectors.items,
             },
         };
@@ -373,6 +414,71 @@ pub const Network = struct {
             .connections = try alloc.dupe(shared.Hex, neighbors.slice()),
             .hostiles = if (hostile_list.items.len > 0) hostile_list.items else null,
             .salvage = if (override) |o| o.salvage else null,
+        };
+    }
+
+    fn buildHomeworldState(alloc: std.mem.Allocator, eng: *GameEngine, player: *const engine_mod.Player) !protocol.HomeworldState {
+        // Build building states
+        const bt_fields = @typeInfo(scaling.BuildingType).@"enum".fields;
+        var buildings = try alloc.alloc(protocol.BuildingState, bt_fields.len);
+        inline for (bt_fields, 0..) |_, i| {
+            const bt: scaling.BuildingType = @enumFromInt(i);
+            buildings[i] = .{
+                .building_type = bt,
+                .level = player.buildings.get(bt),
+            };
+        }
+
+        // Convert queue entries to wire types
+        const build_queue: ?protocol.BuildQueueItem = if (player.building_queue) |q| .{
+            .building_type = q.building,
+            .target_level = q.target_level,
+            .start_tick = q.start_tick,
+            .end_tick = q.end_tick,
+        } else null;
+
+        const shipyard_queue: ?protocol.ShipyardQueueItem = if (player.ship_queue) |q| .{
+            .ship_class = q.ship_class,
+            .count = q.count,
+            .built = q.built,
+            .start_tick = q.start_tick,
+            .end_tick = q.end_tick,
+        } else null;
+
+        const research_active: ?protocol.ResearchItem = if (player.research_queue) |q| .{
+            .tech = q.tech,
+            .target_level = q.target_level,
+            .start_tick = q.start_tick,
+            .end_tick = q.end_tick,
+        } else null;
+
+        // Collect docked ships at homeworld
+        var docked_ships = std.ArrayList(protocol.ShipState).empty;
+        var fleet_iter = eng.fleets.iterator();
+        while (fleet_iter.next()) |f_entry| {
+            const fleet = f_entry.value_ptr;
+            if (fleet.owner_id == player.id and fleet.location.eql(player.homeworld)) {
+                for (fleet.ships[0..fleet.ship_count]) |ship| {
+                    try docked_ships.append(alloc, .{
+                        .id = ship.id,
+                        .class = ship.class,
+                        .hull = ship.hull,
+                        .hull_max = ship.hull_max,
+                        .shield = ship.shield,
+                        .shield_max = ship.shield_max,
+                        .weapon_power = ship.weapon_power,
+                    });
+                }
+            }
+        }
+
+        return .{
+            .location = player.homeworld,
+            .buildings = buildings,
+            .build_queue = build_queue,
+            .shipyard_queue = shipyard_queue,
+            .research_active = research_active,
+            .docked_ships = docked_ships.items,
         };
     }
 

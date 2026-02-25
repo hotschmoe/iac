@@ -5,12 +5,15 @@
 const std = @import("std");
 const hex = @import("hex.zig");
 const constants = @import("constants.zig");
+pub const scaling = @import("scaling.zig");
 
 pub const Hex = hex.Hex;
 pub const Resources = constants.Resources;
 pub const ShipClass = constants.ShipClass;
 pub const TerrainType = constants.TerrainType;
 pub const Density = constants.Density;
+pub const BuildingType = scaling.BuildingType;
+pub const ResearchType = scaling.ResearchType;
 
 // ── Client → Server Messages ──────────────────────────────────────
 
@@ -32,6 +35,10 @@ pub const Command = union(enum) {
     attack: AttackCommand,
     recall: RecallCommand,
     collect_salvage: CollectSalvageCommand,
+    build: BuildCommand,
+    research: ResearchCommand,
+    build_ship: BuildShipCommand,
+    cancel_build: CancelBuildCommand,
     stop: void, // cancel current action
     scan: void,
 
@@ -56,6 +63,23 @@ pub const Command = union(enum) {
 
     pub const CollectSalvageCommand = struct {
         fleet_id: u64,
+    };
+
+    pub const BuildCommand = struct {
+        building_type: BuildingType,
+    };
+
+    pub const ResearchCommand = struct {
+        tech: ResearchType,
+    };
+
+    pub const BuildShipCommand = struct {
+        ship_class: ShipClass,
+        count: u16 = 1,
+    };
+
+    pub const CancelBuildCommand = struct {
+        queue_type: scaling.QueueType,
     };
 };
 
@@ -196,29 +220,7 @@ pub const BuildingState = struct {
     level: u8,
 };
 
-pub const BuildingType = enum {
-    metal_mine,
-    crystal_mine,
-    deuterium_synthesizer,
-    shipyard,
-    research_lab,
-    fuel_depot,
-    sensor_array,
-    defense_grid,
-
-    pub fn label(self: BuildingType) []const u8 {
-        return switch (self) {
-            .metal_mine => "Metal Mine",
-            .crystal_mine => "Crystal Mine",
-            .deuterium_synthesizer => "Deut Synthesizer",
-            .shipyard => "Shipyard",
-            .research_lab => "Research Lab",
-            .fuel_depot => "Fuel Depot",
-            .sensor_array => "Sensor Array",
-            .defense_grid => "Defense Grid",
-        };
-    }
-};
+// BuildingType is imported from scaling.zig (re-exported above)
 
 pub const BuildQueueItem = struct {
     building_type: BuildingType,
@@ -236,7 +238,7 @@ pub const ShipyardQueueItem = struct {
 };
 
 pub const ResearchItem = struct {
-    tech: []const u8,
+    tech: ResearchType,
     target_level: u8,
     start_tick: u64,
     end_tick: u64,
@@ -259,6 +261,9 @@ pub const EventKind = union(enum) {
     combat_ended: CombatEndedEvent,
     salvage_collected: SalvageCollectedEvent,
     fleet_arrived: FleetArrivedEvent,
+    building_completed: BuildingCompletedEvent,
+    research_completed: ResearchCompletedEvent,
+    ship_built: ShipBuiltEvent,
     alert: AlertEvent,
 };
 
@@ -317,6 +322,21 @@ pub const FleetArrivedEvent = struct {
     sector: Hex,
 };
 
+pub const BuildingCompletedEvent = struct {
+    building_type: BuildingType,
+    new_level: u8,
+};
+
+pub const ResearchCompletedEvent = struct {
+    tech: ResearchType,
+    new_level: u8,
+};
+
+pub const ShipBuiltEvent = struct {
+    ship_class: ShipClass,
+    count: u16,
+};
+
 pub const AlertEvent = struct {
     level: AlertLevel,
     message: []const u8,
@@ -345,6 +365,12 @@ pub const ErrorCode = enum(u16) {
     not_in_sector = 1006,
     no_resources = 1007,
     cargo_full = 1008,
+    prerequisites_not_met = 1009,
+    max_level_reached = 1010,
+    queue_full = 1011,
+    ship_locked = 1012,
+    no_shipyard = 1013,
+    no_research_lab = 1014,
     auth_failed = 2000,
     already_authenticated = 2001,
     server_error = 5000,

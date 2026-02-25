@@ -2,6 +2,7 @@ const std = @import("std");
 const shared = @import("shared");
 const zithril = @import("zithril");
 const State = @import("state.zig");
+const scaling = shared.scaling;
 
 const ClientState = State.ClientState;
 
@@ -42,6 +43,7 @@ pub fn view(state: *ClientState, frame: *Frame) void {
         .command_center => renderCommandCenter(state, frame, rows.get(1)),
         .windshield => renderWindshield(state, frame, rows.get(1)),
         .star_map => renderStarMap(state, frame, rows.get(1)),
+        .homeworld => renderHomeworld(state, frame, rows.get(1)),
     }
 
     renderFooter(state, frame, rows.get(2));
@@ -58,6 +60,7 @@ fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
             .command_center => "COMMAND CENTER",
             .windshield => "WINDSHIELD",
             .star_map => "STAR MAP",
+            .homeworld => "HOMEWORLD",
         },
     }) catch " IN AMBER CLAD v0.1";
 
@@ -71,9 +74,10 @@ fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
 
 fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
     const text: []const u8 = switch (state.current_view) {
-        .command_center => " CMD CENTER | [w] Windshield  [m] Map  [?] Keys",
-        .windshield => " WINDSHIELD | [1-6] Move  [i] Info  [?] Keys",
-        .star_map => " STAR MAP | [Arrows] Scroll  [z/x] Zoom  [?] Keys",
+        .command_center => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
+        .windshield => " WINDSHIELD | [1-6] Move  [i] Info  [b] Base  [?] Keys",
+        .star_map => " STAR MAP | [Arrows] Scroll  [z/x] Zoom  [b] Base  [?] Keys",
+        .homeworld => " HOMEWORLD | [1-8] Build  [SCFRH] Ship  [x/X/z] Cancel  [?] Keys",
     };
     frame.render(Paragraph{
         .text = text,
@@ -170,6 +174,9 @@ fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
         .ship_destroyed => |e| std.fmt.bufPrint(slice, " T{d}: {s} destroyed\n", .{ event.tick, e.ship_class.label() }),
         .combat_round => |e| std.fmt.bufPrint(slice, " T{d}: Hit for {d:.0} dmg ({d:.0} absorbed)\n", .{ event.tick, e.hull_damage, e.shield_absorbed }),
         .fleet_destroyed => |e| std.fmt.bufPrint(slice, " T{d}: {s} fleet destroyed!\n", .{ event.tick, if (e.is_npc) "Enemy" else "Your" }),
+        .building_completed => |e| std.fmt.bufPrint(slice, " T{d}: {s} upgraded to Lv{d}\n", .{ event.tick, e.building_type.label(), e.new_level }),
+        .research_completed => |e| std.fmt.bufPrint(slice, " T{d}: {s} {d} researched\n", .{ event.tick, e.tech.label(), e.new_level }),
+        .ship_built => |e| std.fmt.bufPrint(slice, " T{d}: {s} built\n", .{ event.tick, e.ship_class.label() }),
         .alert => |e| std.fmt.bufPrint(slice, " T{d}: [{s}] {s}\n", .{ event.tick, @tagName(e.level), e.message }),
         else => std.fmt.bufPrint(slice, " T{d}: Event\n", .{event.tick}),
     } catch return error.NoSpaceLeft;
@@ -407,6 +414,7 @@ fn renderKeybinds(frame: *Frame, area: Rect) void {
         " Esc       Command Center\n" ++
         " w         Windshield view\n" ++
         " m         Star Map view\n" ++
+        " b         Homeworld base\n" ++
         " Tab       Cycle fleet\n" ++
         " q         Quit\n" ++
         "\n" ++
@@ -418,6 +426,12 @@ fn renderKeybinds(frame: *Frame, area: Rect) void {
         " a         Attack hostile\n" ++
         " r         Recall to homeworld\n" ++
         " i         Sector info\n" ++
+        "\n" ++
+        " HOMEWORLD\n" ++
+        " ─────────────────────────────\n" ++
+        " 1-8       Upgrade building\n" ++
+        " S/C/F/R/H Build ship (class)\n" ++
+        " x/X/z     Cancel bld/ship/res\n" ++
         "\n" ++
         " STAR MAP\n" ++
         " ─────────────────────────────\n" ++
@@ -685,6 +699,195 @@ fn renderEventLog(state: *ClientState, frame: *Frame, area: Rect, title: []const
     }
 
     frame.render(Paragraph{ .text = buf[0..pos], .style = amber_dim }, inner);
+}
+
+// -- Homeworld View ---------------------------------------------------------
+
+fn renderHomeworld(state: *ClientState, frame: *Frame, area: Rect) void {
+    // Top panels + bottom event log
+    const rows = frame.layout(area, .vertical, &.{
+        Constraint.flexible(1),
+        Constraint.len(5),
+    });
+
+    // Top: buildings + queues side by side
+    const cols = frame.layout(rows.get(0), .horizontal, &.{
+        Constraint.flexible(1),
+        Constraint.flexible(1),
+    });
+
+    renderBuildingPanel(state, frame, cols.get(0));
+    renderQueuePanel(state, frame, cols.get(1));
+    renderProductionPanel(state, frame, rows.get(1));
+}
+
+fn renderBuildingPanel(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " BUILDINGS [1-8] ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    const hw = state.homeworld orelse {
+        frame.render(Paragraph{ .text = " No homeworld data", .style = amber_faint }, inner);
+        return;
+    };
+
+    var buf: [1024]u8 = undefined;
+    var pos: usize = 0;
+
+    for (hw.buildings, 0..) |b, i| {
+        const lvl_str = if (b.level > 0) blk: {
+            var tmp: [8]u8 = undefined;
+            break :blk std.fmt.bufPrint(&tmp, "Lv.{d}", .{b.level}) catch "???";
+        } else "---";
+
+        const line = std.fmt.bufPrint(buf[pos..], " [{d}] {s: <18} {s}\n", .{
+            i + 1,
+            b.building_type.label(),
+            lvl_str,
+        }) catch break;
+        pos += line.len;
+    }
+
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
+}
+
+fn renderQueuePanel(state: *ClientState, frame: *Frame, area: Rect) void {
+    // Split into queues (top) and docked fleet (bottom)
+    const rows = frame.layout(area, .vertical, &.{
+        Constraint.flexible(1),
+        Constraint.len(8),
+    });
+
+    const queue_block = Block{
+        .title = " QUEUES ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(queue_block, rows.get(0));
+    const queue_inner = queue_block.inner(rows.get(0));
+
+    const hw = state.homeworld orelse {
+        frame.render(Paragraph{ .text = " ---", .style = amber_faint }, queue_inner);
+        return;
+    };
+
+    var buf: [512]u8 = undefined;
+    var pos: usize = 0;
+
+    // Building queue
+    if (hw.build_queue) |q| {
+        const elapsed = if (state.tick > q.start_tick) state.tick - q.start_tick else 0;
+        const total = if (q.end_tick > q.start_tick) q.end_tick - q.start_tick else 1;
+        const line = std.fmt.bufPrint(buf[pos..], " Build: {s} Lv{d}\n   {d}/{d} ticks [x]\n", .{
+            q.building_type.label(), q.target_level, elapsed, total,
+        }) catch "";
+        pos += line.len;
+    } else {
+        const line = std.fmt.bufPrint(buf[pos..], " Build: idle\n", .{}) catch "";
+        pos += line.len;
+    }
+
+    // Ship queue
+    if (hw.shipyard_queue) |q| {
+        const elapsed = if (state.tick > q.start_tick) state.tick - q.start_tick else 0;
+        const total = if (q.end_tick > q.start_tick) q.end_tick - q.start_tick else 1;
+        const line = std.fmt.bufPrint(buf[pos..], "\n Ship: {s}\n   {d}/{d} built  {d}/{d}t [X]\n", .{
+            q.ship_class.label(), q.built, q.count, elapsed, total,
+        }) catch "";
+        pos += line.len;
+    } else {
+        const line = std.fmt.bufPrint(buf[pos..], "\n Ship: idle\n", .{}) catch "";
+        pos += line.len;
+    }
+
+    // Research queue
+    if (hw.research_active) |q| {
+        const elapsed = if (state.tick > q.start_tick) state.tick - q.start_tick else 0;
+        const total = if (q.end_tick > q.start_tick) q.end_tick - q.start_tick else 1;
+        const line = std.fmt.bufPrint(buf[pos..], "\n Research: {s} {d}\n   {d}/{d} ticks [z]\n", .{
+            q.tech.label(), q.target_level, elapsed, total,
+        }) catch "";
+        pos += line.len;
+    } else {
+        const line = std.fmt.bufPrint(buf[pos..], "\n Research: idle\n", .{}) catch "";
+        pos += line.len;
+    }
+
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber }, queue_inner);
+
+    // Docked fleet panel
+    const dock_block = Block{
+        .title = " DOCKED FLEET ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(dock_block, rows.get(1));
+    const dock_inner = dock_block.inner(rows.get(1));
+
+    if (hw.docked_ships.len == 0) {
+        frame.render(Paragraph{ .text = " No ships docked", .style = amber_faint }, dock_inner);
+        return;
+    }
+
+    // Count ships by class
+    var counts: [5]u16 = .{ 0, 0, 0, 0, 0 };
+    for (hw.docked_ships) |ship| {
+        const ci = @intFromEnum(ship.class);
+        if (ci < 5) counts[ci] += 1;
+    }
+
+    var dock_buf: [256]u8 = undefined;
+    var dpos: usize = 0;
+    for (counts, 0..) |count, ci| {
+        if (count > 0) {
+            const class: shared.constants.ShipClass = @enumFromInt(ci);
+            const line = std.fmt.bufPrint(dock_buf[dpos..], " {d}x {s}\n", .{ count, class.label() }) catch break;
+            dpos += line.len;
+        }
+    }
+
+    frame.render(Paragraph{ .text = dock_buf[0..dpos], .style = amber_bright }, dock_inner);
+}
+
+fn renderProductionPanel(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " PRODUCTION / tick ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    const hw = state.homeworld orelse {
+        frame.render(Paragraph{ .text = " ---", .style = amber_faint }, inner);
+        return;
+    };
+
+    // Derive production rates from building levels
+    var metal_lvl: u8 = 0;
+    var crystal_lvl: u8 = 0;
+    var deut_lvl: u8 = 0;
+    for (hw.buildings) |b| {
+        switch (b.building_type) {
+            .metal_mine => metal_lvl = b.level,
+            .crystal_mine => crystal_lvl = b.level,
+            .deuterium_synthesizer => deut_lvl = b.level,
+            else => {},
+        }
+    }
+
+    var buf: [256]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, " Metal  +{d:.2}    Crystal  +{d:.2}    Deut  +{d:.2}", .{
+        scaling.productionPerTick(.metal_mine, metal_lvl),
+        scaling.productionPerTick(.crystal_mine, crystal_lvl),
+        scaling.productionPerTick(.deuterium_synthesizer, deut_lvl),
+    }) catch " ---";
+
+    frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
 }
 
 // -- Star Map ---------------------------------------------------------------

@@ -276,6 +276,7 @@ pub const View = enum {
     command_center,
     windshield,
     star_map,
+    homeworld,
 };
 
 pub const ZoomLevel = enum {

@@ -5,6 +5,7 @@ pub const hex = @import("hex.zig");
 pub const protocol = @import("protocol.zig");
 pub const constants = @import("constants.zig");
 pub const world = @import("world.zig");
+pub const scaling = @import("scaling.zig");
 
 // Re-export most-used types at top level for convenience
 pub const Hex = hex.Hex;

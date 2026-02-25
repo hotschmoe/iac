@@ -6,6 +6,9 @@ const engine_mod = @import("engine.zig");
 const Hex = shared.Hex;
 const Resources = shared.constants.Resources;
 const ShipClass = shared.constants.ShipClass;
+const scaling = shared.scaling;
+const BuildingType = scaling.BuildingType;
+const ResearchType = scaling.ResearchType;
 
 const log = std.log.scoped(.database);
 
@@ -102,10 +105,45 @@ pub const Database = struct {
             \\);
         );
 
+        try self.db.exec(
+            \\CREATE TABLE IF NOT EXISTS buildings (
+            \\    player_id INTEGER REFERENCES players(id),
+            \\    building_type INTEGER NOT NULL,
+            \\    level INTEGER NOT NULL DEFAULT 0,
+            \\    PRIMARY KEY (player_id, building_type)
+            \\);
+        );
+
+        try self.db.exec(
+            \\CREATE TABLE IF NOT EXISTS research (
+            \\    player_id INTEGER REFERENCES players(id),
+            \\    tech_type INTEGER NOT NULL,
+            \\    level INTEGER NOT NULL DEFAULT 0,
+            \\    PRIMARY KEY (player_id, tech_type)
+            \\);
+        );
+
+        try self.db.exec(
+            \\CREATE TABLE IF NOT EXISTS build_queue (
+            \\    id INTEGER PRIMARY KEY,
+            \\    player_id INTEGER REFERENCES players(id),
+            \\    queue_type TEXT NOT NULL,
+            \\    item_type INTEGER NOT NULL,
+            \\    target_level INTEGER,
+            \\    count INTEGER DEFAULT 1,
+            \\    built INTEGER DEFAULT 0,
+            \\    start_tick INTEGER NOT NULL,
+            \\    end_tick INTEGER NOT NULL
+            \\);
+        );
+
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_explored_player ON explored_edges(player_id)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_buildings_player ON buildings(player_id)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_research_player ON research(player_id)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_build_queue_player ON build_queue(player_id)");
 
         // Migration: add harvest accumulator columns
         self.db.exec("ALTER TABLE sectors_modified ADD COLUMN metal_harvested REAL DEFAULT 0") catch {};
@@ -409,6 +447,184 @@ pub const Database = struct {
         }
         return edges;
     }
+
+    // ── Building / Research / Queue persistence ──────────────────
+
+    pub fn saveBuildings(self: *Database, player_id: u64, levels: scaling.BuildingLevels) !void {
+        const fields = @typeInfo(BuildingType).@"enum".fields;
+        var stmt = try self.db.prepare(
+            "INSERT OR REPLACE INTO buildings (player_id, building_type, level) VALUES (?1, ?2, ?3)",
+        );
+        defer stmt.deinit();
+        inline for (fields, 0..) |_, i| {
+            const bt: BuildingType = @enumFromInt(i);
+            try stmt.bindInt(1, @intCast(player_id));
+            try stmt.bindInt(2, @as(i64, i));
+            try stmt.bindInt(3, @as(i64, levels.get(bt)));
+            _ = try stmt.step();
+            stmt.reset();
+        }
+    }
+
+    pub fn loadBuildings(self: *Database, player_id: u64) !scaling.BuildingLevels {
+        var levels = scaling.BuildingLevels{};
+        var stmt = try self.db.prepare(
+            "SELECT building_type, level FROM buildings WHERE player_id = ?1",
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(player_id));
+        while (try stmt.step()) {
+            const bt_int: u8 = @intCast(stmt.columnInt(0));
+            const level: u8 = @intCast(stmt.columnInt(1));
+            if (bt_int < BuildingType.COUNT) {
+                levels.set(@enumFromInt(bt_int), level);
+            }
+        }
+        return levels;
+    }
+
+    pub fn saveResearch(self: *Database, player_id: u64, levels: scaling.ResearchLevels) !void {
+        const fields = @typeInfo(ResearchType).@"enum".fields;
+        var stmt = try self.db.prepare(
+            "INSERT OR REPLACE INTO research (player_id, tech_type, level) VALUES (?1, ?2, ?3)",
+        );
+        defer stmt.deinit();
+        inline for (fields, 0..) |_, i| {
+            const rt: ResearchType = @enumFromInt(i);
+            const lvl = levels.get(rt);
+            if (lvl > 0) {
+                try stmt.bindInt(1, @intCast(player_id));
+                try stmt.bindInt(2, @as(i64, i));
+                try stmt.bindInt(3, @as(i64, lvl));
+                _ = try stmt.step();
+                stmt.reset();
+            }
+        }
+    }
+
+    pub fn loadResearch(self: *Database, player_id: u64) !scaling.ResearchLevels {
+        var levels = scaling.ResearchLevels{};
+        var stmt = try self.db.prepare(
+            "SELECT tech_type, level FROM research WHERE player_id = ?1",
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(player_id));
+        while (try stmt.step()) {
+            const tech_int: u8 = @intCast(stmt.columnInt(0));
+            const level: u8 = @intCast(stmt.columnInt(1));
+            if (tech_int < ResearchType.COUNT) {
+                levels.set(@enumFromInt(tech_int), level);
+            }
+        }
+        return levels;
+    }
+
+    pub fn saveBuildQueue(self: *Database, player_id: u64, player: engine_mod.Player) !void {
+        // Clear existing queue entries for this player
+        var del = try self.db.prepare("DELETE FROM build_queue WHERE player_id = ?1");
+        defer del.deinit();
+        try del.bindInt(1, @intCast(player_id));
+        _ = try del.step();
+
+        var ins = try self.db.prepare(
+            \\INSERT INTO build_queue
+            \\    (player_id, queue_type, item_type, target_level, count, built, start_tick, end_tick)
+            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        );
+        defer ins.deinit();
+
+        if (player.building_queue) |q| {
+            try ins.bindInt(1, @intCast(player_id));
+            try ins.bindText(2, "building");
+            try ins.bindInt(3, @as(i64, @intFromEnum(q.building)));
+            try ins.bindInt(4, @as(i64, q.target_level));
+            try ins.bindInt(5, 1);
+            try ins.bindInt(6, 0);
+            try ins.bindInt(7, @intCast(q.start_tick));
+            try ins.bindInt(8, @intCast(q.end_tick));
+            _ = try ins.step();
+            ins.reset();
+        }
+
+        if (player.ship_queue) |q| {
+            try ins.bindInt(1, @intCast(player_id));
+            try ins.bindText(2, "ship");
+            try ins.bindInt(3, @as(i64, @intFromEnum(q.ship_class)));
+            try ins.bindOptionalInt(4, null);
+            try ins.bindInt(5, @as(i64, q.count));
+            try ins.bindInt(6, @as(i64, q.built));
+            try ins.bindInt(7, @intCast(q.start_tick));
+            try ins.bindInt(8, @intCast(q.end_tick));
+            _ = try ins.step();
+            ins.reset();
+        }
+
+        if (player.research_queue) |q| {
+            try ins.bindInt(1, @intCast(player_id));
+            try ins.bindText(2, "research");
+            try ins.bindInt(3, @as(i64, @intFromEnum(q.tech)));
+            try ins.bindInt(4, @as(i64, q.target_level));
+            try ins.bindInt(5, 1);
+            try ins.bindInt(6, 0);
+            try ins.bindInt(7, @intCast(q.start_tick));
+            try ins.bindInt(8, @intCast(q.end_tick));
+            _ = try ins.step();
+            ins.reset();
+        }
+    }
+
+    pub fn loadBuildQueues(self: *Database, player_id: u64) !BuildQueueData {
+        var data = BuildQueueData{};
+        var stmt = try self.db.prepare(
+            \\SELECT queue_type, item_type, target_level, count, built, start_tick, end_tick
+            \\FROM build_queue WHERE player_id = ?1
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(player_id));
+        while (try stmt.step()) {
+            const qt_str = stmt.columnText(0) orelse continue;
+            const item_type: u8 = @intCast(stmt.columnInt(1));
+            const start_tick: u64 = @intCast(stmt.columnInt(5));
+            const end_tick: u64 = @intCast(stmt.columnInt(6));
+
+            if (std.mem.eql(u8, qt_str, "building")) {
+                if (item_type < BuildingType.COUNT) {
+                    data.building = .{
+                        .building = @enumFromInt(item_type),
+                        .target_level = @intCast(stmt.columnInt(2)),
+                        .start_tick = start_tick,
+                        .end_tick = end_tick,
+                    };
+                }
+            } else if (std.mem.eql(u8, qt_str, "ship")) {
+                if (item_type < @typeInfo(ShipClass).@"enum".fields.len) {
+                    data.ship = .{
+                        .ship_class = @enumFromInt(item_type),
+                        .count = @intCast(stmt.columnInt(3)),
+                        .built = @intCast(stmt.columnInt(4)),
+                        .start_tick = start_tick,
+                        .end_tick = end_tick,
+                    };
+                }
+            } else if (std.mem.eql(u8, qt_str, "research")) {
+                if (item_type < ResearchType.COUNT) {
+                    data.research = .{
+                        .tech = @enumFromInt(item_type),
+                        .target_level = @intCast(stmt.columnInt(2)),
+                        .start_tick = start_tick,
+                        .end_tick = end_tick,
+                    };
+                }
+            }
+        }
+        return data;
+    }
+};
+
+pub const BuildQueueData = struct {
+    building: ?engine_mod.BuildQueueEntry = null,
+    ship: ?engine_mod.ShipQueueEntry = null,
+    research: ?engine_mod.ResearchQueueEntry = null,
 };
 
 pub const SectorOverrideRow = struct {
