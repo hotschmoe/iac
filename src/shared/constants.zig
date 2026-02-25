@@ -12,10 +12,14 @@ pub const Zone = enum {
     outer_ring,
     wandering,
 
+    /// Maximum distance (inclusive) for each zone boundary.
+    pub const inner_ring_radius: u16 = 8;
+    pub const outer_ring_radius: u16 = 20;
+
     pub fn fromDistance(dist: u16) Zone {
         if (dist == 0) return .central_hub;
-        if (dist <= 8) return .inner_ring;
-        if (dist <= 20) return .outer_ring;
+        if (dist <= inner_ring_radius) return .inner_ring;
+        if (dist <= outer_ring_radius) return .outer_ring;
         return .wandering;
     }
 

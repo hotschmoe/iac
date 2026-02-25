@@ -654,7 +654,7 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] NPC stat scaling by zone (0.6x inner ring, 0.8x mid, 1.0x outer, 1.2x wandering)
 - [x] Hostile fleet info in sector state (ship class, count, behavior displayed per-fleet)
 - [x] Fleet panel cargo capacity display (used/max computed from ship stats)
-- [x] Hex map rendering in star map view (flat-top axial projection, hexSpiral, 3 zoom levels, fog-of-war, symbol classification, legend bar)
+- [x] Hex map rendering in star map view (flat-top axial projection, hexSpiral, 3 zoom levels, fog-of-war, symbol classification, zone boundary rings, legend bar)
 - [x] NPC patrol AI (zone-based respawn timers, patrol/aggressive movement on timer, combat on encounter, npc_cleared_tick tracking)
 - [x] Resource regeneration (density recovery when unoccupied, rate scales with current density, clears override at template level)
 
@@ -674,7 +674,7 @@ A human player can connect via TUI, see the amber hex map, navigate between sect
 
 ## Appendix A: Open Questions
 
-1. **Hex rendering in terminal** — resolved: star map uses single-character symbols on an axial grid (`@`=fleet, `H`=home, `!`=hostile, terrain glyphs for resources). Windshield uses a node graph with the current sector at center and 6 direction slots connected by `/` `\` `-` lines, showing coordinates, exploration state, and resource summaries.
+1. **Hex rendering in terminal** — resolved: star map uses single-character symbols on an axial grid (`@`=fleet, `H`=home, `!`=hostile, terrain glyphs for resources, `-`=inner/outer ring boundary, `~`=outer/wandering boundary). Zone boundary rings are visible in fog and unexplored space as navigation aids. Windshield uses a node graph with the current sector at center and 6 direction slots connected by `/` `\` `-` lines, showing coordinates, exploration state, and resource summaries.
 
 2. **Policy condition language** — how expressive should this be? A simple enum of conditions with AND/OR might be enough. A mini expression language adds power but also parser complexity.
 

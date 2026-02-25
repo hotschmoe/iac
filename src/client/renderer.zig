@@ -6,6 +6,7 @@ const protocol = shared.protocol;
 const scaling = shared.scaling;
 const ShipClass = shared.constants.ShipClass;
 const Resources = shared.constants.Resources;
+const Zone = shared.constants.Zone;
 
 const ClientState = State.ClientState;
 
@@ -1252,23 +1253,24 @@ fn classifyHex(state: *ClientState, coord: shared.Hex) HexCell {
         return .{ .symbol = sector.terrain.symbol(), .style = amber_dim };
     }
 
-    // Zone boundary distance for navigation overlay
+    // Zone boundary markers visible as navigation aid
     const dist = coord.distFromOrigin();
+    const boundary_symbol: ?[]const u8 = if (dist == Zone.inner_ring_radius)
+        "-"
+    else if (dist == Zone.outer_ring_radius)
+        "~"
+    else
+        null;
 
-    // Fog of war: adjacent to explored sector
-    for (coord.neighbors()) |n| {
-        if (state.known_sectors.contains(n.toKey())) {
-            if (dist == 8) return .{ .symbol = "-", .style = amber_dim };
-            if (dist == 20) return .{ .symbol = "~", .style = amber_dim };
-            return .{ .symbol = ".", .style = amber_faint };
-        }
+    // Fog of war: adjacent to explored sector (boundaries brighter near known space)
+    const is_fog = for (coord.neighbors()) |n| {
+        if (state.known_sectors.contains(n.toKey())) break true;
+    } else false;
+
+    if (boundary_symbol) |sym| {
+        return .{ .symbol = sym, .style = if (is_fog) amber_dim else amber_faint };
     }
-
-    // Completely unknown - zone boundaries still visible as navigation aid
-    if (dist == 8) return .{ .symbol = "-", .style = amber_faint };
-    if (dist == 20) return .{ .symbol = "~", .style = amber_faint };
-
-    return .{ .symbol = " ", .style = amber_faint };
+    return .{ .symbol = if (is_fog) "." else " ", .style = amber_faint };
 }
 
 fn renderMapLegend(state: *ClientState, frame: *Frame, area: Rect) void {
