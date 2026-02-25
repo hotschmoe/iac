@@ -73,6 +73,16 @@ pub const Density = enum(u8) {
         };
     }
 
+    pub fn upgrade(self: Density) Density {
+        return switch (self) {
+            .none => .sparse,
+            .sparse => .moderate,
+            .moderate => .rich,
+            .rich => .pristine,
+            .pristine => .pristine,
+        };
+    }
+
     pub fn label(self: Density) []const u8 {
         return switch (self) {
             .none => "None",
@@ -106,7 +116,7 @@ pub const TerrainType = enum(u8) {
     pub fn symbol(self: TerrainType) []const u8 {
         return switch (self) {
             .empty => "·",
-            .asteroid_field => "�ite",
+            .asteroid_field => "*",
             .nebula => "≈",
             .debris_field => "×",
             .anomaly => "?",
@@ -237,6 +247,21 @@ pub const FUEL_RATE_PER_MASS: f32 = 0.1;
 
 /// Resource regeneration: sectors regen this fraction per tick.
 pub const SECTOR_REGEN_RATE: f32 = 0.0001; // ~full in ~3 hours at 1Hz
+
+/// NPC respawn delays (in ticks at 1Hz).
+pub const NPC_RESPAWN_INNER: u64 = 300; // 5 min
+pub const NPC_RESPAWN_OUTER: u64 = 600; // 10 min
+pub const NPC_RESPAWN_WANDERING: u64 = 1200; // 20 min
+pub const NPC_PATROL_INTERVAL: u16 = 15; // ticks between patrol moves
+
+pub fn npcRespawnDelay(zone: Zone) u64 {
+    return switch (zone) {
+        .central_hub => NPC_RESPAWN_INNER, // no NPCs spawn here, but fallback
+        .inner_ring => NPC_RESPAWN_INNER,
+        .outer_ring => NPC_RESPAWN_OUTER,
+        .wandering => NPC_RESPAWN_WANDERING,
+    };
+}
 
 /// Salvage: fraction of destroyed fleet's build cost that drops.
 pub const SALVAGE_FRACTION: f32 = 0.30;

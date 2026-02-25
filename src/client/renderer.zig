@@ -67,9 +67,13 @@ fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
 
 // -- Footer -----------------------------------------------------------------
 
-fn renderFooter(_: *ClientState, frame: *Frame, area: Rect) void {
+fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
+    const text: []const u8 = switch (state.current_view) {
+        .star_map => " [Esc] Cmd Center  [w] Windshield  [Arrows] Scroll  [z/x] Zoom  [c] Center  [Tab] Fleet  [q] Quit",
+        else => " [Esc] Cmd Center  [w] Windshield  [m] Map  [Tab] Cycle Fleet  [q] Quit",
+    };
     frame.render(Paragraph{
-        .text = " [Esc] Cmd Center  [w] Windshield  [m] Map  [Tab] Cycle Fleet  [q] Quit",
+        .text = text,
         .style = amber_dim,
     }, area);
 }
@@ -399,7 +403,26 @@ fn dirKey(is_connected: bool, idx: usize) u8 {
 
 // -- Star Map ---------------------------------------------------------------
 
-fn renderStarMap(_: *ClientState, frame: *Frame, area: Rect) void {
+fn renderStarMap(state: *ClientState, frame: *Frame, area: Rect) void {
+    // Layout: map area (flexible) + legend bar (3 rows)
+    const rows = frame.layout(area, .vertical, &.{
+        Constraint.flexible(1),
+        Constraint.len(3),
+    });
+
+    renderHexGrid(state, frame, rows.get(0));
+    renderMapLegend(state, frame, rows.get(1));
+}
+
+fn zoomRadius(zoom: @import("state.zig").ZoomLevel) u16 {
+    return switch (zoom) {
+        .close => 5,
+        .sector => 10,
+        .region => 20,
+    };
+}
+
+fn renderHexGrid(state: *ClientState, frame: *Frame, area: Rect) void {
     const block = Block{
         .title = " STAR MAP ",
         .border = .rounded,
@@ -408,8 +431,106 @@ fn renderStarMap(_: *ClientState, frame: *Frame, area: Rect) void {
     frame.render(block, area);
     const inner = block.inner(area);
 
-    frame.render(Paragraph{
-        .text = " Star map rendering -- use arrows to scroll\n\n [Arrows] Scroll  [Tab] Cycle fleet",
-        .style = amber_faint,
-    }, inner);
+    if (inner.width < 3 or inner.height < 3) return;
+
+    const center = state.map_center;
+    const radius = zoomRadius(state.map_zoom);
+
+    const ix: i32 = @intCast(inner.x);
+    const iy: i32 = @intCast(inner.y);
+    const iw: i32 = @intCast(inner.width);
+    const ih: i32 = @intCast(inner.height);
+    const vp_cx: i32 = ix + @divTrunc(iw, 2);
+    const vp_cy: i32 = iy + @divTrunc(ih, 2);
+
+    var spiral = shared.hex.hexSpiral(center, radius);
+    while (spiral.next()) |coord| {
+        const dq: i32 = @as(i32, coord.q) - @as(i32, center.q);
+        const dr: i32 = @as(i32, coord.r) - @as(i32, center.r);
+        const screen_x: i32 = vp_cx + dq * 2 + dr;
+        const screen_y: i32 = vp_cy - dr;
+
+        if (screen_x < ix or screen_x >= ix + iw) continue;
+        if (screen_y < iy or screen_y >= iy + ih) continue;
+
+        const cell = classifyHex(state, coord);
+        frame.render(Paragraph{
+            .text = cell.symbol,
+            .style = cell.style,
+        }, Rect.init(@intCast(screen_x), @intCast(screen_y), 1, 1));
+    }
+}
+
+const HexCell = struct {
+    symbol: []const u8,
+    style: Style,
+};
+
+fn classifyHex(state: *ClientState, coord: shared.Hex) HexCell {
+    // Active fleet position
+    if (state.activeFleet()) |fleet| {
+        if (fleet.location.eql(coord)) {
+            return .{ .symbol = "@", .style = amber_full };
+        }
+    }
+
+    // Other player fleets
+    for (state.fleets.items) |fleet| {
+        if (fleet.location.eql(coord)) {
+            return .{ .symbol = "A", .style = amber_bright };
+        }
+    }
+
+    // Homeworld
+    if (state.player) |p| {
+        if (p.homeworld.eql(coord)) {
+            return .{ .symbol = "H", .style = amber_full };
+        }
+    }
+
+    // Known sector (explored)
+    if (state.known_sectors.get(coord.toKey())) |sector| {
+        // Sector with hostiles
+        if (sector.hostiles) |hostiles| {
+            if (hostiles.len > 0) {
+                return .{ .symbol = "!", .style = amber_bright };
+            }
+        }
+
+        // Sector with resources
+        const has_resources = sector.resources.metal != .none or
+            sector.resources.crystal != .none or
+            sector.resources.deuterium != .none;
+        if (has_resources) {
+            return .{ .symbol = sector.terrain.symbol(), .style = amber };
+        }
+
+        // Explored empty sector
+        return .{ .symbol = sector.terrain.symbol(), .style = amber_dim };
+    }
+
+    // Fog of war: adjacent to explored sector
+    const nbrs = coord.neighbors();
+    for (nbrs) |n| {
+        if (state.known_sectors.getPtr(n.toKey()) != null) {
+            return .{ .symbol = ".", .style = amber_faint };
+        }
+    }
+
+    // Completely unknown
+    return .{ .symbol = " ", .style = amber_faint };
+}
+
+fn renderMapLegend(state: *ClientState, frame: *Frame, area: Rect) void {
+    var buf: [256]u8 = undefined;
+    const center = state.map_center;
+    const zoom_label: []const u8 = switch (state.map_zoom) {
+        .close => "CLOSE",
+        .sector => "SECTOR",
+        .region => "REGION",
+    };
+    const text = std.fmt.bufPrint(&buf, " [{d},{d}] Zoom:{s} | @=You H=Home !=Hostile .=Fog | [Arrows]Scroll [z/x]Zoom [c]Center [Tab]Fleet", .{
+        center.q, center.r, zoom_label,
+    }) catch " STAR MAP";
+    frame.render(Paragraph{ .text = text, .style = amber_dim }, area);
 }

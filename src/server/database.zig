@@ -112,6 +112,9 @@ pub const Database = struct {
         self.db.exec("ALTER TABLE sectors_modified ADD COLUMN crystal_harvested REAL DEFAULT 0") catch {};
         self.db.exec("ALTER TABLE sectors_modified ADD COLUMN deut_harvested REAL DEFAULT 0") catch {};
 
+        // Migration: add NPC cleared tick
+        self.db.exec("ALTER TABLE sectors_modified ADD COLUMN npc_cleared_tick INTEGER") catch {};
+
         log.info("Schema verified", .{});
     }
 
@@ -313,8 +316,8 @@ pub const Database = struct {
         var stmt = try self.db.prepare(
             \\INSERT OR REPLACE INTO sectors_modified
             \\    (q, r, metal_density, crystal_density, deut_density,
-            \\     metal_harvested, crystal_harvested, deut_harvested)
-            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            \\     metal_harvested, crystal_harvested, deut_harvested, npc_cleared_tick)
+            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         );
         defer stmt.deinit();
         try stmt.bindInt(1, @as(i64, q));
@@ -325,6 +328,7 @@ pub const Database = struct {
         try stmt.bindInt(6, floatToStoredInt(ov.metal_harvested));
         try stmt.bindInt(7, floatToStoredInt(ov.crystal_harvested));
         try stmt.bindInt(8, floatToStoredInt(ov.deut_harvested));
+        try stmt.bindOptionalInt(9, if (ov.npc_cleared_tick) |t| @as(i64, @intCast(t)) else null);
         _ = try stmt.step();
     }
 
@@ -332,11 +336,13 @@ pub const Database = struct {
         var overrides = std.ArrayList(SectorOverrideRow).empty;
         var stmt = try self.db.prepare(
             \\SELECT q, r, metal_density, crystal_density, deut_density,
-            \\       metal_harvested, crystal_harvested, deut_harvested
+            \\       metal_harvested, crystal_harvested, deut_harvested,
+            \\       npc_cleared_tick
             \\FROM sectors_modified
         );
         defer stmt.deinit();
         while (try stmt.step()) {
+            const cleared_tick_raw = stmt.columnOptionalInt(8);
             try overrides.append(self.allocator, .{
                 .q = @intCast(stmt.columnInt32(0)),
                 .r = @intCast(stmt.columnInt32(1)),
@@ -347,6 +353,7 @@ pub const Database = struct {
                     .metal_harvested = storedIntToFloat(stmt.columnInt(5)),
                     .crystal_harvested = storedIntToFloat(stmt.columnInt(6)),
                     .deut_harvested = storedIntToFloat(stmt.columnInt(7)),
+                    .npc_cleared_tick = if (cleared_tick_raw) |t| @as(u64, @intCast(t)) else null,
                 },
             });
         }

@@ -341,7 +341,9 @@ pub const Network = struct {
         // Template NPCs (not yet spawned but present in the world)
         if (template.npc_template) |npc_tmpl| {
             // Only show if no spawned NPC fleet already covers this sector
-            if (hostile_list.items.len == 0) {
+            // and if NPC hasn't been cleared (respawn timer active)
+            const npc_cleared = if (override) |o| o.npc_cleared_tick != null else false;
+            if (hostile_list.items.len == 0 and !npc_cleared) {
                 var ship_info = try alloc.alloc(protocol.NpcShipInfo, 1);
                 ship_info[0] = .{ .class = npc_tmpl.ship_class, .count = npc_tmpl.count };
                 try hostile_list.append(alloc, .{

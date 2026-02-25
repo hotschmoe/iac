@@ -13,6 +13,7 @@ pub const InputAction = union(enum) {
     scroll: State.ScrollDirection,
     zoom: State.ZoomLevel,
     cycle_fleet: void,
+    center_fleet: void,
 };
 
 pub fn mapKey(key: Key, state: *const ClientState) InputAction {
@@ -46,6 +47,10 @@ fn mapChar(c: u21, state: *const ClientState) InputAction {
 
         'h' => mapHarvest(state),
         'r' => mapRecall(state),
+
+        'z' => mapZoomOut(state),
+        'x' => mapZoomIn(state),
+        'c' => .{ .center_fleet = {} },
 
         else => .{ .none = {} },
     };
@@ -86,6 +91,24 @@ fn mapRecall(state: *const ClientState) InputAction {
     return .{ .send_command = .{ .recall = .{
         .fleet_id = fleet.id,
     } } };
+}
+
+fn mapZoomOut(state: *const ClientState) InputAction {
+    if (state.current_view != .star_map) return .{ .none = {} };
+    return switch (state.map_zoom) {
+        .close => .{ .zoom = .sector },
+        .sector => .{ .zoom = .region },
+        .region => .{ .none = {} },
+    };
+}
+
+fn mapZoomIn(state: *const ClientState) InputAction {
+    if (state.current_view != .star_map) return .{ .none = {} };
+    return switch (state.map_zoom) {
+        .region => .{ .zoom = .sector },
+        .sector => .{ .zoom = .close },
+        .close => .{ .none = {} },
+    };
 }
 
 /// Returns the active fleet only if it exists and has ships.

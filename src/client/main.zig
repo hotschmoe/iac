@@ -33,6 +33,11 @@ fn update(state: *AppState, event: zithril.Event) zithril.Action {
                 .scroll => |dir| state.client_state.scrollMap(dir),
                 .zoom => |level| state.client_state.setZoom(level),
                 .cycle_fleet => state.client_state.cycleFleet(),
+                .center_fleet => {
+                    if (state.client_state.activeFleet()) |fleet| {
+                        state.client_state.map_center = fleet.location;
+                    }
+                },
                 .none => {},
             }
         },

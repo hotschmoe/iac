@@ -88,6 +88,7 @@ pub const GameEngine = struct {
         try self.processMovement();
         try self.processCombat();
         try self.processHarvesting();
+        try self.processSectorRegen();
         try self.processNpcBehavior();
         try self.processHomeworlds();
         try self.processCooldowns();
@@ -174,6 +175,15 @@ pub const GameEngine = struct {
 
                 if (result.player_won) {
                     try self.dropSalvage(active_combat.sector, active_combat.npc_value);
+
+                    // Mark sector NPC as cleared for respawn timer
+                    const cleared_key = active_combat.sector.toKey();
+                    const cleared_ov = self.sector_overrides.getPtr(cleared_key) orelse blk: {
+                        try self.sector_overrides.put(cleared_key, .{});
+                        break :blk self.sector_overrides.getPtr(cleared_key).?;
+                    };
+                    cleared_ov.npc_cleared_tick = self.current_tick;
+                    try self.dirty_sectors.put(cleared_key, {});
                 }
 
                 _ = self.npc_fleets.remove(active_combat.npc_fleet_id);
@@ -293,9 +303,127 @@ pub const GameEngine = struct {
         }
     }
 
+    fn processSectorRegen(self: *GameEngine) !void {
+        var iter = self.sector_overrides.iterator();
+        while (iter.next()) |entry| {
+            const sector_key = entry.key_ptr.*;
+            const ov = entry.value_ptr;
+
+            const has_depleted = (ov.metal_density != null and ov.metal_density.? != .pristine) or
+                (ov.crystal_density != null and ov.crystal_density.? != .pristine) or
+                (ov.deut_density != null and ov.deut_density.? != .pristine);
+            if (!has_depleted) continue;
+
+            // Skip regen if any player fleet is present
+            const coord = Hex.fromKey(sector_key);
+            var fleet_present = false;
+            var fleet_iter = self.fleets.iterator();
+            while (fleet_iter.next()) |f_entry| {
+                if (f_entry.value_ptr.location.eql(coord)) {
+                    fleet_present = true;
+                    break;
+                }
+            }
+            if (fleet_present) continue;
+
+            const template = self.world_gen.generateSector(coord);
+            var changed = false;
+
+            changed = regenResource(&ov.metal_harvested, &ov.metal_density, template.metal_density) or changed;
+            changed = regenResource(&ov.crystal_harvested, &ov.crystal_density, template.crystal_density) or changed;
+            changed = regenResource(&ov.deut_harvested, &ov.deut_density, template.deut_density) or changed;
+
+            if (changed) {
+                try self.dirty_sectors.put(sector_key, {});
+            }
+        }
+    }
+
+    fn regenResource(harvested: *f32, override_density: *?shared.constants.Density, template_density: shared.constants.Density) bool {
+        const current = override_density.* orelse return false;
+        if (@intFromEnum(current) >= @intFromEnum(template_density)) return false;
+
+        const regen_amount = shared.constants.SECTOR_REGEN_RATE * current.depletionThreshold();
+        harvested.* -= regen_amount;
+        if (harvested.* < 0) {
+            const new_density = current.upgrade();
+            if (@intFromEnum(new_density) >= @intFromEnum(template_density)) {
+                override_density.* = null;
+            } else {
+                override_density.* = new_density;
+            }
+            harvested.* = 0;
+        }
+        return true;
+    }
+
     fn processNpcBehavior(self: *GameEngine) !void {
-        // TODO: NPC movement, aggro detection, spawning
-        _ = self;
+        // Respawn check: clear npc_cleared_tick after zone-based delay
+        var sector_iter = self.sector_overrides.iterator();
+        while (sector_iter.next()) |entry| {
+            const ov = entry.value_ptr;
+            const cleared_tick = ov.npc_cleared_tick orelse continue;
+            const coord = Hex.fromKey(entry.key_ptr.*);
+            const zone = shared.constants.Zone.fromDistance(coord.distFromOrigin());
+            const delay = shared.constants.npcRespawnDelay(zone);
+            if (self.current_tick >= cleared_tick + delay) {
+                ov.npc_cleared_tick = null;
+                try self.dirty_sectors.put(entry.key_ptr.*, {});
+            }
+        }
+
+        // Patrol movement: iterate npc_fleets not in combat
+        var rng = std.Random.DefaultPrng.init(self.current_tick *% 0x9E3779B97F4A7C15);
+        const random = rng.random();
+
+        var npc_iter = self.npc_fleets.iterator();
+        while (npc_iter.next()) |entry| {
+            const npc = entry.value_ptr;
+            if (npc.in_combat) continue;
+            if (npc.behavior != .patrol and npc.behavior != .aggressive) continue;
+
+            if (npc.patrol_timer > 0) {
+                npc.patrol_timer -= 1;
+                continue;
+            }
+
+            // Move to a random connected neighbor
+            const connections = self.world_gen.connectedNeighbors(npc.location);
+            if (connections.len == 0) continue;
+
+            const idx = random.intRangeLessThan(u8, 0, connections.len);
+            npc.location = connections.items[idx];
+            npc.patrol_timer = shared.constants.NPC_PATROL_INTERVAL;
+
+            // Check if player fleet at new location -> trigger combat
+            var fleet_check = self.fleets.iterator();
+            while (fleet_check.next()) |f_entry| {
+                const fleet = f_entry.value_ptr;
+                if (fleet.location.eql(npc.location) and fleet.state != .in_combat and fleet.ship_count > 0) {
+                    const combat_id = self.nextId();
+                    try self.active_combats.put(combat_id, Combat{
+                        .id = combat_id,
+                        .sector = npc.location,
+                        .player_fleet_id = fleet.id,
+                        .npc_fleet_id = npc.id,
+                        .npc_value = npc.ships[0].class.buildCost(),
+                        .round = 0,
+                    });
+                    fleet.state = .in_combat;
+                    npc.in_combat = true;
+
+                    try self.pending_events.append(self.allocator, .{
+                        .tick = self.current_tick,
+                        .kind = .{ .combat_started = .{
+                            .player_fleet_id = fleet.id,
+                            .enemy_fleet_id = npc.id,
+                            .sector = npc.location,
+                        } },
+                    });
+                    break;
+                }
+            }
+        }
     }
 
     fn processHomeworlds(self: *GameEngine) !void {
@@ -522,9 +650,46 @@ pub const GameEngine = struct {
     }
 
     fn checkNpcEncounter(self: *GameEngine, fleet: *Fleet) !void {
+        // Check if an existing patrol NPC is at this location
+        var npc_iter = self.npc_fleets.iterator();
+        while (npc_iter.next()) |npc_entry| {
+            const npc = npc_entry.value_ptr;
+            if (npc.location.eql(fleet.location) and !npc.in_combat) {
+                if (npc.behavior == .passive) continue;
+
+                const combat_id = self.nextId();
+                try self.active_combats.put(combat_id, Combat{
+                    .id = combat_id,
+                    .sector = fleet.location,
+                    .player_fleet_id = fleet.id,
+                    .npc_fleet_id = npc.id,
+                    .npc_value = npc.ships[0].class.buildCost(),
+                    .round = 0,
+                });
+                fleet.state = .in_combat;
+                npc.in_combat = true;
+
+                try self.pending_events.append(self.allocator, .{
+                    .tick = self.current_tick,
+                    .kind = .{ .combat_started = .{
+                        .player_fleet_id = fleet.id,
+                        .enemy_fleet_id = npc.id,
+                        .sector = fleet.location,
+                    } },
+                });
+                return;
+            }
+        }
+
+        // Check if sector NPC was cleared recently
+        const sector_key = fleet.location.toKey();
+        if (self.sector_overrides.get(sector_key)) |ov| {
+            if (ov.npc_cleared_tick != null) return;
+        }
+
         const template = self.world_gen.generateSector(fleet.location);
         if (template.npc_template) |npc| {
-            if (npc.behavior == .passive) return; // passive NPCs don't auto-aggro
+            if (npc.behavior == .passive) return;
 
             const combat_id = self.nextId();
             const npc_fleet_id = self.nextId();
@@ -535,6 +700,8 @@ pub const GameEngine = struct {
                 .ships = undefined,
                 .ship_count = npc.count,
                 .behavior = npc.behavior,
+                .home_sector = fleet.location,
+                .in_combat = true,
             };
 
             const stats = npc.ship_class.baseStats();
@@ -562,7 +729,7 @@ pub const GameEngine = struct {
                 .sector = fleet.location,
                 .player_fleet_id = fleet.id,
                 .npc_fleet_id = npc_fleet_id,
-                .npc_value = ShipClass.scout.buildCost(), // TODO: calculate actual value
+                .npc_value = npc.ship_class.buildCost(),
                 .round = 0,
             });
 
@@ -804,6 +971,9 @@ pub const NpcFleet = struct {
     ships: [MAX_NPC_SHIPS]Ship,
     ship_count: u8,
     behavior: shared.world.NpcBehaviorType,
+    home_sector: Hex = Hex.ORIGIN,
+    patrol_timer: u16 = 0,
+    in_combat: bool = false,
 };
 
 pub const Combat = struct {
@@ -824,6 +994,7 @@ pub const SectorOverride = struct {
     deut_harvested: f32 = 0,
     salvage: ?Resources = null,
     salvage_despawn_tick: ?u64 = null,
+    npc_cleared_tick: ?u64 = null,
 
     const Density = shared.constants.Density;
 
