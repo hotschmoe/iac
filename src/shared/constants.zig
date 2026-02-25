@@ -239,6 +239,7 @@ pub const STARTING_RESOURCES = Resources{
 };
 
 pub const STARTING_SCOUTS: usize = 2;
+pub const MAX_FLEETS_PER_PLAYER: usize = 3;
 
 /// Homeworld spawn range (cube distance from origin).
 pub const HOMEWORLD_MIN_DIST: u16 = 3;

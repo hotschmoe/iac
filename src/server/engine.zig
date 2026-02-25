@@ -33,6 +33,7 @@ pub const GameEngine = struct {
     dirty_players: std.AutoHashMap(u64, void),
     dirty_fleets: std.AutoHashMap(u64, void),
     dirty_sectors: std.AutoHashMap(u32, void),
+    deleted_fleet_ids: std.AutoHashMap(u64, void),
 
     pub fn init(allocator: std.mem.Allocator, world_seed: u64, db: *Database) !GameEngine {
         var engine = GameEngine{
@@ -50,6 +51,7 @@ pub const GameEngine = struct {
             .dirty_players = std.AutoHashMap(u64, void).init(allocator),
             .dirty_fleets = std.AutoHashMap(u64, void).init(allocator),
             .dirty_sectors = std.AutoHashMap(u32, void).init(allocator),
+            .deleted_fleet_ids = std.AutoHashMap(u64, void).init(allocator),
         };
 
         try engine.loadState();
@@ -72,6 +74,7 @@ pub const GameEngine = struct {
         self.dirty_players.deinit();
         self.dirty_fleets.deinit();
         self.dirty_sectors.deinit();
+        self.deleted_fleet_ids.deinit();
     }
 
     pub fn currentTick(self: *const GameEngine) u64 {
@@ -142,20 +145,36 @@ pub const GameEngine = struct {
             const combat_id = entry.key_ptr.*;
             const active_combat = entry.value_ptr;
 
-            const player_fleet = self.fleets.getPtr(active_combat.player_fleet_id) orelse {
+            // Collect player fleet pointers
+            var pf_ptrs: [MAX_COMBAT_FLEETS]*Fleet = undefined;
+            var pf_count: usize = 0;
+            for (active_combat.player_fleet_ids[0..active_combat.player_fleet_count]) |fid| {
+                if (self.fleets.getPtr(fid)) |fp| {
+                    pf_ptrs[pf_count] = fp;
+                    pf_count += 1;
+                }
+            }
+
+            // Collect NPC fleet pointers
+            var npc_ptrs: [MAX_COMBAT_FLEETS]*NpcFleet = undefined;
+            var npc_count: usize = 0;
+            for (active_combat.npc_fleet_ids[0..active_combat.npc_fleet_count]) |nid| {
+                if (self.npc_fleets.getPtr(nid)) |np| {
+                    npc_ptrs[npc_count] = np;
+                    npc_count += 1;
+                }
+            }
+
+            if (pf_count == 0 or npc_count == 0) {
                 try to_remove.append(self.allocator, combat_id);
                 continue;
-            };
-            const npc_fleet = self.npc_fleets.getPtr(active_combat.npc_fleet_id) orelse {
-                try to_remove.append(self.allocator, combat_id);
-                continue;
-            };
+            }
 
             const result = try combat.resolveCombatRound(
                 self.allocator,
                 active_combat,
-                player_fleet,
-                npc_fleet,
+                pf_ptrs[0..pf_count],
+                npc_ptrs[0..npc_count],
                 self.current_tick,
             );
             defer self.allocator.free(result.events);
@@ -164,13 +183,19 @@ pub const GameEngine = struct {
                 try self.pending_events.append(self.allocator, event);
             }
 
-            try self.dirty_fleets.put(active_combat.player_fleet_id, {});
+            // Mark all participating player fleets dirty
+            for (active_combat.player_fleet_ids[0..active_combat.player_fleet_count]) |fid| {
+                try self.dirty_fleets.put(fid, {});
+            }
 
             if (result.concluded) {
                 try to_remove.append(self.allocator, combat_id);
 
-                player_fleet.state = if (player_fleet.ship_count == 0) .docked else .idle;
-                player_fleet.idle_ticks = 0;
+                // Update state for each player fleet
+                for (pf_ptrs[0..pf_count]) |pf| {
+                    pf.state = if (pf.ship_count == 0) .docked else .idle;
+                    pf.idle_ticks = 0;
+                }
 
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
@@ -189,7 +214,10 @@ pub const GameEngine = struct {
                     try self.dirty_sectors.put(cleared_key, {});
                 }
 
-                _ = self.npc_fleets.remove(active_combat.npc_fleet_id);
+                // Remove destroyed NPCs
+                for (active_combat.npc_fleet_ids[0..active_combat.npc_fleet_count]) |nid| {
+                    _ = self.npc_fleets.remove(nid);
+                }
             }
         }
 
@@ -431,6 +459,7 @@ pub const GameEngine = struct {
                         .kind = .{ .building_completed = .{
                             .building_type = q.building,
                             .new_level = q.target_level,
+                            .player_id = player.id,
                         } },
                     });
                     if (q.building == .fuel_depot) {
@@ -450,6 +479,7 @@ pub const GameEngine = struct {
                         .kind = .{ .ship_built = .{
                             .ship_class = q.ship_class,
                             .count = 1,
+                            .player_id = player.id,
                         } },
                     });
 
@@ -474,6 +504,7 @@ pub const GameEngine = struct {
                         .kind = .{ .research_completed = .{
                             .tech = q.tech,
                             .new_level = q.target_level,
+                            .player_id = player.id,
                         } },
                     });
                     if (q.tech == .extended_fuel_tanks) {
@@ -517,7 +548,7 @@ pub const GameEngine = struct {
         }
 
         const player_id = self.nextId();
-        const homeworld = self.findHomeworldLocation();
+        const homeworld = self.findHomeworldLocation() orelse return error.RegistrationFailed;
 
         const player = Player{
             .id = player_id,
@@ -578,6 +609,17 @@ pub const GameEngine = struct {
         if (fleet.state == .in_combat) return error.InCombat;
         if (fleet.action_cooldown > 0) return error.OnCooldown;
 
+        const player = self.players.get(fleet.owner_id);
+
+        // Fleet cap: only applies when deploying from homeworld
+        if (player) |p| {
+            if (fleet.location.eql(p.homeworld)) {
+                if (self.countDeployedFleets(fleet.owner_id, p.homeworld) >= shared.constants.MAX_FLEETS_PER_PLAYER) {
+                    return error.FleetLimitReached;
+                }
+            }
+        }
+
         const connections = self.world_gen.connectedNeighbors(fleet.location);
         var valid = false;
         for (connections.slice()) |conn| {
@@ -588,7 +630,6 @@ pub const GameEngine = struct {
         }
         if (!valid) return error.NoConnection;
 
-        const player = self.players.get(fleet.owner_id);
         const research = if (player) |p| p.research else null;
         const fuel_cost = fleetFuelCost(fleet, research);
         if (fleet.fuel < fuel_cost) return error.InsufficientFuel;
@@ -880,7 +921,19 @@ pub const GameEngine = struct {
         try self.dirty_fleets.put(fleet.id, {});
     }
 
-    fn findHomeworldLocation(self: *GameEngine) Hex {
+    fn countDeployedFleets(self: *const GameEngine, player_id: u64, homeworld: Hex) usize {
+        var count: usize = 0;
+        var iter = self.fleets.iterator();
+        while (iter.next()) |entry| {
+            const f = entry.value_ptr;
+            if (f.owner_id == player_id and !f.location.eql(homeworld) and f.ship_count > 0) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    fn findHomeworldLocation(self: *GameEngine) ?Hex {
         var rng = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))));
         const random = rng.random();
 
@@ -897,19 +950,18 @@ pub const GameEngine = struct {
             const candidate = Hex{ .q = q, .r = r };
             if (candidate.distFromOrigin() < min or candidate.distFromOrigin() > max) continue;
 
-            var taken = false;
+            var too_close = false;
             var player_iter = self.players.iterator();
             while (player_iter.next()) |entry| {
-                if (entry.value_ptr.homeworld.eql(candidate)) {
-                    taken = true;
+                if (Hex.distance(entry.value_ptr.homeworld, candidate) <= 1) {
+                    too_close = true;
                     break;
                 }
             }
-            if (!taken) return candidate;
+            if (!too_close) return candidate;
         }
 
-        // Fallback
-        return Hex{ .q = @intCast(min), .r = 0 };
+        return null;
     }
 
     fn checkHomeworldDocking(self: *GameEngine, fleet: *Fleet) !void {
@@ -929,6 +981,51 @@ pub const GameEngine = struct {
         if (fleet.fuel < fleet.fuel_max) {
             fleet.fuel = fleet.fuel_max;
         }
+
+        // Auto-merge: absorb ships from other fleets docked at homeworld
+        var merge_ids: [MAX_COMBAT_FLEETS]u64 = undefined;
+        var merge_count: usize = 0;
+        var fleet_iter = self.fleets.iterator();
+        while (fleet_iter.next()) |f_entry| {
+            const other = f_entry.value_ptr;
+            if (other.id == fleet.id) continue;
+            if (other.owner_id != player.id) continue;
+            if (!other.location.eql(player.homeworld)) continue;
+            if (other.ship_count == 0) continue;
+
+            // Transfer ships
+            for (other.ships[0..other.ship_count]) |ship| {
+                if (fleet.ship_count >= MAX_SHIPS_PER_FLEET) break;
+                fleet.ships[fleet.ship_count] = ship;
+                fleet.ship_count += 1;
+            }
+            // Transfer cargo
+            fleet.cargo.metal += other.cargo.metal;
+            fleet.cargo.crystal += other.cargo.crystal;
+            fleet.cargo.deuterium += other.cargo.deuterium;
+            // Deposit merged cargo to player
+            if (fleet.cargo.metal > 0 or fleet.cargo.crystal > 0 or fleet.cargo.deuterium > 0) {
+                player.resources = player.resources.add(fleet.cargo);
+                fleet.cargo = .{};
+                try self.dirty_players.put(player.id, {});
+            }
+
+            if (merge_count < merge_ids.len) {
+                merge_ids[merge_count] = other.id;
+                merge_count += 1;
+            }
+        }
+
+        // Mark merged fleets for deletion
+        for (merge_ids[0..merge_count]) |mid| {
+            _ = self.fleets.remove(mid);
+            try self.deleted_fleet_ids.put(mid, {});
+        }
+
+        // Recalculate fuel max after merge
+        fleet.fuel_max = fleetFuelMax(fleet, player);
+        fleet.fuel = fleet.fuel_max;
+
         try self.dirty_fleets.put(fleet.id, {});
     }
 
@@ -998,15 +1095,44 @@ pub const GameEngine = struct {
     }
 
     fn startCombat(self: *GameEngine, fleet: *Fleet, npc: *NpcFleet) !void {
+        // Check for existing combat in same sector -- join it
+        var combat_iter = self.active_combats.iterator();
+        while (combat_iter.next()) |c_entry| {
+            const existing = c_entry.value_ptr;
+            if (existing.sector.eql(fleet.location)) {
+                if (!existing.hasPlayerFleet(fleet.id)) {
+                    existing.addPlayerFleet(fleet.id);
+                    fleet.state = .in_combat;
+                }
+                if (!existing.hasNpcFleet(npc.id)) {
+                    existing.addNpcFleet(npc.id);
+                    npc.in_combat = true;
+                    existing.npc_value = existing.npc_value.add(npc.ships[0].class.buildCost());
+                }
+                try self.pending_events.append(self.allocator, .{
+                    .tick = self.current_tick,
+                    .kind = .{ .combat_started = .{
+                        .player_fleet_id = fleet.id,
+                        .enemy_fleet_id = npc.id,
+                        .sector = fleet.location,
+                    } },
+                });
+                try self.enrollAllPlayerFleetsInSectorCombat(existing);
+                return;
+            }
+        }
+
+        // No existing combat -- create new
         const combat_id = self.nextId();
-        try self.active_combats.put(combat_id, Combat{
+        var new_combat = Combat{
             .id = combat_id,
             .sector = fleet.location,
-            .player_fleet_id = fleet.id,
-            .npc_fleet_id = npc.id,
             .npc_value = npc.ships[0].class.buildCost(),
             .round = 0,
-        });
+        };
+        new_combat.addPlayerFleet(fleet.id);
+        new_combat.addNpcFleet(npc.id);
+        try self.active_combats.put(combat_id, new_combat);
         fleet.state = .in_combat;
         npc.in_combat = true;
 
@@ -1018,6 +1144,24 @@ pub const GameEngine = struct {
                 .sector = fleet.location,
             } },
         });
+
+        // Enroll other idle player fleets at this sector
+        if (self.active_combats.getPtr(combat_id)) |c| {
+            try self.enrollAllPlayerFleetsInSectorCombat(c);
+        }
+    }
+
+    fn enrollAllPlayerFleetsInSectorCombat(self: *GameEngine, active_combat: *Combat) !void {
+        var fleet_iter = self.fleets.iterator();
+        while (fleet_iter.next()) |f_entry| {
+            const f = f_entry.value_ptr;
+            if (!f.location.eql(active_combat.sector)) continue;
+            if (f.state == .in_combat) continue;
+            if (f.ship_count == 0) continue;
+            if (active_combat.hasPlayerFleet(f.id)) continue;
+            active_combat.addPlayerFleet(f.id);
+            f.state = .in_combat;
+        }
     }
 
     fn collectSalvage(self: *GameEngine, fleet: *Fleet) !void {
@@ -1171,6 +1315,11 @@ pub const GameEngine = struct {
             }
         }
 
+        var del_iter = self.deleted_fleet_ids.iterator();
+        while (del_iter.next()) |entry| {
+            try self.db.deleteFleet(entry.key_ptr.*);
+        }
+
         var sector_iter = self.dirty_sectors.iterator();
         while (sector_iter.next()) |entry| {
             const key = entry.key_ptr.*;
@@ -1185,6 +1334,7 @@ pub const GameEngine = struct {
         self.dirty_players.clearRetainingCapacity();
         self.dirty_fleets.clearRetainingCapacity();
         self.dirty_sectors.clearRetainingCapacity();
+        self.deleted_fleet_ids.clearRetainingCapacity();
     }
 
     fn recalculatePlayerFleetFuel(self: *GameEngine, player: *const Player) !void {
@@ -1385,13 +1535,45 @@ pub const NpcFleet = struct {
     in_combat: bool = false,
 };
 
+pub const MAX_COMBAT_FLEETS: usize = 8;
+
 pub const Combat = struct {
     id: u64,
     sector: Hex,
-    player_fleet_id: u64,
-    npc_fleet_id: u64,
-    npc_value: Resources, // for salvage calculation
+    player_fleet_ids: [MAX_COMBAT_FLEETS]u64 = @splat(0),
+    player_fleet_count: u8 = 0,
+    npc_fleet_ids: [MAX_COMBAT_FLEETS]u64 = @splat(0),
+    npc_fleet_count: u8 = 0,
+    npc_value: Resources,
     round: u16,
+
+    pub fn addPlayerFleet(self: *Combat, fleet_id: u64) void {
+        if (self.hasPlayerFleet(fleet_id)) return;
+        if (self.player_fleet_count >= MAX_COMBAT_FLEETS) return;
+        self.player_fleet_ids[self.player_fleet_count] = fleet_id;
+        self.player_fleet_count += 1;
+    }
+
+    pub fn addNpcFleet(self: *Combat, fleet_id: u64) void {
+        if (self.hasNpcFleet(fleet_id)) return;
+        if (self.npc_fleet_count >= MAX_COMBAT_FLEETS) return;
+        self.npc_fleet_ids[self.npc_fleet_count] = fleet_id;
+        self.npc_fleet_count += 1;
+    }
+
+    pub fn hasPlayerFleet(self: *const Combat, fleet_id: u64) bool {
+        for (self.player_fleet_ids[0..self.player_fleet_count]) |id| {
+            if (id == fleet_id) return true;
+        }
+        return false;
+    }
+
+    pub fn hasNpcFleet(self: *const Combat, fleet_id: u64) bool {
+        for (self.npc_fleet_ids[0..self.npc_fleet_count]) |id| {
+            if (id == fleet_id) return true;
+        }
+        return false;
+    }
 };
 
 pub const SectorOverride = struct {

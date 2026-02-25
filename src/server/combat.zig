@@ -14,11 +14,17 @@ pub const CombatRoundResult = struct {
     player_won: bool,
 };
 
+const ShipRef = struct {
+    ptr: *Ship,
+    fleet_id: u64,
+    is_npc: bool,
+};
+
 pub fn resolveCombatRound(
     allocator: std.mem.Allocator,
     active_combat: *engine.Combat,
-    player_fleet: *Fleet,
-    npc_fleet: *NpcFleet,
+    player_fleets: []const *Fleet,
+    npc_fleets: []const *NpcFleet,
     tick: u64,
 ) !CombatRoundResult {
     active_combat.round += 1;
@@ -30,86 +36,136 @@ pub fn resolveCombatRound(
 
     var events: std.ArrayList(GameEvent) = .empty;
 
-    // Each player ship fires
-    for (player_fleet.ships[0..player_fleet.ship_count]) |*attacker| {
-        if (attacker.hull <= 0) continue;
-        try fireShip(attacker, npc_fleet.ships[0..npc_fleet.ship_count], true, npc_fleet.id, tick, random, &events, allocator);
-    }
-
-    // Each NPC ship fires
-    for (npc_fleet.ships[0..npc_fleet.ship_count]) |*attacker| {
-        if (attacker.hull <= 0) continue;
-        try fireShip(attacker, player_fleet.ships[0..player_fleet.ship_count], false, player_fleet.id, tick, random, &events, allocator);
-    }
-
-    // Compact destroyed ships from player fleet
-    var write_idx: usize = 0;
-    for (player_fleet.ships[0..player_fleet.ship_count]) |ship| {
-        if (ship.hull > 0) {
-            player_fleet.ships[write_idx] = ship;
-            write_idx += 1;
+    // Build indirection arrays for cross-fleet targeting
+    var npc_targets: std.ArrayList(ShipRef) = .empty;
+    defer npc_targets.deinit(allocator);
+    for (npc_fleets) |npc| {
+        for (npc.ships[0..npc.ship_count]) |*ship| {
+            if (ship.hull > 0) {
+                try npc_targets.append(allocator, .{ .ptr = @constCast(ship), .fleet_id = npc.id, .is_npc = true });
+            }
         }
     }
-    player_fleet.ship_count = write_idx;
 
-    // Compact destroyed ships from NPC fleet
-    write_idx = 0;
-    for (npc_fleet.ships[0..npc_fleet.ship_count]) |ship| {
-        if (ship.hull > 0) {
-            npc_fleet.ships[write_idx] = ship;
-            write_idx += 1;
+    var player_targets: std.ArrayList(ShipRef) = .empty;
+    defer player_targets.deinit(allocator);
+    for (player_fleets) |pf| {
+        for (pf.ships[0..pf.ship_count]) |*ship| {
+            if (ship.hull > 0) {
+                try player_targets.append(allocator, .{ .ptr = @constCast(ship), .fleet_id = pf.id, .is_npc = false });
+            }
         }
     }
-    npc_fleet.ship_count = @intCast(write_idx);
+
+    // Each allied ship fires at NPC pool
+    for (player_fleets) |pf| {
+        for (pf.ships[0..pf.ship_count]) |*attacker| {
+            if (attacker.hull <= 0) continue;
+            try fireShip(@constCast(attacker), npc_targets.items, tick, random, &events, allocator);
+        }
+    }
+
+    // Each NPC ship fires at allied pool
+    for (npc_fleets) |npc| {
+        for (npc.ships[0..npc.ship_count]) |*attacker| {
+            if (attacker.hull <= 0) continue;
+            try fireShip(@constCast(attacker), player_targets.items, tick, random, &events, allocator);
+        }
+    }
+
+    // Compact destroyed ships per fleet
+    for (player_fleets) |pf| {
+        const fleet = @constCast(pf);
+        var write_idx: usize = 0;
+        for (fleet.ships[0..fleet.ship_count]) |ship| {
+            if (ship.hull > 0) {
+                fleet.ships[write_idx] = ship;
+                write_idx += 1;
+            }
+        }
+        if (write_idx != fleet.ship_count) {
+            fleet.ship_count = write_idx;
+        }
+    }
+
+    for (npc_fleets) |npc| {
+        const fleet = @constCast(npc);
+        var write_idx: usize = 0;
+        for (fleet.ships[0..fleet.ship_count]) |ship| {
+            if (ship.hull > 0) {
+                fleet.ships[write_idx] = ship;
+                write_idx += 1;
+            }
+        }
+        if (write_idx != fleet.ship_count) {
+            fleet.ship_count = @intCast(write_idx);
+        }
+    }
 
     // Check victory conditions
-    const player_alive = player_fleet.ship_count > 0;
-    const npc_alive = npc_fleet.ship_count > 0;
-    const concluded = !player_alive or !npc_alive;
+    var any_player_alive = false;
+    for (player_fleets) |pf| {
+        if (pf.ship_count > 0) {
+            any_player_alive = true;
+            break;
+        }
+    }
+
+    var any_npc_alive = false;
+    for (npc_fleets) |npc| {
+        if (npc.ship_count > 0) {
+            any_npc_alive = true;
+            break;
+        }
+    }
+
+    const concluded = !any_player_alive or !any_npc_alive;
 
     if (concluded) {
-        if (!npc_alive) {
-            try events.append(allocator, .{
-                .tick = tick,
-                .kind = .{ .fleet_destroyed = .{
-                    .fleet_id = npc_fleet.id,
-                    .is_npc = true,
-                    .salvage = active_combat.npc_value,
-                } },
-            });
+        if (!any_npc_alive) {
+            for (npc_fleets) |npc| {
+                try events.append(allocator, .{
+                    .tick = tick,
+                    .kind = .{ .fleet_destroyed = .{
+                        .fleet_id = npc.id,
+                        .is_npc = true,
+                        .salvage = active_combat.npc_value,
+                    } },
+                });
+            }
         }
-        if (!player_alive) {
-            try events.append(allocator, .{
-                .tick = tick,
-                .kind = .{ .fleet_destroyed = .{
-                    .fleet_id = player_fleet.id,
-                    .is_npc = false,
-                    .salvage = .{},
-                } },
-            });
+        for (player_fleets) |pf| {
+            if (pf.ship_count == 0) {
+                try events.append(allocator, .{
+                    .tick = tick,
+                    .kind = .{ .fleet_destroyed = .{
+                        .fleet_id = pf.id,
+                        .is_npc = false,
+                        .salvage = .{},
+                    } },
+                });
+            }
         }
     }
 
     return .{
         .events = try events.toOwnedSlice(allocator),
         .concluded = concluded,
-        .player_won = concluded and player_alive,
+        .player_won = concluded and any_player_alive,
     };
 }
 
 fn fireShip(
     attacker: *Ship,
-    targets: []Ship,
-    target_is_npc: bool,
-    target_fleet_id: u64,
+    targets: []ShipRef,
     tick: u64,
     random: std.Random,
     events: *std.ArrayList(GameEvent),
     allocator: std.mem.Allocator,
 ) !void {
     while (true) {
-        const target_idx = selectTarget(targets, targets.len, random) orelse return;
-        const target = &targets[target_idx];
+        const target_ref = selectTarget(targets, random) orelse return;
+        const target = target_ref.ptr;
 
         const damage = rollDamage(attacker.weapon_power, random);
         const result = applyDamage(target, damage);
@@ -133,8 +189,8 @@ fn fireShip(
                 .kind = .{ .ship_destroyed = .{
                     .ship_id = target.id,
                     .ship_class = target.class,
-                    .owner_fleet_id = target_fleet_id,
-                    .is_npc = target_is_npc,
+                    .owner_fleet_id = target_ref.fleet_id,
+                    .is_npc = target_ref.is_npc,
                 } },
             });
         }
@@ -143,24 +199,28 @@ fn fireShip(
     }
 }
 
-fn selectTarget(ships: []Ship, count: usize, rng: std.Random) ?usize {
-    if (count == 0) return null;
-
+fn selectTarget(targets: []ShipRef, rng: std.Random) ?*ShipRef {
     var total_weight: f32 = 0;
-    for (ships[0..count]) |ship| {
-        if (ship.hull > 0) total_weight += ship.hull_max;
+    for (targets) |ref| {
+        if (ref.ptr.hull > 0) total_weight += ref.ptr.hull_max;
     }
 
     if (total_weight <= 0) return null;
 
     var roll = rng.float(f32) * total_weight;
-    for (ships[0..count], 0..) |ship, i| {
-        if (ship.hull <= 0) continue;
-        roll -= ship.hull_max;
-        if (roll <= 0) return i;
+    for (targets) |*ref| {
+        if (ref.ptr.hull <= 0) continue;
+        roll -= ref.ptr.hull_max;
+        if (roll <= 0) return ref;
     }
 
-    return count - 1;
+    // Fallback: last alive
+    var i = targets.len;
+    while (i > 0) {
+        i -= 1;
+        if (targets[i].ptr.hull > 0) return &targets[i];
+    }
+    return null;
 }
 
 fn applyDamage(target: *Ship, damage: f32) struct { shield_absorbed: f32, hull_damage: f32 } {

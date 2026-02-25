@@ -386,6 +386,20 @@ fn renderSectorInfo(state: *ClientState, frame: *Frame, area: Rect) void {
         }
     }
 
+    // Allied fleets
+    if (sector.player_fleets) |allies| {
+        if (allies.len > 0) {
+            const a_sep = std.fmt.bufPrint(buf[pos..], "\n ALLIED FLEETS\n ─────────────────────\n", .{}) catch return;
+            pos += a_sep.len;
+            for (allies) |ally| {
+                const a_line = std.fmt.bufPrint(buf[pos..], " {s} -- {d} ships\n", .{
+                    ally.owner_name, ally.ship_count,
+                }) catch break;
+                pos += a_line.len;
+            }
+        }
+    }
+
     // Connections
     const conn_sep = std.fmt.bufPrint(buf[pos..], "\n EXITS\n ─────────────────────\n", .{}) catch return;
     pos += conn_sep.len;
@@ -1221,10 +1235,17 @@ fn classifyHex(state: *ClientState, coord: shared.Hex) HexCell {
         }
     }
 
-    // Other player fleets
+    // Other own fleets
     for (state.fleets.items) |fleet| {
         if (fleet.location.eql(coord)) {
             return .{ .symbol = "A", .style = amber_bright };
+        }
+    }
+
+    // Allied player fleets (from sector data)
+    if (state.known_sectors.get(coord.toKey())) |sector| {
+        if (sector.player_fleets) |pf| {
+            if (pf.len > 0) return .{ .symbol = "A", .style = amber };
         }
     }
 
@@ -1281,7 +1302,7 @@ fn renderMapLegend(state: *ClientState, frame: *Frame, area: Rect) void {
         .sector => "SECTOR",
         .region => "REGION",
     };
-    const text = std.fmt.bufPrint(&buf, " [{d},{d}] Zoom:{s} | @=You H=Home !=Hostile -=Ring ~=Wander .=Fog | [Arrows]Scroll [z/x]Zoom [c]Center [Tab]Fleet", .{
+    const text = std.fmt.bufPrint(&buf, " [{d},{d}] Zoom:{s} | @=You A=Ally H=Home !=Hostile -=Ring ~=Wander .=Fog | [Arrows]Scroll [z/x]Zoom [c]Center [Tab]Fleet", .{
         center.q, center.r, zoom_label,
     }) catch " STAR MAP";
     frame.render(Paragraph{ .text = text, .style = amber_dim }, area);

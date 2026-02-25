@@ -96,10 +96,12 @@ pub const Network = struct {
 
             var sector_list = std.ArrayList(protocol.SectorState).empty;
             var sector_keys = std.AutoHashMap(u32, void).init(alloc);
-            if (fleet_updates.len > 0) {
-                const loc = fleet_updates[0].location;
-                try sector_keys.put(loc.toKey(), {});
-                try sector_list.append(alloc, try buildSectorState(alloc, eng, loc));
+            for (fleet_updates) |fu| {
+                const key = fu.location.toKey();
+                if (!sector_keys.contains(key)) {
+                    try sector_keys.put(key, {});
+                    try sector_list.append(alloc, try buildSectorState(alloc, eng, fu.location, player_id));
+                }
             }
 
             var player_update: ?protocol.PlayerState = null;
@@ -120,7 +122,7 @@ pub const Network = struct {
                         const key = coord.toKey();
                         if (!sector_keys.contains(key)) {
                             try sector_keys.put(key, {});
-                            try sector_list.append(alloc, try buildSectorState(alloc, eng, coord));
+                            try sector_list.append(alloc, try buildSectorState(alloc, eng, coord, player_id));
                         }
                     }
                 }
@@ -163,7 +165,18 @@ pub const Network = struct {
                     try self.sendErrorToSession(sess, .already_authenticated, "Already authenticated");
                     return;
                 }
-                const player_id = try self.engine.registerPlayer(auth.player_name);
+                const player_id = self.engine.registerPlayer(auth.player_name) catch |err| {
+                    try self.sendToSession(sess, .{
+                        .auth_result = .{
+                            .success = false,
+                            .message = switch (err) {
+                                error.RegistrationFailed => "No homeworld locations available",
+                                else => "Registration failed",
+                            },
+                        },
+                    });
+                    return;
+                };
                 self.mutex.lock();
                 if (self.sessions.getPtr(session_id)) |s| {
                     s.player_id = player_id;
@@ -273,6 +286,7 @@ pub const Network = struct {
             error.NoShipyard => .no_shipyard,
             error.NoResearchLab => .no_research_lab,
             error.InsufficientResources => .no_resources,
+            error.FleetLimitReached => .fleet_limit_reached,
             else => .invalid_command,
         };
 
@@ -299,7 +313,7 @@ pub const Network = struct {
             const key = fs.location.toKey();
             if (!known_keys.contains(key)) {
                 try known_keys.put(key, {});
-                try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, fs.location));
+                try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, fs.location, player_id));
             }
         }
 
@@ -310,7 +324,7 @@ pub const Network = struct {
                 const key = coord.toKey();
                 if (!known_keys.contains(key)) {
                     try known_keys.put(key, {});
-                    try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, coord));
+                    try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, coord, player_id));
                 }
             }
         }
@@ -390,7 +404,7 @@ pub const Network = struct {
         return list.items;
     }
 
-    fn buildSectorState(alloc: std.mem.Allocator, eng: *GameEngine, coord: shared.Hex) !protocol.SectorState {
+    fn buildSectorState(alloc: std.mem.Allocator, eng: *GameEngine, coord: shared.Hex, exclude_player_id: ?u64) !protocol.SectorState {
         const template = eng.world_gen.generateSector(coord);
         const neighbors = eng.world_gen.connectedNeighbors(coord);
         const override = eng.sector_overrides.get(coord.toKey());
@@ -436,6 +450,35 @@ pub const Network = struct {
             }
         }
 
+        // Build player_fleets list (other players' fleets at this sector)
+        var player_fleet_list = std.ArrayList(protocol.FleetBrief).empty;
+        var fleet_iter = eng.fleets.iterator();
+        while (fleet_iter.next()) |f_entry| {
+            const fleet = f_entry.value_ptr;
+            if (!fleet.location.eql(coord)) continue;
+            if (fleet.ship_count == 0) continue;
+            if (exclude_player_id) |excl| {
+                if (fleet.owner_id == excl) continue;
+            }
+            const owner = eng.players.get(fleet.owner_id);
+            var counts = protocol.FleetBrief.ShipClassCounts{};
+            for (fleet.ships[0..fleet.ship_count]) |ship| {
+                switch (ship.class) {
+                    .scout => counts.scout += 1,
+                    .corvette => counts.corvette += 1,
+                    .frigate => counts.frigate += 1,
+                    .cruiser => counts.cruiser += 1,
+                    .hauler => counts.hauler += 1,
+                }
+            }
+            try player_fleet_list.append(alloc, .{
+                .id = fleet.id,
+                .owner_name = if (owner) |o| o.name else "Unknown",
+                .ship_count = @intCast(fleet.ship_count),
+                .ship_classes = counts,
+            });
+        }
+
         return .{
             .location = coord,
             .terrain = template.terrain,
@@ -446,6 +489,7 @@ pub const Network = struct {
             },
             .connections = try alloc.dupe(shared.Hex, neighbors.slice()),
             .hostiles = if (hostile_list.items.len > 0) hostile_list.items else null,
+            .player_fleets = if (player_fleet_list.items.len > 0) player_fleet_list.items else null,
             .salvage = if (override) |o| o.salvage else null,
         };
     }
@@ -520,9 +564,53 @@ pub const Network = struct {
         };
     }
 
-    fn isEventRelevant(_: protocol.GameEvent, _: u64, _: *GameEngine) bool {
-        // M1: all events visible to all players
-        return true;
+    fn isOwnFleet(eng: *GameEngine, fleet_id: u64, player_id: u64) bool {
+        const fleet = eng.fleets.get(fleet_id) orelse return false;
+        return fleet.owner_id == player_id;
+    }
+
+    fn playerHasFleetAtSector(eng: *GameEngine, player_id: u64, sector: shared.Hex) bool {
+        var iter = eng.fleets.iterator();
+        while (iter.next()) |f_entry| {
+            const f = f_entry.value_ptr;
+            if (f.owner_id == player_id and f.location.eql(sector) and f.ship_count > 0) return true;
+        }
+        return false;
+    }
+
+    fn isEventRelevant(event: protocol.GameEvent, player_id: u64, eng: *GameEngine) bool {
+        return switch (event.kind) {
+            .sector_entered => |e| isOwnFleet(eng, e.fleet_id, player_id),
+            .fleet_arrived => |e| isOwnFleet(eng, e.fleet_id, player_id),
+            .resource_harvested => |e| isOwnFleet(eng, e.fleet_id, player_id),
+            .salvage_collected => |e| isOwnFleet(eng, e.fleet_id, player_id),
+            .building_completed => |e| if (e.player_id) |pid| pid == player_id else true,
+            .research_completed => |e| if (e.player_id) |pid| pid == player_id else true,
+            .ship_built => |e| if (e.player_id) |pid| pid == player_id else true,
+            .combat_started => |e| isOwnFleet(eng, e.player_fleet_id, player_id) or playerHasFleetAtSector(eng, player_id, e.sector),
+            .combat_ended => |e| playerHasFleetAtSector(eng, player_id, e.sector),
+            .combat_round => |e| blk: {
+                // Relevant if attacker or target belongs to player's fleet
+                _ = e;
+                break :blk true; // Combat rounds are high-volume; filter by sector presence instead
+            },
+            .ship_destroyed => |e| blk: {
+                if (!e.is_npc and isOwnFleet(eng, e.owner_fleet_id, player_id)) break :blk true;
+                // Also visible to anyone with a fleet in the sector (derive from fleet location)
+                if (eng.fleets.get(e.owner_fleet_id)) |f| {
+                    if (playerHasFleetAtSector(eng, player_id, f.location)) break :blk true;
+                }
+                break :blk false;
+            },
+            .fleet_destroyed => |e| blk: {
+                if (!e.is_npc and isOwnFleet(eng, e.fleet_id, player_id)) break :blk true;
+                // NPC fleet destroyed: visible to anyone with fleet in that sector
+                // We don't have sector on this event, so show NPC destructions to all for now
+                if (e.is_npc) break :blk true;
+                break :blk false;
+            },
+            .alert => true,
+        };
     }
 };
 
