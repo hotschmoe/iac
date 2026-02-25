@@ -629,7 +629,7 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Graceful shutdown with final state persist
 - [x] Leak-free memory management (server and client)
 - [x] Server sends sector state (terrain, resources, connections) per-tick and on full sync
-- [x] Windshield hex compass with fixed direction keys (1=E, 2=NE, 3=NW, 4=W, 5=SW, 6=SE)
+- [x] Windshield hex node graph (spatially-positioned direction slots, connection lines, came-from indicator, resource summaries, compact fallback for small terminals, fixed keys 1=E 2=NE 3=NW 4=W 5=SW 6=SE)
 - [x] Client deep-copies all slice fields from parsed JSON (sector connections/hostiles/player_fleets, event alert messages) to survive parse arena cleanup
 - [x] Combat visual feedback (!! COMBAT !! title flash, damage numbers in event log)
 - [x] Death state handling (0 ships blocks commands client+server, DESTROYED display)
@@ -660,7 +660,7 @@ A human player can connect via TUI, see the amber hex map, navigate between sect
 
 ## Appendix A: Open Questions
 
-1. **Hex rendering in terminal** — what's the best ASCII/Unicode approximation for a hex grid that looks good in a monospace font? Flat-top hexes with `/` `\` `_` characters? Or abstract to a node graph where hexes are represented as labeled points with connection lines?
+1. **Hex rendering in terminal** — resolved: star map uses single-character symbols on an axial grid (`@`=fleet, `H`=home, `!`=hostile, terrain glyphs for resources). Windshield uses a node graph with the current sector at center and 6 direction slots connected by `/` `\` `-` lines, showing coordinates, exploration state, and resource summaries.
 
 2. **Policy condition language** — how expressive should this be? A simple enum of conditions with AND/OR might be enough. A mini expression language adds power but also parser complexity.
 
