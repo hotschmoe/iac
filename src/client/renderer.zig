@@ -71,9 +71,9 @@ fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
 
 fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
     const text: []const u8 = switch (state.current_view) {
-        .command_center => " CMD CENTER | [w] Windshield  [m] Map  [?] Keys  [q] Quit",
-        .windshield => " WINDSHIELD | [1-6] Move  [h] Harvest  [a] Attack  [s] Salvage  [?] Keys",
-        .star_map => " STAR MAP | [Arrows] Scroll  [z/x] Zoom  [c] Center  [?] Keys",
+        .command_center => " CMD CENTER | [w] Windshield  [m] Map  [?] Keys",
+        .windshield => " WINDSHIELD | [1-6] Move  [i] Info  [?] Keys",
+        .star_map => " STAR MAP | [Arrows] Scroll  [z/x] Zoom  [?] Keys",
     };
     frame.render(Paragraph{
         .text = text,
@@ -287,7 +287,7 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
 
     const kb_y = inner.y + inner.height -| 1;
     frame.render(Paragraph{
-        .text = " [1-6] Move  [h] Harvest  [a] Attack  [s] Salvage  [r] Recall",
+        .text = " [1-6] Move  [?] All Keys",
         .style = amber_dim,
     }, Rect.init(inner.x, kb_y, inner.width, 1));
 }
