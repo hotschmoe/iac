@@ -2,7 +2,10 @@ const std = @import("std");
 const shared = @import("shared");
 const zithril = @import("zithril");
 const State = @import("state.zig");
+const protocol = shared.protocol;
 const scaling = shared.scaling;
+const ShipClass = shared.constants.ShipClass;
+const Resources = shared.constants.Resources;
 
 const ClientState = State.ClientState;
 
@@ -163,7 +166,7 @@ fn renderFleetPanel(state: *ClientState, frame: *Frame, area: Rect) void {
     frame.render(Paragraph{ .text = buf[0..pos], .style = amber }, inner);
 }
 
-fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
+fn formatEvent(buf: []u8, pos: usize, event: protocol.GameEvent) !usize {
     const slice = buf[pos..];
     const text = switch (event.kind) {
         .combat_started => |e| std.fmt.bufPrint(slice, " T{d}: Combat at [{d},{d}]\n", .{ event.tick, e.sector.q, e.sector.r }),
@@ -467,7 +470,7 @@ fn renderDirectionNode(
     idx: usize,
     coord: shared.Hex,
     is_came_from: bool,
-    sector_data: ?*const shared.protocol.SectorState,
+    sector_data: ?*const protocol.SectorState,
 ) void {
     const explored = sector_data != null;
     const heading_style = if (is_came_from) amber_full else if (explored) amber_bright else amber;
@@ -490,7 +493,7 @@ fn renderDirectionNode(
     renderTextCentered(frame, inner, nx, ny + 1, resource_text, detail_style);
 }
 
-fn formatResourceSummary(buf: []u8, sector_data: ?*const shared.protocol.SectorState) []const u8 {
+fn formatResourceSummary(buf: []u8, sector_data: ?*const protocol.SectorState) []const u8 {
     const sd = sector_data orelse return "???";
     const res = sd.resources;
     if (res.metal == .none and res.crystal == .none and res.deuterium == .none) return "---";
@@ -562,7 +565,7 @@ fn findCameFrom(state: *const ClientState, loc: shared.Hex) ?usize {
     return null;
 }
 
-fn sectorHasConnection(sector: *const shared.protocol.SectorState, target: shared.Hex) bool {
+fn sectorHasConnection(sector: *const protocol.SectorState, target: shared.Hex) bool {
     for (sector.connections) |conn| {
         if (conn.eql(target)) return true;
     }
@@ -576,7 +579,7 @@ fn queueProgress(tick: u64, start: u64, end: u64) struct { elapsed: u64, total: 
     };
 }
 
-fn densityShort(d: shared.protocol.Density) []const u8 {
+fn densityShort(d: protocol.Density) []const u8 {
     return switch (d) {
         .none => "-",
         .sparse => "S",
@@ -586,7 +589,7 @@ fn densityShort(d: shared.protocol.Density) []const u8 {
     };
 }
 
-fn renderSectorViewCompact(state: *const ClientState, frame: *Frame, inner: Rect, f: *const shared.protocol.FleetState) void {
+fn renderSectorViewCompact(state: *const ClientState, frame: *Frame, inner: Rect, f: *const protocol.FleetState) void {
     var buf: [512]u8 = undefined;
     var pos: usize = 0;
 
@@ -833,7 +836,7 @@ fn renderCard(
             renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, level >= scaling.MAX_BUILDING_LEVEL);
         },
         .shipyard => {
-            const classes = shared.constants.ShipClass.ALL;
+            const classes = ShipClass.ALL;
             if (idx >= classes.len) return;
             const sc = classes[idx];
             const unlocked = scaling.shipClassUnlocked(sc, res_levels);
@@ -914,7 +917,7 @@ fn renderCard(
     }
 }
 
-fn fmtCostLine(buf: []u8, cost: shared.constants.Resources, ticks: u64) usize {
+fn fmtCostLine(buf: []u8, cost: Resources, ticks: u64) usize {
     var pos: usize = 0;
     const cl = std.fmt.bufPrint(buf[pos..], " {d:.0} Fe  {d:.0} Cr", .{ cost.metal, cost.crystal }) catch return pos;
     pos += cl.len;
@@ -1080,7 +1083,7 @@ fn renderTechTree(state: *ClientState, frame: *Frame, area: Rect) void {
         const ship_hdr = std.fmt.bufPrint(buf[pos..], "\n SHIPS\n ─────────────────────────────\n", .{}) catch "";
         pos += ship_hdr.len;
 
-        for (shared.constants.ShipClass.ALL) |sc| {
+        for (ShipClass.ALL) |sc| {
             const unlocked = scaling.shipClassUnlocked(sc, res_levels);
             const status: []const u8 = if (unlocked) "UNLOCKED" else "LOCKED";
             const sl = std.fmt.bufPrint(buf[pos..], " {s: <20} {s}\n", .{ sc.label(), status }) catch break;

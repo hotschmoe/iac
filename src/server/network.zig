@@ -94,22 +94,22 @@ pub const Network = struct {
 
             const fleet_updates = try collectPlayerFleets(alloc, eng, player_id);
 
-            var sector_update: ?protocol.SectorState = null;
-            if (fleet_updates.len > 0) {
-                sector_update = try buildSectorState(alloc, eng, fleet_updates[0].location);
-            }
-
-            const player_data = eng.players.get(player_id);
-            const player_update: ?protocol.PlayerState = if (player_data) |p| .{
-                .id = p.id,
-                .name = p.name,
-                .resources = p.resources,
-                .homeworld = p.homeworld,
-            } else null;
-            const hw_update: ?protocol.HomeworldState = if (player_data) |p|
-                try buildHomeworldState(alloc, eng, &p)
+            const sector_update: ?protocol.SectorState = if (fleet_updates.len > 0)
+                try buildSectorState(alloc, eng, fleet_updates[0].location)
             else
                 null;
+
+            var player_update: ?protocol.PlayerState = null;
+            var hw_update: ?protocol.HomeworldState = null;
+            if (eng.players.get(player_id)) |p| {
+                player_update = .{
+                    .id = p.id,
+                    .name = p.name,
+                    .resources = p.resources,
+                    .homeworld = p.homeworld,
+                };
+                hw_update = try buildHomeworldState(alloc, eng, &p);
+            }
 
             var player_events = std.ArrayList(protocol.GameEvent).empty;
             for (events) |event| {
@@ -364,17 +364,14 @@ pub const Network = struct {
         const override = eng.sector_overrides.get(coord.toKey());
         const densities = engine_mod.SectorOverride.effectiveDensities(override, template);
 
-        // Collect hostile NPC fleets at this coord
         var hostile_list = std.ArrayList(protocol.NpcFleetInfo).empty;
 
-        // Spawned NPC fleets (active in combat or otherwise present)
         var npc_iter = eng.npc_fleets.iterator();
         while (npc_iter.next()) |npc_entry| {
             const npc = npc_entry.value_ptr;
             if (npc.location.eql(coord)) {
                 var ship_info = std.ArrayList(protocol.NpcShipInfo).empty;
-                // Count ships by class
-                var class_counts: [5]u16 = .{ 0, 0, 0, 0, 0 };
+                var class_counts: [protocol.ShipClass.COUNT]u16 = @splat(0);
                 for (npc.ships[0..npc.ship_count]) |ship| {
                     class_counts[@intFromEnum(ship.class)] += 1;
                 }
@@ -394,10 +391,7 @@ pub const Network = struct {
             }
         }
 
-        // Template NPCs (not yet spawned but present in the world)
         if (template.npc_template) |npc_tmpl| {
-            // Only show if no spawned NPC fleet already covers this sector
-            // and if NPC hasn't been cleared (respawn timer active)
             const npc_cleared = if (override) |o| o.npc_cleared_tick != null else false;
             if (hostile_list.items.len == 0 and !npc_cleared) {
                 var ship_info = try alloc.alloc(protocol.NpcShipInfo, 1);
@@ -425,7 +419,6 @@ pub const Network = struct {
     }
 
     fn buildHomeworldState(alloc: std.mem.Allocator, eng: *GameEngine, player: *const engine_mod.Player) !protocol.HomeworldState {
-        // Build building states
         const bt_fields = @typeInfo(scaling.BuildingType).@"enum".fields;
         var buildings = try alloc.alloc(protocol.BuildingState, bt_fields.len);
         inline for (bt_fields, 0..) |_, i| {
@@ -436,7 +429,6 @@ pub const Network = struct {
             };
         }
 
-        // Build research states
         const rt_fields = @typeInfo(scaling.ResearchType).@"enum".fields;
         var research = try alloc.alloc(protocol.ResearchState, rt_fields.len);
         inline for (rt_fields, 0..) |_, i| {
@@ -444,7 +436,6 @@ pub const Network = struct {
             research[i] = .{ .tech = rt, .level = player.research.get(rt) };
         }
 
-        // Convert queue entries to wire types
         const build_queue: ?protocol.BuildQueueItem = if (player.building_queue) |q| .{
             .building_type = q.building,
             .target_level = q.target_level,
@@ -467,7 +458,6 @@ pub const Network = struct {
             .end_tick = q.end_tick,
         } else null;
 
-        // Collect docked ships at homeworld
         var docked_ships = std.ArrayList(protocol.ShipState).empty;
         var fleet_iter = eng.fleets.iterator();
         while (fleet_iter.next()) |f_entry| {

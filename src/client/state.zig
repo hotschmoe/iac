@@ -4,6 +4,7 @@ const shared = @import("shared");
 const Hex = shared.Hex;
 const protocol = shared.protocol;
 const scaling = shared.scaling;
+const ShipClass = shared.constants.ShipClass;
 
 pub const HomeworldTab = enum {
     buildings,
@@ -19,10 +20,9 @@ pub const HomeworldTab = enum {
     }
 
     pub fn itemCount(self: HomeworldTab) usize {
-
         return switch (self) {
             .buildings => scaling.BuildingType.COUNT,
-            .shipyard => shared.constants.ShipClass.COUNT,
+            .shipyard => ShipClass.COUNT,
             .research => scaling.ResearchType.COUNT,
         };
     }
@@ -42,10 +42,10 @@ pub const ClientState = struct {
 
     // Game state (from server)
     tick: u64,
-    player: ?shared.protocol.PlayerState,
-    fleets: std.ArrayList(shared.protocol.FleetState),
-    homeworld: ?shared.protocol.HomeworldState,
-    known_sectors: std.AutoHashMap(u32, shared.protocol.SectorState),
+    player: ?protocol.PlayerState,
+    fleets: std.ArrayList(protocol.FleetState),
+    homeworld: ?protocol.HomeworldState,
+    known_sectors: std.AutoHashMap(u32, protocol.SectorState),
     event_log: EventLog,
 
     // UI state
@@ -72,7 +72,7 @@ pub const ClientState = struct {
             .player = null,
             .fleets = .empty,
             .homeworld = null,
-            .known_sectors = std.AutoHashMap(u32, shared.protocol.SectorState).init(allocator),
+            .known_sectors = std.AutoHashMap(u32, protocol.SectorState).init(allocator),
             .event_log = EventLog.init(allocator),
             .current_view = .command_center,
             .active_fleet_idx = 0,
@@ -126,11 +126,11 @@ pub const ClientState = struct {
     fn freeOwnedSectors(self: *ClientState) void {
         var iter = self.known_sectors.iterator();
         while (iter.next()) |entry| {
-            freeSectorSlices(self.allocator, entry.value_ptr.*);
+            freeSectorOwned(self.allocator, entry.value_ptr.*);
         }
     }
 
-    fn freeSectorSlices(alloc: std.mem.Allocator, sector: shared.protocol.SectorState) void {
+    fn freeSectorOwned(alloc: std.mem.Allocator, sector: protocol.SectorState) void {
         alloc.free(sector.connections);
         if (sector.hostiles) |hostiles| {
             for (hostiles) |h| alloc.free(h.ships);
@@ -142,22 +142,22 @@ pub const ClientState = struct {
         }
     }
 
-    fn replaceSector(self: *ClientState, sector: shared.protocol.SectorState) !void {
+    fn replaceSector(self: *ClientState, sector: protocol.SectorState) !void {
         if (self.known_sectors.getPtr(sector.location.toKey())) |existing| {
-            freeSectorSlices(self.allocator, existing.*);
+            freeSectorOwned(self.allocator, existing.*);
         }
         var owned = sector;
         owned.connections = try self.allocator.dupe(Hex, sector.connections);
         if (sector.hostiles) |hostiles| {
-            const duped = try self.allocator.alloc(shared.protocol.NpcFleetInfo, hostiles.len);
+            const duped = try self.allocator.alloc(protocol.NpcFleetInfo, hostiles.len);
             for (hostiles, 0..) |h, i| {
                 duped[i] = h;
-                duped[i].ships = try self.allocator.dupe(shared.protocol.NpcShipInfo, h.ships);
+                duped[i].ships = try self.allocator.dupe(protocol.NpcShipInfo, h.ships);
             }
             owned.hostiles = duped;
         }
         if (sector.player_fleets) |pf| {
-            const duped = try self.allocator.alloc(shared.protocol.FleetBrief, pf.len);
+            const duped = try self.allocator.alloc(protocol.FleetBrief, pf.len);
             for (pf, 0..) |f, i| {
                 duped[i] = f;
                 duped[i].owner_name = try self.allocator.dupe(u8, f.owner_name);
@@ -167,7 +167,7 @@ pub const ClientState = struct {
         try self.known_sectors.put(sector.location.toKey(), owned);
     }
 
-    pub fn applyServerMessage(self: *ClientState, msg: shared.protocol.ServerMessage) !void {
+    pub fn applyServerMessage(self: *ClientState, msg: protocol.ServerMessage) !void {
         switch (msg) {
             .tick_update => |update| {
                 self.tick = update.tick;
@@ -234,13 +234,13 @@ pub const ClientState = struct {
         }
     }
 
-    fn replaceFleets(self: *ClientState, fleets: []const shared.protocol.FleetState) !void {
+    fn replaceFleets(self: *ClientState, fleets: []const protocol.FleetState) !void {
         const old_loc: ?Hex = if (self.activeFleet()) |f| f.location else null;
         self.freeOwnedFleets();
         self.fleets.clearRetainingCapacity();
         for (fleets) |fleet| {
             var owned = fleet;
-            owned.ships = try self.allocator.dupe(shared.protocol.ShipState, fleet.ships);
+            owned.ships = try self.allocator.dupe(protocol.ShipState, fleet.ships);
             try self.fleets.append(self.allocator, owned);
         }
         self.updatePrevFleetLocation(old_loc);
@@ -254,19 +254,19 @@ pub const ClientState = struct {
         }
     }
 
-    fn replacePlayer(self: *ClientState, player: shared.protocol.PlayerState) !void {
+    fn replacePlayer(self: *ClientState, player: protocol.PlayerState) !void {
         self.freeOwnedPlayer();
         var owned = player;
         owned.name = try self.allocator.dupe(u8, player.name);
         self.player = owned;
     }
 
-    fn replaceHomeworld(self: *ClientState, hw: shared.protocol.HomeworldState) !void {
+    fn replaceHomeworld(self: *ClientState, hw: protocol.HomeworldState) !void {
         self.freeOwnedHomeworld();
         var owned = hw;
-        owned.buildings = try self.allocator.dupe(shared.protocol.BuildingState, hw.buildings);
-        owned.research = try self.allocator.dupe(shared.protocol.ResearchState, hw.research);
-        owned.docked_ships = try self.allocator.dupe(shared.protocol.ShipState, hw.docked_ships);
+        owned.buildings = try self.allocator.dupe(protocol.BuildingState, hw.buildings);
+        owned.research = try self.allocator.dupe(protocol.ResearchState, hw.research);
+        owned.docked_ships = try self.allocator.dupe(protocol.ShipState, hw.docked_ships);
         self.homeworld = owned;
     }
 
@@ -327,7 +327,7 @@ pub const ClientState = struct {
                         return .{ .research = .{ .tech = rt } };
                     },
                     .shipyard => {
-                        const classes = shared.constants.ShipClass.ALL;
+                        const classes = ShipClass.ALL;
                         if (self.homeworld_cursor >= classes.len) return null;
                         const sc = classes[self.homeworld_cursor];
                         if (!scaling.shipClassUnlocked(sc, res_levels)) return null;
@@ -362,7 +362,7 @@ pub const ClientState = struct {
         self.map_zoom = level;
     }
 
-    pub fn activeFleet(self: *const ClientState) ?*const shared.protocol.FleetState {
+    pub fn activeFleet(self: *const ClientState) ?*const protocol.FleetState {
         if (self.active_fleet_idx < self.fleets.items.len) {
             return &self.fleets.items[self.active_fleet_idx];
         }
@@ -379,7 +379,7 @@ pub const ClientState = struct {
         }
     }
 
-    pub fn currentSector(self: *const ClientState) ?*const shared.protocol.SectorState {
+    pub fn currentSector(self: *const ClientState) ?*const protocol.SectorState {
         if (self.activeFleet()) |fleet| {
             return self.known_sectors.getPtr(fleet.location.toKey());
         }
@@ -413,7 +413,7 @@ pub const EventLog = struct {
     const MAX_EVENTS = 100;
 
     allocator: std.mem.Allocator,
-    events: [MAX_EVENTS]shared.protocol.GameEvent = undefined,
+    events: [MAX_EVENTS]protocol.GameEvent = undefined,
     head: usize = 0,
     count: usize = 0,
 
@@ -428,7 +428,7 @@ pub const EventLog = struct {
         }
     }
 
-    pub fn push(self: *EventLog, event: shared.protocol.GameEvent) !void {
+    pub fn push(self: *EventLog, event: protocol.GameEvent) !void {
         if (self.count == MAX_EVENTS) {
             self.freeSlices(self.events[self.head]);
         }
@@ -444,14 +444,14 @@ pub const EventLog = struct {
         if (self.count < MAX_EVENTS) self.count += 1;
     }
 
-    fn freeSlices(self: *EventLog, event: shared.protocol.GameEvent) void {
+    fn freeSlices(self: *EventLog, event: protocol.GameEvent) void {
         switch (event.kind) {
             .alert => |a| self.allocator.free(a.message),
             else => {},
         }
     }
 
-    pub fn getRecent(self: *const EventLog, n: usize) ?shared.protocol.GameEvent {
+    pub fn getRecent(self: *const EventLog, n: usize) ?protocol.GameEvent {
         if (n >= self.count) return null;
         const idx = (self.head + MAX_EVENTS - 1 - n) % MAX_EVENTS;
         return self.events[idx];

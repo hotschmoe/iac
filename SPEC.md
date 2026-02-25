@@ -391,6 +391,7 @@ The server is authoritative. Clients are thin renderers + input devices.
 {
     "type": "tick_update",
     "tick": 4821,
+    "player": { "id": 1, "resources": { ... } },
     "fleet_state": { ... },
     "sector_state": { ... },
     "homeworld_state": { "buildings": [...], "research": [...], ... },
@@ -402,7 +403,7 @@ The server is authoritative. Clients are thin renderers + input devices.
 }
 ```
 
-State deltas are sent — only fields that changed since last tick. Full state sync on initial connection and on request.
+Player state (resources), fleet state, sector state, homeworld state, and events are sent each tick. Full state sync on initial connection and on request.
 
 ### 9.3 Client → Server Messages
 

@@ -4,12 +4,13 @@ const State = @import("state.zig");
 
 const Key = zithril.Key;
 const ClientState = State.ClientState;
+const protocol = shared.protocol;
 
 pub const InputAction = union(enum) {
     none: void,
     quit: void,
     switch_view: State.View,
-    send_command: shared.protocol.Command,
+    send_command: protocol.Command,
     scroll: State.ScrollDirection,
     zoom: State.ZoomLevel,
     cycle_fleet: void,
@@ -174,7 +175,7 @@ fn mapZoomIn(state: *const ClientState) InputAction {
 }
 
 /// Returns the active fleet only if it exists and has ships.
-fn activeReadyFleet(state: *const ClientState) ?*const shared.protocol.FleetState {
+fn activeReadyFleet(state: *const ClientState) ?*const protocol.FleetState {
     const fleet = state.activeFleet() orelse return null;
     if (fleet.ships.len == 0) return null;
     return fleet;
