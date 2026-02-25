@@ -68,7 +68,7 @@ class StarMapView extends StatelessWidget {
           ),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
           child: Text(
-            'nav: ARROWS scroll | +/- zoom | ENTER waypoint | HOME center | TAB cycle | ESC close',
+            'nav: ARROWS cursor | SHIFT+ARROWS scroll | +/- zoom | ENTER waypoint | HOME center | ESC close',
             style: Amber.mono(size: 9, color: Amber.dim),
           ),
         ),

@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 
 import '../theme/amber_theme.dart';
@@ -9,6 +11,7 @@ class AmberText extends StatelessWidget {
   final AmberLevel level;
   final double? size;
   final FontWeight? weight;
+  final bool bloom;
 
   const AmberText(
     this.text, {
@@ -16,17 +19,20 @@ class AmberText extends StatelessWidget {
     this.level = AmberLevel.normal,
     this.size,
     this.weight,
+    this.bloom = false,
   });
 
-  const AmberText.full(this.text, {super.key, this.size, this.weight})
+  const AmberText.full(this.text, {super.key, this.size, this.weight, this.bloom = true})
       : level = AmberLevel.full;
-  const AmberText.bright(this.text, {super.key, this.size, this.weight})
+  const AmberText.bright(this.text, {super.key, this.size, this.weight, this.bloom = false})
       : level = AmberLevel.bright;
   const AmberText.dim(this.text, {super.key, this.size, this.weight})
-      : level = AmberLevel.dim;
+      : level = AmberLevel.dim,
+        bloom = false;
   const AmberText.faint(this.text, {super.key, this.size, this.weight})
-      : level = AmberLevel.faint;
-  const AmberText.danger(this.text, {super.key, this.size, this.weight})
+      : level = AmberLevel.faint,
+        bloom = false;
+  const AmberText.danger(this.text, {super.key, this.size, this.weight, this.bloom = true})
       : level = AmberLevel.danger;
 
   Color get _color {
@@ -50,13 +56,27 @@ class AmberText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: Amber.mono(
-        color: _color,
-        size: size ?? 12,
-        weight: weight ?? FontWeight.w400,
-      ),
+    final style = Amber.mono(
+      color: _color,
+      size: size ?? 12,
+      weight: weight ?? FontWeight.w400,
+    );
+
+    if (!bloom) return Text(text, style: style);
+
+    return Stack(
+      children: [
+        ImageFiltered(
+          imageFilter: ImageFilter.blur(sigmaX: 3, sigmaY: 1),
+          child: Text(
+            text,
+            style: style.copyWith(
+              color: _color.withValues(alpha: 0.4),
+            ),
+          ),
+        ),
+        Text(text, style: style),
+      ],
     );
   }
 }

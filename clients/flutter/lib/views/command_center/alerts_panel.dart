@@ -16,10 +16,13 @@ class AlertsPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           for (final alert in alerts) ...[
-            Text(
-              '${alert.icon} ${alert.message}',
-              style: Amber.mono(size: 11, color: alert.level.color),
-            ),
+            if (alert.level == AlertLevel.glow)
+              _PulsingAlert(alert: alert)
+            else
+              Text(
+                '${alert.icon} ${alert.message}',
+                style: Amber.mono(size: 11, color: alert.level.color),
+              ),
             if (alert.detail.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(left: 8),
@@ -32,6 +35,61 @@ class AlertsPanel extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _PulsingAlert extends StatefulWidget {
+  final Alert alert;
+  const _PulsingAlert({required this.alert});
+
+  @override
+  State<_PulsingAlert> createState() => _PulsingAlertState();
+}
+
+class _PulsingAlertState extends State<_PulsingAlert>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) {
+        final t = _ctrl.value;
+        final alpha = 0.6 + 0.4 * t;
+        final color = Amber.full.withValues(alpha: alpha);
+        final glowRadius = 2.0 + 4.0 * t;
+        return Container(
+          decoration: BoxDecoration(
+            boxShadow: [
+              BoxShadow(
+                color: Amber.full.withValues(alpha: 0.15 * t),
+                blurRadius: glowRadius,
+              ),
+            ],
+          ),
+          child: Text(
+            '${widget.alert.icon} ${widget.alert.message}',
+            style: Amber.mono(size: 11, color: color),
+          ),
+        );
+      },
     );
   }
 }

@@ -199,6 +199,20 @@ class StarMapPainter extends CustomPainter {
           }
         }
 
+        // Cursor crosshair (only when no fleet symbol is already drawn)
+        if (isCursor && !isFleetHere && !isHome && !isRegion) {
+          final cPaint = Paint()
+            ..color = _amberFull.withValues(alpha: 0.6)
+            ..strokeWidth = 0.8
+            ..style = PaintingStyle.stroke;
+          const arm = 4.0;
+          const gap = 2.0;
+          canvas.drawLine(Offset(px - arm - gap, py), Offset(px - gap, py), cPaint);
+          canvas.drawLine(Offset(px + gap, py), Offset(px + arm + gap, py), cPaint);
+          canvas.drawLine(Offset(px, py - arm - gap), Offset(px, py - gap), cPaint);
+          canvas.drawLine(Offset(px, py + gap), Offset(px, py + arm + gap), cPaint);
+        }
+
         // Waypoint markers
         final wp = waypoints.where((w) => w.coord.q == q && w.coord.r == r);
         if (wp.isNotEmpty && !isFleetHere) {

@@ -46,6 +46,11 @@ class GameController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void moveCursor(int dq, int dr) {
+    cursorHex = Hex(cursorHex.q + dq, cursorHex.r + dr);
+    notifyListeners();
+  }
+
   void recenterMap() {
     mapOffsetX = 0;
     mapOffsetY = 0;

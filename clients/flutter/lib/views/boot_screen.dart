@@ -1,3 +1,6 @@
+import 'dart:math';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 
 import '../theme/amber_theme.dart';
@@ -11,7 +14,7 @@ class BootScreen extends StatefulWidget {
 }
 
 class _BootScreenState extends State<BootScreen> {
-  static const _bootLines = [
+  static const _coreLines = [
     'BIOS POST ................. OK',
     'MEM CHECK 64K ............. OK',
     'LOADING UNSC FLEET OS v4.2.1',
@@ -21,20 +24,56 @@ class _BootScreenState extends State<BootScreen> {
     'CALIBRATING NAV ARRAY ..... OK',
     'WEAPONS SYSTEMS ........... STANDBY',
     'CRT PHOSPHOR .............. AMBER',
-    '',
-    'WELCOME ABOARD, ADMIRAL.',
-    '',
   ];
+
+  static const _glitchVariants = [
+    'SECTOR CACHE .............. 3.2% CORRUPTED -- REBUILDING',
+    'NAV BEACON [12,-4] ........ SIGNAL LOST -- REROUTING',
+    'HULL SENSOR ARRAY ......... RECALIBRATING (thermal drift)',
+    'COMMS RELAY ............... TIMEOUT -- RETRY OK',
+    'SHIELD HARMONIC ........... DRIFT DETECTED -- COMPENSATING',
+    'DEUTERIUM SENSOR .......... VARIANCE +0.3% -- ACCEPTABLE',
+    'MLM SIGNATURE DATABASE .... 847 ENTRIES -- UPDATED',
+    'TRANSPONDER ECHO .......... STALE -- REFRESHED',
+    'STAR CHART DELTA .......... 14 SECTORS REVISED',
+    'POWER GRID ................ FLUCTUATION -- STABILIZED',
+  ];
+
+  late final List<String> _bootLines;
+  late final List<bool> _lineVisible;
 
   bool _titleVisible = false;
   bool _subVisible = false;
-  final List<bool> _lineVisible = List.filled(_bootLines.length, false);
   bool _fadeOut = false;
 
   @override
   void initState() {
     super.initState();
+    _bootLines = _generateBootSequence();
+    _lineVisible = List.filled(_bootLines.length, false);
     _runBoot();
+  }
+
+  List<String> _generateBootSequence() {
+    final rng = Random();
+    final lines = List<String>.from(_coreLines);
+
+    // Insert 1-2 random glitch/warning lines at varying positions
+    final shuffled = List<String>.from(_glitchVariants)..shuffle(rng);
+    final glitchCount = 1 + rng.nextInt(2);
+    for (int i = 0; i < glitchCount; i++) {
+      final insertAt = 3 + rng.nextInt(lines.length - 3);
+      lines.insert(insertAt, shuffled[i]);
+    }
+
+    lines.add('');
+    lines.add('WELCOME ABOARD, ADMIRAL.');
+    lines.add('');
+    return lines;
+  }
+
+  bool _isGlitchLine(String line) {
+    return _glitchVariants.contains(line);
   }
 
   Future<void> _runBoot() async {
@@ -53,7 +92,8 @@ class _BootScreenState extends State<BootScreen> {
       await Future.delayed(const Duration(milliseconds: 40));
       setState(() => _lineVisible[i] = true);
       final line = _bootLines[i];
-      final delay = line.isEmpty ? 100 : 70 + (50 * (i % 3));
+      final isGlitch = _isGlitchLine(line);
+      final delay = line.isEmpty ? 100 : isGlitch ? 350 : 70 + (50 * (i % 3));
       await Future.delayed(Duration(milliseconds: delay));
     }
 
@@ -79,13 +119,28 @@ class _BootScreenState extends State<BootScreen> {
               AnimatedOpacity(
                 opacity: _titleVisible ? 1 : 0,
                 duration: const Duration(seconds: 1),
-                child: Text(
-                  'IN AMBER CLAD',
-                  style: Amber.mono(
-                    size: 22,
-                    color: Amber.full,
-                    weight: FontWeight.w700,
-                  ).copyWith(letterSpacing: 8),
+                child: Stack(
+                  children: [
+                    ImageFiltered(
+                      imageFilter: ImageFilter.blur(sigmaX: 6, sigmaY: 2),
+                      child: Text(
+                        'IN AMBER CLAD',
+                        style: Amber.mono(
+                          size: 22,
+                          color: Amber.full.withValues(alpha: 0.4),
+                          weight: FontWeight.w700,
+                        ).copyWith(letterSpacing: 8),
+                      ),
+                    ),
+                    Text(
+                      'IN AMBER CLAD',
+                      style: Amber.mono(
+                        size: 22,
+                        color: Amber.full,
+                        weight: FontWeight.w700,
+                      ).copyWith(letterSpacing: 8),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 12),
@@ -113,10 +168,12 @@ class _BootScreenState extends State<BootScreen> {
                           padding: const EdgeInsets.symmetric(vertical: 2),
                           child: Text(
                             _bootLines[i],
-                            style:
-                                Amber.mono(size: 11, color: Amber.dim).copyWith(
-                              height: 1.7,
-                            ),
+                            style: Amber.mono(
+                              size: 11,
+                              color: _isGlitchLine(_bootLines[i])
+                                  ? Amber.bright
+                                  : Amber.dim,
+                            ).copyWith(height: 1.7),
                           ),
                         ),
                       ),

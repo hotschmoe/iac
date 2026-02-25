@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'dart:ui';
+
 import '../state/game_controller.dart';
 import '../theme/amber_theme.dart';
 import '../theme/crt_overlay.dart';
 import 'command_center/command_center_view.dart';
+import 'help_overlay.dart';
 import 'star_map/star_map_view.dart';
 import 'windshield/windshield_view.dart';
 
@@ -18,15 +21,37 @@ class Shell extends StatefulWidget {
   State<Shell> createState() => _ShellState();
 }
 
-class _ShellState extends State<Shell> {
+class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
   GameView _currentView = GameView.commandCenter;
   final _cmdController = TextEditingController();
   final _cmdFocus = FocusNode();
+  bool _showHelp = false;
+  bool _flickering = false;
+  late final AnimationController _flickerCtrl;
 
   GameController get ctrl => widget.controller;
 
+  @override
+  void initState() {
+    super.initState();
+    _flickerCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 80),
+    )..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          setState(() => _flickering = false);
+          _flickerCtrl.reset();
+        }
+      });
+  }
+
   void _switchView(GameView view) {
-    setState(() => _currentView = view);
+    if (_currentView == view) return;
+    setState(() {
+      _flickering = true;
+      _currentView = view;
+    });
+    _flickerCtrl.forward(from: 0);
   }
 
   void _handleCommand(String cmd) {
@@ -52,6 +77,18 @@ class _ShellState extends State<Shell> {
 
   KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+    // Help toggle -- works everywhere
+    if (event.character == '?') {
+      setState(() => _showHelp = !_showHelp);
+      return KeyEventResult.handled;
+    }
+
+    // Dismiss help with Escape
+    if (_showHelp && event.logicalKey == LogicalKeyboardKey.escape) {
+      setState(() => _showHelp = false);
+      return KeyEventResult.handled;
+    }
 
     if (_cmdFocus.hasFocus) {
       if (event.logicalKey == LogicalKeyboardKey.escape) {
@@ -79,22 +116,23 @@ class _ShellState extends State<Shell> {
       return KeyEventResult.handled;
     }
 
-    // Star map navigation
+    // Star map navigation -- arrows move cursor, shift+arrows pan
     if (_currentView == GameView.starMap) {
+      final shift = HardwareKeyboard.instance.isShiftPressed;
       if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-        ctrl.panMap(-1, 0);
+        shift ? ctrl.panMap(-1, 0) : ctrl.moveCursor(-1, 0);
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-        ctrl.panMap(1, 0);
+        shift ? ctrl.panMap(1, 0) : ctrl.moveCursor(1, 0);
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-        ctrl.panMap(0, -1);
+        shift ? ctrl.panMap(0, -1) : ctrl.moveCursor(0, -1);
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-        ctrl.panMap(0, 1);
+        shift ? ctrl.panMap(0, 1) : ctrl.moveCursor(0, 1);
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.equal ||
@@ -140,6 +178,7 @@ class _ShellState extends State<Shell> {
 
   @override
   void dispose() {
+    _flickerCtrl.dispose();
     _cmdController.dispose();
     _cmdFocus.dispose();
     super.dispose();
@@ -155,12 +194,38 @@ class _ShellState extends State<Shell> {
           listenable: ctrl,
           builder: (context, _) {
             final state = ctrl.state;
-            return Column(
+            return Stack(
               children: [
-                _buildHeader(state.tick, state.clockDisplay),
-                _buildTabBar(),
-                Expanded(child: _buildView()),
-                _buildCommandBar(),
+                Column(
+                  children: [
+                    _buildHeader(state.tick, state.clockDisplay),
+                    _buildTabBar(),
+                    Expanded(child: _buildView()),
+                    _buildCommandBar(),
+                  ],
+                ),
+                if (_flickering)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: AnimatedBuilder(
+                        animation: _flickerCtrl,
+                        builder: (context, child) {
+                          final t = _flickerCtrl.value;
+                          final opacity = t < 0.5
+                              ? 0.15 * (1 - t * 2)
+                              : 0.0;
+                          return Container(
+                            color: Amber.full.withValues(alpha: opacity),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                if (_showHelp)
+                  HelpOverlay(
+                    currentView: _currentView,
+                    onClose: () => setState(() => _showHelp = false),
+                  ),
               ],
             );
           },
@@ -180,13 +245,12 @@ class _ShellState extends State<Shell> {
         children: [
           Row(
             children: [
-              Text(
+              _phosphorText(
                 'IN AMBER CLAD',
-                style: Amber.mono(
-                  size: 15,
-                  color: Amber.full,
-                  weight: FontWeight.w700,
-                ).copyWith(letterSpacing: 3),
+                15,
+                Amber.full,
+                FontWeight.w700,
+                letterSpacing: 3,
               ),
               const Spacer(),
               Text(
@@ -286,6 +350,28 @@ class _ShellState extends State<Shell> {
     }
   }
 
+  Widget _phosphorText(
+    String text,
+    double size,
+    Color color,
+    FontWeight weight, {
+    double letterSpacing = 0,
+  }) {
+    final style = Amber.mono(size: size, color: color, weight: weight)
+        .copyWith(letterSpacing: letterSpacing);
+    return Stack(
+      children: [
+        ImageFiltered(
+          imageFilter: ImageFilter.blur(sigmaX: 4, sigmaY: 1.5),
+          child: Text(text, style: style.copyWith(
+            color: color.withValues(alpha: 0.35),
+          )),
+        ),
+        Text(text, style: style),
+      ],
+    );
+  }
+
   Widget _buildCommandBar() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -295,10 +381,7 @@ class _ShellState extends State<Shell> {
       ),
       child: Row(
         children: [
-          Text(
-            '>',
-            style: Amber.mono(size: 13, color: Amber.full),
-          ),
+          _phosphorText('>', 13, Amber.full, FontWeight.w400),
           const SizedBox(width: 8),
           Expanded(
             child: TextField(
@@ -317,7 +400,7 @@ class _ShellState extends State<Shell> {
             ),
           ),
           Text(
-            '[1]CC [2]WS [3]MAP | [h]arvest [a]ttack [b]uild [r]esearch [f]leet',
+            '[1]CC [2]WS [3]MAP | [h]arvest [a]ttack [b]uild [r]esearch [f]leet | [?]help',
             style: Amber.mono(size: 9, color: Amber.dim).copyWith(
               letterSpacing: 0.5,
             ),
