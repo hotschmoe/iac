@@ -100,6 +100,12 @@ pub const Network = struct {
             }
 
             const player_data = eng.players.get(player_id);
+            const player_update: ?protocol.PlayerState = if (player_data) |p| .{
+                .id = p.id,
+                .name = p.name,
+                .resources = p.resources,
+                .homeworld = p.homeworld,
+            } else null;
             const hw_update: ?protocol.HomeworldState = if (player_data) |p|
                 try buildHomeworldState(alloc, eng, &p)
             else
@@ -115,6 +121,7 @@ pub const Network = struct {
             const update = protocol.ServerMessage{
                 .tick_update = .{
                     .tick = eng.current_tick,
+                    .player = player_update,
                     .fleet_updates = if (fleet_updates.len > 0) fleet_updates else null,
                     .sector_update = sector_update,
                     .homeworld_update = hw_update,

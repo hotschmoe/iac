@@ -113,6 +113,7 @@ pub const AuthResult = struct {
 
 pub const TickUpdate = struct {
     tick: u64,
+    player: ?PlayerState = null,
     fleet_updates: ?[]const FleetState = null,
     sector_update: ?SectorState = null,
     homeworld_update: ?HomeworldState = null,

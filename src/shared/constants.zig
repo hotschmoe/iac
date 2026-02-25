@@ -231,7 +231,7 @@ pub const Resources = struct {
 pub const STARTING_RESOURCES = Resources{
     .metal = 500,
     .crystal = 300,
-    .deuterium = 50000, // testing: high deut for exploration
+    .deuterium = 100,
 };
 
 pub const STARTING_SCOUTS: usize = 2;

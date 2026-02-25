@@ -172,6 +172,10 @@ pub const ClientState = struct {
             .tick_update => |update| {
                 self.tick = update.tick;
 
+                if (update.player) |player| {
+                    try self.replacePlayer(player);
+                }
+
                 if (update.fleet_updates) |fleets| {
                     try self.replaceFleets(fleets);
                 }
