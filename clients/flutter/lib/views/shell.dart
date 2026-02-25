@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'dart:ui';
-
 import '../state/game_controller.dart';
 import '../theme/amber_theme.dart';
 import '../theme/crt_overlay.dart';
+import '../widgets/amber_text.dart';
 import 'command_center/command_center_view.dart';
 import 'help_overlay.dart';
 import 'star_map/star_map_view.dart';
@@ -152,13 +151,15 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
 
     // Windshield movement (numpad keys since digit 1-3 switch views)
     if (_currentView == GameView.windshield) {
-      int? dir;
-      if (event.logicalKey == LogicalKeyboardKey.numpad1) dir = 0;
-      if (event.logicalKey == LogicalKeyboardKey.numpad2) dir = 1;
-      if (event.logicalKey == LogicalKeyboardKey.numpad3) dir = 2;
-      if (event.logicalKey == LogicalKeyboardKey.numpad4) dir = 3;
-      if (event.logicalKey == LogicalKeyboardKey.numpad5) dir = 4;
-      if (event.logicalKey == LogicalKeyboardKey.numpad6) dir = 5;
+      final numpadDirs = {
+        LogicalKeyboardKey.numpad1: 0,
+        LogicalKeyboardKey.numpad2: 1,
+        LogicalKeyboardKey.numpad3: 2,
+        LogicalKeyboardKey.numpad4: 3,
+        LogicalKeyboardKey.numpad5: 4,
+        LogicalKeyboardKey.numpad6: 5,
+      };
+      final dir = numpadDirs[event.logicalKey];
       if (dir != null) {
         ctrl.moveFleet(dir);
         return KeyEventResult.handled;
@@ -245,11 +246,10 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
         children: [
           Row(
             children: [
-              _phosphorText(
+              const AmberText.full(
                 'IN AMBER CLAD',
-                15,
-                Amber.full,
-                FontWeight.w700,
+                size: 15,
+                weight: FontWeight.w700,
                 letterSpacing: 3,
               ),
               const Spacer(),
@@ -350,28 +350,6 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
     }
   }
 
-  Widget _phosphorText(
-    String text,
-    double size,
-    Color color,
-    FontWeight weight, {
-    double letterSpacing = 0,
-  }) {
-    final style = Amber.mono(size: size, color: color, weight: weight)
-        .copyWith(letterSpacing: letterSpacing);
-    return Stack(
-      children: [
-        ImageFiltered(
-          imageFilter: ImageFilter.blur(sigmaX: 4, sigmaY: 1.5),
-          child: Text(text, style: style.copyWith(
-            color: color.withValues(alpha: 0.35),
-          )),
-        ),
-        Text(text, style: style),
-      ],
-    );
-  }
-
   Widget _buildCommandBar() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -381,7 +359,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
       ),
       child: Row(
         children: [
-          _phosphorText('>', 13, Amber.full, FontWeight.w400),
+          const AmberText.full('>', size: 13),
           const SizedBox(width: 8),
           Expanded(
             child: TextField(

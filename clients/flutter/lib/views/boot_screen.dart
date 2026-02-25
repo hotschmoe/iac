@@ -1,9 +1,9 @@
 import 'dart:math';
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
 import '../theme/amber_theme.dart';
+import '../widgets/amber_text.dart';
 
 class BootScreen extends StatefulWidget {
   final VoidCallback onComplete;
@@ -119,28 +119,11 @@ class _BootScreenState extends State<BootScreen> {
               AnimatedOpacity(
                 opacity: _titleVisible ? 1 : 0,
                 duration: const Duration(seconds: 1),
-                child: Stack(
-                  children: [
-                    ImageFiltered(
-                      imageFilter: ImageFilter.blur(sigmaX: 6, sigmaY: 2),
-                      child: Text(
-                        'IN AMBER CLAD',
-                        style: Amber.mono(
-                          size: 22,
-                          color: Amber.full.withValues(alpha: 0.4),
-                          weight: FontWeight.w700,
-                        ).copyWith(letterSpacing: 8),
-                      ),
-                    ),
-                    Text(
-                      'IN AMBER CLAD',
-                      style: Amber.mono(
-                        size: 22,
-                        color: Amber.full,
-                        weight: FontWeight.w700,
-                      ).copyWith(letterSpacing: 8),
-                    ),
-                  ],
+                child: const AmberText.full(
+                  'IN AMBER CLAD',
+                  size: 22,
+                  weight: FontWeight.w700,
+                  letterSpacing: 8,
                 ),
               ),
               const SizedBox(height: 12),

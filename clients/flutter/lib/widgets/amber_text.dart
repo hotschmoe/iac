@@ -11,6 +11,7 @@ class AmberText extends StatelessWidget {
   final AmberLevel level;
   final double? size;
   final FontWeight? weight;
+  final double letterSpacing;
   final bool bloom;
 
   const AmberText(
@@ -19,20 +20,24 @@ class AmberText extends StatelessWidget {
     this.level = AmberLevel.normal,
     this.size,
     this.weight,
+    this.letterSpacing = 0,
     this.bloom = false,
   });
 
-  const AmberText.full(this.text, {super.key, this.size, this.weight, this.bloom = true})
+  const AmberText.full(this.text,
+      {super.key, this.size, this.weight, this.letterSpacing = 0, this.bloom = true})
       : level = AmberLevel.full;
-  const AmberText.bright(this.text, {super.key, this.size, this.weight, this.bloom = false})
+  const AmberText.bright(this.text,
+      {super.key, this.size, this.weight, this.letterSpacing = 0, this.bloom = false})
       : level = AmberLevel.bright;
-  const AmberText.dim(this.text, {super.key, this.size, this.weight})
+  const AmberText.dim(this.text, {super.key, this.size, this.weight, this.letterSpacing = 0})
       : level = AmberLevel.dim,
         bloom = false;
-  const AmberText.faint(this.text, {super.key, this.size, this.weight})
+  const AmberText.faint(this.text, {super.key, this.size, this.weight, this.letterSpacing = 0})
       : level = AmberLevel.faint,
         bloom = false;
-  const AmberText.danger(this.text, {super.key, this.size, this.weight, this.bloom = true})
+  const AmberText.danger(this.text,
+      {super.key, this.size, this.weight, this.letterSpacing = 0, this.bloom = true})
       : level = AmberLevel.danger;
 
   Color get _color {
@@ -60,7 +65,7 @@ class AmberText extends StatelessWidget {
       color: _color,
       size: size ?? 12,
       weight: weight ?? FontWeight.w400,
-    );
+    ).copyWith(letterSpacing: letterSpacing > 0 ? letterSpacing : null);
 
     if (!bloom) return Text(text, style: style);
 

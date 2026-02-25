@@ -41,7 +41,7 @@ class StarMapPainter extends CustomPainter {
     final cy = size.height / 2;
     final isRegion = zoom == MapZoom.region;
 
-    _drawStarsBg(canvas, size);
+    drawStarField(canvas, size, 7, 100, _amberFull.withValues(alpha: 0.015));
 
     // Draw edges
     for (int dq = -radius; dq <= radius; dq++) {
@@ -152,7 +152,7 @@ class StarMapPainter extends CustomPainter {
           final isActive = fi == activeFleet;
           final sym = isActive ? '<>' : '< >';
           final fontSize = isRegion ? 10.0 : 13.0;
-          _drawText(
+          drawMapText(
             canvas,
             sym,
             px,
@@ -163,12 +163,12 @@ class StarMapPainter extends CustomPainter {
             bold: true,
           );
         } else if (isHome) {
-          _drawText(canvas, 'H', px, py + 4, isRegion ? 10.0 : 12.0,
+          drawMapText(canvas, 'H', px, py + 4, isRegion ? 10.0 : 12.0,
               _amberFull.withValues(alpha: 0.7),
               center: true);
         } else if (sec.explored) {
           if (sec.hasHostile) {
-            _drawText(
+            drawMapText(
               canvas,
               isRegion ? '!' : 'T${sec.hostileCount}',
               px,
@@ -178,7 +178,7 @@ class StarMapPainter extends CustomPainter {
               center: true,
             );
           } else if (sec.terrain.index > 0 && sec.resMetal.index > 0) {
-            _drawText(
+            drawMapText(
               canvas,
               isRegion ? '.' : sec.resMetal.label[0].toUpperCase(),
               px,
@@ -188,13 +188,13 @@ class StarMapPainter extends CustomPainter {
               center: true,
             );
           } else {
-            _drawText(canvas, '.', px, py + 2, isRegion ? 3.0 : 6.0,
+            drawMapText(canvas, '.', px, py + 2, isRegion ? 3.0 : 6.0,
                 _amberFull.withValues(alpha: 0.15),
                 center: true);
           }
         } else {
           if (!isRegion) {
-            _drawText(canvas, '?', px, py + 3, 8, _amberFull.withValues(alpha: 0.06),
+            drawMapText(canvas, '?', px, py + 3, 8, _amberFull.withValues(alpha: 0.06),
                 center: true);
           }
         }
@@ -216,7 +216,7 @@ class StarMapPainter extends CustomPainter {
         // Waypoint markers
         final wp = waypoints.where((w) => w.coord.q == q && w.coord.r == r);
         if (wp.isNotEmpty && !isFleetHere) {
-          _drawText(
+          drawMapText(
             canvas,
             'v',
             px,
@@ -228,16 +228,6 @@ class StarMapPainter extends CustomPainter {
         }
       }
     }
-  }
-
-  void _drawStarsBg(Canvas canvas, Size size) {
-    drawStarField(canvas, size, 7, 100, _amberFull.withValues(alpha: 0.015));
-  }
-
-  void _drawText(Canvas canvas, String text, double x, double y, double size,
-      Color color,
-      {bool center = false, bool bold = false}) {
-    drawMapText(canvas, text, x, y, size, color, center: center, bold: bold);
   }
 
   @override

@@ -80,6 +80,17 @@ class GameController extends ChangeNotifier {
     notifyListeners();
   }
 
+  static const _maxEvents = 12;
+
+  List<GameEvent> _pushEvents(List<GameEvent> incoming) {
+    final events = List.of(_state.events);
+    for (final e in incoming) {
+      events.insert(0, e);
+    }
+    if (events.length > _maxEvents) events.removeRange(_maxEvents, events.length);
+    return events;
+  }
+
   void moveFleet(int direction) {
     if (direction < 0 || direction >= 6) return;
     final fleet = _state.fleets[activeFleet];
@@ -94,16 +105,13 @@ class GameController extends ChangeNotifier {
 
     cursorHex = newSector;
 
-    final newEvents = List.of(_state.events);
-    newEvents.insert(
-      0,
+    final newEvents = _pushEvents([
       GameEvent(
         tick: _state.tick,
         message: 'Fleet ${fleet.name} moved to [$nq,$nr]',
         level: EventLevel.normal,
       ),
-    );
-    if (newEvents.length > 12) newEvents.removeRange(12, newEvents.length);
+    ]);
 
     _state = _state.copyWith(fleets: newFleets, events: newEvents);
     notifyListeners();
@@ -129,16 +137,10 @@ class GameController extends ChangeNotifier {
     };
 
     final response = responses[cmd] ?? 'Unknown command: "$cmd". Type "help" for commands.';
-    final newEvents = List.of(_state.events);
-    newEvents.insert(
-      0,
-      GameEvent(tick: _state.tick, message: '> $cmd', level: EventLevel.full),
-    );
-    newEvents.insert(
-      0,
+    final newEvents = _pushEvents([
       GameEvent(tick: _state.tick, message: response, level: EventLevel.normal),
-    );
-    if (newEvents.length > 12) newEvents.removeRange(12, newEvents.length);
+      GameEvent(tick: _state.tick, message: '> $cmd', level: EventLevel.full),
+    ]);
 
     _state = _state.copyWith(events: newEvents);
     notifyListeners();
