@@ -37,7 +37,7 @@ pub fn view(state: *ClientState, frame: *Frame) void {
     renderHeader(state, frame, rows.get(0));
 
     if (state.show_keybinds) {
-        renderKeybinds(state, frame, rows.get(1));
+        renderKeybinds(frame, rows.get(1));
     } else switch (state.current_view) {
         .command_center => renderCommandCenter(state, frame, rows.get(1)),
         .windshield => renderWindshield(state, frame, rows.get(1)),
@@ -99,7 +99,7 @@ fn renderCommandCenter(state: *ClientState, frame: *Frame, area: Rect) void {
     renderResourcePanel(state, frame, top_cols.get(0));
     renderFleetPanel(state, frame, top_cols.get(1));
 
-    renderEventPanel(state, frame, rows.get(1));
+    renderEventLog(state, frame, rows.get(1), " EVENT LOG ");
 }
 
 fn renderResourcePanel(state: *ClientState, frame: *Frame, area: Rect) void {
@@ -155,10 +155,6 @@ fn renderFleetPanel(state: *ClientState, frame: *Frame, area: Rect) void {
     frame.render(Paragraph{ .text = buf[0..pos], .style = amber }, inner);
 }
 
-fn renderEventPanel(state: *ClientState, frame: *Frame, area: Rect) void {
-    renderEventLog(state, frame, area, " EVENT LOG ");
-}
-
 fn formatEvent(buf: []u8, pos: usize, event: shared.protocol.GameEvent) !usize {
     const slice = buf[pos..];
     const text = switch (event.kind) {
@@ -201,7 +197,7 @@ fn renderWindshield(state: *ClientState, frame: *Frame, area: Rect) void {
         renderSectorView(state, frame, cols.get(0));
     renderFleetStatus(state, frame, cols.get(1));
 
-    renderWindshieldEvents(state, frame, rows.get(1));
+    renderEventLog(state, frame, rows.get(1), " EVENTS ");
 }
 
 fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
@@ -396,8 +392,7 @@ fn renderSectorInfo(state: *ClientState, frame: *Frame, area: Rect) void {
     frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
 }
 
-fn renderKeybinds(state: *ClientState, frame: *Frame, area: Rect) void {
-    _ = state;
+fn renderKeybinds(frame: *Frame, area: Rect) void {
     const block = Block{
         .title = " KEYBINDS ",
         .border = .rounded,
@@ -666,10 +661,6 @@ fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
     }) catch return;
 
     frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
-}
-
-fn renderWindshieldEvents(state: *ClientState, frame: *Frame, area: Rect) void {
-    renderEventLog(state, frame, area, " EVENTS ");
 }
 
 fn renderEventLog(state: *ClientState, frame: *Frame, area: Rect, title: []const u8) void {

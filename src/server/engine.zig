@@ -203,9 +203,6 @@ pub const GameEngine = struct {
             const template = self.world_gen.generateSector(fleet.location);
             const sector_key = fleet.location.toKey();
             const densities = SectorOverride.effectiveDensities(self.sector_overrides.get(sector_key), template);
-            const metal_density = densities.metal;
-            const crystal_density = densities.crystal;
-            const deut_density = densities.deut;
 
             const harvest_power = fleetHarvestPower(fleet);
             const max_cargo = fleetCargoCapacity(fleet);
@@ -216,45 +213,27 @@ pub const GameEngine = struct {
                 continue;
             }
 
+            const HarvestTarget = struct { density: shared.constants.Density, cargo: *f32, accum: ResourceType, event: @TypeOf(@as(shared.protocol.ResourceHarvestedEvent, undefined).resource_type) };
+            const targets = [_]HarvestTarget{
+                .{ .density = densities.metal, .cargo = &fleet.cargo.metal, .accum = .metal, .event = .metal },
+                .{ .density = densities.crystal, .cargo = &fleet.cargo.crystal, .accum = .crystal, .event = .crystal },
+                .{ .density = densities.deut, .cargo = &fleet.cargo.deuterium, .accum = .deut, .event = .deuterium },
+            };
+
             var harvested_any = false;
-
-            const metal_amount = metal_density.harvestMultiplier() * harvest_power;
-            if (metal_amount > 0 and remaining > 0) {
-                const actual = @min(metal_amount, remaining);
-                fleet.cargo.metal += actual;
-                remaining -= actual;
-                harvested_any = true;
-                try self.accumulateHarvest(sector_key, .metal, actual, metal_density);
-                try self.pending_events.append(self.allocator, .{
-                    .tick = self.current_tick,
-                    .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .metal, .amount = actual } },
-                });
-            }
-
-            const crystal_amount = crystal_density.harvestMultiplier() * harvest_power;
-            if (crystal_amount > 0 and remaining > 0) {
-                const actual = @min(crystal_amount, remaining);
-                fleet.cargo.crystal += actual;
-                remaining -= actual;
-                harvested_any = true;
-                try self.accumulateHarvest(sector_key, .crystal, actual, crystal_density);
-                try self.pending_events.append(self.allocator, .{
-                    .tick = self.current_tick,
-                    .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .crystal, .amount = actual } },
-                });
-            }
-
-            const deut_amount = deut_density.harvestMultiplier() * harvest_power;
-            if (deut_amount > 0 and remaining > 0) {
-                const actual = @min(deut_amount, remaining);
-                fleet.cargo.deuterium += actual;
-                remaining -= actual;
-                harvested_any = true;
-                try self.accumulateHarvest(sector_key, .deut, actual, deut_density);
-                try self.pending_events.append(self.allocator, .{
-                    .tick = self.current_tick,
-                    .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = .deuterium, .amount = actual } },
-                });
+            for (targets) |t| {
+                const amount = t.density.harvestMultiplier() * harvest_power;
+                if (amount > 0 and remaining > 0) {
+                    const actual = @min(amount, remaining);
+                    t.cargo.* += actual;
+                    remaining -= actual;
+                    harvested_any = true;
+                    try self.accumulateHarvest(sector_key, t.accum, actual, t.density);
+                    try self.pending_events.append(self.allocator, .{
+                        .tick = self.current_tick,
+                        .kind = .{ .resource_harvested = .{ .fleet_id = fleet.id, .resource_type = t.event, .amount = actual } },
+                    });
+                }
             }
 
             if (harvested_any) {
@@ -656,17 +635,7 @@ pub const GameEngine = struct {
         fleet.state = if (fleet.ship_count == 0) .docked else .idle;
         fleet.move_target = null;
 
-        // Drop cargo + refuel at homeworld
-        if (fleet.cargo.metal > 0 or fleet.cargo.crystal > 0 or fleet.cargo.deuterium > 0) {
-            player.resources.metal += fleet.cargo.metal;
-            player.resources.crystal += fleet.cargo.crystal;
-            player.resources.deuterium += fleet.cargo.deuterium;
-            fleet.cargo = .{};
-            try self.dirty_players.put(player.id, {});
-        }
-        fleet.fuel = fleet.fuel_max;
-
-        try self.dirty_fleets.put(fleet.id, {});
+        try self.dockFleet(fleet, player);
     }
 
     fn findHomeworldLocation(self: *GameEngine) Hex {
@@ -704,8 +673,10 @@ pub const GameEngine = struct {
     fn checkHomeworldDocking(self: *GameEngine, fleet: *Fleet) !void {
         const player = self.players.getPtr(fleet.owner_id) orelse return;
         if (!fleet.location.eql(player.homeworld)) return;
+        try self.dockFleet(fleet, player);
+    }
 
-        // Transfer cargo to player resources
+    fn dockFleet(self: *GameEngine, fleet: *Fleet, player: *Player) !void {
         if (fleet.cargo.metal > 0 or fleet.cargo.crystal > 0 or fleet.cargo.deuterium > 0) {
             player.resources.metal += fleet.cargo.metal;
             player.resources.crystal += fleet.cargo.crystal;
@@ -713,12 +684,10 @@ pub const GameEngine = struct {
             fleet.cargo = .{};
             try self.dirty_players.put(player.id, {});
         }
-
-        // Refuel to max
         if (fleet.fuel < fleet.fuel_max) {
             fleet.fuel = fleet.fuel_max;
-            try self.dirty_fleets.put(fleet.id, {});
         }
+        try self.dirty_fleets.put(fleet.id, {});
     }
 
     fn checkNpcEncounter(self: *GameEngine, fleet: *Fleet) !void {
