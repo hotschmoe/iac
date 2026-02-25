@@ -1,7 +1,7 @@
 # In Amber Clad — Technical Specification
 
-**Version:** 0.2.0
-**Status:** M1 complete -- core loop shipped, M2 scoping
+**Version:** 0.3.0
+**Status:** M2 in progress -- economy and progression implemented, pending playtesting
 
 ---
 
