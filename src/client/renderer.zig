@@ -414,7 +414,7 @@ fn renderStarMap(state: *ClientState, frame: *Frame, area: Rect) void {
     renderMapLegend(state, frame, rows.get(1));
 }
 
-fn zoomRadius(zoom: @import("state.zig").ZoomLevel) u16 {
+fn zoomRadius(zoom: State.ZoomLevel) u16 {
     return switch (zoom) {
         .close => 5,
         .sector => 10,
@@ -490,11 +490,8 @@ fn classifyHex(state: *ClientState, coord: shared.Hex) HexCell {
 
     // Known sector (explored)
     if (state.known_sectors.get(coord.toKey())) |sector| {
-        // Sector with hostiles
-        if (sector.hostiles) |hostiles| {
-            if (hostiles.len > 0) {
-                return .{ .symbol = "!", .style = amber_bright };
-            }
+        if (sector.hostiles != null) {
+            return .{ .symbol = "!", .style = amber_bright };
         }
 
         // Sector with resources
@@ -510,9 +507,8 @@ fn classifyHex(state: *ClientState, coord: shared.Hex) HexCell {
     }
 
     // Fog of war: adjacent to explored sector
-    const nbrs = coord.neighbors();
-    for (nbrs) |n| {
-        if (state.known_sectors.getPtr(n.toKey()) != null) {
+    for (coord.neighbors()) |n| {
+        if (state.known_sectors.contains(n.toKey())) {
             return .{ .symbol = ".", .style = amber_faint };
         }
     }

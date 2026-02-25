@@ -176,12 +176,8 @@ pub const GameEngine = struct {
                 if (result.player_won) {
                     try self.dropSalvage(active_combat.sector, active_combat.npc_value);
 
-                    // Mark sector NPC as cleared for respawn timer
                     const cleared_key = active_combat.sector.toKey();
-                    const cleared_ov = self.sector_overrides.getPtr(cleared_key) orelse blk: {
-                        try self.sector_overrides.put(cleared_key, .{});
-                        break :blk self.sector_overrides.getPtr(cleared_key).?;
-                    };
+                    const cleared_ov = try self.ensureOverride(cleared_key);
                     cleared_ov.npc_cleared_tick = self.current_tick;
                     try self.dirty_sectors.put(cleared_key, {});
                 }
@@ -277,10 +273,7 @@ pub const GameEngine = struct {
     ) !void {
         if (current_density == .none) return;
 
-        const ov_ptr = self.sector_overrides.getPtr(sector_key) orelse blk: {
-            try self.sector_overrides.put(sector_key, .{});
-            break :blk self.sector_overrides.getPtr(sector_key).?;
-        };
+        const ov_ptr = try self.ensureOverride(sector_key);
 
         const harvested_ptr = switch (resource) {
             .metal => &ov_ptr.metal_harvested,
@@ -309,10 +302,7 @@ pub const GameEngine = struct {
             const sector_key = entry.key_ptr.*;
             const ov = entry.value_ptr;
 
-            const has_depleted = (ov.metal_density != null and ov.metal_density.? != .pristine) or
-                (ov.crystal_density != null and ov.crystal_density.? != .pristine) or
-                (ov.deut_density != null and ov.deut_density.? != .pristine);
-            if (!has_depleted) continue;
+            if (!isDepleted(ov.metal_density) and !isDepleted(ov.crystal_density) and !isDepleted(ov.deut_density)) continue;
 
             // Skip regen if any player fleet is present
             const coord = Hex.fromKey(sector_key);
@@ -337,6 +327,11 @@ pub const GameEngine = struct {
                 try self.dirty_sectors.put(sector_key, {});
             }
         }
+    }
+
+    fn isDepleted(density: ?shared.constants.Density) bool {
+        const d = density orelse return false;
+        return d != .pristine;
     }
 
     fn regenResource(harvested: *f32, override_density: *?shared.constants.Density, template_density: shared.constants.Density) bool {
@@ -400,26 +395,7 @@ pub const GameEngine = struct {
             while (fleet_check.next()) |f_entry| {
                 const fleet = f_entry.value_ptr;
                 if (fleet.location.eql(npc.location) and fleet.state != .in_combat and fleet.ship_count > 0) {
-                    const combat_id = self.nextId();
-                    try self.active_combats.put(combat_id, Combat{
-                        .id = combat_id,
-                        .sector = npc.location,
-                        .player_fleet_id = fleet.id,
-                        .npc_fleet_id = npc.id,
-                        .npc_value = npc.ships[0].class.buildCost(),
-                        .round = 0,
-                    });
-                    fleet.state = .in_combat;
-                    npc.in_combat = true;
-
-                    try self.pending_events.append(self.allocator, .{
-                        .tick = self.current_tick,
-                        .kind = .{ .combat_started = .{
-                            .player_fleet_id = fleet.id,
-                            .enemy_fleet_id = npc.id,
-                            .sector = npc.location,
-                        } },
-                    });
+                    try self.startCombat(fleet, npc);
                     break;
                 }
             }
@@ -656,27 +632,7 @@ pub const GameEngine = struct {
             const npc = npc_entry.value_ptr;
             if (npc.location.eql(fleet.location) and !npc.in_combat) {
                 if (npc.behavior == .passive) continue;
-
-                const combat_id = self.nextId();
-                try self.active_combats.put(combat_id, Combat{
-                    .id = combat_id,
-                    .sector = fleet.location,
-                    .player_fleet_id = fleet.id,
-                    .npc_fleet_id = npc.id,
-                    .npc_value = npc.ships[0].class.buildCost(),
-                    .round = 0,
-                });
-                fleet.state = .in_combat;
-                npc.in_combat = true;
-
-                try self.pending_events.append(self.allocator, .{
-                    .tick = self.current_tick,
-                    .kind = .{ .combat_started = .{
-                        .player_fleet_id = fleet.id,
-                        .enemy_fleet_id = npc.id,
-                        .sector = fleet.location,
-                    } },
-                });
+                try self.startCombat(fleet, npc);
                 return;
             }
         }
@@ -690,60 +646,71 @@ pub const GameEngine = struct {
         const template = self.world_gen.generateSector(fleet.location);
         if (template.npc_template) |npc| {
             if (npc.behavior == .passive) return;
-
-            const combat_id = self.nextId();
-            const npc_fleet_id = self.nextId();
-
-            var npc_fleet = NpcFleet{
-                .id = npc_fleet_id,
-                .location = fleet.location,
-                .ships = undefined,
-                .ship_count = npc.count,
-                .behavior = npc.behavior,
-                .home_sector = fleet.location,
-                .in_combat = true,
-            };
-
-            const stats = npc.ship_class.baseStats();
-            const m = npc.stat_multiplier;
-            var i: u8 = 0;
-            while (i < @min(npc.count, 32)) : (i += 1) {
-                const hull = stats.hull * m;
-                const shield = stats.shield * m;
-                const weapon = stats.weapon * m;
-                npc_fleet.ships[i] = Ship{
-                    .id = self.nextId(),
-                    .class = npc.ship_class,
-                    .hull = hull,
-                    .hull_max = hull,
-                    .shield = shield,
-                    .shield_max = shield,
-                    .weapon_power = weapon,
-                    .speed = stats.speed,
-                };
-            }
-
-            try self.npc_fleets.put(npc_fleet_id, npc_fleet);
-            try self.active_combats.put(combat_id, Combat{
-                .id = combat_id,
-                .sector = fleet.location,
-                .player_fleet_id = fleet.id,
-                .npc_fleet_id = npc_fleet_id,
-                .npc_value = npc.ship_class.buildCost(),
-                .round = 0,
-            });
-
-            fleet.state = .in_combat;
-
-            try self.pending_events.append(self.allocator, .{
-                .tick = self.current_tick,
-                .kind = .{ .combat_started = .{
-                    .player_fleet_id = fleet.id,
-                    .enemy_fleet_id = npc_fleet_id,
-                    .sector = fleet.location,
-                } },
-            });
+            const spawned = try self.spawnNpcFleet(fleet.location, npc);
+            try self.startCombat(fleet, spawned);
         }
+    }
+
+    fn spawnNpcFleet(self: *GameEngine, location: Hex, npc: shared.world.NpcTemplate) !*NpcFleet {
+        const npc_fleet_id = self.nextId();
+        var npc_fleet = NpcFleet{
+            .id = npc_fleet_id,
+            .location = location,
+            .ships = undefined,
+            .ship_count = npc.count,
+            .behavior = npc.behavior,
+            .home_sector = location,
+        };
+
+        const stats = npc.ship_class.baseStats();
+        const m = npc.stat_multiplier;
+        var i: u8 = 0;
+        while (i < @min(npc.count, 32)) : (i += 1) {
+            const hull = stats.hull * m;
+            const shield = stats.shield * m;
+            npc_fleet.ships[i] = Ship{
+                .id = self.nextId(),
+                .class = npc.ship_class,
+                .hull = hull,
+                .hull_max = hull,
+                .shield = shield,
+                .shield_max = shield,
+                .weapon_power = stats.weapon * m,
+                .speed = stats.speed,
+            };
+        }
+
+        try self.npc_fleets.put(npc_fleet_id, npc_fleet);
+        return self.npc_fleets.getPtr(npc_fleet_id).?;
+    }
+
+    fn ensureOverride(self: *GameEngine, sector_key: u32) !*SectorOverride {
+        if (self.sector_overrides.getPtr(sector_key)) |ptr| return ptr;
+        try self.sector_overrides.put(sector_key, .{});
+        return self.sector_overrides.getPtr(sector_key).?;
+    }
+
+    fn startCombat(self: *GameEngine, fleet: *Fleet, npc: *NpcFleet) !void {
+        const combat_id = self.nextId();
+        try self.active_combats.put(combat_id, Combat{
+            .id = combat_id,
+            .sector = fleet.location,
+            .player_fleet_id = fleet.id,
+            .npc_fleet_id = npc.id,
+            .npc_value = npc.ships[0].class.buildCost(),
+            .round = 0,
+        });
+        fleet.state = .in_combat;
+        npc.in_combat = true;
+
+        try self.pending_events.append(self.allocator, .{
+            .tick = self.current_tick,
+            .kind = .{ .combat_started = .{
+                .player_fleet_id = fleet.id,
+                .enemy_fleet_id = npc.id,
+                .sector = fleet.location,
+            } },
+        });
     }
 
     fn dropSalvage(self: *GameEngine, sector: Hex, fleet_value: Resources) !void {
@@ -754,15 +721,9 @@ pub const GameEngine = struct {
         };
 
         const key = sector.toKey();
-        if (self.sector_overrides.getPtr(key)) |ov| {
-            ov.salvage = salvage;
-            ov.salvage_despawn_tick = self.current_tick + shared.constants.SALVAGE_DESPAWN_TICKS;
-        } else {
-            try self.sector_overrides.put(key, .{
-                .salvage = salvage,
-                .salvage_despawn_tick = self.current_tick + shared.constants.SALVAGE_DESPAWN_TICKS,
-            });
-        }
+        const ov = try self.ensureOverride(key);
+        ov.salvage = salvage;
+        ov.salvage_despawn_tick = self.current_tick + shared.constants.SALVAGE_DESPAWN_TICKS;
     }
 
     fn recordExplored(self: *GameEngine, player_id: u64, coord: Hex) !void {
