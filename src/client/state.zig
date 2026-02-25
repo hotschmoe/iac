@@ -17,6 +17,7 @@ pub const ClientState = struct {
     // UI state
     current_view: View,
     active_fleet_idx: usize,
+    prev_fleet_location: ?Hex = null,
     map_center: Hex,
     map_zoom: ZoomLevel,
     command_buffer: [256]u8,
@@ -185,12 +186,20 @@ pub const ClientState = struct {
     }
 
     fn replaceFleets(self: *ClientState, fleets: []const shared.protocol.FleetState) !void {
+        const old_loc: ?Hex = if (self.activeFleet()) |f| f.location else null;
         self.freeOwnedFleets();
         self.fleets.clearRetainingCapacity();
         for (fleets) |fleet| {
             var owned = fleet;
             owned.ships = try self.allocator.dupe(shared.protocol.ShipState, fleet.ships);
             try self.fleets.append(self.allocator, owned);
+        }
+        if (old_loc) |prev| {
+            if (self.activeFleet()) |cur| {
+                if (!cur.location.eql(prev)) {
+                    self.prev_fleet_location = prev;
+                }
+            }
         }
     }
 
@@ -242,6 +251,7 @@ pub const ClientState = struct {
     pub fn cycleFleet(self: *ClientState) void {
         if (self.fleets.items.len > 0) {
             self.active_fleet_idx = (self.active_fleet_idx + 1) % self.fleets.items.len;
+            self.prev_fleet_location = null;
             if (self.activeFleet()) |fleet| {
                 self.map_center = fleet.location;
             }
