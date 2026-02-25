@@ -46,26 +46,6 @@ fn update(state: *AppState, event: zithril.Event) zithril.Action {
                     state.client_state.show_keybinds = !state.client_state.show_keybinds;
                     state.client_state.show_sector_info = false;
                 },
-                .homeworld_build => |bt| {
-                    state.conn.sendCommand(.{ .build = .{ .building_type = bt } }) catch |err| {
-                        log.warn("Send failed: {any}", .{err});
-                    };
-                },
-                .homeworld_research => |tech| {
-                    state.conn.sendCommand(.{ .research = .{ .tech = tech } }) catch |err| {
-                        log.warn("Send failed: {any}", .{err});
-                    };
-                },
-                .homeworld_ship => |class| {
-                    state.conn.sendCommand(.{ .build_ship = .{ .ship_class = class, .count = 1 } }) catch |err| {
-                        log.warn("Send failed: {any}", .{err});
-                    };
-                },
-                .homeworld_cancel => |qt| {
-                    state.conn.sendCommand(.{ .cancel_build = .{ .queue_type = qt } }) catch |err| {
-                        log.warn("Send failed: {any}", .{err});
-                    };
-                },
                 .none => {},
             }
         },

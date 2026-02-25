@@ -563,6 +563,13 @@ fn sectorHasConnection(sector: *const shared.protocol.SectorState, target: share
     return false;
 }
 
+fn queueProgress(tick: u64, start: u64, end: u64) struct { elapsed: u64, total: u64 } {
+    return .{
+        .elapsed = if (tick > start) tick - start else 0,
+        .total = if (end > start) end - start else 1,
+    };
+}
+
 fn densityShort(d: shared.protocol.Density) []const u8 {
     return switch (d) {
         .none => "-",
@@ -778,12 +785,10 @@ fn renderQueuePanel(state: *ClientState, frame: *Frame, area: Rect) void {
     var buf: [512]u8 = undefined;
     var pos: usize = 0;
 
-    // Building queue
     if (hw.build_queue) |q| {
-        const elapsed = if (state.tick > q.start_tick) state.tick - q.start_tick else 0;
-        const total = if (q.end_tick > q.start_tick) q.end_tick - q.start_tick else 1;
+        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
         const line = std.fmt.bufPrint(buf[pos..], " Build: {s} Lv{d}\n   {d}/{d} ticks [x]\n", .{
-            q.building_type.label(), q.target_level, elapsed, total,
+            q.building_type.label(), q.target_level, p.elapsed, p.total,
         }) catch "";
         pos += line.len;
     } else {
@@ -791,12 +796,10 @@ fn renderQueuePanel(state: *ClientState, frame: *Frame, area: Rect) void {
         pos += line.len;
     }
 
-    // Ship queue
     if (hw.shipyard_queue) |q| {
-        const elapsed = if (state.tick > q.start_tick) state.tick - q.start_tick else 0;
-        const total = if (q.end_tick > q.start_tick) q.end_tick - q.start_tick else 1;
+        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
         const line = std.fmt.bufPrint(buf[pos..], "\n Ship: {s}\n   {d}/{d} built  {d}/{d}t [X]\n", .{
-            q.ship_class.label(), q.built, q.count, elapsed, total,
+            q.ship_class.label(), q.built, q.count, p.elapsed, p.total,
         }) catch "";
         pos += line.len;
     } else {
@@ -804,12 +807,10 @@ fn renderQueuePanel(state: *ClientState, frame: *Frame, area: Rect) void {
         pos += line.len;
     }
 
-    // Research queue
     if (hw.research_active) |q| {
-        const elapsed = if (state.tick > q.start_tick) state.tick - q.start_tick else 0;
-        const total = if (q.end_tick > q.start_tick) q.end_tick - q.start_tick else 1;
+        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
         const line = std.fmt.bufPrint(buf[pos..], "\n Research: {s} {d}\n   {d}/{d} ticks [z]\n", .{
-            q.tech.label(), q.target_level, elapsed, total,
+            q.tech.label(), q.target_level, p.elapsed, p.total,
         }) catch "";
         pos += line.len;
     } else {

@@ -219,7 +219,7 @@ pub const GameEngine = struct {
                 continue;
             }
 
-            const HarvestTarget = struct { density: shared.constants.Density, cargo: *f32, accum: ResourceType, event: @TypeOf(@as(shared.protocol.ResourceHarvestedEvent, undefined).resource_type) };
+            const HarvestTarget = struct { density: shared.constants.Density, cargo: *f32, accum: ResourceType, event: shared.protocol.HarvestResource };
             const targets = [_]HarvestTarget{
                 .{ .density = densities.metal, .cargo = &fleet.cargo.metal, .accum = .metal, .event = .metal },
                 .{ .density = densities.crystal, .cargo = &fleet.cargo.crystal, .accum = .crystal, .event = .crystal },
@@ -797,25 +797,20 @@ pub const GameEngine = struct {
             .building => {
                 const q = player.building_queue orelse return error.NoResources;
                 const cost = scaling.buildingCost(q.building, q.target_level);
-                player.resources = player.resources.add(scaleResources(cost, scaling.CANCEL_REFUND_FRACTION));
+                player.resources = player.resources.add(cost.scale(scaling.CANCEL_REFUND_FRACTION));
                 player.building_queue = null;
             },
             .ship => {
                 const q = player.ship_queue orelse return error.NoResources;
-                const unit_cost = q.ship_class.buildCost();
                 const remaining: f32 = @floatFromInt(q.count - q.built);
-                const refund_cost = Resources{
-                    .metal = unit_cost.metal * remaining,
-                    .crystal = unit_cost.crystal * remaining,
-                    .deuterium = unit_cost.deuterium * remaining,
-                };
-                player.resources = player.resources.add(scaleResources(refund_cost, scaling.CANCEL_REFUND_FRACTION));
+                const refund = q.ship_class.buildCost().scale(remaining).scale(scaling.CANCEL_REFUND_FRACTION);
+                player.resources = player.resources.add(refund);
                 player.ship_queue = null;
             },
             .research => {
                 const q = player.research_queue orelse return error.NoResources;
                 const cost = scaling.researchCost(q.tech, q.target_level);
-                player.resources = player.resources.add(scaleResources(cost, scaling.CANCEL_REFUND_FRACTION));
+                player.resources = player.resources.add(cost.scale(scaling.CANCEL_REFUND_FRACTION));
                 player.research_queue = null;
             },
         }
@@ -1236,14 +1231,6 @@ fn fleetHarvestPower(fleet: *const Fleet, research: ?scaling.ResearchLevels) f32
         return power * scaling.harvestRateModifier(r.harvesting_efficiency);
     }
     return power;
-}
-
-fn scaleResources(res: Resources, fraction: f32) Resources {
-    return .{
-        .metal = res.metal * fraction,
-        .crystal = res.crystal * fraction,
-        .deuterium = res.deuterium * fraction,
-    };
 }
 
 fn fleetCargoCapacity(fleet: *const Fleet) f32 {

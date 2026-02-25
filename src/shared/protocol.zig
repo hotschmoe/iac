@@ -220,8 +220,6 @@ pub const BuildingState = struct {
     level: u8,
 };
 
-// BuildingType is imported from scaling.zig (re-exported above)
-
 pub const BuildQueueItem = struct {
     building_type: BuildingType,
     target_level: u8,
@@ -289,9 +287,11 @@ pub const FleetDestroyedEvent = struct {
     salvage: Resources,
 };
 
+pub const HarvestResource = enum { metal, crystal, deuterium };
+
 pub const ResourceHarvestedEvent = struct {
     fleet_id: u64,
-    resource_type: enum { metal, crystal, deuterium },
+    resource_type: HarvestResource,
     amount: f32,
 };
 

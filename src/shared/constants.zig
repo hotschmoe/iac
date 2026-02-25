@@ -204,6 +204,14 @@ pub const Resources = struct {
         };
     }
 
+    pub fn scale(self: Resources, factor: f32) Resources {
+        return .{
+            .metal = self.metal * factor,
+            .crystal = self.crystal * factor,
+            .deuterium = self.deuterium * factor,
+        };
+    }
+
     pub fn canAfford(self: Resources, cost: Resources) bool {
         return self.metal >= cost.metal and
             self.crystal >= cost.crystal and

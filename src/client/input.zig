@@ -16,10 +16,6 @@ pub const InputAction = union(enum) {
     center_fleet: void,
     toggle_info: void,
     toggle_keybinds: void,
-    homeworld_build: shared.protocol.BuildingType,
-    homeworld_research: shared.protocol.ResearchType,
-    homeworld_ship: shared.constants.ShipClass,
-    homeworld_cancel: shared.scaling.QueueType,
 };
 
 pub fn mapKey(key: Key, state: *const ClientState) InputAction {
@@ -78,35 +74,35 @@ fn mapHomeworldChar(c: u21) InputAction {
         '?' => .{ .toggle_keybinds = {} },
 
         // Building hotkeys: 1-8 map to BuildingType enum values
-        '1' => .{ .homeworld_build = .metal_mine },
-        '2' => .{ .homeworld_build = .crystal_mine },
-        '3' => .{ .homeworld_build = .deuterium_synthesizer },
-        '4' => .{ .homeworld_build = .shipyard },
-        '5' => .{ .homeworld_build = .research_lab },
-        '6' => .{ .homeworld_build = .fuel_depot },
-        '7' => .{ .homeworld_build = .sensor_array },
-        '8' => .{ .homeworld_build = .defense_grid },
+        '1' => .{ .send_command = .{ .build = .{ .building_type = .metal_mine } } },
+        '2' => .{ .send_command = .{ .build = .{ .building_type = .crystal_mine } } },
+        '3' => .{ .send_command = .{ .build = .{ .building_type = .deuterium_synthesizer } } },
+        '4' => .{ .send_command = .{ .build = .{ .building_type = .shipyard } } },
+        '5' => .{ .send_command = .{ .build = .{ .building_type = .research_lab } } },
+        '6' => .{ .send_command = .{ .build = .{ .building_type = .fuel_depot } } },
+        '7' => .{ .send_command = .{ .build = .{ .building_type = .sensor_array } } },
+        '8' => .{ .send_command = .{ .build = .{ .building_type = .defense_grid } } },
 
-        // Ship build: s + class letter
-        'S' => .{ .homeworld_ship = .scout },
-        'C' => .{ .homeworld_ship = .corvette },
-        'F' => .{ .homeworld_ship = .frigate },
-        'R' => .{ .homeworld_ship = .cruiser },
-        'H' => .{ .homeworld_ship = .hauler },
+        // Ship build
+        'S' => .{ .send_command = .{ .build_ship = .{ .ship_class = .scout, .count = 1 } } },
+        'C' => .{ .send_command = .{ .build_ship = .{ .ship_class = .corvette, .count = 1 } } },
+        'F' => .{ .send_command = .{ .build_ship = .{ .ship_class = .frigate, .count = 1 } } },
+        'R' => .{ .send_command = .{ .build_ship = .{ .ship_class = .cruiser, .count = 1 } } },
+        'H' => .{ .send_command = .{ .build_ship = .{ .ship_class = .hauler, .count = 1 } } },
 
         // Research
-        'r' => .{ .homeworld_research = .fuel_efficiency },
-        'e' => .{ .homeworld_research = .extended_fuel_tanks },
-        'h' => .{ .homeworld_research = .reinforced_hulls },
-        'a' => .{ .homeworld_research = .advanced_shields },
-        'p' => .{ .homeworld_research = .weapons_research },
-        'n' => .{ .homeworld_research = .navigation },
-        'v' => .{ .homeworld_research = .harvesting_efficiency },
+        'r' => .{ .send_command = .{ .research = .{ .tech = .fuel_efficiency } } },
+        'e' => .{ .send_command = .{ .research = .{ .tech = .extended_fuel_tanks } } },
+        'h' => .{ .send_command = .{ .research = .{ .tech = .reinforced_hulls } } },
+        'a' => .{ .send_command = .{ .research = .{ .tech = .advanced_shields } } },
+        'p' => .{ .send_command = .{ .research = .{ .tech = .weapons_research } } },
+        'n' => .{ .send_command = .{ .research = .{ .tech = .navigation } } },
+        'v' => .{ .send_command = .{ .research = .{ .tech = .harvesting_efficiency } } },
 
         // Cancel queues
-        'x' => .{ .homeworld_cancel = .building },
-        'X' => .{ .homeworld_cancel = .ship },
-        'z' => .{ .homeworld_cancel = .research },
+        'x' => .{ .send_command = .{ .cancel_build = .{ .queue_type = .building } } },
+        'X' => .{ .send_command = .{ .cancel_build = .{ .queue_type = .ship } } },
+        'z' => .{ .send_command = .{ .cancel_build = .{ .queue_type = .research } } },
 
         else => .{ .none = {} },
     };
