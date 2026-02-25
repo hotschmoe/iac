@@ -224,7 +224,6 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
         return;
     }
 
-    // Fallback to compact text view if area is too small for the node graph
     if (inner.width < 40 or inner.height < 13) {
         renderSectorViewCompact(state, frame, inner, f);
         return;
@@ -235,70 +234,37 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
         return;
     };
 
-    const HexDir = shared.HexDirection;
     const loc = f.location;
-
-    // Build neighbor data
-    var connected: [6]bool = .{false} ** 6;
-    var nbrs: [6]shared.Hex = undefined;
-    for (HexDir.ALL, 0..) |dir, i| {
-        nbrs[i] = loc.neighbor(dir);
-        for (sector.connections) |conn| {
-            if (conn.eql(nbrs[i])) {
-                connected[i] = true;
-                break;
-            }
-        }
-    }
-
-    // Determine came-from direction
-    const came_from: ?usize = blk: {
-        if (state.prev_fleet_location) |prev| {
-            for (HexDir.ALL, 0..) |dir, i| {
-                if (loc.neighbor(dir).eql(prev)) break :blk i;
-            }
-        }
-        break :blk null;
-    };
+    const came_from = findCameFrom(state, loc);
 
     // Center of the inner area
     const cx: i32 = @as(i32, @intCast(inner.x)) + @divTrunc(@as(i32, @intCast(inner.width)), 2);
     const cy: i32 = @as(i32, @intCast(inner.y)) + @divTrunc(@as(i32, @intCast(inner.height)), 2) - 1;
 
     // Node offsets: E, NE, NW, W, SW, SE
-    const dx = [6]i32{ 17, 10, -10, -17, -10, 10 };
-    const dy = [6]i32{ 0, -5, -5, 0, 5, 5 };
+    const node_dx = [6]i32{ 17, 10, -10, -17, -10, 10 };
+    const node_dy = [6]i32{ 0, -5, -5, 0, 5, 5 };
 
-    // Render connection lines
-    for (0..6) |i| {
-        if (!connected[i]) continue;
-        const is_came_from = (came_from != null and came_from.? == i);
-        const line_style = if (is_came_from) amber else amber_dim;
-        renderConnectionLine(frame, inner, cx, cy, dx[i], dy[i], line_style);
+    for (shared.HexDirection.ALL, 0..) |dir, i| {
+        if (sectorHasConnection(sector, loc.neighbor(dir))) {
+            renderConnectionLine(frame, inner, cx, cy, node_dx[i], node_dy[i], if (came_from == i) amber else amber_dim);
+        }
     }
 
-    // Render center node
     renderCenterNode(frame, inner, cx, cy, loc, sector.terrain.label());
 
-    // Render direction nodes
-    for (HexDir.ALL, 0..) |dir, i| {
-        const nx: i32 = cx + dx[i];
-        const ny: i32 = cy + dy[i];
-        const is_came_from = (came_from != null and came_from.? == i);
+    for (shared.HexDirection.ALL, 0..) |dir, i| {
+        const nbr = loc.neighbor(dir);
+        const nx = cx + node_dx[i];
+        const ny = cy + node_dy[i];
 
-        if (connected[i]) {
-            const explored = state.known_sectors.contains(nbrs[i].toKey());
-            const res_info: ?*const shared.protocol.SectorState = if (explored)
-                state.known_sectors.getPtr(nbrs[i].toKey())
-            else
-                null;
-            renderDirectionNode(frame, inner, nx, ny, dir, i, nbrs[i], is_came_from, explored, res_info);
+        if (sectorHasConnection(sector, nbr)) {
+            renderDirectionNode(frame, inner, nx, ny, dir, i, nbr, came_from == i, state.known_sectors.getPtr(nbr.toKey()));
         } else {
             renderDisconnectedNode(frame, inner, nx, ny, dir);
         }
     }
 
-    // Hostile warnings below the graph
     if (sector.hostiles) |hostiles| {
         const hostile_y: u16 = @intCast(@as(i32, @intCast(inner.y)) + @as(i32, @intCast(inner.height)) - 2);
         var buf: [128]u8 = undefined;
@@ -317,7 +283,6 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
         }
     }
 
-    // Keybinds at the bottom
     const kb_y = inner.y + inner.height -| 1;
     frame.render(Paragraph{
         .text = " [1-6] Move  [h] Harvest  [r] Recall",
@@ -326,14 +291,11 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
 }
 
 fn renderCenterNode(frame: *Frame, inner: Rect, cx: i32, cy: i32, loc: shared.Hex, terrain_label: []const u8) void {
-    var line0_buf: [16]u8 = undefined;
-    const line0 = std.fmt.bufPrint(&line0_buf, "[{d},{d}]", .{ loc.q, loc.r }) catch return;
-    renderTextAt(frame, inner, cx - @as(i32, @intCast(line0.len / 2)), cy - 1, line0, amber_bright);
-
-    // Diamond glyph
-    renderTextAt(frame, inner, cx - 1, cy, "<>", amber_full);
-
-    renderTextAt(frame, inner, cx - @as(i32, @intCast(terrain_label.len / 2)), cy + 1, terrain_label, amber);
+    var buf: [16]u8 = undefined;
+    const coord_text = std.fmt.bufPrint(&buf, "[{d},{d}]", .{ loc.q, loc.r }) catch return;
+    renderTextCentered(frame, inner, cx, cy - 1, coord_text, amber_bright);
+    renderTextCentered(frame, inner, cx, cy, "<>", amber_full);
+    renderTextCentered(frame, inner, cx, cy + 1, terrain_label, amber);
 }
 
 fn renderDirectionNode(
@@ -345,43 +307,41 @@ fn renderDirectionNode(
     idx: usize,
     coord: shared.Hex,
     is_came_from: bool,
-    explored: bool,
     sector_data: ?*const shared.protocol.SectorState,
 ) void {
-    const style = if (is_came_from) amber_full else if (explored) amber_bright else amber;
+    const explored = sector_data != null;
+    const heading_style = if (is_came_from) amber_full else if (explored) amber_bright else amber;
+    const detail_style = if (is_came_from or explored) amber else amber_dim;
 
-    // Line 1: [key] DIR or [key] DIR <
-    var line0_buf: [16]u8 = undefined;
-    const line0 = if (is_came_from)
-        std.fmt.bufPrint(&line0_buf, "[{d}] {s} <", .{ idx + 1, dir.label() }) catch return
+    var heading_buf: [16]u8 = undefined;
+    const heading = if (is_came_from)
+        std.fmt.bufPrint(&heading_buf, "[{d}] {s} <", .{ idx + 1, dir.label() }) catch return
     else
-        std.fmt.bufPrint(&line0_buf, "[{d}] {s}", .{ idx + 1, dir.label() }) catch return;
+        std.fmt.bufPrint(&heading_buf, "[{d}] {s}", .{ idx + 1, dir.label() }) catch return;
 
-    // Line 2: [q,r]
-    var line1_buf: [16]u8 = undefined;
-    const line1 = std.fmt.bufPrint(&line1_buf, "[{d},{d}]", .{ coord.q, coord.r }) catch return;
+    var coord_buf: [16]u8 = undefined;
+    const coord_text = std.fmt.bufPrint(&coord_buf, "[{d},{d}]", .{ coord.q, coord.r }) catch return;
 
-    // Line 3: resource summary or ???
-    var line2_buf: [16]u8 = undefined;
-    const line2: []const u8 = if (!explored) "???" else if (sector_data) |sd| blk: {
-        const res = sd.resources;
-        if (res.metal == .none and res.crystal == .none and res.deuterium == .none) {
-            break :blk @as([]const u8, "---");
-        }
-        break :blk std.fmt.bufPrint(&line2_buf, "Fe:{s} Cr:{s}", .{
-            densityShort(res.metal), densityShort(res.crystal),
-        }) catch "...";
-    } else "---";
+    var resource_buf: [16]u8 = undefined;
+    const resource_text = formatResourceSummary(&resource_buf, sector_data);
 
-    renderTextAt(frame, inner, nx - @as(i32, @intCast(line0.len / 2)), ny - 1, line0, style);
-    renderTextAt(frame, inner, nx - @as(i32, @intCast(line1.len / 2)), ny, line1, style);
-    renderTextAt(frame, inner, nx - @as(i32, @intCast(line2.len / 2)), ny + 1, line2, if (is_came_from) amber else if (explored) amber else amber_dim);
+    renderTextCentered(frame, inner, nx, ny - 1, heading, heading_style);
+    renderTextCentered(frame, inner, nx, ny, coord_text, heading_style);
+    renderTextCentered(frame, inner, nx, ny + 1, resource_text, detail_style);
+}
+
+fn formatResourceSummary(buf: []u8, sector_data: ?*const shared.protocol.SectorState) []const u8 {
+    const sd = sector_data orelse return "???";
+    const res = sd.resources;
+    if (res.metal == .none and res.crystal == .none and res.deuterium == .none) return "---";
+    return std.fmt.bufPrint(buf, "Fe:{s} Cr:{s}", .{
+        densityShort(res.metal), densityShort(res.crystal),
+    }) catch "...";
 }
 
 fn renderDisconnectedNode(frame: *Frame, inner: Rect, nx: i32, ny: i32, dir: shared.HexDirection) void {
-    const lbl = dir.label();
-    renderTextAt(frame, inner, nx - @as(i32, @intCast(lbl.len / 2)), ny - 1, lbl, amber_faint);
-    renderTextAt(frame, inner, nx - 1, ny, "---", amber_faint);
+    renderTextCentered(frame, inner, nx, ny - 1, dir.label(), amber_faint);
+    renderTextCentered(frame, inner, nx, ny, "---", amber_faint);
 }
 
 fn renderConnectionLine(frame: *Frame, inner: Rect, cx: i32, cy: i32, target_dx: i32, target_dy: i32, style: Style) void {
@@ -430,6 +390,25 @@ fn renderTextAt(frame: *Frame, inner: Rect, x: i32, y: i32, text: []const u8, st
     }, Rect.init(start_x, @intCast(y), visible_len, 1));
 }
 
+fn renderTextCentered(frame: *Frame, inner: Rect, cx: i32, y: i32, text: []const u8, style: Style) void {
+    renderTextAt(frame, inner, cx - @as(i32, @intCast(text.len / 2)), y, text, style);
+}
+
+fn findCameFrom(state: *const ClientState, loc: shared.Hex) ?usize {
+    const prev = state.prev_fleet_location orelse return null;
+    for (shared.HexDirection.ALL, 0..) |dir, i| {
+        if (loc.neighbor(dir).eql(prev)) return i;
+    }
+    return null;
+}
+
+fn sectorHasConnection(sector: *const shared.protocol.SectorState, target: shared.Hex) bool {
+    for (sector.connections) |conn| {
+        if (conn.eql(target)) return true;
+    }
+    return false;
+}
+
 fn densityShort(d: shared.protocol.Density) []const u8 {
     return switch (d) {
         .none => "-",
@@ -440,7 +419,7 @@ fn densityShort(d: shared.protocol.Density) []const u8 {
     };
 }
 
-fn renderSectorViewCompact(state: *ClientState, frame: *Frame, inner: Rect, f: *const shared.protocol.FleetState) void {
+fn renderSectorViewCompact(state: *const ClientState, frame: *Frame, inner: Rect, f: *const shared.protocol.FleetState) void {
     var buf: [512]u8 = undefined;
     var pos: usize = 0;
 
@@ -455,32 +434,16 @@ fn renderSectorViewCompact(state: *ClientState, frame: *Frame, inner: Rect, f: *
         }) catch return;
         pos += terrain_line.len;
 
-        const HexDir = shared.HexDirection;
         const loc = f.location;
-
-        const came_from: ?usize = blk: {
-            if (state.prev_fleet_location) |prev| {
-                for (HexDir.ALL, 0..) |dir, i| {
-                    if (loc.neighbor(dir).eql(prev)) break :blk i;
-                }
-            }
-            break :blk null;
-        };
+        const came_from = findCameFrom(state, loc);
 
         const exit_hdr = std.fmt.bufPrint(buf[pos..], " Exits:", .{}) catch return;
         pos += exit_hdr.len;
 
-        for (HexDir.ALL, 0..) |dir, i| {
+        for (shared.HexDirection.ALL, 0..) |dir, i| {
             const nbr = loc.neighbor(dir);
-            var is_conn = false;
-            for (sector.connections) |conn| {
-                if (conn.eql(nbr)) {
-                    is_conn = true;
-                    break;
-                }
-            }
-            if (is_conn) {
-                const marker: []const u8 = if (came_from != null and came_from.? == i) "<" else " ";
+            if (sectorHasConnection(sector, nbr)) {
+                const marker: []const u8 = if (came_from == i) "<" else " ";
                 const exit_line = std.fmt.bufPrint(buf[pos..], "\n  [{d}] {s:>2} -> [{d},{d}]{s}", .{
                     i + 1, dir.label(), nbr.q, nbr.r, marker,
                 }) catch break;

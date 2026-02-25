@@ -194,12 +194,14 @@ pub const ClientState = struct {
             owned.ships = try self.allocator.dupe(shared.protocol.ShipState, fleet.ships);
             try self.fleets.append(self.allocator, owned);
         }
-        if (old_loc) |prev| {
-            if (self.activeFleet()) |cur| {
-                if (!cur.location.eql(prev)) {
-                    self.prev_fleet_location = prev;
-                }
-            }
+        self.updatePrevFleetLocation(old_loc);
+    }
+
+    fn updatePrevFleetLocation(self: *ClientState, old_loc: ?Hex) void {
+        const prev = old_loc orelse return;
+        const cur = self.activeFleet() orelse return;
+        if (!cur.location.eql(prev)) {
+            self.prev_fleet_location = prev;
         }
     }
 
