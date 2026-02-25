@@ -248,7 +248,6 @@ pub const HOMEWORLD_MAX_DIST: u16 = 6;
 pub const MOVE_BASE_COOLDOWN: u16 = 1; // testing: fast movement
 pub const HARVEST_COOLDOWN: u16 = 1;
 pub const SCAN_COOLDOWN: u16 = 5;
-pub const DEPLOY_COOLDOWN: u16 = 10;
 
 /// Combat.
 pub const DAMAGE_VARIANCE_MIN: f32 = 0.8;

@@ -184,8 +184,10 @@ pub const ClientState = struct {
                     try self.replaceHomeworld(hw);
                 }
 
-                if (update.sector_update) |sector| {
-                    try self.replaceSector(sector);
+                if (update.sector_updates) |sectors| {
+                    for (sectors) |sector| {
+                        try self.replaceSector(sector);
+                    }
                 }
 
                 if (update.events) |events| {

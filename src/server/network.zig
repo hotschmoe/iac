@@ -94,10 +94,10 @@ pub const Network = struct {
 
             const fleet_updates = try collectPlayerFleets(alloc, eng, player_id);
 
-            const sector_update: ?protocol.SectorState = if (fleet_updates.len > 0)
-                try buildSectorState(alloc, eng, fleet_updates[0].location)
-            else
-                null;
+            var sector_list = std.ArrayList(protocol.SectorState).empty;
+            if (fleet_updates.len > 0) {
+                try sector_list.append(alloc, try buildSectorState(alloc, eng, fleet_updates[0].location));
+            }
 
             var player_update: ?protocol.PlayerState = null;
             var hw_update: ?protocol.HomeworldState = null;
@@ -109,6 +109,14 @@ pub const Network = struct {
                     .homeworld = p.homeworld,
                 };
                 hw_update = try buildHomeworldState(alloc, eng, &p);
+
+                const range = scaling.sensorRange(p.buildings.sensor_array);
+                if (range > 0) {
+                    const revealed = try eng.getSensorRevealedCoords(p.homeworld, range, alloc);
+                    for (revealed) |coord| {
+                        try sector_list.append(alloc, try buildSectorState(alloc, eng, coord));
+                    }
+                }
             }
 
             var player_events = std.ArrayList(protocol.GameEvent).empty;
@@ -123,7 +131,7 @@ pub const Network = struct {
                     .tick = eng.current_tick,
                     .player = player_update,
                     .fleet_updates = if (fleet_updates.len > 0) fleet_updates else null,
-                    .sector_update = sector_update,
+                    .sector_updates = if (sector_list.items.len > 0) sector_list.items else null,
                     .homeworld_update = hw_update,
                     .events = if (player_events.items.len > 0) player_events.items else null,
                 },
@@ -279,8 +287,25 @@ pub const Network = struct {
         const fleet_states = try collectPlayerFleets(alloc, self.engine, player_id);
 
         var known_sectors = std.ArrayList(protocol.SectorState).empty;
+        var known_keys = std.AutoHashMap(u32, void).init(alloc);
         for (fleet_states) |fs| {
-            try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, fs.location));
+            const key = fs.location.toKey();
+            if (!known_keys.contains(key)) {
+                try known_keys.put(key, {});
+                try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, fs.location));
+            }
+        }
+
+        const range = scaling.sensorRange(player.buildings.sensor_array);
+        if (range > 0) {
+            const revealed = try self.engine.getSensorRevealedCoords(player.homeworld, range, alloc);
+            for (revealed) |coord| {
+                const key = coord.toKey();
+                if (!known_keys.contains(key)) {
+                    try known_keys.put(key, {});
+                    try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, coord));
+                }
+            }
         }
 
         const hw_state = try buildHomeworldState(alloc, self.engine, &player);

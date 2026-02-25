@@ -433,6 +433,9 @@ pub const GameEngine = struct {
                             .new_level = q.target_level,
                         } },
                     });
+                    if (q.building == .fuel_depot) {
+                        try self.recalculatePlayerFleetFuel(player);
+                    }
                 }
             }
 
@@ -473,6 +476,9 @@ pub const GameEngine = struct {
                             .new_level = q.target_level,
                         } },
                     });
+                    if (q.tech == .extended_fuel_tanks) {
+                        try self.recalculatePlayerFleetFuel(player);
+                    }
                 }
             }
         }
@@ -868,13 +874,7 @@ pub const GameEngine = struct {
         };
         fleet.ship_count += 1;
 
-        // Update fleet fuel capacity
-        var total_fuel: f32 = 0;
-        for (fleet.ships[0..fleet.ship_count]) |ship| {
-            total_fuel += @floatFromInt(ship.class.baseStats().fuel);
-        }
-        const fuel_cap = scaling.fuelCapacityModifier(player.research.extended_fuel_tanks);
-        fleet.fuel_max = total_fuel * fuel_cap;
+        fleet.fuel_max = calculateFleetFuelMax(fleet, player);
         fleet.fuel = fleet.fuel_max;
 
         try self.dirty_fleets.put(fleet.id, {});
@@ -1187,6 +1187,57 @@ pub const GameEngine = struct {
         self.dirty_sectors.clearRetainingCapacity();
     }
 
+    fn recalculatePlayerFleetFuel(self: *GameEngine, player: *const Player) !void {
+        var iter = self.fleets.iterator();
+        while (iter.next()) |entry| {
+            var fleet = entry.value_ptr;
+            if (fleet.owner_id != player.id) continue;
+            if (fleet.ship_count == 0) continue;
+
+            const new_max = calculateFleetFuelMax(fleet, player);
+            if (new_max > fleet.fuel_max) {
+                const bonus = new_max - fleet.fuel_max;
+                fleet.fuel += bonus;
+                fleet.fuel_max = new_max;
+                try self.dirty_fleets.put(fleet.id, {});
+            }
+        }
+    }
+
+    pub fn getSensorRevealedCoords(self: *GameEngine, origin: Hex, max_hops: u8, alloc: std.mem.Allocator) ![]const Hex {
+        if (max_hops == 0) return &.{};
+
+        var visited = std.AutoHashMap(u32, void).init(alloc);
+        defer visited.deinit();
+
+        var current_frontier: std.ArrayList(Hex) = .empty;
+        defer current_frontier.deinit(alloc);
+        var next_frontier: std.ArrayList(Hex) = .empty;
+        defer next_frontier.deinit(alloc);
+
+        var result: std.ArrayList(Hex) = .empty;
+
+        try visited.put(origin.toKey(), {});
+        try current_frontier.append(alloc, origin);
+
+        for (0..max_hops) |_| {
+            for (current_frontier.items) |coord| {
+                const neighbors = self.world_gen.connectedNeighbors(coord);
+                for (neighbors.slice()) |n| {
+                    const key = n.toKey();
+                    if (visited.contains(key)) continue;
+                    try visited.put(key, {});
+                    try next_frontier.append(alloc, n);
+                    try result.append(alloc, n);
+                }
+            }
+            current_frontier.clearRetainingCapacity();
+            std.mem.swap(std.ArrayList(Hex), &current_frontier, &next_frontier);
+        }
+
+        return try result.toOwnedSlice(alloc);
+    }
+
     pub fn drainEvents(self: *GameEngine) []const shared.protocol.GameEvent {
         return self.pending_events.items;
     }
@@ -1231,6 +1282,14 @@ fn fleetHarvestPower(fleet: *const Fleet, research: ?scaling.ResearchLevels) f32
         return power * scaling.harvestRateModifier(r.harvesting_efficiency);
     }
     return power;
+}
+
+fn calculateFleetFuelMax(fleet: *const Fleet, player: *const Player) f32 {
+    var total_fuel: f32 = 0;
+    for (fleet.ships[0..fleet.ship_count]) |ship| {
+        total_fuel += @floatFromInt(ship.class.baseStats().fuel);
+    }
+    return total_fuel * scaling.fuelCapacityModifier(player.research.extended_fuel_tanks) * scaling.fuelDepotModifier(player.buildings.fuel_depot);
 }
 
 fn fleetCargoCapacity(fleet: *const Fleet) f32 {

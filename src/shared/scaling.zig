@@ -393,6 +393,16 @@ pub fn fuelCapacityModifier(tanks_level: u8) f32 {
     return 1.0 + 0.15 * @as(f32, @floatFromInt(tanks_level));
 }
 
+// 1.0 + 0.10 * level (fuel depot bonus to fleet fuel_max)
+pub fn fuelDepotModifier(depot_level: u8) f32 {
+    return 1.0 + 0.10 * @as(f32, @floatFromInt(depot_level));
+}
+
+// Sensor array reveal range (BFS hops from homeworld)
+pub fn sensorRange(sensor_level: u8) u8 {
+    return sensor_level;
+}
+
 // Returns ticks to subtract from base movement cooldown
 pub fn navigationCooldownReduction(nav_level: u8) u16 {
     return nav_level;

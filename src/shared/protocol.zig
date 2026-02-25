@@ -115,7 +115,7 @@ pub const TickUpdate = struct {
     tick: u64,
     player: ?PlayerState = null,
     fleet_updates: ?[]const FleetState = null,
-    sector_update: ?SectorState = null,
+    sector_updates: ?[]const SectorState = null,
     homeworld_update: ?HomeworldState = null,
     events: ?[]const GameEvent = null,
 };
