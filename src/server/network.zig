@@ -184,6 +184,10 @@ pub const Network = struct {
                 self.sendCommandError(session, "Recall", err);
                 return;
             },
+            .collect_salvage => |s| self.engine.handleCollectSalvage(s.fleet_id) catch |err| {
+                self.sendCommandError(session, "Salvage", err);
+                return;
+            },
             .attack => |a| self.engine.handleAttack(a.fleet_id, a.target_fleet_id) catch |err| {
                 self.sendCommandError(session, "Attack", err);
                 return;

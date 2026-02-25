@@ -31,6 +31,7 @@ pub const Command = union(enum) {
     harvest: HarvestCommand,
     attack: AttackCommand,
     recall: RecallCommand,
+    collect_salvage: CollectSalvageCommand,
     stop: void, // cancel current action
     scan: void,
 
@@ -50,6 +51,10 @@ pub const Command = union(enum) {
     };
 
     pub const RecallCommand = struct {
+        fleet_id: u64,
+    };
+
+    pub const CollectSalvageCommand = struct {
         fleet_id: u64,
     };
 };

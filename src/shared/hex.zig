@@ -4,13 +4,13 @@
 //
 // Hex layout (flat-top, axial):
 //
-//        +r
+//        -r
 //    NW  /  NE
 //      \/
 //  W ──    ── E      +q →
 //      /\
 //    SW  \  SE
-//        -r
+//        +r
 
 const std = @import("std");
 

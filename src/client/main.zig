@@ -40,6 +40,11 @@ fn update(state: *AppState, event: zithril.Event) zithril.Action {
                 },
                 .toggle_info => {
                     state.client_state.show_sector_info = !state.client_state.show_sector_info;
+                    state.client_state.show_keybinds = false;
+                },
+                .toggle_keybinds => {
+                    state.client_state.show_keybinds = !state.client_state.show_keybinds;
+                    state.client_state.show_sector_info = false;
                 },
                 .none => {},
             }

@@ -36,7 +36,9 @@ pub fn view(state: *ClientState, frame: *Frame) void {
 
     renderHeader(state, frame, rows.get(0));
 
-    switch (state.current_view) {
+    if (state.show_keybinds) {
+        renderKeybinds(state, frame, rows.get(1));
+    } else switch (state.current_view) {
         .command_center => renderCommandCenter(state, frame, rows.get(1)),
         .windshield => renderWindshield(state, frame, rows.get(1)),
         .star_map => renderStarMap(state, frame, rows.get(1)),
@@ -69,9 +71,9 @@ fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
 
 fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
     const text: []const u8 = switch (state.current_view) {
-        .star_map => " [Esc] Cmd Center  [w] Windshield  [Arrows] Scroll  [z/x] Zoom  [c] Center  [Tab] Fleet  [q] Quit",
-        .windshield => " [Esc] Cmd Center  [m] Map  [i] Sector Info  [Tab] Fleet  [q] Quit",
-        else => " [Esc] Cmd Center  [w] Windshield  [m] Map  [Tab] Cycle Fleet  [q] Quit",
+        .command_center => " CMD CENTER | [w] Windshield  [m] Map  [?] Keys  [q] Quit",
+        .windshield => " WINDSHIELD | [1-6] Move  [h] Harvest  [a] Attack  [s] Salvage  [?] Keys",
+        .star_map => " STAR MAP | [Arrows] Scroll  [z/x] Zoom  [c] Center  [?] Keys",
     };
     frame.render(Paragraph{
         .text = text,
@@ -289,7 +291,7 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
 
     const kb_y = inner.y + inner.height -| 1;
     frame.render(Paragraph{
-        .text = " [1-6] Move  [h] Harvest  [r] Recall  [i] Info",
+        .text = " [1-6] Move  [h] Harvest  [a] Attack  [s] Salvage  [r] Recall",
         .style = amber_dim,
     }, Rect.init(inner.x, kb_y, inner.width, 1));
 }
@@ -392,6 +394,45 @@ fn renderSectorInfo(state: *ClientState, frame: *Frame, area: Rect) void {
     pos += footer.len;
 
     frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
+}
+
+fn renderKeybinds(state: *ClientState, frame: *Frame, area: Rect) void {
+    _ = state;
+    const block = Block{
+        .title = " KEYBINDS ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    const text =
+        " NAVIGATION\n" ++
+        " ─────────────────────────────\n" ++
+        " Esc       Command Center\n" ++
+        " w         Windshield view\n" ++
+        " m         Star Map view\n" ++
+        " Tab       Cycle fleet\n" ++
+        " q         Quit\n" ++
+        "\n" ++
+        " WINDSHIELD\n" ++
+        " ─────────────────────────────\n" ++
+        " 1-6       Move (hex direction)\n" ++
+        " h         Harvest resources\n" ++
+        " s         Collect salvage\n" ++
+        " a         Attack hostile\n" ++
+        " r         Recall to homeworld\n" ++
+        " i         Sector info\n" ++
+        "\n" ++
+        " STAR MAP\n" ++
+        " ─────────────────────────────\n" ++
+        " Arrows    Scroll map\n" ++
+        " z / x     Zoom out / in\n" ++
+        " c         Center on fleet\n" ++
+        "\n" ++
+        " [?] Close";
+
+    frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
 }
 
 fn renderCenterNode(frame: *Frame, inner: Rect, cx: i32, cy: i32, loc: shared.Hex, terrain_label: []const u8) void {
@@ -702,7 +743,7 @@ fn renderHexGrid(state: *ClientState, frame: *Frame, area: Rect) void {
         const dq: i32 = @as(i32, coord.q) - @as(i32, center.q);
         const dr: i32 = @as(i32, coord.r) - @as(i32, center.r);
         const screen_x: i32 = vp_cx + dq * 2 + dr;
-        const screen_y: i32 = vp_cy - dr;
+        const screen_y: i32 = vp_cy + dr;
 
         if (screen_x < ix or screen_x >= ix + iw) continue;
         if (screen_y < iy or screen_y >= iy + ih) continue;

@@ -15,6 +15,7 @@ pub const InputAction = union(enum) {
     cycle_fleet: void,
     center_fleet: void,
     toggle_info: void,
+    toggle_keybinds: void,
 };
 
 pub fn mapKey(key: Key, state: *const ClientState) InputAction {
@@ -48,7 +49,10 @@ fn mapChar(c: u21, state: *const ClientState) InputAction {
 
         'h' => mapHarvest(state),
         'r' => mapRecall(state),
+        'a' => mapAttack(state),
+        's' => mapCollectSalvage(state),
         'i' => if (state.current_view == .windshield) .{ .toggle_info = {} } else .{ .none = {} },
+        '?' => .{ .toggle_keybinds = {} },
 
         'z' => mapZoomOut(state),
         'x' => mapZoomIn(state),
@@ -91,6 +95,26 @@ fn mapHarvest(state: *const ClientState) InputAction {
 fn mapRecall(state: *const ClientState) InputAction {
     const fleet = activeReadyFleet(state) orelse return .{ .none = {} };
     return .{ .send_command = .{ .recall = .{
+        .fleet_id = fleet.id,
+    } } };
+}
+
+fn mapAttack(state: *const ClientState) InputAction {
+    if (state.current_view != .windshield) return .{ .none = {} };
+    const fleet = activeReadyFleet(state) orelse return .{ .none = {} };
+    const sector = state.currentSector() orelse return .{ .none = {} };
+    const hostiles = sector.hostiles orelse return .{ .none = {} };
+    if (hostiles.len == 0) return .{ .none = {} };
+    return .{ .send_command = .{ .attack = .{
+        .fleet_id = fleet.id,
+        .target_fleet_id = hostiles[0].id,
+    } } };
+}
+
+fn mapCollectSalvage(state: *const ClientState) InputAction {
+    if (state.current_view != .windshield) return .{ .none = {} };
+    const fleet = activeReadyFleet(state) orelse return .{ .none = {} };
+    return .{ .send_command = .{ .collect_salvage = .{
         .fleet_id = fleet.id,
     } } };
 }

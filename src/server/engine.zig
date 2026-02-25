@@ -125,7 +125,6 @@ pub const GameEngine = struct {
 
                 try self.checkHomeworldDocking(fleet);
                 try self.checkNpcEncounter(fleet);
-                try self.collectSalvage(fleet);
             }
         }
     }
@@ -568,6 +567,19 @@ pub const GameEngine = struct {
         try self.dirty_fleets.put(fleet_id, {});
     }
 
+    pub fn handleCollectSalvage(self: *GameEngine, fleet_id: u64) !void {
+        const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
+        if (fleet.ship_count == 0) return error.NoShips;
+        if (fleet.state == .in_combat) return error.InCombat;
+        if (fleet.state == .moving) return error.OnCooldown;
+
+        const key = fleet.location.toKey();
+        const ov = self.sector_overrides.getPtr(key) orelse return error.NoResources;
+        if (ov.salvage == null) return error.NoResources;
+
+        try self.collectSalvage(fleet);
+    }
+
     pub fn handleAttack(self: *GameEngine, fleet_id: u64, target_fleet_id: u64) !void {
         const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
         if (fleet.ship_count == 0) return error.NoShips;
@@ -643,6 +655,17 @@ pub const GameEngine = struct {
         fleet.location = player.homeworld;
         fleet.state = if (fleet.ship_count == 0) .docked else .idle;
         fleet.move_target = null;
+
+        // Drop cargo + refuel at homeworld
+        if (fleet.cargo.metal > 0 or fleet.cargo.crystal > 0 or fleet.cargo.deuterium > 0) {
+            player.resources.metal += fleet.cargo.metal;
+            player.resources.crystal += fleet.cargo.crystal;
+            player.resources.deuterium += fleet.cargo.deuterium;
+            fleet.cargo = .{};
+            try self.dirty_players.put(player.id, {});
+        }
+        fleet.fuel = fleet.fuel_max;
+
         try self.dirty_fleets.put(fleet.id, {});
     }
 
