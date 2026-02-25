@@ -95,8 +95,11 @@ pub const Network = struct {
             const fleet_updates = try collectPlayerFleets(alloc, eng, player_id);
 
             var sector_list = std.ArrayList(protocol.SectorState).empty;
+            var sector_keys = std.AutoHashMap(u32, void).init(alloc);
             if (fleet_updates.len > 0) {
-                try sector_list.append(alloc, try buildSectorState(alloc, eng, fleet_updates[0].location));
+                const loc = fleet_updates[0].location;
+                try sector_keys.put(loc.toKey(), {});
+                try sector_list.append(alloc, try buildSectorState(alloc, eng, loc));
             }
 
             var player_update: ?protocol.PlayerState = null;
@@ -114,7 +117,11 @@ pub const Network = struct {
                 if (range > 0) {
                     const revealed = try eng.getSensorRevealedCoords(p.homeworld, range, alloc);
                     for (revealed) |coord| {
-                        try sector_list.append(alloc, try buildSectorState(alloc, eng, coord));
+                        const key = coord.toKey();
+                        if (!sector_keys.contains(key)) {
+                            try sector_keys.put(key, {});
+                            try sector_list.append(alloc, try buildSectorState(alloc, eng, coord));
+                        }
                     }
                 }
             }

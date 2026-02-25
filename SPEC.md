@@ -108,7 +108,7 @@ Actions have cooldown timers measured in ticks:
 | Fire weapons | 2–6 | Per ship class; combat auto-resolves each tick during engagement |
 | Scan sector | 5 | Reveal hidden info in current/adjacent sector |
 | Emergency recall | 1 (instant) | But has fleet damage risk |
-| Deploy from homeworld | 10 | Fleet launch preparation |
+
 
 Cooldowns are the mechanism that hides the discrete tick rate from human players. Between actions, the TUI shows smooth timers counting down.
 
@@ -162,13 +162,13 @@ Fleet {
     location: HexCoord
     cargo: {metal: f32, crystal: f32, deuterium: f32}
     fuel: f32           // current deuterium fuel
-    fuel_max: f32       // sum of ship fuel capacities + depot bonus
+    fuel_max: f32       // sum(ship.base_fuel) * fuel_capacity_mod * fuel_depot_mod
     state: FleetState   // idle, moving, harvesting, in_combat, returning
     auto_policy: []PolicyRule  // agent auto-actions
 }
 ```
 
-**Fuel consumption:** Moving one hex costs `fuel_cost = fleet_total_mass * fuel_rate`. Research improves `fuel_rate`. Fleet range is `fuel_max / fuel_cost_per_hex`, giving a hard radius of operation.
+**Fuel consumption:** Moving one hex costs `fuel_cost = fleet_total_mass * fuel_rate`. Research improves `fuel_rate`. Fleet range is `fuel_max / fuel_cost_per_hex`, giving a hard radius of operation. `fuel_max` is retroactively recalculated across all player fleets when a Fuel Depot is built or Extended Fuel Tanks research completes -- existing fuel is increased by the difference so docked-at-max fleets stay full.
 
 ### 3.4 Starting Conditions
 
@@ -308,8 +308,8 @@ LootDrop {
 | Deuterium Synthesizer | Passive deuterium production | — |
 | Shipyard | Build and repair ships | Metal Mine 2 |
 | Research Lab | Unlock technologies | Crystal Mine 2 |
-| Fuel Depot | Increase fleet fuel capacity | Deut Synth 2 |
-| Sensor Array | Reveal adjacent sectors, detect incoming fleets | Research Lab 1 |
+| Fuel Depot | Multiplicative bonus to fleet fuel_max (+10%/level) | Deut Synth 2 |
+| Sensor Array | BFS reveal sectors around homeworld (range = level hops) | Research Lab 1 |
 | Defense Grid | Automated homeworld defenses (future PvP) | Shipyard 3 |
 
 Each building has levels. Higher levels cost exponentially more but provide increasing benefits.
@@ -331,7 +331,7 @@ Research requires the Research Lab and costs resources + data fragments.
 | Technology | Effect | Prerequisites |
 |---|---|---|
 | Fuel Efficiency I–V | Reduce fleet fuel consumption 10% per level | Deut Synth 3 |
-| Extended Fuel Tanks I–V | Increase fleet fuel capacity 15% per level | Fuel Depot 2 |
+| Extended Fuel Tanks I–V | Multiplicative +15% fleet fuel_max per level (retroactive) | Fuel Depot 2 |
 | Reinforced Hulls I–V | +10% hull HP for all ships per level | Shipyard 2 |
 | Advanced Shields I–V | +10% shield HP for all ships per level | Research Lab 3 |
 | Weapons Research I–V | +10% weapon power for all ships per level | Research Lab 3 |
@@ -392,8 +392,8 @@ The server is authoritative. Clients are thin renderers + input devices.
     "type": "tick_update",
     "tick": 4821,
     "player": { "id": 1, "resources": { ... } },
-    "fleet_state": { ... },
-    "sector_state": { ... },
+    "fleet_updates": [{ ... }],
+    "sector_updates": [{ ... }],
     "homeworld_state": { "buildings": [...], "research": [...], ... },
     "events": [
         {"type": "combat_round", "details": { ... }},
@@ -403,7 +403,7 @@ The server is authoritative. Clients are thin renderers + input devices.
 }
 ```
 
-Player state (resources), fleet state, sector state, homeworld state, and events are sent each tick. Full state sync on initial connection and on request.
+Player state (resources), fleet updates, sector updates (fleet location + sensor-revealed sectors), homeworld state, and events are sent each tick. Full state sync on initial connection and on request.
 
 ### 9.3 Client → Server Messages
 
@@ -642,7 +642,7 @@ Only modified sectors are stored. Unvisited/unmodified sectors are generated on 
 - [x] Player reconnection (existing players resume by name, not re-created)
 - [x] Graceful shutdown with final state persist
 - [x] Leak-free memory management (server and client)
-- [x] Server sends sector state (terrain, resources, connections) per-tick and on full sync
+- [x] Server sends sector_updates slice (fleet location + sensor-revealed sectors) per-tick and on full sync
 - [x] Windshield hex node graph (spatially-positioned direction slots, connection lines, came-from indicator, resource summaries, compact fallback for small terminals, fixed keys 1=E 2=NE 3=NW 4=W 5=SW 6=SE)
 - [x] Client deep-copies all slice fields from parsed JSON (sector connections/hostiles/player_fleets, event alert messages) to survive parse arena cleanup
 - [x] Combat visual feedback (!! COMBAT !! title flash, damage numbers in event log)
@@ -680,7 +680,7 @@ A human player can connect via TUI, see the amber hex map, navigate between sect
 
 3. **Fleet splitting** — can a player split a fleet into two? This adds tactical depth (send scouts ahead, keep main fleet back) but complicates the UI and state management. Defer to M3+?
 
-4. **Fog of war** — sectors you haven't visited are unexplored. Do adjacent sectors get revealed by proximity? Does the Sensor Array building reveal a radius around home? How much map info does a player get by default?
+4. **Fog of war** — resolved: sectors you haven't visited are unexplored. The Sensor Array building reveals a BFS radius around the homeworld (range = building level hops, following connected edges). Revealed sectors appear on the star map with full terrain/resource/hostile info. Without a sensor array, players only see sectors where their fleets are located.
 
 5. **Resource trade** — can players trade resources with each other at the hub? This is a natural multiplayer feature but needs economic balancing.
 

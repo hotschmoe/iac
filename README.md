@@ -77,7 +77,7 @@ Your persistent base on the inner ring. OGame-style building and upgrade system:
 - **Mines** (metal, crystal, deuterium) — passive resource production
 - **Shipyard** — build queue for new ships
 - **Research Lab** — unlock technologies using data fragments + resources
-- **Fuel Depot** — increase fleet deuterium capacity
+- **Fuel Depot** — multiplicative bonus to fleet fuel capacity (+10%/level)
 - **Defenses** — protect your homeworld (relevant once PvP exists)
 
 Build timers are measured in minutes to hours. This is the slow, strategic layer — ideal for LLM agents who check in periodically.

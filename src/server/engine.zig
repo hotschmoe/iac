@@ -874,7 +874,7 @@ pub const GameEngine = struct {
         };
         fleet.ship_count += 1;
 
-        fleet.fuel_max = calculateFleetFuelMax(fleet, player);
+        fleet.fuel_max = fleetFuelMax(fleet, player);
         fleet.fuel = fleet.fuel_max;
 
         try self.dirty_fleets.put(fleet.id, {});
@@ -1194,7 +1194,7 @@ pub const GameEngine = struct {
             if (fleet.owner_id != player.id) continue;
             if (fleet.ship_count == 0) continue;
 
-            const new_max = calculateFleetFuelMax(fleet, player);
+            const new_max = fleetFuelMax(fleet, player);
             if (new_max > fleet.fuel_max) {
                 const bonus = new_max - fleet.fuel_max;
                 fleet.fuel += bonus;
@@ -1284,7 +1284,7 @@ fn fleetHarvestPower(fleet: *const Fleet, research: ?scaling.ResearchLevels) f32
     return power;
 }
 
-fn calculateFleetFuelMax(fleet: *const Fleet, player: *const Player) f32 {
+fn fleetFuelMax(fleet: *const Fleet, player: *const Player) f32 {
     var total_fuel: f32 = 0;
     for (fleet.ships[0..fleet.ship_count]) |ship| {
         total_fuel += @floatFromInt(ship.class.baseStats().fuel);
