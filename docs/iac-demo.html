@@ -1,0 +1,1314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IN AMBER CLAD</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+
+  :root {
+    --amber-full: #FFB000;
+    --amber-bright: rgba(255, 176, 0, 0.85);
+    --amber-normal: rgba(255, 176, 0, 0.6);
+    --amber-dim: rgba(255, 176, 0, 0.3);
+    --amber-faint: rgba(255, 176, 0, 0.12);
+    --amber-glow: rgba(255, 176, 0, 0.06);
+    --amber-danger: #ff6b35;
+    --bg: #060500;
+    --bg-panel: #0a0800;
+    --bg-inset: #040300;
+    --border: rgba(255, 176, 0, 0.08);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: var(--bg);
+    color: var(--amber-normal);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    height: 100%;
+    overflow: hidden;
+    cursor: default;
+    -webkit-font-smoothing: none;
+  }
+
+  /* ── CRT EFFECTS ────────────────────────── */
+  #crt-overlay {
+    position: fixed; inset: 0;
+    pointer-events: none; z-index: 9999;
+    background:
+      repeating-linear-gradient(0deg, transparent, transparent 1px, rgba(0,0,0,0.04) 1px, rgba(0,0,0,0.04) 2px);
+  }
+  #vignette {
+    position: fixed; inset: 0;
+    pointer-events: none; z-index: 9998;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.65) 100%);
+  }
+  #flicker {
+    position: fixed; inset: 0;
+    pointer-events: none; z-index: 9997;
+    animation: flicker 0.15s infinite;
+    opacity: 0;
+  }
+  @keyframes flicker {
+    0%, 100% { opacity: 0; }
+    50% { opacity: 0.008; background: rgba(255,176,0,0.02); }
+  }
+
+  /* ── LAYOUT ─────────────────────────────── */
+  #app {
+    display: flex; flex-direction: column;
+    height: 100vh; max-width: 1200px;
+    margin: 0 auto; padding: 0;
+  }
+
+  /* ── HEADER ─────────────────────────────── */
+  #header {
+    padding: 10px 16px 0;
+    flex-shrink: 0;
+  }
+  #header h1 {
+    color: var(--amber-full);
+    font-size: 14px; font-weight: 700;
+    letter-spacing: 6px;
+    text-shadow: 0 0 20px rgba(255,176,0,0.5), 0 0 60px rgba(255,176,0,0.15);
+    display: inline;
+  }
+  #header .tick-display {
+    float: right;
+    color: var(--amber-dim);
+    font-size: 11px; letter-spacing: 1px;
+  }
+  #header .tick-display span { color: var(--amber-full); }
+  #subtitle {
+    color: var(--amber-dim); font-size: 9px;
+    letter-spacing: 3px; margin-bottom: 8px;
+  }
+
+  /* ── TABS ────────────────────────────────── */
+  #tabs {
+    display: flex; gap: 0; flex-shrink: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 0 16px;
+  }
+  .tab {
+    padding: 7px 18px;
+    font-family: inherit; font-size: 10px;
+    letter-spacing: 1.5px;
+    color: var(--amber-dim);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    cursor: pointer;
+    transition: all 0.12s;
+    position: relative; top: 1px;
+    user-select: none;
+  }
+  .tab:hover { color: var(--amber-normal); border-color: var(--amber-faint); }
+  .tab.active {
+    color: var(--amber-full);
+    background: var(--bg-panel);
+    border-color: var(--amber-dim);
+    text-shadow: 0 0 8px rgba(255,176,0,0.3);
+  }
+  .tab .key {
+    color: var(--amber-full); font-weight: 700;
+  }
+
+  /* ── VIEWS ───────────────────────────────── */
+  .view { display: none; flex: 1; overflow: hidden; }
+  .view.active { display: flex; flex-direction: column; }
+
+  .view-desc {
+    padding: 6px 16px; font-size: 9px;
+    letter-spacing: 1px; color: var(--amber-dim);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+
+  /* ── PANEL SYSTEM ────────────────────────── */
+  .panel {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    margin: -1px 0 0 -1px;
+  }
+  .panel-title {
+    font-size: 8px; letter-spacing: 2px;
+    color: var(--amber-dim);
+    margin-bottom: 6px; padding-bottom: 3px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel pre {
+    font-family: inherit; font-size: 11px;
+    line-height: 1.45; white-space: pre;
+  }
+
+  /* ── COLOR CLASSES ───────────────────────── */
+  .full { color: var(--amber-full); text-shadow: 0 0 6px rgba(255,176,0,0.25); }
+  .bright { color: var(--amber-bright); }
+  .normal { color: var(--amber-normal); }
+  .dim { color: var(--amber-dim); }
+  .faint { color: var(--amber-faint); }
+  .glow { color: var(--amber-full); text-shadow: 0 0 12px rgba(255,176,0,0.5); }
+  .danger { color: var(--amber-danger); text-shadow: 0 0 8px rgba(255,107,53,0.3); }
+
+  /* ── COMMAND CENTER ──────────────────────── */
+  #view-cc .cc-content {
+    flex: 1; overflow-y: auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-auto-rows: min-content;
+    padding: 0 16px;
+  }
+  #view-cc .cc-content::-webkit-scrollbar { width: 4px; }
+  #view-cc .cc-content::-webkit-scrollbar-thumb { background: var(--amber-faint); }
+  .wide { grid-column: 1 / -1; }
+
+  /* ── RESOURCE BARS ───────────────────────── */
+  .res-bar {
+    display: flex; align-items: center; gap: 6px;
+    margin: 2px 0;
+  }
+  .res-bar .label { width: 52px; color: var(--amber-dim); font-size: 11px; }
+  .res-bar .value { width: 60px; color: var(--amber-full); font-size: 11px; text-align: right; }
+  .res-bar .rate { width: 64px; color: var(--amber-dim); font-size: 10px; }
+  .bar-track {
+    flex: 1; height: 8px;
+    background: rgba(255,176,0,0.04);
+    border: 1px solid var(--border);
+    position: relative; overflow: hidden;
+  }
+  .bar-fill-inner {
+    height: 100%;
+    background: linear-gradient(90deg, rgba(255,176,0,0.3), rgba(255,176,0,0.5));
+    box-shadow: inset 0 0 4px rgba(255,176,0,0.2);
+    transition: width 1s ease;
+  }
+
+  /* ── PROGRESS ────────────────────────────── */
+  .progress-row {
+    display: flex; align-items: center; gap: 8px;
+    margin: 4px 0;
+  }
+  .progress-track {
+    width: 120px; height: 6px;
+    background: rgba(255,176,0,0.04);
+    border: 1px solid var(--border);
+    position: relative;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--amber-normal);
+    transition: width 1s linear;
+  }
+
+  /* ── WINDSHIELD ──────────────────────────── */
+  #view-ws .ws-content {
+    flex: 1; display: grid;
+    grid-template-columns: 1fr 220px;
+    grid-template-rows: 1fr auto;
+    overflow: hidden;
+  }
+  .ws-viewport {
+    position: relative; overflow: hidden;
+    background: var(--bg-inset);
+    border-right: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ws-viewport::before {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(circle at center, transparent 35%, rgba(0,0,0,0.7) 100%);
+    pointer-events: none; z-index: 2;
+  }
+  .ws-viewport canvas { position: relative; z-index: 1; }
+  .ws-sidebar { display: flex; flex-direction: column; overflow-y: auto; }
+  .ws-sidebar::-webkit-scrollbar { width: 3px; }
+  .ws-sidebar::-webkit-scrollbar-thumb { background: var(--amber-faint); }
+  .ws-footer {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--border);
+    padding: 6px 14px;
+  }
+  .ws-footer pre { font-size: 10px; }
+
+  /* ── STAR MAP ────────────────────────────── */
+  #view-sm .sm-content {
+    flex: 1; display: grid;
+    grid-template-columns: 1fr 200px;
+    grid-template-rows: auto 1fr auto;
+    overflow: hidden;
+  }
+  .sm-toolbar {
+    grid-column: 1 / -1;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .zoom-btn {
+    font-family: inherit; font-size: 9px;
+    padding: 2px 8px; letter-spacing: 1px;
+    border: 1px solid var(--amber-dim);
+    background: transparent; color: var(--amber-dim);
+    cursor: pointer; transition: all 0.12s;
+  }
+  .zoom-btn.active, .zoom-btn:hover {
+    border-color: var(--amber-full);
+    color: var(--amber-full);
+    text-shadow: 0 0 6px rgba(255,176,0,0.3);
+  }
+  .sm-canvas-wrap {
+    position: relative; overflow: hidden;
+    background: var(--bg-inset);
+    border-right: 1px solid var(--border);
+  }
+  .sm-canvas-wrap::before {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(circle at center, transparent 45%, rgba(0,0,0,0.5) 100%);
+    pointer-events: none; z-index: 2;
+  }
+  .sm-canvas-wrap canvas { width: 100%; height: 100%; position: relative; z-index: 1; }
+  .sm-info { display: flex; flex-direction: column; overflow-y: auto; }
+  .sm-info::-webkit-scrollbar { width: 3px; }
+  .sm-info::-webkit-scrollbar-thumb { background: var(--amber-faint); }
+  .sm-footer {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--border);
+    padding: 5px 14px;
+  }
+  .sm-footer pre { font-size: 9px; color: var(--amber-dim); }
+
+  /* ── COMMAND INPUT ───────────────────────── */
+  #cmd-bar {
+    flex-shrink: 0;
+    border-top: 1px solid var(--amber-faint);
+    padding: 6px 16px;
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg-panel);
+  }
+  #cmd-bar .prompt {
+    color: var(--amber-full); font-size: 13px;
+    text-shadow: 0 0 8px rgba(255,176,0,0.4);
+  }
+  #cmd-input {
+    flex: 1; background: transparent;
+    border: none; outline: none;
+    color: var(--amber-bright);
+    font-family: inherit; font-size: 12px;
+    caret-color: var(--amber-full);
+  }
+  #cmd-input::placeholder { color: var(--amber-faint); }
+  .cmd-hint {
+    font-size: 9px; color: var(--amber-dim);
+    letter-spacing: 0.5px;
+  }
+
+  /* ── BOOT SCREEN ─────────────────────────── */
+  #boot-screen {
+    position: fixed; inset: 0; z-index: 10000;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 16px;
+    transition: opacity 0.8s ease;
+  }
+  #boot-screen.hidden { opacity: 0; pointer-events: none; }
+  #boot-text {
+    font-size: 11px; color: var(--amber-dim);
+    text-align: left; width: 500px; max-width: 90vw;
+    line-height: 1.7;
+  }
+  #boot-text .line { opacity: 0; transition: opacity 0.3s; }
+  #boot-text .line.visible { opacity: 1; }
+  #boot-title {
+    color: var(--amber-full); font-size: 22px;
+    font-weight: 700; letter-spacing: 8px;
+    text-shadow: 0 0 30px rgba(255,176,0,0.6), 0 0 80px rgba(255,176,0,0.2);
+    opacity: 0; transition: opacity 1s;
+    margin-bottom: 12px;
+  }
+  #boot-title.visible { opacity: 1; }
+  #boot-sub {
+    color: var(--amber-dim); font-size: 10px;
+    letter-spacing: 4px; opacity: 0; transition: opacity 0.8s;
+  }
+  #boot-sub.visible { opacity: 1; }
+
+  /* ── BLINK ───────────────────────────────── */
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+  .blink { animation: blink 1s step-end infinite; }
+
+  /* ── PULSE ───────────────────────────────── */
+  @keyframes pulse-glow { 0%,100% { text-shadow: 0 0 6px rgba(255,176,0,0.2); } 50% { text-shadow: 0 0 14px rgba(255,176,0,0.5); } }
+  .pulse { animation: pulse-glow 2s ease-in-out infinite; }
+
+  /* ── ANIMATIONS ──────────────────────────── */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-in { animation: fadeInUp 0.4s ease forwards; }
+</style>
+</head>
+<body>
+
+<!-- CRT Effects -->
+<div id="crt-overlay"></div>
+<div id="vignette"></div>
+<div id="flicker"></div>
+
+<!-- Boot Screen -->
+<div id="boot-screen">
+  <div id="boot-title">IN AMBER CLAD</div>
+  <div id="boot-sub">FLEET COMMAND INTERFACE v0.2.0</div>
+  <div id="boot-text"></div>
+</div>
+
+<!-- Main App -->
+<div id="app" style="opacity:0">
+
+  <!-- Header -->
+  <div id="header">
+    <h1>IN AMBER CLAD</h1>
+    <div class="tick-display">TICK <span id="tick-num">4821</span> │ <span id="game-clock">02:14:21</span></div>
+    <div id="subtitle">FLEET COMMAND INTERFACE — ADMIRAL'S CONSOLE</div>
+  </div>
+
+  <!-- Tab Bar -->
+  <div id="tabs">
+    <div class="tab active" data-view="cc" onclick="switchView('cc')"><span class="key">1</span> COMMAND CENTER</div>
+    <div class="tab" data-view="ws" onclick="switchView('ws')"><span class="key">2</span> WINDSHIELD</div>
+    <div class="tab" data-view="sm" onclick="switchView('sm')"><span class="key">3</span> STAR MAP</div>
+  </div>
+
+  <!-- ══════ VIEW 1: COMMAND CENTER ══════ -->
+  <div class="view active" id="view-cc">
+    <div class="view-desc">DEFAULT VIEW — HOMEWORLD MANAGEMENT & FLEET OVERVIEW — THE ADMIRAL'S DESK</div>
+    <div class="cc-content" id="cc-panels"></div>
+  </div>
+
+  <!-- ══════ VIEW 2: WINDSHIELD ══════ -->
+  <div class="view" id="view-ws">
+    <div class="view-desc">FLEET CONTROL — DIRECT PILOTING — THE WINDSHIELD</div>
+    <div class="ws-content">
+      <div class="ws-viewport">
+        <canvas id="ws-canvas"></canvas>
+      </div>
+      <div class="ws-sidebar" id="ws-sidebar"></div>
+      <div class="ws-footer">
+        <pre><span class="dim">move: [1]E  [2]NE  [3]NW  [4]W  [5]SW  [6]SE</span>     <span class="dim">[h]arvest [a]ttack [r]ecall [esc]back</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════ VIEW 3: STAR MAP ══════ -->
+  <div class="view" id="view-sm">
+    <div class="view-desc">STAR MAP — STRATEGIC OVERVIEW & WAYPOINT NAVIGATION</div>
+    <div class="sm-content">
+      <div class="sm-toolbar">
+        <span class="dim" style="font-size:9px;letter-spacing:1px;">ZOOM:</span>
+        <button class="zoom-btn" data-z="close" onclick="setMapZoom('close')">CLOSE</button>
+        <button class="zoom-btn active" data-z="sector" onclick="setMapZoom('sector')">SECTOR</button>
+        <button class="zoom-btn" data-z="region" onclick="setMapZoom('region')">REGION</button>
+        <span style="margin-left:auto;font-size:9px;color:var(--amber-dim);letter-spacing:1px;">
+          SCROLL: ARROWS │ WAYPOINT: ENTER │ HOME: CENTER
+        </span>
+      </div>
+      <div class="sm-canvas-wrap">
+        <canvas id="sm-canvas"></canvas>
+      </div>
+      <div class="sm-info" id="sm-info"></div>
+      <div class="sm-footer">
+        <pre><span class="dim">nav: ARROWS scroll │ +/- zoom │ ENTER waypoint │ HOME center │ TAB cycle │ ESC close</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Command Bar -->
+  <div id="cmd-bar">
+    <span class="prompt">▸</span>
+    <input id="cmd-input" type="text" placeholder="enter command..." spellcheck="false" autocomplete="off">
+    <span class="cmd-hint">[1]CC [2]WS [3]MAP │ [h]arvest [a]ttack [b]uild [r]esearch [f]leet</span>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════
+// GAME STATE (simulated, no server)
+// ══════════════════════════════════════════
+const G = {
+  tick: 4821,
+  clockSec: 8061,
+  resources: {
+    metal: { amount: 12847, rate: 38, cap: 20000 },
+    crystal: { amount: 6214, rate: 21, cap: 16000 },
+    deut: { amount: 2105, rate: 11, cap: 8000 }
+  },
+  fleets: [
+    { name:'Alpha', sector:[14,-6], status:'HARVESTING', ships:4, cargo:67, fuel:54, details:[
+      {cls:'Scout',n:1,hull:80,hullMax:100},{cls:'Corvette',n:2,hull:100,hullMax:100},{cls:'Hauler',n:1,hull:60,hullMax:100}
+    ]},
+    { name:'Beta', sector:[3,-1], status:'EN ROUTE', ships:2, cargo:0, fuel:88, details:[
+      {cls:'Corvette',n:1,hull:100,hullMax:100},{cls:'Scout',n:1,hull:100,hullMax:100}
+    ]},
+    { name:'Gamma', sector:[4,-2], status:'DOCKED', ships:1, cargo:0, fuel:100, details:[
+      {cls:'Frigate',n:1,hull:40,hullMax:100}
+    ]}
+  ],
+  buildQueue: [
+    { name:'Crystal Mine Lv.5', time:'03:24:11', pct:62, active:true },
+    { name:'Fuel Depot Lv.3', time:'queued', pct:0, active:false },
+    { name:'Sensor Array Lv.2', time:'queued', pct:0, active:false }
+  ],
+  shipyard: [
+    { name:'Corvette ×2', time:'00:12:45', pct:78, active:true },
+    { name:'Frigate ×1', time:'queued', pct:0, active:false }
+  ],
+  docked: '3×Scout  2×Corvette  1×Hauler',
+  research: { name:'Fuel Efficiency II', time:'01:45:00', pct:24, frags:'8/10',
+    completed:['Fuel Efficiency I','Reinforced Hulls I','Corvette Tech','Harvesting Eff. I'] },
+  events: [
+    {tick:4821, msg:'Fleet Alpha harvested 24 metal, 8 crystal from [14,-6]', lvl:'normal'},
+    {tick:4820, msg:'Fleet Beta departed homeworld → waypoint [3,-1]', lvl:'dim'},
+    {tick:4818, msg:'Fleet Alpha: MLM scout destroyed — salvage: 12 metal, 3 crystal', lvl:'bright'},
+    {tick:4817, msg:'Metal Mine Lv.4 complete', lvl:'dim'},
+    {tick:4815, msg:'Fleet Alpha engaged MLM scout in [14,-6] — combat resolved 2 ticks', lvl:'normal'},
+    {tick:4810, msg:'Research complete: Harvesting Efficiency I', lvl:'dim'},
+    {tick:4802, msg:'Fleet Gamma docked for repairs — hull damage 60%', lvl:'dim'},
+  ],
+  alerts: [
+    {icon:'!', msg:'Fleet Alpha: MLM patrol detected in [15,-6]', detail:'3 corvettes — adjacent sector, approaching\nPolicy: hold position, shields raised', lvl:'glow'},
+    {icon:'·', msg:'Fleet Beta: waypoint reached [3,-1]', detail:'Awaiting orders', lvl:'dim'},
+    {icon:'·', msg:'Corvette construction: 12m remaining', detail:'', lvl:'dim'}
+  ],
+  sector: { terrain:'Asteroid Field', metal:'Rich', crystal:'Moderate', deut:'Sparse',
+    hostile:'None in sector', adjacent:'3 MLM corvettes at [15,-6]', exits:'4 of 6' },
+  mapZoom: 'sector',
+  mapOffset: { x: 0, y: 0 },
+  cursorHex: [14, -6],
+  activeFleet: 0,
+  homeworld: [4, -2],
+  waypoints: [
+    { id:'WP-1', coord:[14,-6], note:'Rich Fe' },
+    { id:'WP-2', coord:[8,-2], note:'Hub gate' },
+    { id:'WP-3', coord:[22,-11], note:'Deep recon' }
+  ]
+};
+
+// ══════════════════════════════════════════
+// HEX MATH
+// ══════════════════════════════════════════
+function hexToPixel(q, r, size) {
+  const x = size * (3/2 * q);
+  const y = size * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r);
+  return { x, y };
+}
+
+function hexDist(q, r) {
+  return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
+}
+
+// Seeded random for consistent procedural gen
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    var t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+
+function sectorSeed(q, r) {
+  return mulberry32(q * 73856093 ^ r * 19349663 ^ 83492791);
+}
+
+function getSectorData(q, r) {
+  const rng = sectorSeed(q, r);
+  const dist = hexDist(q, r);
+  const terrains = ['empty','asteroid','nebula','debris','anomaly'];
+  const tw = dist < 8 ? [0.2,0.4,0.15,0.15,0.1] : dist < 20 ? [0.3,0.3,0.15,0.15,0.1] : [0.4,0.2,0.15,0.15,0.1];
+  let tc = 0, tr = rng();
+  let terrain = terrains[0];
+  for (let i = 0; i < terrains.length; i++) { tc += tw[i]; if (tr < tc) { terrain = terrains[i]; break; } }
+
+  const densities = ['none','sparse','moderate','rich','pristine'];
+  let resMetal = 'none', resCrystal = 'none', resDeut = 'none';
+  if (terrain === 'asteroid' || terrain === 'nebula' || terrain === 'debris') {
+    const ri = Math.min(4, Math.floor(rng() * (dist < 8 ? 3 : dist < 20 ? 4 : 5)));
+    resMetal = densities[ri];
+    resCrystal = densities[Math.max(0, ri - 1 - Math.floor(rng() * 2))];
+    resDeut = densities[Math.max(0, ri - 2 - Math.floor(rng() * 2))];
+  }
+
+  const hasHostile = rng() < Math.min(0.6, dist * 0.03);
+  const hostileCount = hasHostile ? Math.ceil(rng() * Math.min(8, dist * 0.4)) : 0;
+
+  // Edge pruning
+  const prunePct = dist < 8 ? 0.95 : dist < 20 ? 0.8 : Math.max(0.4, 0.6 - dist * 0.005);
+
+  const explored = dist < 18 && rng() > 0.3;
+
+  return { q, r, terrain, resMetal, resCrystal, resDeut, hasHostile, hostileCount, prunePct, explored, dist };
+}
+
+function getEdge(q1, r1, q2, r2) {
+  const a = q1 * 73856093 ^ r1 * 19349663;
+  const b = q2 * 73856093 ^ r2 * 19349663;
+  const seed = Math.min(a, b) * 83492791 ^ Math.max(a, b);
+  const rng = mulberry32(seed);
+  const d1 = hexDist(q1, r1), d2 = hexDist(q2, r2);
+  const dist = Math.max(d1, d2);
+  const pct = dist < 8 ? 0.95 : dist < 20 ? 0.8 : Math.max(0.4, 0.6 - dist * 0.005);
+  return rng() < pct;
+}
+
+const HEX_DIRS = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+
+function getNeighbors(q, r) {
+  const neighbors = [];
+  for (const [dq, dr] of HEX_DIRS) {
+    const nq = q + dq, nr = r + dr;
+    if (getEdge(q, r, nq, nr)) {
+      neighbors.push([nq, nr]);
+    }
+  }
+  return neighbors;
+}
+
+// ══════════════════════════════════════════
+// BOOT SEQUENCE
+// ══════════════════════════════════════════
+const bootLines = [
+  'BIOS POST ................. OK',
+  'MEM CHECK 64K ............. OK',
+  'LOADING UNSC FLEET OS v4.2.1',
+  'INIT WEBSOCKET UPLINK ..... SIMULATED',
+  'SYNC UNIVERSE STATE ....... TICK 4821',
+  'DECRYPTING SECTOR DATA .... OK',
+  'CALIBRATING NAV ARRAY ..... OK',
+  'WEAPONS SYSTEMS ........... STANDBY',
+  'CRT PHOSPHOR .............. AMBER',
+  '',
+  'WELCOME ABOARD, ADMIRAL.',
+  ''
+];
+
+async function runBoot() {
+  const bootText = document.getElementById('boot-text');
+  const bootTitle = document.getElementById('boot-title');
+  const bootSub = document.getElementById('boot-sub');
+  const bootScreen = document.getElementById('boot-screen');
+
+  // Show title first
+  await sleep(300);
+  bootTitle.classList.add('visible');
+  await sleep(600);
+  bootSub.classList.add('visible');
+  await sleep(800);
+
+  // Type boot lines
+  for (const line of bootLines) {
+    const el = document.createElement('div');
+    el.className = 'line';
+    el.textContent = line;
+    bootText.appendChild(el);
+    await sleep(40);
+    el.classList.add('visible');
+    await sleep(line === '' ? 100 : 70 + Math.random() * 80);
+  }
+
+  await sleep(400);
+  bootScreen.classList.add('hidden');
+  document.getElementById('app').style.opacity = '1';
+  await sleep(200);
+
+  initApp();
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ══════════════════════════════════════════
+// RENDER: COMMAND CENTER
+// ══════════════════════════════════════════
+function renderCC() {
+  const el = document.getElementById('cc-panels');
+  const R = G.resources;
+
+  function bar(pct) {
+    return `<div class="bar-track"><div class="bar-fill-inner" style="width:${pct}%"></div></div>`;
+  }
+  function progressBar(pct) {
+    return `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`;
+  }
+
+  let html = '';
+
+  // Resources
+  html += `<div class="panel"><div class="panel-title">RESOURCES</div>`;
+  for (const [key, label] of [['metal','Metal'],['crystal','Crystal'],['deut','Deut']]) {
+    const r = R[key];
+    const pct = (r.amount / r.cap * 100).toFixed(0);
+    html += `<div class="res-bar">
+      <span class="label">${label}</span>
+      <span class="value full">${r.amount.toLocaleString()}</span>
+      <span class="rate">+${r.rate}/tick</span>
+      ${bar(pct)}
+    </div>`;
+  }
+  html += `</div>`;
+
+  // Fleets
+  html += `<div class="panel"><div class="panel-title">FLEETS</div><pre>`;
+  for (const f of G.fleets) {
+    const sc = f.status === 'HARVESTING' ? 'full' : f.status === 'EN ROUTE' ? 'normal' : 'dim';
+    html += `<span class="bright">Fleet ${f.name}</span>   <span class="dim">Sector</span> <span class="normal">[${f.sector}]</span>  <span class="${sc}">${f.status}</span>\n`;
+    html += `  <span class="dim">${f.ships} ships │ cargo ${f.cargo}% │ fuel ${f.fuel}%</span>\n\n`;
+  }
+  html += `</pre></div>`;
+
+  // Build Queue
+  html += `<div class="panel"><div class="panel-title">BUILD QUEUE</div><pre>`;
+  for (const b of G.buildQueue) {
+    if (b.active) {
+      html += `<span class="bright">▸ ${b.name}</span>   <span class="full">${b.time}</span>\n`;
+      html += `  <span class="dim">Progress</span> `;
+      html += `</pre><div class="progress-row"><span class="dim" style="width:60px">Progress</span>${progressBar(b.pct)}<span class="dim" style="width:30px">${b.pct}%</span></div><pre>`;
+    } else {
+      html += `<span class="dim">▹ ${b.name}</span>     <span class="dim">${b.time}</span>\n`;
+    }
+  }
+  html += `</pre></div>`;
+
+  // Shipyard
+  html += `<div class="panel"><div class="panel-title">SHIPYARD</div><pre>`;
+  for (const s of G.shipyard) {
+    if (s.active) {
+      html += `<span class="bright">▸ ${s.name}</span>        <span class="full">${s.time}</span>\n`;
+      html += `</pre><div class="progress-row"><span class="dim" style="width:60px">Progress</span>${progressBar(s.pct)}<span class="dim" style="width:30px">${s.pct}%</span></div><pre>`;
+    } else {
+      html += `<span class="dim">▹ ${s.name}</span>         <span class="dim">${s.time}</span>\n`;
+    }
+  }
+  html += `\n<span class="dim">Docked:</span> <span class="normal">${G.docked}</span>`;
+  html += `</pre></div>`;
+
+  // Research
+  html += `<div class="panel"><div class="panel-title">RESEARCH LAB</div><pre>`;
+  html += `<span class="bright">▸ ${G.research.name}</span>  <span class="full">${G.research.time}</span>\n`;
+  html += `</pre><div class="progress-row"><span class="dim" style="width:60px">Progress</span>${progressBar(G.research.pct)}<span class="dim" style="width:30px">${G.research.pct}%</span></div><pre>`;
+  html += `  <span class="dim">Fragments:</span> <span class="normal">${G.research.frags} required</span>\n\n`;
+  html += `<span class="dim">Completed:</span>\n`;
+  html += `  <span class="dim">${G.research.completed.join(' │ ')}</span>`;
+  html += `</pre></div>`;
+
+  // Alerts
+  html += `<div class="panel"><div class="panel-title">ALERTS</div><pre>`;
+  for (const a of G.alerts) {
+    html += `<span class="${a.lvl}">${a.icon} ${a.msg}</span>\n`;
+    if (a.detail) html += `  <span class="dim">${a.detail}</span>\n`;
+    html += `\n`;
+  }
+  html += `</pre></div>`;
+
+  // Event Log
+  html += `<div class="panel wide"><div class="panel-title">EVENT LOG</div><pre>`;
+  for (const e of G.events) {
+    html += `<span class="dim">${e.tick}</span> <span class="${e.lvl}">${e.msg}</span>\n`;
+  }
+  html += `</pre></div>`;
+
+  el.innerHTML = html;
+}
+
+// ══════════════════════════════════════════
+// RENDER: WINDSHIELD (Canvas hex node graph)
+// ══════════════════════════════════════════
+function renderWindshield() {
+  const canvas = document.getElementById('ws-canvas');
+  const wrap = canvas.parentElement;
+  const W = wrap.clientWidth;
+  const H = wrap.clientHeight;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+
+  const cx = W / 2, cy = H / 2;
+  const fleet = G.fleets[G.activeFleet];
+  const [fq, fr] = fleet.sector;
+  const neighbors = getNeighbors(fq, fr);
+
+  const nodeR = 28;
+  const armLen = Math.min(W, H) * 0.3;
+
+  // Draw background stars
+  const starRng = mulberry32(42);
+  ctx.fillStyle = 'rgba(255,176,0,0.04)';
+  for (let i = 0; i < 60; i++) {
+    const sx = starRng() * W, sy = starRng() * H;
+    const sr = starRng() * 1.5;
+    ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Compute neighbor positions (6 directions, flat-top)
+  const dirAngles = [0, 60, 120, 180, 240, 300].map(d => d * Math.PI / 180);
+  const dirLabels = ['E','NE','NW','W','SW','SE'];
+
+  // Draw connections
+  for (let i = 0; i < 6; i++) {
+    const dq = HEX_DIRS[i][0], dr = HEX_DIRS[i][1];
+    const nq = fq + dq, nr = fr + dr;
+    const connected = getEdge(fq, fr, nq, nr);
+    const angle = dirAngles[i];
+    const ex = cx + Math.cos(angle) * armLen;
+    const ey = cy + Math.sin(angle) * armLen;
+
+    if (connected) {
+      const sec = getSectorData(nq, nr);
+      const isHostile = sec.hasHostile;
+
+      // Connection line
+      ctx.strokeStyle = isHostile ? 'rgba(255,107,53,0.25)' : sec.explored ? 'rgba(255,176,0,0.15)' : 'rgba(255,176,0,0.06)';
+      ctx.lineWidth = isHostile ? 2 : 1.5;
+      ctx.setLineDash(sec.explored ? [] : [4, 4]);
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Direction number
+      ctx.font = '9px JetBrains Mono';
+      ctx.fillStyle = 'rgba(255,176,0,0.25)';
+      const labelDist = armLen * 0.42;
+      const lx = cx + Math.cos(angle) * labelDist;
+      const ly = cy + Math.sin(angle) * labelDist;
+      ctx.fillText(`[${i+1}]${dirLabels[i]}`, lx - 14, ly + 3);
+
+      // Node
+      ctx.fillStyle = isHostile ? 'rgba(255,107,53,0.08)' : sec.explored ? 'rgba(255,176,0,0.06)' : 'rgba(255,176,0,0.02)';
+      ctx.strokeStyle = isHostile ? 'rgba(255,107,53,0.4)' : sec.explored ? 'rgba(255,176,0,0.2)' : 'rgba(255,176,0,0.08)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(ex, ey, nodeR, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+
+      // Node content
+      if (sec.explored) {
+        ctx.font = '10px JetBrains Mono';
+        ctx.fillStyle = isHostile ? 'rgba(255,107,53,0.8)' : 'rgba(255,176,0,0.5)';
+        let symbol = '·';
+        if (isHostile) symbol = `▲${sec.hostileCount}`;
+        else if (sec.resMetal !== 'none') symbol = sec.terrain === 'asteroid' ? '·Fe' : sec.terrain === 'nebula' ? '·Nb' : '·';
+        ctx.textAlign = 'center'; ctx.fillText(symbol, ex, ey + 1);
+        // Coord
+        ctx.font = '8px JetBrains Mono';
+        ctx.fillStyle = 'rgba(255,176,0,0.2)';
+        ctx.fillText(`${nq},${nr}`, ex, ey + nodeR + 10);
+      } else {
+        ctx.font = '10px JetBrains Mono';
+        ctx.fillStyle = 'rgba(255,176,0,0.1)';
+        ctx.textAlign = 'center'; ctx.fillText('░░░', ex, ey + 1);
+      }
+      ctx.textAlign = 'left';
+    } else {
+      // Dead end marker
+      const dx = cx + Math.cos(angle) * (armLen * 0.25);
+      const dy = cy + Math.sin(angle) * (armLen * 0.25);
+      ctx.font = '9px JetBrains Mono';
+      ctx.fillStyle = 'rgba(255,176,0,0.08)';
+      ctx.fillText('╳', dx - 4, dy + 3);
+    }
+  }
+
+  // Center node (current position)
+  // Glow
+  const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, nodeR * 2.5);
+  grd.addColorStop(0, 'rgba(255,176,0,0.12)');
+  grd.addColorStop(1, 'rgba(255,176,0,0)');
+  ctx.fillStyle = grd;
+  ctx.beginPath(); ctx.arc(cx, cy, nodeR * 2.5, 0, Math.PI*2); ctx.fill();
+
+  ctx.fillStyle = 'rgba(255,176,0,0.1)';
+  ctx.strokeStyle = 'rgba(255,176,0,0.6)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy, nodeR, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+
+  ctx.font = 'bold 14px JetBrains Mono';
+  ctx.fillStyle = '#FFB000';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = 'rgba(255,176,0,0.5)';
+  ctx.shadowBlur = 10;
+  ctx.fillText('◆', cx, cy + 5);
+  ctx.shadowBlur = 0;
+
+  ctx.font = '9px JetBrains Mono';
+  ctx.fillStyle = 'rgba(255,176,0,0.7)';
+  ctx.fillText(`${fq},${fr}`, cx, cy + nodeR + 12);
+  ctx.textAlign = 'left';
+
+  // Sidebar
+  renderWSSidebar();
+}
+
+function renderWSSidebar() {
+  const el = document.getElementById('ws-sidebar');
+  const f = G.fleets[G.activeFleet];
+  const s = G.sector;
+
+  let html = '';
+  html += `<div class="panel" style="border-left:none"><div class="panel-title">FLEET ${f.name.toUpperCase()} — ACTIVE</div><pre>`;
+  html += `<span class="dim">Sector</span>  <span class="full">[${f.sector}]</span>\n`;
+  html += `<span class="dim">Zone</span>    <span class="normal">${hexDist(f.sector[0],f.sector[1]) < 8 ? 'Inner Ring' : hexDist(f.sector[0],f.sector[1]) < 20 ? 'Outer Ring' : 'The Wandering'}</span>\n`;
+  html += `<span class="dim">Status</span>  <span class="full">${f.status}</span>\n\n`;
+  html += `<span class="dim">Ships</span>\n`;
+  for (const d of f.details) {
+    const pct = d.hull / d.hullMax;
+    const bars = Math.round(pct * 5);
+    const empty = 5 - bars;
+    html += ` <span class="normal">${d.cls.padEnd(9)}×${d.n}</span> <span class="dim">hull</span><span class="full">${'█'.repeat(bars)}</span><span class="faint">${'░'.repeat(empty)}</span>\n`;
+  }
+  html += `</pre></div>`;
+
+  html += `<div class="panel" style="border-left:none"><div class="panel-title">CARGO & FUEL</div><pre>`;
+  html += `<span class="dim">Cargo</span> <span class="normal">187</span><span class="dim">/280</span>\n`;
+  html += ` <span class="dim">Fe</span> <span class="normal"> 98</span>\n`;
+  html += ` <span class="dim">Cr</span> <span class="normal"> 61</span>\n`;
+  html += ` <span class="dim">De</span> <span class="normal"> 28</span>\n\n`;
+  html += `<span class="dim">Fuel</span>  <span class="bright">271</span><span class="dim">/500</span>\n`;
+  const fuelBars = Math.round(271/500*10);
+  html += ` <span class="full">${'█'.repeat(fuelBars)}</span><span class="faint">${'░'.repeat(10-fuelBars)}</span>\n`;
+  html += ` <span class="dim">~18 jumps remaining</span>`;
+  html += `</pre></div>`;
+
+  html += `<div class="panel" style="border-left:none"><div class="panel-title">SECTOR SCAN</div><pre>`;
+  html += `<span class="dim">Terrain</span>  <span class="normal">${s.terrain}</span>\n`;
+  html += `<span class="dim">Metal</span>    <span class="bright">${s.metal}</span>\n`;
+  html += `<span class="dim">Crystal</span>  <span class="normal">${s.crystal}</span>\n`;
+  html += `<span class="dim">Deut</span>     <span class="dim">${s.deut}</span>\n\n`;
+  html += `<span class="dim">Hostile</span>  <span class="dim">${s.hostile}</span>\n`;
+  html += `<span class="bright">! Adjacent:</span> <span class="bright">${s.adjacent}</span>\n\n`;
+  html += `<span class="dim">Exits</span>    <span class="normal">${s.exits}</span>`;
+  html += `</pre></div>`;
+
+  el.innerHTML = html;
+}
+
+// ══════════════════════════════════════════
+// RENDER: STAR MAP (Canvas hex grid)
+// ══════════════════════════════════════════
+let mapZoom = 'sector';
+const ZOOM_SIZES = { close: 52, sector: 30, region: 14 };
+const ZOOM_RADII = { close: 4, sector: 7, region: 16 };
+
+function renderStarMap() {
+  const canvas = document.getElementById('sm-canvas');
+  const wrap = canvas.parentElement;
+  const W = wrap.clientWidth;
+  const H = wrap.clientHeight;
+  if (W === 0 || H === 0) return;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+
+  const hexSize = ZOOM_SIZES[mapZoom];
+  const radius = ZOOM_RADII[mapZoom];
+  const centerQ = G.fleets[G.activeFleet].sector[0] + G.mapOffset.x;
+  const centerR = G.fleets[G.activeFleet].sector[1] + G.mapOffset.y;
+  const cx = W / 2, cy = H / 2;
+
+  // Background
+  ctx.fillStyle = 'rgba(255,176,0,0.015)';
+  const bgRng = mulberry32(7);
+  for (let i = 0; i < 100; i++) {
+    ctx.beginPath();
+    ctx.arc(bgRng() * W, bgRng() * H, bgRng() * 1.2, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // Draw edges first
+  for (let dq = -radius; dq <= radius; dq++) {
+    for (let dr = -radius; dr <= radius; dr++) {
+      if (Math.abs(dq + dr) > radius) continue;
+      const q = centerQ + dq, r = centerR + dr;
+      const pos = hexToPixel(dq, dr, hexSize);
+      const px = cx + pos.x, py = cy + pos.y;
+
+      for (const [edq, edr] of HEX_DIRS) {
+        const nq = q + edq, nr = r + edr;
+        if (!getEdge(q, r, nq, nr)) continue;
+        const ndq = nq - centerQ, ndr = nr - centerR;
+        if (Math.abs(ndq) > radius || Math.abs(ndr) > radius || Math.abs(ndq+ndr) > radius) continue;
+        const npos = hexToPixel(ndq, ndr, hexSize);
+        const npx = cx + npos.x, npy = cy + npos.y;
+
+        const sec = getSectorData(q, r);
+        const nsec = getSectorData(nq, nr);
+        const visible = sec.explored || nsec.explored;
+
+        ctx.strokeStyle = visible ? 'rgba(255,176,0,0.08)' : 'rgba(255,176,0,0.025)';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(npx, npy); ctx.stroke();
+      }
+    }
+  }
+
+  // Draw hexes
+  for (let dq = -radius; dq <= radius; dq++) {
+    for (let dr = -radius; dr <= radius; dr++) {
+      if (Math.abs(dq + dr) > radius) continue;
+      const q = centerQ + dq, r = centerR + dr;
+      const pos = hexToPixel(dq, dr, hexSize);
+      const px = cx + pos.x, py = cy + pos.y;
+      const sec = getSectorData(q, r);
+
+      const isFleetHere = G.fleets.some(f => f.sector[0] === q && f.sector[1] === r);
+      const isHome = q === G.homeworld[0] && r === G.homeworld[1];
+      const isCursor = q === G.cursorHex[0] && r === G.cursorHex[1];
+
+      // Hex shape (flat-top)
+      if (mapZoom !== 'region') {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const angle = Math.PI / 180 * (60 * i);
+          const hx = px + (hexSize * 0.8) * Math.cos(angle);
+          const hy = py + (hexSize * 0.8) * Math.sin(angle);
+          if (i === 0) ctx.moveTo(hx, hy); else ctx.lineTo(hx, hy);
+        }
+        ctx.closePath();
+
+        if (isCursor) {
+          ctx.fillStyle = 'rgba(255,176,0,0.08)';
+          ctx.strokeStyle = 'rgba(255,176,0,0.5)';
+          ctx.lineWidth = 1.5;
+        } else if (isFleetHere) {
+          ctx.fillStyle = 'rgba(255,176,0,0.06)';
+          ctx.strokeStyle = 'rgba(255,176,0,0.3)';
+          ctx.lineWidth = 1;
+        } else if (sec.explored) {
+          ctx.fillStyle = sec.hasHostile ? 'rgba(255,107,53,0.03)' : 'rgba(255,176,0,0.02)';
+          ctx.strokeStyle = sec.hasHostile ? 'rgba(255,107,53,0.12)' : 'rgba(255,176,0,0.06)';
+          ctx.lineWidth = 0.5;
+        } else {
+          ctx.fillStyle = 'rgba(255,176,0,0.005)';
+          ctx.strokeStyle = 'rgba(255,176,0,0.03)';
+          ctx.lineWidth = 0.3;
+        }
+        ctx.fill(); ctx.stroke();
+      }
+
+      // Symbols
+      ctx.textAlign = 'center';
+      if (isFleetHere) {
+        const fi = G.fleets.findIndex(f => f.sector[0] === q && f.sector[1] === r);
+        ctx.font = `bold ${mapZoom === 'region' ? 10 : 13}px JetBrains Mono`;
+        ctx.fillStyle = fi === G.activeFleet ? '#FFB000' : 'rgba(255,176,0,0.6)';
+        ctx.shadowColor = 'rgba(255,176,0,0.4)';
+        ctx.shadowBlur = fi === G.activeFleet ? 8 : 0;
+        ctx.fillText(fi === G.activeFleet ? '◆' : '◇', px, py + (mapZoom === 'region' ? 4 : 5));
+        ctx.shadowBlur = 0;
+      } else if (isHome) {
+        ctx.font = `${mapZoom === 'region' ? 10 : 12}px JetBrains Mono`;
+        ctx.fillStyle = 'rgba(255,176,0,0.7)';
+        ctx.fillText('⌂', px, py + 4);
+      } else if (sec.explored) {
+        if (sec.hasHostile) {
+          ctx.font = `${mapZoom === 'region' ? 8 : 10}px JetBrains Mono`;
+          ctx.fillStyle = 'rgba(255,107,53,0.7)';
+          ctx.fillText(mapZoom === 'region' ? '!' : `▲${sec.hostileCount}`, px, py + 3);
+        } else if (sec.terrain !== 'empty' && sec.resMetal !== 'none') {
+          ctx.font = `${mapZoom === 'region' ? 6 : 9}px JetBrains Mono`;
+          ctx.fillStyle = 'rgba(255,176,0,0.35)';
+          const sym = mapZoom === 'region' ? '·' : sec.resMetal[0].toUpperCase();
+          ctx.fillText(sym, px, py + 3);
+        } else {
+          ctx.font = `${mapZoom === 'region' ? 3 : 6}px JetBrains Mono`;
+          ctx.fillStyle = 'rgba(255,176,0,0.15)';
+          ctx.fillText('·', px, py + 2);
+        }
+      } else {
+        if (mapZoom !== 'region') {
+          ctx.font = '8px JetBrains Mono';
+          ctx.fillStyle = 'rgba(255,176,0,0.06)';
+          ctx.fillText('░', px, py + 3);
+        }
+      }
+
+      // Waypoint markers
+      const wp = G.waypoints.find(w => w.coord[0] === q && w.coord[1] === r);
+      if (wp && !isFleetHere) {
+        ctx.font = `${mapZoom === 'region' ? 7 : 9}px JetBrains Mono`;
+        ctx.fillStyle = 'rgba(255,176,0,0.5)';
+        ctx.fillText('▾', px, py - (mapZoom === 'region' ? 6 : hexSize * 0.6));
+      }
+
+      ctx.textAlign = 'left';
+    }
+  }
+
+  renderSMInfo();
+}
+
+function renderSMInfo() {
+  const el = document.getElementById('sm-info');
+  const [cq, cr] = G.cursorHex;
+  const sec = getSectorData(cq, cr);
+
+  let html = '';
+
+  html += `<div class="panel" style="border-right:none"><div class="panel-title">CURSOR</div><pre>`;
+  html += `<span class="dim">Sector</span>  <span class="full">[${cq}, ${cr}]</span>\n`;
+  html += `<span class="dim">Zone</span>    <span class="normal">${sec.dist < 8 ? 'Inner Ring' : sec.dist < 20 ? 'Outer Ring' : 'The Wandering'}</span>\n`;
+  html += `<span class="dim">Dist</span>    <span class="normal">${sec.dist} from hub</span>\n\n`;
+  if (sec.explored) {
+    html += `<span class="dim">Terrain</span> <span class="normal">${sec.terrain}</span>\n`;
+    html += `<span class="dim">Metal</span>   <span class="${sec.resMetal==='rich'||sec.resMetal==='pristine'?'bright':'normal'}">${sec.resMetal}</span>\n`;
+    html += `<span class="dim">Crystal</span> <span class="normal">${sec.resCrystal}</span>\n`;
+    html += `<span class="dim">Deut</span>    <span class="dim">${sec.resDeut}</span>\n\n`;
+    html += `<span class="dim">Threat</span>  <span class="${sec.hasHostile?'danger':'dim'}">${sec.hasHostile ? sec.hostileCount+' MLM hostiles' : 'Clear'}</span>\n`;
+  } else {
+    html += `<span class="faint">UNEXPLORED</span>\n<span class="dim">Fog of war — send a\nfleet to reveal.</span>\n`;
+  }
+  html += `</pre></div>`;
+
+  html += `<div class="panel" style="border-right:none"><div class="panel-title">WAYPOINTS</div><pre>`;
+  for (let i = 0; i < G.waypoints.length; i++) {
+    const w = G.waypoints[i];
+    const active = i === 0;
+    html += `<span class="${active?'bright':'dim'}">${active?'▸':' '} ${w.id}</span> <span class="normal">[${w.coord}]</span> <span class="dim">${w.note}</span>\n`;
+  }
+  html += `\n<span class="dim">Routes calculated from\nexplored paths only.</span>`;
+  html += `</pre></div>`;
+
+  html += `<div class="panel" style="border-right:none"><div class="panel-title">FLEET POSITIONS</div><pre>`;
+  for (let i = 0; i < G.fleets.length; i++) {
+    const f = G.fleets[i];
+    const isActive = i === G.activeFleet;
+    const sym = isActive ? '◆' : (f.status === 'DOCKED' ? '⌂' : '◇');
+    html += `<span class="${isActive?'glow':'dim'}">${sym}</span> <span class="${isActive?'bright':'dim'}">${f.name}</span> <span class="normal">[${f.sector}]</span>\n`;
+  }
+  html += `</pre></div>`;
+
+  el.innerHTML = html;
+}
+
+// ══════════════════════════════════════════
+// VIEW SWITCHING
+// ══════════════════════════════════════════
+let currentView = 'cc';
+
+function switchView(id) {
+  currentView = id;
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('view-' + id).classList.add('active');
+  document.querySelector(`.tab[data-view="${id}"]`).classList.add('active');
+
+  if (id === 'ws') requestAnimationFrame(renderWindshield);
+  if (id === 'sm') requestAnimationFrame(renderStarMap);
+}
+
+function setMapZoom(z) {
+  mapZoom = z;
+  document.querySelectorAll('.zoom-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.zoom-btn[data-z="${z}"]`).classList.add('active');
+  renderStarMap();
+}
+
+// ══════════════════════════════════════════
+// TICK SIMULATION
+// ══════════════════════════════════════════
+function simulateTick() {
+  G.tick++;
+  G.clockSec++;
+
+  // Update resources
+  for (const key of ['metal','crystal','deut']) {
+    const r = G.resources[key];
+    r.amount = Math.min(r.cap, r.amount + r.rate);
+  }
+
+  // Slowly advance build progress
+  if (G.buildQueue[0] && G.buildQueue[0].active) {
+    G.buildQueue[0].pct = Math.min(100, G.buildQueue[0].pct + 0.05);
+  }
+  if (G.shipyard[0] && G.shipyard[0].active) {
+    G.shipyard[0].pct = Math.min(100, G.shipyard[0].pct + 0.15);
+  }
+  if (G.research) {
+    G.research.pct = Math.min(100, G.research.pct + 0.02);
+  }
+
+  // Fleet cargo jitter
+  G.fleets[0].cargo = Math.min(100, G.fleets[0].cargo + (Math.random() > 0.7 ? 1 : 0));
+
+  // Random events
+  if (G.tick % 15 === 0 && G.events.length < 20) {
+    const msgs = [
+      { msg: `Fleet Alpha harvested ${Math.floor(10+Math.random()*30)} metal from [14,-6]`, lvl: 'normal' },
+      { msg: 'Sensor sweep complete — no new contacts', lvl: 'dim' },
+      { msg: 'MLM patrol movement detected in adjacent sector', lvl: 'bright' },
+      { msg: `Deuterium synthesizer output: +${Math.floor(5+Math.random()*10)} units`, lvl: 'dim' },
+    ];
+    const m = msgs[Math.floor(Math.random() * msgs.length)];
+    G.events.unshift({ tick: G.tick, ...m });
+    if (G.events.length > 12) G.events.pop();
+  }
+
+  // Update display
+  document.getElementById('tick-num').textContent = G.tick;
+  const h = Math.floor(G.clockSec / 3600);
+  const m = Math.floor((G.clockSec % 3600) / 60);
+  const s = G.clockSec % 60;
+  document.getElementById('game-clock').textContent =
+    `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+
+  if (currentView === 'cc') renderCC();
+}
+
+// ══════════════════════════════════════════
+// INPUT HANDLING
+// ══════════════════════════════════════════
+function handleCommand(cmd) {
+  cmd = cmd.trim().toLowerCase();
+  if (!cmd) return;
+
+  // View switching
+  if (cmd === '1' || cmd === 'cc') { switchView('cc'); return; }
+  if (cmd === '2' || cmd === 'ws') { switchView('ws'); return; }
+  if (cmd === '3' || cmd === 'map' || cmd === 'sm') { switchView('sm'); return; }
+
+  // Simulated command responses
+  const responses = {
+    'help': 'Commands: [1-3]view  [h]arvest  [a]ttack  [b]uild  [r]esearch  [f]leet  [p]olicy  help',
+    'harvest': 'Fleet Alpha: harvesting initiated in sector [14,-6]',
+    'h': 'Fleet Alpha: harvesting initiated in sector [14,-6]',
+    'attack': 'No hostile targets in current sector. Use windshield view for combat.',
+    'a': 'No hostile targets in current sector.',
+    'build': 'Build queue: Crystal Mine Lv.5 (62%), Fuel Depot Lv.3, Sensor Array Lv.2',
+    'b': 'Build queue: Crystal Mine Lv.5 (62%), Fuel Depot Lv.3, Sensor Array Lv.2',
+    'fleet': 'Active fleet: Alpha [14,-6] HARVESTING │ Beta [3,-1] EN ROUTE │ Gamma DOCKED',
+    'f': 'Active fleet: Alpha [14,-6] HARVESTING │ Beta [3,-1] EN ROUTE │ Gamma DOCKED',
+    'recall': 'Emergency recall initiated! Fleet Alpha jumping to homeworld...',
+    'r': 'Research: Fuel Efficiency II — 24% complete, 8/10 fragments',
+    'research': 'Research: Fuel Efficiency II — 24% complete, 8/10 fragments',
+    'policy': 'Policy table: 4 rules active. Use "policy edit" to modify.',
+    'p': 'Policy table: 4 rules active. Use "policy edit" to modify.',
+    'status': `Tick ${G.tick} │ Metal ${G.resources.metal.amount} │ Crystal ${G.resources.crystal.amount} │ Deut ${G.resources.deut.amount}`,
+  };
+
+  const response = responses[cmd] || `Unknown command: "${cmd}". Type "help" for commands.`;
+  G.events.unshift({ tick: G.tick, msg: `> ${cmd}`, lvl: 'full' });
+  G.events.unshift({ tick: G.tick, msg: response, lvl: 'normal' });
+  if (G.events.length > 12) { G.events.pop(); G.events.pop(); }
+
+  if (currentView === 'cc') renderCC();
+}
+
+// ══════════════════════════════════════════
+// KEYBOARD
+// ══════════════════════════════════════════
+document.addEventListener('keydown', (e) => {
+  const input = document.getElementById('cmd-input');
+
+  // Number keys for view switching (when not focused on input)
+  if (document.activeElement !== input) {
+    if (e.key === '1') { switchView('cc'); return; }
+    if (e.key === '2') { switchView('ws'); return; }
+    if (e.key === '3') { switchView('sm'); return; }
+    if (e.key === 'Escape') { switchView('cc'); return; }
+
+    // Star map navigation
+    if (currentView === 'sm') {
+      if (e.key === 'ArrowLeft') { G.mapOffset.x--; renderStarMap(); return; }
+      if (e.key === 'ArrowRight') { G.mapOffset.x++; renderStarMap(); return; }
+      if (e.key === 'ArrowUp') { G.mapOffset.y--; renderStarMap(); return; }
+      if (e.key === 'ArrowDown') { G.mapOffset.y++; renderStarMap(); return; }
+      if (e.key === '+' || e.key === '=') {
+        const zooms = ['region','sector','close'];
+        const ci = zooms.indexOf(mapZoom);
+        if (ci < zooms.length - 1) setMapZoom(zooms[ci+1]);
+        return;
+      }
+      if (e.key === '-') {
+        const zooms = ['region','sector','close'];
+        const ci = zooms.indexOf(mapZoom);
+        if (ci > 0) setMapZoom(zooms[ci-1]);
+        return;
+      }
+      if (e.key === 'Home') { G.mapOffset = {x:0,y:0}; renderStarMap(); return; }
+    }
+
+    // Windshield movement
+    if (currentView === 'ws') {
+      const dirMap = {'1':0,'2':1,'3':2,'4':3,'5':4,'6':5};
+      if (dirMap[e.key] !== undefined) {
+        const di = dirMap[e.key];
+        const f = G.fleets[G.activeFleet];
+        const [dq, dr] = HEX_DIRS[di];
+        const nq = f.sector[0]+dq, nr = f.sector[1]+dr;
+        if (getEdge(f.sector[0], f.sector[1], nq, nr)) {
+          f.sector = [nq, nr];
+          G.cursorHex = [nq, nr];
+          G.events.unshift({tick:G.tick, msg:`Fleet ${f.name} moved to [${nq},${nr}]`, lvl:'normal'});
+          renderWindshield();
+        }
+        return;
+      }
+    }
+
+    // Focus input on letter keys
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      input.focus();
+    }
+  }
+
+  // Enter to submit command
+  if (e.key === 'Enter' && document.activeElement === input) {
+    handleCommand(input.value);
+    input.value = '';
+  }
+
+  // Escape to unfocus
+  if (e.key === 'Escape' && document.activeElement === input) {
+    input.blur();
+  }
+});
+
+// ══════════════════════════════════════════
+// RESIZE
+// ══════════════════════════════════════════
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (currentView === 'ws') renderWindshield();
+    if (currentView === 'sm') renderStarMap();
+  }, 100);
+});
+
+// ══════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════
+function initApp() {
+  renderCC();
+
+  // Pre-render other views when they become visible
+  const observer = new MutationObserver(() => {
+    if (currentView === 'ws') setTimeout(renderWindshield, 50);
+    if (currentView === 'sm') setTimeout(renderStarMap, 50);
+  });
+  document.querySelectorAll('.view').forEach(v => {
+    observer.observe(v, { attributes: true, attributeFilter: ['class'] });
+  });
+
+  // Tick loop
+  setInterval(simulateTick, 1000);
+}
+
+// Start boot sequence
+runBoot();
+</script>
+</body>
+</html>
