@@ -1252,14 +1252,22 @@ fn classifyHex(state: *ClientState, coord: shared.Hex) HexCell {
         return .{ .symbol = sector.terrain.symbol(), .style = amber_dim };
     }
 
+    // Zone boundary distance for navigation overlay
+    const dist = coord.distFromOrigin();
+
     // Fog of war: adjacent to explored sector
     for (coord.neighbors()) |n| {
         if (state.known_sectors.contains(n.toKey())) {
+            if (dist == 8) return .{ .symbol = "-", .style = amber_dim };
+            if (dist == 20) return .{ .symbol = "~", .style = amber_dim };
             return .{ .symbol = ".", .style = amber_faint };
         }
     }
 
-    // Completely unknown
+    // Completely unknown - zone boundaries still visible as navigation aid
+    if (dist == 8) return .{ .symbol = "-", .style = amber_faint };
+    if (dist == 20) return .{ .symbol = "~", .style = amber_faint };
+
     return .{ .symbol = " ", .style = amber_faint };
 }
 
@@ -1271,7 +1279,7 @@ fn renderMapLegend(state: *ClientState, frame: *Frame, area: Rect) void {
         .sector => "SECTOR",
         .region => "REGION",
     };
-    const text = std.fmt.bufPrint(&buf, " [{d},{d}] Zoom:{s} | @=You H=Home !=Hostile .=Fog | [Arrows]Scroll [z/x]Zoom [c]Center [Tab]Fleet", .{
+    const text = std.fmt.bufPrint(&buf, " [{d},{d}] Zoom:{s} | @=You H=Home !=Hostile -=Ring ~=Wander .=Fog | [Arrows]Scroll [z/x]Zoom [c]Center [Tab]Fleet", .{
         center.q, center.r, zoom_label,
     }) catch " STAR MAP";
     frame.render(Paragraph{ .text = text, .style = amber_dim }, area);
