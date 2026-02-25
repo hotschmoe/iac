@@ -950,14 +950,10 @@ pub const GameEngine = struct {
             const candidate = Hex{ .q = q, .r = r };
             if (candidate.distFromOrigin() < min or candidate.distFromOrigin() > max) continue;
 
-            var too_close = false;
             var player_iter = self.players.iterator();
-            while (player_iter.next()) |entry| {
-                if (Hex.distance(entry.value_ptr.homeworld, candidate) <= 1) {
-                    too_close = true;
-                    break;
-                }
-            }
+            const too_close = while (player_iter.next()) |entry| {
+                if (Hex.distance(entry.value_ptr.homeworld, candidate) <= 1) break true;
+            } else false;
             if (!too_close) return candidate;
         }
 
@@ -971,16 +967,9 @@ pub const GameEngine = struct {
     }
 
     fn dockFleet(self: *GameEngine, fleet: *Fleet, player: *Player) !void {
-        if (fleet.cargo.metal > 0 or fleet.cargo.crystal > 0 or fleet.cargo.deuterium > 0) {
-            player.resources.metal += fleet.cargo.metal;
-            player.resources.crystal += fleet.cargo.crystal;
-            player.resources.deuterium += fleet.cargo.deuterium;
-            fleet.cargo = .{};
-            try self.dirty_players.put(player.id, {});
-        }
-        if (fleet.fuel < fleet.fuel_max) {
-            fleet.fuel = fleet.fuel_max;
-        }
+        // Deposit cargo
+        player.resources = player.resources.add(fleet.cargo);
+        fleet.cargo = .{};
 
         // Auto-merge: absorb ships from other fleets docked at homeworld
         var merge_ids: [MAX_COMBAT_FLEETS]u64 = undefined;
@@ -993,22 +982,12 @@ pub const GameEngine = struct {
             if (!other.location.eql(player.homeworld)) continue;
             if (other.ship_count == 0) continue;
 
-            // Transfer ships
             for (other.ships[0..other.ship_count]) |ship| {
                 if (fleet.ship_count >= MAX_SHIPS_PER_FLEET) break;
                 fleet.ships[fleet.ship_count] = ship;
                 fleet.ship_count += 1;
             }
-            // Transfer cargo
-            fleet.cargo.metal += other.cargo.metal;
-            fleet.cargo.crystal += other.cargo.crystal;
-            fleet.cargo.deuterium += other.cargo.deuterium;
-            // Deposit merged cargo to player
-            if (fleet.cargo.metal > 0 or fleet.cargo.crystal > 0 or fleet.cargo.deuterium > 0) {
-                player.resources = player.resources.add(fleet.cargo);
-                fleet.cargo = .{};
-                try self.dirty_players.put(player.id, {});
-            }
+            player.resources = player.resources.add(other.cargo);
 
             if (merge_count < merge_ids.len) {
                 merge_ids[merge_count] = other.id;
@@ -1016,16 +995,15 @@ pub const GameEngine = struct {
             }
         }
 
-        // Mark merged fleets for deletion
         for (merge_ids[0..merge_count]) |mid| {
             _ = self.fleets.remove(mid);
             try self.deleted_fleet_ids.put(mid, {});
         }
 
-        // Recalculate fuel max after merge
         fleet.fuel_max = fleetFuelMax(fleet, player);
         fleet.fuel = fleet.fuel_max;
 
+        try self.dirty_players.put(player.id, {});
         try self.dirty_fleets.put(fleet.id, {});
     }
 
@@ -1145,10 +1123,7 @@ pub const GameEngine = struct {
             } },
         });
 
-        // Enroll other idle player fleets at this sector
-        if (self.active_combats.getPtr(combat_id)) |c| {
-            try self.enrollAllPlayerFleetsInSectorCombat(c);
-        }
+        try self.enrollAllPlayerFleetsInSectorCombat(self.active_combats.getPtr(combat_id).?);
     }
 
     fn enrollAllPlayerFleetsInSectorCombat(self: *GameEngine, active_combat: *Combat) !void {
@@ -1199,15 +1174,9 @@ pub const GameEngine = struct {
     }
 
     fn dropSalvage(self: *GameEngine, sector: Hex, fleet_value: Resources) !void {
-        const salvage = Resources{
-            .metal = fleet_value.metal * shared.constants.SALVAGE_FRACTION,
-            .crystal = fleet_value.crystal * shared.constants.SALVAGE_FRACTION,
-            .deuterium = fleet_value.deuterium * shared.constants.SALVAGE_FRACTION,
-        };
-
         const key = sector.toKey();
         const ov = try self.ensureOverride(key);
-        ov.salvage = salvage;
+        ov.salvage = fleet_value.scale(shared.constants.SALVAGE_FRACTION);
         ov.salvage_despawn_tick = self.current_tick + shared.constants.SALVAGE_DESPAWN_TICKS;
     }
 

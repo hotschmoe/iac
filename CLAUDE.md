@@ -164,9 +164,9 @@ Server (Zig)          Clients
 - **NPCs**: Morning Light Mountain (MLM) faction, scales with distance from center
 - **Auto-action policies**: Condition/action rule tables evaluated server-side each tick
 
-### Current Milestone: M1 (Core Loop)
+### Current Milestone: M4 (Deep Systems)
 
-Single player, client-server via WebSocket. One ship (scout). Hex grid with procgen and edge pruning. Movement, NPC combat, resource harvesting. Amber TUI + JSON CLI interface. SQLite persistence.
+M1-M3 complete. M4: Loot system (salvage, components, data fragments), Morning Light Mountain faction scaling, auto-action policy system, LLM agent reference implementation.
 
 ### Dependencies
 

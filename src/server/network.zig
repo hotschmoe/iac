@@ -93,20 +93,12 @@ pub const Network = struct {
             const alloc = arena.allocator();
 
             const fleet_updates = try collectPlayerFleets(alloc, eng, player_id);
-
-            var sector_list = std.ArrayList(protocol.SectorState).empty;
-            var sector_keys = std.AutoHashMap(u32, void).init(alloc);
-            for (fleet_updates) |fu| {
-                const key = fu.location.toKey();
-                if (!sector_keys.contains(key)) {
-                    try sector_keys.put(key, {});
-                    try sector_list.append(alloc, try buildSectorState(alloc, eng, fu.location, player_id));
-                }
-            }
+            const player_data = eng.players.get(player_id);
+            const sector_updates = try collectVisibleSectors(alloc, eng, fleet_updates, player_data, player_id);
 
             var player_update: ?protocol.PlayerState = null;
             var hw_update: ?protocol.HomeworldState = null;
-            if (eng.players.get(player_id)) |p| {
+            if (player_data) |p| {
                 player_update = .{
                     .id = p.id,
                     .name = p.name,
@@ -114,18 +106,6 @@ pub const Network = struct {
                     .homeworld = p.homeworld,
                 };
                 hw_update = try buildHomeworldState(alloc, eng, &p);
-
-                const range = scaling.sensorRange(p.buildings.sensor_array);
-                if (range > 0) {
-                    const revealed = try eng.getSensorRevealedCoords(p.homeworld, range, alloc);
-                    for (revealed) |coord| {
-                        const key = coord.toKey();
-                        if (!sector_keys.contains(key)) {
-                            try sector_keys.put(key, {});
-                            try sector_list.append(alloc, try buildSectorState(alloc, eng, coord, player_id));
-                        }
-                    }
-                }
             }
 
             var player_events = std.ArrayList(protocol.GameEvent).empty;
@@ -140,7 +120,7 @@ pub const Network = struct {
                     .tick = eng.current_tick,
                     .player = player_update,
                     .fleet_updates = if (fleet_updates.len > 0) fleet_updates else null,
-                    .sector_updates = if (sector_list.items.len > 0) sector_list.items else null,
+                    .sector_updates = if (sector_updates.len > 0) sector_updates else null,
                     .homeworld_update = hw_update,
                     .events = if (player_events.items.len > 0) player_events.items else null,
                 },
@@ -306,32 +286,10 @@ pub const Network = struct {
         const alloc = arena.allocator();
 
         const fleet_states = try collectPlayerFleets(alloc, self.engine, player_id);
-
-        var known_sectors = std.ArrayList(protocol.SectorState).empty;
-        var known_keys = std.AutoHashMap(u32, void).init(alloc);
-        for (fleet_states) |fs| {
-            const key = fs.location.toKey();
-            if (!known_keys.contains(key)) {
-                try known_keys.put(key, {});
-                try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, fs.location, player_id));
-            }
-        }
-
-        const range = scaling.sensorRange(player.buildings.sensor_array);
-        if (range > 0) {
-            const revealed = try self.engine.getSensorRevealedCoords(player.homeworld, range, alloc);
-            for (revealed) |coord| {
-                const key = coord.toKey();
-                if (!known_keys.contains(key)) {
-                    try known_keys.put(key, {});
-                    try known_sectors.append(alloc, try buildSectorState(alloc, self.engine, coord, player_id));
-                }
-            }
-        }
-
+        const known_sectors = try collectVisibleSectors(alloc, self.engine, fleet_states, player, player_id);
         const hw_state = try buildHomeworldState(alloc, self.engine, &player);
 
-        const msg = protocol.ServerMessage{
+        try self.sendToSession(session, .{
             .full_state = .{
                 .tick = self.engine.current_tick,
                 .player = .{
@@ -342,11 +300,9 @@ pub const Network = struct {
                 },
                 .fleets = fleet_states,
                 .homeworld = hw_state,
-                .known_sectors = known_sectors.items,
+                .known_sectors = known_sectors,
             },
-        };
-
-        try self.sendToSession(session, msg);
+        });
     }
 
     fn sendToSession(self: *Network, session: *const ClientSession, msg: protocol.ServerMessage) !void {
@@ -366,6 +322,41 @@ pub const Network = struct {
                 .message = message,
             },
         });
+    }
+
+    fn collectVisibleSectors(
+        alloc: std.mem.Allocator,
+        eng: *GameEngine,
+        fleet_states: []const protocol.FleetState,
+        player: ?engine_mod.Player,
+        player_id: u64,
+    ) ![]const protocol.SectorState {
+        var sector_list = std.ArrayList(protocol.SectorState).empty;
+        var sector_keys = std.AutoHashMap(u32, void).init(alloc);
+
+        for (fleet_states) |fs| {
+            const key = fs.location.toKey();
+            if (!sector_keys.contains(key)) {
+                try sector_keys.put(key, {});
+                try sector_list.append(alloc, try buildSectorState(alloc, eng, fs.location, player_id));
+            }
+        }
+
+        if (player) |p| {
+            const range = scaling.sensorRange(p.buildings.sensor_array);
+            if (range > 0) {
+                const revealed = try eng.getSensorRevealedCoords(p.homeworld, range, alloc);
+                for (revealed) |coord| {
+                    const key = coord.toKey();
+                    if (!sector_keys.contains(key)) {
+                        try sector_keys.put(key, {});
+                        try sector_list.append(alloc, try buildSectorState(alloc, eng, coord, player_id));
+                    }
+                }
+            }
+        }
+
+        return sector_list.items;
     }
 
     fn collectPlayerFleets(alloc: std.mem.Allocator, eng: *GameEngine, player_id: u64) ![]const protocol.FleetState {
@@ -450,7 +441,6 @@ pub const Network = struct {
             }
         }
 
-        // Build player_fleets list (other players' fleets at this sector)
         var player_fleet_list = std.ArrayList(protocol.FleetBrief).empty;
         var fleet_iter = eng.fleets.iterator();
         while (fleet_iter.next()) |f_entry| {
@@ -589,11 +579,7 @@ pub const Network = struct {
             .ship_built => |e| if (e.player_id) |pid| pid == player_id else true,
             .combat_started => |e| isOwnFleet(eng, e.player_fleet_id, player_id) or playerHasFleetAtSector(eng, player_id, e.sector),
             .combat_ended => |e| playerHasFleetAtSector(eng, player_id, e.sector),
-            .combat_round => |e| blk: {
-                // Relevant if attacker or target belongs to player's fleet
-                _ = e;
-                break :blk true; // Combat rounds are high-volume; filter by sector presence instead
-            },
+            .combat_round => true,
             .ship_destroyed => |e| blk: {
                 if (!e.is_npc and isOwnFleet(eng, e.owner_fleet_id, player_id)) break :blk true;
                 // Also visible to anyone with a fleet in the sector (derive from fleet location)
@@ -602,13 +588,7 @@ pub const Network = struct {
                 }
                 break :blk false;
             },
-            .fleet_destroyed => |e| blk: {
-                if (!e.is_npc and isOwnFleet(eng, e.fleet_id, player_id)) break :blk true;
-                // NPC fleet destroyed: visible to anyone with fleet in that sector
-                // We don't have sector on this event, so show NPC destructions to all for now
-                if (e.is_npc) break :blk true;
-                break :blk false;
-            },
+            .fleet_destroyed => |e| e.is_npc or isOwnFleet(eng, e.fleet_id, player_id),
             .alert => true,
         };
     }

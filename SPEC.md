@@ -1,7 +1,7 @@
 # In Amber Clad — Technical Specification
 
-**Version:** 0.3.0
-**Status:** M2 complete. M3 in progress -- multiplayer (concurrent players, shared state, co-op combat)
+**Version:** 0.4.0
+**Status:** M3 complete. Multiplayer: concurrent players, homeworld separation, fleet cap, co-op combat, event visibility
 
 ---
 

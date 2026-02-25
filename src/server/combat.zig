@@ -36,13 +36,12 @@ pub fn resolveCombatRound(
 
     var events: std.ArrayList(GameEvent) = .empty;
 
-    // Build indirection arrays for cross-fleet targeting
     var npc_targets: std.ArrayList(ShipRef) = .empty;
     defer npc_targets.deinit(allocator);
     for (npc_fleets) |npc| {
         for (npc.ships[0..npc.ship_count]) |*ship| {
             if (ship.hull > 0) {
-                try npc_targets.append(allocator, .{ .ptr = @constCast(ship), .fleet_id = npc.id, .is_npc = true });
+                try npc_targets.append(allocator, .{ .ptr = ship, .fleet_id = npc.id, .is_npc = true });
             }
         }
     }
@@ -52,72 +51,39 @@ pub fn resolveCombatRound(
     for (player_fleets) |pf| {
         for (pf.ships[0..pf.ship_count]) |*ship| {
             if (ship.hull > 0) {
-                try player_targets.append(allocator, .{ .ptr = @constCast(ship), .fleet_id = pf.id, .is_npc = false });
+                try player_targets.append(allocator, .{ .ptr = ship, .fleet_id = pf.id, .is_npc = false });
             }
         }
     }
 
-    // Each allied ship fires at NPC pool
     for (player_fleets) |pf| {
         for (pf.ships[0..pf.ship_count]) |*attacker| {
             if (attacker.hull <= 0) continue;
-            try fireShip(@constCast(attacker), npc_targets.items, tick, random, &events, allocator);
+            try fireShip(attacker, npc_targets.items, tick, random, &events, allocator);
         }
     }
 
-    // Each NPC ship fires at allied pool
     for (npc_fleets) |npc| {
         for (npc.ships[0..npc.ship_count]) |*attacker| {
             if (attacker.hull <= 0) continue;
-            try fireShip(@constCast(attacker), player_targets.items, tick, random, &events, allocator);
+            try fireShip(attacker, player_targets.items, tick, random, &events, allocator);
         }
     }
 
-    // Compact destroyed ships per fleet
     for (player_fleets) |pf| {
-        const fleet = @constCast(pf);
-        var write_idx: usize = 0;
-        for (fleet.ships[0..fleet.ship_count]) |ship| {
-            if (ship.hull > 0) {
-                fleet.ships[write_idx] = ship;
-                write_idx += 1;
-            }
-        }
-        if (write_idx != fleet.ship_count) {
-            fleet.ship_count = write_idx;
-        }
+        pf.ship_count = compactDestroyedShips(pf.ships[0..pf.ship_count]);
     }
-
     for (npc_fleets) |npc| {
-        const fleet = @constCast(npc);
-        var write_idx: usize = 0;
-        for (fleet.ships[0..fleet.ship_count]) |ship| {
-            if (ship.hull > 0) {
-                fleet.ships[write_idx] = ship;
-                write_idx += 1;
-            }
-        }
-        if (write_idx != fleet.ship_count) {
-            fleet.ship_count = @intCast(write_idx);
-        }
+        npc.ship_count = @intCast(compactDestroyedShips(npc.ships[0..npc.ship_count]));
     }
 
-    // Check victory conditions
-    var any_player_alive = false;
-    for (player_fleets) |pf| {
-        if (pf.ship_count > 0) {
-            any_player_alive = true;
-            break;
-        }
-    }
+    const any_player_alive = for (player_fleets) |pf| {
+        if (pf.ship_count > 0) break true;
+    } else false;
 
-    var any_npc_alive = false;
-    for (npc_fleets) |npc| {
-        if (npc.ship_count > 0) {
-            any_npc_alive = true;
-            break;
-        }
-    }
+    const any_npc_alive = for (npc_fleets) |npc| {
+        if (npc.ship_count > 0) break true;
+    } else false;
 
     const concluded = !any_player_alive or !any_npc_alive;
 
@@ -247,4 +213,15 @@ fn checkRapidFire(attacker_class: ShipClass, target_class: ShipClass, rng: std.R
     const rf = attacker_class.rapidFireVs(target_class);
     if (rf == 0) return false;
     return rng.float(f32) < (1.0 - 1.0 / @as(f32, @floatFromInt(rf)));
+}
+
+fn compactDestroyedShips(ships: []Ship) usize {
+    var write_idx: usize = 0;
+    for (ships) |ship| {
+        if (ship.hull > 0) {
+            ships[write_idx] = ship;
+            write_idx += 1;
+        }
+    }
+    return write_idx;
 }
