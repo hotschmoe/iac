@@ -209,6 +209,7 @@ pub const FleetBrief = struct {
 pub const HomeworldState = struct {
     location: Hex,
     buildings: []const BuildingState,
+    research: []const ResearchState,
     build_queue: ?BuildQueueItem = null,
     shipyard_queue: ?ShipyardQueueItem = null,
     research_active: ?ResearchItem = null,
@@ -217,6 +218,11 @@ pub const HomeworldState = struct {
 
 pub const BuildingState = struct {
     building_type: BuildingType,
+    level: u8,
+};
+
+pub const ResearchState = struct {
+    tech: ResearchType,
     level: u8,
 };
 

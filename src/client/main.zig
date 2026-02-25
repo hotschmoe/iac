@@ -45,6 +45,18 @@ fn update(state: *AppState, event: zithril.Event) zithril.Action {
                 .toggle_keybinds => {
                     state.client_state.show_keybinds = !state.client_state.show_keybinds;
                     state.client_state.show_sector_info = false;
+                    state.client_state.show_tech_tree = false;
+                },
+                .homeworld_nav => |nav| {
+                    if (state.client_state.homeworldNav(nav)) |cmd| {
+                        state.conn.sendCommand(cmd) catch |err| {
+                            log.warn("Send failed: {any}", .{err});
+                        };
+                    }
+                },
+                .toggle_tech_tree => {
+                    state.client_state.show_tech_tree = !state.client_state.show_tech_tree;
+                    state.client_state.show_keybinds = false;
                 },
                 .none => {},
             }

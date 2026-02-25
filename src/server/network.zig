@@ -429,6 +429,14 @@ pub const Network = struct {
             };
         }
 
+        // Build research states
+        const rt_fields = @typeInfo(scaling.ResearchType).@"enum".fields;
+        var research = try alloc.alloc(protocol.ResearchState, rt_fields.len);
+        inline for (rt_fields, 0..) |_, i| {
+            const rt: scaling.ResearchType = @enumFromInt(i);
+            research[i] = .{ .tech = rt, .level = player.research.get(rt) };
+        }
+
         // Convert queue entries to wire types
         const build_queue: ?protocol.BuildQueueItem = if (player.building_queue) |q| .{
             .building_type = q.building,
@@ -475,6 +483,7 @@ pub const Network = struct {
         return .{
             .location = player.homeworld,
             .buildings = buildings,
+            .research = research,
             .build_queue = build_queue,
             .shipyard_queue = shipyard_queue,
             .research_active = research_active,

@@ -39,6 +39,8 @@ pub fn view(state: *ClientState, frame: *Frame) void {
 
     if (state.show_keybinds) {
         renderKeybinds(frame, rows.get(1));
+    } else if (state.show_tech_tree and state.current_view == .homeworld) {
+        renderTechTree(state, frame, rows.get(1));
     } else switch (state.current_view) {
         .command_center => renderCommandCenter(state, frame, rows.get(1)),
         .windshield => renderWindshield(state, frame, rows.get(1)),
@@ -73,11 +75,13 @@ fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
 // -- Footer -----------------------------------------------------------------
 
 fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
-    const text: []const u8 = switch (state.current_view) {
+    const text: []const u8 = if (state.show_tech_tree and state.current_view == .homeworld)
+        " TECH TREE | [t] Close  [?] Keys"
+    else switch (state.current_view) {
         .command_center => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
         .windshield => " WINDSHIELD | [1-6] Move  [i] Info  [b] Base  [?] Keys",
         .star_map => " STAR MAP | [Arrows] Scroll  [z/x] Zoom  [b] Base  [?] Keys",
-        .homeworld => " HOMEWORLD | [1-8] Build  [SCFRH] Ship  [x/X/z] Cancel  [?] Keys",
+        .homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [x/X/z] Cancel  [t] Tree  [?] Keys",
     };
     frame.render(Paragraph{
         .text = text,
@@ -429,9 +433,11 @@ fn renderKeybinds(frame: *Frame, area: Rect) void {
         "\n" ++
         " HOMEWORLD\n" ++
         " ─────────────────────────────\n" ++
-        " 1-8       Upgrade building\n" ++
-        " S/C/F/R/H Build ship (class)\n" ++
+        " Tab       Cycle panel\n" ++
+        " Arrows    Navigate cards\n" ++
+        " Enter     Build/Research\n" ++
         " x/X/z     Cancel bld/ship/res\n" ++
+        " t         Tech tree\n" ++
         "\n" ++
         " STAR MAP\n" ++
         " ─────────────────────────────\n" ++
@@ -711,152 +717,275 @@ fn renderEventLog(state: *ClientState, frame: *Frame, area: Rect, title: []const
 // -- Homeworld View ---------------------------------------------------------
 
 fn renderHomeworld(state: *ClientState, frame: *Frame, area: Rect) void {
-    // Top panels + bottom event log
     const rows = frame.layout(area, .vertical, &.{
-        Constraint.flexible(1),
-        Constraint.len(5),
+        Constraint.len(1), // tab bar
+        Constraint.flexible(1), // card grid
+        Constraint.len(3), // status bar
     });
 
-    // Top: buildings + queues side by side
-    const cols = frame.layout(rows.get(0), .horizontal, &.{
-        Constraint.flexible(1),
-        Constraint.flexible(1),
-    });
-
-    renderBuildingPanel(state, frame, cols.get(0));
-    renderQueuePanel(state, frame, cols.get(1));
-    renderProductionPanel(state, frame, rows.get(1));
+    renderTabBar(state, frame, rows.get(0));
+    renderCardGrid(state, frame, rows.get(1));
+    renderStatusBar(state, frame, rows.get(2));
 }
 
-fn renderBuildingPanel(state: *ClientState, frame: *Frame, area: Rect) void {
+fn renderTabBar(state: *ClientState, frame: *Frame, area: Rect) void {
+    const tabs = [_]struct { tab: State.HomeworldTab, label: []const u8 }{
+        .{ .tab = .buildings, .label = "Buildings" },
+        .{ .tab = .shipyard, .label = "Shipyard" },
+        .{ .tab = .research, .label = "Research" },
+    };
+
+    var buf: [128]u8 = undefined;
+    var pos: usize = 0;
+    for (tabs) |t| {
+        const active = state.homeworld_tab == t.tab;
+        const segment = if (active)
+            std.fmt.bufPrint(buf[pos..], " [*{s}] ", .{t.label})
+        else
+            std.fmt.bufPrint(buf[pos..], " [ {s} ] ", .{t.label});
+        pos += (segment catch break).len;
+    }
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_full }, area);
+}
+
+fn renderCardGrid(state: *ClientState, frame: *Frame, area: Rect) void {
+    const hw = state.homeworld orelse {
+        frame.render(Paragraph{ .text = " No homeworld data", .style = amber_faint }, area);
+        return;
+    };
+
+    const bldg_levels = ClientState.buildingLevelsFromSlice(hw.buildings);
+    const res_levels = ClientState.researchLevelsFromSlice(hw.research);
+
+    const count = state.homeworld_tab.itemCount();
+    const num_rows: u16 = @intCast((count + 1) / 2);
+    const card_height: u16 = if (num_rows > 0 and area.height >= num_rows)
+        area.height / num_rows
+    else
+        6;
+
+    var row_constraints: [6]Constraint = undefined;
+    for (0..num_rows) |i| {
+        row_constraints[i] = Constraint.len(card_height);
+    }
+    const grid_rows = frame.layout(area, .vertical, row_constraints[0..num_rows]);
+
+    for (0..num_rows) |ri| {
+        const cols = frame.layout(grid_rows.get(@intCast(ri)), .horizontal, &.{
+            Constraint.flexible(1),
+            Constraint.flexible(1),
+        });
+
+        const left_idx = ri * 2;
+        const right_idx = ri * 2 + 1;
+
+        renderCard(state, frame, cols.get(0), left_idx, bldg_levels, res_levels);
+        if (right_idx < count) {
+            renderCard(state, frame, cols.get(1), right_idx, bldg_levels, res_levels);
+        }
+    }
+}
+
+fn renderCard(
+    state: *ClientState,
+    frame: *Frame,
+    area: Rect,
+    idx: usize,
+    bldg_levels: scaling.BuildingLevels,
+    res_levels: scaling.ResearchLevels,
+) void {
+    const is_selected = state.homeworld_cursor == idx;
+
+    var title_buf: [32]u8 = undefined;
+    var content_buf: [256]u8 = undefined;
+    var cpos: usize = 0;
+    var locked = false;
+
+    switch (state.homeworld_tab) {
+        .buildings => {
+            if (idx >= scaling.BuildingType.COUNT) return;
+            const bt: scaling.BuildingType = @enumFromInt(idx);
+            const level = bldg_levels.get(bt);
+            const met = scaling.buildingPrerequisitesMet(bt, bldg_levels);
+            locked = !met;
+
+            const title = std.fmt.bufPrint(&title_buf, " {s} ", .{bt.label()}) catch return;
+
+            if (level >= scaling.MAX_BUILDING_LEVEL) {
+                const l = std.fmt.bufPrint(content_buf[cpos..], " MAX (Lv.{d})\n", .{level}) catch return;
+                cpos += l.len;
+            } else {
+                const l = std.fmt.bufPrint(content_buf[cpos..], " Level {d}\n", .{level}) catch return;
+                cpos += l.len;
+            }
+
+            if (scaling.buildingPrerequisites(bt)) |prereq| {
+                const met_str: []const u8 = if (bldg_levels.get(prereq.building) >= prereq.level) "[OK]" else "[--]";
+                const l = std.fmt.bufPrint(content_buf[cpos..], " Need: {s} >={d} {s}\n", .{ prereq.building.label(), prereq.level, met_str }) catch return;
+                cpos += l.len;
+            }
+
+            if (level < scaling.MAX_BUILDING_LEVEL) {
+                const cost = scaling.buildingCost(bt, level + 1);
+                const l = std.fmt.bufPrint(content_buf[cpos..], " {d:.0} Fe  {d:.0} Cr", .{ cost.metal, cost.crystal }) catch return;
+                cpos += l.len;
+                if (cost.deuterium > 0) {
+                    const d = std.fmt.bufPrint(content_buf[cpos..], "  {d:.0} De", .{cost.deuterium}) catch return;
+                    cpos += d.len;
+                }
+                const nl = std.fmt.bufPrint(content_buf[cpos..], "\n", .{}) catch return;
+                cpos += nl.len;
+                const time = scaling.buildingTime(bt, level + 1);
+                const tl = std.fmt.bufPrint(content_buf[cpos..], " {d} ticks\n", .{time}) catch return;
+                cpos += tl.len;
+            }
+
+            renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, level >= scaling.MAX_BUILDING_LEVEL);
+        },
+        .shipyard => {
+            const classes = [_]shared.constants.ShipClass{ .scout, .corvette, .frigate, .cruiser, .hauler };
+            if (idx >= classes.len) return;
+            const sc = classes[idx];
+            const unlocked = scaling.shipClassUnlocked(sc, res_levels);
+            locked = !unlocked;
+
+            const title = std.fmt.bufPrint(&title_buf, " {s} ", .{sc.label()}) catch return;
+
+            if (unlocked) {
+                const l = std.fmt.bufPrint(content_buf[cpos..], " READY\n", .{}) catch return;
+                cpos += l.len;
+            } else {
+                const l = std.fmt.bufPrint(content_buf[cpos..], " LOCKED\n", .{}) catch return;
+                cpos += l.len;
+                // Show unlock requirement
+                const req_label: []const u8 = switch (sc) {
+                    .corvette => "Corvette Tech >=1",
+                    .frigate => "Frigate Tech >=1",
+                    .cruiser => "Cruiser Tech >=1",
+                    .hauler => "Hauler Tech >=1",
+                    .scout => "",
+                };
+                if (req_label.len > 0) {
+                    const rl = std.fmt.bufPrint(content_buf[cpos..], " Need: {s}\n", .{req_label}) catch return;
+                    cpos += rl.len;
+                }
+            }
+
+            const cost = sc.buildCost();
+            const cl = std.fmt.bufPrint(content_buf[cpos..], " {d:.0} Fe  {d:.0} Cr", .{ cost.metal, cost.crystal }) catch return;
+            cpos += cl.len;
+            if (cost.deuterium > 0) {
+                const d = std.fmt.bufPrint(content_buf[cpos..], "  {d:.0} De", .{cost.deuterium}) catch return;
+                cpos += d.len;
+            }
+            const nl = std.fmt.bufPrint(content_buf[cpos..], "\n", .{}) catch return;
+            cpos += nl.len;
+
+            const sy_level = bldg_levels.get(.shipyard);
+            const time = scaling.shipBuildTime(sc, sy_level);
+            const tl = std.fmt.bufPrint(content_buf[cpos..], " {d} ticks\n", .{time}) catch return;
+            cpos += tl.len;
+
+            renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, false);
+        },
+        .research => {
+            if (idx >= scaling.ResearchType.COUNT) return;
+            const rt: scaling.ResearchType = @enumFromInt(idx);
+            const level = res_levels.get(rt);
+            const max_level = scaling.researchMaxLevel(rt);
+            const met = scaling.researchPrerequisitesMet(rt, bldg_levels, res_levels);
+            locked = !met;
+            const maxed = level >= max_level;
+
+            const title = std.fmt.bufPrint(&title_buf, " {s} ", .{rt.label()}) catch return;
+
+            if (maxed) {
+                const l = std.fmt.bufPrint(content_buf[cpos..], " Lv.{d}/{d} MAX\n", .{ level, max_level }) catch return;
+                cpos += l.len;
+            } else {
+                const l = std.fmt.bufPrint(content_buf[cpos..], " Lv.{d}/{d}\n", .{ level, max_level }) catch return;
+                cpos += l.len;
+            }
+
+            // Show prereqs
+            const prereqs = scaling.researchPrerequisites(rt);
+            for (prereqs) |maybe_prereq| {
+                const prereq = maybe_prereq orelse continue;
+                switch (prereq.kind) {
+                    .building => |b| {
+                        const met_str: []const u8 = if (bldg_levels.get(b.building) >= b.level) "[OK]" else "[--]";
+                        const l = std.fmt.bufPrint(content_buf[cpos..], " Need: {s} >={d} {s}\n", .{ b.building.label(), b.level, met_str }) catch break;
+                        cpos += l.len;
+                    },
+                    .research => |r| {
+                        const met_str: []const u8 = if (res_levels.get(r.tech) >= r.level) "[OK]" else "[--]";
+                        const l = std.fmt.bufPrint(content_buf[cpos..], " Need: {s} >={d} {s}\n", .{ r.tech.label(), r.level, met_str }) catch break;
+                        cpos += l.len;
+                    },
+                }
+            }
+
+            if (!maxed) {
+                const cost = scaling.researchCost(rt, level + 1);
+                const cl = std.fmt.bufPrint(content_buf[cpos..], " {d:.0} Fe  {d:.0} Cr", .{ cost.metal, cost.crystal }) catch return;
+                cpos += cl.len;
+                if (cost.deuterium > 0) {
+                    const d = std.fmt.bufPrint(content_buf[cpos..], "  {d:.0} De", .{cost.deuterium}) catch return;
+                    cpos += d.len;
+                }
+                const nl = std.fmt.bufPrint(content_buf[cpos..], "\n", .{}) catch return;
+                cpos += nl.len;
+                const time = scaling.researchTime(rt, level + 1);
+                const tl = std.fmt.bufPrint(content_buf[cpos..], " {d} ticks\n", .{time}) catch return;
+                cpos += tl.len;
+            }
+
+            renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, maxed);
+        },
+    }
+}
+
+fn renderCardBox(
+    frame: *Frame,
+    area: Rect,
+    title: []const u8,
+    content: []const u8,
+    is_selected: bool,
+    is_locked: bool,
+    is_maxed: bool,
+) void {
+    const border_style = if (is_selected)
+        amber_full
+    else if (is_locked)
+        amber_faint
+    else if (is_maxed)
+        amber_dim
+    else
+        amber_dim;
+
     const block = Block{
-        .title = " BUILDINGS [1-8] ",
+        .title = title,
         .border = .rounded,
-        .border_style = amber_dim,
+        .border_style = border_style,
     };
     frame.render(block, area);
     const inner = block.inner(area);
 
-    const hw = state.homeworld orelse {
-        frame.render(Paragraph{ .text = " No homeworld data", .style = amber_faint }, inner);
-        return;
-    };
+    const text_style = if (is_selected and !is_locked)
+        amber_bright
+    else if (is_locked)
+        amber_dim
+    else if (is_maxed)
+        amber
+    else
+        amber_bright;
 
-    var buf: [1024]u8 = undefined;
-    var pos: usize = 0;
-
-    for (hw.buildings, 0..) |b, i| {
-        const lvl_str = if (b.level > 0) blk: {
-            var tmp: [8]u8 = undefined;
-            break :blk std.fmt.bufPrint(&tmp, "Lv.{d}", .{b.level}) catch "???";
-        } else "---";
-
-        const line = std.fmt.bufPrint(buf[pos..], " [{d}] {s: <18} {s}\n", .{
-            i + 1,
-            b.building_type.label(),
-            lvl_str,
-        }) catch break;
-        pos += line.len;
-    }
-
-    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
+    frame.render(Paragraph{ .text = content, .style = text_style }, inner);
 }
 
-fn renderQueuePanel(state: *ClientState, frame: *Frame, area: Rect) void {
-    // Split into queues (top) and docked fleet (bottom)
-    const rows = frame.layout(area, .vertical, &.{
-        Constraint.flexible(1),
-        Constraint.len(8),
-    });
-
-    const queue_block = Block{
-        .title = " QUEUES ",
-        .border = .rounded,
-        .border_style = amber_dim,
-    };
-    frame.render(queue_block, rows.get(0));
-    const queue_inner = queue_block.inner(rows.get(0));
-
-    const hw = state.homeworld orelse {
-        frame.render(Paragraph{ .text = " ---", .style = amber_faint }, queue_inner);
-        return;
-    };
-
-    var buf: [512]u8 = undefined;
-    var pos: usize = 0;
-
-    if (hw.build_queue) |q| {
-        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
-        const line = std.fmt.bufPrint(buf[pos..], " Build: {s} Lv{d}\n   {d}/{d} ticks [x]\n", .{
-            q.building_type.label(), q.target_level, p.elapsed, p.total,
-        }) catch "";
-        pos += line.len;
-    } else {
-        const line = std.fmt.bufPrint(buf[pos..], " Build: idle\n", .{}) catch "";
-        pos += line.len;
-    }
-
-    if (hw.shipyard_queue) |q| {
-        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
-        const line = std.fmt.bufPrint(buf[pos..], "\n Ship: {s}\n   {d}/{d} built  {d}/{d}t [X]\n", .{
-            q.ship_class.label(), q.built, q.count, p.elapsed, p.total,
-        }) catch "";
-        pos += line.len;
-    } else {
-        const line = std.fmt.bufPrint(buf[pos..], "\n Ship: idle\n", .{}) catch "";
-        pos += line.len;
-    }
-
-    if (hw.research_active) |q| {
-        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
-        const line = std.fmt.bufPrint(buf[pos..], "\n Research: {s} {d}\n   {d}/{d} ticks [z]\n", .{
-            q.tech.label(), q.target_level, p.elapsed, p.total,
-        }) catch "";
-        pos += line.len;
-    } else {
-        const line = std.fmt.bufPrint(buf[pos..], "\n Research: idle\n", .{}) catch "";
-        pos += line.len;
-    }
-
-    frame.render(Paragraph{ .text = buf[0..pos], .style = amber }, queue_inner);
-
-    // Docked fleet panel
-    const dock_block = Block{
-        .title = " DOCKED FLEET ",
-        .border = .rounded,
-        .border_style = amber_dim,
-    };
-    frame.render(dock_block, rows.get(1));
-    const dock_inner = dock_block.inner(rows.get(1));
-
-    if (hw.docked_ships.len == 0) {
-        frame.render(Paragraph{ .text = " No ships docked", .style = amber_faint }, dock_inner);
-        return;
-    }
-
-    // Count ships by class
-    var counts: [5]u16 = .{ 0, 0, 0, 0, 0 };
-    for (hw.docked_ships) |ship| {
-        const ci = @intFromEnum(ship.class);
-        if (ci < 5) counts[ci] += 1;
-    }
-
-    var dock_buf: [256]u8 = undefined;
-    var dpos: usize = 0;
-    for (counts, 0..) |count, ci| {
-        if (count > 0) {
-            const class: shared.constants.ShipClass = @enumFromInt(ci);
-            const line = std.fmt.bufPrint(dock_buf[dpos..], " {d}x {s}\n", .{ count, class.label() }) catch break;
-            dpos += line.len;
-        }
-    }
-
-    frame.render(Paragraph{ .text = dock_buf[0..dpos], .style = amber_bright }, dock_inner);
-}
-
-fn renderProductionPanel(state: *ClientState, frame: *Frame, area: Rect) void {
+fn renderStatusBar(state: *ClientState, frame: *Frame, area: Rect) void {
     const block = Block{
-        .title = " PRODUCTION / tick ",
+        .title = " STATUS ",
         .border = .rounded,
         .border_style = amber_dim,
     };
@@ -868,27 +997,172 @@ fn renderProductionPanel(state: *ClientState, frame: *Frame, area: Rect) void {
         return;
     };
 
-    // Derive production rates from building levels
-    var metal_lvl: u8 = 0;
-    var crystal_lvl: u8 = 0;
-    var deut_lvl: u8 = 0;
-    for (hw.buildings) |b| {
-        switch (b.building_type) {
-            .metal_mine => metal_lvl = b.level,
-            .crystal_mine => crystal_lvl = b.level,
-            .deuterium_synthesizer => deut_lvl = b.level,
-            else => {},
-        }
+    var buf: [512]u8 = undefined;
+    var pos: usize = 0;
+
+    // Queue line
+    if (hw.build_queue) |q| {
+        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
+        const l = std.fmt.bufPrint(buf[pos..], " Bld: {s} Lv{d} {d}/{d}t [x]", .{
+            q.building_type.label(), q.target_level, p.elapsed, p.total,
+        }) catch "";
+        pos += l.len;
+    } else {
+        const l = std.fmt.bufPrint(buf[pos..], " Bld: idle", .{}) catch "";
+        pos += l.len;
     }
 
-    var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, " Metal  +{d:.2}    Crystal  +{d:.2}    Deut  +{d:.2}", .{
-        scaling.productionPerTick(.metal_mine, metal_lvl),
-        scaling.productionPerTick(.crystal_mine, crystal_lvl),
-        scaling.productionPerTick(.deuterium_synthesizer, deut_lvl),
-    }) catch " ---";
+    if (hw.shipyard_queue) |q| {
+        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
+        const l = std.fmt.bufPrint(buf[pos..], " | Ship: {s} {d}/{d}b {d}/{d}t [X]", .{
+            q.ship_class.label(), q.built, q.count, p.elapsed, p.total,
+        }) catch "";
+        pos += l.len;
+    } else {
+        const l = std.fmt.bufPrint(buf[pos..], " | Ship: idle", .{}) catch "";
+        pos += l.len;
+    }
 
-    frame.render(Paragraph{ .text = text, .style = amber_bright }, inner);
+    if (hw.research_active) |q| {
+        const p = queueProgress(state.tick, q.start_tick, q.end_tick);
+        const l = std.fmt.bufPrint(buf[pos..], " | Res: {s} {d}/{d}t [z]", .{
+            q.tech.label(), p.elapsed, p.total,
+        }) catch "";
+        pos += l.len;
+    } else {
+        const l = std.fmt.bufPrint(buf[pos..], " | Res: idle", .{}) catch "";
+        pos += l.len;
+    }
+
+    // Production line
+    const bldg_levels = ClientState.buildingLevelsFromSlice(hw.buildings);
+    const nl = std.fmt.bufPrint(buf[pos..], "\n +{d:.2} Fe/t  +{d:.2} Cr/t  +{d:.2} De/t", .{
+        scaling.productionPerTick(.metal_mine, bldg_levels.get(.metal_mine)),
+        scaling.productionPerTick(.crystal_mine, bldg_levels.get(.crystal_mine)),
+        scaling.productionPerTick(.deuterium_synthesizer, bldg_levels.get(.deuterium_synthesizer)),
+    }) catch "";
+    pos += nl.len;
+
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
+}
+
+fn renderTechTree(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " TECH TREE ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    const hw = state.homeworld orelse {
+        frame.render(Paragraph{ .text = " No homeworld data", .style = amber_faint }, inner);
+        return;
+    };
+
+    const bldg_levels = ClientState.buildingLevelsFromSlice(hw.buildings);
+    const res_levels = ClientState.researchLevelsFromSlice(hw.research);
+
+    // Two columns: left = buildings+ships, right = research
+    const cols = frame.layout(inner, .horizontal, &.{
+        Constraint.flexible(1),
+        Constraint.flexible(1),
+    });
+
+    // Left column: buildings + ships
+    {
+        var buf: [1536]u8 = undefined;
+        var pos: usize = 0;
+
+        const hdr = std.fmt.bufPrint(buf[pos..], " BUILDINGS\n ─────────────────────────────\n", .{}) catch "";
+        pos += hdr.len;
+
+        const bt_fields = @typeInfo(scaling.BuildingType).@"enum".fields;
+        inline for (bt_fields, 0..) |_, i| {
+            const bt: scaling.BuildingType = @enumFromInt(i);
+            const level = bldg_levels.get(bt);
+            if (level > 0) {
+                const l = std.fmt.bufPrint(buf[pos..], " {s: <20} Lv.{d}\n", .{ bt.label(), level }) catch break;
+                pos += l.len;
+            } else {
+                const l = std.fmt.bufPrint(buf[pos..], " {s: <20} ---\n", .{bt.label()}) catch break;
+                pos += l.len;
+            }
+            if (scaling.buildingPrerequisites(bt)) |prereq| {
+                if (!scaling.buildingPrerequisitesMet(bt, bldg_levels)) {
+                    const met_str: []const u8 = if (bldg_levels.get(prereq.building) >= prereq.level) "[OK]" else "[--]";
+                    const pl = std.fmt.bufPrint(buf[pos..], "   Need: {s} >= {d} {s}\n", .{ prereq.building.label(), prereq.level, met_str }) catch break;
+                    pos += pl.len;
+                }
+            }
+        }
+
+        const ship_hdr = std.fmt.bufPrint(buf[pos..], "\n SHIPS\n ─────────────────────────────\n", .{}) catch "";
+        pos += ship_hdr.len;
+
+        const ship_classes = [_]shared.constants.ShipClass{ .scout, .corvette, .frigate, .cruiser, .hauler };
+        for (ship_classes) |sc| {
+            const unlocked = scaling.shipClassUnlocked(sc, res_levels);
+            const status: []const u8 = if (unlocked) "UNLOCKED" else "LOCKED";
+            const sl = std.fmt.bufPrint(buf[pos..], " {s: <20} {s}\n", .{ sc.label(), status }) catch break;
+            pos += sl.len;
+            if (!unlocked) {
+                const req: []const u8 = switch (sc) {
+                    .corvette => "Corvette Tech >= 1",
+                    .frigate => "Frigate Tech >= 1",
+                    .cruiser => "Cruiser Tech >= 1",
+                    .hauler => "Hauler Tech >= 1",
+                    .scout => "",
+                };
+                if (req.len > 0) {
+                    const rl = std.fmt.bufPrint(buf[pos..], "   Need: {s}\n", .{req}) catch break;
+                    pos += rl.len;
+                }
+            }
+        }
+
+        frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, cols.get(0));
+    }
+
+    // Right column: research
+    {
+        var buf: [1536]u8 = undefined;
+        var pos: usize = 0;
+
+        const hdr = std.fmt.bufPrint(buf[pos..], " RESEARCH\n ─────────────────────────────\n", .{}) catch "";
+        pos += hdr.len;
+
+        const rt_fields = @typeInfo(scaling.ResearchType).@"enum".fields;
+        inline for (rt_fields, 0..) |_, i| {
+            const rt: scaling.ResearchType = @enumFromInt(i);
+            const level = res_levels.get(rt);
+            const max_level = scaling.researchMaxLevel(rt);
+            const rl = std.fmt.bufPrint(buf[pos..], " {s: <20} {d}/{d}\n", .{ rt.label(), level, max_level }) catch break;
+            pos += rl.len;
+
+            const prereqs = scaling.researchPrerequisites(rt);
+            for (prereqs) |maybe_prereq| {
+                const prereq = maybe_prereq orelse continue;
+                switch (prereq.kind) {
+                    .building => |b| {
+                        const met_str: []const u8 = if (bldg_levels.get(b.building) >= b.level) "[OK]" else "[--]";
+                        const pl = std.fmt.bufPrint(buf[pos..], "   Need: {s} >= {d} {s}\n", .{ b.building.label(), b.level, met_str }) catch break;
+                        pos += pl.len;
+                    },
+                    .research => |r| {
+                        const met_str: []const u8 = if (res_levels.get(r.tech) >= r.level) "[OK]" else "[--]";
+                        const pl = std.fmt.bufPrint(buf[pos..], "   Need: {s} >= {d} {s}\n", .{ r.tech.label(), r.level, met_str }) catch break;
+                        pos += pl.len;
+                    },
+                }
+            }
+        }
+
+        const footer = std.fmt.bufPrint(buf[pos..], "\n [t] Close", .{}) catch "";
+        pos += footer.len;
+
+        frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, cols.get(1));
+    }
 }
 
 // -- Star Map ---------------------------------------------------------------

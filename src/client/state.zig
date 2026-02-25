@@ -2,6 +2,47 @@ const std = @import("std");
 const shared = @import("shared");
 
 const Hex = shared.Hex;
+const protocol = shared.protocol;
+const scaling = shared.scaling;
+
+pub const HomeworldTab = enum {
+    buildings,
+    shipyard,
+    research,
+
+    pub fn next(self: HomeworldTab) HomeworldTab {
+        return switch (self) {
+            .buildings => .shipyard,
+            .shipyard => .research,
+            .research => .buildings,
+        };
+    }
+
+    pub fn prev(self: HomeworldTab) HomeworldTab {
+        return switch (self) {
+            .buildings => .research,
+            .shipyard => .buildings,
+            .research => .shipyard,
+        };
+    }
+
+    pub fn itemCount(self: HomeworldTab) usize {
+        return switch (self) {
+            .buildings => scaling.BuildingType.COUNT,
+            .shipyard => 5, // ShipClass count
+            .research => scaling.ResearchType.COUNT,
+        };
+    }
+};
+
+pub const HomeworldNav = enum {
+    cursor_up,
+    cursor_down,
+    cursor_left,
+    cursor_right,
+    tab_next,
+    select,
+};
 
 pub const ClientState = struct {
     allocator: std.mem.Allocator,
@@ -24,7 +65,10 @@ pub const ClientState = struct {
     command_len: usize,
     show_sector_info: bool,
     show_keybinds: bool,
+    show_tech_tree: bool,
     command_mode: bool,
+    homeworld_tab: HomeworldTab,
+    homeworld_cursor: usize,
     status_message: [128]u8,
     status_len: usize,
 
@@ -45,7 +89,10 @@ pub const ClientState = struct {
             .command_len = 0,
             .show_sector_info = false,
             .show_keybinds = false,
+            .show_tech_tree = false,
             .command_mode = false,
+            .homeworld_tab = .buildings,
+            .homeworld_cursor = 0,
             .status_message = undefined,
             .status_len = 0,
         };
@@ -77,6 +124,7 @@ pub const ClientState = struct {
     fn freeOwnedHomeworld(self: *ClientState) void {
         if (self.homeworld) |hw| {
             self.allocator.free(hw.buildings);
+            self.allocator.free(hw.research);
             self.allocator.free(hw.docked_ships);
             self.homeworld = null;
         }
@@ -220,8 +268,78 @@ pub const ClientState = struct {
         self.freeOwnedHomeworld();
         var owned = hw;
         owned.buildings = try self.allocator.dupe(shared.protocol.BuildingState, hw.buildings);
+        owned.research = try self.allocator.dupe(shared.protocol.ResearchState, hw.research);
         owned.docked_ships = try self.allocator.dupe(shared.protocol.ShipState, hw.docked_ships);
         self.homeworld = owned;
+    }
+
+    pub fn buildingLevelsFromSlice(buildings: []const protocol.BuildingState) scaling.BuildingLevels {
+        var levels = scaling.BuildingLevels{};
+        for (buildings) |b| levels.set(b.building_type, b.level);
+        return levels;
+    }
+
+    pub fn researchLevelsFromSlice(research: []const protocol.ResearchState) scaling.ResearchLevels {
+        var levels = scaling.ResearchLevels{};
+        for (research) |r| levels.set(r.tech, r.level);
+        return levels;
+    }
+
+    pub fn homeworldNav(self: *ClientState, nav: HomeworldNav) ?protocol.Command {
+        const hw = self.homeworld orelse return null;
+        const count = self.homeworld_tab.itemCount();
+
+        switch (nav) {
+            .cursor_up => {
+                if (self.homeworld_cursor >= 2)
+                    self.homeworld_cursor -= 2;
+            },
+            .cursor_down => {
+                if (self.homeworld_cursor + 2 < count)
+                    self.homeworld_cursor += 2;
+            },
+            .cursor_left => {
+                if (self.homeworld_cursor > 0)
+                    self.homeworld_cursor -= 1;
+            },
+            .cursor_right => {
+                if (self.homeworld_cursor + 1 < count)
+                    self.homeworld_cursor += 1;
+            },
+            .tab_next => {
+                self.homeworld_tab = self.homeworld_tab.next();
+                self.homeworld_cursor = 0;
+            },
+            .select => {
+                const bldg_levels = buildingLevelsFromSlice(hw.buildings);
+                const res_levels = researchLevelsFromSlice(hw.research);
+
+                switch (self.homeworld_tab) {
+                    .buildings => {
+                        if (self.homeworld_cursor >= scaling.BuildingType.COUNT) return null;
+                        const bt: scaling.BuildingType = @enumFromInt(self.homeworld_cursor);
+                        if (!scaling.buildingPrerequisitesMet(bt, bldg_levels)) return null;
+                        if (bldg_levels.get(bt) >= scaling.MAX_BUILDING_LEVEL) return null;
+                        return .{ .build = .{ .building_type = bt } };
+                    },
+                    .research => {
+                        if (self.homeworld_cursor >= scaling.ResearchType.COUNT) return null;
+                        const rt: scaling.ResearchType = @enumFromInt(self.homeworld_cursor);
+                        if (!scaling.researchPrerequisitesMet(rt, bldg_levels, res_levels)) return null;
+                        if (res_levels.get(rt) >= scaling.researchMaxLevel(rt)) return null;
+                        return .{ .research = .{ .tech = rt } };
+                    },
+                    .shipyard => {
+                        const classes = [_]shared.constants.ShipClass{ .scout, .corvette, .frigate, .cruiser, .hauler };
+                        if (self.homeworld_cursor >= classes.len) return null;
+                        const sc = classes[self.homeworld_cursor];
+                        if (!scaling.shipClassUnlocked(sc, res_levels)) return null;
+                        return .{ .build_ship = .{ .ship_class = sc, .count = 1 } };
+                    },
+                }
+            },
+        }
+        return null;
     }
 
     pub fn setView(self: *ClientState, view: View) void {
