@@ -1,6 +1,6 @@
 .{
     .name = .in_amber_clad,
-    .version = "0.1.0",
+    .version = "0.2.0",
     .fingerprint = 0xd6b0ac27ef0cd7c6,
     .minimum_zig_version = "0.15.0",
 

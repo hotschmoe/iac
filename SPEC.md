@@ -1,7 +1,7 @@
 # In Amber Clad — Technical Specification
 
-**Version:** 0.1.0
-**Status:** M1 in progress -- core systems implemented, integration ongoing
+**Version:** 0.2.0
+**Status:** M1 complete -- core loop shipped, M2 scoping
 
 ---
 
