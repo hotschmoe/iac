@@ -70,6 +70,7 @@ fn renderHeader(state: *ClientState, frame: *Frame, area: Rect) void {
 fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
     const text: []const u8 = switch (state.current_view) {
         .star_map => " [Esc] Cmd Center  [w] Windshield  [Arrows] Scroll  [z/x] Zoom  [c] Center  [Tab] Fleet  [q] Quit",
+        .windshield => " [Esc] Cmd Center  [m] Map  [i] Sector Info  [Tab] Fleet  [q] Quit",
         else => " [Esc] Cmd Center  [w] Windshield  [m] Map  [Tab] Cycle Fleet  [q] Quit",
     };
     frame.render(Paragraph{
@@ -192,7 +193,10 @@ fn renderWindshield(state: *ClientState, frame: *Frame, area: Rect) void {
         Constraint.len(30),
     });
 
-    renderSectorView(state, frame, cols.get(0));
+    if (state.show_sector_info)
+        renderSectorInfo(state, frame, cols.get(0))
+    else
+        renderSectorView(state, frame, cols.get(0));
     renderFleetStatus(state, frame, cols.get(1));
 
     renderWindshieldEvents(state, frame, rows.get(1));
@@ -285,9 +289,109 @@ fn renderSectorView(state: *ClientState, frame: *Frame, area: Rect) void {
 
     const kb_y = inner.y + inner.height -| 1;
     frame.render(Paragraph{
-        .text = " [1-6] Move  [h] Harvest  [r] Recall",
+        .text = " [1-6] Move  [h] Harvest  [r] Recall  [i] Info",
         .style = amber_dim,
     }, Rect.init(inner.x, kb_y, inner.width, 1));
+}
+
+fn renderSectorInfo(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " SECTOR INFO ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    const fleet = state.activeFleet() orelse {
+        frame.render(Paragraph{ .text = " No active fleet", .style = amber_faint }, inner);
+        return;
+    };
+
+    const sector = state.currentSector() orelse {
+        frame.render(Paragraph{ .text = " Sector data pending...", .style = amber_faint }, inner);
+        return;
+    };
+
+    var buf: [1024]u8 = undefined;
+    var pos: usize = 0;
+
+    // Location + terrain
+    const hdr = std.fmt.bufPrint(buf[pos..], " Location: [{d},{d}]\n Terrain:  {s}\n", .{
+        fleet.location.q, fleet.location.r, sector.terrain.label(),
+    }) catch return;
+    pos += hdr.len;
+
+    // Zone
+    const dist = fleet.location.distFromOrigin();
+    const zone_label: []const u8 = if (dist == 0) "Central Hub" else if (dist <= 8) "Inner Ring" else if (dist <= 20) "Outer Ring" else "The Wandering";
+    const zone_line = std.fmt.bufPrint(buf[pos..], " Zone:     {s} (dist {d})\n", .{ zone_label, dist }) catch return;
+    pos += zone_line.len;
+
+    // Homeworld marker
+    if (state.player) |p| {
+        if (p.homeworld.eql(fleet.location)) {
+            const hw = std.fmt.bufPrint(buf[pos..], " ** HOMEWORLD **\n", .{}) catch return;
+            pos += hw.len;
+        }
+    }
+
+    // Separator
+    const sep = std.fmt.bufPrint(buf[pos..], "\n RESOURCES\n ─────────────────────\n", .{}) catch return;
+    pos += sep.len;
+
+    // Resources detail
+    const res = sector.resources;
+    const metal_line = std.fmt.bufPrint(buf[pos..], " Metal:     {s}\n", .{res.metal.label()}) catch return;
+    pos += metal_line.len;
+    const crystal_line = std.fmt.bufPrint(buf[pos..], " Crystal:   {s}\n", .{res.crystal.label()}) catch return;
+    pos += crystal_line.len;
+    const deut_line = std.fmt.bufPrint(buf[pos..], " Deuterium: {s}\n", .{res.deuterium.label()}) catch return;
+    pos += deut_line.len;
+
+    // Salvage
+    if (sector.salvage) |salvage| {
+        const sal_sep = std.fmt.bufPrint(buf[pos..], "\n SALVAGE\n ─────────────────────\n", .{}) catch return;
+        pos += sal_sep.len;
+        const sal = std.fmt.bufPrint(buf[pos..], " Fe {d:.0}  Cr {d:.0}  De {d:.0}\n", .{
+            salvage.metal, salvage.crystal, salvage.deuterium,
+        }) catch return;
+        pos += sal.len;
+    }
+
+    // Hostiles
+    if (sector.hostiles) |hostiles| {
+        const h_sep = std.fmt.bufPrint(buf[pos..], "\n HOSTILES\n ─────────────────────\n", .{}) catch return;
+        pos += h_sep.len;
+        for (hostiles) |fleet_info| {
+            for (fleet_info.ships) |ship| {
+                const h_line = std.fmt.bufPrint(buf[pos..], " {d}x {s} ({s})\n", .{
+                    ship.count, ship.class.label(), @tagName(fleet_info.behavior),
+                }) catch break;
+                pos += h_line.len;
+            }
+        }
+    }
+
+    // Connections
+    const conn_sep = std.fmt.bufPrint(buf[pos..], "\n EXITS\n ─────────────────────\n", .{}) catch return;
+    pos += conn_sep.len;
+    const loc = fleet.location;
+    for (shared.HexDirection.ALL, 0..) |dir, i| {
+        const nbr = loc.neighbor(dir);
+        if (sectorHasConnection(sector, nbr)) {
+            const conn_line = std.fmt.bufPrint(buf[pos..], " [{d}] {s:>2} -> [{d},{d}]\n", .{
+                i + 1, dir.label(), nbr.q, nbr.r,
+            }) catch break;
+            pos += conn_line.len;
+        }
+    }
+
+    // Footer
+    const footer = std.fmt.bufPrint(buf[pos..], "\n [i] Close Info  [1-6] Move  [h] Harvest", .{}) catch return;
+    pos += footer.len;
+
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
 }
 
 fn renderCenterNode(frame: *Frame, inner: Rect, cx: i32, cy: i32, loc: shared.Hex, terrain_label: []const u8) void {
@@ -482,16 +586,37 @@ fn renderFleetStatus(state: *ClientState, frame: *Frame, area: Rect) void {
         std.fmt.bufPrint(&ships_buf, "{d}", .{fleet.ships.len}) catch "?";
 
     var cargo_cap: u16 = 0;
+    var hull_cur: f32 = 0;
+    var hull_max: f32 = 0;
+    var shield_cur: f32 = 0;
+    var shield_max: f32 = 0;
+    var dps: f32 = 0;
     for (fleet.ships) |ship| {
         cargo_cap += ship.class.baseStats().cargo;
+        hull_cur += ship.hull;
+        hull_max += ship.hull_max;
+        shield_cur += ship.shield;
+        shield_max += ship.shield_max;
+        dps += ship.weapon_power;
     }
     const total_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
 
-    var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, " Ships: {s}\n Fuel:  {d:.0}/{d:.0}\n\n Cargo: {d:.0}/{d}\n  Fe {d:.0}\n  Cr {d:.0}\n  De {d:.0}", .{
+    var buf: [512]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf,
+        " Ships: {s}\n Fuel:  {d:.0}/{d:.0}\n" ++
+        "\n Hull:   {d:.0}/{d:.0}" ++
+        "\n Shield: {d:.0}/{d:.0}" ++
+        "\n DPS:    {d:.0}" ++
+        "\n\n Cargo: {d:.0}/{d}\n  Fe {d:.0}\n  Cr {d:.0}\n  De {d:.0}"
+    , .{
         ships_str,
         fleet.fuel,
         fleet.fuel_max,
+        hull_cur,
+        hull_max,
+        shield_cur,
+        shield_max,
+        dps,
         total_cargo,
         cargo_cap,
         fleet.cargo.metal,

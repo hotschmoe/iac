@@ -14,6 +14,7 @@ pub const InputAction = union(enum) {
     zoom: State.ZoomLevel,
     cycle_fleet: void,
     center_fleet: void,
+    toggle_info: void,
 };
 
 pub fn mapKey(key: Key, state: *const ClientState) InputAction {
@@ -47,6 +48,7 @@ fn mapChar(c: u21, state: *const ClientState) InputAction {
 
         'h' => mapHarvest(state),
         'r' => mapRecall(state),
+        'i' => if (state.current_view == .windshield) .{ .toggle_info = {} } else .{ .none = {} },
 
         'z' => mapZoomOut(state),
         'x' => mapZoomIn(state),

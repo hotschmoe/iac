@@ -38,6 +38,9 @@ fn update(state: *AppState, event: zithril.Event) zithril.Action {
                         state.client_state.map_center = fleet.location;
                     }
                 },
+                .toggle_info => {
+                    state.client_state.show_sector_info = !state.client_state.show_sector_info;
+                },
                 .none => {},
             }
         },
