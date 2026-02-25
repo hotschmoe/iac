@@ -2,6 +2,40 @@ import 'package:flutter/material.dart';
 
 import '../theme/amber_theme.dart';
 
+class ProgressRow extends StatelessWidget {
+  final double pct;
+  final String? label;
+
+  const ProgressRow({
+    super.key,
+    required this.pct,
+    this.label = 'Progress',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        if (label != null)
+          SizedBox(
+            width: 60,
+            child: Text(label!, style: Amber.mono(size: 10, color: Amber.dim)),
+          ),
+        Expanded(child: AmberProgressBar(fraction: pct / 100)),
+        const SizedBox(width: 6),
+        SizedBox(
+          width: 30,
+          child: Text(
+            '${pct.toStringAsFixed(0)}%',
+            style: Amber.mono(size: 10, color: Amber.dim),
+            textAlign: TextAlign.right,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class AmberProgressBar extends StatelessWidget {
   final double fraction;
   final double height;

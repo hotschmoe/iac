@@ -27,7 +27,7 @@ class WindshieldPainter extends CustomPainter {
     final nodeR = 28.0;
     final armLen = math.min(size.width, size.height) * 0.3;
 
-    _drawStars(canvas, size);
+    _drawStarsBg(canvas, size);
 
     final dirAngles = [0, 60, 120, 180, 240, 300]
         .map((d) => d * math.pi / 180)
@@ -101,15 +101,15 @@ class WindshieldPainter extends CustomPainter {
 
         // Node content
         if (sec.explored) {
-          String symbol = '.';
+          String symbol;
           if (isHostile) {
             symbol = 'T${sec.hostileCount}';
-          } else if (sec.resMetal.index > 0) {
-            symbol = sec.terrain.label.startsWith('Asteroid')
-                ? '.Fe'
-                : sec.terrain.label.startsWith('Nebula')
-                    ? '.Nb'
-                    : '.';
+          } else if (sec.resMetal.index > 0 && sec.terrain.label.startsWith('Asteroid')) {
+            symbol = '.Fe';
+          } else if (sec.resMetal.index > 0 && sec.terrain.label.startsWith('Nebula')) {
+            symbol = '.Nb';
+          } else {
+            symbol = '.';
           }
           _drawText(
             canvas,
@@ -168,15 +168,8 @@ class WindshieldPainter extends CustomPainter {
         center: true);
   }
 
-  void _drawStars(Canvas canvas, Size size) {
-    final rng = mulberry32(42);
-    final paint = Paint()..color = _amberFull.withValues(alpha: 0.04);
-    for (int i = 0; i < 60; i++) {
-      final sx = rng() * size.width;
-      final sy = rng() * size.height;
-      final sr = rng() * 1.5;
-      canvas.drawCircle(Offset(sx, sy), sr, paint);
-    }
+  void _drawStarsBg(Canvas canvas, Size size) {
+    drawStarField(canvas, size, 42, 60, _amberFull.withValues(alpha: 0.04));
   }
 
   void _drawDashedLine(
@@ -204,22 +197,7 @@ class WindshieldPainter extends CustomPainter {
   void _drawText(Canvas canvas, String text, double x, double y, double size,
       Color color,
       {bool center = false, bool bold = false}) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          fontFamily: 'JetBrains Mono',
-          fontSize: size,
-          color: color,
-          fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final offset = center
-        ? Offset(x - tp.width / 2, y - tp.height / 2)
-        : Offset(x, y - tp.height / 2);
-    tp.paint(canvas, offset);
+    drawMapText(canvas, text, x, y, size, color, center: center, bold: bold);
   }
 
   @override

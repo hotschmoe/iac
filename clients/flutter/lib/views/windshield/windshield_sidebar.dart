@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../hex/hex_math.dart';
 import '../../models/fleet.dart';
 import '../../models/game_state.dart';
 import '../../theme/amber_theme.dart';
@@ -18,13 +17,10 @@ class WindshieldSidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dist = hexDist(fleet.sector.q, fleet.sector.r);
-    final zone = dist < 8 ? 'Inner Ring' : dist < 20 ? 'Outer Ring' : 'The Wandering';
-
     return SingleChildScrollView(
       child: Column(
         children: [
-          _fleetPanel(zone),
+          _fleetPanel(),
           _cargoPanel(),
           _sectorPanel(),
         ],
@@ -32,15 +28,15 @@ class WindshieldSidebar extends StatelessWidget {
     );
   }
 
-  Widget _fleetPanel(String zone) {
+  Widget _fleetPanel() {
     return AmberPanel(
       title: 'FLEET ${fleet.name.toUpperCase()} -- ACTIVE',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _row('Sector', '${fleet.sector}', Amber.full),
-          _row('Zone', zone, Amber.normal),
-          _row('Status', fleet.status.label, Amber.full),
+          LabeledRow(label: 'Sector', value: '${fleet.sector}', valueColor: Amber.full),
+          LabeledRow(label: 'Zone', value: fleet.sector.zone, valueColor: Amber.normal),
+          LabeledRow(label: 'Status', value: fleet.status.label, valueColor: Amber.full),
           const SizedBox(height: 6),
           Text('Ships', style: Amber.mono(size: 11, color: Amber.dim)),
           for (final ship in fleet.ships) _shipRow(ship),
@@ -103,9 +99,9 @@ class WindshieldSidebar extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _row('Fe', '${fleet.cargo.metal}', Amber.normal),
-                _row('Cr', '${fleet.cargo.crystal}', Amber.normal),
-                _row('De', '${fleet.cargo.deut}', Amber.normal),
+                LabeledRow(label: 'Fe', value: '${fleet.cargo.metal}', valueColor: Amber.normal),
+                LabeledRow(label: 'Cr', value: '${fleet.cargo.crystal}', valueColor: Amber.normal),
+                LabeledRow(label: 'De', value: '${fleet.cargo.deut}', valueColor: Amber.normal),
               ],
             ),
           ),
@@ -154,12 +150,12 @@ class WindshieldSidebar extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _row('Terrain', sector.terrain, Amber.normal),
-          _row('Metal', sector.metal, Amber.bright),
-          _row('Crystal', sector.crystal, Amber.normal),
-          _row('Deut', sector.deut, Amber.dim),
+          LabeledRow(label: 'Terrain', value: sector.terrain, valueColor: Amber.normal),
+          LabeledRow(label: 'Metal', value: sector.metal, valueColor: Amber.bright),
+          LabeledRow(label: 'Crystal', value: sector.crystal, valueColor: Amber.normal),
+          LabeledRow(label: 'Deut', value: sector.deut, valueColor: Amber.dim),
           const SizedBox(height: 6),
-          _row('Hostile', sector.hostile, Amber.dim),
+          LabeledRow(label: 'Hostile', value: sector.hostile, valueColor: Amber.dim),
           RichText(
             text: TextSpan(children: [
               TextSpan(
@@ -171,24 +167,9 @@ class WindshieldSidebar extends StatelessWidget {
             ]),
           ),
           const SizedBox(height: 6),
-          _row('Exits', sector.exits, Amber.normal),
+          LabeledRow(label: 'Exits', value: sector.exits, valueColor: Amber.normal),
         ],
       ),
-    );
-  }
-
-  Widget _row(String label, String value, Color valueColor) {
-    return RichText(
-      text: TextSpan(children: [
-        TextSpan(
-          text: label.padRight(9),
-          style: Amber.mono(size: 11, color: Amber.dim),
-        ),
-        TextSpan(
-          text: value,
-          style: Amber.mono(size: 11, color: valueColor),
-        ),
-      ]),
     );
   }
 }

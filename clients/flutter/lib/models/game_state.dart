@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'fleet.dart';
 import 'hex.dart';
 import 'homeworld.dart';
@@ -15,7 +17,15 @@ class GameEvent {
   });
 }
 
-enum EventLevel { full, bright, normal, dim }
+enum EventLevel {
+  full(Color(0xFFFFB000)),
+  bright(Color(0xD9FFB000)),
+  normal(Color(0x99FFB000)),
+  dim(Color(0x4DFFB000));
+
+  final Color color;
+  const EventLevel(this.color);
+}
 
 class Alert {
   final String icon;
@@ -31,7 +41,15 @@ class Alert {
   });
 }
 
-enum AlertLevel { glow, bright, normal, dim }
+enum AlertLevel {
+  glow(Color(0xFFFFB000)),
+  bright(Color(0xD9FFB000)),
+  normal(Color(0x99FFB000)),
+  dim(Color(0x4DFFB000));
+
+  final Color color;
+  const AlertLevel(this.color);
+}
 
 class SectorInfo {
   final String terrain;

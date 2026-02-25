@@ -41,7 +41,7 @@ class StarMapPainter extends CustomPainter {
     final cy = size.height / 2;
     final isRegion = zoom == MapZoom.region;
 
-    _drawStars(canvas, size);
+    _drawStarsBg(canvas, size);
 
     // Draw edges
     for (int dq = -radius; dq <= radius; dq++) {
@@ -216,37 +216,14 @@ class StarMapPainter extends CustomPainter {
     }
   }
 
-  void _drawStars(Canvas canvas, Size size) {
-    final rng = mulberry32(7);
-    final paint = Paint()..color = _amberFull.withValues(alpha: 0.015);
-    for (int i = 0; i < 100; i++) {
-      canvas.drawCircle(
-        Offset(rng() * size.width, rng() * size.height),
-        rng() * 1.2,
-        paint,
-      );
-    }
+  void _drawStarsBg(Canvas canvas, Size size) {
+    drawStarField(canvas, size, 7, 100, _amberFull.withValues(alpha: 0.015));
   }
 
   void _drawText(Canvas canvas, String text, double x, double y, double size,
       Color color,
       {bool center = false, bool bold = false}) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          fontFamily: 'JetBrains Mono',
-          fontSize: size,
-          color: color,
-          fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final offset = center
-        ? Offset(x - tp.width / 2, y - tp.height / 2)
-        : Offset(x, y - tp.height / 2);
-    tp.paint(canvas, offset);
+    drawMapText(canvas, text, x, y, size, color, center: center, bold: bold);
   }
 
   @override

@@ -8,24 +8,10 @@ class EventLogPanel extends StatelessWidget {
   final List<GameEvent> events;
   const EventLogPanel({super.key, required this.events});
 
-  Color _levelColor(EventLevel level) {
-    switch (level) {
-      case EventLevel.full:
-        return Amber.full;
-      case EventLevel.bright:
-        return Amber.bright;
-      case EventLevel.normal:
-        return Amber.normal;
-      case EventLevel.dim:
-        return Amber.dim;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return AmberPanel(
       title: 'EVENT LOG',
-      wide: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -38,8 +24,7 @@ class EventLogPanel extends StatelessWidget {
                 ),
                 TextSpan(
                   text: event.message,
-                  style:
-                      Amber.mono(size: 11, color: _levelColor(event.level)),
+                  style: Amber.mono(size: 11, color: event.level.color),
                 ),
               ]),
             ),

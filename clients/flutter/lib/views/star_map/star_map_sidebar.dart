@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../hex/world_gen.dart';
 import '../../models/fleet.dart';
 import '../../models/game_state.dart';
-import '../../models/hex.dart';
 import '../../models/sector.dart';
 import '../../state/game_controller.dart';
 import '../../theme/amber_theme.dart';
@@ -22,7 +21,7 @@ class StarMapSidebar extends StatelessWidget {
     return SingleChildScrollView(
       child: Column(
         children: [
-          _cursorPanel(cursor, sec),
+          _cursorPanel(sec),
           _waypointsPanel(state.waypoints),
           _fleetsPanel(state.fleets, controller.activeFleet),
         ],
@@ -30,36 +29,30 @@ class StarMapSidebar extends StatelessWidget {
     );
   }
 
-  Widget _cursorPanel(Hex cursor, SectorState sec) {
-    final zone = sec.dist < 8
-        ? 'Inner Ring'
-        : sec.dist < 20
-            ? 'Outer Ring'
-            : 'The Wandering';
-
+  Widget _cursorPanel(SectorState sec) {
     return AmberPanel(
       title: 'CURSOR',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _row('Sector', '$cursor', Amber.full),
-          _row('Zone', zone, Amber.normal),
-          _row('Dist', '${sec.dist} from hub', Amber.normal),
+          LabeledRow(label: 'Sector', value: '${controller.cursorHex}', valueColor: Amber.full),
+          LabeledRow(label: 'Zone', value: controller.cursorHex.zone, valueColor: Amber.normal),
+          LabeledRow(label: 'Dist', value: '${sec.dist} from hub', valueColor: Amber.normal),
           const SizedBox(height: 6),
           if (sec.explored) ...[
-            _row('Terrain', sec.terrain.label, Amber.normal),
-            _row(
-              'Metal',
-              sec.resMetal.label,
-              sec.resMetal.index >= 3 ? Amber.bright : Amber.normal,
+            LabeledRow(label: 'Terrain', value: sec.terrain.label, valueColor: Amber.normal),
+            LabeledRow(
+              label: 'Metal',
+              value: sec.resMetal.label,
+              valueColor: sec.resMetal.index >= 3 ? Amber.bright : Amber.normal,
             ),
-            _row('Crystal', sec.resCrystal.label, Amber.normal),
-            _row('Deut', sec.resDeut.label, Amber.dim),
+            LabeledRow(label: 'Crystal', value: sec.resCrystal.label, valueColor: Amber.normal),
+            LabeledRow(label: 'Deut', value: sec.resDeut.label, valueColor: Amber.dim),
             const SizedBox(height: 6),
-            _row(
-              'Threat',
-              sec.hasHostile ? '${sec.hostileCount} MLM hostiles' : 'Clear',
-              sec.hasHostile ? Amber.danger : Amber.dim,
+            LabeledRow(
+              label: 'Threat',
+              value: sec.hasHostile ? '${sec.hostileCount} MLM hostiles' : 'Clear',
+              valueColor: sec.hasHostile ? Amber.danger : Amber.dim,
             ),
           ] else ...[
             Text('UNEXPLORED', style: Amber.mono(size: 11, color: Amber.faint)),
@@ -150,18 +143,4 @@ class StarMapSidebar extends StatelessWidget {
     );
   }
 
-  Widget _row(String label, String value, Color valueColor) {
-    return RichText(
-      text: TextSpan(children: [
-        TextSpan(
-          text: label.padRight(9),
-          style: Amber.mono(size: 11, color: Amber.dim),
-        ),
-        TextSpan(
-          text: value,
-          style: Amber.mono(size: 11, color: valueColor),
-        ),
-      ]),
-    );
-  }
 }

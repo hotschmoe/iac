@@ -1,5 +1,6 @@
 import 'dart:math' as math;
-import 'dart:ui';
+
+import 'package:flutter/painting.dart';
 
 const double sqrt3 = 1.7320508075688772;
 
@@ -43,4 +44,44 @@ bool getEdge(int q1, int r1, int q2, int r2) {
 
 int hexDist(int q, int r) {
   return math.max(q.abs(), math.max(r.abs(), (q + r).abs()));
+}
+
+void drawMapText(
+  Canvas canvas,
+  String text,
+  double x,
+  double y,
+  double size,
+  Color color, {
+  bool center = false,
+  bool bold = false,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: 'JetBrains Mono',
+        fontSize: size,
+        color: color,
+        fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final offset = center
+      ? Offset(x - tp.width / 2, y - tp.height / 2)
+      : Offset(x, y - tp.height / 2);
+  tp.paint(canvas, offset);
+}
+
+void drawStarField(Canvas canvas, Size size, int seed, int count, Color color) {
+  final rng = mulberry32(seed);
+  final paint = Paint()..color = color;
+  for (int i = 0; i < count; i++) {
+    canvas.drawCircle(
+      Offset(rng() * size.width, rng() * size.height),
+      rng() * 1.5,
+      paint,
+    );
+  }
 }

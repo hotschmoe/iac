@@ -8,19 +8,6 @@ class AlertsPanel extends StatelessWidget {
   final List<Alert> alerts;
   const AlertsPanel({super.key, required this.alerts});
 
-  Color _levelColor(AlertLevel level) {
-    switch (level) {
-      case AlertLevel.glow:
-        return Amber.full;
-      case AlertLevel.bright:
-        return Amber.bright;
-      case AlertLevel.normal:
-        return Amber.normal;
-      case AlertLevel.dim:
-        return Amber.dim;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return AmberPanel(
@@ -31,7 +18,7 @@ class AlertsPanel extends StatelessWidget {
           for (final alert in alerts) ...[
             Text(
               '${alert.icon} ${alert.message}',
-              style: Amber.mono(size: 11, color: _levelColor(alert.level)),
+              style: Amber.mono(size: 11, color: alert.level.color),
             ),
             if (alert.detail.isNotEmpty)
               Padding(

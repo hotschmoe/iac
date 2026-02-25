@@ -29,24 +29,7 @@ class ResearchPanel extends StatelessWidget {
             ]),
           ),
           const SizedBox(height: 4),
-          Row(
-            children: [
-              SizedBox(
-                width: 60,
-                child: Text('Progress',
-                    style: Amber.mono(size: 10, color: Amber.dim)),
-              ),
-              Expanded(
-                  child: AmberProgressBar(fraction: research.pct / 100)),
-              const SizedBox(width: 6),
-              SizedBox(
-                width: 30,
-                child: Text('${research.pct.toStringAsFixed(0)}%',
-                    style: Amber.mono(size: 10, color: Amber.dim),
-                    textAlign: TextAlign.right),
-              ),
-            ],
-          ),
+          ProgressRow(pct: research.pct),
           const SizedBox(height: 4),
           RichText(
             text: TextSpan(children: [

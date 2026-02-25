@@ -37,52 +37,35 @@ class ShipyardPanel extends StatelessWidget {
   }
 
   Widget _buildItem(QueueItem item) {
-    if (item.active) {
+    if (!item.active) {
       return Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            RichText(
-              text: TextSpan(children: [
-                TextSpan(
-                  text: '> ${item.name}',
-                  style: Amber.mono(size: 11, color: Amber.bright),
-                ),
-                TextSpan(
-                  text: '        ${item.time}',
-                  style: Amber.mono(size: 11, color: Amber.full),
-                ),
-              ]),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                SizedBox(
-                  width: 60,
-                  child: Text('Progress',
-                      style: Amber.mono(size: 10, color: Amber.dim)),
-                ),
-                Expanded(
-                    child: AmberProgressBar(fraction: item.pct / 100)),
-                const SizedBox(width: 6),
-                SizedBox(
-                  width: 30,
-                  child: Text('${item.pct.toStringAsFixed(0)}%',
-                      style: Amber.mono(size: 10, color: Amber.dim),
-                      textAlign: TextAlign.right),
-                ),
-              ],
-            ),
-          ],
+        padding: const EdgeInsets.only(bottom: 2),
+        child: Text(
+          '  ${item.name}     ${item.time}',
+          style: Amber.mono(size: 11, color: Amber.dim),
         ),
       );
     }
     return Padding(
-      padding: const EdgeInsets.only(bottom: 2),
-      child: Text(
-        '  ${item.name}         ${item.time}',
-        style: Amber.mono(size: 11, color: Amber.dim),
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          RichText(
+            text: TextSpan(children: [
+              TextSpan(
+                text: '> ${item.name}',
+                style: Amber.mono(size: 11, color: Amber.bright),
+              ),
+              TextSpan(
+                text: '   ${item.time}',
+                style: Amber.mono(size: 11, color: Amber.full),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 4),
+          ProgressRow(pct: item.pct),
+        ],
       ),
     );
   }

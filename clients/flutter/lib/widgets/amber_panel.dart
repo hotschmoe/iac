@@ -2,16 +2,45 @@ import 'package:flutter/material.dart';
 
 import '../theme/amber_theme.dart';
 
+class LabeledRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color valueColor;
+  final int padWidth;
+
+  const LabeledRow({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.valueColor,
+    this.padWidth = 9,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return RichText(
+      text: TextSpan(children: [
+        TextSpan(
+          text: label.padRight(padWidth),
+          style: Amber.mono(size: 11, color: Amber.dim),
+        ),
+        TextSpan(
+          text: value,
+          style: Amber.mono(size: 11, color: valueColor),
+        ),
+      ]),
+    );
+  }
+}
+
 class AmberPanel extends StatelessWidget {
   final String title;
   final Widget child;
-  final bool wide;
 
   const AmberPanel({
     super.key,
     required this.title,
     required this.child,
-    this.wide = false,
   });
 
   @override
