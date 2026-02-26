@@ -34,10 +34,22 @@ pub const Connection = struct {
         self.client.deinit();
     }
 
-    pub fn sendAuth(self: *Connection, player_name: []const u8) !void {
+    pub fn sendAuthRegister(self: *Connection, player_name: []const u8) !void {
         const msg = shared.protocol.ClientMessage{
             .auth = .{
                 .player_name = player_name,
+                .action = .register,
+            },
+        };
+        try self.send(msg);
+    }
+
+    pub fn sendAuthLogin(self: *Connection, player_name: []const u8, token: []const u8) !void {
+        const msg = shared.protocol.ClientMessage{
+            .auth = .{
+                .player_name = player_name,
+                .token = token,
+                .action = .login,
             },
         };
         try self.send(msg);

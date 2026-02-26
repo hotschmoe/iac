@@ -15,9 +15,17 @@ const scaling = shared.scaling;
 
 const log = std.log.scoped(.network);
 
+const constants = shared.constants;
+
+const RateEntry = struct {
+    count: u16,
+    window_start: i64,
+};
+
 pub const Network = struct {
     allocator: std.mem.Allocator,
     port: u16,
+    max_players: u32,
     engine: *GameEngine,
     server: wz.Server(Handler),
     server_thread: ?std.Thread,
@@ -27,20 +35,26 @@ pub const Network = struct {
     sessions: std.AutoHashMap(u64, ClientSession),
     next_session_id: u64,
 
-    pub fn init(allocator: std.mem.Allocator, port: u16, _engine: *GameEngine) !Network {
+    conn_rate: std.AutoHashMap(u32, RateEntry),
+    reg_rate: std.AutoHashMap(u32, RateEntry),
+
+    pub fn init(allocator: std.mem.Allocator, port: u16, _engine: *GameEngine, max_players: u32) !Network {
         return .{
             .allocator = allocator,
             .port = port,
+            .max_players = max_players,
             .engine = _engine,
             .server = try wz.Server(Handler).init(allocator, .{
                 .port = port,
-                .address = shared.constants.DEFAULT_HOST,
+                .address = constants.DEFAULT_HOST,
             }),
             .server_thread = null,
             .mutex = .{},
             .incoming_queue = std.ArrayList(QueuedMessage).empty,
             .sessions = std.AutoHashMap(u64, ClientSession).init(allocator),
             .next_session_id = 1,
+            .conn_rate = std.AutoHashMap(u32, RateEntry).init(allocator),
+            .reg_rate = std.AutoHashMap(u32, RateEntry).init(allocator),
         };
     }
 
@@ -50,6 +64,8 @@ pub const Network = struct {
         self.server.deinit();
         self.incoming_queue.deinit(self.allocator);
         self.sessions.deinit();
+        self.conn_rate.deinit();
+        self.reg_rate.deinit();
     }
 
     pub fn startListening(self: *Network) !void {
@@ -145,35 +161,86 @@ pub const Network = struct {
                     try self.sendErrorToSession(sess, .already_authenticated, "Already authenticated");
                     return;
                 }
-                const player_id = self.engine.registerPlayer(auth.player_name) catch |err| {
-                    try self.sendToSession(sess, .{
-                        .auth_result = .{
-                            .success = false,
-                            .message = switch (err) {
+
+                switch (auth.action) {
+                    .register => {
+                        // Registration rate limit
+                        const ip_key = self.sessionIpKey(session_id);
+                        if (ip_key != 0) {
+                            const now = std.time.timestamp();
+                            if (!checkRate(&self.reg_rate, ip_key, constants.REG_RATE_LIMIT, constants.REG_RATE_WINDOW_SECS, now)) {
+                                try self.sendToSession(sess, .{
+                                    .auth_result = .{ .success = false, .message = "Rate limited - try again later" },
+                                });
+                                return;
+                            }
+                        }
+
+                        const result = self.engine.registerNewPlayer(auth.player_name, self.max_players) catch |err| {
+                            const message: []const u8 = switch (err) {
+                                error.NameInvalid => "Invalid player name",
+                                error.NameTaken => "Name already taken",
+                                error.PlayerCapReached => "Server is full",
                                 error.RegistrationFailed => "No homeworld locations available",
                                 else => "Registration failed",
+                            };
+                            try self.sendToSession(sess, .{
+                                .auth_result = .{ .success = false, .message = message },
+                            });
+                            return;
+                        };
+
+                        // Record successful registration for rate limiting
+                        if (ip_key != 0) {
+                            bumpRate(&self.reg_rate, ip_key, std.time.timestamp());
+                        }
+
+                        self.mutex.lock();
+                        if (self.sessions.getPtr(session_id)) |s| {
+                            s.player_id = result.player_id;
+                            s.authenticated = true;
+                            s.client_type = .tui_human;
+                        }
+                        self.mutex.unlock();
+
+                        try self.sendToSession(sess, .{
+                            .auth_result = .{
+                                .success = true,
+                                .player_id = result.player_id,
+                                .token = &result.token_hex,
                             },
-                        },
-                    });
-                    return;
-                };
-                self.mutex.lock();
-                if (self.sessions.getPtr(session_id)) |s| {
-                    s.player_id = player_id;
-                    s.authenticated = true;
-                    s.client_type = if (auth.token != null) .llm_agent else .tui_human;
-                }
-                self.mutex.unlock();
-
-                const result = protocol.ServerMessage{
-                    .auth_result = .{
-                        .success = true,
-                        .player_id = player_id,
+                        });
+                        try self.sendFullState(sess, result.player_id);
                     },
-                };
-                try self.sendToSession(sess, result);
+                    .login => {
+                        const token = auth.token orelse {
+                            try self.sendToSession(sess, .{
+                                .auth_result = .{ .success = false, .message = "Invalid credentials" },
+                            });
+                            return;
+                        };
 
-                try self.sendFullState(sess, player_id);
+                        const player_id = self.engine.loginPlayer(auth.player_name, token) catch {
+                            try self.sendToSession(sess, .{
+                                .auth_result = .{ .success = false, .message = "Invalid credentials" },
+                            });
+                            return;
+                        };
+
+                        self.mutex.lock();
+                        if (self.sessions.getPtr(session_id)) |s| {
+                            s.player_id = player_id;
+                            s.authenticated = true;
+                            s.client_type = if (auth.token != null) .llm_agent else .tui_human;
+                        }
+                        self.mutex.unlock();
+
+                        try self.sendToSession(sess, .{
+                            .auth_result = .{ .success = true, .player_id = player_id },
+                        });
+                        try self.sendFullState(sess, player_id);
+                    },
+                }
             },
             .command => |cmd| {
                 if (!sess.authenticated) {
@@ -568,6 +635,13 @@ pub const Network = struct {
         return false;
     }
 
+    fn sessionIpKey(self: *Network, session_id: u64) u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const sess = self.sessions.get(session_id) orelse return 0;
+        return sess.ip_key;
+    }
+
     fn isEventRelevant(event: protocol.GameEvent, player_id: u64, eng: *GameEngine) bool {
         return switch (event.kind) {
             .sector_entered => |e| isOwnFleet(eng, e.fleet_id, player_id),
@@ -594,14 +668,61 @@ pub const Network = struct {
     }
 };
 
+fn checkRate(map: *std.AutoHashMap(u32, RateEntry), key: u32, max: u16, window_secs: i64, now: i64) bool {
+    if (map.getPtr(key)) |entry| {
+        if (now - entry.window_start > window_secs) {
+            entry.count = 0;
+            entry.window_start = now;
+        }
+        return entry.count < max;
+    }
+    return true;
+}
+
+fn bumpRate(map: *std.AutoHashMap(u32, RateEntry), key: u32, now: i64) void {
+    if (map.getPtr(key)) |entry| {
+        entry.count += 1;
+    } else {
+        map.put(key, .{ .count = 1, .window_start = now }) catch {};
+    }
+}
+
+fn ipKeyFromAddress(addr: std.net.Address) u32 {
+    return switch (addr.any.family) {
+        std.posix.AF.INET => @bitCast(addr.in.sa.addr),
+        std.posix.AF.INET6 => blk: {
+            const bytes = addr.in6.sa.addr;
+            var h: u32 = 0;
+            h ^= std.mem.readInt(u32, bytes[0..4], .little);
+            h ^= std.mem.readInt(u32, bytes[4..8], .little);
+            h ^= std.mem.readInt(u32, bytes[8..12], .little);
+            h ^= std.mem.readInt(u32, bytes[12..16], .little);
+            break :blk h;
+        },
+        else => 0,
+    };
+}
+
 const Handler = struct {
     conn: *wz.Conn,
     network: *Network,
     session_id: u64,
 
     pub fn init(_: *wz.Handshake, conn: *wz.Conn, ctx: *Network) !Handler {
+        const ip_key = ipKeyFromAddress(conn.address);
+
         ctx.mutex.lock();
         defer ctx.mutex.unlock();
+
+        // Connection rate limit
+        if (ip_key != 0) {
+            const now = std.time.timestamp();
+            if (!checkRate(&ctx.conn_rate, ip_key, constants.CONN_RATE_LIMIT, constants.CONN_RATE_WINDOW_SECS, now)) {
+                log.warn("Connection rate limited for IP key {d}", .{ip_key});
+                return error.ConnectionRefused;
+            }
+            bumpRate(&ctx.conn_rate, ip_key, now);
+        }
 
         const session_id = ctx.next_session_id;
         ctx.next_session_id += 1;
@@ -613,6 +734,7 @@ const Handler = struct {
             .authenticated = false,
             .client_type = .unknown,
             .last_active_tick = ctx.engine.currentTick(),
+            .ip_key = ip_key,
         });
 
         log.info("Client connected (session {d})", .{session_id});
@@ -671,6 +793,7 @@ pub const ClientSession = struct {
     authenticated: bool,
     client_type: ClientType,
     last_active_tick: u64,
+    ip_key: u32 = 0,
 };
 
 pub const ClientType = enum {

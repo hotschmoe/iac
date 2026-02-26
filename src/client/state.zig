@@ -48,6 +48,10 @@ pub const ClientState = struct {
     known_sectors: std.AutoHashMap(u32, protocol.SectorState),
     event_log: EventLog,
 
+    // Auth
+    pending_token: ?[128]u8 = null,
+    pending_token_len: usize = 0,
+
     // UI state
     current_view: View,
     active_fleet_idx: usize,
@@ -210,14 +214,34 @@ pub const ClientState = struct {
 
                 if (self.player) |p| {
                     self.map_center = p.homeworld;
+
+                    // Flush pending token to credentials file
+                    if (self.pending_token) |tok| {
+                        const main_mod = @import("main.zig");
+                        main_mod.saveCredentials(p.name, tok[0..self.pending_token_len]);
+                        self.pending_token = null;
+                        self.pending_token_len = 0;
+                    }
                 }
             },
             .event => |event| {
                 try self.event_log.push(event);
             },
             .auth_result => |result| {
-                if (!result.success) {
-                    // TODO: display error
+                if (result.success) {
+                    if (result.token) |token| {
+                        const len = @min(token.len, @as(usize, 128));
+                        var buf: [128]u8 = undefined;
+                        @memcpy(buf[0..len], token[0..len]);
+                        self.pending_token = buf;
+                        self.pending_token_len = len;
+                    }
+                } else {
+                    if (result.message) |err_msg| {
+                        const len = @min(err_msg.len, self.status_message.len);
+                        @memcpy(self.status_message[0..len], err_msg[0..len]);
+                        self.status_len = len;
+                    }
                 }
             },
             .@"error" => |err| {

@@ -64,6 +64,7 @@ pub const GameEngine = struct {
         var player_iter = self.players.iterator();
         while (player_iter.next()) |entry| {
             self.allocator.free(entry.value_ptr.name);
+            if (entry.value_ptr.token_hash) |th| self.allocator.free(th);
         }
         self.players.deinit();
         self.fleets.deinit();
@@ -537,16 +538,52 @@ pub const GameEngine = struct {
         }
     }
 
-    pub fn registerPlayer(self: *GameEngine, name: []const u8) !u64 {
-        // Reconnect if player already exists
+    pub const RegisterResult = struct {
+        player_id: u64,
+        token_hex: [shared.constants.TOKEN_HEX_LEN]u8,
+    };
+
+    pub fn registerNewPlayer(self: *GameEngine, raw_name: []const u8, max_players: u32) !RegisterResult {
+        var name_buf: [shared.constants.PLAYER_NAME_MAX_LEN]u8 = undefined;
+        const name = normalizeName(raw_name, &name_buf) orelse return error.NameInvalid;
+        try validatePlayerName(name);
+
+        if (self.players.count() >= max_players) {
+            const db_count = self.db.countPlayers() catch 0;
+            if (db_count >= max_players) return error.PlayerCapReached;
+        }
+
+        // Check for existing player with this name
         var iter = self.players.iterator();
         while (iter.next()) |entry| {
             if (std.mem.eql(u8, entry.value_ptr.name, name)) {
-                log.info("Player '{s}' reconnected (id={d})", .{ name, entry.key_ptr.* });
-                return entry.key_ptr.*;
+                // Legacy migration: player exists with no token_hash -> claim account
+                if (entry.value_ptr.token_hash == null) {
+                    const token = generateToken();
+                    var hash_buf: [shared.constants.HASH_HEX_LEN]u8 = undefined;
+                    hashToken(&token, &hash_buf);
+
+                    const duped_hash = try self.allocator.dupe(u8, &hash_buf);
+                    if (entry.value_ptr.token_hash) |old| self.allocator.free(old);
+                    entry.value_ptr.token_hash = duped_hash;
+                    entry.value_ptr.last_login_at = currentTimestamp();
+
+                    self.db.savePlayerAuth(entry.key_ptr.*, &hash_buf, entry.value_ptr.created_at) catch |err| {
+                        log.warn("Failed to save auth for claimed player: {}", .{err});
+                    };
+
+                    log.info("Player '{s}' claimed legacy account (id={d})", .{ name, entry.key_ptr.* });
+                    return .{ .player_id = entry.key_ptr.*, .token_hex = token };
+                }
+                return error.NameTaken;
             }
         }
 
+        const token = generateToken();
+        var hash_buf: [shared.constants.HASH_HEX_LEN]u8 = undefined;
+        hashToken(&token, &hash_buf);
+
+        const now = currentTimestamp();
         const player_id = self.nextId();
         const homeworld = self.findHomeworldLocation() orelse return error.RegistrationFailed;
 
@@ -555,15 +592,50 @@ pub const GameEngine = struct {
             .name = try self.allocator.dupe(u8, name),
             .resources = shared.constants.STARTING_RESOURCES,
             .homeworld = homeworld,
+            .token_hash = try self.allocator.dupe(u8, &hash_buf),
+            .created_at = now,
+            .last_login_at = now,
         };
 
         try self.players.put(player_id, player);
         try self.db.savePlayer(player);
+        try self.createStartingFleet(player_id, homeworld, player.research);
 
+        log.info("Player '{s}' registered (id={d}) at homeworld {any}", .{ name, player_id, homeworld });
+
+        return .{ .player_id = player_id, .token_hex = token };
+    }
+
+    pub fn loginPlayer(self: *GameEngine, raw_name: []const u8, token: []const u8) !u64 {
+        var name_buf: [shared.constants.PLAYER_NAME_MAX_LEN]u8 = undefined;
+        const name = normalizeName(raw_name, &name_buf) orelse return error.AuthFailed;
+
+        var iter = self.players.iterator();
+        while (iter.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.name, name)) {
+                const stored_hash = entry.value_ptr.token_hash orelse return error.AuthFailed;
+                var provided_hash: [shared.constants.HASH_HEX_LEN]u8 = undefined;
+                hashToken(token, &provided_hash);
+                if (!constantTimeEql(&provided_hash, stored_hash)) return error.AuthFailed;
+
+                entry.value_ptr.last_login_at = currentTimestamp();
+                self.db.updateLastLogin(entry.key_ptr.*, entry.value_ptr.last_login_at) catch |err| {
+                    log.warn("Failed to update last_login_at: {}", .{err});
+                };
+
+                log.info("Player '{s}' logged in (id={d})", .{ name, entry.key_ptr.* });
+                return entry.key_ptr.*;
+            }
+        }
+
+        return error.AuthFailed;
+    }
+
+    fn createStartingFleet(self: *GameEngine, player_id: u64, homeworld: Hex, research: scaling.ResearchLevels) !void {
         const fleet_id = self.nextId();
-
         const scout_base = ShipClass.scout.baseStats();
-        const scout_stats = scaling.applyResearchToStats(scout_base, player.research);
+        const scout_stats = scaling.applyResearchToStats(scout_base, research);
+
         var fleet = Fleet{
             .id = fleet_id,
             .owner_id = player_id,
@@ -572,7 +644,7 @@ pub const GameEngine = struct {
             .ships = undefined,
             .ship_count = shared.constants.STARTING_SCOUTS,
             .cargo = .{},
-            .fuel = 50000, // testing: high starting fuel
+            .fuel = 50000,
             .fuel_max = 50000,
             .move_cooldown = 0,
             .action_cooldown = 0,
@@ -596,10 +668,6 @@ pub const GameEngine = struct {
         try self.fleets.put(fleet_id, fleet);
         try self.dirty_players.put(player_id, {});
         try self.dirty_fleets.put(fleet_id, {});
-
-        log.info("Player '{s}' registered (id={d}) at homeworld {any}", .{ name, player_id, homeworld });
-
-        return player_id;
     }
 
     pub fn handleMove(self: *GameEngine, fleet_id: u64, target: Hex) !void {
@@ -1420,6 +1488,65 @@ fn fleetCargoCapacity(fleet: *const Fleet) f32 {
     return cap;
 }
 
+fn normalizeName(raw: []const u8, buf: *[shared.constants.PLAYER_NAME_MAX_LEN]u8) ?[]const u8 {
+    if (raw.len < shared.constants.PLAYER_NAME_MIN_LEN or raw.len > shared.constants.PLAYER_NAME_MAX_LEN) return null;
+    for (raw, 0..) |c, i| {
+        buf[i] = std.ascii.toLower(c);
+    }
+    return buf[0..raw.len];
+}
+
+fn validatePlayerName(name: []const u8) !void {
+    if (name.len < shared.constants.PLAYER_NAME_MIN_LEN or name.len > shared.constants.PLAYER_NAME_MAX_LEN)
+        return error.NameInvalid;
+
+    for (name) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return error.NameInvalid;
+    }
+    // No uppercase after normalization
+    for (name) |c| {
+        if (std.ascii.isUpper(c)) return error.NameInvalid;
+    }
+
+    if (name[0] == '-' or name[0] == '_') return error.NameInvalid;
+    if (name[name.len - 1] == '-' or name[name.len - 1] == '_') return error.NameInvalid;
+
+    const reserved = [_][]const u8{
+        "admin", "administrator", "server", "system", "moderator",
+        "mod",   "npc",           "mlm",    "gm",     "gamemaster",
+    };
+    for (reserved) |r| {
+        if (std.mem.eql(u8, name, r)) return error.NameInvalid;
+    }
+}
+
+fn generateToken() [shared.constants.TOKEN_HEX_LEN]u8 {
+    var raw_bytes: [shared.constants.TOKEN_BYTES]u8 = undefined;
+    std.crypto.random.bytes(&raw_bytes);
+    return std.fmt.bytesToHex(raw_bytes, .lower);
+}
+
+fn hashToken(token: []const u8, out: *[shared.constants.HASH_HEX_LEN]u8) void {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(token);
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    out.* = std.fmt.bytesToHex(digest, .lower);
+}
+
+fn constantTimeEql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    var diff: u8 = 0;
+    for (a, b) |x, y| {
+        diff |= x ^ y;
+    }
+    return diff == 0;
+}
+
+fn currentTimestamp() u64 {
+    return @intCast(@divTrunc(std.time.timestamp(), 1));
+}
+
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
 pub const MAX_NPC_SHIPS: usize = 32;
 
@@ -1433,6 +1560,9 @@ pub const Player = struct {
     building_queue: ?BuildQueueEntry = null,
     ship_queue: ?ShipQueueEntry = null,
     research_queue: ?ResearchQueueEntry = null,
+    token_hash: ?[]const u8 = null,
+    created_at: u64 = 0,
+    last_login_at: u64 = 0,
 };
 
 pub const BuildQueueEntry = struct {

@@ -153,6 +153,11 @@ pub const Database = struct {
         // Migration: add NPC cleared tick
         self.db.exec("ALTER TABLE sectors_modified ADD COLUMN npc_cleared_tick INTEGER") catch {};
 
+        // Migration: add auth columns
+        self.db.exec("ALTER TABLE players ADD COLUMN token_hash TEXT") catch {};
+        self.db.exec("ALTER TABLE players ADD COLUMN created_at INTEGER DEFAULT 0") catch {};
+        self.db.exec("ALTER TABLE players ADD COLUMN last_login_at INTEGER DEFAULT 0") catch {};
+
         log.info("Schema verified", .{});
     }
 
@@ -188,8 +193,9 @@ pub const Database = struct {
     pub fn savePlayer(self: *Database, player: engine_mod.Player) !void {
         var stmt = try self.db.prepare(
             \\INSERT OR REPLACE INTO players
-            \\    (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium)
-            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            \\    (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium,
+            \\     token_hash, created_at, last_login_at)
+            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         );
         defer stmt.deinit();
         try stmt.bindInt(1, @intCast(player.id));
@@ -199,17 +205,27 @@ pub const Database = struct {
         try stmt.bindInt(5, floatToStoredInt(player.resources.metal));
         try stmt.bindInt(6, floatToStoredInt(player.resources.crystal));
         try stmt.bindInt(7, floatToStoredInt(player.resources.deuterium));
+        if (player.token_hash) |th| {
+            try stmt.bindText(8, th);
+        } else {
+            try stmt.bindOptionalInt(8, null);
+        }
+        try stmt.bindInt(9, @intCast(player.created_at));
+        try stmt.bindInt(10, @intCast(player.last_login_at));
         _ = try stmt.step();
     }
 
     pub fn loadPlayers(self: *Database) !std.ArrayList(engine_mod.Player) {
         var players = std.ArrayList(engine_mod.Player).empty;
         var stmt = try self.db.prepare(
-            "SELECT id, name, homeworld_q, homeworld_r, metal, crystal, deuterium FROM players",
+            \\SELECT id, name, homeworld_q, homeworld_r, metal, crystal, deuterium,
+            \\       token_hash, created_at, last_login_at
+            \\FROM players
         );
         defer stmt.deinit();
         while (try stmt.step()) {
             const name_raw = stmt.columnText(1) orelse continue;
+            const token_hash_raw = stmt.columnText(7);
             try players.append(self.allocator, .{
                 .id = @intCast(stmt.columnInt(0)),
                 .name = try self.allocator.dupe(u8, name_raw),
@@ -222,9 +238,42 @@ pub const Database = struct {
                     .crystal = storedIntToFloat(stmt.columnInt(5)),
                     .deuterium = storedIntToFloat(stmt.columnInt(6)),
                 },
+                .token_hash = if (token_hash_raw) |th| try self.allocator.dupe(u8, th) else null,
+                .created_at = @intCast(@max(0, stmt.columnInt(8))),
+                .last_login_at = @intCast(@max(0, stmt.columnInt(9))),
             });
         }
         return players;
+    }
+
+    pub fn savePlayerAuth(self: *Database, player_id: u64, token_hash: []const u8, created_at: u64) !void {
+        var stmt = try self.db.prepare(
+            "UPDATE players SET token_hash = ?1, created_at = ?2 WHERE id = ?3",
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, token_hash);
+        try stmt.bindInt(2, @intCast(created_at));
+        try stmt.bindInt(3, @intCast(player_id));
+        _ = try stmt.step();
+    }
+
+    pub fn updateLastLogin(self: *Database, player_id: u64, timestamp: u64) !void {
+        var stmt = try self.db.prepare(
+            "UPDATE players SET last_login_at = ?1 WHERE id = ?2",
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(timestamp));
+        try stmt.bindInt(2, @intCast(player_id));
+        _ = try stmt.step();
+    }
+
+    pub fn countPlayers(self: *Database) !u32 {
+        var stmt = try self.db.prepare("SELECT COUNT(*) FROM players");
+        defer stmt.deinit();
+        if (try stmt.step()) {
+            return @intCast(stmt.columnInt(0));
+        }
+        return 0;
     }
 
     pub fn saveFleet(self: *Database, fleet: engine_mod.Fleet) !void {

@@ -35,6 +35,7 @@ pub fn main() !void {
     log.info("═══════════════════════════════════════════", .{});
     log.info("Port:       {d}", .{config.port});
     log.info("World seed: 0x{X}", .{config.world_seed});
+    log.info("Max players:{d}", .{config.max_players});
     log.info("Tick rate:  {d} Hz", .{shared.constants.TICK_RATE_HZ});
     log.info("───────────────────────────────────────────", .{});
 
@@ -44,7 +45,7 @@ pub fn main() !void {
     var engine = try GameEngine.init(allocator, config.world_seed, &db);
     defer engine.deinit();
 
-    var network = try Network.init(allocator, config.port, &engine);
+    var network = try Network.init(allocator, config.port, &engine, config.max_players);
     defer network.deinit();
 
     installSignalHandlers();
@@ -89,14 +90,40 @@ const ServerConfig = struct {
     port: u16,
     world_seed: u64,
     db_path: []const u8,
+    max_players: u32,
 };
 
 fn parseArgs() ServerConfig {
-    return .{
+    var config = ServerConfig{
         .port = shared.constants.DEFAULT_PORT,
         .world_seed = shared.constants.DEFAULT_WORLD_SEED,
         .db_path = "iac_world.db",
+        .max_players = shared.constants.MAX_PLAYERS,
     };
+
+    var args = std.process.args();
+    _ = args.skip(); // program name
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--port")) {
+            if (args.next()) |val| {
+                config.port = std.fmt.parseInt(u16, val, 10) catch shared.constants.DEFAULT_PORT;
+            }
+        } else if (std.mem.eql(u8, arg, "--seed")) {
+            if (args.next()) |val| {
+                config.world_seed = std.fmt.parseInt(u64, val, 10) catch shared.constants.DEFAULT_WORLD_SEED;
+            }
+        } else if (std.mem.eql(u8, arg, "--db")) {
+            if (args.next()) |val| {
+                config.db_path = val;
+            }
+        } else if (std.mem.eql(u8, arg, "--max-players")) {
+            if (args.next()) |val| {
+                config.max_players = std.fmt.parseInt(u32, val, 10) catch shared.constants.MAX_PLAYERS;
+            }
+        }
+    }
+
+    return config;
 }
 
 test {

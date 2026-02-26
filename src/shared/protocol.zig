@@ -24,9 +24,12 @@ pub const ClientMessage = union(enum) {
     request_full_state: void,
 };
 
+pub const AuthAction = enum { register, login };
+
 pub const AuthRequest = struct {
     player_name: []const u8,
-    token: ?[]const u8 = null, // null = new player registration
+    token: ?[]const u8 = null,
+    action: AuthAction = .register,
 };
 
 pub const Command = union(enum) {
@@ -393,5 +396,9 @@ pub const ErrorCode = enum(u16) {
     fleet_limit_reached = 1015,
     auth_failed = 2000,
     already_authenticated = 2001,
+    name_invalid = 2002,
+    name_taken = 2003,
+    player_cap_reached = 2004,
+    rate_limited = 2005,
     server_error = 5000,
 };

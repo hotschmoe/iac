@@ -12,10 +12,16 @@ const App = zithril.App(AppState);
 
 const log = std.log.scoped(.client);
 
+const Credentials = struct {
+    name: []const u8,
+    token: []const u8,
+};
+
 const AppState = struct {
     client_state: ClientState,
     conn: Connection,
     allocator: std.mem.Allocator,
+    config: ClientConfig,
 };
 
 fn update(state: *AppState, event: zithril.Event) zithril.Action {
@@ -92,18 +98,26 @@ pub fn main() !void {
         .client_state = ClientState.init(allocator),
         .conn = try Connection.init(allocator, config.server_host, config.server_port),
         .allocator = allocator,
+        .config = config,
     };
     defer app_state.client_state.deinit();
     defer app_state.conn.deinit();
 
-    // Authenticate
-    try app_state.conn.sendAuth(config.player_name);
+    // Auth flow: try credentials file first, fall back to registration
+    const creds = loadCredentials(allocator);
+    if (creds) |c| {
+        defer allocator.free(c.name);
+        defer allocator.free(c.token);
+        try app_state.conn.sendAuthLogin(c.name, c.token);
+    } else {
+        try app_state.conn.sendAuthRegister(config.player_name);
+    }
 
     var app = App.init(.{
         .state = &app_state,
         .update = update,
         .view = appView,
-        .tick_rate_ms = 100, // Poll server at ~10Hz, render on change
+        .tick_rate_ms = 100,
     });
 
     try app.run(allocator);
@@ -116,9 +130,85 @@ const ClientConfig = struct {
 };
 
 fn parseArgs() ClientConfig {
-    return .{
+    var config = ClientConfig{
         .server_host = shared.constants.DEFAULT_HOST,
         .server_port = shared.constants.DEFAULT_PORT,
         .player_name = "Admiral",
     };
+
+    var args = std.process.args();
+    _ = args.skip();
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--host")) {
+            if (args.next()) |val| config.server_host = val;
+        } else if (std.mem.eql(u8, arg, "--port")) {
+            if (args.next()) |val| {
+                config.server_port = std.fmt.parseInt(u16, val, 10) catch shared.constants.DEFAULT_PORT;
+            }
+        } else if (std.mem.eql(u8, arg, "--name")) {
+            if (args.next()) |val| config.player_name = val;
+        }
+    }
+
+    return config;
+}
+
+const CREDS_DIR = ".iac";
+const CREDS_FILE = ".iac/credentials";
+
+fn getCredsPath(buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
+    const home = std.posix.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/{s}", .{ home, CREDS_FILE }) catch null;
+}
+
+fn loadCredentials(allocator: std.mem.Allocator) ?Credentials {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = getCredsPath(&path_buf) orelse return null;
+
+    const contents = std.fs.cwd().readFileAlloc(allocator, path, 4096) catch return null;
+    defer allocator.free(contents);
+
+    var name: ?[]const u8 = null;
+    var token: ?[]const u8 = null;
+
+    var lines = std.mem.splitScalar(u8, contents, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "name=")) {
+            name = allocator.dupe(u8, line[5..]) catch return null;
+        } else if (std.mem.startsWith(u8, line, "token=")) {
+            token = allocator.dupe(u8, line[6..]) catch {
+                if (name) |n| allocator.free(n);
+                return null;
+            };
+        }
+    }
+
+    if (name != null and token != null) {
+        return .{ .name = name.?, .token = token.? };
+    }
+    if (name) |n| allocator.free(n);
+    if (token) |t| allocator.free(t);
+    return null;
+}
+
+pub fn saveCredentials(player_name: []const u8, token: []const u8) void {
+    const home = std.posix.getenv("HOME") orelse return;
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/{s}", .{ home, CREDS_DIR }) catch return;
+    std.fs.cwd().makeDir(dir_path) catch |err| {
+        if (err != error.PathAlreadyExists) return;
+    };
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ home, CREDS_FILE }) catch return;
+
+    var content_buf: [512]u8 = undefined;
+    const content = std.fmt.bufPrint(&content_buf, "name={s}\ntoken={s}\n", .{ player_name, token }) catch return;
+
+    const file = std.fs.cwd().createFile(path, .{ .mode = 0o600 }) catch return;
+    defer file.close();
+    file.writeAll(content) catch return;
+
+    log.info("Credentials saved to {s}", .{path});
 }
