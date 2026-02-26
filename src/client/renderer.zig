@@ -85,10 +85,11 @@ fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
         .command_center => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
         .windshield => " WINDSHIELD | [1-6] Move  [i] Info  [b] Base  [?] Keys",
         .star_map => " STAR MAP | [Arrows] Scroll  [z/x] Zoom  [b] Base  [?] Keys",
-        .homeworld => if (state.homeworld_tab == .fleets)
-            " FLEETS | Tab Switch  Up/Down Select  [n] New  [d] Dock  [1-3] Assign  [x] Dissolve  [?] Keys"
-        else
-            " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [x/X/z] Cancel  [t] Tree  [?] Keys",
+        .homeworld => switch (state.homeworld_tab) {
+            .fleets => " FLEETS | Tab Switch  Up/Down Select  [n] New  [d] Dock  [1-3] Assign  [x] Dissolve  [?] Keys",
+            .inventory => " INVENTORY | Tab Switch  [?] Keys",
+            else => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [x/X/z] Cancel  [t] Tree  [?] Keys",
+        },
     };
     frame.render(Paragraph{
         .text = text,
@@ -188,6 +189,10 @@ fn formatEvent(buf: []u8, pos: usize, event: protocol.GameEvent) !usize {
         .building_completed => |e| std.fmt.bufPrint(slice, " T{d}: {s} upgraded to Lv{d}\n", .{ event.tick, e.building_type.label(), e.new_level }),
         .research_completed => |e| std.fmt.bufPrint(slice, " T{d}: {s} {d} researched\n", .{ event.tick, e.tech.label(), e.new_level }),
         .ship_built => |e| std.fmt.bufPrint(slice, " T{d}: {s} built\n", .{ event.tick, e.ship_class.label() }),
+        .loot_acquired => |e| switch (e.loot_type) {
+            .component => |c| std.fmt.bufPrint(slice, " T{d}: Found {s} ({s})\n", .{ event.tick, c.component_type.label(), c.rarity.label() }),
+            .data_fragment => |f| std.fmt.bufPrint(slice, " T{d}: +{d} {s}\n", .{ event.tick, f.count, f.fragment_type.label() }),
+        },
         .alert => |e| std.fmt.bufPrint(slice, " T{d}: [{s}] {s}\n", .{ event.tick, @tagName(e.level), e.message }),
         else => std.fmt.bufPrint(slice, " T{d}: Event\n", .{event.tick}),
     } catch return error.NoSpaceLeft;
@@ -745,10 +750,10 @@ fn renderHomeworld(state: *ClientState, frame: *Frame, area: Rect) void {
     });
 
     renderTabBar(state, frame, rows.get(0));
-    if (state.homeworld_tab == .fleets) {
-        renderFleetManager(state, frame, rows.get(1));
-    } else {
-        renderCardGrid(state, frame, rows.get(1));
+    switch (state.homeworld_tab) {
+        .fleets => renderFleetManager(state, frame, rows.get(1)),
+        .inventory => renderInventory(state, frame, rows.get(1)),
+        else => renderCardGrid(state, frame, rows.get(1)),
     }
     renderStatusBar(state, frame, rows.get(2));
 }
@@ -759,6 +764,7 @@ fn renderTabBar(state: *ClientState, frame: *Frame, area: Rect) void {
         .{ .tab = .shipyard, .label = "Shipyard" },
         .{ .tab = .research, .label = "Research" },
         .{ .tab = .fleets, .label = "Fleets" },
+        .{ .tab = .inventory, .label = "Inventory" },
     };
 
     var buf: [128]u8 = undefined;
@@ -872,6 +878,62 @@ fn renderFleetManager(state: *ClientState, frame: *Frame, area: Rect) void {
     const legend = "[n] New Fleet  [d] Dock Ship  [1-3] Assign  [x] Dissolve";
     const ll = std.fmt.bufPrint(buf[pos..], "{s}", .{legend}) catch "";
     pos += ll.len;
+
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
+}
+
+fn renderInventory(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " INVENTORY ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    const hw = state.homeworld orelse {
+        frame.render(Paragraph{ .text = " No homeworld data", .style = amber_faint }, inner);
+        return;
+    };
+
+    var buf: [2048]u8 = undefined;
+    var pos: usize = 0;
+
+    // Components section
+    const comp_hdr = std.fmt.bufPrint(buf[pos..], " COMPONENTS\n", .{}) catch "";
+    pos += comp_hdr.len;
+
+    if (hw.components.len == 0) {
+        const l = std.fmt.bufPrint(buf[pos..], "   (none acquired)\n", .{}) catch "";
+        pos += l.len;
+    } else {
+        for (hw.components) |comp| {
+            const bonus_pct: f32 = comp.component_type.bonusPerLevel() * @as(f32, @floatFromInt(comp.level)) * 100.0;
+            const l = std.fmt.bufPrint(buf[pos..], "   {s: <22} Lv.{d}  +{d:.0}%\n", .{
+                comp.component_type.label(),
+                comp.level,
+                bonus_pct,
+            }) catch break;
+            pos += l.len;
+        }
+    }
+
+    // Separator
+    const sep = std.fmt.bufPrint(buf[pos..], "\n DATA FRAGMENTS\n", .{}) catch "";
+    pos += sep.len;
+
+    if (hw.fragments.len == 0) {
+        const l = std.fmt.bufPrint(buf[pos..], "   (none collected)\n", .{}) catch "";
+        pos += l.len;
+    } else {
+        for (hw.fragments) |frag| {
+            const l = std.fmt.bufPrint(buf[pos..], "   {s: <22} x{d}\n", .{
+                frag.fragment_type.label(),
+                frag.count,
+            }) catch break;
+            pos += l.len;
+        }
+    }
 
     frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
 }
@@ -1035,11 +1097,27 @@ fn renderCard(
             if (!maxed) {
                 const cost = scaling.researchCost(rt, level + 1);
                 cpos += fmtCostLine(content_buf[cpos..], cost, scaling.researchTime(rt, level + 1));
+
+                // Fragment cost for level III+
+                if (scaling.researchFragmentCost(rt, level + 1)) |fc| {
+                    if (fc.inner > 0) {
+                        const fl = std.fmt.bufPrint(content_buf[cpos..], " Req: {d} Inner frags\n", .{fc.inner}) catch "";
+                        cpos += fl.len;
+                    }
+                    if (fc.outer > 0) {
+                        const fl = std.fmt.bufPrint(content_buf[cpos..], " Req: {d} Outer frags\n", .{fc.outer}) catch "";
+                        cpos += fl.len;
+                    }
+                    if (fc.wandering > 0) {
+                        const fl = std.fmt.bufPrint(content_buf[cpos..], " Req: {d} Deep frags\n", .{fc.wandering}) catch "";
+                        cpos += fl.len;
+                    }
+                }
             }
 
             renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, maxed);
         },
-        .fleets => return, // handled by renderFleetManager
+        .fleets, .inventory => return, // handled separately
     }
 }
 

@@ -9,6 +9,8 @@ const ShipClass = shared.constants.ShipClass;
 const scaling = shared.scaling;
 const BuildingType = scaling.BuildingType;
 const ResearchType = scaling.ResearchType;
+const ComponentType = scaling.ComponentType;
+const FragmentType = scaling.FragmentType;
 
 const log = std.log.scoped(.database);
 
@@ -138,6 +140,24 @@ pub const Database = struct {
             \\);
         );
 
+        try self.db.exec(
+            \\CREATE TABLE IF NOT EXISTS components (
+            \\    player_id INTEGER REFERENCES players(id),
+            \\    component_type INTEGER NOT NULL,
+            \\    level INTEGER NOT NULL DEFAULT 0,
+            \\    PRIMARY KEY (player_id, component_type)
+            \\);
+        );
+
+        try self.db.exec(
+            \\CREATE TABLE IF NOT EXISTS fragments (
+            \\    player_id INTEGER REFERENCES players(id),
+            \\    fragment_type INTEGER NOT NULL,
+            \\    count INTEGER NOT NULL DEFAULT 0,
+            \\    PRIMARY KEY (player_id, fragment_type)
+            \\);
+        );
+
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id)");
@@ -146,6 +166,8 @@ pub const Database = struct {
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_buildings_player ON buildings(player_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_research_player ON research(player_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_build_queue_player ON build_queue(player_id)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_components_player ON components(player_id)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fragments_player ON fragments(player_id)");
 
         // Migration: add harvest accumulator columns
         self.db.exec("ALTER TABLE sectors_modified ADD COLUMN metal_harvested REAL DEFAULT 0") catch {};
@@ -173,7 +195,12 @@ pub const Database = struct {
         defer if (version_str) |v| self.allocator.free(v);
         const version: u32 = if (version_str) |v| std.fmt.parseInt(u32, v, 10) catch 0 else 0;
 
-        if (version >= 2) return;
+        if (version >= 3) return;
+        if (version >= 2) {
+            try self.saveServerState("schema_version", "3");
+            log.info("Migrated to schema v3: components and fragments tables", .{});
+            return;
+        }
 
         // v2: native float storage (was integer-encoded as val * 1000)
         try self.db.exec(
@@ -212,8 +239,8 @@ pub const Database = struct {
         // v2: token_hash from hex TEXT to raw BLOB
         try self.migrateTokenHashes();
 
-        try self.saveServerState("schema_version", "2");
-        log.info("Migrated to schema v2: native floats, blob token hashes", .{});
+        try self.saveServerState("schema_version", "3");
+        log.info("Migrated to schema v3: native floats, blob token hashes, components/fragments", .{});
     }
 
     fn migrateTokenHashes(self: *Database) !void {
@@ -730,6 +757,78 @@ pub const Database = struct {
             }
         }
         return levels;
+    }
+
+    pub fn saveComponents(self: *Database, player_id: u64, levels: scaling.ComponentLevels) !void {
+        const fields = @typeInfo(ComponentType).@"enum".fields;
+        var stmt = try self.db.prepare(
+            "INSERT OR REPLACE INTO components (player_id, component_type, level) VALUES (?1, ?2, ?3)",
+        );
+        defer stmt.deinit();
+        inline for (fields, 0..) |_, i| {
+            const ct: ComponentType = @enumFromInt(i);
+            const lvl = levels.get(ct);
+            if (lvl > 0) {
+                try stmt.bindInt(1, @intCast(player_id));
+                try stmt.bindInt(2, @as(i64, i));
+                try stmt.bindInt(3, @as(i64, lvl));
+                _ = try stmt.step();
+                stmt.reset();
+            }
+        }
+    }
+
+    pub fn loadComponents(self: *Database, player_id: u64) !scaling.ComponentLevels {
+        var levels = scaling.ComponentLevels{};
+        var stmt = try self.db.prepare(
+            "SELECT component_type, level FROM components WHERE player_id = ?1",
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(player_id));
+        while (try stmt.step()) {
+            const ct_int: u8 = @intCast(stmt.columnInt(0));
+            const level: u8 = @intCast(stmt.columnInt(1));
+            if (ct_int < ComponentType.COUNT) {
+                levels.set(@enumFromInt(ct_int), level);
+            }
+        }
+        return levels;
+    }
+
+    pub fn saveFragments(self: *Database, player_id: u64, counts: scaling.FragmentCounts) !void {
+        const fields = @typeInfo(FragmentType).@"enum".fields;
+        var stmt = try self.db.prepare(
+            "INSERT OR REPLACE INTO fragments (player_id, fragment_type, count) VALUES (?1, ?2, ?3)",
+        );
+        defer stmt.deinit();
+        inline for (fields, 0..) |_, i| {
+            const ft: FragmentType = @enumFromInt(i);
+            const count = counts.get(ft);
+            if (count > 0) {
+                try stmt.bindInt(1, @intCast(player_id));
+                try stmt.bindInt(2, @as(i64, i));
+                try stmt.bindInt(3, @as(i64, count));
+                _ = try stmt.step();
+                stmt.reset();
+            }
+        }
+    }
+
+    pub fn loadFragments(self: *Database, player_id: u64) !scaling.FragmentCounts {
+        var counts = scaling.FragmentCounts{};
+        var stmt = try self.db.prepare(
+            "SELECT fragment_type, count FROM fragments WHERE player_id = ?1",
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(player_id));
+        while (try stmt.step()) {
+            const ft_int: u8 = @intCast(stmt.columnInt(0));
+            const count: u16 = @intCast(stmt.columnInt(1));
+            if (ft_int < FragmentType.COUNT) {
+                counts.set(@enumFromInt(ft_int), count);
+            }
+        }
+        return counts;
     }
 
     pub fn saveBuildQueue(self: *Database, player_id: u64, player: engine_mod.Player) !void {

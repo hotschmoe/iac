@@ -37,6 +37,8 @@ pub fn mapKey(key: Key, state: *const ClientState) InputAction {
                 .down => return .{ .fleet_nav = .{ .cursor_down = {} } },
                 else => {},
             }
+        } else if (state.homeworld_tab == .inventory) {
+            if (key.code == .tab) return .{ .homeworld_nav = .tab_next };
         } else {
             switch (key.code) {
                 .tab => return .{ .homeworld_nav = .tab_next },

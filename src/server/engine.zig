@@ -208,6 +208,7 @@ pub const GameEngine = struct {
 
                 if (result.player_won) {
                     try self.dropSalvage(active_combat.sector, active_combat.npc_value);
+                    try self.generateLootDrops(active_combat, pf_ptrs[0..pf_count]);
 
                     const cleared_key = active_combat.sector.toKey();
                     const cleared_ov = try self.ensureOverride(cleared_key);
@@ -853,7 +854,16 @@ pub const GameEngine = struct {
         const cost = scaling.researchCost(tech, target_level);
         if (!player.resources.canAfford(cost)) return error.InsufficientResources;
 
+        // Check fragment cost for level III+
+        const frag_cost = scaling.researchFragmentCost(tech, target_level);
+        if (frag_cost) |fc| {
+            if (!player.fragments.canAfford(fc)) return error.InsufficientFragments;
+        }
+
         player.resources = player.resources.sub(cost);
+        if (frag_cost) |fc| {
+            player.fragments.sub(fc);
+        }
         const duration = scaling.researchTime(tech, target_level);
         player.research_queue = .{
             .tech = tech,
@@ -923,7 +933,8 @@ pub const GameEngine = struct {
         if (player.docked_ship_count >= MAX_SHIPS_PER_FLEET) return;
 
         const base_stats = ship_class.baseStats();
-        const stats = scaling.applyResearchToStats(base_stats, player.research);
+        const research_stats = scaling.applyResearchToStats(base_stats, player.research);
+        const stats = scaling.applyComponentBonus(research_stats, ship_class, player.components);
 
         player.docked_ships[player.docked_ship_count] = Ship{
             .id = self.nextId(),
@@ -1076,7 +1087,7 @@ pub const GameEngine = struct {
                 if (!existing.hasNpcFleet(npc.id)) {
                     existing.addNpcFleet(npc.id);
                     npc.in_combat = true;
-                    existing.npc_value = existing.npc_value.add(npc.ships[0].class.buildCost());
+                    existing.npc_value = existing.npc_value.add(npcFleetValue(npc));
                 }
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
@@ -1096,7 +1107,9 @@ pub const GameEngine = struct {
         var new_combat = Combat{
             .id = combat_id,
             .sector = fleet.location,
-            .npc_value = npc.ships[0].class.buildCost(),
+            .npc_value = npcFleetValue(npc),
+            .npc_ship_class = npc.ships[0].class,
+            .npc_ship_count = npc.ship_count,
             .round = 0,
         };
         new_combat.addPlayerFleet(fleet.id);
@@ -1282,6 +1295,72 @@ pub const GameEngine = struct {
         });
     }
 
+    fn generateLootDrops(self: *GameEngine, active_combat: *const Combat, player_fleets: []*Fleet) !void {
+        const zone = shared.constants.Zone.fromDistance(active_combat.sector.distFromOrigin());
+
+        var rng = std.Random.DefaultPrng.init(self.current_tick *% 0x517CC1B727220A95);
+        const random = rng.random();
+
+        const loot = scaling.rollLoot(zone, active_combat.npc_ship_class, active_combat.npc_ship_count, random);
+
+        // Deduplicate player owners
+        var owner_ids: [MAX_COMBAT_FLEETS]u64 = @splat(0);
+        var owner_count: usize = 0;
+        for (player_fleets) |pf| {
+            var found = false;
+            for (owner_ids[0..owner_count]) |oid| {
+                if (oid == pf.owner_id) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found and owner_count < MAX_COMBAT_FLEETS) {
+                owner_ids[owner_count] = pf.owner_id;
+                owner_count += 1;
+            }
+        }
+
+        // Award loot to each participating player
+        for (owner_ids[0..owner_count]) |pid| {
+            const player = self.players.getPtr(pid) orelse continue;
+
+            // Fragments
+            if (loot.fragment_type) |ft| {
+                player.fragments.add(ft, loot.fragment_count);
+                try self.pending_events.append(self.allocator, .{
+                    .tick = self.current_tick,
+                    .kind = .{ .loot_acquired = .{
+                        .player_id = pid,
+                        .loot_type = .{ .data_fragment = .{
+                            .fragment_type = ft,
+                            .count = loot.fragment_count,
+                        } },
+                    } },
+                });
+            }
+
+            // Component
+            if (loot.component) |comp| {
+                const current = player.components.get(comp.component_type);
+                if (current < scaling.MAX_COMPONENT_LEVEL) {
+                    player.components.set(comp.component_type, current + 1);
+                    try self.pending_events.append(self.allocator, .{
+                        .tick = self.current_tick,
+                        .kind = .{ .loot_acquired = .{
+                            .player_id = pid,
+                            .loot_type = .{ .component = .{
+                                .component_type = comp.component_type,
+                                .rarity = comp.rarity,
+                            } },
+                        } },
+                    });
+                }
+            }
+
+            try self.dirty_players.put(pid, {});
+        }
+    }
+
     fn dropSalvage(self: *GameEngine, sector: Hex, fleet_value: Resources) !void {
         const key = sector.toKey();
         const ov = try self.ensureOverride(key);
@@ -1323,6 +1402,8 @@ pub const GameEngine = struct {
             var p = player;
             p.buildings = try self.db.loadBuildings(player.id);
             p.research = try self.db.loadResearch(player.id);
+            p.components = try self.db.loadComponents(player.id);
+            p.fragments = try self.db.loadFragments(player.id);
             const queues = try self.db.loadBuildQueues(player.id);
             p.building_queue = queues.building;
             p.ship_queue = queues.ship;
@@ -1391,6 +1472,8 @@ pub const GameEngine = struct {
                 try self.db.savePlayer(player);
                 try self.db.saveBuildings(player_id, player.buildings);
                 try self.db.saveResearch(player_id, player.research);
+                try self.db.saveComponents(player_id, player.components);
+                try self.db.saveFragments(player_id, player.fragments);
                 try self.db.saveBuildQueue(player_id, player);
                 try self.db.saveDockedShips(player_id, player.docked_ships[0..player.docked_ship_count]);
             }
@@ -1555,6 +1638,14 @@ fn removeDockedShip(player: *Player, ship_id: u64) ?Ship {
     return null;
 }
 
+fn npcFleetValue(npc: *const NpcFleet) Resources {
+    var total = Resources{};
+    for (npc.ships[0..npc.ship_count]) |ship| {
+        total = total.add(ship.class.buildCost());
+    }
+    return total;
+}
+
 fn fleetCargoCapacity(fleet: *const Fleet) f32 {
     var cap: f32 = 0;
     for (fleet.ships[0..fleet.ship_count]) |ship| {
@@ -1625,6 +1716,8 @@ pub const Player = struct {
     homeworld: Hex,
     buildings: scaling.BuildingLevels = .{},
     research: scaling.ResearchLevels = .{},
+    components: scaling.ComponentLevels = .{},
+    fragments: scaling.FragmentCounts = .{},
     building_queue: ?BuildQueueEntry = null,
     ship_queue: ?ShipQueueEntry = null,
     research_queue: ?ResearchQueueEntry = null,
@@ -1714,6 +1807,8 @@ pub const Combat = struct {
     npc_fleet_ids: [MAX_COMBAT_FLEETS]u64 = @splat(0),
     npc_fleet_count: u8 = 0,
     npc_value: Resources,
+    npc_ship_class: ShipClass = .scout,
+    npc_ship_count: u8 = 0,
     round: u16,
 
     pub fn addPlayerFleet(self: *Combat, fleet_id: u64) void {

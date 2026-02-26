@@ -363,6 +363,7 @@ pub const Network = struct {
             error.NotAtHomeworld => .not_at_homeworld,
             error.DockFull => .dock_full,
             error.ShipNotFound => .ship_not_found,
+            error.InsufficientFragments => .insufficient_fragments,
             else => .invalid_command,
         };
 
@@ -645,6 +646,28 @@ pub const Network = struct {
             });
         }
 
+        // Components
+        const ct_fields = @typeInfo(scaling.ComponentType).@"enum".fields;
+        var comp_list = std.ArrayList(protocol.ComponentState).empty;
+        inline for (ct_fields, 0..) |_, i| {
+            const ct: scaling.ComponentType = @enumFromInt(i);
+            const lvl = player.components.get(ct);
+            if (lvl > 0) {
+                try comp_list.append(alloc, .{ .component_type = ct, .level = lvl });
+            }
+        }
+
+        // Fragments
+        const ft_fields = @typeInfo(scaling.FragmentType).@"enum".fields;
+        var frag_list = std.ArrayList(protocol.FragmentState).empty;
+        inline for (ft_fields, 0..) |_, i| {
+            const ft: scaling.FragmentType = @enumFromInt(i);
+            const count = player.fragments.get(ft);
+            if (count > 0) {
+                try frag_list.append(alloc, .{ .fragment_type = ft, .count = count });
+            }
+        }
+
         return .{
             .location = player.homeworld,
             .buildings = buildings,
@@ -653,6 +676,8 @@ pub const Network = struct {
             .shipyard_queue = shipyard_queue,
             .research_active = research_active,
             .docked_ships = docked_ships.items,
+            .components = comp_list.items,
+            .fragments = frag_list.items,
         };
     }
 
@@ -698,6 +723,7 @@ pub const Network = struct {
                 break :blk false;
             },
             .fleet_destroyed => |e| e.is_npc or isOwnFleet(eng, e.fleet_id, player_id),
+            .loot_acquired => |e| e.player_id == player_id,
             .alert => true,
         };
     }

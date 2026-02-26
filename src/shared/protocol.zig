@@ -14,6 +14,8 @@ pub const TerrainType = constants.TerrainType;
 pub const Density = constants.Density;
 pub const BuildingType = scaling.BuildingType;
 pub const ResearchType = scaling.ResearchType;
+pub const ComponentType = scaling.ComponentType;
+pub const FragmentType = scaling.FragmentType;
 
 // ── Client → Server Messages ──────────────────────────────────────
 
@@ -244,6 +246,18 @@ pub const HomeworldState = struct {
     shipyard_queue: ?ShipyardQueueItem = null,
     research_active: ?ResearchItem = null,
     docked_ships: []const ShipState,
+    components: []const ComponentState = &.{},
+    fragments: []const FragmentState = &.{},
+};
+
+pub const ComponentState = struct {
+    component_type: ComponentType,
+    level: u8,
+};
+
+pub const FragmentState = struct {
+    fragment_type: FragmentType,
+    count: u16,
 };
 
 pub const BuildingState = struct {
@@ -299,6 +313,7 @@ pub const EventKind = union(enum) {
     research_completed: ResearchCompletedEvent,
     ship_built: ShipBuiltEvent,
     alert: AlertEvent,
+    loot_acquired: LootAcquiredEvent,
 };
 
 pub const CombatRoundEvent = struct {
@@ -384,6 +399,26 @@ pub const AlertEvent = struct {
     fleet_id: ?u64 = null,
 };
 
+pub const LootAcquiredEvent = struct {
+    player_id: u64,
+    loot_type: LootType,
+
+    pub const LootType = union(enum) {
+        component: ComponentLoot,
+        data_fragment: FragmentLoot,
+    };
+
+    pub const ComponentLoot = struct {
+        component_type: ComponentType,
+        rarity: scaling.Rarity,
+    };
+
+    pub const FragmentLoot = struct {
+        fragment_type: FragmentType,
+        count: u16,
+    };
+};
+
 pub const AlertLevel = enum {
     info,
     warning,
@@ -415,6 +450,7 @@ pub const ErrorCode = enum(u16) {
     not_at_homeworld = 1016,
     dock_full = 1017,
     ship_not_found = 1018,
+    insufficient_fragments = 1019,
     auth_failed = 2000,
     already_authenticated = 2001,
     name_invalid = 2002,

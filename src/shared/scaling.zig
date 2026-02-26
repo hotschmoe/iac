@@ -449,6 +449,336 @@ pub const QueueType = enum {
     research,
 };
 
+// ── Component System ─────────────────────────────────────────────
+
+pub const ComponentStat = enum { hull, shield, weapon, cargo };
+
+pub const ComponentType = enum(u8) {
+    scout_hull,
+    scout_shield,
+    corvette_hull,
+    corvette_shield,
+    corvette_weapon,
+    frigate_hull,
+    frigate_shield,
+    frigate_weapon,
+    cruiser_hull,
+    cruiser_weapon,
+    hauler_cargo,
+
+    pub const COUNT = @typeInfo(ComponentType).@"enum".fields.len;
+
+    pub fn label(self: ComponentType) []const u8 {
+        return switch (self) {
+            .scout_hull => "Scout Hull Plating",
+            .scout_shield => "Scout Shield Array",
+            .corvette_hull => "Corvette Armor",
+            .corvette_shield => "Corvette Barriers",
+            .corvette_weapon => "Corvette Ordnance",
+            .frigate_hull => "Frigate Bulkheads",
+            .frigate_shield => "Frigate Deflectors",
+            .frigate_weapon => "Frigate Batteries",
+            .cruiser_hull => "Cruiser Plating",
+            .cruiser_weapon => "Cruiser Cannons",
+            .hauler_cargo => "Hauler Cargo Mods",
+        };
+    }
+
+    pub fn shipClass(self: ComponentType) ShipClass {
+        return switch (self) {
+            .scout_hull, .scout_shield => .scout,
+            .corvette_hull, .corvette_shield, .corvette_weapon => .corvette,
+            .frigate_hull, .frigate_shield, .frigate_weapon => .frigate,
+            .cruiser_hull, .cruiser_weapon => .cruiser,
+            .hauler_cargo => .hauler,
+        };
+    }
+
+    pub fn stat(self: ComponentType) ComponentStat {
+        return switch (self) {
+            .scout_hull, .corvette_hull, .frigate_hull, .cruiser_hull => .hull,
+            .scout_shield, .corvette_shield, .frigate_shield => .shield,
+            .corvette_weapon, .frigate_weapon, .cruiser_weapon => .weapon,
+            .hauler_cargo => .cargo,
+        };
+    }
+
+    pub fn bonusPerLevel(self: ComponentType) f32 {
+        return switch (self.stat()) {
+            .cargo => 0.15,
+            else => 0.10,
+        };
+    }
+};
+
+pub const MAX_COMPONENT_LEVEL: u8 = 5;
+
+pub const ComponentLevels = struct {
+    scout_hull: u8 = 0,
+    scout_shield: u8 = 0,
+    corvette_hull: u8 = 0,
+    corvette_shield: u8 = 0,
+    corvette_weapon: u8 = 0,
+    frigate_hull: u8 = 0,
+    frigate_shield: u8 = 0,
+    frigate_weapon: u8 = 0,
+    cruiser_hull: u8 = 0,
+    cruiser_weapon: u8 = 0,
+    hauler_cargo: u8 = 0,
+
+    pub fn get(self: ComponentLevels, ct: ComponentType) u8 {
+        return switch (ct) {
+            .scout_hull => self.scout_hull,
+            .scout_shield => self.scout_shield,
+            .corvette_hull => self.corvette_hull,
+            .corvette_shield => self.corvette_shield,
+            .corvette_weapon => self.corvette_weapon,
+            .frigate_hull => self.frigate_hull,
+            .frigate_shield => self.frigate_shield,
+            .frigate_weapon => self.frigate_weapon,
+            .cruiser_hull => self.cruiser_hull,
+            .cruiser_weapon => self.cruiser_weapon,
+            .hauler_cargo => self.hauler_cargo,
+        };
+    }
+
+    pub fn set(self: *ComponentLevels, ct: ComponentType, level: u8) void {
+        switch (ct) {
+            .scout_hull => self.scout_hull = level,
+            .scout_shield => self.scout_shield = level,
+            .corvette_hull => self.corvette_hull = level,
+            .corvette_shield => self.corvette_shield = level,
+            .corvette_weapon => self.corvette_weapon = level,
+            .frigate_hull => self.frigate_hull = level,
+            .frigate_shield => self.frigate_shield = level,
+            .frigate_weapon => self.frigate_weapon = level,
+            .cruiser_hull => self.cruiser_hull = level,
+            .cruiser_weapon => self.cruiser_weapon = level,
+            .hauler_cargo => self.hauler_cargo = level,
+        }
+    }
+};
+
+pub const FragmentType = enum(u8) {
+    inner,
+    outer,
+    wandering,
+
+    pub const COUNT = @typeInfo(FragmentType).@"enum".fields.len;
+
+    pub fn label(self: FragmentType) []const u8 {
+        return switch (self) {
+            .inner => "Inner Ring Data",
+            .outer => "Outer Ring Data",
+            .wandering => "Deep Space Data",
+        };
+    }
+
+    pub fn fromZone(zone: constants.Zone) ?FragmentType {
+        return switch (zone) {
+            .central_hub => null,
+            .inner_ring => .inner,
+            .outer_ring => .outer,
+            .wandering => .wandering,
+        };
+    }
+};
+
+pub const FragmentCounts = struct {
+    inner: u16 = 0,
+    outer: u16 = 0,
+    wandering: u16 = 0,
+
+    pub fn get(self: FragmentCounts, ft: FragmentType) u16 {
+        return switch (ft) {
+            .inner => self.inner,
+            .outer => self.outer,
+            .wandering => self.wandering,
+        };
+    }
+
+    pub fn set(self: *FragmentCounts, ft: FragmentType, count: u16) void {
+        switch (ft) {
+            .inner => self.inner = count,
+            .outer => self.outer = count,
+            .wandering => self.wandering = count,
+        }
+    }
+
+    pub fn add(self: *FragmentCounts, ft: FragmentType, amount: u16) void {
+        switch (ft) {
+            .inner => self.inner += amount,
+            .outer => self.outer += amount,
+            .wandering => self.wandering += amount,
+        }
+    }
+
+    pub fn canAfford(self: FragmentCounts, cost: FragmentCounts) bool {
+        return self.inner >= cost.inner and
+            self.outer >= cost.outer and
+            self.wandering >= cost.wandering;
+    }
+
+    pub fn sub(self: *FragmentCounts, cost: FragmentCounts) void {
+        self.inner -= cost.inner;
+        self.outer -= cost.outer;
+        self.wandering -= cost.wandering;
+    }
+};
+
+pub const Rarity = enum {
+    common,
+    uncommon,
+    rare,
+    exotic,
+
+    pub fn label(self: Rarity) []const u8 {
+        return switch (self) {
+            .common => "Common",
+            .uncommon => "Uncommon",
+            .rare => "Rare",
+            .exotic => "Exotic",
+        };
+    }
+};
+
+pub fn applyComponentBonus(base: ShipStats, class: ShipClass, components: ComponentLevels) ShipStats {
+    var result = base;
+    const fields = @typeInfo(ComponentType).@"enum".fields;
+    inline for (fields, 0..) |_, i| {
+        const ct: ComponentType = @enumFromInt(i);
+        if (ct.shipClass() == class) {
+            const level = components.get(ct);
+            if (level > 0) {
+                const bonus = 1.0 + ct.bonusPerLevel() * @as(f32, @floatFromInt(level));
+                switch (ct.stat()) {
+                    .hull => {
+                        result.hull *= bonus;
+                    },
+                    .shield => {
+                        result.shield *= bonus;
+                    },
+                    .weapon => {
+                        result.weapon *= bonus;
+                    },
+                    .cargo => {
+                        result.cargo = @intFromFloat(@as(f32, @floatFromInt(result.cargo)) * bonus);
+                    },
+                }
+            }
+        }
+    }
+    return result;
+}
+
+pub fn researchFragmentCost(tech: ResearchType, level: u8) ?FragmentCounts {
+    // No fragment cost for unlock techs or levels 1-2
+    switch (tech) {
+        .corvette_tech, .frigate_tech, .cruiser_tech, .hauler_tech => return null,
+        else => {},
+    }
+    if (level < 3) return null;
+
+    // Level 3+: scaling fragment costs
+    const n: u16 = level - 2; // 1 at level 3, 2 at level 4, 3 at level 5
+    return switch (tech) {
+        .fuel_efficiency, .extended_fuel_tanks, .navigation, .harvesting_efficiency => .{ .inner = n * 2 },
+        .reinforced_hulls, .advanced_shields, .weapons_research => .{ .outer = n * 2 },
+        .emergency_jump => .{ .outer = n, .wandering = n },
+        else => null,
+    };
+}
+
+pub const LootResult = struct {
+    fragment_type: ?FragmentType,
+    fragment_count: u16,
+    component: ?ComponentDrop,
+
+    pub const ComponentDrop = struct {
+        component_type: ComponentType,
+        rarity: Rarity,
+    };
+};
+
+pub fn rollLoot(zone: constants.Zone, npc_class: ShipClass, npc_count: u8, random: std.Random) LootResult {
+    var result = LootResult{
+        .fragment_type = null,
+        .fragment_count = 0,
+        .component = null,
+    };
+
+    // Fragments always drop from non-hub zones
+    if (FragmentType.fromZone(zone)) |ft| {
+        result.fragment_type = ft;
+        // Base 1 + 1 per 2 NPC ships, scaled by zone
+        const zone_mult: u16 = switch (zone) {
+            .central_hub => 0,
+            .inner_ring => 1,
+            .outer_ring => 2,
+            .wandering => 3,
+        };
+        result.fragment_count = 1 + @as(u16, npc_count) / 2;
+        result.fragment_count *= zone_mult;
+        if (result.fragment_count == 0) result.fragment_count = 1;
+    }
+
+    // Component drop chance: 20% inner, 30% outer, 45% wandering
+    const drop_roll = random.float(f32);
+    const drop_chance: f32 = switch (zone) {
+        .central_hub => 0.0,
+        .inner_ring => 0.20,
+        .outer_ring => 0.30,
+        .wandering => 0.45,
+    };
+
+    if (drop_roll < drop_chance) {
+        const ct = rollComponentType(npc_class, zone, random);
+        const rarity = rollRarity(zone, random);
+        result.component = .{
+            .component_type = ct,
+            .rarity = rarity,
+        };
+    }
+
+    return result;
+}
+
+fn rollComponentType(npc_class: ShipClass, zone: constants.Zone, random: std.Random) ComponentType {
+    _ = zone;
+    // Weighted towards the NPC's ship class (60% same class, 40% any)
+    if (random.float(f32) < 0.6) {
+        // Pick a component matching the NPC's class
+        const matching = componentsForClass(npc_class);
+        if (matching.len > 0) {
+            const idx = random.intRangeLessThan(u8, 0, @intCast(matching.len));
+            return matching[idx];
+        }
+    }
+    // Random from all components
+    const all_count: u8 = @intCast(ComponentType.COUNT);
+    return @enumFromInt(random.intRangeLessThan(u8, 0, all_count));
+}
+
+fn componentsForClass(class: ShipClass) []const ComponentType {
+    return switch (class) {
+        .scout => &.{ .scout_hull, .scout_shield },
+        .corvette => &.{ .corvette_hull, .corvette_shield, .corvette_weapon },
+        .frigate => &.{ .frigate_hull, .frigate_shield, .frigate_weapon },
+        .cruiser => &.{ .cruiser_hull, .cruiser_weapon },
+        .hauler => &.{.hauler_cargo},
+    };
+}
+
+fn rollRarity(zone: constants.Zone, random: std.Random) Rarity {
+    const roll = random.float(f32);
+    return switch (zone) {
+        .central_hub => .common,
+        .inner_ring => if (roll < 0.60) .common else if (roll < 0.90) .uncommon else .rare,
+        .outer_ring => if (roll < 0.40) .common else if (roll < 0.75) .uncommon else if (roll < 0.95) .rare else .exotic,
+        .wandering => if (roll < 0.20) .common else if (roll < 0.50) .uncommon else if (roll < 0.85) .rare else .exotic,
+    };
+}
+
 // ── Utility ─────────────────────────────────────────────────────
 
 fn pow_f32(base: f32, exp: u8) f32 {

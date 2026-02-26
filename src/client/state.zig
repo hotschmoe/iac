@@ -11,13 +11,15 @@ pub const HomeworldTab = enum {
     shipyard,
     research,
     fleets,
+    inventory,
 
     pub fn next(self: HomeworldTab) HomeworldTab {
         return switch (self) {
             .buildings => .shipyard,
             .shipyard => .research,
             .research => .fleets,
-            .fleets => .buildings,
+            .fleets => .inventory,
+            .inventory => .buildings,
         };
     }
 
@@ -26,7 +28,8 @@ pub const HomeworldTab = enum {
             .buildings => scaling.BuildingType.COUNT,
             .shipyard => ShipClass.COUNT,
             .research => scaling.ResearchType.COUNT,
-            .fleets => 0, // dynamic, handled by fleet manager
+            .fleets => 0,
+            .inventory => 0,
         };
     }
 };
@@ -137,6 +140,8 @@ pub const ClientState = struct {
             self.allocator.free(hw.buildings);
             self.allocator.free(hw.research);
             self.allocator.free(hw.docked_ships);
+            if (hw.components.len > 0) self.allocator.free(hw.components);
+            if (hw.fragments.len > 0) self.allocator.free(hw.fragments);
             self.homeworld = null;
         }
     }
@@ -307,6 +312,14 @@ pub const ClientState = struct {
         owned.buildings = try self.allocator.dupe(protocol.BuildingState, hw.buildings);
         owned.research = try self.allocator.dupe(protocol.ResearchState, hw.research);
         owned.docked_ships = try self.allocator.dupe(protocol.ShipState, hw.docked_ships);
+        owned.components = if (hw.components.len > 0)
+            try self.allocator.dupe(protocol.ComponentState, hw.components)
+        else
+            &.{};
+        owned.fragments = if (hw.fragments.len > 0)
+            try self.allocator.dupe(protocol.FragmentState, hw.fragments)
+        else
+            &.{};
         self.homeworld = owned;
     }
 
@@ -374,7 +387,7 @@ pub const ClientState = struct {
                         if (!scaling.shipClassUnlocked(sc, res_levels)) return null;
                         return .{ .build_ship = .{ .ship_class = sc, .count = 1 } };
                     },
-                    .fleets => return null, // handled by fleetManagerNav
+                    .fleets, .inventory => return null,
                 }
             },
         }
