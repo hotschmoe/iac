@@ -1,7 +1,7 @@
 # In Amber Clad — Technical Specification
 
-**Version:** 0.4.0
-**Status:** M3 complete. Multiplayer: concurrent players, homeworld separation, fleet cap, co-op combat, event visibility
+**Version:** 0.5.0
+**Status:** M3 complete + auth. Token-based authentication, name validation, rate limiting, client credential storage
 
 ---
 
@@ -383,7 +383,7 @@ The server is authoritative. Clients are thin renderers + input devices.
 
 **Connection:** WebSocket (ws:// for local dev, wss:// for production).
 
-**Authentication:** Simple token-based. Player registers a name, gets a session token. (Full auth system is out of scope for early milestones.)
+**Authentication:** Token-based. See `docs/auth_spec.md` for full specification and section 14 below for implementation summary.
 
 ### 9.2 Server → Client Messages
 
@@ -703,7 +703,7 @@ A human player can connect via TUI, see the amber hex map, navigate between sect
 
 ## 13. Milestone 3 Detailed Scope: Multiplayer
 
-**Note:** Authentication, registration, and login are specified and implemented separately.
+**Note:** Authentication is implemented. See section 14.
 
 ### 13.1 Concurrent Player Support
 
@@ -834,3 +834,66 @@ while connected:
         strategic_review = llm_reason(homeworld_status, research_tree, economy)
         send(build_commands or research_commands)
 ```
+
+---
+
+## 14. Authentication
+
+Full specification in `docs/auth_spec.md`. This section summarizes the implemented system.
+
+### 14.1 Protocol
+
+Clients send an explicit action with their auth request:
+
+```json
+{"auth": {"player_name": "admiral", "action": "register"}}
+{"auth": {"player_name": "admiral", "action": "login", "token": "a3f8c9..."}}
+```
+
+Registration returns a 64-character hex token (256-bit random, shown once). Login requires that token. Both return `auth_result` with success/failure, player_id, and (on registration only) the token.
+
+### 14.2 Token Storage
+
+Server stores `SHA-256(token)` as a 64-char hex string in `players.token_hash`. The raw token is never stored server-side. Constant-time comparison prevents timing attacks.
+
+**Database columns:** `token_hash TEXT`, `created_at INTEGER`, `last_login_at INTEGER` on the `players` table.
+
+### 14.3 Name Validation
+
+Names are lowercased on the server before any processing. Validation rules:
+
+- Length: 3-24 characters
+- Charset: `[a-z0-9_-]` (after lowercasing)
+- No leading or trailing `-` or `_`
+- Reserved names blocked: admin, administrator, server, system, moderator, mod, npc, mlm, gm, gamemaster
+
+### 14.4 Anti-Griefing
+
+| Layer | Limit | Scope |
+|---|---|---|
+| Player cap | 200 (configurable via `--max-players`) | Global |
+| Registration rate | 2/hour | Per IP |
+| Connection rate | 10/minute | Per IP |
+
+Rate limits are in-memory, reset on server restart.
+
+### 14.5 Legacy Migration
+
+Existing players with NULL `token_hash` (pre-auth) can be claimed: a registration with that name generates a new token and assigns it. Once claimed, the name requires the token for login.
+
+### 14.6 Client Credential Storage
+
+The TUI client stores credentials at `~/.iac/credentials` (mode 0600):
+
+```
+name=admiral
+token=a3f8c9...
+```
+
+On launch: if credentials exist, login; otherwise register with `--name`. Token is saved automatically after successful registration.
+
+### 14.7 CLI Arguments
+
+**Server:** `--port`, `--seed`, `--db`, `--max-players`
+
+**Client:** `--host`, `--port`, `--name`

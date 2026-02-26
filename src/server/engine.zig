@@ -553,19 +553,15 @@ pub const GameEngine = struct {
             if (db_count >= max_players) return error.PlayerCapReached;
         }
 
-        // Check for existing player with this name
         var iter = self.players.iterator();
         while (iter.next()) |entry| {
             if (std.mem.eql(u8, entry.value_ptr.name, name)) {
-                // Legacy migration: player exists with no token_hash -> claim account
                 if (entry.value_ptr.token_hash == null) {
                     const token = generateToken();
                     var hash_buf: [shared.constants.HASH_HEX_LEN]u8 = undefined;
                     hashToken(&token, &hash_buf);
 
-                    const duped_hash = try self.allocator.dupe(u8, &hash_buf);
-                    if (entry.value_ptr.token_hash) |old| self.allocator.free(old);
-                    entry.value_ptr.token_hash = duped_hash;
+                    entry.value_ptr.token_hash = try self.allocator.dupe(u8, &hash_buf);
                     entry.value_ptr.last_login_at = currentTimestamp();
 
                     self.db.savePlayerAuth(entry.key_ptr.*, &hash_buf, entry.value_ptr.created_at) catch |err| {
@@ -1497,15 +1493,9 @@ fn normalizeName(raw: []const u8, buf: *[shared.constants.PLAYER_NAME_MAX_LEN]u8
 }
 
 fn validatePlayerName(name: []const u8) !void {
-    if (name.len < shared.constants.PLAYER_NAME_MIN_LEN or name.len > shared.constants.PLAYER_NAME_MAX_LEN)
-        return error.NameInvalid;
-
     for (name) |c| {
-        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return error.NameInvalid;
-    }
-    // No uppercase after normalization
-    for (name) |c| {
-        if (std.ascii.isUpper(c)) return error.NameInvalid;
+        const valid = (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_' or c == '-';
+        if (!valid) return error.NameInvalid;
     }
 
     if (name[0] == '-' or name[0] == '_') return error.NameInvalid;
@@ -1544,7 +1534,7 @@ fn constantTimeEql(a: []const u8, b: []const u8) bool {
 }
 
 fn currentTimestamp() u64 {
-    return @intCast(@divTrunc(std.time.timestamp(), 1));
+    return @intCast(std.time.timestamp());
 }
 
 pub const MAX_SHIPS_PER_FLEET: usize = 64;

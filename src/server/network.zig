@@ -164,7 +164,6 @@ pub const Network = struct {
 
                 switch (auth.action) {
                     .register => {
-                        // Registration rate limit
                         const ip_key = self.sessionIpKey(session_id);
                         if (ip_key != 0) {
                             const now = std.time.timestamp();
@@ -190,7 +189,6 @@ pub const Network = struct {
                             return;
                         };
 
-                        // Record successful registration for rate limiting
                         if (ip_key != 0) {
                             bumpRate(&self.reg_rate, ip_key, std.time.timestamp());
                         }
@@ -231,7 +229,7 @@ pub const Network = struct {
                         if (self.sessions.getPtr(session_id)) |s| {
                             s.player_id = player_id;
                             s.authenticated = true;
-                            s.client_type = if (auth.token != null) .llm_agent else .tui_human;
+                            s.client_type = .tui_human;
                         }
                         self.mutex.unlock();
 
@@ -714,7 +712,6 @@ const Handler = struct {
         ctx.mutex.lock();
         defer ctx.mutex.unlock();
 
-        // Connection rate limit
         if (ip_key != 0) {
             const now = std.time.timestamp();
             if (!checkRate(&ctx.conn_rate, ip_key, constants.CONN_RATE_LIMIT, constants.CONN_RATE_WINDOW_SECS, now)) {

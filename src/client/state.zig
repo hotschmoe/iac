@@ -48,7 +48,6 @@ pub const ClientState = struct {
     known_sectors: std.AutoHashMap(u32, protocol.SectorState),
     event_log: EventLog,
 
-    // Auth
     pending_token: ?[128]u8 = null,
     pending_token_len: usize = 0,
 
@@ -215,7 +214,6 @@ pub const ClientState = struct {
                 if (self.player) |p| {
                     self.map_center = p.homeworld;
 
-                    // Flush pending token to credentials file
                     if (self.pending_token) |tok| {
                         const main_mod = @import("main.zig");
                         main_mod.saveCredentials(p.name, tok[0..self.pending_token_len]);

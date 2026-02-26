@@ -156,7 +156,9 @@ Homeworld buildings with leveled production (metal mine, crystal mine, deut synt
 ### M3: Multiplayer (Complete)
 Multiple concurrent players in a shared universe. Homeworld minimum 2-hex separation. 3-fleet cap per player with docked ship auto-merge on return. Shared sector state (depletion, NPC kills visible to all). Player visibility (see other fleets in your sector with ship class breakdown via `FleetBrief`). Co-op combat (pooled allied ships vs pooled enemies, single engagement per sector). Per-player event visibility filtering (own fleet/homeworld + sectors where fleet is physically present). Allied fleet rendering on star map (`A` symbol) and in sector info panel.
 
-**Implemented:** Multi-fleet `Combat` struct with bounded arrays. `resolveCombatRound` takes fleet pointer slices with `ShipRef` indirection for cross-fleet targeting. `startCombat` joins existing sector combats or creates new ones; `enrollAllPlayerFleetsInSectorCombat` sweeps idle fleets into active engagements. `buildSectorState` populates `player_fleets` (excluding own) with per-class ship counts. `broadcastUpdates` sends sector state for all fleet locations (not just first). `isEventRelevant` filters by fleet ownership and sector presence. Fleet cap enforced in `handleMove` (homeworld departure only). Auto-merge in `dockFleet` absorbs all other homeworld fleets. `deleteFleet` DB method for merged fleet cleanup. Auth catches registration failure when no homeworld locations available.
+**Implemented:** Multi-fleet `Combat` struct with bounded arrays. `resolveCombatRound` takes fleet pointer slices with `ShipRef` indirection for cross-fleet targeting. `startCombat` joins existing sector combats or creates new ones; `enrollAllPlayerFleetsInSectorCombat` sweeps idle fleets into active engagements. `buildSectorState` populates `player_fleets` (excluding own) with per-class ship counts. `broadcastUpdates` sends sector state for all fleet locations (not just first). `isEventRelevant` filters by fleet ownership and sector presence. Fleet cap enforced in `handleMove` (homeworld departure only). Auto-merge in `dockFleet` absorbs all other homeworld fleets. `deleteFleet` DB method for merged fleet cleanup.
+
+**Authentication:** Token-based auth system. Clients register (receive a 256-bit random token) or login (provide stored token). Server stores SHA-256 hash only. Name validation (lowercase, 3-24 chars, `[a-z0-9_-]`, reserved names blocked). Per-IP rate limiting (10 connections/min, 2 registrations/hr). Player cap (200, configurable). TUI client stores credentials at `~/.iac/credentials`. Legacy account migration (pre-auth players claimed on first register). See `docs/auth_spec.md` for full specification.
 
 ### M4: Deep Systems
 Loot system (salvage, components, data fragments). Morning Light Mountain faction with scaling difficulty. Auto-action policy system. LLM agent reference implementation.
@@ -175,17 +177,21 @@ zig build client       # Build client only
 
 ### Run
 ```bash
-# Start the server (default port 7777)
+# Start the server
 zig-out/bin/iac-server
+zig-out/bin/iac-server --port 7777 --seed 42 --db world.db --max-players 200
 
-# Connect with the TUI client
+# Connect with the TUI client (first run registers, subsequent runs auto-login)
 zig-out/bin/iac-client
+zig-out/bin/iac-client --host 127.0.0.1 --port 7777 --name Admiral
 ```
+
+Credentials are stored at `~/.iac/credentials` after first registration.
 
 ### LLM Agent (JSON/WebSocket)
 ```bash
 # Connect via WebSocket to ws://localhost:7777
-# Authenticate, then send commands and receive state as JSON
+# Register or login, then send commands and receive state as JSON
 ```
 
 Example agent interaction:

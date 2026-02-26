@@ -287,18 +287,16 @@ pub fn npcRespawnDelay(zone: Zone) u64 {
 pub const SALVAGE_FRACTION: f32 = 0.30;
 pub const SALVAGE_DESPAWN_TICKS: u32 = 60;
 
-/// Authentication.
 pub const MAX_PLAYERS: u32 = 200;
 pub const PLAYER_NAME_MIN_LEN: usize = 3;
 pub const PLAYER_NAME_MAX_LEN: usize = 24;
 pub const TOKEN_BYTES: usize = 32;
-pub const TOKEN_HEX_LEN: usize = TOKEN_BYTES * 2; // 64 chars
-pub const HASH_HEX_LEN: usize = 64; // SHA-256 output as hex
+pub const TOKEN_HEX_LEN: usize = TOKEN_BYTES * 2;
+pub const HASH_HEX_LEN: usize = 64;
 
-/// Rate limiting.
-pub const CONN_RATE_LIMIT: u16 = 10; // max connections per IP per window
+pub const CONN_RATE_LIMIT: u16 = 10;
 pub const CONN_RATE_WINDOW_SECS: i64 = 60;
-pub const REG_RATE_LIMIT: u16 = 2; // max registrations per IP per window
+pub const REG_RATE_LIMIT: u16 = 2;
 pub const REG_RATE_WINDOW_SECS: i64 = 3600;
 
 /// WebSocket server defaults.

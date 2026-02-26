@@ -35,7 +35,7 @@ pub fn main() !void {
     log.info("═══════════════════════════════════════════", .{});
     log.info("Port:       {d}", .{config.port});
     log.info("World seed: 0x{X}", .{config.world_seed});
-    log.info("Max players:{d}", .{config.max_players});
+    log.info("Max players: {d}", .{config.max_players});
     log.info("Tick rate:  {d} Hz", .{shared.constants.TICK_RATE_HZ});
     log.info("───────────────────────────────────────────", .{});
 

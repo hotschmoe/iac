@@ -103,7 +103,6 @@ pub fn main() !void {
     defer app_state.client_state.deinit();
     defer app_state.conn.deinit();
 
-    // Auth flow: try credentials file first, fall back to registration
     const creds = loadCredentials(allocator);
     if (creds) |c| {
         defer allocator.free(c.name);

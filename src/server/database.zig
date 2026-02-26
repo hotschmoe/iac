@@ -153,7 +153,6 @@ pub const Database = struct {
         // Migration: add NPC cleared tick
         self.db.exec("ALTER TABLE sectors_modified ADD COLUMN npc_cleared_tick INTEGER") catch {};
 
-        // Migration: add auth columns
         self.db.exec("ALTER TABLE players ADD COLUMN token_hash TEXT") catch {};
         self.db.exec("ALTER TABLE players ADD COLUMN created_at INTEGER DEFAULT 0") catch {};
         self.db.exec("ALTER TABLE players ADD COLUMN last_login_at INTEGER DEFAULT 0") catch {};
