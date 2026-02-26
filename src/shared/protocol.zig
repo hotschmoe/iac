@@ -291,6 +291,7 @@ pub const CombatRoundEvent = struct {
     shield_absorbed: f32,
     hull_damage: f32,
     rapid_fire: bool,
+    sector: Hex,
 };
 
 pub const ShipDestroyedEvent = struct {

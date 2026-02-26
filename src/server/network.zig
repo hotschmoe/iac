@@ -110,7 +110,7 @@ pub const Network = struct {
 
             const fleet_updates = try collectPlayerFleets(alloc, eng, player_id);
             const player_data = eng.players.get(player_id);
-            const sector_updates = try collectVisibleSectors(alloc, eng, fleet_updates, player_data, player_id);
+            const sector_updates = try collectVisibleSectors(alloc, eng, fleet_updates, player_data, player_id, null);
 
             var player_update: ?protocol.PlayerState = null;
             var hw_update: ?protocol.HomeworldState = null;
@@ -351,7 +351,8 @@ pub const Network = struct {
         const alloc = arena.allocator();
 
         const fleet_states = try collectPlayerFleets(alloc, self.engine, player_id);
-        const known_sectors = try collectVisibleSectors(alloc, self.engine, fleet_states, player, player_id);
+        const explored = try self.engine.db.loadExploredCoords(alloc, player_id);
+        const known_sectors = try collectVisibleSectors(alloc, self.engine, fleet_states, player, player_id, explored);
         const hw_state = try buildHomeworldState(alloc, self.engine, &player);
 
         try self.sendToSession(session, .{
@@ -395,6 +396,7 @@ pub const Network = struct {
         fleet_states: []const protocol.FleetState,
         player: ?engine_mod.Player,
         player_id: u64,
+        explored_coords: ?[]const shared.Hex,
     ) ![]const protocol.SectorState {
         var sector_list = std.ArrayList(protocol.SectorState).empty;
         var sector_keys = std.AutoHashMap(u32, void).init(alloc);
@@ -417,6 +419,16 @@ pub const Network = struct {
                         try sector_keys.put(key, {});
                         try sector_list.append(alloc, try buildSectorState(alloc, eng, coord, player_id));
                     }
+                }
+            }
+        }
+
+        if (explored_coords) |coords| {
+            for (coords) |coord| {
+                const key = coord.toKey();
+                if (!sector_keys.contains(key)) {
+                    try sector_keys.put(key, {});
+                    try sector_list.append(alloc, try buildSectorState(alloc, eng, coord, player_id));
                 }
             }
         }
@@ -651,7 +663,7 @@ pub const Network = struct {
             .ship_built => |e| if (e.player_id) |pid| pid == player_id else true,
             .combat_started => |e| isOwnFleet(eng, e.player_fleet_id, player_id) or playerHasFleetAtSector(eng, player_id, e.sector),
             .combat_ended => |e| playerHasFleetAtSector(eng, player_id, e.sector),
-            .combat_round => true,
+            .combat_round => |e| playerHasFleetAtSector(eng, player_id, e.sector),
             .ship_destroyed => |e| blk: {
                 if (!e.is_npc and isOwnFleet(eng, e.owner_fleet_id, player_id)) break :blk true;
                 // Also visible to anyone with a fleet in the sector (derive from fleet location)

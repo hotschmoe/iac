@@ -90,8 +90,11 @@ pub fn main() !void {
 
     const config = parseArgs();
 
+    var client_state = ClientState.init(allocator);
+    client_state.config_player_name = config.player_name;
+
     var app_state = AppState{
-        .client_state = ClientState.init(allocator),
+        .client_state = client_state,
         .conn = try Connection.init(allocator, config.server_host, config.server_port),
         .allocator = allocator,
         .config = config,

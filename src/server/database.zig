@@ -577,6 +577,27 @@ pub const Database = struct {
         return edges;
     }
 
+    /// Returns distinct sector coords a player has explored (visited + visible neighbors).
+    pub fn loadExploredCoords(self: *Database, alloc: std.mem.Allocator, player_id: u64) ![]const Hex {
+        var coords = std.AutoHashMap(u32, Hex).init(alloc);
+        var stmt = try self.db.prepare(
+            "SELECT DISTINCT q1, r1 FROM explored_edges WHERE player_id = ?1",
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(player_id));
+        while (try stmt.step()) {
+            const h = Hex{ .q = @intCast(stmt.columnInt32(0)), .r = @intCast(stmt.columnInt32(1)) };
+            try coords.put(h.toKey(), h);
+        }
+        var result = std.ArrayList(Hex).empty;
+        var iter = coords.iterator();
+        while (iter.next()) |entry| {
+            try result.append(alloc, entry.value_ptr.*);
+        }
+        coords.deinit();
+        return result.items;
+    }
+
     // ── Building / Research / Queue persistence ──────────────────
 
     pub fn saveBuildings(self: *Database, player_id: u64, levels: scaling.BuildingLevels) !void {

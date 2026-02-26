@@ -50,6 +50,7 @@ pub const ClientState = struct {
 
     pending_token: ?[128]u8 = null,
     pending_token_len: usize = 0,
+    config_player_name: []const u8 = "",
 
     // UI state
     current_view: View,
@@ -216,7 +217,8 @@ pub const ClientState = struct {
 
                     if (self.pending_token) |tok| {
                         const main_mod = @import("main.zig");
-                        main_mod.saveToken(p.name, tok[0..self.pending_token_len]);
+                        const name = if (self.config_player_name.len > 0) self.config_player_name else p.name;
+                        main_mod.saveToken(name, tok[0..self.pending_token_len]);
                         self.pending_token = null;
                         self.pending_token_len = 0;
                     }

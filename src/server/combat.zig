@@ -56,17 +56,19 @@ pub fn resolveCombatRound(
         }
     }
 
+    const sector = active_combat.sector;
+
     for (player_fleets) |pf| {
         for (pf.ships[0..pf.ship_count]) |*attacker| {
             if (attacker.hull <= 0) continue;
-            try fireShip(attacker, npc_targets.items, tick, random, &events, allocator);
+            try fireShip(attacker, npc_targets.items, tick, random, &events, allocator, sector);
         }
     }
 
     for (npc_fleets) |npc| {
         for (npc.ships[0..npc.ship_count]) |*attacker| {
             if (attacker.hull <= 0) continue;
-            try fireShip(attacker, player_targets.items, tick, random, &events, allocator);
+            try fireShip(attacker, player_targets.items, tick, random, &events, allocator, sector);
         }
     }
 
@@ -128,6 +130,7 @@ fn fireShip(
     random: std.Random,
     events: *std.ArrayList(GameEvent),
     allocator: std.mem.Allocator,
+    sector: shared.Hex,
 ) !void {
     while (true) {
         const target_ref = selectTarget(targets, random) orelse return;
@@ -146,6 +149,7 @@ fn fireShip(
                 .shield_absorbed = result.shield_absorbed,
                 .hull_damage = result.hull_damage,
                 .rapid_fire = rapid,
+                .sector = sector,
             } },
         });
 
