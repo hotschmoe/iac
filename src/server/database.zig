@@ -141,6 +141,7 @@ pub const Database = struct {
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id)");
+        try self.db.exec("CREATE INDEX IF NOT EXISTS idx_ships_player_docked ON ships(player_id, fleet_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_explored_player ON explored_edges(player_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_buildings_player ON buildings(player_id)");
         try self.db.exec("CREATE INDEX IF NOT EXISTS idx_research_player ON research(player_id)");
@@ -465,6 +466,68 @@ pub const Database = struct {
             count += 1;
         }
         return count;
+    }
+
+    pub fn saveDockedShips(self: *Database, player_id: u64, ships: []const engine_mod.Ship) !void {
+        var del = try self.db.prepare("DELETE FROM ships WHERE player_id = ?1 AND fleet_id IS NULL");
+        defer del.deinit();
+        try del.bindInt(1, @intCast(player_id));
+        _ = try del.step();
+
+        if (ships.len == 0) return;
+
+        var ins = try self.db.prepare(
+            \\INSERT INTO ships
+            \\    (id, fleet_id, player_id, class, hull, hull_max, shield, shield_max, weapon_power, speed)
+            \\VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        );
+        defer ins.deinit();
+
+        for (ships) |ship| {
+            try ins.bindInt(1, @intCast(ship.id));
+            try ins.bindInt(2, @intCast(player_id));
+            try ins.bindText(3, @tagName(ship.class));
+            try ins.bindFloat(4, @floatCast(ship.hull));
+            try ins.bindFloat(5, @floatCast(ship.hull_max));
+            try ins.bindFloat(6, @floatCast(ship.shield));
+            try ins.bindFloat(7, @floatCast(ship.shield_max));
+            try ins.bindFloat(8, @floatCast(ship.weapon_power));
+            try ins.bindInt(9, @as(i64, ship.speed));
+            _ = try ins.step();
+            ins.reset();
+        }
+    }
+
+    pub const DockedShipsResult = struct {
+        ships: [engine_mod.MAX_SHIPS_PER_FLEET]engine_mod.Ship,
+        count: usize,
+    };
+
+    pub fn loadDockedShips(self: *Database, player_id: u64) !DockedShipsResult {
+        var result = DockedShipsResult{ .ships = undefined, .count = 0 };
+        var stmt = try self.db.prepare(
+            \\SELECT id, class, hull, hull_max, shield, shield_max, weapon_power, speed
+            \\FROM ships WHERE player_id = ?1 AND fleet_id IS NULL
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, @intCast(player_id));
+
+        while (try stmt.step()) {
+            if (result.count >= engine_mod.MAX_SHIPS_PER_FLEET) break;
+            const class_str = stmt.columnText(1) orelse "scout";
+            result.ships[result.count] = .{
+                .id = @intCast(stmt.columnInt(0)),
+                .class = parseShipClass(class_str),
+                .hull = @floatCast(stmt.columnFloat(2)),
+                .hull_max = @floatCast(stmt.columnFloat(3)),
+                .shield = @floatCast(stmt.columnFloat(4)),
+                .shield_max = @floatCast(stmt.columnFloat(5)),
+                .weapon_power = @floatCast(stmt.columnFloat(6)),
+                .speed = @intCast(stmt.columnInt(7)),
+            };
+            result.count += 1;
+        }
+        return result;
     }
 
     pub fn deleteFleet(self: *Database, fleet_id: u64) !void {

@@ -56,6 +56,13 @@ fn update(state: *AppState, event: zithril.Event) zithril.Action {
                         };
                     }
                 },
+                .fleet_nav => |nav| {
+                    if (state.client_state.fleetManagerNav(nav)) |cmd| {
+                        state.conn.sendCommand(cmd) catch |err| {
+                            log.warn("Send failed: {any}", .{err});
+                        };
+                    }
+                },
                 .toggle_tech_tree => {
                     state.client_state.show_tech_tree = !state.client_state.show_tech_tree;
                     state.client_state.show_keybinds = false;

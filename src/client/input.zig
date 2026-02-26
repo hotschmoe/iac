@@ -18,6 +18,7 @@ pub const InputAction = union(enum) {
     toggle_info: void,
     toggle_keybinds: void,
     homeworld_nav: State.HomeworldNav,
+    fleet_nav: State.FleetManagerNav,
     toggle_tech_tree: void,
 };
 
@@ -29,14 +30,23 @@ pub fn mapKey(key: Key, state: *const ClientState) InputAction {
 
     // Homeworld-specific: arrow/tab/enter routing for card navigation
     if (state.current_view == .homeworld and !state.show_keybinds and !state.show_tech_tree) {
-        switch (key.code) {
-            .tab => return .{ .homeworld_nav = .tab_next },
-            .up => return .{ .homeworld_nav = .cursor_up },
-            .down => return .{ .homeworld_nav = .cursor_down },
-            .left => return .{ .homeworld_nav = .cursor_left },
-            .right => return .{ .homeworld_nav = .cursor_right },
-            .enter => return .{ .homeworld_nav = .select },
-            else => {},
+        if (state.homeworld_tab == .fleets) {
+            switch (key.code) {
+                .tab => return .{ .homeworld_nav = .tab_next },
+                .up => return .{ .fleet_nav = .{ .cursor_up = {} } },
+                .down => return .{ .fleet_nav = .{ .cursor_down = {} } },
+                else => {},
+            }
+        } else {
+            switch (key.code) {
+                .tab => return .{ .homeworld_nav = .tab_next },
+                .up => return .{ .homeworld_nav = .cursor_up },
+                .down => return .{ .homeworld_nav = .cursor_down },
+                .left => return .{ .homeworld_nav = .cursor_left },
+                .right => return .{ .homeworld_nav = .cursor_right },
+                .enter => return .{ .homeworld_nav = .select },
+                else => {},
+            }
         }
     }
 
@@ -54,7 +64,10 @@ pub fn mapKey(key: Key, state: *const ClientState) InputAction {
 }
 
 fn mapChar(c: u21, state: *const ClientState) InputAction {
-    if (state.current_view == .homeworld) return mapHomeworldChar(c);
+    if (state.current_view == .homeworld) {
+        if (state.homeworld_tab == .fleets) return mapFleetManagerChar(c);
+        return mapHomeworldChar(c);
+    }
 
     return switch (c) {
         'q' => .{ .quit = {} },
@@ -77,6 +90,23 @@ fn mapChar(c: u21, state: *const ClientState) InputAction {
         'x' => mapZoomIn(state),
         'c' => .{ .center_fleet = {} },
 
+        else => .{ .none = {} },
+    };
+}
+
+fn mapFleetManagerChar(c: u21) InputAction {
+    return switch (c) {
+        'q' => .{ .quit = {} },
+        'w' => .{ .switch_view = .windshield },
+        'm' => .{ .switch_view = .star_map },
+        '`' => .{ .switch_view = .command_center },
+        '?' => .{ .toggle_keybinds = {} },
+        'n' => .{ .fleet_nav = .{ .create_fleet = {} } },
+        'd' => .{ .fleet_nav = .{ .dock_ship = {} } },
+        'x' => .{ .fleet_nav = .{ .dissolve_fleet = {} } },
+        '1' => .{ .fleet_nav = .{ .assign_to_fleet = 0 } },
+        '2' => .{ .fleet_nav = .{ .assign_to_fleet = 1 } },
+        '3' => .{ .fleet_nav = .{ .assign_to_fleet = 2 } },
         else => .{ .none = {} },
     };
 }

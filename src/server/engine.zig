@@ -675,15 +675,6 @@ pub const GameEngine = struct {
 
         const player = self.players.get(fleet.owner_id);
 
-        // Fleet cap: only applies when deploying from homeworld
-        if (player) |p| {
-            if (fleet.location.eql(p.homeworld)) {
-                if (self.countDeployedFleets(fleet.owner_id, p.homeworld) >= shared.constants.MAX_FLEETS_PER_PLAYER) {
-                    return error.FleetLimitReached;
-                }
-            }
-        }
-
         const connections = self.world_gen.connectedNeighbors(fleet.location);
         var valid = false;
         for (connections.slice()) |conn| {
@@ -929,45 +920,12 @@ pub const GameEngine = struct {
     }
 
     fn addShipToHomeworld(self: *GameEngine, player: *Player, ship_class: ShipClass) !void {
-        // Find existing docked fleet at homeworld, or create one
-        var docked_fleet: ?*Fleet = null;
-        var fleet_iter = self.fleets.iterator();
-        while (fleet_iter.next()) |f_entry| {
-            const fleet = f_entry.value_ptr;
-            if (fleet.owner_id == player.id and fleet.location.eql(player.homeworld)) {
-                docked_fleet = fleet;
-                break;
-            }
-        }
-
-        if (docked_fleet == null) {
-            const fleet_id = self.nextId();
-            const new_fleet = Fleet{
-                .id = fleet_id,
-                .owner_id = player.id,
-                .location = player.homeworld,
-                .state = .idle,
-                .ships = undefined,
-                .ship_count = 0,
-                .cargo = .{},
-                .fuel = 0,
-                .fuel_max = 0,
-                .move_cooldown = 0,
-                .action_cooldown = 0,
-                .move_target = null,
-                .idle_ticks = 0,
-            };
-            try self.fleets.put(fleet_id, new_fleet);
-            docked_fleet = self.fleets.getPtr(fleet_id);
-        }
-
-        const fleet = docked_fleet.?;
-        if (fleet.ship_count >= MAX_SHIPS_PER_FLEET) return;
+        if (player.docked_ship_count >= MAX_SHIPS_PER_FLEET) return;
 
         const base_stats = ship_class.baseStats();
         const stats = scaling.applyResearchToStats(base_stats, player.research);
 
-        fleet.ships[fleet.ship_count] = Ship{
+        player.docked_ships[player.docked_ship_count] = Ship{
             .id = self.nextId(),
             .class = ship_class,
             .hull = stats.hull,
@@ -977,20 +935,17 @@ pub const GameEngine = struct {
             .weapon_power = stats.weapon,
             .speed = stats.speed,
         };
-        fleet.ship_count += 1;
+        player.docked_ship_count += 1;
 
-        fleet.fuel_max = fleetFuelMax(fleet, player);
-        fleet.fuel = fleet.fuel_max;
-
-        try self.dirty_fleets.put(fleet.id, {});
+        try self.dirty_players.put(player.id, {});
     }
 
-    fn countDeployedFleets(self: *const GameEngine, player_id: u64, homeworld: Hex) usize {
+    fn countPlayerFleets(self: *const GameEngine, player_id: u64) usize {
         var count: usize = 0;
         var iter = self.fleets.iterator();
         while (iter.next()) |entry| {
             const f = entry.value_ptr;
-            if (f.owner_id == player_id and !f.location.eql(homeworld) and f.ship_count > 0) {
+            if (f.owner_id == player_id and f.ship_count > 0) {
                 count += 1;
             }
         }
@@ -1031,39 +986,11 @@ pub const GameEngine = struct {
     }
 
     fn dockFleet(self: *GameEngine, fleet: *Fleet, player: *Player) !void {
-        // Deposit cargo
+        // Deposit cargo to player resources
         player.resources = player.resources.add(fleet.cargo);
         fleet.cargo = .{};
 
-        // Auto-merge: absorb ships from other fleets docked at homeworld
-        var merge_ids: [MAX_COMBAT_FLEETS]u64 = undefined;
-        var merge_count: usize = 0;
-        var fleet_iter = self.fleets.iterator();
-        while (fleet_iter.next()) |f_entry| {
-            const other = f_entry.value_ptr;
-            if (other.id == fleet.id) continue;
-            if (other.owner_id != player.id) continue;
-            if (!other.location.eql(player.homeworld)) continue;
-            if (other.ship_count == 0) continue;
-
-            for (other.ships[0..other.ship_count]) |ship| {
-                if (fleet.ship_count >= MAX_SHIPS_PER_FLEET) break;
-                fleet.ships[fleet.ship_count] = ship;
-                fleet.ship_count += 1;
-            }
-            player.resources = player.resources.add(other.cargo);
-
-            if (merge_count < merge_ids.len) {
-                merge_ids[merge_count] = other.id;
-                merge_count += 1;
-            }
-        }
-
-        for (merge_ids[0..merge_count]) |mid| {
-            _ = self.fleets.remove(mid);
-            try self.deleted_fleet_ids.put(mid, {});
-        }
-
+        // Refuel
         fleet.fuel_max = fleetFuelMax(fleet, player);
         fleet.fuel = fleet.fuel_max;
 
@@ -1203,6 +1130,124 @@ pub const GameEngine = struct {
         }
     }
 
+    pub fn handleCreateFleet(self: *GameEngine, player_id: u64) !void {
+        const player = self.players.getPtr(player_id) orelse return error.PlayerNotFound;
+
+        if (self.countPlayerFleets(player_id) >= shared.constants.MAX_FLEETS_PER_PLAYER) {
+            return error.FleetLimitReached;
+        }
+
+        // Must be at homeworld: player has a fleet at homeworld or has docked ships
+        const at_home = player.docked_ship_count > 0 or self.playerHasFleetAtHomeworld(player_id, player.homeworld);
+        if (!at_home) return error.NotAtHomeworld;
+
+        const fleet_id = self.nextId();
+        const new_fleet = Fleet{
+            .id = fleet_id,
+            .owner_id = player_id,
+            .location = player.homeworld,
+            .state = .idle,
+            .ships = undefined,
+            .ship_count = 0,
+            .cargo = .{},
+            .fuel = 0,
+            .fuel_max = 0,
+            .move_cooldown = 0,
+            .action_cooldown = 0,
+            .move_target = null,
+            .idle_ticks = 0,
+        };
+        try self.fleets.put(fleet_id, new_fleet);
+        try self.dirty_fleets.put(fleet_id, {});
+    }
+
+    pub fn handleDissolveFleet(self: *GameEngine, player_id: u64, fleet_id: u64) !void {
+        const player = self.players.getPtr(player_id) orelse return error.PlayerNotFound;
+        const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
+
+        if (fleet.owner_id != player_id) return error.FleetNotFound;
+        if (!fleet.location.eql(player.homeworld)) return error.NotAtHomeworld;
+        if (fleet.state == .in_combat) return error.InCombat;
+
+        // Move all ships to docked pool
+        for (fleet.ships[0..fleet.ship_count]) |ship| {
+            if (player.docked_ship_count >= MAX_SHIPS_PER_FLEET) return error.DockFull;
+            player.docked_ships[player.docked_ship_count] = ship;
+            player.docked_ship_count += 1;
+        }
+
+        // Deposit fleet cargo
+        player.resources = player.resources.add(fleet.cargo);
+
+        _ = self.fleets.remove(fleet_id);
+        try self.deleted_fleet_ids.put(fleet_id, {});
+        try self.dirty_players.put(player_id, {});
+    }
+
+    pub fn handleTransferShip(self: *GameEngine, player_id: u64, ship_id: u64, fleet_id: u64) !void {
+        const player = self.players.getPtr(player_id) orelse return error.PlayerNotFound;
+        const fleet = self.fleets.getPtr(fleet_id) orelse return error.FleetNotFound;
+
+        if (fleet.owner_id != player_id) return error.FleetNotFound;
+        if (!fleet.location.eql(player.homeworld)) return error.NotAtHomeworld;
+        if (fleet.state == .in_combat) return error.InCombat;
+        if (fleet.ship_count >= MAX_SHIPS_PER_FLEET) return error.CargoFull;
+
+        const ship = removeDockedShip(player, ship_id) orelse return error.ShipNotFound;
+
+        fleet.ships[fleet.ship_count] = ship;
+        fleet.ship_count += 1;
+
+        fleet.fuel_max = fleetFuelMax(fleet, player);
+        fleet.fuel = fleet.fuel_max;
+
+        try self.dirty_fleets.put(fleet_id, {});
+        try self.dirty_players.put(player_id, {});
+    }
+
+    pub fn handleDockShip(self: *GameEngine, player_id: u64, ship_id: u64) !void {
+        const player = self.players.getPtr(player_id) orelse return error.PlayerNotFound;
+        if (player.docked_ship_count >= MAX_SHIPS_PER_FLEET) return error.DockFull;
+
+        // Find which fleet contains this ship
+        var target_fleet: ?*Fleet = null;
+        var iter = self.fleets.iterator();
+        while (iter.next()) |entry| {
+            const f = entry.value_ptr;
+            if (f.owner_id != player_id) continue;
+            if (!f.location.eql(player.homeworld)) continue;
+            if (f.state == .in_combat or f.state == .moving) continue;
+            for (f.ships[0..f.ship_count]) |ship| {
+                if (ship.id == ship_id) {
+                    target_fleet = f;
+                    break;
+                }
+            }
+            if (target_fleet != null) break;
+        }
+
+        const fleet = target_fleet orelse return error.ShipNotFound;
+        const ship = removeShipFromFleet(fleet, ship_id) orelse return error.ShipNotFound;
+
+        player.docked_ships[player.docked_ship_count] = ship;
+        player.docked_ship_count += 1;
+
+        fleet.fuel_max = fleetFuelMax(fleet, player);
+        if (fleet.fuel > fleet.fuel_max) fleet.fuel = fleet.fuel_max;
+
+        try self.dirty_fleets.put(fleet.id, {});
+        try self.dirty_players.put(player_id, {});
+    }
+
+    fn playerHasFleetAtHomeworld(self: *const GameEngine, player_id: u64, homeworld: Hex) bool {
+        var iter = self.fleets.iterator();
+        while (iter.next()) |entry| {
+            const f = entry.value_ptr;
+            if (f.owner_id == player_id and f.location.eql(homeworld)) return true;
+        }
+        return false;
+    }
+
     fn collectSalvage(self: *GameEngine, fleet: *Fleet) !void {
         const key = fleet.location.toKey();
         const ov = self.sector_overrides.getPtr(key) orelse return;
@@ -1291,6 +1336,16 @@ pub const GameEngine = struct {
             try self.fleets.put(fleet.id, fleet);
         }
 
+        // Load docked ships for each player
+        var dock_iter = self.players.iterator();
+        while (dock_iter.next()) |entry| {
+            const docked = try self.db.loadDockedShips(entry.key_ptr.*);
+            entry.value_ptr.docked_ship_count = docked.count;
+            if (docked.count > 0) {
+                @memcpy(entry.value_ptr.docked_ships[0..docked.count], docked.ships[0..docked.count]);
+            }
+        }
+
         var overrides = try self.db.loadSectorOverrides();
         defer overrides.deinit(self.allocator);
         for (overrides.items) |row| {
@@ -1337,6 +1392,7 @@ pub const GameEngine = struct {
                 try self.db.saveBuildings(player_id, player.buildings);
                 try self.db.saveResearch(player_id, player.research);
                 try self.db.saveBuildQueue(player_id, player);
+                try self.db.saveDockedShips(player_id, player.docked_ships[0..player.docked_ship_count]);
             }
         }
 
@@ -1475,6 +1531,30 @@ fn fleetFuelMax(fleet: *const Fleet, player: *const Player) f32 {
     return total_fuel * scaling.fuelCapacityModifier(player.research.extended_fuel_tanks) * scaling.fuelDepotModifier(player.buildings.fuel_depot);
 }
 
+fn removeShipFromFleet(fleet: *Fleet, ship_id: u64) ?Ship {
+    for (0..fleet.ship_count) |i| {
+        if (fleet.ships[i].id == ship_id) {
+            const ship = fleet.ships[i];
+            fleet.ships[i] = fleet.ships[fleet.ship_count - 1];
+            fleet.ship_count -= 1;
+            return ship;
+        }
+    }
+    return null;
+}
+
+fn removeDockedShip(player: *Player, ship_id: u64) ?Ship {
+    for (0..player.docked_ship_count) |i| {
+        if (player.docked_ships[i].id == ship_id) {
+            const ship = player.docked_ships[i];
+            player.docked_ships[i] = player.docked_ships[player.docked_ship_count - 1];
+            player.docked_ship_count -= 1;
+            return ship;
+        }
+    }
+    return null;
+}
+
 fn fleetCargoCapacity(fleet: *const Fleet) f32 {
     var cap: f32 = 0;
     for (fleet.ships[0..fleet.ship_count]) |ship| {
@@ -1551,6 +1631,8 @@ pub const Player = struct {
     token_hash: ?[]const u8 = null,
     created_at: u64 = 0,
     last_login_at: u64 = 0,
+    docked_ships: [MAX_SHIPS_PER_FLEET]Ship = undefined,
+    docked_ship_count: usize = 0,
 };
 
 pub const BuildQueueEntry = struct {

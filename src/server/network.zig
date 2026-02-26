@@ -308,6 +308,34 @@ pub const Network = struct {
                     return;
                 };
             },
+            .create_fleet => {
+                const pid = session.player_id orelse return;
+                self.engine.handleCreateFleet(pid) catch |err| {
+                    self.sendCommandError(session, "CreateFleet", err);
+                    return;
+                };
+            },
+            .dissolve_fleet => |df| {
+                const pid = session.player_id orelse return;
+                self.engine.handleDissolveFleet(pid, df.fleet_id) catch |err| {
+                    self.sendCommandError(session, "DissolveFleet", err);
+                    return;
+                };
+            },
+            .transfer_ship => |ts| {
+                const pid = session.player_id orelse return;
+                self.engine.handleTransferShip(pid, ts.ship_id, ts.fleet_id) catch |err| {
+                    self.sendCommandError(session, "TransferShip", err);
+                    return;
+                };
+            },
+            .dock_ship => |ds| {
+                const pid = session.player_id orelse return;
+                self.engine.handleDockShip(pid, ds.ship_id) catch |err| {
+                    self.sendCommandError(session, "DockShip", err);
+                    return;
+                };
+            },
             .stop => {},
             .scan => {},
         }
@@ -332,6 +360,9 @@ pub const Network = struct {
             error.NoResearchLab => .no_research_lab,
             error.InsufficientResources => .no_resources,
             error.FleetLimitReached => .fleet_limit_reached,
+            error.NotAtHomeworld => .not_at_homeworld,
+            error.DockFull => .dock_full,
+            error.ShipNotFound => .ship_not_found,
             else => .invalid_command,
         };
 
@@ -561,7 +592,7 @@ pub const Network = struct {
         };
     }
 
-    fn buildHomeworldState(alloc: std.mem.Allocator, eng: *GameEngine, player: *const engine_mod.Player) !protocol.HomeworldState {
+    fn buildHomeworldState(alloc: std.mem.Allocator, _: *GameEngine, player: *const engine_mod.Player) !protocol.HomeworldState {
         const bt_fields = @typeInfo(scaling.BuildingType).@"enum".fields;
         var buildings = try alloc.alloc(protocol.BuildingState, bt_fields.len);
         inline for (bt_fields, 0..) |_, i| {
@@ -602,22 +633,16 @@ pub const Network = struct {
         } else null;
 
         var docked_ships = std.ArrayList(protocol.ShipState).empty;
-        var fleet_iter = eng.fleets.iterator();
-        while (fleet_iter.next()) |f_entry| {
-            const fleet = f_entry.value_ptr;
-            if (fleet.owner_id == player.id and fleet.location.eql(player.homeworld)) {
-                for (fleet.ships[0..fleet.ship_count]) |ship| {
-                    try docked_ships.append(alloc, .{
-                        .id = ship.id,
-                        .class = ship.class,
-                        .hull = ship.hull,
-                        .hull_max = ship.hull_max,
-                        .shield = ship.shield,
-                        .shield_max = ship.shield_max,
-                        .weapon_power = ship.weapon_power,
-                    });
-                }
-            }
+        for (player.docked_ships[0..player.docked_ship_count]) |ship| {
+            try docked_ships.append(alloc, .{
+                .id = ship.id,
+                .class = ship.class,
+                .hull = ship.hull,
+                .hull_max = ship.hull_max,
+                .shield = ship.shield,
+                .shield_max = ship.shield_max,
+                .weapon_power = ship.weapon_power,
+            });
         }
 
         return .{

@@ -42,6 +42,10 @@ pub const Command = union(enum) {
     research: ResearchCommand,
     build_ship: BuildShipCommand,
     cancel_build: CancelBuildCommand,
+    create_fleet: void,
+    dissolve_fleet: DissolveFleetCommand,
+    transfer_ship: TransferShipCommand,
+    dock_ship: DockShipCommand,
     stop: void, // cancel current action
     scan: void,
 
@@ -83,6 +87,19 @@ pub const Command = union(enum) {
 
     pub const CancelBuildCommand = struct {
         queue_type: scaling.QueueType,
+    };
+
+    pub const DissolveFleetCommand = struct {
+        fleet_id: u64,
+    };
+
+    pub const TransferShipCommand = struct {
+        ship_id: u64,
+        fleet_id: u64,
+    };
+
+    pub const DockShipCommand = struct {
+        ship_id: u64,
     };
 };
 
@@ -395,6 +412,9 @@ pub const ErrorCode = enum(u16) {
     no_shipyard = 1013,
     no_research_lab = 1014,
     fleet_limit_reached = 1015,
+    not_at_homeworld = 1016,
+    dock_full = 1017,
+    ship_not_found = 1018,
     auth_failed = 2000,
     already_authenticated = 2001,
     name_invalid = 2002,

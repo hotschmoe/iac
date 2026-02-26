@@ -85,7 +85,10 @@ fn renderFooter(state: *ClientState, frame: *Frame, area: Rect) void {
         .command_center => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
         .windshield => " WINDSHIELD | [1-6] Move  [i] Info  [b] Base  [?] Keys",
         .star_map => " STAR MAP | [Arrows] Scroll  [z/x] Zoom  [b] Base  [?] Keys",
-        .homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [x/X/z] Cancel  [t] Tree  [?] Keys",
+        .homeworld => if (state.homeworld_tab == .fleets)
+            " FLEETS | Tab Switch  Up/Down Select  [n] New  [d] Dock  [1-3] Assign  [x] Dissolve  [?] Keys"
+        else
+            " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [x/X/z] Cancel  [t] Tree  [?] Keys",
     };
     frame.render(Paragraph{
         .text = text,
@@ -737,12 +740,16 @@ fn renderEventLog(state: *ClientState, frame: *Frame, area: Rect, title: []const
 fn renderHomeworld(state: *ClientState, frame: *Frame, area: Rect) void {
     const rows = frame.layout(area, .vertical, &.{
         Constraint.len(1), // tab bar
-        Constraint.flexible(1), // card grid
+        Constraint.flexible(1), // content
         Constraint.len(3), // status bar
     });
 
     renderTabBar(state, frame, rows.get(0));
-    renderCardGrid(state, frame, rows.get(1));
+    if (state.homeworld_tab == .fleets) {
+        renderFleetManager(state, frame, rows.get(1));
+    } else {
+        renderCardGrid(state, frame, rows.get(1));
+    }
     renderStatusBar(state, frame, rows.get(2));
 }
 
@@ -751,6 +758,7 @@ fn renderTabBar(state: *ClientState, frame: *Frame, area: Rect) void {
         .{ .tab = .buildings, .label = "Buildings" },
         .{ .tab = .shipyard, .label = "Shipyard" },
         .{ .tab = .research, .label = "Research" },
+        .{ .tab = .fleets, .label = "Fleets" },
     };
 
     var buf: [128]u8 = undefined;
@@ -764,6 +772,108 @@ fn renderTabBar(state: *ClientState, frame: *Frame, area: Rect) void {
         pos += (segment catch break).len;
     }
     frame.render(Paragraph{ .text = buf[0..pos], .style = amber_full }, area);
+}
+
+fn renderFleetManager(state: *ClientState, frame: *Frame, area: Rect) void {
+    const block = Block{
+        .title = " FLEET MANAGER ",
+        .border = .rounded,
+        .border_style = amber_dim,
+    };
+    frame.render(block, area);
+    const inner = block.inner(area);
+
+    if (inner.height < 2) return;
+
+    const rows_data = state.buildFleetRows();
+    const total = state.fleetRowCount();
+    if (total == 0) {
+        frame.render(Paragraph{ .text = " No fleet data", .style = amber_faint }, inner);
+        return;
+    }
+
+    // Calculate visible window (scrolling)
+    const visible: usize = @intCast(inner.height - 1); // reserve 1 for legend
+    const scroll_offset: usize = if (state.fleet_cursor >= visible)
+        state.fleet_cursor - visible + 1
+    else
+        0;
+
+    var buf: [2048]u8 = undefined;
+    var pos: usize = 0;
+    var rendered: usize = 0;
+
+    for (0..total) |i| {
+        if (i < scroll_offset) continue;
+        if (rendered >= visible) break;
+
+        const is_selected = (i == state.fleet_cursor);
+        const cursor_char: u8 = if (is_selected) '>' else ' ';
+
+        switch (rows_data[i]) {
+            .docked_header => |count| {
+                const l = std.fmt.bufPrint(buf[pos..], "{c} DOCKED ({d} ships)\n", .{ cursor_char, count }) catch break;
+                pos += l.len;
+            },
+            .docked_ship => |ship| {
+                const l = std.fmt.bufPrint(buf[pos..], "{c}   {s: <10} {d:.0}/{d:.0} hull  {d:.0}/{d:.0} shld\n", .{
+                    cursor_char,
+                    ship.class.label(),
+                    ship.hull,
+                    ship.hull_max,
+                    ship.shield,
+                    ship.shield_max,
+                }) catch break;
+                pos += l.len;
+            },
+            .fleet_header => |fh| {
+                const state_str: []const u8 = switch (fh.state) {
+                    .idle => "idle",
+                    .moving => "moving",
+                    .harvesting => "harvesting",
+                    .in_combat => "COMBAT",
+                    .returning => "returning",
+                    .docked => "docked",
+                };
+                const l = std.fmt.bufPrint(buf[pos..], "{c} FLEET {d} [{s} @ home] ({d} ships)\n", .{
+                    cursor_char,
+                    fh.fleet_idx + 1,
+                    state_str,
+                    fh.ship_count,
+                }) catch break;
+                pos += l.len;
+            },
+            .fleet_ship => |fs| {
+                const l = std.fmt.bufPrint(buf[pos..], "{c}   {s: <10} {d:.0}/{d:.0} hull  {d:.0}/{d:.0} shld\n", .{
+                    cursor_char,
+                    fs.ship.class.label(),
+                    fs.ship.hull,
+                    fs.ship.hull_max,
+                    fs.ship.shield,
+                    fs.ship.shield_max,
+                }) catch break;
+                pos += l.len;
+            },
+            .deployed_header => |fh| {
+                const l = std.fmt.bufPrint(buf[pos..], "{c} FLEET {d} [deployed {d},{d}] ({d} ships)\n", .{
+                    cursor_char,
+                    fh.fleet_idx + 1,
+                    fh.location.q,
+                    fh.location.r,
+                    fh.ship_count,
+                }) catch break;
+                pos += l.len;
+            },
+        }
+        rendered += 1;
+    }
+
+    // Legend
+    const legend = "[n] New Fleet  [d] Dock Ship  [1-3] Assign  [x] Dissolve";
+    const ll = std.fmt.bufPrint(buf[pos..], "{s}", .{legend}) catch "";
+    pos += ll.len;
+
+    frame.render(Paragraph{ .text = buf[0..pos], .style = amber_bright }, inner);
 }
 
 fn renderCardGrid(state: *ClientState, frame: *Frame, area: Rect) void {
@@ -929,6 +1039,7 @@ fn renderCard(
 
             renderCardBox(frame, area, title, content_buf[0..cpos], is_selected, locked, maxed);
         },
+        .fleets => return, // handled by renderFleetManager
     }
 }
 

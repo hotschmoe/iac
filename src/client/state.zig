@@ -10,12 +10,14 @@ pub const HomeworldTab = enum {
     buildings,
     shipyard,
     research,
+    fleets,
 
     pub fn next(self: HomeworldTab) HomeworldTab {
         return switch (self) {
             .buildings => .shipyard,
             .shipyard => .research,
-            .research => .buildings,
+            .research => .fleets,
+            .fleets => .buildings,
         };
     }
 
@@ -24,6 +26,7 @@ pub const HomeworldTab = enum {
             .buildings => scaling.BuildingType.COUNT,
             .shipyard => ShipClass.COUNT,
             .research => scaling.ResearchType.COUNT,
+            .fleets => 0, // dynamic, handled by fleet manager
         };
     }
 };
@@ -35,6 +38,15 @@ pub const HomeworldNav = enum {
     cursor_right,
     tab_next,
     select,
+};
+
+pub const FleetManagerNav = union(enum) {
+    cursor_up: void,
+    cursor_down: void,
+    create_fleet: void,
+    dock_ship: void,
+    assign_to_fleet: usize, // fleet index (0-based)
+    dissolve_fleet: void,
 };
 
 pub const ClientState = struct {
@@ -66,6 +78,7 @@ pub const ClientState = struct {
     command_mode: bool,
     homeworld_tab: HomeworldTab,
     homeworld_cursor: usize,
+    fleet_cursor: usize,
     status_message: [128]u8,
     status_len: usize,
 
@@ -90,6 +103,7 @@ pub const ClientState = struct {
             .command_mode = false,
             .homeworld_tab = .buildings,
             .homeworld_cursor = 0,
+            .fleet_cursor = 0,
             .status_message = undefined,
             .status_len = 0,
         };
@@ -332,6 +346,7 @@ pub const ClientState = struct {
             .tab_next => {
                 self.homeworld_tab = self.homeworld_tab.next();
                 self.homeworld_cursor = 0;
+                self.fleet_cursor = 0;
             },
             .select => {
                 const bldg_levels = buildingLevelsFromSlice(hw.buildings);
@@ -359,7 +374,150 @@ pub const ClientState = struct {
                         if (!scaling.shipClassUnlocked(sc, res_levels)) return null;
                         return .{ .build_ship = .{ .ship_class = sc, .count = 1 } };
                     },
+                    .fleets => return null, // handled by fleetManagerNav
                 }
+            },
+        }
+        return null;
+    }
+
+    // Builds a list of selectable rows for the fleet manager.
+    // Row kinds: docked ship, fleet header, fleet ship (homeworld only), deployed header (not selectable).
+    pub const FleetRow = union(enum) {
+        docked_header: usize, // count of docked ships
+        docked_ship: protocol.ShipState,
+        fleet_header: FleetHeaderInfo,
+        fleet_ship: FleetShipInfo,
+        deployed_header: FleetHeaderInfo,
+    };
+
+    pub const FleetHeaderInfo = struct {
+        fleet_id: u64,
+        fleet_idx: usize, // 0-based index among player's fleets
+        state: protocol.FleetStatus,
+        location: Hex,
+        ship_count: usize,
+    };
+
+    pub const FleetShipInfo = struct {
+        ship: protocol.ShipState,
+        fleet_id: u64,
+    };
+
+    pub fn buildFleetRows(self: *const ClientState) [128]FleetRow {
+        var rows: [128]FleetRow = undefined;
+        var count: usize = 0;
+        const hw = self.homeworld orelse return rows;
+        const player = self.player orelse return rows;
+
+        // Docked ships header + ships
+        if (count < rows.len) {
+            rows[count] = .{ .docked_header = hw.docked_ships.len };
+            count += 1;
+        }
+        for (hw.docked_ships) |ship| {
+            if (count >= rows.len) break;
+            rows[count] = .{ .docked_ship = ship };
+            count += 1;
+        }
+
+        // Fleets
+        for (self.fleets.items, 0..) |fleet, fi| {
+            if (count >= rows.len) break;
+            const at_home = fleet.location.eql(player.homeworld);
+            const header = FleetHeaderInfo{
+                .fleet_id = fleet.id,
+                .fleet_idx = fi,
+                .state = fleet.state,
+                .location = fleet.location,
+                .ship_count = fleet.ships.len,
+            };
+
+            if (at_home and fleet.state != .in_combat) {
+                rows[count] = .{ .fleet_header = header };
+                count += 1;
+                for (fleet.ships) |ship| {
+                    if (count >= rows.len) break;
+                    rows[count] = .{ .fleet_ship = .{ .ship = ship, .fleet_id = fleet.id } };
+                    count += 1;
+                }
+            } else {
+                rows[count] = .{ .deployed_header = header };
+                count += 1;
+            }
+        }
+
+        return rows;
+    }
+
+    pub fn fleetRowCount(self: *const ClientState) usize {
+        const hw = self.homeworld orelse return 0;
+        const player = self.player orelse return 0;
+
+        var count: usize = 1; // docked header
+        count += hw.docked_ships.len;
+
+        for (self.fleets.items) |fleet| {
+            count += 1; // fleet header
+            const at_home = fleet.location.eql(player.homeworld);
+            if (at_home and fleet.state != .in_combat) {
+                count += fleet.ships.len;
+            }
+        }
+
+        return count;
+    }
+
+    pub fn fleetManagerNav(self: *ClientState, nav: FleetManagerNav) ?protocol.Command {
+        const total = self.fleetRowCount();
+        if (total == 0) return null;
+
+        switch (nav) {
+            .cursor_up => {
+                if (self.fleet_cursor > 0) self.fleet_cursor -= 1;
+            },
+            .cursor_down => {
+                if (self.fleet_cursor + 1 < total) self.fleet_cursor += 1;
+            },
+            .create_fleet => {
+                return .{ .create_fleet = {} };
+            },
+            .dock_ship => {
+                const rows = self.buildFleetRows();
+                if (self.fleet_cursor < rows.len) {
+                    switch (rows[self.fleet_cursor]) {
+                        .fleet_ship => |fs| return .{ .dock_ship = .{ .ship_id = fs.ship.id } },
+                        else => {},
+                    }
+                }
+                return null;
+            },
+            .assign_to_fleet => |fleet_idx| {
+                // Find the fleet at this index
+                if (fleet_idx >= self.fleets.items.len) return null;
+                const target_fleet = self.fleets.items[fleet_idx];
+
+                const rows = self.buildFleetRows();
+                if (self.fleet_cursor < rows.len) {
+                    switch (rows[self.fleet_cursor]) {
+                        .docked_ship => |ship| return .{ .transfer_ship = .{
+                            .ship_id = ship.id,
+                            .fleet_id = target_fleet.id,
+                        } },
+                        else => {},
+                    }
+                }
+                return null;
+            },
+            .dissolve_fleet => {
+                const rows = self.buildFleetRows();
+                if (self.fleet_cursor < rows.len) {
+                    switch (rows[self.fleet_cursor]) {
+                        .fleet_header => |fh| return .{ .dissolve_fleet = .{ .fleet_id = fh.fleet_id } },
+                        else => {},
+                    }
+                }
+                return null;
             },
         }
         return null;
