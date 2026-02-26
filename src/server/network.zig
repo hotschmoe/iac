@@ -121,7 +121,7 @@ pub const Network = struct {
                     .resources = p.resources,
                     .homeworld = p.homeworld,
                 };
-                hw_update = try buildHomeworldState(alloc, eng, &p);
+                hw_update = try buildHomeworldState(alloc, &p);
             }
 
             var player_events = std.ArrayList(protocol.GameEvent).empty;
@@ -384,7 +384,7 @@ pub const Network = struct {
         const fleet_states = try collectPlayerFleets(alloc, self.engine, player_id);
         const explored = try self.engine.db.loadExploredCoords(alloc, player_id);
         const known_sectors = try collectVisibleSectors(alloc, self.engine, fleet_states, player, player_id, explored);
-        const hw_state = try buildHomeworldState(alloc, self.engine, &player);
+        const hw_state = try buildHomeworldState(alloc, &player);
 
         try self.sendToSession(session, .{
             .full_state = .{
@@ -592,7 +592,7 @@ pub const Network = struct {
         };
     }
 
-    fn buildHomeworldState(alloc: std.mem.Allocator, _: *GameEngine, player: *const engine_mod.Player) !protocol.HomeworldState {
+    fn buildHomeworldState(alloc: std.mem.Allocator, player: *const engine_mod.Player) !protocol.HomeworldState {
         const bt_fields = @typeInfo(scaling.BuildingType).@"enum".fields;
         var buildings = try alloc.alloc(protocol.BuildingState, bt_fields.len);
         inline for (bt_fields, 0..) |_, i| {

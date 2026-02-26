@@ -404,8 +404,10 @@ pub const ClientState = struct {
         fleet_id: u64,
     };
 
-    pub fn buildFleetRows(self: *const ClientState) [128]FleetRow {
-        var rows: [128]FleetRow = undefined;
+    const MAX_FLEET_ROWS = 128;
+
+    pub fn buildFleetRows(self: *const ClientState) [MAX_FLEET_ROWS]FleetRow {
+        var rows: [MAX_FLEET_ROWS]FleetRow = undefined;
         var count: usize = 0;
         const hw = self.homeworld orelse return rows;
         const player = self.player orelse return rows;
@@ -465,7 +467,7 @@ pub const ClientState = struct {
             }
         }
 
-        return count;
+        return @min(count, MAX_FLEET_ROWS);
     }
 
     pub fn fleetManagerNav(self: *ClientState, nav: FleetManagerNav) ?protocol.Command {

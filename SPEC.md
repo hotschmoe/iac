@@ -152,7 +152,7 @@ Ship {
 
 ### 3.3 Fleets
 
-A fleet is a collection of ships deployed together.
+A fleet is a collection of ships deployed together. Maximum 3 fleets per player (total, not deployed). Ships not assigned to any fleet sit in a per-player **docked pool** at the homeworld. Shipyard output goes to the docked pool. Players create fleets and assign ships via the fleet manager.
 
 ```
 Fleet {
@@ -168,12 +168,20 @@ Fleet {
 }
 ```
 
+**Fleet management** (homeworld only, fleet not in combat):
+- **Create fleet:** Creates an empty fleet at homeworld. Rejected if 3 fleets already exist.
+- **Transfer ship:** Move a ship from the docked pool to a fleet. Fleet fuel refilled to new max.
+- **Dock ship:** Move a ship from a fleet back to the docked pool. Fleet fuel capped to new max.
+- **Dissolve fleet:** All ships returned to docked pool, cargo deposited, fleet deleted.
+
+**Returning fleets** stay intact -- cargo is deposited to player resources and fuel is refilled, but ships remain in the fleet (no auto-merge).
+
 **Fuel consumption:** Moving one hex costs `fuel_cost = fleet_total_mass * fuel_rate`. Research improves `fuel_rate`. Fleet range is `fuel_max / fuel_cost_per_hex`, giving a hard radius of operation. `fuel_max` is retroactively recalculated across all player fleets when a Fuel Depot is built or Extended Fuel Tanks research completes -- existing fuel is increased by the difference so docked-at-max fleets stay full.
 
 ### 3.4 Starting Conditions
 
 New players begin with:
-- 2 Scout ships
+- 1 fleet with 2 Scout ships (can create 2 more fleets later)
 - Homeworld claim in the inner ring (random unoccupied hex, dist 3–6 from center)
 - Starting resources: 500 metal, 300 crystal, 100 deuterium
 - Basic mine levels (metal 1, crystal 1, deuterium 0)
@@ -415,6 +423,10 @@ Player state (resources), fleet updates, sector updates (fleet location + sensor
 {"type": "command", "action": "build", "building": "metal_mine"}
 {"type": "command", "action": "research", "tech": "fuel_efficiency_2"}
 {"type": "command", "action": "build_ship", "class": "corvette"}
+{"type": "command", "action": "create_fleet"}
+{"type": "command", "action": "dissolve_fleet", "fleet_id": 42}
+{"type": "command", "action": "transfer_ship", "ship_id": 7, "fleet_id": 42}
+{"type": "command", "action": "dock_ship", "ship_id": 7}
 {"type": "policy_update", "policy": [ ... ]}
 ```
 
@@ -564,7 +576,7 @@ CREATE TABLE fleets (
 
 CREATE TABLE ships (
     id INTEGER PRIMARY KEY,
-    fleet_id INTEGER REFERENCES fleets(id),
+    fleet_id INTEGER REFERENCES fleets(id),  -- NULL = docked at homeworld
     player_id INTEGER REFERENCES players(id),
     class TEXT NOT NULL,
     hull REAL NOT NULL,
@@ -711,9 +723,11 @@ The server already handles multiple sessions, per-player data filtering, and uni
 
 **Homeworld placement:** Minimum 2-hex separation between homeworlds. `findHomeworldLocation()` must reject candidates that are within 1 hop of any existing homeworld (not just exact coordinate collision). The 100-attempt fallback must also respect this constraint -- if it cannot find a valid location after 100 attempts, reject the registration with an error rather than placing at a fixed coordinate.
 
-**Fleet cap:** Maximum 3 deployed fleets per player (server-enforced). Ships built at the shipyard dock at homeworld. When a deployed fleet returns to homeworld, all docked ships auto-merge into that fleet. If a player attempts to deploy a 4th fleet, the server rejects with an error indicating the cap has been reached and that a commander (existing fleet) must return to pick up new ships.
+**Fleet cap:** Maximum 3 total fleets per player (server-enforced at fleet creation, not deployment). Ships built at the shipyard go to a docked pool at the homeworld. Returning fleets stay intact (no auto-merge) -- cargo is deposited and fuel is refilled, but fleet composition is preserved. Players manage fleet composition via the fleet manager UI at homeworld.
 
-TODO: Fleet manager UI for assigning docked ships to specific fleets. Defer to M4+.
+**Fleet manager:** A homeworld tab (Fleets) where players create fleets, assign ships from the docked pool to fleets, dock ships from fleets back to the pool, and dissolve fleets. All fleet management operations require the fleet to be at homeworld and not in combat. New commands: `create_fleet`, `dissolve_fleet`, `transfer_ship`, `dock_ship`. Empty fleets (0 ships) exist but cannot be deployed. Starting condition: 1 fleet with 2 scouts (unchanged -- new players don't need to learn the fleet manager to start playing).
+
+**Docked ships:** Ships not assigned to any fleet sit in a per-player docked pool stored in the `ships` table with `fleet_id = NULL`. The pool shares the same capacity as a fleet (`MAX_SHIPS_PER_FLEET = 64`). The `HomeworldState.docked_ships` field carries the pool contents to the client.
 
 **Sector updates for multiple fleets:** The tick broadcast must include sector state for ALL of a player's fleet locations, not just the first fleet. Combined with sensor-revealed sectors from the homeworld, each player's sector update set is: `union(all fleet locations) + sensor_range(homeworld)`.
 
@@ -771,8 +785,10 @@ Future: Global broadcast channel for major events (e.g., "[player] destroyed a l
 ### 13.6 What's In (M3)
 
 - Homeworld minimum 2-hex separation
-- 3-fleet cap per player (server-enforced, error on exceeded)
-- Docked ship auto-merge on fleet return to homeworld
+- 3-fleet cap per player (total, enforced at fleet creation)
+- Docked ship pool at homeworld (shipyard output, fleet dissolve)
+- Fleet manager UI (create/dissolve fleets, transfer/dock ships)
+- Returning fleets stay intact (no auto-merge), cargo deposited, fuel refilled
 - Sector updates for all fleet locations (not just first fleet)
 - `player_fleets` populated in sector state with expanded `FleetBrief` (ship class breakdown)
 - Other-player fleet rendering on star map and in sector info
@@ -782,7 +798,6 @@ Future: Global broadcast channel for major events (e.g., "[player] destroyed a l
 ### 13.7 What's Out (Deferred)
 
 - Chat (M3.5 or M4)
-- Fleet splitting / fleet manager UI (M4+)
 - Resource trade between players (M4+)
 - PvP combat (M5)
 - Sensor array active scan action with cooldown (M4+)
@@ -800,7 +815,7 @@ Two or more human players can connect simultaneously via TUI, see each other's f
 
 2. **Policy condition language** — how expressive should this be? A simple enum of conditions with AND/OR might be enough. A mini expression language adds power but also parser complexity.
 
-3. **Fleet splitting** — resolved: deferred to M4+. M3 enforces a 3-fleet cap with docked ship auto-merge. Fleet manager UI for assigning docked ships to specific fleets deferred to M4+.
+3. **Fleet splitting** — resolved: implemented. 3-fleet cap (total, enforced at creation). Docked ship pool at homeworld. Fleet manager tab for creating fleets, assigning/docking ships, dissolving fleets. No auto-merge on return.
 
 4. **Fog of war** — resolved: sectors you haven't visited are unexplored. The Sensor Array building reveals a BFS radius around the homeworld (range = building level hops, following connected edges). Revealed sectors appear on the star map with full terrain/resource/hostile info. Without a sensor array, players only see sectors where their fleets are located.
 
