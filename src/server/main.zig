@@ -1,5 +1,6 @@
 const std = @import("std");
 const shared = @import("shared");
+const build_options = @import("build_options");
 
 const GameEngine = @import("engine.zig").GameEngine;
 const Network = @import("network.zig").Network;
@@ -31,7 +32,7 @@ pub fn main() !void {
     const config = parseArgs();
 
     log.info("═══════════════════════════════════════════", .{});
-    log.info("  IN AMBER CLAD — Server v0.1.0", .{});
+    log.info("  IN AMBER CLAD — Server v{s}", .{build_options.version});
     log.info("═══════════════════════════════════════════", .{});
     log.info("Port:       {d}", .{config.port});
     log.info("World seed: 0x{X}", .{config.world_seed});

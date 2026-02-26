@@ -216,7 +216,7 @@ pub const ClientState = struct {
 
                     if (self.pending_token) |tok| {
                         const main_mod = @import("main.zig");
-                        main_mod.saveCredentials(p.name, tok[0..self.pending_token_len]);
+                        main_mod.saveToken(p.name, tok[0..self.pending_token_len]);
                         self.pending_token = null;
                         self.pending_token_len = 0;
                     }

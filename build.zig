@@ -14,6 +14,10 @@ pub fn build(b: *std.Build) void {
     const zithril_dep = b.dependency("zithril", .{ .target = target, .optimize = optimize });
     const zithril_mod = zithril_dep.module("zithril");
 
+    // ── Build options (version from build.zig.zon) ─────────────────
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
+
     // ── Shared module (protocol, hex math, constants) ──────────────
     const shared_mod = b.addModule("shared", .{
         .root_source_file = b.path("src/shared/root.zig"),
@@ -32,6 +36,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "shared", .module = shared_mod },
                 .{ .name = "zqlite", .module = zqlite_mod },
                 .{ .name = "webzocket", .module = webzocket_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
@@ -48,6 +53,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "shared", .module = shared_mod },
                 .{ .name = "zithril", .module = zithril_mod },
                 .{ .name = "webzocket", .module = webzocket_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
