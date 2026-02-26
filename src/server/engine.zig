@@ -558,7 +558,7 @@ pub const GameEngine = struct {
             if (std.mem.eql(u8, entry.value_ptr.name, name)) {
                 if (entry.value_ptr.token_hash == null) {
                     const token = generateToken();
-                    var hash_buf: [shared.constants.HASH_HEX_LEN]u8 = undefined;
+                    var hash_buf: [shared.constants.HASH_BYTES]u8 = undefined;
                     hashToken(&token, &hash_buf);
 
                     entry.value_ptr.token_hash = try self.allocator.dupe(u8, &hash_buf);
@@ -576,7 +576,7 @@ pub const GameEngine = struct {
         }
 
         const token = generateToken();
-        var hash_buf: [shared.constants.HASH_HEX_LEN]u8 = undefined;
+        var hash_buf: [shared.constants.HASH_BYTES]u8 = undefined;
         hashToken(&token, &hash_buf);
 
         const now = currentTimestamp();
@@ -610,7 +610,7 @@ pub const GameEngine = struct {
         while (iter.next()) |entry| {
             if (std.mem.eql(u8, entry.value_ptr.name, name)) {
                 const stored_hash = entry.value_ptr.token_hash orelse return error.AuthFailed;
-                var provided_hash: [shared.constants.HASH_HEX_LEN]u8 = undefined;
+                var provided_hash: [shared.constants.HASH_BYTES]u8 = undefined;
                 hashToken(token, &provided_hash);
                 if (!constantTimeEql(&provided_hash, stored_hash)) return error.AuthFailed;
 
@@ -1516,12 +1516,10 @@ fn generateToken() [shared.constants.TOKEN_HEX_LEN]u8 {
     return std.fmt.bytesToHex(raw_bytes, .lower);
 }
 
-fn hashToken(token: []const u8, out: *[shared.constants.HASH_HEX_LEN]u8) void {
+fn hashToken(token: []const u8, out: *[shared.constants.HASH_BYTES]u8) void {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(token);
-    var digest: [32]u8 = undefined;
-    hasher.final(&digest);
-    out.* = std.fmt.bytesToHex(digest, .lower);
+    hasher.final(out);
 }
 
 fn constantTimeEql(a: []const u8, b: []const u8) bool {

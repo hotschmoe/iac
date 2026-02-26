@@ -24,6 +24,7 @@ pub const Database = struct {
 
         try db.ensureSchema();
         try db.applyPragmas();
+        try db.migrateData();
         log.info("Database initialized: {s}", .{db_path});
         return db;
     }
@@ -166,6 +167,78 @@ pub const Database = struct {
         log.info("Pragmas applied: cache_size=8MB, wal_autocheckpoint=1000", .{});
     }
 
+    fn migrateData(self: *Database) !void {
+        const version_str = try self.loadServerState("schema_version");
+        defer if (version_str) |v| self.allocator.free(v);
+        const version: u32 = if (version_str) |v| std.fmt.parseInt(u32, v, 10) catch 0 else 0;
+
+        if (version >= 2) return;
+
+        // v2: native float storage (was integer-encoded as val * 1000)
+        try self.db.exec(
+            \\UPDATE players SET
+            \\    metal = metal / 1000.0,
+            \\    crystal = crystal / 1000.0,
+            \\    deuterium = deuterium / 1000.0
+            \\WHERE typeof(metal) = 'integer'
+        );
+        try self.db.exec(
+            \\UPDATE fleets SET
+            \\    fuel = fuel / 1000.0,
+            \\    fuel_max = fuel_max / 1000.0,
+            \\    cargo_metal = cargo_metal / 1000.0,
+            \\    cargo_crystal = cargo_crystal / 1000.0,
+            \\    cargo_deuterium = cargo_deuterium / 1000.0
+            \\WHERE typeof(fuel) = 'integer'
+        );
+        try self.db.exec(
+            \\UPDATE ships SET
+            \\    hull = hull / 1000.0,
+            \\    hull_max = hull_max / 1000.0,
+            \\    shield = shield / 1000.0,
+            \\    shield_max = shield_max / 1000.0,
+            \\    weapon_power = weapon_power / 1000.0
+            \\WHERE typeof(hull) = 'integer'
+        );
+        try self.db.exec(
+            \\UPDATE sectors_modified SET
+            \\    metal_harvested = metal_harvested / 1000.0,
+            \\    crystal_harvested = crystal_harvested / 1000.0,
+            \\    deut_harvested = deut_harvested / 1000.0
+            \\WHERE typeof(metal_harvested) = 'integer'
+        );
+
+        // v2: token_hash from hex TEXT to raw BLOB
+        try self.migrateTokenHashes();
+
+        try self.saveServerState("schema_version", "2");
+        log.info("Migrated to schema v2: native floats, blob token hashes", .{});
+    }
+
+    fn migrateTokenHashes(self: *Database) !void {
+        var stmt = try self.db.prepare(
+            "SELECT id, token_hash FROM players WHERE token_hash IS NOT NULL AND typeof(token_hash) = 'text'",
+        );
+        defer stmt.deinit();
+
+        var update = try self.db.prepare("UPDATE players SET token_hash = ?1 WHERE id = ?2");
+        defer update.deinit();
+
+        while (try stmt.step()) {
+            const id = stmt.columnInt(0);
+            const hash_text = stmt.columnText(1) orelse continue;
+            if (hash_text.len != 64) continue;
+
+            var bytes: [32]u8 = undefined;
+            _ = std.fmt.hexToBytes(&bytes, hash_text) catch continue;
+
+            try update.bindBlob(1, &bytes);
+            try update.bindInt(2, id);
+            _ = try update.step();
+            update.reset();
+        }
+    }
+
     pub fn saveServerState(self: *Database, key: []const u8, value: []const u8) !void {
         var stmt = try self.db.prepare(
             "INSERT OR REPLACE INTO server_state (key, value) VALUES (?1, ?2)",
@@ -201,14 +274,10 @@ pub const Database = struct {
         try stmt.bindText(2, player.name);
         try stmt.bindInt(3, @as(i64, player.homeworld.q));
         try stmt.bindInt(4, @as(i64, player.homeworld.r));
-        try stmt.bindInt(5, floatToStoredInt(player.resources.metal));
-        try stmt.bindInt(6, floatToStoredInt(player.resources.crystal));
-        try stmt.bindInt(7, floatToStoredInt(player.resources.deuterium));
-        if (player.token_hash) |th| {
-            try stmt.bindText(8, th);
-        } else {
-            try stmt.bindOptionalInt(8, null);
-        }
+        try stmt.bindFloat(5, @floatCast(player.resources.metal));
+        try stmt.bindFloat(6, @floatCast(player.resources.crystal));
+        try stmt.bindFloat(7, @floatCast(player.resources.deuterium));
+        try stmt.bindBlob(8, player.token_hash);
         try stmt.bindInt(9, @intCast(player.created_at));
         try stmt.bindInt(10, @intCast(player.last_login_at));
         _ = try stmt.step();
@@ -224,7 +293,7 @@ pub const Database = struct {
         defer stmt.deinit();
         while (try stmt.step()) {
             const name_raw = stmt.columnText(1) orelse continue;
-            const token_hash_raw = stmt.columnText(7);
+            const token_hash_raw = stmt.columnBlob(7);
             try players.append(self.allocator, .{
                 .id = @intCast(stmt.columnInt(0)),
                 .name = try self.allocator.dupe(u8, name_raw),
@@ -233,9 +302,9 @@ pub const Database = struct {
                     .r = @intCast(stmt.columnInt32(3)),
                 },
                 .resources = .{
-                    .metal = storedIntToFloat(stmt.columnInt(4)),
-                    .crystal = storedIntToFloat(stmt.columnInt(5)),
-                    .deuterium = storedIntToFloat(stmt.columnInt(6)),
+                    .metal = @floatCast(stmt.columnFloat(4)),
+                    .crystal = @floatCast(stmt.columnFloat(5)),
+                    .deuterium = @floatCast(stmt.columnFloat(6)),
                 },
                 .token_hash = if (token_hash_raw) |th| try self.allocator.dupe(u8, th) else null,
                 .created_at = @intCast(@max(0, stmt.columnInt(8))),
@@ -250,7 +319,7 @@ pub const Database = struct {
             "UPDATE players SET token_hash = ?1, created_at = ?2 WHERE id = ?3",
         );
         defer stmt.deinit();
-        try stmt.bindText(1, token_hash);
+        try stmt.bindBlob(1, token_hash);
         try stmt.bindInt(2, @intCast(created_at));
         try stmt.bindInt(3, @intCast(player_id));
         _ = try stmt.step();
@@ -288,11 +357,11 @@ pub const Database = struct {
         try stmt.bindInt(3, @as(i64, fleet.location.q));
         try stmt.bindInt(4, @as(i64, fleet.location.r));
         try stmt.bindText(5, @tagName(fleet.state));
-        try stmt.bindInt(6, floatToStoredInt(fleet.fuel));
-        try stmt.bindInt(7, floatToStoredInt(fleet.fuel_max));
-        try stmt.bindInt(8, floatToStoredInt(fleet.cargo.metal));
-        try stmt.bindInt(9, floatToStoredInt(fleet.cargo.crystal));
-        try stmt.bindInt(10, floatToStoredInt(fleet.cargo.deuterium));
+        try stmt.bindFloat(6, @floatCast(fleet.fuel));
+        try stmt.bindFloat(7, @floatCast(fleet.fuel_max));
+        try stmt.bindFloat(8, @floatCast(fleet.cargo.metal));
+        try stmt.bindFloat(9, @floatCast(fleet.cargo.crystal));
+        try stmt.bindFloat(10, @floatCast(fleet.cargo.deuterium));
         _ = try stmt.step();
 
         try self.saveShips(fleet.id, fleet.owner_id, fleet.ships[0..fleet.ship_count]);
@@ -316,11 +385,11 @@ pub const Database = struct {
             try ins.bindInt(2, @intCast(fleet_id));
             try ins.bindInt(3, @intCast(player_id));
             try ins.bindText(4, @tagName(ship.class));
-            try ins.bindInt(5, floatToStoredInt(ship.hull));
-            try ins.bindInt(6, floatToStoredInt(ship.hull_max));
-            try ins.bindInt(7, floatToStoredInt(ship.shield));
-            try ins.bindInt(8, floatToStoredInt(ship.shield_max));
-            try ins.bindInt(9, floatToStoredInt(ship.weapon_power));
+            try ins.bindFloat(5, @floatCast(ship.hull));
+            try ins.bindFloat(6, @floatCast(ship.hull_max));
+            try ins.bindFloat(7, @floatCast(ship.shield));
+            try ins.bindFloat(8, @floatCast(ship.shield_max));
+            try ins.bindFloat(9, @floatCast(ship.weapon_power));
             try ins.bindInt(10, @as(i64, ship.speed));
             _ = try ins.step();
             ins.reset();
@@ -352,12 +421,12 @@ pub const Database = struct {
                 .ships = undefined,
                 .ship_count = 0,
                 .cargo = .{
-                    .metal = storedIntToFloat(stmt.columnInt(7)),
-                    .crystal = storedIntToFloat(stmt.columnInt(8)),
-                    .deuterium = storedIntToFloat(stmt.columnInt(9)),
+                    .metal = @floatCast(stmt.columnFloat(7)),
+                    .crystal = @floatCast(stmt.columnFloat(8)),
+                    .deuterium = @floatCast(stmt.columnFloat(9)),
                 },
-                .fuel = storedIntToFloat(stmt.columnInt(5)),
-                .fuel_max = storedIntToFloat(stmt.columnInt(6)),
+                .fuel = @floatCast(stmt.columnFloat(5)),
+                .fuel_max = @floatCast(stmt.columnFloat(6)),
                 .move_cooldown = 0,
                 .action_cooldown = 0,
                 .move_target = null,
@@ -386,11 +455,11 @@ pub const Database = struct {
             ships[count] = .{
                 .id = @intCast(ship_stmt.columnInt(0)),
                 .class = parseShipClass(class_str),
-                .hull = storedIntToFloat(ship_stmt.columnInt(2)),
-                .hull_max = storedIntToFloat(ship_stmt.columnInt(3)),
-                .shield = storedIntToFloat(ship_stmt.columnInt(4)),
-                .shield_max = storedIntToFloat(ship_stmt.columnInt(5)),
-                .weapon_power = storedIntToFloat(ship_stmt.columnInt(6)),
+                .hull = @floatCast(ship_stmt.columnFloat(2)),
+                .hull_max = @floatCast(ship_stmt.columnFloat(3)),
+                .shield = @floatCast(ship_stmt.columnFloat(4)),
+                .shield_max = @floatCast(ship_stmt.columnFloat(5)),
+                .weapon_power = @floatCast(ship_stmt.columnFloat(6)),
                 .speed = @intCast(ship_stmt.columnInt(7)),
             };
             count += 1;
@@ -423,9 +492,9 @@ pub const Database = struct {
         try stmt.bindOptionalInt(3, densityToInt(ov.metal_density));
         try stmt.bindOptionalInt(4, densityToInt(ov.crystal_density));
         try stmt.bindOptionalInt(5, densityToInt(ov.deut_density));
-        try stmt.bindInt(6, floatToStoredInt(ov.metal_harvested));
-        try stmt.bindInt(7, floatToStoredInt(ov.crystal_harvested));
-        try stmt.bindInt(8, floatToStoredInt(ov.deut_harvested));
+        try stmt.bindFloat(6, @floatCast(ov.metal_harvested));
+        try stmt.bindFloat(7, @floatCast(ov.crystal_harvested));
+        try stmt.bindFloat(8, @floatCast(ov.deut_harvested));
         try stmt.bindOptionalInt(9, if (ov.npc_cleared_tick) |t| @as(i64, @intCast(t)) else null);
         _ = try stmt.step();
     }
@@ -448,9 +517,9 @@ pub const Database = struct {
                     .metal_density = intToDensity(stmt.columnOptionalInt(2)),
                     .crystal_density = intToDensity(stmt.columnOptionalInt(3)),
                     .deut_density = intToDensity(stmt.columnOptionalInt(4)),
-                    .metal_harvested = storedIntToFloat(stmt.columnInt(5)),
-                    .crystal_harvested = storedIntToFloat(stmt.columnInt(6)),
-                    .deut_harvested = storedIntToFloat(stmt.columnInt(7)),
+                    .metal_harvested = @floatCast(stmt.columnFloat(5)),
+                    .crystal_harvested = @floatCast(stmt.columnFloat(6)),
+                    .deut_harvested = @floatCast(stmt.columnFloat(7)),
                     .npc_cleared_tick = if (cleared_tick_raw) |t| @as(u64, @intCast(t)) else null,
                 },
             });
@@ -698,14 +767,6 @@ pub const ExploredEdgeRow = struct {
     to: Hex,
     discovered_tick: u64,
 };
-
-fn floatToStoredInt(val: f32) i64 {
-    return @intFromFloat(val * 1000.0);
-}
-
-fn storedIntToFloat(val: i64) f32 {
-    return @as(f32, @floatFromInt(val)) / 1000.0;
-}
 
 fn densityToInt(d: ?shared.constants.Density) ?i64 {
     if (d) |density| return @as(i64, @intFromEnum(density));

@@ -292,7 +292,7 @@ pub const PLAYER_NAME_MIN_LEN: usize = 3;
 pub const PLAYER_NAME_MAX_LEN: usize = 24;
 pub const TOKEN_BYTES: usize = 32;
 pub const TOKEN_HEX_LEN: usize = TOKEN_BYTES * 2;
-pub const HASH_HEX_LEN: usize = 64;
+pub const HASH_BYTES: usize = 32;
 
 pub const CONN_RATE_LIMIT: u16 = 10;
 pub const CONN_RATE_WINDOW_SECS: i64 = 60;

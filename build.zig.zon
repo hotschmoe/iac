@@ -14,8 +14,8 @@
             .hash = "webzocket-0.1.0-qU6sG0EIAwB7rOOeFxMKQ1bJ6ec8G7T2TIMDHhygOC3l",
         },
         .zqlite = .{
-            .url = "git+https://github.com/hotschmoe/zqlite#8f6d4eef99ba7d533888ea4e53475ec8b9859694",
-            .hash = "zqlite-0.1.1-qtf-W6BGlwD4r9vZ3JKVoGpuVQstX-vAPy5V_CyLEQzB",
+            .url = "git+https://github.com/hotschmoe/zqlite#34a8f1495669fd49a429c552f86dbb9fb10f8019",
+            .hash = "zqlite-0.3.0-qtf-W4gPmACSn_kP-Sru9M7RANIQY9JTx3f8EcMVtrGB",
         },
     },
 
