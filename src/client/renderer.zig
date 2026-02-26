@@ -1098,19 +1098,17 @@ fn renderCard(
                 const cost = scaling.researchCost(rt, level + 1);
                 cpos += fmtCostLine(content_buf[cpos..], cost, scaling.researchTime(rt, level + 1));
 
-                // Fragment cost for level III+
                 if (scaling.researchFragmentCost(rt, level + 1)) |fc| {
-                    if (fc.inner > 0) {
-                        const fl = std.fmt.bufPrint(content_buf[cpos..], " Req: {d} Inner frags\n", .{fc.inner}) catch "";
-                        cpos += fl.len;
-                    }
-                    if (fc.outer > 0) {
-                        const fl = std.fmt.bufPrint(content_buf[cpos..], " Req: {d} Outer frags\n", .{fc.outer}) catch "";
-                        cpos += fl.len;
-                    }
-                    if (fc.wandering > 0) {
-                        const fl = std.fmt.bufPrint(content_buf[cpos..], " Req: {d} Deep frags\n", .{fc.wandering}) catch "";
-                        cpos += fl.len;
+                    const frag_info = [_]struct { count: u16, label: []const u8 }{
+                        .{ .count = fc.inner, .label = "Inner" },
+                        .{ .count = fc.outer, .label = "Outer" },
+                        .{ .count = fc.wandering, .label = "Deep" },
+                    };
+                    for (frag_info) |fi| {
+                        if (fi.count > 0) {
+                            const fl = std.fmt.bufPrint(content_buf[cpos..], " Req: {d} {s} frags\n", .{ fi.count, fi.label }) catch break;
+                            cpos += fl.len;
+                        }
                     }
                 }
             }

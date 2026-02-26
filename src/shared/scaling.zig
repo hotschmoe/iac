@@ -732,7 +732,7 @@ pub fn rollLoot(zone: constants.Zone, npc_class: ShipClass, npc_count: u8, rando
     };
 
     if (drop_roll < drop_chance) {
-        const ct = rollComponentType(npc_class, zone, random);
+        const ct = rollComponentType(npc_class, random);
         const rarity = rollRarity(zone, random);
         result.component = .{
             .component_type = ct,
@@ -743,9 +743,7 @@ pub fn rollLoot(zone: constants.Zone, npc_class: ShipClass, npc_count: u8, rando
     return result;
 }
 
-fn rollComponentType(npc_class: ShipClass, zone: constants.Zone, random: std.Random) ComponentType {
-    _ = zone;
-    // Weighted towards the NPC's ship class (60% same class, 40% any)
+fn rollComponentType(npc_class: ShipClass, random: std.Random) ComponentType {
     if (random.float(f32) < 0.6) {
         // Pick a component matching the NPC's class
         const matching = componentsForClass(npc_class);
@@ -771,12 +769,19 @@ fn componentsForClass(class: ShipClass) []const ComponentType {
 
 fn rollRarity(zone: constants.Zone, random: std.Random) Rarity {
     const roll = random.float(f32);
-    return switch (zone) {
-        .central_hub => .common,
-        .inner_ring => if (roll < 0.60) .common else if (roll < 0.90) .uncommon else .rare,
-        .outer_ring => if (roll < 0.40) .common else if (roll < 0.75) .uncommon else if (roll < 0.95) .rare else .exotic,
-        .wandering => if (roll < 0.20) .common else if (roll < 0.50) .uncommon else if (roll < 0.85) .rare else .exotic,
+
+    // Thresholds: [common_max, uncommon_max, rare_max] -- remainder is exotic
+    const thresholds: struct { common: f32, uncommon: f32, rare: f32 } = switch (zone) {
+        .central_hub => return .common,
+        .inner_ring => .{ .common = 0.60, .uncommon = 0.90, .rare = 1.0 },
+        .outer_ring => .{ .common = 0.40, .uncommon = 0.75, .rare = 0.95 },
+        .wandering => .{ .common = 0.20, .uncommon = 0.50, .rare = 0.85 },
     };
+
+    if (roll < thresholds.common) return .common;
+    if (roll < thresholds.uncommon) return .uncommon;
+    if (roll < thresholds.rare) return .rare;
+    return .exotic;
 }
 
 // ── Utility ─────────────────────────────────────────────────────

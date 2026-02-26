@@ -854,7 +854,6 @@ pub const GameEngine = struct {
         const cost = scaling.researchCost(tech, target_level);
         if (!player.resources.canAfford(cost)) return error.InsufficientResources;
 
-        // Check fragment cost for level III+
         const frag_cost = scaling.researchFragmentCost(tech, target_level);
         if (frag_cost) |fc| {
             if (!player.fragments.canAfford(fc)) return error.InsufficientFragments;
@@ -1088,6 +1087,7 @@ pub const GameEngine = struct {
                     existing.addNpcFleet(npc.id);
                     npc.in_combat = true;
                     existing.npc_value = existing.npc_value.add(npcFleetValue(npc));
+                    existing.npc_ship_count +|= npc.ship_count;
                 }
                 try self.pending_events.append(self.allocator, .{
                     .tick = self.current_tick,
