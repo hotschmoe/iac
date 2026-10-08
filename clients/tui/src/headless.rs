@@ -1,0 +1,138 @@
+// Headless NDJSON mode: the game as a pipe, so LLM agents (or scripts,
+// or `jq`) can play without a terminal.
+//
+//   stdout — every server message, one JSON object per line, verbatim.
+//   stdin  — one JSON command per line. Accepts either a full client
+//            message ({"type":"command","action":"move",...}) or a bare
+//            command ({"action":"move",...}), which gets wrapped.
+//
+// Auth happens automatically from --name/--token; the session ends when
+// stdin closes or the server hangs up.
+
+use std::io::Write;
+
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_tungstenite::tungstenite::protocol::Message;
+
+use iac_shared::protocol::{AuthRequest, ClientMessage, Command};
+
+use crate::connection::{Connection, ConnectionConfig};
+
+pub async fn run(
+    config: &ConnectionConfig,
+    name: &str,
+    token: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let conn = Connection::connect(config).await?;
+
+    // A token marks the session as an LLM agent server-side; headless
+    // sessions always identify as agents.
+    let auth = ClientMessage::Auth(AuthRequest {
+        player_name: name.to_string(),
+        token: Some(token.unwrap_or("headless").to_string()),
+    });
+    conn.send_message(auth).await?;
+
+    let conn_tx = conn.tx.clone();
+
+    // Server → stdout task.
+    let printer = tokio::spawn(async move {
+        loop {
+            let msg = {
+                let mut rx = conn.rx.lock().await;
+                rx.recv().await
+            };
+            match msg {
+                Some(text) => {
+                    let mut out = std::io::stdout().lock();
+                    if writeln!(out, "{}", text).and_then(|_| out.flush()).is_err() {
+                        break; // stdout closed — reader is gone
+                    }
+                }
+                None => {
+                    // Connection closed: emit a final marker so agents can
+                    // distinguish "server gone" from "quiet".
+                    let mut out = std::io::stdout().lock();
+                    let _ = writeln!(out, r#"{{"type":"connection_closed"}}"#);
+                    let _ = out.flush();
+                    break;
+                }
+            }
+        }
+    });
+
+    // stdin → server loop.
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut lines = stdin.lines();
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                match line? {
+                    Some(line) => {
+                        let line = line.trim();
+                        if line.is_empty() { continue; }
+                        match parse_line(line) {
+                            Ok(msg) => {
+                                let json = serde_json::to_string(&msg)?;
+                                if conn_tx.send(Message::Text(json.into())).is_err() {
+                                    break; // connection writer gone
+                                }
+                            }
+                            Err(e) => {
+                                // Report bad input on stdout in-band, same
+                                // shape as server errors.
+                                let mut out = std::io::stdout().lock();
+                                let _ = writeln!(
+                                    out,
+                                    r#"{{"type":"client_error","message":{}}}"#,
+                                    serde_json::to_string(&format!("unparseable input: {e}"))?
+                                );
+                                let _ = out.flush();
+                            }
+                        }
+                    }
+                    None => break, // EOF: agent is done
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(200)), if printer.is_finished() => {
+                break; // connection closed underneath us
+            }
+        }
+    }
+
+    printer.abort();
+    Ok(())
+}
+
+/// Accept a full ClientMessage or a bare Command and normalize to the former.
+fn parse_line(line: &str) -> Result<ClientMessage, serde_json::Error> {
+    if let Ok(msg) = serde_json::from_str::<ClientMessage>(line) {
+        return Ok(msg);
+    }
+    serde_json::from_str::<Command>(line).map(ClientMessage::Command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_client_message() {
+        let msg = parse_line(r#"{"type":"request_full_state"}"#).unwrap();
+        assert!(matches!(msg, ClientMessage::RequestFullState));
+    }
+
+    #[test]
+    fn wraps_bare_command() {
+        let msg = parse_line(r#"{"action":"scan","fleet_id":7}"#).unwrap();
+        match msg {
+            ClientMessage::Command(Command::Scan { fleet_id }) => assert_eq!(fleet_id, 7),
+            other => panic!("wrong parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_line("not json").is_err());
+    }
+}

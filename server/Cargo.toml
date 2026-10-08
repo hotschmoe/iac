@@ -1,0 +1,17 @@
+[package]
+name = "iac-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iac-shared = { path = "../shared" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"

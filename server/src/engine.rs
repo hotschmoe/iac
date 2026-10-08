@@ -1,0 +1,3473 @@
+// Game engine: tick loop, movement, combat, harvesting, NPC behavior, homeworlds, build queues.
+// Ported from Zig engine.zig.
+
+use std::collections::HashMap;
+use std::time::SystemTime;
+
+use log::{info, warn};
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+
+use iac_shared::hex::Hex;
+use iac_shared::constants::{
+    Resources, ShipClass, Density, Zone,
+    STARTING_RESOURCES, STARTING_SCOUTS, MAX_FLEETS_PER_PLAYER,
+    HARVEST_COOLDOWN, SHIELD_REGEN_IDLE_TICKS,
+    RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
+    RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
+    FUEL_RATE_PER_MASS, SECTOR_REGEN_RATE,
+    NPC_PATROL_INTERVAL, SALVAGE_FRACTION, SALVAGE_DESPAWN_TICKS,
+    HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST, MOVE_BASE_COOLDOWN,
+    SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_SCOUT_RANGE, SCAN_REVEAL_TICKS,
+    RAID_ROLL_INTERVAL, RAID_ROLL_CHANCE, RAID_WARNING_TICKS, RAID_MIN_INTERVAL,
+    RAID_MIN_PLAYER_AGE, RAID_POWER_FRACTION_MIN, RAID_POWER_FRACTION_MAX,
+    RAID_LOSS_CAP_METAL, RAID_LOSS_CAP_CRYSTAL, RAID_LOSS_CAP_DEUT,
+    RAID_DEFENSE_SALVAGE_FRACTION, RAID_SUPPRESS_AFTER_LOSS,
+    EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
+    EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_PATROL_RADIUS, POLICY_PATROL_MIN_HULL,
+    derelict_tier, derelict_tier_odds, derelict_loot_ranges,
+    defense_grid_scout_units, npc_respawn_delay,
+};
+use iac_shared::world::WorldGen;
+use iac_shared::scaling::{
+    self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
+    MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION,
+};
+use iac_shared::protocol::{GameEvent, EventKind, ErrorCode, PolicyPreset, PolicyParams};
+
+use crate::combat;
+use crate::database::Database;
+
+// ── Constants ─────────────────────────────────────────────────────
+
+pub const MAX_SHIPS_PER_FLEET: usize = 64;
+pub const MAX_NPC_SHIPS: usize = 32;
+pub const MAX_COMBAT_FLEETS: usize = 8;
+
+// ── Core Data Types ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetStatus {
+    Idle,
+    Moving,
+    Harvesting,
+    InCombat,
+    Returning,
+    Docked,
+    Exploring,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Ship {
+    pub id: u64,
+    pub ship_class: ShipClass,
+    pub hull: f32,
+    pub hull_max: f32,
+    pub shield: f32,
+    pub shield_max: f32,
+    pub weapon_power: f32,
+    pub speed: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct Fleet {
+    pub id: u64,
+    pub owner_id: u64,
+    pub location: Hex,
+    pub state: FleetStatus,
+    pub ships: [Ship; MAX_SHIPS_PER_FLEET],
+    pub ship_count: usize,
+    pub cargo: Resources,
+    pub fuel: f32,
+    pub fuel_max: f32,
+    pub move_cooldown: u16,
+    pub action_cooldown: u16,
+    pub move_target: Option<Hex>,
+    pub idle_ticks: u16,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct NpcFleet {
+    pub id: u64,
+    pub location: Hex,
+    pub ships: [Ship; MAX_NPC_SHIPS],
+    pub ship_count: u8,
+    pub behavior: iac_shared::world::NpcBehaviorType,
+    pub home_sector: Hex,
+    pub patrol_timer: u16,
+    pub in_combat: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Player {
+    pub id: u64,
+    pub name: String,
+    pub resources: Resources,
+    pub homeworld: Hex,
+    pub buildings: BuildingLevels,
+    pub research: ResearchLevels,
+    pub building_queue: Option<BuildQueueEntry>,
+    pub ship_queue: Option<ShipQueueEntry>,
+    pub research_queue: Option<ResearchQueueEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildQueueEntry {
+    pub building_type: BuildingType,
+    pub target_level: u8,
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShipQueueEntry {
+    pub ship_class: ShipClass,
+    pub count: u16,
+    pub built: u16,
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchQueueEntry {
+    pub tech: ResearchType,
+    pub target_level: u8,
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Combat {
+    pub id: u64,
+    pub sector: Hex,
+    pub player_fleet_ids: Vec<u64>,
+    pub npc_fleet_ids: Vec<u64>,
+    pub npc_value: Resources,
+    pub round: u16,
+}
+
+impl Combat {
+    pub fn add_player_fleet(&mut self, fleet_id: u64) {
+        if !self.player_fleet_ids.contains(&fleet_id) && self.player_fleet_ids.len() < MAX_COMBAT_FLEETS {
+            self.player_fleet_ids.push(fleet_id);
+        }
+    }
+
+    pub fn add_npc_fleet(&mut self, fleet_id: u64) {
+        if !self.npc_fleet_ids.contains(&fleet_id) && self.npc_fleet_ids.len() < MAX_COMBAT_FLEETS {
+            self.npc_fleet_ids.push(fleet_id);
+        }
+    }
+
+    pub fn has_player_fleet(&self, fleet_id: u64) -> bool {
+        self.player_fleet_ids.contains(&fleet_id)
+    }
+
+    pub fn has_npc_fleet(&self, fleet_id: u64) -> bool {
+        self.npc_fleet_ids.contains(&fleet_id)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SectorOverride {
+    pub metal_density: Option<Density>,
+    pub crystal_density: Option<Density>,
+    pub deut_density: Option<Density>,
+    pub metal_harvested: f32,
+    pub crystal_harvested: f32,
+    pub deut_harvested: f32,
+    pub salvage: Option<Resources>,
+    pub salvage_despawn_tick: Option<u64>,
+    pub npc_cleared_tick: Option<u64>,
+    /// Tick a derelict site here was stripped (sites don't respawn).
+    pub site_looted_tick: Option<u64>,
+    /// Failed boardings so far — each makes the next attempt hotter.
+    pub site_ambush_bumps: u8,
+}
+
+impl SectorOverride {
+    pub fn effective_densities(
+        override_opt: Option<&SectorOverride>,
+        template: &iac_shared::world::SectorTemplate,
+    ) -> (Density, Density, Density) {
+        let ov = override_opt;
+        (
+            ov.and_then(|o| o.metal_density).unwrap_or(template.metal_density),
+            ov.and_then(|o| o.crystal_density).unwrap_or(template.crystal_density),
+            ov.and_then(|o| o.deut_density).unwrap_or(template.deut_density),
+        )
+    }
+}
+
+/// Per-player raid pacing state. Deliberately not persisted: a server
+/// restart just resets the raid clock, which is always in the player's favor.
+#[derive(Debug, Clone)]
+pub struct RaidState {
+    pub first_seen_tick: u64,
+    pub next_roll_tick: u64,
+    pub last_raid_tick: u64,
+    pub suppress_until: u64,
+    pub incoming: Option<IncomingRaid>,
+}
+
+/// A fleet's standing orders plus the bit of memory the autopilot needs.
+#[derive(Debug, Clone)]
+pub struct FleetPolicy {
+    pub preset: PolicyPreset,
+    pub params: PolicyParams,
+    /// The sector this doctrine works (set when assigned; MineAndReturn
+    /// shuttles between here and home).
+    pub work_sector: Option<Hex>,
+    /// Next tick the autopilot will reconsider this fleet.
+    pub next_eval_tick: u64,
+}
+
+/// What a policy BFS is hunting for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyTarget {
+    Resources,
+    SalvageOrSite,
+    Hostiles,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IncomingRaid {
+    pub arrival_tick: u64,
+    /// Combat power of the raid fleet, fixed at forecast time so the
+    /// player's preparations after the warning actually help.
+    pub power: f32,
+}
+
+// ── GameEngine ────────────────────────────────────────────────────
+
+pub struct GameEngine {
+    pub world_gen: WorldGen,
+    pub db: Database,
+    pub current_tick: u64,
+
+    pub players: HashMap<u64, Player>,
+    pub fleets: HashMap<u64, Fleet>,
+    pub npc_fleets: HashMap<u64, NpcFleet>,
+    pub active_combats: HashMap<u64, Combat>,
+    pub sector_overrides: HashMap<u32, SectorOverride>,
+
+    /// Actively-scanned sectors per player: hex key → expiry tick.
+    scan_reveals: HashMap<u64, HashMap<u32, u64>>,
+    raid_states: HashMap<u64, RaidState>,
+    /// Standing orders per fleet.
+    pub policies: HashMap<u64, FleetPolicy>,
+
+    pending_events: Vec<GameEvent>,
+    pending_arrivals: Vec<u64>,  // fleet IDs pending homeworld/NPC checks after movement
+
+    next_id: u64,
+
+    dirty_players: HashMap<u64, ()>,
+    dirty_fleets: HashMap<u64, ()>,
+    dirty_sectors: HashMap<u32, ()>,
+    deleted_fleet_ids: HashMap<u64, ()>,
+    dirty_policies: HashMap<u64, ()>,
+    deleted_policy_ids: HashMap<u64, ()>,
+}
+
+impl GameEngine {
+    pub fn init(world_seed: u64, db: Database) -> Result<GameEngine, Box<dyn std::error::Error>> {
+        let mut engine = GameEngine {
+            world_gen: WorldGen::init(world_seed),
+            db,
+            current_tick: 0,
+            players: HashMap::new(),
+            fleets: HashMap::new(),
+            npc_fleets: HashMap::new(),
+            active_combats: HashMap::new(),
+            sector_overrides: HashMap::new(),
+            scan_reveals: HashMap::new(),
+            raid_states: HashMap::new(),
+            policies: HashMap::new(),
+            pending_events: Vec::new(),
+            pending_arrivals: Vec::new(),
+            next_id: 1,
+            dirty_players: HashMap::new(),
+            dirty_fleets: HashMap::new(),
+            dirty_sectors: HashMap::new(),
+            deleted_fleet_ids: HashMap::new(),
+            dirty_policies: HashMap::new(),
+            deleted_policy_ids: HashMap::new(),
+        };
+
+        engine.load_state()?;
+        engine.persist_world_seed()?;
+
+        Ok(engine)
+    }
+
+    pub fn current_tick(&self) -> u64 {
+        self.current_tick
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    // ── Main Tick ─────────────────────────────────────────────────
+
+    pub fn tick(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // NOTE: pending_events must NOT be cleared here — command handlers
+        // push events between ticks (commands are processed before tick()
+        // in the server loop) and broadcast_updates() drains the queue
+        // after every tick.
+        self.current_tick += 1;
+
+        self.process_policies()?;
+        self.process_movement()?;
+        self.process_combat()?;
+        self.process_exploration()?;
+        self.process_harvesting()?;
+        self.process_sector_regen()?;
+        self.process_npc_behavior()?;
+        self.process_homeworlds()?;
+        self.process_build_queues()?;
+        self.process_raids()?;
+        self.process_salvage_despawn()?;
+        self.process_cooldowns()?;
+        self.prune_scan_reveals();
+
+        Ok(())
+    }
+
+    // ── Movement ──────────────────────────────────────────────────
+
+    fn process_movement(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Phase 1: Advance fleets that are moving
+        let mut arrived: Vec<(u64, Hex, u64)> = Vec::new(); // (fleet_id, target, owner_id)
+
+        for (_, fleet) in self.fleets.iter_mut() {
+            if fleet.state != FleetStatus::Moving { continue; }
+
+            if fleet.move_cooldown > 0 {
+                fleet.move_cooldown -= 1;
+                continue;
+            }
+
+            if let Some(target) = fleet.move_target {
+                fleet.location = target;
+                fleet.state = FleetStatus::Idle;
+                fleet.move_target = None;
+                self.dirty_fleets.insert(fleet.id, ());
+                arrived.push((fleet.id, target, fleet.owner_id));
+            }
+        }
+
+        // Phase 2: Process arrivals (exploration, docking, NPC encounters)
+        for (fleet_id, target, owner_id) in arrived {
+            let first_visit = !self.db.has_explored_sector(owner_id, target)?;
+            self.record_explored(owner_id, target)?;
+
+            self.pending_events.push(GameEvent {
+                tick: self.current_tick,
+                kind: EventKind::SectorEntered(iac_shared::protocol::SectorEnteredEvent {
+                    fleet_id,
+                    sector: target,
+                    first_visit,
+                }),
+            });
+
+            // Defer docking/encounter checks to avoid double mutable borrow
+            self.pending_arrivals.push(fleet_id);
+        }
+
+        // Process deferred arrival checks
+        let arrival_ids: Vec<u64> = self.pending_arrivals.drain(..).collect();
+        for fleet_id in arrival_ids {
+            self.check_homeworld_docking(fleet_id)?;
+            self.check_npc_encounter(fleet_id)?;
+        }
+
+        Ok(())
+    }
+
+    // ── Combat ────────────────────────────────────────────────────
+
+    fn process_combat(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let combat_ids: Vec<u64> = self.active_combats.keys().copied().collect();
+        let mut to_remove: Vec<u64> = Vec::new();
+
+        for combat_id in combat_ids {
+            let Some(active_combat) = self.active_combats.get(&combat_id) else { continue; };
+
+            // Copy needed data before mutable borrows
+            let combat_sector = active_combat.sector;
+            let combat_npc_value = active_combat.npc_value;
+            let combat_round = active_combat.round;
+            let pf_ids = active_combat.player_fleet_ids.clone();
+            let npc_ids = active_combat.npc_fleet_ids.clone();
+            let _ = active_combat;  // suppress unused warning
+
+            // Collect player fleet ship data (read-only)
+            let mut player_sides: Vec<combat::CombatSide> = Vec::new();
+            for &fid in &pf_ids {
+                if let Some(f) = self.fleets.get(&fid) {
+                    let ships: Vec<combat::CombatShip> = f.ships[0..f.ship_count].iter()
+                        .filter(|s| s.hull > 0.0)
+                        .map(combat::CombatShip::from)
+                        .collect();
+                    player_sides.push(combat::CombatSide {
+                        fleet_id: fid,
+                        is_npc: false,
+                        ships,
+                    });
+                }
+            }
+
+            // Collect NPC fleet ship data (read-only)
+            let mut npc_sides: Vec<combat::CombatSide> = Vec::new();
+            for &nid in &npc_ids {
+                if let Some(n) = self.npc_fleets.get(&nid) {
+                    let ships: Vec<combat::CombatShip> = n.ships[0..n.ship_count as usize].iter()
+                        .filter(|s| s.hull > 0.0)
+                        .map(combat::CombatShip::from)
+                        .collect();
+                    npc_sides.push(combat::CombatSide {
+                        fleet_id: nid,
+                        is_npc: true,
+                        ships,
+                    });
+                }
+            }
+
+            if player_sides.is_empty() || npc_sides.is_empty() {
+                to_remove.push(combat_id);
+                continue;
+            }
+
+            // Resolve combat with copied data
+            let result = combat::resolve_combat_round(
+                &player_sides, &npc_sides,
+                combat_npc_value,
+                self.current_tick,
+                combat_round as u32,
+            );
+
+            // Increment round counter
+            if let Some(combat_mut) = self.active_combats.get_mut(&combat_id) {
+                combat_mut.round = combat_round + 1;
+            }
+
+            self.pending_events.extend(result.events);
+
+            // Write updated ship data back to player fleets
+            for (i, side) in player_sides.iter().enumerate() {
+                if let Some(f) = self.fleets.get_mut(&side.fleet_id) {
+                    let new_ships: Vec<Ship> = result.player_ships[i].iter().map(|cs| Ship {
+                        id: cs.id,
+                        ship_class: cs.ship_class,
+                        hull: cs.hull,
+                        hull_max: cs.hull_max,
+                        shield: cs.shield,
+                        shield_max: cs.shield_max,
+                        weapon_power: cs.weapon_power,
+                        speed: cs.ship_class.base_stats().speed,
+                    }).collect();
+                    f.ships[..new_ships.len()].copy_from_slice(&new_ships);
+                    for j in new_ships.len()..f.ships.len() {
+                        f.ships[j] = Ship::default();
+                    }
+                    f.ship_count = new_ships.len();
+                    self.dirty_fleets.insert(f.id, ());
+                }
+            }
+
+            // Write updated ship data back to NPC fleets
+            for (i, side) in npc_sides.iter().enumerate() {
+                if let Some(n) = self.npc_fleets.get_mut(&side.fleet_id) {
+                    let new_ships = &result.npc_ships[i];
+                    let count = new_ships.len().min(n.ships.len());
+                    for (j, ns) in new_ships.iter().enumerate().take(count) {
+                        n.ships[j] = Ship {
+                            id: ns.id,
+                            ship_class: ns.ship_class,
+                            hull: ns.hull,
+                            hull_max: ns.hull_max,
+                            shield: ns.shield,
+                            shield_max: ns.shield_max,
+                            weapon_power: ns.weapon_power,
+                            speed: ns.ship_class.base_stats().speed,
+                        };
+                    }
+                    for j in count..n.ships.len() {
+                        n.ships[j] = Ship::default();
+                    }
+                    n.ship_count = count as u8;
+                }
+            }
+
+            if result.concluded {
+                to_remove.push(combat_id);
+
+                // Update state for each player fleet
+                for side in &player_sides {
+                    if let Some(f) = self.fleets.get_mut(&side.fleet_id) {
+                        f.state = if result.player_ships[player_sides.iter().position(|s| s.fleet_id == side.fleet_id).unwrap()].is_empty()
+                            { FleetStatus::Docked } else { FleetStatus::Idle };
+                        f.idle_ticks = 0;
+                    }
+                }
+
+                self.pending_events.push(GameEvent {
+                    tick: self.current_tick,
+                    kind: EventKind::CombatEnded(iac_shared::protocol::CombatEndedEvent {
+                        sector: combat_sector,
+                        player_victory: result.player_won,
+                    }),
+                });
+
+                if result.player_won {
+                    self.drop_salvage(combat_sector, combat_npc_value)?;
+
+                    let cleared_key = combat_sector.to_key();
+                    self.ensure_override(cleared_key)
+                        .npc_cleared_tick = Some(self.current_tick);
+                    self.dirty_sectors.insert(cleared_key, ());
+                }
+
+                // Remove destroyed NPCs
+                for &nid in &npc_ids {
+                    self.npc_fleets.remove(&nid);
+                }
+            }
+        }
+
+        for id in to_remove {
+            self.active_combats.remove(&id);
+        }
+
+        Ok(())
+    }
+
+    // ── Harvesting ────────────────────────────────────────────────
+
+    fn process_harvesting(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Each harvesting fleet collects ALL available resources per tick
+        // (metal, then crystal, then deuterium), capped by remaining cargo.
+        let fleet_ids: Vec<u64> = self.fleets.keys().copied().collect();
+
+        for fid in fleet_ids {
+            // Phase 1: read fleet + sector, compute per-resource harvest amounts
+            let Some(fleet) = self.fleets.get(&fid) else { continue; };
+            if fleet.state != FleetStatus::Harvesting { continue; }
+
+            let location = fleet.location;
+            let sector_key = location.to_key();
+            let template = self.world_gen.generate_sector(location);
+            let ov = self.sector_overrides.get(&sector_key);
+            let (metal_d, crystal_d, deut_d) = SectorOverride::effective_densities(ov, &template);
+
+            let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
+            let harvest_power = fleet_harvest_power(fleet, research);
+            let max_cargo = fleet_cargo_capacity(fleet);
+            let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+            let mut remaining = max_cargo - used;
+
+            if remaining <= 0.0 {
+                if let Some(f) = self.fleets.get_mut(&fid) {
+                    f.state = FleetStatus::Idle;
+                }
+                continue;
+            }
+
+            let targets = [
+                (metal_d, iac_shared::protocol::HarvestResource::Metal, "metal"),
+                (crystal_d, iac_shared::protocol::HarvestResource::Crystal, "crystal"),
+                (deut_d, iac_shared::protocol::HarvestResource::Deuterium, "deut"),
+            ];
+
+            // Phase 2: apply, sequentially capped by remaining cargo
+            let mut harvested_any = false;
+            for (density, res_type, accum_key) in targets {
+                let amount = density.harvest_multiplier() * harvest_power;
+                if amount > 0.0 && remaining > 0.0 {
+                    let actual = amount.min(remaining);
+                    remaining -= actual;
+                    harvested_any = true;
+
+                    if let Some(f) = self.fleets.get_mut(&fid) {
+                        match res_type {
+                            iac_shared::protocol::HarvestResource::Metal => f.cargo.metal += actual,
+                            iac_shared::protocol::HarvestResource::Crystal => f.cargo.crystal += actual,
+                            _ => f.cargo.deuterium += actual,
+                        }
+                    }
+
+                    self.accumulate_harvest(sector_key, accum_key, actual, density)?;
+                    self.pending_events.push(GameEvent {
+                        tick: self.current_tick,
+                        kind: EventKind::ResourceHarvested(iac_shared::protocol::ResourceHarvestedEvent {
+                            fleet_id: fid,
+                            resource_type: res_type,
+                            amount: actual,
+                        }),
+                    });
+                }
+            }
+
+            if harvested_any {
+                self.dirty_fleets.insert(fid, ());
+            } else if let Some(f) = self.fleets.get_mut(&fid) {
+                // Nothing harvestable here — stop instead of spinning forever.
+                f.state = FleetStatus::Idle;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn accumulate_harvest(&mut self, sector_key: u32, resource: &str, amount: f32, current_density: Density) -> Result<(), Box<dyn std::error::Error>> {
+        if current_density == Density::None { return Ok(()); }
+
+        let ov = self.ensure_override(sector_key);
+        let harvested_ptr = match resource {
+            "metal" => &mut ov.metal_harvested,
+            "crystal" => &mut ov.crystal_harvested,
+            "deut" => &mut ov.deut_harvested,
+            _ => &mut ov.metal_harvested,
+        };
+
+        *harvested_ptr += amount;
+
+        let threshold = current_density.depletion_threshold();
+        if threshold > 0.0 && *harvested_ptr >= threshold {
+            *harvested_ptr = 0.0;
+            let new_density = current_density.downgrade();
+            match resource {
+                "metal" => ov.metal_density = Some(new_density),
+                "crystal" => ov.crystal_density = Some(new_density),
+                "deut" => ov.deut_density = Some(new_density),
+                _ => {}
+            }
+            self.dirty_sectors.insert(sector_key, ());
+        }
+        Ok(())
+    }
+
+    // ── Sector Regen ──────────────────────────────────────────────
+
+    fn process_sector_regen(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
+        for sector_key in keys {
+            let Some(ov) = self.sector_overrides.get(&sector_key) else { continue; };
+            if !is_depleted(ov.metal_density) && !is_depleted(ov.crystal_density) && !is_depleted(ov.deut_density) {
+                continue;
+            }
+
+            let coord = Hex::from_key(sector_key);
+            let mut fleet_present = false;
+            for f in self.fleets.values() {
+                if f.location == coord {
+                    fleet_present = true;
+                    break;
+                }
+            }
+            if fleet_present { continue; }
+
+            let template = self.world_gen.generate_sector(coord);
+            let ov_mut = self.sector_overrides.get_mut(&sector_key).unwrap();
+            let mut changed = false;
+
+            changed = regen_resource(&mut ov_mut.metal_harvested, &mut ov_mut.metal_density, template.metal_density) || changed;
+            changed = regen_resource(&mut ov_mut.crystal_harvested, &mut ov_mut.crystal_density, template.crystal_density) || changed;
+            changed = regen_resource(&mut ov_mut.deut_harvested, &mut ov_mut.deut_density, template.deut_density) || changed;
+
+            if changed {
+                self.dirty_sectors.insert(sector_key, ());
+            }
+        }
+        Ok(())
+    }
+
+    // ── Salvage Despawn ───────────────────────────────────────────
+
+    fn process_salvage_despawn(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
+        for key in keys {
+            let Some(ov) = self.sector_overrides.get_mut(&key) else { continue; };
+            if let Some(despawn_tick) = ov.salvage_despawn_tick
+                && self.current_tick >= despawn_tick
+            {
+                ov.salvage = None;
+                ov.salvage_despawn_tick = None;
+                self.dirty_sectors.insert(key, ());
+            }
+        }
+        Ok(())
+    }
+
+    // ── NPC Behavior ──────────────────────────────────────────────
+
+    fn process_npc_behavior(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Respawn check
+        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
+        for key in keys {
+            let Some(ov) = self.sector_overrides.get(&key) else { continue; };
+            let Some(cleared_tick) = ov.npc_cleared_tick else { continue; };
+            let coord = Hex::from_key(key);
+            let zone = Zone::from_distance(coord.dist_from_origin());
+            let delay = npc_respawn_delay(zone);
+            if self.current_tick >= cleared_tick + delay
+                && let Some(ov_mut) = self.sector_overrides.get_mut(&key)
+            {
+                ov_mut.npc_cleared_tick = None;
+                self.dirty_sectors.insert(key, ());
+            }
+        }
+
+        // Patrol movement
+        let mut rng = StdRng::seed_from_u64(self.current_tick.wrapping_mul(0x9E3779B97F4A7C15));
+
+        let npc_ids: Vec<u64> = self.npc_fleets.keys().copied().collect();
+        for npc_id in npc_ids {
+            let Some(npc) = self.npc_fleets.get(&npc_id) else { continue; };
+            if npc.in_combat { continue; }
+            if npc.behavior != iac_shared::world::NpcBehaviorType::Patrol
+                && npc.behavior != iac_shared::world::NpcBehaviorType::Aggressive
+            {
+                continue;
+            }
+
+            let npc_mut = self.npc_fleets.get(&npc_id).unwrap();
+            if npc_mut.patrol_timer > 0 {
+                if let Some(npc_m) = self.npc_fleets.get_mut(&npc_id) {
+                    npc_m.patrol_timer -= 1;
+                }
+                continue;
+            }
+
+            let connections = self.world_gen.connected_neighbors(npc.location);
+            let conns = connections.slice();
+            if conns.is_empty() { continue; }
+
+            let idx = rng.random_range(0..conns.len());
+            let new_location = conns[idx];
+
+            if let Some(npc_m) = self.npc_fleets.get_mut(&npc_id) {
+                npc_m.location = new_location;
+                npc_m.patrol_timer = NPC_PATROL_INTERVAL;
+            }
+
+            // Check if player fleet at new location -> trigger combat
+            for fleet in self.fleets.values() {
+                if fleet.location == new_location && fleet.state != FleetStatus::InCombat && fleet.ship_count > 0 {
+                    self.start_combat(fleet.id, npc_id)?;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ── Homeworlds ────────────────────────────────────────────────
+
+    fn process_homeworlds(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        for (_, player) in self.players.iter_mut() {
+            player.resources.metal += scaling::production_per_tick(BuildingType::MetalMine, player.buildings.metal_mine);
+            player.resources.crystal += scaling::production_per_tick(BuildingType::CrystalMine, player.buildings.crystal_mine);
+            player.resources.deuterium += scaling::production_per_tick(BuildingType::DeuteriumSynthesizer, player.buildings.deuterium_synthesizer);
+            self.dirty_players.insert(player.id, ());
+        }
+        Ok(())
+    }
+
+    // ── Build Queues ──────────────────────────────────────────────
+
+    fn process_build_queues(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Phase 1: Collect completed queue items (read-only)
+        let mut completed_buildings: Vec<(u64, BuildingType, u8)> = Vec::new(); // (pid, type, level)
+        let mut completed_ships: Vec<(u64, ShipClass)> = Vec::new();
+        let mut completed_research: Vec<(u64, ResearchType, u8)> = Vec::new();
+        let mut fuel_recalc_players: Vec<u64> = Vec::new();
+
+        for (pid, player) in &self.players {
+            // Building queue
+            if let Some(ref q) = player.building_queue
+                && self.current_tick >= q.end_tick
+            {
+                completed_buildings.push((*pid, q.building_type, q.target_level));
+                if q.building_type == BuildingType::FuelDepot {
+                    fuel_recalc_players.push(*pid);
+                }
+            }
+
+            // Ship queue
+            if let Some(ref q) = player.ship_queue
+                && self.current_tick >= q.end_tick
+            {
+                completed_ships.push((*pid, q.ship_class));
+            }
+
+            // Research queue
+            if let Some(ref q) = player.research_queue
+                && self.current_tick >= q.end_tick
+            {
+                completed_research.push((*pid, q.tech, q.target_level));
+                if q.tech == ResearchType::ExtendedFuelTanks {
+                    fuel_recalc_players.push(*pid);
+                }
+            }
+        }
+
+        // Phase 2: Apply completed buildings
+        for (pid, bt, tl) in completed_buildings {
+            if let Some(player) = self.players.get_mut(&pid) {
+                player.buildings.set(bt, tl);
+                player.building_queue = None;
+                self.dirty_players.insert(pid, ());
+                self.pending_events.push(GameEvent {
+                    tick: self.current_tick,
+                    kind: EventKind::BuildingCompleted(iac_shared::protocol::BuildingCompletedEvent {
+                        building_type: bt,
+                        new_level: tl,
+                        player_id: Some(pid),
+                    }),
+                });
+            }
+        }
+
+        // Phase 3: Apply completed ships
+        for (pid, ship_class) in completed_ships {
+            self.add_ship_to_homeworld(pid, ship_class)?;
+            self.dirty_players.insert(pid, ());
+            self.pending_events.push(GameEvent {
+                tick: self.current_tick,
+                kind: EventKind::ShipBuilt(iac_shared::protocol::ShipBuiltEvent {
+                    ship_class,
+                    count: 1,
+                    player_id: Some(pid),
+                }),
+            });
+
+            // Update ship queue progress
+            if let Some(player) = self.players.get_mut(&pid)
+                && let Some(ref mut q) = player.ship_queue
+            {
+                q.built += 1;
+                if q.built >= q.count {
+                    player.ship_queue = None;
+                } else {
+                    let per_ship = scaling::ship_build_time(q.ship_class, player.buildings.shipyard);
+                    q.end_tick = self.current_tick + per_ship;
+                }
+            }
+        }
+
+        // Phase 4: Apply completed research
+        for (pid, tech, tl) in completed_research {
+            if let Some(player) = self.players.get_mut(&pid) {
+                player.research.set(tech, tl);
+                player.research_queue = None;
+                self.dirty_players.insert(pid, ());
+                self.pending_events.push(GameEvent {
+                    tick: self.current_tick,
+                    kind: EventKind::ResearchCompleted(iac_shared::protocol::ResearchCompletedEvent {
+                        tech,
+                        new_level: tl,
+                        player_id: Some(pid),
+                    }),
+                });
+            }
+        }
+
+        // Phase 5: Recalculate fuel for affected players
+        for pid in fuel_recalc_players {
+            self.recalculate_player_fleet_fuel(pid)?;
+        }
+
+        Ok(())
+    }
+
+    // ── Homeworld Raids ───────────────────────────────────────────
+    //
+    // Forecasted pressure, never a random tax: raids are announced
+    // RAID_WARNING_TICKS in advance, sized against the defense the player
+    // already has, hard-capped on losses, and pay out salvage when repelled.
+    // DefenseGrid exists so a player can leave home without babysitting it.
+
+    fn process_raids(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let tick = self.current_tick;
+        let player_ids: Vec<u64> = self.players.keys().copied().collect();
+
+        for pid in player_ids {
+            let state = self.raid_states.entry(pid).or_insert_with(|| RaidState {
+                first_seen_tick: tick,
+                next_roll_tick: tick + RAID_ROLL_INTERVAL,
+                last_raid_tick: 0,
+                suppress_until: 0,
+                incoming: None,
+            });
+
+            if let Some(incoming) = state.incoming {
+                if tick >= incoming.arrival_tick {
+                    state.incoming = None;
+                    self.resolve_raid(pid, incoming.power)?;
+                }
+                continue;
+            }
+
+            if tick < state.next_roll_tick { continue; }
+            state.next_roll_tick = tick + RAID_ROLL_INTERVAL;
+
+            let age = tick.saturating_sub(state.first_seen_tick);
+            if age < RAID_MIN_PLAYER_AGE { continue; }
+            if tick < state.suppress_until { continue; }
+            if tick.saturating_sub(state.last_raid_tick) < RAID_MIN_INTERVAL { continue; }
+
+            let Some(player) = self.players.get(&pid) else { continue; };
+            // Raids only threaten empires worth raiding — and defenseless
+            // beginners are off the menu entirely.
+            let eligible = player.buildings.shipyard >= 2 || player.buildings.defense_grid >= 1;
+            if !eligible { continue; }
+
+            let defense = self.home_defense_power(pid);
+            if defense <= 0.0 { continue; }
+
+            let mut rng = StdRng::seed_from_u64(
+                tick.wrapping_mul(0xA24BAED4963EE407).wrapping_add(pid),
+            );
+            if rng.random_range(0.0..1.0) >= RAID_ROLL_CHANCE { continue; }
+
+            let fraction = rng.random_range(RAID_POWER_FRACTION_MIN..RAID_POWER_FRACTION_MAX);
+            let power = defense * fraction;
+            let arrival_tick = tick + RAID_WARNING_TICKS;
+
+            if let Some(state) = self.raid_states.get_mut(&pid) {
+                state.incoming = Some(IncomingRaid { arrival_tick, power });
+            }
+
+            let scout_power = ship_class_power(ShipClass::Scout);
+            let threat = if power < scout_power * 5.0 {
+                "light"
+            } else if power < scout_power * 15.0 {
+                "moderate"
+            } else {
+                "heavy"
+            };
+
+            self.pending_events.push(GameEvent {
+                tick,
+                kind: EventKind::RaidIncoming(iac_shared::protocol::RaidIncomingEvent {
+                    player_id: pid,
+                    arrival_tick,
+                    threat: threat.to_string(),
+                }),
+            });
+            info!("Raid forecast for player {} ({} threat, arrives tick {})", pid, threat, arrival_tick);
+        }
+
+        Ok(())
+    }
+
+    fn resolve_raid(&mut self, player_id: u64, raid_power: f32) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(player) = self.players.get(&player_id) else { return Ok(()); };
+        let homeworld = player.homeworld;
+        let grid_level = player.buildings.defense_grid;
+
+        // Defense is measured at arrival, not forecast — ships built or
+        // recalled during the warning window count.
+        let defense_power = self.home_defense_power(player_id);
+
+        let mut rng = StdRng::seed_from_u64(
+            self.current_tick.wrapping_mul(0xD6E8FEB86659FD93).wrapping_add(player_id),
+        );
+        // ±10% fog of war on the outcome so a near-run thing stays tense.
+        let effective_defense = defense_power * rng.random_range(0.9..1.1);
+        let defended = effective_defense >= raid_power;
+
+        // Raid fleet value, for salvage: treat it as corvette-equivalents.
+        let corvette_power = ship_class_power(ShipClass::Corvette);
+        let corvettes = (raid_power / corvette_power).ceil().max(1.0);
+        let raid_value = ShipClass::Corvette.build_cost().scale(corvettes);
+
+        let mut resources_lost = Resources::default();
+        let mut salvage_dropped: Option<Resources> = None;
+
+        if defended {
+            let salvage = raid_value.scale(RAID_DEFENSE_SALVAGE_FRACTION);
+            let key = homeworld.to_key();
+            let tick = self.current_tick;
+            let ov = self.ensure_override(key);
+            ov.salvage = Some(ov.salvage.unwrap_or_default().add(salvage));
+            ov.salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
+            self.dirty_sectors.insert(key, ());
+            salvage_dropped = Some(salvage);
+            // Defenders take shield damage but the grid keeps hulls intact.
+            for fleet in self.fleets.values_mut() {
+                if fleet.owner_id != player_id || fleet.location != homeworld { continue; }
+                for ship in &mut fleet.ships[0..fleet.ship_count] {
+                    ship.shield = (ship.shield * 0.5).max(0.0);
+                }
+                fleet.idle_ticks = 0;
+                self.dirty_fleets.insert(fleet.id, ());
+            }
+        } else {
+            let player_mut = self.players.get_mut(&player_id).unwrap();
+            resources_lost = Resources {
+                metal: player_mut.resources.metal * RAID_LOSS_CAP_METAL,
+                crystal: player_mut.resources.crystal * RAID_LOSS_CAP_CRYSTAL,
+                deuterium: player_mut.resources.deuterium * RAID_LOSS_CAP_DEUT,
+            };
+            player_mut.resources = player_mut.resources.sub(resources_lost);
+            self.dirty_players.insert(player_id, ());
+        }
+
+        let tick = self.current_tick;
+        let state = self.raid_states.entry(player_id).or_insert_with(|| RaidState {
+            first_seen_tick: tick,
+            next_roll_tick: tick + RAID_ROLL_INTERVAL,
+            last_raid_tick: 0,
+            suppress_until: 0,
+            incoming: None,
+        });
+        state.last_raid_tick = tick;
+        if !defended {
+            state.suppress_until = tick + RAID_SUPPRESS_AFTER_LOSS;
+        }
+
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::RaidResolved(iac_shared::protocol::RaidResolvedEvent {
+                player_id,
+                defended,
+                resources_lost,
+                salvage_dropped,
+                raid_power,
+                defense_power,
+            }),
+        });
+        info!(
+            "Raid on player {} resolved: {} (raid {:.0} vs defense {:.0}, grid L{})",
+            player_id, if defended { "repelled" } else { "lost" },
+            raid_power, defense_power, grid_level,
+        );
+
+        Ok(())
+    }
+
+    /// Combat power defending the homeworld: docked ships plus the
+    /// DefenseGrid's virtual platforms.
+    fn home_defense_power(&self, player_id: u64) -> f32 {
+        let Some(player) = self.players.get(&player_id) else { return 0.0; };
+        let mut power = 0.0;
+        for fleet in self.fleets.values() {
+            if fleet.owner_id != player_id || fleet.location != player.homeworld { continue; }
+            for ship in &fleet.ships[0..fleet.ship_count] {
+                if ship.hull <= 0.0 { continue; }
+                power += ship.weapon_power + (ship.hull + ship.shield) / 10.0;
+            }
+        }
+        power += defense_grid_scout_units(player.buildings.defense_grid)
+            * ship_class_power(ShipClass::Scout);
+        power
+    }
+
+    // ── Cooldowns ─────────────────────────────────────────────────
+
+    fn process_cooldowns(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        for (_, fleet) in self.fleets.iter_mut() {
+            if fleet.action_cooldown > 0 {
+                fleet.action_cooldown -= 1;
+            }
+            if fleet.state == FleetStatus::Idle {
+                fleet.idle_ticks += 1;
+                if fleet.idle_ticks >= SHIELD_REGEN_IDLE_TICKS {
+                    for ship in &mut fleet.ships[0..fleet.ship_count] {
+                        if ship.shield < ship.shield_max {
+                            ship.shield = (ship.shield + ship.shield_max * 0.1).min(ship.shield_max);
+                            self.dirty_fleets.insert(fleet.id, ());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ── Player Registration ───────────────────────────────────────
+
+    pub fn register_player(&mut self, name: String) -> Result<u64, ErrorCode> {
+        // Reconnect if player already exists
+        for existing in self.players.values() {
+            if existing.name == name {
+                info!("Player '{}' reconnected (id={})", name, existing.id);
+                return Ok(existing.id);
+            }
+        }
+
+        let player_id = self.next_id();
+        let homeworld = self.find_homeworld_location().ok_or(ErrorCode::ServerError)?;
+
+        let player = Player {
+            id: player_id,
+            name: name.clone(),
+            resources: STARTING_RESOURCES,
+            homeworld,
+            buildings: BuildingLevels::default(),
+            research: ResearchLevels::default(),
+            building_queue: None,
+            ship_queue: None,
+            research_queue: None,
+        };
+
+        self.players.insert(player_id, player);
+        self.db.save_player(self.players.get(&player_id).unwrap())
+            .map_err(|_| ErrorCode::ServerError)?;
+
+        let fleet_id = self.next_id();
+        let scout_base = ShipClass::Scout.base_stats();
+        let scout_stats = scaling::apply_research_to_stats(scout_base, &ResearchLevels::default());
+
+        let mut fleet = Fleet {
+            id: fleet_id,
+            owner_id: player_id,
+            location: homeworld,
+            state: FleetStatus::Idle,
+            ships: [Ship::default(); MAX_SHIPS_PER_FLEET],
+            ship_count: STARTING_SCOUTS,
+            cargo: Resources::default(),
+            fuel: 50000.0,
+            fuel_max: 50000.0,
+            move_cooldown: 0,
+            action_cooldown: 0,
+            move_target: None,
+            idle_ticks: 0,
+        };
+
+        for i in 0..STARTING_SCOUTS {
+            fleet.ships[i] = Ship {
+                id: self.next_id(),
+                ship_class: ShipClass::Scout,
+                hull: scout_stats.hull,
+                hull_max: scout_stats.hull,
+                shield: scout_stats.shield,
+                shield_max: scout_stats.shield,
+                weapon_power: scout_stats.weapon,
+                speed: scout_stats.speed,
+            };
+        }
+
+        self.fleets.insert(fleet_id, fleet);
+        self.dirty_players.insert(player_id, ());
+        self.dirty_fleets.insert(fleet_id, ());
+
+        info!("Player '{}' registered (id={}) at homeworld {}", name, player_id, homeworld);
+        Ok(player_id)
+    }
+
+    // ── Command Handlers ──────────────────────────────────────────
+
+    /// Returns the fleet only if it exists, has ships, and belongs to the
+    /// commanding player — fleet IDs arrive from the wire and must never
+    /// let one player steer another's ships.
+    fn owned_fleet(&self, player_id: u64, fleet_id: u64) -> Result<&Fleet, ErrorCode> {
+        let fleet = self.fleets.get(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        if fleet.owner_id != player_id { return Err(ErrorCode::FleetNotFound); }
+        if fleet.ship_count == 0 { return Err(ErrorCode::FleetNotFound); }
+        Ok(fleet)
+    }
+
+    pub fn handle_move(&mut self, player_id: u64, fleet_id: u64, target: Hex) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
+        if fleet.action_cooldown > 0 { return Err(ErrorCode::OnCooldown); }
+
+        // Fleet cap check
+        if let Some(player) = self.players.get(&fleet.owner_id)
+            && fleet.location == player.homeworld
+            && self.count_deployed_fleets(fleet.owner_id, player.homeworld) >= MAX_FLEETS_PER_PLAYER
+        {
+            return Err(ErrorCode::FleetLimitReached);
+        }
+
+        let connections = self.world_gen.connected_neighbors(fleet.location);
+        if !connections.slice().contains(&target) {
+            return Err(ErrorCode::NoConnection);
+        }
+
+        let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
+        let fuel_cost = fleet_fuel_cost(fleet, research);
+        if fleet.fuel < fuel_cost { return Err(ErrorCode::InsufficientFuel); }
+
+        // Compute cooldown before mutable borrow (needs immutable fleet data)
+        let cooldown = fleet_move_cooldown(fleet, research);
+
+        let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet_mut.fuel -= fuel_cost;
+        fleet_mut.state = FleetStatus::Moving;
+        fleet_mut.move_target = Some(target);
+        fleet_mut.move_cooldown = cooldown;
+        fleet_mut.action_cooldown = cooldown;
+        self.dirty_fleets.insert(fleet_id, ());
+
+        Ok(())
+    }
+
+    pub fn handle_harvest(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
+        if fleet.state == FleetStatus::Moving { return Err(ErrorCode::OnCooldown); }
+        if fleet.action_cooldown > 0 { return Err(ErrorCode::OnCooldown); }
+
+        let template = self.world_gen.generate_sector(fleet.location);
+        let ov = self.sector_overrides.get(&fleet.location.to_key());
+        let (metal_d, crystal_d, deut_d) = SectorOverride::effective_densities(ov, &template);
+        if metal_d == Density::None && crystal_d == Density::None && deut_d == Density::None {
+            return Err(ErrorCode::NoResources);
+        }
+
+        let max_cargo = fleet_cargo_capacity(fleet);
+        let current_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+        if current_cargo >= max_cargo { return Err(ErrorCode::CargoFull); }
+
+        let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet_mut.state = FleetStatus::Harvesting;
+        fleet_mut.action_cooldown = HARVEST_COOLDOWN;
+        self.dirty_fleets.insert(fleet_id, ());
+
+        Ok(())
+    }
+
+    pub fn handle_collect_salvage(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
+        if fleet.state == FleetStatus::Moving { return Err(ErrorCode::OnCooldown); }
+
+        let key = fleet.location.to_key();
+        let ov = self.sector_overrides.get(&key).ok_or(ErrorCode::NoResources)?;
+        if ov.salvage.is_none() { return Err(ErrorCode::NoResources); }
+
+        self.collect_salvage(fleet_id).map_err(|_| ErrorCode::ServerError)?;
+
+        Ok(())
+    }
+
+    pub fn handle_attack(&mut self, player_id: u64, fleet_id: u64, target_fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
+        if fleet.state == FleetStatus::Moving { return Err(ErrorCode::OnCooldown); }
+
+        // Check if NPC exists at this location
+        if let Some(npc) = self.npc_fleets.get(&target_fleet_id) {
+            if npc.location != fleet.location { return Err(ErrorCode::InvalidTarget); }
+            if npc.in_combat { return Err(ErrorCode::OnCooldown); }
+            return self.start_combat(fleet_id, target_fleet_id).map_err(|_| ErrorCode::ServerError);
+        }
+
+        // Try spawning from template
+        let sector_key = fleet.location.to_key();
+        if let Some(ov) = self.sector_overrides.get(&sector_key)
+            && ov.npc_cleared_tick.is_some()
+        {
+            return Err(ErrorCode::InvalidTarget);
+        }
+        let template = self.world_gen.generate_sector(fleet.location);
+        if let Some(npc_tmpl) = &template.npc_template {
+            let spawned = self.spawn_npc_fleet(fleet.location, npc_tmpl.clone())
+                .map_err(|_| ErrorCode::ServerError)?;
+            return self.start_combat(fleet_id, spawned.id).map_err(|_| ErrorCode::ServerError);
+        }
+
+        Err(ErrorCode::InvalidTarget)
+    }
+
+    pub fn handle_recall(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        let player = self.players.get(&fleet.owner_id).ok_or(ErrorCode::ServerError)?;
+
+        let dist = Hex::distance(&fleet.location, &player.homeworld) as f32;
+        let fuel_cost = fleet_fuel_cost(fleet, Some(&player.research)) * dist * RECALL_FUEL_MULTIPLIER;
+        if fleet.fuel < fuel_cost { return Err(ErrorCode::InsufficientFuel); }
+
+        let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet_mut.fuel -= fuel_cost;
+
+        let base_damage_chance = RECALL_DAMAGE_CHANCE_PER_HEX * dist;
+        let ej_reduction = scaling::recall_damage_reduction(player.research.emergency_jump);
+        let damage_chance = RECALL_DAMAGE_CHANCE_CAP.min(base_damage_chance.max(0.0) - ej_reduction.max(0.0));
+
+        let mut rng = StdRng::seed_from_u64(
+            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+        );
+
+        let mut i = 0;
+        while i < fleet_mut.ship_count {
+            let roll = rng.random_range(0.0..1.0);
+            if roll < damage_chance {
+                let damage_pct = RECALL_HULL_DAMAGE_MIN + rng.random_range(0.0..1.0) * (RECALL_HULL_DAMAGE_MAX - RECALL_HULL_DAMAGE_MIN);
+                fleet_mut.ships[i].hull -= fleet_mut.ships[i].hull_max * damage_pct;
+
+                if fleet_mut.ships[i].hull <= 0.0 {
+                    self.pending_events.push(GameEvent {
+                        tick: self.current_tick,
+                        kind: EventKind::ShipDestroyed(iac_shared::protocol::ShipDestroyedEvent {
+                            ship_id: fleet_mut.ships[i].id,
+                            ship_class: fleet_mut.ships[i].ship_class,
+                            owner_fleet_id: fleet_id,
+                            is_npc: false,
+                        }),
+                    });
+                    // Swap-remove
+                    fleet_mut.ship_count -= 1;
+                    fleet_mut.ships[i] = fleet_mut.ships[fleet_mut.ship_count];
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        fleet_mut.location = player.homeworld;
+        fleet_mut.state = if fleet_mut.ship_count == 0 { FleetStatus::Docked } else { FleetStatus::Idle };
+        fleet_mut.move_target = None;
+
+        self.dock_fleet(fleet_id).map_err(|_| ErrorCode::ServerError)?;
+
+        Ok(())
+    }
+
+    pub fn handle_build(&mut self, player_id: u64, building_type: BuildingType) -> Result<(), ErrorCode> {
+        let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
+        if player.building_queue.is_some() { return Err(ErrorCode::QueueFull); }
+
+        let current_level = player.buildings.get(building_type);
+        if current_level >= MAX_BUILDING_LEVEL { return Err(ErrorCode::MaxLevelReached); }
+        if !scaling::building_prerequisites_met(building_type, &player.buildings) {
+            return Err(ErrorCode::PrerequisitesNotMet);
+        }
+
+        let target_level = current_level + 1;
+        let cost = scaling::building_cost(building_type, target_level);
+        if !player.resources.can_afford(cost) { return Err(ErrorCode::NoResources); }
+
+        let player_mut = self.players.get_mut(&player_id).unwrap();
+        player_mut.resources = player_mut.resources.sub(cost);
+        let duration = scaling::building_time(building_type, target_level);
+        player_mut.building_queue = Some(BuildQueueEntry {
+            building_type,
+            target_level,
+            start_tick: self.current_tick,
+            end_tick: self.current_tick + duration,
+        });
+        self.dirty_players.insert(player_id, ());
+
+        Ok(())
+    }
+
+    pub fn handle_research(&mut self, player_id: u64, tech: ResearchType) -> Result<(), ErrorCode> {
+        let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
+        if player.research_queue.is_some() { return Err(ErrorCode::QueueFull); }
+        if player.buildings.research_lab == 0 { return Err(ErrorCode::NoResearchLab); }
+
+        let current_level = player.research.get(tech);
+        if current_level >= scaling::research_max_level(tech) { return Err(ErrorCode::MaxLevelReached); }
+        if !scaling::research_prerequisites_met(tech, &player.buildings, &player.research) {
+            return Err(ErrorCode::PrerequisitesNotMet);
+        }
+
+        let target_level = current_level + 1;
+        let cost = scaling::research_cost(tech, target_level);
+        if !player.resources.can_afford(cost) { return Err(ErrorCode::NoResources); }
+
+        let player_mut = self.players.get_mut(&player_id).unwrap();
+        player_mut.resources = player_mut.resources.sub(cost);
+        let duration = scaling::research_time(tech, target_level);
+        player_mut.research_queue = Some(ResearchQueueEntry {
+            tech,
+            target_level,
+            start_tick: self.current_tick,
+            end_tick: self.current_tick + duration,
+        });
+        self.dirty_players.insert(player_id, ());
+
+        Ok(())
+    }
+
+    pub fn handle_build_ship(&mut self, player_id: u64, ship_class: ShipClass, count: u16) -> Result<(), ErrorCode> {
+        let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
+        if player.ship_queue.is_some() { return Err(ErrorCode::QueueFull); }
+        if player.buildings.shipyard == 0 { return Err(ErrorCode::NoShipyard); }
+        if !scaling::ship_class_unlocked(ship_class, &player.research) { return Err(ErrorCode::ShipLocked); }
+
+        let unit_cost = ship_class.build_cost();
+        let total_cost = Resources {
+            metal: unit_cost.metal * count as f32,
+            crystal: unit_cost.crystal * count as f32,
+            deuterium: unit_cost.deuterium * count as f32,
+        };
+        if !player.resources.can_afford(total_cost) { return Err(ErrorCode::NoResources); }
+
+        // Copy needed data before mutable borrow
+        let shipyard_level = player.buildings.shipyard;
+
+        let player_mut = self.players.get_mut(&player_id).unwrap();
+        player_mut.resources = player_mut.resources.sub(total_cost);
+        let per_ship = scaling::ship_build_time(ship_class, shipyard_level);
+        player_mut.ship_queue = Some(ShipQueueEntry {
+            ship_class,
+            count,
+            built: 0,
+            start_tick: self.current_tick,
+            end_tick: self.current_tick + per_ship,
+        });
+        self.dirty_players.insert(player_id, ());
+
+        Ok(())
+    }
+
+    pub fn handle_cancel_build(&mut self, player_id: u64, queue_type: iac_shared::protocol::QueueType) -> Result<(), ErrorCode> {
+        let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
+
+        // Copy queue data before mutable borrow
+        let building_queue = player.building_queue.clone();
+        let ship_queue = player.ship_queue.clone();
+        let research_queue = player.research_queue.clone();
+
+        let player_mut = self.players.get_mut(&player_id).unwrap();
+        match queue_type {
+            iac_shared::protocol::QueueType::Building => {
+                let q = building_queue.as_ref().ok_or(ErrorCode::NoResources)?;
+                let cost = scaling::building_cost(q.building_type, q.target_level);
+                player_mut.resources = player_mut.resources.add(cost.scale(CANCEL_REFUND_FRACTION));
+                player_mut.building_queue = None;
+            }
+            iac_shared::protocol::QueueType::Ship => {
+                let q = ship_queue.as_ref().ok_or(ErrorCode::NoResources)?;
+                let remaining = (q.count - q.built) as f32;
+                let refund = q.ship_class.build_cost().scale(remaining).scale(CANCEL_REFUND_FRACTION);
+                player_mut.resources = player_mut.resources.add(refund);
+                player_mut.ship_queue = None;
+            }
+            iac_shared::protocol::QueueType::Research => {
+                let q = research_queue.as_ref().ok_or(ErrorCode::NoResources)?;
+                let cost = scaling::research_cost(q.tech, q.target_level);
+                player_mut.resources = player_mut.resources.add(cost.scale(CANCEL_REFUND_FRACTION));
+                player_mut.research_queue = None;
+            }
+        }
+        self.dirty_players.insert(player_id, ());
+
+        Ok(())
+    }
+
+    /// Active scan: reveal connected sectors around the fleet and pick up
+    /// faint signal contacts one hop beyond. Scouts extend the range —
+    /// that's their job.
+    pub fn handle_scan(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
+        if fleet.state == FleetStatus::Moving { return Err(ErrorCode::OnCooldown); }
+        if fleet.action_cooldown > 0 { return Err(ErrorCode::OnCooldown); }
+
+        let origin = fleet.location;
+        let has_scout = fleet.ships[0..fleet.ship_count].iter()
+            .any(|s| s.ship_class == ShipClass::Scout);
+        let range = if has_scout { SCAN_SCOUT_RANGE } else { SCAN_BASE_RANGE };
+
+        let revealed = self.get_sensor_revealed_coords(origin, range);
+        let fringe: Vec<Hex> = {
+            let inner: std::collections::HashSet<u32> =
+                revealed.iter().map(|h| h.to_key()).collect();
+            self.get_sensor_revealed_coords(origin, range + 1)
+                .into_iter()
+                .filter(|h| !inner.contains(&h.to_key()))
+                .collect()
+        };
+
+        let mut hostiles_detected: u16 = 0;
+        for coord in &revealed {
+            if self.sector_has_hostiles(*coord) { hostiles_detected += 1; }
+        }
+
+        let mut signals: Vec<iac_shared::protocol::SignalContact> = Vec::new();
+        for coord in &fringe {
+            if let Some(signal) = self.faint_signal_at(*coord) {
+                signals.push(iac_shared::protocol::SignalContact { sector: *coord, signal });
+            }
+        }
+
+        let expiry = self.current_tick + SCAN_REVEAL_TICKS;
+        let player_reveals = self.scan_reveals.entry(player_id).or_default();
+        // The scanning fleet's own sector counts as scanned — autopilots
+        // use this to know a position's pings are still fresh.
+        player_reveals.insert(origin.to_key(), expiry);
+        for coord in &revealed {
+            player_reveals.insert(coord.to_key(), expiry);
+        }
+
+        let sectors_revealed = revealed.len() as u16;
+        let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet_mut.action_cooldown = SCAN_COOLDOWN;
+        fleet_mut.idle_ticks = 0;
+
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::ScanCompleted(iac_shared::protocol::ScanCompletedEvent {
+                fleet_id,
+                sector: origin,
+                sectors_revealed,
+                hostiles_detected,
+                signals,
+            }),
+        });
+
+        Ok(())
+    }
+
+    /// Stop whatever the fleet is doing. Aborting a jump forfeits the fuel
+    /// already burned — that's the price of hesitation.
+    pub fn handle_stop(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        match fleet.state {
+            FleetStatus::Moving | FleetStatus::Harvesting | FleetStatus::Exploring => {
+                // Backing out of a boarding leaves the site on alert.
+                let was_exploring = fleet.state == FleetStatus::Exploring;
+                if was_exploring {
+                    let key = fleet.location.to_key();
+                    let ov = self.ensure_override(key);
+                    ov.site_ambush_bumps = ov.site_ambush_bumps.saturating_add(1);
+                    self.dirty_sectors.insert(key, ());
+                }
+                let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+                fleet_mut.state = FleetStatus::Idle;
+                fleet_mut.move_target = None;
+                fleet_mut.move_cooldown = 0;
+                if was_exploring {
+                    // action_cooldown was the boarding timer — release it.
+                    fleet_mut.action_cooldown = 0;
+                }
+                fleet_mut.idle_ticks = 0;
+                self.dirty_fleets.insert(fleet_id, ());
+                Ok(())
+            }
+            FleetStatus::InCombat => Err(ErrorCode::OnCooldown),
+            _ => Err(ErrorCode::InvalidCommand),
+        }
+    }
+
+    // ── Derelict Sites ────────────────────────────────────────────
+
+    /// The boardable derelict in a sector, if one exists and hasn't been
+    /// stripped: (tier, failed-boarding bumps).
+    pub fn derelict_site_at(&self, coord: Hex) -> Option<(u8, u8)> {
+        let template = self.world_gen.generate_sector(coord);
+        if !template.has_derelict { return None; }
+        let ov = self.sector_overrides.get(&coord.to_key());
+        if ov.map(|o| o.site_looted_tick.is_some()).unwrap_or(false) { return None; }
+        let bumps = ov.map(|o| o.site_ambush_bumps).unwrap_or(0);
+        Some((derelict_tier(coord.dist_from_origin()), bumps))
+    }
+
+    /// Ambush odds for a boarding attempt by this fleet.
+    fn site_ambush_chance(&self, fleet: &Fleet, tier: u8, bumps: u8) -> f32 {
+        let (base, _, _) = derelict_tier_odds(tier);
+        let has_scout = fleet.ships[0..fleet.ship_count].iter()
+            .any(|s| s.ship_class == ShipClass::Scout);
+        let scout_bonus = if has_scout { EXPLORE_SCOUT_AMBUSH_REDUCTION } else { 0.0 };
+        (base + bumps as f32 * EXPLORE_RETRY_AMBUSH_BUMP - scout_bonus).clamp(0.02, 0.95)
+    }
+
+    /// Send a boarding party into the derelict in the fleet's sector.
+    pub fn handle_explore_site(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
+        if fleet.state == FleetStatus::Moving { return Err(ErrorCode::OnCooldown); }
+        if fleet.state == FleetStatus::Exploring { return Err(ErrorCode::OnCooldown); }
+        if fleet.action_cooldown > 0 { return Err(ErrorCode::OnCooldown); }
+
+        let location = fleet.location;
+        let (tier, _) = self.derelict_site_at(location).ok_or(ErrorCode::InvalidTarget)?;
+
+        let end_tick = self.current_tick + EXPLORE_DURATION_TICKS as u64;
+        let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet_mut.state = FleetStatus::Exploring;
+        fleet_mut.action_cooldown = EXPLORE_DURATION_TICKS;
+        fleet_mut.idle_ticks = 0;
+        self.dirty_fleets.insert(fleet_id, ());
+
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::SiteExplorationStarted(iac_shared::protocol::SiteExplorationStartedEvent {
+                fleet_id,
+                sector: location,
+                tier,
+                end_tick,
+            }),
+        });
+        Ok(())
+    }
+
+    /// Resolve boardings whose timer has run out.
+    fn process_exploration(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let due: Vec<u64> = self.fleets.values()
+            .filter(|f| f.state == FleetStatus::Exploring && f.action_cooldown == 0)
+            .map(|f| f.id)
+            .collect();
+        for fleet_id in due {
+            self.resolve_exploration(fleet_id)?;
+        }
+        Ok(())
+    }
+
+    fn resolve_exploration(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return Ok(()); };
+        let location = fleet.location;
+        let owner_id = fleet.owner_id;
+        let key = location.to_key();
+
+        // Site may have been looted out from under us (another fleet).
+        let Some((tier, bumps)) = self.derelict_site_at(location) else {
+            if let Some(f) = self.fleets.get_mut(&fleet_id) {
+                f.state = FleetStatus::Idle;
+            }
+            self.dirty_fleets.insert(fleet_id, ());
+            return Ok(());
+        };
+
+        let fleet = self.fleets.get(&fleet_id).unwrap();
+        let ambush_chance = self.site_ambush_chance(fleet, tier, bumps);
+        let has_hauler = fleet.ships[0..fleet.ship_count].iter()
+            .any(|s| s.ship_class == ShipClass::Hauler);
+
+        let mut rng = StdRng::seed_from_u64(
+            self.current_tick
+                .wrapping_mul(0xC2B2AE3D27D4EB4F)
+                .wrapping_add(u64::from(key))
+                .wrapping_add(fleet_id),
+        );
+
+        if rng.random_range(0.0..1.0) < ambush_chance {
+            // The wreck was bait. Site survives, gets hotter.
+            let ov = self.ensure_override(key);
+            ov.site_ambush_bumps = ov.site_ambush_bumps.saturating_add(1);
+            self.dirty_sectors.insert(key, ());
+
+            let guardian = ambush_guardian_template(tier, &mut rng);
+            let npc = self.spawn_npc_fleet(location, guardian)?;
+            if let Some(f) = self.fleets.get_mut(&fleet_id) {
+                f.state = FleetStatus::Idle;
+            }
+            self.pending_events.push(GameEvent {
+                tick: self.current_tick,
+                kind: EventKind::SiteAmbush(iac_shared::protocol::SiteAmbushEvent {
+                    fleet_id,
+                    sector: location,
+                    npc_fleet_id: npc.id,
+                }),
+            });
+            self.start_combat(fleet_id, npc.id)?;
+            return Ok(());
+        }
+
+        // Clean breach: roll the loot.
+        let ranges = derelict_loot_ranges(tier);
+        let loot_mult = if has_hauler { EXPLORE_HAULER_LOOT_MULTIPLIER } else { 1.0 };
+        let rolled = Resources {
+            metal: rng.random_range(ranges[0].0..=ranges[0].1) * loot_mult,
+            crystal: rng.random_range(ranges[1].0..=ranges[1].1) * loot_mult,
+            deuterium: rng.random_range(ranges[2].0..=ranges[2].1) * loot_mult,
+        };
+
+        // Cargo-cap the haul; anything the hold can't take drifts loose
+        // as salvage for a follow-up trip.
+        let fleet = self.fleets.get(&fleet_id).unwrap();
+        let max_cargo = fleet_cargo_capacity(fleet);
+        let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+        let mut remaining = (max_cargo - used).max(0.0);
+        let mut taken = Resources {
+            metal: rolled.metal.min(remaining),
+            ..Default::default()
+        };
+        remaining -= taken.metal;
+        taken.crystal = rolled.crystal.min(remaining);
+        remaining -= taken.crystal;
+        taken.deuterium = rolled.deuterium.min(remaining);
+        let overflow = rolled.sub(taken);
+
+        // Ship recovery and tech caches, by tier.
+        let (_, recover_chance, cache_chance) = derelict_tier_odds(tier);
+        let mut recovered_ship: Option<ShipClass> = None;
+        if recover_chance > 0.0 && rng.random_range(0.0..1.0) < recover_chance {
+            recovered_ship = Some(recoverable_ship_class(tier, &mut rng));
+        }
+        let mut tech_cache: Option<ResearchType> = None;
+        if cache_chance > 0.0 && rng.random_range(0.0..1.0) < cache_chance {
+            tech_cache = self.pick_tech_cache(owner_id, &mut rng);
+        }
+
+        // Apply: cargo, site consumed, overflow salvage.
+        if let Some(f) = self.fleets.get_mut(&fleet_id) {
+            f.cargo = f.cargo.add(taken);
+            f.state = FleetStatus::Idle;
+        }
+        self.dirty_fleets.insert(fleet_id, ());
+
+        let tick = self.current_tick;
+        let ov = self.ensure_override(key);
+        ov.site_looted_tick = Some(tick);
+        if overflow.metal + overflow.crystal + overflow.deuterium > 1.0 {
+            ov.salvage = Some(ov.salvage.unwrap_or_default().add(overflow));
+            ov.salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
+        }
+        self.dirty_sectors.insert(key, ());
+
+        if let Some(class) = recovered_ship {
+            self.add_recovered_ship(fleet_id, class, &mut rng);
+        }
+        if let Some(tech) = tech_cache {
+            self.grant_tech_level(owner_id, tech);
+        }
+
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::SiteExplored(iac_shared::protocol::SiteExploredEvent {
+                fleet_id,
+                sector: location,
+                tier,
+                resources: taken,
+                recovered_ship,
+                tech_cache,
+            }),
+        });
+        info!(
+            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{})",
+            fleet_id, tier, location, taken.metal, taken.crystal, taken.deuterium,
+            recovered_ship.map(|c| format!(", recovered {}", c.label())).unwrap_or_default(),
+            tech_cache.map(|t| format!(", data core: {:?}", t)).unwrap_or_default(),
+        );
+        Ok(())
+    }
+
+    /// Wedge a battered-but-flyable ship into the fleet, if there's room.
+    fn add_recovered_ship(&mut self, fleet_id: u64, class: ShipClass, rng: &mut StdRng) {
+        let research = self.fleets.get(&fleet_id)
+            .and_then(|f| self.players.get(&f.owner_id))
+            .map(|p| p.research.clone())
+            .unwrap_or_default();
+        let stats = scaling::apply_research_to_stats(class.base_stats(), &research);
+        let hull_frac: f32 = rng.random_range(0.35..0.70);
+        let ship_id = self.next_id();
+        if let Some(f) = self.fleets.get_mut(&fleet_id) {
+            if f.ship_count >= MAX_SHIPS_PER_FLEET { return; }
+            f.ships[f.ship_count] = Ship {
+                id: ship_id,
+                ship_class: class,
+                hull: stats.hull * hull_frac,
+                hull_max: stats.hull,
+                shield: 0.0,
+                shield_max: stats.shield,
+                weapon_power: stats.weapon,
+                speed: stats.speed,
+            };
+            f.ship_count += 1;
+            self.dirty_fleets.insert(fleet_id, ());
+        }
+    }
+
+    /// A data core grants an instant level in a random low tech.
+    fn pick_tech_cache(&self, player_id: u64, rng: &mut StdRng) -> Option<ResearchType> {
+        let player = self.players.get(&player_id)?;
+        let candidates: Vec<ResearchType> = ResearchType::ALL.iter().copied()
+            .filter(|&t| {
+                let lvl = player.research.get(t);
+                lvl < 3 && lvl < scaling::research_max_level(t)
+            })
+            .collect();
+        if candidates.is_empty() { return None; }
+        Some(candidates[rng.random_range(0..candidates.len())])
+    }
+
+    fn grant_tech_level(&mut self, player_id: u64, tech: ResearchType) {
+        let Some(player) = self.players.get_mut(&player_id) else { return; };
+        let new_level = player.research.get(tech) + 1;
+        player.research.set(tech, new_level);
+        self.dirty_players.insert(player_id, ());
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::ResearchCompleted(iac_shared::protocol::ResearchCompletedEvent {
+                tech,
+                new_level,
+                player_id: Some(player_id),
+            }),
+        });
+    }
+
+    // ── Standing Orders (Fleet Policies) ──────────────────────────
+
+    /// Assign (or clear, with `manual`) a fleet's standing orders.
+    pub fn handle_policy_update(
+        &mut self,
+        player_id: u64,
+        fleet_id: u64,
+        preset: PolicyPreset,
+        params: Option<PolicyParams>,
+    ) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        let location = fleet.location;
+
+        if preset == PolicyPreset::Manual {
+            self.policies.remove(&fleet_id);
+            self.dirty_policies.remove(&fleet_id);
+            self.deleted_policy_ids.insert(fleet_id, ());
+            self.push_policy_event(fleet_id, PolicyPreset::Manual, "clear", "standing orders cleared");
+            return Ok(());
+        }
+
+        // Clamp wire params to the same bounds the DB reload enforces,
+        // or behavior would change across a restart.
+        let mut params = params.unwrap_or_default();
+        params.min_fuel_pct = params.min_fuel_pct.min(90);
+        params.cargo_return_pct = params.cargo_return_pct.clamp(10, 100);
+        params.max_range = params.max_range.clamp(1, 30);
+        params.engage_ratio_x10 = params.engage_ratio_x10.clamp(1, 100);
+
+        let policy = FleetPolicy {
+            preset,
+            params,
+            work_sector: Some(location),
+            next_eval_tick: self.current_tick + 1,
+        };
+        self.policies.insert(fleet_id, policy);
+        self.deleted_policy_ids.remove(&fleet_id);
+        self.dirty_policies.insert(fleet_id, ());
+        // Policies persist alongside their fleet, so make sure the fleet
+        // row lands in the same transaction (FK).
+        self.dirty_fleets.insert(fleet_id, ());
+        let reason = format!("doctrine set: {}", preset.label());
+        self.push_policy_event(fleet_id, preset, "engage", &reason);
+        Ok(())
+    }
+
+    fn push_policy_event(&mut self, fleet_id: u64, preset: PolicyPreset, action: &str, reason: &str) {
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::PolicyAction(iac_shared::protocol::PolicyActionEvent {
+                fleet_id,
+                preset,
+                action: action.to_string(),
+                reason: reason.to_string(),
+            }),
+        });
+    }
+
+    /// The autopilot: fleets with standing orders act when free.
+    fn process_policies(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let tick = self.current_tick;
+        let fleet_ids: Vec<u64> = self.policies.keys().copied().collect();
+
+        for fid in fleet_ids {
+            let Some(policy) = self.policies.get(&fid) else { continue; };
+            let preset = policy.preset;
+            if tick < policy.next_eval_tick { continue; }
+
+            let Some(fleet) = self.fleets.get(&fid) else {
+                // Fleet merged or died; orders die with it.
+                self.policies.remove(&fid);
+                self.dirty_policies.remove(&fid);
+                self.deleted_policy_ids.insert(fid, ());
+                continue;
+            };
+            if fleet.ship_count == 0 { continue; }
+            // Only steer a fleet that is free to act.
+            if fleet.state != FleetStatus::Idle && fleet.state != FleetStatus::Docked { continue; }
+            if fleet.action_cooldown > 0 || fleet.move_cooldown > 0 { continue; }
+
+            if let Some(p) = self.policies.get_mut(&fid) {
+                p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64;
+            }
+
+            let acted = match preset {
+                PolicyPreset::Manual => { self.policies.remove(&fid); true }
+                PolicyPreset::Prospect => self.policy_prospect(fid)?,
+                PolicyPreset::MineAndReturn => self.policy_mine_and_return(fid)?,
+                PolicyPreset::SalvageAndSites => self.policy_salvage_and_sites(fid)?,
+                PolicyPreset::PatrolHome => self.policy_patrol_home(fid)?,
+            };
+
+            // Nothing to do — check back later instead of spinning.
+            if !acted && let Some(p) = self.policies.get_mut(&fid) {
+                p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64 * 5;
+            }
+        }
+        Ok(())
+    }
+
+    /// Fuel/cargo doctrine thresholds: the reason to head home, if any.
+    fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<String> {
+        if fleet.fuel_max > 0.0 {
+            let fuel_pct = fleet.fuel / fleet.fuel_max * 100.0;
+            if fuel_pct < params.min_fuel_pct as f32 {
+                return Some(format!("fuel {:.0}%", fuel_pct));
+            }
+        }
+        let max_cargo = fleet_cargo_capacity(fleet);
+        if max_cargo > 0.0 {
+            let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+            let cargo_pct = used / max_cargo * 100.0;
+            if cargo_pct >= params.cargo_return_pct as f32 {
+                return Some(format!("cargo {:.0}%", cargo_pct));
+            }
+        }
+        None
+    }
+
+    /// First hop of the shortest connected path from → target (BFS with
+    /// predecessors, bounded). The hex graph is sparse: pure greedy
+    /// distance-chasing bounces off missing edges.
+    fn first_hop_toward(&self, from: Hex, target: Hex, max_hops: u8) -> Option<Hex> {
+        if from == target { return None; }
+        let mut prev: HashMap<u32, u32> = HashMap::new();
+        let mut frontier = vec![from];
+        prev.insert(from.to_key(), from.to_key());
+
+        'search: for _ in 0..max_hops {
+            let mut next = Vec::new();
+            for coord in &frontier {
+                for &n in self.world_gen.connected_neighbors(*coord).slice() {
+                    let key = n.to_key();
+                    if prev.contains_key(&key) { continue; }
+                    prev.insert(key, coord.to_key());
+                    if n == target { break 'search; }
+                    next.push(n);
+                }
+            }
+            frontier = next;
+        }
+
+        // Walk back from the target to the hop right after `from`.
+        let from_key = from.to_key();
+        let mut cur = target.to_key();
+        prev.get(&cur)?;
+        while prev[&cur] != from_key {
+            cur = prev[&cur];
+        }
+        Some(Hex::from_key(cur))
+    }
+
+    /// One hop along the connected graph toward `target`. True if a move
+    /// was issued.
+    fn policy_step_toward(&mut self, fleet_id: u64, target: Hex, preset: PolicyPreset, reason: &str) -> bool {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return false; };
+        let owner = fleet.owner_id;
+        let from = fleet.location;
+        if from == target { return false; }
+
+        // Real path first; greedy distance-descent as a fallback when the
+        // target is beyond the BFS budget.
+        let step = self.first_hop_toward(from, target, 16).or_else(|| {
+            self.world_gen.connected_neighbors(from).slice().iter().copied()
+                .min_by_key(|n| Hex::distance(n, &target))
+        });
+        let Some(step) = step else { return false; };
+
+        match self.handle_move(owner, fleet_id, step) {
+            Ok(()) => {
+                self.push_policy_event(fleet_id, preset, "move", reason);
+                true
+            }
+            Err(code) => {
+                // Stranded or capped — report once and back way off.
+                let why = format!("cannot move ({:?}): {}", code, reason);
+                self.push_policy_event(fleet_id, preset, "hold", &why);
+                if let Some(p) = self.policies.get_mut(&fleet_id) {
+                    p.next_eval_tick = self.current_tick + 30;
+                }
+                true
+            }
+        }
+    }
+
+    /// Nearest sector (BFS over the connected graph) matching `what`.
+    fn find_nearest_target(&self, from: Hex, max_hops: u8, what: PolicyTarget) -> Option<Hex> {
+        let mut visited: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut frontier = vec![from];
+        visited.insert(from.to_key());
+
+        for _ in 0..max_hops {
+            let mut next = Vec::new();
+            for coord in &frontier {
+                for &n in self.world_gen.connected_neighbors(*coord).slice() {
+                    if !visited.insert(n.to_key()) { continue; }
+                    if self.policy_target_matches(n, what) { return Some(n); }
+                    next.push(n);
+                }
+            }
+            frontier = next;
+        }
+        None
+    }
+
+    fn policy_target_matches(&self, coord: Hex, what: PolicyTarget) -> bool {
+        match what {
+            PolicyTarget::Resources => {
+                if self.sector_has_hostiles(coord) { return false; }
+                let template = self.world_gen.generate_sector(coord);
+                let ov = self.sector_overrides.get(&coord.to_key());
+                let (m, c, d) = SectorOverride::effective_densities(ov, &template);
+                m != Density::None || c != Density::None || d != Density::None
+            }
+            PolicyTarget::SalvageOrSite => {
+                if self.sector_has_hostiles(coord) { return false; }
+                let ov = self.sector_overrides.get(&coord.to_key());
+                ov.and_then(|o| o.salvage).is_some() || self.derelict_site_at(coord).is_some()
+            }
+            PolicyTarget::Hostiles => self.sector_has_hostiles(coord),
+        }
+    }
+
+    /// Estimated combat power of whatever is hostile in a sector.
+    fn hostile_power_at(&self, coord: Hex) -> f32 {
+        let mut power: f32 = 0.0;
+        for npc in self.npc_fleets.values() {
+            if npc.location != coord { continue; }
+            for ship in &npc.ships[0..npc.ship_count as usize] {
+                if ship.hull <= 0.0 { continue; }
+                power += ship.weapon_power + (ship.hull + ship.shield) / 10.0;
+            }
+        }
+        if power > 0.0 { return power; }
+        let cleared = self.sector_overrides.get(&coord.to_key())
+            .map(|o| o.npc_cleared_tick.is_some())
+            .unwrap_or(false);
+        if cleared { return 0.0; }
+        if let Some(tmpl) = &self.world_gen.generate_sector(coord).npc_template {
+            return ship_class_power(tmpl.ship_class) * tmpl.count as f32 * tmpl.stat_multiplier;
+        }
+        0.0
+    }
+
+    /// Prospect: scan when the pings have gone stale, otherwise push the
+    /// frontier outward; come home on fumes.
+    fn policy_prospect(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return Ok(false); };
+        let owner = fleet.owner_id;
+        let location = fleet.location;
+        let Some(policy) = self.policies.get(&fleet_id) else { return Ok(false); };
+        let params = policy.params;
+        let Some(player) = self.players.get(&owner) else { return Ok(false); };
+        let home = player.homeworld;
+
+        if let Some(reason) = self.policy_return_reason(fleet, &params)
+            && location != home
+        {
+            let why = format!("returning: {}", reason);
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::Prospect, &why));
+        }
+
+        // Scan if this position hasn't been pinged recently.
+        let scanned_here = self.scan_reveals.get(&owner)
+            .map(|m| m.contains_key(&location.to_key()))
+            .unwrap_or(false);
+        if !scanned_here && self.handle_scan(owner, fleet_id).is_ok() {
+            self.push_policy_event(fleet_id, PolicyPreset::Prospect, "scan", "pinging the dark");
+            return Ok(true);
+        }
+
+        // Push outward, avoiding hostiles, staying inside max_range of home.
+        let mut rng = StdRng::seed_from_u64(
+            self.current_tick.wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(fleet_id),
+        );
+        let neighbors = self.world_gen.connected_neighbors(location);
+        let mut candidates: Vec<Hex> = neighbors.slice().iter().copied()
+            .filter(|n| !self.sector_has_hostiles(*n))
+            .filter(|n| Hex::distance(n, &home) <= params.max_range as u16)
+            .collect();
+        if candidates.is_empty() {
+            // Boxed in — drift homeward.
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::Prospect, "no safe frontier"));
+        }
+        let cur_dist = Hex::distance(&location, &home);
+        // Prefer hops that push outward.
+        let outward: Vec<Hex> = candidates.iter().copied()
+            .filter(|n| Hex::distance(n, &home) > cur_dist)
+            .collect();
+        if !outward.is_empty() { candidates = outward; }
+        let target = candidates[rng.random_range(0..candidates.len())];
+        if self.handle_move(owner, fleet_id, target).is_ok() {
+            self.push_policy_event(fleet_id, PolicyPreset::Prospect, "move", "pushing frontier");
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// MineAndReturn: shuttle between the work sector and home.
+    fn policy_mine_and_return(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return Ok(false); };
+        let owner = fleet.owner_id;
+        let location = fleet.location;
+        let Some(policy) = self.policies.get(&fleet_id) else { return Ok(false); };
+        let params = policy.params;
+        let mut work = policy.work_sector.unwrap_or(location);
+        let Some(player) = self.players.get(&owner) else { return Ok(false); };
+        let home = player.homeworld;
+
+        // Orders given while docked at home: there's no claim yet — stake
+        // one at the nearest workable seam.
+        if work == home {
+            let Some(new_work) = self.find_nearest_target(home, params.max_range, PolicyTarget::Resources) else {
+                self.push_policy_event(fleet_id, PolicyPreset::MineAndReturn, "hold", "no ore in range of home");
+                return Ok(false);
+            };
+            if let Some(p) = self.policies.get_mut(&fleet_id) {
+                p.work_sector = Some(new_work);
+            }
+            self.dirty_policies.insert(fleet_id, ());
+            work = new_work;
+        }
+
+        // Loaded or dry → head home (docking deposits + refuels).
+        if let Some(reason) = self.policy_return_reason(fleet, &params)
+            && location != home
+        {
+            let why = format!("returning: {}", reason);
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::MineAndReturn, &why));
+        }
+
+        if location == work && location != home {
+            // Try to dig where we stand.
+            if self.handle_harvest(owner, fleet_id).is_ok() {
+                self.push_policy_event(fleet_id, PolicyPreset::MineAndReturn, "harvest", "seam holds");
+                return Ok(true);
+            }
+            // Seam's dry — find a new one near the old claim.
+            if let Some(new_work) = self.find_nearest_target(work, params.max_range, PolicyTarget::Resources) {
+                if let Some(p) = self.policies.get_mut(&fleet_id) {
+                    p.work_sector = Some(new_work);
+                }
+                self.dirty_policies.insert(fleet_id, ());
+                return Ok(self.policy_step_toward(
+                    fleet_id, new_work, PolicyPreset::MineAndReturn, "claim dry, moving to new seam",
+                ));
+            }
+            self.push_policy_event(fleet_id, PolicyPreset::MineAndReturn, "hold", "no ore in range");
+            return Ok(false);
+        }
+
+        // Anywhere else (including docked at home): head for the claim.
+        Ok(self.policy_step_toward(fleet_id, work, PolicyPreset::MineAndReturn, "heading to claim"))
+    }
+
+    /// SalvageAndSites: scoop wreckage, board derelicts, avoid fights.
+    fn policy_salvage_and_sites(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return Ok(false); };
+        let owner = fleet.owner_id;
+        let location = fleet.location;
+        let Some(policy) = self.policies.get(&fleet_id) else { return Ok(false); };
+        let params = policy.params;
+        let Some(player) = self.players.get(&owner) else { return Ok(false); };
+        let home = player.homeworld;
+
+        if let Some(reason) = self.policy_return_reason(fleet, &params)
+            && location != home
+        {
+            let why = format!("returning: {}", reason);
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::SalvageAndSites, &why));
+        }
+
+        // Wreckage first: free money.
+        let has_salvage = self.sector_overrides.get(&location.to_key())
+            .and_then(|o| o.salvage)
+            .is_some();
+        if has_salvage && self.handle_collect_salvage(owner, fleet_id).is_ok() {
+            self.push_policy_event(fleet_id, PolicyPreset::SalvageAndSites, "salvage", "scooping wreckage");
+            return Ok(true);
+        }
+
+        // Then the hulk, if the odds look survivable.
+        if let Some((tier, bumps)) = self.derelict_site_at(location) {
+            let fleet = self.fleets.get(&fleet_id).unwrap();
+            let chance = self.site_ambush_chance(fleet, tier, bumps);
+            let guardian_power = ship_class_power(ShipClass::Frigate) * 4.0 * tier as f32;
+            let safe = chance < 0.25
+                || fleet_power(fleet) * 10.0 >= guardian_power * params.engage_ratio_x10 as f32;
+            if safe && self.handle_explore_site(owner, fleet_id).is_ok() {
+                let why = format!("boarding tier-{} derelict", tier);
+                self.push_policy_event(fleet_id, PolicyPreset::SalvageAndSites, "explore", &why);
+                return Ok(true);
+            }
+        }
+
+        // Otherwise hunt the next payday.
+        if let Some(target) = self.find_nearest_target(location, params.max_range, PolicyTarget::SalvageOrSite) {
+            return Ok(self.policy_step_toward(
+                fleet_id, target, PolicyPreset::SalvageAndSites, "contact on the board",
+            ));
+        }
+        if location != home {
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::SalvageAndSites, "board is clear"));
+        }
+        Ok(false)
+    }
+
+    /// PatrolHome: keep the porch lights on.
+    fn policy_patrol_home(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return Ok(false); };
+        let owner = fleet.owner_id;
+        let location = fleet.location;
+        let Some(policy) = self.policies.get(&fleet_id) else { return Ok(false); };
+        let params = policy.params;
+        let Some(player) = self.players.get(&owner) else { return Ok(false); };
+        let home = player.homeworld;
+
+        // Wounded → go home and dock.
+        let (hull, hull_max) = fleet.ships[0..fleet.ship_count].iter()
+            .fold((0.0f32, 0.0f32), |(h, hm), s| (h + s.hull.max(0.0), hm + s.hull_max));
+        if hull_max > 0.0 && hull / hull_max < POLICY_PATROL_MIN_HULL && location != home {
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::PatrolHome, "licking wounds"));
+        }
+        if let Some(reason) = self.policy_return_reason(fleet, &params)
+            && location != home
+        {
+            let why = format!("returning: {}", reason);
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::PatrolHome, &why));
+        }
+
+        let ours = fleet_power(fleet);
+
+        // Engage what we can beat, where we stand.
+        if self.sector_has_hostiles(location) {
+            let threat = self.hostile_power_at(location);
+            if ours * 10.0 >= threat * params.engage_ratio_x10 as f32 {
+                let target_id = self.npc_fleets.values()
+                    .find(|n| n.location == location && n.ship_count > 0)
+                    .map(|n| n.id)
+                    .unwrap_or(0);
+                if self.handle_attack(owner, fleet_id, target_id).is_ok() {
+                    self.push_policy_event(fleet_id, PolicyPreset::PatrolHome, "attack", "engaging hostiles");
+                    return Ok(true);
+                }
+            } else {
+                // Outgunned on our own doorstep — call it in.
+                self.push_policy_event(fleet_id, PolicyPreset::PatrolHome, "hold", "hostiles too strong");
+                return Ok(false);
+            }
+        }
+
+        // Hunt hostiles inside the patrol radius.
+        if let Some(target) = self.find_nearest_target(home, POLICY_PATROL_RADIUS, PolicyTarget::Hostiles) {
+            let threat = self.hostile_power_at(target);
+            if ours * 10.0 >= threat * params.engage_ratio_x10 as f32 {
+                return Ok(self.policy_step_toward(fleet_id, target, PolicyPreset::PatrolHome, "intercepting contact"));
+            }
+        }
+
+        // Quiet night: wander the beat.
+        let mut rng = StdRng::seed_from_u64(
+            self.current_tick.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(fleet_id),
+        );
+        let candidates: Vec<Hex> = self.world_gen.connected_neighbors(location).slice().iter().copied()
+            .filter(|n| Hex::distance(n, &home) <= POLICY_PATROL_RADIUS as u16)
+            .collect();
+        if candidates.is_empty() {
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::PatrolHome, "drifted off the beat"));
+        }
+        let target = candidates[rng.random_range(0..candidates.len())];
+        if target != location && self.handle_move(owner, fleet_id, target).is_ok() {
+            self.push_policy_event(fleet_id, PolicyPreset::PatrolHome, "move", "walking the beat");
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    // ── Helper Methods ────────────────────────────────────────────
+
+    /// True if the sector holds a live NPC fleet or an unspawned,
+    /// uncleared NPC template.
+    fn sector_has_hostiles(&self, coord: Hex) -> bool {
+        if self.npc_fleets.values().any(|n| n.location == coord && n.ship_count > 0) {
+            return true;
+        }
+        let cleared = self.sector_overrides.get(&coord.to_key())
+            .map(|o| o.npc_cleared_tick.is_some())
+            .unwrap_or(false);
+        !cleared && self.world_gen.generate_sector(coord).npc_template.is_some()
+    }
+
+    /// What a scanner hears at the edge of its range: the strongest
+    /// signature in the sector, or nothing.
+    fn faint_signal_at(&self, coord: Hex) -> Option<iac_shared::protocol::SignalKind> {
+        use iac_shared::protocol::SignalKind;
+        if self.sector_has_hostiles(coord) {
+            return Some(SignalKind::HostileMass);
+        }
+        if self.derelict_site_at(coord).is_some() {
+            return Some(SignalKind::Derelict);
+        }
+        let ov = self.sector_overrides.get(&coord.to_key());
+        if ov.and_then(|o| o.salvage).is_some() {
+            return Some(SignalKind::Derelict);
+        }
+        let template = self.world_gen.generate_sector(coord);
+        let (m, c, d) = SectorOverride::effective_densities(ov, &template);
+        if [m, c, d].iter().any(|&den| den as u8 >= Density::Rich as u8) {
+            return Some(SignalKind::RichOre);
+        }
+        if template.terrain == iac_shared::constants::TerrainType::Anomaly {
+            return Some(SignalKind::Anomaly);
+        }
+        None
+    }
+
+    /// Sectors this player is actively scanning (unexpired reveals).
+    pub fn scan_revealed_coords(&self, player_id: u64) -> Vec<Hex> {
+        self.scan_reveals.get(&player_id)
+            .map(|m| {
+                m.iter()
+                    .filter(|(_, expiry)| **expiry > self.current_tick)
+                    .map(|(key, _)| Hex::from_key(*key))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn prune_scan_reveals(&mut self) {
+        let tick = self.current_tick;
+        for reveals in self.scan_reveals.values_mut() {
+            reveals.retain(|_, &mut expiry| expiry > tick);
+        }
+        self.scan_reveals.retain(|_, m| !m.is_empty());
+    }
+
+    fn ensure_override(&mut self, sector_key: u32) -> &mut SectorOverride {
+        self.sector_overrides
+            .entry(sector_key)
+            .or_default()
+    }
+
+    fn count_deployed_fleets(&self, player_id: u64, homeworld: Hex) -> usize {
+        self.fleets.values().filter(|f| {
+            f.owner_id == player_id && f.location != homeworld && f.ship_count > 0
+        }).count()
+    }
+
+    fn find_homeworld_location(&self) -> Option<Hex> {
+        let mut rng = StdRng::seed_from_u64(
+            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+        );
+
+        let min = HOMEWORLD_MIN_DIST as i32;
+        let max = HOMEWORLD_MAX_DIST as i32;
+
+        for _ in 0..100 {
+            let dist = rng.random_range(min..=max) as u16;
+            let q = rng.random_range((-(dist as i32))..=(dist as i32)) as i16;
+            let r_min = (-(dist as i32)).max(-q as i32 - dist as i32) as i16;
+            let r_max = (dist as i32).min(-q as i32 + dist as i32) as i16;
+            let r = rng.random_range(r_min..=r_max);
+
+            let candidate = Hex { q, r };
+            let d = candidate.dist_from_origin();
+            if !(HOMEWORLD_MIN_DIST..=HOMEWORLD_MAX_DIST).contains(&d) { continue; }
+
+            let too_close = self.players.values().any(|p| Hex::distance(&p.homeworld, &candidate) <= 1);
+            if !too_close { return Some(candidate); }
+        }
+        None
+    }
+
+    fn check_homeworld_docking(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let fleet = self.fleets.get(&fleet_id).ok_or("Fleet not found")?;
+        let player = self.players.get(&fleet.owner_id).ok_or("Player not found")?;
+        if fleet.location != player.homeworld { return Ok(()); }
+        self.dock_fleet(fleet_id)
+    }
+
+    fn dock_fleet(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let fleet = self.fleets.get(&fleet_id).ok_or("Fleet not found")?;
+        let player_id = fleet.owner_id;
+        let homeworld = fleet.location;
+
+        // Deposit cargo
+        let player = self.players.get_mut(&player_id).ok_or("Player not found")?;
+        let fleet = self.fleets.get(&fleet_id).unwrap();
+        player.resources = player.resources.add(fleet.cargo);
+
+        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet.cargo = Resources::default();
+
+        // Auto-merge: absorb ships from other fleets docked at homeworld
+        let mut merge_ids: Vec<u64> = Vec::new();
+        let mut merge_ships: Vec<Ship> = Vec::new();
+        let mut merge_cargo = Resources::default();
+
+        let fleet_ids: Vec<u64> = self.fleets.keys().copied().collect();
+        for fid in fleet_ids {
+            if fid == fleet_id { continue; }
+            let other = self.fleets.get(&fid).unwrap();
+            if other.owner_id != player_id { continue; }
+            if other.location != homeworld { continue; }
+            if other.ship_count == 0 { continue; }
+            merge_ids.push(fid);
+            merge_cargo = merge_cargo.add(other.cargo);
+            for i in 0..other.ship_count {
+                merge_ships.push(other.ships[i]);
+            }
+        }
+
+        // Apply merges
+        if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+            for ship in merge_ships {
+                if fleet.ship_count >= MAX_SHIPS_PER_FLEET { break; }
+                fleet.ships[fleet.ship_count] = ship;
+                fleet.ship_count += 1;
+            }
+        }
+        if let Some(player) = self.players.get_mut(&player_id) {
+            player.resources = player.resources.add(merge_cargo);
+        }
+
+        for mid in merge_ids {
+            self.fleets.remove(&mid);
+            self.deleted_fleet_ids.insert(mid, ());
+            // Standing orders don't survive the merge.
+            if self.policies.remove(&mid).is_some() {
+                self.dirty_policies.remove(&mid);
+                self.deleted_policy_ids.insert(mid, ());
+            }
+        }
+
+        let player = self.players.get(&player_id).unwrap();
+        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet.fuel_max = fleet_fuel_max(fleet, player);
+        fleet.fuel = fleet.fuel_max;
+
+        self.dirty_players.insert(player_id, ());
+        self.dirty_fleets.insert(fleet_id, ());
+
+        Ok(())
+    }
+
+    fn check_npc_encounter(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let fleet = self.fleets.get(&fleet_id).ok_or("Fleet not found")?;
+        let location = fleet.location;
+
+        // Check existing patrol NPCs
+        let npc_ids: Vec<u64> = self.npc_fleets.keys().copied().collect();
+        for npc_id in npc_ids {
+            let npc = self.npc_fleets.get(&npc_id).unwrap();
+            if npc.location == location && !npc.in_combat {
+                if npc.behavior == iac_shared::world::NpcBehaviorType::Passive { continue; }
+                return self.start_combat(fleet_id, npc_id);
+            }
+        }
+
+        // Check if sector NPC was cleared recently
+        let sector_key = location.to_key();
+        if let Some(ov) = self.sector_overrides.get(&sector_key)
+            && ov.npc_cleared_tick.is_some()
+        {
+            return Ok(());
+        }
+
+        let template = self.world_gen.generate_sector(location);
+        if let Some(npc_tmpl) = &template.npc_template {
+            if npc_tmpl.behavior == iac_shared::world::NpcBehaviorType::Passive { return Ok(()); }
+            let spawned = self.spawn_npc_fleet(location, npc_tmpl.clone())?;
+            self.start_combat(fleet_id, spawned.id)?;
+        }
+        Ok(())
+    }
+
+    fn spawn_npc_fleet(&mut self, location: Hex, npc: iac_shared::world::NpcTemplate) -> Result<NpcFleet, Box<dyn std::error::Error>> {
+        let npc_fleet_id = self.next_id();
+        let mut ships = [Ship::default(); MAX_NPC_SHIPS];
+        let stats = npc.ship_class.base_stats();
+        let m = npc.stat_multiplier;
+        let count = (npc.count as usize).min(MAX_NPC_SHIPS);
+
+        for ship in ships.iter_mut().take(count) {
+            *ship = Ship {
+                id: self.next_id(),
+                ship_class: npc.ship_class,
+                hull: stats.hull * m,
+                hull_max: stats.hull * m,
+                shield: stats.shield * m,
+                shield_max: stats.shield * m,
+                weapon_power: stats.weapon * m,
+                speed: stats.speed,
+            };
+        }
+
+        let npc_fleet = NpcFleet {
+            id: npc_fleet_id,
+            location,
+            ships,
+            ship_count: count as u8,
+            behavior: npc.behavior,
+            home_sector: location,
+            patrol_timer: 0,
+            in_combat: false,
+        };
+
+        self.npc_fleets.insert(npc_fleet_id, npc_fleet.clone());
+        Ok(npc_fleet)
+    }
+
+    fn start_combat(&mut self, fleet_id: u64, npc_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let fleet = self.fleets.get(&fleet_id).ok_or("Fleet not found")?;
+        let npc = self.npc_fleets.get(&npc_id).ok_or("NPC not found")?;
+        let sector = fleet.location;
+        
+        // Copy needed data before any mutable borrows
+        let npc_ship_class = npc.ships[0].ship_class;
+        let npc_value = npc_ship_class.build_cost();
+
+        // Check for existing combat in same sector
+        for existing in self.active_combats.values() {
+            if existing.sector == sector {
+                let existing_id = existing.id;
+                let add_player = !existing.has_player_fleet(fleet_id);
+                let add_npc = !existing.has_npc_fleet(npc_id);
+
+                if add_player {
+                    if let Some(combat_mut) = self.active_combats.get_mut(&existing_id) {
+                        combat_mut.add_player_fleet(fleet_id);
+                    }
+                    if let Some(f) = self.fleets.get_mut(&fleet_id) {
+                        f.state = FleetStatus::InCombat;
+                    }
+                }
+                if add_npc {
+                    if let Some(combat_mut) = self.active_combats.get_mut(&existing_id) {
+                        combat_mut.add_npc_fleet(npc_id);
+                        combat_mut.npc_value = combat_mut.npc_value.add(npc_value);
+                    }
+                    if let Some(n) = self.npc_fleets.get_mut(&npc_id) {
+                        n.in_combat = true;
+                    }
+                }
+
+                self.pending_events.push(GameEvent {
+                    tick: self.current_tick,
+                    kind: EventKind::CombatStarted(iac_shared::protocol::CombatStartedEvent {
+                        player_fleet_id: fleet_id,
+                        enemy_fleet_id: npc_id,
+                        sector,
+                    }),
+                });
+                self.enroll_all_player_fleets_in_sector_combat(&existing_id)?;
+                return Ok(());
+            }
+        }
+
+        // Create new combat
+        let combat_id = self.next_id();
+        let mut new_combat = Combat {
+            id: combat_id,
+            sector,
+            player_fleet_ids: Vec::new(),
+            npc_fleet_ids: Vec::new(),
+            npc_value,
+            round: 0,
+        };
+        new_combat.add_player_fleet(fleet_id);
+        new_combat.add_npc_fleet(npc_id);
+        self.active_combats.insert(combat_id, new_combat);
+
+        if let Some(f) = self.fleets.get_mut(&fleet_id) {
+            f.state = FleetStatus::InCombat;
+        }
+        if let Some(n) = self.npc_fleets.get_mut(&npc_id) {
+            n.in_combat = true;
+        }
+
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::CombatStarted(iac_shared::protocol::CombatStartedEvent {
+                player_fleet_id: fleet_id,
+                enemy_fleet_id: npc_id,
+                sector,
+            }),
+        });
+
+        self.enroll_all_player_fleets_in_sector_combat(&combat_id)?;
+        Ok(())
+    }
+
+    fn enroll_all_player_fleets_in_sector_combat(&mut self, combat_id: &u64) -> Result<(), Box<dyn std::error::Error>> {
+        let combat = self.active_combats.get(combat_id).unwrap();
+        let sector = combat.sector;
+        let existing_fleet_ids: Vec<u64> = combat.player_fleet_ids.clone();
+        let _ = combat;
+
+        let fleet_ids: Vec<u64> = self.fleets.keys().copied().collect();
+        for fid in fleet_ids {
+            let f = self.fleets.get(&fid).unwrap();
+            if f.location != sector { continue; }
+            if f.state == FleetStatus::InCombat { continue; }
+            if f.ship_count == 0 { continue; }
+            if existing_fleet_ids.contains(&fid) { continue; }
+            
+            if let Some(combat_mut) = self.active_combats.get_mut(combat_id) {
+                combat_mut.add_player_fleet(fid);
+            }
+            if let Some(fleet_mut) = self.fleets.get_mut(&fid) {
+                fleet_mut.state = FleetStatus::InCombat;
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_salvage(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let fleet = self.fleets.get(&fleet_id).ok_or("Fleet not found")?;
+        let key = fleet.location.to_key();
+
+        let ov = self.sector_overrides.get_mut(&key).ok_or("No override")?;
+        let salvage = ov.salvage.ok_or("No salvage")?;
+
+        let fleet = self.fleets.get(&fleet_id).unwrap();
+        let max_cargo = fleet_cargo_capacity(fleet);
+        let used_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+        let mut remaining = (max_cargo - used_cargo).max(0.0);
+        if remaining <= 0.0 { return Ok(()); }
+
+        let mut collected = Resources {
+            metal: salvage.metal.min(remaining),
+            ..Default::default()
+        };
+        remaining -= collected.metal;
+        collected.crystal = salvage.crystal.min(remaining);
+        remaining -= collected.crystal;
+        collected.deuterium = salvage.deuterium.min(remaining);
+
+        if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+            fleet.cargo.metal += collected.metal;
+            fleet.cargo.crystal += collected.crystal;
+            fleet.cargo.deuterium += collected.deuterium;
+        }
+
+        // A full hold doesn't vaporize the rest of the wreckage — what
+        // wasn't scooped stays for another trip.
+        let remainder = salvage.sub(collected);
+        if remainder.metal + remainder.crystal + remainder.deuterium > 1.0 {
+            ov.salvage = Some(remainder);
+        } else {
+            ov.salvage = None;
+            ov.salvage_despawn_tick = None;
+        }
+        self.dirty_fleets.insert(fleet_id, ());
+        self.dirty_sectors.insert(key, ());
+
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::SalvageCollected(iac_shared::protocol::SalvageCollectedEvent {
+                fleet_id,
+                resources: collected,
+            }),
+        });
+        Ok(())
+    }
+
+    fn drop_salvage(&mut self, sector: Hex, fleet_value: Resources) -> Result<(), Box<dyn std::error::Error>> {
+        let key = sector.to_key();
+        let tick = self.current_tick;
+        let ov = self.ensure_override(key);
+        ov.salvage = Some(fleet_value.scale(SALVAGE_FRACTION));
+        ov.salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
+        Ok(())
+    }
+
+    fn record_explored(&mut self, player_id: u64, coord: Hex) -> Result<(), Box<dyn std::error::Error>> {
+        let connections = self.world_gen.connected_neighbors(coord);
+        for neighbor in connections.slice() {
+            if let Err(e) = self.db.save_explored_edge(player_id, coord, *neighbor, self.current_tick) {
+                warn!("Failed to save explored edge: {:?}", e);
+            }
+        }
+        Ok(())
+    }
+
+    fn add_ship_to_homeworld(&mut self, player_id: u64, ship_class: ShipClass) -> Result<(), Box<dyn std::error::Error>> {
+        let player = self.players.get(&player_id).ok_or("Player not found")?;
+        let homeworld = player.homeworld;
+
+        // Find existing docked fleet at homeworld, or create one
+        let mut docked_fleet_id: Option<u64> = None;
+        for (fid, f) in &self.fleets {
+            if f.owner_id == player_id && f.location == homeworld {
+                docked_fleet_id = Some(*fid);
+                break;
+            }
+        }
+
+        let fleet_id = if let Some(fid) = docked_fleet_id {
+            fid
+        } else {
+            let new_id = self.next_id();
+            let new_fleet = Fleet {
+                id: new_id,
+                owner_id: player_id,
+                location: homeworld,
+                state: FleetStatus::Idle,
+                ships: [Ship::default(); MAX_SHIPS_PER_FLEET],
+                ship_count: 0,
+                cargo: Resources::default(),
+                fuel: 0.0,
+                fuel_max: 0.0,
+                move_cooldown: 0,
+                action_cooldown: 0,
+                move_target: None,
+                idle_ticks: 0,
+            };
+            self.fleets.insert(new_id, new_fleet);
+            new_id
+        };
+
+        let player = self.players.get(&player_id).unwrap();
+        let research = player.research.clone();
+        let base_stats = ship_class.base_stats();
+        let stats = scaling::apply_research_to_stats(base_stats, &research);
+
+        let ship_id = self.next_id();
+        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
+        if fleet.ship_count >= MAX_SHIPS_PER_FLEET { return Ok(()); }
+
+        fleet.ships[fleet.ship_count] = Ship {
+            id: ship_id,
+            ship_class,
+            hull: stats.hull,
+            hull_max: stats.hull,
+            shield: stats.shield,
+            shield_max: stats.shield,
+            weapon_power: stats.weapon,
+            speed: stats.speed,
+        };
+        fleet.ship_count += 1;
+
+        let player = self.players.get(&player_id).unwrap();
+        fleet.fuel_max = fleet_fuel_max(fleet, player);
+        fleet.fuel = fleet.fuel_max;
+
+        self.dirty_fleets.insert(fleet.id, ());
+        Ok(())
+    }
+
+    fn recalculate_player_fleet_fuel(&mut self, player_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let player = self.players.get(&player_id).ok_or("Player not found")?;
+        let fleet_ids: Vec<u64> = self.fleets.keys().copied().collect();
+        for fid in fleet_ids {
+            let fleet = self.fleets.get(&fid).unwrap();
+            if fleet.owner_id != player.id { continue; }
+            if fleet.ship_count == 0 { continue; }
+
+            let new_max = fleet_fuel_max(fleet, player);
+            if new_max > fleet.fuel_max {
+                let fleet_mut = self.fleets.get_mut(&fid).unwrap();
+                let bonus = new_max - fleet_mut.fuel_max;
+                fleet_mut.fuel += bonus;
+                fleet_mut.fuel_max = new_max;
+                self.dirty_fleets.insert(fid, ());
+            }
+        }
+        Ok(())
+    }
+
+    // ── Sensor / Map ──────────────────────────────────────────────
+
+    pub fn get_sensor_revealed_coords(&self, origin: Hex, max_hops: u8) -> Vec<Hex> {
+        if max_hops == 0 { return Vec::new(); }
+
+        let mut visited: HashMap<u32, ()> = HashMap::new();
+        let mut current_frontier: Vec<Hex> = Vec::new();
+        let mut result: Vec<Hex> = Vec::new();
+
+        visited.insert(origin.to_key(), ());
+        current_frontier.push(origin);
+
+        for _ in 0..max_hops {
+            let mut next_frontier: Vec<Hex> = Vec::new();
+            for coord in &current_frontier {
+                let neighbors = self.world_gen.connected_neighbors(*coord);
+                for n in neighbors.slice() {
+                    let key = n.to_key();
+                    if visited.contains_key(&key) { continue; }
+                    visited.insert(key, ());
+                    next_frontier.push(*n);
+                    result.push(*n);
+                }
+            }
+            current_frontier = next_frontier;
+        }
+
+        result
+    }
+
+    // ── Events ────────────────────────────────────────────────────
+
+    pub fn drain_events(&mut self) -> Vec<GameEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    // ── Persistence ───────────────────────────────────────────────
+
+    fn load_state(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(tick_str) = self.db.load_server_state("current_tick")? {
+            self.current_tick = tick_str.parse().unwrap_or(0);
+        }
+        if let Some(id_str) = self.db.load_server_state("next_id")? {
+            self.next_id = id_str.parse().unwrap_or(1);
+        }
+        if let Some(seed_str) = self.db.load_server_state("world_seed")? {
+            let stored_seed: u64 = seed_str.parse().unwrap_or(0);
+            if stored_seed != self.world_gen.world_seed {
+                warn!("World seed mismatch: DB has {}, config has {}", stored_seed, self.world_gen.world_seed);
+            }
+        }
+
+        let mut players = self.db.load_players()?;
+        for mut player in players.drain(..) {
+            player.buildings = self.db.load_buildings(player.id)?;
+            player.research = self.db.load_research(player.id)?;
+            let queues = self.db.load_build_queues(player.id)?;
+            player.building_queue = queues.building;
+            player.ship_queue = queues.ship;
+            player.research_queue = queues.research;
+            self.players.insert(player.id, player);
+        }
+
+        let fleets = self.db.load_fleets()?;
+        for fleet in fleets {
+            self.fleets.insert(fleet.id, fleet);
+        }
+
+        let overrides = self.db.load_sector_overrides()?;
+        for row in overrides {
+            let key = Hex { q: row.q, r: row.r }.to_key();
+            self.sector_overrides.insert(key, row.override_data);
+        }
+
+        for (fleet_id, policy) in self.db.load_fleet_policies()? {
+            if self.fleets.contains_key(&fleet_id) {
+                self.policies.insert(fleet_id, policy);
+            }
+        }
+
+        let player_count = self.players.len();
+        let fleet_count = self.fleets.len();
+        if player_count > 0 {
+            info!("State loaded: {} players, {} fleets, tick {}", player_count, fleet_count, self.current_tick);
+        } else {
+            info!("State loaded (empty -- fresh world)");
+        }
+
+        Ok(())
+    }
+
+    fn persist_world_seed(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.db.save_server_state("world_seed", &self.world_gen.world_seed.to_string())?;
+        Ok(())
+    }
+
+    pub fn persist_dirty_state(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // All writes in one transaction; dirty sets are cleared only on success
+        // so a failed persist retries everything next time.
+        let players = &self.players;
+        let fleets = &self.fleets;
+        let sector_overrides = &self.sector_overrides;
+        let dirty_players = &self.dirty_players;
+        let dirty_fleets = &self.dirty_fleets;
+        let deleted_fleet_ids = &self.deleted_fleet_ids;
+        let dirty_sectors = &self.dirty_sectors;
+        let policies = &self.policies;
+        let dirty_policies = &self.dirty_policies;
+        let deleted_policy_ids = &self.deleted_policy_ids;
+        let current_tick = self.current_tick;
+        let next_id = self.next_id;
+
+        self.db.with_transaction(|db| {
+            db.save_server_state("current_tick", &current_tick.to_string())?;
+            db.save_server_state("next_id", &next_id.to_string())?;
+
+            for &player_id in dirty_players.keys() {
+                if let Some(player) = players.get(&player_id) {
+                    db.save_player(player)?;
+                    db.save_buildings(player_id, &player.buildings)?;
+                    db.save_research(player_id, &player.research)?;
+                    db.save_build_queue(player_id, player)?;
+                }
+            }
+
+            for &fid in dirty_fleets.keys() {
+                if let Some(fleet) = fleets.get(&fid) {
+                    db.save_fleet(fleet)?;
+                }
+            }
+
+            for &fid in deleted_fleet_ids.keys() {
+                db.delete_fleet(fid)?;
+            }
+
+            // Policies save after their fleets (FK) and delete before
+            // nothing depends on them.
+            for &fid in deleted_policy_ids.keys() {
+                db.delete_fleet_policy(fid)?;
+            }
+            for &fid in dirty_policies.keys() {
+                if let Some(policy) = policies.get(&fid) {
+                    db.save_fleet_policy(fid, policy)?;
+                }
+            }
+
+            for &key in dirty_sectors.keys() {
+                if let Some(ov) = sector_overrides.get(&key) {
+                    let hex_val = Hex::from_key(key);
+                    db.save_sector_override(hex_val.q, hex_val.r, ov)?;
+                }
+            }
+
+            Ok(())
+        })?;
+
+        self.dirty_players.clear();
+        self.dirty_fleets.clear();
+        self.dirty_sectors.clear();
+        self.deleted_fleet_ids.clear();
+        self.dirty_policies.clear();
+        self.deleted_policy_ids.clear();
+
+        Ok(())
+    }
+}
+
+// ── Helper Functions ──────────────────────────────────────────────
+
+fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
+    let mut min_speed: u8 = 255;
+    for ship in &fleet.ships[0..fleet.ship_count] {
+        if ship.speed < min_speed { min_speed = ship.speed; }
+    }
+    if min_speed == 0 { return MOVE_BASE_COOLDOWN; }
+    let base = (MOVE_BASE_COOLDOWN as u32 * 10 / min_speed as u32) as u16;
+    if let Some(r) = research {
+        let reduction = scaling::navigation_cooldown_reduction(r.navigation);
+        base.saturating_sub(reduction)
+    } else {
+        base
+    }
+}
+
+fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>) -> f32 {
+    let total_mass: f32 = fleet.ships[0..fleet.ship_count].iter().map(|s| s.hull_max).sum();
+    let base = total_mass * FUEL_RATE_PER_MASS;
+    if let Some(r) = research {
+        base * scaling::fuel_rate_modifier(r.fuel_efficiency)
+    } else {
+        base
+    }
+}
+
+fn fleet_harvest_power(fleet: &Fleet, research: Option<&ResearchLevels>) -> f32 {
+    let mut power: f32 = 0.0;
+    for ship in &fleet.ships[0..fleet.ship_count] {
+        power += match ship.ship_class {
+            ShipClass::Hauler => 5.0,
+            ShipClass::Scout => 1.0,
+            _ => 0.5,
+        };
+    }
+    if let Some(r) = research {
+        power * scaling::harvest_rate_modifier(r.harvesting_efficiency)
+    } else {
+        power
+    }
+}
+
+fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f32 {
+    let total_fuel: f32 = fleet.ships[0..fleet.ship_count].iter()
+        .map(|s| s.ship_class.base_stats().fuel as f32)
+        .sum();
+    total_fuel
+        * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
+        * scaling::fuel_depot_modifier(player.buildings.fuel_depot)
+}
+
+/// Rough combat power of one ship of this class, used for raid sizing.
+fn ship_class_power(class: ShipClass) -> f32 {
+    let s = class.base_stats();
+    s.weapon + (s.hull + s.shield) / 10.0
+}
+
+/// Live combat power of a whole fleet.
+fn fleet_power(fleet: &Fleet) -> f32 {
+    fleet.ships[0..fleet.ship_count].iter()
+        .filter(|s| s.hull > 0.0)
+        .map(|s| s.weapon_power + (s.hull + s.shield) / 10.0)
+        .sum()
+}
+
+/// What jumps a careless boarding party, sized to the wreck's tier.
+fn ambush_guardian_template(tier: u8, rng: &mut StdRng) -> iac_shared::world::NpcTemplate {
+    use iac_shared::world::{NpcTemplate, NpcBehaviorType};
+    match tier {
+        1 => NpcTemplate {
+            ship_class: ShipClass::Corvette,
+            count: rng.random_range(2..=4),
+            behavior: NpcBehaviorType::Aggressive,
+            stat_multiplier: 0.8,
+        },
+        2 => NpcTemplate {
+            ship_class: ShipClass::Frigate,
+            count: rng.random_range(3..=6),
+            behavior: NpcBehaviorType::Aggressive,
+            stat_multiplier: 0.9,
+        },
+        _ => NpcTemplate {
+            ship_class: ShipClass::Cruiser,
+            count: rng.random_range(4..=8),
+            behavior: NpcBehaviorType::Aggressive,
+            stat_multiplier: 1.0,
+        },
+    }
+}
+
+/// What can be coaxed back to life in a wreck of this tier.
+fn recoverable_ship_class(tier: u8, rng: &mut StdRng) -> ShipClass {
+    let pool: &[ShipClass] = match tier {
+        1 => &[ShipClass::Scout, ShipClass::Corvette],
+        2 => &[ShipClass::Scout, ShipClass::Corvette, ShipClass::Hauler],
+        _ => &[ShipClass::Corvette, ShipClass::Hauler, ShipClass::Frigate, ShipClass::Cruiser],
+    };
+    pool[rng.random_range(0..pool.len())]
+}
+
+/// The risk read a fleet on-site gets before boarding.
+pub fn site_risk_label(tier: u8, bumps: u8) -> iac_shared::protocol::SiteRisk {
+    use iac_shared::protocol::SiteRisk;
+    let (base, _, _) = derelict_tier_odds(tier);
+    let chance = base + bumps as f32 * EXPLORE_RETRY_AMBUSH_BUMP;
+    if chance < 0.15 {
+        SiteRisk::Quiet
+    } else if chance < 0.30 {
+        SiteRisk::Uneasy
+    } else {
+        SiteRisk::Hot
+    }
+}
+
+fn fleet_cargo_capacity(fleet: &Fleet) -> f32 {
+    fleet.ships[0..fleet.ship_count].iter()
+        .map(|s| s.ship_class.base_stats().cargo as f32)
+        .sum()
+}
+
+fn is_depleted(density: Option<Density>) -> bool {
+    match density {
+        None => false,
+        Some(d) => d != Density::Pristine,
+    }
+}
+
+fn regen_resource(
+    harvested: &mut f32,
+    override_density: &mut Option<Density>,
+    template_density: Density,
+) -> bool {
+    let current = match *override_density {
+        Some(d) => d,
+        None => return false,
+    };
+
+    // Compare by repr value
+    let current_val = current as u8;
+    let template_val = template_density as u8;
+    if current_val >= template_val { return false; }
+
+    let regen_amount = SECTOR_REGEN_RATE * current.depletion_threshold();
+    *harvested -= regen_amount;
+    if *harvested < 0.0 {
+        let new_density = current.upgrade();
+        let new_val = new_density as u8;
+        if new_val >= template_val {
+            *override_density = None;
+        } else {
+            *override_density = Some(new_density);
+        }
+        *harvested = 0.0;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_engine() -> GameEngine {
+        let db = Database::init(":memory:").expect("in-memory db");
+        GameEngine::init(42, db).expect("engine init")
+    }
+
+    fn register(engine: &mut GameEngine, name: &str) -> (u64, u64) {
+        let pid = engine.register_player(name.to_string()).expect("register");
+        let fid = engine.fleets.values()
+            .find(|f| f.owner_id == pid)
+            .map(|f| f.id)
+            .expect("starting fleet");
+        (pid, fid)
+    }
+
+    #[test]
+    fn scan_reveals_sectors_and_sets_cooldown() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Scanner");
+
+        engine.handle_scan(pid, fid).expect("scan should succeed");
+
+        let revealed = engine.scan_revealed_coords(pid);
+        assert!(!revealed.is_empty(), "scan revealed no sectors");
+        assert_eq!(engine.fleets[&fid].action_cooldown, SCAN_COOLDOWN);
+
+        let events = engine.drain_events();
+        let scan_event = events.iter().find(|e| matches!(e.kind, EventKind::ScanCompleted(_)));
+        assert!(scan_event.is_some(), "no ScanCompleted event");
+
+        // Second scan is blocked by the cooldown.
+        assert_eq!(engine.handle_scan(pid, fid), Err(ErrorCode::OnCooldown));
+    }
+
+    #[test]
+    fn scan_reveals_expire() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Scanner");
+        engine.handle_scan(pid, fid).unwrap();
+        assert!(!engine.scan_revealed_coords(pid).is_empty());
+
+        engine.current_tick += SCAN_REVEAL_TICKS + 1;
+        engine.prune_scan_reveals();
+        assert!(engine.scan_revealed_coords(pid).is_empty(), "reveals should expire");
+    }
+
+    #[test]
+    fn commands_reject_foreign_fleets() {
+        let mut engine = test_engine();
+        let (_pid_a, fid_a) = register(&mut engine, "Alice");
+        let (pid_b, _fid_b) = register(&mut engine, "Bob");
+
+        assert_eq!(engine.handle_scan(pid_b, fid_a), Err(ErrorCode::FleetNotFound));
+        assert_eq!(engine.handle_stop(pid_b, fid_a), Err(ErrorCode::FleetNotFound));
+        assert_eq!(engine.handle_recall(pid_b, fid_a), Err(ErrorCode::FleetNotFound));
+        assert_eq!(engine.handle_harvest(pid_b, fid_a), Err(ErrorCode::FleetNotFound));
+    }
+
+    #[test]
+    fn stop_cancels_movement() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Stopper");
+
+        // Idle fleet has nothing to stop.
+        assert_eq!(engine.handle_stop(pid, fid), Err(ErrorCode::InvalidCommand));
+
+        let home = engine.fleets[&fid].location;
+        let target = engine.world_gen.connected_neighbors(home).slice()[0];
+        engine.handle_move(pid, fid, target).expect("move");
+        assert_eq!(engine.fleets[&fid].state, FleetStatus::Moving);
+
+        engine.handle_stop(pid, fid).expect("stop");
+        let fleet = &engine.fleets[&fid];
+        assert_eq!(fleet.state, FleetStatus::Idle);
+        assert_eq!(fleet.move_target, None);
+        // The fleet never left.
+        assert_eq!(fleet.location, home);
+    }
+
+    #[test]
+    fn defense_grid_adds_power() {
+        let mut engine = test_engine();
+        let (pid, _fid) = register(&mut engine, "Defender");
+
+        let base = engine.home_defense_power(pid);
+        engine.players.get_mut(&pid).unwrap().buildings.defense_grid = 3;
+        let with_grid = engine.home_defense_power(pid);
+        assert!(with_grid > base, "grid should add power: {base} -> {with_grid}");
+
+        let expected_bonus = defense_grid_scout_units(3) * ship_class_power(ShipClass::Scout);
+        assert!((with_grid - base - expected_bonus).abs() < 0.01);
+    }
+
+    #[test]
+    fn repelled_raid_drops_salvage_and_spares_resources() {
+        let mut engine = test_engine();
+        let (pid, _fid) = register(&mut engine, "Winner");
+        let before = engine.players[&pid].resources;
+
+        // Tiny raid vs the starting defense (2 scouts): guaranteed repel
+        // even with the ±10% variance.
+        engine.resolve_raid(pid, 0.1).expect("resolve");
+
+        let after = engine.players[&pid].resources;
+        assert_eq!(before.metal, after.metal, "repelled raid must not cost resources");
+
+        let home_key = engine.players[&pid].homeworld.to_key();
+        let salvage = engine.sector_overrides.get(&home_key).and_then(|o| o.salvage);
+        assert!(salvage.is_some(), "repelled raid should drop salvage");
+
+        let events = engine.drain_events();
+        match events.iter().find_map(|e| match &e.kind {
+            EventKind::RaidResolved(r) => Some(r),
+            _ => None,
+        }) {
+            Some(r) => assert!(r.defended),
+            None => panic!("no RaidResolved event"),
+        }
+    }
+
+    #[test]
+    fn state_survives_server_restart() {
+        // Regression: REAL-affinity columns were read back as i64, which
+        // made every restart with saved players panic with
+        // InvalidColumnType.
+        let path = std::env::temp_dir().join(format!(
+            "iac_restart_test_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let (pid, fid, resources) = {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            let mut engine = GameEngine::init(42, db).unwrap();
+            let (pid, fid) = register(&mut engine, "Restarter");
+            engine.persist_dirty_state().unwrap();
+            (pid, fid, engine.players[&pid].resources)
+        };
+
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let engine = GameEngine::init(42, db).expect("engine must reload saved state");
+        let player = engine.players.get(&pid).expect("player survived restart");
+        assert!((player.resources.metal - resources.metal).abs() < 0.01);
+        let fleet = engine.fleets.get(&fid).expect("fleet survived restart");
+        assert_eq!(fleet.ship_count, STARTING_SCOUTS);
+        assert!(fleet.fuel > 0.0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lost_raid_caps_losses_and_suppresses_raids() {
+        let mut engine = test_engine();
+        let (pid, _fid) = register(&mut engine, "Loser");
+        let before = engine.players[&pid].resources;
+
+        // Overwhelming raid: guaranteed loss.
+        engine.resolve_raid(pid, 1_000_000.0).expect("resolve");
+
+        let after = engine.players[&pid].resources;
+        let metal_lost = before.metal - after.metal;
+        assert!(metal_lost > 0.0, "lost raid should cost resources");
+        assert!(
+            metal_lost <= before.metal * RAID_LOSS_CAP_METAL + 0.01,
+            "metal loss over cap: {metal_lost}"
+        );
+        assert!(
+            before.deuterium - after.deuterium <= before.deuterium * RAID_LOSS_CAP_DEUT + 0.01
+        );
+
+        let state = engine.raid_states.get(&pid).expect("raid state");
+        assert!(
+            state.suppress_until > engine.current_tick,
+            "losing a raid must suppress the next one"
+        );
+    }
+
+    /// Find a sector with an unlooted derelict, scanning outward.
+    fn find_derelict_sector(engine: &GameEngine) -> Hex {
+        for q in -30i16..30 {
+            for r in -30i16..30 {
+                let coord = Hex { q, r };
+                if engine.derelict_site_at(coord).is_some() {
+                    return coord;
+                }
+            }
+        }
+        panic!("no derelict in a 60x60 window — spawn rate broken?");
+    }
+
+    #[test]
+    fn derelicts_spawn_beyond_min_dist_only() {
+        let engine = test_engine();
+        let mut found = 0;
+        for q in -30i16..30 {
+            for r in -30i16..30 {
+                let coord = Hex { q, r };
+                let t = engine.world_gen.generate_sector(coord);
+                if t.has_derelict {
+                    found += 1;
+                    assert!(
+                        coord.dist_from_origin() >= iac_shared::constants::DERELICT_MIN_DIST,
+                        "derelict too close to hub at {coord}"
+                    );
+                    assert!(
+                        matches!(t.terrain, iac_shared::constants::TerrainType::DebrisField
+                            | iac_shared::constants::TerrainType::Empty),
+                        "derelict in wrong terrain at {coord}"
+                    );
+                }
+            }
+        }
+        assert!(found > 0, "no derelicts anywhere");
+    }
+
+    #[test]
+    fn explore_site_boards_and_resolves() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Boarder");
+
+        let site = find_derelict_sector(&engine);
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+
+        // No derelict → InvalidTarget (the hub never has one).
+        engine.fleets.get_mut(&fid).unwrap().location = Hex::ORIGIN;
+        assert_eq!(engine.handle_explore_site(pid, fid), Err(ErrorCode::InvalidTarget));
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+
+        engine.handle_explore_site(pid, fid).expect("board");
+        assert_eq!(engine.fleets[&fid].state, FleetStatus::Exploring);
+        assert_eq!(engine.fleets[&fid].action_cooldown, EXPLORE_DURATION_TICKS);
+        let events = engine.drain_events();
+        assert!(events.iter().any(|e| matches!(e.kind, EventKind::SiteExplorationStarted(_))));
+
+        // Double-board is rejected while working.
+        assert_eq!(engine.handle_explore_site(pid, fid), Err(ErrorCode::OnCooldown));
+
+        // Run the clock out.
+        for _ in 0..=EXPLORE_DURATION_TICKS {
+            engine.tick().expect("tick");
+        }
+
+        let events = engine.drain_events();
+        let looted = events.iter().any(|e| matches!(e.kind, EventKind::SiteExplored(_)));
+        let ambushed = events.iter().any(|e| matches!(e.kind, EventKind::SiteAmbush(_)));
+        assert!(looted || ambushed, "boarding must resolve one way or the other");
+
+        let ov = engine.sector_overrides.get(&site.to_key());
+        if looted {
+            let fleet = &engine.fleets[&fid];
+            let cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+            assert!(cargo > 0.0, "loot must land in cargo");
+            assert!(ov.and_then(|o| o.site_looted_tick).is_some(), "site must be consumed");
+            assert!(engine.derelict_site_at(site).is_none());
+        } else {
+            assert_eq!(engine.fleets[&fid].state, FleetStatus::InCombat);
+            assert!(ov.map(|o| o.site_ambush_bumps >= 1).unwrap_or(false));
+            assert!(engine.derelict_site_at(site).is_some(), "ambush leaves the site");
+        }
+    }
+
+    #[test]
+    fn aborting_a_boarding_angers_the_site() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Coward");
+        let site = find_derelict_sector(&engine);
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+
+        engine.handle_explore_site(pid, fid).expect("board");
+        engine.handle_stop(pid, fid).expect("abort");
+
+        let fleet = &engine.fleets[&fid];
+        assert_eq!(fleet.state, FleetStatus::Idle);
+        assert_eq!(fleet.action_cooldown, 0, "abort must release the boarding timer");
+        let bumps = engine.sector_overrides.get(&site.to_key()).map(|o| o.site_ambush_bumps);
+        assert_eq!(bumps, Some(1));
+    }
+
+    #[test]
+    fn policy_set_and_clear() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Boss");
+        let (pid_b, _) = register(&mut engine, "Rival");
+
+        // Foreign fleets can't be given orders.
+        assert_eq!(
+            engine.handle_policy_update(pid_b, fid, PolicyPreset::Prospect, None),
+            Err(ErrorCode::FleetNotFound)
+        );
+
+        engine.handle_policy_update(pid, fid, PolicyPreset::MineAndReturn, None).expect("set");
+        let policy = engine.policies.get(&fid).expect("policy stored");
+        assert_eq!(policy.preset, PolicyPreset::MineAndReturn);
+        assert_eq!(policy.work_sector, Some(engine.fleets[&fid].location));
+
+        engine.handle_policy_update(pid, fid, PolicyPreset::Manual, None).expect("clear");
+        assert!(engine.policies.get(&fid).is_none(), "manual clears orders");
+
+        let events = engine.drain_events();
+        let policy_events: Vec<_> = events.iter()
+            .filter(|e| matches!(e.kind, EventKind::PolicyAction(_)))
+            .collect();
+        assert_eq!(policy_events.len(), 2, "engage + clear events");
+    }
+
+    #[test]
+    fn mine_policy_heads_home_when_loaded() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Miner");
+        let home = engine.players[&pid].homeworld;
+
+        // Park the fleet one hop out with a stuffed hold.
+        let away = engine.world_gen.connected_neighbors(home).slice()[0];
+        {
+            let fleet = engine.fleets.get_mut(&fid).unwrap();
+            fleet.location = away;
+            fleet.cargo.metal = 10_000.0; // way past any cargo threshold
+        }
+
+        engine.handle_policy_update(pid, fid, PolicyPreset::MineAndReturn, None).expect("set");
+        engine.drain_events();
+
+        engine.current_tick += 2;
+        engine.process_policies().expect("policies");
+
+        let fleet = &engine.fleets[&fid];
+        assert_eq!(fleet.state, FleetStatus::Moving, "loaded miner must head home");
+        assert_eq!(fleet.move_target, Some(home));
+
+        let events = engine.drain_events();
+        let acted = events.iter().find_map(|e| match &e.kind {
+            EventKind::PolicyAction(p) => Some(p),
+            _ => None,
+        }).expect("policy action event");
+        assert_eq!(acted.action, "move");
+        assert!(acted.reason.contains("cargo"), "reason must say why: {}", acted.reason);
+    }
+
+    #[test]
+    fn policies_and_sites_survive_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "iac_policy_restart_test_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let (fid, site) = {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            let mut engine = GameEngine::init(42, db).unwrap();
+            let (pid, fid) = register(&mut engine, "Persistent");
+            engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
+
+            let site = find_derelict_sector(&engine);
+            let ov = engine.ensure_override(site.to_key());
+            ov.site_looted_tick = Some(7);
+            ov.site_ambush_bumps = 2;
+            engine.dirty_sectors.insert(site.to_key(), ());
+            engine.persist_dirty_state().unwrap();
+            (fid, site)
+        };
+
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let engine = GameEngine::init(42, db).expect("reload");
+        let policy = engine.policies.get(&fid).expect("policy survived restart");
+        assert_eq!(policy.preset, PolicyPreset::PatrolHome);
+
+        let ov = engine.sector_overrides.get(&site.to_key()).expect("override survived");
+        assert_eq!(ov.site_looted_tick, Some(7));
+        assert_eq!(ov.site_ambush_bumps, 2);
+        assert!(engine.derelict_site_at(site).is_none(), "looted site stays looted");
+
+        let _ = std::fs::remove_file(&path);
+    }
+}

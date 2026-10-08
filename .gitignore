@@ -1,6 +1,16 @@
-.zig-cache/
-zig-out/
-.archive/
+# Rust
+target/
+# Runtime
 *.db
 *.db-shm
 *.db-wal
+server.pid
+# Flutter web client
+clients/web/build/
+clients/web/.dart_tool/
+.flutter-plugins-dependencies
+# Zig (archive/zig)
+.zig-cache/
+zig-out/
+zig-pkg/
+.archive/
