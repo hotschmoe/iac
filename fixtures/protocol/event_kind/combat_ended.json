@@ -1,5 +1,10 @@
 {
   "kind": "CombatEnded",
+  "mine": false,
+  "owners": [
+    "Admiral",
+    "Rival"
+  ],
   "player_victory": false,
   "sector": {
     "q": 5,

@@ -16,7 +16,8 @@ use iac_shared::constants::{
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
     FUEL_RATE_PER_MASS, SECTOR_REGEN_RATE,
-    NPC_PATROL_INTERVAL, SALVAGE_FRACTION, SALVAGE_DESPAWN_TICKS,
+    NPC_PATROL_INTERVAL, SALVAGE_FRACTION, SALVAGE_DESPAWN_TICKS, HARVEST_REPORT_TICKS,
+    TEMPLATE_NPC_ID_BASE,
     HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST, MOVE_BASE_COOLDOWN,
     SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_SCOUT_RANGE, SCAN_REVEAL_TICKS,
     RAID_ROLL_INTERVAL, RAID_ROLL_CHANCE, RAID_WARNING_TICKS, RAID_MIN_INTERVAL,
@@ -38,6 +39,7 @@ use iac_shared::protocol::{GameEvent, EventKind, ErrorCode, HarvestResource, Pol
 use crate::auth::{self, TokenHash};
 use crate::combat;
 use crate::database::{Database, ExploredEdge, PersistBatch, Persister};
+use crate::intel::KnownSectors;
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -163,7 +165,6 @@ pub struct Combat {
     pub sector: Hex,
     pub player_fleet_ids: Vec<u64>,
     pub npc_fleet_ids: Vec<u64>,
-    pub npc_value: Resources,
     pub round: u16,
 }
 
@@ -231,6 +232,15 @@ pub struct RaidState {
     pub incoming: Option<IncomingRaid>,
 }
 
+/// Harvest yield not yet reported to the owner.
+#[derive(Debug, Clone, Default)]
+struct HarvestReport {
+    resources: Resources,
+    ticks: u16,
+    /// Tick the first unreported harvest happened.
+    since: u64,
+}
+
 /// A fleet's standing orders plus the bit of memory the autopilot needs.
 #[derive(Debug, Clone)]
 pub struct FleetPolicy {
@@ -290,6 +300,8 @@ pub struct GameEngine {
     /// Actively-scanned sectors per player: hex key → expiry tick.
     scan_reveals: HashMap<u64, HashMap<u32, u64>>,
     raid_states: HashMap<u64, RaidState>,
+    /// Harvest yield per fleet awaiting its next `ResourceHarvested` event.
+    harvest_reports: HashMap<u64, HarvestReport>,
     /// Standing orders per fleet.
     pub policies: HashMap<u64, FleetPolicy>,
 
@@ -310,6 +322,8 @@ pub struct GameEngine {
     explored: HashSet<(u64, u32)>,
     /// Explored edges not yet handed to the persister.
     new_edges: Vec<ExploredEdge>,
+    /// What each player has seen of the galaxy, live or remembered.
+    pub known: KnownSectors,
 }
 
 impl GameEngine {
@@ -328,6 +342,7 @@ impl GameEngine {
             sector_overrides: world.sector_overrides,
             scan_reveals: HashMap::new(),
             raid_states: HashMap::new(),
+            harvest_reports: HashMap::new(),
             policies: world.policies,
             pending_events: Vec::new(),
             pending_arrivals: Vec::new(),
@@ -340,6 +355,7 @@ impl GameEngine {
             deleted_policy_ids: HashMap::new(),
             explored: world.explored,
             new_edges: Vec::new(),
+            known: KnownSectors::load(world.known_sectors),
         })
     }
 
@@ -376,6 +392,10 @@ impl GameEngine {
         self.process_salvage_despawn()?;
         self.process_cooldowns()?;
         self.prune_scan_reveals();
+
+        let mut known = std::mem::take(&mut self.known);
+        known.refresh(self);
+        self.known = known;
 
         Ok(())
     }
@@ -466,7 +486,6 @@ impl GameEngine {
 
             // Copy needed data before mutable borrows
             let combat_sector = active_combat.sector;
-            let combat_npc_value = active_combat.npc_value;
             let combat_round = active_combat.round;
             let pf_ids = active_combat.player_fleet_ids.clone();
             let npc_ids = active_combat.npc_fleet_ids.clone();
@@ -483,6 +502,8 @@ impl GameEngine {
                     player_sides.push(combat::CombatSide {
                         fleet_id: fid,
                         is_npc: false,
+                        owner: self.players.get(&f.owner_id).map(|p| p.name.clone()),
+                        salvage: Resources::default(),
                         ships,
                     });
                 }
@@ -499,6 +520,8 @@ impl GameEngine {
                     npc_sides.push(combat::CombatSide {
                         fleet_id: nid,
                         is_npc: true,
+                        owner: None,
+                        salvage: npc_salvage(n),
                         ships,
                     });
                 }
@@ -512,7 +535,7 @@ impl GameEngine {
             // Resolve combat with copied data
             let result = combat::resolve_combat_round(
                 &player_sides, &npc_sides,
-                combat_npc_value,
+                combat_sector,
                 self.current_tick,
                 combat_round as u32,
             );
@@ -522,6 +545,13 @@ impl GameEngine {
                 combat_mut.round = combat_round + 1;
             }
 
+            for e in &result.events {
+                if let EventKind::FleetDestroyed(d) = &e.kind
+                    && !d.is_npc
+                {
+                    self.alert_fleet_lost(d.fleet_id, combat_sector, &npc_ids);
+                }
+            }
             self.pending_events.extend(result.events);
 
             // Write updated ship data back to player fleets
@@ -582,16 +612,25 @@ impl GameEngine {
                     }
                 }
 
+                let pile = if result.player_won {
+                    let total = npc_sides.iter().fold(Resources::default(), |acc, s| acc.add(s.salvage));
+                    Some(self.drop_salvage(combat_sector, total))
+                } else {
+                    None
+                };
                 self.pending_events.push(GameEvent {
                     tick: self.current_tick,
                     kind: EventKind::CombatEnded(iac_shared::protocol::CombatEndedEvent {
                         sector: combat_sector,
                         player_victory: result.player_won,
+                        owners: player_sides.iter().filter_map(|s| s.owner.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
+                        mine: false,
+                        salvage: pile.map(|(r, _)| r),
+                        salvage_despawn_tick: pile.map(|(_, t)| t),
                     }),
                 });
 
                 if result.player_won {
-                    self.drop_salvage(combat_sector, combat_npc_value)?;
 
                     let cleared_key = combat_sector.to_key();
                     self.ensure_override(cleared_key)
@@ -611,6 +650,54 @@ impl GameEngine {
         }
 
         Ok(())
+    }
+
+    /// Turn the per-tick harvest tallies into events: one per fleet every
+    /// HARVEST_REPORT_TICKS ticks, and right away once the fleet stops
+    /// harvesting (or is gone), so the last stretch is never lost.
+    fn flush_harvest_reports(&mut self) {
+        let tick = self.current_tick;
+        let due: Vec<u64> = self.harvest_reports.iter()
+            .filter(|(fid, r)| {
+                r.ticks > 0
+                    && (tick - r.since >= HARVEST_REPORT_TICKS
+                        || self.fleets.get(fid).is_none_or(|f| f.state != FleetStatus::Harvesting))
+            })
+            .map(|(fid, _)| *fid)
+            .collect();
+        for fid in due {
+            let Some(r) = self.harvest_reports.remove(&fid) else { continue; };
+            if self.fleets.contains_key(&fid) {
+                self.pending_events.push(GameEvent {
+                    tick,
+                    kind: EventKind::ResourceHarvested(iac_shared::protocol::ResourceHarvestedEvent {
+                        fleet_id: fid,
+                        resources: r.resources,
+                        ticks: r.ticks,
+                    }),
+                });
+            }
+        }
+        self.harvest_reports.retain(|fid, _| self.fleets.contains_key(fid));
+    }
+
+    /// Tell a fleet's owner, loudly, that the fleet is gone.
+    fn alert_fleet_lost(&mut self, fleet_id: u64, sector: Hex, enemy_ids: &[u64]) {
+        let Some(owner) = self.fleets.get(&fleet_id).map(|f| f.owner_id) else { return; };
+        let enemies = enemy_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ");
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Alert(iac_shared::protocol::AlertEvent {
+                player_id: Some(owner),
+                level: iac_shared::protocol::AlertLevel::Critical,
+                message: format!(
+                    "FLEET LOST: fleet {fleet_id} destroyed at [{},{}] by hostile fleet {enemies}; every ship is gone",
+                    sector.q, sector.r
+                ),
+                sector: Some(sector),
+                fleet_id: Some(fleet_id),
+            }),
+        });
     }
 
     // ── Harvesting ────────────────────────────────────────────────
@@ -653,6 +740,7 @@ impl GameEngine {
 
             // Phase 2: apply, sequentially capped by remaining cargo
             let mut harvested_any = false;
+            let mut took = Resources::default();
             for (density, res_type, accum_key) in targets {
                 if target != HarvestResource::Auto && target != res_type { continue; }
                 let amount = density.harvest_multiplier() * harvest_power;
@@ -670,15 +758,19 @@ impl GameEngine {
                     }
 
                     self.accumulate_harvest(sector_key, accum_key, actual, density)?;
-                    self.pending_events.push(GameEvent {
-                        tick: self.current_tick,
-                        kind: EventKind::ResourceHarvested(iac_shared::protocol::ResourceHarvestedEvent {
-                            fleet_id: fid,
-                            resource_type: res_type,
-                            amount: actual,
-                        }),
-                    });
+                    match res_type {
+                        HarvestResource::Metal => took.metal += actual,
+                        HarvestResource::Crystal => took.crystal += actual,
+                        _ => took.deuterium += actual,
+                    }
                 }
+            }
+            if harvested_any {
+                let tick = self.current_tick;
+                let report = self.harvest_reports.entry(fid)
+                    .or_insert_with(|| HarvestReport { since: tick, ..Default::default() });
+                report.resources = report.resources.add(took);
+                report.ticks += 1;
             }
 
             if harvested_any {
@@ -689,6 +781,7 @@ impl GameEngine {
             }
         }
 
+        self.flush_harvest_reports();
         Ok(())
     }
 
@@ -764,9 +857,18 @@ impl GameEngine {
             if let Some(despawn_tick) = ov.salvage_despawn_tick
                 && self.current_tick >= despawn_tick
             {
-                ov.salvage = None;
+                let lost = ov.salvage.take();
                 ov.salvage_despawn_tick = None;
                 self.dirty_sectors.insert(key, ());
+                if let Some(resources) = lost {
+                    self.pending_events.push(GameEvent {
+                        tick: self.current_tick,
+                        kind: EventKind::SalvageDespawned(iac_shared::protocol::SalvageDespawnedEvent {
+                            sector: Hex::from_key(key),
+                            resources,
+                        }),
+                    });
+                }
             }
         }
         Ok(())
@@ -1366,6 +1468,8 @@ impl GameEngine {
         let key = fleet.location.to_key();
         let ov = self.sector_overrides.get(&key).ok_or(ErrorCode::NoResources)?;
         if ov.salvage.is_none() { return Err(ErrorCode::NoResources); }
+        let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
+        if used >= fleet_cargo_capacity(fleet) { return Err(ErrorCode::CargoFull); }
 
         self.collect_salvage(fleet_id).map_err(|_| ErrorCode::ServerError)?;
 
@@ -1384,16 +1488,12 @@ impl GameEngine {
             return self.start_combat(fleet_id, target_fleet_id).map_err(|_| ErrorCode::ServerError);
         }
 
-        // Try spawning from template
-        let sector_key = fleet.location.to_key();
-        if let Some(ov) = self.sector_overrides.get(&sector_key)
-            && ov.npc_cleared_tick.is_some()
+        // The sector's own hostile, listed in the sector view before it materialises
+        let location = fleet.location;
+        if target_fleet_id == template_npc_id(location)
+            && let Some(npc_tmpl) = self.pending_template_npc(location)
         {
-            return Err(ErrorCode::InvalidTarget);
-        }
-        let template = self.world_gen.generate_sector(fleet.location);
-        if let Some(npc_tmpl) = &template.npc_template {
-            let spawned = self.spawn_npc_fleet(fleet.location, npc_tmpl.clone())
+            let spawned = self.spawn_npc_fleet(location, npc_tmpl, target_fleet_id)
                 .map_err(|_| ErrorCode::ServerError)?;
             return self.start_combat(fleet_id, spawned.id).map_err(|_| ErrorCode::ServerError);
         }
@@ -1435,6 +1535,9 @@ impl GameEngine {
                             ship_class: fleet_mut.ships[i].ship_class,
                             owner_fleet_id: fleet_id,
                             is_npc: false,
+                            sector: fleet_mut.location,
+                            owner: Some(player.name.clone()),
+                            mine: false,
                         }),
                     });
                     // Swap-remove
@@ -1772,7 +1875,8 @@ impl GameEngine {
             self.dirty_sectors.insert(key, ());
 
             let guardian = ambush_guardian_template(tier, &mut rng);
-            let npc = self.spawn_npc_fleet(location, guardian)?;
+            let guardian_id = self.next_id();
+            let npc = self.spawn_npc_fleet(location, guardian, guardian_id)?;
             if let Some(f) = self.fleets.get_mut(&fleet_id) {
                 f.state = FleetStatus::Idle;
             }
@@ -2574,25 +2678,28 @@ impl GameEngine {
             }
         }
 
-        // Check if sector NPC was cleared recently
-        let sector_key = location.to_key();
-        if let Some(ov) = self.sector_overrides.get(&sector_key)
-            && ov.npc_cleared_tick.is_some()
-        {
-            return Ok(());
-        }
-
-        let template = self.world_gen.generate_sector(location);
-        if let Some(npc_tmpl) = &template.npc_template {
+        if let Some(npc_tmpl) = self.pending_template_npc(location) {
             if npc_tmpl.behavior == iac_shared::world::NpcBehaviorType::Passive { return Ok(()); }
-            let spawned = self.spawn_npc_fleet(location, npc_tmpl.clone())?;
+            let spawned = self.spawn_npc_fleet(location, npc_tmpl, template_npc_id(location))?;
             self.start_combat(fleet_id, spawned.id)?;
         }
         Ok(())
     }
 
-    fn spawn_npc_fleet(&mut self, location: Hex, npc: iac_shared::world::NpcTemplate) -> Result<NpcFleet, Box<dyn std::error::Error>> {
-        let npc_fleet_id = self.next_id();
+    /// The sector's template NPC while it has not materialised (or has since
+    /// been cleared or has wandered off as a live fleet): the hostile a sector
+    /// view lists under `template_npc_id(coord)`.
+    pub fn pending_template_npc(&self, coord: Hex) -> Option<iac_shared::world::NpcTemplate> {
+        let cleared = self.sector_overrides.get(&coord.to_key())
+            .map(|o| o.npc_cleared_tick.is_some())
+            .unwrap_or(false);
+        if cleared || self.npc_fleets.contains_key(&template_npc_id(coord)) {
+            return None;
+        }
+        self.world_gen.generate_sector(coord).npc_template
+    }
+
+    fn spawn_npc_fleet(&mut self, location: Hex, npc: iac_shared::world::NpcTemplate, npc_fleet_id: u64) -> Result<NpcFleet, Box<dyn std::error::Error>> {
         let mut ships = [Ship::default(); MAX_NPC_SHIPS];
         let stats = npc.ship_class.base_stats();
         let m = npc.stat_multiplier;
@@ -2628,12 +2735,9 @@ impl GameEngine {
 
     fn start_combat(&mut self, fleet_id: u64, npc_id: u64) -> Result<(), Box<dyn std::error::Error>> {
         let fleet = self.fleets.get(&fleet_id).ok_or("Fleet not found")?;
-        let npc = self.npc_fleets.get(&npc_id).ok_or("NPC not found")?;
+        if !self.npc_fleets.contains_key(&npc_id) { return Err("NPC not found".into()); }
         let sector = fleet.location;
-        
-        // Copy needed data before any mutable borrows
-        let npc_ship_class = npc.ships[0].ship_class;
-        let npc_value = npc_ship_class.build_cost();
+        let owner = self.players.get(&fleet.owner_id).map(|p| p.name.clone()).unwrap_or_default();
 
         // Check for existing combat in same sector
         for existing in self.active_combats.values() {
@@ -2653,7 +2757,6 @@ impl GameEngine {
                 if add_npc {
                     if let Some(combat_mut) = self.active_combats.get_mut(&existing_id) {
                         combat_mut.add_npc_fleet(npc_id);
-                        combat_mut.npc_value = combat_mut.npc_value.add(npc_value);
                     }
                     if let Some(n) = self.npc_fleets.get_mut(&npc_id) {
                         n.in_combat = true;
@@ -2664,8 +2767,10 @@ impl GameEngine {
                     tick: self.current_tick,
                     kind: EventKind::CombatStarted(iac_shared::protocol::CombatStartedEvent {
                         player_fleet_id: fleet_id,
+                        owner,
                         enemy_fleet_id: npc_id,
                         sector,
+                        mine: false,
                     }),
                 });
                 self.enroll_all_player_fleets_in_sector_combat(&existing_id)?;
@@ -2680,7 +2785,6 @@ impl GameEngine {
             sector,
             player_fleet_ids: Vec::new(),
             npc_fleet_ids: Vec::new(),
-            npc_value,
             round: 0,
         };
         new_combat.add_player_fleet(fleet_id);
@@ -2698,8 +2802,10 @@ impl GameEngine {
             tick: self.current_tick,
             kind: EventKind::CombatStarted(iac_shared::protocol::CombatStartedEvent {
                 player_fleet_id: fleet_id,
+                owner,
                 enemy_fleet_id: npc_id,
                 sector,
+                mine: false,
             }),
         });
 
@@ -2762,8 +2868,9 @@ impl GameEngine {
         // A full hold doesn't vaporize the rest of the wreckage — what
         // wasn't scooped stays for another trip.
         let remainder = salvage.sub(collected);
-        if remainder.metal + remainder.crystal + remainder.deuterium > 1.0 {
-            ov.salvage = Some(remainder);
+        let left_behind = (remainder.metal + remainder.crystal + remainder.deuterium > 1.0).then_some(remainder);
+        if left_behind.is_some() {
+            ov.salvage = left_behind;
         } else {
             ov.salvage = None;
             ov.salvage_despawn_tick = None;
@@ -2775,19 +2882,26 @@ impl GameEngine {
             tick: self.current_tick,
             kind: EventKind::SalvageCollected(iac_shared::protocol::SalvageCollectedEvent {
                 fleet_id,
+                sector: Hex::from_key(key),
                 resources: collected,
+                remaining: left_behind,
             }),
         });
         Ok(())
     }
 
-    fn drop_salvage(&mut self, sector: Hex, fleet_value: Resources) -> Result<(), Box<dyn std::error::Error>> {
+    /// Add `pile` to the wreckage in `sector` and restart its despawn clock.
+    /// Returns the pile as it now lies there (a fresh kill on top of an
+    /// uncollected one stacks) together with its despawn tick.
+    fn drop_salvage(&mut self, sector: Hex, pile: Resources) -> (Resources, u64) {
         let key = sector.to_key();
-        let tick = self.current_tick;
+        let despawn = self.current_tick + SALVAGE_DESPAWN_TICKS as u64;
         let ov = self.ensure_override(key);
-        ov.salvage = Some(fleet_value.scale(SALVAGE_FRACTION));
-        ov.salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
-        Ok(())
+        let total = ov.salvage.unwrap_or_default().add(pile);
+        ov.salvage = Some(total);
+        ov.salvage_despawn_tick = Some(despawn);
+        self.dirty_sectors.insert(key, ());
+        (total, despawn)
     }
 
     fn record_explored(&mut self, player_id: u64, coord: Hex) -> Result<(), Box<dyn std::error::Error>> {
@@ -2945,6 +3059,7 @@ impl GameEngine {
                 .filter_map(|key| self.sector_overrides.get(key).map(|ov| (Hex::from_key(*key), ov.clone())))
                 .collect(),
             explored_edges: std::mem::take(&mut self.new_edges),
+            known_sectors: self.known.take_dirty(),
         };
         self.dirty_players.clear();
         self.dirty_fleets.clear();
@@ -2954,6 +3069,12 @@ impl GameEngine {
         self.deleted_policy_ids.clear();
         self.persister.submit(batch);
         Ok(())
+    }
+
+    /// Stamp every live sector for the next persist; call before the final
+    /// persist of a clean shutdown so remembered `last_seen` ticks are current.
+    pub fn checkpoint_known_sectors(&mut self) {
+        self.known.touch_live();
     }
 
     /// Block until every submitted batch is committed (shutdown, tests).
@@ -2970,6 +3091,7 @@ struct LoadedWorld {
     sector_overrides: HashMap<u32, SectorOverride>,
     policies: HashMap<u64, FleetPolicy>,
     explored: HashSet<(u64, u32)>,
+    known_sectors: Vec<crate::database::KnownRow>,
 }
 
 fn load_world(db: &Database, world_seed: u64) -> Result<LoadedWorld, Box<dyn std::error::Error>> {
@@ -3016,10 +3138,22 @@ fn load_world(db: &Database, world_seed: u64) -> Result<LoadedWorld, Box<dyn std
         info!("State loaded: {} players, {} fleets, tick {}", players.len(), fleets.len(), tick);
     }
 
-    Ok(LoadedWorld { tick, next_id, players, fleets, sector_overrides, policies, explored })
+    let known_sectors = db.load_known_sectors()?;
+
+    Ok(LoadedWorld { tick, next_id, players, fleets, sector_overrides, policies, explored, known_sectors })
 }
 
 // ── Helper Functions ──────────────────────────────────────────────
+
+/// Stable id of the hostile a sector's template spawns; see `TEMPLATE_NPC_ID_BASE`.
+pub fn template_npc_id(coord: Hex) -> u64 {
+    TEMPLATE_NPC_ID_BASE + u64::from(coord.to_key())
+}
+
+/// Wreckage a destroyed NPC fleet leaves behind.
+fn npc_salvage(npc: &NpcFleet) -> Resources {
+    npc.ships[0].ship_class.build_cost().scale(SALVAGE_FRACTION)
+}
 
 fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
     let mut min_speed: u8 = 255;
@@ -3268,15 +3402,39 @@ mod tests {
         assert!(cargo.crystal > 0.0, "crystal not mined");
         assert_eq!(cargo.metal, 0.0, "metal mined despite crystal order");
         assert_eq!(cargo.deuterium, 0.0);
-        let events = engine.drain_events();
-        assert!(events.iter().any(|e| matches!(
-            &e.kind,
-            EventKind::ResourceHarvested(h) if h.resource_type == HarvestResource::Crystal
-        )));
-        assert!(!events.iter().any(|e| matches!(
-            &e.kind,
-            EventKind::ResourceHarvested(h) if h.resource_type != HarvestResource::Crystal
-        )));
+    }
+
+    #[test]
+    fn harvest_events_are_aggregated_per_fleet() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Sweeper");
+        let site = find_sector_with(&engine, |m, c, _| m != Density::None && c != Density::None);
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+        engine.handle_harvest(pid, fid, HarvestResource::Auto).expect("harvest");
+
+        let mut reports = Vec::new();
+        for _ in 0..(2 * HARVEST_REPORT_TICKS) {
+            engine.tick().expect("tick");
+            for e in engine.drain_events() {
+                if let EventKind::ResourceHarvested(h) = e.kind {
+                    reports.push(h);
+                }
+            }
+        }
+        // Stopping flushes the unreported tail immediately.
+        engine.handle_stop(pid, fid).expect("stop");
+        engine.tick().expect("tick");
+        for e in engine.drain_events() {
+            if let EventKind::ResourceHarvested(h) = e.kind {
+                reports.push(h);
+            }
+        }
+        let mined = engine.fleets[&fid].cargo;
+        assert!(reports.len() <= 3, "one event per fleet per report interval, got {}", reports.len());
+        let total = reports.iter().fold(Resources::default(), |acc, h| acc.add(h.resources));
+        assert!((total.metal - mined.metal).abs() < 0.01 && (total.crystal - mined.crystal).abs() < 0.01,
+            "reported {total:?} but cargo holds {mined:?}");
+        assert!(reports.iter().all(|h| h.fleet_id == fid && h.ticks > 0));
     }
 
     #[test]
@@ -3743,6 +3901,362 @@ mod tests {
         assert_eq!(ov.site_ambush_bumps, 2);
         assert!(engine.derelict_site_at(site).is_none(), "looted site stays looted");
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Hostile ids, salvage and chart memory ─────────────────────
+
+    /// A sector within the 40x40 window whose template spawns an NPC with `behavior`.
+    fn find_npc_sector(engine: &GameEngine, behavior: iac_shared::world::NpcBehaviorType) -> Hex {
+        for q in -20i16..20 {
+            for r in -20i16..20 {
+                let coord = Hex { q, r };
+                if let Some(t) = engine.world_gen.generate_sector(coord).npc_template
+                    && t.behavior == behavior
+                    && t.count == 1
+                    && engine.derelict_site_at(coord).is_none()
+                {
+                    return coord;
+                }
+            }
+        }
+        panic!("no such NPC sector in a 40x40 window");
+    }
+
+    /// Make a fleet strong enough to win any early fight in one round.
+    fn arm(engine: &mut GameEngine, fid: u64) {
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        for ship in &mut f.ships[..f.ship_count] {
+            ship.weapon_power = 5000.0;
+            ship.hull = 1e6;
+            ship.hull_max = 1e6;
+        }
+    }
+
+    /// Fight the sector's NPC with an armed fleet; returns all events.
+    fn win_a_fight(engine: &mut GameEngine, pid: u64, fid: u64, at: Hex) -> Vec<GameEvent> {
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        arm(engine, fid);
+        let target = template_npc_id(at);
+        engine.handle_attack(pid, fid, target).expect("attack the listed hostile");
+        let mut events = engine.drain_events();
+        for _ in 0..5 {
+            engine.tick().unwrap();
+            events.extend(engine.drain_events());
+            if engine.active_combats.is_empty() { break; }
+        }
+        assert!(engine.active_combats.is_empty(), "fight did not conclude");
+        events
+    }
+
+    #[test]
+    fn listed_hostile_id_is_the_id_combat_uses() {
+        use iac_shared::world::NpcBehaviorType::Passive;
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Hunter");
+        let at = find_npc_sector(&engine, Passive);
+
+        let view = crate::intel::build_sector_state(&engine, at, Some(pid));
+        let listed = view.hostiles.expect("passive scout is listed");
+        assert_eq!(listed.len(), 1);
+        assert_ne!(listed[0].id, 0, "no placeholder id");
+        assert_eq!(listed[0].id, template_npc_id(at));
+
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        assert_eq!(engine.handle_attack(pid, fid, 0), Err(ErrorCode::InvalidTarget), "0 names nothing");
+        engine.handle_attack(pid, fid, listed[0].id).expect("listed id attacks");
+        let started = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::CombatStarted(c) => Some(c),
+            _ => None,
+        }).expect("CombatStarted");
+        assert_eq!(started.enemy_fleet_id, listed[0].id);
+        assert_eq!(started.owner, "Hunter");
+    }
+
+    #[test]
+    fn no_sector_lists_a_hostile_with_id_zero() {
+        let engine = test_engine();
+        for q in -15i16..15 {
+            for r in -15i16..15 {
+                let s = crate::intel::build_sector_state(&engine, Hex { q, r }, None);
+                assert!(s.hostiles.iter().flatten().all(|h| h.id != 0), "id 0 at {q},{r}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wandering_template_hostile_is_not_listed_twice() {
+        use iac_shared::world::NpcBehaviorType::Patrol;
+        let mut engine = test_engine();
+        let at = find_npc_sector(&engine, Patrol);
+        let tmpl = engine.pending_template_npc(at).unwrap();
+        let id = template_npc_id(at);
+        engine.spawn_npc_fleet(Hex { q: at.q + 40, r: at.r }, tmpl, id).unwrap();
+        assert!(engine.pending_template_npc(at).is_none(), "its fleet is alive elsewhere");
+        assert!(crate::intel::build_sector_state(&engine, at, None).hostiles.is_none());
+    }
+
+    #[test]
+    fn destroyed_npc_event_reports_the_pile_on_the_ground() {
+        use iac_shared::world::NpcBehaviorType::Passive;
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Salvager");
+        let at = find_npc_sector(&engine, Passive);
+        let events = win_a_fight(&mut engine, pid, fid, at);
+
+        let destroyed: Vec<_> = events.iter().filter_map(|e| match &e.kind {
+            EventKind::FleetDestroyed(d) if d.is_npc => Some(d.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(destroyed.len(), 1);
+        let pile = engine.sector_overrides[&at.to_key()].salvage.expect("pile dropped");
+        assert_eq!(destroyed[0].salvage, pile, "event advertises what can be collected");
+        assert_eq!(destroyed[0].sector, at);
+        assert_eq!(destroyed[0].owner, None);
+        let full_cost = ShipClass::Scout.build_cost();
+        assert!(pile.metal < full_cost.metal, "pile is a fraction of the ship's cost");
+
+        let ended = events.iter().find_map(|e| match &e.kind {
+            EventKind::CombatEnded(c) => Some(c.clone()),
+            _ => None,
+        }).unwrap();
+        assert_eq!(ended.salvage, Some(pile));
+        assert_eq!(ended.salvage_despawn_tick, engine.sector_overrides[&at.to_key()].salvage_despawn_tick);
+
+        engine.fleets.get_mut(&fid).unwrap().ships[0].ship_class = ShipClass::Hauler;
+        engine.handle_collect_salvage(pid, fid).expect("collect");
+        let got = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::SalvageCollected(c) => Some(c),
+            _ => None,
+        }).unwrap();
+        assert_eq!(got.resources, pile, "collected exactly what was advertised");
+        assert_eq!(got.remaining, None);
+        assert!(engine.sector_overrides[&at.to_key()].salvage.is_none());
+    }
+
+    #[test]
+    fn a_full_hold_leaves_the_rest_and_says_so() {
+        use iac_shared::world::NpcBehaviorType::Passive;
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Hauler");
+        let at = find_npc_sector(&engine, Passive);
+        win_a_fight(&mut engine, pid, fid, at);
+        let pile = engine.sector_overrides[&at.to_key()].salvage.unwrap();
+
+        let cap = fleet_cargo_capacity(&engine.fleets[&fid]);
+        engine.fleets.get_mut(&fid).unwrap().cargo = Resources { metal: cap - 10.0, ..Default::default() };
+        engine.handle_collect_salvage(pid, fid).unwrap();
+        let got = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::SalvageCollected(c) => Some(c),
+            _ => None,
+        }).unwrap();
+        assert!((got.resources.metal - 10.0).abs() < 1e-3);
+        let left = got.remaining.expect("remainder reported");
+        assert!((left.metal - (pile.metal - 10.0)).abs() < 1e-3);
+        assert_eq!(engine.sector_overrides[&at.to_key()].salvage, Some(left));
+
+        assert_eq!(engine.handle_collect_salvage(pid, fid), Err(ErrorCode::CargoFull));
+    }
+
+    #[test]
+    fn a_second_kill_stacks_on_an_uncollected_pile() {
+        let mut engine = test_engine();
+        let at = Hex { q: 3, r: 3 };
+        let (first, _) = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
+        let (second, _) = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
+        assert_eq!(second.metal, first.metal * 2.0);
+        assert_eq!(engine.sector_overrides[&at.to_key()].salvage, Some(second));
+    }
+
+    #[test]
+    fn despawning_salvage_tells_the_players_present() {
+        let mut engine = test_engine();
+        let (_pid, fid) = register(&mut engine, "Witness");
+        let at = Hex { q: 4, r: -2 };
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        let (pile, despawn) = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
+        engine.drain_events();
+
+        while engine.current_tick + 1 < despawn { engine.tick().unwrap(); }
+        assert!(engine.drain_events().iter().all(|e| !matches!(e.kind, EventKind::SalvageDespawned(_))));
+        engine.tick().unwrap();
+        let gone: Vec<_> = engine.drain_events().into_iter().filter_map(|e| match e.kind {
+            EventKind::SalvageDespawned(d) => Some(d),
+            _ => None,
+        }).collect();
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].sector, at);
+        assert_eq!(gone[0].resources, pile);
+        assert!(engine.sector_overrides[&at.to_key()].salvage.is_none());
+    }
+
+    #[test]
+    fn salvage_survives_restart() {
+        let path = std::env::temp_dir().join(format!("iac_salvage_restart_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let at = Hex { q: 2, r: 5 };
+        let (pile, despawn) = {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            let mut engine = GameEngine::init(42, db).unwrap();
+            let dropped = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
+            engine.persist_dirty_state().unwrap();
+            dropped
+        };
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let engine = GameEngine::init(42, db).unwrap();
+        let ov = &engine.sector_overrides[&at.to_key()];
+        assert_eq!(ov.salvage, Some(pile));
+        assert_eq!(ov.salvage_despawn_tick, Some(despawn));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn losing_a_fleet_raises_a_critical_alert_for_its_owner_only() {
+        use iac_shared::protocol::AlertLevel;
+        use iac_shared::world::NpcBehaviorType::Patrol;
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Doomed");
+        let (other, _) = register(&mut engine, "Bystander");
+        let at = find_npc_sector(&engine, Patrol);
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        for ship in &mut engine.fleets.get_mut(&fid).unwrap().ships[..STARTING_SCOUTS] {
+            ship.hull = 0.5;
+            ship.shield = 0.0;
+        }
+        engine.handle_attack(pid, fid, template_npc_id(at)).unwrap();
+        let mut events = engine.drain_events();
+        for _ in 0..10 {
+            engine.tick().unwrap();
+            events.extend(engine.drain_events());
+        }
+        let lost = events.iter().find_map(|e| match &e.kind {
+            EventKind::FleetDestroyed(d) if !d.is_npc => Some(d.clone()),
+            _ => None,
+        }).expect("player fleet destroyed");
+        assert_eq!(lost.owner.as_deref(), Some("Doomed"));
+        assert_eq!(lost.salvage, Resources::default());
+        let alerts: Vec<_> = events.iter().filter_map(|e| match &e.kind {
+            EventKind::Alert(a) => Some(a.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].player_id, Some(pid));
+        assert_ne!(alerts[0].player_id, Some(other));
+        assert!(matches!(alerts[0].level, AlertLevel::Critical));
+        assert_eq!(alerts[0].fleet_id, Some(fid));
+    }
+
+    fn chart_of(engine: &GameEngine, pid: u64) -> HashMap<u32, iac_shared::protocol::SectorState> {
+        engine.known.chart(engine, pid).into_iter().map(|s| (s.location.to_key(), s)).collect()
+    }
+
+    #[test]
+    fn explored_sectors_outlive_the_scan_that_found_them() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Cartographer");
+        engine.handle_scan(pid, fid).unwrap();
+        engine.tick().unwrap();
+        let revealed = engine.scan_revealed_coords(pid);
+        assert!(!revealed.is_empty());
+        let chart = chart_of(&engine, pid);
+        for c in &revealed {
+            let s = &chart[&c.to_key()];
+            assert!(s.live);
+            assert_eq!(s.last_seen, engine.current_tick);
+        }
+        let scanned_at = engine.current_tick;
+        let known_before = chart.len();
+
+        for _ in 0..(SCAN_REVEAL_TICKS + 2) {
+            engine.tick().unwrap();
+        }
+        assert!(engine.scan_revealed_coords(pid).is_empty());
+        let chart = chart_of(&engine, pid);
+        assert_eq!(chart.len(), known_before, "no sector is forgotten");
+        let here = engine.fleets[&fid].location;
+        for c in revealed.iter().filter(|c| **c != here) {
+            let s = &chart[&c.to_key()];
+            assert!(!s.live, "{c:?} should be stale");
+            assert!(s.last_seen >= scanned_at && s.last_seen < engine.current_tick);
+        }
+        assert!(chart[&here.to_key()].live, "the fleet's own sector stays live");
+    }
+
+    #[test]
+    fn a_sector_goes_stale_once_in_the_tick_updates() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Watcher");
+        engine.handle_scan(pid, fid).unwrap();
+        engine.tick().unwrap();
+        let mut stale_notices: HashMap<u32, u32> = HashMap::new();
+        for _ in 0..(SCAN_REVEAL_TICKS + 5) {
+            engine.tick().unwrap();
+            for s in engine.known.tick_updates(&engine, pid) {
+                if !s.live {
+                    *stale_notices.entry(s.location.to_key()).or_default() += 1;
+                }
+            }
+        }
+        assert!(!stale_notices.is_empty());
+        assert!(stale_notices.values().all(|&n| n == 1), "stale deltas are sent once: {stale_notices:?}");
+    }
+
+    #[test]
+    fn stale_entry_keeps_what_was_last_seen() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Witness");
+        let at = Hex { q: 1, r: 1 };
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        let (pile, despawn) = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
+        engine.tick().unwrap();
+        let seen_at = engine.current_tick;
+        assert_eq!(chart_of(&engine, pid)[&at.to_key()].salvage, Some(pile));
+
+        // Fly away; the pile despawns while nobody is looking.
+        engine.fleets.get_mut(&fid).unwrap().location = engine.players[&pid].homeworld;
+        while engine.current_tick <= despawn + 1 { engine.tick().unwrap(); }
+        assert!(engine.sector_overrides[&at.to_key()].salvage.is_none());
+        let s = &chart_of(&engine, pid)[&at.to_key()];
+        assert!(!s.live);
+        assert_eq!(s.salvage, Some(pile), "remembered as seen");
+        assert_eq!(s.salvage_despawn_tick, Some(despawn));
+        assert_eq!(s.last_seen, seen_at);
+    }
+
+    #[test]
+    fn chart_survives_server_restart_marked_stale() {
+        let path = std::env::temp_dir().join(format!("iac_chart_restart_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (pid, seen) = {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            let mut engine = GameEngine::init(42, db).unwrap();
+            let (pid, fid) = register(&mut engine, "Veteran");
+            engine.handle_scan(pid, fid).unwrap();
+            for _ in 0..3 { engine.tick().unwrap(); }
+            engine.checkpoint_known_sectors();
+            engine.persist_dirty_state().unwrap();
+            engine.flush_persistence().unwrap();
+            (pid, chart_of(&engine, pid))
+        };
+        assert!(seen.len() > 1);
+
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let mut engine = GameEngine::init(42, db).unwrap();
+        // The scan reveal itself is memory-only, so only the sensor/fleet sectors are live now.
+        let after = chart_of(&engine, pid);
+        assert_eq!(after.len(), seen.len(), "every remembered sector reloaded");
+        for (key, old) in &seen {
+            let new = &after[key];
+            assert_eq!(new.last_seen, old.last_seen);
+            assert_eq!(new.resources, old.resources);
+            assert_eq!(new.hostiles, old.hostiles);
+        }
+        let stale = after.values().filter(|s| !s.live).count();
+        assert!(stale > 0, "scan-only sectors come back stale");
+
+        engine.tick().unwrap();
+        let again = chart_of(&engine, pid);
+        assert!(again.len() >= seen.len());
         let _ = std::fs::remove_file(&path);
     }
 }

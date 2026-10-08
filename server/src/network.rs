@@ -25,15 +25,14 @@ use log::{info, warn};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     ClientMessage, ServerMessage, Command, ErrorCode, HarvestResource,
-    GameState, PlayerState, FleetState, ShipState, SectorState, SectorResources,
-    NpcFleetInfo, NpcShipInfo, FleetBrief, ShipClassCounts,
+    GameState, PlayerState, FleetState, ShipState,
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
     GameEvent, AuthResult,
 };
-use iac_shared::constants::{ShipClass, MAX_FLEETS_PER_PLAYER};
-use iac_shared::scaling::{self, BuildingType, ResearchType};
+use iac_shared::constants::MAX_FLEETS_PER_PLAYER;
+use iac_shared::scaling::{BuildingType, ResearchType};
 
-use crate::engine::{fleet_cargo_capacity, AuthError, GameEngine, FleetStatus, SectorOverride};
+use crate::engine::{fleet_cargo_capacity, AuthError, GameEngine, FleetStatus};
 
 pub struct Network {
     port: u16,
@@ -255,7 +254,7 @@ impl Network {
 
             let fleets = collect_player_fleets(&engine, player_id);
             let player_data = engine.players.get(&player_id);
-            let sector_updates = collect_visible_sectors(&engine, &fleets, player_data, player_id);
+            let sector_updates = engine.known.tick_updates(&engine, player_id);
 
             let mut player_update: Option<PlayerState> = None;
             let mut hw_update: Option<HomeworldState> = None;
@@ -269,10 +268,9 @@ impl Network {
                 hw_update = Some(build_homeworld_state(&engine, p));
             }
 
-            let player_events: Vec<GameEvent> = events.iter()
-                .filter(|e| is_event_relevant(e, player_id, &engine))
-                .cloned()
-                .collect();
+            let player_events: Vec<GameEvent> = player_data
+                .map(|p| events.iter().filter_map(|e| event_for(e, p, &engine)).collect())
+                .unwrap_or_default();
 
             let update = ServerMessage::TickUpdate(iac_shared::protocol::TickUpdate {
                 tick: engine.current_tick(),
@@ -311,7 +309,7 @@ impl Network {
         let player = engine.players.get(&player_id).ok_or("Player not found")?;
 
         let fleet_states = collect_player_fleets(&engine, player_id);
-        let known_sectors = collect_visible_sectors(&engine, &fleet_states, Some(player), player_id);
+        let known_sectors = engine.known.chart(&engine, player_id);
         let hw_state = build_homeworld_state(&engine, player);
 
         let state = ServerMessage::FullState(GameState {
@@ -616,160 +614,6 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
     list
 }
 
-fn collect_visible_sectors(
-    engine: &GameEngine,
-    fleet_states: &[FleetState],
-    player: Option<&crate::engine::Player>,
-    player_id: u64,
-) -> Vec<SectorState> {
-    let mut sector_list: Vec<SectorState> = Vec::new();
-    let mut sector_keys: std::collections::HashSet<u32> = std::collections::HashSet::new();
-
-    for fs in fleet_states {
-        let key = fs.location.to_key();
-        if sector_keys.insert(key) {
-            sector_list.push(build_sector_state(engine, fs.location, Some(player_id)));
-        }
-    }
-
-    if let Some(p) = player {
-        let range = scaling::sensor_range(p.buildings.sensor_array);
-        if range > 0 {
-            let revealed = engine.get_sensor_revealed_coords(p.homeworld, range);
-            for coord in revealed {
-                let key = coord.to_key();
-                if sector_keys.insert(key) {
-                    sector_list.push(build_sector_state(engine, coord, Some(player_id)));
-                }
-            }
-        }
-    }
-
-    // Active-scan intel: sectors the player recently pinged keep streaming
-    // live updates until the reveal expires.
-    for coord in engine.scan_revealed_coords(player_id) {
-        let key = coord.to_key();
-        if sector_keys.insert(key) {
-            sector_list.push(build_sector_state(engine, coord, Some(player_id)));
-        }
-    }
-
-    sector_list
-}
-
-fn build_sector_state(engine: &GameEngine, coord: Hex, exclude_player_id: Option<u64>) -> SectorState {
-    let template = engine.world_gen.generate_sector(coord);
-    let neighbors = engine.world_gen.connected_neighbors(coord);
-    let ov = engine.sector_overrides.get(&coord.to_key());
-    let (metal_d, crystal_d, deut_d) = SectorOverride::effective_densities(ov, &template);
-
-    // Hostile NPCs
-    let mut hostile_list: Vec<NpcFleetInfo> = Vec::new();
-    for npc in engine.npc_fleets.values() {
-        if npc.location == coord {
-            let mut class_counts: [u16; 5] = [0; 5];
-            for ship in &npc.ships[0..npc.ship_count as usize] {
-                class_counts[ship.ship_class as usize] += 1;
-            }
-            let mut ship_info: Vec<NpcShipInfo> = Vec::new();
-            for (ci, &count) in class_counts.iter().enumerate() {
-                if count > 0 {
-                    let sc: ShipClass = match ci {
-                        0 => ShipClass::Scout,
-                        1 => ShipClass::Corvette,
-                        2 => ShipClass::Frigate,
-                        3 => ShipClass::Cruiser,
-                        4 => ShipClass::Hauler,
-                        _ => unreachable!(),
-                    };
-                    ship_info.push(NpcShipInfo {
-                        ship_class: sc,
-                        count,
-                    });
-                }
-            }
-            let behavior = match npc.behavior {
-                iac_shared::world::NpcBehaviorType::Passive => iac_shared::protocol::NpcBehavior::Passive,
-                iac_shared::world::NpcBehaviorType::Patrol => iac_shared::protocol::NpcBehavior::Patrol,
-                iac_shared::world::NpcBehaviorType::Aggressive => iac_shared::protocol::NpcBehavior::Aggressive,
-                iac_shared::world::NpcBehaviorType::Swarm => iac_shared::protocol::NpcBehavior::Swarm,
-            };
-            hostile_list.push(NpcFleetInfo {
-                id: npc.id,
-                ships: ship_info,
-                behavior,
-            });
-        }
-    }
-
-    // Template NPC (not yet spawned)
-    if let Some(npc_tmpl) = &template.npc_template {
-        let npc_cleared = ov.map(|o| o.npc_cleared_tick.is_some()).unwrap_or(false);
-        if hostile_list.is_empty() && !npc_cleared {
-            hostile_list.push(NpcFleetInfo {
-                id: 0,
-                ships: vec![NpcShipInfo {
-                    ship_class: npc_tmpl.ship_class,
-                    count: npc_tmpl.count as u16,
-                }],
-                behavior: match npc_tmpl.behavior {
-                    iac_shared::world::NpcBehaviorType::Passive => iac_shared::protocol::NpcBehavior::Passive,
-                    iac_shared::world::NpcBehaviorType::Patrol => iac_shared::protocol::NpcBehavior::Patrol,
-                    iac_shared::world::NpcBehaviorType::Aggressive => iac_shared::protocol::NpcBehavior::Aggressive,
-                    iac_shared::world::NpcBehaviorType::Swarm => iac_shared::protocol::NpcBehavior::Swarm,
-                },
-            });
-        }
-    }
-
-    // Other player fleets
-    let mut player_fleet_list: Vec<FleetBrief> = Vec::new();
-    for fleet in engine.fleets.values() {
-        if fleet.location != coord { continue; }
-        if fleet.ship_count == 0 { continue; }
-        if let Some(excl) = exclude_player_id
-            && fleet.owner_id == excl
-        {
-            continue;
-        }
-        let owner = engine.players.get(&fleet.owner_id);
-        let mut counts = ShipClassCounts::default();
-        for ship in &fleet.ships[0..fleet.ship_count] {
-            match ship.ship_class {
-                ShipClass::Scout => counts.scout += 1,
-                ShipClass::Corvette => counts.corvette += 1,
-                ShipClass::Frigate => counts.frigate += 1,
-                ShipClass::Cruiser => counts.cruiser += 1,
-                ShipClass::Hauler => counts.hauler += 1,
-            }
-        }
-        player_fleet_list.push(FleetBrief {
-            id: fleet.id,
-            owner_name: owner.map(|o| o.name.clone()).unwrap_or_else(|| "Unknown".to_string()),
-            ship_count: fleet.ship_count as u16,
-            ship_classes: counts,
-        });
-    }
-
-    SectorState {
-        location: coord,
-        terrain: template.terrain,
-        resources: SectorResources {
-            metal: metal_d,
-            crystal: crystal_d,
-            deuterium: deut_d,
-        },
-        connections: neighbors.slice().to_vec(),
-        hostiles: if hostile_list.is_empty() { None } else { Some(hostile_list) },
-        player_fleets: if player_fleet_list.is_empty() { None } else { Some(player_fleet_list) },
-        salvage: ov.and_then(|o| o.salvage),
-        site: engine.derelict_site_at(coord).map(|(tier, bumps)| iac_shared::protocol::SiteBrief {
-            tier,
-            risk: crate::engine::site_risk_label(tier, bumps),
-        }),
-    }
-}
-
 fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) -> HomeworldState {
     let mut buildings: Vec<BuildingState> = Vec::new();
     for bt in 0..BuildingType::COUNT {
@@ -865,55 +709,72 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
     }
 }
 
-fn is_own_fleet(engine: &GameEngine, fleet_id: u64, player_id: u64) -> bool {
-    engine.fleets.get(&fleet_id).map(|f| f.owner_id == player_id).unwrap_or(false)
+/// True when the player has a fleet in `sector` or their homeworld is there.
+fn present_at(engine: &GameEngine, player: &crate::engine::Player, sector: Hex) -> bool {
+    player.homeworld == sector
+        || engine.fleets.values().any(|f| f.owner_id == player.id && f.location == sector && f.ship_count > 0)
 }
 
-fn player_has_fleet_at_sector(engine: &GameEngine, player_id: u64, sector: Hex) -> bool {
-    engine.fleets.values().any(|f| {
-        f.owner_id == player_id && f.location == sector && f.ship_count > 0
-    })
-}
+/// The event as `player` should see it, or None if it does not concern them.
+///
+/// Combat and loss events name their sector and the owning empires, so the
+/// decision needs no fleet lookup (a destroyed fleet may already be gone):
+/// they reach an empire that owns one of the fleets involved and anyone with
+/// a fleet or their homeworld in that sector. `mine` is filled in here, per
+/// recipient.
+fn event_for(event: &GameEvent, player: &crate::engine::Player, engine: &GameEngine) -> Option<GameEvent> {
+    use iac_shared::protocol::EventKind as K;
+    let own_fleet = |fleet_id: u64| engine.fleets.get(&fleet_id).is_some_and(|f| f.owner_id == player.id);
+    let named = |owner: &Option<String>| owner.as_deref() == Some(player.name.as_str());
+    let in_sector = |sector: Hex| present_at(engine, player, sector);
+    let mut out = event.clone();
 
-fn is_event_relevant(event: &GameEvent, player_id: u64, engine: &GameEngine) -> bool {
-    match &event.kind {
-        iac_shared::protocol::EventKind::SectorEntered(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::FleetArrived(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::ResourceHarvested(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::SalvageCollected(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::BuildingCompleted(e) => e.player_id.map(|p| p == player_id).unwrap_or(true),
-        iac_shared::protocol::EventKind::ResearchCompleted(e) => e.player_id.map(|p| p == player_id).unwrap_or(true),
-        iac_shared::protocol::EventKind::ShipBuilt(e) => e.player_id.map(|p| p == player_id).unwrap_or(true),
-        iac_shared::protocol::EventKind::CombatStarted(e) => {
-            is_own_fleet(engine, e.player_fleet_id, player_id) || player_has_fleet_at_sector(engine, player_id, e.sector)
+    let relevant = match &mut out.kind {
+        K::CombatRound(e) => {
+            e.mine = named(&e.attacker_owner) || named(&e.target_owner);
+            e.mine || in_sector(e.sector)
         }
-        iac_shared::protocol::EventKind::CombatEnded(e) => player_has_fleet_at_sector(engine, player_id, e.sector),
-        iac_shared::protocol::EventKind::CombatRound(_) => true,
-        iac_shared::protocol::EventKind::ShipDestroyed(e) => {
-            if !e.is_npc && is_own_fleet(engine, e.owner_fleet_id, player_id) { return true; }
-            if let Some(f) = engine.fleets.get(&e.owner_fleet_id)
-                && player_has_fleet_at_sector(engine, player_id, f.location)
-            {
-                return true;
-            }
-            false
+        K::ShipDestroyed(e) => {
+            e.mine = named(&e.owner);
+            e.mine || in_sector(e.sector)
         }
-        iac_shared::protocol::EventKind::FleetDestroyed(e) => e.is_npc || is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::ScanCompleted(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::RaidIncoming(e) => e.player_id == player_id,
-        iac_shared::protocol::EventKind::RaidResolved(e) => e.player_id == player_id,
-        iac_shared::protocol::EventKind::SiteExplorationStarted(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::SiteExplored(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::SiteAmbush(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::PolicyAction(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::Alert(_) => true,
-    }
+        K::FleetDestroyed(e) => {
+            e.mine = named(&e.owner);
+            e.mine || in_sector(e.sector)
+        }
+        K::CombatStarted(e) => {
+            e.mine = e.owner == player.name;
+            e.mine || in_sector(e.sector)
+        }
+        K::CombatEnded(e) => {
+            e.mine = e.owners.contains(&player.name);
+            e.mine || in_sector(e.sector)
+        }
+        K::SalvageDespawned(e) => in_sector(e.sector),
+        K::SectorEntered(e) => own_fleet(e.fleet_id),
+        K::FleetArrived(e) => own_fleet(e.fleet_id),
+        K::ResourceHarvested(e) => own_fleet(e.fleet_id),
+        K::SalvageCollected(e) => own_fleet(e.fleet_id),
+        K::BuildingCompleted(e) => e.player_id.is_none_or(|p| p == player.id),
+        K::ResearchCompleted(e) => e.player_id.is_none_or(|p| p == player.id),
+        K::ShipBuilt(e) => e.player_id.is_none_or(|p| p == player.id),
+        K::ScanCompleted(e) => own_fleet(e.fleet_id),
+        K::RaidIncoming(e) => e.player_id == player.id,
+        K::RaidResolved(e) => e.player_id == player.id,
+        K::SiteExplorationStarted(e) => own_fleet(e.fleet_id),
+        K::SiteExplored(e) => own_fleet(e.fleet_id),
+        K::SiteAmbush(e) => own_fleet(e.fleet_id),
+        K::PolicyAction(e) => own_fleet(e.fleet_id),
+        K::Alert(e) => e.player_id.is_none_or(|p| p == player.id),
+    };
+    relevant.then_some(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::Database;
+    use iac_shared::constants::ShipClass;
     use serde_json::Value;
 
     fn network_with_player() -> (Network, Arc<Mutex<GameEngine>>, u64, u64, mpsc::UnboundedReceiver<Message>) {
@@ -1088,5 +949,163 @@ mod tests {
             command_error_message(&e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
             "Frigate Tech needs Research Lab level 1 (you have 0), Corvette Tech level 1 (you have 0) and Shipyard level 4 (you have 2)"
         );
+    }
+
+    fn fight_events(engine: &mut GameEngine, pid: u64, fid: u64, at: Hex) -> Vec<GameEvent> {
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        for ship in &mut engine.fleets.get_mut(&fid).unwrap().ships[..] {
+            ship.weapon_power = 5000.0;
+            ship.hull_max = 1e6;
+            ship.hull = 1e6;
+        }
+        engine.handle_attack(pid, fid, crate::engine::template_npc_id(at)).unwrap();
+        let mut events = engine.drain_events();
+        for _ in 0..5 {
+            engine.tick().unwrap();
+            events.extend(engine.drain_events());
+        }
+        events
+    }
+
+    fn is_combat_detail(e: &GameEvent) -> bool {
+        use iac_shared::protocol::EventKind as K;
+        matches!(
+            e.kind,
+            K::CombatRound(_) | K::CombatStarted(_) | K::CombatEnded(_) | K::ShipDestroyed(_) | K::FleetDestroyed(_)
+        )
+    }
+
+    #[test]
+    fn combat_reaches_only_the_players_involved_or_present() {
+        use iac_shared::protocol::EventKind as K;
+        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let a = engine.register_player("Alpha".to_string()).unwrap();
+        let b = engine.register_player("Bravo".to_string()).unwrap();
+        let c = engine.register_player("Charlie".to_string()).unwrap();
+        let d = engine.register_player("Delta".to_string()).unwrap();
+        let fleet_of = |e: &GameEngine, p: u64| e.fleets.values().find(|f| f.owner_id == p).unwrap().id;
+        let (fa, fc) = (fleet_of(&engine, a), fleet_of(&engine, c));
+
+        let at = (-20i16..20)
+            .flat_map(|q| (-20i16..20).map(move |r| Hex { q, r }))
+            .find(|&h| {
+                engine.world_gen.generate_sector(h).npc_template.is_some_and(|t| t.count == 1)
+                    && engine.derelict_site_at(h).is_none()
+                    && ![a, b, c, d].iter().any(|p| engine.players[p].homeworld == h)
+            })
+            .unwrap();
+        engine.fleets.get_mut(&fc).unwrap().location = at;
+        engine.players.get_mut(&d).unwrap().homeworld = at;
+        let events = fight_events(&mut engine, a, fa, at);
+        assert!(events.iter().any(|e| matches!(e.kind, K::CombatRound(_))), "a fight happened");
+        engine.fleets.get_mut(&fa).unwrap().location = engine.players[&a].homeworld;
+
+        let seen = |p: u64| -> Vec<GameEvent> {
+            let player = &engine.players[&p];
+            events.iter().filter_map(|e| event_for(e, player, &engine)).collect()
+        };
+
+        let alpha = seen(a);
+        assert!(alpha.iter().any(is_combat_detail));
+        for e in alpha.iter().filter(|e| is_combat_detail(e)) {
+            match &e.kind {
+                K::CombatRound(r) => assert!(r.mine && (r.attacker_owner.as_deref() == Some("Alpha") || r.target_owner.as_deref() == Some("Alpha"))),
+                K::CombatStarted(s) => assert!(s.mine && s.owner == "Alpha"),
+                K::CombatEnded(s) => assert!(s.mine),
+                K::ShipDestroyed(s) => assert!(!s.mine && s.owner.is_none(), "the destroyed ship was an NPC's"),
+                K::FleetDestroyed(s) => assert!(!s.mine && s.owner.is_none()),
+                _ => unreachable!(),
+            }
+        }
+
+        assert!(seen(b).iter().all(|e| !is_combat_detail(e)), "uninvolved player gets no combat detail");
+        assert!(seen(b).is_empty() || seen(b).iter().all(|e| !matches!(e.kind, K::Alert(_))));
+
+        // Charlie's fleet was in the sector, so the fight swept it in: the outcome is his too.
+        let charlie = seen(c);
+        assert!(charlie.iter().any(|e| matches!(&e.kind, K::CombatEnded(s) if s.mine && s.owners.len() == 2)));
+        assert!(charlie.iter().any(|e| matches!(&e.kind, K::CombatStarted(s) if !s.mine && s.owner == "Alpha")));
+
+        // Delta's homeworld sits in the sector with no fleet: a pure witness.
+        let delta = seen(d);
+        assert!(delta.iter().any(is_combat_detail), "homeworld presence is enough to see the fight");
+        assert!(delta.iter().filter(|e| is_combat_detail(e)).all(|e| match &e.kind {
+            K::CombatRound(r) => !r.mine,
+            K::CombatStarted(s) => !s.mine,
+            K::CombatEnded(s) => !s.mine,
+            K::ShipDestroyed(s) => !s.mine,
+            K::FleetDestroyed(s) => !s.mine,
+            _ => unreachable!(),
+        }), "witnessed fights are never flagged mine");
+    }
+
+    #[test]
+    fn a_players_own_loss_reaches_them_even_when_nobody_else_is_there() {
+        use iac_shared::protocol::{AlertLevel, EventKind as K};
+        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let a = engine.register_player("Alpha".to_string()).unwrap();
+        let b = engine.register_player("Bravo".to_string()).unwrap();
+        let fa = engine.fleets.values().find(|f| f.owner_id == a).unwrap().id;
+        let at = (-20i16..20)
+            .flat_map(|q| (-20i16..20).map(move |r| Hex { q, r }))
+            .find(|&h| {
+                engine.world_gen.generate_sector(h).npc_template.is_some_and(|t| {
+                    t.count == 1 && t.behavior != iac_shared::world::NpcBehaviorType::Passive
+                })
+            })
+            .unwrap();
+        engine.fleets.get_mut(&fa).unwrap().location = at;
+        for ship in &mut engine.fleets.get_mut(&fa).unwrap().ships[..] {
+            ship.hull = 0.5;
+            ship.shield = 0.0;
+        }
+        engine.handle_attack(a, fa, crate::engine::template_npc_id(at)).unwrap();
+        let mut events = engine.drain_events();
+        for _ in 0..8 {
+            engine.tick().unwrap();
+            events.extend(engine.drain_events());
+        }
+        // The fleet is reaped by now: routing must not need it.
+        assert!(!engine.fleets.contains_key(&fa));
+        let for_a: Vec<_> = events.iter().filter_map(|e| event_for(e, &engine.players[&a], &engine)).collect();
+        let lost = for_a.iter().find_map(|e| match &e.kind {
+            K::FleetDestroyed(d) if !d.is_npc => Some(d.clone()),
+            _ => None,
+        }).expect("owner is told");
+        assert!(lost.mine);
+        assert!(for_a.iter().any(|e| matches!(&e.kind, K::Alert(al) if matches!(al.level, AlertLevel::Critical))));
+        let for_b: Vec<_> = events.iter().filter_map(|e| event_for(e, &engine.players[&b], &engine)).collect();
+        assert!(for_b.is_empty(), "{for_b:?}");
+    }
+
+    #[test]
+    fn full_state_carries_stale_sectors_and_the_tick_only_new_ones() {
+        let (net, engine, pid, fid, mut rx) = network_with_player();
+        {
+            let mut e = engine.lock().unwrap();
+            e.handle_scan(pid, fid).unwrap();
+            e.tick().unwrap();
+        }
+        net.broadcast_updates().unwrap();
+        let live = next_message(&mut rx);
+        assert!(live["sector_updates"].as_array().unwrap().iter().all(|s| s["live"] == true));
+        let learned = live["sector_updates"].as_array().unwrap().len();
+
+        for _ in 0..(iac_shared::constants::SCAN_REVEAL_TICKS + 2) {
+            engine.lock().unwrap().tick().unwrap();
+        }
+        net.send_full_state(&net.sessions.lock().unwrap().get(&1).cloned().unwrap(), pid).unwrap();
+        let full = next_message(&mut rx);
+        let known = full["known_sectors"].as_array().unwrap();
+        assert_eq!(known.len(), learned.max(known.len()));
+        let stale: Vec<_> = known.iter().filter(|s| s["live"] == false).collect();
+        assert!(!stale.is_empty(), "scan-only sectors persist as stale");
+        assert!(stale.iter().all(|s| s["last_seen"].as_u64().unwrap() < full["tick"].as_u64().unwrap()));
+        assert!(known.len() >= learned, "nothing forgotten: {} < {learned}", known.len());
+
+        net.broadcast_updates().unwrap();
+        let tick = next_message(&mut rx);
+        let updates = tick["sector_updates"].as_array().unwrap();
+        assert!(updates.iter().all(|s| s["live"] == true), "settled stale sectors are not repeated");
     }
 }

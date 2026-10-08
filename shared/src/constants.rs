@@ -406,6 +406,14 @@ pub fn defense_grid_scout_units(level: u8) -> f32 {
 pub const SALVAGE_FRACTION: f32 = 0.30;
 pub const SALVAGE_DESPAWN_TICKS: u32 = 60;
 
+/// Ticks of harvesting summed into one `ResourceHarvested` event.
+pub const HARVEST_REPORT_TICKS: u64 = 10;
+
+/// NPC fleets that spawn from a sector's template get `base + sector key` as
+/// their id, so a sector view can name the hostile before it materialises and
+/// `attack` / `CombatStarted` use the same id. Real counter ids stay far below.
+pub const TEMPLATE_NPC_ID_BASE: u64 = 1 << 32;
+
 /// Derelict sites: content behind the "derelict transponder" signal.
 /// Boarding takes time, pays in loot (sometimes a recoverable ship or a
 /// tech cache), and risks waking whatever killed the crew.

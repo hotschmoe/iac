@@ -8,7 +8,11 @@ use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 
 use iac_shared::constants::{ShipClass, DAMAGE_VARIANCE_MIN, DAMAGE_VARIANCE_MAX};
-use iac_shared::protocol::GameEvent;
+use iac_shared::hex::Hex;
+use iac_shared::protocol::{
+    CombatRoundEvent, EventKind, FleetDestroyedEvent, GameEvent, ShipDestroyedEvent,
+};
+use iac_shared::Resources;
 
 use crate::engine::Ship;
 
@@ -38,11 +42,14 @@ impl From<&Ship> for CombatShip {
     }
 }
 
-#[allow(dead_code)]
 /// A single combat side (player fleet or NPC fleet).
 pub struct CombatSide {
     pub fleet_id: u64,
     pub is_npc: bool,
+    /// Owning empire's name; None for NPCs.
+    pub owner: Option<String>,
+    /// Wreckage this side leaves if it is destroyed by players.
+    pub salvage: Resources,
     pub ships: Vec<CombatShip>,
 }
 
@@ -64,7 +71,7 @@ pub struct CombatRoundResult {
 pub fn resolve_combat_round(
     player_sides: &[CombatSide],
     npc_sides: &[CombatSide],
-    npc_value: iac_shared::Resources,
+    sector: Hex,
     tick: u64,
     round: u32,
 ) -> CombatRoundResult {
@@ -95,7 +102,8 @@ pub fn resolve_combat_round(
         for ai in 0..player_ships[psi].len() {
             let attacker = player_ships[psi][ai];
             if attacker.hull <= 0.0 { continue; }
-            fire_ship(&attacker, &npc_targets, &mut npc_ships, npc_sides, tick, &mut rng, &mut events);
+            let shot = Shot { sector, tick, attacker_side: &player_sides[psi], target_sides: npc_sides };
+            fire_ship(&attacker, &shot, &npc_targets, &mut npc_ships, &mut rng, &mut events);
         }
     }
 
@@ -106,7 +114,8 @@ pub fn resolve_combat_round(
         for ai in 0..npc_ships[nsi].len() {
             let attacker = npc_ships[nsi][ai];
             if attacker.hull <= 0.0 { continue; }
-            fire_ship(&attacker, &player_targets, &mut player_ships, player_sides, tick, &mut rng, &mut events);
+            let shot = Shot { sector, tick, attacker_side: &npc_sides[nsi], target_sides: player_sides };
+            fire_ship(&attacker, &shot, &player_targets, &mut player_ships, &mut rng, &mut events);
         }
     }
 
@@ -122,34 +131,14 @@ pub fn resolve_combat_round(
     let any_npc_alive = npc_ships.iter().any(|s| !s.is_empty());
     let concluded = !any_player_alive || !any_npc_alive;
 
-    if concluded {
-        if !any_npc_alive {
-            for side in npc_sides.iter() {
-                events.push(GameEvent {
-                    tick,
-                    kind: iac_shared::protocol::EventKind::FleetDestroyed(
-                        iac_shared::protocol::FleetDestroyedEvent {
-                            fleet_id: side.fleet_id,
-                            is_npc: true,
-                            salvage: npc_value,
-                        },
-                    ),
-                });
-            }
+    if concluded && !any_npc_alive {
+        for side in npc_sides.iter() {
+            events.push(fleet_destroyed(tick, sector, side, side.salvage));
         }
-        for (i, side) in player_sides.iter().enumerate() {
-            if player_ships[i].is_empty() {
-                events.push(GameEvent {
-                    tick,
-                    kind: iac_shared::protocol::EventKind::FleetDestroyed(
-                        iac_shared::protocol::FleetDestroyedEvent {
-                            fleet_id: side.fleet_id,
-                            is_npc: false,
-                            salvage: iac_shared::Resources::default(),
-                        },
-                    ),
-                });
-            }
+    }
+    for (i, side) in player_sides.iter().enumerate() {
+        if !side.ships.is_empty() && player_ships[i].is_empty() {
+            events.push(fleet_destroyed(tick, sector, side, Resources::default()));
         }
     }
 
@@ -168,13 +157,20 @@ fn all_indices(ships: &[Vec<CombatShip>]) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// Who fires at whom, and where: the context every shot event needs.
+struct Shot<'a> {
+    sector: Hex,
+    tick: u64,
+    attacker_side: &'a CombatSide,
+    target_sides: &'a [CombatSide],
+}
+
 /// Fire one ship, chaining extra shots while rapid-fire rolls succeed.
 fn fire_ship(
     attacker: &CombatShip,
+    shot: &Shot,
     targets: &[(usize, usize)],
     target_ships: &mut [Vec<CombatShip>],
-    target_sides: &[CombatSide],
-    tick: u64,
     rng: &mut StdRng,
     events: &mut Vec<GameEvent>,
 ) {
@@ -185,19 +181,56 @@ fn fire_ship(
         let target = &mut target_ships[si][ti];
         let result = apply_damage(target, damage);
         let rapid = check_rapid_fire(attacker.ship_class, target.ship_class, rng);
+        let target_side = &shot.target_sides[si];
 
-        emit_combat_event(events, tick, attacker.id, target.id, damage, &result, rapid);
+        events.push(GameEvent {
+            tick: shot.tick,
+            kind: EventKind::CombatRound(CombatRoundEvent {
+                sector: shot.sector,
+                attacker_fleet_id: shot.attacker_side.fleet_id,
+                attacker_owner: shot.attacker_side.owner.clone(),
+                attacker_ship_id: attacker.id,
+                target_fleet_id: target_side.fleet_id,
+                target_owner: target_side.owner.clone(),
+                target_ship_id: target.id,
+                damage,
+                shield_absorbed: result.shield_absorbed,
+                hull_damage: result.hull_damage,
+                rapid_fire: rapid,
+                mine: false,
+            }),
+        });
 
         if target.hull <= 0.0 {
-            let target_id = target.id;
-            let target_class = target.ship_class;
-            emit_ship_destroyed(
-                events, tick, target_id, target_class,
-                target_sides[si].fleet_id, target_sides[si].is_npc,
-            );
+            events.push(GameEvent {
+                tick: shot.tick,
+                kind: EventKind::ShipDestroyed(ShipDestroyedEvent {
+                    ship_id: target.id,
+                    ship_class: target.ship_class,
+                    owner_fleet_id: target_side.fleet_id,
+                    is_npc: target_side.is_npc,
+                    sector: shot.sector,
+                    owner: target_side.owner.clone(),
+                    mine: false,
+                }),
+            });
         }
 
         if !rapid { break; }
+    }
+}
+
+fn fleet_destroyed(tick: u64, sector: Hex, side: &CombatSide, salvage: Resources) -> GameEvent {
+    GameEvent {
+        tick,
+        kind: EventKind::FleetDestroyed(FleetDestroyedEvent {
+            fleet_id: side.fleet_id,
+            is_npc: side.is_npc,
+            sector,
+            owner: side.owner.clone(),
+            mine: false,
+            salvage,
+        }),
     }
 }
 
@@ -256,49 +289,4 @@ fn check_rapid_fire(attacker_class: ShipClass, target_class: ShipClass, rng: &mu
 
 fn compact_ships(ships: &mut Vec<CombatShip>) {
     ships.retain(|s| s.hull > 0.0);
-}
-
-fn emit_combat_event(
-    events: &mut Vec<GameEvent>,
-    tick: u64,
-    attacker_id: u64,
-    target_id: u64,
-    damage: f32,
-    result: &DamageResult,
-    rapid: bool,
-) {
-    events.push(GameEvent {
-        tick,
-        kind: iac_shared::protocol::EventKind::CombatRound(
-            iac_shared::protocol::CombatRoundEvent {
-                attacker_ship_id: attacker_id,
-                target_ship_id: target_id,
-                damage,
-                shield_absorbed: result.shield_absorbed,
-                hull_damage: result.hull_damage,
-                rapid_fire: rapid,
-            },
-        ),
-    });
-}
-
-fn emit_ship_destroyed(
-    events: &mut Vec<GameEvent>,
-    tick: u64,
-    ship_id: u64,
-    ship_class: ShipClass,
-    fleet_id: u64,
-    is_npc: bool,
-) {
-    events.push(GameEvent {
-        tick,
-        kind: iac_shared::protocol::EventKind::ShipDestroyed(
-            iac_shared::protocol::ShipDestroyedEvent {
-                ship_id,
-                ship_class,
-                owner_fleet_id: fleet_id,
-                is_npc,
-            },
-        ),
-    });
 }

@@ -1,17 +1,22 @@
 {
   "events": [
     {
-      "amount": 24.5,
       "fleet_id": 1,
       "kind": "ResourceHarvested",
-      "resource_type": "Metal",
-      "tick": 4821
+      "resources": {
+        "crystal": 0.0,
+        "deuterium": 0.0,
+        "metal": 24.5
+      },
+      "tick": 4821,
+      "ticks": 10
     },
     {
       "fleet_id": 1,
       "kind": "Alert",
       "level": "Warning",
       "message": "Low fuel",
+      "player_id": 3,
       "sector": {
         "q": 3,
         "r": -2
@@ -844,6 +849,8 @@
           ]
         }
       ],
+      "last_seen": 4821,
+      "live": true,
       "location": {
         "q": 3,
         "r": -2
@@ -872,6 +879,7 @@
         "deuterium": 2.5,
         "metal": 40.0
       },
+      "salvage_despawn_tick": 4880,
       "site": {
         "risk": "uneasy",
         "tier": 2
@@ -880,6 +888,8 @@
     },
     {
       "connections": [],
+      "last_seen": 4821,
+      "live": true,
       "location": {
         "q": -1,
         "r": 0

@@ -3,6 +3,7 @@
   "kind": "Alert",
   "level": "Critical",
   "message": "Homeworld under attack",
+  "player_id": 1,
   "sector": {
     "q": 4,
     "r": -2

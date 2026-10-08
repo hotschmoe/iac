@@ -1,10 +1,6 @@
 {
-  "fleet_id": 9001,
-  "is_npc": true,
-  "kind": "FleetDestroyed",
-  "mine": false,
-  "owner": null,
-  "salvage": {
+  "kind": "SalvageDespawned",
+  "resources": {
     "crystal": 15.0,
     "deuterium": 9.0,
     "metal": 60.0

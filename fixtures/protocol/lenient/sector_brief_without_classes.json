@@ -4,6 +4,8 @@
     "sector_updates": [
       {
         "connections": [],
+        "last_seen": 9,
+        "live": true,
         "location": {
           "q": 1,
           "r": 1
@@ -38,6 +40,8 @@
     "sector_updates": [
       {
         "connections": [],
+        "last_seen": 9,
+        "live": true,
         "location": {
           "q": 1,
           "r": 1

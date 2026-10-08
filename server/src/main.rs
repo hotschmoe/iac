@@ -16,6 +16,7 @@ mod auth;
 mod combat;
 mod database;
 mod engine;
+mod intel;
 mod network;
 
 const TICK_PERIOD: Duration = Duration::from_secs(1);
@@ -118,6 +119,7 @@ async fn main() {
             _ = &mut shutdown => {
                 info!("Shutdown signal received, persisting final state...");
                 let mut engine = engine.lock().unwrap();
+                engine.checkpoint_known_sectors();
                 let saved = engine.persist_dirty_state().and_then(|_| engine.flush_persistence());
                 match saved {
                     Ok(()) => info!("Server shutdown complete."),

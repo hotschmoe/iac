@@ -1,7 +1,11 @@
 {
-  "amount": 12.25,
   "fleet_id": 1,
   "kind": "ResourceHarvested",
-  "resource_type": "Crystal",
-  "tick": 1234
+  "resources": {
+    "crystal": 6.0,
+    "deuterium": 0.0,
+    "metal": 12.25
+  },
+  "tick": 1234,
+  "ticks": 10
 }

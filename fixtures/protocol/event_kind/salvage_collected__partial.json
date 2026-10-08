@@ -1,10 +1,15 @@
 {
   "fleet_id": 1,
   "kind": "SalvageCollected",
+  "remaining": {
+    "crystal": 15.0,
+    "deuterium": 9.0,
+    "metal": 20.0
+  },
   "resources": {
     "crystal": 0.0,
-    "deuterium": 1.5,
-    "metal": 5.0
+    "deuterium": 0.0,
+    "metal": 40.0
   },
   "sector": {
     "q": 5,

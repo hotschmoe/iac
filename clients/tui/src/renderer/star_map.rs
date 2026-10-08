@@ -239,9 +239,8 @@ fn classify_hex(state: &ClientState, coord: Hex) -> HexCell {
 
     // Known sector: live intel renders at full heat, memory fades.
     if let Some(sector) = state.known_sectors.get(&key) {
-        let live = state.sector_is_live(key);
         let cell = classify_known(sector);
-        return if live { cell } else { HexCell { symbol: cell.symbol, style: fade(cell.style) } };
+        return if sector.live { cell } else { HexCell { symbol: cell.symbol, style: fade(cell.style) } };
     }
 
     // Scan pings: faint contacts in the fog, blinking until they expire.
@@ -358,7 +357,11 @@ fn inspect_line(state: &ClientState) -> (String, Style) {
     let dist = coord.dist_from_origin();
 
     if let Some(sector) = state.known_sectors.get(&key) {
-        let freshness = if state.sector_is_live(key) { "LIVE" } else { "CHART" };
+        let freshness = if sector.live {
+            "LIVE".to_string()
+        } else {
+            format!("CHART {}", age_label(state.tick.saturating_sub(sector.last_seen)))
+        };
         let mut line = format!(
             " ▣ [{},{}] {} d{}  {}  M:{} C:{} D:{}",
             coord.q, coord.r, freshness, dist,
@@ -394,4 +397,9 @@ fn inspect_line(state: &ClientState) -> (String, Style) {
         format!(" ▣ [{},{}] d{}  UNCHARTED", coord.q, coord.r, dist),
         AMBER_DIM,
     )
+}
+
+/// "42s ago" / "7m ago": how old a remembered sector's intel is (1 tick = 1 s).
+fn age_label(ticks: u64) -> String {
+    if ticks < 120 { format!("{ticks}s ago") } else { format!("{}m ago", ticks / 60) }
 }

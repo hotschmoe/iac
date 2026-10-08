@@ -1,7 +1,13 @@
 {
   "is_npc": true,
   "kind": "ShipDestroyed",
+  "mine": false,
+  "owner": null,
   "owner_fleet_id": 9001,
+  "sector": {
+    "q": 5,
+    "r": -5
+  },
   "ship_class": "Corvette",
   "ship_id": 22,
   "tick": 1234
