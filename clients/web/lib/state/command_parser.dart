@@ -60,7 +60,7 @@ const helpLines = [
   '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump>',
   '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research>',
   'fleets: f[leet] [n]  select/list   p[olicy] [manual|prospect|mine|salvage|patrol]  (no arg cycles)',
-  'other:  status  refresh  help      views: 1|cc  2|ws  3|map   TAB cycles fleets',
+  'other:  status  refresh  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
 ];
 
 const _dirs = {

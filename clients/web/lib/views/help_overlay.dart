@@ -57,6 +57,7 @@ class HelpOverlay extends StatelessWidget {
                   _bind('1 / cc', 'Command Center'),
                   _bind('2 / ws', 'Windshield'),
                   _bind('3 / map', 'Star Map'),
+                  _bind('4 / hw', 'Homeworld (build, ships, research)'),
                   _bind('TAB', 'Cycle fleets'),
                   _bind('ESC', 'Return to Command Center'),
                   _bind('?', 'Toggle this help'),
@@ -68,6 +69,15 @@ class HelpOverlay extends StatelessWidget {
                     _bind('+ / -', 'Zoom in / out'),
                     _bind('HOME', 'Center on fleet'),
                     _bind('ENTER', 'Fly 1 hop to cursor'),
+                  ],
+                  if (currentView == GameView.homeworld) ...[
+                    _section('HOMEWORLD'),
+                    _bind('Click / ENTER', 'Queue the card (build, ship, research)'),
+                    _bind('Arrows', 'Select a card'),
+                    _bind('[ / ]', 'Previous / next tab'),
+                    _bind('+ / -', 'Ship batch 1 / 5 / 10'),
+                    _bind('DEL / BKSP', 'Cancel this tab\'s queue'),
+                    _bind('b / research / ship', 'Command bar still works'),
                   ],
                   if (currentView == GameView.windshield) ...[
                     _section('WINDSHIELD'),

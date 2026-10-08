@@ -16,6 +16,8 @@ class BuildQueuePanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (queue.isEmpty)
+            Text('idle -- [4] Homeworld picks what to build', style: Amber.mono(size: 11, color: Amber.dim)),
           for (final item in queue) _buildItem(item),
         ],
       ),

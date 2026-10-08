@@ -7,10 +7,11 @@ import '../theme/crt_overlay.dart';
 import '../widgets/amber_text.dart';
 import 'command_center/command_center_view.dart';
 import 'help_overlay.dart';
+import 'homeworld/homeworld_view.dart';
 import 'star_map/star_map_view.dart';
 import 'windshield/windshield_view.dart';
 
-enum GameView { commandCenter, windshield, starMap }
+enum GameView { commandCenter, windshield, starMap, homeworld }
 
 class Shell extends StatefulWidget {
   final GameController controller;
@@ -70,6 +71,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
       '1' || 'cc' => GameView.commandCenter,
       '2' || 'ws' => GameView.windshield,
       '3' || 'map' || 'sm' => GameView.starMap,
+      '4' || 'hw' || 'home' => GameView.homeworld,
       _ => null,
     };
     if (view != null) {
@@ -133,8 +135,16 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
       _switchView(GameView.starMap);
       return KeyEventResult.handled;
     }
+    if (event.logicalKey == LogicalKeyboardKey.digit4) {
+      _switchView(GameView.homeworld);
+      return KeyEventResult.handled;
+    }
     if (event.logicalKey == LogicalKeyboardKey.escape) {
       _switchView(GameView.commandCenter);
+      return KeyEventResult.handled;
+    }
+
+    if (_currentView == GameView.homeworld && _handleHomeworldKey(event)) {
       return KeyEventResult.handled;
     }
 
@@ -205,6 +215,36 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
     }
 
     return KeyEventResult.ignored;
+  }
+
+  /// Homeworld keys: arrows pick a card, Enter queues it, [ ] switch tabs,
+  /// +/- change the ship batch, Delete/Backspace cancels the tab's queue.
+  bool _handleHomeworldKey(KeyEvent event) {
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      ctrl.moveHomeworldCursor(-1, 0);
+    } else if (key == LogicalKeyboardKey.arrowRight) {
+      ctrl.moveHomeworldCursor(1, 0);
+    } else if (key == LogicalKeyboardKey.arrowUp) {
+      ctrl.moveHomeworldCursor(0, -1);
+    } else if (key == LogicalKeyboardKey.arrowDown) {
+      ctrl.moveHomeworldCursor(0, 1);
+    } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+      ctrl.activateHomeworldCard();
+    } else if (key == LogicalKeyboardKey.delete || key == LogicalKeyboardKey.backspace) {
+      ctrl.cancelCurrentHomeworldQueue();
+    } else if (key == LogicalKeyboardKey.bracketLeft) {
+      ctrl.cycleHomeworldTab(-1);
+    } else if (key == LogicalKeyboardKey.bracketRight) {
+      ctrl.cycleHomeworldTab(1);
+    } else if (key == LogicalKeyboardKey.equal || key == LogicalKeyboardKey.add) {
+      ctrl.cycleShipBatch(1);
+    } else if (key == LogicalKeyboardKey.minus || key == LogicalKeyboardKey.numpadSubtract) {
+      ctrl.cycleShipBatch(-1);
+    } else {
+      return false;
+    }
+    return true;
   }
 
   @override
@@ -328,6 +368,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
           _tab('1', 'COMMAND CENTER', GameView.commandCenter),
           _tab('2', 'WINDSHIELD', GameView.windshield),
           _tab('3', 'STAR MAP', GameView.starMap),
+          _tab('4', 'HOMEWORLD', GameView.homeworld),
         ],
       ),
     );
@@ -387,6 +428,8 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
         return WindshieldView(controller: ctrl);
       case GameView.starMap:
         return StarMapView(controller: ctrl);
+      case GameView.homeworld:
+        return HomeworldView(controller: ctrl);
     }
   }
 
@@ -418,7 +461,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
             ),
           ),
           Text(
-            '[1]CC [2]WS [3]MAP | [h]arvest [a]ttack [v]scan [r]ecall [b]uild [f]leet | help',
+            '[1]CC [2]WS [3]MAP [4]HW | [h]arvest [a]ttack [v]scan [r]ecall [b]uild [f]leet | help',
             style: Amber.mono(size: 9, color: Amber.dim).copyWith(
               letterSpacing: 0.5,
             ),

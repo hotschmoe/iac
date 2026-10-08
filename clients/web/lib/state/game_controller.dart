@@ -23,6 +23,18 @@ enum MapZoom {
   const MapZoom(this.hexSize, this.radius);
 }
 
+enum HomeworldTab {
+  buildings('BUILDINGS'),
+  shipyard('SHIPYARD'),
+  research('RESEARCH');
+
+  final String label;
+  const HomeworldTab(this.label);
+}
+
+/// Ship batch sizes the homeworld view offers.
+const shipBatches = [1, 5, 10];
+
 enum LinkState { idle, connecting, live, reconnecting, demo }
 
 /// The server refused the login in a way the player can fix by typing a
@@ -94,6 +106,14 @@ class GameController extends ChangeNotifier {
   int mapOffsetX = 0;
   int mapOffsetY = 0;
   bool _cursorInit = false;
+
+  HomeworldTab hwTab = HomeworldTab.buildings;
+  int hwCursor = 0;
+  int shipBatch = shipBatches.first;
+
+  /// Cards per row in the homeworld grid; written by the view on layout so
+  /// up/down keys know the row length.
+  int hwColumns = 1;
 
   GameState get state => _state;
   bool get isLive => link == LinkState.live;
@@ -379,6 +399,115 @@ class GameController extends ChangeNotifier {
     mapZoom = zoom;
     notifyListeners();
   }
+
+  // ── Homeworld ─────────────────────────────────────────────────
+
+  int get hwCardCount {
+    final c = _state.catalog;
+    if (c == null) return 0;
+    return switch (hwTab) {
+      HomeworldTab.buildings => c.buildings.length,
+      HomeworldTab.shipyard => c.ships.length,
+      HomeworldTab.research => c.research.length,
+    };
+  }
+
+  void selectHomeworldTab(HomeworldTab tab) {
+    if (tab == hwTab) return;
+    hwTab = tab;
+    hwCursor = 0;
+    notifyListeners();
+  }
+
+  void cycleHomeworldTab(int delta) {
+    const n = 3;
+    selectHomeworldTab(HomeworldTab.values[(hwTab.index + delta + n) % n]);
+  }
+
+  /// Move the card selection by whole cards ([dx]) or whole rows ([dy]).
+  void moveHomeworldCursor(int dx, int dy) {
+    final n = hwCardCount;
+    if (n == 0) return;
+    hwCursor = (hwCursor + dx + dy * hwColumns).clamp(0, n - 1);
+    notifyListeners();
+  }
+
+  void selectHomeworldCard(int index) {
+    hwCursor = index;
+    notifyListeners();
+  }
+
+  void setShipBatch(int n) {
+    if (!shipBatches.contains(n) || n == shipBatch) return;
+    shipBatch = n;
+    notifyListeners();
+  }
+
+  void cycleShipBatch(int delta) {
+    final i = shipBatches.indexOf(shipBatch);
+    setShipBatch(shipBatches[(i + delta).clamp(0, shipBatches.length - 1)]);
+  }
+
+  /// Queue the card at [index] (the selection by default). Locked and
+  /// maxed cards are answered locally; the server stays the judge of
+  /// everything else, including whether the player can pay.
+  void activateHomeworldCard([int? index]) {
+    final c = _state.catalog;
+    final i = index ?? hwCursor;
+    if (c == null || i < 0 || i >= hwCardCount) return;
+    hwCursor = i;
+
+    final List<proto.Requirement> requires;
+    final bool maxed;
+    final String name;
+    final proto.Command command;
+    final String echo;
+    switch (hwTab) {
+      case HomeworldTab.buildings:
+        final o = c.buildings[i];
+        requires = o.requires;
+        maxed = o.next == null;
+        name = o.buildingType.label;
+        command = proto.BuildCommand(buildingType: o.buildingType);
+        echo = 'build ${o.buildingType.label}';
+      case HomeworldTab.research:
+        final o = c.research[i];
+        requires = o.requires;
+        maxed = o.next == null;
+        name = o.tech.label;
+        command = proto.ResearchCommand(tech: o.tech);
+        echo = 'research ${o.tech.label}';
+      case HomeworldTab.shipyard:
+        final o = c.ships[i];
+        requires = o.requires;
+        maxed = false;
+        name = o.shipClass.label;
+        command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
+        echo = 'ship ${o.shipClass.label} x$shipBatch';
+    }
+
+    final unmet = [for (final r in requires) if (!r.met) r.label];
+    if (unmet.isNotEmpty) {
+      note('$name is locked: needs ${unmet.join(', ')}', level: EventLevel.bright);
+    } else if (maxed) {
+      note('$name is already at its maximum level', level: EventLevel.bright);
+    } else {
+      note('> $echo', level: EventLevel.full);
+      sendCommand(command);
+    }
+  }
+
+  void cancelHomeworldQueue(proto.QueueType queue) {
+    note('> cancel ${queue.name}', level: EventLevel.full);
+    sendCommand(proto.CancelBuildCommand(queueType: queue));
+  }
+
+  /// Cancel the queue that belongs to the open homeworld tab.
+  void cancelCurrentHomeworldQueue() => cancelHomeworldQueue(switch (hwTab) {
+        HomeworldTab.buildings => proto.QueueType.building,
+        HomeworldTab.shipyard => proto.QueueType.ship,
+        HomeworldTab.research => proto.QueueType.research,
+      });
 
   // ── Commands ──────────────────────────────────────────────────
 

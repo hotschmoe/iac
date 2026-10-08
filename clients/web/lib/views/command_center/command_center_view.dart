@@ -24,7 +24,7 @@ class CommandCenterView extends StatelessWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
           child: Text(
-            "DEFAULT VIEW -- HOMEWORLD MANAGEMENT & FLEET OVERVIEW -- THE ADMIRAL'S DESK",
+            "DEFAULT VIEW -- FLEET OVERVIEW -- THE ADMIRAL'S DESK -- [4] HOMEWORLD TO BUILD, SHIP & RESEARCH",
             style: Amber.mono(size: 9, color: Amber.dim).copyWith(
               letterSpacing: 1,
             ),

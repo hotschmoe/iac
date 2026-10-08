@@ -31,7 +31,7 @@ void main() {
     expect(c.isDemo, isTrue);
     expect(c.state.fleets.length, 3);
 
-    for (final cmd in ['2', '3', '1']) {
+    for (final cmd in ['2', '3', '4', '1']) {
       await tester.enterText(find.byType(TextField), cmd);
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pump(const Duration(milliseconds: 200));
