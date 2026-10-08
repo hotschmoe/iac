@@ -44,7 +44,7 @@ class StarMapPainter extends CustomPainter {
   static const _danger = Color(0xFFFF6B35);
 
   /// Chart memory is drawn at this fraction of live brightness.
-  static const _staleDim = 0.45;
+  static const _staleDim = 0.6;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -217,7 +217,7 @@ class StarMapPainter extends CustomPainter {
           }
           if (stale && !isFleetHere && !isHome && !isRegion) {
             drawMapText(canvas, ageLabel(tick - sec.lastSeen), px, py + hexSize * 0.45, 7,
-                _amberFull.withValues(alpha: 0.3),
+                _amberFull.withValues(alpha: 0.45),
                 center: true);
           }
         } else if (signal != null) {
