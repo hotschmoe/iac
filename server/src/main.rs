@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,6 +23,15 @@ struct Args {
     #[arg(short, long, default_value_t = DEFAULT_PORT)]
     port: u16,
 
+    /// Address to bind (use 0.0.0.0 for LAN play)
+    #[arg(long, default_value = DEFAULT_HOST)]
+    host: String,
+
+    /// Directory with the built Flutter web client to serve over HTTP
+    /// (default: clients/web/build/web if it exists)
+    #[arg(long)]
+    web_dir: Option<PathBuf>,
+
     /// World seed (hex or decimal)
     #[arg(short, long)]
     seed: Option<u64>,
@@ -41,7 +51,7 @@ async fn main() {
     info!("====================================================");
     info!("  IN AMBER CLAD - Server v0.1.0");
     info!("====================================================");
-    info!("Host:       {}", DEFAULT_HOST);
+    info!("Host:       {}", args.host);
     info!("Port:       {}", args.port);
     info!("World seed: 0x{:X}", world_seed);
     info!("Tick rate:  1 Hz");
@@ -52,8 +62,28 @@ async fn main() {
     let engine = GameEngine::init(world_seed, db).expect("Failed to initialize engine");
     let engine = Arc::new(Mutex::new(engine));
 
+    let web_dir = match args.web_dir.clone() {
+        Some(d) if d.join("index.html").is_file() => Some(d),
+        Some(d) => {
+            warn!("--web-dir {} has no index.html; serving WebSocket only", d.display());
+            None
+        }
+        None => {
+            let d = PathBuf::from("clients/web/build/web");
+            if d.join("index.html").is_file() {
+                Some(d)
+            } else {
+                info!("No web client build found; WebSocket only. Build it with: scripts/play.sh (or `cd clients/web && flutter build web --release`)");
+                None
+            }
+        }
+    };
+    if let Some(d) = &web_dir {
+        info!("Web dir:    {} (http://{}:{}/)", d.display(), args.host, args.port);
+    }
+
     let network = Network::init(args.port, Arc::clone(&engine));
-    network.start_listening().await.expect("Failed to start WebSocket server");
+    network.start_listening(&args.host, web_dir).await.expect("Failed to start WebSocket server");
 
     // Signal handling: SIGINT (ctrl-c) and SIGTERM (docker stop / systemd)
     // both trigger a final persist before exit.

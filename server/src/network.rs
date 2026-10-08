@@ -1,14 +1,23 @@
-// WebSocket server with tokio-tungstenite.
+// HTTP/WebSocket server (axum). WebSocket upgrades are accepted on any path
+// (the TUI connects to `/`, the web client to `/ws`); plain GETs are served
+// from the optional static web dir with SPA fallback.
 // Session management, message routing, state broadcasting.
 // Ported from Zig network.zig.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use std::path::PathBuf;
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
+use axum::extract::{Request, State};
+use axum::http::{header, HeaderName, HeaderValue};
+use axum::response::{IntoResponse, Response};
+use axum::Router;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
-use tokio::net::TcpStream;
+use tower_http::services::{ServeDir, ServeFile};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use log::{info, warn};
@@ -21,7 +30,7 @@ use iac_shared::protocol::{
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
     GameEvent,
 };
-use iac_shared::constants::{ShipClass, DEFAULT_HOST};
+use iac_shared::constants::ShipClass;
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 
 use crate::engine::{GameEngine, FleetStatus, SectorOverride};
@@ -73,63 +82,29 @@ impl Network {
         }
     }
 
-    pub async fn start_listening(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let addr = format!("{}:{}", DEFAULT_HOST, self.port);
+    pub async fn start_listening(
+        &self,
+        host: &str,
+        web_dir: Option<PathBuf>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let addr = format!("{}:{}", host, self.port);
         let listener = TcpListener::bind(&addr).await?;
-        info!("WebSocket server listening on {}", addr);
+        info!("HTTP/WebSocket server listening on {} (ws://{}/ws)", addr, addr);
 
-        let sessions = Arc::clone(&self.sessions);
-        let next_session_id = Arc::clone(&self.next_session_id);
-        let incoming_tx = self.incoming_tx.clone();
+        let state = HttpState {
+            sessions: Arc::clone(&self.sessions),
+            next_session_id: Arc::clone(&self.next_session_id),
+            incoming_tx: self.incoming_tx.clone(),
+            static_dir: web_dir.map(|dir| {
+                let index = dir.join("index.html");
+                ServeDir::new(dir).fallback(ServeFile::new(index))
+            }),
+        };
+        let app = Router::new().fallback(handle_request).with_state(state);
 
         tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => {
-                        let session_id = {
-                            let mut nsid = next_session_id.lock().unwrap();
-                            let id = *nsid;
-                            *nsid += 1;
-                            id
-                        };
-
-                        let ws_stream = match tokio_tungstenite::accept_async(stream).await {
-                            Ok(ws) => ws,
-                            Err(e) => {
-                                warn!("WebSocket handshake failed: {}", e);
-                                continue;
-                            }
-                        };
-                        let (ws_write, ws_read) = ws_stream.split();
-
-                        let (tx, rx) = mpsc::unbounded_channel();
-                        tokio::spawn(writer_task(ws_write, rx));
-
-                        let session = ClientSession {
-                            id: session_id,
-                            sender: Some(tx),
-                            player_id: None,
-                            authenticated: false,
-                            client_type: ClientType::Unknown,
-                        };
-
-                        sessions.lock().unwrap().insert(session_id, session);
-                        info!("Client connected (session {})", session_id);
-
-                        // Spawn reader task
-                        let sessions_clone = Arc::clone(&sessions);
-                        let incoming_tx_clone = incoming_tx.clone();
-                        tokio::spawn(reader_task(
-                            session_id,
-                            ws_read,
-                            sessions_clone,
-                            incoming_tx_clone,
-                        ));
-                    }
-                    Err(e) => {
-                        warn!("Accept error: {}", e);
-                    }
-                }
+            if let Err(e) = axum::serve(listener, app).await {
+                warn!("HTTP server stopped: {}", e);
             }
         });
 
@@ -383,7 +358,7 @@ impl Network {
 // ── WebSocket I/O Tasks ───────────────────────────────────────────
 
 async fn writer_task(
-    mut ws: SplitSink<WebSocketStream<TcpStream>, Message>,
+    mut ws: SplitSink<WebSocket, Message>,
     mut rx: mpsc::UnboundedReceiver<Message>,
 ) {
     while let Some(msg) = rx.recv().await {
@@ -396,7 +371,7 @@ async fn writer_task(
 
 async fn reader_task(
     session_id: u64,
-    mut ws: SplitStream<WebSocketStream<TcpStream>>,
+    mut ws: SplitStream<WebSocket>,
     sessions: Arc<Mutex<HashMap<u64, ClientSession>>>,
     incoming_tx: mpsc::UnboundedSender<QueuedMessage>,
 ) {
@@ -434,6 +409,70 @@ async fn reader_task(
             info!("Client disconnected (session {}, player {:?})", session_id, session.player_id);
         }
     }
+}
+
+// ── HTTP transport ────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct HttpState {
+    sessions: Arc<Mutex<HashMap<u64, ClientSession>>>,
+    next_session_id: Arc<Mutex<u64>>,
+    incoming_tx: mpsc::UnboundedSender<QueuedMessage>,
+    static_dir: Option<ServeDir<ServeFile>>,
+}
+
+/// Single entry point for every path: WebSocket upgrades (any path) become
+/// game sessions; everything else is static files, if a web dir is configured.
+async fn handle_request(
+    State(state): State<HttpState>,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+    req: Request,
+) -> Response {
+    if let Ok(ws) = ws {
+        return ws.on_upgrade(move |socket| run_session(socket, state));
+    }
+    let Some(mut dir) = state.static_dir else {
+        return (axum::http::StatusCode::NOT_FOUND, "iac-server: WebSocket only (no web dir configured)\n")
+            .into_response();
+    };
+    let mut resp = match dir.try_call(req).await {
+        Ok(r) => r.into_response(),
+        Err(e) => {
+            warn!("Static file error: {}", e);
+            return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let h = resp.headers_mut();
+    // Always revalidate (ServeDir sends Last-Modified, so this is cheap) so
+    // a rebuilt client is picked up without a hard refresh.
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    // Cross-origin isolation, needed by Flutter wasm (multi-threaded renderer).
+    h.insert(HeaderName::from_static("cross-origin-opener-policy"), HeaderValue::from_static("same-origin"));
+    h.insert(HeaderName::from_static("cross-origin-embedder-policy"), HeaderValue::from_static("require-corp"));
+    resp
+}
+
+async fn run_session(socket: WebSocket, state: HttpState) {
+    let session_id = {
+        let mut nsid = state.next_session_id.lock().unwrap();
+        let id = *nsid;
+        *nsid += 1;
+        id
+    };
+    let (ws_write, ws_read) = socket.split();
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(writer_task(ws_write, rx));
+
+    state.sessions.lock().unwrap().insert(session_id, ClientSession {
+        id: session_id,
+        sender: Some(tx),
+        player_id: None,
+        authenticated: false,
+        client_type: ClientType::Unknown,
+    });
+    info!("Client connected (session {})", session_id);
+
+    reader_task(session_id, ws_read, state.sessions, state.incoming_tx).await;
 }
 
 // ── State Builders ────────────────────────────────────────────────

@@ -157,7 +157,11 @@ cargo run -p iac-client -- --name Admiral
 cargo run -p iac-client -- --headless --name Agent   # NDJSON on stdin/stdout
 
 cd clients/web && flutter pub get && flutter analyze
+scripts/play.sh                   # build web client + serve it and WS on one port (0.0.0.0:7777)
+cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web   # same, without rebuilding
 ```
+
+The server serves static files (SPA fallback, COOP/COEP headers) and WebSockets (any path; `/ws` for web, `/` for TUI) on one port.
 
 Flutter lives at `~/development/flutter/bin` on the dev machine.
 

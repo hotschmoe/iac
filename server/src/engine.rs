@@ -3393,7 +3393,7 @@ mod tests {
         assert_eq!(policy.work_sector, Some(engine.fleets[&fid].location));
 
         engine.handle_policy_update(pid, fid, PolicyPreset::Manual, None).expect("clear");
-        assert!(engine.policies.get(&fid).is_none(), "manual clears orders");
+        assert!(!engine.policies.contains_key(&fid), "manual clears orders");
 
         let events = engine.drain_events();
         let policy_events: Vec<_> = events.iter()
