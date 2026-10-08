@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../hex/hex_math.dart';
 import '../../models/fleet.dart';
 import '../../models/game_state.dart';
 import '../../theme/amber_theme.dart';
@@ -77,7 +78,7 @@ class WindshieldSidebar extends StatelessWidget {
   }
 
   Widget _cargoPanel() {
-    final fuelBars = (fleet.fuel / fleet.fuelMax * 10).round();
+    final fuelBars = (fleet.fuel / fleet.fuelMax * 10).round().clamp(0, 10);
     return AmberPanel(
       title: 'CARGO & FUEL',
       child: Column(
@@ -132,13 +133,9 @@ class WindshieldSidebar extends StatelessWidget {
               ]),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.only(left: 4),
-            child: Text(
-              '~${fleet.fuel ~/ 15} jumps remaining',
-              style: Amber.mono(size: 11, color: Amber.dim),
-            ),
-          ),
+          const SizedBox(height: 4),
+          LabeledRow(label: 'Cooldown', value: '${fleet.cooldown}', valueColor: Amber.normal),
+          LabeledRow(label: 'Policy', value: fleet.policy ?? 'manual', valueColor: Amber.normal),
         ],
       ),
     );
@@ -168,6 +165,8 @@ class WindshieldSidebar extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           LabeledRow(label: 'Exits', value: sector.exits, valueColor: Amber.normal),
+          LabeledRow(label: 'Salvage', value: sector.salvage, valueColor: Amber.normal),
+          LabeledRow(label: 'Derelict', value: sector.site, valueColor: Amber.normal),
         ],
       ),
     );

@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../../hex/world_gen.dart';
+import '../../hex/hex_math.dart';
 import '../../models/fleet.dart';
 import '../../models/game_state.dart';
-import '../../models/sector.dart';
+import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
 import '../../theme/amber_theme.dart';
 import '../../widgets/amber_panel.dart';
@@ -16,12 +16,13 @@ class StarMapSidebar extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = controller.state;
     final cursor = controller.cursorHex;
-    final sec = getSectorData(cursor.q, cursor.r);
+    final sec = controller.sectorAt(cursor);
+    final signal = state.signals[cursor];
 
     return SingleChildScrollView(
       child: Column(
         children: [
-          _cursorPanel(sec),
+          _cursorPanel(sec, signal),
           _waypointsPanel(state.waypoints),
           _fleetsPanel(state.fleets, controller.activeFleet),
         ],
@@ -29,7 +30,8 @@ class StarMapSidebar extends StatelessWidget {
     );
   }
 
-  Widget _cursorPanel(SectorState sec) {
+  Widget _cursorPanel(proto.SectorState? sec, proto.SignalKind? signal) {
+    final hostiles = sec?.hostiles?.fold<int>(0, (n, h) => n + h.shipCount) ?? 0;
     return AmberPanel(
       title: 'CURSOR',
       child: Column(
@@ -37,27 +39,38 @@ class StarMapSidebar extends StatelessWidget {
         children: [
           LabeledRow(label: 'Sector', value: '${controller.cursorHex}', valueColor: Amber.full),
           LabeledRow(label: 'Zone', value: controller.cursorHex.zone, valueColor: Amber.normal),
-          LabeledRow(label: 'Dist', value: '${sec.dist} from hub', valueColor: Amber.normal),
+          LabeledRow(label: 'Dist', value: '${controller.cursorHex.distFromOrigin} from hub', valueColor: Amber.normal),
           const SizedBox(height: 6),
-          if (sec.explored) ...[
+          if (sec != null) ...[
             LabeledRow(label: 'Terrain', value: sec.terrain.label, valueColor: Amber.normal),
             LabeledRow(
               label: 'Metal',
-              value: sec.resMetal.label,
-              valueColor: sec.resMetal.index >= 3 ? Amber.bright : Amber.normal,
+              value: sec.resources.metal.label,
+              valueColor: sec.resources.metal.index >= 3 ? Amber.bright : Amber.normal,
             ),
-            LabeledRow(label: 'Crystal', value: sec.resCrystal.label, valueColor: Amber.normal),
-            LabeledRow(label: 'Deut', value: sec.resDeut.label, valueColor: Amber.dim),
+            LabeledRow(label: 'Crystal', value: sec.resources.crystal.label, valueColor: Amber.normal),
+            LabeledRow(label: 'Deut', value: sec.resources.deuterium.label, valueColor: Amber.dim),
             const SizedBox(height: 6),
             LabeledRow(
               label: 'Threat',
-              value: sec.hasHostile ? '${sec.hostileCount} MLM hostiles' : 'Clear',
-              valueColor: sec.hasHostile ? Amber.danger : Amber.dim,
+              value: hostiles > 0 ? '$hostiles hostile ships' : 'Clear',
+              valueColor: hostiles > 0 ? Amber.danger : Amber.dim,
             ),
+            LabeledRow(label: 'Exits', value: '${sec.connections.length} of 6', valueColor: Amber.normal),
+            if (sec.site != null)
+              LabeledRow(
+                label: 'Derelict',
+                value: 'tier ${sec.site!.tier} ${sec.site!.risk.label}',
+                valueColor: Amber.bright,
+              ),
+            if (sec.salvage != null && sec.salvage!.total > 0)
+              LabeledRow(label: 'Salvage', value: '${sec.salvage!.total.round()}', valueColor: Amber.normal),
           ] else ...[
             Text('UNEXPLORED', style: Amber.mono(size: 11, color: Amber.faint)),
+            if (signal != null)
+              Text('Contact: ${signal.label}', style: Amber.mono(size: 11, color: Amber.bright)),
             Text(
-              'Fog of war -- send a\nfleet to reveal.',
+              'Fog of war -- send a\nfleet or scan (v).',
               style: Amber.mono(size: 11, color: Amber.dim),
             ),
           ],
@@ -96,7 +109,7 @@ class StarMapSidebar extends StatelessWidget {
             ),
           const SizedBox(height: 6),
           Text(
-            'Routes calculated from\nexplored paths only.',
+            'Lanes shown are the ones\nthe server has revealed.',
             style: Amber.mono(size: 11, color: Amber.dim),
           ),
         ],

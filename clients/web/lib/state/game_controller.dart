@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:iac_shared/iac_shared.dart' as shared;
 
-import '../hex/hex_math.dart';
+import '../models/fleet.dart';
 import '../models/game_state.dart';
-import '../models/hex.dart';
+import '../models/homeworld.dart';
+import '../models/resources.dart';
+import '../protocol/protocol.dart' as proto;
+import 'command_parser.dart';
 import 'connection_provider.dart';
 import 'demo_provider.dart';
 import 'state_mapper.dart';
@@ -20,88 +22,252 @@ enum MapZoom {
   const MapZoom(this.hexSize, this.radius);
 }
 
-/// Drives the UI from either the live Dart server or offline demo mode.
+enum LinkState { idle, connecting, live, reconnecting, demo }
+
+/// Drives the UI from either the live Rust server or the offline demo.
+/// Both feed the same protocol messages into one [StateMapper].
 class GameController extends ChangeNotifier {
   final GameConnection connection = GameConnection();
   final StateMapper _mapper = StateMapper();
   DemoProvider? _demo;
-  StreamSubscription? _msgSub;
-  StreamSubscription? _statusSub;
+  StreamSubscription<proto.ServerMessage>? _msgSub;
+  StreamSubscription<ConnectionStatus>? _statusSub;
+  Timer? _retry;
+  int _retryDelaySec = 2;
+  bool _disposed = false;
 
-  GameState _state = createDemoState();
-  bool live = false;
-  bool connecting = false;
+  ConnectParams? _params;
+  String playerName = '';
+
+  LinkState link = LinkState.idle;
   String? connectionError;
-  String playerName = 'Admiral';
-  String? wsUrl;
+  bool _authed = false;
+
+  GameState _state = GameState(
+    tick: 0,
+    clockSec: 0,
+    resources: _zeroRes,
+    fleets: const [],
+    buildQueue: const [],
+    shipyard: const [],
+    docked: 'none',
+    research: const ResearchState(name: 'Idle', time: '—', pct: 0, completed: []),
+    events: const [],
+    alerts: const [],
+    sector: SectorInfo.unknown,
+    homeworld: proto.Hex.origin,
+    waypoints: const [],
+  );
+
+  static const _zeroRes = Resources(
+    metal: ResourceStock(amount: 0, rate: 0),
+    crystal: ResourceStock(amount: 0, rate: 0),
+    deut: ResourceStock(amount: 0, rate: 0),
+  );
 
   int activeFleet = 0;
-  Hex cursorHex = const Hex(4, -2);
+  proto.Hex cursorHex = proto.Hex.origin;
   MapZoom mapZoom = MapZoom.sector;
   int mapOffsetX = 0;
   int mapOffsetY = 0;
-
-  /// Server fleet ids parallel to UI fleets list.
-  List<int> _fleetIds = [];
+  bool _cursorInit = false;
 
   GameState get state => _state;
-  bool get isLive => live && connection.connected;
+  bool get isLive => link == LinkState.live;
+  bool get isDemo => link == LinkState.demo;
+  bool get hasState => _mapper.hasState;
 
-  Future<void> start({String? url, String name = 'Admiral'}) async {
+  String get linkLabel => switch (link) {
+        LinkState.idle => 'OFFLINE',
+        LinkState.connecting => 'CONNECTING',
+        LinkState.live => 'LIVE SERVER',
+        LinkState.reconnecting => 'RECONNECTING',
+        LinkState.demo => 'DEMO',
+      };
+
+  /// The selected fleet, or a placeholder docked at home when there is none
+  /// (e.g. every fleet was lost) so views never index an empty list.
+  FleetState get currentFleet {
+    if (activeFleet >= 0 && activeFleet < _state.fleets.length) return _state.fleets[activeFleet];
+    return FleetState(
+      id: 0,
+      name: '—',
+      sector: _state.homeworld,
+      status: FleetStatus.docked,
+      shipCount: 0,
+    );
+  }
+
+  /// Server fleet id of the selected fleet (from state, never hard-coded).
+  int? get activeFleetId {
+    if (activeFleet < 0 || activeFleet >= _state.fleets.length) return null;
+    return _state.fleets[activeFleet].id;
+  }
+
+  proto.SectorState? sectorAt(proto.Hex h) => _state.sectors[h];
+
+  // ── Connection lifecycle ──────────────────────────────────────
+
+  /// Connect to the server; on failure fall back to demo mode and keep
+  /// retrying in the background.
+  Future<void> start({required ConnectParams params, required String name}) async {
+    _params = params;
     playerName = name;
-    wsUrl = url ?? GameConnection.defaultUrl();
-    connecting = true;
+    _retry?.cancel();
+    link = LinkState.connecting;
     connectionError = null;
     notifyListeners();
+    await _connect();
+  }
 
+  /// Skip the server entirely.
+  void startDemo() {
+    _retry?.cancel();
+    connection.disconnect();
+    connectionError = null;
+    _enterDemo();
+  }
+
+  Future<void> _connect() async {
+    final p = _params!;
+    _authed = false;
     try {
-      await connection.connect(wsUrl!);
-      _msgSub?.cancel();
+      connection.onProtocolError = (e) {
+        _mapper.pushLog('Protocol error: $e', EventLevel.bright);
+        _refresh();
+      };
+      await connection.connect(p.url);
+      await _msgSub?.cancel();
       _msgSub = connection.messages.listen(_onServerMessage);
-      _statusSub?.cancel();
-      _statusSub = connection.status.listen((s) {
-        if (s == ConnectionStatus.disconnected || s == ConnectionStatus.error) {
-          if (live) {
-            connectionError = 'Disconnected from server';
-            live = false;
-            _fallbackDemo();
-            notifyListeners();
-          }
-        }
-      });
-
-      connection.auth(playerName);
-      // Wait briefly for full_state; if nothing, fall back to demo
-      await Future<void>.delayed(const Duration(milliseconds: 800));
-      if (!live) {
-        // Still waiting — keep connection open; full_state may arrive late
-        connecting = false;
-        // Optimistic: if authenticated, mark live on first full_state
-        notifyListeners();
-      } else {
-        connecting = false;
-        notifyListeners();
-      }
+      await _statusSub?.cancel();
+      _statusSub = connection.status.listen(_onStatus);
+      connection.auth(playerName, token: p.token);
+      // No fixed wait: the first full_state flips us to LIVE; an
+      // auth_result with success=false (or a socket close) reports failure.
     } catch (e) {
-      connectionError = 'Server unavailable ($e) — demo mode';
-      connecting = false;
-      live = false;
-      _fallbackDemo();
-      notifyListeners();
+      connectionError = 'Server unavailable at ${p.url}';
+      _fallbackToDemo();
+      _scheduleRetry();
     }
   }
 
-  void _fallbackDemo() {
-    _demo?.stop();
-    _demo = DemoProvider((s) {
-      _state = s;
+  void _onStatus(ConnectionStatus s) {
+    if (s != ConnectionStatus.disconnected && s != ConnectionStatus.error) return;
+    switch (link) {
+      case LinkState.live:
+        // Keep the last state on screen, retry in the background.
+        connectionError = 'Disconnected from server';
+        link = LinkState.reconnecting;
+        _scheduleRetry();
+        notifyListeners();
+      case LinkState.connecting:
+        connectionError = 'Connection closed before login completed';
+        _fallbackToDemo();
+        _scheduleRetry();
+      case LinkState.demo:
+        _scheduleRetry(); // a background retry attempt was cut short
+      case LinkState.reconnecting || LinkState.idle:
+        break;
+    }
+  }
+
+  /// Offline fallback; never clobbers a live (reconnecting) view or an
+  /// already-running demo.
+  void _fallbackToDemo() {
+    if (link == LinkState.reconnecting || link == LinkState.demo) {
       notifyListeners();
+      return;
+    }
+    _enterDemo();
+  }
+
+  void _scheduleRetry() {
+    _retry?.cancel();
+    if (_disposed || _params == null) return;
+    _retry = Timer(Duration(seconds: _retryDelaySec), () async {
+      if (_disposed) return;
+      _retryDelaySec = (_retryDelaySec * 2).clamp(2, 15);
+      if (link == LinkState.reconnecting) notifyListeners();
+      await _connect();
     });
-    _state = _demo!.state;
+  }
+
+  void _enterDemo() {
+    _demo?.stop();
+    _mapper.reset();
+    link = LinkState.demo;
+    _demo = DemoProvider(_onDemoMessages);
+    _mapper.apply(_demo!.initial());
     _demo!.start();
+    _cursorInit = false;
+    _refresh();
+  }
+
+  void _leaveDemo() {
+    _demo?.stop();
+    _demo = null;
+  }
+
+  void _onDemoMessages(List<proto.ServerMessage> msgs) {
+    for (final m in msgs) {
+      _mapper.apply(m);
+    }
+    _refresh();
+  }
+
+  void _onServerMessage(proto.ServerMessage msg) {
+    switch (msg) {
+      case proto.AuthResult(:final success, :final message):
+        if (!success) {
+          // Not retried: a rejected login will not fix itself.
+          connectionError = 'Auth failed: ${message ?? 'unknown'}';
+          _retry?.cancel();
+          connection.disconnect();
+          if (link == LinkState.reconnecting) link = LinkState.connecting;
+          _fallbackToDemo();
+          return;
+        }
+        _authed = true;
+      case proto.GameState():
+        if (!_authed) return;
+        if (link != LinkState.live) {
+          _leaveDemo();
+          _mapper.reset();
+          link = LinkState.live;
+          connectionError = null;
+          _retryDelaySec = 2;
+          _cursorInit = false;
+        }
+        _mapper.apply(msg);
+      default:
+        if (link != LinkState.live) return; // ignore strays before full_state
+        _mapper.apply(msg);
+    }
+    _refresh();
+  }
+
+  void _refresh() {
+    final prevId = activeFleetId;
+    final n = _mapper.fleets.length;
+    activeFleet = n == 0 ? 0 : activeFleet.clamp(0, n - 1);
+    _state = _mapper.toUiState(activeFleet: activeFleet);
+    // Keep the selected fleet selected when the list order changes.
+    if (prevId != null && activeFleetId != prevId) {
+      final i = _state.fleets.indexWhere((f) => f.id == prevId);
+      if (i >= 0) {
+        activeFleet = i;
+        _state = _mapper.toUiState(activeFleet: activeFleet);
+      }
+    }
+    if (!_cursorInit && _mapper.hasState) {
+      cursorHex = currentFleet.sector;
+      _cursorInit = true;
+    }
+    notifyListeners();
   }
 
   void stop() {
+    _retry?.cancel();
     _demo?.stop();
     _msgSub?.cancel();
     _statusSub?.cancel();
@@ -110,65 +276,27 @@ class GameController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     stop();
     connection.dispose();
     super.dispose();
   }
 
-  void _onServerMessage(shared.ServerMessage msg) {
-    switch (msg) {
-      case shared.AuthResult(:final success, :final message):
-        if (!success) {
-          connectionError = message ?? 'Auth failed';
-          live = false;
-          _fallbackDemo();
-        }
-      case shared.FullState():
-        live = true;
-        connecting = false;
-        connectionError = null;
-        _demo?.stop();
-        _demo = null;
-        _mapper.applyFull(msg);
-        _syncFromMapper();
-      case shared.TickUpdate():
-        if (!live) {
-          live = true;
-          connecting = false;
-          _demo?.stop();
-          _demo = null;
-        }
-        _mapper.applyTick(msg);
-        _syncFromMapper();
-      case shared.ErrorMessage():
-        _mapper.applyError(msg);
-        _syncFromMapper();
-      case shared.GameEvent():
-        _mapper.ingestSharedEvent(msg);
-        _syncFromMapper();
-    }
+  // ── Map UI ────────────────────────────────────────────────────
+
+  void cycleFleet() {
+    if (_state.fleets.isEmpty) return;
+    selectFleet((activeFleet + 1) % _state.fleets.length);
   }
 
-  void _syncFromMapper() {
-    _state = _mapper.toUiState();
-    _fleetIds = _mapper.fleets.map((f) => f.id).toList();
-    if (_fleetIds.isNotEmpty) {
-      activeFleet = activeFleet.clamp(0, _fleetIds.length - 1);
-      final f = _mapper.fleets[activeFleet];
-      cursorHex = Hex(f.location.q, f.location.r);
-    } else if (_mapper.player != null) {
-      cursorHex = Hex(_mapper.player!.homeworld.q, _mapper.player!.homeworld.r);
-    }
-    notifyListeners();
+  void selectFleet(int index) {
+    if (index < 0 || index >= _state.fleets.length) return;
+    activeFleet = index;
+    cursorHex = currentFleet.sector;
+    mapOffsetX = 0;
+    mapOffsetY = 0;
+    _refresh();
   }
-
-  int? get activeFleetId {
-    if (_fleetIds.isEmpty) return null;
-    if (activeFleet < 0 || activeFleet >= _fleetIds.length) return null;
-    return _fleetIds[activeFleet];
-  }
-
-  // ── Map UI ──────────────────────────────────────────────────────
 
   void panMap(int dx, int dy) {
     mapOffsetX += dx;
@@ -177,30 +305,29 @@ class GameController extends ChangeNotifier {
   }
 
   void moveCursor(int dq, int dr) {
-    cursorHex = Hex(cursorHex.q + dq, cursorHex.r + dr);
+    cursorHex = proto.Hex(cursorHex.q + dq, cursorHex.r + dr);
     notifyListeners();
   }
 
   void recenterMap() {
     mapOffsetX = 0;
     mapOffsetY = 0;
+    cursorHex = currentFleet.sector;
     notifyListeners();
   }
 
   void zoomIn() {
-    const zooms = MapZoom.values;
-    final idx = zooms.indexOf(mapZoom);
+    final idx = MapZoom.values.indexOf(mapZoom);
     if (idx > 0) {
-      mapZoom = zooms[idx - 1];
+      mapZoom = MapZoom.values[idx - 1];
       notifyListeners();
     }
   }
 
   void zoomOut() {
-    const zooms = MapZoom.values;
-    final idx = zooms.indexOf(mapZoom);
-    if (idx < zooms.length - 1) {
-      mapZoom = zooms[idx + 1];
+    final idx = MapZoom.values.indexOf(mapZoom);
+    if (idx < MapZoom.values.length - 1) {
+      mapZoom = MapZoom.values[idx + 1];
       notifyListeners();
     }
   }
@@ -210,193 +337,91 @@ class GameController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Commands ────────────────────────────────────────────────────
+  // ── Commands ──────────────────────────────────────────────────
 
+  /// Log a line locally (client-side feedback, not from the server).
+  void note(String msg, {EventLevel level = EventLevel.normal}) {
+    _mapper.pushLog(msg, level);
+    _refresh();
+  }
+
+  /// Send a client message to the server (or the demo).
+  void send(proto.ClientMessage msg) {
+    if (isLive) {
+      connection.send(msg);
+    } else if (isDemo && _demo != null) {
+      _onDemoMessages(_demo!.handle(msg));
+    } else {
+      note('Not connected -- command dropped', level: EventLevel.bright);
+    }
+  }
+
+  void sendCommand(proto.Command c) => send(proto.CommandMessage(c));
+
+  /// Windshield: fly the active fleet one hop in [direction] (0-5, same
+  /// order as [proto.HexDirection]) if the server lists that lane.
   void moveFleet(int direction) {
     if (direction < 0 || direction >= 6) return;
-    final fleet = _state.fleets[activeFleet.clamp(0, _state.fleets.length - 1)];
-    final dir = Hex.directions[direction];
-    final nq = fleet.sector.q + dir.q;
-    final nr = fleet.sector.r + dir.r;
-    if (!getEdge(fleet.sector.q, fleet.sector.r, nq, nr)) return;
-
-    if (isLive) {
-      final id = activeFleetId;
-      if (id == null) return;
-      connection.sendCommand(
-        shared.MoveCommand(
-          fleetId: id,
-          target: shared.Hex(nq, nr),
-        ),
-      );
-      return;
-    }
-
-    // Offline demo local move
-    final newSector = Hex(nq, nr);
-    final newFleets = List.of(_state.fleets);
-    newFleets[activeFleet] = newFleets[activeFleet].copyWith(sector: newSector);
-    cursorHex = newSector;
-    _state = _state.copyWith(
-      fleets: newFleets,
-      events: [
-        GameEvent(
-          tick: _state.tick,
-          message: 'Fleet ${fleet.name} moved to [$nq,$nr]',
-          level: EventLevel.normal,
-        ),
-        ..._state.events,
-      ].take(12).toList(),
-    );
-    notifyListeners();
-  }
-
-  void handleCommand(String cmd) {
-    cmd = cmd.trim().toLowerCase();
-    if (cmd.isEmpty) return;
-
-    if (isLive) {
-      _handleLiveCommand(cmd);
-      return;
-    }
-
-    final responses = <String, String>{
-      'help':
-          'Commands: [1-3]view  [h]arvest  [a]ttack  [b]uild  [r]esearch  [f]leet  [p]olicy  help',
-      'harvest': 'Fleet harvesting (demo)',
-      'h': 'Fleet harvesting (demo)',
-      'attack': 'No hostiles (demo)',
-      'a': 'No hostiles (demo)',
-      'build': 'Build queue (demo)',
-      'b': 'Build queue (demo)',
-      'fleet': 'Fleet status (demo)',
-      'f': 'Fleet status (demo)',
-      'recall': 'Emergency recall (demo)',
-      'r': 'Research (demo)',
-      'research': 'Research (demo)',
-      'status':
-          'Tick ${_state.tick} | Metal ${_state.resources.metal.amount}',
-    };
-    final response =
-        responses[cmd] ?? 'Unknown command: "$cmd". Type "help" for commands.';
-    _state = _state.copyWith(
-      events: [
-        GameEvent(tick: _state.tick, message: response, level: EventLevel.normal),
-        GameEvent(tick: _state.tick, message: '> $cmd', level: EventLevel.full),
-        ..._state.events,
-      ].take(12).toList(),
-    );
-    notifyListeners();
-  }
-
-  void _handleLiveCommand(String cmd) {
     final id = activeFleetId;
-    void note(String msg) {
-      _mapper.pushLocalEvent(
-        GameEvent(tick: _mapper.tick, message: msg, level: EventLevel.normal),
-      );
-      _syncFromMapper();
+    if (id == null) {
+      note('No fleet to move', level: EventLevel.bright);
+      return;
     }
+    final target = currentFleet.sector.neighbor(proto.HexDirection.values[direction]);
+    if (!_connected(currentFleet.sector, target)) {
+      note('No lane ${proto.HexDirection.values[direction].label} from ${currentFleet.sector}');
+      return;
+    }
+    sendCommand(proto.MoveCommand(fleetId: id, target: target));
+  }
 
-    note('> $cmd');
+  /// Star map: fly one hop to the cursor sector (must be an adjacent lane).
+  void moveToCursor() {
+    final id = activeFleetId;
+    if (id == null) {
+      note('No fleet to move', level: EventLevel.bright);
+      return;
+    }
+    final from = currentFleet.sector;
+    if (!_connected(from, cursorHex)) {
+      note('Cursor $cursorHex is not a lane from $from (moves are one hop)');
+      return;
+    }
+    sendCommand(proto.MoveCommand(fleetId: id, target: cursorHex));
+  }
 
-    switch (cmd) {
-      case 'help':
-        note(
-          'Live: harvest/h | attack/a | build metal|crystal|shipyard|… | '
-          'research fuel|hull|… | ship scout|corvette | recall | stop | status',
-        );
-      case 'h':
-      case 'harvest':
-        if (id != null) {
-          connection.sendCommand(shared.HarvestCommand(fleetId: id));
+  bool _connected(proto.Hex from, proto.Hex to) =>
+      sectorAt(from)?.connections.contains(to) ?? false;
+
+  /// Command-bar entry.
+  void handleCommand(String text) {
+    final cmd = text.trim();
+    if (cmd.isEmpty) return;
+    note('> $cmd', level: EventLevel.full);
+
+    final ctx = CommandContext(
+      fleetId: activeFleetId,
+      fleetSector: activeFleetId == null ? null : currentFleet.sector,
+      sectors: _state.sectors,
+      fleets: _mapper.fleets,
+      cursor: cursorHex,
+      tick: _mapper.tick,
+    );
+    final result = parseCommand(cmd, ctx);
+    switch (result) {
+      case ParsedSend(:final messages):
+        for (final m in messages) {
+          send(m);
         }
-      case 'a':
-      case 'attack':
-        if (id != null) {
-          // Attack synthetic hostile id 0 → server spawns from template
-          connection.sendCommand(
-            shared.AttackCommand(fleetId: id, targetFleetId: 0),
-          );
+      case ParsedLocal(:final lines):
+        for (final l in lines.reversed) {
+          note(l); // log is newest-first, so reverse to read top-down
         }
-      case 'recall':
-        if (id != null) {
-          connection.sendCommand(shared.RecallCommand(fleetId: id));
-        }
-      case 'stop':
-        connection.sendCommand(const shared.StopCommand());
-      case 'status':
-        note(
-          'Tick ${_mapper.tick} | '
-          'M${_mapper.player?.resources.metal.toStringAsFixed(0)} '
-          'C${_mapper.player?.resources.crystal.toStringAsFixed(0)} '
-          'D${_mapper.player?.resources.deuterium.toStringAsFixed(0)}',
-        );
-      case 'f':
-      case 'fleet':
-        final names = _mapper.fleets
-            .map((f) => '${f.name ?? f.id}@${f.location} ${f.state.wireName}')
-            .join(' | ');
-        note(names.isEmpty ? 'No fleets' : names);
-      case 'b':
-      case 'build':
-        connection.sendCommand(
-          const shared.BuildCommand(
-            buildingType: shared.BuildingType.metalMine,
-          ),
-        );
-      case 'build metal':
-        connection.sendCommand(
-          const shared.BuildCommand(
-            buildingType: shared.BuildingType.metalMine,
-          ),
-        );
-      case 'build crystal':
-        connection.sendCommand(
-          const shared.BuildCommand(
-            buildingType: shared.BuildingType.crystalMine,
-          ),
-        );
-      case 'build shipyard':
-        connection.sendCommand(
-          const shared.BuildCommand(
-            buildingType: shared.BuildingType.shipyard,
-          ),
-        );
-      case 'build lab':
-      case 'build research':
-        connection.sendCommand(
-          const shared.BuildCommand(
-            buildingType: shared.BuildingType.researchLab,
-          ),
-        );
-      case 'build deut':
-        connection.sendCommand(
-          const shared.BuildCommand(
-            buildingType: shared.BuildingType.deuteriumSynthesizer,
-          ),
-        );
-      case 'r':
-      case 'research':
-        connection.sendCommand(
-          const shared.ResearchCommand(
-            tech: shared.ResearchType.fuelEfficiency,
-          ),
-        );
-      case 'ship scout':
-        connection.sendCommand(
-          const shared.BuildShipCommand(shipClass: shared.ShipClass.scout),
-        );
-      case 'ship corvette':
-        connection.sendCommand(
-          const shared.BuildShipCommand(shipClass: shared.ShipClass.corvette),
-        );
-      default:
-        if (cmd.startsWith('build ')) {
-          note('Try: build metal|crystal|deut|shipyard|lab');
-        } else {
-          note('Unknown: "$cmd" — type help');
-        }
+      case ParsedSelectFleet(:final index):
+        selectFleet(index);
+        note('Active fleet: ${currentFleet.name} at ${currentFleet.sector}');
+      case ParsedError(:final message):
+        note(message, level: EventLevel.bright);
     }
   }
 }

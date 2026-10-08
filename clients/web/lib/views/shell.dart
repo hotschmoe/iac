@@ -94,7 +94,22 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
         _cmdFocus.unfocus();
         return KeyEventResult.handled;
       }
+      if (event.logicalKey == LogicalKeyboardKey.tab) {
+        ctrl.cycleFleet();
+        return KeyEventResult.handled;
+      }
       return KeyEventResult.ignored;
+    }
+
+    if (event.logicalKey == LogicalKeyboardKey.tab) {
+      ctrl.cycleFleet();
+      return KeyEventResult.handled;
+    }
+
+    // Star map: fly one hop to the cursor
+    if (_currentView == GameView.starMap && event.logicalKey == LogicalKeyboardKey.enter) {
+      ctrl.moveToCursor();
+      return KeyEventResult.handled;
     }
 
     // View switching
@@ -254,7 +269,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
               ),
               const SizedBox(width: 12),
               Text(
-                ctrl.isLive ? 'LIVE' : 'DEMO',
+                ctrl.linkLabel,
                 style: Amber.mono(
                   size: 9,
                   color: ctrl.isLive ? Amber.full : Amber.dim,
@@ -386,7 +401,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
             ),
           ),
           Text(
-            '[1]CC [2]WS [3]MAP | [h]arvest [a]ttack [b]uild [r]esearch [f]leet | [?]help',
+            '[1]CC [2]WS [3]MAP | [h]arvest [a]ttack [v]scan [r]ecall [b]uild [f]leet | help',
             style: Amber.mono(size: 9, color: Amber.dim).copyWith(
               letterSpacing: 0.5,
             ),

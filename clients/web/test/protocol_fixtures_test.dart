@@ -101,13 +101,10 @@ void main() {
       test(baseName(f), () {
         final doc = readJson(f) as Map<String, dynamic>;
         final input = doc['input'];
-        final Object? out = switch (doc['type']) {
+        final out = switch (doc['type']) {
           'Command' => Command.fromJson(input).toJson(),
           'ClientMessage' => ClientMessage.fromJson(input).toJson(),
-          'ServerMessage' => switch (ServerMessage.fromJson(input)) {
-              GameEvent e => e.toJson(),
-              final m => m.toJson(),
-            },
+          'ServerMessage' => ServerMessage.fromJson(input).toJson(),
           final t => fail('unknown lenient type $t'),
         };
         expect(jsonEq(wire(out), doc['canonical']), isTrue, reason: 'in ${jsonEncode(input)} out ${jsonEncode(out)}');
@@ -116,7 +113,7 @@ void main() {
   });
 
   group('enums', () {
-    final enums = readJson(File('${fixturesDir().path}/protocol/enums.json')) as Map<String, dynamic>;
+    final Map<String, dynamic> enums = readJson(File('${fixturesDir().path}/protocol/enums.json')) as Map<String, dynamic>;
 
     void check<T>(String name, T Function(Object?) from, Object? Function(T) to) {
       test(name, () {

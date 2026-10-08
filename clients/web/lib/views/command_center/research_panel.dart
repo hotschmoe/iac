@@ -31,18 +31,6 @@ class ResearchPanel extends StatelessWidget {
           const SizedBox(height: 4),
           ProgressRow(pct: research.pct),
           const SizedBox(height: 4),
-          RichText(
-            text: TextSpan(children: [
-              TextSpan(
-                text: '  Fragments: ',
-                style: Amber.mono(size: 11, color: Amber.dim),
-              ),
-              TextSpan(
-                text: '${research.fragments} required',
-                style: Amber.mono(size: 11, color: Amber.normal),
-              ),
-            ]),
-          ),
           const SizedBox(height: 8),
           Text('Completed:', style: Amber.mono(size: 11, color: Amber.dim)),
           const SizedBox(height: 2),

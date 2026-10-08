@@ -1,11 +1,13 @@
-import 'hex.dart';
+import '../protocol/hex.dart';
 
 enum FleetStatus {
   docked('DOCKED'),
+  idle('IDLE'),
   enRoute('EN ROUTE'),
   harvesting('HARVESTING'),
   combat('COMBAT'),
-  returning('RETURNING');
+  returning('RETURNING'),
+  exploring('EXPLORING');
 
   final String label;
   const FleetStatus(this.label);
@@ -44,7 +46,10 @@ class FleetCargo {
   double get fraction => capacity > 0 ? total / capacity : 0;
 }
 
+/// Presentation model of one of the player's fleets. [id] is the server's
+/// fleet id (commands are addressed with it).
 class FleetState {
+  final int id;
   final String name;
   final Hex sector;
   final FleetStatus status;
@@ -55,8 +60,11 @@ class FleetState {
   final FleetCargo cargo;
   final int fuel;
   final int fuelMax;
+  final int cooldown;
+  final String? policy;
 
   const FleetState({
+    required this.id,
     required this.name,
     required this.sector,
     required this.status,
@@ -64,27 +72,10 @@ class FleetState {
     this.cargoPercent = 0,
     this.fuelPercent = 100,
     this.ships = const [],
-    this.cargo = const FleetCargo(capacity: 280),
-    this.fuel = 500,
-    this.fuelMax = 500,
+    this.cargo = const FleetCargo(capacity: 1),
+    this.fuel = 0,
+    this.fuelMax = 1,
+    this.cooldown = 0,
+    this.policy,
   });
-
-  FleetState copyWith({
-    Hex? sector,
-    FleetStatus? status,
-    int? cargoPercent,
-    int? fuelPercent,
-  }) =>
-      FleetState(
-        name: name,
-        sector: sector ?? this.sector,
-        status: status ?? this.status,
-        shipCount: shipCount,
-        cargoPercent: cargoPercent ?? this.cargoPercent,
-        fuelPercent: fuelPercent ?? this.fuelPercent,
-        ships: ships,
-        cargo: cargo,
-        fuel: fuel,
-        fuelMax: fuelMax,
-      );
 }

@@ -1,16 +1,17 @@
 import 'dart:ui';
 
+import '../protocol/protocol.dart' as proto;
 import 'fleet.dart';
-import 'hex.dart';
 import 'homeworld.dart';
 import 'resources.dart';
 
-class GameEvent {
+/// One line of the event log.
+class LogEntry {
   final int tick;
   final String message;
   final EventLevel level;
 
-  const GameEvent({
+  const LogEntry({
     required this.tick,
     required this.message,
     required this.level,
@@ -31,7 +32,7 @@ class Alert {
   final String icon;
   final String message;
   final String detail;
-  final AlertLevel level;
+  final AlertTone level;
 
   const Alert({
     required this.icon,
@@ -41,14 +42,14 @@ class Alert {
   });
 }
 
-enum AlertLevel {
+enum AlertTone {
   glow(Color(0xFFFFB000)),
   bright(Color(0xD9FFB000)),
   normal(Color(0x99FFB000)),
   dim(Color(0x4DFFB000));
 
   final Color color;
-  const AlertLevel(this.color);
+  const AlertTone(this.color);
 }
 
 class SectorInfo {
@@ -59,6 +60,8 @@ class SectorInfo {
   final String hostile;
   final String adjacent;
   final String exits;
+  final String salvage;
+  final String site;
 
   const SectorInfo({
     required this.terrain,
@@ -68,12 +71,24 @@ class SectorInfo {
     required this.hostile,
     required this.adjacent,
     required this.exits,
+    this.salvage = '—',
+    this.site = '—',
   });
+
+  static const unknown = SectorInfo(
+    terrain: 'Unknown',
+    metal: '—',
+    crystal: '—',
+    deut: '—',
+    hostile: '—',
+    adjacent: '—',
+    exits: '—',
+  );
 }
 
 class Waypoint {
   final String id;
-  final Hex coord;
+  final proto.Hex coord;
   final String note;
 
   const Waypoint({
@@ -92,11 +107,18 @@ class GameState {
   final List<QueueItem> shipyard;
   final String docked;
   final ResearchState research;
-  final List<GameEvent> events;
+  final List<LogEntry> events;
   final List<Alert> alerts;
   final SectorInfo sector;
-  final Hex homeworld;
+  final proto.Hex homeworld;
   final List<Waypoint> waypoints;
+
+  /// Every sector the server has told us about, keyed by location.
+  /// Absent = unexplored. Connections come from here (server-authoritative).
+  final Map<proto.Hex, proto.SectorState> sectors;
+
+  /// Faint scan contacts in not-yet-explored sectors.
+  final Map<proto.Hex, proto.SignalKind> signals;
 
   const GameState({
     required this.tick,
@@ -112,6 +134,8 @@ class GameState {
     required this.sector,
     required this.homeworld,
     required this.waypoints,
+    this.sectors = const {},
+    this.signals = const {},
   });
 
   String get clockDisplay {
@@ -132,11 +156,13 @@ class GameState {
     List<QueueItem>? shipyard,
     String? docked,
     ResearchState? research,
-    List<GameEvent>? events,
+    List<LogEntry>? events,
     List<Alert>? alerts,
     SectorInfo? sector,
-    Hex? homeworld,
+    proto.Hex? homeworld,
     List<Waypoint>? waypoints,
+    Map<proto.Hex, proto.SectorState>? sectors,
+    Map<proto.Hex, proto.SignalKind>? signals,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -152,5 +178,7 @@ class GameState {
         sector: sector ?? this.sector,
         homeworld: homeworld ?? this.homeworld,
         waypoints: waypoints ?? this.waypoints,
+        sectors: sectors ?? this.sectors,
+        signals: signals ?? this.signals,
       );
 }

@@ -1110,7 +1110,7 @@ class ResearchItem {
 
 // ── Events ────────────────────────────────────────────────────────
 
-/// {"tick": n, "kind": "<EventKind>", ...kind fields}. Also a ServerMessage
+/// {"tick": n, "kind": "PascalCaseVariant", ...kind fields}. Also a ServerMessage
 /// when sent standalone: {"type":"event", "tick":..., "kind":..., ...}.
 class GameEvent extends ServerMessage {
   final int tick;
