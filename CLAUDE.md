@@ -140,9 +140,10 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling, hex math, worldgen |
-| `server/` | `iac-server`: engine, combat, network, SQLite (tests in `server/tests/smoke.rs`) |
+| `server/` | `iac-server`: engine, combat, network, SQLite (tests in `server/tests/`: `smoke.rs` game flow, `web.rs` static hosting + WS paths) |
 | `clients/tui/` | `iac-client`: ratatui TUI, `--headless` NDJSON mode |
-| `clients/web/` | Flutter web client; still speaks the old Dart-server protocol (local `packages/iac_shared`), to be rewired to the Rust wire protocol |
+| `clients/web/` | Flutter web client on the Rust wire protocol (`lib/protocol/` mirrors `shared/src/protocol.rs`) |
+| `fixtures/` | Golden JSON generated from `shared/`; checked by Rust and Flutter tests |
 | `docs/` | Design docs; `PORTING.md` and `journal.md` are the Rust dev log |
 | `SPEC.md` | Original technical spec (Zig era; the Rust wire protocol has intentionally diverged) |
 
@@ -156,8 +157,10 @@ cargo run -p iac-server           # port 7777, iac_world.db
 cargo run -p iac-client -- --name Admiral
 cargo run -p iac-client -- --headless --name Agent   # NDJSON on stdin/stdout
 
-cd clients/web && flutter pub get && flutter analyze
-scripts/play.sh                   # build web client + serve it and WS on one port (0.0.0.0:7777)
+UPDATE_FIXTURES=1 cargo test -p iac-shared   # regenerate fixtures/ after a protocol change
+
+cd clients/web && flutter pub get && flutter analyze && flutter test
+scripts/play.sh                   # build web client + serve it and WS on one port (0.0.0.0:${PORT:-7777})
 cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web   # same, without rebuilding
 ```
 
@@ -171,11 +174,11 @@ Flutter lives at `~/development/flutter/bin` on the dev machine.
 Server (Rust, tokio)       Clients
   Tick loop (1Hz) --> WebSocket JSON --> TUI client (ratatui)
   SQLite (state)  --> WebSocket JSON --> headless/LLM client (NDJSON)
-                  --> WebSocket JSON --> Flutter web client (in progress)
+                  --> WebSocket JSON --> Flutter web client (served by the same port)
 ```
 
 - Server runs the authoritative simulation at 1 tick/second; clients send commands and receive `full_state` / `tick_update`.
-- Wire protocol types are defined once in `shared/` and used by server and TUI; the Flutter client must be kept in sync by hand.
+- Wire protocol types are defined once in `shared/` and used by server and TUI. The Flutter client mirrors them by hand in `clients/web/lib/protocol/`; `fixtures/` catches drift on both sides, so a protocol change means: edit Rust, regenerate fixtures, fix Dart until `flutter test` passes.
 - Only modified sectors persisted; unvisited sectors generated from the world seed.
 
 ### Key Concepts

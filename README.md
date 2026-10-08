@@ -13,7 +13,7 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | `shared/` | `iac-shared`: protocol, constants, scaling, hex math, world generation |
 | `server/` | `iac-server`: authoritative engine, combat, WebSocket network, SQLite persistence |
 | `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
-| `clients/web/` | Flutter web client (amber CRT UI) - in progress, see below |
+| `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server` |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
 | `SPEC.md` | Original technical specification (world model, combat, economy, networking) |
 
@@ -23,7 +23,7 @@ One command, browser play (builds the Flutter web client, then serves it and
 the WebSocket from the server on one port, printing the LAN URL):
 
 ```sh
-scripts/play.sh              # wasm build, falls back to JS; --js / --no-build available
+scripts/play.sh              # wasm build, falls back to JS; --js / --no-build; PORT=7777 default
 ```
 
 Or manually:
@@ -104,14 +104,32 @@ Presets: `manual` (clears orders), `prospect` (scan + push the frontier),
 `params` is optional. Every autopilot act emits a `PolicyAction` event with a
 human-readable `reason` — an audit trail for agents (and captains).
 
-## Web client (in progress)
+## Web client
 
-`clients/web/` is a Flutter web app with the amber CRT look (windshield, star map, command center, demo mode). It was written against a Dart server's protocol, not the Rust wire protocol, so it currently runs in demo mode only. Rewiring it to the Rust server is the next step. It keeps a local copy of the old protocol package at `clients/web/packages/iac_shared` until then.
+`clients/web/` is a Flutter web app with the amber CRT look: command center,
+windshield and star map, driven by a command bar (`help` lists commands) and
+hotkeys (`1`/`2`/`3` views, numpad 1-6 to move, Esc leaves the bar). It speaks
+the Rust wire protocol over `/ws` on the page's own host and port.
+
+- `?name=Admiral` skips the name prompt (same name resumes the same empire);
+  `?token=...` is optional; `?ws=ws://host:port/ws` points at another server.
+- If the server is unreachable it falls back to an offline DEMO mode and keeps
+  retrying in the background.
 
 ```sh
-cd clients/web && flutter pub get && flutter analyze
-flutter run -d chrome
+cd clients/web && flutter pub get && flutter analyze && flutter test
+flutter run -d chrome   # dev UI; append ?ws=ws://localhost:7777/ws to reach a running server
 ```
+
+### Protocol fixtures
+
+`fixtures/` holds golden JSON generated from the Rust types in `shared/`:
+every `ClientMessage`, `Command`, `ServerMessage` and `EventKind` variant plus
+hex math results. `shared/tests/golden_fixtures.rs` fails if the Rust types
+drift from them (regenerate with `UPDATE_FIXTURES=1 cargo test -p iac-shared`),
+and the Flutter tests round-trip every fixture and check hex math cell by cell.
+Change the Rust protocol, regenerate, then fix the Dart side until
+`flutter test` passes.
 
 ## The game
 
