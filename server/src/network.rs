@@ -848,6 +848,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
         shipyard_queue,
         research_active,
         docked_ships,
+        catalog: iac_shared::protocol::HomeworldCatalog::new(&player.buildings, &player.research),
     }
 }
 
@@ -1031,5 +1032,25 @@ mod tests {
             "advertised production must equal the stockpile change");
         assert!((grown.crystal - before.crystal - prod["crystal"].as_f64().unwrap() as f32).abs() < 1e-3);
         assert!((grown.deuterium - before.deuterium - prod["deuterium"].as_f64().unwrap() as f32).abs() < 1e-3);
+    }
+
+    #[test]
+    fn homeworld_catalog_tracks_levels() {
+        let (net, engine, pid, _fid, mut rx) = network_with_player();
+        net.broadcast_updates().unwrap();
+        let update = next_message(&mut rx);
+        let mine = &update["homeworld_update"]["catalog"]["buildings"][0];
+        assert_eq!(mine["building_type"], "MetalMine");
+        assert_eq!(mine["level"], 1);
+        assert_eq!(mine["next"]["level"], 2);
+        let yard = &update["homeworld_update"]["catalog"]["buildings"][3];
+        assert_eq!(yard["requires"][0]["met"], false);
+
+        engine.lock().unwrap().players.get_mut(&pid).unwrap().buildings.metal_mine = 2;
+        net.broadcast_updates().unwrap();
+        let update = next_message(&mut rx);
+        let catalog = &update["homeworld_update"]["catalog"];
+        assert_eq!(catalog["buildings"][0]["level"], 2);
+        assert_eq!(catalog["buildings"][3]["requires"][0]["met"], true);
     }
 }

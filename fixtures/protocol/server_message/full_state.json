@@ -135,6 +135,514 @@
         "level": 7
       }
     ],
+    "catalog": {
+      "buildings": [
+        {
+          "building_type": "MetalMine",
+          "level": 0,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 15.0,
+              "deuterium": 0.0,
+              "metal": 60.0
+            },
+            "level": 1,
+            "ticks": 45
+          },
+          "requires": []
+        },
+        {
+          "building_type": "CrystalMine",
+          "level": 1,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 48.0,
+              "deuterium": 0.0,
+              "metal": 96.0
+            },
+            "level": 2,
+            "ticks": 135
+          },
+          "requires": []
+        },
+        {
+          "building_type": "DeuteriumSynthesizer",
+          "level": 2,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 225.0,
+              "deuterium": 0.0,
+              "metal": 675.0
+            },
+            "level": 3,
+            "ticks": 303
+          },
+          "requires": []
+        },
+        {
+          "building_type": "Shipyard",
+          "level": 3,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 400.0,
+              "deuterium": 200.0,
+              "metal": 800.0
+            },
+            "level": 4,
+            "ticks": 1215
+          },
+          "requires": [
+            {
+              "label": "Metal Mine >= 2",
+              "met": false
+            }
+          ]
+        },
+        {
+          "building_type": "ResearchLab",
+          "level": 4,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 1000.0,
+              "deuterium": 250.0,
+              "metal": 500.0
+            },
+            "level": 5,
+            "ticks": 2278
+          },
+          "requires": [
+            {
+              "label": "Crystal Mine >= 2",
+              "met": false
+            }
+          ]
+        },
+        {
+          "building_type": "FuelDepot",
+          "level": 5,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 300.0,
+              "deuterium": 600.0,
+              "metal": 900.0
+            },
+            "level": 6,
+            "ticks": 2733
+          },
+          "requires": [
+            {
+              "label": "Deut Synthesizer >= 2",
+              "met": true
+            }
+          ]
+        },
+        {
+          "building_type": "SensorArray",
+          "level": 6,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 1050.0,
+              "deuterium": 525.0,
+              "metal": 700.0
+            },
+            "level": 7,
+            "ticks": 5980
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            }
+          ]
+        },
+        {
+          "building_type": "DefenseGrid",
+          "level": 7,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 1600.0,
+              "deuterium": 800.0,
+              "metal": 2400.0
+            },
+            "level": 8,
+            "ticks": 18452
+          },
+          "requires": [
+            {
+              "label": "Shipyard >= 3",
+              "met": true
+            }
+          ]
+        }
+      ],
+      "research": [
+        {
+          "level": 0,
+          "max_level": 5,
+          "next": {
+            "cost": {
+              "crystal": 100.0,
+              "deuterium": 100.0,
+              "metal": 200.0
+            },
+            "level": 1,
+            "ticks": 90
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Deut Synthesizer >= 3",
+              "met": false
+            }
+          ],
+          "tech": "FuelEfficiency"
+        },
+        {
+          "level": 1,
+          "max_level": 5,
+          "next": {
+            "cost": {
+              "crystal": 150.0,
+              "deuterium": 300.0,
+              "metal": 300.0
+            },
+            "level": 2,
+            "ticks": 270
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Fuel Depot >= 2",
+              "met": true
+            }
+          ],
+          "tech": "ExtendedFuelTanks"
+        },
+        {
+          "level": 2,
+          "max_level": 5,
+          "next": {
+            "cost": {
+              "crystal": 300.0,
+              "deuterium": 0.0,
+              "metal": 900.0
+            },
+            "level": 3,
+            "ticks": 607
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Shipyard >= 2",
+              "met": true
+            }
+          ],
+          "tech": "ReinforcedHulls"
+        },
+        {
+          "level": 3,
+          "max_level": 5,
+          "next": {
+            "cost": {
+              "crystal": 1200.0,
+              "deuterium": 200.0,
+              "metal": 400.0
+            },
+            "level": 4,
+            "ticks": 1215
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Research Lab >= 3",
+              "met": true
+            }
+          ],
+          "tech": "AdvancedShields"
+        },
+        {
+          "level": 0,
+          "max_level": 5,
+          "next": {
+            "cost": {
+              "crystal": 200.0,
+              "deuterium": 100.0,
+              "metal": 200.0
+            },
+            "level": 1,
+            "ticks": 90
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Research Lab >= 3",
+              "met": true
+            }
+          ],
+          "tech": "WeaponsResearch"
+        },
+        {
+          "level": 1,
+          "max_level": 5,
+          "next": {
+            "cost": {
+              "crystal": 300.0,
+              "deuterium": 100.0,
+              "metal": 200.0
+            },
+            "level": 2,
+            "ticks": 270
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Research Lab >= 2",
+              "met": true
+            }
+          ],
+          "tech": "Navigation"
+        },
+        {
+          "level": 2,
+          "max_level": 5,
+          "next": {
+            "cost": {
+              "crystal": 300.0,
+              "deuterium": 225.0,
+              "metal": 450.0
+            },
+            "level": 3,
+            "ticks": 607
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Research Lab >= 2",
+              "met": true
+            }
+          ],
+          "tech": "HarvestingEfficiency"
+        },
+        {
+          "level": 3,
+          "max_level": 1,
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Shipyard >= 2",
+              "met": true
+            }
+          ],
+          "tech": "CorvetteTech"
+        },
+        {
+          "level": 0,
+          "max_level": 1,
+          "next": {
+            "cost": {
+              "crystal": 600.0,
+              "deuterium": 300.0,
+              "metal": 1000.0
+            },
+            "level": 1,
+            "ticks": 120
+          },
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Corvette Tech >= 1",
+              "met": true
+            },
+            {
+              "label": "Shipyard >= 4",
+              "met": false
+            }
+          ],
+          "tech": "FrigateTech"
+        },
+        {
+          "level": 1,
+          "max_level": 1,
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Frigate Tech >= 1",
+              "met": false
+            },
+            {
+              "label": "Shipyard >= 6",
+              "met": false
+            }
+          ],
+          "tech": "CruiserTech"
+        },
+        {
+          "level": 2,
+          "max_level": 1,
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Shipyard >= 3",
+              "met": true
+            }
+          ],
+          "tech": "HaulerTech"
+        },
+        {
+          "level": 3,
+          "max_level": 3,
+          "requires": [
+            {
+              "label": "Research Lab >= 1",
+              "met": true
+            },
+            {
+              "label": "Navigation >= 1",
+              "met": true
+            },
+            {
+              "label": "Research Lab >= 4",
+              "met": true
+            }
+          ],
+          "tech": "EmergencyJump"
+        }
+      ],
+      "ships": [
+        {
+          "requires": [
+            {
+              "label": "Shipyard >= 1",
+              "met": true
+            }
+          ],
+          "ship_class": "Scout",
+          "ticks_per_ship": 23,
+          "unit_cost": {
+            "crystal": 50.0,
+            "deuterium": 30.0,
+            "metal": 200.0
+          }
+        },
+        {
+          "requires": [
+            {
+              "label": "Shipyard >= 1",
+              "met": true
+            },
+            {
+              "label": "Corvette Tech >= 1",
+              "met": true
+            }
+          ],
+          "ship_class": "Corvette",
+          "ticks_per_ship": 46,
+          "unit_cost": {
+            "crystal": 100.0,
+            "deuterium": 60.0,
+            "metal": 400.0
+          }
+        },
+        {
+          "requires": [
+            {
+              "label": "Shipyard >= 1",
+              "met": true
+            },
+            {
+              "label": "Frigate Tech >= 1",
+              "met": false
+            }
+          ],
+          "ship_class": "Frigate",
+          "ticks_per_ship": 92,
+          "unit_cost": {
+            "crystal": 400.0,
+            "deuterium": 200.0,
+            "metal": 1000.0
+          }
+        },
+        {
+          "requires": [
+            {
+              "label": "Shipyard >= 1",
+              "met": true
+            },
+            {
+              "label": "Cruiser Tech >= 1",
+              "met": true
+            }
+          ],
+          "ship_class": "Cruiser",
+          "ticks_per_ship": 184,
+          "unit_cost": {
+            "crystal": 1500.0,
+            "deuterium": 800.0,
+            "metal": 3000.0
+          }
+        },
+        {
+          "requires": [
+            {
+              "label": "Shipyard >= 1",
+              "met": true
+            },
+            {
+              "label": "Hauler Tech >= 1",
+              "met": true
+            }
+          ],
+          "ship_class": "Hauler",
+          "ticks_per_ship": 69,
+          "unit_cost": {
+            "crystal": 200.0,
+            "deuterium": 150.0,
+            "metal": 600.0
+          }
+        }
+      ]
+    },
     "docked_ships": [
       {
         "class": "Cruiser",

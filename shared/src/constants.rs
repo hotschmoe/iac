@@ -268,7 +268,7 @@ pub struct ShipStats {
     pub fuel: u16,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Resources {
     pub metal: f32,
     pub crystal: f32,

@@ -635,14 +635,19 @@ pub fn recall_damage_reduction(ej_level: u8) -> f32 {
     0.05 * ej_level as f32
 }
 
-pub fn ship_class_unlocked(class: ShipClass, research: &ResearchLevels) -> bool {
+/// The research that unlocks a ship class, if it needs one.
+pub fn ship_class_tech(class: ShipClass) -> Option<ResearchType> {
     match class {
-        ShipClass::Scout => true,
-        ShipClass::Corvette => research.corvette_tech >= 1,
-        ShipClass::Frigate => research.frigate_tech >= 1,
-        ShipClass::Cruiser => research.cruiser_tech >= 1,
-        ShipClass::Hauler => research.hauler_tech >= 1,
+        ShipClass::Scout => None,
+        ShipClass::Corvette => Some(ResearchType::CorvetteTech),
+        ShipClass::Frigate => Some(ResearchType::FrigateTech),
+        ShipClass::Cruiser => Some(ResearchType::CruiserTech),
+        ShipClass::Hauler => Some(ResearchType::HaulerTech),
     }
+}
+
+pub fn ship_class_unlocked(class: ShipClass, research: &ResearchLevels) -> bool {
+    ship_class_tech(class).is_none_or(|tech| research.get(tech) >= 1)
 }
 
 pub fn ship_build_time(class: ShipClass, shipyard_level: u8) -> u64 {

@@ -21,7 +21,7 @@ use iac_shared::Resources;
 use iac_shared::constants::{Density, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
 use iac_shared::protocol::*;
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::scaling::{BuildingLevels, BuildingType, ResearchLevels, ResearchType};
 
 // ── Plumbing ──────────────────────────────────────────────────────
 
@@ -188,7 +188,11 @@ fn sample_homeworld() -> HomeworldState {
     .iter()
     .enumerate()
     .map(|(i, b)| BuildingState { building_type: *b, level: i as u8 })
-    .collect();
+    .collect::<Vec<_>>();
+    let mut levels = BuildingLevels::default();
+    for b in &buildings {
+        levels.set(b.building_type, b.level);
+    }
     use ResearchType::*;
     let research = [
         FuelEfficiency, ExtendedFuelTanks, ReinforcedHulls, AdvancedShields, WeaponsResearch,
@@ -198,7 +202,11 @@ fn sample_homeworld() -> HomeworldState {
     .iter()
     .enumerate()
     .map(|(i, t)| ResearchState { tech: *t, level: (i % 4) as u8 })
-    .collect();
+    .collect::<Vec<_>>();
+    let mut researched = ResearchLevels::default();
+    for r in &research {
+        researched.set(r.tech, r.level);
+    }
     HomeworldState {
         location: h(4, -2),
         production: res(2.75, 1.25, 0.4),
@@ -224,6 +232,7 @@ fn sample_homeworld() -> HomeworldState {
             end_tick: 600,
         }),
         docked_ships: vec![ship(501, ShipClass::Cruiser, 100.0, 50.0, 18.0)],
+        catalog: HomeworldCatalog::new(&levels, &researched),
     }
 }
 
@@ -237,6 +246,7 @@ fn idle_homeworld() -> HomeworldState {
         shipyard_queue: None,
         research_active: None,
         docked_ships: vec![],
+        catalog: HomeworldCatalog::new(&BuildingLevels::default(), &ResearchLevels::default()),
     }
 }
 
