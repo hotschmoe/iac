@@ -155,10 +155,99 @@ void main() {
       final before = mapper.fleets.length;
       mapper.apply(const proto.GameEvent(
         tick: 5,
-        kind: proto.FleetDestroyedEvent(fleetId: 101, isNpc: false, salvage: proto.Resources()),
+        kind: proto.FleetDestroyedEvent(
+          fleetId: 101,
+          isNpc: false,
+          sector: proto.Hex(2, 1),
+          owner: 'Admiral',
+          mine: true,
+          salvage: proto.Resources(),
+        ),
       ));
       expect(mapper.fleets, hasLength(before));
-      expect(mapper.toUiState().events.first.message, contains('101'));
+      final entry = mapper.toUiState().events.first;
+      expect(entry.message, contains('YOUR FLEET'));
+      expect(entry.message, contains('101'));
+    });
+
+    test('other empires and hostiles are told apart from your own losses', () {
+      mapper.apply(const proto.GameEvent(
+        tick: 6,
+        kind: proto.FleetDestroyedEvent(
+          fleetId: 55,
+          isNpc: false,
+          sector: proto.Hex(2, 1),
+          owner: 'Rival',
+          mine: false,
+          salvage: proto.Resources(),
+        ),
+      ));
+      expect(mapper.toUiState().events.first.message, contains("Rival's fleet"));
+      mapper.apply(const proto.GameEvent(
+        tick: 7,
+        kind: proto.FleetDestroyedEvent(
+          fleetId: 9001,
+          isNpc: true,
+          sector: proto.Hex(2, 1),
+          owner: null,
+          mine: false,
+          salvage: proto.Resources(metal: 60, crystal: 15, deuterium: 9),
+        ),
+      ));
+      expect(mapper.toUiState().events.first.message, contains('wreckage 60M 15C 9D'));
+    });
+
+    test('a critical alert from the server surfaces as a glowing alert', () {
+      mapper.apply(const proto.GameEvent(
+        tick: 8,
+        kind: proto.AlertEvent(
+          playerId: 1,
+          level: proto.AlertLevel.critical,
+          message: 'FLEET LOST: fleet 2 destroyed',
+          fleetId: 2,
+        ),
+      ));
+      expect(mapper.toUiState().alerts.first.message, contains('FLEET LOST'));
+    });
+
+    test('stale sectors are kept from full_state and reported with their age', () {
+      const where = proto.Hex(3, -2);
+      final stale = proto.SectorState(
+        location: where,
+        terrain: proto.TerrainType.asteroidField,
+        resources: const proto.SectorResources(
+            metal: proto.Density.rich, crystal: proto.Density.none, deuterium: proto.Density.none),
+        connections: const [],
+        salvage: const proto.Resources(metal: 60),
+        salvageDespawnTick: 100,
+        lastSeen: 40,
+        live: false,
+      );
+      mapper.apply(proto.GameState(
+        tick: 400,
+        player: mapper.player!,
+        fleets: const [],
+        homeworld: mapper.homeworld!,
+        knownSectors: [stale],
+      ));
+      expect(mapper.sectors[where.toKey()]!.live, isFalse);
+      final info = mapper.toUiState().sectors[where]!;
+      expect(info.lastSeen, 40);
+
+      mapper.apply(const proto.TickUpdate(tick: 401, fleets: []));
+      expect(mapper.sectors[where.toKey()]!.live, isFalse); // a tick without it leaves the memory alone
+
+      mapper.apply(proto.TickUpdate(tick: 402, fleets: const [], sectorUpdates: [
+        proto.SectorState(
+          location: where,
+          terrain: stale.terrain,
+          resources: stale.resources,
+          connections: const [],
+          lastSeen: 402,
+          live: true,
+        ),
+      ]));
+      expect(mapper.sectors[where.toKey()]!.live, isTrue);
     });
   });
 }

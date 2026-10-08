@@ -775,7 +775,18 @@ class SectorState {
   final List<NpcFleetInfo>? hostiles;
   final List<FleetBrief>? playerFleets;
   final Resources? salvage;
+
+  /// Tick the wreckage pile despawns if nobody collects it.
+  final int? salvageDespawnTick;
   final SiteBrief? site;
+
+  /// Tick this sector was last observed; the current tick when [live].
+  final int lastSeen;
+
+  /// True when the server is watching the sector this tick. False is chart
+  /// memory: resources, hostiles, salvage and site are as last observed at
+  /// [lastSeen] and may have changed since.
+  final bool live;
   const SectorState({
     required this.location,
     required this.terrain,
@@ -784,7 +795,10 @@ class SectorState {
     this.hostiles,
     this.playerFleets,
     this.salvage,
+    this.salvageDespawnTick,
     this.site,
+    required this.lastSeen,
+    required this.live,
   });
 
   factory SectorState.fromJson(Object? json) {
@@ -797,7 +811,10 @@ class SectorState {
       hostiles: _opt(m['hostiles'], (v) => _list(v, NpcFleetInfo.fromJson)),
       playerFleets: _opt(m['player_fleets'], (v) => _list(v, FleetBrief.fromJson)),
       salvage: _opt(m['salvage'], Resources.fromJson),
+      salvageDespawnTick: _opt(m['salvage_despawn_tick'], _i),
       site: _opt(m['site'], SiteBrief.fromJson),
+      lastSeen: _i(m['last_seen']),
+      live: m['live'] as bool,
     );
   }
 
@@ -807,10 +824,13 @@ class SectorState {
       'terrain': terrain.toJson(),
       'resources': resources.toJson(),
       'connections': connections.map((e) => e.toJson()).toList(),
+      'last_seen': lastSeen,
+      'live': live,
     };
     _put(m, 'hostiles', hostiles?.map((e) => e.toJson()).toList());
     _put(m, 'player_fleets', playerFleets?.map((e) => e.toJson()).toList());
     _put(m, 'salvage', salvage?.toJson());
+    _put(m, 'salvage_despawn_tick', salvageDespawnTick);
     _put(m, 'site', site?.toJson());
     return m;
   }
@@ -1350,45 +1370,72 @@ sealed class EventKind {
       'SiteAmbush' => SiteAmbushEvent.fromJson(m),
       'PolicyAction' => PolicyActionEvent.fromJson(m),
       'Alert' => AlertEvent.fromJson(m),
+      'SalvageDespawned' => SalvageDespawnedEvent.fromJson(m),
       final k => throw FormatException('unknown EventKind "$k"'),
     };
   }
 }
 
+/// One shot in a fight. `attackerOwner` / `targetOwner` name the owning
+/// empire; null is an NPC. [mine]: one of the two fleets is the receiver's.
 class CombatRoundEvent extends EventKind {
+  final Hex sector;
+  final int attackerFleetId;
+  final String? attackerOwner;
   final int attackerShipId;
+  final int targetFleetId;
+  final String? targetOwner;
   final int targetShipId;
   final double damage;
   final double shieldAbsorbed;
   final double hullDamage;
   final bool rapidFire;
+  final bool mine;
   const CombatRoundEvent({
+    required this.sector,
+    required this.attackerFleetId,
+    required this.attackerOwner,
     required this.attackerShipId,
+    required this.targetFleetId,
+    required this.targetOwner,
     required this.targetShipId,
     required this.damage,
     required this.shieldAbsorbed,
     required this.hullDamage,
     required this.rapidFire,
+    required this.mine,
   });
 
   factory CombatRoundEvent.fromJson(Json m) => CombatRoundEvent(
+        sector: Hex.fromJson(m['sector']),
+        attackerFleetId: _i(m['attacker_fleet_id']),
+        attackerOwner: m['attacker_owner'] as String?,
         attackerShipId: _i(m['attacker_ship_id']),
+        targetFleetId: _i(m['target_fleet_id']),
+        targetOwner: m['target_owner'] as String?,
         targetShipId: _i(m['target_ship_id']),
         damage: _f(m['damage']),
         shieldAbsorbed: _f(m['shield_absorbed']),
         hullDamage: _f(m['hull_damage']),
         rapidFire: m['rapid_fire'] as bool,
+        mine: m['mine'] as bool? ?? false,
       );
 
   @override
   Json toJson() => {
         'kind': 'CombatRound',
+        'sector': sector.toJson(),
+        'attacker_fleet_id': attackerFleetId,
+        'attacker_owner': attackerOwner,
         'attacker_ship_id': attackerShipId,
+        'target_fleet_id': targetFleetId,
+        'target_owner': targetOwner,
         'target_ship_id': targetShipId,
         'damage': damage,
         'shield_absorbed': shieldAbsorbed,
         'hull_damage': hullDamage,
         'rapid_fire': rapidFire,
+        'mine': mine,
       };
 }
 
@@ -1397,11 +1444,21 @@ class ShipDestroyedEvent extends EventKind {
   final ShipClass shipClass;
   final int ownerFleetId;
   final bool isNpc;
+  final Hex sector;
+
+  /// Empire that owned the ship; null for an NPC.
+  final String? owner;
+
+  /// The ship was the receiver's.
+  final bool mine;
   const ShipDestroyedEvent({
     required this.shipId,
     required this.shipClass,
     required this.ownerFleetId,
     required this.isNpc,
+    required this.sector,
+    required this.owner,
+    required this.mine,
   });
 
   factory ShipDestroyedEvent.fromJson(Json m) => ShipDestroyedEvent(
@@ -1409,6 +1466,9 @@ class ShipDestroyedEvent extends EventKind {
         shipClass: ShipClass.fromJson(m['ship_class']),
         ownerFleetId: _i(m['owner_fleet_id']),
         isNpc: m['is_npc'] as bool,
+        sector: Hex.fromJson(m['sector']),
+        owner: m['owner'] as String?,
+        mine: m['mine'] as bool? ?? false,
       );
 
   @override
@@ -1418,18 +1478,36 @@ class ShipDestroyedEvent extends EventKind {
         'ship_class': shipClass.toJson(),
         'owner_fleet_id': ownerFleetId,
         'is_npc': isNpc,
+        'sector': sector.toJson(),
+        'owner': owner,
+        'mine': mine,
       };
 }
 
+/// A fleet lost every ship. For an NPC, [salvage] is the wreckage left in
+/// [sector], exactly what `collect_salvage` can take; player fleets leave none.
 class FleetDestroyedEvent extends EventKind {
   final int fleetId;
   final bool isNpc;
+  final Hex sector;
+  final String? owner;
+  final bool mine;
   final Resources salvage;
-  const FleetDestroyedEvent({required this.fleetId, required this.isNpc, required this.salvage});
+  const FleetDestroyedEvent({
+    required this.fleetId,
+    required this.isNpc,
+    required this.sector,
+    required this.owner,
+    required this.mine,
+    required this.salvage,
+  });
 
   factory FleetDestroyedEvent.fromJson(Json m) => FleetDestroyedEvent(
         fleetId: _i(m['fleet_id']),
         isNpc: m['is_npc'] as bool,
+        sector: Hex.fromJson(m['sector']),
+        owner: m['owner'] as String?,
+        mine: m['mine'] as bool? ?? false,
         salvage: Resources.fromJson(m['salvage']),
       );
 
@@ -1438,28 +1516,32 @@ class FleetDestroyedEvent extends EventKind {
         'kind': 'FleetDestroyed',
         'fleet_id': fleetId,
         'is_npc': isNpc,
+        'sector': sector.toJson(),
+        'owner': owner,
+        'mine': mine,
         'salvage': salvage.toJson(),
       };
 }
 
+/// What a harvesting fleet took aboard over the last [ticks] ticks.
 class ResourceHarvestedEvent extends EventKind {
   final int fleetId;
-  final HarvestResource resourceType;
-  final double amount;
-  const ResourceHarvestedEvent({required this.fleetId, required this.resourceType, required this.amount});
+  final Resources resources;
+  final int ticks;
+  const ResourceHarvestedEvent({required this.fleetId, required this.resources, required this.ticks});
 
   factory ResourceHarvestedEvent.fromJson(Json m) => ResourceHarvestedEvent(
         fleetId: _i(m['fleet_id']),
-        resourceType: HarvestResource.fromJson(m['resource_type']),
-        amount: _f(m['amount']),
+        resources: Resources.fromJson(m['resources']),
+        ticks: _i(m['ticks']),
       );
 
   @override
   Json toJson() => {
         'kind': 'ResourceHarvested',
         'fleet_id': fleetId,
-        'resource_type': resourceType.toJson(),
-        'amount': amount,
+        'resources': resources.toJson(),
+        'ticks': ticks,
       };
 }
 
@@ -1486,51 +1568,132 @@ class SectorEnteredEvent extends EventKind {
 
 class CombatStartedEvent extends EventKind {
   final int playerFleetId;
+
+  /// Empire owning [playerFleetId].
+  final String owner;
   final int enemyFleetId;
   final Hex sector;
-  const CombatStartedEvent({required this.playerFleetId, required this.enemyFleetId, required this.sector});
+
+  /// [playerFleetId] is the receiver's.
+  final bool mine;
+  const CombatStartedEvent({
+    required this.playerFleetId,
+    required this.owner,
+    required this.enemyFleetId,
+    required this.sector,
+    required this.mine,
+  });
 
   factory CombatStartedEvent.fromJson(Json m) => CombatStartedEvent(
         playerFleetId: _i(m['player_fleet_id']),
+        owner: m['owner'] as String,
         enemyFleetId: _i(m['enemy_fleet_id']),
         sector: Hex.fromJson(m['sector']),
+        mine: m['mine'] as bool? ?? false,
       );
 
   @override
   Json toJson() => {
         'kind': 'CombatStarted',
         'player_fleet_id': playerFleetId,
+        'owner': owner,
         'enemy_fleet_id': enemyFleetId,
         'sector': sector.toJson(),
+        'mine': mine,
       };
 }
 
 class CombatEndedEvent extends EventKind {
   final Hex sector;
   final bool playerVictory;
-  const CombatEndedEvent({required this.sector, required this.playerVictory});
 
-  factory CombatEndedEvent.fromJson(Json m) =>
-      CombatEndedEvent(sector: Hex.fromJson(m['sector']), playerVictory: m['player_victory'] as bool);
+  /// Empires that fought.
+  final List<String> owners;
+  final bool mine;
+
+  /// The wreckage now lying in [sector] after a victory.
+  final Resources? salvage;
+  final int? salvageDespawnTick;
+  const CombatEndedEvent({
+    required this.sector,
+    required this.playerVictory,
+    required this.owners,
+    required this.mine,
+    this.salvage,
+    this.salvageDespawnTick,
+  });
+
+  factory CombatEndedEvent.fromJson(Json m) => CombatEndedEvent(
+        sector: Hex.fromJson(m['sector']),
+        playerVictory: m['player_victory'] as bool,
+        owners: _list(m['owners'], (v) => v as String),
+        mine: m['mine'] as bool? ?? false,
+        salvage: _opt(m['salvage'], Resources.fromJson),
+        salvageDespawnTick: _opt(m['salvage_despawn_tick'], _i),
+      );
 
   @override
-  Json toJson() =>
-      {'kind': 'CombatEnded', 'sector': sector.toJson(), 'player_victory': playerVictory};
+  Json toJson() {
+    final m = <String, dynamic>{
+      'kind': 'CombatEnded',
+      'sector': sector.toJson(),
+      'player_victory': playerVictory,
+      'owners': owners,
+      'mine': mine,
+    };
+    _put(m, 'salvage', salvage?.toJson());
+    _put(m, 'salvage_despawn_tick', salvageDespawnTick);
+    return m;
+  }
 }
 
+/// A fleet scooped wreckage. [remaining] is what is still on the ground when
+/// the hold filled first.
 class SalvageCollectedEvent extends EventKind {
   final int fleetId;
+  final Hex sector;
   final Resources resources;
-  const SalvageCollectedEvent({required this.fleetId, required this.resources});
+  final Resources? remaining;
+  const SalvageCollectedEvent({
+    required this.fleetId,
+    required this.sector,
+    required this.resources,
+    this.remaining,
+  });
 
   factory SalvageCollectedEvent.fromJson(Json m) => SalvageCollectedEvent(
         fleetId: _i(m['fleet_id']),
+        sector: Hex.fromJson(m['sector']),
+        resources: Resources.fromJson(m['resources']),
+        remaining: _opt(m['remaining'], Resources.fromJson),
+      );
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{
+      'kind': 'SalvageCollected',
+      'fleet_id': fleetId,
+      'sector': sector.toJson(),
+      'resources': resources.toJson(),
+    };
+    _put(m, 'remaining', remaining?.toJson());
+    return m;
+  }
+}
+
+/// A wreckage pile expired uncollected.
+class SalvageDespawnedEvent extends EventKind {
+  final Hex sector;
+  final Resources resources;
+  const SalvageDespawnedEvent({required this.sector, required this.resources});
+
+  factory SalvageDespawnedEvent.fromJson(Json m) => SalvageDespawnedEvent(
+        sector: Hex.fromJson(m['sector']),
         resources: Resources.fromJson(m['resources']),
       );
 
   @override
-  Json toJson() =>
-      {'kind': 'SalvageCollected', 'fleet_id': fleetId, 'resources': resources.toJson()};
+  Json toJson() => {'kind': 'SalvageDespawned', 'sector': sector.toJson(), 'resources': resources.toJson()};
 }
 
 class FleetArrivedEvent extends EventKind {
@@ -1840,13 +2003,16 @@ class PolicyActionEvent extends EventKind {
 }
 
 class AlertEvent extends EventKind {
+  /// Recipient; null is a server-wide notice.
+  final int? playerId;
   final AlertLevel level;
   final String message;
   final Hex? sector;
   final int? fleetId;
-  const AlertEvent({required this.level, required this.message, this.sector, this.fleetId});
+  const AlertEvent({this.playerId, required this.level, required this.message, this.sector, this.fleetId});
 
   factory AlertEvent.fromJson(Json m) => AlertEvent(
+        playerId: m['player_id'] as int?,
         level: AlertLevel.fromJson(m['level']),
         message: m['message'] as String,
         sector: _opt(m['sector'], Hex.fromJson),
@@ -1856,6 +2022,7 @@ class AlertEvent extends EventKind {
   @override
   Json toJson() {
     final m = <String, dynamic>{'kind': 'Alert', 'level': level.toJson(), 'message': message};
+    _put(m, 'player_id', playerId);
     _put(m, 'sector', sector?.toJson());
     _put(m, 'fleet_id', fleetId);
     return m;
