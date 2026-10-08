@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IAC Interface Prototypes</title><link rel="stylesheet" href="iac.css">
+<style>
+body{overflow:auto}
+.hero{min-height:100vh;display:grid;place-items:center;padding:40px 20px;background:radial-gradient(80% 60% at 50% 0%,#2a1b0a 0,transparent 70%),var(--void)}
+.in{max-width:1100px;width:100%}
+h1{font-family:var(--f-display);font-weight:700;font-size:clamp(34px,6vw,64px);letter-spacing:.18em;color:var(--a100);text-shadow:0 0 40px rgba(255,176,0,.5);line-height:1.05}
+.sub{font-family:var(--f-voice);font-style:italic;font-size:19px;color:var(--text-2);margin:12px 0 34px;max-width:640px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.card{display:block;padding:20px;transition:.2s var(--ease);position:relative;overflow:hidden}
+.card:hover{transform:translateY(-5px);border-color:var(--a400);box-shadow:0 0 30px rgba(255,176,0,.25)}
+.card .k{font-family:var(--f-display);letter-spacing:.3em;font-size:10px;color:var(--text-3)}
+.card h2{font-family:var(--f-display);font-size:26px;color:var(--a200);margin:6px 0 8px;font-weight:600;letter-spacing:.06em}
+.card p{font-size:12px;color:var(--text-2);line-height:1.55}
+.card ul{margin:10px 0 0 16px;font-size:11px;color:var(--text-3);line-height:1.6}
+.card .go{margin-top:14px;display:inline-block;color:var(--own);font-family:var(--f-display);letter-spacing:.14em;font-size:11px;text-transform:uppercase}
+.tip{margin-top:26px;font-size:12px;color:var(--text-3);line-height:1.8}
+</style></head><body><div class="hero"><div class="in">
+<div class="lbl" style="margin-bottom:12px">In Amber Clad &middot; web client redesign &middot; interactive prototypes (mock data)</div>
+<h1>AMBER GLASS</h1>
+<p class="sub">The CRT is a lens, not a filter. A game interface for humans: spatial, animated, legible, and still amber.</p>
+<div class="cards">
+<a class="panel card" href="windshield.html"><div class="k">TOP PRIORITY</div><h2>Windshield</h2><p>The sector you are in, the six gates out, hostiles, salvage and derelicts. Jump, scan, harvest, fight.</p><ul><li>Q W E / A S D to jump, V scan, F fire</li><li>Scan, then jump NW into the heavy pack and fight</li><li>Board the derelict, collect salvage</li></ul><span class="go">Open &rarr;</span></a>
+<a class="panel card" href="map.html"><div class="k">TOP PRIORITY</div><h2>Star Map</h2><p>Pan and zoom the lane graph. Threat overlay, intel age, click-to-route with fuel, time and risk preview.</p><ul><li>Hover for route preview, click to plan</li><li>L threat layer, I intel age, Shift+click waypoint</li><li>Enter to engage; Heavy sectors hold the route</li></ul><span class="go">Open &rarr;</span></a>
+<a class="panel card" href="overview.html"><div class="k">HOME</div><h2>Overview</h2><p>The OGame home screen: resources with time-to-full, four queues, fleets, alerts, feed, rank and chat.</p><ul><li>Queue the idle research slot</li><li>Raid timer, next-up card</li></ul><span class="go">Open &rarr;</span></a>
+<a class="panel card" href="homeworld.html"><div class="k">ECONOMY</div><h2>Homeworld</h2><p>A hex base with costed upgrades, a tech graph, shipyard, plus preview tabs for defence and storage.</p><ul><li>Keys 1-5 switch tabs, Enter upgrades</li><li>Every disabled button says why</li></ul><span class="go">Open &rarr;</span></a>
+</div>
+<div class="tip">Global keys: <span class="key">G</span> then <span class="key">O</span> <span class="key">W</span> <span class="key">M</span> <span class="key">H</span> go to a screen &middot; <span class="key">?</span> all keys &middot; <span class="key">M</span> sound on or off (sound is off until you turn it on).<br>Everything here is mock data on a simulated 1 Hz tick. Works at phone width too.</div>
+</div></div></body></html>

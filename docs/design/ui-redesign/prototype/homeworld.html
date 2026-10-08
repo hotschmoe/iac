@@ -1,0 +1,174 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IAC Homeworld (prototype)</title><link rel="stylesheet" href="iac.css">
+<style>
+.wrap{position:absolute;inset:0;display:grid;grid-template-columns:1fr 380px;grid-template-rows:auto auto 1fr;overflow:hidden}
+.qbar{grid-column:1/3;display:flex;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line-lo);overflow-x:auto}
+.qpill{display:flex;align-items:center;gap:10px;padding:6px 12px;border:1px solid var(--line);border-radius:5px;background:rgba(0,0,0,.28);min-width:210px;flex:none;position:relative;overflow:hidden}
+.qpill .l{font-family:var(--f-display);font-size:9.5px;letter-spacing:.16em;color:var(--text-3);text-transform:uppercase}
+.qpill b{font-family:var(--f-display);font-weight:600;font-size:13px;color:var(--a200);display:block}
+.qpill .t{margin-left:auto;font-family:var(--f-display);font-size:15px;font-weight:600;color:var(--a100);font-variant-numeric:tabular-nums}
+.qpill .p{position:absolute;left:0;bottom:0;height:2px;background:var(--a400);box-shadow:0 0 8px var(--a400)}
+.qpill.idle{border-style:dashed;border-color:var(--a600);color:var(--a400)}.qpill.idle b{color:var(--a400)}
+.qpill.lock{opacity:.5}
+.tabs{grid-column:1/3;display:flex;gap:2px;padding:0 16px;border-bottom:1px solid var(--line)}
+.tab{padding:11px 18px 10px;font-family:var(--f-display);font-weight:600;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--text-3);position:relative;display:flex;gap:8px;align-items:center}
+.tab:hover{color:var(--a300)}.tab.on{color:var(--a300)}.tab.on::after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;background:var(--a500);box-shadow:var(--glow)}
+.tab .key{height:15px;min-width:15px;font-size:9px}.tab .pv{font-size:8px;letter-spacing:.1em;color:var(--rare);border:1px solid #5c4690;padding:0 4px;border-radius:3px}
+.stage{position:relative;overflow:auto;min-height:0;padding:20px}
+.drawer{border-left:1px solid var(--line);background:linear-gradient(180deg,rgba(20,14,9,.9),rgba(10,8,6,.95));overflow:auto;padding:18px;min-height:0}
+/* hex base */
+.base{position:relative;margin:20px auto 0;width:640px;height:520px}
+.hx{position:absolute;width:132px;height:114px;transform:translate(-50%,-50%);cursor:pointer;transition:transform .2s var(--ease),filter .2s;filter:drop-shadow(0 0 0 transparent)}
+.hx .o,.hx .i{position:absolute;clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)}
+.hx .o{inset:0;background:var(--line-hi)}
+.hx .i{inset:2px;background:linear-gradient(180deg,#241a0e,#120d08)}
+.hx .c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;text-align:center;padding:0 22px}
+.hx svg{width:30px;height:30px;stroke:var(--a400);fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.hx .nm{font-family:var(--f-display);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-2);line-height:1.1}
+.hx .lv{font-family:var(--f-display);font-weight:700;font-size:20px;color:var(--a100);line-height:1}
+.hx .pr{font-size:9px;color:var(--text-3)}
+.hx:hover{transform:translate(-50%,-50%) scale(1.07);z-index:3;filter:drop-shadow(0 0 16px rgba(255,176,0,.55))}
+.hx.sel .o{background:var(--a300);}.hx.sel{filter:drop-shadow(0 0 20px rgba(255,176,0,.7));z-index:2}
+.hx.can .o{background:linear-gradient(135deg,var(--a400),var(--own))}
+.hx.lock .i{background:#0c0907}.hx.lock svg{stroke:var(--text-4)}.hx.lock .o{background:var(--line)}
+.hx.busy .o{background:var(--a500);animation:pulse-a 1.4s infinite}
+.hx .up{position:absolute;top:6px;right:34px;font-size:11px;color:var(--own);font-weight:700;text-shadow:0 0 8px var(--own)}
+.hx.core .o{background:rgba(255,176,0,.5)}.hx.core .i{background:radial-gradient(circle at 40% 35%,#b8741a,#4a2a08 60%,#140b03)}
+.hx.core{cursor:default;pointer-events:none}.hx.core .nm{color:#ffe2a3}
+.cost{display:inline-flex;gap:10px;font-size:12px}
+.need{display:flex;justify-content:space-between;padding:5px 0;font-size:12px;border-bottom:1px solid var(--line-lo)}.need.bad{color:var(--ember)}
+.req{display:flex;gap:8px;align-items:center;padding:4px 0;font-size:11.5px;color:var(--text-2)}.req i{width:14px;height:14px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:9px;font-weight:700}
+.req.ok i{background:rgba(94,224,207,.2);color:var(--own)}.req.no i{background:rgba(255,90,60,.2);color:var(--ember)}.req.no{color:#ffb3a3}
+.big2{font-family:var(--f-display);font-weight:700;font-size:26px;color:var(--a100);line-height:1.1}
+.lvlrow{display:flex;align-items:center;gap:10px;margin:8px 0 14px;font-family:var(--f-display);font-size:22px;color:var(--a200)}.lvlrow .ar{color:var(--own)}
+.eff{font-size:12px;color:var(--text-2);line-height:1.5;margin:8px 0}.eff b{color:var(--own)}
+/* tree */
+.tree{position:relative;min-width:900px;height:520px}
+.tree svg.edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.node{position:absolute;width:150px;transform:translate(-50%,-50%);padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:linear-gradient(180deg,#201609,#130e08);cursor:pointer;transition:.15s var(--ease);z-index:2}
+.node:hover{border-color:var(--a400);transform:translate(-50%,-50%) scale(1.05);box-shadow:var(--glow)}
+.node .n{font-family:var(--f-display);font-weight:600;font-size:11.5px;letter-spacing:.04em;color:var(--a200)}.node .m{font-size:9.5px;color:var(--text-3);margin-top:3px;display:flex;justify-content:space-between}
+.node.done{border-color:var(--a600)}.node.avail{border-color:var(--own);box-shadow:0 0 14px rgba(94,224,207,.25)}.node.avail .n{color:var(--own)}
+.node.lock{opacity:.5}.node.sel{border-color:var(--a300);box-shadow:0 0 22px rgba(255,176,0,.5)}.node.act{border-color:var(--a400);animation:pulse-a 1.5s infinite}
+.branch{position:absolute;font-family:var(--f-display);letter-spacing:.3em;font-size:10px;color:var(--text-4);text-transform:uppercase}
+/* ships */
+.ships{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.sh{padding:14px;position:relative}.sh svg.s{width:100%;height:92px;margin-bottom:6px}
+.sh .t{font-family:var(--f-display);font-weight:700;font-size:18px;color:var(--a100);display:flex;justify-content:space-between;align-items:center}
+.sh .st{display:grid;grid-template-columns:auto 1fr auto;gap:5px 8px;font-size:10px;color:var(--text-3);margin:10px 0;align-items:center}
+.sh.lock{opacity:.6}
+.qty{display:flex;gap:4px;margin:8px 0}.qty button{flex:1;padding:4px;border:1px solid var(--line);border-radius:3px;font-size:11px}.qty button:hover,.qty button.on{border-color:var(--a500);background:rgba(255,176,0,.12);color:var(--a200)}
+.pvnote{margin-bottom:14px;padding:8px 12px;border:1px dashed #5c4690;border-radius:5px;color:var(--rare);font-size:11px;background:rgba(60,40,100,.12)}
+.def{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:1100px){.wrap{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}.drawer{position:absolute;left:0;right:0;bottom:0;height:46%;border-top:1px solid var(--line-hi);border-left:0;z-index:20;box-shadow:0 -20px 40px rgba(0,0,0,.6)}.stage{padding-bottom:50%}.qbar,.tabs{grid-column:1}.def{grid-template-columns:1fr}}
+@media (max-width:820px){.base{transform:scale(.62);transform-origin:top center;margin-bottom:-170px}.tab{padding:10px 10px;font-size:10px;letter-spacing:.08em}.tab .key{display:none}.tree{transform:scale(.8);transform-origin:top left}}
+</style></head><body>
+<script src="iac.js"></script>
+<script>
+const I=IAC; I.start();
+const main=I.mount('homeworld',{badges:{overview:2}});
+const T0=I.tick;
+const IC={mine:'<path d="M4 20 14 10M12 5l7 7M9 3l12 12M3 21l2-6 4 4z"/>',gem:'<path d="M12 3l7 6-7 12L5 9z"/><path d="M5 9h14M9 9l3 12 3-12" opacity=".6"/>',drop:'<path d="M12 3c4 5 6 8 6 11a6 6 0 0 1-12 0c0-3 2-6 6-11z"/>',yard:'<path d="M3 17h18M5 17l2-8h10l2 8M9 9V5h6v4"/>',lab:'<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/><path d="M8 15h8" opacity=".6"/>',tank:'<rect x="6" y="5" width="12" height="15" rx="3"/><path d="M6 10h12M9 3h6"/>',dish:'<path d="M5 13a8 8 0 0 1 14 0z"/><path d="M12 13v7M8 20h8M12 13l5-6"/>',shield:'<path d="M12 3l8 3v6c0 5-4 8-8 9-4-1-8-4-8-9V6z"/><path d="M12 8v8M8 12h8" opacity=".6"/>',core:'<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4a12 12 0 0 1 0 16M12 4a12 12 0 0 0 0 16" opacity=".6"/>'};
+/* building catalog (mirrors server HomeworldCatalog: level, next{cost,ticks}, requires[]) */
+const BLD=[
+ {id:'mm',name:'Metal Mine',ic:'mine',lv:9,pos:[1,-1],prod:'+2.46 Fe/t',eff:l=>`<b>+${(.31*(l+1)).toFixed(2)} Fe/t</b> more output`,cost:l=>({m:Math.round(60*Math.pow(1.5,l)),c:Math.round(15*Math.pow(1.5,l)),d:0}),req:[]},
+ {id:'cm',name:'Crystal Mine',ic:'gem',lv:7,pos:[1,0],prod:'+1.12 Cr/t',busy:true,eff:l=>`<b>+0.16 Cr/t</b>`,cost:l=>({m:Math.round(48*Math.pow(1.6,l)),c:Math.round(24*Math.pow(1.6,l)),d:0}),req:[['Metal Mine',2,9]]},
+ {id:'ds',name:'Deuterium Synth.',ic:'drop',lv:5,pos:[0,1],prod:'+0.43 De/t',eff:l=>`<b>+0.09 De/t</b>`,cost:l=>({m:Math.round(150*Math.pow(1.5,l)),c:Math.round(50*Math.pow(1.5,l)),d:0}),req:[['Metal Mine',3,9]]},
+ {id:'sy',name:'Shipyard',ic:'yard',lv:4,pos:[-1,1],prod:'4 ships/hr',eff:l=>`Ships build <b>14% faster</b>; unlocks Cruiser at L6`,cost:l=>({m:Math.round(200*Math.pow(1.7,l)),c:Math.round(100*Math.pow(1.7,l)),d:Math.round(50*Math.pow(1.7,l))}),req:[['Metal Mine',4,9]]},
+ {id:'rl',name:'Research Lab',ic:'lab',lv:3,pos:[-1,0],prod:'research x1.3',eff:l=>`Research <b>12% faster</b>; unlocks higher tiers`,cost:l=>({m:Math.round(140*Math.pow(1.8,l)),c:Math.round(210*Math.pow(1.8,l)),d:Math.round(70*Math.pow(1.8,l))}),req:[['Crystal Mine',3,7]]},
+ {id:'fd',name:'Fuel Depot',ic:'tank',lv:2,pos:[0,-1],prod:'tank +20%',eff:l=>`Fleet tanks <b>+10%</b> at dock`,cost:l=>({m:Math.round(180*Math.pow(1.6,l)),c:Math.round(70*Math.pow(1.6,l)),d:Math.round(90*Math.pow(1.6,l))}),req:[['Deuterium Synth.',2,5]]},
+ {id:'sa',name:'Sensor Array',ic:'dish',lv:3,pos:[2,-1],prod:'range 3',eff:l=>`Live intel radius <b>+1</b> around home; earlier raid warning`,cost:l=>({m:Math.round(120*Math.pow(1.7,l)),c:Math.round(180*Math.pow(1.7,l)),d:Math.round(40*Math.pow(1.7,l))}),req:[['Research Lab',2,3]]},
+ {id:'dg',name:'Defense Grid',ic:'shield',lv:2,pos:[-2,1],prod:'power 140',eff:l=>`Raid defence power <b>+40</b>`,cost:l=>({m:Math.round(300*Math.pow(1.6,l)),c:Math.round(150*Math.pow(1.6,l)),d:Math.round(60*Math.pow(1.6,l))}),req:[['Shipyard',3,4]]}];
+const Q={a:{name:'Crystal Mine',to:8,s:T0-420,e:T0+260},res:null,yard:{n:'Corvette x3',s:T0-200,e:T0+170}};
+const TREE=[ // branch, id, name, lv,max, x,y, req ids, cost base, ticks
+ ['Drives','fe','Fuel Efficiency',3,8,100,90,[],'Hops cost 5% less fuel per level'],['Drives','ft','Extended Tanks',2,8,280,90,['fe'],'+10% tank per level'],['Drives','nv','Navigation',1,6,460,90,['ft'],'+1 scan range at L2, faster jumps'],['Drives','ej','Emergency Jump',0,3,640,90,['nv'],'Instant retreat from combat, costs 2x fuel'],
+ ['Hulls and arms','rh','Reinforced Hulls',4,10,100,230,[],'+8% hull per level'],['Hulls and arms','as','Advanced Shields',2,10,280,230,['rh'],'+10% shield per level'],['Hulls and arms','wr','Weapons',3,10,460,230,['as'],'+8% weapon damage'],['Hulls and arms','ct','Corvette Tech',3,5,100,340,['rh'],'Unlocks Corvette, upgrades its line'],['Hulls and arms','ft2','Frigate Tech',0,5,280,340,['ct','as'],'Unlocks Frigate'],['Hulls and arms','cr','Cruiser Tech',0,5,460,340,['ft2','wr'],'Unlocks Cruiser'],
+ ['Economy','he','Harvesting Efficiency',2,8,100,450,[],'+8% ore per trip'],['Economy','ht','Hauler Tech',1,5,280,450,['he'],'Bigger holds, unlocks Hauler L2'],['Economy','lg','Logistics',0,3,460,450,['ht'],'Unlocks building slot B']];
+const SHIPS=[
+ {id:'scout',n:'Scout',hull:30,sh:10,wp:5,cg:20,sp:10,fu:60,cost:{m:200,c:50,d:30},t:60,req:[]},
+ {id:'corvette',n:'Corvette',hull:50,sh:20,wp:15,cg:10,sp:8,fu:50,cost:{m:400,c:100,d:60},t:120,req:[['Corvette Tech',1,3]]},
+ {id:'hauler',n:'Hauler',hull:80,sh:20,wp:5,cg:200,sp:6,fu:100,cost:{m:600,c:300,d:100},t:150,req:[['Hauler Tech',1,1]]},
+ {id:'frigate',n:'Frigate',hull:120,sh:60,wp:30,cg:30,sp:5,fu:80,cost:{m:1000,c:400,d:200},t:300,req:[['Frigate Tech',1,0],['Shipyard',5,4]]},
+ {id:'cruiser',n:'Cruiser',hull:200,sh:100,wp:80,cg:50,sp:4,fu:120,cost:{m:2400,c:1200,d:500},t:600,req:[['Cruiser Tech',1,0],['Shipyard',6,4]]}];
+const SHAPES={scout:'M50 8 L62 70 L50 58 L38 70z',corvette:'M50 6 L64 40 L84 74 L50 62 L16 74 L36 40z',hauler:'M32 12 H68 L76 76 H24z',frigate:'M50 4 L66 30 L90 78 H10 L34 30z',cruiser:'M50 0 L60 24 L68 46 L92 58 L86 84 L50 74 L14 84 L8 58 L32 46 L40 24z'};
+let tab=(location.hash||'#buildings').slice(1),selB='mm',selT='ft2',selS='frigate',qty=1,tnow=()=>I.tick;
+const level=n=>{const b=BLD.find(b=>b.name===n);if(b)return b.lv;const t=TREE.find(t=>t[2]===n);return t?t[3]:0};
+const afford=c=>{const r=I.res();return r.m>=c.m&&r.c>=c.c&&r.d>=c.d};
+const cost=c=>`<span class="cost">${c.m?`<span class="fe">${I.fmt(c.m)} Fe</span>`:''}${c.c?`<span class="cr">${I.fmt(c.c)} Cr</span>`:''}${c.d?`<span class="de">${I.fmt(c.d)} De</span>`:''}</span>`;
+const secs=c=>{const r=I.res(),P=I.PROD;let w=0;[['m'],['c'],['d']].forEach(([k])=>{if(r[k]<c[k])w=Math.max(w,(c[k]-r[k])/P[k])});return w};
+main.innerHTML=`<div class="wrap"><div class="qbar" id="qbar"></div><div class="tabs" id="tabs"></div><div class="stage" id="stage"></div><div class="drawer" id="drawer"></div></div>`;
+function qbar(){const T=I.tick,a=Q.a,y=Q.yard;
+ document.getElementById('qbar').innerHTML=
+  `<div class="qpill ${a?'':'idle'}"><div><span class="l">Build slot A</span><b>${a?a.name+' L'+a.to:'Idle: queue something'}</b></div>${a?`<span class="t">${I.clock(a.e-T)}</span><span class="p" style="width:${Math.min(100,(T-a.s)/(a.e-a.s)*100)}%"></span>`:''}</div>
+   <div class="qpill lock"><div><span class="l">Build slot B</span><b>Locked: Logistics L1</b></div></div>
+   <div class="qpill ${Q.res?'':'idle'}"><div><span class="l">Research</span><b>${Q.res?Q.res.n+' L'+Q.res.to:'Idle: pick a tech'}</b></div>${Q.res?`<span class="t">${I.clock(Q.res.e-T)}</span><span class="p" style="width:${Math.min(100,(T-Q.res.s)/(Q.res.e-Q.res.s)*100)}%"></span>`:''}</div>
+   <div class="qpill"><div><span class="l">Shipyard</span><b>${y.n}</b></div><span class="t">${I.clock(y.e-T)}</span><span class="p" style="width:${Math.min(100,(T-y.s)/(y.e-y.s)*100)}%"></span></div>`}
+function tabs(){const L=[['buildings','Buildings'],['research','Research'],['shipyard','Shipyard'],['defence','Defence','pv'],['storage','Storage','pv']];
+ document.getElementById('tabs').innerHTML=L.map(([k,l,pv],i)=>`<a class="tab ${tab===k?'on':''}" href="#${k}" data-t="${k}">${l}${pv?'<span class="pv">NEEDS SERVER</span>':''}<span class="key">${i+1}</span></a>`).join('');
+ document.querySelectorAll('.tab').forEach(a=>a.onclick=e=>{e.preventDefault();tab=a.dataset.t;history.replaceState(null,'','#'+tab);render()})}
+function stageB(){const st=document.getElementById('stage');const S=74;
+ let h=`<div class="base" id="base">`;
+ h+=`<div class="hx core" style="left:320px;top:260px"><div class="o"></div><div class="i"></div><div class="c"><div class="nm">Ember Landing</div></div></div>`;
+ BLD.forEach(b=>{const [q,r]=b.pos,x=320+S*1.5*q*1.04,y=260+S*(Math.sqrt(3)/2*q+Math.sqrt(3)*r)*1.04;
+   const c=b.cost(b.lv),ok=afford(c)&&!Q.a&&reqOK(b);
+   h+=`<div class="hx ${selB===b.id?'sel':''} ${ok?'can':''} ${b.id==='cm'&&Q.a&&Q.a.name==='Crystal Mine'?'busy':''} ${reqOK(b)?'':'lock'}" data-b="${b.id}" style="left:${x}px;top:${y}px"><div class="o"></div><div class="i"></div><div class="c"><svg viewBox="0 0 24 24">${IC[b.ic]}</svg><div class="lv">${b.lv}</div><div class="nm">${b.name}</div><div class="pr">${b.prod}</div></div>${ok?'<span class="up">&#9650;</span>':''}</div>`});
+ h+=`</div><div style="text-align:center;color:var(--text-3);font-size:11px;margin-top:6px"><span class="voice">Click a building. A teal edge means you can afford the next level and a slot is free.</span></div>`;
+ st.innerHTML=h;st.querySelectorAll('.hx[data-b]').forEach(e=>{e.onclick=()=>{selB=e.dataset.b;I.sfx('click');render()}})}
+function reqOK(b){return b.req.every(([n,need])=>level(n)>=need)}
+function drawerB(){const b=BLD.find(x=>x.id===selB),c=b.cost(b.lv),w=secs(c),ok=afford(c),rq=reqOK(b),slot=!Q.a;
+ const ticks=Math.round(120*Math.pow(1.45,b.lv)/4);let why=!rq?'Prerequisites missing':!slot?`Slot A busy (${I.clock(Q.a.e-I.tick)} left)`:!ok?`Short ${[['m','Fe'],['c','Cr'],['d','De']].filter(([k])=>I.res()[k]<c[k]).map(([k,l])=>Math.ceil(c[k]-I.res()[k])+' '+l).join(', ')} (in ${I.clock(w)})`:'';
+ document.getElementById('drawer').innerHTML=`<div class="lbl">Building</div><div class="big2">${b.name}</div>
+  <div class="lvlrow"><span>L${b.lv}</span><span class="ar">&rarr;</span><span style="color:var(--a100)">L${b.lv+1}</span></div>
+  <div class="eff">${b.eff(b.lv)}</div>
+  <div class="lbl" style="margin:14px 0 4px">Cost</div>
+  ${[['m','Metal','fe'],['c','Crystal','cr'],['d','Deuterium','de']].filter(([k])=>c[k]).map(([k,n,cl])=>`<div class="need ${I.res()[k]<c[k]?'bad':''}"><span class="${cl}">${n}</span><span class="num">${I.fmt(I.res()[k])} / <b>${I.fmt(c[k])}</b></span></div>`).join('')}
+  <div class="need"><span>Build time</span><b class="num">${I.clock(ticks)}</b></div>
+  <div class="lbl" style="margin:14px 0 4px">Requires</div>
+  ${b.req.length?b.req.map(([n,need])=>`<div class="req ${level(n)>=need?'ok':'no'}"><i>${level(n)>=need?'&#10003;':'&#10005;'}</i>${n} L${need} <span style="color:var(--text-3)">(you have L${level(n)})</span></div>`).join(''):'<div class="req ok"><i>&#10003;</i>No prerequisites</div>'}
+  <div style="margin-top:18px"><button class="btn primary" style="width:100%;justify-content:center;padding:11px" id="go" ${why?'disabled':''}>Upgrade to L${b.lv+1} <span class="key">&#9166;</span></button>${why?`<div style="margin-top:8px;color:var(--ember);font-size:11px">${why}</div>`:''}</div>
+  <div class="voice" style="margin-top:18px;font-size:12px">${b.id==='mm'?'Everything starts with rock.':b.id==='dg'?'It will not stop a swarm. It will stop a bad day.':'Level ups stack. Keep a slot busy.'}</div>`;
+ const g=document.getElementById('go');if(g)g.onclick=()=>{if(I.spend(c)){b.lv++;Q.a={name:b.name,to:b.lv,s:I.tick,e:I.tick+ticks};I.sfx('ok');I.toast('Upgrade queued',b.name+' L'+b.lv+' in '+I.clock(ticks),'teal');b.lv--;render()}}}
+function stageR(){const st=document.getElementById('stage');
+ const st_=t=>{const [br,id,n,lv,mx,x,y,req]=t;const ok=req.every(r=>TREE.find(q=>q[1]===r)[3]>=1);return lv>=mx?'done':ok?(Q.res&&Q.res.id===id?'act':'avail'):'lock'};
+ let e='',nodes='';TREE.forEach(t=>{t[7].forEach(r=>{const p=TREE.find(q=>q[1]===r);const on=p[3]>=1;const st=on?'#ffb000':'#4d4230',d=on?'':'stroke-dasharray="4 5"';
+    if(p[6]===t[6])e+=`<path d="M${p[5]+75} ${p[6]} L ${t[5]-75} ${t[6]}" stroke="${st}" stroke-width="2" fill="none" ${d}/>`;
+    else{const y1=p[6]+28,y2=t[6]-28,m=(y1+y2)/2;e+=`<path d="M${p[5]} ${y1} C ${p[5]} ${m}, ${t[5]} ${m}, ${t[5]} ${y2}" stroke="${st}" stroke-width="2" fill="none" ${d}/>`}})
+  nodes+=`<div class="node ${st_(t)} ${selT===t[1]?'sel':''}" data-t="${t[1]}" style="left:${t[5]}px;top:${t[6]}px"><div class="n">${t[2]}</div><div class="m"><span>L${t[3]}/${t[4]}</span><span>${st_(t)==='lock'?'&#128274;'.replace('&#128274;','locked'):st_(t)==='avail'?'<b style="color:var(--own)">upgrade</b>':t[3]>=t[4]?'max':''}</span></div><div class="bar" style="margin-top:5px;height:3px"><i style="width:${t[3]/t[4]*100}%"></i></div></div>`});
+ st.innerHTML=`<div class="tree"><svg class="edges">${e}</svg>${['Drives:20','Hulls and arms:160','Economy:395'].map(s=>`<div class="branch" style="left:10px;top:${s.split(':')[1]-6}px">${s.split(':')[0]}</div>`).join('')}${nodes}</div>`;
+ st.querySelectorAll('.node').forEach(n=>n.onclick=()=>{selT=n.dataset.t;I.sfx('click');render()})}
+function drawerR(){const t=TREE.find(q=>q[1]===selT),lv=t[3],c={m:Math.round(180*Math.pow(1.7,lv)),c:Math.round(260*Math.pow(1.7,lv)),d:Math.round(60*Math.pow(1.7,lv))},tk=Math.round(300*Math.pow(1.6,lv)),
+  reqs=t[7].map(r=>TREE.find(q=>q[1]===r)),ok=reqs.every(r=>r[3]>=1),free=!Q.res,af=afford(c);
+ const why=!ok?'Prerequisite tech missing':!free?`Lab busy (${I.clock(Q.res.e-I.tick)} left)`:!af?'Not enough resources':lv>=t[4]?'Max level':'';
+ document.getElementById('drawer').innerHTML=`<div class="lbl">Research &middot; ${t[0]}</div><div class="big2">${t[2]}</div><div class="lvlrow"><span>L${lv}</span><span class="ar">&rarr;</span><span style="color:var(--a100)">L${lv+1}</span><span style="font-size:12px;color:var(--text-3);margin-left:auto">max ${t[4]}</span></div>
+ <div class="eff">${t[8]}.</div><div class="lbl" style="margin:14px 0 4px">Cost</div>${cost(c)}<div class="need" style="margin-top:8px"><span>Research time</span><b class="num">${I.clock(tk)}</b></div>
+ <div class="lbl" style="margin:14px 0 4px">Requires</div><div class="req ${level('Research Lab')>=1?'ok':'no'}"><i>&#10003;</i>Research Lab L1</div>${reqs.map(r=>`<div class="req ${r[3]>=1?'ok':'no'}"><i>${r[3]>=1?'&#10003;':'&#10005;'}</i>${r[2]} L1</div>`).join('')}
+ <div style="margin-top:18px"><button class="btn primary" style="width:100%;justify-content:center;padding:11px" id="go" ${why?'disabled':''}>Research L${lv+1}</button>${why?`<div style="margin-top:8px;color:var(--ember);font-size:11px">${why}</div>`:''}</div>`;
+ const g=document.getElementById('go');if(g)g.onclick=()=>{if(I.spend(c)){Q.res={id:t[1],n:t[2],to:lv+1,s:I.tick,e:I.tick+Math.round(tk/6)};I.sfx('ok');I.toast('Research started',t[2]+' L'+(lv+1),'violet');render()}}}
+function stageS(){const st=document.getElementById('stage');
+ st.innerHTML=`<div class="ships">${SHIPS.map(s=>{const ok=s.req.every(([n,need])=>level(n)>=need);const mx=Math.max(1,Math.floor(Math.min(I.res().m/s.cost.m,I.res().c/s.cost.c,I.res().d/s.cost.d)));
+  const bar=(l,v,m,c)=>`<span>${l}</span><div class="bar ${c||''}"><i style="width:${Math.min(100,v/m*100)}%"></i></div><b style="color:var(--text)">${v}</b>`;
+  return `<div class="panel sh ${ok?'':'lock'}" data-s="${s.id}"><div class="t">${s.n}<span class="chip ${ok?'teal':''}">${ok?'available':'locked'}</span></div>
+  <svg class="s" viewBox="0 0 100 90"><defs><linearGradient id="g${s.id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1d6b63"/><stop offset="1" stop-color="#0a2623"/></linearGradient></defs><path d="${SHAPES[s.id]}" fill="url(#g${s.id})" stroke="#5ee0cf" stroke-width="1.3" style="filter:drop-shadow(0 0 5px rgba(94,224,207,.5))"/></svg>
+  <div class="st">${bar('HULL',s.hull,200)}${bar('SHLD',s.sh,100,'teal')}${bar('GUNS',s.wp,80,'red')}${bar('HOLD',s.cg,200)}</div>
+  ${ok?`<div>${cost(s.cost)}</div><div style="font-size:11px;color:var(--text-3);margin:4px 0">${I.clock(s.t)} each &middot; can build up to ${mx}</div><div class="qty">${[1,5,10].map(n=>`<button class="${qty===n?'on':''}" data-q="${n}">${n}x</button>`).join('')}<button data-q="${mx}">Max</button></div><button class="btn primary sm" style="width:100%;justify-content:center" data-b="${s.id}">Build ${qty}x</button>`:
+  `<div style="margin-top:6px">${s.req.map(([n,need])=>`<div class="req ${level(n)>=need?'ok':'no'}"><i>${level(n)>=need?'&#10003;':'&#10005;'}</i>${n} L${need} <span style="color:var(--text-3)">(L${level(n)})</span></div>`).join('')}</div>`}</div>`}).join('')}</div>`;
+ st.querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{qty=+b.dataset.q;render()});
+ st.querySelectorAll('[data-b]').forEach(b=>b.onclick=()=>{const s=SHIPS.find(x=>x.id===b.dataset.b),c={m:s.cost.m*qty,c:s.cost.c*qty,d:s.cost.d*qty};if(!afford(c)){I.toast('Cannot afford','Need '+I.fmt(c.m)+' Fe, '+I.fmt(c.c)+' Cr, '+I.fmt(c.d)+' De','red');return}I.spend(c);I.sfx('ok');I.toast('Queued',qty+'x '+s.n,'teal');Q.yard={n:qty+'x '+s.n,s:I.tick,e:I.tick+s.t*qty/2}})}
+function drawerS(){document.getElementById('drawer').innerHTML=`<div class="lbl">Fleet slots</div><div class="big2">3 / 3</div><div class="eff">New ships join the docked fleet. You cannot found a fourth fleet. Merge or split fleets in the Fleets screen.</div>
+ <div class="lbl" style="margin:16px 0 6px">Docked now</div><div class="need"><span>Longhaul</span><b>2x Hauler</b></div><div class="lbl" style="margin:16px 0 6px">Queue</div><div class="need"><span>${Q.yard.n}</span><b class="num">${I.clock(Q.yard.e-I.tick)}</b></div><div class="voice" style="margin-top:18px">Pace is a server setting: this timer is ${I.clock(Q.yard.e-I.tick)} on this world, a week on a seasonal one.</div>`}
+function stageD(){const st=document.getElementById('stage');
+ st.innerHTML=`<div class="pvnote">Preview: defences, raid forecasts and storage are on the roadmap. The protocol does not carry them yet; see spec.md section 8.</div><div class="def">
+ <div class="panel" style="padding:0"><div class="ph">Raid forecast</div><div class="pb"><div style="display:flex;gap:30px;align-items:flex-end;height:150px;margin:6px 0 12px"><div style="flex:1;text-align:center"><div style="height:${140/200*130}px;background:linear-gradient(180deg,var(--own),var(--own-dim));border-radius:4px 4px 0 0"></div><b class="tc0 num" style="font-size:20px">140</b><div class="lbl">Your defence</div></div><div style="flex:1;text-align:center"><div style="height:${120/200*130}px;background:repeating-linear-gradient(135deg,var(--t2) 0 6px,#a8601a 6px 12px);border-radius:4px 4px 0 0"></div><b class="tc2 num" style="font-size:20px">~120</b><div class="lbl">Raid (moderate)</div></div></div><div style="font-size:12px;color:var(--text-2)">Next roll in <b>${I.clock(240)}</b>. Estimated outcome: <b class="tc0">held, minor losses</b>. Docked fleets add their power.</div></div></div>
+ <div class="panel" style="padding:0"><div class="ph">Defence structures</div><div class="pb">${[['Defense Grid',2,'Shields the planet, raid power +40'],['Pulse Battery',0,'Direct fire vs raiders. Needs Weapons L4'],['Shield Dome',0,'Absorbs the first 200 damage'],['Orbital Platform',0,'Hosts one defence fleet permanently']].map(([n,l,d])=>`<div class="need" style="align-items:center"><span><b style="color:var(--a200)">${n}</b> L${l}<br><span style="font-size:10px;color:var(--text-3)">${d}</span></span><button class="btn sm" ${l?'':'disabled'}>Upgrade</button></div>`).join('')}</div></div></div>`}
+function stageSt(){const st=document.getElementById('stage');const r=I.res();
+ st.innerHTML=`<div class="pvnote">Preview: storage caps and protected stock are not in the protocol yet.</div><div class="def">${['m','c','d'].map((k,i)=>{const n=['Metal','Crystal','Deuterium'][i],cap=I.CAP[k],pr=cap*.25;return `<div class="panel" style="padding:0"><div class="ph">${n} vault</div><div class="pb"><div class="big2 num">${I.fmt(r[k])} <span style="font-size:13px;color:var(--text-3)">/ ${I.fmt(cap)}</span></div>
+ <div style="position:relative;height:18px;border-radius:4px;background:rgba(255,176,0,.08);overflow:hidden;margin:12px 0 6px"><div style="position:absolute;left:0;top:0;bottom:0;width:${Math.min(r[k],pr)/cap*100}%;background:var(--own)"></div><div style="position:absolute;left:${Math.min(r[k],pr)/cap*100}%;top:0;bottom:0;width:${Math.max(0,r[k]-pr)/cap*100}%;background:repeating-linear-gradient(135deg,var(--ember) 0 5px,#8a2a18 5px 10px)"></div></div>
+ <div style="font-size:11px;color:var(--text-2)"><b class="tc0">${I.fmt(pr)}</b> protected &middot; <b style="color:var(--ember)">${I.fmt(Math.max(0,r[k]-pr))}</b> raidable. If it sits, it gets hit.</div><button class="btn sm" style="margin-top:12px">Upgrade vault &rarr; ${I.fmt(cap*1.4)}</button></div></div>`}).join('')}</div>`}
+function drawerGeneric(){document.getElementById('drawer').innerHTML=`<div class="lbl">Notes</div><div class="eff" style="margin-top:8px">${tab==='defence'?'Defences fight on the surface during a raid. A fleet docked at home adds its power but is also at risk: the forecast shows both cases.':'Storage is capped. Overflow is lost, so a full vault is a visible warning on the Overview. Vaults protect a share from raids.'}</div>`}
+function render(){tabs();qbar();({buildings:stageB,research:stageR,shipyard:stageS,defence:stageD,storage:stageSt}[tab]||stageB)();({buildings:drawerB,research:drawerR,shipyard:drawerS}[tab]||drawerGeneric)()}
+I.onTick(T=>{qbar();if(Q.a&&T>=Q.a.e){const b=BLD.find(x=>x.name===Q.a.name);if(b)b.lv=Q.a.to;I.toast('Build complete',Q.a.name+' L'+Q.a.to,'teal');I.sfx('ok');Q.a=null;render()}
+ if(Q.res&&T>=Q.res.e){const t=TREE.find(x=>x[1]===Q.res.id);if(t)t[3]=Q.res.to;I.toast('Research complete',Q.res.n+' L'+Q.res.to,'violet');Q.res=null;render()}
+ if(tab==='buildings'||tab==='research')(tab==='buildings'?drawerB:drawerR)()});
+addEventListener('keydown',e=>{const n=+e.key;if(n>=1&&n<=5){tab=['buildings','research','shipyard','defence','storage'][n-1];history.replaceState(null,'','#'+tab);render()}if(e.key==='Enter'){const g=document.getElementById('go');if(g&&!g.disabled)g.click()}});
+render();
+</script></body></html>
