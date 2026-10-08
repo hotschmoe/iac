@@ -1,10 +1,19 @@
 {
+  "attacker_fleet_id": 1,
+  "attacker_owner": "Admiral",
   "attacker_ship_id": 11,
   "damage": 18.5,
   "hull_damage": 8.5,
   "kind": "CombatRound",
+  "mine": true,
   "rapid_fire": true,
+  "sector": {
+    "q": 5,
+    "r": -5
+  },
   "shield_absorbed": 10.0,
+  "target_fleet_id": 9001,
+  "target_owner": null,
   "target_ship_id": 22,
   "tick": 1234
 }

@@ -1,6 +1,8 @@
 {
-  "enemy_fleet_id": 9001,
+  "enemy_fleet_id": 4294967400,
   "kind": "CombatStarted",
+  "mine": true,
+  "owner": "Admiral",
   "player_fleet_id": 1,
   "sector": {
     "q": 5,

@@ -829,6 +829,8 @@
           ]
         }
       ],
+      "last_seen": 4821,
+      "live": true,
       "location": {
         "q": 3,
         "r": -2
@@ -857,6 +859,7 @@
         "deuterium": 2.5,
         "metal": 40.0
       },
+      "salvage_despawn_tick": 4880,
       "site": {
         "risk": "uneasy",
         "tier": 2
@@ -865,6 +868,8 @@
     },
     {
       "connections": [],
+      "last_seen": 4821,
+      "live": true,
       "location": {
         "q": -1,
         "r": 0
@@ -888,6 +893,8 @@
         }
       ],
       "hostiles": [],
+      "last_seen": 4240,
+      "live": false,
       "location": {
         "q": -5,
         "r": 7
@@ -898,6 +905,12 @@
         "deuterium": "Rich",
         "metal": "Sparse"
       },
+      "salvage": {
+        "crystal": 15.0,
+        "deuterium": 9.0,
+        "metal": 60.0
+      },
+      "salvage_despawn_tick": 4300,
       "site": {
         "risk": "hot",
         "tier": 5

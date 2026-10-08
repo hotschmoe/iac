@@ -1,6 +1,16 @@
 {
   "kind": "CombatEnded",
+  "mine": true,
+  "owners": [
+    "Admiral"
+  ],
   "player_victory": true,
+  "salvage": {
+    "crystal": 15.0,
+    "deuterium": 9.0,
+    "metal": 60.0
+  },
+  "salvage_despawn_tick": 137,
   "sector": {
     "q": 2,
     "r": 2

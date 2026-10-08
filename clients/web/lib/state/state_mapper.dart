@@ -127,24 +127,38 @@ class StateMapper {
       case proto.CombatRoundEvent():
         return; // far too chatty for the log
       case proto.ShipDestroyedEvent():
-        msg = '${k.isNpc ? 'Hostile' : 'Ship'} ${k.shipClass.label} destroyed';
-        level = k.isNpc ? EventLevel.normal : EventLevel.bright;
+        msg = k.mine
+            ? '! Your ${k.shipClass.label} lost in ${k.sector} (fleet ${k.ownerFleetId})'
+            : '${k.isNpc ? 'Hostile' : "${k.owner}'s"} ${k.shipClass.label} destroyed in ${k.sector}';
+        level = k.mine ? EventLevel.bright : (k.isNpc ? EventLevel.normal : EventLevel.dim);
       case proto.FleetDestroyedEvent():
-        msg = '${k.isNpc ? 'Hostile fleet ' : 'Fleet '}${k.fleetId} destroyed'
-            '${k.salvage.total > 0 ? ' -- salvage ${_res(k.salvage)}' : ''}';
-        level = k.isNpc ? EventLevel.normal : EventLevel.bright;
+        if (k.mine) {
+          msg = '!! YOUR FLEET ${_fleet(k.fleetId)} DESTROYED in ${k.sector}';
+          level = EventLevel.bright;
+        } else if (k.isNpc) {
+          msg = 'Hostile fleet ${k.fleetId} destroyed in ${k.sector} -- wreckage ${_res(k.salvage)}';
+        } else {
+          msg = "${k.owner}'s fleet ${_fleet(k.fleetId)} destroyed in ${k.sector}";
+          level = EventLevel.dim;
+        }
       case proto.ResourceHarvestedEvent():
-        msg = '${_fleet(k.fleetId)} harvested ${k.amount.toStringAsFixed(1)} ${k.resourceType.name}';
+        msg = '${_fleet(k.fleetId)} harvested ${_res(k.resources)} over ${k.ticks}s';
       case proto.SectorEnteredEvent():
         msg = '${_fleet(k.fleetId)} entered ${k.sector}${k.firstVisit ? ' (first visit)' : ''}';
       case proto.CombatStartedEvent():
-        msg = '! Combat: ${_fleet(k.playerFleetId)} vs hostile ${k.enemyFleetId} in ${k.sector}';
-        level = EventLevel.bright;
+        msg = '! Combat in ${k.sector}: ${k.mine ? 'your' : "${k.owner}'s"} ${_fleet(k.playerFleetId)} vs hostile ${k.enemyFleetId}';
+        level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.CombatEndedEvent():
-        msg = '! Combat ended in ${k.sector} -- ${k.playerVictory ? 'victory' : 'defeat'}';
-        level = EventLevel.bright;
+        final outcome = k.mine ? (k.playerVictory ? 'victory' : 'defeat') : (k.playerVictory ? 'won by others' : 'lost by others');
+        final pile = k.salvage == null ? '' : ' -- wreckage ${_res(k.salvage!)}';
+        msg = '! Combat ended in ${k.sector}: $outcome$pile';
+        level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.SalvageCollectedEvent():
-        msg = '${_fleet(k.fleetId)} collected salvage ${_res(k.resources)}';
+        msg = '${_fleet(k.fleetId)} collected salvage ${_res(k.resources)}'
+            '${k.remaining == null ? '' : ", ${_res(k.remaining!)} left behind"}';
+      case proto.SalvageDespawnedEvent():
+        msg = 'Wreckage in ${k.sector} drifted away (${_res(k.resources)})';
+        level = EventLevel.dim;
       case proto.FleetArrivedEvent():
         msg = '${_fleet(k.fleetId)} arrived at ${k.sector}';
       case proto.BuildingCompletedEvent():
@@ -206,6 +220,13 @@ class StateMapper {
 
     log.insert(0, LogEntry(tick: e.tick, message: msg, level: level));
     if (log.length > 14) log.removeRange(14, log.length);
+  }
+
+  static String _age(int ticks) {
+    final t = math.max(0, ticks);
+    if (t < 120) return '${t}s';
+    if (t < 7200) return '${t ~/ 60}m';
+    return '${t ~/ 3600}h';
   }
 
   static String _res(proto.Resources r) =>
@@ -394,9 +415,12 @@ class StateMapper {
       crystal: sec.resources.crystal.label,
       deut: sec.resources.deuterium.label,
       hostile: hostileStr,
+      intel: sec.live ? 'live' : 'chart, ${_age(tick - sec.lastSeen)} old',
       adjacent: near.isEmpty ? 'none known' : near.join('; '),
       exits: '${sec.connections.length} of 6',
-      salvage: (salvage == null || salvage.total <= 0) ? 'none' : _res(salvage),
+      salvage: (salvage == null || salvage.total <= 0)
+          ? 'none'
+          : '${_res(salvage)}${!sec.live && (sec.salvageDespawnTick ?? 1 << 60) <= tick ? ' (since gone)' : ''}',
       site: site == null ? 'none' : 'tier ${site.tier} (${site.risk.label})',
     );
   }

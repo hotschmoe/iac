@@ -63,6 +63,9 @@ class SectorInfo {
   final String salvage;
   final String site;
 
+  /// "live", or how old the remembered intel on this sector is.
+  final String intel;
+
   const SectorInfo({
     required this.terrain,
     required this.metal,
@@ -73,6 +76,7 @@ class SectorInfo {
     required this.exits,
     this.salvage = '—',
     this.site = '—',
+    this.intel = '—',
   });
 
   static const unknown = SectorInfo(

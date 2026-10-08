@@ -23,7 +23,11 @@ class StarMapPainter extends CustomPainter {
   final Map<Hex, proto.SectorState> sectors;
   final Map<Hex, proto.SignalKind> signals;
 
+  /// Current server tick, for the age of remembered (stale) sectors.
+  final int tick;
+
   StarMapPainter({
+    required this.tick,
     required this.zoom,
     required this.centerQ,
     required this.centerR,
@@ -38,6 +42,9 @@ class StarMapPainter extends CustomPainter {
 
   static const _amberFull = Color(0xFFFFB000);
   static const _danger = Color(0xFFFF6B35);
+
+  /// Chart memory is drawn at this fraction of live brightness.
+  static const _staleDim = 0.6;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -72,10 +79,11 @@ class StarMapPainter extends CustomPainter {
           final npy = cy + npos.dy;
 
           final visible = sectors.containsKey(conn);
+          final remembered = !here.live || sectors[conn]?.live == false;
 
           final paint = Paint()
             ..color = visible
-                ? _amberFull.withValues(alpha: 0.08)
+                ? _amberFull.withValues(alpha: remembered ? 0.08 * _staleDim : 0.08)
                 : _amberFull.withValues(alpha: 0.025)
             ..strokeWidth = 0.8
             ..style = PaintingStyle.stroke;
@@ -96,6 +104,8 @@ class StarMapPainter extends CustomPainter {
         final py = cy + pos.dy;
         final sec = sectors[Hex(q, r)];
         final explored = sec != null;
+        final stale = sec != null && !sec.live;
+        final k = stale ? _staleDim : 1.0;
         final hostileCount = _hostileCount(sec);
         final hasHostile = hostileCount > 0;
         final signal = signals[Hex(q, r)];
@@ -133,11 +143,11 @@ class StarMapPainter extends CustomPainter {
             strokeWidth = 1;
           } else if (explored) {
             fillColor = hasHostile
-                ? _danger.withValues(alpha: 0.03)
-                : _amberFull.withValues(alpha: 0.02);
+                ? _danger.withValues(alpha: 0.03 * k)
+                : _amberFull.withValues(alpha: 0.02 * k);
             strokeColor = hasHostile
-                ? _danger.withValues(alpha: 0.12)
-                : _amberFull.withValues(alpha: 0.06);
+                ? _danger.withValues(alpha: 0.12 * k)
+                : _amberFull.withValues(alpha: 0.06 * k);
             strokeWidth = 0.5;
           } else {
             fillColor = _amberFull.withValues(alpha: 0.005);
@@ -183,12 +193,12 @@ class StarMapPainter extends CustomPainter {
               px,
               py + 3,
               isRegion ? 8.0 : 10.0,
-              _danger.withValues(alpha: 0.7),
+              _danger.withValues(alpha: 0.7 * k),
               center: true,
             );
           } else if (sec.site != null) {
             drawMapText(canvas, isRegion ? 'd' : 'D${sec.site!.tier}', px, py + 3, isRegion ? 7.0 : 9.0,
-                _amberFull.withValues(alpha: 0.6),
+                _amberFull.withValues(alpha: 0.6 * k),
                 center: true);
           } else if (sec.terrain != proto.TerrainType.empty && sec.resources.metal != proto.Density.none) {
             drawMapText(
@@ -197,12 +207,17 @@ class StarMapPainter extends CustomPainter {
               px,
               py + 3,
               isRegion ? 6.0 : 9.0,
-              _amberFull.withValues(alpha: 0.35),
+              _amberFull.withValues(alpha: 0.35 * k),
               center: true,
             );
           } else {
             drawMapText(canvas, '.', px, py + 2, isRegion ? 3.0 : 6.0,
-                _amberFull.withValues(alpha: 0.15),
+                _amberFull.withValues(alpha: 0.15 * k),
+                center: true);
+          }
+          if (stale && !isFleetHere && !isHome && !isRegion) {
+            drawMapText(canvas, ageLabel(tick - sec.lastSeen), px, py + hexSize * 0.45, 7,
+                _amberFull.withValues(alpha: 0.45),
                 center: true);
           }
         } else if (signal != null) {
@@ -256,6 +271,7 @@ class StarMapPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(StarMapPainter oldDelegate) =>
+      oldDelegate.tick != tick ||
       oldDelegate.zoom != zoom ||
       oldDelegate.centerQ != centerQ ||
       oldDelegate.centerR != centerR ||
@@ -267,4 +283,12 @@ class StarMapPainter extends CustomPainter {
 
   static int _hostileCount(proto.SectorState? s) =>
       s?.hostiles?.fold<int>(0, (n, h) => n + h.shipCount) ?? 0;
+}
+
+/// How old remembered intel is, as a short label: "45s", "7m", "3h".
+String ageLabel(int ticks) {
+  final t = ticks < 0 ? 0 : ticks;
+  if (t < 120) return '${t}s';
+  if (t < 7200) return '${t ~/ 60}m';
+  return '${t ~/ 3600}h';
 }

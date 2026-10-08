@@ -141,7 +141,10 @@ fn rich_sector() -> SectorState {
             ship_classes: ShipClassCounts { scout: 1, corvette: 2, frigate: 0, cruiser: 0, hauler: 1 },
         }]),
         salvage: Some(res(40.0, 12.0, 2.5)),
+        salvage_despawn_tick: Some(4880),
         site: Some(SiteBrief { tier: 2, risk: SiteRisk::Uneasy }),
+        last_seen: 4821,
+        live: true,
     }
 }
 
@@ -158,7 +161,10 @@ fn bare_sector() -> SectorState {
         hostiles: None,
         player_fleets: None,
         salvage: None,
+        salvage_despawn_tick: None,
         site: None,
+        last_seen: 4821,
+        live: true,
     }
 }
 
@@ -174,8 +180,11 @@ fn anomaly_sector() -> SectorState {
         connections: vec![h(-4, 7), h(-5, 6)],
         hostiles: Some(vec![]),
         player_fleets: Some(vec![]),
-        salvage: None,
+        salvage: Some(res(60.0, 15.0, 9.0)),
+        salvage_despawn_tick: Some(4300),
         site: Some(SiteBrief { tier: 5, risk: SiteRisk::Hot }),
+        last_seen: 4240,
+        live: false,
     }
 }
 
@@ -314,6 +323,7 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::SiteAmbush(_) => "site_ambush",
         EventKind::PolicyAction(_) => "policy_action",
         EventKind::Alert(_) => "alert",
+        EventKind::SalvageDespawned(_) => "salvage_despawned",
     }
 }
 
@@ -503,13 +513,14 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                         tick: 4821,
                         kind: EventKind::ResourceHarvested(ResourceHarvestedEvent {
                             fleet_id: 1,
-                            resource_type: HarvestResource::Metal,
-                            amount: 24.5,
+                            resources: res(24.5, 0.0, 0.0),
+                            ticks: 10,
                         }),
                     },
                     GameEvent {
                         tick: 4821,
                         kind: EventKind::Alert(AlertEvent {
+                            player_id: Some(3),
                             level: AlertLevel::Warning,
                             message: "Low fuel".into(),
                             sector: Some(h(3, -2)),
@@ -573,7 +584,14 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             "".into(),
             ServerMessage::Event(GameEvent {
                 tick: 77,
-                kind: EventKind::CombatEnded(CombatEndedEvent { sector: h(2, 2), player_victory: true }),
+                kind: EventKind::CombatEnded(CombatEndedEvent {
+                    sector: h(2, 2),
+                    player_victory: true,
+                    owners: vec!["Admiral".into()],
+                    mine: true,
+                    salvage: Some(res(60.0, 15.0, 9.0)),
+                    salvage_despawn_tick: Some(137),
+                }),
             }),
         ),
     ];
@@ -589,37 +607,81 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
 fn event_kinds() -> Vec<(&'static str, EventKind)> {
     vec![
         ("", EventKind::CombatRound(CombatRoundEvent {
+            sector: h(5, -5),
+            attacker_fleet_id: 1,
+            attacker_owner: Some("Admiral".into()),
             attacker_ship_id: 11,
+            target_fleet_id: 9001,
+            target_owner: None,
             target_ship_id: 22,
             damage: 18.5,
             shield_absorbed: 10.0,
             hull_damage: 8.5,
             rapid_fire: true,
+            mine: true,
         })),
         ("", EventKind::ShipDestroyed(ShipDestroyedEvent {
             ship_id: 22,
             ship_class: ShipClass::Corvette,
             owner_fleet_id: 9001,
             is_npc: true,
+            sector: h(5, -5),
+            owner: None,
+            mine: false,
         })),
         ("", EventKind::FleetDestroyed(FleetDestroyedEvent {
             fleet_id: 9001,
             is_npc: true,
-            salvage: res(30.0, 10.0, 5.0),
+            sector: h(5, -5),
+            owner: None,
+            mine: false,
+            salvage: res(60.0, 15.0, 9.0),
+        })),
+        ("player_fleet", EventKind::FleetDestroyed(FleetDestroyedEvent {
+            fleet_id: 4,
+            is_npc: false,
+            sector: h(5, -5),
+            owner: Some("Admiral".into()),
+            mine: true,
+            salvage: res(0.0, 0.0, 0.0),
         })),
         ("", EventKind::ResourceHarvested(ResourceHarvestedEvent {
             fleet_id: 1,
-            resource_type: HarvestResource::Crystal,
-            amount: 12.25,
+            resources: res(12.25, 6.0, 0.0),
+            ticks: 10,
         })),
         ("", EventKind::SectorEntered(SectorEnteredEvent { fleet_id: 1, sector: h(-2, 3), first_visit: true })),
         ("", EventKind::CombatStarted(CombatStartedEvent {
             player_fleet_id: 1,
-            enemy_fleet_id: 9001,
+            owner: "Admiral".into(),
+            enemy_fleet_id: 4294967400,
             sector: h(5, -5),
+            mine: true,
         })),
-        ("", EventKind::CombatEnded(CombatEndedEvent { sector: h(5, -5), player_victory: false })),
-        ("", EventKind::SalvageCollected(SalvageCollectedEvent { fleet_id: 1, resources: res(5.0, 0.0, 1.5) })),
+        ("", EventKind::CombatEnded(CombatEndedEvent {
+            sector: h(5, -5),
+            player_victory: false,
+            owners: vec!["Admiral".into(), "Rival".into()],
+            mine: false,
+            salvage: None,
+            salvage_despawn_tick: None,
+        })),
+        ("", EventKind::SalvageCollected(SalvageCollectedEvent {
+            fleet_id: 1,
+            sector: h(5, -5),
+            resources: res(5.0, 0.0, 1.5),
+            remaining: None,
+        })),
+        ("partial", EventKind::SalvageCollected(SalvageCollectedEvent {
+            fleet_id: 1,
+            sector: h(5, -5),
+            resources: res(40.0, 0.0, 0.0),
+            remaining: Some(res(20.0, 15.0, 9.0)),
+        })),
+        ("", EventKind::SalvageDespawned(SalvageDespawnedEvent {
+            sector: h(5, -5),
+            resources: res(60.0, 15.0, 9.0),
+        })),
         ("", EventKind::FleetArrived(FleetArrivedEvent { fleet_id: 2, sector: h(0, -3) })),
         ("", EventKind::BuildingCompleted(BuildingCompletedEvent {
             building_type: BuildingType::SensorArray,
@@ -717,12 +779,14 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             reason: "no unexplored neighbours known".into(),
         })),
         ("", EventKind::Alert(AlertEvent {
+            player_id: None,
             level: AlertLevel::Info,
             message: "Uplink established".into(),
             sector: None,
             fleet_id: None,
         })),
         ("critical", EventKind::Alert(AlertEvent {
+            player_id: Some(1),
             level: AlertLevel::Critical,
             message: "Homeworld under attack".into(),
             sector: Some(h(4, -2)),
@@ -759,7 +823,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             json!({"type": "tick_update", "tick": 9, "fleets": [], "sector_updates": [{
                 "location": {"q": 1, "r": 1}, "terrain": "Nebula",
                 "resources": {"metal": "Sparse", "crystal": "None", "deuterium": "None"},
-                "connections": [],
+                "connections": [], "last_seen": 9, "live": true,
                 "player_fleets": [{"id": 3, "owner_name": "x", "ship_count": 2}]
             }]}),
         ),

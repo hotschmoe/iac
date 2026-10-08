@@ -41,6 +41,7 @@ class StarMapView extends StatelessWidget {
                   child: ClipRect(
                     child: CustomPaint(
                       painter: StarMapPainter(
+                        tick: state.tick,
                         zoom: controller.mapZoom,
                         centerQ: fleet.sector.q + controller.mapOffsetX,
                         centerR: fleet.sector.r + controller.mapOffsetY,

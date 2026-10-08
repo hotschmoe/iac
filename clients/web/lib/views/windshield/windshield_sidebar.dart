@@ -166,6 +166,7 @@ class WindshieldSidebar extends StatelessWidget {
           const SizedBox(height: 6),
           LabeledRow(label: 'Exits', value: sector.exits, valueColor: Amber.normal),
           LabeledRow(label: 'Salvage', value: sector.salvage, valueColor: Amber.normal),
+          LabeledRow(label: 'Intel', value: sector.intel, valueColor: Amber.dim),
           LabeledRow(label: 'Derelict', value: sector.site, valueColor: Amber.normal),
         ],
       ),
