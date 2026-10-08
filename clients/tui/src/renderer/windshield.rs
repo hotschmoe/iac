@@ -338,13 +338,8 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         }
     };
 
-    let ships_str = if fleet.ships.is_empty() {
-        "0 (DESTROYED)".to_string()
-    } else {
-        fleet.ships.len().to_string()
-    };
+    let ships_str = fleet.ships.len().to_string();
 
-    let mut cargo_cap: u16 = 0;
     let mut hull_cur: f32 = 0.0;
     let mut hull_max: f32 = 0.0;
     let mut shield_cur: f32 = 0.0;
@@ -352,7 +347,6 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     let mut dps: f32 = 0.0;
 
     for ship in &fleet.ships {
-        cargo_cap += ship.ship_class.base_stats().cargo;
         hull_cur += ship.hull;
         hull_max += ship.hull_max;
         shield_cur += ship.shield;
@@ -400,7 +394,7 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         Line::styled(format!(" Shield: {:.0}/{:.0}", shield_cur, shield_max), CYAN_INTEL),
         Line::styled(format!(" DPS:    {:.0}", dps), AMBER_BRIGHT),
         Line::raw(""),
-        Line::styled(format!(" Cargo: {:.0}/{}", total_cargo, cargo_cap), AMBER_BRIGHT),
+        Line::styled(format!(" Cargo: {:.0}/{:.0}", total_cargo, fleet.cargo_capacity), AMBER_BRIGHT),
         Line::styled(format!("  Fe {:.0}", fleet.cargo.metal), AMBER),
         Line::styled(format!("  Cr {:.0}", fleet.cargo.crystal), AMBER),
         Line::styled(format!("  De {:.0}", fleet.cargo.deuterium), AMBER),

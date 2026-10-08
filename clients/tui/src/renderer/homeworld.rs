@@ -362,12 +362,9 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     }
 
     // Production line
-    let bldg_levels = ClientState::building_levels_from_slice(&hw.buildings);
     text.push_str(&format!(
         "\n +{:.2} Fe/t  +{:.2} Cr/t  +{:.2} De/t",
-        scaling::production_per_tick(BuildingType::MetalMine, bldg_levels.get(BuildingType::MetalMine)),
-        scaling::production_per_tick(BuildingType::CrystalMine, bldg_levels.get(BuildingType::CrystalMine)),
-        scaling::production_per_tick(BuildingType::DeuteriumSynthesizer, bldg_levels.get(BuildingType::DeuteriumSynthesizer)),
+        hw.production.metal, hw.production.crystal, hw.production.deuterium,
     ));
 
     frame.render_widget(Paragraph::new(text).style(AMBER_BRIGHT), inner);

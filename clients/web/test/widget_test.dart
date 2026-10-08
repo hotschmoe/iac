@@ -118,6 +118,38 @@ void main() {
       expect(mapper.toUiState().fleets, isEmpty);
     });
 
+    test('cargo capacity and production rates come straight from the server', () {
+      final base = mapper.fleets.first;
+      final odd = proto.FleetState(
+        id: base.id,
+        location: base.location,
+        state: base.state,
+        ships: base.ships,
+        cargo: const proto.Resources(metal: 10),
+        cargoCapacity: 40,
+        fuel: base.fuel,
+        fuelMax: base.fuelMax,
+      );
+      final hw = mapper.homeworld!;
+      mapper.apply(proto.TickUpdate(
+        tick: 8,
+        fleets: [odd],
+        homeworldUpdate: proto.HomeworldState(
+          location: hw.location,
+          production: const proto.Resources(metal: 7.5, crystal: 3.25, deuterium: 0.5),
+          buildings: hw.buildings,
+          research: hw.research,
+          dockedShips: hw.dockedShips,
+        ),
+      ));
+      final ui = mapper.toUiState();
+      expect(ui.fleets.single.cargo.capacity, 40);
+      expect(ui.fleets.single.cargoPercent, 25);
+      expect(ui.resources.metal.rate, 7.5);
+      expect(ui.resources.crystal.rate, 3.25);
+      expect(ui.resources.deut.rate, 0.5);
+    });
+
     test('a FleetDestroyed event is only logged; the fleet list comes from the tick', () {
       final before = mapper.fleets.length;
       mapper.apply(const proto.GameEvent(

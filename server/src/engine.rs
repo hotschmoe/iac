@@ -114,6 +114,20 @@ pub struct Player {
     pub research_queue: Option<ResearchQueueEntry>,
 }
 
+impl Player {
+    /// What the homeworld mines add to the stockpile each tick.
+    pub fn production_per_tick(&self) -> Resources {
+        Resources {
+            metal: scaling::production_per_tick(BuildingType::MetalMine, self.buildings.metal_mine),
+            crystal: scaling::production_per_tick(BuildingType::CrystalMine, self.buildings.crystal_mine),
+            deuterium: scaling::production_per_tick(
+                BuildingType::DeuteriumSynthesizer,
+                self.buildings.deuterium_synthesizer,
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BuildQueueEntry {
     pub building_type: BuildingType,
@@ -800,9 +814,7 @@ impl GameEngine {
 
     fn process_homeworlds(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         for (_, player) in self.players.iter_mut() {
-            player.resources.metal += scaling::production_per_tick(BuildingType::MetalMine, player.buildings.metal_mine);
-            player.resources.crystal += scaling::production_per_tick(BuildingType::CrystalMine, player.buildings.crystal_mine);
-            player.resources.deuterium += scaling::production_per_tick(BuildingType::DeuteriumSynthesizer, player.buildings.deuterium_synthesizer);
+            player.resources = player.resources.add(player.production_per_tick());
             self.dirty_players.insert(player.id, ());
         }
         Ok(())
@@ -3084,7 +3096,7 @@ pub fn site_risk_label(tier: u8, bumps: u8) -> iac_shared::protocol::SiteRisk {
     }
 }
 
-fn fleet_cargo_capacity(fleet: &Fleet) -> f32 {
+pub fn fleet_cargo_capacity(fleet: &Fleet) -> f32 {
     fleet.ships[0..fleet.ship_count].iter()
         .map(|s| s.ship_class.base_stats().cargo as f32)
         .sum()

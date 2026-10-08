@@ -7,6 +7,7 @@
           "deuterium": 0.0,
           "metal": 0.0
         },
+        "cargo_capacity": 20.0,
         "cooldown_remaining": 0,
         "fuel": 1.0,
         "fuel_max": 2.0,
@@ -30,6 +31,7 @@
           "deuterium": 0.0,
           "metal": 0.0
         },
+        "cargo_capacity": 20.0,
         "fuel": 1.0,
         "fuel_max": 2.0,
         "id": 1,

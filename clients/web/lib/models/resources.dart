@@ -1,5 +1,5 @@
 /// One resource line in the UI: current stock and production per tick.
-/// (The server sends no storage cap, so there is none here.)
+/// (The game has no storage caps; production comes from the server.)
 class ResourceStock {
   final int amount;
   final double rate;

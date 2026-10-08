@@ -6,6 +6,7 @@
         "deuterium": 0.0,
         "metal": 12.5
       },
+      "cargo_capacity": 220.0,
       "cooldown_remaining": 3,
       "fuel": 271.5,
       "fuel_max": 500.0,
@@ -43,6 +44,7 @@
         "deuterium": 0.0,
         "metal": 12.5
       },
+      "cargo_capacity": 220.0,
       "cooldown_remaining": 3,
       "fuel": 271.5,
       "fuel_max": 500.0,
@@ -79,6 +81,7 @@
         "deuterium": 0.0,
         "metal": 12.5
       },
+      "cargo_capacity": 220.0,
       "cooldown_remaining": 0,
       "fuel": 271.5,
       "fuel_max": 500.0,
@@ -146,6 +149,11 @@
     "location": {
       "q": 4,
       "r": -2
+    },
+    "production": {
+      "crystal": 1.25,
+      "deuterium": 0.4000000059604645,
+      "metal": 2.75
     },
     "research": [
       {

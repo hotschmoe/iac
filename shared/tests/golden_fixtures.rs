@@ -101,6 +101,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<PolicyPres
             ship(id * 10 + 2, ShipClass::Hauler, 100.0, 0.0, 0.0),
         ],
         cargo: res(12.5, 3.0, 0.0),
+        cargo_capacity: 220.0,
         fuel: 271.5,
         fuel_max: 500.0,
         cooldown_remaining: 3,
@@ -200,6 +201,7 @@ fn sample_homeworld() -> HomeworldState {
     .collect();
     HomeworldState {
         location: h(4, -2),
+        production: res(2.75, 1.25, 0.4),
         buildings,
         research,
         build_queue: Some(BuildQueueItem {
@@ -228,6 +230,7 @@ fn sample_homeworld() -> HomeworldState {
 fn idle_homeworld() -> HomeworldState {
     HomeworldState {
         location: h(0, 0),
+        production: res(0.0, 0.0, 0.0),
         buildings: vec![],
         research: vec![],
         build_queue: None,
@@ -699,7 +702,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             json!({"type": "tick_update", "tick": 9, "fleets": [{
                 "id": 1, "location": {"q": 0, "r": 0}, "state": "Idle", "ships": [],
                 "cargo": {"metal": 0.0, "crystal": 0.0, "deuterium": 0.0},
-                "fuel": 1.0, "fuel_max": 2.0
+                "cargo_capacity": 20.0, "fuel": 1.0, "fuel_max": 2.0
             }]}),
         ),
         (

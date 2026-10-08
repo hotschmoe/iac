@@ -42,17 +42,14 @@ void _put(Json m, String key, Object? v) {
 // ── Plain enums (serde default: PascalCase variant names) ────────
 
 enum ShipClass {
-  scout(20, 'Scout'),
-  corvette(10, 'Corvette'),
-  frigate(30, 'Frigate'),
-  cruiser(50, 'Cruiser'),
-  hauler(200, 'Hauler');
+  scout('Scout'),
+  corvette('Corvette'),
+  frigate('Frigate'),
+  cruiser('Cruiser'),
+  hauler('Hauler');
 
-  /// Base cargo capacity per ship (constants.rs `base_stats().cargo`);
-  /// the server does not send fleet cargo capacity, so the UI derives it.
-  final int cargo;
   final String label;
-  const ShipClass(this.cargo, this.label);
+  const ShipClass(this.label);
 
   String get wire => _pascal(name);
   String toJson() => wire;
@@ -666,6 +663,9 @@ class FleetState {
   final FleetStatus state;
   final List<ShipState> ships;
   final Resources cargo;
+
+  /// Hold size as the server enforces it; never derive it client-side.
+  final double cargoCapacity;
   final double fuel;
   final double fuelMax;
   final int cooldownRemaining;
@@ -676,6 +676,7 @@ class FleetState {
     required this.state,
     required this.ships,
     required this.cargo,
+    required this.cargoCapacity,
     required this.fuel,
     required this.fuelMax,
     this.cooldownRemaining = 0,
@@ -690,6 +691,7 @@ class FleetState {
       state: FleetStatus.fromJson(m['state']),
       ships: _list(m['ships'], ShipState.fromJson),
       cargo: Resources.fromJson(m['cargo']),
+      cargoCapacity: _f(m['cargo_capacity']),
       fuel: _f(m['fuel']),
       fuelMax: _f(m['fuel_max']),
       cooldownRemaining: (m['cooldown_remaining'] as int?) ?? 0,
@@ -704,6 +706,7 @@ class FleetState {
       'state': state.toJson(),
       'ships': ships.map((e) => e.toJson()).toList(),
       'cargo': cargo.toJson(),
+      'cargo_capacity': cargoCapacity,
       'fuel': fuel,
       'fuel_max': fuelMax,
       'cooldown_remaining': cooldownRemaining,
@@ -711,9 +714,6 @@ class FleetState {
     _put(m, 'policy', policy?.toJson());
     return m;
   }
-
-  /// Total cargo capacity (sum of per-ship base cargo, as the server counts it).
-  int get cargoCapacity => ships.fold(0, (s, e) => s + e.shipClass.cargo);
 }
 
 /// JSON key for the class is "class".
@@ -941,6 +941,9 @@ class ShipClassCounts {
 
 class HomeworldState {
   final Hex location;
+
+  /// Mine output per tick at current levels. There are no storage caps.
+  final Resources production;
   final List<BuildingState> buildings;
   final List<ResearchState> research;
   final BuildQueueItem? buildQueue;
@@ -949,6 +952,7 @@ class HomeworldState {
   final List<ShipState> dockedShips;
   const HomeworldState({
     required this.location,
+    required this.production,
     required this.buildings,
     required this.research,
     this.buildQueue,
@@ -961,6 +965,7 @@ class HomeworldState {
     final m = _obj(json);
     return HomeworldState(
       location: Hex.fromJson(m['location']),
+      production: Resources.fromJson(m['production']),
       buildings: _list(m['buildings'], BuildingState.fromJson),
       research: _list(m['research'], ResearchState.fromJson),
       buildQueue: _opt(m['build_queue'], BuildQueueItem.fromJson),
@@ -973,6 +978,7 @@ class HomeworldState {
   Json toJson() {
     final m = <String, dynamic>{
       'location': location.toJson(),
+      'production': production.toJson(),
       'buildings': buildings.map((e) => e.toJson()).toList(),
       'research': research.map((e) => e.toJson()).toList(),
       'docked_ships': dockedShips.map((e) => e.toJson()).toList(),

@@ -33,7 +33,7 @@ use iac_shared::protocol::{
 use iac_shared::constants::{ShipClass, MAX_FLEETS_PER_PLAYER};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 
-use crate::engine::{GameEngine, FleetStatus, SectorOverride};
+use crate::engine::{fleet_cargo_capacity, GameEngine, FleetStatus, SectorOverride};
 
 pub struct Network {
     port: u16,
@@ -591,6 +591,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             state: status,
             ships: ship_states,
             cargo: fleet.cargo,
+            cargo_capacity: fleet_cargo_capacity(fleet),
             fuel: fleet.fuel,
             fuel_max: fleet.fuel_max,
             cooldown_remaining: fleet.action_cooldown,
@@ -839,6 +840,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
 
     HomeworldState {
         location: player.homeworld,
+        production: player.production_per_tick(),
         buildings,
         research,
         build_queue,
@@ -995,5 +997,39 @@ mod tests {
         assert_eq!(reply["code"], "ResourceNotPresent");
         let msg = reply["message"].as_str().unwrap();
         assert!(msg.contains("deuterium"), "message should name the resource: {msg} (sector {site})");
+    }
+
+    #[test]
+    fn state_carries_cargo_capacity_and_real_production() {
+        let (net, engine, pid, fid, mut rx) = network_with_player();
+        {
+            let mut e = engine.lock().unwrap();
+            e.players.get_mut(&pid).unwrap().buildings.metal_mine = 3;
+            e.players.get_mut(&pid).unwrap().buildings.deuterium_synthesizer = 2;
+            // Starting scouts plus one hauler.
+            let fleet = e.fleets.get_mut(&fid).unwrap();
+            fleet.ships[fleet.ship_count].ship_class = ShipClass::Hauler;
+            fleet.ship_count += 1;
+        }
+        let expected_cap: f32 = {
+            let e = engine.lock().unwrap();
+            e.fleets[&fid].ships[..e.fleets[&fid].ship_count].iter()
+                .map(|s| s.ship_class.base_stats().cargo as f32).sum()
+        };
+        assert!(expected_cap > 200.0, "hauler must be counted: {expected_cap}");
+
+        let before = engine.lock().unwrap().players[&pid].resources;
+        engine.lock().unwrap().tick().unwrap();
+        let grown = engine.lock().unwrap().players[&pid].resources;
+        net.broadcast_updates().unwrap();
+        let update = next_message(&mut rx);
+
+        assert_eq!(update["fleets"][0]["cargo_capacity"].as_f64().unwrap() as f32, expected_cap);
+        let prod = &update["homeworld_update"]["production"];
+        assert!(prod["metal"].as_f64().unwrap() > 0.0);
+        assert!((grown.metal - before.metal - prod["metal"].as_f64().unwrap() as f32).abs() < 1e-3,
+            "advertised production must equal the stockpile change");
+        assert!((grown.crystal - before.crystal - prod["crystal"].as_f64().unwrap() as f32).abs() < 1e-3);
+        assert!((grown.deuterium - before.deuterium - prod["deuterium"].as_f64().unwrap() as f32).abs() < 1e-3);
     }
 }

@@ -220,15 +220,15 @@ class StateMapper {
       resources: Resources(
         metal: ResourceStock(
           amount: res.metal.round(),
-          rate: _prodRate(proto.BuildingType.metalMine, hw),
+          rate: hw?.production.metal ?? 0,
         ),
         crystal: ResourceStock(
           amount: res.crystal.round(),
-          rate: _prodRate(proto.BuildingType.crystalMine, hw),
+          rate: hw?.production.crystal ?? 0,
         ),
         deut: ResourceStock(
           amount: res.deuterium.round(),
-          rate: _prodRate(proto.BuildingType.deuteriumSynthesizer, hw),
+          rate: hw?.production.deuterium ?? 0,
         ),
       ),
       fleets: uiFleets,
@@ -253,22 +253,6 @@ class StateMapper {
     );
   }
 
-  /// Display-only mirror of scaling.rs `production_per_tick`:
-  /// base * level * 1.1^level.
-  static double productionPerTick(proto.BuildingType t, int level) {
-    if (level == 0) return 0;
-    final base = switch (t) {
-      proto.BuildingType.metalMine => 0.5,
-      proto.BuildingType.crystalMine => 0.3,
-      proto.BuildingType.deuteriumSynthesizer => 0.15,
-      _ => 0.0,
-    };
-    return base * level * math.pow(1.1, level);
-  }
-
-  double _prodRate(proto.BuildingType type, proto.HomeworldState? hw) =>
-      hw == null ? 0 : productionPerTick(type, hw.buildingLevel(type));
-
   FleetState _mapFleet(proto.FleetState f) {
     final status = switch (f.state) {
       proto.FleetStatus.idle => FleetStatus.idle,
@@ -290,7 +274,7 @@ class StateMapper {
       );
     }
 
-    final cap = f.cargoCapacity;
+    final cap = f.cargoCapacity.round();
     final fuelPct = f.fuelMax > 0 ? ((f.fuel / f.fuelMax) * 100).round().clamp(0, 100) : 0;
     final cargoPct = cap > 0 ? ((f.cargo.total / cap) * 100).round().clamp(0, 100) : 0;
 

@@ -36,6 +36,7 @@ class DemoProvider {
         state: FleetStatus.harvesting,
         ships: ships,
         cargo: const Resources(metal: 98, crystal: 61, deuterium: 28),
+        cargoCapacity: 270,
         fuel: 271,
         fuelMax: 500,
       ),
@@ -45,6 +46,7 @@ class DemoProvider {
         state: FleetStatus.docked,
         ships: [_ship(1021, ShipClass.frigate, 40)],
         cargo: const Resources(),
+        cargoCapacity: 30,
         fuel: 500,
         fuelMax: 500,
       ),
@@ -54,27 +56,30 @@ class DemoProvider {
         state: FleetStatus.idle,
         ships: [_ship(1031, ShipClass.scout, 100)],
         cargo: const Resources(),
+        cargoCapacity: 20,
         fuel: 440,
         fuelMax: 500,
         policy: PolicyPreset.prospect,
       ),
     ];
+    final buildings = [
+      for (final t in BuildingType.values)
+        BuildingState(
+          buildingType: t,
+          level: switch (t) {
+            BuildingType.metalMine => 4,
+            BuildingType.crystalMine => 3,
+            BuildingType.deuteriumSynthesizer => 2,
+            BuildingType.shipyard => 1,
+            BuildingType.researchLab => 1,
+            _ => 0,
+          },
+        ),
+    ];
     _hw = HomeworldState(
       location: _home,
-      buildings: [
-        for (final t in BuildingType.values)
-          BuildingState(
-            buildingType: t,
-            level: switch (t) {
-              BuildingType.metalMine => 4,
-              BuildingType.crystalMine => 3,
-              BuildingType.deuteriumSynthesizer => 2,
-              BuildingType.shipyard => 1,
-              BuildingType.researchLab => 1,
-              _ => 0,
-            },
-          ),
-      ],
+      production: _production(buildings),
+      buildings: buildings,
       research: [
         for (final t in ResearchType.values)
           ResearchState(tech: t, level: (t == ResearchType.fuelEfficiency || t == ResearchType.reinforcedHulls) ? 1 : 0),
@@ -180,15 +185,11 @@ class DemoProvider {
 
   void _step() {
     _tick++;
-    double rate(BuildingType t, double base) {
-      final l = _hw.buildingLevel(t);
-      return l == 0 ? 0 : base * l * pow(1.1, l);
-    }
-
+    final p = _hw.production;
     _resources = Resources(
-      metal: _resources.metal + rate(BuildingType.metalMine, 0.5),
-      crystal: _resources.crystal + rate(BuildingType.crystalMine, 0.3),
-      deuterium: _resources.deuterium + rate(BuildingType.deuteriumSynthesizer, 0.15),
+      metal: _resources.metal + p.metal,
+      crystal: _resources.crystal + p.crystal,
+      deuterium: _resources.deuterium + p.deuterium,
     );
 
     _fleets = [
@@ -277,6 +278,7 @@ class DemoProvider {
         state: state ?? f.state,
         ships: f.ships,
         cargo: cargo ?? f.cargo,
+        cargoCapacity: f.cargoCapacity,
         fuel: f.fuel,
         fuelMax: f.fuelMax,
         cooldownRemaining: f.cooldownRemaining,
@@ -295,6 +297,7 @@ class DemoProvider {
   }) =>
       HomeworldState(
         location: _hw.location,
+        production: _production(buildings ?? _hw.buildings),
         buildings: buildings ?? _hw.buildings,
         research: research ?? _hw.research,
         buildQueue: clearBuild ? null : (build ?? _hw.buildQueue),
@@ -302,6 +305,20 @@ class DemoProvider {
         researchActive: clearResearch ? null : (researchItem ?? _hw.researchActive),
         dockedShips: _hw.dockedShips,
       );
+
+  /// The demo plays the server: mine output at the given building levels.
+  static Resources _production(List<BuildingState> buildings) {
+    double rate(BuildingType t, double base) {
+      final l = buildings.firstWhere((b) => b.buildingType == t).level;
+      return l == 0 ? 0 : base * l * pow(1.1, l);
+    }
+
+    return Resources(
+      metal: rate(BuildingType.metalMine, 0.5),
+      crystal: rate(BuildingType.crystalMine, 0.3),
+      deuterium: rate(BuildingType.deuteriumSynthesizer, 0.15),
+    );
+  }
 
   FleetState? _find(int id) {
     for (final f in _fleets) {

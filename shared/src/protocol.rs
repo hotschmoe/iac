@@ -233,6 +233,8 @@ pub struct FleetState {
     pub state: FleetStatus,
     pub ships: Vec<ShipState>,
     pub cargo: Resources,
+    /// Hold size: the most `cargo` can total, as the server enforces it.
+    pub cargo_capacity: f32,
     pub fuel: f32,
     pub fuel_max: f32,
     #[serde(default)]
@@ -358,6 +360,10 @@ pub struct ShipClassCounts {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HomeworldState {
     pub location: Hex,
+    /// What the mines add to the player's stockpile each tick at current
+    /// levels. The homeworld has no storage caps, so there is no capacity
+    /// field: stockpiles grow without limit.
+    pub production: Resources,
     pub buildings: Vec<BuildingState>,
     pub research: Vec<ResearchState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
