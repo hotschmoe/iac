@@ -45,13 +45,18 @@ fn load_from(path: &Path, server: &str, name: &str) -> Option<String> {
 }
 
 fn save_to(path: &Path, server: &str, name: &str, token: &str) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // Clients logging in at the same moment would otherwise each write back
+    // their own read of the file and drop the other's token.
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("json.lock"))?;
+    lock.lock()?;
+
     // A file we cannot parse is left alone rather than overwritten.
     let mut all = read_all(path)?;
     all.entry(server.to_string()).or_default().insert(name.to_lowercase(), token.to_string());
 
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let tmp = path.with_extension("json.tmp");
     write_private(&tmp, serde_json::to_string_pretty(&all)?.as_bytes())?;
     std::fs::rename(&tmp, path)
@@ -105,6 +110,23 @@ mod tests {
         let path = temp_file("mode");
         save_to(&path, "a:1", "Ann", "secret").unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn concurrent_saves_keep_every_token() {
+        let path = temp_file("race");
+        let handles: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || save_to(&path, "a:1", &format!("P{i}"), &format!("t{i}")).unwrap())
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        for i in 0..16 {
+            assert_eq!(load_from(&path, "a:1", &format!("P{i}")).as_deref(), Some(format!("t{i}").as_str()));
+        }
     }
 
     #[test]
