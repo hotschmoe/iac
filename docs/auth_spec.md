@@ -14,6 +14,11 @@ matters for a LAN game, with these differences:
   `TokenRequired`, `InvalidToken`) says why a login failed, `message` is
   human readable. Names are public in this game (they appear in sector
   briefs), so the failure replies do not try to hide whether a name exists.
+- **Names are case-insensitive**: "admiral" logs in to "Admiral", so nobody
+  can register a lookalike that differs only by case. The display name keeps
+  its original casing. An exact-case match wins, so any case-variant accounts
+  from before this rule stay reachable. Clients key saved tokens by the
+  lowercased name.
 - **Tokens and hashing as specified**: 32 random bytes, hex, SHA-256 stored in
   `players.token_hash`, constant-time compare (`server/src/auth.rs`).
 - **Accounts from before tokens** (NULL `token_hash`): the next login for the

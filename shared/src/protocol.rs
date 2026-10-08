@@ -32,6 +32,10 @@ pub enum ClientMessage {
 ///   reply is `TokenRequired` / `InvalidToken`;
 /// - an account from before tokens existed has none yet and is claimed by
 ///   its next login, which is issued one the same way.
+///
+/// Names are matched case-insensitively ("admiral" logs in to "Admiral"), so
+/// no two accounts can differ only by case. An exact-case match wins, which
+/// keeps any case-variant accounts registered before this rule reachable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthRequest {
     pub player_name: String,

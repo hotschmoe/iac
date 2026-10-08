@@ -1163,8 +1163,7 @@ impl GameEngine {
     /// Resolve an auth request to a player (see `AuthRequest` for the rules),
     /// issuing a token when the account is new or still unclaimed.
     pub fn authenticate(&mut self, name: &str, presented: Option<&str>) -> Result<Authenticated, AuthError> {
-        let existing = self.players.values().find(|p| p.name == name).map(|p| p.id);
-        let Some(player_id) = existing else {
+        let Some(player_id) = self.find_player_by_name(name) else {
             auth::validate_name(name).map_err(AuthError::InvalidName)?;
             let player_id = self.register_player(name.to_string()).map_err(|_| AuthError::Server)?;
             let token = self.issue_token(player_id);
@@ -1197,10 +1196,24 @@ impl GameEngine {
         token
     }
 
+    /// Case-insensitive name lookup; an exact-case match wins (see `AuthRequest`).
+    fn find_player_by_name(&self, name: &str) -> Option<u64> {
+        let mut folded = None;
+        for p in self.players.values() {
+            if p.name == name {
+                return Some(p.id);
+            }
+            if p.name.eq_ignore_ascii_case(name) && folded.is_none_or(|id| p.id < id) {
+                folded = Some(p.id);
+            }
+        }
+        folded
+    }
+
     /// Creates the account. The name must be unused; `authenticate` is the
     /// entry point that decides between registering and logging in.
     pub fn register_player(&mut self, name: String) -> Result<u64, ErrorCode> {
-        if self.players.values().any(|p| p.name == name) {
+        if self.find_player_by_name(&name).is_some() {
             return Err(ErrorCode::InvalidCommand);
         }
 
@@ -3385,10 +3398,36 @@ mod tests {
         assert_eq!(engine.authenticate("Legacy", None).err(), Some(AuthError::TokenRequired));
         assert!(engine.authenticate("Legacy", Some(&legacy_token)).is_ok());
 
-        // Names are case-sensitive accounts, and bad names never register.
-        assert!(engine.authenticate("fresh", None).unwrap().registered);
+        // Bad names never register.
         assert!(matches!(engine.authenticate("x", None), Err(AuthError::InvalidName(_))));
         assert_eq!(engine.players.values().filter(|p| p.name == "x").count(), 0);
+    }
+
+    #[test]
+    fn names_are_case_insensitive_accounts() {
+        let mut engine = test_engine();
+        let admiral = engine.authenticate("Admiral", None).unwrap();
+        let token = admiral.new_token.unwrap();
+
+        // Another casing is the same account, not a lookalike registration.
+        assert_eq!(engine.authenticate("ADMIRAL", None).err(), Some(AuthError::TokenRequired));
+        assert_eq!(engine.authenticate("admiral", Some("nope")).err(), Some(AuthError::InvalidToken));
+        let back = engine.authenticate("admiral", Some(&token)).unwrap();
+        assert_eq!(back.player_id, admiral.player_id);
+        assert!(!back.registered);
+        assert!(engine.register_player("aDmIrAl".to_string()).is_err());
+        assert_eq!(engine.players.values().filter(|p| p.name.eq_ignore_ascii_case("admiral")).count(), 1);
+
+        // Case-variant accounts created before the rule stay reachable by
+        // their exact name.
+        let mut twin = engine.players[&admiral.player_id].clone();
+        twin.id = engine.next_id();
+        twin.name = "admiral".to_string();
+        twin.token_hash = None;
+        let twin_id = twin.id;
+        engine.players.insert(twin_id, twin);
+        assert_eq!(engine.authenticate("admiral", None).unwrap().player_id, twin_id);
+        assert_eq!(engine.authenticate("Admiral", Some(&token)).unwrap().player_id, admiral.player_id);
     }
 
     #[test]

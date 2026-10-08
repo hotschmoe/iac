@@ -27,7 +27,8 @@ class MemoryTokenStore implements TokenStore {
   }
 }
 
-String tokenKey(String server, String name) => 'iac.token|$server|$name';
+String tokenKey(String server, String name) =>
+    'iac.token|$server|${name.toLowerCase()}';
 
 /// Minimal string storage, implemented over `window.localStorage` on web.
 abstract interface class KeyValueStorage {

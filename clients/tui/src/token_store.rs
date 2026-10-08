@@ -1,8 +1,9 @@
 // Auth tokens, remembered per server and player name in a small JSON file
 // under the user's config dir (e.g. ~/.config/iac/tokens.json):
 //
-//   { "127.0.0.1:7777": { "Admiral": "<64 hex chars>" } }
+//   { "127.0.0.1:7777": { "admiral": "<64 hex chars>" } }
 //
+// Names are keyed lowercase, matching the server's case-insensitive names.
 // The token is the account's only secret, so the file is created 0600.
 
 use std::collections::BTreeMap;
@@ -40,13 +41,13 @@ fn read_all(path: &Path) -> io::Result<Tokens> {
 }
 
 fn load_from(path: &Path, server: &str, name: &str) -> Option<String> {
-    read_all(path).ok()?.get(server)?.get(name).cloned()
+    read_all(path).ok()?.get(server)?.get(&name.to_lowercase()).cloned()
 }
 
 fn save_to(path: &Path, server: &str, name: &str, token: &str) -> io::Result<()> {
     // A file we cannot parse is left alone rather than overwritten.
     let mut all = read_all(path)?;
-    all.entry(server.to_string()).or_default().insert(name.to_string(), token.to_string());
+    all.entry(server.to_string()).or_default().insert(name.to_lowercase(), token.to_string());
 
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -94,6 +95,7 @@ mod tests {
 
         save_to(&path, "a:1", "Ann", "rotated").unwrap();
         assert_eq!(load_from(&path, "a:1", "Ann").as_deref(), Some("rotated"));
+        assert_eq!(load_from(&path, "a:1", "ANN").as_deref(), Some("rotated"));
     }
 
     #[cfg(unix)]

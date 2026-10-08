@@ -238,6 +238,8 @@ void main() {
       store.save('ws://b/ws', 'Ann', 't2');
       expect(GuardedTokenStore(() => backing).load('ws://a/ws', 'Ann'), 't1');
       expect(GuardedTokenStore(() => backing).load('ws://b/ws', 'Ann'), 't2');
+      expect(GuardedTokenStore(() => backing).load('ws://a/ws', 'ANN'), 't1',
+          reason: 'names are case-insensitive on the server');
       expect(store.load('ws://a/ws', 'Bob'), isNull);
     });
   });
