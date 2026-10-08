@@ -956,6 +956,9 @@ class HomeworldState {
   final ShipyardQueueItem? shipyardQueue;
   final ResearchItem? researchActive;
   final List<ShipState> dockedShips;
+
+  /// Costs, times and prerequisites for every building, tech and ship class.
+  final HomeworldCatalog catalog;
   const HomeworldState({
     required this.location,
     required this.production,
@@ -965,6 +968,7 @@ class HomeworldState {
     this.shipyardQueue,
     this.researchActive,
     required this.dockedShips,
+    required this.catalog,
   });
 
   factory HomeworldState.fromJson(Object? json) {
@@ -978,6 +982,7 @@ class HomeworldState {
       shipyardQueue: _opt(m['shipyard_queue'], ShipyardQueueItem.fromJson),
       researchActive: _opt(m['research_active'], ResearchItem.fromJson),
       dockedShips: _list(m['docked_ships'], ShipState.fromJson),
+      catalog: HomeworldCatalog.fromJson(m['catalog']),
     );
   }
 
@@ -988,6 +993,7 @@ class HomeworldState {
       'buildings': buildings.map((e) => e.toJson()).toList(),
       'research': research.map((e) => e.toJson()).toList(),
       'docked_ships': dockedShips.map((e) => e.toJson()).toList(),
+      'catalog': catalog.toJson(),
     };
     _put(m, 'build_queue', buildQueue?.toJson());
     _put(m, 'shipyard_queue', shipyardQueue?.toJson());
@@ -1001,6 +1007,172 @@ class HomeworldState {
     }
     return 0;
   }
+}
+
+/// Server-computed menu of homeworld actions (see `HomeworldCatalog` in
+/// shared/src/protocol.rs). Whether the player can pay is the client's call:
+/// compare a cost with the stockpile.
+class HomeworldCatalog {
+  final List<BuildingOption> buildings;
+  final List<ResearchOption> research;
+  final List<ShipOption> ships;
+  const HomeworldCatalog({required this.buildings, required this.research, required this.ships});
+
+  factory HomeworldCatalog.fromJson(Object? json) {
+    final m = _obj(json);
+    return HomeworldCatalog(
+      buildings: _list(m['buildings'], BuildingOption.fromJson),
+      research: _list(m['research'], ResearchOption.fromJson),
+      ships: _list(m['ships'], ShipOption.fromJson),
+    );
+  }
+
+  Json toJson() => {
+        'buildings': buildings.map((e) => e.toJson()).toList(),
+        'research': research.map((e) => e.toJson()).toList(),
+        'ships': ships.map((e) => e.toJson()).toList(),
+      };
+}
+
+/// A prerequisite as readable text ("Shipyard >= 2") with its status.
+class Requirement {
+  final String label;
+  final bool met;
+  const Requirement({required this.label, required this.met});
+
+  factory Requirement.fromJson(Object? json) {
+    final m = _obj(json);
+    return Requirement(label: m['label'] as String, met: m['met'] as bool);
+  }
+
+  Json toJson() => {'label': label, 'met': met};
+}
+
+/// Cost and duration of reaching [level].
+class UpgradeStep {
+  final int level;
+  final Resources cost;
+  final int ticks;
+  const UpgradeStep({required this.level, required this.cost, required this.ticks});
+
+  factory UpgradeStep.fromJson(Object? json) {
+    final m = _obj(json);
+    return UpgradeStep(level: _i(m['level']), cost: Resources.fromJson(m['cost']), ticks: _i(m['ticks']));
+  }
+
+  Json toJson() => {'level': level, 'cost': cost.toJson(), 'ticks': ticks};
+}
+
+List<Requirement> _requirements(Object? v) => _list(v, Requirement.fromJson);
+
+class BuildingOption {
+  final BuildingType buildingType;
+  final int level;
+  final int maxLevel;
+
+  /// Null at [maxLevel].
+  final UpgradeStep? next;
+  final List<Requirement> requires;
+  const BuildingOption({
+    required this.buildingType,
+    required this.level,
+    required this.maxLevel,
+    this.next,
+    required this.requires,
+  });
+
+  factory BuildingOption.fromJson(Object? json) {
+    final m = _obj(json);
+    return BuildingOption(
+      buildingType: BuildingType.fromJson(m['building_type']),
+      level: _i(m['level']),
+      maxLevel: _i(m['max_level']),
+      next: _opt(m['next'], UpgradeStep.fromJson),
+      requires: _requirements(m['requires']),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'building_type': buildingType.toJson(),
+      'level': level,
+      'max_level': maxLevel,
+      'requires': requires.map((e) => e.toJson()).toList(),
+    };
+    _put(m, 'next', next?.toJson());
+    return m;
+  }
+}
+
+class ResearchOption {
+  final ResearchType tech;
+  final int level;
+  final int maxLevel;
+
+  /// Null at [maxLevel].
+  final UpgradeStep? next;
+  final List<Requirement> requires;
+  const ResearchOption({
+    required this.tech,
+    required this.level,
+    required this.maxLevel,
+    this.next,
+    required this.requires,
+  });
+
+  factory ResearchOption.fromJson(Object? json) {
+    final m = _obj(json);
+    return ResearchOption(
+      tech: ResearchType.fromJson(m['tech']),
+      level: _i(m['level']),
+      maxLevel: _i(m['max_level']),
+      next: _opt(m['next'], UpgradeStep.fromJson),
+      requires: _requirements(m['requires']),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'tech': tech.toJson(),
+      'level': level,
+      'max_level': maxLevel,
+      'requires': requires.map((e) => e.toJson()).toList(),
+    };
+    _put(m, 'next', next?.toJson());
+    return m;
+  }
+}
+
+class ShipOption {
+  final ShipClass shipClass;
+
+  /// Cost of one ship; a batch costs count times this.
+  final Resources unitCost;
+  final int ticksPerShip;
+  final List<Requirement> requires;
+  const ShipOption({
+    required this.shipClass,
+    required this.unitCost,
+    required this.ticksPerShip,
+    required this.requires,
+  });
+
+  factory ShipOption.fromJson(Object? json) {
+    final m = _obj(json);
+    return ShipOption(
+      shipClass: ShipClass.fromJson(m['ship_class']),
+      unitCost: Resources.fromJson(m['unit_cost']),
+      ticksPerShip: _i(m['ticks_per_ship']),
+      requires: _requirements(m['requires']),
+    );
+  }
+
+  Json toJson() => {
+        'ship_class': shipClass.toJson(),
+        'unit_cost': unitCost.toJson(),
+        'ticks_per_ship': ticksPerShip,
+        'requires': requires.map((e) => e.toJson()).toList(),
+      };
 }
 
 class BuildingState {

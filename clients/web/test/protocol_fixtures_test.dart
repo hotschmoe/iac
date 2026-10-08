@@ -94,6 +94,18 @@ void main() {
       expect(s.fleets.first.policy, isNotNull);
       expect(s.homeworld.buildings.length, 8);
     });
+
+    test('full_state carries the homeworld catalog the server computed', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final cat = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld.catalog;
+      expect(cat.buildings.map((b) => b.buildingType), BuildingType.values);
+      expect(cat.research.map((r) => r.tech), ResearchType.values);
+      expect(cat.ships.map((s) => s.shipClass), ShipClass.values);
+      final yard = cat.buildings.firstWhere((b) => b.buildingType == BuildingType.shipyard);
+      expect(yard.next, isNotNull);
+      expect(yard.requires.single.label, 'Metal Mine >= 2');
+      expect(cat.ships.first.requires.first.label, 'Shipyard >= 1');
+    });
   });
 
   group('lenient inputs (serde defaults)', () {

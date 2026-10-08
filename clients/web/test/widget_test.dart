@@ -140,6 +140,7 @@ void main() {
           buildings: hw.buildings,
           research: hw.research,
           dockedShips: hw.dockedShips,
+          catalog: hw.catalog,
         ),
       ));
       final ui = mapper.toUiState();

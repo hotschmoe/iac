@@ -262,6 +262,8 @@ class StateMapper {
       ],
       sectors: {for (final s in sectors.values) s.location: s},
       signals: {for (final e in signals.entries) proto.Hex.fromKey(e.key): e.value},
+      stock: res,
+      catalog: hw?.catalog,
     );
   }
 

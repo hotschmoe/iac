@@ -120,6 +120,13 @@ class GameState {
   /// Faint scan contacts in not-yet-explored sectors.
   final Map<proto.Hex, proto.SignalKind> signals;
 
+  /// Exact stockpile (the resource stocks above are rounded for display).
+  final proto.Resources stock;
+
+  /// What the homeworld can build, research and launch; null before the
+  /// first server message.
+  final proto.HomeworldCatalog? catalog;
+
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -136,6 +143,8 @@ class GameState {
     required this.waypoints,
     this.sectors = const {},
     this.signals = const {},
+    this.stock = const proto.Resources(),
+    this.catalog,
   });
 
   String get clockDisplay {
@@ -163,6 +172,8 @@ class GameState {
     List<Waypoint>? waypoints,
     Map<proto.Hex, proto.SectorState>? sectors,
     Map<proto.Hex, proto.SignalKind>? signals,
+    proto.Resources? stock,
+    proto.HomeworldCatalog? catalog,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -180,5 +191,7 @@ class GameState {
         waypoints: waypoints ?? this.waypoints,
         sectors: sectors ?? this.sectors,
         signals: signals ?? this.signals,
+        stock: stock ?? this.stock,
+        catalog: catalog ?? this.catalog,
       );
 }

@@ -7,6 +7,8 @@ import '../protocol/protocol.dart';
 /// (full_state, tick_update, error) so the UI has a single render path.
 /// It simulates just enough (move, scan, harvest, recall, stop, queues,
 /// policies) to click around; combat, salvage and derelicts are not modelled.
+/// Its catalog uses a rough cost model of its own, only meant to look like the
+/// real one; a live server sends the real numbers.
 class DemoProvider {
   static const _playerId = 1;
   static const _home = Hex(4, -2);
@@ -76,14 +78,16 @@ class DemoProvider {
           },
         ),
     ];
+    final research = [
+      for (final t in ResearchType.values)
+        ResearchState(tech: t, level: (t == ResearchType.fuelEfficiency || t == ResearchType.reinforcedHulls) ? 1 : 0),
+    ];
     _hw = HomeworldState(
       location: _home,
       production: _production(buildings),
       buildings: buildings,
-      research: [
-        for (final t in ResearchType.values)
-          ResearchState(tech: t, level: (t == ResearchType.fuelEfficiency || t == ResearchType.reinforcedHulls) ? 1 : 0),
-      ],
+      research: research,
+      catalog: _catalogFor(buildings, research),
       buildQueue: BuildQueueItem(
         buildingType: BuildingType.crystalMine,
         targetLevel: 4,
@@ -304,7 +308,120 @@ class DemoProvider {
         shipyardQueue: clearShip ? null : (ship ?? _hw.shipyardQueue),
         researchActive: clearResearch ? null : (researchItem ?? _hw.researchActive),
         dockedShips: _hw.dockedShips,
+        catalog: _catalogFor(buildings ?? _hw.buildings, research ?? _hw.research),
       );
+
+  // Per-level cost and prerequisite tables for the demo catalog.
+  static const _buildingBase = {
+    BuildingType.metalMine: Resources(metal: 60, crystal: 15),
+    BuildingType.crystalMine: Resources(metal: 48, crystal: 24),
+    BuildingType.deuteriumSynthesizer: Resources(metal: 225, crystal: 75),
+    BuildingType.shipyard: Resources(metal: 200, crystal: 100, deuterium: 50),
+    BuildingType.researchLab: Resources(metal: 100, crystal: 200, deuterium: 50),
+    BuildingType.fuelDepot: Resources(metal: 150, crystal: 50, deuterium: 100),
+    BuildingType.sensorArray: Resources(metal: 100, crystal: 150, deuterium: 75),
+    BuildingType.defenseGrid: Resources(metal: 300, crystal: 200, deuterium: 100),
+  };
+  static const _buildingNeeds = {
+    BuildingType.shipyard: (BuildingType.metalMine, 2),
+    BuildingType.researchLab: (BuildingType.crystalMine, 2),
+    BuildingType.fuelDepot: (BuildingType.deuteriumSynthesizer, 2),
+    BuildingType.sensorArray: (BuildingType.researchLab, 1),
+    BuildingType.defenseGrid: (BuildingType.shipyard, 3),
+  };
+  static const _shipCost = {
+    ShipClass.scout: Resources(metal: 200, crystal: 50, deuterium: 30),
+    ShipClass.corvette: Resources(metal: 400, crystal: 100, deuterium: 60),
+    ShipClass.frigate: Resources(metal: 1000, crystal: 400, deuterium: 200),
+    ShipClass.cruiser: Resources(metal: 3000, crystal: 1500, deuterium: 800),
+    ShipClass.hauler: Resources(metal: 600, crystal: 200, deuterium: 150),
+  };
+  static const _shipTicks = {
+    ShipClass.scout: 30,
+    ShipClass.corvette: 60,
+    ShipClass.frigate: 120,
+    ShipClass.cruiser: 240,
+    ShipClass.hauler: 90,
+  };
+  static const _shipTech = {
+    ShipClass.corvette: ResearchType.corvetteTech,
+    ShipClass.frigate: ResearchType.frigateTech,
+    ShipClass.cruiser: ResearchType.cruiserTech,
+    ShipClass.hauler: ResearchType.haulerTech,
+  };
+
+  static Resources _times(Resources r, num n) =>
+      Resources(metal: r.metal * n, crystal: r.crystal * n, deuterium: r.deuterium * n);
+
+  static HomeworldCatalog _catalogFor(List<BuildingState> buildings, List<ResearchState> research) {
+    int bl(BuildingType t) => buildings.firstWhere((b) => b.buildingType == t).level;
+    int rl(ResearchType t) => research.firstWhere((r) => r.tech == t).level;
+    Requirement needBuilding(BuildingType t, int l) =>
+        Requirement(label: '${t.label} >= $l', met: bl(t) >= l);
+
+    return HomeworldCatalog(
+      buildings: [
+        for (final t in BuildingType.values)
+          BuildingOption(
+            buildingType: t,
+            level: bl(t),
+            maxLevel: 20,
+            next: bl(t) >= 20
+                ? null
+                : UpgradeStep(level: bl(t) + 1, cost: _times(_buildingBase[t]!, bl(t) + 1), ticks: 30 * (bl(t) + 1)),
+            requires: [
+              if (_buildingNeeds[t] case (final b, final l)) needBuilding(b, l),
+            ],
+          ),
+      ],
+      research: [
+        for (final t in ResearchType.values)
+          ResearchOption(
+            tech: t,
+            level: rl(t),
+            maxLevel: _shipTech.containsValue(t) ? 1 : 5,
+            next: rl(t) >= (_shipTech.containsValue(t) ? 1 : 5)
+                ? null
+                : UpgradeStep(
+                    level: rl(t) + 1,
+                    cost: _times(const Resources(metal: 200, crystal: 150, deuterium: 100), rl(t) + 1),
+                    ticks: 60 * (rl(t) + 1),
+                  ),
+            requires: [
+              needBuilding(BuildingType.researchLab, 1),
+              if (t == ResearchType.corvetteTech) needBuilding(BuildingType.shipyard, 2),
+            ],
+          ),
+      ],
+      ships: [
+        for (final c in ShipClass.values)
+          ShipOption(
+            shipClass: c,
+            unitCost: _shipCost[c]!,
+            ticksPerShip: _shipTicks[c]!,
+            requires: [
+              needBuilding(BuildingType.shipyard, 1),
+              if (_shipTech[c] case final t?) Requirement(label: '${t.label} >= 1', met: rl(t) >= 1),
+            ],
+          ),
+      ],
+    );
+  }
+
+  /// Spend [cost] if the stockpile covers it; otherwise the error to send.
+  ServerMessage? _pay(Resources cost) {
+    if (_resources.metal < cost.metal ||
+        _resources.crystal < cost.crystal ||
+        _resources.deuterium < cost.deuterium) {
+      return _err(ErrorCode.noResources, 'Not enough resources');
+    }
+    _resources = Resources(
+      metal: _resources.metal - cost.metal,
+      crystal: _resources.crystal - cost.crystal,
+      deuterium: _resources.deuterium - cost.deuterium,
+    );
+    return null;
+  }
 
   /// The demo plays the server: mine output at the given building levels.
   static Resources _production(List<BuildingState> buildings) {
@@ -400,30 +517,51 @@ class DemoProvider {
         return [_tickUpdate(sectors: true)];
       case BuildCommand(:final buildingType):
         if (_hw.buildQueue != null) return [_err(ErrorCode.queueFull, 'Build queue busy')];
+        final o = _hw.catalog.buildings.firstWhere((o) => o.buildingType == buildingType);
+        if (o.next == null) return [_err(ErrorCode.maxLevelReached, '${buildingType.label} is maxed')];
+        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
+        final broke = _pay(o.next!.cost);
+        if (broke != null) return [broke];
         _hw = _hwWith(
           build: BuildQueueItem(
             buildingType: buildingType,
-            targetLevel: _hw.buildingLevel(buildingType) + 1,
+            targetLevel: o.next!.level,
             startTick: _tick,
-            endTick: _tick + 90,
+            endTick: _tick + o.next!.ticks,
           ),
         );
         return [_tickUpdate()];
       case ResearchCommand(:final tech):
         if (_hw.researchActive != null) return [_err(ErrorCode.queueFull, 'Lab busy')];
+        final o = _hw.catalog.research.firstWhere((o) => o.tech == tech);
+        if (o.requires.first.met == false) return [_err(ErrorCode.noResearchLab, 'Build a research lab first')];
+        if (o.next == null) return [_err(ErrorCode.maxLevelReached, '${tech.label} is maxed')];
+        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
+        final broke = _pay(o.next!.cost);
+        if (broke != null) return [broke];
         _hw = _hwWith(
-          researchItem: ResearchItem(targetLevel: 1, tech: tech, startTick: _tick, endTick: _tick + 120),
+          researchItem: ResearchItem(
+            targetLevel: o.next!.level,
+            tech: tech,
+            startTick: _tick,
+            endTick: _tick + o.next!.ticks,
+          ),
         );
         return [_tickUpdate()];
       case BuildShipCommand(:final shipClass, :final count):
         if (_hw.shipyardQueue != null) return [_err(ErrorCode.queueFull, 'Shipyard busy')];
+        final o = _hw.catalog.ships.firstWhere((o) => o.shipClass == shipClass);
+        if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
+        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.shipLocked, 'Ship class not unlocked')];
+        final broke = _pay(_times(o.unitCost, count));
+        if (broke != null) return [broke];
         _hw = _hwWith(
           ship: ShipyardQueueItem(
             shipClass: shipClass,
             count: count,
             built: 0,
             startTick: _tick,
-            endTick: _tick + 60 * count,
+            endTick: _tick + o.ticksPerShip * count,
           ),
         );
         return [_tickUpdate()];

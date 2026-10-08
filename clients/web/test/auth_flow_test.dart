@@ -85,6 +85,7 @@ class _FakeServer {
           'buildings': <dynamic>[],
           'research': <dynamic>[],
           'docked_ships': <dynamic>[],
+          'catalog': {'buildings': <dynamic>[], 'research': <dynamic>[], 'ships': <dynamic>[]},
         },
         'known_sectors': <dynamic>[],
       };
