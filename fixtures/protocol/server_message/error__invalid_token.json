@@ -1,0 +1,5 @@
+{
+  "code": "InvalidToken",
+  "message": "sample InvalidToken",
+  "type": "error"
+}

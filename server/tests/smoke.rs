@@ -135,44 +135,172 @@ async fn auth_state_and_command_roundtrip() {
     let _ = std::fs::remove_file(&db);
 }
 
-#[tokio::test]
-async fn reauth_resumes_same_player() {
-    let port = 17932;
-    let db = std::env::temp_dir().join(format!("iac_smoke_{port}.db"));
-    let _ = std::fs::remove_file(&db);
+type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+fn fresh_db(port: u16) -> std::path::PathBuf {
+    let db = std::env::temp_dir().join(format!("iac_smoke_{port}.db"));
+    remove_db(&db);
+    db
+}
+
+fn remove_db(db: &std::path::Path) {
+    for ext in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{ext}", db.display()));
+    }
+}
+
+fn start_server(port: u16, db: &std::path::Path) -> ServerGuard {
     let child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
         .args(["--port", &port.to_string(), "--db", db.to_str().unwrap()])
         .spawn()
         .expect("failed to spawn server");
-    let _guard = ServerGuard(child);
+    ServerGuard(child)
+}
 
-    let url = format!("ws://127.0.0.1:{port}");
+/// Connect, send an auth request, and return the connection with the reply.
+async fn login(port: u16, name: &str, token: Option<&str>) -> (Ws, Value) {
+    let mut ws = connect_with_retry(&format!("ws://127.0.0.1:{port}")).await;
+    let mut req = json!({"type": "auth", "player_name": name});
+    if let Some(t) = token {
+        req["token"] = json!(t);
+    }
+    ws.send(Message::text(req.to_string())).await.unwrap();
+    let reply = next_json(&mut ws).await;
+    assert_eq!(reply["type"], "auth_result", "unexpected reply: {reply}");
+    (ws, reply)
+}
 
-    let mut ws = connect_with_retry(&url).await;
-    ws.send(Message::text(
-        json!({"type": "auth", "player_name": "Returning"}).to_string(),
-    ))
-    .await
-    .unwrap();
-    let first = next_json(&mut ws).await;
-    assert_eq!(first["success"], true, "first auth failed: {first}");
-    let first_id = first["player_id"].as_u64().unwrap();
-    ws.close(None).await.unwrap();
+#[tokio::test]
+async fn auth_issues_a_token_and_demands_it_afterwards() {
+    let port = 17932;
+    let db = fresh_db(port);
+    let _guard = start_server(port, &db);
 
-    let mut ws2 = connect_with_retry(&url).await;
-    ws2.send(Message::text(
-        json!({"type": "auth", "player_name": "Returning"}).to_string(),
-    ))
-    .await
-    .unwrap();
-    let second = next_json(&mut ws2).await;
-    assert_eq!(second["success"], true, "re-auth failed: {second}");
-    assert_eq!(
-        second["player_id"].as_u64().unwrap(),
-        first_id,
-        "same player name should resume the same player"
-    );
+    let (_ws, first) = login(port, "Returning", None).await;
+    assert_eq!(first["success"], true, "registration failed: {first}");
+    let token = first["token"].as_str().expect("first login returns the token").to_string();
+    assert_eq!(token.len(), 64);
+    assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+    let player_id = first["player_id"].as_u64().unwrap();
 
-    let _ = std::fs::remove_file(&db);
+    // Same name, no token: refused with a code and readable text.
+    let (_ws, missing) = login(port, "Returning", None).await;
+    assert_eq!(missing["success"], false);
+    assert_eq!(missing["code"], "TokenRequired");
+    assert!(missing.get("token").is_none() && missing.get("player_id").is_none(), "no data leaks on failure: {missing}");
+    let text = missing["message"].as_str().unwrap();
+    assert!(text.contains("Returning") && !text.contains("::") && !text.contains('{'), "message not human readable: {text}");
+
+    // Wrong token.
+    let (_ws, wrong) = login(port, "Returning", Some(&"0".repeat(64))).await;
+    assert_eq!(wrong["success"], false);
+    assert_eq!(wrong["code"], "InvalidToken");
+
+    // The right token resumes the same empire and does not re-issue itself.
+    let (mut ws, again) = login(port, "Returning", Some(&token)).await;
+    assert_eq!(again["success"], true, "valid token refused: {again}");
+    assert_eq!(again["player_id"].as_u64().unwrap(), player_id);
+    assert!(again.get("token").is_none(), "token must be shown only once: {again}");
+    let state = loop {
+        let msg = next_json(&mut ws).await;
+        if msg["type"] == "full_state" {
+            break msg;
+        }
+    };
+    assert_eq!(state["player"]["id"].as_u64().unwrap(), player_id);
+
+    // A failed login must not have opened the session to commands.
+    let (mut ws, refused) = login(port, "Returning", None).await;
+    assert_eq!(refused["success"], false);
+    ws.send(Message::text(json!({"type": "request_full_state"}).to_string())).await.unwrap();
+    ws.send(Message::text(json!({"type": "command", "action": "scan", "fleet_id": 1}).to_string())).await.unwrap();
+    let err = loop {
+        let msg = next_json(&mut ws).await;
+        if msg["type"] == "error" {
+            break msg;
+        }
+        assert_ne!(msg["type"], "full_state", "unauthenticated session got state");
+    };
+    assert_eq!(err["code"], "AuthFailed");
+
+    remove_db(&db);
+}
+
+#[tokio::test]
+async fn auth_rejects_bad_names() {
+    let port = 17933;
+    let db = fresh_db(port);
+    let _guard = start_server(port, &db);
+
+    for bad in ["ab", "has space", "-dash", "Admin", &"x".repeat(25)] {
+        let (_ws, reply) = login(port, bad, None).await;
+        assert_eq!(reply["success"], false, "{bad:?} accepted");
+        assert_eq!(reply["code"], "InvalidName", "{bad:?}: {reply}");
+        assert!(reply["message"].as_str().unwrap().starts_with("invalid player name"));
+    }
+    remove_db(&db);
+}
+
+#[tokio::test]
+async fn token_survives_restart_and_pre_token_databases_are_claimed() {
+    let port = 17934;
+    let db = fresh_db(port);
+
+    // Run 1: register, let the persist thread commit it.
+    let (player_id, token) = {
+        let _guard = start_server(port, &db);
+        let (_ws, reply) = login(port, "OldTimer", None).await;
+        assert_eq!(reply["success"], true, "{reply}");
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        (reply["player_id"].as_u64().unwrap(), reply["token"].as_str().unwrap().to_string())
+    };
+
+    // Run 2: the hash was stored, so the token still works and is still required.
+    {
+        let _guard = start_server(port, &db);
+        let (_ws, missing) = login(port, "OldTimer", None).await;
+        assert_eq!(missing["code"], "TokenRequired", "{missing}");
+        let (_ws, ok) = login(port, "OldTimer", Some(&token)).await;
+        assert_eq!(ok["success"], true, "{ok}");
+    }
+
+    // Turn the database into one written before tokens existed.
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("ALTER TABLE players DROP COLUMN token_hash").unwrap();
+    }
+
+    // Run 3: the column is migrated back in, and the first login claims the account.
+    let claimed = {
+        let _guard = start_server(port, &db);
+        let (mut ws, reply) = login(port, "OldTimer", None).await;
+        assert_eq!(reply["success"], true, "legacy account not claimable: {reply}");
+        assert_eq!(reply["player_id"].as_u64().unwrap(), player_id, "claim must keep the same empire");
+        let new_token = reply["token"].as_str().expect("claim returns a token").to_string();
+        assert_ne!(new_token, token);
+        let state = loop {
+            let msg = next_json(&mut ws).await;
+            if msg["type"] == "full_state" {
+                break msg;
+            }
+        };
+        assert!(!state["fleets"].as_array().unwrap().is_empty(), "claimed account kept its fleet");
+
+        // From now on it is protected like any other.
+        let (_ws, second) = login(port, "OldTimer", None).await;
+        assert_eq!(second["code"], "TokenRequired");
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        new_token
+    };
+
+    // Run 4: the claim itself was persisted.
+    {
+        let _guard = start_server(port, &db);
+        let (_ws, stale) = login(port, "OldTimer", Some(&token)).await;
+        assert_eq!(stale["code"], "InvalidToken", "old token must not work after a claim: {stale}");
+        let (_ws, ok) = login(port, "OldTimer", Some(&claimed)).await;
+        assert_eq!(ok["success"], true, "{ok}");
+    }
+
+    remove_db(&db);
 }

@@ -28,12 +28,12 @@ use iac_shared::protocol::{
     GameState, PlayerState, FleetState, ShipState, SectorState, SectorResources,
     NpcFleetInfo, NpcShipInfo, FleetBrief, ShipClassCounts,
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
-    GameEvent,
+    GameEvent, AuthResult,
 };
 use iac_shared::constants::{ShipClass, MAX_FLEETS_PER_PLAYER};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 
-use crate::engine::{fleet_cargo_capacity, GameEngine, FleetStatus, SectorOverride};
+use crate::engine::{fleet_cargo_capacity, AuthError, GameEngine, FleetStatus, SectorOverride};
 
 pub struct Network {
     port: u16,
@@ -56,17 +56,6 @@ pub struct ClientSession {
     pub sender: Option<mpsc::UnboundedSender<Message>>,
     pub player_id: Option<u64>,
     pub authenticated: bool,
-    pub client_type: ClientType,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientType {
-    Unknown,
-    TuiHuman,
-    LlmAgent,
-    WebClient,
-    Spectator,
 }
 
 impl Network {
@@ -145,19 +134,20 @@ impl Network {
                     return Ok(());
                 }
 
-                let registration = {
+                let outcome = {
                     let mut engine = self.engine.lock().unwrap();
-                    engine.register_player(auth.player_name.clone())
+                    engine.authenticate(&auth.player_name, auth.token.as_deref())
                 };
-                let player_id = match registration {
-                    Ok(id) => id,
-                    Err(code) => {
-                        // Tell the client auth failed instead of going silent.
-                        self.send_to_session(&sess, ServerMessage::AuthResult(iac_shared::protocol::AuthResult {
+                let granted = match outcome {
+                    Ok(granted) => granted,
+                    Err(err) => {
+                        let (code, message) = auth_failure(&auth.player_name, err);
+                        self.send_to_session(&sess, ServerMessage::AuthResult(AuthResult {
                             success: false,
                             player_id: None,
                             token: None,
-                            message: Some(format!("Registration failed: {:?}", code)),
+                            code: Some(code),
+                            message: Some(message),
                         }))?;
                         return Ok(());
                     }
@@ -166,25 +156,25 @@ impl Network {
                 {
                     let mut sessions = self.sessions.lock().unwrap();
                     if let Some(s) = sessions.get_mut(&session_id) {
-                        s.player_id = Some(player_id);
+                        s.player_id = Some(granted.player_id);
                         s.authenticated = true;
-                        s.client_type = if auth.token.is_some() {
-                            ClientType::LlmAgent
-                        } else {
-                            ClientType::TuiHuman
-                        };
                     }
                 }
 
-                let result = ServerMessage::AuthResult(iac_shared::protocol::AuthResult {
+                let message = match (&granted.new_token, granted.registered) {
+                    (Some(_), true) => Some("account created; keep this token, it is your password".to_string()),
+                    (Some(_), false) => Some("account claimed; keep this token, it is your password".to_string()),
+                    (None, _) => None,
+                };
+                self.send_to_session(&sess, ServerMessage::AuthResult(AuthResult {
                     success: true,
-                    player_id: Some(player_id),
-                    token: None,
-                    message: None,
-                });
-                self.send_to_session(&sess, result)?;
+                    player_id: Some(granted.player_id),
+                    token: granted.new_token,
+                    code: None,
+                    message,
+                }))?;
 
-                self.send_full_state(&sess, player_id)?;
+                self.send_full_state(&sess, granted.player_id)?;
             }
             ClientMessage::Command(cmd) => {
                 if !sess.authenticated {
@@ -339,6 +329,18 @@ impl Network {
 
         drop(engine);
         self.send_to_session(session, state)
+    }
+}
+
+fn auth_failure(name: &str, err: AuthError) -> (ErrorCode, String) {
+    match err {
+        AuthError::InvalidName(reason) => (ErrorCode::InvalidName, format!("invalid player name: {reason}")),
+        AuthError::TokenRequired => (
+            ErrorCode::TokenRequired,
+            format!("player '{name}' is already registered; present its token to log in"),
+        ),
+        AuthError::InvalidToken => (ErrorCode::InvalidToken, format!("token rejected for player '{name}'")),
+        AuthError::Server => (ErrorCode::ServerError, "could not create the account".to_string()),
     }
 }
 
@@ -549,7 +551,6 @@ async fn run_session(socket: WebSocket, state: HttpState) {
         sender: Some(tx),
         player_id: None,
         authenticated: false,
-        client_type: ClientType::Unknown,
     });
     info!("Client connected (session {})", session_id);
 
@@ -917,7 +918,6 @@ mod tests {
             sender: Some(tx),
             player_id: Some(pid),
             authenticated: true,
-            client_type: ClientType::Unknown,
         });
         (net, engine, pid, fid, rx)
     }

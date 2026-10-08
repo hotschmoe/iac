@@ -2,7 +2,7 @@
 // Live smoke test against a running Rust server, reusing the app's protocol
 // classes (no Flutter needed):
 //
-//   dart run tool/smoke.dart [ws://127.0.0.1:7777/ws] [player-name]
+//   dart run tool/smoke.dart [ws://127.0.0.1:7777/ws] [player-name] [token]
 //
 // Connects, authenticates, expects auth_result + full_state, a few
 // tick_updates, sends scan and move (when a lane exists), and fails on any
@@ -21,6 +21,7 @@ Never fail(String msg) {
 Future<void> main(List<String> args) async {
   final url = args.isNotEmpty ? args[0] : 'ws://127.0.0.1:7777/ws';
   final name = args.length > 1 ? args[1] : 'smoke-${DateTime.now().millisecondsSinceEpoch % 100000}';
+  final token = args.length > 2 ? args[2] : null;
 
   final ws = await WebSocket.connect(url).timeout(const Duration(seconds: 5));
   final inbox = StreamController<ServerMessage>();
@@ -59,10 +60,10 @@ Future<void> main(List<String> args) async {
     fail('stream closed waiting for $T');
   }
 
-  send(AuthRequest(playerName: name));
+  send(AuthRequest(playerName: name, token: token));
   final auth = await next<AuthResult>();
-  if (!auth.success) fail('auth rejected: ${auth.message}');
-  print('auth ok: player_id=${auth.playerId}');
+  if (!auth.success) fail('auth rejected (${auth.code?.wire}): ${auth.message}');
+  print('auth ok: player_id=${auth.playerId}${auth.token == null ? '' : ' issued token=${auth.token}'}');
 
   final full = await next<GameState>();
   print('full_state: tick=${full.tick} player=${full.player.name} fleets=${full.fleets.length} '

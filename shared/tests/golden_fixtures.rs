@@ -328,11 +328,14 @@ fn error_code_name(c: ErrorCode) -> &'static str {
         ErrorCode::ResourceNotPresent => "resource_not_present",
         ErrorCode::AuthFailed => "auth_failed",
         ErrorCode::AlreadyAuthenticated => "already_authenticated",
+        ErrorCode::InvalidName => "invalid_name",
+        ErrorCode::TokenRequired => "token_required",
+        ErrorCode::InvalidToken => "invalid_token",
         ErrorCode::ServerError => "server_error",
     }
 }
 
-const ALL_ERROR_CODES: [ErrorCode; 20] = [
+const ALL_ERROR_CODES: [ErrorCode; 23] = [
     ErrorCode::InvalidCommand,
     ErrorCode::InvalidTarget,
     ErrorCode::NoConnection,
@@ -352,6 +355,9 @@ const ALL_ERROR_CODES: [ErrorCode; 20] = [
     ErrorCode::ResourceNotPresent,
     ErrorCode::AuthFailed,
     ErrorCode::AlreadyAuthenticated,
+    ErrorCode::InvalidName,
+    ErrorCode::TokenRequired,
+    ErrorCode::InvalidToken,
     ErrorCode::ServerError,
 ];
 
@@ -385,7 +391,7 @@ fn client_messages() -> Vec<(&'static str, ClientMessage)> {
         ("", ClientMessage::Auth(AuthRequest { player_name: "Admiral".into(), token: None })),
         (
             "with_token",
-            ClientMessage::Auth(AuthRequest { player_name: "Bot".into(), token: Some("headless".into()) }),
+            ClientMessage::Auth(AuthRequest { player_name: "Bot".into(), token: Some("9f2c4a7be1d8350c6a94f0b3d27e81c5a4b6e90f3d1c28a7b5e4f60918273645".into()) }),
         ),
         ("", ClientMessage::Command(Command::Move { fleet_id: 1, target: h(1, -1) })),
         ("scan", ClientMessage::Command(Command::Scan { fleet_id: 1 })),
@@ -426,17 +432,49 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             ServerMessage::AuthResult(AuthResult {
                 success: true,
                 player_id: Some(42),
-                token: Some("tok-123".into()),
+                token: Some("9f2c4a7be1d8350c6a94f0b3d27e81c5a4b6e90f3d1c28a7b5e4f60918273645".into()),
+                code: None,
+                message: Some("account created; keep this token, it is your password".into()),
+            }),
+        ),
+        (
+            "returning".into(),
+            ServerMessage::AuthResult(AuthResult {
+                success: true,
+                player_id: Some(42),
+                token: None,
+                code: None,
                 message: None,
             }),
         ),
         (
-            "failure".into(),
+            "token_required".into(),
             ServerMessage::AuthResult(AuthResult {
                 success: false,
                 player_id: None,
                 token: None,
-                message: Some("Registration failed: ServerError".into()),
+                code: Some(ErrorCode::TokenRequired),
+                message: Some("player 'Admiral' is already registered; supply its token".into()),
+            }),
+        ),
+        (
+            "invalid_token".into(),
+            ServerMessage::AuthResult(AuthResult {
+                success: false,
+                player_id: None,
+                token: None,
+                code: Some(ErrorCode::InvalidToken),
+                message: Some("token rejected for player 'Admiral'".into()),
+            }),
+        ),
+        (
+            "invalid_name".into(),
+            ServerMessage::AuthResult(AuthResult {
+                success: false,
+                player_id: None,
+                token: None,
+                code: Some(ErrorCode::InvalidName),
+                message: Some("invalid player name: must be 3-24 characters long (got 2)".into()),
             }),
         ),
         (

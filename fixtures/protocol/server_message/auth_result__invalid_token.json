@@ -1,0 +1,6 @@
+{
+  "code": "InvalidToken",
+  "message": "token rejected for player 'Admiral'",
+  "success": false,
+  "type": "auth_result"
+}

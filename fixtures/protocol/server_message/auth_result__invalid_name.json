@@ -1,0 +1,6 @@
+{
+  "code": "InvalidName",
+  "message": "invalid player name: must be 3-24 characters long (got 2)",
+  "success": false,
+  "type": "auth_result"
+}

@@ -94,6 +94,18 @@ class StateMapper {
     ));
   }
 
+  /// The server just issued this account's token. It is shown once, so it
+  /// goes in the log and alerts; [saved] says whether the browser kept it.
+  void noticeToken(String token, {required bool saved}) {
+    pushLog('Account token: $token (keep it; it is your password)', EventLevel.bright);
+    _pushAlert(Alert(
+      icon: '!',
+      message: 'New account token',
+      detail: saved ? token : '$token  (NOT stored in this browser: copy it now)',
+      level: AlertTone.glow,
+    ));
+  }
+
   void pushLog(String msg, [EventLevel level = EventLevel.normal]) {
     log.insert(0, LogEntry(tick: tick, message: msg, level: level));
     if (log.length > 14) log.removeRange(14, log.length);

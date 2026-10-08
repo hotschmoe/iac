@@ -9,8 +9,8 @@ import '../protocol/protocol.dart';
 ///
 ///   ?ws=ws://host:port/ws   override the WebSocket URL
 ///   ?name=Admiral           player name (skips the login prompt)
-///   ?token=...              optional token (the server treats token-bearing
-///                           sessions as LLM agents; humans send none)
+///   ?token=...              account token for [name]; otherwise the one the
+///                           browser remembered (or typed at the login form)
 class ConnectParams {
   final String url;
   final String? name;

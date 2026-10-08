@@ -3,6 +3,32 @@
 In Amber Clad authentication for all client types: TUI, web, Android, LLM agents,
 and third-party clients.
 
+## Implemented subset (what the Rust server does today)
+
+The spec below is the full design. The Rust server implements the part that
+matters for a LAN game, with these differences:
+
+- **No `action` field.** The server decides from the name: an unused name
+  registers (name rules below apply) and the `auth_result` returns the token;
+  a used name logs in and must present it. `AuthResult.code` (`InvalidName`,
+  `TokenRequired`, `InvalidToken`) says why a login failed, `message` is
+  human readable. Names are public in this game (they appear in sector
+  briefs), so the failure replies do not try to hide whether a name exists.
+- **Tokens and hashing as specified**: 32 random bytes, hex, SHA-256 stored in
+  `players.token_hash`, constant-time compare (`server/src/auth.rs`).
+- **Accounts from before tokens** (NULL `token_hash`): the next login for the
+  name claims the account and is issued a token. The column is added to old
+  databases on startup; no data is touched.
+- **Failed logins keep the connection open** (the client may retry); a failed
+  session cannot send commands or request state.
+- **Not implemented**: the anti-griefing layers (player cap, per-IP
+  registration and connection limits, failure lockout), `created_at` /
+  `last_login_at`, and the multi-device recovery ideas. Online guessing of a
+  256-bit token is infeasible, so lockout buys little; registration spam is
+  the open gap if the server is ever exposed beyond a trusted network.
+- Clients store the token per server and name: TUI/headless in
+  `~/.config/iac/tokens.json`, the web client in `localStorage`.
+
 ## Design Principles
 
 1. **One protocol, all clients.** The WebSocket JSON protocol is the only interface.

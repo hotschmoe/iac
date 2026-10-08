@@ -6,32 +6,26 @@
 //            message ({"type":"command","action":"move",...}) or a bare
 //            command ({"action":"move",...}), which gets wrapped.
 //
-// Auth happens automatically from --name/--token; the session ends when
-// stdin closes or the server hangs up.
+// Auth happens automatically from --name/--token (or the saved token file);
+// the session ends when stdin closes or the server hangs up. A refused login
+// prints the reason on stderr and exits non-zero without touching stdout.
 
 use std::io::Write;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_tungstenite::tungstenite::protocol::Message;
 
-use iac_shared::protocol::{AuthRequest, ClientMessage, Command};
+use iac_shared::protocol::{ClientMessage, Command};
 
-use crate::connection::{Connection, ConnectionConfig};
+use crate::connection::{self, ConnectionConfig};
 
 pub async fn run(
     config: &ConnectionConfig,
     name: &str,
     token: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let conn = Connection::connect(config).await?;
-
-    // A token marks the session as an LLM agent server-side; headless
-    // sessions always identify as agents.
-    let auth = ClientMessage::Auth(AuthRequest {
-        player_name: name.to_string(),
-        token: Some(token.unwrap_or("headless").to_string()),
-    });
-    conn.send_message(auth).await?;
+    let (conn, auth_line) = connection::login(config, name, token).await?;
+    println!("{auth_line}");
 
     let conn_tx = conn.tx.clone();
 

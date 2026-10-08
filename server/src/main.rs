@@ -12,6 +12,7 @@ use crate::database::Database;
 use crate::engine::GameEngine;
 use crate::network::Network;
 
+mod auth;
 mod combat;
 mod database;
 mod engine;

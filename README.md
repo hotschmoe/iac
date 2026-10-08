@@ -52,7 +52,7 @@ The game is fully playable without a terminal. Headless mode turns the
 client into an NDJSON pipe:
 
 ```sh
-cargo run -p iac-client -- --headless --name MyAgent [--token secret]
+cargo run -p iac-client -- --headless --name MyAgent [--token <token>]
 ```
 
 - **stdout** — every server message, one JSON object per line: `auth_result`,
@@ -65,8 +65,30 @@ cargo run -p iac-client -- --headless --name MyAgent [--token secret]
   (`{"action":"scan","fleet_id":2}`) both work. Malformed lines come back
   in-band as `{"type":"client_error",...}`.
 
-Auth is automatic from `--name`; the same name always resumes the same
-empire. Example session:
+### Accounts and tokens
+
+A name is an account, protected by a token the server generates (256 random
+bits, hex). There is no separate register step:
+
+- **First login with a new name** creates the account. The `auth_result`
+  carries the token, once: `{"type":"auth_result","success":true,"player_id":4,"token":"9f2c…"}`.
+- **Later logins** must present it (`--token`, or `"token"` in the `auth`
+  message). A known name without a token fails with code `TokenRequired`,
+  a wrong one with `InvalidToken`; an unusable new name gets `InvalidName`
+  (3-24 chars of `A-Za-z0-9_-`, no leading/trailing `-`/`_`, a few reserved
+  words). Failures arrive as `{"type":"auth_result","success":false,"code":"TokenRequired","message":"…"}`.
+- **Saved automatically**: the TUI and headless client store the token per
+  server and name in `~/.config/iac/tokens.json` (`$XDG_CONFIG_HOME/iac/`;
+  mode 0600) and reuse it. `--token` overrides the saved one. A refused
+  login prints the reason on stderr and exits 1 (headless emits no further
+  stdout).
+- **Servers upgraded from before tokens**: existing players have no token
+  yet; the next login for that name claims the account and is issued one.
+  Claim your name promptly: whoever logs in first owns it.
+- Token lost = account lost (see `docs/auth_spec.md`); the server stores only
+  its SHA-256.
+
+Example session:
 
 ```sh
 { echo '{"type":"request_full_state"}'
@@ -113,8 +135,12 @@ windshield and star map, driven by a command bar (`help` lists commands) and
 hotkeys (`1`/`2`/`3` views, numpad 1-6 to move, Esc leaves the bar). It speaks
 the Rust wire protocol over `/ws` on the page's own host and port.
 
-- `?name=Admiral` skips the name prompt (same name resumes the same empire);
-  `?token=...` is optional; `?ws=ws://host:port/ws` points at another server.
+- `?name=Admiral` skips the name prompt; `?token=...` supplies the account
+  token (see "Accounts and tokens"); `?ws=ws://host:port/ws` points at another
+  server. The token the server issues is remembered in the browser's
+  `localStorage` per server and name; if a name needs a token the browser
+  does not have (or storage is blocked), the login form asks for it. A new
+  token is also shown once in the event log and alerts, so you can copy it.
 - If the server is unreachable it falls back to an offline DEMO mode and keeps
   retrying in the background.
 

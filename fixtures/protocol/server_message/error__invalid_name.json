@@ -1,0 +1,5 @@
+{
+  "code": "InvalidName",
+  "message": "sample InvalidName",
+  "type": "error"
+}

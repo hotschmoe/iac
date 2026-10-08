@@ -215,6 +215,9 @@ enum ErrorCode {
   resourceNotPresent(1016),
   authFailed(2000),
   alreadyAuthenticated(2001),
+  invalidName(2002),
+  tokenRequired(2003),
+  invalidToken(2004),
   serverError(5000);
 
   final int code;
@@ -525,13 +528,15 @@ class AuthResult extends ServerMessage {
   final bool success;
   final int? playerId;
   final String? token;
+  final ErrorCode? code;
   final String? message;
-  const AuthResult({required this.success, this.playerId, this.token, this.message});
+  const AuthResult({required this.success, this.playerId, this.token, this.code, this.message});
 
   factory AuthResult.fromJson(Json m) => AuthResult(
         success: m['success'] as bool,
         playerId: m['player_id'] as int?,
         token: m['token'] as String?,
+        code: _opt(m['code'], ErrorCode.fromJson),
         message: m['message'] as String?,
       );
 
@@ -540,6 +545,7 @@ class AuthResult extends ServerMessage {
     final m = <String, dynamic>{'type': 'auth_result', 'success': success};
     _put(m, 'player_id', playerId);
     _put(m, 'token', token);
+    _put(m, 'code', code?.toJson());
     _put(m, 'message', message);
     return m;
   }

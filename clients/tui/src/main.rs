@@ -21,6 +21,7 @@ mod headless;
 mod input;
 mod renderer;
 mod state;
+mod token_store;
 
 use connection::Connection;
 use state::ClientState;
@@ -46,24 +47,34 @@ struct Cli {
     #[arg(long)]
     headless: bool,
 
-    /// Auth token (marks the session as an LLM agent server-side)
+    /// Auth token for this name. Defaults to the one saved for this server
+    /// and name; a token issued on first login is saved automatically.
     #[arg(long)]
     token: Option<String>,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn main() {
     env_logger::init();
+    if let Err(e) = run_client().await {
+        eprintln!("iac-client: {e}");
+        std::process::exit(1);
+    }
+}
 
+async fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
 
+    let config = connection::ConnectionConfig {
+        host: cli.host.clone(),
+        port: cli.port,
+    };
     if cli.headless {
-        let config = connection::ConnectionConfig {
-            host: cli.host.clone(),
-            port: cli.port,
-        };
         return headless::run(&config, &cli.name, cli.token.as_deref()).await;
     }
+
+    // Log in before taking over the terminal so a refusal prints normally.
+    let (conn, _) = connection::login(&config, &cli.name, cli.token.as_deref()).await?;
 
     // Initialize terminal
     crossterm::terminal::enable_raw_mode()?;
@@ -84,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         default_hook(info);
     }));
 
-    let result = run(terminal, &cli).await;
+    let result = run(terminal, conn).await;
 
     // Restore terminal
     crossterm::terminal::disable_raw_mode()?;
@@ -96,18 +107,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 async fn run(
     mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
-    cli: &Cli,
+    conn: Connection,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Connect to server
-    let config = connection::ConnectionConfig {
-        host: cli.host.clone(),
-        port: cli.port,
-    };
-    let conn = Connection::connect(&config).await?;
-
-    // Authenticate
-    conn.send_auth(&cli.name).await?;
-
     // Shared state
     let state = Arc::new(TokioMutex::new(ClientState::new()));
 

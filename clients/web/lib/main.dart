@@ -47,9 +47,9 @@ class _GameScreenState extends State<GameScreen> {
     if (name != null) _connect(name);
   }
 
-  void _connect(String name) {
+  void _connect(String name, [String? token]) {
     _started = true;
-    _controller.start(params: _params, name: name);
+    _controller.start(params: _params, name: name, token: token);
   }
 
   @override
@@ -76,11 +76,13 @@ class _GameScreenState extends State<GameScreen> {
     return ListenableBuilder(
       listenable: _controller,
       builder: (context, _) {
-        if (!_started) {
+        final rejection = _controller.authRejection;
+        if (!_started || rejection != null) {
           return LoginScreen(
             url: _params.url,
-            initialName: 'Admiral',
-            onConnect: (n) => setState(() => _connect(n)),
+            initialName: rejection == null ? 'Admiral' : _controller.playerName,
+            error: rejection?.message,
+            onConnect: (n, t) => setState(() => _connect(n, t)),
             onDemo: () => setState(() {
               _started = true;
               _controller.startDemo();

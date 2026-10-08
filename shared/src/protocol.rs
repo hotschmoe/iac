@@ -23,6 +23,15 @@ pub enum ClientMessage {
     RequestFullState,
 }
 
+/// First message on a connection. The server decides what it means from the
+/// name alone, so there is no separate register/login action:
+///
+/// - unknown name: valid names register a new account and the reply carries
+///   the new secret in `AuthResult.token` (this is the only time it is sent);
+/// - known name: `token` must match the one issued earlier, otherwise the
+///   reply is `TokenRequired` / `InvalidToken`;
+/// - an account from before tokens existed has none yet and is claimed by
+///   its next login, which is issued one the same way.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthRequest {
     pub player_name: String,
@@ -176,6 +185,10 @@ pub enum ServerMessage {
     Error(ErrorMessage),
 }
 
+/// Reply to `AuthRequest`. On success `token` is set only when the server just
+/// issued one (new account or claimed legacy account): the client must store
+/// it. On failure `code` says why (`InvalidName`, `TokenRequired`,
+/// `InvalidToken`, `ServerError`) and `message` is readable text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResult {
     pub success: bool,
@@ -183,6 +196,8 @@ pub struct AuthResult {
     pub player_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub code: Option<ErrorCode>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub message: Option<String>,
 }
@@ -683,5 +698,8 @@ pub enum ErrorCode {
     ResourceNotPresent = 1016,
     AuthFailed = 2000,
     AlreadyAuthenticated = 2001,
+    InvalidName = 2002,
+    TokenRequired = 2003,
+    InvalidToken = 2004,
     ServerError = 5000,
 }

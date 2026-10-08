@@ -1,6 +1,7 @@
 {
+  "message": "account created; keep this token, it is your password",
   "player_id": 42,
   "success": true,
-  "token": "tok-123",
+  "token": "9f2c4a7be1d8350c6a94f0b3d27e81c5a4b6e90f3d1c28a7b5e4f60918273645",
   "type": "auth_result"
 }

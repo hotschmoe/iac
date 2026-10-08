@@ -306,7 +306,8 @@ CREATE TABLE IF NOT EXISTS players (
     homeworld_r  INTEGER NOT NULL,
     metal        REAL DEFAULT 500,
     crystal      REAL DEFAULT 300,
-    deuterium    REAL DEFAULT 100
+    deuterium    REAL DEFAULT 100,
+    token_hash   BLOB          -- SHA-256 of the account token; NULL = unclaimed (added by migration)
 );
 -- name has implicit index via UNIQUE constraint
 
@@ -320,7 +321,8 @@ CREATE TABLE IF NOT EXISTS fleets (
     fuel_max        REAL NOT NULL,
     cargo_metal     REAL DEFAULT 0,
     cargo_crystal   REAL DEFAULT 0,
-    cargo_deuterium REAL DEFAULT 0
+    cargo_deuterium REAL DEFAULT 0,
+    harvest_resource TEXT DEFAULT 'auto'   -- what the current harvest order mines (added by migration)
 );
 CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id);
 CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r);

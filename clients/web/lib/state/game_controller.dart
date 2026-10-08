@@ -11,6 +11,7 @@ import 'command_parser.dart';
 import 'connection_provider.dart';
 import 'demo_provider.dart';
 import 'state_mapper.dart';
+import 'token_store.dart';
 
 enum MapZoom {
   close(52, 4),
@@ -24,9 +25,22 @@ enum MapZoom {
 
 enum LinkState { idle, connecting, live, reconnecting, demo }
 
+/// The server refused the login in a way the player can fix by typing a
+/// different name or token.
+class AuthRejection {
+  final proto.ErrorCode? code;
+  final String message;
+  const AuthRejection(this.code, this.message);
+
+  bool get needsToken => code == proto.ErrorCode.tokenRequired || code == proto.ErrorCode.invalidToken;
+}
+
 /// Drives the UI from either the live Rust server or the offline demo.
 /// Both feed the same protocol messages into one [StateMapper].
 class GameController extends ChangeNotifier {
+  GameController({TokenStore? tokens}) : _tokens = tokens ?? TokenStore.platform();
+
+  final TokenStore _tokens;
   final GameConnection connection = GameConnection();
   final StateMapper _mapper = StateMapper();
   DemoProvider? _demo;
@@ -38,6 +52,15 @@ class GameController extends ChangeNotifier {
 
   ConnectParams? _params;
   String playerName = '';
+
+  /// The token this session logs in with: typed by the player, from `?token=`,
+  /// or remembered by [TokenStore] for this server and name.
+  String? _token;
+
+  /// Set while the server is refusing the login; the UI shows the login form
+  /// again with this message.
+  AuthRejection? authRejection;
+  ({String token, bool saved})? _issuedToken;
 
   LinkState link = LinkState.idle;
   String? connectionError;
@@ -110,9 +133,12 @@ class GameController extends ChangeNotifier {
 
   /// Connect to the server; on failure fall back to demo mode and keep
   /// retrying in the background.
-  Future<void> start({required ConnectParams params, required String name}) async {
+  Future<void> start({required ConnectParams params, required String name, String? token}) async {
     _params = params;
     playerName = name;
+    final typed = token?.trim();
+    _token = (typed != null && typed.isNotEmpty) ? typed : (params.token ?? _tokens.load(params.url, name));
+    authRejection = null;
     _retry?.cancel();
     link = LinkState.connecting;
     connectionError = null;
@@ -141,7 +167,7 @@ class GameController extends ChangeNotifier {
       _msgSub = connection.messages.listen(_onServerMessage);
       await _statusSub?.cancel();
       _statusSub = connection.status.listen(_onStatus);
-      connection.auth(playerName, token: p.token);
+      connection.auth(playerName, token: _token);
       // No fixed wait: the first full_state flips us to LIVE; an
       // auth_result with success=false (or a socket close) reports failure.
     } catch (e) {
@@ -217,10 +243,15 @@ class GameController extends ChangeNotifier {
 
   void _onServerMessage(proto.ServerMessage msg) {
     switch (msg) {
-      case proto.AuthResult(:final success, :final message):
+      case proto.AuthResult(:final success, :final message, :final code, :final token):
         if (!success) {
           // Not retried: a rejected login will not fix itself.
-          connectionError = 'Auth failed: ${message ?? 'unknown'}';
+          connectionError = message ?? 'login refused';
+          if (code == proto.ErrorCode.tokenRequired ||
+              code == proto.ErrorCode.invalidToken ||
+              code == proto.ErrorCode.invalidName) {
+            authRejection = AuthRejection(code, connectionError!);
+          }
           _retry?.cancel();
           connection.disconnect();
           if (link == LinkState.reconnecting) link = LinkState.connecting;
@@ -228,6 +259,13 @@ class GameController extends ChangeNotifier {
           return;
         }
         _authed = true;
+        authRejection = null;
+        final effective = token ?? _token;
+        if (effective != null) {
+          _token = effective;
+          final saved = _tokens.save(_params!.url, playerName, effective);
+          if (token != null) _issuedToken = (token: token, saved: saved);
+        }
       case proto.GameState():
         if (!_authed) return;
         if (link != LinkState.live) {
@@ -239,6 +277,11 @@ class GameController extends ChangeNotifier {
           _cursorInit = false;
         }
         _mapper.apply(msg);
+        final issued = _issuedToken;
+        if (issued != null) {
+          _issuedToken = null;
+          _mapper.noticeToken(issued.token, saved: issued.saved);
+        }
       default:
         if (link != LinkState.live) return; // ignore strays before full_state
         _mapper.apply(msg);

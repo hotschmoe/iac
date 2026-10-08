@@ -333,11 +333,8 @@ impl ClientState {
             ServerMessage::Event(event) => {
                 self.note_event(event);
             }
-            ServerMessage::AuthResult(result) => {
-                if !result.success {
-                    // Auth failed; status message set elsewhere
-                }
-            }
+            // Login is settled before the TUI starts (connection::login).
+            ServerMessage::AuthResult(_) => {}
             ServerMessage::Error(err) => {
                 // A rejected command aborts any plotted course — better to
                 // stop than to blindly keep sending hops.

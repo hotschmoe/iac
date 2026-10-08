@@ -35,6 +35,7 @@ use iac_shared::scaling::{
 };
 use iac_shared::protocol::{GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams};
 
+use crate::auth::{self, TokenHash};
 use crate::combat;
 use crate::database::{Database, ExploredEdge, PersistBatch, Persister};
 
@@ -112,6 +113,9 @@ pub struct Player {
     pub building_queue: Option<BuildQueueEntry>,
     pub ship_queue: Option<ShipQueueEntry>,
     pub research_queue: Option<ResearchQueueEntry>,
+    /// SHA-256 of the account's token; None for accounts that predate
+    /// tokens until their next login claims them.
+    pub token_hash: Option<TokenHash>,
 }
 
 impl Player {
@@ -256,6 +260,21 @@ pub struct IncomingRaid {
 }
 
 // ── GameEngine ────────────────────────────────────────────────────
+
+pub struct Authenticated {
+    pub player_id: u64,
+    /// Set only when a token was just issued; shown to the client once.
+    pub new_token: Option<String>,
+    pub registered: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AuthError {
+    InvalidName(String),
+    TokenRequired,
+    InvalidToken,
+    Server,
+}
 
 pub struct GameEngine {
     pub world_gen: WorldGen,
@@ -1141,13 +1160,48 @@ impl GameEngine {
 
     // ── Player Registration ───────────────────────────────────────
 
-    pub fn register_player(&mut self, name: String) -> Result<u64, ErrorCode> {
-        // Reconnect if player already exists
-        for existing in self.players.values() {
-            if existing.name == name {
-                info!("Player '{}' reconnected (id={})", name, existing.id);
-                return Ok(existing.id);
+    /// Resolve an auth request to a player (see `AuthRequest` for the rules),
+    /// issuing a token when the account is new or still unclaimed.
+    pub fn authenticate(&mut self, name: &str, presented: Option<&str>) -> Result<Authenticated, AuthError> {
+        let existing = self.players.values().find(|p| p.name == name).map(|p| p.id);
+        let Some(player_id) = existing else {
+            auth::validate_name(name).map_err(AuthError::InvalidName)?;
+            let player_id = self.register_player(name.to_string()).map_err(|_| AuthError::Server)?;
+            let token = self.issue_token(player_id);
+            return Ok(Authenticated { player_id, new_token: Some(token), registered: true });
+        };
+
+        match self.players[&player_id].token_hash {
+            None => {
+                info!("Player '{}' (id={}) claimed a token", name, player_id);
+                let token = self.issue_token(player_id);
+                Ok(Authenticated { player_id, new_token: Some(token), registered: false })
             }
+            Some(stored) => match presented {
+                None => Err(AuthError::TokenRequired),
+                Some(t) if auth::token_matches(&stored, t) => {
+                    info!("Player '{}' logged in (id={})", name, player_id);
+                    Ok(Authenticated { player_id, new_token: None, registered: false })
+                }
+                Some(_) => Err(AuthError::InvalidToken),
+            },
+        }
+    }
+
+    fn issue_token(&mut self, player_id: u64) -> String {
+        let token = auth::generate_token();
+        if let Some(p) = self.players.get_mut(&player_id) {
+            p.token_hash = Some(auth::hash_token(&token));
+            self.dirty_players.insert(player_id, ());
+        }
+        token
+    }
+
+    /// Creates the account. The name must be unused; `authenticate` is the
+    /// entry point that decides between registering and logging in.
+    pub fn register_player(&mut self, name: String) -> Result<u64, ErrorCode> {
+        if self.players.values().any(|p| p.name == name) {
+            return Err(ErrorCode::InvalidCommand);
         }
 
         let player_id = self.next_id();
@@ -1163,6 +1217,7 @@ impl GameEngine {
             building_queue: None,
             ship_queue: None,
             research_queue: None,
+            token_hash: None,
         };
 
         self.players.insert(player_id, player);
@@ -3297,6 +3352,43 @@ mod tests {
         for ext in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
         }
+    }
+
+    #[test]
+    fn authenticate_registers_claims_and_rejects() {
+        let mut engine = test_engine();
+
+        // New name: account created, token issued once.
+        let fresh = engine.authenticate("Fresh", None).unwrap();
+        assert!(fresh.registered);
+        let token = fresh.new_token.expect("token issued on registration");
+        assert_eq!(engine.authenticate("Fresh", None).err(), Some(AuthError::TokenRequired));
+        assert_eq!(engine.authenticate("Fresh", Some("nope")).err(), Some(AuthError::InvalidToken));
+        let back = engine.authenticate("Fresh", Some(&token)).unwrap();
+        assert_eq!(back.player_id, fresh.player_id);
+        assert!(back.new_token.is_none());
+        assert!(!back.registered);
+
+        // Only the hash is kept.
+        let stored = engine.players[&fresh.player_id].token_hash.unwrap();
+        assert_eq!(stored, auth::hash_token(&token));
+        assert!(!stored.iter().eq(token.as_bytes().iter().take(32)));
+
+        // An account without a token (pre-auth database) is claimed by the
+        // next login, whatever it presents, and is protected afterwards.
+        let (legacy_id, _) = register(&mut engine, "Legacy");
+        assert!(engine.players[&legacy_id].token_hash.is_none());
+        let claimed = engine.authenticate("Legacy", Some("whatever")).unwrap();
+        assert_eq!(claimed.player_id, legacy_id);
+        let legacy_token = claimed.new_token.expect("claim issues a token");
+        assert!(engine.dirty_players.contains_key(&legacy_id), "claim must be persisted");
+        assert_eq!(engine.authenticate("Legacy", None).err(), Some(AuthError::TokenRequired));
+        assert!(engine.authenticate("Legacy", Some(&legacy_token)).is_ok());
+
+        // Names are case-sensitive accounts, and bad names never register.
+        assert!(engine.authenticate("fresh", None).unwrap().registered);
+        assert!(matches!(engine.authenticate("x", None), Err(AuthError::InvalidName(_))));
+        assert_eq!(engine.players.values().filter(|p| p.name == "x").count(), 0);
     }
 
     #[test]

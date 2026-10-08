@@ -269,6 +269,7 @@ impl Database {
         Self::ensure_column(&conn, "sectors_modified", "site_looted_tick", "INTEGER")?;
         Self::ensure_column(&conn, "sectors_modified", "site_ambush_bumps", "INTEGER DEFAULT 0")?;
         Self::ensure_column(&conn, "fleets", "harvest_resource", "TEXT DEFAULT 'auto'")?;
+        Self::ensure_column(&conn, "players", "token_hash", "BLOB")?;
 
         info!("Schema verified");
         Ok(())
@@ -349,8 +350,8 @@ impl Database {
     pub fn save_player(&self, player: &Player) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO players (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO players (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 player.id as i64,
                 &player.name,
@@ -359,6 +360,7 @@ impl Database {
                 float_to_stored(player.resources.metal),
                 float_to_stored(player.resources.crystal),
                 float_to_stored(player.resources.deuterium),
+                player.token_hash.as_ref().map(|h| h.as_slice()),
             ],
         )?;
         Ok(())
@@ -367,7 +369,7 @@ impl Database {
     pub fn load_players(&self) -> Result<Vec<Player>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, homeworld_q, homeworld_r, metal, crystal, deuterium FROM players",
+            "SELECT id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash FROM players",
         )?;
         let players = stmt.query_map(params![], |row| {
             Ok(Player {
@@ -387,6 +389,7 @@ impl Database {
                 building_queue: None,
                 ship_queue: None,
                 research_queue: None,
+                token_hash: row.get::<_, Option<Vec<u8>>>(7)?.and_then(|v| v.try_into().ok()),
             })
         })?;
         players.collect()

@@ -41,6 +41,9 @@
     "ResourceNotPresent",
     "AuthFailed",
     "AlreadyAuthenticated",
+    "InvalidName",
+    "TokenRequired",
+    "InvalidToken",
     "ServerError"
   ],
   "FleetStatus": [

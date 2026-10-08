@@ -1,0 +1,6 @@
+{
+  "code": "TokenRequired",
+  "message": "player 'Admiral' is already registered; supply its token",
+  "success": false,
+  "type": "auth_result"
+}
