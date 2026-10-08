@@ -24,6 +24,9 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
   GameView _currentView = GameView.commandCenter;
   final _cmdController = TextEditingController();
   final _cmdFocus = FocusNode();
+  // Owns the hotkeys. Focus must land back here (not on the root scope) when
+  // the command bar lets go, or no key handler sees anything until a click.
+  final _shellFocus = FocusNode();
   bool _showHelp = false;
   bool _flickering = false;
   late final AnimationController _flickerCtrl;
@@ -55,23 +58,28 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
 
   void _handleCommand(String cmd) {
     cmd = cmd.trim().toLowerCase();
-    if (cmd.isEmpty) return;
+    if (cmd.isEmpty) {
+      _shellFocus.requestFocus();
+      return;
+    }
     _cmdController.clear();
 
-    if (cmd == '1' || cmd == 'cc') {
-      _switchView(GameView.commandCenter);
-      return;
-    }
-    if (cmd == '2' || cmd == 'ws') {
-      _switchView(GameView.windshield);
-      return;
-    }
-    if (cmd == '3' || cmd == 'map' || cmd == 'sm') {
-      _switchView(GameView.starMap);
+    // View switches hand focus back to the hotkeys of the new view; any other
+    // command keeps the bar focused so the next one can be typed straight away.
+    final view = switch (cmd) {
+      '1' || 'cc' => GameView.commandCenter,
+      '2' || 'ws' => GameView.windshield,
+      '3' || 'map' || 'sm' => GameView.starMap,
+      _ => null,
+    };
+    if (view != null) {
+      _switchView(view);
+      _shellFocus.requestFocus();
       return;
     }
 
     ctrl.handleCommand(cmd);
+    _cmdFocus.requestFocus();
   }
 
   KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
@@ -91,7 +99,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
 
     if (_cmdFocus.hasFocus) {
       if (event.logicalKey == LogicalKeyboardKey.escape) {
-        _cmdFocus.unfocus();
+        _shellFocus.requestFocus();
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.tab) {
@@ -186,7 +194,14 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
         event.character!.length == 1 &&
         !HardwareKeyboard.instance.isControlPressed &&
         !HardwareKeyboard.instance.isMetaPressed) {
+      // The keystroke that opened the bar would otherwise be lost.
+      final text = _cmdController.text + event.character!;
+      _cmdController.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
       _cmdFocus.requestFocus();
+      return KeyEventResult.handled;
     }
 
     return KeyEventResult.ignored;
@@ -197,6 +212,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
     _flickerCtrl.dispose();
     _cmdController.dispose();
     _cmdFocus.dispose();
+    _shellFocus.dispose();
     super.dispose();
   }
 
@@ -204,6 +220,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
   Widget build(BuildContext context) {
     return CrtOverlay(
       child: Focus(
+        focusNode: _shellFocus,
         autofocus: true,
         onKeyEvent: _handleKey,
         child: ListenableBuilder(
