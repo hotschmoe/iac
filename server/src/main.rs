@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use log::{info, warn};
+use tokio::time::MissedTickBehavior;
 
 use iac_shared::constants::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_WORLD_SEED};
 
@@ -15,6 +16,10 @@ mod combat;
 mod database;
 mod engine;
 mod network;
+
+const TICK_PERIOD: Duration = Duration::from_secs(1);
+/// A tick over this is slow enough to be worth a warning (budget is 1000 ms).
+const TICK_BUDGET_WARN: Duration = Duration::from_millis(100);
 
 #[derive(Parser, Debug)]
 #[command(name = "iac-server", about = "In Amber Clad - Game Server")]
@@ -97,7 +102,13 @@ async fn main() {
     };
     tokio::pin!(shutdown);
 
-    let persist_interval: u64 = 30;
+    // A fixed schedule, not "work + sleep", so ticks do not drift. If a tick
+    // ever overruns, Delay restarts the 1 s cadence after it rather than
+    // firing a burst of catch-up ticks that would flood clients and run the
+    // simulation faster than real time.
+    let mut ticker = tokio::time::interval(TICK_PERIOD);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut last_start: Option<Instant> = None;
 
     info!("Server ready.");
 
@@ -106,14 +117,20 @@ async fn main() {
             _ = &mut shutdown => {
                 info!("Shutdown signal received, persisting final state...");
                 let mut engine = engine.lock().unwrap();
-                engine.persist_dirty_state().unwrap_or_else(|e| {
-                    warn!("Final persist failed: {}", e);
-                });
-                info!("Server shutdown complete.");
+                let saved = engine.persist_dirty_state().and_then(|_| engine.flush_persistence());
+                match saved {
+                    Ok(()) => info!("Server shutdown complete."),
+                    Err(e) => warn!("Final persist failed: {}", e),
+                }
                 break;
             }
-            result = run_tick(&network, &engine, persist_interval) => {
-                if let Err(e) = result {
+            _ = ticker.tick() => {
+                let started = Instant::now();
+                if let Some(prev) = last_start {
+                    log::debug!("inter-tick interval {:?}", started - prev);
+                }
+                last_start = Some(started);
+                if let Err(e) = run_tick(&network, &engine) {
                     warn!("Tick error: {}", e);
                 }
             }
@@ -121,45 +138,39 @@ async fn main() {
     }
 }
 
-async fn run_tick(
-    network: &Network,
-    engine: &Arc<Mutex<GameEngine>>,
-    persist_interval: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let start = std::time::Instant::now();
+/// One simulation step. Everything here is memory-only; the database write
+/// is queued to the persist thread, so the tick never waits on the disk.
+fn run_tick(network: &Network, engine: &Arc<Mutex<GameEngine>>) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
 
-    // Process incoming messages from the queue
     network.process_incoming()?;
+    let t_incoming = start.elapsed();
 
-    // Run game tick
-    {
-        let mut engine = engine.lock().unwrap();
-        engine.tick()?;
-    }
+    engine.lock().unwrap().tick()?;
+    let t_sim = start.elapsed();
 
-    // Broadcast updates to all connected clients
     network.broadcast_updates()?;
+    let t_broadcast = start.elapsed();
 
-    // Persist every N ticks
-    {
-        let mut engine = engine.lock().unwrap();
-        if engine.current_tick().is_multiple_of(persist_interval) {
-            engine.persist_dirty_state()?;
-        }
-    }
+    engine.lock().unwrap().persist_dirty_state()?;
+    let t_persist = start.elapsed();
 
-    // Sleep to maintain tick rate
-    let elapsed = start.elapsed();
-    let tick_duration = Duration::from_secs(1);
-    if elapsed < tick_duration {
-        tokio::time::sleep(tick_duration - elapsed).await;
-    } else {
+    log::debug!(
+        "tick phases: incoming {:?} sim {:?} broadcast {:?} persist-handoff {:?}",
+        t_incoming,
+        t_sim - t_incoming,
+        t_broadcast - t_sim,
+        t_persist - t_broadcast
+    );
+    if t_persist > TICK_BUDGET_WARN {
         warn!(
-            "Tick {} overran by {}ms",
+            "Tick {} took {:?} (incoming {:?}, sim {:?}, broadcast {:?})",
             engine.lock().unwrap().current_tick(),
-            elapsed.as_millis() - 1000
+            t_persist,
+            t_incoming,
+            t_sim - t_incoming,
+            t_broadcast - t_sim
         );
     }
-
     Ok(())
 }

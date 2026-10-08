@@ -1,7 +1,7 @@
 // Game engine: tick loop, movement, combat, harvesting, NPC behavior, homeworlds, build queues.
 // Ported from Zig engine.zig.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
 use log::{info, warn};
@@ -36,7 +36,7 @@ use iac_shared::scaling::{
 use iac_shared::protocol::{GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams};
 
 use crate::combat;
-use crate::database::Database;
+use crate::database::{Database, ExploredEdge, PersistBatch, Persister};
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -259,7 +259,7 @@ pub struct IncomingRaid {
 
 pub struct GameEngine {
     pub world_gen: WorldGen,
-    pub db: Database,
+    persister: Persister,
     pub current_tick: u64,
 
     pub players: HashMap<u64, Player>,
@@ -285,37 +285,43 @@ pub struct GameEngine {
     deleted_fleet_ids: HashMap<u64, ()>,
     dirty_policies: HashMap<u64, ()>,
     deleted_policy_ids: HashMap<u64, ()>,
+
+    /// (player, sector key) pairs the player has entered; answers
+    /// "first visit?" without touching the database.
+    explored: HashSet<(u64, u32)>,
+    /// Explored edges not yet handed to the persister.
+    new_edges: Vec<ExploredEdge>,
 }
 
 impl GameEngine {
     pub fn init(world_seed: u64, db: Database) -> Result<GameEngine, Box<dyn std::error::Error>> {
-        let mut engine = GameEngine {
+        let world = load_world(&db, world_seed)?;
+        db.save_server_state("world_seed", &world_seed.to_string())?;
+
+        Ok(GameEngine {
             world_gen: WorldGen::init(world_seed),
-            db,
-            current_tick: 0,
-            players: HashMap::new(),
-            fleets: HashMap::new(),
+            persister: Persister::spawn(db),
+            current_tick: world.tick,
+            players: world.players,
+            fleets: world.fleets,
             npc_fleets: HashMap::new(),
             active_combats: HashMap::new(),
-            sector_overrides: HashMap::new(),
+            sector_overrides: world.sector_overrides,
             scan_reveals: HashMap::new(),
             raid_states: HashMap::new(),
-            policies: HashMap::new(),
+            policies: world.policies,
             pending_events: Vec::new(),
             pending_arrivals: Vec::new(),
-            next_id: 1,
+            next_id: world.next_id,
             dirty_players: HashMap::new(),
             dirty_fleets: HashMap::new(),
             dirty_sectors: HashMap::new(),
             deleted_fleet_ids: HashMap::new(),
             dirty_policies: HashMap::new(),
             deleted_policy_ids: HashMap::new(),
-        };
-
-        engine.load_state()?;
-        engine.persist_world_seed()?;
-
-        Ok(engine)
+            explored: world.explored,
+            new_edges: Vec::new(),
+        })
     }
 
     pub fn current_tick(&self) -> u64 {
@@ -404,7 +410,7 @@ impl GameEngine {
 
         // Phase 2: Process arrivals (exploration, docking, NPC encounters)
         for (fleet_id, target, owner_id) in arrived {
-            let first_visit = !self.db.has_explored_sector(owner_id, target)?;
+            let first_visit = !self.explored.contains(&(owner_id, target.to_key()));
             self.record_explored(owner_id, target)?;
 
             self.pending_events.push(GameEvent {
@@ -1160,8 +1166,6 @@ impl GameEngine {
         };
 
         self.players.insert(player_id, player);
-        self.db.save_player(self.players.get(&player_id).unwrap())
-            .map_err(|_| ErrorCode::ServerError)?;
 
         let fleet_id = self.next_id();
         let scout_base = ShipClass::Scout.base_stats();
@@ -2719,11 +2723,15 @@ impl GameEngine {
     }
 
     fn record_explored(&mut self, player_id: u64, coord: Hex) -> Result<(), Box<dyn std::error::Error>> {
+        self.explored.insert((player_id, coord.to_key()));
         let connections = self.world_gen.connected_neighbors(coord);
         for neighbor in connections.slice() {
-            if let Err(e) = self.db.save_explored_edge(player_id, coord, *neighbor, self.current_tick) {
-                warn!("Failed to save explored edge: {:?}", e);
-            }
+            self.new_edges.push(ExploredEdge {
+                player_id,
+                from: coord,
+                to: *neighbor,
+                tick: self.current_tick,
+            });
         }
         Ok(())
     }
@@ -2852,133 +2860,95 @@ impl GameEngine {
 
     // ── Persistence ───────────────────────────────────────────────
 
-    fn load_state(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(tick_str) = self.db.load_server_state("current_tick")? {
-            self.current_tick = tick_str.parse().unwrap_or(0);
-        }
-        if let Some(id_str) = self.db.load_server_state("next_id")? {
-            self.next_id = id_str.parse().unwrap_or(1);
-        }
-        if let Some(seed_str) = self.db.load_server_state("world_seed")? {
-            let stored_seed: u64 = seed_str.parse().unwrap_or(0);
-            if stored_seed != self.world_gen.world_seed {
-                warn!("World seed mismatch: DB has {}, config has {}", stored_seed, self.world_gen.world_seed);
-            }
-        }
-
-        let mut players = self.db.load_players()?;
-        for mut player in players.drain(..) {
-            player.buildings = self.db.load_buildings(player.id)?;
-            player.research = self.db.load_research(player.id)?;
-            let queues = self.db.load_build_queues(player.id)?;
-            player.building_queue = queues.building;
-            player.ship_queue = queues.ship;
-            player.research_queue = queues.research;
-            self.players.insert(player.id, player);
-        }
-
-        let fleets = self.db.load_fleets()?;
-        for fleet in fleets {
-            self.fleets.insert(fleet.id, fleet);
-        }
-
-        let overrides = self.db.load_sector_overrides()?;
-        for row in overrides {
-            let key = Hex { q: row.q, r: row.r }.to_key();
-            self.sector_overrides.insert(key, row.override_data);
-        }
-
-        for (fleet_id, policy) in self.db.load_fleet_policies()? {
-            if self.fleets.contains_key(&fleet_id) {
-                self.policies.insert(fleet_id, policy);
-            }
-        }
-
-        let player_count = self.players.len();
-        let fleet_count = self.fleets.len();
-        if player_count > 0 {
-            info!("State loaded: {} players, {} fleets, tick {}", player_count, fleet_count, self.current_tick);
-        } else {
-            info!("State loaded (empty -- fresh world)");
-        }
-
-        Ok(())
-    }
-
-    fn persist_world_seed(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.db.save_server_state("world_seed", &self.world_gen.world_seed.to_string())?;
-        Ok(())
-    }
-
+    /// Hand everything dirty since the last call to the persist thread.
+    /// Cheap (clones the dirty rows); the SQLite write happens off-thread.
     pub fn persist_dirty_state(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // All writes in one transaction; dirty sets are cleared only on success
-        // so a failed persist retries everything next time.
-        let players = &self.players;
-        let fleets = &self.fleets;
-        let sector_overrides = &self.sector_overrides;
-        let dirty_players = &self.dirty_players;
-        let dirty_fleets = &self.dirty_fleets;
-        let deleted_fleet_ids = &self.deleted_fleet_ids;
-        let dirty_sectors = &self.dirty_sectors;
-        let policies = &self.policies;
-        let dirty_policies = &self.dirty_policies;
-        let deleted_policy_ids = &self.deleted_policy_ids;
-        let current_tick = self.current_tick;
-        let next_id = self.next_id;
-
-        self.db.with_transaction(|db| {
-            db.save_server_state("current_tick", &current_tick.to_string())?;
-            db.save_server_state("next_id", &next_id.to_string())?;
-
-            for &player_id in dirty_players.keys() {
-                if let Some(player) = players.get(&player_id) {
-                    db.save_player(player)?;
-                    db.save_buildings(player_id, &player.buildings)?;
-                    db.save_research(player_id, &player.research)?;
-                    db.save_build_queue(player_id, player)?;
-                }
-            }
-
-            for &fid in dirty_fleets.keys() {
-                if let Some(fleet) = fleets.get(&fid) {
-                    db.save_fleet(fleet)?;
-                }
-            }
-
-            for &fid in deleted_fleet_ids.keys() {
-                db.delete_fleet(fid)?;
-            }
-
-            // Policies save after their fleets (FK) and delete before
-            // nothing depends on them.
-            for &fid in deleted_policy_ids.keys() {
-                db.delete_fleet_policy(fid)?;
-            }
-            for &fid in dirty_policies.keys() {
-                if let Some(policy) = policies.get(&fid) {
-                    db.save_fleet_policy(fid, policy)?;
-                }
-            }
-
-            for &key in dirty_sectors.keys() {
-                if let Some(ov) = sector_overrides.get(&key) {
-                    let hex_val = Hex::from_key(key);
-                    db.save_sector_override(hex_val.q, hex_val.r, ov)?;
-                }
-            }
-
-            Ok(())
-        })?;
-
+        let batch = PersistBatch {
+            tick: self.current_tick,
+            next_id: self.next_id,
+            players: self.dirty_players.keys().filter_map(|id| self.players.get(id).cloned()).collect(),
+            fleets: self.dirty_fleets.keys().filter_map(|id| self.fleets.get(id).cloned()).collect(),
+            deleted_fleets: self.deleted_fleet_ids.keys().copied().collect(),
+            policies: self.dirty_policies.keys()
+                .filter_map(|id| self.policies.get(id).map(|p| (*id, p.clone())))
+                .collect(),
+            deleted_policies: self.deleted_policy_ids.keys().copied().collect(),
+            sectors: self.dirty_sectors.keys()
+                .filter_map(|key| self.sector_overrides.get(key).map(|ov| (Hex::from_key(*key), ov.clone())))
+                .collect(),
+            explored_edges: std::mem::take(&mut self.new_edges),
+        };
         self.dirty_players.clear();
         self.dirty_fleets.clear();
         self.dirty_sectors.clear();
         self.deleted_fleet_ids.clear();
         self.dirty_policies.clear();
         self.deleted_policy_ids.clear();
-
+        self.persister.submit(batch);
         Ok(())
     }
+
+    /// Block until every submitted batch is committed (shutdown, tests).
+    pub fn flush_persistence(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.persister.flush().map_err(|e| e.into())
+    }
+}
+
+struct LoadedWorld {
+    tick: u64,
+    next_id: u64,
+    players: HashMap<u64, Player>,
+    fleets: HashMap<u64, Fleet>,
+    sector_overrides: HashMap<u32, SectorOverride>,
+    policies: HashMap<u64, FleetPolicy>,
+    explored: HashSet<(u64, u32)>,
+}
+
+fn load_world(db: &Database, world_seed: u64) -> Result<LoadedWorld, Box<dyn std::error::Error>> {
+    let tick = db.load_server_state("current_tick")?.and_then(|s| s.parse().ok()).unwrap_or(0);
+    let next_id = db.load_server_state("next_id")?.and_then(|s| s.parse().ok()).unwrap_or(1);
+    if let Some(seed_str) = db.load_server_state("world_seed")? {
+        let stored_seed: u64 = seed_str.parse().unwrap_or(0);
+        if stored_seed != world_seed {
+            warn!("World seed mismatch: DB has {}, config has {}", stored_seed, world_seed);
+        }
+    }
+
+    let mut players = HashMap::new();
+    for mut player in db.load_players()? {
+        player.buildings = db.load_buildings(player.id)?;
+        player.research = db.load_research(player.id)?;
+        let queues = db.load_build_queues(player.id)?;
+        player.building_queue = queues.building;
+        player.ship_queue = queues.ship;
+        player.research_queue = queues.research;
+        players.insert(player.id, player);
+    }
+
+    let fleets: HashMap<u64, Fleet> = db.load_fleets()?.into_iter().map(|f| (f.id, f)).collect();
+
+    let sector_overrides = db.load_sector_overrides()?
+        .into_iter()
+        .map(|row| (Hex { q: row.q, r: row.r }.to_key(), row.override_data))
+        .collect();
+
+    let policies = db.load_fleet_policies()?
+        .into_iter()
+        .filter(|(fleet_id, _)| fleets.contains_key(fleet_id))
+        .collect();
+
+    let explored = db.load_explored_sectors()?
+        .into_iter()
+        .map(|(pid, hex)| (pid, hex.to_key()))
+        .collect();
+
+    if players.is_empty() {
+        info!("State loaded (empty -- fresh world)");
+    } else {
+        info!("State loaded: {} players, {} fleets, tick {}", players.len(), fleets.len(), tick);
+    }
+
+    Ok(LoadedWorld { tick, next_id, players, fleets, sector_overrides, policies, explored })
 }
 
 // ── Helper Functions ──────────────────────────────────────────────
@@ -3295,6 +3265,38 @@ mod tests {
         assert_eq!(fleet.harvest_target, HarvestResource::Crystal);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn first_visit_memory_survives_restart_without_db_reads() {
+        let path = std::env::temp_dir().join(format!(
+            "iac_explored_restart_test_{}.db",
+            std::process::id()
+        ));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
+
+        let (pid, visited) = {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            let mut engine = GameEngine::init(42, db).unwrap();
+            let (pid, fid) = register(&mut engine, "Wanderer");
+            let home = engine.fleets[&fid].location;
+            let visited = engine.world_gen.connected_neighbors(home).slice()[0];
+            assert!(!engine.explored.contains(&(pid, visited.to_key())));
+            engine.record_explored(pid, visited).unwrap();
+            assert!(engine.explored.contains(&(pid, visited.to_key())), "visible at once, before any write");
+            engine.persist_dirty_state().unwrap();
+            (pid, visited)
+        };
+
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let engine = GameEngine::init(42, db).unwrap();
+        assert!(engine.explored.contains(&(pid, visited.to_key())), "explored sectors reload from explored_edges");
+
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
     }
 
     #[test]

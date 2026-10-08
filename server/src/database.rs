@@ -1,10 +1,12 @@
 // SQLite persistence layer using rusqlite.
 // Mirrors the Zig database.zig schema and operations.
 
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, params, OptionalExtension};
-use log::info;
+use log::{debug, error, info, warn};
 
 use iac_shared::hex::Hex;
 use iac_shared::constants::{Density, Resources, ShipClass};
@@ -135,11 +137,14 @@ pub struct Database {
 impl Database {
     pub fn init(db_path: &str) -> Result<Database, rusqlite::Error> {
         let conn = Connection::open(db_path)?;
+        // Only a foreign process (the sqlite3 CLI, a backup) can hold the
+        // write lock; do not let the writer sit on it for rusqlite's default 5 s.
+        conn.busy_timeout(Duration::from_secs(1))?;
         let db = Database {
             conn: Mutex::new(conn),
         };
-        db.ensure_schema()?;
         db.apply_pragmas()?;
+        db.ensure_schema()?;
         info!("Database initialized: {}", db_path);
         Ok(db)
     }
@@ -285,13 +290,22 @@ impl Database {
 
     fn apply_pragmas(&self) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
+        // WAL makes a commit one sequential append. synchronous=NORMAL skips
+        // the per-commit fsync: a commit survives a process crash (it is in
+        // the OS page cache) and the database is never corrupted, but an OS
+        // crash or power loss can drop commits made since the last
+        // checkpoint, which the Persister forces every CHECKPOINT_EVERY.
+        // (FULL was measured on the dev box: fsyncs there stall for seconds,
+        // and a stalled writer keeps unsaved ticks in memory.)
         conn.execute_batch(
             "
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA cache_size = -8000;
             PRAGMA wal_autocheckpoint = 1000;
             ",
         )?;
-        info!("Pragmas applied: cache_size=8MB, wal_autocheckpoint=1000");
+        info!("Pragmas applied: WAL, synchronous=NORMAL, cache_size=8MB, wal_autocheckpoint=1000");
         Ok(())
     }
 
@@ -693,14 +707,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn has_explored_sector(&self, player_id: u64, coord: Hex) -> Result<bool, rusqlite::Error> {
+    /// Every (player, sector) pair the player has ever entered.
+    pub fn load_explored_sectors(&self) -> Result<Vec<(u64, Hex)>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let exists: bool = conn.query_row(
-            "SELECT 1 FROM explored_edges WHERE player_id = ?1 AND q1 = ?2 AND r1 = ?3 LIMIT 1",
-            params![player_id as i64, coord.q as i64, coord.r as i64],
-            |row| row.get(0),
-        ).unwrap_or(false);
-        Ok(exists)
+        let mut stmt = conn.prepare("SELECT DISTINCT player_id, q1, r1 FROM explored_edges")?;
+        let rows = stmt.query_map(params![], |row| {
+            Ok((row.get::<_, i64>(0)? as u64, Hex { q: row.get::<_, i64>(1)? as i16, r: row.get::<_, i64>(2)? as i16 }))
+        })?;
+        rows.collect()
     }
 
     // ── Buildings / Research / Queue ──────────────────────────────
@@ -995,3 +1009,277 @@ pub struct BuildQueueData {
     pub research: Option<ResearchQueueEntry>,
 }
 
+
+// ── Background persistence ────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ExploredEdge {
+    pub player_id: u64,
+    pub from: Hex,
+    pub to: Hex,
+    pub tick: u64,
+}
+
+/// A snapshot of everything that changed since the previous batch. Rows are
+/// whole-row upserts, so replaying batches in order is idempotent.
+#[derive(Debug, Default)]
+pub struct PersistBatch {
+    pub tick: u64,
+    pub next_id: u64,
+    pub players: Vec<Player>,
+    pub fleets: Vec<Fleet>,
+    pub deleted_fleets: Vec<u64>,
+    pub policies: Vec<(u64, FleetPolicy)>,
+    pub deleted_policies: Vec<u64>,
+    pub sectors: Vec<(Hex, SectorOverride)>,
+    pub explored_edges: Vec<ExploredEdge>,
+}
+
+impl Database {
+    /// Fold the WAL into the main database file and fsync it.
+    fn checkpoint(&self) -> Result<(), rusqlite::Error> {
+        self.conn.lock().unwrap().query_row("PRAGMA wal_checkpoint(PASSIVE)", params![], |_| Ok(()))
+    }
+
+    /// Write one batch. Call inside `with_transaction`.
+    fn apply_batch(&self, batch: &PersistBatch) -> Result<(), rusqlite::Error> {
+        self.save_server_state("current_tick", &batch.tick.to_string())?;
+        self.save_server_state("next_id", &batch.next_id.to_string())?;
+
+        for player in &batch.players {
+            self.save_player(player)?;
+            self.save_buildings(player.id, &player.buildings)?;
+            self.save_research(player.id, &player.research)?;
+            self.save_build_queue(player.id, player)?;
+        }
+        for fleet in &batch.fleets {
+            self.save_fleet(fleet)?;
+        }
+        for &fid in &batch.deleted_fleets {
+            self.delete_fleet(fid)?;
+        }
+        // Policies save after their fleets; deletes come first so a fleet
+        // id never carries a stale policy.
+        for &fid in &batch.deleted_policies {
+            self.delete_fleet_policy(fid)?;
+        }
+        for (fid, policy) in &batch.policies {
+            self.save_fleet_policy(*fid, policy)?;
+        }
+        for (hex, ov) in &batch.sectors {
+            self.save_sector_override(hex.q, hex.r, ov)?;
+        }
+        for e in &batch.explored_edges {
+            self.save_explored_edge(e.player_id, e.from, e.to, e.tick)?;
+        }
+        Ok(())
+    }
+}
+
+enum WriterMsg {
+    Batch(Box<PersistBatch>),
+    Flush(mpsc::SyncSender<Result<(), String>>),
+}
+
+const WRITER_RETRY_DELAY: Duration = Duration::from_secs(1);
+/// How often the writer fsyncs the WAL into the main file, bounding what an
+/// OS crash or power loss can take back.
+const CHECKPOINT_EVERY: Duration = Duration::from_secs(30);
+const WRITER_SLOW_WARN: Duration = Duration::from_millis(250);
+
+/// Owns the SQLite connection on a dedicated thread so a slow or stalled
+/// disk can never delay the 1 Hz tick: the engine hands over a snapshot and
+/// moves on. Batches queued while a write is in flight are coalesced into
+/// one transaction; a failed write is retried (in order) until it succeeds.
+pub struct Persister {
+    tx: Option<mpsc::Sender<WriterMsg>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Persister {
+    pub fn spawn(db: Database) -> Persister {
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::Builder::new()
+            .name("iac-persist".into())
+            .spawn(move || writer_loop(db, rx))
+            .expect("spawn persist thread");
+        Persister { tx: Some(tx), handle: Some(handle) }
+    }
+
+    pub fn submit(&self, batch: PersistBatch) {
+        if let Some(tx) = &self.tx
+            && tx.send(WriterMsg::Batch(Box::new(batch))).is_err()
+        {
+            error!("persist thread is gone; state is no longer being saved");
+        }
+    }
+
+    /// Block until everything submitted so far is committed.
+    pub fn flush(&self) -> Result<(), String> {
+        let tx = self.tx.as_ref().ok_or("persister already shut down")?;
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        tx.send(WriterMsg::Flush(ack_tx)).map_err(|_| "persist thread is gone".to_string())?;
+        ack_rx.recv().map_err(|_| "persist thread is gone".to_string())?
+    }
+}
+
+impl Drop for Persister {
+    fn drop(&mut self) {
+        self.tx.take();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+fn writer_loop(db: Database, rx: mpsc::Receiver<WriterMsg>) {
+    let mut last_checkpoint = Instant::now();
+    let mut pending: Vec<PersistBatch> = Vec::new();
+    let mut flushes: Vec<mpsc::SyncSender<Result<(), String>>> = Vec::new();
+    let mut closed = false;
+
+    while !closed || !pending.is_empty() || !flushes.is_empty() {
+        let wait = if pending.is_empty() { Duration::from_secs(3600) } else { WRITER_RETRY_DELAY };
+        match rx.recv_timeout(wait) {
+            Ok(msg) => take_msg(msg, &mut pending, &mut flushes),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => closed = true,
+        }
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => take_msg(msg, &mut pending, &mut flushes),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    closed = true;
+                    break;
+                }
+            }
+        }
+
+        let mut outcome = Ok(());
+        if !pending.is_empty() {
+            let started = Instant::now();
+            let result = db.with_transaction(|db| {
+                pending.iter().try_for_each(|b| db.apply_batch(b))
+            });
+            let took = started.elapsed();
+            match result {
+                Ok(()) => {
+                    debug!("persisted {} batch(es) in {:?}", pending.len(), took);
+                    if took > WRITER_SLOW_WARN {
+                        warn!("slow persist: {} batch(es) took {:?}", pending.len(), took);
+                    }
+                    pending.clear();
+                    if last_checkpoint.elapsed() >= CHECKPOINT_EVERY {
+                        last_checkpoint = Instant::now();
+                        match db.checkpoint() {
+                            Ok(()) => debug!("wal checkpoint took {:?}", last_checkpoint.elapsed()),
+                            Err(e) => warn!("wal checkpoint failed: {}", e),
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("persist failed ({} batch(es) kept for retry): {}", pending.len(), e);
+                    outcome = Err(e.to_string());
+                    if closed {
+                        error!("shutting down with {} unsaved batch(es)", pending.len());
+                        pending.clear();
+                    }
+                }
+            }
+        }
+        for ack in flushes.drain(..) {
+            let _ = ack.send(outcome.clone());
+        }
+    }
+}
+
+fn take_msg(
+    msg: WriterMsg,
+    pending: &mut Vec<PersistBatch>,
+    flushes: &mut Vec<mpsc::SyncSender<Result<(), String>>>,
+) {
+    match msg {
+        WriterMsg::Batch(b) => pending.push(*b),
+        WriterMsg::Flush(ack) => flushes.push(ack),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db(name: &str) -> String {
+        let path = std::env::temp_dir().join(format!("iac_{name}_{}.db", std::process::id()));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
+        path.to_str().unwrap().to_string()
+    }
+
+    fn sector_batch(tick: u64) -> PersistBatch {
+        PersistBatch {
+            tick,
+            next_id: 9,
+            sectors: vec![(Hex { q: 3, r: 4 }, SectorOverride { metal_harvested: 5.0, ..Default::default() })],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn flush_commits_submitted_batches() {
+        let path = temp_db("flush");
+        let persister = Persister::spawn(Database::init(&path).unwrap());
+        persister.submit(sector_batch(41));
+        persister.submit(sector_batch(42));
+        persister.flush().expect("flush");
+
+        let reader = Database::init(&path).unwrap();
+        assert_eq!(reader.load_server_state("current_tick").unwrap().as_deref(), Some("42"));
+        let rows = reader.load_sector_overrides().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!((rows[0].override_data.metal_harvested - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_blocked_database_never_blocks_the_caller_and_loses_nothing() {
+        let path = temp_db("blocked");
+        let persister = Persister::spawn(Database::init(&path).unwrap());
+
+        // A foreign writer holds the lock, as a stalled disk or a backup would.
+        let intruder = Connection::open(&path).unwrap();
+        intruder.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let started = Instant::now();
+        persister.submit(sector_batch(100));
+        persister.submit(sector_batch(101));
+        assert!(started.elapsed() < Duration::from_millis(50), "submit must not wait for the disk");
+        assert!(persister.flush().is_err(), "flush reports the failed write");
+
+        intruder.execute_batch("COMMIT").unwrap();
+        persister.flush().expect("batches kept for retry commit once the lock clears");
+
+        let reader = Database::init(&path).unwrap();
+        assert_eq!(reader.load_server_state("current_tick").unwrap().as_deref(), Some("101"));
+        assert_eq!(reader.load_sector_overrides().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dropping_the_persister_writes_what_is_queued() {
+        let path = temp_db("drop");
+        {
+            let persister = Persister::spawn(Database::init(&path).unwrap());
+            persister.submit(sector_batch(7));
+        }
+        let reader = Database::init(&path).unwrap();
+        assert_eq!(reader.load_server_state("current_tick").unwrap().as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn database_runs_in_wal_mode() {
+        let path = temp_db("wal");
+        let db = Database::init(&path).unwrap();
+        let mode: String = db.conn.lock().unwrap().query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, "wal");
+    }
+}

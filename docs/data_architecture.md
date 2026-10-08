@@ -37,7 +37,8 @@ Clients never read from or write to the database. They interact exclusively thro
                           │    to clients  entities     ++   │
                           │         │          │             │
                           │         │          ▼             │
-                          │         │   every 30 ticks:      │
+                          │         │   every tick, handed   │
+                          │         │   to a writer thread:  │
                           │         │   ┌─────────────┐      │
                           │         │   │   SQLite    │      │
                           │         │   │  (WAL mode) │      │
@@ -70,11 +71,10 @@ Clients never read from or write to the database. They interact exclusively thro
        │
    ... ticks continue ...
        │
-8. Every 30 ticks: persistDirtyState()
-   - BEGIN IMMEDIATE
-   - Write all dirty players, fleets, sectors
-   - COMMIT
-   - Clear dirty sets
+8. End of every tick: persist_dirty_state()
+   - Clone the dirty players, fleets, sectors, explored edges into a batch
+   - Clear dirty sets, send the batch to the persist thread (no disk I/O here)
+   - The persist thread: BEGIN IMMEDIATE, write the batch(es), COMMIT
 ```
 
 ### 2.2 Read Path (Disk → Memory, at startup only)
@@ -134,7 +134,7 @@ PRAGMA journal_mode = WAL;          -- concurrent readers + one writer
 PRAGMA synchronous = NORMAL;        -- safe with WAL, faster than FULL
 PRAGMA foreign_keys = ON;           -- enforce referential integrity
 PRAGMA cache_size = -8000;          -- 8MB page cache
-PRAGMA busy_timeout = 5000;         -- 5s wait on lock contention (shouldn't happen)
+PRAGMA busy_timeout = 1000;         -- 1s wait on lock contention (only foreign tools contend)
 PRAGMA wal_autocheckpoint = 1000;   -- checkpoint every 1000 pages
 ```
 
@@ -156,7 +156,8 @@ With WAL mode, `SYNCHRONOUS = NORMAL` means:
 - WAL writes are not synced to disk on every commit (faster).
 - Checkpoints do sync (durable).
 - Risk: a power failure *during a write* could lose that transaction.
-- For a game: losing up to 30 seconds of state on a power failure is acceptable. The alternative (`FULL`) adds ~10ms per transaction for disk sync.
+- The Persister forces a checkpoint every 30 s, so a power failure loses at most ~30 s of state.
+- `FULL` was tried on the dev box and rejected: its per-commit fsync stalled for 8-16 s at times, during which the writer fell behind and unsaved ticks piled up in memory, widening the process-crash window instead of narrowing it.
 
 ---
 
@@ -214,16 +215,16 @@ For a server with 1,000 concurrent players:
 
 ### 5.1 Checkpoint Interval
 
-Write dirty state every **30 ticks** (30 seconds at 1 Hz). This is the **maximum data loss window** on crash.
+Dirty state is snapshotted **every tick** and written by a dedicated persist thread (`Persister` in `database.rs`). The tick path never touches SQLite: even a multi-second fsync stall on the disk only delays the writer, which coalesces whatever queued up into one transaction. (The Zig-era design wrote every 30 ticks on the tick thread; measured on the Rust port, per-arrival writes alone pushed ticks past 1 s and caused multi-second gaps.)
 
-Rationale:
-- 30s of lost game state is imperceptible. Players' homeworld queues (minutes/hours) are barely affected. Fleet positions might rewind one or two sectors.
-- 30 ticks of batched writes is efficient. Individual writes per tick would be 1 transaction/second with potentially dozens of statements — wasteful and slower.
-- The dirty tracking system means we only write entities that actually changed, not the entire state.
+What a crash can lose:
+- **Process crash / panic / SIGKILL**: the last tick, plus anything still queued in the persist thread. WAL commits are in the OS page cache and survive the process, so normally that is at most one tick. If the disk is stalled at that moment the queue (in memory) is lost with it.
+- **OS crash / power loss**: with `synchronous=NORMAL` commits are not fsynced individually; the writer forces a WAL checkpoint (fsync) every 30 s, so the window is up to ~30 s. The database file is never corrupted.
+- New registrations (and their auth tokens) are part of the next batch: a crash in that window forgets the account, and the name is simply free to register again.
 
 ### 5.2 Batch Write Pattern
 
-See `engine.zig:persistDirtyState()` for the implementation. The pattern:
+See `GameEngine::persist_dirty_state` and `Database::apply_batch`. The pattern:
 
 ```
 BEGIN IMMEDIATE
@@ -235,9 +236,9 @@ COMMIT
   clear dirty sets
 ```
 
-On error, `errdefer` issues `ROLLBACK` -- dirty sets are preserved so the next cycle retries.
+On error the transaction is rolled back and the batches are kept and retried in order (every upsert is a whole-row replace, so replay is idempotent).
 
-World seed is persisted once at init via `persistWorldSeed()`, not on every checkpoint.
+World seed is persisted once at init, not on every batch. "Has this player entered this sector" is answered from an in-memory set (loaded from `explored_edges` at startup); new explored edges ride along in the batch.
 
 ### 5.3 Why BEGIN IMMEDIATE
 
@@ -256,10 +257,10 @@ On server shutdown signal (SIGTERM, SIGINT):
 
 1. Signal handler sets an atomic `shutdown_requested` bool.
 2. Tick loop checks the bool each iteration and exits.
-3. Run one final `persistDirtyState()` to flush everything.
-4. Normal defer cleanup: `engine.deinit()`, `db.deinit()` (triggers WAL checkpoint), `network.deinit()`.
+3. Run one final `persist_dirty_state()` and wait for the persist thread to commit it (`flush_persistence`).
+4. Dropping the engine joins the persist thread.
 
-This ensures zero data loss on clean shutdown regardless of where in the 30-tick cycle we are.
+This ensures zero data loss on clean shutdown.
 
 Future: broadcast "server shutting down" to connected clients before exit (requires protocol support).
 
