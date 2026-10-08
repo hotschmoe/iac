@@ -1,0 +1,10 @@
+{
+  "first_visit": true,
+  "fleet_id": 1,
+  "kind": "SectorEntered",
+  "sector": {
+    "q": -2,
+    "r": 3
+  },
+  "tick": 1234
+}

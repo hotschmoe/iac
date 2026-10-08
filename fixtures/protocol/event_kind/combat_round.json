@@ -1,0 +1,10 @@
+{
+  "attacker_ship_id": 11,
+  "damage": 18.5,
+  "hull_damage": 8.5,
+  "kind": "CombatRound",
+  "rapid_fire": true,
+  "shield_absorbed": 10.0,
+  "target_ship_id": 22,
+  "tick": 1234
+}

@@ -16,6 +16,8 @@ class FleetsPanel extends StatelessWidget {
         return Amber.normal;
       case FleetStatus.combat:
         return Amber.danger;
+      case FleetStatus.exploring:
+        return Amber.bright;
       default:
         return Amber.dim;
     }
@@ -56,7 +58,9 @@ class FleetsPanel extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(left: 8, bottom: 8),
               child: Text(
-                '${f.shipCount} ships | cargo ${f.cargoPercent}% | fuel ${f.fuelPercent}%',
+                '${f.shipCount} ships | cargo ${f.cargoPercent}% | fuel ${f.fuelPercent}%'
+                '${f.policy == null ? '' : ' | policy ${f.policy}'}'
+                '${f.cooldown > 0 ? ' | cd ${f.cooldown}' : ''}',
                 style: Amber.mono(size: 11, color: Amber.dim),
               ),
             ),

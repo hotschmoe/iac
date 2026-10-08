@@ -1,0 +1,50 @@
+[
+  {
+    "label": "E",
+    "opposite": "W",
+    "vec": {
+      "q": 1,
+      "r": 0
+    }
+  },
+  {
+    "label": "NE",
+    "opposite": "SW",
+    "vec": {
+      "q": 1,
+      "r": -1
+    }
+  },
+  {
+    "label": "NW",
+    "opposite": "SE",
+    "vec": {
+      "q": 0,
+      "r": -1
+    }
+  },
+  {
+    "label": "W",
+    "opposite": "E",
+    "vec": {
+      "q": -1,
+      "r": 0
+    }
+  },
+  {
+    "label": "SW",
+    "opposite": "NE",
+    "vec": {
+      "q": -1,
+      "r": 1
+    }
+  },
+  {
+    "label": "SE",
+    "opposite": "NW",
+    "vec": {
+      "q": 0,
+      "r": 1
+    }
+  }
+]

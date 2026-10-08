@@ -1,0 +1,10 @@
+{
+  "canonical": {
+    "action": "explore_site",
+    "fleet_id": 0
+  },
+  "input": {
+    "action": "explore_site"
+  },
+  "type": "Command"
+}

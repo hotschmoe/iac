@@ -1,0 +1,12 @@
+{
+  "canonical": {
+    "action": "build_ship",
+    "count": 1,
+    "ship_class": "Scout"
+  },
+  "input": {
+    "action": "build_ship",
+    "ship_class": "Scout"
+  },
+  "type": "Command"
+}

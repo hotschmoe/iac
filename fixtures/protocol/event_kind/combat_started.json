@@ -1,0 +1,10 @@
+{
+  "enemy_fleet_id": 9001,
+  "kind": "CombatStarted",
+  "player_fleet_id": 1,
+  "sector": {
+    "q": 5,
+    "r": -5
+  },
+  "tick": 1234
+}

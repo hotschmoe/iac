@@ -1,27 +1,12 @@
+/// One resource line in the UI: current stock and production per tick.
+/// (The server sends no storage cap, so there is none here.)
 class ResourceStock {
   final int amount;
-  final int rate;
-  final int cap;
+  final double rate;
 
-  const ResourceStock({
-    required this.amount,
-    required this.rate,
-    required this.cap,
-  });
+  const ResourceStock({required this.amount, required this.rate});
 
-  double get fraction => cap > 0 ? amount / cap : 0;
-
-  ResourceStock tick() => ResourceStock(
-        amount: (amount + rate).clamp(0, cap),
-        rate: rate,
-        cap: cap,
-      );
-
-  ResourceStock copyWith({int? amount, int? rate, int? cap}) => ResourceStock(
-        amount: amount ?? this.amount,
-        rate: rate ?? this.rate,
-        cap: cap ?? this.cap,
-      );
+  ResourceStock tick() => ResourceStock(amount: amount + rate.round(), rate: rate);
 }
 
 class Resources {
@@ -34,21 +19,4 @@ class Resources {
     required this.crystal,
     required this.deut,
   });
-
-  Resources tick() => Resources(
-        metal: metal.tick(),
-        crystal: crystal.tick(),
-        deut: deut.tick(),
-      );
-
-  Resources copyWith({
-    ResourceStock? metal,
-    ResourceStock? crystal,
-    ResourceStock? deut,
-  }) =>
-      Resources(
-        metal: metal ?? this.metal,
-        crystal: crystal ?? this.crystal,
-        deut: deut ?? this.deut,
-      );
 }

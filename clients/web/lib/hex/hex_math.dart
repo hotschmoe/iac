@@ -1,8 +1,19 @@
 import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
-import 'package:iac_shared/iac_shared.dart' as shared;
-import 'package:iac_shared/iac_shared.dart' show WorldGen;
+import '../protocol/hex.dart';
+
+/// Zone names by distance from the hub (constants.rs `Zone`: inner ring <= 8,
+/// outer ring <= 20).
+extension HexZone on Hex {
+  String get zone {
+    final d = distFromOrigin;
+    if (d == 0) return 'Central Hub';
+    if (d <= 8) return 'Inner Ring';
+    if (d <= 20) return 'Outer Ring';
+    return 'The Wandering';
+  }
+}
 
 const double sqrt3 = 1.7320508075688772;
 
@@ -22,25 +33,6 @@ Prng mulberry32(int seed) {
     t = ((t + ((t ^ (t >> 7)) * (61 | t)) & 0xFFFFFFFF) ^ t) & 0xFFFFFFFF;
     return ((t ^ (t >> 14)) & 0x7FFFFFFF) / 2147483648.0;
   };
-}
-
-int sectorHash(int q, int r) {
-  return (q * 73856093 ^ r * 19349663 ^ 83492791) & 0xFFFFFFFF;
-}
-
-Prng sectorRng(int q, int r) => mulberry32(sectorHash(q, r));
-
-/// World gen used for map edges — must match the server seed.
-var clientWorldSeed = shared.defaultWorldSeed;
-
-bool getEdge(int q1, int r1, int q2, int r2) {
-  // Align with packages/iac_shared WorldGen so windshield/star map match server.
-  final gen = WorldGen(clientWorldSeed);
-  return gen.edgeExists(shared.Hex(q1, r1), shared.Hex(q2, r2));
-}
-
-int hexDist(int q, int r) {
-  return math.max(q.abs(), math.max(r.abs(), (q + r).abs()));
 }
 
 void drawMapText(

@@ -1,0 +1,117 @@
+{
+  "AlertLevel": [
+    "Info",
+    "Warning",
+    "Critical"
+  ],
+  "BuildingType": [
+    "MetalMine",
+    "CrystalMine",
+    "DeuteriumSynthesizer",
+    "Shipyard",
+    "ResearchLab",
+    "FuelDepot",
+    "SensorArray",
+    "DefenseGrid"
+  ],
+  "Density": [
+    "None",
+    "Sparse",
+    "Moderate",
+    "Rich",
+    "Pristine"
+  ],
+  "ErrorCode": [
+    "InvalidCommand",
+    "InvalidTarget",
+    "NoConnection",
+    "InsufficientFuel",
+    "OnCooldown",
+    "FleetNotFound",
+    "NotInSector",
+    "NoResources",
+    "CargoFull",
+    "PrerequisitesNotMet",
+    "MaxLevelReached",
+    "QueueFull",
+    "ShipLocked",
+    "NoShipyard",
+    "NoResearchLab",
+    "FleetLimitReached",
+    "AuthFailed",
+    "AlreadyAuthenticated",
+    "ServerError"
+  ],
+  "FleetStatus": [
+    "Idle",
+    "Moving",
+    "Harvesting",
+    "InCombat",
+    "Returning",
+    "Docked",
+    "Exploring"
+  ],
+  "HarvestResource": [
+    "Metal",
+    "Crystal",
+    "Deuterium",
+    "Auto"
+  ],
+  "NpcBehavior": [
+    "Passive",
+    "Patrol",
+    "Aggressive",
+    "Swarm"
+  ],
+  "PolicyPreset": [
+    "manual",
+    "prospect",
+    "mine_and_return",
+    "salvage_and_sites",
+    "patrol_home"
+  ],
+  "QueueType": [
+    "Building",
+    "Ship",
+    "Research"
+  ],
+  "ResearchType": [
+    "FuelEfficiency",
+    "ExtendedFuelTanks",
+    "ReinforcedHulls",
+    "AdvancedShields",
+    "WeaponsResearch",
+    "Navigation",
+    "HarvestingEfficiency",
+    "CorvetteTech",
+    "FrigateTech",
+    "CruiserTech",
+    "HaulerTech",
+    "EmergencyJump"
+  ],
+  "ShipClass": [
+    "Scout",
+    "Corvette",
+    "Frigate",
+    "Cruiser",
+    "Hauler"
+  ],
+  "SignalKind": [
+    "RichOre",
+    "HostileMass",
+    "Derelict",
+    "Anomaly"
+  ],
+  "SiteRisk": [
+    "quiet",
+    "uneasy",
+    "hot"
+  ],
+  "TerrainType": [
+    "Empty",
+    "AsteroidField",
+    "Nebula",
+    "DebrisField",
+    "Anomaly"
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "fleet_id": 1,
+  "hostiles_detected": 2,
+  "kind": "ScanCompleted",
+  "sector": {
+    "q": 1,
+    "r": 1
+  },
+  "sectors_revealed": 7,
+  "signals": [
+    {
+      "sector": {
+        "q": 4,
+        "r": 1
+      },
+      "signal": "RichOre"
+    },
+    {
+      "sector": {
+        "q": -3,
+        "r": 2
+      },
+      "signal": "HostileMass"
+    },
+    {
+      "sector": {
+        "q": 0,
+        "r": 5
+      },
+      "signal": "Derelict"
+    },
+    {
+      "sector": {
+        "q": 6,
+        "r": -6
+      },
+      "signal": "Anomaly"
+    }
+  ],
+  "tick": 1234
+}

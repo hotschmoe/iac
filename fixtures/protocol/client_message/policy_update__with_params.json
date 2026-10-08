@@ -1,0 +1,11 @@
+{
+  "fleet_id": 3,
+  "params": {
+    "cargo_return_pct": 90,
+    "engage_ratio_x10": 15,
+    "max_range": 6,
+    "min_fuel_pct": 30
+  },
+  "preset": "mine_and_return",
+  "type": "policy_update"
+}

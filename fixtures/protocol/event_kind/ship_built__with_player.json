@@ -1,0 +1,7 @@
+{
+  "count": 1,
+  "kind": "ShipBuilt",
+  "player_id": 42,
+  "ship_class": "Hauler",
+  "tick": 1234
+}

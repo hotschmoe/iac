@@ -1,0 +1,9 @@
+{
+  "action": "move",
+  "fleet_id": 1,
+  "target": {
+    "q": 1,
+    "r": -1
+  },
+  "type": "command"
+}

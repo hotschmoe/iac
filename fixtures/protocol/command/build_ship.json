@@ -1,0 +1,5 @@
+{
+  "action": "build_ship",
+  "count": 3,
+  "ship_class": "Frigate"
+}

@@ -1,0 +1,10 @@
+{
+  "canonical": {
+    "action": "scan",
+    "fleet_id": 0
+  },
+  "input": {
+    "action": "scan"
+  },
+  "type": "Command"
+}

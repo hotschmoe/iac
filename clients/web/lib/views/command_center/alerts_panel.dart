@@ -16,7 +16,7 @@ class AlertsPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           for (final alert in alerts) ...[
-            if (alert.level == AlertLevel.glow)
+            if (alert.level == AlertTone.glow)
               _PulsingAlert(alert: alert)
             else
               Text(

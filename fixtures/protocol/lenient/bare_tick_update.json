@@ -1,0 +1,11 @@
+{
+  "canonical": {
+    "tick": 9,
+    "type": "tick_update"
+  },
+  "input": {
+    "tick": 9,
+    "type": "tick_update"
+  },
+  "type": "ServerMessage"
+}

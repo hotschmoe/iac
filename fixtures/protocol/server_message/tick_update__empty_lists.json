@@ -1,0 +1,16 @@
+{
+  "events": [],
+  "fleet_updates": [],
+  "homeworld_update": {
+    "buildings": [],
+    "docked_ships": [],
+    "location": {
+      "q": 0,
+      "r": 0
+    },
+    "research": []
+  },
+  "sector_updates": [],
+  "tick": 2,
+  "type": "tick_update"
+}

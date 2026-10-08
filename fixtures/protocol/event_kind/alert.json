@@ -1,0 +1,6 @@
+{
+  "kind": "Alert",
+  "level": "Info",
+  "message": "Uplink established",
+  "tick": 1234
+}

@@ -12,7 +12,7 @@ class StarMapView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = controller.state;
-    final fleet = state.fleets[controller.activeFleet];
+    final fleet = controller.currentFleet;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -49,6 +49,8 @@ class StarMapView extends StatelessWidget {
                         cursorHex: controller.cursorHex,
                         homeworld: state.homeworld,
                         waypoints: state.waypoints,
+                        sectors: state.sectors,
+                        signals: state.signals,
                       ),
                       child: const SizedBox.expand(),
                     ),
@@ -68,7 +70,7 @@ class StarMapView extends StatelessWidget {
           ),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
           child: Text(
-            'nav: ARROWS cursor | SHIFT+ARROWS scroll | +/- zoom | ENTER waypoint | HOME center | ESC close',
+            'nav: ARROWS cursor | SHIFT+ARROWS scroll | +/- zoom | ENTER fly 1 hop to cursor | TAB fleet | HOME center | ESC close',
             style: Amber.mono(size: 9, color: Amber.dim),
           ),
         ),

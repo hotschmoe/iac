@@ -23,14 +23,12 @@ class ResearchState {
   final String name;
   final String time;
   final double pct;
-  final String fragments;
   final List<String> completed;
 
   const ResearchState({
     required this.name,
     required this.time,
     required this.pct,
-    required this.fragments,
     required this.completed,
   });
 
@@ -38,7 +36,6 @@ class ResearchState {
         name: name,
         time: time,
         pct: newPct.clamp(0, 100),
-        fragments: fragments,
         completed: completed,
       );
 }

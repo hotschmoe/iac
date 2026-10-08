@@ -1,20 +1,17 @@
 import 'package:flutter/material.dart';
 
 import '../theme/amber_theme.dart';
-import 'progress_bar.dart';
 
 class ResourceBar extends StatelessWidget {
   final String label;
   final int value;
-  final int rate;
-  final double fraction;
+  final double rate;
 
   const ResourceBar({
     super.key,
     required this.label,
     required this.value,
     required this.rate,
-    required this.fraction,
   });
 
   @override
@@ -37,14 +34,12 @@ class ResourceBar extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           SizedBox(
-            width: 48,
+            width: 64,
             child: Text(
-              '+$rate/t',
+              '+${rate.toStringAsFixed(1)}/t',
               style: Amber.mono(size: 10, color: Amber.dim),
             ),
           ),
-          const SizedBox(width: 6),
-          Expanded(child: AmberProgressBar(fraction: fraction)),
         ],
       ),
     );

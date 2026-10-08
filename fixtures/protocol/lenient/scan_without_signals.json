@@ -1,0 +1,27 @@
+{
+  "canonical": {
+    "fleet_id": 1,
+    "hostiles_detected": 0,
+    "kind": "ScanCompleted",
+    "sector": {
+      "q": 0,
+      "r": 0
+    },
+    "sectors_revealed": 1,
+    "tick": 3,
+    "type": "event"
+  },
+  "input": {
+    "fleet_id": 1,
+    "hostiles_detected": 0,
+    "kind": "ScanCompleted",
+    "sector": {
+      "q": 0,
+      "r": 0
+    },
+    "sectors_revealed": 1,
+    "tick": 3,
+    "type": "event"
+  },
+  "type": "ServerMessage"
+}

@@ -12,7 +12,7 @@ class WindshieldView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = controller.state;
-    final fleet = state.fleets[controller.activeFleet];
+    final fleet = controller.currentFleet;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -39,7 +39,10 @@ class WindshieldView extends StatelessWidget {
                   ),
                   child: ClipRect(
                     child: CustomPaint(
-                      painter: WindshieldPainter(fleetSector: fleet.sector),
+                      painter: WindshieldPainter(
+                        fleetSector: fleet.sector,
+                        sectors: state.sectors,
+                      ),
                       child: const SizedBox.expand(),
                     ),
                   ),
@@ -61,7 +64,7 @@ class WindshieldView extends StatelessWidget {
           ),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
           child: Text(
-            'move: [1]E  [2]NE  [3]NW  [4]W  [5]SW  [6]SE     [h]arvest [a]ttack [r]ecall [esc]back',
+            'move: [1]E  [2]NE  [3]NW  [4]W  [5]SW  [6]SE     [h]arvest [a]ttack [v]scan [s]alvage [x]plore [r]ecall [esc]back',
             style: Amber.mono(size: 10, color: Amber.dim),
           ),
         ),

@@ -1,0 +1,15 @@
+{
+  "fleet_id": 1,
+  "kind": "SiteExplored",
+  "resources": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 10.0
+  },
+  "sector": {
+    "q": 2,
+    "r": -4
+  },
+  "tick": 1234,
+  "tier": 1
+}

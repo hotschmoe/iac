@@ -1,0 +1,5 @@
+{
+  "code": "InvalidCommand",
+  "message": "sample InvalidCommand",
+  "type": "error"
+}

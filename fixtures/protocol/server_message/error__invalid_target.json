@@ -1,0 +1,5 @@
+{
+  "code": "InvalidTarget",
+  "message": "sample InvalidTarget",
+  "type": "error"
+}

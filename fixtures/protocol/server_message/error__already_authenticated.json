@@ -1,0 +1,5 @@
+{
+  "code": "AlreadyAuthenticated",
+  "message": "sample AlreadyAuthenticated",
+  "type": "error"
+}

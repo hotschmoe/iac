@@ -1,0 +1,355 @@
+{
+  "fleets": [
+    {
+      "cargo": {
+        "crystal": 3.0,
+        "deuterium": 0.0,
+        "metal": 12.5
+      },
+      "cooldown_remaining": 3,
+      "fuel": 271.5,
+      "fuel_max": 500.0,
+      "id": 1,
+      "location": {
+        "q": 3,
+        "r": -2
+      },
+      "policy": "salvage_and_sites",
+      "ships": [
+        {
+          "class": "Scout",
+          "hull": 80.5,
+          "hull_max": 100.0,
+          "id": 11,
+          "shield": 25.0,
+          "shield_max": 50.0,
+          "weapon_power": 4.0
+        },
+        {
+          "class": "Hauler",
+          "hull": 100.0,
+          "hull_max": 100.0,
+          "id": 12,
+          "shield": 0.0,
+          "shield_max": 50.0,
+          "weapon_power": 0.0
+        }
+      ],
+      "state": "Moving"
+    },
+    {
+      "cargo": {
+        "crystal": 3.0,
+        "deuterium": 0.0,
+        "metal": 12.5
+      },
+      "cooldown_remaining": 3,
+      "fuel": 271.5,
+      "fuel_max": 500.0,
+      "id": 2,
+      "location": {
+        "q": 4,
+        "r": -2
+      },
+      "ships": [
+        {
+          "class": "Scout",
+          "hull": 80.5,
+          "hull_max": 100.0,
+          "id": 21,
+          "shield": 25.0,
+          "shield_max": 50.0,
+          "weapon_power": 4.0
+        },
+        {
+          "class": "Hauler",
+          "hull": 100.0,
+          "hull_max": 100.0,
+          "id": 22,
+          "shield": 0.0,
+          "shield_max": 50.0,
+          "weapon_power": 0.0
+        }
+      ],
+      "state": "Exploring"
+    },
+    {
+      "cargo": {
+        "crystal": 3.0,
+        "deuterium": 0.0,
+        "metal": 12.5
+      },
+      "cooldown_remaining": 0,
+      "fuel": 271.5,
+      "fuel_max": 500.0,
+      "id": 3,
+      "location": {
+        "q": -5,
+        "r": 7
+      },
+      "ships": [],
+      "state": "InCombat"
+    }
+  ],
+  "homeworld": {
+    "build_queue": {
+      "building_type": "CrystalMine",
+      "end_tick": 460,
+      "start_tick": 100,
+      "target_level": 5
+    },
+    "buildings": [
+      {
+        "building_type": "MetalMine",
+        "level": 0
+      },
+      {
+        "building_type": "CrystalMine",
+        "level": 1
+      },
+      {
+        "building_type": "DeuteriumSynthesizer",
+        "level": 2
+      },
+      {
+        "building_type": "Shipyard",
+        "level": 3
+      },
+      {
+        "building_type": "ResearchLab",
+        "level": 4
+      },
+      {
+        "building_type": "FuelDepot",
+        "level": 5
+      },
+      {
+        "building_type": "SensorArray",
+        "level": 6
+      },
+      {
+        "building_type": "DefenseGrid",
+        "level": 7
+      }
+    ],
+    "docked_ships": [
+      {
+        "class": "Cruiser",
+        "hull": 100.0,
+        "hull_max": 100.0,
+        "id": 501,
+        "shield": 50.0,
+        "shield_max": 50.0,
+        "weapon_power": 18.0
+      }
+    ],
+    "location": {
+      "q": 4,
+      "r": -2
+    },
+    "research": [
+      {
+        "level": 0,
+        "tech": "FuelEfficiency"
+      },
+      {
+        "level": 1,
+        "tech": "ExtendedFuelTanks"
+      },
+      {
+        "level": 2,
+        "tech": "ReinforcedHulls"
+      },
+      {
+        "level": 3,
+        "tech": "AdvancedShields"
+      },
+      {
+        "level": 0,
+        "tech": "WeaponsResearch"
+      },
+      {
+        "level": 1,
+        "tech": "Navigation"
+      },
+      {
+        "level": 2,
+        "tech": "HarvestingEfficiency"
+      },
+      {
+        "level": 3,
+        "tech": "CorvetteTech"
+      },
+      {
+        "level": 0,
+        "tech": "FrigateTech"
+      },
+      {
+        "level": 1,
+        "tech": "CruiserTech"
+      },
+      {
+        "level": 2,
+        "tech": "HaulerTech"
+      },
+      {
+        "level": 3,
+        "tech": "EmergencyJump"
+      }
+    ],
+    "research_active": {
+      "end_tick": 600,
+      "start_tick": 90,
+      "target_level": 2,
+      "tech": "FuelEfficiency"
+    },
+    "shipyard_queue": {
+      "built": 1,
+      "count": 2,
+      "end_tick": 300,
+      "ship_class": "Corvette",
+      "start_tick": 120
+    }
+  },
+  "known_sectors": [
+    {
+      "connections": [
+        {
+          "q": 4,
+          "r": -2
+        },
+        {
+          "q": 4,
+          "r": -3
+        },
+        {
+          "q": 2,
+          "r": -2
+        },
+        {
+          "q": 2,
+          "r": -1
+        },
+        {
+          "q": 3,
+          "r": -1
+        }
+      ],
+      "hostiles": [
+        {
+          "behavior": "Aggressive",
+          "id": 9001,
+          "ships": [
+            {
+              "class": "Corvette",
+              "count": 3
+            },
+            {
+              "class": "Frigate",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "behavior": "Passive",
+          "id": 9002,
+          "ships": [
+            {
+              "class": "Scout",
+              "count": 2
+            }
+          ]
+        }
+      ],
+      "location": {
+        "q": 3,
+        "r": -2
+      },
+      "player_fleets": [
+        {
+          "id": 7,
+          "owner_name": "Rival",
+          "ship_classes": {
+            "corvette": 2,
+            "cruiser": 0,
+            "frigate": 0,
+            "hauler": 1,
+            "scout": 1
+          },
+          "ship_count": 4
+        }
+      ],
+      "resources": {
+        "crystal": "Moderate",
+        "deuterium": "None",
+        "metal": "Rich"
+      },
+      "salvage": {
+        "crystal": 12.0,
+        "deuterium": 2.5,
+        "metal": 40.0
+      },
+      "site": {
+        "risk": "uneasy",
+        "tier": 2
+      },
+      "terrain": "AsteroidField"
+    },
+    {
+      "connections": [],
+      "location": {
+        "q": -1,
+        "r": 0
+      },
+      "resources": {
+        "crystal": "None",
+        "deuterium": "None",
+        "metal": "None"
+      },
+      "terrain": "Empty"
+    },
+    {
+      "connections": [
+        {
+          "q": -4,
+          "r": 7
+        },
+        {
+          "q": -5,
+          "r": 6
+        }
+      ],
+      "hostiles": [],
+      "location": {
+        "q": -5,
+        "r": 7
+      },
+      "player_fleets": [],
+      "resources": {
+        "crystal": "Pristine",
+        "deuterium": "Rich",
+        "metal": "Sparse"
+      },
+      "site": {
+        "risk": "hot",
+        "tier": 5
+      },
+      "terrain": "Anomaly"
+    }
+  ],
+  "player": {
+    "homeworld": {
+      "q": 4,
+      "r": -2
+    },
+    "id": 42,
+    "name": "Admiral",
+    "resources": {
+      "crystal": 600.0,
+      "deuterium": 150.25,
+      "metal": 1200.5
+    }
+  },
+  "tick": 4820,
+  "type": "full_state"
+}

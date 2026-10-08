@@ -1,0 +1,17 @@
+{
+  "fleet_id": 1,
+  "kind": "SiteExplored",
+  "recovered_ship": "Frigate",
+  "resources": {
+    "crystal": 80.0,
+    "deuterium": 40.0,
+    "metal": 200.0
+  },
+  "sector": {
+    "q": 2,
+    "r": -4
+  },
+  "tech_cache": "AdvancedShields",
+  "tick": 1234,
+  "tier": 3
+}

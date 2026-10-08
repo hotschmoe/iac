@@ -3,10 +3,10 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../hex/hex_math.dart';
-import '../../hex/world_gen.dart';
 import '../../models/fleet.dart';
 import '../../models/game_state.dart';
-import '../../models/hex.dart';
+import '../../protocol/protocol.dart' as proto;
+import '../../protocol/hex.dart';
 import '../../state/game_controller.dart';
 
 class StarMapPainter extends CustomPainter {
@@ -19,6 +19,10 @@ class StarMapPainter extends CustomPainter {
   final Hex homeworld;
   final List<Waypoint> waypoints;
 
+  /// Server-provided sector data; absent = unexplored.
+  final Map<Hex, proto.SectorState> sectors;
+  final Map<Hex, proto.SignalKind> signals;
+
   StarMapPainter({
     required this.zoom,
     required this.centerQ,
@@ -28,6 +32,8 @@ class StarMapPainter extends CustomPainter {
     required this.cursorHex,
     required this.homeworld,
     required this.waypoints,
+    required this.sectors,
+    required this.signals,
   });
 
   static const _amberFull = Color(0xFFFFB000);
@@ -53,10 +59,11 @@ class StarMapPainter extends CustomPainter {
         final px = cx + pos.dx;
         final py = cy + pos.dy;
 
-        for (final dir in Hex.directions) {
-          final nq = q + dir.q;
-          final nr = r + dir.r;
-          if (!getEdge(q, r, nq, nr)) continue;
+        final here = sectors[Hex(q, r)];
+        if (here == null) continue;
+        for (final conn in here.connections) {
+          final nq = conn.q;
+          final nr = conn.r;
           final ndq = nq - centerQ;
           final ndr = nr - centerR;
           if (ndq.abs() > radius || ndr.abs() > radius || (ndq + ndr).abs() > radius) continue;
@@ -64,9 +71,7 @@ class StarMapPainter extends CustomPainter {
           final npx = cx + npos.dx;
           final npy = cy + npos.dy;
 
-          final sec = getSectorData(q, r);
-          final nsec = getSectorData(nq, nr);
-          final visible = sec.explored || nsec.explored;
+          final visible = sectors.containsKey(conn);
 
           final paint = Paint()
             ..color = visible
@@ -89,7 +94,11 @@ class StarMapPainter extends CustomPainter {
         final pos = hexToPixel(dq, dr, hexSize);
         final px = cx + pos.dx;
         final py = cy + pos.dy;
-        final sec = getSectorData(q, r);
+        final sec = sectors[Hex(q, r)];
+        final explored = sec != null;
+        final hostileCount = _hostileCount(sec);
+        final hasHostile = hostileCount > 0;
+        final signal = signals[Hex(q, r)];
 
         final isFleetHere = fleets.any((f) => f.sector.q == q && f.sector.r == r);
         final isHome = q == homeworld.q && r == homeworld.r;
@@ -122,11 +131,11 @@ class StarMapPainter extends CustomPainter {
             fillColor = _amberFull.withValues(alpha: 0.06);
             strokeColor = _amberFull.withValues(alpha: 0.3);
             strokeWidth = 1;
-          } else if (sec.explored) {
-            fillColor = sec.hasHostile
+          } else if (explored) {
+            fillColor = hasHostile
                 ? _danger.withValues(alpha: 0.03)
                 : _amberFull.withValues(alpha: 0.02);
-            strokeColor = sec.hasHostile
+            strokeColor = hasHostile
                 ? _danger.withValues(alpha: 0.12)
                 : _amberFull.withValues(alpha: 0.06);
             strokeWidth = 0.5;
@@ -166,21 +175,25 @@ class StarMapPainter extends CustomPainter {
           drawMapText(canvas, 'H', px, py + 4, isRegion ? 10.0 : 12.0,
               _amberFull.withValues(alpha: 0.7),
               center: true);
-        } else if (sec.explored) {
-          if (sec.hasHostile) {
+        } else if (explored) {
+          if (hasHostile) {
             drawMapText(
               canvas,
-              isRegion ? '!' : 'T${sec.hostileCount}',
+              isRegion ? '!' : 'T$hostileCount',
               px,
               py + 3,
               isRegion ? 8.0 : 10.0,
               _danger.withValues(alpha: 0.7),
               center: true,
             );
-          } else if (sec.terrain.index > 0 && sec.resMetal.index > 0) {
+          } else if (sec.site != null) {
+            drawMapText(canvas, isRegion ? 'd' : 'D${sec.site!.tier}', px, py + 3, isRegion ? 7.0 : 9.0,
+                _amberFull.withValues(alpha: 0.6),
+                center: true);
+          } else if (sec.terrain != proto.TerrainType.empty && sec.resources.metal != proto.Density.none) {
             drawMapText(
               canvas,
-              isRegion ? '.' : sec.resMetal.label[0].toUpperCase(),
+              isRegion ? '.' : sec.resources.metal.label[0],
               px,
               py + 3,
               isRegion ? 6.0 : 9.0,
@@ -192,6 +205,17 @@ class StarMapPainter extends CustomPainter {
                 _amberFull.withValues(alpha: 0.15),
                 center: true);
           }
+        } else if (signal != null) {
+          // Faint scan contact beyond sensor range.
+          final glyph = switch (signal) {
+            proto.SignalKind.richOre => 'o',
+            proto.SignalKind.hostileMass => '!',
+            proto.SignalKind.derelict => 'd',
+            proto.SignalKind.anomaly => '~',
+          };
+          drawMapText(canvas, glyph, px, py + 3, isRegion ? 7.0 : 10.0,
+              (signal == proto.SignalKind.hostileMass ? _danger : _amberFull).withValues(alpha: 0.35),
+              center: true);
         } else {
           if (!isRegion) {
             drawMapText(canvas, '?', px, py + 3, 8, _amberFull.withValues(alpha: 0.06),
@@ -236,5 +260,11 @@ class StarMapPainter extends CustomPainter {
       oldDelegate.centerQ != centerQ ||
       oldDelegate.centerR != centerR ||
       oldDelegate.cursorHex != cursorHex ||
-      oldDelegate.activeFleet != activeFleet;
+      oldDelegate.activeFleet != activeFleet ||
+      !identical(oldDelegate.sectors, sectors) ||
+      !identical(oldDelegate.fleets, fleets) ||
+      !identical(oldDelegate.signals, signals);
+
+  static int _hostileCount(proto.SectorState? s) =>
+      s?.hostiles?.fold<int>(0, (n, h) => n + h.shipCount) ?? 0;
 }

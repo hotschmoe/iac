@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
+import 'state/connection_provider.dart';
 import 'state/game_controller.dart';
 import 'theme/amber_theme.dart';
 import 'views/boot_screen.dart';
+import 'views/login_screen.dart';
 import 'views/shell.dart';
 
 void main() {
@@ -32,13 +34,22 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> {
   final _controller = GameController();
+  final _params = ConnectParams.fromUri(Uri.base);
   bool _booting = true;
+
+  /// True once the player has chosen a name (or the URL did).
+  bool _started = false;
 
   @override
   void initState() {
     super.initState();
-    // Connect to live Dart server (falls back to offline demo if unreachable).
-    _controller.start(name: 'Admiral');
+    final name = _params.name;
+    if (name != null) _connect(name);
+  }
+
+  void _connect(String name) {
+    _started = true;
+    _controller.start(params: _params, name: name);
   }
 
   @override
@@ -48,45 +59,65 @@ class _GameScreenState extends State<GameScreen> {
     super.dispose();
   }
 
-  void _onBootComplete() {
-    setState(() => _booting = false);
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Amber.bg,
       body: Stack(
         children: [
-          if (!_booting) Shell(controller: _controller),
-          if (_booting) BootScreen(onComplete: _onBootComplete),
-          // Live / demo indicator
-          if (!_booting)
+          if (!_booting) _body(),
+          if (_booting) BootScreen(onComplete: () => setState(() => _booting = false)),
+        ],
+      ),
+    );
+  }
+
+  Widget _body() {
+    return ListenableBuilder(
+      listenable: _controller,
+      builder: (context, _) {
+        if (!_started) {
+          return LoginScreen(
+            url: _params.url,
+            initialName: 'Admiral',
+            onConnect: (n) => setState(() => _connect(n)),
+            onDemo: () => setState(() {
+              _started = true;
+              _controller.startDemo();
+            }),
+          );
+        }
+        if (!_controller.hasState) return _connecting();
+        return Stack(
+          children: [
+            Shell(controller: _controller),
             Positioned(
               right: 12,
               bottom: 48,
-              child: ListenableBuilder(
-                listenable: _controller,
-                builder: (context, _) {
-                  final live = _controller.isLive;
-                  final err = _controller.connectionError;
-                  final label = live
-                      ? '● LIVE SERVER'
-                      : (err != null ? '○ DEMO ($err)' : '○ DEMO');
-                  return IgnorePointer(
-                    child: Text(
-                      label,
-                      style: Amber.mono(
-                        size: 9,
-                        color: live ? Amber.full : Amber.dim,
-                      ).copyWith(letterSpacing: 1),
-                    ),
-                  );
-                },
-              ),
+              child: IgnorePointer(child: _status()),
             ),
-        ],
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _connecting() {
+    return Center(
+      child: Text(
+        'ESTABLISHING UPLINK ... ${_params.url}',
+        style: Amber.mono(size: 11, color: Amber.dim).copyWith(letterSpacing: 1),
       ),
+    );
+  }
+
+  Widget _status() {
+    final err = _controller.connectionError;
+    final live = _controller.isLive;
+    final label = '${live ? '●' : '○'} ${_controller.linkLabel}${err != null && !live ? ' ($err)' : ''}';
+    return Text(
+      label,
+      style: Amber.mono(size: 9, color: live ? Amber.full : Amber.dim).copyWith(letterSpacing: 1),
     );
   }
 }

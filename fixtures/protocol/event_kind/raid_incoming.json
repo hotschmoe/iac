@@ -1,0 +1,7 @@
+{
+  "arrival_tick": 5000,
+  "kind": "RaidIncoming",
+  "player_id": 42,
+  "threat": "moderate",
+  "tick": 1234
+}

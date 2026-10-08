@@ -1,182 +1,221 @@
-import 'package:iac_shared/iac_shared.dart' as shared;
+import 'dart:math' as math;
 
 import '../models/fleet.dart';
 import '../models/game_state.dart';
-import '../models/hex.dart';
 import '../models/homeworld.dart';
 import '../models/resources.dart';
+import '../protocol/protocol.dart' as proto;
 
-/// Maps shared protocol snapshots → amber UI presentation models.
+/// Holds the latest protocol snapshots (full_state + tick_update deltas) and
+/// maps them to the amber UI presentation models.
 class StateMapper {
-  shared.FullState? lastFull;
-  shared.PlayerState? player;
-  List<shared.FleetState> fleets = [];
-  shared.HomeworldState? homeworld;
-  List<shared.SectorState> sectors = [];
-  final List<GameEvent> events = [];
-  final List<Alert> alerts = [];
   int tick = 0;
-  int startTick = 0;
   DateTime? connectedAt;
 
-  void applyFull(shared.FullState state) {
-    lastFull = state;
-    tick = state.tick;
-    startTick = state.tick;
+  proto.PlayerState? player;
+  List<proto.FleetState> fleets = [];
+  proto.HomeworldState? homeworld;
+
+  /// Known sectors keyed by [proto.Hex.toKey].
+  final Map<int, proto.SectorState> sectors = {};
+
+  /// Faint scan contacts for sectors we have no data on yet.
+  final Map<int, proto.SignalKind> signals = {};
+
+  final List<LogEntry> log = [];
+  final List<Alert> alerts = [];
+
+  bool get hasState => player != null;
+
+  void reset() {
+    tick = 0;
+    connectedAt = null;
+    player = null;
+    fleets = [];
+    homeworld = null;
+    sectors.clear();
+    signals.clear();
+    log.clear();
+    alerts.clear();
+  }
+
+  /// Apply any server message. Returns normally for every variant.
+  void apply(proto.ServerMessage msg) {
+    switch (msg) {
+      case proto.GameState():
+        _applyFull(msg);
+      case proto.TickUpdate():
+        _applyTick(msg);
+      case proto.GameEvent():
+        _ingestEvent(msg);
+      case proto.ErrorMessage():
+        _applyError(msg);
+      case proto.AuthResult():
+        break; // handled by the controller (connection state)
+    }
+  }
+
+  void _applyFull(proto.GameState s) {
+    tick = s.tick;
     connectedAt = DateTime.now();
-    player = state.player;
-    fleets = List.of(state.fleets);
-    homeworld = state.homeworld;
-    sectors = List.of(state.knownSectors);
-    _pushEvent(GameEvent(
-      tick: tick,
-      message: 'Full state sync — tick $tick, homeworld ${state.player.homeworld}',
-      level: EventLevel.bright,
-    ));
+    player = s.player;
+    fleets = List.of(s.fleets);
+    homeworld = s.homeworld;
+    sectors.clear();
+    for (final sec in s.knownSectors) {
+      sectors[sec.location.toKey()] = sec;
+    }
+    signals.removeWhere((k, _) => sectors.containsKey(k));
+    pushLog('Full state sync: tick $tick, homeworld ${s.player.homeworld}', EventLevel.bright);
   }
 
-  void applyTick(shared.TickUpdate update) {
-    tick = update.tick;
-    if (update.player != null) player = update.player;
-    if (update.fleetUpdates != null) fleets = List.of(update.fleetUpdates!);
-    if (update.homeworldUpdate != null) homeworld = update.homeworldUpdate;
-    if (update.sectorUpdates != null) {
-      // Merge sector updates by location
-      final map = {for (final s in sectors) s.location.toKey(): s};
-      for (final s in update.sectorUpdates!) {
-        map[s.location.toKey()] = s;
-      }
-      sectors = map.values.toList();
+  void _applyTick(proto.TickUpdate u) {
+    tick = u.tick;
+    if (u.player != null) player = u.player;
+    // The server sends every owned fleet each tick (omitted only when the
+    // list would be empty), so replace wholesale.
+    if (u.fleetUpdates != null) fleets = List.of(u.fleetUpdates!);
+    if (u.homeworldUpdate != null) homeworld = u.homeworldUpdate;
+    for (final sec in u.sectorUpdates ?? const <proto.SectorState>[]) {
+      final key = sec.location.toKey();
+      sectors[key] = sec;
+      signals.remove(key);
     }
-    if (update.events != null) {
-      for (final e in update.events!) {
-        _ingestSharedEvent(e);
-      }
+    for (final e in u.events ?? const <proto.GameEvent>[]) {
+      _ingestEvent(e);
     }
   }
 
-  void applyError(shared.ErrorMessage err) {
-    _pushEvent(GameEvent(
-      tick: tick,
-      message: 'ERR ${err.code.code}: ${err.message}',
-      level: EventLevel.bright,
+  void _applyError(proto.ErrorMessage err) {
+    pushLog('ERR ${err.code.code} ${err.code.wire}: ${err.message}', EventLevel.bright);
+    _pushAlert(Alert(
+      icon: '!',
+      message: err.message,
+      detail: err.code.wire,
+      level: AlertTone.glow,
     ));
-    alerts.insert(
-      0,
-      Alert(
-        icon: '!',
-        message: err.message,
-        detail: err.code.wireName,
-        level: AlertLevel.glow,
-      ),
-    );
+  }
+
+  void pushLog(String msg, [EventLevel level = EventLevel.normal]) {
+    log.insert(0, LogEntry(tick: tick, message: msg, level: level));
+    if (log.length > 14) log.removeRange(14, log.length);
+  }
+
+  void _pushAlert(Alert a) {
+    alerts.insert(0, a);
     if (alerts.length > 8) alerts.removeRange(8, alerts.length);
   }
 
-  void ingestSharedEvent(shared.GameEvent e) {
-    _ingestSharedEvent(e);
-  }
+  String _fleet(int id) => 'F$id';
 
-  void pushLocalEvent(GameEvent e) => _pushEvent(e);
+  void _ingestEvent(proto.GameEvent e) {
+    final k = e.kind;
+    String? msg;
+    var level = EventLevel.normal;
 
-  void _ingestSharedEvent(shared.GameEvent e) {
-    final msg = _formatEvent(e);
-    if (msg == null) return;
-    final level = msg.startsWith('!') || msg.toLowerCase().contains('combat')
-        ? EventLevel.bright
-        : EventLevel.normal;
-    _pushEvent(GameEvent(tick: e.tick, message: msg, level: level));
-
-    // Surface alerts
-    final kind = e.kind;
-    if (kind.containsKey('alert')) {
-      final a = kind['alert'] as Map<String, dynamic>? ?? {};
-      final text = a['message'] as String? ?? msg;
-      final lvl = a['level'] as String? ?? 'info';
-      alerts.insert(
-        0,
-        Alert(
-          icon: lvl == 'critical' ? '!' : (lvl == 'warning' ? '!' : '.'),
-          message: text,
-          detail: '',
-          level: lvl == 'info' ? AlertLevel.dim : AlertLevel.glow,
-        ),
-      );
-      if (alerts.length > 8) alerts.removeRange(8, alerts.length);
+    switch (k) {
+      case proto.CombatRoundEvent():
+        return; // far too chatty for the log
+      case proto.ShipDestroyedEvent():
+        msg = '${k.isNpc ? 'Hostile' : 'Ship'} ${k.shipClass.label} destroyed';
+        level = k.isNpc ? EventLevel.normal : EventLevel.bright;
+      case proto.FleetDestroyedEvent():
+        msg = '${k.isNpc ? 'Hostile fleet ' : 'Fleet '}${k.fleetId} destroyed'
+            '${k.salvage.total > 0 ? ' -- salvage ${_res(k.salvage)}' : ''}';
+        level = k.isNpc ? EventLevel.normal : EventLevel.bright;
+        if (!k.isNpc) fleets = fleets.where((f) => f.id != k.fleetId).toList();
+      case proto.ResourceHarvestedEvent():
+        msg = '${_fleet(k.fleetId)} harvested ${k.amount.toStringAsFixed(1)} ${k.resourceType.name}';
+      case proto.SectorEnteredEvent():
+        msg = '${_fleet(k.fleetId)} entered ${k.sector}${k.firstVisit ? ' (first visit)' : ''}';
+      case proto.CombatStartedEvent():
+        msg = '! Combat: ${_fleet(k.playerFleetId)} vs hostile ${k.enemyFleetId} in ${k.sector}';
+        level = EventLevel.bright;
+      case proto.CombatEndedEvent():
+        msg = '! Combat ended in ${k.sector} -- ${k.playerVictory ? 'victory' : 'defeat'}';
+        level = EventLevel.bright;
+      case proto.SalvageCollectedEvent():
+        msg = '${_fleet(k.fleetId)} collected salvage ${_res(k.resources)}';
+      case proto.FleetArrivedEvent():
+        msg = '${_fleet(k.fleetId)} arrived at ${k.sector}';
+      case proto.BuildingCompletedEvent():
+        msg = 'Building complete: ${k.buildingType.label} Lv.${k.newLevel}';
+        level = EventLevel.bright;
+      case proto.ResearchCompletedEvent():
+        msg = 'Research complete: ${k.tech.label} Lv.${k.newLevel}';
+        level = EventLevel.bright;
+      case proto.ShipBuiltEvent():
+        msg = 'Shipyard: ${k.count}x ${k.shipClass.label} ready';
+        level = EventLevel.bright;
+      case proto.ScanCompletedEvent():
+        msg = '${_fleet(k.fleetId)} scan at ${k.sector}: ${k.sectorsRevealed} sectors revealed, '
+            '${k.hostilesDetected} hostiles${k.signals.isEmpty ? '' : ', ${k.signals.length} faint contacts'}';
+        for (final s in k.signals) {
+          final key = s.sector.toKey();
+          if (!sectors.containsKey(key)) signals[key] = s.signal;
+        }
+      case proto.RaidIncomingEvent():
+        msg = '! RAID INCOMING (${k.threat}) -- arrival tick ${k.arrivalTick}';
+        level = EventLevel.bright;
+        _pushAlert(Alert(
+          icon: '!',
+          message: 'Raid incoming (${k.threat})',
+          detail: 'Arrives tick ${k.arrivalTick} -- ${math.max(0, k.arrivalTick - tick)}s',
+          level: AlertTone.glow,
+        ));
+      case proto.RaidResolvedEvent():
+        msg = k.defended
+            ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})'
+            : '! Raid broke through: lost ${_res(k.resourcesLost)}';
+        level = EventLevel.bright;
+      case proto.SiteExplorationStartedEvent():
+        msg = '${_fleet(k.fleetId)} boarding derelict (tier ${k.tier}) in ${k.sector}, done tick ${k.endTick}';
+      case proto.SiteExploredEvent():
+        msg = '${_fleet(k.fleetId)} derelict yielded ${_res(k.resources)}'
+            '${k.recoveredShip != null ? ', recovered ${k.recoveredShip!.label}' : ''}'
+            '${k.techCache != null ? ', data core: ${k.techCache!.label}' : ''}';
+        level = EventLevel.bright;
+      case proto.SiteAmbushEvent():
+        msg = '! ${_fleet(k.fleetId)} ambushed aboard derelict in ${k.sector} (hostile ${k.npcFleetId})';
+        level = EventLevel.bright;
+      case proto.PolicyActionEvent():
+        msg = '${_fleet(k.fleetId)} [${k.preset.label}] ${k.action}: ${k.reason}';
+        level = EventLevel.dim;
+      case proto.AlertEvent():
+        msg = '${k.level == proto.AlertLevel.info ? '' : '! '}${k.message}';
+        level = k.level == proto.AlertLevel.info ? EventLevel.normal : EventLevel.bright;
+        _pushAlert(Alert(
+          icon: k.level == proto.AlertLevel.info ? '.' : '!',
+          message: k.message,
+          detail: [
+            if (k.fleetId != null) _fleet(k.fleetId!),
+            if (k.sector != null) '${k.sector}',
+          ].join(' '),
+          level: k.level == proto.AlertLevel.info ? AlertTone.dim : AlertTone.glow,
+        ));
     }
+
+    log.insert(0, LogEntry(tick: e.tick, message: msg, level: level));
+    if (log.length > 14) log.removeRange(14, log.length);
   }
 
-  String? _formatEvent(shared.GameEvent e) {
-    final kind = e.kind;
-    if (kind.isEmpty) return null;
-    final key = kind.keys.first;
-    final body = kind[key];
-    if (body is! Map) return key;
-    final m = Map<String, dynamic>.from(body);
-    switch (key) {
-      case 'alert':
-        return m['message'] as String? ?? 'alert';
-      case 'resource_harvested':
-        return 'Fleet ${m['fleet_id']}: harvested '
-            '${(m['amount'] as num?)?.toStringAsFixed(0) ?? '?'} '
-            '${m['resource_type']}';
-      case 'sector_entered':
-        final first = m['first_visit'] == true ? ' (first visit)' : '';
-        return 'Fleet ${m['fleet_id']} entered sector ${m['sector']}$first';
-      case 'fleet_arrived':
-        return 'Fleet ${m['fleet_id']} arrived ${m['sector']}';
-      case 'building_completed':
-        return 'Building complete: ${m['building_type']} Lv${m['new_level']}';
-      case 'research_completed':
-        return 'Research complete: ${m['tech']} Lv${m['new_level']}';
-      case 'ship_built':
-        return 'Shipyard: ${m['count']}× ${m['ship_class']} ready';
-      case 'combat_started':
-        return '! Combat started in ${m['sector']}';
-      case 'combat_ended':
-        final win = m['player_victory'] == true ? 'victory' : 'defeat';
-        return '! Combat ended — $win';
-      case 'ship_destroyed':
-        return 'Ship destroyed: ${m['ship_class']}';
-      default:
-        return key.replaceAll('_', ' ');
-    }
-  }
+  static String _res(proto.Resources r) =>
+      '${r.metal.round()}M ${r.crystal.round()}C ${r.deuterium.round()}D';
 
-  void _pushEvent(GameEvent e) {
-    events.insert(0, e);
-    if (events.length > 14) events.removeRange(14, events.length);
-  }
+  int get clockSec =>
+      connectedAt == null ? tick : DateTime.now().difference(connectedAt!).inSeconds;
 
-  int get clockSec {
-    if (connectedAt == null) return tick;
-    return DateTime.now().difference(connectedAt!).inSeconds;
-  }
+  // ── UI mapping ────────────────────────────────────────────────
 
-  GameState toUiState() {
+  GameState toUiState({int activeFleet = 0}) {
     final p = player;
     final hw = homeworld;
-    final res = p?.resources ?? const shared.ResourceAmounts();
-
-    // Caps are presentation-only; rates from building levels if we have homeworld
-    final metalRate = _prodRate(shared.BuildingType.metalMine, hw);
-    final crystalRate = _prodRate(shared.BuildingType.crystalMine, hw);
-    final deutRate = _prodRate(shared.BuildingType.deuteriumSynthesizer, hw);
+    final res = p?.resources ?? const proto.Resources();
 
     final uiFleets = fleets.map(_mapFleet).toList();
-    if (uiFleets.isEmpty) {
-      uiFleets.add(const FleetState(
-        name: '—',
-        sector: Hex(0, 0),
-        status: FleetStatus.docked,
-        shipCount: 0,
-      ));
-    }
-
-    final activeFleet = fleets.isNotEmpty ? fleets.first : null;
-    final sectorUi = _mapSector(
-      activeFleet?.location ?? p?.homeworld ?? const shared.Hex(0, 0),
-    );
+    final active = (activeFleet >= 0 && activeFleet < fleets.length) ? fleets[activeFleet] : null;
+    final home = p?.homeworld ?? hw?.location ?? proto.Hex.origin;
+    final focus = active?.location ?? home;
 
     return GameState(
       tick: tick,
@@ -184,18 +223,15 @@ class StateMapper {
       resources: Resources(
         metal: ResourceStock(
           amount: res.metal.round(),
-          rate: metalRate,
-          cap: 50000,
+          rate: _prodRate(proto.BuildingType.metalMine, hw),
         ),
         crystal: ResourceStock(
           amount: res.crystal.round(),
-          rate: crystalRate,
-          cap: 40000,
+          rate: _prodRate(proto.BuildingType.crystalMine, hw),
         ),
         deut: ResourceStock(
           amount: res.deuterium.round(),
-          rate: deutRate,
-          cap: 20000,
+          rate: _prodRate(proto.BuildingType.deuteriumSynthesizer, hw),
         ),
       ),
       fleets: uiFleets,
@@ -203,238 +239,179 @@ class StateMapper {
       shipyard: _mapShipyard(hw),
       docked: _dockedSummary(hw),
       research: _mapResearch(hw),
-      events: List.of(events),
+      events: List.of(log),
       alerts: alerts.isEmpty
-          ? [
-              const Alert(
-                icon: '.',
-                message: 'Uplink established',
-                detail: 'Live server feed',
-                level: AlertLevel.dim,
-              ),
+          ? const [
+              Alert(icon: '.', message: 'Uplink established', detail: 'Live server feed', level: AlertTone.dim),
             ]
           : List.of(alerts),
-      sector: sectorUi,
-      homeworld: _toUiHex(p?.homeworld ?? const shared.Hex(0, 0)),
+      sector: _mapSector(focus),
+      homeworld: home,
       waypoints: [
-        if (p != null)
-          Waypoint(
-            id: 'HW',
-            coord: _toUiHex(p.homeworld),
-            note: 'Homeworld',
-          ),
-        for (final f in fleets)
-          Waypoint(
-            id: f.name ?? 'F${f.id}',
-            coord: _toUiHex(f.location),
-            note: f.state.wireName,
-          ),
+        if (p != null) Waypoint(id: 'HW', coord: home, note: 'Homeworld'),
+        for (final f in fleets) Waypoint(id: _fleet(f.id), coord: f.location, note: f.state.wire),
       ],
+      sectors: {for (final s in sectors.values) s.location: s},
+      signals: {for (final e in signals.entries) proto.Hex.fromKey(e.key): e.value},
     );
   }
 
-  int _prodRate(shared.BuildingType type, shared.HomeworldState? hw) {
-    if (hw == null) return 0;
-    int? level;
-    for (final b in hw.buildings) {
-      if (b.buildingType == type) {
-        level = b.level;
-        break;
-      }
-    }
-    if (level == null || level == 0) return 0;
-    return shared.productionPerTick(type, level).round().clamp(0, 999);
+  /// Display-only mirror of scaling.rs `production_per_tick`:
+  /// base * level * 1.1^level.
+  static double productionPerTick(proto.BuildingType t, int level) {
+    if (level == 0) return 0;
+    final base = switch (t) {
+      proto.BuildingType.metalMine => 0.5,
+      proto.BuildingType.crystalMine => 0.3,
+      proto.BuildingType.deuteriumSynthesizer => 0.15,
+      _ => 0.0,
+    };
+    return base * level * math.pow(1.1, level);
   }
 
-  FleetState _mapFleet(shared.FleetState f) {
+  double _prodRate(proto.BuildingType type, proto.HomeworldState? hw) =>
+      hw == null ? 0 : productionPerTick(type, hw.buildingLevel(type));
+
+  FleetState _mapFleet(proto.FleetState f) {
     final status = switch (f.state) {
-      shared.FleetStatus.idle => FleetStatus.docked,
-      shared.FleetStatus.docked => FleetStatus.docked,
-      shared.FleetStatus.moving => FleetStatus.enRoute,
-      shared.FleetStatus.harvesting => FleetStatus.harvesting,
-      shared.FleetStatus.inCombat => FleetStatus.combat,
-      shared.FleetStatus.returning => FleetStatus.returning,
+      proto.FleetStatus.idle => FleetStatus.idle,
+      proto.FleetStatus.docked => FleetStatus.docked,
+      proto.FleetStatus.moving => FleetStatus.enRoute,
+      proto.FleetStatus.harvesting => FleetStatus.harvesting,
+      proto.FleetStatus.inCombat => FleetStatus.combat,
+      proto.FleetStatus.returning => FleetStatus.returning,
+      proto.FleetStatus.exploring => FleetStatus.exploring,
     };
 
-    // Aggregate ships by class for UI
-    final byClass = <String, ({int count, double hull, double hullMax})>{};
+    final byClass = <proto.ShipClass, ({int count, double hull, double hullMax})>{};
     for (final s in f.ships) {
-      final label = s.class_.label;
-      final prev = byClass[label];
-      if (prev == null) {
-        byClass[label] = (count: 1, hull: s.hull, hullMax: s.hullMax);
-      } else {
-        byClass[label] = (
-          count: prev.count + 1,
-          hull: prev.hull + s.hull,
-          hullMax: prev.hullMax + s.hullMax,
-        );
-      }
+      final prev = byClass[s.shipClass];
+      byClass[s.shipClass] = (
+        count: (prev?.count ?? 0) + 1,
+        hull: (prev?.hull ?? 0) + s.hull,
+        hullMax: (prev?.hullMax ?? 0) + s.hullMax,
+      );
     }
 
-    final cargoCap = f.ships.fold<double>(
-      0,
-      (sum, s) => sum + s.class_.baseStats.cargo,
-    );
-    final cargoTotal = f.cargo.metal + f.cargo.crystal + f.cargo.deuterium;
-    final fuelPct =
-        f.fuelMax > 0 ? ((f.fuel / f.fuelMax) * 100).round().clamp(0, 100) : 0;
-    final cargoPct =
-        cargoCap > 0 ? ((cargoTotal / cargoCap) * 100).round().clamp(0, 100) : 0;
+    final cap = f.cargoCapacity;
+    final fuelPct = f.fuelMax > 0 ? ((f.fuel / f.fuelMax) * 100).round().clamp(0, 100) : 0;
+    final cargoPct = cap > 0 ? ((f.cargo.total / cap) * 100).round().clamp(0, 100) : 0;
 
     return FleetState(
-      name: f.name ?? 'Fleet ${f.id}',
-      sector: _toUiHex(f.location),
+      id: f.id,
+      name: _fleet(f.id),
+      sector: f.location,
       status: status,
       shipCount: f.ships.length,
       cargoPercent: cargoPct,
       fuelPercent: fuelPct,
-      ships: byClass.entries
-          .map(
-            (e) => ShipState(
-              shipClass: e.key,
-              count: e.value.count,
-              hull: e.value.hull.round(),
-              hullMax: e.value.hullMax.round().clamp(1, 99999),
-            ),
-          )
-          .toList(),
+      ships: [
+        for (final e in byClass.entries)
+          ShipState(
+            shipClass: e.key.label,
+            count: e.value.count,
+            hull: e.value.hull.round(),
+            hullMax: e.value.hullMax.round().clamp(1, 99999),
+          ),
+      ],
       cargo: FleetCargo(
         metal: f.cargo.metal.round(),
         crystal: f.cargo.crystal.round(),
         deut: f.cargo.deuterium.round(),
-        capacity: cargoCap.round().clamp(1, 99999),
+        capacity: math.max(1, cap),
       ),
       fuel: f.fuel.round(),
-      fuelMax: f.fuelMax.round().clamp(1, 999999),
+      fuelMax: math.max(1, f.fuelMax.round()),
+      cooldown: f.cooldownRemaining,
+      policy: f.policy?.label,
     );
   }
 
-  List<QueueItem> _mapBuildQueue(shared.HomeworldState? hw) {
-    if (hw?.buildQueue == null) return const [];
-    final q = hw!.buildQueue!;
-    final total = (q.endTick - q.startTick).clamp(1, 1 << 30);
-    final done = (tick - q.startTick).clamp(0, total);
-    final pct = (done / total * 100).clamp(0, 100).toDouble();
-    final remaining = (q.endTick - tick).clamp(0, 1 << 30);
-    return [
-      QueueItem(
-        name: '${q.buildingType.label} Lv.${q.targetLevel}',
-        time: _fmtTicks(remaining),
-        pct: pct,
-        active: true,
-      ),
-    ];
+  QueueItem _queueItem(String name, int start, int end) {
+    final total = math.max(1, end - start);
+    final done = (tick - start).clamp(0, total);
+    return QueueItem(
+      name: name,
+      time: _fmtTicks(math.max(0, end - tick)),
+      pct: done / total * 100,
+      active: true,
+    );
   }
 
-  List<QueueItem> _mapShipyard(shared.HomeworldState? hw) {
-    if (hw?.shipyardQueue == null) return const [];
-    final q = hw!.shipyardQueue!;
-    final total = (q.endTick - q.startTick).clamp(1, 1 << 30);
-    final done = (tick - q.startTick).clamp(0, total);
-    final pct = (done / total * 100).clamp(0, 100).toDouble();
-    final remaining = (q.endTick - tick).clamp(0, 1 << 30);
-    return [
-      QueueItem(
-        name: '${q.shipClass.label} x${q.count} (${q.built} built)',
-        time: _fmtTicks(remaining),
-        pct: pct,
-        active: true,
-      ),
-    ];
+  List<QueueItem> _mapBuildQueue(proto.HomeworldState? hw) {
+    final q = hw?.buildQueue;
+    if (q == null) return const [];
+    return [_queueItem('${q.buildingType.label} Lv.${q.targetLevel}', q.startTick, q.endTick)];
   }
 
-  String _dockedSummary(shared.HomeworldState? hw) {
+  List<QueueItem> _mapShipyard(proto.HomeworldState? hw) {
+    final q = hw?.shipyardQueue;
+    if (q == null) return const [];
+    return [_queueItem('${q.shipClass.label} x${q.count} (${q.built} built)', q.startTick, q.endTick)];
+  }
+
+  String _dockedSummary(proto.HomeworldState? hw) {
     if (hw == null || hw.dockedShips.isEmpty) return 'none';
     final counts = <String, int>{};
     for (final s in hw.dockedShips) {
-      counts[s.class_.label] = (counts[s.class_.label] ?? 0) + 1;
+      counts[s.shipClass.label] = (counts[s.shipClass.label] ?? 0) + 1;
     }
     return counts.entries.map((e) => '${e.value}x${e.key}').join('  ');
   }
 
-  ResearchState _mapResearch(shared.HomeworldState? hw) {
-    if (hw?.researchActive != null) {
-      final q = hw!.researchActive!;
-      final total = (q.endTick - q.startTick).clamp(1, 1 << 30);
-      final done = (tick - q.startTick).clamp(0, total);
-      final pct = (done / total * 100).clamp(0, 100).toDouble();
-      final remaining = (q.endTick - tick).clamp(0, 1 << 30);
-      final completed = hw.research
-          .where((r) => r.level > 0)
-          .map((r) => '${r.tech.label} ${r.level}')
-          .toList();
-      return ResearchState(
-        name: '${q.tech.label} Lv.${q.targetLevel}',
-        time: _fmtTicks(remaining),
-        pct: pct,
-        fragments: '—',
-        completed: completed,
-      );
+  ResearchState _mapResearch(proto.HomeworldState? hw) {
+    final completed = [
+      for (final r in hw?.research ?? const <proto.ResearchState>[])
+        if (r.level > 0) '${r.tech.label} ${r.level}',
+    ];
+    final a = hw?.researchActive;
+    if (a == null) {
+      return ResearchState(name: 'Idle', time: '—', pct: 0, completed: completed);
     }
-    final completed = hw?.research
-            .where((r) => r.level > 0)
-            .map((r) => '${r.tech.label} ${r.level}')
-            .toList() ??
-        const <String>[];
-    return ResearchState(
-      name: 'Idle',
-      time: '—',
-      pct: 0,
-      fragments: '—',
-      completed: completed,
-    );
+    final item = _queueItem('${a.tech.label} Lv.${a.targetLevel}', a.startTick, a.endTick);
+    return ResearchState(name: item.name, time: item.time, pct: item.pct, completed: completed);
   }
 
-  SectorInfo _mapSector(shared.Hex loc) {
-    shared.SectorState? found;
-    for (final s in sectors) {
-      if (s.location == loc) {
-        found = s;
-        break;
+  SectorInfo _mapSector(proto.Hex loc) {
+    final sec = sectors[loc.toKey()];
+    if (sec == null) return SectorInfo.unknown;
+
+    final hostiles = sec.hostiles;
+    final hostileStr = (hostiles == null || hostiles.isEmpty)
+        ? 'None in sector'
+        : hostiles
+            .map((h) => '#${h.id} ${h.ships.map((s) => '${s.count}x${s.shipClass.label}').join(' ')} ${h.behavior.wire.toLowerCase()}')
+            .join('; ');
+
+    final near = <String>[];
+    for (final c in sec.connections) {
+      final h = sectors[c.toKey()]?.hostiles;
+      if (h != null && h.isNotEmpty) {
+        near.add('${h.fold<int>(0, (s, e) => s + e.shipCount)} hostile ships at $c');
       }
     }
-    if (found == null) {
-      return SectorInfo(
-        terrain: 'Unknown',
-        metal: '—',
-        crystal: '—',
-        deut: '—',
-        hostile: '—',
-        adjacent: '—',
-        exits: '—',
-      );
-    }
-    final hostiles = found.hostiles;
-    String hostileStr = 'None in sector';
-    if (hostiles != null && hostiles.isNotEmpty) {
-      hostileStr = hostiles
-          .map((h) => h.ships.map((s) => '${s.count}x${s.class_.label}').join(' '))
-          .join('; ');
-    }
+
+    final salvage = sec.salvage;
+    final site = sec.site;
     return SectorInfo(
-      terrain: found.terrain.label,
-      metal: found.resources.metal.label,
-      crystal: found.resources.crystal.label,
-      deut: found.resources.deuterium.label,
+      terrain: sec.terrain.label,
+      metal: sec.resources.metal.label,
+      crystal: sec.resources.crystal.label,
+      deut: sec.resources.deuterium.label,
       hostile: hostileStr,
-      adjacent: '${found.connections.length} links',
-      exits: '${found.connections.length} of 6',
+      adjacent: near.isEmpty ? 'none known' : near.join('; '),
+      exits: '${sec.connections.length} of 6',
+      salvage: (salvage == null || salvage.total <= 0) ? 'none' : _res(salvage),
+      site: site == null ? 'none' : 'tier ${site.tier} (${site.risk.label})',
     );
   }
 
-  Hex _toUiHex(shared.Hex h) => Hex(h.q, h.r);
-
-  String _fmtTicks(int t) {
+  static String _fmtTicks(int t) {
     final h = t ~/ 3600;
     final m = (t % 3600) ~/ 60;
     final s = t % 60;
-    if (h > 0) {
-      return '${h.toString().padLeft(2, '0')}:'
-          '${m.toString().padLeft(2, '0')}:'
-          '${s.toString().padLeft(2, '0')}';
-    }
-    return '${m.toString().padLeft(2, '0')}:'
-        '${s.toString().padLeft(2, '0')}';
+    final mm = m.toString().padLeft(2, '0');
+    final ss = s.toString().padLeft(2, '0');
+    return h > 0 ? '${h.toString().padLeft(2, '0')}:$mm:$ss' : '$mm:$ss';
   }
 }

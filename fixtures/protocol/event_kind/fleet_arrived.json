@@ -1,0 +1,9 @@
+{
+  "fleet_id": 2,
+  "kind": "FleetArrived",
+  "sector": {
+    "q": 0,
+    "r": -3
+  },
+  "tick": 1234
+}

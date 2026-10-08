@@ -5,7 +5,7 @@ import '../../theme/amber_theme.dart';
 import '../../widgets/amber_panel.dart';
 
 class EventLogPanel extends StatelessWidget {
-  final List<GameEvent> events;
+  final List<LogEntry> events;
   const EventLogPanel({super.key, required this.events});
 
   @override

@@ -1,0 +1,5 @@
+{
+  "code": "ServerError",
+  "message": "sample ServerError",
+  "type": "error"
+}
