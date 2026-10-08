@@ -9,8 +9,5 @@ server.pid
 clients/web/build/
 clients/web/.dart_tool/
 .flutter-plugins-dependencies
-# Zig (archive/zig)
-.zig-cache/
-zig-out/
-zig-pkg/
+# Deprecated files awaiting review (see CLAUDE.md)
 .archive/
