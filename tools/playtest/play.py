@@ -90,16 +90,40 @@ def last_tick(name):
     return None
 
 
-def digest(msgs):
-    """Events, errors and notable messages; skips per-tick noise."""
+def digest(msgs, mine_only=False):
+    """Events, errors and notable messages; skips per-tick noise.
+
+    Per-shot CombatRound events collapse to one line per fight and tick.
+    With mine_only, events about other empires' fights (mine=false) are dropped.
+    """
     out = []
+    rounds = {}
     for m in msgs:
         t = m.get("type")
         if t == "tick_update":
-            for e in m.get("events") or []:
-                out.append(("event", e))
+            events = [("event", e) for e in m.get("events") or []]
         elif t in ("event", "error", "connection_closed", "client_error"):
-            out.append((t, m))
+            events = [(t, m)]
+        else:
+            continue
+        for kind, e in events:
+            if mine_only and kind == "event" and e.get("mine") is False:
+                continue
+            if kind == "event" and e.get("kind") == "CombatRound":
+                key = (e["tick"], e["sector"]["q"], e["sector"]["r"])
+                if key not in rounds:
+                    rounds[key] = {"tick": e["tick"], "kind": "CombatRounds", "sector": e["sector"],
+                                   "shots": 0, "mine": False, "hull_damage_to_you": 0.0,
+                                   "hull_damage_dealt": 0.0, "hull_damage_others": 0.0}
+                    out.append(("event", rounds[key]))
+                r = rounds[key]
+                r["shots"] += 1
+                r["mine"] = r["mine"] or bool(e.get("mine"))
+                field = ("hull_damage_to_you" if e.get("target_owner") is not None else "hull_damage_dealt") \
+                    if e.get("mine") else "hull_damage_others"
+                r[field] = round(r[field] + e["hull_damage"], 1)
+                continue
+            out.append((kind, e))
     return out
 
 
@@ -131,6 +155,17 @@ def fresh_state(name, timeout=8):
     return None
 
 
+def age(ticks):
+    """Ticks are seconds: 45s, 7m, 3h."""
+    ticks = max(int(ticks), 0)
+    return f"{ticks}s" if ticks < 120 else f"{ticks // 60}m" if ticks < 7200 else f"{ticks // 3600}h"
+
+
+def freshness(sec, now):
+    """'LIVE' for current intel, else how old the remembered entry is."""
+    return "LIVE" if sec.get("live") else f"STALE {age(now - sec.get('last_seen', now))} old"
+
+
 def res(r):
     return "/".join(f"{(r or {}).get(k, 0):.0f}" for k in ("metal", "crystal", "deuterium"))
 
@@ -153,7 +188,8 @@ def summarize(fs):
         docked[s["class"]] = docked.get(s["class"], 0) + 1
     print("Docked ships: " + (", ".join(f"{n}x {c}" for c, n in docked.items()) or "none"))
     sectors = {(s["location"]["q"], s["location"]["r"]): s for s in fs.get("known_sectors") or []}
-    print(f"Known sectors: {len(sectors)}")
+    live = sum(1 for s in sectors.values() if s.get("live"))
+    print(f"Known sectors: {len(sectors)} ({live} live, {len(sectors) - live} remembered/stale)")
     for f in fs.get("fleets") or []:
         loc = (f["location"]["q"], f["location"]["r"])
         classes = {}
@@ -177,12 +213,14 @@ def summarize(fs):
             print(f"  fuel cost: jump {jump:.0f}, way home {home:.0f}{note}")
         sec = sectors.get(loc)
         if sec:
-            describe(sec, loc, sectors, indent="  ")
+            describe(sec, loc, sectors, fs["tick"], indent="  ")
 
 
-def describe(sec, loc, sectors, indent=""):
+def describe(sec, loc, sectors, now, indent=""):
     r = sec.get("resources") or {}
-    print(f"{indent}sector {loc[0]},{loc[1]}: {sec['terrain']}  ore metal={r.get('metal')} crystal={r.get('crystal')} deut={r.get('deuterium')}")
+    print(f"{indent}sector {loc[0]},{loc[1]} [{freshness(sec, now)}]: {sec['terrain']}  ore metal={r.get('metal')} crystal={r.get('crystal')} deut={r.get('deuterium')}")
+    if not sec.get("live"):
+        print(f"{indent}(remembered: ore, hostiles, salvage and derelict below are as last seen, not current)")
     exits = []
     for c in sec.get("connections") or []:
         d = DIRS.get((c["q"] - loc[0], c["r"] - loc[1]), "?")
@@ -193,14 +231,20 @@ def describe(sec, loc, sectors, indent=""):
                 tag = f" hostiles:{len(known['hostiles'])}"
             elif known.get("terrain"):
                 tag = f" {known['terrain']}"
+            if not known.get("live"):
+                tag += f" (stale {age(now - known.get('last_seen', now))})"
         exits.append(f"{d}->{c['q']},{c['r']}{tag}")
     print(f"{indent}exits: " + (", ".join(exits) or "none"))
     for h in sec.get("hostiles") or []:
-        print(f"{indent}HOSTILE fleet id {h['id']} {h['behavior']}: " + json.dumps(h.get("ships"), separators=(",", ":"))[:200])
+        print(f"{indent}HOSTILE fleet id {h['id']} {h['behavior']} (attack target_fleet_id {h['id']}): " + json.dumps(h.get("ships"), separators=(",", ":"))[:200])
     for pf in sec.get("player_fleets") or []:
         print(f"{indent}player fleet {pf['id']} of {pf['owner_name']}: {pf['ship_count']} ships")
     if sec.get("salvage"):
-        print(f"{indent}salvage: {res(sec['salvage'])}")
+        left = ""
+        if sec.get("salvage_despawn_tick") is not None:
+            t = sec["salvage_despawn_tick"] - now
+            left = f", despawns in {t}s" if t > 0 else ", despawn time passed (probably gone)"
+        print(f"{indent}salvage: {res(sec['salvage'])}{left}")
     if sec.get("site"):
         print(f"{indent}derelict site tier {sec['site']['tier']} risk {sec['site']['risk']}")
 
@@ -218,11 +262,14 @@ def cmd_sector(name, q, r):
     fs = fresh_state(name)
     header(name, fs["tick"] if fs else None)
     sectors = {(s["location"]["q"], s["location"]["r"]): s for s in (fs or {}).get("known_sectors") or []}
+    if not fs:
+        print("No state received (server or client down?). Try again shortly.")
+        return
     sec = sectors.get((int(q), int(r)))
     if not sec:
-        print(f"sector {q},{r} is not in your known sectors (scan or visit it)")
+        print(f"sector {q},{r} was never seen by you (scan or visit it)")
         return
-    describe(sec, (int(q), int(r)), sectors)
+    describe(sec, (int(q), int(r)), sectors, fs["tick"])
 
 
 def cmd_map(name, radius=4):
@@ -237,11 +284,15 @@ def cmd_map(name, radius=4):
         dq, dr = a[0] - b[0], a[1] - b[1]
         return (abs(dq) + abs(dr) + abs(dq + dr)) // 2
     shown = sorted(k for k in sectors if min(dist(k, c) for c in centers) <= int(radius))
-    print(f"{len(shown)} known sectors within {radius} of your fleets (of {len(sectors)} known):")
+    now = fs["tick"]
+    live = sum(1 for s in sectors.values() if s.get("live"))
+    print(f"{len(shown)} known sectors within {radius} of your fleets "
+          f"(of {len(sectors)} ever seen: {live} live, {len(sectors) - live} remembered). "
+          "LIVE = current; STALE Nm = as last seen N ago.")
     for k in shown:
         s = sectors[k]
         r = s.get("resources") or {}
-        bits = [s["terrain"], f"m={r.get('metal')} c={r.get('crystal')} d={r.get('deuterium')}"]
+        bits = [freshness(s, now), s["terrain"], f"m={r.get('metal')} c={r.get('crystal')} d={r.get('deuterium')}"]
         if s.get("hostiles"): bits.append(f"HOSTILES x{len(s['hostiles'])}")
         if s.get("player_fleets"): bits.append("players: " + ",".join(p["owner_name"] for p in s["player_fleets"]))
         if s.get("salvage"): bits.append("salvage")
@@ -265,20 +316,20 @@ def cmd_do(name, payload):
     print_digest(digest(lines))
 
 
-def cmd_events(name, advance=True):
+def cmd_events(name, mine_only=False, advance=True):
     start = cursor(name)
     lines, end = log_lines(name, start)
     header(name, last_tick(name))
-    print_digest(digest(lines))
+    print_digest(digest(lines, mine_only))
     if advance:
         cursor(name, end)
 
 
-def cmd_wait(name, secs):
+def cmd_wait(name, secs, mine_only=False):
     secs = max(5, min(int(secs), 90))
     time.sleep(secs)
     print(f"(waited {secs}s)")
-    cmd_events(name)
+    cmd_events(name, mine_only)
 
 
 def daemon(name):
@@ -305,8 +356,8 @@ USAGE = """usage: play <command>
   do '<json>'            send a command, e.g. play do '{"action":"scan","fleet_id":2}'
                          or standing orders: play do '{"type":"policy_update","fleet_id":2,"preset":"prospect"}'
                          or split ships off: play do '{"action":"split","fleet_id":2,"ship_ids":[41,42]}'
-  events                 events since you last looked
-  wait [seconds]         sleep (5-90s, default 45) then show events; use while timers run
+  events [--mine]        events since you last looked; --mine drops fights you only witnessed
+  wait [seconds] [--mine] sleep (5-90s, default 45) then show events; use while timers run
   rules                  print RULES.md"""
 
 
@@ -323,8 +374,10 @@ def main():
     elif cmd == "map": cmd_map(name, *rest[:1])
     elif cmd == "sector" and len(rest) == 2: cmd_sector(name, *rest)
     elif cmd == "do" and rest: cmd_do(name, " ".join(rest))
-    elif cmd == "events": cmd_events(name)
-    elif cmd == "wait": cmd_wait(name, rest[0] if rest else 45)
+    elif cmd == "events": cmd_events(name, "--mine" in rest)
+    elif cmd == "wait":
+        nums = [x for x in rest if x != "--mine"]
+        cmd_wait(name, nums[0] if nums else 45, "--mine" in rest)
     elif cmd == "rules": print((HERE / "RULES.md").read_text())
     else: print(USAGE)
 

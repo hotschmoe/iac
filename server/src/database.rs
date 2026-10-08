@@ -13,7 +13,7 @@ use iac_shared::constants::{Density, Resources, ShipClass};
 use iac_shared::scaling::{BuildingType, BuildingLevels, ResearchType, ResearchLevels};
 
 use crate::engine::{Player, Fleet, Ship, SectorOverride, BuildQueueEntry, ShipQueueEntry, ResearchQueueEntry, FleetStatus, FleetPolicy};
-use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams};
+use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams, SectorState};
 
 /// Float storage: multiply by 1000 and store as integer for precision.
 fn float_to_stored(val: f32) -> i64 {
@@ -218,6 +218,15 @@ impl Database {
                 PRIMARY KEY (player_id, q1, r1, q2, r2)
             );
 
+            CREATE TABLE IF NOT EXISTS known_sectors (
+                player_id INTEGER NOT NULL REFERENCES players(id),
+                q INTEGER NOT NULL,
+                r INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                observed TEXT NOT NULL,
+                PRIMARY KEY (player_id, q, r)
+            );
+
             CREATE TABLE IF NOT EXISTS buildings (
                 player_id INTEGER REFERENCES players(id),
                 building_type INTEGER NOT NULL,
@@ -259,6 +268,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r);
             CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id);
             CREATE INDEX IF NOT EXISTS idx_explored_player ON explored_edges(player_id);
+            CREATE INDEX IF NOT EXISTS idx_known_player ON known_sectors(player_id);
             CREATE INDEX IF NOT EXISTS idx_buildings_player ON buildings(player_id);
             CREATE INDEX IF NOT EXISTS idx_research_player ON research(player_id);
             CREATE INDEX IF NOT EXISTS idx_build_queue_player ON build_queue(player_id);
@@ -268,6 +278,10 @@ impl Database {
         // Columns added after release — migrate old worlds in place.
         Self::ensure_column(&conn, "sectors_modified", "site_looted_tick", "INTEGER")?;
         Self::ensure_column(&conn, "sectors_modified", "site_ambush_bumps", "INTEGER DEFAULT 0")?;
+        Self::ensure_column(&conn, "sectors_modified", "salvage_metal", "REAL")?;
+        Self::ensure_column(&conn, "sectors_modified", "salvage_crystal", "REAL")?;
+        Self::ensure_column(&conn, "sectors_modified", "salvage_deut", "REAL")?;
+        Self::ensure_column(&conn, "sectors_modified", "salvage_despawn_tick", "INTEGER")?;
         Self::ensure_column(&conn, "fleets", "harvest_resource", "TEXT DEFAULT 'auto'")?;
         Self::ensure_column(&conn, "players", "token_hash", "BLOB")?;
 
@@ -557,8 +571,9 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO sectors_modified (q, r, metal_density, crystal_density, deut_density,
              metal_harvested, crystal_harvested, deut_harvested, npc_cleared_tick,
-             site_looted_tick, site_ambush_bumps)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             site_looted_tick, site_ambush_bumps,
+             salvage_metal, salvage_crystal, salvage_deut, salvage_despawn_tick)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 q as i64,
                 r as i64,
@@ -571,6 +586,10 @@ impl Database {
                 ov.npc_cleared_tick.map(|t| t as i64),
                 ov.site_looted_tick.map(|t| t as i64),
                 ov.site_ambush_bumps as i64,
+                ov.salvage.map(|r| r.metal as f64),
+                ov.salvage.map(|r| r.crystal as f64),
+                ov.salvage.map(|r| r.deuterium as f64),
+                ov.salvage_despawn_tick.map(|t| t as i64),
             ],
         )?;
         Ok(())
@@ -581,7 +600,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT q, r, metal_density, crystal_density, deut_density,
                     metal_harvested, crystal_harvested, deut_harvested,
-                    npc_cleared_tick, site_looted_tick, site_ambush_bumps
+                    npc_cleared_tick, site_looted_tick, site_ambush_bumps,
+                    salvage_metal, salvage_crystal, salvage_deut, salvage_despawn_tick
              FROM sectors_modified",
         )?;
 
@@ -599,11 +619,15 @@ impl Database {
                 row.get::<_, Option<i64>>(8)?,
                 row.get::<_, Option<i64>>(9)?,
                 row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<f64>>(11)?,
+                row.get::<_, Option<f64>>(12)?,
+                row.get::<_, Option<f64>>(13)?,
+                row.get::<_, Option<i64>>(14)?,
             ))
         })?;
 
         for row_result in rows {
-            let (q, r, md, cd, dd, mh, ch, dh, nct, slt, sab) = row_result?;
+            let (q, r, md, cd, dd, mh, ch, dh, nct, slt, sab, sm, sc, sd, sdt) = row_result?;
             overrides.push(SectorOverrideRow {
                 q: q as i16,
                 r: r as i16,
@@ -614,8 +638,12 @@ impl Database {
                     metal_harvested: stored_to_float(mh),
                     crystal_harvested: stored_to_float(ch),
                     deut_harvested: stored_to_float(dh),
-                    salvage: None,
-                    salvage_despawn_tick: None,
+                    salvage: sm.map(|m| Resources {
+                        metal: m as f32,
+                        crystal: sc.unwrap_or(0.0) as f32,
+                        deuterium: sd.unwrap_or(0.0) as f32,
+                    }),
+                    salvage_despawn_tick: sdt.map(|t| t as u64),
                     npc_cleared_tick: nct.map(|t| t as u64),
                     site_looted_tick: slt.map(|t| t as u64),
                     site_ambush_bumps: sab.unwrap_or(0).clamp(0, 255) as u8,
@@ -722,6 +750,60 @@ impl Database {
             Ok((row.get::<_, i64>(0)? as u64, Hex { q: row.get::<_, i64>(1)? as i16, r: row.get::<_, i64>(2)? as i16 }))
         })?;
         rows.collect()
+    }
+
+    // ── Known Sectors ─────────────────────────────────────────────
+
+    pub fn save_known_sector(&self, row: &KnownRow) -> Result<(), rusqlite::Error> {
+        let observed = serde_json::to_string(&row.state)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO known_sectors (player_id, q, r, last_seen, observed)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                row.player_id as i64,
+                row.sector.q as i64,
+                row.sector.r as i64,
+                row.last_seen as i64,
+                observed,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every player's chart. Rows that no longer parse (written by an older
+    /// protocol) are skipped; the sector is simply re-learned when next seen.
+    pub fn load_known_sectors(&self) -> Result<Vec<KnownRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT player_id, q, r, last_seen, observed FROM known_sectors")?;
+        let rows = stmt.query_map(params![], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (pid, q, r, last_seen, observed) = row?;
+            match serde_json::from_str::<SectorState>(&observed) {
+                Ok(mut state) => {
+                    state.last_seen = last_seen as u64;
+                    state.live = false;
+                    out.push(KnownRow {
+                        player_id: pid as u64,
+                        sector: Hex { q: q as i16, r: r as i16 },
+                        last_seen: last_seen as u64,
+                        state,
+                    });
+                }
+                Err(e) => warn!("Skipping unreadable known sector ({q},{r}) of player {pid}: {e}"),
+            }
+        }
+        Ok(out)
     }
 
     // ── Buildings / Research / Queue ──────────────────────────────
@@ -1027,6 +1109,15 @@ pub struct ExploredEdge {
     pub tick: u64,
 }
 
+/// One sector of one player's chart.
+#[derive(Debug, Clone)]
+pub struct KnownRow {
+    pub player_id: u64,
+    pub sector: Hex,
+    pub last_seen: u64,
+    pub state: SectorState,
+}
+
 /// A snapshot of everything that changed since the previous batch. Rows are
 /// whole-row upserts, so replaying batches in order is idempotent.
 #[derive(Debug, Default)]
@@ -1040,6 +1131,7 @@ pub struct PersistBatch {
     pub deleted_policies: Vec<u64>,
     pub sectors: Vec<(Hex, SectorOverride)>,
     pub explored_edges: Vec<ExploredEdge>,
+    pub known_sectors: Vec<KnownRow>,
 }
 
 impl Database {
@@ -1078,6 +1170,9 @@ impl Database {
         }
         for e in &batch.explored_edges {
             self.save_explored_edge(e.player_id, e.from, e.to, e.tick)?;
+        }
+        for row in &batch.known_sectors {
+            self.save_known_sector(row)?;
         }
         Ok(())
     }

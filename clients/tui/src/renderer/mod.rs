@@ -261,33 +261,53 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
     use iac_shared::protocol::EventKind;
     match &event.kind {
         EventKind::CombatStarted(e) => {
-            format!(" T{}: Combat at [{},{}]\n", event.tick, e.sector.q, e.sector.r)
+            let whose = if e.mine { "your".to_string() } else { format!("{}'s", e.owner) };
+            format!(
+                " T{}: Combat at [{},{}]: {} F{} vs hostile {}\n",
+                event.tick, e.sector.q, e.sector.r, whose, e.player_fleet_id, e.enemy_fleet_id
+            )
         }
         EventKind::CombatEnded(e) => {
-            let result = if e.player_victory { "WON" } else { "LOST" };
-            format!(" T{}: Combat {} at [{},{}]\n", event.tick, result, e.sector.q, e.sector.r)
+            let result = match (e.mine, e.player_victory) {
+                (true, true) => "WON",
+                (true, false) => "LOST",
+                (false, true) => "won by others",
+                (false, false) => "lost by others",
+            };
+            let mut line = format!(" T{}: Combat {} at [{},{}]", event.tick, result, e.sector.q, e.sector.r);
+            if let Some(s) = e.salvage {
+                line.push_str(&format!(", wreckage {}", res_short(&s)));
+            }
+            line.push('\n');
+            line
         }
         EventKind::SectorEntered(e) => {
             format!(" T{}: Entered [{},{}]\n", event.tick, e.sector.q, e.sector.r)
         }
         EventKind::ResourceHarvested(e) => {
-            let res_label = match e.resource_type {
-                iac_shared::protocol::HarvestResource::Metal => "Metal",
-                iac_shared::protocol::HarvestResource::Crystal => "Crystal",
-                iac_shared::protocol::HarvestResource::Deuterium => "Deuterium",
-                iac_shared::protocol::HarvestResource::Auto => "Auto",
-            };
-            format!(" T{}: Harvested {:.1} {}\n", event.tick, e.amount, res_label)
+            format!(" T{}: F{} harvested {} over {}s\n", event.tick, e.fleet_id, res_short(&e.resources), e.ticks)
         }
         EventKind::ShipDestroyed(e) => {
-            format!(" T{}: {} destroyed\n", event.tick, e.ship_class.label())
+            let who = e.owner.as_deref().map_or("hostile".to_string(), |o| if e.mine { "your".to_string() } else { format!("{o}'s") });
+            format!(" T{}: {} {} destroyed\n", event.tick, who, e.ship_class.label())
         }
         EventKind::CombatRound(e) => {
-            format!(" T{}: Hit for {:.0} dmg ({:.0} absorbed)\n", event.tick, e.hull_damage, e.shield_absorbed)
+            format!(" T{}: F{} hit F{} for {:.0} dmg ({:.0} absorbed)\n", event.tick, e.attacker_fleet_id, e.target_fleet_id, e.hull_damage, e.shield_absorbed)
         }
         EventKind::FleetDestroyed(e) => {
-            let who = if e.is_npc { "Enemy" } else { "Your" };
-            format!(" T{}: {} fleet destroyed!\n", event.tick, who)
+            if e.mine {
+                format!(" T{}: !! YOUR FLEET F{} DESTROYED at [{},{}] !!\n", event.tick, e.fleet_id, e.sector.q, e.sector.r)
+            } else if e.is_npc {
+                format!(
+                    " T{}: Hostile fleet {} destroyed at [{},{}], wreckage {}\n",
+                    event.tick, e.fleet_id, e.sector.q, e.sector.r, res_short(&e.salvage)
+                )
+            } else {
+                format!(
+                    " T{}: {}'s fleet F{} destroyed at [{},{}]\n",
+                    event.tick, e.owner.as_deref().unwrap_or("?"), e.fleet_id, e.sector.q, e.sector.r
+                )
+            }
         }
         EventKind::BuildingCompleted(e) => {
             format!(" T{}: {} upgraded to Lv{}\n", event.tick, e.building_type.label(), e.new_level)
@@ -299,8 +319,15 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             format!(" T{}: {} built\n", event.tick, e.ship_class.label())
         }
         EventKind::SalvageCollected(e) => {
-            let total = e.resources.metal + e.resources.crystal + e.resources.deuterium;
-            format!(" T{}: Salvaged {:.0} resources\n", event.tick, total)
+            let mut line = format!(" T{}: F{} salvaged {}", event.tick, e.fleet_id, res_short(&e.resources));
+            if let Some(left) = e.remaining {
+                line.push_str(&format!(", {} left behind", res_short(&left)));
+            }
+            line.push('\n');
+            line
+        }
+        EventKind::SalvageDespawned(e) => {
+            format!(" T{}: Wreckage at [{},{}] drifted away ({})\n", event.tick, e.sector.q, e.sector.r, res_short(&e.resources))
         }
         EventKind::FleetArrived(e) => {
             format!(" T{}: Fleet arrived at [{},{}]\n", event.tick, e.sector.q, e.sector.r)
@@ -379,13 +406,20 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
 pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
     use iac_shared::protocol::EventKind;
     match &event.kind {
-        EventKind::CombatStarted(_)
-        | EventKind::CombatRound(_)
-        | EventKind::RaidIncoming(_) => RED_ALERT,
-        EventKind::ShipDestroyed(e) if !e.is_npc => RED_ALERT,
-        EventKind::FleetDestroyed(e) if !e.is_npc => RED_ALERT,
-        EventKind::ShipDestroyed(_) | EventKind::FleetDestroyed(_) => GREEN_GOOD,
-        EventKind::CombatEnded(e) => if e.player_victory { GREEN_GOOD } else { RED_ALERT },
+        EventKind::CombatStarted(e) => if e.mine { RED_ALERT } else { AMBER_DIM },
+        EventKind::CombatRound(e) => if e.mine { RED_ALERT } else { AMBER_DIM },
+        EventKind::RaidIncoming(_) => RED_ALERT,
+        EventKind::ShipDestroyed(e) if e.mine => RED_ALERT,
+        EventKind::FleetDestroyed(e) if e.mine => RED_ALERT,
+        EventKind::ShipDestroyed(e) if e.is_npc => GREEN_GOOD,
+        EventKind::FleetDestroyed(e) if e.is_npc => GREEN_GOOD,
+        EventKind::ShipDestroyed(_) | EventKind::FleetDestroyed(_) => AMBER_DIM,
+        EventKind::CombatEnded(e) => match (e.mine, e.player_victory) {
+            (true, true) => GREEN_GOOD,
+            (true, false) => RED_ALERT,
+            (false, _) => AMBER_DIM,
+        },
+        EventKind::SalvageDespawned(_) => AMBER,
         EventKind::RaidResolved(e) => if e.defended { GREEN_GOOD } else { RED_ALERT },
         EventKind::ResourceHarvested(_)
         | EventKind::SalvageCollected(_)
@@ -404,6 +438,16 @@ pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
             iac_shared::protocol::AlertLevel::Critical => RED_ALERT,
         },
     }
+}
+
+/// "60M 15C 9D": the nonzero parts of a resource bundle.
+fn res_short(r: &iac_shared::Resources) -> String {
+    let parts: Vec<String> = [(r.metal, "M"), (r.crystal, "C"), (r.deuterium, "D")]
+        .iter()
+        .filter(|(v, _)| *v > 0.0)
+        .map(|(v, l)| format!("{v:.0}{l}"))
+        .collect();
+    if parts.is_empty() { "nothing".to_string() } else { parts.join(" ") }
 }
 
 /// Render the recent event log as styled lines, newest first.

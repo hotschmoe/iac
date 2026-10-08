@@ -233,7 +233,10 @@ pub struct AuthResult {
 }
 
 /// Per-tick update. `player`, `homeworld_update`, `sector_updates` and
-/// `events` are optional and omitted when there is nothing to say. `fleets`
+/// `events` are optional and omitted when there is nothing to say.
+/// `sector_updates` holds every live sector (current this tick) plus, once,
+/// each sector that stopped being live this tick (`live: false`, so the
+/// client knows to dim it). Stale sectors are not repeated after that. `fleets`
 /// is not optional: it is the complete, authoritative list of the player's
 /// fleets, sent whole every tick (like `GameState.fleets`), so a client
 /// replaces its list wholesale. A fleet missing from the list no longer
@@ -252,6 +255,12 @@ pub struct TickUpdate {
     pub events: Option<Vec<GameEvent>>,
 }
 
+/// Full snapshot, sent on login and on `request_full_state`.
+///
+/// `known_sectors` is the player's whole chart: every sector the player has
+/// ever had eyes on (fleet present, sensor array, active scan), not only the
+/// ones with fresh intel. Entries with `live: true` are current; the rest
+/// carry what was last observed and the tick it was observed (`last_seen`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub tick: u64,
@@ -322,25 +331,46 @@ pub struct ShipState {
     pub weapon_power: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One sector as the player knows it.
+///
+/// `live: true` means the server is watching the sector this tick (a fleet
+/// is there, the sensor array covers it, or a scan has not expired) and every
+/// field is current. `live: false` is chart memory: `resources`, `hostiles`,
+/// `salvage` and `site` are what was last observed at tick `last_seen` and
+/// may have changed since (a wreck despawns, a hostile moves, a derelict is
+/// looted). `terrain` and `connections` never change. `player_fleets` is
+/// only ever sent for live sectors; other empires' positions are not
+/// remembered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SectorState {
     pub location: Hex,
     pub terrain: TerrainType,
     pub resources: SectorResources,
     pub connections: Vec<Hex>,
+    /// Hostile fleets. `id` is the fleet id to pass to `attack`: it is stable
+    /// whether or not the fleet has materialised yet, and it is the same id
+    /// that later appears as `enemy_fleet_id` in `CombatStarted`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub hostiles: Option<Vec<NpcFleetInfo>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub player_fleets: Option<Vec<FleetBrief>>,
+    /// Collectible wreckage pile (what `collect_salvage` would take).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage: Option<Resources>,
+    /// Tick the pile despawns if nobody collects it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub salvage_despawn_tick: Option<u64>,
     /// A boardable derelict hulk drifting in this sector.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub site: Option<SiteBrief>,
+    /// Tick this sector was last observed; the current tick when `live`.
+    pub last_seen: u64,
+    /// See the struct docs.
+    pub live: bool,
 }
 
 /// What a fleet on-site can tell about a derelict before boarding.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SiteBrief {
     pub tier: u8,
     /// Rough boarding risk read: "quiet" / "uneasy" / "hot".
@@ -365,28 +395,28 @@ impl SiteRisk {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SectorResources {
     pub metal: Density,
     pub crystal: Density,
     pub deuterium: Density,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NpcFleetInfo {
     pub id: u64,
     pub ships: Vec<NpcShipInfo>,
     pub behavior: NpcBehavior,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NpcShipInfo {
     #[serde(rename = "class")]
     pub ship_class: ShipClass,
     pub count: u16,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NpcBehavior {
     Passive,
     Patrol,
@@ -394,7 +424,7 @@ pub enum NpcBehavior {
     Swarm,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FleetBrief {
     pub id: u64,
     pub owner_name: String,
@@ -403,7 +433,7 @@ pub struct FleetBrief {
     pub ship_classes: ShipClassCounts,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ShipClassCounts {
     pub scout: u16,
     pub corvette: u16,
@@ -668,6 +698,17 @@ pub struct ResearchItem {
 }
 
 // ── Game Events ───────────────────────────────────────────────────
+//
+// Scoping. A player only receives events that concern them: their own
+// fleets, homeworld and queues, plus combat and loss detail for fights in
+// any sector where they have a fleet or their homeworld. Other empires'
+// fights elsewhere are not reported at all.
+//
+// Ownership. Combat and loss events name the empire that owns each fleet
+// (`owner`, `None` for an NPC; empire names are public) and carry `mine`,
+// computed per recipient: true when the event involves one of the
+// receiver's own fleets. A player can therefore always tell their own
+// losses from a fight they merely witnessed.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameEvent {
@@ -699,6 +740,7 @@ pub enum EventKind {
     SiteAmbush(SiteAmbushEvent),
     PolicyAction(PolicyActionEvent),
     Alert(AlertEvent),
+    SalvageDespawned(SalvageDespawnedEvent),
 }
 
 /// A boarding party is aboard the derelict; loot (or trouble) at end_tick.
@@ -743,14 +785,25 @@ pub struct PolicyActionEvent {
     pub reason: String,
 }
 
+/// One shot in a fight.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatRoundEvent {
+    pub sector: Hex,
+    pub attacker_fleet_id: u64,
+    /// Empire owning the attacking fleet; `None` for an NPC.
+    pub attacker_owner: Option<String>,
     pub attacker_ship_id: u64,
+    pub target_fleet_id: u64,
+    /// Empire owning the target fleet; `None` for an NPC.
+    pub target_owner: Option<String>,
     pub target_ship_id: u64,
     pub damage: f32,
     pub shield_absorbed: f32,
     pub hull_damage: f32,
     pub rapid_fire: bool,
+    /// One of the two fleets is the receiver's.
+    #[serde(default)]
+    pub mine: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -760,20 +813,41 @@ pub struct ShipDestroyedEvent {
     pub ship_class: ShipClass,
     pub owner_fleet_id: u64,
     pub is_npc: bool,
+    pub sector: Hex,
+    /// Empire that owned the ship; `None` for an NPC.
+    pub owner: Option<String>,
+    /// The ship was the receiver's.
+    #[serde(default)]
+    pub mine: bool,
 }
 
+/// Every ship of a fleet is gone. For an NPC fleet killed by players,
+/// `salvage` is the wreckage it left in `sector`: exactly what
+/// `collect_salvage` can take (when several NPC fleets die in one fight the
+/// sector pile is the sum of their events). Player fleets leave no wreckage,
+/// so `salvage` is zero. A destroyed fleet of the receiver's also produces a
+/// `Critical` `Alert`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetDestroyedEvent {
     pub fleet_id: u64,
     pub is_npc: bool,
+    pub sector: Hex,
+    /// Empire that owned the fleet; `None` for an NPC.
+    pub owner: Option<String>,
+    /// The fleet was the receiver's.
+    #[serde(default)]
+    pub mine: bool,
     pub salvage: Resources,
 }
 
+/// What a harvesting fleet took aboard. Aggregated: one event per fleet
+/// every `HARVEST_REPORT_TICKS` ticks (and when harvesting stops) rather
+/// than one per resource per tick; `ticks` is how many ticks it covers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceHarvestedEvent {
     pub fleet_id: u64,
-    pub resource_type: HarvestResource,
-    pub amount: f32,
+    pub resources: Resources,
+    pub ticks: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -783,22 +857,52 @@ pub struct SectorEnteredEvent {
     pub first_visit: bool,
 }
 
+/// `enemy_fleet_id` is the same id the sector view listed under `hostiles`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatStartedEvent {
     pub player_fleet_id: u64,
+    /// Empire owning `player_fleet_id`.
+    pub owner: String,
     pub enemy_fleet_id: u64,
     pub sector: Hex,
+    /// `player_fleet_id` is the receiver's.
+    #[serde(default)]
+    pub mine: bool,
 }
 
+/// `owners` lists the empires that fought. `salvage` is the pile the victory
+/// left in the sector (absent on defeat); it despawns at `salvage_despawn_tick`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatEndedEvent {
     pub sector: Hex,
     pub player_victory: bool,
+    pub owners: Vec<String>,
+    #[serde(default)]
+    pub mine: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub salvage: Option<Resources>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub salvage_despawn_tick: Option<u64>,
 }
 
+/// A fleet scooped wreckage. `resources` is what went into the hold; if the
+/// hold filled first, `remaining` is what is still on the ground (it keeps
+/// its original despawn time). Absent when the pile is gone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SalvageCollectedEvent {
     pub fleet_id: u64,
+    pub sector: Hex,
+    pub resources: Resources,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub remaining: Option<Resources>,
+}
+
+/// A wreckage pile expired uncollected. Sent to players with a fleet or
+/// their homeworld in `sector`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SalvageDespawnedEvent {
+    pub sector: Hex,
+    /// What was lost.
     pub resources: Resources,
 }
 
@@ -892,8 +996,12 @@ pub struct RaidResolvedEvent {
     pub defense_power: f32,
 }
 
+/// A message for the player. `player_id` names the recipient; `None` is a
+/// server-wide notice. Losing a fleet raises a `Critical` alert.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertEvent {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub player_id: Option<u64>,
     pub level: AlertLevel,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]

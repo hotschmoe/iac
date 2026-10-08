@@ -117,6 +117,10 @@ class DemoProvider {
       _reveal(f.location, 2);
     }
     _reveal(_home, 3);
+    // Older charted space beyond sensor range, remembered but not live.
+    for (final h in hexSpiral(_home, 6)) {
+      _sectors.putIfAbsent(h.toKey(), () => _gen(h, live: false));
+    }
     // One hostile patrol next to Alpha, for atmosphere.
     final alpha = _fleets.first.location;
     final next = _sectors[alpha.toKey()]!.connections.first.toKey();
@@ -126,6 +130,8 @@ class DemoProvider {
       terrain: s.terrain,
       resources: s.resources,
       connections: s.connections,
+      lastSeen: s.lastSeen,
+      live: s.live,
       hostiles: const [
         NpcFleetInfo(
           id: 9001,
@@ -150,7 +156,7 @@ class DemoProvider {
     return _hash(lo.toKey(), hi.toKey()) % 7 != 0;
   }
 
-  SectorState _gen(Hex h) {
+  SectorState _gen(Hex h, {bool live = true}) {
     final x = _hash(h.q, h.r);
     final terrain = TerrainType.values[x % 5];
     Density d(int shift) =>
@@ -160,6 +166,8 @@ class DemoProvider {
       terrain: terrain,
       resources: SectorResources(metal: d(3), crystal: d(6), deuterium: d(9)),
       connections: [for (final n in h.neighbors()) if (_edge(h, n)) n],
+      lastSeen: live ? _tick : _tick - 90 - x % 600,
+      live: live,
     );
   }
 
@@ -247,8 +255,8 @@ class DemoProvider {
         kind: _rng.nextBool()
             ? ResourceHarvestedEvent(
                 fleetId: 101,
-                resourceType: HarvestResource.metal,
-                amount: 10.0 + _rng.nextInt(30),
+                resources: Resources(metal: 10.0 + _rng.nextInt(30)),
+                ticks: 10,
               )
             : const AlertEvent(level: AlertLevel.info, message: 'Demo mode: no server connected'),
       ));

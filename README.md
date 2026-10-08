@@ -204,10 +204,25 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   over. `merge` with a fresh fleet from home pools fuel and also rescues it.
   `recall` costs 2x the jump fuel per hex, all or nothing.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
-  chains (corvettes shred scouts…), victors drop salvage.
+  chains (corvettes shred scouts…), victors drop salvage (`FleetDestroyed.salvage`
+  is exactly the pile `collect_salvage` can take; it lasts 60 ticks and a
+  `SalvageDespawned` event says when one expires). You only receive combat
+  events for fights your fleets or homeworld are in, or that happen in a
+  sector where you have a fleet or your homeworld. Each carries `owner`
+  (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
+  `Critical` `Alert`. Hostile ids in a sector view are the ids `attack` and
+  `CombatStarted.enemy_fleet_id` use. `ResourceHarvested` is one event per fleet
+  every 10 ticks (and when harvesting stops).
 - **Scanning** — active `scan` reveals connected sectors (2 hops with a Scout
   in fleet, 1 without) and picks up *signals* one hop farther: rich ore,
-  hostile mass, derelicts, anomalies. Intel stays live for ~2 minutes.
+  hostile mass, derelicts, anomalies. Scan intel is live for ~2 minutes.
+  After that the sector stays on your chart: the server remembers every
+  sector you have had eyes on, and `full_state.known_sectors` returns all of
+  them. Each entry has `live` (true: current this tick; false: remembered) and
+  `last_seen` (tick it was last observed). A stale entry shows ore, hostiles,
+  wreckage and derelict **as last seen**, which may be out of date (wreckage
+  lasts 60 ticks; `salvage_despawn_tick` says when). Tick updates add a
+  sector to `sector_updates` once more when it turns stale.
 - **Derelicts** — dead ships drift in debris fields and empty space beyond
   the shipping lanes (`D` on the map, "derelict transponder" on scans).
   Board one (`explore_site`, 20 ticks) for tiered loot, sometimes a

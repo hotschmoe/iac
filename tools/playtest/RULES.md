@@ -19,10 +19,10 @@ server, no spamming it faster than about one command per second.
 
 ```
 ./play status            empire, queues, fleets, and the sector each fleet sits in
-./play map [radius]      known sectors near your fleets
-./play sector Q R        one known sector in detail
+./play map [radius]      every sector you have seen near your fleets, marked LIVE or STALE <age>
+./play sector Q R        one sector in detail (same LIVE / STALE marking)
 ./play do '<json>'       send one command (JSON, see reference below); prints errors/events
-./play events            events since you last looked
+./play events [--mine]   events since you last looked; --mine hides fights you only witnessed
 ./play wait [5-90]       sleep, then show events (use this to pass time)
 ./play rules             this file
 ```
@@ -55,8 +55,8 @@ can pick up where you left off if your session is restarted.
 | `move` | `fleet_id`, `target:{q,r}` | jump to a connected sector (fuel, cooldown) |
 | `scan` | `fleet_id` | reveal nearby sectors + faint signal contacts; scouts scan farther |
 | `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it) |
-| `attack` | `fleet_id`, `target_fleet_id` | engage an NPC fleet |
-| `collect_salvage` | `fleet_id` | scoop wreckage |
+| `attack` | `fleet_id`, `target_fleet_id` | engage the NPC fleet listed as HOSTILE in your sector (use its id) |
+| `collect_salvage` | `fleet_id` | scoop wreckage (partial if the hold fills; `CargoFull` if it is already full) |
 | `recall` | `fleet_id` | emergency-jump home (2× fuel, hull risk) |
 | `stop` | `fleet_id` | abort a move, harvest, or boarding |
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
@@ -121,10 +121,25 @@ left it returns home and holds rather than wandering between known sectors.
   over. `merge` with a fresh fleet from home pools fuel and also rescues it.
   `recall` costs 2x the jump fuel per hex, all or nothing.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
-  chains (corvettes shred scouts…), victors drop salvage.
+  chains (corvettes shred scouts…), victors drop salvage (`FleetDestroyed.salvage`
+  is exactly the pile `collect_salvage` can take; it lasts 60 ticks and a
+  `SalvageDespawned` event says when one expires). You only receive combat
+  events for fights your fleets or homeworld are in, or that happen in a
+  sector where you have a fleet or your homeworld. Each carries `owner`
+  (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
+  `Critical` `Alert`. Hostile ids in a sector view are the ids `attack` and
+  `CombatStarted.enemy_fleet_id` use. `ResourceHarvested` is one event per fleet
+  every 10 ticks (and when harvesting stops).
 - **Scanning** — active `scan` reveals connected sectors (2 hops with a Scout
   in fleet, 1 without) and picks up *signals* one hop farther: rich ore,
-  hostile mass, derelicts, anomalies. Intel stays live for ~2 minutes.
+  hostile mass, derelicts, anomalies. Scan intel is live for ~2 minutes.
+  After that the sector stays on your chart: the server remembers every
+  sector you have had eyes on, and `full_state.known_sectors` returns all of
+  them. Each entry has `live` (true: current this tick; false: remembered) and
+  `last_seen` (tick it was last observed). A stale entry shows ore, hostiles,
+  wreckage and derelict **as last seen**, which may be out of date (wreckage
+  lasts 60 ticks; `salvage_despawn_tick` says when). Tick updates add a
+  sector to `sector_updates` once more when it turns stale.
 - **Derelicts** — dead ships drift in debris fields and empty space beyond
   the shipping lanes (`D` on the map, "derelict transponder" on scans).
   Board one (`explore_site`, 20 ticks) for tiered loot, sometimes a

@@ -1,0 +1,17 @@
+{
+  "fleet_id": 4,
+  "is_npc": false,
+  "kind": "FleetDestroyed",
+  "mine": true,
+  "owner": "Admiral",
+  "salvage": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "sector": {
+    "q": 5,
+    "r": -5
+  },
+  "tick": 1234
+}

@@ -337,6 +337,54 @@ TUI/headless keep tokens in `~/.config/iac/tokens.json`; the web client uses
 localStorage behind try/catch and re-prompts on refusal. Not done: the
 spec's rate limits and lockout (see `docs/auth_spec.md`, "Implemented subset").
 
+**Known gaps noticed, not changed:** fleet move targets / cooldowns are not
+persisted across restarts. (Sector salvage is now persisted, see below.)
+
+## Events, salvage and chart memory (branch `fix-events-intel`)
+
+From the 2026-10-09 six-agent playtest (`docs/playtests/2026-10-09/`).
+
+**Event scoping.** Combat and loss events now name their `sector` and the
+owning empires (`owner`, `None` = NPC) and the server computes `mine` per
+recipient. A player receives them only if they own a fleet involved or have a
+fleet or their homeworld in that sector, decided from the event alone (the old
+router looked fleets up, which fails once a fleet is reaped). Other empires'
+fights elsewhere are not summarised either: a one-line digest still leaks
+where and when someone fought, and the complaint was noise, not a missing
+feed. A destroyed fleet raises a `Critical` `Alert` for its owner;
+`AlertEvent.player_id` routes alerts (they used to go to everyone). A fleet
+that died mid-fight now reports at once instead of waiting for the fight to
+end (it used to be reaped before the event was sent). `ResourceHarvested` is
+one event per fleet per 10 ticks, flushed when harvesting stops.
+
+**Salvage.** `FleetDestroyed.salvage` was the ship's full cost; the pile is
+`SALVAGE_FRACTION` of it. The event now carries the share it dropped, the
+pile stacks on an uncollected one instead of overwriting it, and
+`CombatEnded` reports the pile and its despawn tick. `collect_salvage` with a
+full hold is `CargoFull` (it used to succeed silently), a partial pickup
+reports `remaining`, and `SalvageDespawned` tells players present when a pile
+expires. Salvage and its despawn tick are persisted (new `sectors_modified`
+columns). Amounts and lifetimes are unchanged.
+
+**Hostile id 0.** A sector's NPC exists as a template until a fleet arrives
+(passive ones never materialise on their own), and the sector view listed that
+template with id 0, while `attack` ignored the id and `CombatStarted`
+reported the real one. Template NPCs now get a stable id,
+`TEMPLATE_NPC_ID_BASE + sector key`, used by the view, `attack` (which now
+rejects ids that name nothing here) and `CombatStarted`. A template NPC whose
+live fleet wandered off is no longer listed twice.
+
+**Chart memory.** `server/src/intel.rs`. Each tick, after the simulation,
+every sector a player can see (fleet present, sensor array, unexpired scan)
+is stored per player with the tick it was last seen; persisted in
+`known_sectors` as the observed `SectorState` JSON (rows that no longer parse
+are skipped and relearned). `full_state.known_sectors` returns the whole
+chart; `SectorState.live` / `last_seen` mark live versus remembered, and a
+tick update repeats a sector once, flagged stale, when it stops being live.
+Other empires' fleet positions are never remembered. Worlds from before this
+change start with an empty chart (the old `explored_edges` have no
+observations to restore).
+
 **Known gaps noticed, not changed:** sector salvage and fleet move targets /
 cooldowns are not persisted across restarts.
 

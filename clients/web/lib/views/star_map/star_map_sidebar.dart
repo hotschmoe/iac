@@ -6,6 +6,7 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
 import '../../theme/amber_theme.dart';
+import 'star_map_painter.dart' show ageLabel;
 import '../../widgets/amber_panel.dart';
 
 class StarMapSidebar extends StatelessWidget {
@@ -22,7 +23,7 @@ class StarMapSidebar extends StatelessWidget {
     return SingleChildScrollView(
       child: Column(
         children: [
-          _cursorPanel(sec, signal),
+          _cursorPanel(sec, signal, state),
           _waypointsPanel(state.waypoints),
           _fleetsPanel(state.fleets, controller.activeFleet),
         ],
@@ -30,7 +31,7 @@ class StarMapSidebar extends StatelessWidget {
     );
   }
 
-  Widget _cursorPanel(proto.SectorState? sec, proto.SignalKind? signal) {
+  Widget _cursorPanel(proto.SectorState? sec, proto.SignalKind? signal, GameState state) {
     final hostiles = sec?.hostiles?.fold<int>(0, (n, h) => n + h.shipCount) ?? 0;
     return AmberPanel(
       title: 'CURSOR',
@@ -42,6 +43,11 @@ class StarMapSidebar extends StatelessWidget {
           LabeledRow(label: 'Dist', value: '${controller.cursorHex.distFromOrigin} from hub', valueColor: Amber.normal),
           const SizedBox(height: 6),
           if (sec != null) ...[
+            LabeledRow(
+              label: 'Intel',
+              value: sec.live ? 'LIVE' : 'CHART, ${ageLabel(state.tick - sec.lastSeen)} old',
+              valueColor: sec.live ? Amber.bright : Amber.dim,
+            ),
             LabeledRow(label: 'Terrain', value: sec.terrain.label, valueColor: Amber.normal),
             LabeledRow(
               label: 'Metal',

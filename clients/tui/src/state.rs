@@ -160,9 +160,6 @@ pub struct ClientState {
     pub raid_eta: Option<u64>,
 
     // Map intel & navigation
-    /// Last tick each known sector streamed an update — live intel vs
-    /// remembered chart.
-    pub sector_seen: HashMap<u32, u64>,
     /// Faint scan contacts remembered on the chart: hex key → (kind, tick).
     pub signal_pings: HashMap<u32, (iac_shared::protocol::SignalKind, u64)>,
     /// Recent scan origins for the expanding-ring flourish: (center, tick).
@@ -177,8 +174,6 @@ pub struct ClientState {
 /// How long a remembered signal ping stays on the chart (matches the
 /// server's scan reveal window).
 pub const SIGNAL_PING_TICKS: u64 = 120;
-/// A sector streamed within this many ticks renders as live intel.
-pub const LIVE_INTEL_TICKS: u64 = 3;
 /// How many ticks the scan ripple animation runs.
 pub const SCAN_RIPPLE_TICKS: u64 = 4;
 
@@ -211,7 +206,6 @@ impl ClientState {
             target_idx: 0,
             ship_build_count: 1,
             raid_eta: None,
-            sector_seen: HashMap::new(),
             signal_pings: HashMap::new(),
             scan_ripples: Vec::new(),
             nav_route: None,
@@ -241,13 +235,6 @@ impl ClientState {
         let tick = self.tick;
         self.signal_pings.retain(|_, (_, t)| tick.saturating_sub(*t) < SIGNAL_PING_TICKS);
         self.scan_ripples.retain(|(_, t)| tick.saturating_sub(*t) <= SCAN_RIPPLE_TICKS);
-    }
-
-    /// True if this sector streamed an update recently (live intel).
-    pub fn sector_is_live(&self, key: u32) -> bool {
-        self.sector_seen.get(&key)
-            .map(|&t| self.tick.saturating_sub(t) <= LIVE_INTEL_TICKS)
-            .unwrap_or(false)
     }
 
     /// Ticks until the forecasted raid arrives, if one is inbound.
@@ -385,8 +372,7 @@ impl ClientState {
                     for sector in sectors {
                         let key = sector.location.to_key();
                         self.known_sectors.insert(key, sector.clone());
-                        self.sector_seen.insert(key, update.tick);
-                        // A streamed sector is hard intel; drop the ping.
+                        // Charted sectors outrank a faint ping.
                         self.signal_pings.remove(&key);
                     }
                 }
@@ -408,7 +394,6 @@ impl ClientState {
                 for sector in &state.known_sectors {
                     let key = sector.location.to_key();
                     self.known_sectors.insert(key, sector.clone());
-                    self.sector_seen.insert(key, state.tick);
                 }
 
                 if let Some(p) = &self.player {
@@ -431,6 +416,7 @@ impl ClientState {
                 self.event_log.push(GameEvent {
                     tick: self.tick,
                     kind: EventKind::Alert(iac_shared::protocol::AlertEvent {
+                        player_id: None,
                         level: iac_shared::protocol::AlertLevel::Warning,
                         message: err.message.clone(),
                         fleet_id: None,

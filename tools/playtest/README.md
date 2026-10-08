@@ -10,6 +10,8 @@ tools/playtest/stop.sh            # add --keep-world to keep the database
 
 - Each player gets `run/players/<name>/` with a `./play` wrapper (status, map,
   sector, do, events, wait, rules) backed by a long-lived headless client.
+  `map` and `sector` show every sector the player has ever seen, marked LIVE
+  or STALE with its age; `events --mine` drops fights the player only witnessed.
 - `grok` and `pi` players run under `supervise.sh`, which relaunches them with a
   resume prompt until the clock runs out and forces a feedback run at the end.
 - `manual` players are driven by you, e.g. Claude subagents told to `cd` into
