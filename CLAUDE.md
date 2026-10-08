@@ -133,59 +133,60 @@ we love you, Claude! do your best today
 
 ### Project: In Amber Clad (IAC)
 
-Multiplayer space strategy game played through an amber terminal (TUI). Humans play via a retro amber CRT interface; LLM agents connect over WebSocket and play via JSON. Both are first-class citizens.
+Multiplayer space strategy game played through an amber terminal (TUI). Humans play via a retro amber CRT interface; LLM agents connect over WebSocket and play via JSON. Both are first-class citizens. The live implementation is Rust; the Zig, full-stack Dart and Numen versions are on `archive/*` branches (see README.md).
 
-### Toolchain
+### Layout
 
-- **Language**: Zig v0.15.2
-- **TUI**: zithril (wraps rich_zig internally)
-- **Database**: zqlite (bundles SQLite amalgamation)
-- **Networking**: webzocket (WebSocket, client-server, server is authoritative)
+| Path | What |
+|---|---|
+| `shared/` | `iac-shared`: protocol, constants, scaling, hex math, worldgen |
+| `server/` | `iac-server`: engine, combat, network, SQLite (tests in `server/tests/smoke.rs`) |
+| `clients/tui/` | `iac-client`: ratatui TUI, `--headless` NDJSON mode |
+| `clients/web/` | Flutter web client; still speaks the old Dart-server protocol (local `packages/iac_shared`), to be rewired to the Rust wire protocol |
+| `docs/` | Design docs; `PORTING.md` and `journal.md` are the Rust dev log |
+| `SPEC.md` | Original technical spec (Zig era; the Rust wire protocol has intentionally diverged) |
+
+### Commands
+
+```sh
+cargo build --workspace
+cargo test --workspace            # unit + end-to-end smoke tests
+cargo clippy --workspace
+cargo run -p iac-server           # port 7777, iac_world.db
+cargo run -p iac-client -- --name Admiral
+cargo run -p iac-client -- --headless --name Agent   # NDJSON on stdin/stdout
+
+cd clients/web && flutter pub get && flutter analyze
+```
+
+Flutter lives at `~/development/flutter/bin` on the dev machine.
 
 ### Architecture
 
 ```
-Server (Zig)          Clients
-  Tick loop (1Hz) --> WebSocket --> TUI Client (zithril/rich_zig)
-  SQLite (state)  --> WebSocket --> LLM/CLI Client (JSON)
+Server (Rust, tokio)       Clients
+  Tick loop (1Hz) --> WebSocket JSON --> TUI client (ratatui)
+  SQLite (state)  --> WebSocket JSON --> headless/LLM client (NDJSON)
+                  --> WebSocket JSON --> Flutter web client (in progress)
 ```
 
-- Server runs authoritative simulation at 1 tick/second
-- State deltas broadcast to clients each tick
-- Only modified sectors persisted; unvisited sectors generated from seed
+- Server runs the authoritative simulation at 1 tick/second; clients send commands and receive `full_state` / `tick_update`.
+- Wire protocol types are defined once in `shared/` and used by server and TUI; the Flutter client must be kept in sync by hand.
+- Only modified sectors persisted; unvisited sectors generated from the world seed.
 
 ### Key Concepts
 
-- **Hex grid**: Axial coords (q,r), flat-top. Infinite, procedurally generated from `hash(world_seed, q, r)`
+- **Hex grid**: Axial coords (q,r), infinite, procedurally generated from `hash(world_seed, q, r)`
 - **Zones**: Central Hub (0), Inner Ring (1-8), Outer Ring (9-20), The Wandering (21+)
 - **Edge pruning**: Connectivity decreases with distance, creating maze-like deep space
 - **Resources**: Metal, Crystal, Deuterium (passive homeworld production + active harvesting)
-- **Combat**: Fleet-based, stochastic, one round per tick. OGame-style rapid-fire mechanic
-- **NPCs**: Morning Light Mountain (MLM) faction, scales with distance from center
-- **Auto-action policies**: Condition/action rule tables evaluated server-side each tick
-
-### Current Milestone: M4 (Deep Systems)
-
-M1-M3 complete. M4: Loot system (salvage, components, data fragments), Morning Light Mountain faction scaling, auto-action policy system, LLM agent reference implementation.
-
-### Dependencies
-
-All dependencies are **our own upstream libraries** (github.com/hotschmoe). If you encounter bugs, limitations, or API improvements needed in a dependency, do NOT work around them silently. Instead:
-
-1. Tell me what the issue is and which upstream library is affected
-2. Open a GitHub issue on that project (e.g. `gh issue create -R hotschmoe/zithril ...`)
-3. We fix upstream, bump the dependency, and keep IAC clean
-
-| Import       | Repo                              | Used By        |
-|--------------|-----------------------------------|----------------|
-| `zithril`    | hotschmoe/zithril                 | client         |
-| `webzocket`  | hotschmoe/webzocket               | server, client |
-| `zqlite`     | hotschmoe/zqlite                  | server         |
-
-Note: `rich_zig` (hotschmoe/rich_zig) is a transitive dependency of zithril -- use everything through zithril, not rich_zig directly.
+- **Combat**: Fleet-based, stochastic rounds per tick, OGame-style rapid-fire
+- **Standing orders**: Per-fleet policy presets run by the server (`policy_update`)
+- **Derelicts, raids, scanning**: see the "The game" section of README.md
 
 ### Key Files
 
-- `README.md` -- game design vision and overview
-- `SPEC.md` -- full technical specification (world model, combat, economy, networking, DB schema)
-
+- `README.md` -- overview, quick start, headless/agent protocol
+- `SPEC.md` -- original technical specification
+- `docs/journal.md` -- Rust development log and decisions
+- `docs/data_architecture.md`, `docs/auth_spec.md` -- persistence and auth design
