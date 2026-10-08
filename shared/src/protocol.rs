@@ -467,8 +467,16 @@ pub fn building_requirements(levels: &BuildingLevels, b: BuildingType) -> Vec<Re
 /// Prerequisites for researching `t`, including the Research Lab the server
 /// requires before any research.
 pub fn research_requirements(buildings: &BuildingLevels, research: &ResearchLevels, t: ResearchType) -> Vec<Requirement> {
-    let mut requires = vec![building_req(buildings, BuildingType::ResearchLab, 1)];
-    for p in scaling::research_prerequisites(t).into_iter().flatten() {
+    let prereqs: Vec<_> = scaling::research_prerequisites(t).into_iter().flatten().collect();
+    // Every tech needs a lab; skip the generic entry when the tech names a lab level itself.
+    let names_lab = prereqs.iter().any(|p| {
+        matches!(p, ResearchPrereqKind::Building(b) if b.building == BuildingType::ResearchLab)
+    });
+    let mut requires = Vec::new();
+    if !names_lab {
+        requires.push(building_req(buildings, BuildingType::ResearchLab, 1));
+    }
+    for p in prereqs {
         requires.push(match p {
             ResearchPrereqKind::Building(b) => building_req(buildings, b.building, b.level),
             ResearchPrereqKind::Research { tech, level } => tech_req(research, tech, level),
@@ -969,6 +977,18 @@ mod catalog_tests {
         let cat = HomeworldCatalog::new(&b, &r);
         let frigate = cat.research.iter().find(|o| o.tech == ResearchType::FrigateTech).unwrap();
         assert!(frigate.requires.iter().all(|q| q.met));
+    }
+
+    #[test]
+    fn research_lists_one_lab_requirement_at_the_highest_level() {
+        let (b, r) = fresh();
+        let cat = HomeworldCatalog::new(&b, &r);
+        for opt in &cat.research {
+            let labs: Vec<u8> = opt.requires.iter().filter(|q| q.name == "Research Lab").map(|q| q.need).collect();
+            assert_eq!(labs.len(), 1, "{:?} lists the lab {} times", opt.tech, labs.len());
+        }
+        let nav = cat.research.iter().find(|o| o.tech == ResearchType::Navigation).unwrap();
+        assert!(nav.requires.iter().any(|q| q.name == "Research Lab" && q.need == 2));
     }
 
     #[test]

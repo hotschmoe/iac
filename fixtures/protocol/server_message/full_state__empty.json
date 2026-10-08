@@ -262,12 +262,6 @@
               "have": 0,
               "met": false,
               "name": "Research Lab",
-              "need": 1
-            },
-            {
-              "have": 0,
-              "met": false,
-              "name": "Research Lab",
               "need": 3
             }
           ],
@@ -286,12 +280,6 @@
             "ticks": 90
           },
           "requires": [
-            {
-              "have": 0,
-              "met": false,
-              "name": "Research Lab",
-              "need": 1
-            },
             {
               "have": 0,
               "met": false,
@@ -318,12 +306,6 @@
               "have": 0,
               "met": false,
               "name": "Research Lab",
-              "need": 1
-            },
-            {
-              "have": 0,
-              "met": false,
-              "name": "Research Lab",
               "need": 2
             }
           ],
@@ -342,12 +324,6 @@
             "ticks": 90
           },
           "requires": [
-            {
-              "have": 0,
-              "met": false,
-              "name": "Research Lab",
-              "need": 1
-            },
             {
               "have": 0,
               "met": false,
@@ -494,12 +470,6 @@
             "ticks": 90
           },
           "requires": [
-            {
-              "have": 0,
-              "met": false,
-              "name": "Research Lab",
-              "need": 1
-            },
             {
               "have": 0,
               "met": false,
