@@ -7,8 +7,8 @@ use ratatui::{
     Frame,
 };
 
-use iac_shared::constants::ShipClass;
-use iac_shared::scaling::{self, BuildingLevels, BuildingType, ResearchLevels, ResearchType};
+use iac_shared::constants::Resources;
+use iac_shared::protocol::{HomeworldState, Requirement};
 
 use crate::state::{ClientState, HomeworldTab};
 use super::{
@@ -52,9 +52,6 @@ fn render_card_grid(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         }
     };
 
-    let bldg_levels = ClientState::building_levels_from_slice(&hw.buildings);
-    let res_levels = ClientState::research_levels_from_slice(&hw.research);
-
     let count = state.homeworld_tab.item_count();
     let num_rows = count.div_ceil(2);
     let card_height = if num_rows > 0 && area.height >= num_rows as u16 {
@@ -74,167 +71,77 @@ fn render_card_grid(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         let left_idx = ri * 2;
         let right_idx = ri * 2 + 1;
 
-        render_card(frame, &cols[0], state, left_idx, &bldg_levels, &res_levels);
+        render_card(frame, &cols[0], state, hw, left_idx);
         if right_idx < count {
-            render_card(frame, &cols[1], state, right_idx, &bldg_levels, &res_levels);
+            render_card(frame, &cols[1], state, hw, right_idx);
         }
     }
 }
 
-fn render_card(
-    frame: &mut Frame<'_>,
-    area: &Rect,
-    state: &ClientState,
-    idx: usize,
-    bldg_levels: &BuildingLevels,
-    res_levels: &ResearchLevels,
-) {
+fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &HomeworldState, idx: usize) {
     let is_selected = state.homeworld_cursor == idx;
+    let catalog = &hw.catalog;
     let mut content = String::new();
-    let mut maxed = false;
+    let maxed;
     // (cost, build time) for the next level/unit; colored by affordability.
-    let mut cost_info: Option<(iac_shared::constants::Resources, u64)> = None;
+    let cost_info: Option<(Resources, u64)>;
+    let title: String;
+    let requires: &[Requirement];
 
     match state.homeworld_tab {
         HomeworldTab::Buildings => {
-            let bt = match BuildingType::from_usize(idx) {
-                Some(b) => b,
-                None => return,
-            };
-            let level = bldg_levels.get(bt);
-            let locked = !scaling::building_prerequisites_met(bt, bldg_levels);
-            let title = format!(" {} ", bt.label());
-
-            if level >= scaling::MAX_BUILDING_LEVEL {
-                content.push_str(&format!(" MAX (Lv.{})\n", level));
-                maxed = true;
+            let Some(o) = catalog.buildings.get(idx) else { return };
+            title = format!(" {} ", o.building_type.label());
+            requires = &o.requires;
+            maxed = o.next.is_none();
+            if maxed {
+                content.push_str(&format!(" MAX (Lv.{})\n", o.level));
             } else {
-                content.push_str(&format!(" Level {}\n", level));
+                content.push_str(&format!(" Level {}\n", o.level));
             }
-
-            if let Some(prereq) = scaling::building_prerequisites(bt) {
-                let met_str = if bldg_levels.get(prereq.building) >= prereq.level {
-                    "[OK]"
-                } else {
-                    "[--]"
-                };
-                content.push_str(&format!(
-                    " Need: {} >={} {}\n",
-                    prereq.building.label(),
-                    prereq.level,
-                    met_str,
-                ));
-            }
-
-            if level < scaling::MAX_BUILDING_LEVEL {
-                cost_info = Some((
-                    scaling::building_cost(bt, level + 1),
-                    scaling::building_time(bt, level + 1),
-                ));
-            }
-
-            render_card_box(frame, *area, state, &title, &content, cost_info, is_selected, locked, maxed);
+            cost_info = o.next.map(|n| (n.cost, n.ticks));
         }
         HomeworldTab::Shipyard => {
-            let classes = ShipClass::ALL;
-            if idx >= classes.len() {
-                return;
-            }
-            let sc = classes[idx];
-            let locked = !scaling::ship_class_unlocked(sc, res_levels);
+            let Some(o) = catalog.ships.get(idx) else { return };
             let batch = state.ship_build_count;
-            let title = if batch > 1 {
-                format!(" {} x{} ", sc.label(), batch)
+            title = if batch > 1 {
+                format!(" {} x{} ", o.ship_class.label(), batch)
             } else {
-                format!(" {} ", sc.label())
+                format!(" {} ", o.ship_class.label())
             };
-            let unlocked = !locked;
-
-            if unlocked {
+            requires = &o.requires;
+            if requires.iter().all(|r| r.met) {
                 if batch > 1 {
-                    content.push_str(&format!(" READY — Enter queues {}\n", batch));
+                    content.push_str(&format!(" READY - Enter queues {}\n", batch));
                 } else {
                     content.push_str(" READY\n");
                 }
             } else {
                 content.push_str(" LOCKED\n");
-                let req_label = match sc {
-                    ShipClass::Corvette => "Corvette Tech >=1",
-                    ShipClass::Frigate => "Frigate Tech >=1",
-                    ShipClass::Cruiser => "Cruiser Tech >=1",
-                    ShipClass::Hauler => "Hauler Tech >=1",
-                    ShipClass::Scout => "",
-                };
-                if !req_label.is_empty() {
-                    content.push_str(&format!(" Need: {}\n", req_label));
-                }
             }
-
-            let cost = sc.build_cost().scale(batch as f32);
-            let sy_level = bldg_levels.get(BuildingType::Shipyard);
-            let ticks = scaling::ship_build_time(sc, sy_level) * batch as u64;
-            cost_info = Some((cost, ticks));
-
-            render_card_box(frame, *area, state, &title, &content, cost_info, is_selected, locked, false);
+            maxed = false;
+            cost_info = Some((o.unit_cost.scale(batch as f32), o.ticks_per_ship * batch as u64));
         }
         HomeworldTab::Research => {
-            let rt = match ResearchType::from_usize(idx) {
-                Some(r) => r,
-                None => return,
-            };
-            let level = res_levels.get(rt);
-            let max_level = scaling::research_max_level(rt);
-            let met = scaling::research_prerequisites_met(rt, bldg_levels, res_levels);
-            let locked = !met;
-            let title = format!(" {} ", rt.label());
-            maxed = level >= max_level;
-
+            let Some(o) = catalog.research.get(idx) else { return };
+            title = format!(" {} ", o.tech.label());
+            requires = &o.requires;
+            maxed = o.next.is_none();
             if maxed {
-                content.push_str(&format!(" Lv.{}/{} MAX\n", level, max_level));
+                content.push_str(&format!(" Lv.{}/{} MAX\n", o.level, o.max_level));
             } else {
-                content.push_str(&format!(" Lv.{}/{}\n", level, max_level));
+                content.push_str(&format!(" Lv.{}/{}\n", o.level, o.max_level));
             }
-
-            // Show prereqs
-            let prereqs = scaling::research_prerequisites(rt);
-            for prereq in prereqs.iter().flatten() {
-                let met_str = match prereq {
-                    scaling::ResearchPrereqKind::Building(b) => {
-                        if bldg_levels.get(b.building) >= b.level {
-                            "[OK]"
-                        } else {
-                            "[--]"
-                        }
-                    }
-                    scaling::ResearchPrereqKind::Research { tech, level } => {
-                        if res_levels.get(*tech) >= *level {
-                            "[OK]"
-                        } else {
-                            "[--]"
-                        }
-                    }
-                };
-                let label = match prereq {
-                    scaling::ResearchPrereqKind::Building(b) => {
-                        format!(" Need: {} >={} {}", b.building.label(), b.level, met_str)
-                    }
-                    scaling::ResearchPrereqKind::Research { tech, level } => {
-                        format!(" Need: {} >={} {}", tech.label(), level, met_str)
-                    }
-                };
-                content.push_str(&format!("{}\n", label));
-            }
-
-            if !maxed {
-                cost_info = Some((
-                    scaling::research_cost(rt, level + 1),
-                    scaling::research_time(rt, level + 1),
-                ));
-            }
-
-            render_card_box(frame, *area, state, &title, &content, cost_info, is_selected, locked, maxed);
+            cost_info = o.next.map(|n| (n.cost, n.ticks));
         }
     }
+
+    for r in requires {
+        content.push_str(&format!(" Need: {} {}\n", r.label, if r.met { "[OK]" } else { "[--]" }));
+    }
+    let locked = requires.iter().any(|r| !r.met);
+
+    render_card_box(frame, *area, state, &title, &content, cost_info, is_selected, locked, maxed);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -244,7 +151,7 @@ fn render_card_box(
     state: &ClientState,
     title: &str,
     content: &str,
-    cost_info: Option<(iac_shared::constants::Resources, u64)>,
+    cost_info: Option<(Resources, u64)>,
     is_selected: bool,
     is_locked: bool,
     is_maxed: bool,
@@ -385,10 +292,15 @@ pub fn render_tech_tree(frame: &mut Frame<'_>, state: &ClientState, area: Rect) 
         }
     };
 
-    let bldg_levels = ClientState::building_levels_from_slice(&hw.buildings);
-    let res_levels = ClientState::research_levels_from_slice(&hw.research);
-
     let cols = Layout::horizontal([Constraint::Min(1), Constraint::Min(1)]).split(inner);
+    let catalog = &hw.catalog;
+
+    let need_lines = |lines: &mut Vec<Line<'_>>, requires: &[Requirement], only_unmet: bool| {
+        for r in requires.iter().filter(|r| !only_unmet || !r.met) {
+            let met = if r.met { "[OK]" } else { "[--]" };
+            lines.push(Line::raw(format!("   Need: {} {}", r.label, met)));
+        }
+    };
 
     // Left column: buildings + ships
     {
@@ -396,58 +308,24 @@ pub fn render_tech_tree(frame: &mut Frame<'_>, state: &ClientState, area: Rect) 
         lines.push(Line::raw(" BUILDINGS"));
         lines.push(Line::raw(" ─────────────────────────────"));
 
-        for bt in [
-            BuildingType::MetalMine,
-            BuildingType::CrystalMine,
-            BuildingType::DeuteriumSynthesizer,
-            BuildingType::Shipyard,
-            BuildingType::ResearchLab,
-            BuildingType::FuelDepot,
-            BuildingType::SensorArray,
-            BuildingType::DefenseGrid,
-        ] {
-            let level = bldg_levels.get(bt);
-            if level > 0 {
-                lines.push(Line::raw(format!(" {:<20} Lv.{}\n", bt.label(), level)));
+        for o in &catalog.buildings {
+            if o.level > 0 {
+                lines.push(Line::raw(format!(" {:<20} Lv.{}", o.building_type.label(), o.level)));
             } else {
-                lines.push(Line::raw(format!(" {:<20} ---\n", bt.label())));
+                lines.push(Line::raw(format!(" {:<20} ---", o.building_type.label())));
             }
-            if let Some(prereq) = scaling::building_prerequisites(bt)
-                && !scaling::building_prerequisites_met(bt, &bldg_levels) {
-                    let met_str = if bldg_levels.get(prereq.building) >= prereq.level {
-                        "[OK]"
-                    } else {
-                        "[--]"
-                    };
-                    lines.push(Line::raw(format!(
-                        "   Need: {} >= {} {}\n",
-                        prereq.building.label(),
-                        prereq.level,
-                        met_str,
-                    )));
-                }
+            need_lines(&mut lines, &o.requires, true);
         }
 
         lines.push(Line::raw(""));
         lines.push(Line::raw(" SHIPS"));
         lines.push(Line::raw(" ─────────────────────────────"));
 
-        for sc in ShipClass::ALL {
-            let unlocked = scaling::ship_class_unlocked(sc, &res_levels);
+        for o in &catalog.ships {
+            let unlocked = o.requires.iter().all(|r| r.met);
             let status = if unlocked { "UNLOCKED" } else { "LOCKED" };
-            lines.push(Line::raw(format!(" {:<20} {}\n", sc.label(), status)));
-            if !unlocked {
-                let req = match sc {
-                    ShipClass::Corvette => "Corvette Tech >= 1",
-                    ShipClass::Frigate => "Frigate Tech >= 1",
-                    ShipClass::Cruiser => "Cruiser Tech >= 1",
-                    ShipClass::Hauler => "Hauler Tech >= 1",
-                    ShipClass::Scout => "",
-                };
-                if !req.is_empty() {
-                    lines.push(Line::raw(format!("   Need: {}\n", req)));
-                }
-            }
+            lines.push(Line::raw(format!(" {:<20} {}", o.ship_class.label(), status)));
+            need_lines(&mut lines, &o.requires, true);
         }
 
         frame.render_widget(Paragraph::new(lines).style(AMBER_BRIGHT), cols[0]);
@@ -459,46 +337,9 @@ pub fn render_tech_tree(frame: &mut Frame<'_>, state: &ClientState, area: Rect) 
         lines.push(Line::raw(" RESEARCH"));
         lines.push(Line::raw(" ─────────────────────────────"));
 
-        for rt in [
-            ResearchType::FuelEfficiency,
-            ResearchType::ExtendedFuelTanks,
-            ResearchType::ReinforcedHulls,
-            ResearchType::AdvancedShields,
-            ResearchType::WeaponsResearch,
-            ResearchType::Navigation,
-            ResearchType::HarvestingEfficiency,
-            ResearchType::CorvetteTech,
-            ResearchType::FrigateTech,
-            ResearchType::CruiserTech,
-            ResearchType::HaulerTech,
-            ResearchType::EmergencyJump,
-        ] {
-            let level = res_levels.get(rt);
-            let max_level = scaling::research_max_level(rt);
-            lines.push(Line::raw(format!(" {:<20} {}/{}\n", rt.label(), level, max_level)));
-
-            let prereqs = scaling::research_prerequisites(rt);
-            for prereq in prereqs.iter().flatten() {
-                let (label, met_str) = match prereq {
-                    scaling::ResearchPrereqKind::Building(b) => {
-                        let met = if bldg_levels.get(b.building) >= b.level {
-                            "[OK]"
-                        } else {
-                            "[--]"
-                        };
-                        (format!("{} >= {}", b.building.label(), b.level), met)
-                    }
-                    scaling::ResearchPrereqKind::Research { tech, level } => {
-                        let met = if res_levels.get(*tech) >= *level {
-                            "[OK]"
-                        } else {
-                            "[--]"
-                        };
-                        (format!("{} >= {}", tech.label(), level), met)
-                    }
-                };
-                lines.push(Line::raw(format!("   Need: {} {}\n", label, met_str)));
-            }
+        for o in &catalog.research {
+            lines.push(Line::raw(format!(" {:<20} {}/{}", o.tech.label(), o.level, o.max_level)));
+            need_lines(&mut lines, &o.requires, false);
         }
 
         lines.push(Line::raw("\n [t] Close"));

@@ -5,10 +5,10 @@ use std::collections::HashMap;
 use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
-    BuildingState, Command, EventKind, FleetState, GameEvent, HomeworldState,
-    PlayerState, ResearchState, SectorState, ServerMessage,
+    Command, EventKind, FleetState, GameEvent, HomeworldState,
+    PlayerState, SectorState, ServerMessage,
 };
-use iac_shared::scaling::{self, BuildingLevels, BuildingType, ResearchLevels, ResearchType};
+use iac_shared::scaling::{BuildingType, ResearchType};
 
 /// UI view modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -530,47 +530,23 @@ impl ClientState {
                 self.homeworld_cursor = 0;
             }
             HomeworldNav::Select => {
-                let bldg_levels = Self::building_levels_from_slice(&hw.buildings);
-                let res_levels = Self::research_levels_from_slice(&hw.research);
-
+                let cat = &hw.catalog;
+                let i = self.homeworld_cursor;
                 return match self.homeworld_tab {
                     HomeworldTab::Buildings => {
-                        if self.homeworld_cursor >= BuildingType::COUNT {
-                            return None;
-                        }
-                        let bt = BuildingType::from_usize(self.homeworld_cursor)?;
-                        if !scaling::building_prerequisites_met(bt, &bldg_levels) {
-                            return None;
-                        }
-                        if bldg_levels.get(bt) >= scaling::MAX_BUILDING_LEVEL {
-                            return None;
-                        }
-                        Some(Command::Build { building_type: bt })
+                        let o = cat.buildings.get(i)?;
+                        let open = o.next.is_some() && o.requires.iter().all(|r| r.met);
+                        open.then_some(Command::Build { building_type: o.building_type })
                     }
                     HomeworldTab::Research => {
-                        if self.homeworld_cursor >= ResearchType::COUNT {
-                            return None;
-                        }
-                        let rt = ResearchType::from_usize(self.homeworld_cursor)?;
-                        if !scaling::research_prerequisites_met(rt, &bldg_levels, &res_levels) {
-                            return None;
-                        }
-                        if res_levels.get(rt) >= scaling::research_max_level(rt) {
-                            return None;
-                        }
-                        Some(Command::Research { tech: rt })
+                        let o = cat.research.get(i)?;
+                        let open = o.next.is_some() && o.requires.iter().all(|r| r.met);
+                        open.then_some(Command::Research { tech: o.tech })
                     }
                     HomeworldTab::Shipyard => {
-                        let classes = ShipClass::ALL;
-                        if self.homeworld_cursor >= classes.len() {
-                            return None;
-                        }
-                        let sc = classes[self.homeworld_cursor];
-                        if !scaling::ship_class_unlocked(sc, &res_levels) {
-                            return None;
-                        }
-                        Some(Command::BuildShip {
-                            ship_class: sc,
+                        let o = cat.ships.get(i)?;
+                        o.requires.iter().all(|r| r.met).then_some(Command::BuildShip {
+                            ship_class: o.ship_class,
                             count: self.ship_build_count,
                         })
                     }
@@ -578,21 +554,5 @@ impl ClientState {
             }
         }
         None
-    }
-
-    pub fn building_levels_from_slice(buildings: &[BuildingState]) -> BuildingLevels {
-        let mut levels = BuildingLevels::default();
-        for b in buildings {
-            levels.set(b.building_type, b.level);
-        }
-        levels
-    }
-
-    pub fn research_levels_from_slice(research: &[ResearchState]) -> ResearchLevels {
-        let mut levels = ResearchLevels::default();
-        for r in research {
-            levels.set(r.tech, r.level);
-        }
-        levels
     }
 }
