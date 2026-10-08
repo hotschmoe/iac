@@ -357,7 +357,7 @@ class DemoProvider {
     int bl(BuildingType t) => buildings.firstWhere((b) => b.buildingType == t).level;
     int rl(ResearchType t) => research.firstWhere((r) => r.tech == t).level;
     Requirement needBuilding(BuildingType t, int l) =>
-        Requirement(label: '${t.label} >= $l', met: bl(t) >= l);
+        Requirement(name: t.label, need: l, have: bl(t), met: bl(t) >= l);
 
     return HomeworldCatalog(
       buildings: [
@@ -401,7 +401,7 @@ class DemoProvider {
             ticksPerShip: _shipTicks[c]!,
             requires: [
               needBuilding(BuildingType.shipyard, 1),
-              if (_shipTech[c] case final t?) Requirement(label: '${t.label} >= 1', met: rl(t) >= 1),
+              if (_shipTech[c] case final t?) Requirement(name: t.label, need: 1, have: rl(t), met: rl(t) >= 1),
             ],
           ),
       ],

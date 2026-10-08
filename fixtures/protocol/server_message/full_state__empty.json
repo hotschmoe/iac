@@ -64,8 +64,10 @@
           },
           "requires": [
             {
-              "label": "Metal Mine >= 2",
-              "met": false
+              "have": 1,
+              "met": false,
+              "name": "Metal Mine",
+              "need": 2
             }
           ]
         },
@@ -84,8 +86,10 @@
           },
           "requires": [
             {
-              "label": "Crystal Mine >= 2",
-              "met": false
+              "have": 1,
+              "met": false,
+              "name": "Crystal Mine",
+              "need": 2
             }
           ]
         },
@@ -104,8 +108,10 @@
           },
           "requires": [
             {
-              "label": "Deut Synthesizer >= 2",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Deut Synthesizer",
+              "need": 2
             }
           ]
         },
@@ -124,8 +130,10 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             }
           ]
         },
@@ -144,8 +152,10 @@
           },
           "requires": [
             {
-              "label": "Shipyard >= 3",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 3
             }
           ]
         }
@@ -165,12 +175,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Deut Synthesizer >= 3",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Deut Synthesizer",
+              "need": 3
             }
           ],
           "tech": "FuelEfficiency"
@@ -189,12 +203,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Fuel Depot >= 2",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Fuel Depot",
+              "need": 2
             }
           ],
           "tech": "ExtendedFuelTanks"
@@ -213,12 +231,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Shipyard >= 2",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 2
             }
           ],
           "tech": "ReinforcedHulls"
@@ -237,12 +259,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Research Lab >= 3",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 3
             }
           ],
           "tech": "AdvancedShields"
@@ -261,12 +287,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Research Lab >= 3",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 3
             }
           ],
           "tech": "WeaponsResearch"
@@ -285,12 +315,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Research Lab >= 2",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 2
             }
           ],
           "tech": "Navigation"
@@ -309,12 +343,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Research Lab >= 2",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 2
             }
           ],
           "tech": "HarvestingEfficiency"
@@ -333,12 +371,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Shipyard >= 2",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 2
             }
           ],
           "tech": "CorvetteTech"
@@ -357,16 +399,22 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Corvette Tech >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Corvette Tech",
+              "need": 1
             },
             {
-              "label": "Shipyard >= 4",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 4
             }
           ],
           "tech": "FrigateTech"
@@ -385,16 +433,22 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Frigate Tech >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Frigate Tech",
+              "need": 1
             },
             {
-              "label": "Shipyard >= 6",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 6
             }
           ],
           "tech": "CruiserTech"
@@ -413,12 +467,16 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Shipyard >= 3",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 3
             }
           ],
           "tech": "HaulerTech"
@@ -437,16 +495,22 @@
           },
           "requires": [
             {
-              "label": "Research Lab >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 1
             },
             {
-              "label": "Navigation >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Navigation",
+              "need": 1
             },
             {
-              "label": "Research Lab >= 4",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 4
             }
           ],
           "tech": "EmergencyJump"
@@ -456,8 +520,10 @@
         {
           "requires": [
             {
-              "label": "Shipyard >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 1
             }
           ],
           "ship_class": "Scout",
@@ -471,12 +537,16 @@
         {
           "requires": [
             {
-              "label": "Shipyard >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 1
             },
             {
-              "label": "Corvette Tech >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Corvette Tech",
+              "need": 1
             }
           ],
           "ship_class": "Corvette",
@@ -490,12 +560,16 @@
         {
           "requires": [
             {
-              "label": "Shipyard >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 1
             },
             {
-              "label": "Frigate Tech >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Frigate Tech",
+              "need": 1
             }
           ],
           "ship_class": "Frigate",
@@ -509,12 +583,16 @@
         {
           "requires": [
             {
-              "label": "Shipyard >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 1
             },
             {
-              "label": "Cruiser Tech >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Cruiser Tech",
+              "need": 1
             }
           ],
           "ship_class": "Cruiser",
@@ -528,12 +606,16 @@
         {
           "requires": [
             {
-              "label": "Shipyard >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 1
             },
             {
-              "label": "Hauler Tech >= 1",
-              "met": false
+              "have": 0,
+              "met": false,
+              "name": "Hauler Tech",
+              "need": 1
             }
           ],
           "ship_class": "Hauler",

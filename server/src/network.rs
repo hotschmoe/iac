@@ -370,6 +370,20 @@ fn harvest_label(r: HarvestResource) -> &'static str {
     }
 }
 
+/// "X needs Y level N (you have M) and ..." for a build, research or ship
+/// order, from the same requirement lists the catalog sends.
+fn missing_prerequisites_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> Option<String> {
+    use iac_shared::protocol::{building_requirements, missing_requirements_message, research_requirements, ship_requirements};
+    let p = engine.players.get(&player_id)?;
+    let (subject, requires) = match cmd {
+        Command::Build { building_type } => (building_type.label(), building_requirements(&p.buildings, *building_type)),
+        Command::Research { tech } => (tech.label(), research_requirements(&p.buildings, &p.research, *tech)),
+        Command::BuildShip { ship_class, .. } => (ship_class.label(), ship_requirements(&p.buildings, &p.research, *ship_class)),
+        _ => return None,
+    };
+    missing_requirements_message(subject, &requires)
+}
+
 /// Human-readable explanation for a rejected command. The code stays the
 /// machine-readable part; this says which fleet, sector or queue is at fault.
 fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, code: ErrorCode) -> String {
@@ -427,12 +441,11 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         (ErrorCode::MaxLevelReached, Command::Research { tech }) => {
             format!("{} is already at its maximum level", tech.label())
         }
-        (ErrorCode::PrerequisitesNotMet, _) => "prerequisites not met".to_string(),
-        (ErrorCode::NoShipyard, _) => "build a shipyard first".to_string(),
-        (ErrorCode::NoResearchLab, _) => "build a research lab first".to_string(),
-        (ErrorCode::ShipLocked, Command::BuildShip { ship_class, .. }) => {
-            format!("{} hulls are not unlocked yet; research the matching tech", ship_class.label())
-        }
+        (
+            ErrorCode::PrerequisitesNotMet | ErrorCode::NoShipyard | ErrorCode::NoResearchLab | ErrorCode::ShipLocked,
+            Command::Build { .. } | Command::Research { .. } | Command::BuildShip { .. },
+        ) => missing_prerequisites_message(engine, player_id, cmd)
+            .unwrap_or_else(|| format!("command rejected ({code:?})")),
         (ErrorCode::ServerError, _) => "internal server error".to_string(),
         (code, _) => format!("command rejected ({code:?})"),
     }
@@ -1052,5 +1065,28 @@ mod tests {
         let catalog = &update["homeworld_update"]["catalog"];
         assert_eq!(catalog["buildings"][0]["level"], 2);
         assert_eq!(catalog["buildings"][3]["requires"][0]["met"], true);
+    }
+
+    #[test]
+    fn prerequisite_errors_name_what_is_missing() {
+        let (_net, engine, pid, _fid, _rx) = network_with_player();
+        let mut e = engine.lock().unwrap();
+        e.players.get_mut(&pid).unwrap().buildings.shipyard = 2;
+
+        let cmd = Command::BuildShip { ship_class: ShipClass::Frigate, count: 1 };
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::ShipLocked),
+            "Frigate needs Frigate Tech level 1 (you have 0)"
+        );
+        let cmd = Command::Build { building_type: BuildingType::DefenseGrid };
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
+            "Defense Grid needs Shipyard level 3 (you have 2)"
+        );
+        let cmd = Command::Research { tech: ResearchType::FrigateTech };
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
+            "Frigate Tech needs Research Lab level 1 (you have 0), Corvette Tech level 1 (you have 0) and Shipyard level 4 (you have 2)"
+        );
     }
 }

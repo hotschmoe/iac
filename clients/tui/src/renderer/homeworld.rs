@@ -137,7 +137,7 @@ fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &Hom
     }
 
     for r in requires {
-        content.push_str(&format!(" Need: {} {}\n", r.label, if r.met { "[OK]" } else { "[--]" }));
+        content.push_str(&format!(" Need: {} {}\n", r.label(), if r.met { "[OK]" } else { "[--]" }));
     }
     let locked = requires.iter().any(|r| !r.met);
 
@@ -298,7 +298,7 @@ pub fn render_tech_tree(frame: &mut Frame<'_>, state: &ClientState, area: Rect) 
     let need_lines = |lines: &mut Vec<Line<'_>>, requires: &[Requirement], only_unmet: bool| {
         for r in requires.iter().filter(|r| !only_unmet || !r.met) {
             let met = if r.met { "[OK]" } else { "[--]" };
-            lines.push(Line::raw(format!("   Need: {} {}", r.label, met)));
+            lines.push(Line::raw(format!("   Need: {} {}", r.label(), met)));
         }
     };
 

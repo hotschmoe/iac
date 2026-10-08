@@ -15,11 +15,13 @@ class HomeworldView extends StatelessWidget {
   const HomeworldView({super.key, required this.controller});
 
   static const _cardWidth = 250.0;
+  static const _gap = 6.0;
+  static const _sidebarWidth = 360.0;
+  static const _sidebarBreakpoint = 1000.0;
 
   @override
   Widget build(BuildContext context) {
-    final state = controller.state;
-    final catalog = state.catalog;
+    final catalog = controller.state.catalog;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -34,11 +36,44 @@ class HomeworldView extends StatelessWidget {
         Expanded(
           child: catalog == null
               ? Center(child: Text('No homeworld data yet', style: Amber.mono(size: 11, color: Amber.dim)))
-              : LayoutBuilder(builder: (context, c) => _grid(c.maxWidth, catalog)),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-          child: _queues(),
+              : LayoutBuilder(builder: (context, c) {
+                  if (c.maxWidth < _sidebarBreakpoint) {
+                    return SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _stockStrip(),
+                          const SizedBox(height: _gap),
+                          _grid(c.maxWidth - 16, catalog),
+                          const SizedBox(height: _gap),
+                          _queues(),
+                        ],
+                      ),
+                    );
+                  }
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(8, 4, 4, 8),
+                          child: _grid(c.maxWidth - _sidebarWidth - 12, catalog),
+                        ),
+                      ),
+                      SizedBox(
+                        width: _sidebarWidth,
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(4, 4, 8, 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [_stockStrip(), const SizedBox(height: _gap), _queues()],
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                }),
         ),
       ],
     );
@@ -62,7 +97,7 @@ class HomeworldView extends StatelessWidget {
           const SizedBox(width: 10),
           Text(
             'ARROWS select  ENTER queue  [ ] tab  +/- batch  DEL cancel',
-            style: Amber.mono(size: 9, color: Amber.faint),
+            style: Amber.mono(size: 9, color: Amber.dim),
           ),
         ],
       ),
@@ -102,35 +137,33 @@ class HomeworldView extends StatelessWidget {
     );
   }
 
+  /// Cards laid out in equal-height rows; [width] is what the grid may use.
   Widget _grid(double width, proto.HomeworldCatalog catalog) {
-    const gap = 6.0;
-    final usable = width - 16;
-    final cols = ((usable + gap) / (_cardWidth + gap)).floor().clamp(1, 6);
+    final cols = ((width + _gap) / (_cardWidth + _gap)).floor().clamp(1, 6);
     controller.hwColumns = cols;
-    final cardWidth = (usable - gap * (cols - 1)) / cols;
-
     final cards = _cards(catalog);
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _stockStrip(),
-          const SizedBox(height: gap),
-          Wrap(
-            spacing: gap,
-            runSpacing: gap,
-            children: [
-              for (var i = 0; i < cards.length; i++)
-                SizedBox(
-                  key: ValueKey('hw-card-$i'),
-                  width: cardWidth,
-                  child: cards[i],
-                ),
-            ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var start = 0; start < cards.length; start += cols)
+          Padding(
+            padding: EdgeInsets.only(bottom: start + cols < cards.length ? _gap : 0),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = start; i < start + cols; i++) ...[
+                    if (i > start) const SizedBox(width: _gap),
+                    Expanded(
+                      key: ValueKey('hw-card-$i'),
+                      child: i < cards.length ? cards[i] : const SizedBox.shrink(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -241,7 +274,7 @@ class HomeworldView extends StatelessWidget {
 
   Widget _queues() {
     final s = controller.state;
-    final log = s.events.take(2).toList();
+    final log = s.events.take(3).toList();
     return AmberPanel(
       title: 'QUEUES',
       child: Column(
@@ -261,6 +294,7 @@ class HomeworldView extends StatelessWidget {
             Text(
               log[i].message,
               key: ValueKey('hw-log-$i'),
+              maxLines: 3,
               overflow: TextOverflow.ellipsis,
               style: Amber.mono(size: 10, color: log[i].level.color),
             ),
@@ -270,33 +304,40 @@ class HomeworldView extends StatelessWidget {
   }
 
   Widget _queueRow(String label, QueueItem? item, proto.QueueType queue) {
+    final dim = Amber.mono(size: 10, color: Amber.dim);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SizedBox(width: 70, child: Text(label, style: Amber.mono(size: 10, color: Amber.dim))),
-          if (item == null)
-            Expanded(child: Text('idle', style: Amber.mono(size: 10, color: Amber.faint)))
-          else ...[
-            Expanded(
-              flex: 3,
-              child: Text(
-                item.name,
-                overflow: TextOverflow.ellipsis,
-                style: Amber.mono(size: 10, color: Amber.bright),
-              ),
-            ),
-            SizedBox(width: 52, child: Text(item.time, style: Amber.mono(size: 10, color: Amber.full))),
-            Expanded(flex: 2, child: AmberProgressBar(fraction: item.pct / 100)),
-            const SizedBox(width: 8),
-            GestureDetector(
-              key: ValueKey('hw-cancel-${queue.name}'),
-              onTap: () => controller.cancelHomeworldQueue(queue),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                decoration: BoxDecoration(border: Border.all(color: Amber.dim, width: 0.5)),
-                child: Text('CANCEL', style: Amber.mono(size: 9, color: Amber.normal)),
-              ),
+          Row(
+            children: [
+              SizedBox(width: 64, child: Text(label, style: dim)),
+              if (item == null)
+                Expanded(child: Text('idle', style: Amber.mono(size: 10, color: Amber.faint)))
+              else ...[
+                Expanded(
+                  child: Text(item.name, overflow: TextOverflow.ellipsis, style: Amber.mono(size: 10, color: Amber.bright)),
+                ),
+                Text(item.time, style: Amber.mono(size: 10, color: Amber.full)),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  key: ValueKey('hw-cancel-${queue.name}'),
+                  onTap: () => controller.cancelHomeworldQueue(queue),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(border: Border.all(color: Amber.dim, width: 0.5)),
+                    child: Text('CANCEL', style: Amber.mono(size: 9, color: Amber.normal)),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (item != null) ...[
+            const SizedBox(height: 3),
+            Padding(
+              padding: const EdgeInsets.only(left: 64),
+              child: AmberProgressBar(fraction: item.pct / 100, height: 4),
             ),
           ],
         ],

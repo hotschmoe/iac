@@ -412,11 +412,76 @@ pub struct HomeworldCatalog {
     pub ships: Vec<ShipOption>,
 }
 
-/// One prerequisite of a catalog entry, as readable text ("Shipyard >= 2").
+/// One prerequisite: a building or tech that must reach `need`, with the
+/// player's current level. The server's "prerequisites not met" errors are
+/// written from the same values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Requirement {
-    pub label: String,
+    /// Building or tech label ("Shipyard", "Frigate Tech").
+    pub name: String,
+    pub need: u8,
+    pub have: u8,
     pub met: bool,
+}
+
+impl Requirement {
+    fn new(name: &str, need: u8, have: u8) -> Self {
+        Requirement { name: name.to_string(), need, have, met: have >= need }
+    }
+
+    /// Compact form for cards: "Shipyard >= 4".
+    pub fn label(&self) -> String {
+        format!("{} >= {}", self.name, self.need)
+    }
+}
+
+/// "Frigate needs Shipyard level 4 (you have 2) and Frigate Tech level 1
+/// (you have 0)"; None when every requirement is met.
+pub fn missing_requirements_message(subject: &str, requires: &[Requirement]) -> Option<String> {
+    let parts: Vec<String> = requires
+        .iter()
+        .filter(|r| !r.met)
+        .map(|r| format!("{} level {} (you have {})", r.name, r.need, r.have))
+        .collect();
+    let (last, rest) = parts.split_last()?;
+    let list = if rest.is_empty() { last.clone() } else { format!("{} and {}", rest.join(", "), last) };
+    Some(format!("{subject} needs {list}"))
+}
+
+fn building_req(levels: &BuildingLevels, b: BuildingType, need: u8) -> Requirement {
+    Requirement::new(b.label(), need, levels.get(b))
+}
+
+fn tech_req(levels: &ResearchLevels, t: ResearchType, need: u8) -> Requirement {
+    Requirement::new(t.label(), need, levels.get(t))
+}
+
+/// Everything standing between the player and the next level of `b`.
+pub fn building_requirements(levels: &BuildingLevels, b: BuildingType) -> Vec<Requirement> {
+    scaling::building_prerequisites(b)
+        .map(|p| building_req(levels, p.building, p.level))
+        .into_iter()
+        .collect()
+}
+
+/// Prerequisites for researching `t`, including the Research Lab the server
+/// requires before any research.
+pub fn research_requirements(buildings: &BuildingLevels, research: &ResearchLevels, t: ResearchType) -> Vec<Requirement> {
+    let mut requires = vec![building_req(buildings, BuildingType::ResearchLab, 1)];
+    for p in scaling::research_prerequisites(t).into_iter().flatten() {
+        requires.push(match p {
+            ResearchPrereqKind::Building(b) => building_req(buildings, b.building, b.level),
+            ResearchPrereqKind::Research { tech, level } => tech_req(research, tech, level),
+        });
+    }
+    requires
+}
+
+/// Prerequisites for building `c`: a Shipyard plus the class's unlock tech.
+pub fn ship_requirements(buildings: &BuildingLevels, research: &ResearchLevels, c: ShipClass) -> Vec<Requirement> {
+    let mut requires = vec![building_req(buildings, BuildingType::Shipyard, 1)];
+    requires.extend(scaling::ship_class_tech(c).map(|t| tech_req(research, t, 1)));
+    requires
 }
 
 /// Cost and duration of the next level of a building or tech.
@@ -465,15 +530,6 @@ pub struct ShipOption {
 
 impl HomeworldCatalog {
     pub fn new(buildings: &BuildingLevels, research: &ResearchLevels) -> Self {
-        let building_req = |b: BuildingType, level: u8| Requirement {
-            label: format!("{} >= {}", b.label(), level),
-            met: buildings.get(b) >= level,
-        };
-        let tech_req = |t: ResearchType, level: u8| Requirement {
-            label: format!("{} >= {}", t.label(), level),
-            met: research.get(t) >= level,
-        };
-
         let building_options = (0..BuildingType::COUNT)
             .filter_map(BuildingType::from_usize)
             .map(|b| {
@@ -487,10 +543,7 @@ impl HomeworldCatalog {
                         cost: scaling::building_cost(b, level + 1),
                         ticks: scaling::building_time(b, level + 1),
                     }),
-                    requires: scaling::building_prerequisites(b)
-                        .map(|p| building_req(p.building, p.level))
-                        .into_iter()
-                        .collect(),
+                    requires: building_requirements(buildings, b),
                 }
             })
             .collect();
@@ -500,13 +553,6 @@ impl HomeworldCatalog {
             .map(|&t| {
                 let level = research.get(t);
                 let max_level = scaling::research_max_level(t);
-                let mut requires = vec![building_req(BuildingType::ResearchLab, 1)];
-                for p in scaling::research_prerequisites(t).into_iter().flatten() {
-                    requires.push(match p {
-                        ResearchPrereqKind::Building(b) => building_req(b.building, b.level),
-                        ResearchPrereqKind::Research { tech, level } => tech_req(tech, level),
-                    });
-                }
                 ResearchOption {
                     tech: t,
                     level,
@@ -516,22 +562,18 @@ impl HomeworldCatalog {
                         cost: scaling::research_cost(t, level + 1),
                         ticks: scaling::research_time(t, level + 1),
                     }),
-                    requires,
+                    requires: research_requirements(buildings, research, t),
                 }
             })
             .collect();
 
         let ship_options = ShipClass::ALL
             .iter()
-            .map(|&c| {
-                let mut requires = vec![building_req(BuildingType::Shipyard, 1)];
-                requires.extend(scaling::ship_class_tech(c).map(|t| tech_req(t, 1)));
-                ShipOption {
-                    ship_class: c,
-                    unit_cost: c.build_cost(),
-                    ticks_per_ship: scaling::ship_build_time(c, buildings.get(BuildingType::Shipyard)),
-                    requires,
-                }
+            .map(|&c| ShipOption {
+                ship_class: c,
+                unit_cost: c.build_cost(),
+                ticks_per_ship: scaling::ship_build_time(c, buildings.get(BuildingType::Shipyard)),
+                requires: ship_requirements(buildings, research, c),
             })
             .collect();
 
@@ -888,7 +930,8 @@ mod catalog_tests {
         let before = HomeworldCatalog::new(&b, &r);
         let yard = building(&before, BuildingType::Shipyard);
         assert_eq!(yard.requires.len(), 1);
-        assert_eq!(yard.requires[0].label, "Metal Mine >= 2");
+        assert_eq!(yard.requires[0].name, "Metal Mine");
+        assert_eq!((yard.requires[0].need, yard.requires[0].have), (2, 1));
         assert!(!yard.requires[0].met);
 
         b.set(BuildingType::MetalMine, 2);
@@ -913,8 +956,8 @@ mod catalog_tests {
         let (mut b, mut r) = fresh();
         let cat = HomeworldCatalog::new(&b, &r);
         let frigate = cat.research.iter().find(|o| o.tech == ResearchType::FrigateTech).unwrap();
-        let unmet: Vec<_> = frigate.requires.iter().filter(|q| !q.met).map(|q| q.label.as_str()).collect();
-        assert_eq!(unmet, ["Research Lab >= 1", "Corvette Tech >= 1", "Shipyard >= 4"]);
+        let unmet: Vec<_> = frigate.requires.iter().filter(|q| !q.met).map(|q| (q.name.as_str(), q.need)).collect();
+        assert_eq!(unmet, [("Research Lab", 1), ("Corvette Tech", 1), ("Shipyard", 4)]);
         assert_eq!(
             frigate.next.unwrap().cost,
             scaling::research_cost(ResearchType::FrigateTech, 1)
@@ -946,5 +989,22 @@ mod catalog_tests {
         let corvette = cat.ships.iter().find(|o| o.ship_class == ShipClass::Corvette).unwrap();
         assert_eq!(corvette.ticks_per_ship, scaling::ship_build_time(ShipClass::Corvette, 3));
         assert!(corvette.requires.iter().all(|q| q.met));
+    }
+
+    #[test]
+    fn error_message_names_what_is_missing() {
+        let (mut b, r) = fresh();
+        b.set(BuildingType::Shipyard, 2);
+        let msg = missing_requirements_message("Frigate", &ship_requirements(&b, &r, ShipClass::Frigate));
+        assert_eq!(msg.unwrap(), "Frigate needs Frigate Tech level 1 (you have 0)");
+
+        let research = research_requirements(&b, &r, ResearchType::FrigateTech);
+        assert_eq!(
+            missing_requirements_message("Frigate Tech", &research).unwrap(),
+            "Frigate Tech needs Research Lab level 1 (you have 0), Corvette Tech level 1 (you have 0) and Shipyard level 4 (you have 2)"
+        );
+
+        b.set(BuildingType::Shipyard, 1);
+        assert!(missing_requirements_message("Scout", &ship_requirements(&b, &r, ShipClass::Scout)).is_none());
     }
 }

@@ -1034,18 +1034,23 @@ class HomeworldCatalog {
       };
 }
 
-/// A prerequisite as readable text ("Shipyard >= 2") with its status.
+/// A building or tech that must reach [need]; [have] is the player's level.
 class Requirement {
-  final String label;
+  final String name;
+  final int need;
+  final int have;
   final bool met;
-  const Requirement({required this.label, required this.met});
+  const Requirement({required this.name, required this.need, required this.have, required this.met});
+
+  /// Compact form for cards: "Shipyard >= 4".
+  String get label => '$name >= $need';
 
   factory Requirement.fromJson(Object? json) {
     final m = _obj(json);
-    return Requirement(label: m['label'] as String, met: m['met'] as bool);
+    return Requirement(name: m['name'] as String, need: _i(m['need']), have: _i(m['have']), met: m['met'] as bool);
   }
 
-  Json toJson() => {'label': label, 'met': met};
+  Json toJson() => {'name': name, 'need': need, 'have': have, 'met': met};
 }
 
 /// Cost and duration of reaching [level].
