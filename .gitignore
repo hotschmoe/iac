@@ -11,3 +11,5 @@ clients/web/.dart_tool/
 .flutter-plugins-dependencies
 # Deprecated files awaiting review (see CLAUDE.md)
 .archive/
+# Playtest run directories
+tools/playtest/run/
