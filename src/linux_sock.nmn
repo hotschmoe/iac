@@ -1,0 +1,158 @@
+// Linux aarch64 socket shims for Amber Scout's one-connection HTTP/1.0 loop.
+
+const mem = @import("std/mem.nmn");
+const syscalls = @import("std/linux/syscalls.nmn");
+const testing = @import("std/testing.nmn");
+
+const NR_socket: u32 = @intFromEnum(syscalls.Syscall.socket);
+const NR_bind: u32 = @intFromEnum(syscalls.Syscall.bind);
+const NR_listen: u32 = @intFromEnum(syscalls.Syscall.listen);
+const NR_accept: u32 = @intFromEnum(syscalls.Syscall.accept);
+const NR_sendto: u32 = @intFromEnum(syscalls.Syscall.sendto);
+const NR_recvfrom: u32 = @intFromEnum(syscalls.Syscall.recvfrom);
+const NR_setsockopt: u32 = @intFromEnum(syscalls.Syscall.setsockopt);
+const NR_close: u32 = @intFromEnum(syscalls.Syscall.close);
+const LINUX_SVC: u32 = 0;
+
+const AF_INET: u32 = 2;
+const SOCK_STREAM: u32 = 1;
+const SOL_SOCKET: u32 = 1;
+const SO_REUSEADDR: u32 = 2;
+const LISTEN_BACKLOG: u32 = 16;
+const LOOPBACK_HOST_ORDER: u32 = 0x7f000001;
+
+pub fn htons(port: u16) u16 {
+    const widened: u32 = @as(u32, port);
+    const hi: u32 = (widened & @as(u32, 0x00ff)) << @as(u32, 8);
+    const lo: u32 = (widened & @as(u32, 0xff00)) >> @as(u32, 8);
+    return @as(u16, @intCast(hi | lo));
+}
+
+fn htonl(value: u32) u32 {
+    return ((value & @as(u32, 0x000000ff)) << @as(u32, 24)) |
+        ((value & @as(u32, 0x0000ff00)) << @as(u32, 8)) |
+        ((value & @as(u32, 0x00ff0000)) >> @as(u32, 8)) |
+        ((value & @as(u32, 0xff000000)) >> @as(u32, 24));
+}
+
+fn socket(domain: u32, typ: u32, protocol: u32) i64 {
+    return asm(.aarch64) {
+        mov w8, #NR_socket;
+        svc #LINUX_SVC;
+        yield x0;
+    };
+}
+
+fn bind(fd: u32, addr: *const u8, len: u32) i64 {
+    return asm(.aarch64) {
+        mov w8, #NR_bind;
+        svc #LINUX_SVC;
+        yield x0;
+    };
+}
+
+fn listen(fd: u32, backlog: u32) i64 {
+    return asm(.aarch64) {
+        mov w8, #NR_listen;
+        svc #LINUX_SVC;
+        yield x0;
+    };
+}
+
+fn setsockopt(fd: u32, level: u32, optname: u32, optval: *const u32, optlen: u32) i64 {
+    return asm(.aarch64) {
+        mov w8, #NR_setsockopt;
+        svc #LINUX_SVC;
+        yield x0;
+    };
+}
+
+fn sendto(fd: u32, buf: [*]const u8, len: usize, flags: u32, dest: usize, dest_len: u32) i64 {
+    return asm(.aarch64) {
+        mov w8, #NR_sendto;
+        svc #LINUX_SVC;
+        yield x0;
+    };
+}
+
+fn recvfrom(fd: u32, buf: [*]u8, len: usize, flags: u32, src: usize, src_len: usize) i64 {
+    return asm(.aarch64) {
+        mov w8, #NR_recvfrom;
+        svc #LINUX_SVC;
+        yield x0;
+    };
+}
+
+pub fn listenLoopback(port: u16) i64 {
+    const fd: i64 = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return fd;
+
+    const listen_fd: u32 = @as(u32, @intCast(fd));
+    const yes: u32 = 1;
+    const opt_result: i64 = setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, @sizeOf(u32));
+    if (opt_result < 0) {
+        _ = closeFd(listen_fd);
+        return opt_result;
+    }
+
+    var addr: [16]u8 = undefined;
+    mem.zero(@ptrCast(&addr), addr.len);
+    mem.storeInt(u16, @ptrCast(&addr), 0, @as(u16, @intCast(AF_INET)), .little);
+    mem.storeInt(u16, @ptrCast(&addr), 2, htons(port), .little);
+    mem.storeInt(u32, @ptrCast(&addr), 4, htonl(LOOPBACK_HOST_ORDER), .little);
+
+    const bind_result: i64 = bind(listen_fd, @ptrCast(&addr), addr.len);
+    if (bind_result < 0) {
+        _ = closeFd(listen_fd);
+        return bind_result;
+    }
+
+    const listen_result: i64 = listen(listen_fd, LISTEN_BACKLOG);
+    if (listen_result < 0) {
+        _ = closeFd(listen_fd);
+        return listen_result;
+    }
+
+    return fd;
+}
+
+pub fn acceptClient(listen_fd: u32) i64 {
+    return asm(.aarch64) {
+        mov x1, xzr;
+        mov x2, xzr;
+        mov w8, #NR_accept;
+        svc #LINUX_SVC;
+        yield x0;
+    };
+}
+
+pub fn closeFd(fd: u32) i64 {
+    return asm(.aarch64) {
+        mov w8, #NR_close;
+        svc #LINUX_SVC;
+        yield x0;
+    };
+}
+
+pub fn recv(fd: u32, buf: []u8) i64 {
+    return recvfrom(fd, buf.ptr, buf.len, 0, 0, 0);
+}
+
+pub fn sendAll(fd: u32, buf: []const u8) bool {
+    var offset: usize = 0;
+    while (offset < buf.len) {
+        const result: i64 = sendto(fd, buf[offset..].ptr, buf.len - offset, 0, 0, 0);
+        if (result <= 0) return false;
+        offset = offset + @as(usize, @intCast(result));
+    }
+    return true;
+}
+
+test "htons swaps bytes" {
+    try testing.expectEqual(u16, 0x3412, htons(0x1234));
+}
+
+test "htons zero and all ones" {
+    try testing.expectEqual(u16, 0, htons(0));
+    try testing.expectEqual(u16, 0xffff, htons(0xffff));
+}

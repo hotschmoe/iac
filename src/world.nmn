@@ -1,0 +1,387 @@
+// Deterministic sector generation + symmetric edge pruning.
+// Ported from IAC `src/shared/world.zig` and `constants.zig`, without floats.
+
+const testing = @import("std/testing.nmn");
+const hash = @import("std/hash.nmn");
+const mem = @import("std/mem.nmn");
+const random = @import("std/random.nmn");
+const hex_mod = @import("hex.nmn");
+
+const Hex = hex_mod.Hex;
+const HexDirection = hex_mod.HexDirection;
+
+pub const INNER_RING_RADIUS: u16 = 8;
+pub const OUTER_RING_RADIUS: u16 = 20;
+
+pub const Zone = enum(u8) {
+    central_hub = 0,
+    inner_ring = 1,
+    outer_ring = 2,
+    wandering = 3,
+
+    pub fn fromDistance(dist: u16) Zone {
+        if (dist == 0) return .central_hub;
+        if (dist <= INNER_RING_RADIUS) return .inner_ring;
+        if (dist <= OUTER_RING_RADIUS) return .outer_ring;
+        return .wandering;
+    }
+
+    pub fn edgeSurvivalPct(self: Zone, dist: u16) u8 {
+        return switch (self) {
+            .central_hub => 100,
+            .inner_ring => 95,
+            .outer_ring => 80,
+            .wandering => wanderingSurvival(dist),
+        };
+    }
+
+    pub fn label(self: Zone) []const u8 {
+        return switch (self) {
+            .central_hub => "hub",
+            .inner_ring => "inner",
+            .outer_ring => "outer",
+            .wandering => "wandering",
+        };
+    }
+};
+
+fn wanderingSurvival(dist: u16) u8 {
+    // 60% at dist 21, lose 1% per 2 hexes, floor 40%.
+    var decay: u16 = 0;
+    if (dist > @as(u16, 20)) {
+        decay = dist - @as(u16, 20);
+        if (decay > @as(u16, 40)) decay = 40;
+        decay = decay / @as(u16, 2);
+    }
+    return @as(u8, @intCast(@as(u16, 60) - decay));
+}
+
+pub const Density = enum(u8) {
+    none = 0,
+    sparse = 1,
+    moderate = 2,
+    rich = 3,
+    pristine = 4,
+
+    pub fn label(self: Density) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .sparse => "sparse",
+            .moderate => "moderate",
+            .rich => "rich",
+            .pristine => "pristine",
+        };
+    }
+};
+
+pub const Terrain = enum(u8) {
+    empty = 0,
+    asteroid_field = 1,
+    nebula = 2,
+    debris_field = 3,
+    anomaly = 4,
+
+    pub fn label(self: Terrain) []const u8 {
+        return switch (self) {
+            .empty => "empty",
+            .asteroid_field => "asteroids",
+            .nebula => "nebula",
+            .debris_field => "debris",
+            .anomaly => "anomaly",
+        };
+    }
+
+    pub fn symbol(self: Terrain) u8 {
+        return switch (self) {
+            .empty => '.',
+            .asteroid_field => '*',
+            .nebula => '~',
+            .debris_field => 'x',
+            .anomaly => '?',
+        };
+    }
+};
+
+pub const NpcBehavior = enum(u8) {
+    none = 0,
+    passive = 1,
+    patrol = 2,
+    aggressive = 3,
+    swarm = 4,
+};
+
+pub const NpcPresence = struct {
+    behavior: NpcBehavior,
+    count: u8,
+};
+
+pub const Sector = struct {
+    coord: Hex,
+    zone: Zone,
+    terrain: Terrain,
+    metal: Density,
+    crystal: Density,
+    deuterium: Density,
+    npc: NpcPresence,
+};
+
+pub const ConnectedList = struct {
+    items: [6]Hex,
+    len: u8,
+};
+
+pub const WorldGen = struct {
+    world_seed: u64,
+
+    pub fn init(seed: u64) WorldGen {
+        return WorldGen{ .world_seed = seed };
+    }
+
+    pub fn generateSector(self: WorldGen, coord: Hex) Sector {
+        const seed: u64 = self.sectorSeed(coord);
+        var rng: random.Xoshiro256StarStar = random.Xoshiro256StarStar.init(seed);
+        const dist: u16 = coord.distFromOrigin();
+        const zone: Zone = Zone.fromDistance(dist);
+        const terrain: Terrain = rollTerrain(&rng, zone);
+        return Sector{
+            .coord = coord,
+            .zone = zone,
+            .terrain = terrain,
+            .metal = rollDensity(&rng, metalChance(zone, terrain)),
+            .crystal = rollDensity(&rng, crystalChance(zone, terrain)),
+            .deuterium = rollDensity(&rng, deutChance(zone, terrain)),
+            .npc = rollNpc(&rng, zone, dist),
+        };
+    }
+
+    pub fn sectorConnections(self: WorldGen, coord: Hex) u8 {
+        var mask: u8 = 0;
+        var connected_count: u8 = 0;
+        var last_dir: u8 = 0;
+        const dirs: [6]HexDirection = HexDirection.ALL;
+        var i: u8 = 0;
+        while (i < @as(u8, 6)) {
+            const neighbor_coord: Hex = coord.neighbor(dirs[i]);
+            if (self.edgeExists(coord, neighbor_coord)) {
+                mask = mask | (@as(u8, 1) << i);
+                connected_count = connected_count + @as(u8, 1);
+                last_dir = i;
+            }
+            i = i + @as(u8, 1);
+        }
+        if (connected_count == 0) {
+            mask = mask | (@as(u8, 1) << last_dir);
+        }
+        return mask;
+    }
+
+    pub fn connectedNeighbors(self: WorldGen, coord: Hex) ConnectedList {
+        const mask: u8 = self.sectorConnections(coord);
+        var result: ConnectedList = ConnectedList{
+            .items = undefined,
+            .len = 0,
+        };
+        const dirs: [6]HexDirection = HexDirection.ALL;
+        var i: u8 = 0;
+        while (i < @as(u8, 6)) {
+            if ((mask & (@as(u8, 1) << i)) != 0) {
+                result.items[result.len] = coord.neighbor(dirs[i]);
+                result.len = result.len + @as(u8, 1);
+            }
+            i = i + @as(u8, 1);
+        }
+        return result;
+    }
+
+    fn edgeExists(self: WorldGen, a: Hex, b: Hex) bool {
+        const key_a: u32 = a.toKey();
+        const key_b: u32 = b.toKey();
+        const lo: u32 = if (key_a < key_b) key_a else key_b;
+        const hi: u32 = if (key_a < key_b) key_b else key_a;
+        const edge_seed: u64 = hashTwo(lo, hi, self.world_seed);
+        const dist_a: u16 = a.distFromOrigin();
+        const dist_b: u16 = b.distFromOrigin();
+        const max_dist: u16 = if (dist_a > dist_b) dist_a else dist_b;
+        const zone: Zone = Zone.fromDistance(max_dist);
+        const survival: u8 = zone.edgeSurvivalPct(max_dist);
+        const roll: u8 = @as(u8, @truncate(edge_seed % @as(u64, 100)));
+        return roll < survival;
+    }
+
+    fn sectorSeed(self: WorldGen, coord: Hex) u64 {
+        return hashTwo(coord.toKey(), 0, self.world_seed);
+    }
+};
+
+fn hashTwo(a: u32, b: u32, seed: u64) u64 {
+    var bytes: [16]u8 = undefined;
+    const ptr: [*]u8 = @ptrCast(&bytes);
+    mem.storeInt(u32, ptr, 0, a, .little);
+    mem.storeInt(u32, ptr, 4, b, .little);
+    mem.storeInt(u64, ptr, 8, seed, .little);
+    return hash.fnv1a(@ptrCast(&bytes), @as(usize, 16));
+}
+
+fn rollU8(rng: *random.Xoshiro256StarStar, upper_inclusive: u8) u8 {
+    const span: u64 = @as(u64, upper_inclusive) + @as(u64, 1);
+    const value: u64 = rng.lessThan(span) orelse 0;
+    return @as(u8, @intCast(value));
+}
+
+fn zoneBoost(zone: Zone) u8 {
+    return switch (zone) {
+        .central_hub => 0,
+        .inner_ring => 30,
+        .outer_ring => 40,
+        .wandering => 50,
+    };
+}
+
+fn metalChance(zone: Zone, terrain: Terrain) u8 {
+    if (terrain == .empty) return 0;
+    const boost: u8 = zoneBoost(zone);
+    if (terrain == .asteroid_field) return 60 + boost;
+    return 20;
+}
+
+fn crystalChance(zone: Zone, terrain: Terrain) u8 {
+    if (terrain == .empty) return 0;
+    const boost: u8 = zoneBoost(zone);
+    if (terrain == .asteroid_field or terrain == .nebula) return 40 + boost;
+    return 10;
+}
+
+fn deutChance(zone: Zone, terrain: Terrain) u8 {
+    if (terrain == .empty) return 0;
+    const boost: u8 = zoneBoost(zone);
+    if (terrain == .nebula) return 50 + boost;
+    return 15;
+}
+
+fn rollTerrain(rng: *random.Xoshiro256StarStar, zone: Zone) Terrain {
+    const roll: u8 = rollU8(rng, 100);
+    return switch (zone) {
+        .central_hub => .empty,
+        .inner_ring => innerTerrain(roll),
+        .outer_ring => outerTerrain(roll),
+        .wandering => wanderingTerrain(roll),
+    };
+}
+
+fn innerTerrain(roll: u8) Terrain {
+    if (roll < 55) return .asteroid_field;
+    if (roll < 70) return .nebula;
+    if (roll < 80) return .debris_field;
+    return .empty;
+}
+
+fn outerTerrain(roll: u8) Terrain {
+    if (roll < 35) return .asteroid_field;
+    if (roll < 50) return .nebula;
+    if (roll < 70) return .debris_field;
+    if (roll < 75) return .anomaly;
+    return .empty;
+}
+
+fn wanderingTerrain(roll: u8) Terrain {
+    if (roll < 30) return .asteroid_field;
+    if (roll < 45) return .nebula;
+    if (roll < 65) return .debris_field;
+    if (roll < 80) return .anomaly;
+    return .empty;
+}
+
+fn rollDensity(rng: *random.Xoshiro256StarStar, chance: u8) Density {
+    if (chance == 0) return .none;
+    const roll: u8 = rollU8(rng, 100);
+    if (roll >= chance) return .none;
+    const quality: u8 = rollU8(rng, 100);
+    if (quality < 40) return .sparse;
+    if (quality < 70) return .moderate;
+    if (quality < 90) return .rich;
+    return .pristine;
+}
+
+fn rollNpc(rng: *random.Xoshiro256StarStar, zone: Zone, dist: u16) NpcPresence {
+    const presence_chance: u8 = switch (zone) {
+        .central_hub => 0,
+        .inner_ring => 30,
+        .outer_ring => 70,
+        .wandering => 80,
+    };
+    if (rollU8(rng, 100) >= presence_chance) {
+        return NpcPresence{ .behavior = .none, .count = 0 };
+    }
+    if (dist <= INNER_RING_RADIUS) {
+        const behavior: NpcBehavior = if (rollU8(rng, 1) == 0) .passive else .patrol;
+        return NpcPresence{ .behavior = behavior, .count = 1 };
+    }
+    if (dist <= @as(u16, 15)) {
+        return NpcPresence{ .behavior = .patrol, .count = 3 + rollU8(rng, 5) };
+    }
+    if (dist <= @as(u16, 25)) {
+        return NpcPresence{ .behavior = .aggressive, .count = 5 + rollU8(rng, 10) };
+    }
+    return NpcPresence{ .behavior = .swarm, .count = 10 + rollU8(rng, 20) };
+}
+
+test "zone from distance" {
+    try testing.expectEqual(Zone, Zone.central_hub, Zone.fromDistance(0));
+    try testing.expectEqual(Zone, Zone.inner_ring, Zone.fromDistance(1));
+    try testing.expectEqual(Zone, Zone.inner_ring, Zone.fromDistance(8));
+    try testing.expectEqual(Zone, Zone.outer_ring, Zone.fromDistance(9));
+    try testing.expectEqual(Zone, Zone.outer_ring, Zone.fromDistance(20));
+    try testing.expectEqual(Zone, Zone.wandering, Zone.fromDistance(21));
+}
+
+test "world gen is deterministic" {
+    const gen: WorldGen = WorldGen.init(12345);
+    const s1: Sector = gen.generateSector(Hex{ .q = 5, .r = -3 });
+    const s2: Sector = gen.generateSector(Hex{ .q = 5, .r = -3 });
+    try testing.expectEqual(Terrain, s1.terrain, s2.terrain);
+    try testing.expectEqual(Density, s1.metal, s2.metal);
+    try testing.expectEqual(Density, s1.crystal, s2.crystal);
+    try testing.expectEqual(Density, s1.deuterium, s2.deuterium);
+    try testing.expectEqual(NpcBehavior, s1.npc.behavior, s2.npc.behavior);
+    try testing.expectEqual(u8, s1.npc.count, s2.npc.count);
+}
+
+test "hub is empty and fully connected" {
+    const gen: WorldGen = WorldGen.init(1);
+    const hub: Hex = Hex.origin();
+    const sector: Sector = gen.generateSector(hub);
+    try testing.expectEqual(Zone, Zone.central_hub, sector.zone);
+    try testing.expectEqual(Terrain, Terrain.empty, sector.terrain);
+    const links: ConnectedList = gen.connectedNeighbors(hub);
+    try testing.expectEqual(u8, 6, links.len);
+}
+
+test "every hex keeps at least one edge" {
+    const gen: WorldGen = WorldGen.init(99);
+    var spiral = hex_mod.hexSpiral(Hex.origin(), 6);
+    while (spiral.next()) |coord| {
+        const links: ConnectedList = gen.connectedNeighbors(coord);
+        try testing.expect(links.len >= @as(u8, 1));
+    }
+}
+
+test "edges are symmetric" {
+    const gen: WorldGen = WorldGen.init(7);
+    const a: Hex = Hex{ .q = 2, .r = -1 };
+    const b: Hex = a.neighbor(HexDirection.east);
+    const a_links: ConnectedList = gen.connectedNeighbors(a);
+    const b_links: ConnectedList = gen.connectedNeighbors(b);
+    var a_has_b: bool = false;
+    var i: u8 = 0;
+    while (i < a_links.len) {
+        if (Hex.eql(a_links.items[i], b)) a_has_b = true;
+        i = i + @as(u8, 1);
+    }
+    var b_has_a: bool = false;
+    i = 0;
+    while (i < b_links.len) {
+        if (Hex.eql(b_links.items[i], a)) b_has_a = true;
+        i = i + @as(u8, 1);
+    }
+    try testing.expect(a_has_b == b_has_a);
+}

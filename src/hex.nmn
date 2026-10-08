@@ -1,0 +1,293 @@
+// Axial hex coordinates, flat-top. Stored as (q, r); cube s = -q - r.
+//
+//        -r
+//    NW  /  NE
+//      \/
+//  W ──    ── E      +q →
+//      /\
+//    SW  \  SE
+//        +r
+//
+// Ported from IAC `src/shared/hex.zig`. Sub-word `@bitCast(u16)<->i16` is a
+// known Numen gap, so toKey/fromKey sign-extend through i32/u32.
+
+const testing = @import("std/testing.nmn");
+
+pub const Hex = struct {
+    q: i16,
+    r: i16,
+
+    pub fn origin() Hex {
+        return Hex{ .q = 0, .r = 0 };
+    }
+
+    pub fn cubeS(self: Hex) i16 {
+        return (0 - self.q) - self.r;
+    }
+
+    pub fn distance(a: Hex, b: Hex) u16 {
+        const dq: i32 = @as(i32, a.q) - @as(i32, b.q);
+        const dr: i32 = @as(i32, a.r) - @as(i32, b.r);
+        const ds: i32 = @as(i32, a.cubeS()) - @as(i32, b.cubeS());
+        const m: u32 = @max(@max(@abs(dq), @abs(dr)), @abs(ds));
+        return @as(u16, @intCast(m));
+    }
+
+    pub fn distFromOrigin(self: Hex) u16 {
+        return Hex.distance(self, Hex.origin());
+    }
+
+    pub fn add(self: Hex, other: Hex) Hex {
+        return Hex{
+            .q = self.q + other.q,
+            .r = self.r + other.r,
+        };
+    }
+
+    pub fn sub(self: Hex, other: Hex) Hex {
+        return Hex{
+            .q = self.q - other.q,
+            .r = self.r - other.r,
+        };
+    }
+
+    pub fn neighbor(self: Hex, dir: HexDirection) Hex {
+        return self.add(dir.toVec());
+    }
+
+    pub fn neighbors(self: Hex) [6]Hex {
+        var result: [6]Hex = undefined;
+        const dirs: [6]HexDirection = HexDirection.ALL;
+        var i: usize = 0;
+        while (i < @as(usize, 6)) {
+            result[i] = self.neighbor(dirs[i]);
+            i = i + @as(usize, 1);
+        }
+        return result;
+    }
+
+    pub fn toKey(self: Hex) u32 {
+        const q32: i32 = @as(i32, self.q);
+        const r32: i32 = @as(i32, self.r);
+        const q_bits: u32 = @as(u32, @bitCast(q32)) & @as(u32, 65535);
+        const r_bits: u32 = @as(u32, @bitCast(r32)) & @as(u32, 65535);
+        return q_bits | (r_bits << @as(u32, 16));
+    }
+
+    pub fn fromKey(key: u32) Hex {
+        return Hex{
+            .q = signExtend16(key & @as(u32, 65535)),
+            .r = signExtend16(key >> @as(u32, 16)),
+        };
+    }
+
+    pub fn eql(a: Hex, b: Hex) bool {
+        return a.q == b.q and a.r == b.r;
+    }
+};
+
+fn signExtend16(bits: u32) i16 {
+    const masked: u32 = bits & @as(u32, 65535);
+    if (masked >= @as(u32, 32768)) {
+        const widened: i32 = @as(i32, @bitCast(masked)) - @as(i32, 65536);
+        return @as(i16, @intCast(widened));
+    }
+    return @as(i16, @intCast(masked));
+}
+
+pub const HexDirection = enum(u8) {
+    east = 0,
+    north_east = 1,
+    north_west = 2,
+    west = 3,
+    south_west = 4,
+    south_east = 5,
+
+    pub const ALL: [6]HexDirection = .{
+        .east,
+        .north_east,
+        .north_west,
+        .west,
+        .south_west,
+        .south_east,
+    };
+
+    pub fn toVec(self: HexDirection) Hex {
+        return switch (self) {
+            .east => Hex{ .q = 1, .r = 0 },
+            .north_east => Hex{ .q = 1, .r = -1 },
+            .north_west => Hex{ .q = 0, .r = -1 },
+            .west => Hex{ .q = -1, .r = 0 },
+            .south_west => Hex{ .q = -1, .r = 1 },
+            .south_east => Hex{ .q = 0, .r = 1 },
+        };
+    }
+
+    pub fn opposite(self: HexDirection) HexDirection {
+        const tag: u32 = @as(u32, @intFromEnum(self));
+        const flipped: u32 = (tag + @as(u32, 3)) % @as(u32, 6);
+        return @enumFromInt(@as(u8, @intCast(flipped)));
+    }
+
+    pub fn label(self: HexDirection) []const u8 {
+        return switch (self) {
+            .east => "E",
+            .north_east => "NE",
+            .north_west => "NW",
+            .west => "W",
+            .south_west => "SW",
+            .south_east => "SE",
+        };
+    }
+};
+
+pub const HexRingIterator = struct {
+    current: Hex,
+    radius: u16,
+    side: u8,
+    step: u16,
+    started: bool,
+
+    pub fn next(self: *HexRingIterator) ?Hex {
+        if (self.radius == 0) {
+            if (!self.started) {
+                self.started = true;
+                return self.current;
+            }
+            return null;
+        }
+
+        // Yield current, then walk `radius` steps on each of the 6 sides
+        // (Red Blob Games ring). IAC's iterator incremented `side` before
+        // walking, so radius-1 included the origin and cells at distance 2.
+        if (self.side >= @as(u8, 6)) return null;
+        const result: Hex = self.current;
+        const walk_dirs: [6]HexDirection = HexDirection.ALL;
+        self.current = self.current.neighbor(walk_dirs[self.side]);
+        self.step = self.step + @as(u16, 1);
+        if (self.step >= self.radius) {
+            self.step = 0;
+            self.side = self.side + @as(u8, 1);
+        }
+        return result;
+    }
+};
+
+pub fn hexRing(center: Hex, radius: u16) HexRingIterator {
+    if (radius == 0) {
+        return HexRingIterator{
+            .current = center,
+            .radius = 0,
+            .side = 0,
+            .step = 0,
+            .started = false,
+        };
+    }
+    var start: Hex = center;
+    var i: u16 = 0;
+    while (i < radius) {
+        start = start.neighbor(HexDirection.south_west);
+        i = i + @as(u16, 1);
+    }
+    return HexRingIterator{
+        .current = start,
+        .radius = radius,
+        .side = 0,
+        .step = 0,
+        .started = false,
+    };
+}
+
+pub const HexSpiralIterator = struct {
+    center: Hex,
+    max_radius: u16,
+    current_radius: u16,
+    ring_iter: HexRingIterator,
+
+    pub fn next(self: *HexSpiralIterator) ?Hex {
+        if (self.ring_iter.next()) |h| {
+            return h;
+        }
+        self.current_radius = self.current_radius + @as(u16, 1);
+        if (self.current_radius > self.max_radius) return null;
+        self.ring_iter = hexRing(self.center, self.current_radius);
+        return self.ring_iter.next();
+    }
+};
+
+pub fn hexSpiral(center: Hex, max_radius: u16) HexSpiralIterator {
+    return HexSpiralIterator{
+        .center = center,
+        .max_radius = max_radius,
+        .current_radius = 0,
+        .ring_iter = hexRing(center, 0),
+    };
+}
+
+test "hex distance" {
+    const a: Hex = Hex{ .q = 0, .r = 0 };
+    const b: Hex = Hex{ .q = 3, .r = -1 };
+    try testing.expectEqual(u16, 3, Hex.distance(a, b));
+}
+
+test "hex distance symmetric" {
+    const a: Hex = Hex{ .q = 2, .r = -5 };
+    const b: Hex = Hex{ .q = -1, .r = 3 };
+    try testing.expectEqual(u16, Hex.distance(a, b), Hex.distance(b, a));
+}
+
+test "hex neighbors are distance 1" {
+    const center: Hex = Hex{ .q = 5, .r = -3 };
+    const nbrs: [6]Hex = center.neighbors();
+    var i: usize = 0;
+    while (i < @as(usize, 6)) {
+        try testing.expectEqual(u16, 1, Hex.distance(center, nbrs[i]));
+        i = i + @as(usize, 1);
+    }
+}
+
+test "hex key roundtrip" {
+    const h: Hex = Hex{ .q = -42, .r = 127 };
+    const key: u32 = h.toKey();
+    const h2: Hex = Hex.fromKey(key);
+    try testing.expect(Hex.eql(h, h2));
+}
+
+test "hex key roundtrip origin" {
+    const h: Hex = Hex.origin();
+    try testing.expect(Hex.eql(h, Hex.fromKey(h.toKey())));
+}
+
+test "hex direction opposite" {
+    try testing.expectEqual(HexDirection, HexDirection.west, HexDirection.east.opposite());
+    try testing.expectEqual(HexDirection, HexDirection.south_west, HexDirection.north_east.opposite());
+}
+
+test "hex ring radius 1 has 6 cells" {
+    var iter: HexRingIterator = hexRing(Hex.origin(), 1);
+    var count: u16 = 0;
+    while (iter.next()) |cell| {
+        try testing.expectEqual(u16, 1, cell.distFromOrigin());
+        count = count + @as(u16, 1);
+    }
+    try testing.expectEqual(u16, 6, count);
+}
+
+test "hex ring radius 2 has 12 cells" {
+    var iter: HexRingIterator = hexRing(Hex.origin(), 2);
+    var count: u16 = 0;
+    while (iter.next()) |cell| {
+        try testing.expectEqual(u16, 2, cell.distFromOrigin());
+        count = count + @as(u16, 1);
+    }
+    try testing.expectEqual(u16, 12, count);
+}
+
+test "hex spiral radius 2 has 19 cells" {
+    var iter: HexSpiralIterator = hexSpiral(Hex.origin(), 2);
+    var count: u16 = 0;
+    while (iter.next()) |_| {
+        count = count + @as(u16, 1);
+    }
+    try testing.expectEqual(u16, 19, count);
+}

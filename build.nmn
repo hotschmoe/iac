@@ -1,0 +1,12 @@
+const bld = @import("std/build.nmn");
+
+pub fn build(b: *bld.Builder) anyerror!void {
+    var opts: bld.ExeOptions = .{
+        .name = "amber-scout",
+        .root = b.path("src/main.nmn"),
+        .stdlib_root = b.stdlibRoot(),
+        .release = true,
+    };
+    const exe: u32 = b.addExecutable(&opts);
+    b.setDefault(b.installArtifact(exe));
+}

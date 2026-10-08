@@ -1,0 +1,398 @@
+// Session + commands. Same logic for CLI and HTTP.
+
+const testing = @import("std/testing.nmn");
+const mem = @import("std/mem.nmn");
+const random = @import("std/random.nmn");
+const hex_mod = @import("hex.nmn");
+const world_mod = @import("world.nmn");
+const fleet_mod = @import("fleet.nmn");
+
+const Hex = hex_mod.Hex;
+const HexDirection = hex_mod.HexDirection;
+const WorldGen = world_mod.WorldGen;
+const Sector = world_mod.Sector;
+const Density = world_mod.Density;
+const Terrain = world_mod.Terrain;
+const Fleet = fleet_mod.Fleet;
+
+pub const WORLD_SEED: u64 = 1;
+pub const START_Q: i16 = 3;
+pub const START_R: i16 = -1;
+pub const START_FUEL: u32 = 60;
+pub const WIN_CARGO: u32 = 40;
+pub const MAX_HARVESTS: u8 = 3;
+pub const MSG_CAP: usize = 240;
+
+pub const Status = enum(u8) {
+    playing = 0,
+    won = 1,
+    lost = 2,
+};
+
+pub const CommandResult = enum(u8) {
+    ok = 0,
+    quit = 1,
+};
+
+pub const Game = struct {
+    gen: WorldGen,
+    rng: random.Xoshiro256StarStar,
+    pos: Hex,
+    fleet: Fleet,
+    npc: Fleet,
+    metal: u32,
+    crystal: u32,
+    deuterium: u32,
+    fuel: u32,
+    harvests_here: u8,
+    fights_won: u8,
+    npc_start_count: u8,
+    in_combat: bool,
+    status: Status,
+    last_msg: [MSG_CAP]u8,
+    last_msg_len: usize,
+
+    pub fn init(self: *Game) void {
+        self.gen = WorldGen.init(WORLD_SEED);
+        self.rng = random.Xoshiro256StarStar.init(WORLD_SEED ^ @as(u64, 0x9e3779b97f4a7c15));
+        self.pos = Hex{ .q = START_Q, .r = START_R };
+        self.fleet = fleet_mod.Fleet{
+            .ships = undefined,
+            .count = 0,
+        };
+        self.fleet.ships[0] = fleet_mod.scoutShip();
+        self.fleet.ships[1] = fleet_mod.scoutShip();
+        self.fleet.count = 2;
+        self.npc = fleet_mod.Fleet{ .ships = undefined, .count = 0 };
+        self.metal = 0;
+        self.crystal = 0;
+        self.deuterium = 0;
+        self.fuel = START_FUEL;
+        self.harvests_here = 0;
+        self.fights_won = 0;
+        self.npc_start_count = 0;
+        self.in_combat = false;
+        self.status = .playing;
+        self.last_msg_len = 0;
+        self.enterSector();
+        self.setMsg("scout launched. type help.");
+    }
+
+    pub fn cargoSum(self: *const Game) u32 {
+        return self.metal + self.crystal + self.deuterium;
+    }
+
+    pub fn currentSector(self: *const Game) Sector {
+        return self.gen.generateSector(self.pos);
+    }
+
+    pub fn msg(self: *const Game) []const u8 {
+        return self.last_msg[0..self.last_msg_len];
+    }
+
+    pub fn applyLine(self: *Game, line: []const u8) CommandResult {
+        if (self.status != .playing) {
+            self.setMsg("the run is over.");
+            return .ok;
+        }
+        const trimmed: []const u8 = trimLine(line);
+        if (trimmed.len == 0) {
+            self.setMsg("say help");
+            return .ok;
+        }
+        var cmd_end: usize = 0;
+        while (cmd_end < trimmed.len) {
+            if (trimmed[cmd_end] == @as(u8, ' ')) break;
+            cmd_end = cmd_end + @as(usize, 1);
+        }
+        const cmd: []const u8 = trimmed[0..cmd_end];
+        var arg: []const u8 = trimmed[0..0];
+        if (cmd_end < trimmed.len) {
+            arg = trimLine(trimmed[(cmd_end + @as(usize, 1))..trimmed.len]);
+        }
+        if (ieql(cmd, "quit") or ieql(cmd, "q")) return .quit;
+        if (ieql(cmd, "help") or ieql(cmd, "h")) {
+            self.setMsg("look move scan harvest fight help quit");
+            return .ok;
+        }
+        if (ieql(cmd, "look") or ieql(cmd, "l")) {
+            self.cmdLook();
+            return .ok;
+        }
+        if (ieql(cmd, "scan") or ieql(cmd, "s")) {
+            self.cmdScan();
+            return .ok;
+        }
+        if (ieql(cmd, "harvest")) {
+            self.cmdHarvest();
+            return .ok;
+        }
+        if (ieql(cmd, "fight") or ieql(cmd, "f")) {
+            self.cmdFight();
+            return .ok;
+        }
+        if (ieql(cmd, "move") or ieql(cmd, "m")) {
+            self.cmdMove(arg);
+            return .ok;
+        }
+        self.setMsg("unknown command. type help.");
+        return .ok;
+    }
+
+    fn setMsg(self: *Game, text: []const u8) void {
+        var n: usize = text.len;
+        if (n > MSG_CAP) n = MSG_CAP;
+        if (n > 0) {
+            @memcpy(self.last_msg[0..n], text[0..n]);
+        }
+        self.last_msg_len = n;
+    }
+
+    fn enterSector(self: *Game) void {
+        self.harvests_here = 0;
+        const sector: Sector = self.currentSector();
+        if (sector.npc.count == 0 or sector.npc.behavior == .none) {
+            self.in_combat = false;
+            self.npc.count = 0;
+            self.npc_start_count = 0;
+            return;
+        }
+        const class = fleet_mod.npcClassForDistance(self.pos.distFromOrigin());
+        self.npc = fleet_mod.spawnNpc(class, sector.npc.count);
+        self.npc_start_count = self.npc.count;
+        self.in_combat = self.npc.count > 0;
+    }
+
+    fn cmdLook(self: *Game) void {
+        self.setMsg("look");
+    }
+
+    fn cmdScan(self: *Game) void {
+        self.setMsg("scan");
+    }
+
+    fn cmdMove(self: *Game, arg: []const u8) void {
+        if (self.in_combat) {
+            self.setMsg("in combat: fight first.");
+            return;
+        }
+        if (self.fuel == 0) {
+            self.setMsg("no fuel.");
+            self.checkLose();
+            return;
+        }
+        const dir_opt: ?HexDirection = parseDir(arg);
+        if (dir_opt == null) {
+            self.setMsg("move E|NE|NW|W|SW|SE");
+            return;
+        }
+        const dir: HexDirection = dir_opt.?;
+        const dest: Hex = self.pos.neighbor(dir);
+        if (!self.edgeOpen(dest)) {
+            self.setMsg("no edge that way.");
+            return;
+        }
+        self.pos = dest;
+        self.fuel = self.fuel - @as(u32, 1);
+        self.enterSector();
+        self.checkWin();
+        self.checkLose();
+        if (self.status == .playing) {
+            if (self.in_combat) {
+                self.setMsg("moved. hostiles.");
+            } else {
+                self.setMsg("moved.");
+            }
+        }
+    }
+
+    fn cmdHarvest(self: *Game) void {
+        if (self.in_combat) {
+            self.setMsg("in combat: fight first.");
+            return;
+        }
+        if (self.harvests_here >= MAX_HARVESTS) {
+            self.setMsg("sector depleted.");
+            return;
+        }
+        const sector: Sector = self.currentSector();
+        const m: u32 = densityYield(sector.metal);
+        const c: u32 = densityYield(sector.crystal);
+        const d: u32 = densityYield(sector.deuterium);
+        if (m == 0 and c == 0 and d == 0) {
+            self.setMsg("nothing to harvest.");
+            return;
+        }
+        self.metal = self.metal + m;
+        self.crystal = self.crystal + c;
+        self.deuterium = self.deuterium + d;
+        self.harvests_here = self.harvests_here + @as(u8, 1);
+        self.checkWin();
+        self.setMsg("harvested.");
+    }
+
+    fn cmdFight(self: *Game) void {
+        if (!self.in_combat or self.npc.count == 0) {
+            self.setMsg("no hostiles.");
+            return;
+        }
+        var rounds: u8 = 0;
+        while (rounds < @as(u8, 64)) {
+            const result = fleet_mod.resolveRound(&self.fleet, &self.npc, &self.rng);
+            rounds = rounds + @as(u8, 1);
+            if (result.concluded) {
+                if (result.player_won) {
+                    self.metal = self.metal + fleet_mod.salvageMetal(self.npc_start_count);
+                    self.crystal = self.crystal + fleet_mod.salvageCrystal(self.npc_start_count);
+                    self.deuterium = self.deuterium + fleet_mod.salvageDeut(self.npc_start_count);
+                    self.fights_won = self.fights_won + @as(u8, 1);
+                    self.in_combat = false;
+                    self.npc.count = 0;
+                    self.checkWin();
+                    self.setMsg("victory. salvage aboard.");
+                } else {
+                    self.status = .lost;
+                    self.setMsg("fleet destroyed.");
+                }
+                return;
+            }
+        }
+        self.setMsg("combat continues.");
+    }
+
+    fn edgeOpen(self: *const Game, dest: Hex) bool {
+        const links = self.gen.connectedNeighbors(self.pos);
+        var i: u8 = 0;
+        while (i < links.len) {
+            if (Hex.eql(links.items[i], dest)) return true;
+            i = i + @as(u8, 1);
+        }
+        return false;
+    }
+
+    fn checkWin(self: *Game) void {
+        if (self.status != .playing) return;
+        if (self.pos.q == 0 and self.pos.r == 0) {
+            if (self.cargoSum() >= WIN_CARGO and self.fights_won >= @as(u8, 1)) {
+                self.status = .won;
+                self.setMsg("hub reached with salvage. you win.");
+            }
+        }
+    }
+
+    fn checkLose(self: *Game) void {
+        if (self.status != .playing) return;
+        if (fleet_mod.aliveCount(&self.fleet) == 0) {
+            self.status = .lost;
+            self.setMsg("fleet destroyed.");
+            return;
+        }
+        if (self.fuel == 0) {
+            const sector: Sector = self.currentSector();
+            const can_harvest: bool = self.harvests_here < MAX_HARVESTS and
+                (densityYield(sector.metal) + densityYield(sector.crystal) + densityYield(sector.deuterium)) > 0;
+            if (!can_harvest) {
+                self.status = .lost;
+                self.setMsg("stranded. no fuel.");
+            }
+        }
+    }
+};
+
+fn densityYield(d: Density) u32 {
+    return switch (d) {
+        .none => 0,
+        .sparse => 4,
+        .moderate => 8,
+        .rich => 16,
+        .pristine => 32,
+    };
+}
+
+fn trimLine(s: []const u8) []const u8 {
+    var start: usize = 0;
+    var end: usize = s.len;
+    while (start < end) {
+        const c: u8 = s[start];
+        if (c != @as(u8, ' ') and c != @as(u8, '\t') and c != @as(u8, '\r') and c != @as(u8, '\n')) break;
+        start = start + @as(usize, 1);
+    }
+    while (end > start) {
+        const c: u8 = s[end - @as(usize, 1)];
+        if (c != @as(u8, ' ') and c != @as(u8, '\t') and c != @as(u8, '\r') and c != @as(u8, '\n')) break;
+        end = end - @as(usize, 1);
+    }
+    return s[start..end];
+}
+
+fn upper(c: u8) u8 {
+    if (c >= @as(u8, 'a') and c <= @as(u8, 'z')) return c - @as(u8, 32);
+    return c;
+}
+
+fn ieql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    var i: usize = 0;
+    while (i < a.len) {
+        if (upper(a[i]) != upper(b[i])) return false;
+        i = i + @as(usize, 1);
+    }
+    return true;
+}
+
+pub fn parseDir(arg: []const u8) ?HexDirection {
+    if (ieql(arg, "E") or ieql(arg, "EAST")) return HexDirection.east;
+    if (ieql(arg, "NE")) return HexDirection.north_east;
+    if (ieql(arg, "NW")) return HexDirection.north_west;
+    if (ieql(arg, "W") or ieql(arg, "WEST")) return HexDirection.west;
+    if (ieql(arg, "SW")) return HexDirection.south_west;
+    if (ieql(arg, "SE")) return HexDirection.south_east;
+    return null;
+}
+
+pub fn harvestYield(d: Density) u32 {
+    return densityYield(d);
+}
+
+test "parse directions" {
+    try testing.expectEqual(HexDirection, HexDirection.east, parseDir("e").?);
+    try testing.expectEqual(HexDirection, HexDirection.north_west, parseDir("NW").?);
+    try testing.expect(parseDir("up") == null);
+}
+
+test "new game starts at 3,-1 with two scouts" {
+    var g: Game = undefined;
+    g.init();
+    try testing.expectEqual(i16, 3, g.pos.q);
+    try testing.expectEqual(i16, -1, g.pos.r);
+    try testing.expectEqual(u32, START_FUEL, g.fuel);
+    try testing.expectEqual(u8, 2, g.fleet.count);
+    try testing.expectEqual(Status, Status.playing, g.status);
+}
+
+test "help and unknown commands" {
+    var g: Game = undefined;
+    g.init();
+    try testing.expectEqual(CommandResult, CommandResult.ok, g.applyLine("help"));
+    try testing.expect(ieql(g.msg(), "look move scan harvest fight help quit"));
+    try testing.expectEqual(CommandResult, CommandResult.quit, g.applyLine("quit"));
+}
+
+test "move without a direction is refused" {
+    var g: Game = undefined;
+    g.init();
+    _ = g.applyLine("move");
+    try testing.expectEqual(u32, START_FUEL, g.fuel);
+}
+
+test "forced hub with salvage wins" {
+    var g: Game = undefined;
+    g.init();
+    g.in_combat = false;
+    g.npc.count = 0;
+    g.pos = Hex.origin();
+    g.metal = 40;
+    g.fights_won = 1;
+    g.checkWin();
+    try testing.expectEqual(Status, Status.won, g.status);
+}

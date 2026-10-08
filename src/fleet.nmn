@@ -1,0 +1,232 @@
+// Integer ships + one-round combat. No floats, no rapid-fire.
+
+const testing = @import("std/testing.nmn");
+const random = @import("std/random.nmn");
+
+pub const MAX_SHIPS: usize = 8;
+
+pub const ShipClass = enum(u8) {
+    scout = 0,
+    corvette = 1,
+    frigate = 2,
+    cruiser = 3,
+};
+
+pub const Ship = struct {
+    class: ShipClass,
+    hull: u16,
+    hull_max: u16,
+    shield: u16,
+    shield_max: u16,
+    weapon: u16,
+};
+
+pub const Fleet = struct {
+    ships: [MAX_SHIPS]Ship,
+    count: u8,
+};
+
+pub const RoundResult = struct {
+    player_alive: u8,
+    npc_alive: u8,
+    damage_dealt: u16,
+    damage_taken: u16,
+    concluded: bool,
+    player_won: bool,
+};
+
+pub fn makeShip(class: ShipClass) Ship {
+    return switch (class) {
+        .scout => Ship{ .class = .scout, .hull = 30, .hull_max = 30, .shield = 10, .shield_max = 10, .weapon = 5 },
+        .corvette => Ship{ .class = .corvette, .hull = 50, .hull_max = 50, .shield = 20, .shield_max = 20, .weapon = 15 },
+        .frigate => Ship{ .class = .frigate, .hull = 120, .hull_max = 120, .shield = 60, .shield_max = 60, .weapon = 30 },
+        .cruiser => Ship{ .class = .cruiser, .hull = 200, .hull_max = 200, .shield = 100, .shield_max = 100, .weapon = 80 },
+    };
+}
+
+pub fn scoutShip() Ship {
+    return makeShip(.scout);
+}
+
+pub fn npcClassForDistance(dist: u16) ShipClass {
+    if (dist <= @as(u16, 8)) return .scout;
+    if (dist <= @as(u16, 15)) return .corvette;
+    if (dist <= @as(u16, 25)) return .frigate;
+    return .cruiser;
+}
+
+pub fn spawnNpc(class: ShipClass, count: u8) Fleet {
+    var fleet: Fleet = Fleet{ .ships = undefined, .count = 0 };
+    var n: u8 = count;
+    if (n > @as(u8, MAX_SHIPS)) n = @as(u8, MAX_SHIPS);
+    var i: u8 = 0;
+    while (i < n) {
+        fleet.ships[i] = makeShip(class);
+        i = i + @as(u8, 1);
+    }
+    fleet.count = n;
+    return fleet;
+}
+
+pub fn aliveCount(fleet: *const Fleet) u8 {
+    var n: u8 = 0;
+    var i: u8 = 0;
+    while (i < fleet.count) {
+        if (fleet.ships[i].hull > 0) n = n + @as(u8, 1);
+        i = i + @as(u8, 1);
+    }
+    return n;
+}
+
+pub fn salvageMetal(npc_start_count: u8) u32 {
+    return @as(u32, npc_start_count) * @as(u32, 10);
+}
+
+pub fn salvageCrystal(npc_start_count: u8) u32 {
+    return @as(u32, npc_start_count) * @as(u32, 5);
+}
+
+pub fn salvageDeut(npc_start_count: u8) u32 {
+    return @as(u32, npc_start_count) * @as(u32, 2);
+}
+
+pub fn compact(fleet: *Fleet) void {
+    var write_i: u8 = 0;
+    var read_i: u8 = 0;
+    while (read_i < fleet.count) {
+        if (fleet.ships[read_i].hull > 0) {
+            if (write_i != read_i) {
+                fleet.ships[write_i] = fleet.ships[read_i];
+            }
+            write_i = write_i + @as(u8, 1);
+        }
+        read_i = read_i + @as(u8, 1);
+    }
+    fleet.count = write_i;
+}
+
+fn rollDamage(weapon: u16, rng: *random.Xoshiro256StarStar) u16 {
+    const roll: u64 = rng.lessThan(@as(u64, 41)) orelse 0;
+    const scaled: u32 = @as(u32, weapon) * (@as(u32, 80) + @as(u32, @intCast(roll)));
+    return @as(u16, @intCast(scaled / @as(u32, 100)));
+}
+
+fn pickLiving(fleet: *Fleet, rng: *random.Xoshiro256StarStar) ?u8 {
+    const living: u8 = aliveCount(fleet);
+    if (living == 0) return null;
+    const pick: u64 = rng.lessThan(@as(u64, living)) orelse 0;
+    var seen: u8 = 0;
+    var i: u8 = 0;
+    while (i < fleet.count) {
+        if (fleet.ships[i].hull > 0) {
+            if (seen == @as(u8, @intCast(pick))) return i;
+            seen = seen + @as(u8, 1);
+        }
+        i = i + @as(u8, 1);
+    }
+    return null;
+}
+
+fn applyDamage(ship: *Ship, damage: u16) void {
+    var remaining: u16 = damage;
+    if (ship.shield > 0) {
+        if (ship.shield >= remaining) {
+            ship.shield = ship.shield - remaining;
+            return;
+        }
+        remaining = remaining - ship.shield;
+        ship.shield = 0;
+    }
+    if (ship.hull > remaining) {
+        ship.hull = ship.hull - remaining;
+    } else {
+        ship.hull = 0;
+    }
+}
+
+pub fn resolveRound(player: *Fleet, npc: *Fleet, rng: *random.Xoshiro256StarStar) RoundResult {
+    var dealt: u16 = 0;
+    var taken: u16 = 0;
+    var i: u8 = 0;
+    while (i < player.count) {
+        if (player.ships[i].hull > 0) {
+            if (pickLiving(npc, rng)) |idx| {
+                const dmg: u16 = rollDamage(player.ships[i].weapon, rng);
+                applyDamage(&npc.ships[idx], dmg);
+                dealt = dealt + dmg;
+            }
+        }
+        i = i + @as(u8, 1);
+    }
+    i = 0;
+    while (i < npc.count) {
+        if (npc.ships[i].hull > 0) {
+            if (pickLiving(player, rng)) |idx| {
+                const dmg: u16 = rollDamage(npc.ships[i].weapon, rng);
+                applyDamage(&player.ships[idx], dmg);
+                taken = taken + dmg;
+            }
+        }
+        i = i + @as(u8, 1);
+    }
+    compact(player);
+    compact(npc);
+    const p_alive: u8 = player.count;
+    const n_alive: u8 = npc.count;
+    const concluded: bool = p_alive == 0 or n_alive == 0;
+    return RoundResult{
+        .player_alive = p_alive,
+        .npc_alive = n_alive,
+        .damage_dealt = dealt,
+        .damage_taken = taken,
+        .concluded = concluded,
+        .player_won = concluded and p_alive > 0,
+    };
+}
+
+test "scoutShip stats" {
+    const s: Ship = scoutShip();
+    try testing.expectEqual(u16, 30, s.hull);
+    try testing.expectEqual(u16, 10, s.shield);
+    try testing.expectEqual(u16, 5, s.weapon);
+}
+
+test "spawnNpc caps and counts" {
+    const f: Fleet = spawnNpc(.corvette, 3);
+    try testing.expectEqual(u8, 3, f.count);
+    try testing.expectEqual(ShipClass, ShipClass.corvette, f.ships[0].class);
+    const capped: Fleet = spawnNpc(.scout, 20);
+    try testing.expectEqual(u8, 8, capped.count);
+}
+
+test "salvage tables" {
+    try testing.expectEqual(u32, 40, salvageMetal(4));
+    try testing.expectEqual(u32, 20, salvageCrystal(4));
+    try testing.expectEqual(u32, 8, salvageDeut(4));
+}
+
+test "compact removes dead ships" {
+    var f: Fleet = spawnNpc(.scout, 3);
+    f.ships[1].hull = 0;
+    compact(&f);
+    try testing.expectEqual(u8, 2, f.count);
+    try testing.expect(f.ships[0].hull > 0);
+    try testing.expect(f.ships[1].hull > 0);
+}
+
+test "two scouts eventually beat one scout" {
+    var player: Fleet = Fleet{ .ships = undefined, .count = 2 };
+    player.ships[0] = scoutShip();
+    player.ships[1] = scoutShip();
+    var npc: Fleet = spawnNpc(.scout, 1);
+    var rng: random.Xoshiro256StarStar = random.Xoshiro256StarStar.init(7);
+    var round: u8 = 0;
+    var last: RoundResult = undefined;
+    while (round < @as(u8, 50)) {
+        last = resolveRound(&player, &npc, &rng);
+        round = round + @as(u8, 1);
+        if (last.concluded) break;
+    }
+    try testing.expect(last.concluded);
+    try testing.expect(last.player_won);
+}

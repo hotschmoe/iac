@@ -1,0 +1,75 @@
+// Amber CRT HTML for the current Game session.
+
+const fmt = @import("std/fmt.nmn");
+const mem = @import("std/mem.nmn");
+const hex_mod = @import("hex.nmn");
+const world_mod = @import("world.nmn");
+const game_mod = @import("game.nmn");
+
+const Hex = hex_mod.Hex;
+const HexDirection = hex_mod.HexDirection;
+const Game = game_mod.Game;
+const Sector = world_mod.Sector;
+
+const HEAD: []const u8 = "<!doctype html><html><head><meta charset=utf-8><title>Amber Scout</title><style>html,body{background:#110800;color:#ffb000;font-family:ui-monospace,monospace;}a{color:#ffd56a}pre,section{border:1px solid #7a4a00;padding:12px}nav a{margin-right:10px}</style></head><body><h1>AMBER SCOUT</h1><pre>";
+const AFTER_PRE: []const u8 = "</pre>";
+const NAV: []const u8 = "<nav><a href=\"/\">look</a> <a href=\"/cmd?c=SCAN\">scan</a> <a href=\"/cmd?c=HARVEST\">harvest</a> <a href=\"/cmd?c=FIGHT\">fight</a> <a href=\"/cmd?c=HELP\">help</a></nav><section><p>move</p>";
+const FOOT: []const u8 = "</section><p>win: reach hub [0,0] with 40 cargo after a fight. seed 1.</p></body></html>";
+
+pub fn render(game: *const Game, out: []u8) usize {
+    var cursor: mem.WriteCursor = undefined;
+    cursor.init(out);
+    cursor.writeBytes(HEAD) catch return cursor.offset;
+    const sector: Sector = game.currentSector();
+    const q: i32 = @as(i32, game.pos.q);
+    const r: i32 = @as(i32, game.pos.r);
+    const fuel: u32 = game.fuel;
+    const metal: u32 = game.metal;
+    const crystal: u32 = game.crystal;
+    const deut: u32 = game.deuterium;
+    const ships: u32 = @as(u32, game.fleet.count);
+    const npc: u32 = @as(u32, game.npc.count);
+    const zone: []const u8 = sector.zone.label();
+    const terrain: []const u8 = sector.terrain.label();
+    const status: []const u8 = statusLabel(game);
+    const msg: []const u8 = game.msg();
+    _ = fmt.format(&cursor,
+        "status {s}\nhex [{d},{d}] {s}/{s}\nfuel {d}  metal {d}  crystal {d}  deut {d}\nships {d}  hostiles {d}\n{s}",
+        .{ status, q, r, zone, terrain, fuel, metal, crystal, deut, ships, npc, msg },
+    ) catch return cursor.offset;
+    cursor.writeBytes(AFTER_PRE) catch return cursor.offset;
+    cursor.writeBytes(NAV) catch return cursor.offset;
+    writeMoves(&cursor, game);
+    cursor.writeBytes(FOOT) catch return cursor.offset;
+    return cursor.offset;
+}
+
+fn statusLabel(game: *const Game) []const u8 {
+    return switch (game.status) {
+        .playing => "PLAYING",
+        .won => "WON",
+        .lost => "LOST",
+    };
+}
+
+fn writeMoves(cursor: *mem.WriteCursor, game: *const Game) void {
+    const links = game.gen.connectedNeighbors(game.pos);
+    const dirs: [6]HexDirection = HexDirection.ALL;
+    var i: u8 = 0;
+    while (i < @as(u8, 6)) {
+        const dest: Hex = game.pos.neighbor(dirs[i]);
+        var open: bool = false;
+        var k: u8 = 0;
+        while (k < links.len) {
+            if (Hex.eql(links.items[k], dest)) open = true;
+            k = k + @as(u8, 1);
+        }
+        const lab: []const u8 = dirs[i].label();
+        if (open) {
+            _ = fmt.format(cursor, "<a href=\"/cmd?c=MOVE&d={s}\">{s}</a> ", .{ lab, lab }) catch return;
+        } else {
+            _ = fmt.format(cursor, "<span>{s}</span> ", .{lab}) catch return;
+        }
+        i = i + @as(u8, 1);
+    }
+}

@@ -1,0 +1,5 @@
+.{
+    .name = "amber-scout",
+    .version = "0.1.0",
+    .compiled_by = "0.12",
+}

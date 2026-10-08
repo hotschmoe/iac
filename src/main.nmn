@@ -1,0 +1,220 @@
+// Amber Scout — CLI scout run, or `--http` for the amber page.
+
+const fmt = @import("std/fmt.nmn");
+const io = @import("std/io.nmn");
+const mem = @import("std/mem.nmn");
+const linux_io = @import("std/linux/io.nmn");
+const hex_mod = @import("hex.nmn");
+const world_mod = @import("world.nmn");
+const fleet_mod = @import("fleet.nmn");
+const game_mod = @import("game.nmn");
+const page_mod = @import("page.nmn");
+const http_mod = @import("http.nmn");
+const sock = @import("linux_sock.nmn");
+
+const Hex = hex_mod.Hex;
+const HexDirection = hex_mod.HexDirection;
+const Game = game_mod.Game;
+const Sector = world_mod.Sector;
+
+const EXIT_OK: u32 = 0;
+const EXIT_WRITE: u32 = 1;
+const EXIT_SOCK: u32 = 2;
+const HTTP_PORT: u16 = 18080;
+const PAGE_CAP: usize = 8192;
+const REQ_CAP: usize = 4096;
+
+fn writeAll(bytes: []const u8) bool {
+    var context: linux_io.FdWriter = undefined;
+    linux_io.initStdoutWriter(&context);
+    var writer: io.Writer = undefined;
+    context.writer(&writer);
+    var result: io.Transfer = undefined;
+    writer.writeAll(bytes, &result);
+    return result.state == .complete and result.count == bytes.len;
+}
+
+fn print(comptime pattern: []const u8, args: anytype) bool {
+    var context: linux_io.FdWriter = undefined;
+    linux_io.initStdoutWriter(&context);
+    var writer: io.Writer = undefined;
+    context.writer(&writer);
+    var result: io.Transfer = undefined;
+    fmt.formatWriter(&writer, pattern, args, &result);
+    return result.state == .complete;
+}
+
+fn printLook(game: *const Game) bool {
+    const sector: Sector = game.currentSector();
+    const q: i32 = @as(i32, game.pos.q);
+    const r: i32 = @as(i32, game.pos.r);
+    if (!print("hex [{d},{d}] {s}/{s} fuel={d} cargo={d}/{d}/{d} ships={d} hostiles={d}\n", .{
+        q,
+        r,
+        sector.zone.label(),
+        sector.terrain.label(),
+        game.fuel,
+        game.metal,
+        game.crystal,
+        game.deuterium,
+        @as(u32, game.fleet.count),
+        @as(u32, game.npc.count),
+    })) return false;
+    const links = game.gen.connectedNeighbors(game.pos);
+    if (!writeAll("exits:")) return false;
+    const dirs: [6]HexDirection = HexDirection.ALL;
+    var i: u8 = 0;
+    while (i < @as(u8, 6)) {
+        const dest: Hex = game.pos.neighbor(dirs[i]);
+        var open: bool = false;
+        var k: u8 = 0;
+        while (k < links.len) {
+            if (Hex.eql(links.items[k], dest)) open = true;
+            k = k + @as(u8, 1);
+        }
+        if (open) {
+            if (!print(" {s}", .{dirs[i].label()})) return false;
+        }
+        i = i + @as(u8, 1);
+    }
+    if (!writeAll("\n")) return false;
+    if (game.last_msg_len > 0) {
+        if (!writeAll(game.msg())) return false;
+        if (!writeAll("\n")) return false;
+    }
+    return true;
+}
+
+fn applyLines(game: *Game, buf: []const u8) game_mod.CommandResult {
+    var start: usize = 0;
+    while (start < buf.len) {
+        var end: usize = start;
+        while (end < buf.len) {
+            if (buf[end] == @as(u8, '\n') or buf[end] == @as(u8, '\r')) break;
+            end = end + @as(usize, 1);
+        }
+        const outcome = game.applyLine(buf[start..end]);
+        if (outcome == .quit) return .quit;
+        if (game.status != .playing) return .ok;
+        while (end < buf.len and (buf[end] == @as(u8, '\n') or buf[end] == @as(u8, '\r'))) {
+            end = end + @as(usize, 1);
+        }
+        start = end;
+    }
+    return .ok;
+}
+
+fn runCli() u32 {
+    var game: Game = undefined;
+    game.init();
+    if (!writeAll("AMBER SCOUT  seed 1  win: hub with 40 cargo after a fight\n")) return EXIT_WRITE;
+    while (game.status == .playing) {
+        if (!printLook(&game)) return EXIT_WRITE;
+        if (!writeAll("> ")) return EXIT_WRITE;
+        var buf: [256]u8 = undefined;
+        var context: linux_io.FdReader = undefined;
+        linux_io.initStdinReader(&context);
+        var reader: io.Reader = undefined;
+        context.reader(&reader);
+        var result: io.Transfer = undefined;
+        reader.read(buf[0..], &result);
+        if (result.state == .end) break;
+        if (result.state != .complete and result.state != .progress) return EXIT_WRITE;
+        if (applyLines(&game, buf[0..result.count]) == .quit) break;
+    }
+    if (!printLook(&game)) return EXIT_WRITE;
+    if (game.status == .won) {
+        if (!writeAll("YOU WIN\n")) return EXIT_WRITE;
+    } else if (game.status == .lost) {
+        if (!writeAll("YOU LOSE\n")) return EXIT_WRITE;
+    }
+    return EXIT_OK;
+}
+
+fn commandFromQuery(query: []const u8, out: []u8) usize {
+    var cmd_buf: [16]u8 = undefined;
+    var dir_buf: [8]u8 = undefined;
+    const cmd_n: usize = http_mod.queryGet(query, "c", cmd_buf[0..]);
+    const dir_n: usize = http_mod.queryGet(query, "d", dir_buf[0..]);
+    if (cmd_n == 0) {
+        const look: []const u8 = "look";
+        var i: usize = 0;
+        while (i < look.len and i < out.len) {
+            out[i] = look[i];
+            i = i + @as(usize, 1);
+        }
+        return i;
+    }
+    var cursor: mem.WriteCursor = undefined;
+    cursor.init(out);
+    cursor.writeBytes(cmd_buf[0..cmd_n]) catch return 0;
+    if (dir_n > 0) {
+        cursor.writeBytes(" ") catch return cursor.offset;
+        cursor.writeBytes(dir_buf[0..dir_n]) catch return cursor.offset;
+    }
+    return cursor.offset;
+}
+
+fn handleClient(game: *Game, client_fd: u32) void {
+    var req_buf: [REQ_CAP]u8 = undefined;
+    const n: i64 = sock.recv(client_fd, req_buf[0..]);
+    if (n <= 0) {
+        _ = sock.closeFd(client_fd);
+        return;
+    }
+    const got: usize = @as(usize, @intCast(n));
+    const req_opt = http_mod.parseRequest(req_buf[0..got]);
+    if (req_opt == null) {
+        _ = http_mod.writeHttp(client_fd, 400, "Bad Request", "text/plain", "bad request\n");
+        _ = sock.closeFd(client_fd);
+        return;
+    }
+    const req: http_mod.Request = req_opt.?;
+    if (req.method != .get) {
+        _ = http_mod.writeHttp(client_fd, 405, "Method Not Allowed", "text/plain", "GET only\n");
+        _ = sock.closeFd(client_fd);
+        return;
+    }
+    if (mem.eql(req.path, "/cmd")) {
+        var line_buf: [32]u8 = undefined;
+        const line_n: usize = commandFromQuery(req.query, line_buf[0..]);
+        _ = game.applyLine(line_buf[0..line_n]);
+    } else if (!mem.eql(req.path, "/")) {
+        _ = http_mod.writeHttp(client_fd, 404, "Not Found", "text/plain", "not found\n");
+        _ = sock.closeFd(client_fd);
+        return;
+    }
+    var page_buf: [PAGE_CAP]u8 = undefined;
+    const page_n: usize = page_mod.render(game, page_buf[0..]);
+    _ = http_mod.writeHttp(client_fd, 200, "OK", "text/html", page_buf[0..page_n]);
+    _ = sock.closeFd(client_fd);
+}
+
+fn runHttp() u32 {
+    var game: Game = undefined;
+    game.init();
+    const listen_i: i64 = sock.listenLoopback(HTTP_PORT);
+    if (listen_i < 0) {
+        const err: i64 = 0 - listen_i;
+        if (!print("listen failed errno={d}\n", .{err})) return EXIT_WRITE;
+        return EXIT_SOCK;
+    }
+    const listen_fd: u32 = @as(u32, @intCast(listen_i));
+    if (!print("AMBER SCOUT http://127.0.0.1:{d}/\n", .{@as(u32, HTTP_PORT)})) {
+        _ = sock.closeFd(listen_fd);
+        return EXIT_WRITE;
+    }
+    while (true) {
+        const client_i: i64 = sock.acceptClient(listen_fd);
+        if (client_i < 0) continue;
+        handleClient(&game, @as(u32, @intCast(client_i)));
+    }
+}
+
+pub fn main(argc: usize, argv: [*]const [*]const u8) u32 {
+    if (argc >= @as(usize, 2)) {
+        const arg: []const u8 = mem.cstrSlice(argv[1]);
+        if (mem.eql(arg, "--http")) return runHttp();
+    }
+    return runCli();
+}

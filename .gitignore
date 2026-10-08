@@ -1,0 +1,4 @@
+numen-out/
+*.elf
+/amber-scout
+.numen-test-bin
