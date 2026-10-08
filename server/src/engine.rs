@@ -4494,4 +4494,38 @@ mod tests {
         assert!(engine.fleets[&fid].fuel <= engine.fleets[&fid].fuel_max);
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn split_and_merge_survive_persistence_and_restart() {
+        let path = std::env::temp_dir().join(format!("iac_split_persist_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (pid, fid, new_id) = {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            let mut engine = GameEngine::init(42, db).unwrap();
+            let (pid, fid) = register(&mut engine, "Splitter");
+            engine.add_ship_to_homeworld(pid, ShipClass::Hauler).unwrap();
+            engine.persist_dirty_state().unwrap();
+            let ship = engine.fleets[&fid].ships[2].id;
+            let new_id = engine.handle_split(pid, fid, &[ship]).unwrap();
+            engine.persist_dirty_state().unwrap();
+            engine.flush_persistence().unwrap();
+            (pid, fid, new_id)
+        };
+
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let mut engine = GameEngine::init(42, db).unwrap();
+        assert_eq!(engine.fleets[&fid].ship_count, 2);
+        assert_eq!(engine.fleets[&new_id].ship_count, 1);
+
+        engine.handle_merge(pid, fid, new_id).unwrap();
+        engine.persist_dirty_state().unwrap();
+        engine.flush_persistence().unwrap();
+        drop(engine);
+
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let engine = GameEngine::init(42, db).unwrap();
+        assert_eq!(engine.fleets[&fid].ship_count, 3);
+        assert!(!engine.fleets.contains_key(&new_id));
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -420,6 +420,9 @@ impl Database {
         self.save_ships_inner(&conn, fleet)
     }
 
+    /// Rewrites the fleet's ship rows. REPLACE, because a ship that just
+    /// moved here by split or merge may still have a row under its old fleet
+    /// when this fleet happens to be saved first.
     fn save_ships_inner(&self, conn: &Connection, fleet: &Fleet) -> Result<(), rusqlite::Error> {
         conn.execute(
             "DELETE FROM ships WHERE fleet_id = ?1",
@@ -427,7 +430,7 @@ impl Database {
         )?;
 
         let mut stmt = conn.prepare(
-            "INSERT INTO ships (id, fleet_id, player_id, class, hull, hull_max, shield, shield_max, weapon_power, speed)
+            "INSERT OR REPLACE INTO ships (id, fleet_id, player_id, class, hull, hull_max, shield, shield_max, weapon_power, speed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
 
