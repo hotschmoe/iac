@@ -11,7 +11,7 @@ use rand::rngs::StdRng;
 use iac_shared::hex::Hex;
 use iac_shared::constants::{
     Resources, ShipClass, Density, Zone,
-    STARTING_RESOURCES, STARTING_SCOUTS, MAX_FLEETS_PER_PLAYER,
+    STARTING_RESOURCES, STARTING_SCOUTS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, STRANDED_RECOVERY_TICKS,
     HARVEST_COOLDOWN, SHIELD_REGEN_IDLE_TICKS,
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
@@ -33,7 +33,7 @@ use iac_shared::scaling::{
     self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION,
 };
-use iac_shared::protocol::{GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams};
+use iac_shared::protocol::{AlertEvent, AlertLevel, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams};
 
 use crate::auth::{self, TokenHash};
 use crate::combat;
@@ -241,6 +241,9 @@ pub struct FleetPolicy {
     pub work_sector: Option<Hex>,
     /// Next tick the autopilot will reconsider this fleet.
     pub next_eval_tick: u64,
+    /// The last hold reason announced and when, so a fleet that keeps
+    /// holding for the same reason does not flood the event stream.
+    pub last_hold: Option<(String, u64)>,
 }
 
 /// What a policy BFS is hunting for.
@@ -365,6 +368,7 @@ impl GameEngine {
         self.reap_empty_fleets();
         self.process_policies()?;
         self.process_movement()?;
+        self.process_stranded();
         self.process_combat()?;
         self.process_exploration()?;
         self.process_harvesting()?;
@@ -378,6 +382,49 @@ impl GameEngine {
         self.prune_scan_reveals();
 
         Ok(())
+    }
+
+    /// Emergency reserve: an idle fleet away from home with less fuel than one
+    /// jump slowly regains exactly one jump's worth, taking
+    /// `STRANDED_RECOVERY_TICKS` from empty. Progress is announced at each
+    /// quarter. The reserve is ordinary fuel, so it buys one hop and then
+    /// the wait starts over: a fleet five hops out is five waits from home.
+    fn process_stranded(&mut self) {
+        let mut notes: Vec<(AlertLevel, u64, Hex, String)> = Vec::new();
+        let ids: Vec<u64> = self.fleets.keys().copied().collect();
+        for fid in ids {
+            let fleet = &self.fleets[&fid];
+            if fleet.ship_count == 0 || fleet.state != FleetStatus::Idle { continue; }
+            let Some(player) = self.players.get(&fleet.owner_id) else { continue; };
+            if fleet.location == player.homeworld { continue; }
+            let hop = fleet_fuel_cost(fleet, Some(&player.research)).min(fleet.fuel_max);
+            if hop <= 0.0 || fleet.fuel >= hop { continue; }
+
+            let old = fleet.fuel;
+            let mut new = old + hop / STRANDED_RECOVERY_TICKS as f32;
+            if new >= hop * 0.9999 { new = hop; }
+            let quarters = |f: f32| (f / hop * 4.0 + 0.0001).floor() as u32;
+            let location = fleet.location;
+            let note = if new >= hop {
+                Some((AlertLevel::Info, format!(
+                    "fleet {fid} at {location}: emergency reserve ready, enough fuel for one jump toward home",
+                )))
+            } else if quarters(new) > quarters(old) {
+                let left = ((hop - new) / (hop / STRANDED_RECOVERY_TICKS as f32)).ceil() as u64;
+                Some((AlertLevel::Warning, format!(
+                    "fleet {fid} stranded at {location}: emergency reserve {}% charged, about {left} ticks to one jump",
+                    quarters(new) * 25,
+                )))
+            } else {
+                None
+            };
+            if let Some((level, message)) = note { notes.push((level, fid, location, message)); }
+            if let Some(f) = self.fleets.get_mut(&fid) { f.fuel = new; }
+            self.dirty_fleets.insert(fid, ());
+        }
+        for (level, fid, sector, message) in notes {
+            self.push_alert(level, fid, sector, message);
+        }
     }
 
     /// Drop a fleet and its standing orders, and queue both for deletion.
@@ -449,10 +496,25 @@ impl GameEngine {
         let arrival_ids: Vec<u64> = self.pending_arrivals.drain(..).collect();
         for fleet_id in arrival_ids {
             self.check_homeworld_docking(fleet_id)?;
+            self.announce_if_stranded(fleet_id);
             self.check_npc_encounter(fleet_id)?;
         }
 
         Ok(())
+    }
+
+    fn announce_if_stranded(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let Some(player) = self.players.get(&fleet.owner_id) else { return; };
+        if fleet.ship_count == 0 || fleet.location == player.homeworld { return; }
+        let hop = fleet_fuel_cost(fleet, Some(&player.research));
+        if fleet.fuel >= hop { return; }
+        let (location, fuel) = (fleet.location, fleet.fuel);
+        let message = format!(
+            "fleet {fleet_id} is stranded at {location}: {fuel:.0} fuel, a jump costs {hop:.0}; the emergency reserve recovers one jump in about {} minutes",
+            STRANDED_RECOVERY_TICKS / 60,
+        );
+        self.push_alert(AlertLevel::Critical, fleet_id, location, message);
     }
 
     // ── Combat ────────────────────────────────────────────────────
@@ -1247,8 +1309,8 @@ impl GameEngine {
             ships: [Ship::default(); MAX_SHIPS_PER_FLEET],
             ship_count: STARTING_SCOUTS,
             cargo: Resources::default(),
-            fuel: 50000.0,
-            fuel_max: 50000.0,
+            fuel: 0.0,
+            fuel_max: 0.0,
             move_cooldown: 0,
             action_cooldown: 0,
             move_target: None,
@@ -1267,6 +1329,11 @@ impl GameEngine {
                 weapon_power: scout_stats.weapon,
                 speed: scout_stats.speed,
             };
+        }
+
+        if let Some(player) = self.players.get(&player_id) {
+            fleet.fuel_max = fleet_fuel_max(&fleet, player);
+            fleet.fuel = fleet.fuel_max;
         }
 
         self.fleets.insert(fleet_id, fleet);
@@ -1322,7 +1389,78 @@ impl GameEngine {
         fleet_mut.action_cooldown = cooldown;
         self.dirty_fleets.insert(fleet_id, ());
 
+        self.warn_if_cannot_return(fleet_id, target, fuel_cost);
         Ok(())
+    }
+
+    /// Fuel for one jump of this fleet.
+    pub fn hop_fuel_cost(&self, fleet: &Fleet) -> f32 {
+        let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
+        fleet_fuel_cost(fleet, research)
+    }
+
+    /// Fewest hops from `from` to the owner's homeworld over lanes the owner
+    /// has charted (sectors they have entered). Falls back to the straight
+    /// distance when no charted route exists.
+    pub fn known_hops_home(&self, owner: u64, from: Hex) -> u32 {
+        let Some(player) = self.players.get(&owner) else { return 0; };
+        let home = player.homeworld;
+        if from == home { return 0; }
+        let mut seen: HashSet<u32> = HashSet::new();
+        seen.insert(from.to_key());
+        let mut frontier = vec![from];
+        let mut hops = 0u32;
+        while !frontier.is_empty() && hops < 64 {
+            hops += 1;
+            let mut next = Vec::new();
+            for coord in &frontier {
+                for &n in self.world_gen.connected_neighbors(*coord).slice() {
+                    if n == home { return hops; }
+                    if !self.explored.contains(&(owner, n.to_key())) { continue; }
+                    if seen.insert(n.to_key()) { next.push(n); }
+                }
+            }
+            frontier = next;
+        }
+        Hex::distance(&from, &home) as u32
+    }
+
+    /// Fuel the fleet would burn getting home from `from`, one jump per hop.
+    pub fn route_home_cost(&self, fleet: &Fleet, from: Hex) -> f32 {
+        self.known_hops_home(fleet.owner_id, from) as f32 * self.hop_fuel_cost(fleet)
+    }
+
+    fn push_alert(&mut self, level: AlertLevel, fleet_id: u64, sector: Hex, message: String) {
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Alert(AlertEvent {
+                level,
+                message,
+                sector: Some(sector),
+                fleet_id: Some(fleet_id),
+            }),
+        });
+    }
+
+    /// A jump that leaves the fleet unable to afford the way home is
+    /// allowed, but never silent.
+    fn warn_if_cannot_return(&mut self, fleet_id: u64, target: Hex, hop_cost: f32) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let Some(player) = self.players.get(&fleet.owner_id) else { return; };
+        if target == player.homeworld { return; }
+        let hops = self.known_hops_home(fleet.owner_id, target);
+        let need = hops as f32 * hop_cost;
+        let have = fleet.fuel;
+        if have + 0.001 >= need { return; }
+        let (level, outcome) = if have + 0.001 < hop_cost {
+            (AlertLevel::Critical, "it will be stranded on arrival; the emergency reserve recovers one hop in about 5 minutes")
+        } else {
+            (AlertLevel::Warning, "it cannot reach home without help")
+        };
+        let message = format!(
+            "fleet {fleet_id} jumping to {target} with {have:.0} fuel after the jump; the way home is {hops} hops, {need:.0} fuel: {outcome}",
+        );
+        self.push_alert(level, fleet_id, target, message);
     }
 
     pub fn handle_harvest(&mut self, player_id: u64, fleet_id: u64, resource: HarvestResource) -> Result<(), ErrorCode> {
@@ -1401,12 +1539,22 @@ impl GameEngine {
         Err(ErrorCode::InvalidTarget)
     }
 
+    /// Fuel an emergency jump home would burn: the per-hop cost over the
+    /// straight distance, doubled. All-or-nothing: a fleet with less than
+    /// this does not move at all.
+    pub fn recall_fuel_cost(&self, fleet: &Fleet) -> f32 {
+        let dist = self.players.get(&fleet.owner_id)
+            .map(|p| Hex::distance(&fleet.location, &p.homeworld) as f32)
+            .unwrap_or(0.0);
+        self.hop_fuel_cost(fleet) * dist * RECALL_FUEL_MULTIPLIER
+    }
+
     pub fn handle_recall(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         let player = self.players.get(&fleet.owner_id).ok_or(ErrorCode::ServerError)?;
 
         let dist = Hex::distance(&fleet.location, &player.homeworld) as f32;
-        let fuel_cost = fleet_fuel_cost(fleet, Some(&player.research)) * dist * RECALL_FUEL_MULTIPLIER;
+        let fuel_cost = self.recall_fuel_cost(fleet);
         if fleet.fuel < fuel_cost { return Err(ErrorCode::InsufficientFuel); }
 
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
@@ -1452,6 +1600,123 @@ impl GameEngine {
 
         self.dock_fleet(fleet_id).map_err(|_| ErrorCode::ServerError)?;
 
+        Ok(())
+    }
+
+    fn fleet_is_free(fleet: &Fleet) -> bool {
+        fleet.state == FleetStatus::Idle || fleet.state == FleetStatus::Docked
+    }
+
+    /// Detach `ship_ids` from a fleet into a new fleet at the same sector and
+    /// return its id. Fuel and cargo follow the ships in proportion to the
+    /// tank and hold they take along.
+    pub fn handle_split(&mut self, player_id: u64, fleet_id: u64, ship_ids: &[u64]) -> Result<u64, ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if !Self::fleet_is_free(fleet) { return Err(ErrorCode::OnCooldown); }
+
+        let mut take: Vec<u64> = ship_ids.to_vec();
+        take.sort_unstable();
+        take.dedup();
+        let aboard = &fleet.ships[0..fleet.ship_count];
+        if take.is_empty()
+            || take.len() >= fleet.ship_count
+            || take.iter().any(|id| !aboard.iter().any(|s| s.id == *id))
+        {
+            return Err(ErrorCode::InvalidTarget);
+        }
+
+        let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
+        let owned = self.fleets.values().filter(|f| f.owner_id == player_id && f.ship_count > 0).count();
+        if owned >= MAX_FLEETS_TOTAL { return Err(ErrorCode::FleetLimitReached); }
+        if fleet.location != player.homeworld
+            && self.count_deployed_fleets(player_id, player.homeworld) >= MAX_FLEETS_PER_PLAYER
+        {
+            return Err(ErrorCode::FleetLimitReached);
+        }
+
+        let (kept, taken): (Vec<Ship>, Vec<Ship>) = aboard.iter().copied().partition(|s| !take.contains(&s.id));
+        let mut new_fleet = Fleet {
+            id: 0,
+            owner_id: player_id,
+            location: fleet.location,
+            state: FleetStatus::Idle,
+            ships: [Ship::default(); MAX_SHIPS_PER_FLEET],
+            ship_count: taken.len(),
+            cargo: Resources::default(),
+            fuel: 0.0,
+            fuel_max: 0.0,
+            move_cooldown: fleet.move_cooldown,
+            action_cooldown: fleet.action_cooldown,
+            move_target: None,
+            idle_ticks: fleet.idle_ticks,
+            harvest_target: fleet.harvest_target,
+        };
+        new_fleet.ships[..taken.len()].copy_from_slice(&taken);
+        let mut rest = fleet.clone();
+        rest.ships = [Ship::default(); MAX_SHIPS_PER_FLEET];
+        rest.ships[..kept.len()].copy_from_slice(&kept);
+        rest.ship_count = kept.len();
+
+        let old_tank = fleet_fuel_max(fleet, player);
+        let old_hold = fleet_cargo_capacity(fleet);
+        let tank_share = if old_tank > 0.0 { fleet_fuel_max(&new_fleet, player) / old_tank } else { 0.0 };
+        let hold_share = if old_hold > 0.0 { fleet_cargo_capacity(&new_fleet) / old_hold } else { 0.0 };
+
+        new_fleet.fuel_max = fleet_fuel_max(&new_fleet, player);
+        new_fleet.fuel = (fleet.fuel * tank_share).min(new_fleet.fuel_max);
+        new_fleet.cargo = fleet.cargo.scale(hold_share);
+        rest.fuel_max = fleet_fuel_max(&rest, player);
+        rest.fuel = (fleet.fuel - new_fleet.fuel).clamp(0.0, rest.fuel_max);
+        rest.cargo = fleet.cargo.sub(new_fleet.cargo);
+
+        let new_id = self.next_id();
+        new_fleet.id = new_id;
+        let location = new_fleet.location;
+        let count = new_fleet.ship_count;
+        self.fleets.insert(fleet_id, rest);
+        self.fleets.insert(new_id, new_fleet);
+        self.dirty_fleets.insert(fleet_id, ());
+        self.dirty_fleets.insert(new_id, ());
+        self.push_alert(
+            AlertLevel::Info, new_id, location,
+            format!("fleet {fleet_id} split: {count} ship(s) now fly as fleet {new_id}"),
+        );
+        Ok(new_id)
+    }
+
+    /// Fold `other_id` into `fleet_id`: ships, cargo and fuel pool and the
+    /// absorbed fleet and its standing orders cease to exist.
+    pub fn handle_merge(&mut self, player_id: u64, fleet_id: u64, other_id: u64) -> Result<(), ErrorCode> {
+        if fleet_id == other_id { return Err(ErrorCode::InvalidTarget); }
+        let a = self.owned_fleet(player_id, fleet_id)?;
+        let b = self.owned_fleet(player_id, other_id)?;
+        if a.location != b.location { return Err(ErrorCode::NotInSector); }
+        if !Self::fleet_is_free(a) || !Self::fleet_is_free(b) { return Err(ErrorCode::OnCooldown); }
+        if a.ship_count + b.ship_count > MAX_SHIPS_PER_FLEET { return Err(ErrorCode::InvalidCommand); }
+        let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
+
+        let mut merged = a.clone();
+        merged.ships[a.ship_count..a.ship_count + b.ship_count].copy_from_slice(&b.ships[..b.ship_count]);
+        merged.ship_count = a.ship_count + b.ship_count;
+        merged.cargo = a.cargo.add(b.cargo);
+        merged.fuel_max = fleet_fuel_max(&merged, player);
+        merged.fuel = (a.fuel + b.fuel).min(merged.fuel_max);
+        merged.move_cooldown = a.move_cooldown.max(b.move_cooldown);
+        merged.action_cooldown = a.action_cooldown.max(b.action_cooldown);
+        let location = merged.location;
+        let count = merged.ship_count;
+
+        let orders_ended = self.policies.contains_key(&other_id);
+        self.remove_fleet(other_id);
+        self.fleets.insert(fleet_id, merged);
+        self.dirty_fleets.insert(fleet_id, ());
+        self.push_alert(
+            AlertLevel::Info, fleet_id, location,
+            format!(
+                "fleet {other_id} merged into fleet {fleet_id}: {count} ship(s){}",
+                if orders_ended { "; the absorbed fleet's standing orders ended" } else { "" },
+            ),
+        );
         Ok(())
     }
 
@@ -1955,6 +2220,7 @@ impl GameEngine {
             params,
             work_sector: Some(location),
             next_eval_tick: self.current_tick + 1,
+            last_hold: None,
         };
         self.policies.insert(fleet_id, policy);
         self.deleted_policy_ids.remove(&fleet_id);
@@ -2021,13 +2287,37 @@ impl GameEngine {
         Ok(())
     }
 
-    /// Fuel/cargo doctrine thresholds: the reason to head home, if any.
+    /// Most hops from home the fleet can fly and still afford the way back
+    /// with the doctrine's fuel reserve intact, capped by `max_range`.
+    fn policy_effective_range(&self, fleet: &Fleet, params: &PolicyParams) -> u8 {
+        let hop = self.hop_fuel_cost(fleet);
+        if hop <= 0.0 { return params.max_range; }
+        let reserve = fleet.fuel_max * params.min_fuel_pct as f32 / 100.0;
+        let hops = ((fleet.fuel_max - reserve) / (2.0 * hop)).floor().clamp(0.0, 255.0) as u8;
+        params.max_range.min(hops)
+    }
+
+    /// "within N hops of home", noting when the tank rather than max_range
+    /// is the limit.
+    fn range_phrase(effective: u8, params: &PolicyParams) -> String {
+        if effective < params.max_range {
+            format!("within {effective} hops of home (the fuel tank limits range; max_range is {})", params.max_range)
+        } else {
+            format!("within {} hops of home", params.max_range)
+        }
+    }
+
+    /// Fuel/cargo doctrine thresholds: the reason to head home, if any. Fuel
+    /// is judged against the actual cost of the charted route home plus the
+    /// doctrine's reserve, not a fraction of the tank.
     fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<String> {
-        if fleet.fuel_max > 0.0 {
-            let fuel_pct = fleet.fuel / fleet.fuel_max * 100.0;
-            if fuel_pct < params.min_fuel_pct as f32 {
-                return Some(format!("fuel {:.0}%", fuel_pct));
-            }
+        let need = self.route_home_cost(fleet, fleet.location);
+        let reserve = fleet.fuel_max * params.min_fuel_pct as f32 / 100.0;
+        if fleet.fuel < need + reserve {
+            return Some(format!(
+                "fuel {:.0} is below the route home {:.0} plus reserve {:.0}",
+                fleet.fuel, need, reserve,
+            ));
         }
         let max_cargo = fleet_cargo_capacity(fleet);
         if max_cargo > 0.0 {
@@ -2040,46 +2330,73 @@ impl GameEngine {
         None
     }
 
-    /// First hop of the shortest connected path from → target (BFS with
+    /// Announce that the autopilot is standing still and why; the same
+    /// reason is repeated at most once a minute. Always returns false.
+    fn hold_policy(&mut self, fleet_id: u64, preset: PolicyPreset, reason: &str) -> bool {
+        let tick = self.current_tick;
+        let announce = match self.policies.get_mut(&fleet_id) {
+            Some(p) => {
+                let repeat = matches!(&p.last_hold, Some((r, t)) if r == reason && tick < t + 60);
+                if !repeat { p.last_hold = Some((reason.to_string(), tick)); }
+                !repeat
+            }
+            None => true,
+        };
+        if announce { self.push_policy_event(fleet_id, preset, "hold", reason); }
+        false
+    }
+
+    /// First hop of the shortest path from `from` to a sector satisfying
+    /// `goal`, walking only through sectors satisfying `passable` (BFS with
     /// predecessors, bounded). The hex graph is sparse: pure greedy
     /// distance-chasing bounces off missing edges.
-    fn first_hop_toward(&self, from: Hex, target: Hex, max_hops: u8) -> Option<Hex> {
-        if from == target { return None; }
+    fn bfs_first_hop(
+        &self,
+        from: Hex,
+        max_hops: u8,
+        passable: &dyn Fn(Hex) -> bool,
+        goal: &dyn Fn(Hex) -> bool,
+    ) -> Option<Hex> {
         let mut prev: HashMap<u32, u32> = HashMap::new();
         let mut frontier = vec![from];
         prev.insert(from.to_key(), from.to_key());
+        let mut found: Option<Hex> = None;
 
         'search: for _ in 0..max_hops {
             let mut next = Vec::new();
             for coord in &frontier {
                 for &n in self.world_gen.connected_neighbors(*coord).slice() {
                     let key = n.to_key();
-                    if prev.contains_key(&key) { continue; }
+                    if prev.contains_key(&key) || !passable(n) { continue; }
                     prev.insert(key, coord.to_key());
-                    if n == target { break 'search; }
+                    if goal(n) { found = Some(n); break 'search; }
                     next.push(n);
                 }
             }
             frontier = next;
         }
 
-        // Walk back from the target to the hop right after `from`.
+        // Walk back from the goal to the hop right after `from`.
         let from_key = from.to_key();
-        let mut cur = target.to_key();
-        prev.get(&cur)?;
+        let mut cur = found?.to_key();
         while prev[&cur] != from_key {
             cur = prev[&cur];
         }
         Some(Hex::from_key(cur))
     }
 
-    /// One hop along the connected graph toward `target`. True if a move
-    /// was issued.
+    fn first_hop_toward(&self, from: Hex, target: Hex, max_hops: u8) -> Option<Hex> {
+        if from == target { return None; }
+        self.bfs_first_hop(from, max_hops, &|_| true, &|n| n == target)
+    }
+
+    /// One hop along the connected graph toward `target`. True if the
+    /// autopilot acted (moved, or reported why it cannot).
     fn policy_step_toward(&mut self, fleet_id: u64, target: Hex, preset: PolicyPreset, reason: &str) -> bool {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return false; };
-        let owner = fleet.owner_id;
         let from = fleet.location;
         if from == target { return false; }
+        let Some(home) = self.players.get(&fleet.owner_id).map(|p| p.homeworld) else { return false; };
 
         // Real path first; greedy distance-descent as a fallback when the
         // target is beyond the BFS budget.
@@ -2087,17 +2404,52 @@ impl GameEngine {
             self.world_gen.connected_neighbors(from).slice().iter().copied()
                 .min_by_key(|n| Hex::distance(n, &target))
         });
-        let Some(step) = step else { return false; };
+        let Some(step) = step else {
+            return self.hold_policy(fleet_id, preset, &format!("no lane toward {target}"));
+        };
+        self.policy_move(fleet_id, step, target == home, preset, reason)
+    }
+
+    /// Issue one jump for the autopilot. A jump that is not heading home
+    /// must leave enough fuel for the route back plus the reserve; if it
+    /// would not, the fleet turns for home (or holds, if already there).
+    fn policy_move(&mut self, fleet_id: u64, step: Hex, homeward: bool, preset: PolicyPreset, reason: &str) -> bool {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return false; };
+        let (owner, from, fuel) = (fleet.owner_id, fleet.location, fleet.fuel);
+        let hop = self.hop_fuel_cost(fleet);
+
+        if !homeward {
+            let min_pct = self.policies.get(&fleet_id).map(|p| p.params.min_fuel_pct).unwrap_or_default();
+            let reserve = fleet.fuel_max * min_pct as f32 / 100.0;
+            let need = self.known_hops_home(owner, step) as f32 * hop + reserve;
+            if fuel - hop < need {
+                let why = format!(
+                    "a jump to {step} would leave {:.0} fuel against {:.0} needed to return home",
+                    (fuel - hop).max(0.0), need,
+                );
+                let home = self.players.get(&owner).map(|p| p.homeworld);
+                if let Some(home) = home && from != home {
+                    return self.policy_step_toward(fleet_id, home, preset, &format!("returning: {why}"));
+                }
+                return self.hold_policy(fleet_id, preset, &why);
+            }
+        }
 
         match self.handle_move(owner, fleet_id, step) {
             Ok(()) => {
+                if let Some(p) = self.policies.get_mut(&fleet_id) { p.last_hold = None; }
                 self.push_policy_event(fleet_id, preset, "move", reason);
                 true
             }
             Err(code) => {
-                // Stranded or capped — report once and back way off.
-                let why = format!("cannot move ({:?}): {}", code, reason);
-                self.push_policy_event(fleet_id, preset, "hold", &why);
+                let why = if code == ErrorCode::InsufficientFuel {
+                    format!(
+                        "stranded: {fuel:.0} fuel, a jump costs {hop:.0}; the emergency reserve is recharging ({reason})",
+                    )
+                } else {
+                    format!("cannot move ({code:?}): {reason}")
+                };
+                self.hold_policy(fleet_id, preset, &why);
                 if let Some(p) = self.policies.get_mut(&fleet_id) {
                     p.next_eval_tick = self.current_tick + 30;
                 }
@@ -2165,8 +2517,9 @@ impl GameEngine {
         0.0
     }
 
-    /// Prospect: scan when the pings have gone stale, otherwise push the
-    /// frontier outward; come home on fumes.
+    /// Prospect: scan when the pings have gone stale, then walk to the
+    /// nearest sector the player has never entered inside the safe range of
+    /// home. With nothing left to chart it goes home and holds.
     fn policy_prospect(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return Ok(false); };
         let owner = fleet.owner_id;
@@ -2175,6 +2528,7 @@ impl GameEngine {
         let params = policy.params;
         let Some(player) = self.players.get(&owner) else { return Ok(false); };
         let home = player.homeworld;
+        let range = self.policy_effective_range(fleet, &params);
 
         if let Some(reason) = self.policy_return_reason(fleet, &params)
             && location != home
@@ -2192,34 +2546,29 @@ impl GameEngine {
             return Ok(true);
         }
 
-        // Push outward, avoiding hostiles, staying inside max_range of home.
-        let mut rng = StdRng::seed_from_u64(
-            self.current_tick.wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(fleet_id),
+        let in_range = move |n: Hex| Hex::distance(&n, &home) <= range as u16;
+        let step = self.bfs_first_hop(
+            location,
+            16,
+            &|n| in_range(n) && !self.sector_has_hostiles(n),
+            &|n| n != home && !self.explored.contains(&(owner, n.to_key())),
         );
-        let neighbors = self.world_gen.connected_neighbors(location);
-        let mut candidates: Vec<Hex> = neighbors.slice().iter().copied()
-            .filter(|n| !self.sector_has_hostiles(*n))
-            .filter(|n| Hex::distance(n, &home) <= params.max_range as u16)
-            .collect();
-        if candidates.is_empty() {
-            // Boxed in — drift homeward.
-            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::Prospect, "no safe frontier"));
+        if let Some(step) = step {
+            return Ok(self.policy_move(fleet_id, step, false, PolicyPreset::Prospect, "pushing frontier"));
         }
-        let cur_dist = Hex::distance(&location, &home);
-        // Prefer hops that push outward.
-        let outward: Vec<Hex> = candidates.iter().copied()
-            .filter(|n| Hex::distance(n, &home) > cur_dist)
-            .collect();
-        if !outward.is_empty() { candidates = outward; }
-        let target = candidates[rng.random_range(0..candidates.len())];
-        if self.handle_move(owner, fleet_id, target).is_ok() {
-            self.push_policy_event(fleet_id, PolicyPreset::Prospect, "move", "pushing frontier");
-            return Ok(true);
+
+        let why = format!(
+            "nothing uncharted and safe {}; raise max_range or pick another doctrine",
+            Self::range_phrase(range, &params),
+        );
+        if location != home {
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::Prospect, &format!("returning: {why}")));
         }
-        Ok(false)
+        Ok(self.hold_policy(fleet_id, PolicyPreset::Prospect, &why))
     }
 
-    /// MineAndReturn: shuttle between the work sector and home.
+    /// MineAndReturn: shuttle between the work sector and home. Every claim
+    /// is chosen by distance from home, so the fleet never creeps outward.
     fn policy_mine_and_return(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return Ok(false); };
         let owner = fleet.owner_id;
@@ -2229,13 +2578,17 @@ impl GameEngine {
         let mut work = policy.work_sector.unwrap_or(location);
         let Some(player) = self.players.get(&owner) else { return Ok(false); };
         let home = player.homeworld;
+        let range = self.policy_effective_range(fleet, &params);
 
-        // Orders given while docked at home: there's no claim yet — stake
-        // one at the nearest workable seam.
-        if work == home {
-            let Some(new_work) = self.find_nearest_target(home, params.max_range, PolicyTarget::Resources) else {
-                self.push_policy_event(fleet_id, PolicyPreset::MineAndReturn, "hold", "no ore in range of home");
-                return Ok(false);
+        // No claim yet, or the claim lies outside the leash (orders given
+        // far from home): stake the nearest workable seam around home.
+        if work == home || Hex::distance(&work, &home) > params.max_range as u16 {
+            let Some(new_work) = self.find_nearest_target(home, range, PolicyTarget::Resources) else {
+                let why = format!("no ore {}", Self::range_phrase(range, &params));
+                if location != home {
+                    return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::MineAndReturn, &format!("returning: {why}")));
+                }
+                return Ok(self.hold_policy(fleet_id, PolicyPreset::MineAndReturn, &why));
             };
             if let Some(p) = self.policies.get_mut(&fleet_id) {
                 p.work_sector = Some(new_work);
@@ -2244,7 +2597,8 @@ impl GameEngine {
             work = new_work;
         }
 
-        // Loaded or dry → head home (docking deposits + refuels).
+        // Loaded or low on fuel for the way home: head home (docking
+        // deposits + refuels).
         if let Some(reason) = self.policy_return_reason(fleet, &params)
             && location != home
         {
@@ -2253,23 +2607,32 @@ impl GameEngine {
         }
 
         if location == work && location != home {
-            // Try to dig where we stand.
-            if self.handle_harvest(owner, fleet_id, HarvestResource::Auto).is_ok() {
-                self.push_policy_event(fleet_id, PolicyPreset::MineAndReturn, "harvest", "seam holds");
-                return Ok(true);
-            }
-            // Seam's dry — find a new one near the old claim.
-            if let Some(new_work) = self.find_nearest_target(work, params.max_range, PolicyTarget::Resources) {
-                if let Some(p) = self.policies.get_mut(&fleet_id) {
-                    p.work_sector = Some(new_work);
+            match self.handle_harvest(owner, fleet_id, HarvestResource::Auto) {
+                Ok(()) => {
+                    self.push_policy_event(fleet_id, PolicyPreset::MineAndReturn, "harvest", "seam holds");
+                    return Ok(true);
                 }
-                self.dirty_policies.insert(fleet_id, ());
-                return Ok(self.policy_step_toward(
-                    fleet_id, new_work, PolicyPreset::MineAndReturn, "claim dry, moving to new seam",
-                ));
+                Err(ErrorCode::CargoFull) => {
+                    return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::MineAndReturn, "returning: hold is full"));
+                }
+                Err(ErrorCode::NoResources) | Err(ErrorCode::ResourceNotPresent) => {}
+                Err(code) => {
+                    let why = format!("cannot harvest ({code:?})");
+                    return Ok(self.hold_policy(fleet_id, PolicyPreset::MineAndReturn, &why));
+                }
             }
-            self.push_policy_event(fleet_id, PolicyPreset::MineAndReturn, "hold", "no ore in range");
-            return Ok(false);
+            // Seam's dry: next claim, again measured from home.
+            let Some(new_work) = self.find_nearest_target(home, range, PolicyTarget::Resources) else {
+                let why = format!("claim dry and no other ore {}", Self::range_phrase(range, &params));
+                return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::MineAndReturn, &format!("returning: {why}")));
+            };
+            if let Some(p) = self.policies.get_mut(&fleet_id) {
+                p.work_sector = Some(new_work);
+            }
+            self.dirty_policies.insert(fleet_id, ());
+            return Ok(self.policy_step_toward(
+                fleet_id, new_work, PolicyPreset::MineAndReturn, "claim dry, moving to new seam",
+            ));
         }
 
         // Anywhere else (including docked at home): head for the claim.
@@ -2285,6 +2648,7 @@ impl GameEngine {
         let params = policy.params;
         let Some(player) = self.players.get(&owner) else { return Ok(false); };
         let home = player.homeworld;
+        let range = self.policy_effective_range(fleet, &params);
 
         if let Some(reason) = self.policy_return_reason(fleet, &params)
             && location != home
@@ -2316,16 +2680,19 @@ impl GameEngine {
             }
         }
 
-        // Otherwise hunt the next payday.
-        if let Some(target) = self.find_nearest_target(location, params.max_range, PolicyTarget::SalvageOrSite) {
+        // Otherwise hunt the next payday, searching outward from home.
+        if let Some(target) = self.find_nearest_target(home, range, PolicyTarget::SalvageOrSite)
+            && target != location
+        {
             return Ok(self.policy_step_toward(
                 fleet_id, target, PolicyPreset::SalvageAndSites, "contact on the board",
             ));
         }
+        let why = format!("board is clear {}", Self::range_phrase(range, &params));
         if location != home {
-            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::SalvageAndSites, "board is clear"));
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::SalvageAndSites, &why));
         }
-        Ok(false)
+        Ok(self.hold_policy(fleet_id, PolicyPreset::SalvageAndSites, &why))
     }
 
     /// PatrolHome: keep the porch lights on.
@@ -2367,8 +2734,7 @@ impl GameEngine {
                 }
             } else {
                 // Outgunned on our own doorstep — call it in.
-                self.push_policy_event(fleet_id, PolicyPreset::PatrolHome, "hold", "hostiles too strong");
-                return Ok(false);
+                return Ok(self.hold_policy(fleet_id, PolicyPreset::PatrolHome, "hostiles too strong"));
             }
         }
 
@@ -2391,11 +2757,10 @@ impl GameEngine {
             return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::PatrolHome, "drifted off the beat"));
         }
         let target = candidates[rng.random_range(0..candidates.len())];
-        if target != location && self.handle_move(owner, fleet_id, target).is_ok() {
-            self.push_policy_event(fleet_id, PolicyPreset::PatrolHome, "move", "walking the beat");
-            return Ok(true);
+        if target != location {
+            return Ok(self.policy_move(fleet_id, target, false, PolicyPreset::PatrolHome, "walking the beat"));
         }
-        Ok(false)
+        Ok(self.hold_policy(fleet_id, PolicyPreset::PatrolHome, "no lane to walk the beat"))
     }
 
     // ── Helper Methods ────────────────────────────────────────────
@@ -2504,50 +2869,15 @@ impl GameEngine {
     fn dock_fleet(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
         let fleet = self.fleets.get(&fleet_id).ok_or("Fleet not found")?;
         let player_id = fleet.owner_id;
-        let homeworld = fleet.location;
 
-        // Deposit cargo
+        // Deposit cargo and refuel; docked fleets stay separate until the
+        // player merges them.
         let player = self.players.get_mut(&player_id).ok_or("Player not found")?;
         let fleet = self.fleets.get(&fleet_id).unwrap();
         player.resources = player.resources.add(fleet.cargo);
 
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.cargo = Resources::default();
-
-        // Auto-merge: absorb ships from other fleets docked at homeworld
-        let mut merge_ids: Vec<u64> = Vec::new();
-        let mut merge_ships: Vec<Ship> = Vec::new();
-        let mut merge_cargo = Resources::default();
-
-        let fleet_ids: Vec<u64> = self.fleets.keys().copied().collect();
-        for fid in fleet_ids {
-            if fid == fleet_id { continue; }
-            let other = self.fleets.get(&fid).unwrap();
-            if other.owner_id != player_id { continue; }
-            if other.location != homeworld { continue; }
-            if other.ship_count == 0 { continue; }
-            merge_ids.push(fid);
-            merge_cargo = merge_cargo.add(other.cargo);
-            for i in 0..other.ship_count {
-                merge_ships.push(other.ships[i]);
-            }
-        }
-
-        // Apply merges
-        if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
-            for ship in merge_ships {
-                if fleet.ship_count >= MAX_SHIPS_PER_FLEET { break; }
-                fleet.ships[fleet.ship_count] = ship;
-                fleet.ship_count += 1;
-            }
-        }
-        if let Some(player) = self.players.get_mut(&player_id) {
-            player.resources = player.resources.add(merge_cargo);
-        }
-
-        for mid in merge_ids {
-            self.remove_fleet(mid);
-        }
 
         let player = self.players.get(&player_id).unwrap();
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
@@ -2808,14 +3138,18 @@ impl GameEngine {
         let player = self.players.get(&player_id).ok_or("Player not found")?;
         let homeworld = player.homeworld;
 
-        // Find existing docked fleet at homeworld, or create one
-        let mut docked_fleet_id: Option<u64> = None;
-        for (fid, f) in &self.fleets {
-            if f.owner_id == player_id && f.location == homeworld {
-                docked_fleet_id = Some(*fid);
-                break;
-            }
-        }
+        // New hulls reinforce the lowest-numbered idle fleet at home that
+        // has no standing orders and room; otherwise they form their own.
+        let docked_fleet_id = self.fleets.values()
+            .filter(|f| {
+                f.owner_id == player_id
+                    && f.location == homeworld
+                    && f.state == FleetStatus::Idle
+                    && f.ship_count < MAX_SHIPS_PER_FLEET
+                    && !self.policies.contains_key(&f.id)
+            })
+            .map(|f| f.id)
+            .min();
 
         let fleet_id = if let Some(fid) = docked_fleet_id {
             fid
@@ -2993,7 +3327,18 @@ fn load_world(db: &Database, world_seed: u64) -> Result<LoadedWorld, Box<dyn std
         players.insert(player.id, player);
     }
 
-    let fleets: HashMap<u64, Fleet> = db.load_fleets()?.into_iter().map(|f| (f.id, f)).collect();
+    let mut fleets: HashMap<u64, Fleet> = db.load_fleets()?.into_iter().map(|f| (f.id, f)).collect();
+    // Fleets registered before the starting-fuel fix were stored with a
+    // 50000 tank; hold them to the real one.
+    for fleet in fleets.values_mut() {
+        if let Some(player) = players.get(&fleet.owner_id) {
+            let tank = fleet_fuel_max(fleet, player);
+            if fleet.fuel_max > tank {
+                fleet.fuel_max = tank;
+                fleet.fuel = fleet.fuel.min(tank);
+            }
+        }
+    }
 
     let sector_overrides = db.load_sector_overrides()?
         .into_iter()
@@ -3743,6 +4088,410 @@ mod tests {
         assert_eq!(ov.site_ambush_bumps, 2);
         assert!(engine.derelict_site_at(site).is_none(), "looted site stays looted");
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Fleets, fuel and autopilot ────────────────────────────────
+
+    /// A walk of `len` charted hops out from home, each hop one step
+    /// farther away; marks every sector on it explored by the player.
+    fn charted_chain(engine: &mut GameEngine, pid: u64, len: usize) -> Vec<Hex> {
+        fn extend(engine: &GameEngine, chain: &mut Vec<Hex>, len: usize, home: Hex) -> bool {
+            if chain.len() == len { return true; }
+            let tip = *chain.last().unwrap();
+            for &n in engine.world_gen.connected_neighbors(tip).slice() {
+                if Hex::distance(&n, &home) != chain.len() as u16 { continue; }
+                chain.push(n);
+                if extend(engine, chain, len, home) { return true; }
+                chain.pop();
+            }
+            false
+        }
+        let home = engine.players[&pid].homeworld;
+        let mut chain = vec![home];
+        assert!(extend(engine, &mut chain, len + 1, home), "no straight {len}-hop lane from home");
+        let walk: Vec<Hex> = chain[1..].to_vec();
+        for h in &walk { engine.explored.insert((pid, h.to_key())); }
+        walk
+    }
+
+    fn place(engine: &mut GameEngine, fid: u64, at: Hex, fuel: f32) {
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        f.location = at;
+        f.state = FleetStatus::Idle;
+        f.fuel = fuel;
+    }
+
+    fn policy_events(engine: &mut GameEngine) -> Vec<iac_shared::protocol::PolicyActionEvent> {
+        engine.drain_events().into_iter().filter_map(|e| match e.kind {
+            EventKind::PolicyAction(p) => Some(p),
+            _ => None,
+        }).collect()
+    }
+
+    fn alerts(engine: &mut GameEngine) -> Vec<AlertEvent> {
+        engine.drain_events().into_iter().filter_map(|e| match e.kind {
+            EventKind::Alert(a) => Some(a),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn starting_fleet_has_the_real_tank_from_tick_zero() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Fresh");
+        let fleet = &engine.fleets[&fid];
+        let expected = STARTING_SCOUTS as f32 * ShipClass::Scout.base_stats().fuel as f32;
+        assert_eq!(fleet.fuel_max, expected);
+        assert_eq!(fleet.fuel, fleet.fuel_max);
+        assert!(fleet.fuel_max < 1000.0, "no 50000 placeholder tank");
+        assert!(fleet.fuel_max >= engine.hop_fuel_cost(fleet), "the tank covers at least one jump");
+        let _ = pid;
+    }
+
+    #[test]
+    fn mine_claims_stay_within_range_of_home() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Miner");
+        let home = engine.players[&pid].homeworld;
+        let params = PolicyParams { max_range: 2, ..PolicyParams::default() };
+
+        // Orders given four hops out must not adopt that spot as the claim.
+        let far = charted_chain(&mut engine, pid, 4);
+        place(&mut engine, fid, far[3], 1_000_000.0);
+        engine.fleets.get_mut(&fid).unwrap().fuel_max = 1_000_000.0;
+        engine.handle_policy_update(pid, fid, PolicyPreset::MineAndReturn, Some(params)).unwrap();
+        engine.drain_events();
+
+        let mut dried = 0;
+        for tick in 0..400 {
+            engine.tick().unwrap();
+            let Some(policy) = engine.policies.get(&fid) else { break; };
+            if let Some(work) = policy.work_sector {
+                assert!(
+                    Hex::distance(&work, &home) <= 2 || work == home,
+                    "claim {work} is {} from home at tick {tick}", Hex::distance(&work, &home),
+                );
+                // Exhaust each claim in turn to force re-claims.
+                if tick % 25 == 24 && work != home && dried < 6 {
+                    let ov = engine.ensure_override(work.to_key());
+                    ov.metal_density = Some(Density::None);
+                    ov.crystal_density = Some(Density::None);
+                    ov.deut_density = Some(Density::None);
+                    dried += 1;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prospect_holds_instead_of_thrashing_when_the_range_is_charted() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Prospector");
+        let home = engine.players[&pid].homeworld;
+        let params = PolicyParams { max_range: 2, ..PolicyParams::default() };
+        for q in -2i16..=2 {
+            for r in -2i16..=2 {
+                let h = Hex { q: home.q + q, r: home.r + r };
+                if Hex::distance(&h, &home) <= 2 { engine.explored.insert((pid, h.to_key())); }
+            }
+        }
+        engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+        engine.drain_events();
+
+        let mut moves = 0;
+        let mut holds = Vec::new();
+        for _ in 0..200 {
+            engine.tick().unwrap();
+            for ev in policy_events(&mut engine) {
+                match ev.action.as_str() {
+                    "move" => moves += 1,
+                    "hold" => holds.push(ev.reason),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(moves, 0, "everything in range is charted: nothing to move to");
+        assert!(!holds.is_empty(), "the hold must be announced");
+        assert!(holds[0].contains("uncharted"), "reason: {}", holds[0]);
+        assert!(holds.len() <= 4, "the same hold must not flood events: {}", holds.len());
+        assert_eq!(engine.fleets[&fid].location, home);
+    }
+
+    #[test]
+    fn autopilot_returns_on_route_cost_not_fuel_percent() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Cautious");
+        let chain = charted_chain(&mut engine, pid, 3);
+        let params = PolicyParams { min_fuel_pct: 0, ..PolicyParams::default() };
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+
+        // Three hops out, plenty of tank: a bare 20% would have tripped the
+        // old rule, yet the route home is affordable so nothing forces a return.
+        engine.fleets.get_mut(&fid).unwrap().fuel_max = hop * 100.0;
+        place(&mut engine, fid, chain[2], hop * 3.5);
+        let fleet = engine.fleets[&fid].clone();
+        assert!(engine.policy_return_reason(&fleet, &params).is_none());
+
+        place(&mut engine, fid, chain[2], hop * 2.9);
+        let fleet = engine.fleets[&fid].clone();
+        let reason = engine.policy_return_reason(&fleet, &params).expect("short of the route home");
+        assert!(reason.contains("route home"), "{reason}");
+    }
+
+    #[test]
+    fn autopilot_refuses_a_hop_that_would_strand_it() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Careful");
+        let chain = charted_chain(&mut engine, pid, 2);
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+        let params = PolicyParams { min_fuel_pct: 0, ..PolicyParams::default() };
+        engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+        engine.drain_events();
+
+        // At chain[0] with fuel for the way home plus one hop but not two:
+        // going out one more would leave too little for the return.
+        place(&mut engine, fid, chain[0], hop * 2.5);
+        let acted = engine.policy_move(fid, chain[1], false, PolicyPreset::Prospect, "pushing frontier");
+        assert!(acted, "turning for home counts as acting");
+        let fleet = &engine.fleets[&fid];
+        assert_eq!(fleet.move_target, Some(engine.players[&pid].homeworld), "must turn for home");
+        let events = policy_events(&mut engine);
+        assert!(events.iter().any(|e| e.action == "move" && e.reason.starts_with("returning")), "{events:?}");
+    }
+
+    #[test]
+    fn manual_move_that_strands_warns() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Reckless");
+        let chain = charted_chain(&mut engine, pid, 3);
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+
+        // Jump to hop 3 with fuel left for less than one more hop: stranded.
+        place(&mut engine, fid, chain[1], hop * 1.5);
+        engine.drain_events();
+        engine.handle_move(pid, fid, chain[2]).expect("risky moves are allowed");
+        let a = alerts(&mut engine);
+        assert_eq!(a.len(), 1, "{a:?}");
+        assert!(matches!(a[0].level, AlertLevel::Critical));
+        assert_eq!(a[0].fleet_id, Some(fid));
+        assert!(a[0].message.contains("stranded"), "{}", a[0].message);
+
+        // Enough to move again but not to get home: a plain warning.
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Reckless");
+        let chain = charted_chain(&mut engine, pid, 3);
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+        place(&mut engine, fid, chain[1], hop * 3.0);
+        engine.drain_events();
+        engine.handle_move(pid, fid, chain[2]).unwrap();
+        let a = alerts(&mut engine);
+        assert_eq!(a.len(), 1, "{a:?}");
+        assert!(matches!(a[0].level, AlertLevel::Warning));
+
+        // A safe move says nothing.
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Reckless");
+        let chain = charted_chain(&mut engine, pid, 2);
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+        place(&mut engine, fid, chain[0], hop * 10.0);
+        engine.drain_events();
+        engine.handle_move(pid, fid, chain[1]).unwrap();
+        assert!(alerts(&mut engine).is_empty());
+    }
+
+    #[test]
+    fn stranded_fleet_regains_one_jump_slowly() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Adrift");
+        let chain = charted_chain(&mut engine, pid, 2);
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+        place(&mut engine, fid, chain[1], 0.0);
+        assert_eq!(engine.handle_move(pid, fid, chain[0]), Err(ErrorCode::InsufficientFuel));
+        engine.drain_events();
+
+        let mut announced = 0;
+        for _ in 0..STRANDED_RECOVERY_TICKS - 1 {
+            engine.process_stranded();
+            announced += alerts(&mut engine).len();
+        }
+        assert!(engine.fleets[&fid].fuel < hop, "still short one tick before the end");
+        assert_eq!(engine.handle_move(pid, fid, chain[0]), Err(ErrorCode::InsufficientFuel));
+        assert!(announced >= 3, "quarter-way progress is announced, got {announced}");
+
+        engine.process_stranded();
+        let a = alerts(&mut engine);
+        assert!(a.iter().any(|e| e.message.contains("reserve ready")), "{a:?}");
+        engine.handle_move(pid, fid, chain[0]).expect("one jump toward home");
+
+        // Spent: the next hop needs the whole wait again.
+        assert!(engine.fleets[&fid].fuel < hop * 0.01);
+    }
+
+    #[test]
+    fn reserve_does_not_trickle_at_home_or_en_route() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Docked");
+        engine.fleets.get_mut(&fid).unwrap().fuel = 0.0;
+        engine.process_stranded();
+        assert_eq!(engine.fleets[&fid].fuel, 0.0, "home refuels by docking, not the reserve");
+
+        let chain = charted_chain(&mut engine, pid, 1);
+        place(&mut engine, fid, chain[0], 0.0);
+        engine.fleets.get_mut(&fid).unwrap().state = FleetStatus::Harvesting;
+        engine.process_stranded();
+        assert_eq!(engine.fleets[&fid].fuel, 0.0);
+    }
+
+    #[test]
+    fn recall_without_the_fuel_leaves_the_fleet_alone() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Short");
+        let chain = charted_chain(&mut engine, pid, 2);
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+
+        // Two hexes out a recall costs 2 x 2 hops of fuel.
+        place(&mut engine, fid, chain[1], hop * 3.9);
+        assert_eq!(engine.handle_recall(pid, fid), Err(ErrorCode::InsufficientFuel));
+        let fleet = &engine.fleets[&fid];
+        assert_eq!(fleet.location, chain[1]);
+        assert_eq!(fleet.fuel, hop * 3.9, "a refused recall burns nothing");
+
+        // Walking costs less than recalling, and still works.
+        engine.handle_move(pid, fid, chain[0]).expect("walking home is cheaper than the emergency jump");
+    }
+
+    #[test]
+    fn split_and_merge_move_ships_fuel_and_cargo() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Fleeter");
+        engine.add_ship_to_homeworld(pid, ShipClass::Hauler).unwrap();
+        assert_eq!(engine.fleets[&fid].ship_count, 3, "new hulls reinforce the idle fleet at home");
+        engine.fleets.get_mut(&fid).unwrap().cargo = Resources { metal: 30.0, crystal: 0.0, deuterium: 0.0 };
+        let hauler = engine.fleets[&fid].ships[2];
+        assert_eq!(hauler.ship_class, ShipClass::Hauler);
+        let (fuel_before, cargo_before) = {
+            let f = &engine.fleets[&fid];
+            (f.fuel, f.cargo.metal)
+        };
+
+        let new_id = engine.handle_split(pid, fid, &[hauler.id]).expect("split");
+        assert_eq!(engine.fleets[&fid].ship_count, 2);
+        let new_fleet = &engine.fleets[&new_id];
+        assert_eq!(new_fleet.ship_count, 1);
+        assert_eq!(new_fleet.ships[0].id, hauler.id);
+        assert_eq!(new_fleet.location, engine.fleets[&fid].location);
+        let (a, b) = (&engine.fleets[&fid], new_fleet);
+        assert!((a.fuel + b.fuel - fuel_before).abs() < 0.01, "fuel is conserved");
+        assert!((a.cargo.metal + b.cargo.metal - cargo_before).abs() < 0.01, "cargo is conserved");
+        assert!(a.fuel <= a.fuel_max && b.fuel <= b.fuel_max);
+        assert!(alerts(&mut engine).iter().any(|e| e.fleet_id == Some(new_id)), "split announced");
+
+        engine.handle_merge(pid, fid, new_id).expect("merge");
+        assert!(!engine.fleets.contains_key(&new_id));
+        let merged = &engine.fleets[&fid];
+        assert_eq!(merged.ship_count, 3);
+        assert!((merged.fuel - fuel_before).abs() < 0.01);
+        assert!((merged.cargo.metal - cargo_before).abs() < 0.01);
+    }
+
+    #[test]
+    fn split_and_merge_reject_bad_requests() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Fleeter");
+        let (other, other_fid) = register(&mut engine, "Rival");
+        let ids: Vec<u64> = engine.fleets[&fid].ships[..2].iter().map(|s| s.id).collect();
+
+        assert_eq!(engine.handle_split(pid, fid, &[]), Err(ErrorCode::InvalidTarget));
+        assert_eq!(engine.handle_split(pid, fid, &ids), Err(ErrorCode::InvalidTarget), "one ship must stay");
+        assert_eq!(engine.handle_split(pid, fid, &[999_999]), Err(ErrorCode::InvalidTarget));
+        assert_eq!(engine.handle_split(other, fid, &ids[..1]), Err(ErrorCode::FleetNotFound));
+        assert_eq!(engine.handle_merge(pid, fid, fid), Err(ErrorCode::InvalidTarget));
+        assert_eq!(engine.handle_merge(pid, fid, other_fid), Err(ErrorCode::FleetNotFound));
+
+        // Total fleet cap.
+        let mut made = 1;
+        loop {
+            let donor = engine.fleets.values().filter(|f| f.owner_id == pid && f.ship_count > 1).map(|f| f.id).next();
+            let Some(donor) = donor else { break; };
+            let ship = engine.fleets[&donor].ships[0].id;
+            match engine.handle_split(pid, donor, &[ship]) {
+                Ok(_) => made += 1,
+                Err(e) => { assert_eq!(e, ErrorCode::FleetLimitReached); break; }
+            }
+            engine.add_ship_to_homeworld(pid, ShipClass::Scout).unwrap();
+        }
+        assert!(made >= 2);
+        assert!(engine.fleets.values().filter(|f| f.owner_id == pid).count() <= MAX_FLEETS_TOTAL);
+    }
+
+    #[test]
+    fn merge_needs_a_shared_sector_and_idle_fleets() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Fleeter");
+        engine.add_ship_to_homeworld(pid, ShipClass::Scout).unwrap();
+        let ship = engine.fleets[&fid].ships[2].id;
+        let second = engine.handle_split(pid, fid, &[ship]).unwrap();
+
+        let chain = charted_chain(&mut engine, pid, 1);
+        place(&mut engine, second, chain[0], 10.0);
+        assert_eq!(engine.handle_merge(pid, fid, second), Err(ErrorCode::NotInSector));
+
+        let home = engine.players[&pid].homeworld;
+        place(&mut engine, second, home, 10.0);
+        engine.fleets.get_mut(&second).unwrap().state = FleetStatus::Harvesting;
+        assert_eq!(engine.handle_merge(pid, fid, second), Err(ErrorCode::OnCooldown));
+    }
+
+    #[test]
+    fn docking_does_not_merge_fleets() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Docker");
+        engine.add_ship_to_homeworld(pid, ShipClass::Scout).unwrap();
+        let ship = engine.fleets[&fid].ships[2].id;
+        let second = engine.handle_split(pid, fid, &[ship]).unwrap();
+        let home = engine.players[&pid].homeworld;
+        let chain = charted_chain(&mut engine, pid, 1);
+
+        // The first fleet goes out and comes back.
+        place(&mut engine, fid, chain[0], 10.0);
+        engine.handle_move(pid, fid, home).unwrap();
+        for _ in 0..10 { engine.tick().unwrap(); }
+        assert_eq!(engine.fleets[&fid].location, home);
+        assert!(engine.fleets.contains_key(&second), "arrival must not absorb the other fleet");
+        assert_eq!(engine.fleets[&fid].ship_count, 2);
+        assert_eq!(engine.fleets[&second].ship_count, 1);
+    }
+
+    #[test]
+    fn new_hulls_do_not_join_a_fleet_under_orders() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Orders");
+        engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
+        engine.add_ship_to_homeworld(pid, ShipClass::Scout).unwrap();
+        assert_eq!(engine.fleets[&fid].ship_count, STARTING_SCOUTS, "the patrol keeps its roster");
+        assert_eq!(engine.fleets.values().filter(|f| f.owner_id == pid).count(), 2);
+    }
+
+    #[test]
+    fn registered_before_the_fix_clamps_on_reload() {
+        let path = std::env::temp_dir().join(format!("iac_fuel_reload_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let fid = {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            let mut engine = GameEngine::init(42, db).unwrap();
+            let (_, fid) = register(&mut engine, "Old");
+            let f = engine.fleets.get_mut(&fid).unwrap();
+            f.fuel = 50_000.0;
+            f.fuel_max = 50_000.0;
+            engine.dirty_fleets.insert(fid, ());
+            engine.persist_dirty_state().unwrap();
+            fid
+        };
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let engine = GameEngine::init(42, db).unwrap();
+        assert!(engine.fleets[&fid].fuel_max < 1000.0);
+        assert!(engine.fleets[&fid].fuel <= engine.fleets[&fid].fuel_max);
         let _ = std::fs::remove_file(&path);
     }
 }

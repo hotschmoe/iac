@@ -30,7 +30,7 @@ use iac_shared::protocol::{
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
     GameEvent, AuthResult,
 };
-use iac_shared::constants::{ShipClass, MAX_FLEETS_PER_PLAYER};
+use iac_shared::constants::{ShipClass, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 
 use crate::engine::{fleet_cargo_capacity, AuthError, GameEngine, FleetStatus, SectorOverride};
@@ -229,6 +229,8 @@ impl Network {
             Command::Stop { fleet_id } => engine.handle_stop(pid, fleet_id),
             Command::Scan { fleet_id } => engine.handle_scan(pid, fleet_id),
             Command::ExploreSite { fleet_id } => engine.handle_explore_site(pid, fleet_id),
+            Command::Split { fleet_id, ref ship_ids } => engine.handle_split(pid, fleet_id, ship_ids).map(|_| ()),
+            Command::Merge { fleet_id, other_fleet_id } => engine.handle_merge(pid, fleet_id, other_fleet_id),
         };
         let failure = result.err().map(|code| (code, command_error_message(&engine, pid, &cmd, code)));
         drop(engine);
@@ -353,7 +355,9 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::CollectSalvage { fleet_id }
         | Command::Stop { fleet_id }
         | Command::Scan { fleet_id }
-        | Command::ExploreSite { fleet_id } => Some(*fleet_id),
+        | Command::ExploreSite { fleet_id }
+        | Command::Split { fleet_id, .. }
+        | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
         | Command::BuildShip { .. }
@@ -413,13 +417,35 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
             Some(f) => format!("no lane from {} to {}", f.location, target),
             None => format!("no lane to {target}"),
         },
-        (ErrorCode::InsufficientFuel, Command::Recall { .. }) => {
-            format!("fleet {fid} lacks the fuel for an emergency jump home")
-        }
-        (ErrorCode::InsufficientFuel, _) => format!("fleet {fid} lacks the fuel for this jump"),
+        (ErrorCode::InsufficientFuel, Command::Recall { .. }) => match fleet {
+            Some(f) => format!(
+                "fleet {fid} has {:.0} fuel; an emergency jump home costs {:.0} (twice a normal jump per hex). \
+                 Walk home with move (one jump costs {:.0}) or wait for the emergency reserve",
+                f.fuel, engine.recall_fuel_cost(f), engine.hop_fuel_cost(f),
+            ),
+            None => format!("fleet {fid} lacks the fuel for an emergency jump home"),
+        },
+        (ErrorCode::InsufficientFuel, _) => match fleet {
+            Some(f) => format!(
+                "fleet {fid} has {:.0} fuel; this jump costs {:.0}. A stranded fleet regains one jump of fuel every few minutes",
+                f.fuel, engine.hop_fuel_cost(f),
+            ),
+            None => format!("fleet {fid} lacks the fuel for this jump"),
+        },
+        (ErrorCode::FleetLimitReached, Command::Split { .. }) => format!(
+            "fleet limit reached: at most {MAX_FLEETS_TOTAL} fleets in all and {MAX_FLEETS_PER_PLAYER} deployed away from home"
+        ),
         (ErrorCode::FleetLimitReached, _) => {
             format!("fleet limit reached: at most {MAX_FLEETS_PER_PLAYER} fleets can be deployed")
         }
+        (ErrorCode::NotInSector, Command::Merge { other_fleet_id, .. }) => {
+            format!("fleets {fid} and {other_fleet_id} are not in the same sector")
+        }
+        (ErrorCode::InvalidTarget, Command::Split { .. }) => {
+            "split needs at least one ship id aboard the fleet, and at least one ship must stay behind".to_string()
+        }
+        (ErrorCode::InvalidTarget, Command::Merge { .. }) => "a fleet cannot merge with itself".to_string(),
+        (ErrorCode::InvalidCommand, Command::Merge { .. }) => "the merged fleet would exceed 64 ships".to_string(),
         (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
         (ErrorCode::NoResources, _) => "not enough resources".to_string(),
@@ -906,7 +932,7 @@ fn is_event_relevant(event: &GameEvent, player_id: u64, engine: &GameEngine) -> 
         iac_shared::protocol::EventKind::SiteExplored(e) => is_own_fleet(engine, e.fleet_id, player_id),
         iac_shared::protocol::EventKind::SiteAmbush(e) => is_own_fleet(engine, e.fleet_id, player_id),
         iac_shared::protocol::EventKind::PolicyAction(e) => is_own_fleet(engine, e.fleet_id, player_id),
-        iac_shared::protocol::EventKind::Alert(_) => true,
+        iac_shared::protocol::EventKind::Alert(e) => e.fleet_id.is_none_or(|fid| is_own_fleet(engine, fid, player_id)),
     }
 }
 

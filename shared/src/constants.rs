@@ -319,7 +319,10 @@ pub const STARTING_RESOURCES: Resources = Resources {
 };
 
 pub const STARTING_SCOUTS: usize = 2;
+/// Fleets that may be away from the homeworld at once.
 pub const MAX_FLEETS_PER_PLAYER: usize = 3;
+/// All fleets a player may own, docked or deployed; splits stop here.
+pub const MAX_FLEETS_TOTAL: usize = 8;
 
 /// Homeworld spawn range (cube distance from origin).
 pub const HOMEWORLD_MIN_DIST: u16 = 3;
@@ -341,6 +344,10 @@ pub const RECALL_DAMAGE_CHANCE_PER_HEX: f32 = 0.02;
 pub const RECALL_DAMAGE_CHANCE_CAP: f32 = 0.60;
 pub const RECALL_HULL_DAMAGE_MIN: f32 = 0.20;
 pub const RECALL_HULL_DAMAGE_MAX: f32 = 0.80;
+
+/// A fleet stranded away from home (idle, fuel below one hop) regains one
+/// hop of fuel over this many ticks from empty: five minutes at 1 Hz.
+pub const STRANDED_RECOVERY_TICKS: u64 = 300;
 
 /// Fuel consumption per hex: fleet_mass * this value.
 pub const FUEL_RATE_PER_MASS: f32 = 0.1;
@@ -449,7 +456,7 @@ pub fn derelict_loot_ranges(tier: u8) -> [(f32, f32); 3] {
 /// Fleet standing orders: how often an auto-piloted fleet re-evaluates,
 /// and the default doctrine thresholds.
 pub const POLICY_EVAL_INTERVAL: u16 = 3;
-pub const POLICY_DEFAULT_MIN_FUEL_PCT: u8 = 30;
+pub const POLICY_DEFAULT_MIN_FUEL_PCT: u8 = 10;
 pub const POLICY_DEFAULT_CARGO_RETURN_PCT: u8 = 85;
 pub const POLICY_DEFAULT_MAX_RANGE: u8 = 4;
 /// Engage only if our power ≥ theirs × (this / 10).

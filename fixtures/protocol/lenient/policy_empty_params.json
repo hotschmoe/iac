@@ -1,0 +1,20 @@
+{
+  "canonical": {
+    "fleet_id": 3,
+    "params": {
+      "cargo_return_pct": 85,
+      "engage_ratio_x10": 12,
+      "max_range": 4,
+      "min_fuel_pct": 10
+    },
+    "preset": "prospect",
+    "type": "policy_update"
+  },
+  "input": {
+    "fleet_id": 3,
+    "params": {},
+    "preset": "prospect",
+    "type": "policy_update"
+  },
+  "type": "ClientMessage"
+}

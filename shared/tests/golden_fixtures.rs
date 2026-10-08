@@ -279,6 +279,8 @@ fn command_name(c: &Command) -> &'static str {
         Command::Stop { .. } => "stop",
         Command::Scan { .. } => "scan",
         Command::ExploreSite { .. } => "explore_site",
+        Command::Split { .. } => "split",
+        Command::Merge { .. } => "merge",
     }
 }
 
@@ -393,6 +395,8 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::Stop { fleet_id: 6 }),
         ("", Command::Scan { fleet_id: 7 }),
         ("", Command::ExploreSite { fleet_id: 8 }),
+        ("", Command::Split { fleet_id: 9, ship_ids: vec![101, 102] }),
+        ("", Command::Merge { fleet_id: 9, other_fleet_id: 10 }),
     ]
 }
 
@@ -768,6 +772,16 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             "ServerMessage",
             json!({"type": "event", "tick": 3, "kind": "ScanCompleted", "fleet_id": 1,
                    "sector": {"q": 0, "r": 0}, "sectors_revealed": 1, "hostiles_detected": 0}),
+        ),
+        (
+            "policy_partial_params",
+            "ClientMessage",
+            json!({"type": "policy_update", "fleet_id": 3, "preset": "mine_and_return", "params": {"max_range": 2}}),
+        ),
+        (
+            "policy_empty_params",
+            "ClientMessage",
+            json!({"type": "policy_update", "fleet_id": 3, "preset": "prospect", "params": {}}),
         ),
         ("auth_without_token", "ClientMessage", json!({"type": "auth", "player_name": "x"})),
         ("bare_auth_result", "ServerMessage", json!({"type": "auth_result", "success": false})),

@@ -83,6 +83,23 @@ pub enum Command {
         #[serde(default)]
         fleet_id: u64,
     },
+    /// Detach the listed ships from `fleet_id` into a new fleet at the same
+    /// sector. The new fleet starts with no standing orders and takes a share
+    /// of fuel and cargo proportional to the tank and hold it carries off.
+    /// At least one ship must stay behind. Both fleets must be idle. Rejected
+    /// with `FleetLimitReached` at the fleet cap, `InvalidTarget` for ship ids
+    /// not in the fleet or an attempt to take every ship. At the homeworld
+    /// this is also how docked ships are launched as their own fleet. The
+    /// reply is an `Alert` (info) event naming the new fleet id.
+    #[serde(rename = "split")]
+    Split { fleet_id: u64, ship_ids: Vec<u64> },
+    /// Fold `other_fleet_id` into `fleet_id`. Both must be yours, idle, and in
+    /// the same sector (`NotInSector` otherwise). Ships, cargo and fuel are
+    /// pooled (fuel up to the combined tank), the merged fleet keeps the
+    /// standing orders of `fleet_id`, and `other_fleet_id` ceases to exist.
+    /// This works anywhere, so a fresh fleet can rescue a stranded one.
+    #[serde(rename = "merge")]
+    Merge { fleet_id: u64, other_fleet_id: u64 },
 }
 
 fn default_ship_count() -> u16 {
@@ -141,16 +158,25 @@ impl PolicyPreset {
     }
 }
 
-/// Doctrine thresholds. Omitted fields take the defaults in constants.rs.
+/// Doctrine thresholds. Every field is optional on the wire; an omitted field
+/// (or an omitted `params` object) takes the default in constants.rs.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PolicyParams {
-    /// Head home when fuel drops below this percent.
+    /// Spare fuel, as a percent of the tank, kept on top of the exact fuel
+    /// cost of the route home. The autopilot heads home when fuel falls below
+    /// route cost plus this reserve, and never takes a hop outward that would
+    /// leave it unable to return. Clamped to 0..=90. Default 10.
     pub min_fuel_pct: u8,
-    /// Head home when cargo fills past this percent.
+    /// Head home when cargo fills past this percent. Clamped to 10..=100.
+    /// Default 85.
     pub cargo_return_pct: u8,
-    /// Maximum hops from home (or from the assigned work sector).
+    /// Maximum distance in hexes from the HOMEWORLD that the autopilot will
+    /// claim, prospect or wander to; never measured from the last claim.
+    /// Clamped to 1..=30. Default 4.
     pub max_range: u8,
-    /// Engage hostiles only if our power ≥ theirs × (this / 10).
+    /// Engage hostiles only if our power >= theirs x (this / 10). Clamped to
+    /// 1..=100. Default 12 (1.2x).
     pub engage_ratio_x10: u8,
 }
 
@@ -1026,5 +1052,47 @@ mod catalog_tests {
 
         b.set(BuildingType::Shipyard, 1);
         assert!(missing_requirements_message("Scout", &ship_requirements(&b, &r, ShipClass::Scout)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod policy_params_tests {
+    use super::*;
+    use crate::constants::*;
+
+    fn parse(json: &str) -> ClientMessage {
+        serde_json::from_str(json).expect("policy_update parses")
+    }
+
+    fn params(msg: ClientMessage) -> PolicyParams {
+        match msg {
+            ClientMessage::PolicyUpdate(u) => u.params.expect("params present"),
+            other => panic!("not a policy update: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn partial_params_fill_the_rest_with_defaults() {
+        let p = params(parse(r#"{"type":"policy_update","fleet_id":1,"preset":"mine_and_return","params":{"max_range":2}}"#));
+        assert_eq!(p.max_range, 2);
+        assert_eq!(p.min_fuel_pct, POLICY_DEFAULT_MIN_FUEL_PCT);
+        assert_eq!(p.cargo_return_pct, POLICY_DEFAULT_CARGO_RETURN_PCT);
+        assert_eq!(p.engage_ratio_x10, POLICY_DEFAULT_ENGAGE_RATIO_X10);
+    }
+
+    #[test]
+    fn empty_params_are_all_defaults() {
+        let p = params(parse(r#"{"type":"policy_update","fleet_id":1,"preset":"prospect","params":{}}"#));
+        let d = PolicyParams::default();
+        assert_eq!((p.min_fuel_pct, p.cargo_return_pct, p.max_range, p.engage_ratio_x10),
+                   (d.min_fuel_pct, d.cargo_return_pct, d.max_range, d.engage_ratio_x10));
+    }
+
+    #[test]
+    fn omitted_params_stay_none() {
+        match parse(r#"{"type":"policy_update","fleet_id":1,"preset":"manual"}"#) {
+            ClientMessage::PolicyUpdate(u) => assert!(u.params.is_none()),
+            other => panic!("{other:?}"),
+        }
     }
 }

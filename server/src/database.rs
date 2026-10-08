@@ -686,6 +686,7 @@ impl Database {
                 },
                 work_sector,
                 next_eval_tick: 0,
+                last_hold: None,
             }));
         }
         Ok(policies)

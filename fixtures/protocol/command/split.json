@@ -1,0 +1,8 @@
+{
+  "action": "split",
+  "fleet_id": 9,
+  "ship_ids": [
+    101,
+    102
+  ]
+}
