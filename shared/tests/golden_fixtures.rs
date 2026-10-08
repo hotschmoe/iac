@@ -104,6 +104,8 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<PolicyPres
         cargo_capacity: 220.0,
         fuel: 271.5,
         fuel_max: 500.0,
+        jump_fuel: 31.5,
+        home_fuel: 63.0,
         cooldown_remaining: 3,
         policy,
     }

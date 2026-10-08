@@ -282,6 +282,16 @@ pub struct FleetState {
     pub cargo_capacity: f32,
     pub fuel: f32,
     pub fuel_max: f32,
+    /// Fuel one jump costs this fleet right now (it scales with the fleet's
+    /// hull mass and fuel research). A fleet with less than this and away
+    /// from home is stranded and only regains fuel from the emergency
+    /// reserve, one jump per five minutes.
+    #[serde(default)]
+    pub jump_fuel: f32,
+    /// Fuel the way home costs: the fewest hops over lanes the player has
+    /// charted, times `jump_fuel`; 0 at the homeworld. Compare with `fuel`.
+    #[serde(default)]
+    pub home_fuel: f32,
     #[serde(default)]
     pub cooldown_remaining: u16,
     /// Standing orders currently flying this fleet, if any.

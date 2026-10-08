@@ -53,6 +53,7 @@ class WindshieldView extends StatelessWidget {
                 child: WindshieldSidebar(
                   fleet: fleet,
                   sector: state.sector,
+                  controller: controller,
                 ),
               ),
             ],

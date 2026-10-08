@@ -59,6 +59,7 @@ class FleetsPanel extends StatelessWidget {
               padding: const EdgeInsets.only(left: 8, bottom: 8),
               child: Text(
                 '${f.shipCount} ships | cargo ${f.cargoPercent}% | fuel ${f.fuelPercent}%'
+                '${f.stranded ? ' STRANDED' : f.shortOfHomeFuel ? ' (short of home fuel)' : ''}'
                 '${f.policy == null ? '' : ' | policy ${f.policy}'}'
                 '${f.cooldown > 0 ? ' | cd ${f.cooldown}' : ''}',
                 style: Amber.mono(size: 11, color: Amber.dim),

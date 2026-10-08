@@ -166,6 +166,15 @@ def summarize(fs):
         print(f"  ships: " + ", ".join(f"{n}x {c}" for c, n in classes.items())
               + f"  hull {hull:.0f}/{hull_max:.0f}  fuel {f['fuel']:.0f}/{f['fuel_max']:.0f}"
               + f"  cargo {cargo:.0f}/{f['cargo_capacity']:.0f} ({res(f.get('cargo'))})")
+        print("  ship ids: " + ", ".join(f"{s['id']}={s['class']}" for s in f["ships"]))
+        jump, home = f.get("jump_fuel", 0), f.get("home_fuel", 0)
+        if jump:
+            note = ""
+            if home and f["fuel"] < jump:
+                note = "  STRANDED: emergency reserve recharging (about 5 min per jump)"
+            elif home > f["fuel"]:
+                note = "  WARNING: not enough fuel to get home"
+            print(f"  fuel cost: jump {jump:.0f}, way home {home:.0f}{note}")
         sec = sectors.get(loc)
         if sec:
             describe(sec, loc, sectors, indent="  ")
@@ -295,6 +304,7 @@ USAGE = """usage: play <command>
   sector Q R             details of one known sector
   do '<json>'            send a command, e.g. play do '{"action":"scan","fleet_id":2}'
                          or standing orders: play do '{"type":"policy_update","fleet_id":2,"preset":"prospect"}'
+                         or split ships off: play do '{"action":"split","fleet_id":2,"ship_ids":[41,42]}'
   events                 events since you last looked
   wait [seconds]         sleep (5-90s, default 45) then show events; use while timers run
   rules                  print RULES.md"""

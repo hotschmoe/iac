@@ -62,8 +62,10 @@ cargo run -p iac-client -- --headless --name MyAgent [--token <token>]
   `{"type":"connection_closed"}` is emitted if the server hangs up.
 - **stdin** — one command per line. Full client messages
   (`{"type":"command","action":"scan","fleet_id":2}`) or bare commands
-  (`{"action":"scan","fleet_id":2}`) both work. Malformed lines come back
-  in-band as `{"type":"client_error",...}`.
+  (`{"action":"scan","fleet_id":2}`) both work; a line with a `type` field is
+  parsed as a message, one with an `action` field as a command. Malformed
+  lines come back in-band as `{"type":"client_error","message":"unparseable input: ..."}`
+  carrying the real parse error (the field and shape that failed).
 
 ### Accounts and tokens
 
@@ -114,19 +116,40 @@ Example session:
 | `research` | `tech` | queue research |
 | `build_ship` | `ship_class`, `count` | queue ship production |
 | `cancel_build` | `queue_type` | cancel with 50% refund |
+| `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
+| `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
 
 Standing orders are a separate message type (not a command):
 
 ```json
 {"type":"policy_update","fleet_id":2,"preset":"salvage_and_sites",
- "params":{"min_fuel_pct":30,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":12}}
+ "params":{"min_fuel_pct":10,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":12}}
 ```
+
+`params` is optional, and so is every field in it: send only what you want to
+change (`"params":{"max_range":2}`) and the rest take their defaults.
+
+| param | default | meaning |
+|-------|---------|---------|
+| `min_fuel_pct` | 10 | spare fuel, as a percent of the tank, kept on top of the exact fuel cost of the route home (clamped 0-90) |
+| `cargo_return_pct` | 85 | head home to unload when the hold is this full (10-100) |
+| `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting and salvage runs (1-30); never measured from the last claim |
+| `engage_ratio_x10` | 12 | fight only if your power is at least enemy power x this/10 (1-100) |
+
+Fuel safety: the autopilot returns home when its fuel falls below the cost of
+the shortest charted route home plus the `min_fuel_pct` reserve, and it
+refuses any outward jump that would leave less than that. A range limit
+shorter than `max_range` (the tank cannot afford the round trip) is reported
+in the hold reason. Whenever a doctrine stands still it says why in a
+`PolicyAction` event (`action: "hold"`).
 
 Presets: `manual` (clears orders), `prospect` (scan + push the frontier),
 `mine_and_return` (shuttle ore between a claim and home), `salvage_and_sites`
 (scoop wreckage, board derelicts), `patrol_home` (hunt hostiles near home).
-`params` is optional. Every autopilot act emits a `PolicyAction` event with a
-human-readable `reason` — an audit trail for agents (and captains).
+Every autopilot act emits a `PolicyAction` event with a human-readable
+`reason` — an audit trail for agents (and captains). `prospect` walks to the
+nearest sector you have never entered inside `max_range` of home; when none is
+left it returns home and holds rather than wandering between known sectors.
 
 ## Web client
 
@@ -167,8 +190,19 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   reveal around home) and Defense Grid (see raids).
 - **Research** — 12 techs: hulls, shields, weapons, fuel, navigation, ship
   class unlocks, emergency jump.
-- **Fleets** — up to 3 deployed, 64 ships each, hex movement with fuel mass
-  costs, auto-dock/merge/refuel at home.
+- **Fleets** — up to 3 deployed (8 in all), 64 ships each, hex movement with
+  fuel mass costs. Docking at home unloads cargo and refuels but never merges
+  fleets: use `split` and `merge`. New ships join an idle fleet at home that
+  has no standing orders, or form their own.
+- **Fuel and stranding** — each fleet reports `jump_fuel` (one jump) and
+  `home_fuel` (the charted way home) next to `fuel`. A manual jump that leaves
+  too little to get home still happens, but raises an `Alert` event
+  (warning, or critical if the fleet will be stranded on arrival). A fleet
+  away from home with less than one jump of fuel is stranded: its emergency
+  reserve slowly recovers exactly one jump (about 5 minutes from empty,
+  announced at each quarter), enough to hop toward home, then the wait starts
+  over. `merge` with a fresh fleet from home pools fuel and also rescues it.
+  `recall` costs 2x the jump fuel per hex, all or nothing.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
   chains (corvettes shred scouts…), victors drop salvage.
 - **Scanning** — active `scan` reveals connected sectors (2 hops with a Scout

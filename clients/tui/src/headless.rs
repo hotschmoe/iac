@@ -106,12 +106,23 @@ pub async fn run(
     Ok(())
 }
 
-/// Accept a full ClientMessage or a bare Command and normalize to the former.
-fn parse_line(line: &str) -> Result<ClientMessage, serde_json::Error> {
-    if let Ok(msg) = serde_json::from_str::<ClientMessage>(line) {
-        return Ok(msg);
+/// Accept a full ClientMessage (has a `type` field) or a bare Command (has
+/// an `action` field) and normalize to the former. The error is the one for
+/// the shape the line claims to be, so a bad field is named as itself.
+fn parse_line(line: &str) -> Result<ClientMessage, String> {
+    let value: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+    let Some(object) = value.as_object() else {
+        return Err("expected a JSON object".to_string());
+    };
+    if object.contains_key("type") {
+        serde_json::from_value::<ClientMessage>(value).map_err(|e| e.to_string())
+    } else if object.contains_key("action") {
+        serde_json::from_value::<Command>(value)
+            .map(ClientMessage::Command)
+            .map_err(|e| e.to_string())
+    } else {
+        Err("expected a \"type\" field (full message) or an \"action\" field (bare command)".to_string())
     }
-    serde_json::from_str::<Command>(line).map(ClientMessage::Command)
 }
 
 #[cfg(test)]
@@ -136,5 +147,33 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(parse_line("not json").is_err());
+        assert!(parse_line("[1,2]").is_err());
+        assert!(parse_line(r#"{"fleet_id":1}"#).unwrap_err().contains("action"));
+    }
+
+    #[test]
+    fn partial_policy_params_parse() {
+        let msg = parse_line(
+            r#"{"type":"policy_update","fleet_id":2,"preset":"mine_and_return","params":{"max_range":3}}"#,
+        ).unwrap();
+        match msg {
+            ClientMessage::PolicyUpdate(u) => assert_eq!(u.params.unwrap().max_range, 3),
+            other => panic!("wrong parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bad_policy_field_is_reported_as_itself() {
+        let err = parse_line(
+            r#"{"type":"policy_update","fleet_id":2,"preset":"mine_and_return","params":{"max_range":"far"}}"#,
+        ).unwrap_err();
+        assert!(!err.contains("missing field `action`"), "{err}");
+        assert!(err.contains("max_range") || err.contains("invalid type"), "{err}");
+    }
+
+    #[test]
+    fn bad_command_field_is_reported_as_itself() {
+        let err = parse_line(r#"{"action":"split","fleet_id":2}"#).unwrap_err();
+        assert!(err.contains("ship_ids"), "{err}");
     }
 }

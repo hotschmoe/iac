@@ -10,7 +10,9 @@
       "cooldown_remaining": 3,
       "fuel": 271.5,
       "fuel_max": 500.0,
+      "home_fuel": 63.0,
       "id": 1,
+      "jump_fuel": 31.5,
       "location": {
         "q": 3,
         "r": -2
@@ -48,7 +50,9 @@
       "cooldown_remaining": 3,
       "fuel": 271.5,
       "fuel_max": 500.0,
+      "home_fuel": 63.0,
       "id": 2,
+      "jump_fuel": 31.5,
       "location": {
         "q": 4,
         "r": -2
@@ -85,7 +89,9 @@
       "cooldown_remaining": 0,
       "fuel": 271.5,
       "fuel_max": 500.0,
+      "home_fuel": 63.0,
       "id": 3,
+      "jump_fuel": 31.5,
       "location": {
         "q": -5,
         "r": 7

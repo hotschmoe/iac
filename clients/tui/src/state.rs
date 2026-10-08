@@ -62,6 +62,13 @@ impl HomeworldTab {
     }
 }
 
+/// Fleet-management overlay: pick ships of the active fleet to split off.
+#[derive(Debug, Clone, Default)]
+pub struct FleetPanel {
+    pub cursor: usize,
+    pub marked: Vec<u64>,
+}
+
 /// Navigation actions within the homeworld view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeworldNav {
@@ -139,6 +146,7 @@ pub struct ClientState {
     pub show_sector_info: bool,
     pub show_keybinds: bool,
     pub show_tech_tree: bool,
+    pub fleet_panel: Option<FleetPanel>,
     pub homeworld_tab: HomeworldTab,
     pub homeworld_cursor: usize,
     pub status_message: String,
@@ -195,6 +203,7 @@ impl ClientState {
             show_sector_info: false,
             show_keybinds: false,
             show_tech_tree: false,
+            fleet_panel: None,
             homeworld_tab: HomeworldTab::Buildings,
             homeworld_cursor: 0,
             status_message: String::new(),
@@ -271,6 +280,82 @@ impl ClientState {
             self.target_idx = (self.target_idx + 1) % count;
         } else {
             self.target_idx = 0;
+        }
+    }
+
+    // ── Fleet management ─────────────────────────────────────────────
+
+    pub fn toggle_fleet_panel(&mut self) {
+        self.fleet_panel = match self.fleet_panel {
+            Some(_) => None,
+            None if self.active_fleet().is_some() => Some(FleetPanel::default()),
+            None => None,
+        };
+        self.show_keybinds = false;
+        self.show_tech_tree = false;
+    }
+
+    pub fn fleet_panel_move(&mut self, delta: i32) {
+        let count = self.active_fleet().map(|f| f.ships.len()).unwrap_or(0);
+        if let Some(panel) = self.fleet_panel.as_mut() && count > 0 {
+            panel.cursor = (panel.cursor as i32 + delta).rem_euclid(count as i32) as usize;
+        }
+    }
+
+    pub fn fleet_panel_mark(&mut self) {
+        let Some(ship_id) = self.fleet_panel.as_ref()
+            .and_then(|p| self.active_fleet().and_then(|f| f.ships.get(p.cursor)))
+            .map(|s| s.id)
+        else { return; };
+        if let Some(panel) = self.fleet_panel.as_mut() {
+            match panel.marked.iter().position(|id| *id == ship_id) {
+                Some(i) => { panel.marked.remove(i); }
+                None => panel.marked.push(ship_id),
+            }
+        }
+    }
+
+    /// Split the marked ships off the active fleet.
+    pub fn fleet_panel_split(&mut self) -> Option<Command> {
+        let fleet = self.active_fleet()?;
+        let panel = self.fleet_panel.as_ref()?;
+        let marked: Vec<u64> = panel.marked.iter().copied()
+            .filter(|id| fleet.ships.iter().any(|s| s.id == *id))
+            .collect();
+        if marked.is_empty() || marked.len() >= fleet.ships.len() {
+            self.status_message = "mark some ships (space), but leave at least one behind".to_string();
+            self.status_set_tick = self.tick;
+            return None;
+        }
+        let cmd = Command::Split { fleet_id: fleet.id, ship_ids: marked };
+        if let Some(panel) = self.fleet_panel.as_mut() {
+            panel.marked.clear();
+            panel.cursor = 0;
+        }
+        Some(cmd)
+    }
+
+    /// Other fleets sharing the active fleet's sector, lowest id first.
+    pub fn merge_candidates(&self) -> Vec<&FleetState> {
+        let Some(active) = self.active_fleet() else { return Vec::new(); };
+        let mut v: Vec<&FleetState> = self.fleets.iter()
+            .filter(|f| f.id != active.id && f.location == active.location)
+            .collect();
+        v.sort_by_key(|f| f.id);
+        v
+    }
+
+    /// Fold the lowest-numbered fleet sharing this sector into the active one.
+    pub fn fleet_panel_merge(&mut self) -> Option<Command> {
+        let active_id = self.active_fleet()?.id;
+        let other = self.merge_candidates().first().map(|f| f.id);
+        match other {
+            Some(other_fleet_id) => Some(Command::Merge { fleet_id: active_id, other_fleet_id }),
+            None => {
+                self.status_message = "no other fleet in this sector to merge".to_string();
+                self.status_set_tick = self.tick;
+                None
+            }
         }
     }
 
@@ -554,5 +639,66 @@ impl ClientState {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iac_shared::constants::Resources;
+    use iac_shared::protocol::{FleetStatus, ShipState};
+
+    fn ship(id: u64) -> ShipState {
+        ShipState {
+            id, ship_class: ShipClass::Scout, hull: 10.0, hull_max: 10.0,
+            shield: 0.0, shield_max: 0.0, weapon_power: 1.0,
+        }
+    }
+
+    fn fleet(id: u64, at: Hex, ship_ids: &[u64]) -> FleetState {
+        FleetState {
+            id, location: at, state: FleetStatus::Idle,
+            ships: ship_ids.iter().map(|i| ship(*i)).collect(),
+            cargo: Resources::default(), cargo_capacity: 20.0, fuel: 10.0, fuel_max: 10.0,
+            jump_fuel: 1.0, home_fuel: 0.0, cooldown_remaining: 0, policy: None,
+        }
+    }
+
+    #[test]
+    fn panel_splits_marked_ships_and_keeps_one() {
+        let mut st = ClientState::new();
+        st.fleets = vec![fleet(1, Hex::ORIGIN, &[11, 12, 13])];
+        st.toggle_fleet_panel();
+        st.fleet_panel_mark();
+        st.fleet_panel_move(1);
+        st.fleet_panel_mark();
+        match st.fleet_panel_split() {
+            Some(Command::Split { fleet_id, ship_ids }) => {
+                assert_eq!(fleet_id, 1);
+                assert_eq!(ship_ids, vec![11, 12]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(st.fleet_panel_split().is_none(), "marks were consumed");
+
+        for _ in 0..3 { st.fleet_panel_move(1); st.fleet_panel_mark(); }
+        assert!(st.fleet_panel_split().is_none(), "cannot take every ship");
+    }
+
+    #[test]
+    fn panel_merges_only_fleets_in_the_same_sector() {
+        let mut st = ClientState::new();
+        st.fleets = vec![
+            fleet(1, Hex::ORIGIN, &[11]),
+            fleet(2, Hex::new(1, 0), &[21]),
+            fleet(3, Hex::ORIGIN, &[31]),
+        ];
+        st.toggle_fleet_panel();
+        match st.fleet_panel_merge() {
+            Some(Command::Merge { fleet_id, other_fleet_id }) => assert_eq!((fleet_id, other_fleet_id), (1, 3)),
+            other => panic!("{other:?}"),
+        }
+        st.fleets.retain(|f| f.id != 3);
+        assert!(st.fleet_panel_merge().is_none());
     }
 }

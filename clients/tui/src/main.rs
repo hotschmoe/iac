@@ -275,6 +275,27 @@ async fn run(
                             let _ = cmd_tx.send(msg);
                         }
                     }
+                    input::InputAction::ToggleFleetPanel => {
+                        state.lock().await.toggle_fleet_panel();
+                    }
+                    input::InputAction::FleetPanelMove(delta) => {
+                        state.lock().await.fleet_panel_move(delta);
+                    }
+                    input::InputAction::FleetPanelMark => {
+                        state.lock().await.fleet_panel_mark();
+                    }
+                    input::InputAction::FleetPanelSplit => {
+                        let cmd = state.lock().await.fleet_panel_split();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
+                    input::InputAction::FleetPanelMerge => {
+                        let cmd = state.lock().await.fleet_panel_merge();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
                     input::InputAction::PlotRoute => {
                         let mut st = state.lock().await;
                         let target = st.map_center;

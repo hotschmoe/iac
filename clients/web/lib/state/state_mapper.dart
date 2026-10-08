@@ -278,13 +278,14 @@ class StateMapper {
       proto.FleetStatus.exploring => FleetStatus.exploring,
     };
 
-    final byClass = <proto.ShipClass, ({int count, double hull, double hullMax})>{};
+    final byClass = <proto.ShipClass, ({int count, double hull, double hullMax, List<int> ids})>{};
     for (final s in f.ships) {
       final prev = byClass[s.shipClass];
       byClass[s.shipClass] = (
         count: (prev?.count ?? 0) + 1,
         hull: (prev?.hull ?? 0) + s.hull,
         hullMax: (prev?.hullMax ?? 0) + s.hullMax,
+        ids: [...?prev?.ids, s.id],
       );
     }
 
@@ -307,6 +308,7 @@ class StateMapper {
             count: e.value.count,
             hull: e.value.hull.round(),
             hullMax: e.value.hullMax.round().clamp(1, 99999),
+            ids: e.value.ids,
           ),
       ],
       cargo: FleetCargo(
@@ -317,6 +319,8 @@ class StateMapper {
       ),
       fuel: f.fuel.round(),
       fuelMax: math.max(1, f.fuelMax.round()),
+      jumpFuel: f.jumpFuel.round(),
+      homeFuel: f.homeFuel.round(),
       cooldown: f.cooldownRemaining,
       policy: f.policy?.label,
     );

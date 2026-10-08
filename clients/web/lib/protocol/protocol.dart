@@ -350,25 +350,30 @@ class RequestFullState extends ClientMessage {
   Json toJson() => {'type': 'request_full_state'};
 }
 
+/// Doctrine thresholds. Every field is optional on the wire; the defaults
+/// here are the server's (constants.rs).
 class PolicyParams {
+  /// Spare fuel, percent of the tank, kept on top of the route home.
   final int minFuelPct;
   final int cargoReturnPct;
+
+  /// Hexes from the homeworld, never from the last claim.
   final int maxRange;
   final int engageRatioX10;
   const PolicyParams({
-    required this.minFuelPct,
-    required this.cargoReturnPct,
-    required this.maxRange,
-    required this.engageRatioX10,
+    this.minFuelPct = 10,
+    this.cargoReturnPct = 85,
+    this.maxRange = 4,
+    this.engageRatioX10 = 12,
   });
 
   factory PolicyParams.fromJson(Object? json) {
     final m = _obj(json);
     return PolicyParams(
-      minFuelPct: _i(m['min_fuel_pct']),
-      cargoReturnPct: _i(m['cargo_return_pct']),
-      maxRange: _i(m['max_range']),
-      engageRatioX10: _i(m['engage_ratio_x10']),
+      minFuelPct: (m['min_fuel_pct'] as int?) ?? 10,
+      cargoReturnPct: (m['cargo_return_pct'] as int?) ?? 85,
+      maxRange: (m['max_range'] as int?) ?? 4,
+      engageRatioX10: (m['engage_ratio_x10'] as int?) ?? 12,
     );
   }
 
@@ -407,6 +412,8 @@ sealed class Command {
       'stop' => StopCommand(fleetId: fleet()),
       'scan' => ScanCommand(fleetId: fleet()),
       'explore_site' => ExploreSiteCommand(fleetId: fleet()),
+      'split' => SplitCommand(fleetId: _i(m['fleet_id']), shipIds: _list(m['ship_ids'], _i)),
+      'merge' => MergeCommand(fleetId: _i(m['fleet_id']), otherFleetId: _i(m['other_fleet_id'])),
       final a => throw FormatException('unknown Command action "$a"'),
     };
   }
@@ -498,6 +505,26 @@ class ExploreSiteCommand extends Command {
   const ExploreSiteCommand({this.fleetId = 0});
   @override
   Json toJson() => {'action': 'explore_site', 'fleet_id': fleetId};
+}
+
+/// Detach [shipIds] from the fleet into a new fleet at the same sector (at the
+/// homeworld this launches docked ships). The reply is an Alert event naming
+/// the new fleet id.
+class SplitCommand extends Command {
+  final int fleetId;
+  final List<int> shipIds;
+  const SplitCommand({required this.fleetId, required this.shipIds});
+  @override
+  Json toJson() => {'action': 'split', 'fleet_id': fleetId, 'ship_ids': shipIds};
+}
+
+/// Fold [otherFleetId] into [fleetId]; both idle, same sector.
+class MergeCommand extends Command {
+  final int fleetId;
+  final int otherFleetId;
+  const MergeCommand({required this.fleetId, required this.otherFleetId});
+  @override
+  Json toJson() => {'action': 'merge', 'fleet_id': fleetId, 'other_fleet_id': otherFleetId};
 }
 
 // ── Server → Client ───────────────────────────────────────────────
@@ -674,6 +701,12 @@ class FleetState {
   final double cargoCapacity;
   final double fuel;
   final double fuelMax;
+
+  /// Fuel one jump costs this fleet; below it, away from home, it is stranded.
+  final double jumpFuel;
+
+  /// Fuel the way home costs over charted lanes (0 at the homeworld).
+  final double homeFuel;
   final int cooldownRemaining;
   final PolicyPreset? policy;
   const FleetState({
@@ -685,6 +718,8 @@ class FleetState {
     required this.cargoCapacity,
     required this.fuel,
     required this.fuelMax,
+    this.jumpFuel = 0,
+    this.homeFuel = 0,
     this.cooldownRemaining = 0,
     this.policy,
   });
@@ -700,6 +735,8 @@ class FleetState {
       cargoCapacity: _f(m['cargo_capacity']),
       fuel: _f(m['fuel']),
       fuelMax: _f(m['fuel_max']),
+      jumpFuel: m['jump_fuel'] == null ? 0 : _f(m['jump_fuel']),
+      homeFuel: m['home_fuel'] == null ? 0 : _f(m['home_fuel']),
       cooldownRemaining: (m['cooldown_remaining'] as int?) ?? 0,
       policy: _opt(m['policy'], PolicyPreset.fromJson),
     );
@@ -715,6 +752,8 @@ class FleetState {
       'cargo_capacity': cargoCapacity,
       'fuel': fuel,
       'fuel_max': fuelMax,
+      'jump_fuel': jumpFuel,
+      'home_fuel': homeFuel,
       'cooldown_remaining': cooldownRemaining,
     };
     _put(m, 'policy', policy?.toJson());

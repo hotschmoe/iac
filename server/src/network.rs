@@ -634,6 +634,8 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             cargo_capacity: fleet_cargo_capacity(fleet),
             fuel: fleet.fuel,
             fuel_max: fleet.fuel_max,
+            jump_fuel: engine.hop_fuel_cost(fleet),
+            home_fuel: engine.route_home_cost(fleet, fleet.move_target.unwrap_or(fleet.location)),
             cooldown_remaining: fleet.action_cooldown,
             policy: engine.policies.get(&fleet.id).map(|p| p.preset),
         });

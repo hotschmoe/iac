@@ -60,6 +60,7 @@ const helpLines = [
   '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump>',
   '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research>',
   'fleets: f[leet] [n]  select/list   p[olicy] [manual|prospect|mine|salvage|patrol]  (no arg cycles)',
+  '        split <class> [count]  detach ships into a new fleet   merge <fleet id>  fold a fleet in this sector into the active one',
   'other:  status  refresh  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
 ];
 
@@ -254,6 +255,40 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
       };
       if (q == null) return const ParsedError('cancel: building|ship|research');
       return ParsedSend([CommandMessage(CancelBuildCommand(queueType: q))]);
+
+    case 'split':
+      final fleet = ctx.fleet;
+      if (fid == null || fleet == null) return const ParsedError('No fleet selected (you have none)');
+      ShipClass? c;
+      for (final s in ShipClass.values) {
+        if (args.isNotEmpty && s.name == args.first) c = s;
+      }
+      if (c == null) return const ParsedError('split: <scout|corvette|frigate|cruiser|hauler> [count]');
+      final n = args.length > 1 ? int.tryParse(args[1]) : 1;
+      final aboard = [for (final s in fleet.ships) if (s.shipClass == c) s.id];
+      if (n == null || n < 1 || n > aboard.length) {
+        return ParsedError('split: F$fid has ${aboard.length} ${c.name}');
+      }
+      if (n >= fleet.ships.length) return const ParsedError('split: at least one ship must stay in the fleet');
+      return ParsedSend([CommandMessage(SplitCommand(fleetId: fid, shipIds: aboard.take(n).toList()))]);
+
+    case 'merge':
+      final fleet = ctx.fleet;
+      if (fid == null || fleet == null) return const ParsedError('No fleet selected (you have none)');
+      final others = [
+        for (final f in ctx.fleets)
+          if (f.id != fid && f.location == fleet.location) f,
+      ];
+      if (others.isEmpty) return const ParsedError('merge: no other fleet in this sector');
+      var other = others.first;
+      if (args.isNotEmpty) {
+        final want = int.tryParse(args.first.replaceFirst('f', ''));
+        final match = others.where((f) => f.id == want);
+        if (match.isEmpty) return ParsedError('merge: choose ${others.map((f) => 'F${f.id}').join('|')}');
+        other = match.first;
+      }
+      final target = other.id;
+      return ParsedSend([CommandMessage(MergeCommand(fleetId: fid, otherFleetId: target))]);
 
     case 'p' || 'policy':
       if (fid == null) return const ParsedError('No fleet selected (you have none)');

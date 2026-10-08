@@ -385,10 +385,20 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         AMBER_BRIGHT
     };
 
+    // Fuel turns red when the tank cannot cover the way home.
+    let fuel_style = if fleet.home_fuel > fleet.fuel { RED_ALERT } else { AMBER_BRIGHT };
+    let mut fuel_line = format!(" Fuel:  {:.0}/{:.0}  jump {:.0}", fleet.fuel, fleet.fuel_max, fleet.jump_fuel);
+    if fleet.home_fuel > 0.0 {
+        fuel_line.push_str(&format!("  home {:.0}", fleet.home_fuel));
+    }
+    if fleet.jump_fuel > 0.0 && fleet.fuel < fleet.jump_fuel && fleet.home_fuel > 0.0 {
+        fuel_line.push_str("  STRANDED, reserve recharging");
+    }
+
     let lines = vec![
         Line::styled(status_line, status_style),
         Line::styled(format!(" Ships: {}", ships_str), AMBER_BRIGHT),
-        Line::styled(format!(" Fuel:  {:.0}/{:.0}", fleet.fuel, fleet.fuel_max), AMBER_BRIGHT),
+        Line::styled(fuel_line, fuel_style),
         Line::raw(""),
         Line::styled(format!(" Hull:   {:.0}/{:.0}", hull_cur, hull_max), hull_style),
         Line::styled(format!(" Shield: {:.0}/{:.0}", shield_cur, shield_max), CYAN_INTEL),

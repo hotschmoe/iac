@@ -11,7 +11,9 @@
         "cooldown_remaining": 0,
         "fuel": 1.0,
         "fuel_max": 2.0,
+        "home_fuel": 0.0,
         "id": 1,
+        "jump_fuel": 0.0,
         "location": {
           "q": 0,
           "r": 0

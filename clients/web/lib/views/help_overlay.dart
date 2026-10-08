@@ -100,6 +100,8 @@ class HelpOverlay extends StatelessWidget {
                     _bind('cancel <queue>', 'Cancel building|ship|research'),
                     _bind('f / fleet [n]', 'List / select fleet'),
                     _bind('p / policy [name]', 'Standing orders (cycles)'),
+                    _bind('split <class> [n]', 'Detach ships into a new fleet'),
+                    _bind('merge [fleet id]', 'Fold a fleet in this sector in'),
                     _bind('status / refresh', 'Status / re-sync full state'),
                   ],
                   const SizedBox(height: 16),

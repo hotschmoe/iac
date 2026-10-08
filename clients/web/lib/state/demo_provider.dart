@@ -41,6 +41,8 @@ class DemoProvider {
         cargoCapacity: 270,
         fuel: 271,
         fuelMax: 500,
+        jumpFuel: 25,
+        homeFuel: 50,
       ),
       FleetState(
         id: 102,
@@ -61,6 +63,8 @@ class DemoProvider {
         cargoCapacity: 20,
         fuel: 440,
         fuelMax: 500,
+        jumpFuel: 15,
+        homeFuel: 45,
         policy: PolicyPreset.prospect,
       ),
     ];
@@ -285,6 +289,8 @@ class DemoProvider {
         cargoCapacity: f.cargoCapacity,
         fuel: f.fuel,
         fuelMax: f.fuelMax,
+        jumpFuel: f.jumpFuel,
+        homeFuel: f.homeFuel,
         cooldownRemaining: f.cooldownRemaining,
         policy: clearPolicy ? null : (policy ?? f.policy),
       );
@@ -571,6 +577,89 @@ class DemoProvider {
           clearShip: queueType == QueueType.ship,
           clearResearch: queueType == QueueType.research,
         );
+        return [_tickUpdate()];
+      case SplitCommand(:final fleetId, :final shipIds):
+        final f = fleet(fleetId);
+        if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
+        final taken = [for (final s in f.ships) if (shipIds.contains(s.id)) s];
+        if (taken.isEmpty || taken.length >= f.ships.length) {
+          return [_err(ErrorCode.invalidTarget, 'Split needs some ships, and one must stay')];
+        }
+        if (_fleets.length >= 8) return [_err(ErrorCode.fleetLimitReached, 'Fleet limit reached')];
+        final share = taken.length / f.ships.length;
+        final newId = 1 + _fleets.map((e) => e.id).reduce(max);
+        final rest = [for (final s in f.ships) if (!shipIds.contains(s.id)) s];
+        _fleets = [
+          for (final e in _fleets)
+            if (e.id == fleetId)
+              FleetState(
+                id: e.id,
+                location: e.location,
+                state: e.state,
+                ships: rest,
+                cargo: e.cargo,
+                cargoCapacity: e.cargoCapacity * (1 - share),
+                fuel: e.fuel * (1 - share),
+                fuelMax: e.fuelMax * (1 - share),
+                policy: e.policy,
+              )
+            else
+              e,
+          FleetState(
+            id: newId,
+            location: f.location,
+            state: FleetStatus.idle,
+            ships: taken,
+            cargo: const Resources(),
+            cargoCapacity: f.cargoCapacity * share,
+            fuel: f.fuel * share,
+            fuelMax: f.fuelMax * share,
+          ),
+        ];
+        _pending.add(GameEvent(
+          tick: _tick,
+          kind: AlertEvent(
+            level: AlertLevel.info,
+            message: 'fleet $fleetId split: ${taken.length} ship(s) now fly as fleet $newId',
+            fleetId: newId,
+          ),
+        ));
+        return [_tickUpdate()];
+      case MergeCommand(:final fleetId, :final otherFleetId):
+        final a = fleet(fleetId);
+        final b = fleet(otherFleetId);
+        if (a == null || b == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
+        if (a.id == b.id) return [_err(ErrorCode.invalidTarget, 'A fleet cannot merge with itself')];
+        if (a.location != b.location) return [_err(ErrorCode.notInSector, 'Fleets are not in the same sector')];
+        _fleets = [
+          for (final e in _fleets)
+            if (e.id == fleetId)
+              FleetState(
+                id: a.id,
+                location: a.location,
+                state: a.state,
+                ships: [...a.ships, ...b.ships],
+                cargo: Resources(
+                  metal: a.cargo.metal + b.cargo.metal,
+                  crystal: a.cargo.crystal + b.cargo.crystal,
+                  deuterium: a.cargo.deuterium + b.cargo.deuterium,
+                ),
+                cargoCapacity: a.cargoCapacity + b.cargoCapacity,
+                fuel: a.fuel + b.fuel,
+                fuelMax: a.fuelMax + b.fuelMax,
+                policy: a.policy,
+              )
+            else if (e.id != otherFleetId)
+              e,
+        ];
+        _pending.add(GameEvent(
+          tick: _tick,
+          kind: AlertEvent(
+            level: AlertLevel.info,
+            message: 'fleet $otherFleetId merged into fleet $fleetId',
+            fleetId: fleetId,
+          ),
+        ));
         return [_tickUpdate()];
       case AttackCommand() || CollectSalvageCommand() || ExploreSiteCommand():
         return [_err(ErrorCode.invalidCommand, 'Demo mode: not simulated')];

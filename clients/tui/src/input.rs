@@ -29,6 +29,11 @@ pub enum InputAction {
     PlotRoute,
     /// Clear the plotted course.
     ClearRoute,
+    ToggleFleetPanel,
+    FleetPanelMove(i32),
+    FleetPanelMark,
+    FleetPanelSplit,
+    FleetPanelMerge,
 }
 
 pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
@@ -40,6 +45,21 @@ pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
     // Global keys
     if key.code == KeyCode::Esc {
         return InputAction::SwitchView(View::CommandCenter);
+    }
+
+    // The fleet panel captures the keyboard while it is open.
+    if state.fleet_panel.is_some() {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Char('f') => InputAction::ToggleFleetPanel,
+            KeyCode::Up => InputAction::FleetPanelMove(-1),
+            KeyCode::Down => InputAction::FleetPanelMove(1),
+            KeyCode::Char(' ') => InputAction::FleetPanelMark,
+            KeyCode::Char('s') | KeyCode::Enter => InputAction::FleetPanelSplit,
+            KeyCode::Char('g') => InputAction::FleetPanelMerge,
+            KeyCode::Tab => InputAction::CycleFleet,
+            KeyCode::Char('q') => InputAction::Quit,
+            _ => InputAction::None,
+        };
     }
 
     // Homeworld-specific: arrow/tab/enter routing for card navigation
@@ -120,6 +140,7 @@ fn map_char(c: char, state: &ClientState) -> InputAction {
         },
         'c' => InputAction::CenterFleet,
         'p' => InputAction::CyclePolicy,
+        'f' => InputAction::ToggleFleetPanel,
 
         _ => InputAction::None,
     }
@@ -145,6 +166,7 @@ fn map_homeworld_char(c: char) -> InputAction {
         '`' => InputAction::SwitchView(View::CommandCenter),
         '?' => InputAction::ToggleKeybinds,
         't' => InputAction::ToggleTechTree,
+        'f' => InputAction::ToggleFleetPanel,
 
         // Cancel queues
         'x' => InputAction::SendCommand(Command::CancelBuild {

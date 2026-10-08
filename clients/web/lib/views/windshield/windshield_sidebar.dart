@@ -3,17 +3,21 @@ import 'package:flutter/material.dart';
 import '../../hex/hex_math.dart';
 import '../../models/fleet.dart';
 import '../../models/game_state.dart';
+import '../../state/game_controller.dart';
 import '../../theme/amber_theme.dart';
 import '../../widgets/amber_panel.dart';
+import 'fleet_manage_panel.dart';
 
 class WindshieldSidebar extends StatelessWidget {
   final FleetState fleet;
   final SectorInfo sector;
+  final GameController controller;
 
   const WindshieldSidebar({
     super.key,
     required this.fleet,
     required this.sector,
+    required this.controller,
   });
 
   @override
@@ -23,6 +27,7 @@ class WindshieldSidebar extends StatelessWidget {
         children: [
           _fleetPanel(),
           _cargoPanel(),
+          FleetManagePanel(controller: controller),
           _sectorPanel(),
         ],
       ),
@@ -133,6 +138,16 @@ class WindshieldSidebar extends StatelessWidget {
               ]),
             ),
           ),
+          if (fleet.jumpFuel > 0)
+            LabeledRow(label: 'Jump', value: '${fleet.jumpFuel}', valueColor: Amber.normal),
+          if (fleet.homeFuel > 0)
+            LabeledRow(
+              label: 'Home',
+              value: '${fleet.homeFuel}${fleet.shortOfHomeFuel ? '  SHORT' : ''}',
+              valueColor: fleet.shortOfHomeFuel ? Amber.danger : Amber.normal,
+            ),
+          if (fleet.stranded)
+            Text('STRANDED: reserve recharging', style: Amber.mono(size: 11, color: Amber.danger)),
           const SizedBox(height: 4),
           LabeledRow(label: 'Cooldown', value: '${fleet.cooldown}', valueColor: Amber.normal),
           LabeledRow(label: 'Policy', value: fleet.policy ?? 'manual', valueColor: Amber.normal),

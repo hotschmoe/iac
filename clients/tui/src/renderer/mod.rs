@@ -50,6 +50,8 @@ pub fn view(frame: &mut Frame<'_>, state: &ClientState) {
 
     if state.show_keybinds {
         render_keybinds(frame, chunks[1]);
+    } else if state.fleet_panel.is_some() {
+        render_fleet_panel(frame, state, chunks[1]);
     } else if state.show_tech_tree && state.current_view == crate::state::View::Homeworld {
         homeworld::render_tech_tree(frame, state, chunks[1]);
     } else {
@@ -104,12 +106,14 @@ fn render_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         return;
     }
 
-    let text: &str = if state.show_tech_tree && state.current_view == crate::state::View::Homeworld {
+    let text: &str = if state.fleet_panel.is_some() {
+        " FLEETS | [Up/Down] Ship  [Space] Mark  [s] Split marked  [g] Merge in  [Tab] Fleet  [f] Close"
+    } else if state.show_tech_tree && state.current_view == crate::state::View::Homeworld {
         " TECH TREE | [t] Close  [?] Keys"
     } else {
         match state.current_view {
             crate::state::View::CommandCenter => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
-            crate::state::View::Windshield => " WINDSHIELD | [1-6] Move  [v] Scan  [h] Harvest  [x] Board  [a] Attack  [p] Orders  [?] Keys",
+            crate::state::View::Windshield => " WINDSHIELD | [1-6] Move  [v] Scan  [h] Harvest  [x] Board  [a] Attack  [p] Orders  [f] Fleets  [?] Keys",
             crate::state::View::StarMap => " STAR MAP | [Arrows] Crosshair  [Enter] Plot Course  [z/x] Zoom  [?] Keys",
             crate::state::View::Homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [+/-] Count  [x/X/z] Cancel  [t] Tree  [?] Keys",
         }
@@ -153,6 +157,9 @@ i         Sector info
 
 FLEET ORDERS
 ─────────────────────────────
+f         Fleet panel: split ships
+          off, merge fleets in
+          the same sector
 p         Cycle standing orders
           (manual > prospect >
            mine+return > salvage
@@ -181,6 +188,60 @@ c         Center on fleet
     let inner = block.inner(area);
     frame.render_widget(&block, area);
     frame.render_widget(paragraph, inner);
+}
+
+// ── Fleet panel ────────────────────────────────────────────────────
+
+fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
+    use ratatui::text::{Line, Span};
+    let block = titled_block(" FLEETS ", AMBER_DIM);
+    let inner = block.inner(area);
+    frame.render_widget(&block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let (Some(fleet), Some(panel)) = (state.active_fleet(), state.fleet_panel.as_ref()) else {
+        return;
+    };
+
+    lines.push(Line::styled(
+        format!(
+            "Fleet {} at [{},{}]  fuel {:.0}/{:.0}  cargo {:.0}/{:.0}",
+            fleet.id, fleet.location.q, fleet.location.r, fleet.fuel, fleet.fuel_max,
+            fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium, fleet.cargo_capacity,
+        ),
+        AMBER_FULL,
+    ));
+    lines.push(Line::styled(
+        "Mark ships with [Space], then [s] to send them off as a new fleet. At least one stays.",
+        AMBER_DIM,
+    ));
+    lines.push(Line::raw(""));
+    for (i, ship) in fleet.ships.iter().enumerate() {
+        let mark = if panel.marked.contains(&ship.id) { "[x]" } else { "[ ]" };
+        let cursor = if i == panel.cursor { ">" } else { " " };
+        let style = if i == panel.cursor { AMBER_FULL } else { AMBER };
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "{cursor} {mark} {:<9} #{:<6} hull {:.0}/{:.0}",
+                ship.ship_class.label(), ship.id, ship.hull, ship.hull_max,
+            ),
+            style,
+        )]));
+    }
+    lines.push(Line::raw(""));
+    let partners = state.merge_candidates();
+    if partners.is_empty() {
+        lines.push(Line::styled("No other fleet in this sector to merge.", AMBER_DIM));
+    } else {
+        lines.push(Line::styled("Same sector ([g] merges the first into this fleet):", AMBER_BRIGHT));
+        for f in partners {
+            lines.push(Line::styled(
+                format!("  fleet {}  {} ship(s)  fuel {:.0}/{:.0}", f.id, f.ships.len(), f.fuel, f.fuel_max),
+                AMBER,
+            ));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────

@@ -497,6 +497,61 @@ class GameController extends ChangeNotifier {
     }
   }
 
+  // ── Fleet management ──────────────────────────────────────────
+
+  /// Other fleets in the selected fleet's sector, which can be merged in.
+  List<FleetState> get mergeCandidates {
+    final cur = currentFleet;
+    if (cur.id == 0) return const [];
+    return [
+      for (final f in _state.fleets)
+        if (f.id != cur.id && f.sector == cur.sector) f,
+    ];
+  }
+
+  /// Split [count] ships of [shipClass] off the selected fleet.
+  void splitShips(String shipClass, int count) {
+    final id = activeFleetId;
+    if (id == null) {
+      note('No fleet to split', level: EventLevel.bright);
+      return;
+    }
+    final ids = [
+      for (final g in currentFleet.ships)
+        if (g.shipClass.toLowerCase() == shipClass.toLowerCase()) ...g.ids,
+    ];
+    if (count < 1 || ids.length < count) {
+      note('split: ${currentFleet.name} has ${ids.length} $shipClass', level: EventLevel.bright);
+      return;
+    }
+    if (count >= currentFleet.shipCount) {
+      note('split: at least one ship must stay in the fleet', level: EventLevel.bright);
+      return;
+    }
+    note('> split $count $shipClass off ${currentFleet.name}', level: EventLevel.full);
+    sendCommand(proto.SplitCommand(fleetId: id, shipIds: ids.take(count).toList()));
+  }
+
+  /// Split exact ships (chosen by the fleet panel) off the selected fleet.
+  void splitShipIds(List<int> shipIds) {
+    final id = activeFleetId;
+    if (id == null || shipIds.isEmpty) return;
+    if (shipIds.length >= currentFleet.shipCount) {
+      note('split: at least one ship must stay in the fleet', level: EventLevel.bright);
+      return;
+    }
+    note('> split ${shipIds.length} ship(s) off ${currentFleet.name}', level: EventLevel.full);
+    sendCommand(proto.SplitCommand(fleetId: id, shipIds: shipIds));
+  }
+
+  /// Fold fleet [otherFleetId] into the selected fleet.
+  void mergeFleet(int otherFleetId) {
+    final id = activeFleetId;
+    if (id == null) return;
+    note('> merge fleet $otherFleetId into ${currentFleet.name}', level: EventLevel.full);
+    sendCommand(proto.MergeCommand(fleetId: id, otherFleetId: otherFleetId));
+  }
+
   void cancelHomeworldQueue(proto.QueueType queue) {
     note('> cancel ${queue.name}', level: EventLevel.full);
     sendCommand(proto.CancelBuildCommand(queueType: queue));

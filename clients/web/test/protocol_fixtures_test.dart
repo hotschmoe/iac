@@ -82,9 +82,9 @@ void main() {
       expect(kinds.length, 20);
     });
 
-    test('command fixtures cover all 12 commands', () {
+    test('command fixtures cover all 14 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 12);
+      expect(kinds.length, 14);
     });
 
     test('full_state exposes sector connections', () {

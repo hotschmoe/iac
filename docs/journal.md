@@ -339,3 +339,60 @@ spec's rate limits and lockout (see `docs/auth_spec.md`, "Implemented subset").
 
 **Known gaps noticed, not changed:** sector salvage and fleet move targets /
 cooldowns are not persisted across restarts.
+
+## 2026-10-09: fleets, autopilot and fuel (playtest fixes)
+
+Branch `fix-fleets`. Findings from `docs/playtests/2026-10-09/`.
+
+**Starting fuel.** `register_player` hard-coded a 50000 tank and only the
+first dock recomputed it. The fleet now gets `fleet_fuel_max` at creation, and
+`load_world` clamps stored tanks to the real maximum so old worlds heal.
+
+**Autopilot range.** Re-claims searched from the previous claim, so
+`max_range` was a per-step leash that walked outward. Every claim is now
+chosen by BFS from home, a claim beyond `max_range` of home is re-staked
+(orders given away from home), and salvage runs search from home too.
+`prospect` walks to the nearest sector the player has never entered
+(`engine.explored`) inside range; with none left it returns home and holds.
+Holds go through `hold_policy`, which emits a `PolicyAction` and repeats the
+same reason at most once a minute.
+
+**Fuel safety.** The return trigger is `fuel < route_home_cost + reserve`
+(`min_fuel_pct` of the tank is now a reserve on top of the route, default 10)
+and `policy_move` refuses an outward jump that would leave less than the
+route back. The route is the shortest path over sectors the player has
+entered (`known_hops_home`), times the fleet's jump cost. Effective range is
+also capped by what the tank can afford for the round trip. `FleetState` now
+carries `jump_fuel` and `home_fuel` so every client shows the risk.
+Manual jumps are never blocked; one that cannot be paid back raises an
+`Alert` (warning, or critical when stranded on arrival).
+
+**Stranding.** Design: an emergency reserve. An idle fleet away from home with
+less than one jump regains `jump/300` fuel per tick (exactly one jump in 300
+ticks from empty), with alerts at each quarter and when ready. No new state:
+the reserve is ordinary fuel, so it persists and merges like fuel does.
+Rejected alternatives: auto-teleport home (removes the risk), a free
+refuel-anywhere (same), and a rescue-ship mechanic (needs a fleet in range and
+a new order). Because the reserve is real fuel it can be spent in any
+direction, but at five minutes per jump crawling outward is not a strategy,
+and the autopilot only ever uses it to go home. A rescue is also possible by
+`merge`: fuel pools, so a fresh fleet that reaches the stranded one tops it up.
+`recall` stays all-or-nothing at 2x jump fuel per hex; its error now states
+the cost and the walking alternative.
+
+**Fleet composition.** Docking no longer merges. Added `split` (named ship ids
+to a new fleet; fuel and cargo follow in proportion to the tank and hold taken)
+and `merge` (same sector, both idle; pools ships, cargo, fuel; absorbed fleet's
+orders end). Limits: 64 ships per fleet, 3 deployed, 8 in all. Splitting at
+home is also how docked ships are launched, so there is no separate launch
+command. Newly built ships join the lowest-numbered idle home fleet without
+standing orders, else form a new fleet.
+
+**Params.** `PolicyParams` is `#[serde(default)]`, each field optional. The
+headless client parsed first as `ClientMessage` and then as `Command`, so a
+bad policy field surfaced as the second parse's "missing field `action`"; it
+now picks the shape from the `type`/`action` key and reports that parse's
+error.
+
+**Touched outside this scope (merge note):** `is_event_relevant` Alert arm
+(now scoped by `fleet_id` when present), since the new alerts carry a fleet id.
