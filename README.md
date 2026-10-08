@@ -19,13 +19,28 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 
 ## Quick start
 
+One command, browser play (builds the Flutter web client, then serves it and
+the WebSocket from the server on one port, printing the LAN URL):
+
+```sh
+scripts/play.sh              # wasm build, falls back to JS; --js / --no-build available
+```
+
+Or manually:
+
 ```sh
 # Terminal 1: the server (1 Hz tick loop, SQLite persistence)
-cargo run -p iac-server                  # port 7777, iac_world.db
+cargo run -p iac-server                  # 127.0.0.1:7777, iac_world.db
+# serve the web client too (after `flutter build web --release` in clients/web):
+cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web
 
 # Terminal 2: the TUI client
 cargo run -p iac-client -- --name Admiral
 ```
+
+The server serves `clients/web/build/web` automatically if it exists
+(override with `--web-dir`). WebSockets are accepted on any path (`/ws` for
+the web client, `/` for the TUI); `--host` sets the bind address.
 
 TUI basics: `w` windshield / `m` star map / `b` homeworld / `` ` `` command
 center, `?` for all keybinds. In the windshield: `1-6` move, `v` scan,
