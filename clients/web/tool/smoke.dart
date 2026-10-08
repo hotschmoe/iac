@@ -89,8 +89,8 @@ Future<void> main(List<String> args) async {
         if (m.code == ErrorCode.authFailed) fail('auth lost');
       case TickUpdate():
         ticks++;
-        final mine = m.fleetUpdates?.where((f) => f.id == fleet.id);
-        if (mine != null && mine.isNotEmpty) {
+        final mine = m.fleets.where((f) => f.id == fleet.id);
+        if (mine.isNotEmpty) {
           lastLoc = mine.first.location;
           cooldown = mine.first.cooldownRemaining;
         }
@@ -117,8 +117,8 @@ Future<void> main(List<String> args) async {
     final m = it.current;
     if (m is TickUpdate) {
       ticks++;
-      final f = m.fleetUpdates?.where((f) => f.id == fleet.id);
-      if (f != null && f.isNotEmpty) lastLoc = f.first.location;
+      final f = m.fleets.where((f) => f.id == fleet.id);
+      if (f.isNotEmpty) lastLoc = f.first.location;
     }
   }
   if (lastLoc != home.connections.first) fail('fleet did not arrive at ${home.connections.first} (at $lastLoc)');

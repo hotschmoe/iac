@@ -24,13 +24,13 @@ use log::{info, warn};
 
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
-    ClientMessage, ServerMessage, Command, ErrorCode,
+    ClientMessage, ServerMessage, Command, ErrorCode, HarvestResource,
     GameState, PlayerState, FleetState, ShipState, SectorState, SectorResources,
     NpcFleetInfo, NpcShipInfo, FleetBrief, ShipClassCounts,
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
     GameEvent,
 };
-use iac_shared::constants::ShipClass;
+use iac_shared::constants::{ShipClass, MAX_FLEETS_PER_PLAYER};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 
 use crate::engine::{GameEngine, FleetStatus, SectorOverride};
@@ -228,7 +228,7 @@ impl Network {
         let mut engine = self.engine.lock().unwrap();
         let result = match cmd {
             Command::Move { fleet_id, target } => engine.handle_move(pid, fleet_id, target),
-            Command::Harvest { fleet_id, resource: _ } => engine.handle_harvest(pid, fleet_id),
+            Command::Harvest { fleet_id, resource } => engine.handle_harvest(pid, fleet_id, resource),
             Command::Recall { fleet_id } => engine.handle_recall(pid, fleet_id),
             Command::CollectSalvage { fleet_id } => engine.handle_collect_salvage(pid, fleet_id),
             Command::Attack { fleet_id, target_fleet_id } => engine.handle_attack(pid, fleet_id, target_fleet_id),
@@ -240,24 +240,11 @@ impl Network {
             Command::Scan { fleet_id } => engine.handle_scan(pid, fleet_id),
             Command::ExploreSite { fleet_id } => engine.handle_explore_site(pid, fleet_id),
         };
+        let failure = result.err().map(|code| (code, command_error_message(&engine, pid, &cmd, code)));
         drop(engine);
 
-        if let Err(e) = result {
-            let action = match cmd {
-                Command::Move { .. } => "Move",
-                Command::Harvest { .. } => "Harvest",
-                Command::Recall { .. } => "Recall",
-                Command::CollectSalvage { .. } => "Salvage",
-                Command::Attack { .. } => "Attack",
-                Command::Build { .. } => "Build",
-                Command::Research { .. } => "Research",
-                Command::BuildShip { .. } => "BuildShip",
-                Command::CancelBuild { .. } => "Cancel",
-                Command::Stop { .. } => "Stop",
-                Command::Scan { .. } => "Scan",
-                Command::ExploreSite { .. } => "ExploreSite",
-            };
-            self.send_error_to_session(session, e, &format!("{} failed", action))?;
+        if let Some((code, message)) = failure {
+            self.send_error_to_session(session, code, &message)?;
         }
 
         Ok(())
@@ -276,9 +263,9 @@ impl Network {
             if !session.authenticated { continue; }
             let Some(player_id) = session.player_id else { continue; };
 
-            let fleet_updates = collect_player_fleets(&engine, player_id);
+            let fleets = collect_player_fleets(&engine, player_id);
             let player_data = engine.players.get(&player_id);
-            let sector_updates = collect_visible_sectors(&engine, &fleet_updates, player_data, player_id);
+            let sector_updates = collect_visible_sectors(&engine, &fleets, player_data, player_id);
 
             let mut player_update: Option<PlayerState> = None;
             let mut hw_update: Option<HomeworldState> = None;
@@ -300,7 +287,7 @@ impl Network {
             let update = ServerMessage::TickUpdate(iac_shared::protocol::TickUpdate {
                 tick: engine.current_tick(),
                 player: player_update,
-                fleet_updates: if fleet_updates.is_empty() { None } else { Some(fleet_updates) },
+                fleets,
                 sector_updates: if sector_updates.is_empty() { None } else { Some(sector_updates) },
                 homeworld_update: hw_update,
                 events: if player_events.is_empty() { None } else { Some(player_events) },
@@ -352,6 +339,100 @@ impl Network {
 
         drop(engine);
         self.send_to_session(session, state)
+    }
+}
+
+fn command_fleet_id(cmd: &Command) -> Option<u64> {
+    match cmd {
+        Command::Move { fleet_id, .. }
+        | Command::Harvest { fleet_id, .. }
+        | Command::Attack { fleet_id, .. }
+        | Command::Recall { fleet_id }
+        | Command::CollectSalvage { fleet_id }
+        | Command::Stop { fleet_id }
+        | Command::Scan { fleet_id }
+        | Command::ExploreSite { fleet_id } => Some(*fleet_id),
+        Command::Build { .. }
+        | Command::Research { .. }
+        | Command::BuildShip { .. }
+        | Command::CancelBuild { .. } => None,
+    }
+}
+
+fn harvest_label(r: HarvestResource) -> &'static str {
+    match r {
+        HarvestResource::Metal => "metal",
+        HarvestResource::Crystal => "crystal",
+        HarvestResource::Deuterium => "deuterium",
+        HarvestResource::Auto => "resources",
+    }
+}
+
+/// Human-readable explanation for a rejected command. The code stays the
+/// machine-readable part; this says which fleet, sector or queue is at fault.
+fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, code: ErrorCode) -> String {
+    let fleet_id = command_fleet_id(cmd);
+    let fleet = fleet_id
+        .and_then(|id| engine.fleets.get(&id))
+        .filter(|f| f.owner_id == player_id && f.ship_count > 0);
+    let fid = fleet_id.unwrap_or(0);
+
+    match (code, cmd) {
+        (ErrorCode::FleetNotFound, _) => format!("fleet {fid} not found (or it has no ships left)"),
+        (ErrorCode::OnCooldown, Command::Attack { target_fleet_id, .. })
+            if fleet.is_some_and(|f| f.state != FleetStatus::InCombat && f.state != FleetStatus::Moving) =>
+        {
+            format!("hostile fleet {target_fleet_id} is already locked in combat")
+        }
+        (ErrorCode::OnCooldown, _) => match fleet {
+            Some(f) if f.state == FleetStatus::InCombat => format!("fleet {fid} is in combat"),
+            Some(f) if f.state == FleetStatus::Moving => format!("fleet {fid} is in transit"),
+            Some(f) if f.state == FleetStatus::Exploring => format!("fleet {fid} is busy boarding a derelict"),
+            Some(f) if f.action_cooldown > 0 => {
+                format!("fleet {fid} is on cooldown for {} more ticks", f.action_cooldown)
+            }
+            _ => format!("fleet {fid} is busy"),
+        },
+        (ErrorCode::NoConnection, Command::Move { target, .. }) => match fleet {
+            Some(f) => format!("no lane from {} to {}", f.location, target),
+            None => format!("no lane to {target}"),
+        },
+        (ErrorCode::InsufficientFuel, Command::Recall { .. }) => {
+            format!("fleet {fid} lacks the fuel for an emergency jump home")
+        }
+        (ErrorCode::InsufficientFuel, _) => format!("fleet {fid} lacks the fuel for this jump"),
+        (ErrorCode::FleetLimitReached, _) => {
+            format!("fleet limit reached: at most {MAX_FLEETS_PER_PLAYER} fleets can be deployed")
+        }
+        (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
+        (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
+        (ErrorCode::NoResources, _) => "not enough resources".to_string(),
+        (ErrorCode::ResourceNotPresent, Command::Harvest { resource, .. }) => {
+            format!("this sector has no {} to harvest", harvest_label(*resource))
+        }
+        (ErrorCode::CargoFull, _) => format!("fleet {fid} cargo hold is full; return home to unload"),
+        (ErrorCode::InvalidTarget, Command::Attack { target_fleet_id, .. }) => {
+            format!("hostile fleet {target_fleet_id} is not in this sector")
+        }
+        (ErrorCode::InvalidTarget, Command::ExploreSite { .. }) => "no derelict to board in this sector".to_string(),
+        (ErrorCode::InvalidCommand, Command::Stop { .. }) => format!("fleet {fid} has nothing to stop"),
+        (ErrorCode::QueueFull, Command::Build { .. }) => "a building is already under construction".to_string(),
+        (ErrorCode::QueueFull, Command::Research { .. }) => "a research project is already running".to_string(),
+        (ErrorCode::QueueFull, Command::BuildShip { .. }) => "the shipyard is already building".to_string(),
+        (ErrorCode::MaxLevelReached, Command::Build { building_type }) => {
+            format!("{} is already at its maximum level", building_type.label())
+        }
+        (ErrorCode::MaxLevelReached, Command::Research { tech }) => {
+            format!("{} is already at its maximum level", tech.label())
+        }
+        (ErrorCode::PrerequisitesNotMet, _) => "prerequisites not met".to_string(),
+        (ErrorCode::NoShipyard, _) => "build a shipyard first".to_string(),
+        (ErrorCode::NoResearchLab, _) => "build a research lab first".to_string(),
+        (ErrorCode::ShipLocked, Command::BuildShip { ship_class, .. }) => {
+            format!("{} hulls are not unlocked yet; research the matching tech", ship_class.label())
+        }
+        (ErrorCode::ServerError, _) => "internal server error".to_string(),
+        (code, _) => format!("command rejected ({code:?})"),
     }
 }
 
@@ -480,7 +561,7 @@ async fn run_session(socket: WebSocket, state: HttpState) {
 fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState> {
     let mut list = Vec::new();
     for fleet in engine.fleets.values() {
-        if fleet.owner_id != player_id { continue; }
+        if fleet.owner_id != player_id || fleet.ship_count == 0 { continue; }
 
         let ship_states: Vec<ShipState> = fleet.ships[0..fleet.ship_count].iter().map(|ship| {
             ShipState {
@@ -516,6 +597,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             policy: engine.policies.get(&fleet.id).map(|p| p.preset),
         });
     }
+    list.sort_by_key(|f| f.id);
     list
 }
 
@@ -808,5 +890,110 @@ fn is_event_relevant(event: &GameEvent, player_id: u64, engine: &GameEngine) -> 
         iac_shared::protocol::EventKind::SiteAmbush(e) => is_own_fleet(engine, e.fleet_id, player_id),
         iac_shared::protocol::EventKind::PolicyAction(e) => is_own_fleet(engine, e.fleet_id, player_id),
         iac_shared::protocol::EventKind::Alert(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::Database;
+    use serde_json::Value;
+
+    fn network_with_player() -> (Network, Arc<Mutex<GameEngine>>, u64, u64, mpsc::UnboundedReceiver<Message>) {
+        let engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let engine = Arc::new(Mutex::new(engine));
+        let (pid, fid) = {
+            let mut e = engine.lock().unwrap();
+            let pid = e.register_player("Watcher".to_string()).unwrap();
+            let fid = e.fleets.values().find(|f| f.owner_id == pid).unwrap().id;
+            (pid, fid)
+        };
+        let net = Network::init(0, Arc::clone(&engine));
+        let (tx, rx) = mpsc::unbounded_channel();
+        net.sessions.lock().unwrap().insert(1, ClientSession {
+            id: 1,
+            sender: Some(tx),
+            player_id: Some(pid),
+            authenticated: true,
+            client_type: ClientType::Unknown,
+        });
+        (net, engine, pid, fid, rx)
+    }
+
+    fn next_message(rx: &mut mpsc::UnboundedReceiver<Message>) -> Value {
+        match rx.try_recv().expect("a message was sent") {
+            Message::Text(t) => serde_json::from_str(&t).unwrap(),
+            other => panic!("unexpected frame {other:?}"),
+        }
+    }
+
+    #[test]
+    fn losing_every_fleet_is_signalled_with_an_empty_list() {
+        let (net, engine, _pid, fid, mut rx) = network_with_player();
+
+        net.broadcast_updates().unwrap();
+        let before = next_message(&mut rx);
+        assert_eq!(before["fleets"].as_array().unwrap().len(), 1);
+        assert_eq!(before["fleets"][0]["id"], fid);
+
+        // Combat leaves a wiped-out fleet with no ships.
+        engine.lock().unwrap().fleets.get_mut(&fid).unwrap().ship_count = 0;
+        net.broadcast_updates().unwrap();
+        let during = next_message(&mut rx);
+        assert_eq!(during["fleets"], serde_json::json!([]), "dead fleet must not be listed: {during}");
+
+        // Once reaped, the list stays an explicit empty array, never absent.
+        engine.lock().unwrap().tick().unwrap();
+        assert!(!engine.lock().unwrap().fleets.contains_key(&fid));
+        net.broadcast_updates().unwrap();
+        let after = next_message(&mut rx);
+        assert_eq!(after["fleets"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn fleet_list_is_ordered_by_id() {
+        let (net, engine, pid, fid, mut rx) = network_with_player();
+        {
+            let mut e = engine.lock().unwrap();
+            let mut clone = e.fleets[&fid].clone();
+            for id in [fid + 900, fid + 100, fid + 500] {
+                clone.id = id;
+                e.fleets.insert(id, clone.clone());
+            }
+            assert_eq!(e.fleets.values().filter(|f| f.owner_id == pid).count(), 4);
+        }
+        net.broadcast_updates().unwrap();
+        let ids: Vec<u64> = next_message(&mut rx)["fleets"]
+            .as_array().unwrap().iter().map(|f| f["id"].as_u64().unwrap()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+    }
+
+    #[test]
+    fn wrong_resource_harvest_gets_a_specific_error() {
+        use iac_shared::constants::Density;
+        let (net, engine, _pid, fid, mut rx) = network_with_player();
+        let site = {
+            let mut e = engine.lock().unwrap();
+            let site = (-30i16..30)
+                .flat_map(|q| (-30i16..30).map(move |r| Hex { q, r }))
+                .find(|&h| {
+                    let t = e.world_gen.generate_sector(h);
+                    t.metal_density != Density::None && t.deut_density == Density::None
+                })
+                .expect("a metal-only sector");
+            e.fleets.get_mut(&fid).unwrap().location = site;
+            site
+        };
+
+        let session = net.sessions.lock().unwrap().get(&1).cloned().unwrap();
+        net.route_command(&session, Command::Harvest { fleet_id: fid, resource: HarvestResource::Deuterium }).unwrap();
+
+        let reply = next_message(&mut rx);
+        assert_eq!(reply["type"], "error");
+        assert_eq!(reply["code"], "ResourceNotPresent");
+        let msg = reply["message"].as_str().unwrap();
+        assert!(msg.contains("deuterium"), "message should name the resource: {msg} (sector {site})");
     }
 }

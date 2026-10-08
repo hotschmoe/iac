@@ -3,7 +3,7 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
 use iac_shared::hex::HexDirection;
-use iac_shared::protocol::Command;
+use iac_shared::protocol::{Command, HarvestResource};
 
 use crate::state::{ClientState, HomeworldNav, ScrollDirection, View, ZoomLevel};
 
@@ -91,7 +91,10 @@ fn map_char(c: char, state: &ClientState) -> InputAction {
         // Movement keys: map 1-6 to the sector's connected exits
         '1'..='6' => map_movement(c, state),
 
-        'h' => map_harvest(state),
+        'h' => map_harvest(state, HarvestResource::Auto),
+        'M' => map_harvest(state, HarvestResource::Metal),
+        'C' => map_harvest(state, HarvestResource::Crystal),
+        'D' => map_harvest(state, HarvestResource::Deuterium),
         'r' => map_recall(state),
         'a' => map_attack(state),
         's' => map_collect_salvage(state),
@@ -186,11 +189,11 @@ fn map_movement(key: char, state: &ClientState) -> InputAction {
     InputAction::None
 }
 
-fn map_harvest(state: &ClientState) -> InputAction {
+fn map_harvest(state: &ClientState, resource: HarvestResource) -> InputAction {
     let Some(fleet) = active_ready_fleet(state) else { return InputAction::None };
     InputAction::SendCommand(Command::Harvest {
         fleet_id: fleet.id,
-        resource: iac_shared::protocol::HarvestResource::Auto,
+        resource,
     })
 }
 

@@ -107,12 +107,25 @@ void main() {
       expect(parseCommand('dance', ctx()), isA<ParsedError>());
     });
 
-    test('a destroyed own fleet disappears', () {
+    test('a tick update replaces the fleet list, and an empty list means all fleets are lost', () {
+      final survivors = mapper.fleets.where((f) => f.id != 101).toList();
+      mapper.apply(proto.TickUpdate(tick: 6, fleets: survivors));
+      expect(mapper.fleets.map((f) => f.id), isNot(contains(101)));
+      expect(mapper.fleets, hasLength(survivors.length));
+
+      mapper.apply(const proto.TickUpdate(tick: 7, fleets: []));
+      expect(mapper.fleets, isEmpty);
+      expect(mapper.toUiState().fleets, isEmpty);
+    });
+
+    test('a FleetDestroyed event is only logged; the fleet list comes from the tick', () {
+      final before = mapper.fleets.length;
       mapper.apply(const proto.GameEvent(
         tick: 5,
         kind: proto.FleetDestroyedEvent(fleetId: 101, isNpc: false, salvage: proto.Resources()),
       ));
-      expect(mapper.fleets.map((f) => f.id), isNot(contains(101)));
+      expect(mapper.fleets, hasLength(before));
+      expect(mapper.toUiState().events.first.message, contains('101'));
     });
   });
 }

@@ -11,7 +11,7 @@ use iac_shared::constants::{Density, Resources, ShipClass};
 use iac_shared::scaling::{BuildingType, BuildingLevels, ResearchType, ResearchLevels};
 
 use crate::engine::{Player, Fleet, Ship, SectorOverride, BuildQueueEntry, ShipQueueEntry, ResearchQueueEntry, FleetStatus, FleetPolicy};
-use iac_shared::protocol::{PolicyPreset, PolicyParams};
+use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams};
 
 /// Float storage: multiply by 1000 and store as integer for precision.
 fn float_to_stored(val: f32) -> i64 {
@@ -66,6 +66,24 @@ fn fleet_status_to_str(s: FleetStatus) -> &'static str {
         FleetStatus::Returning => "returning",
         FleetStatus::Docked => "docked",
         FleetStatus::Exploring => "exploring",
+    }
+}
+
+fn harvest_resource_to_str(r: HarvestResource) -> &'static str {
+    match r {
+        HarvestResource::Metal => "metal",
+        HarvestResource::Crystal => "crystal",
+        HarvestResource::Deuterium => "deuterium",
+        HarvestResource::Auto => "auto",
+    }
+}
+
+fn parse_harvest_resource(s: &str) -> HarvestResource {
+    match s {
+        "metal" => HarvestResource::Metal,
+        "crystal" => HarvestResource::Crystal,
+        "deuterium" => HarvestResource::Deuterium,
+        _ => HarvestResource::Auto,
     }
 }
 
@@ -245,6 +263,7 @@ impl Database {
         // Columns added after release — migrate old worlds in place.
         Self::ensure_column(&conn, "sectors_modified", "site_looted_tick", "INTEGER")?;
         Self::ensure_column(&conn, "sectors_modified", "site_ambush_bumps", "INTEGER DEFAULT 0")?;
+        Self::ensure_column(&conn, "fleets", "harvest_resource", "TEXT DEFAULT 'auto'")?;
 
         info!("Schema verified");
         Ok(())
@@ -365,8 +384,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO fleets (id, player_id, q, r, state, fuel, fuel_max,
-             cargo_metal, cargo_crystal, cargo_deuterium)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 fleet.id as i64,
                 fleet.owner_id as i64,
@@ -378,6 +397,7 @@ impl Database {
                 float_to_stored(fleet.cargo.metal),
                 float_to_stored(fleet.cargo.crystal),
                 float_to_stored(fleet.cargo.deuterium),
+                harvest_resource_to_str(fleet.harvest_target),
             ],
         )?;
         self.save_ships_inner(&conn, fleet)
@@ -415,7 +435,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, player_id, q, r, state, fuel, fuel_max,
-                    cargo_metal, cargo_crystal, cargo_deuterium
+                    cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource
              FROM fleets",
         )?;
 
@@ -432,11 +452,12 @@ impl Database {
                 row.get::<_, f64>(7)?,
                 row.get::<_, f64>(8)?,
                 row.get::<_, f64>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         })?;
 
         for row_result in fleet_rows {
-            let (fid, pid, q, r, state_str, fuel, fuel_max, cm, cc, cd) = row_result?;
+            let (fid, pid, q, r, state_str, fuel, fuel_max, cm, cc, cd, harvest) = row_result?;
             let mut fleet = Fleet {
                 id: fid as u64,
                 owner_id: pid as u64,
@@ -455,6 +476,7 @@ impl Database {
                 action_cooldown: 0,
                 move_target: None,
                 idle_ticks: 0,
+                harvest_target: parse_harvest_resource(harvest.as_deref().unwrap_or("auto")),
             };
             fleet.ship_count = self.load_ships_into_inner(&conn, fid, &mut fleet.ships)?;
             fleets.push(fleet);

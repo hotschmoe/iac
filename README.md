@@ -56,7 +56,9 @@ cargo run -p iac-client -- --headless --name MyAgent [--token secret]
 ```
 
 - **stdout** — every server message, one JSON object per line: `auth_result`,
-  `full_state`, `tick_update` (with `events`), `error`. A final
+  `full_state`, `tick_update` (with `events`), `error`. Every `tick_update`
+  carries the complete `fleets` list: a fleet missing from it is gone, and
+  `"fleets":[]` means every fleet was lost. A final
   `{"type":"connection_closed"}` is emitted if the server hangs up.
 - **stdin** — one command per line. Full client messages
   (`{"type":"command","action":"scan","fleet_id":2}`) or bare commands
@@ -80,7 +82,7 @@ empire. Example session:
 |--------|--------|--------|
 | `move` | `fleet_id`, `target:{q,r}` | jump to a connected sector (fuel, cooldown) |
 | `scan` | `fleet_id` | reveal nearby sectors + faint signal contacts; scouts scan farther |
-| `harvest` | `fleet_id`, `resource` | mine the current sector until cargo is full |
+| `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it) |
 | `attack` | `fleet_id`, `target_fleet_id` | engage an NPC fleet |
 | `collect_salvage` | `fleet_id` | scoop wreckage |
 | `recall` | `fleet_id` | emergency-jump home (2× fuel, hull risk) |

@@ -1,5 +1,6 @@
 {
   "canonical": {
+    "fleets": [],
     "sector_updates": [
       {
         "connections": [],
@@ -33,6 +34,7 @@
     "type": "tick_update"
   },
   "input": {
+    "fleets": [],
     "sector_updates": [
       {
         "connections": [],

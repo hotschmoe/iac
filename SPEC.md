@@ -392,7 +392,7 @@ The server is authoritative. Clients are thin renderers + input devices.
     "type": "tick_update",
     "tick": 4821,
     "player": { "id": 1, "resources": { ... } },
-    "fleet_updates": [{ ... }],
+    "fleets": [{ ... }],
     "sector_updates": [{ ... }],
     "homeworld_state": { "buildings": [...], "research": [...], ... },
     "events": [
@@ -723,7 +723,7 @@ Sector state is already global (`sector_overrides` is a shared map). Harvesting 
 
 ### 13.3 Player Visibility
 
-When building sector state for a tick, the server must populate `player_fleets` with a `FleetBrief` for every player fleet in that sector (excluding the receiving player's own fleets, which are sent separately via `fleet_updates`).
+When building sector state for a tick, the server must populate `player_fleets` with a `FleetBrief` for every player fleet in that sector (excluding the receiving player's own fleets, which are sent separately via `fleets`).
 
 **`FleetBrief` expansion:** Add ship class breakdown alongside the existing fields:
 

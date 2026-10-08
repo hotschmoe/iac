@@ -38,6 +38,7 @@
     "NoShipyard",
     "NoResearchLab",
     "FleetLimitReached",
+    "ResourceNotPresent",
     "AuthFailed",
     "AlreadyAuthenticated",
     "ServerError"

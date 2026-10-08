@@ -215,6 +215,7 @@ enum ErrorCode {
   noShipyard(1013),
   noResearchLab(1014),
   fleetLimitReached(1015),
+  resourceNotPresent(1016),
   authFailed(2000),
   alreadyAuthenticated(2001),
   serverError(5000);
@@ -547,17 +548,19 @@ class AuthResult extends ServerMessage {
   }
 }
 
+/// Every owned fleet, every tick: the list is authoritative, so a fleet
+/// missing from it is gone and an empty list means all fleets are lost.
 class TickUpdate extends ServerMessage {
   final int tick;
   final PlayerState? player;
-  final List<FleetState>? fleetUpdates;
+  final List<FleetState> fleets;
   final List<SectorState>? sectorUpdates;
   final HomeworldState? homeworldUpdate;
   final List<GameEvent>? events;
   const TickUpdate({
     required this.tick,
     this.player,
-    this.fleetUpdates,
+    required this.fleets,
     this.sectorUpdates,
     this.homeworldUpdate,
     this.events,
@@ -566,7 +569,7 @@ class TickUpdate extends ServerMessage {
   factory TickUpdate.fromJson(Json m) => TickUpdate(
         tick: _i(m['tick']),
         player: _opt(m['player'], PlayerState.fromJson),
-        fleetUpdates: _opt(m['fleet_updates'], (v) => _list(v, FleetState.fromJson)),
+        fleets: _list(m['fleets'], FleetState.fromJson),
         sectorUpdates: _opt(m['sector_updates'], (v) => _list(v, SectorState.fromJson)),
         homeworldUpdate: _opt(m['homeworld_update'], HomeworldState.fromJson),
         events: _opt(m['events'], (v) => _list(v, GameEvent.fromJson)),
@@ -576,7 +579,7 @@ class TickUpdate extends ServerMessage {
   Json toJson() {
     final m = <String, dynamic>{'type': 'tick_update', 'tick': tick};
     _put(m, 'player', player?.toJson());
-    _put(m, 'fleet_updates', fleetUpdates?.map((e) => e.toJson()).toList());
+    m['fleets'] = fleets.map((e) => e.toJson()).toList();
     _put(m, 'sector_updates', sectorUpdates?.map((e) => e.toJson()).toList());
     _put(m, 'homeworld_update', homeworldUpdate?.toJson());
     _put(m, 'events', events?.map((e) => e.toEventJson()).toList());

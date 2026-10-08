@@ -322,13 +322,14 @@ fn error_code_name(c: ErrorCode) -> &'static str {
         ErrorCode::NoShipyard => "no_shipyard",
         ErrorCode::NoResearchLab => "no_research_lab",
         ErrorCode::FleetLimitReached => "fleet_limit_reached",
+        ErrorCode::ResourceNotPresent => "resource_not_present",
         ErrorCode::AuthFailed => "auth_failed",
         ErrorCode::AlreadyAuthenticated => "already_authenticated",
         ErrorCode::ServerError => "server_error",
     }
 }
 
-const ALL_ERROR_CODES: [ErrorCode; 19] = [
+const ALL_ERROR_CODES: [ErrorCode; 20] = [
     ErrorCode::InvalidCommand,
     ErrorCode::InvalidTarget,
     ErrorCode::NoConnection,
@@ -345,6 +346,7 @@ const ALL_ERROR_CODES: [ErrorCode; 19] = [
     ErrorCode::NoShipyard,
     ErrorCode::NoResearchLab,
     ErrorCode::FleetLimitReached,
+    ErrorCode::ResourceNotPresent,
     ErrorCode::AuthFailed,
     ErrorCode::AlreadyAuthenticated,
     ErrorCode::ServerError,
@@ -439,10 +441,10 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             ServerMessage::TickUpdate(TickUpdate {
                 tick: 4821,
                 player: Some(sample_player()),
-                fleet_updates: Some(vec![
+                fleets: vec![
                     sample_fleet(1, h(3, -2), FleetStatus::Harvesting, Some(PolicyPreset::PatrolHome)),
                     sample_fleet(2, h(4, -2), FleetStatus::Docked, None),
-                ]),
+                ],
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
                 homeworld_update: Some(sample_homeworld()),
                 events: Some(vec![
@@ -471,7 +473,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             ServerMessage::TickUpdate(TickUpdate {
                 tick: 1,
                 player: None,
-                fleet_updates: None,
+                fleets: vec![],
                 sector_updates: None,
                 homeworld_update: None,
                 events: None,
@@ -482,7 +484,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             ServerMessage::TickUpdate(TickUpdate {
                 tick: 2,
                 player: None,
-                fleet_updates: Some(vec![]),
+                fleets: vec![],
                 sector_updates: Some(vec![]),
                 homeworld_update: Some(idle_homeworld()),
                 events: Some(vec![]),
@@ -690,11 +692,11 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
         ("scan_without_fleet", "Command", json!({"action": "scan"})),
         ("explore_without_fleet", "Command", json!({"action": "explore_site"})),
         ("build_ship_default_count", "Command", json!({"action": "build_ship", "ship_class": "Scout"})),
-        ("bare_tick_update", "ServerMessage", json!({"type": "tick_update", "tick": 9})),
+        ("bare_tick_update", "ServerMessage", json!({"type": "tick_update", "tick": 9, "fleets": []})),
         (
             "fleet_without_cooldown",
             "ServerMessage",
-            json!({"type": "tick_update", "tick": 9, "fleet_updates": [{
+            json!({"type": "tick_update", "tick": 9, "fleets": [{
                 "id": 1, "location": {"q": 0, "r": 0}, "state": "Idle", "ships": [],
                 "cargo": {"metal": 0.0, "crystal": 0.0, "deuterium": 0.0},
                 "fuel": 1.0, "fuel_max": 2.0
@@ -703,7 +705,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
         (
             "sector_brief_without_classes",
             "ServerMessage",
-            json!({"type": "tick_update", "tick": 9, "sector_updates": [{
+            json!({"type": "tick_update", "tick": 9, "fleets": [], "sector_updates": [{
                 "location": {"q": 1, "r": 1}, "terrain": "Nebula",
                 "resources": {"metal": "Sparse", "crystal": "None", "deuterium": "None"},
                 "connections": [],

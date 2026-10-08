@@ -1,9 +1,11 @@
 {
   "canonical": {
+    "fleets": [],
     "tick": 9,
     "type": "tick_update"
   },
   "input": {
+    "fleets": [],
     "tick": 9,
     "type": "tick_update"
   },

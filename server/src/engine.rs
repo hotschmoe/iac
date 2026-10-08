@@ -33,7 +33,7 @@ use iac_shared::scaling::{
     self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION,
 };
-use iac_shared::protocol::{GameEvent, EventKind, ErrorCode, PolicyPreset, PolicyParams};
+use iac_shared::protocol::{GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams};
 
 use crate::combat;
 use crate::database::Database;
@@ -84,6 +84,8 @@ pub struct Fleet {
     pub action_cooldown: u16,
     pub move_target: Option<Hex>,
     pub idle_ticks: u16,
+    /// What the current (or last) harvest order mines.
+    pub harvest_target: HarvestResource,
 }
 
 #[allow(dead_code)]
@@ -321,6 +323,7 @@ impl GameEngine {
         // after every tick.
         self.current_tick += 1;
 
+        self.reap_empty_fleets();
         self.process_policies()?;
         self.process_movement()?;
         self.process_combat()?;
@@ -336,6 +339,30 @@ impl GameEngine {
         self.prune_scan_reveals();
 
         Ok(())
+    }
+
+    /// Drop a fleet and its standing orders, and queue both for deletion.
+    fn remove_fleet(&mut self, fleet_id: u64) {
+        self.fleets.remove(&fleet_id);
+        self.dirty_fleets.remove(&fleet_id);
+        self.deleted_fleet_ids.insert(fleet_id, ());
+        if self.policies.remove(&fleet_id).is_some() {
+            self.dirty_policies.remove(&fleet_id);
+            self.deleted_policy_ids.insert(fleet_id, ());
+        }
+    }
+
+    /// Fleets that lost every ship in combat. They linger until the next
+    /// tick so the owner still receives the FleetDestroyed event (event
+    /// routing looks the fleet up), but are never listed to clients.
+    fn reap_empty_fleets(&mut self) {
+        let empty: Vec<u64> = self.fleets.values()
+            .filter(|f| f.ship_count == 0)
+            .map(|f| f.id)
+            .collect();
+        for fid in empty {
+            self.remove_fleet(fid);
+        }
     }
 
     // ── Movement ──────────────────────────────────────────────────
@@ -565,6 +592,7 @@ impl GameEngine {
             let ov = self.sector_overrides.get(&sector_key);
             let (metal_d, crystal_d, deut_d) = SectorOverride::effective_densities(ov, &template);
 
+            let target = fleet.harvest_target;
             let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
             let harvest_power = fleet_harvest_power(fleet, research);
             let max_cargo = fleet_cargo_capacity(fleet);
@@ -579,14 +607,15 @@ impl GameEngine {
             }
 
             let targets = [
-                (metal_d, iac_shared::protocol::HarvestResource::Metal, "metal"),
-                (crystal_d, iac_shared::protocol::HarvestResource::Crystal, "crystal"),
-                (deut_d, iac_shared::protocol::HarvestResource::Deuterium, "deut"),
+                (metal_d, HarvestResource::Metal, "metal"),
+                (crystal_d, HarvestResource::Crystal, "crystal"),
+                (deut_d, HarvestResource::Deuterium, "deut"),
             ];
 
             // Phase 2: apply, sequentially capped by remaining cargo
             let mut harvested_any = false;
             for (density, res_type, accum_key) in targets {
+                if target != HarvestResource::Auto && target != res_type { continue; }
                 let amount = density.harvest_multiplier() * harvest_power;
                 if amount > 0.0 && remaining > 0.0 {
                     let actual = amount.min(remaining);
@@ -595,8 +624,8 @@ impl GameEngine {
 
                     if let Some(f) = self.fleets.get_mut(&fid) {
                         match res_type {
-                            iac_shared::protocol::HarvestResource::Metal => f.cargo.metal += actual,
-                            iac_shared::protocol::HarvestResource::Crystal => f.cargo.crystal += actual,
+                            HarvestResource::Metal => f.cargo.metal += actual,
+                            HarvestResource::Crystal => f.cargo.crystal += actual,
                             _ => f.cargo.deuterium += actual,
                         }
                     }
@@ -1140,6 +1169,7 @@ impl GameEngine {
             action_cooldown: 0,
             move_target: None,
             idle_ticks: 0,
+            harvest_target: HarvestResource::Auto,
         };
 
         for i in 0..STARTING_SCOUTS {
@@ -1211,7 +1241,7 @@ impl GameEngine {
         Ok(())
     }
 
-    pub fn handle_harvest(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+    pub fn handle_harvest(&mut self, player_id: u64, fleet_id: u64, resource: HarvestResource) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
         if fleet.state == FleetStatus::Moving { return Err(ErrorCode::OnCooldown); }
@@ -1223,6 +1253,13 @@ impl GameEngine {
         if metal_d == Density::None && crystal_d == Density::None && deut_d == Density::None {
             return Err(ErrorCode::NoResources);
         }
+        let present = match resource {
+            HarvestResource::Metal => metal_d != Density::None,
+            HarvestResource::Crystal => crystal_d != Density::None,
+            HarvestResource::Deuterium => deut_d != Density::None,
+            HarvestResource::Auto => true,
+        };
+        if !present { return Err(ErrorCode::ResourceNotPresent); }
 
         let max_cargo = fleet_cargo_capacity(fleet);
         let current_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
@@ -1230,6 +1267,7 @@ impl GameEngine {
 
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.state = FleetStatus::Harvesting;
+        fleet_mut.harvest_target = resource;
         fleet_mut.action_cooldown = HARVEST_COOLDOWN;
         self.dirty_fleets.insert(fleet_id, ());
 
@@ -2132,7 +2170,7 @@ impl GameEngine {
 
         if location == work && location != home {
             // Try to dig where we stand.
-            if self.handle_harvest(owner, fleet_id).is_ok() {
+            if self.handle_harvest(owner, fleet_id, HarvestResource::Auto).is_ok() {
                 self.push_policy_event(fleet_id, PolicyPreset::MineAndReturn, "harvest", "seam holds");
                 return Ok(true);
             }
@@ -2424,13 +2462,7 @@ impl GameEngine {
         }
 
         for mid in merge_ids {
-            self.fleets.remove(&mid);
-            self.deleted_fleet_ids.insert(mid, ());
-            // Standing orders don't survive the merge.
-            if self.policies.remove(&mid).is_some() {
-                self.dirty_policies.remove(&mid);
-                self.deleted_policy_ids.insert(mid, ());
-            }
+            self.remove_fleet(mid);
         }
 
         let player = self.players.get(&player_id).unwrap();
@@ -2715,6 +2747,7 @@ impl GameEngine {
                 action_cooldown: 0,
                 move_target: None,
                 idle_ticks: 0,
+                harvest_target: HarvestResource::Auto,
             };
             self.fleets.insert(new_id, new_fleet);
             new_id
@@ -3152,7 +3185,104 @@ mod tests {
         assert_eq!(engine.handle_scan(pid_b, fid_a), Err(ErrorCode::FleetNotFound));
         assert_eq!(engine.handle_stop(pid_b, fid_a), Err(ErrorCode::FleetNotFound));
         assert_eq!(engine.handle_recall(pid_b, fid_a), Err(ErrorCode::FleetNotFound));
-        assert_eq!(engine.handle_harvest(pid_b, fid_a), Err(ErrorCode::FleetNotFound));
+        assert_eq!(engine.handle_harvest(pid_b, fid_a, HarvestResource::Auto), Err(ErrorCode::FleetNotFound));
+    }
+
+    /// A sector satisfying `pred` on its (metal, crystal, deuterium) densities.
+    fn find_sector_with(
+        engine: &GameEngine,
+        pred: impl Fn(Density, Density, Density) -> bool,
+    ) -> Hex {
+        for q in -30i16..30 {
+            for r in -30i16..30 {
+                let coord = Hex { q, r };
+                let t = engine.world_gen.generate_sector(coord);
+                if pred(t.metal_density, t.crystal_density, t.deut_density) {
+                    return coord;
+                }
+            }
+        }
+        panic!("no matching sector in a 60x60 window");
+    }
+
+    #[test]
+    fn harvest_mines_only_the_chosen_resource() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Miner");
+        let site = find_sector_with(&engine, |m, c, _| m != Density::None && c != Density::None);
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+
+        engine.handle_harvest(pid, fid, HarvestResource::Crystal).expect("harvest crystal");
+        engine.tick().expect("tick");
+        let cargo = engine.fleets[&fid].cargo;
+        assert!(cargo.crystal > 0.0, "crystal not mined");
+        assert_eq!(cargo.metal, 0.0, "metal mined despite crystal order");
+        assert_eq!(cargo.deuterium, 0.0);
+        let events = engine.drain_events();
+        assert!(events.iter().any(|e| matches!(
+            &e.kind,
+            EventKind::ResourceHarvested(h) if h.resource_type == HarvestResource::Crystal
+        )));
+        assert!(!events.iter().any(|e| matches!(
+            &e.kind,
+            EventKind::ResourceHarvested(h) if h.resource_type != HarvestResource::Crystal
+        )));
+    }
+
+    #[test]
+    fn auto_harvest_takes_everything_present() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Sweeper");
+        let site = find_sector_with(&engine, |m, c, _| m != Density::None && c != Density::None);
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+
+        engine.handle_harvest(pid, fid, HarvestResource::Auto).expect("harvest auto");
+        engine.tick().expect("tick");
+        let cargo = engine.fleets[&fid].cargo;
+        assert!(cargo.metal > 0.0 && cargo.crystal > 0.0, "auto should mine metal and crystal: {cargo:?}");
+    }
+
+    #[test]
+    fn harvest_rejects_a_resource_the_sector_lacks() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Picky");
+        let site = find_sector_with(&engine, |m, _, d| m != Density::None && d == Density::None);
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+
+        assert_eq!(
+            engine.handle_harvest(pid, fid, HarvestResource::Deuterium),
+            Err(ErrorCode::ResourceNotPresent)
+        );
+        assert_eq!(engine.fleets[&fid].state, FleetStatus::Idle, "rejected order must not start mining");
+        assert!(engine.handle_harvest(pid, fid, HarvestResource::Metal).is_ok());
+    }
+
+    #[test]
+    fn harvest_choice_survives_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "iac_harvest_restart_test_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let fid = {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            let mut engine = GameEngine::init(42, db).unwrap();
+            let (pid, fid) = register(&mut engine, "Persistent");
+            let site = find_sector_with(&engine, |m, c, _| m != Density::None && c != Density::None);
+            engine.fleets.get_mut(&fid).unwrap().location = site;
+            engine.handle_harvest(pid, fid, HarvestResource::Crystal).unwrap();
+            engine.persist_dirty_state().unwrap();
+            fid
+        };
+
+        let db = Database::init(path.to_str().unwrap()).unwrap();
+        let engine = GameEngine::init(42, db).expect("reload");
+        let fleet = &engine.fleets[&fid];
+        assert_eq!(fleet.state, FleetStatus::Harvesting);
+        assert_eq!(fleet.harvest_target, HarvestResource::Crystal);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

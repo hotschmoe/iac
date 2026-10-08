@@ -140,7 +140,8 @@ q         Quit
 WINDSHIELD
 ─────────────────────────────
 1-6       Move (hex direction)
-h         Harvest resources
+h         Harvest everything
+M/C/D     Harvest metal/crystal/deut
 s         Collect salvage
 v         Scan (scouts reach far)
 x         Board derelict site

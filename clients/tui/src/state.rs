@@ -290,9 +290,7 @@ impl ClientState {
                     self.player = Some(player.clone());
                 }
 
-                if let Some(fleets) = &update.fleet_updates {
-                    self.replace_fleets(fleets);
-                }
+                self.replace_fleets(&update.fleets);
 
                 if let Some(hw) = &update.homeworld_update {
                     self.homeworld = Some(hw.clone());
@@ -365,6 +363,7 @@ impl ClientState {
     fn replace_fleets(&mut self, fleets: &[FleetState]) {
         let old_loc = self.active_fleet().map(|f| f.location);
         self.fleets = fleets.to_vec();
+        self.active_fleet_idx = self.active_fleet_idx.min(self.fleets.len().saturating_sub(1));
         self.update_prev_fleet_location(old_loc);
     }
 

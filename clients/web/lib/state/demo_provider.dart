@@ -254,7 +254,7 @@ class DemoProvider {
     return TickUpdate(
       tick: _tick,
       player: _player(),
-      fleetUpdates: List.of(_fleets),
+      fleets: List.of(_fleets),
       homeworldUpdate: _hw,
       sectorUpdates: sectors ? _sectors.values.toList() : null,
       events: events.isEmpty ? null : events,

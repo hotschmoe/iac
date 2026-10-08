@@ -1,4 +1,5 @@
 {
+  "fleets": [],
   "tick": 1,
   "type": "tick_update"
 }

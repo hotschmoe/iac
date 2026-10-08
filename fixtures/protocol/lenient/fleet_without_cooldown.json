@@ -1,6 +1,6 @@
 {
   "canonical": {
-    "fleet_updates": [
+    "fleets": [
       {
         "cargo": {
           "crystal": 0.0,
@@ -23,7 +23,7 @@
     "type": "tick_update"
   },
   "input": {
-    "fleet_updates": [
+    "fleets": [
       {
         "cargo": {
           "crystal": 0.0,

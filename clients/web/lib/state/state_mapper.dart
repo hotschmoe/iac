@@ -72,9 +72,7 @@ class StateMapper {
   void _applyTick(proto.TickUpdate u) {
     tick = u.tick;
     if (u.player != null) player = u.player;
-    // The server sends every owned fleet each tick (omitted only when the
-    // list would be empty), so replace wholesale.
-    if (u.fleetUpdates != null) fleets = List.of(u.fleetUpdates!);
+    fleets = List.of(u.fleets);
     if (u.homeworldUpdate != null) homeworld = u.homeworldUpdate;
     for (final sec in u.sectorUpdates ?? const <proto.SectorState>[]) {
       final key = sec.location.toKey();
@@ -123,7 +121,6 @@ class StateMapper {
         msg = '${k.isNpc ? 'Hostile fleet ' : 'Fleet '}${k.fleetId} destroyed'
             '${k.salvage.total > 0 ? ' -- salvage ${_res(k.salvage)}' : ''}';
         level = k.isNpc ? EventLevel.normal : EventLevel.bright;
-        if (!k.isNpc) fleets = fleets.where((f) => f.id != k.fleetId).toList();
       case proto.ResourceHarvestedEvent():
         msg = '${_fleet(k.fleetId)} harvested ${k.amount.toStringAsFixed(1)} ${k.resourceType.name}';
       case proto.SectorEnteredEvent():

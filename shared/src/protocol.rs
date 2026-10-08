@@ -76,7 +76,11 @@ fn default_ship_count() -> u16 {
     1
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// Which resource a harvest order mines. `Auto` takes everything the sector
+/// has, metal then crystal then deuterium, until the hold is full; a specific
+/// resource mines only that one and is rejected with
+/// `ErrorCode::ResourceNotPresent` if the sector has none of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HarvestResource {
     Metal,
     Crystal,
@@ -183,13 +187,18 @@ pub struct AuthResult {
     pub message: Option<String>,
 }
 
+/// Per-tick update. `player`, `homeworld_update`, `sector_updates` and
+/// `events` are optional and omitted when there is nothing to say. `fleets`
+/// is not optional: it is the complete, authoritative list of the player's
+/// fleets, sent whole every tick (like `GameState.fleets`), so a client
+/// replaces its list wholesale. A fleet missing from the list no longer
+/// exists, and an empty list means every fleet is lost.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TickUpdate {
     pub tick: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub player: Option<PlayerState>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub fleet_updates: Option<Vec<FleetState>>,
+    pub fleets: Vec<FleetState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub sector_updates: Option<Vec<SectorState>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -665,6 +674,7 @@ pub enum ErrorCode {
     NoShipyard = 1013,
     NoResearchLab = 1014,
     FleetLimitReached = 1015,
+    ResourceNotPresent = 1016,
     AuthFailed = 2000,
     AlreadyAuthenticated = 2001,
     ServerError = 5000,
