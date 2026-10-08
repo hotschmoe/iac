@@ -1,0 +1,28 @@
+{
+  "fleets": [],
+  "homeworld": {
+    "buildings": [],
+    "docked_ships": [],
+    "location": {
+      "q": 0,
+      "r": 0
+    },
+    "research": []
+  },
+  "known_sectors": [],
+  "player": {
+    "homeworld": {
+      "q": 0,
+      "r": 0
+    },
+    "id": 1,
+    "name": "New",
+    "resources": {
+      "crystal": 0.0,
+      "deuterium": 0.0,
+      "metal": 0.0
+    }
+  },
+  "tick": 0,
+  "type": "full_state"
+}

@@ -1,0 +1,7 @@
+{
+  "building_type": "Shipyard",
+  "kind": "BuildingCompleted",
+  "new_level": 1,
+  "player_id": 42,
+  "tick": 1234
+}

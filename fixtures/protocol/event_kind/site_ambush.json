@@ -1,0 +1,10 @@
+{
+  "fleet_id": 1,
+  "kind": "SiteAmbush",
+  "npc_fleet_id": 9100,
+  "sector": {
+    "q": 2,
+    "r": -4
+  },
+  "tick": 1234
+}

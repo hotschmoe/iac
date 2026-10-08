@@ -1,0 +1,10 @@
+{
+  "canonical": {
+    "action": "stop",
+    "fleet_id": 0
+  },
+  "input": {
+    "action": "stop"
+  },
+  "type": "Command"
+}

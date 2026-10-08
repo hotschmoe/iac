@@ -1,0 +1,11 @@
+{
+  "fleet_id": 2,
+  "kind": "Alert",
+  "level": "Critical",
+  "message": "Homeworld under attack",
+  "sector": {
+    "q": 4,
+    "r": -2
+  },
+  "tick": 1234
+}

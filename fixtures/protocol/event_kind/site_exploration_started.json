@@ -1,0 +1,11 @@
+{
+  "end_tick": 900,
+  "fleet_id": 1,
+  "kind": "SiteExplorationStarted",
+  "sector": {
+    "q": 2,
+    "r": -4
+  },
+  "tick": 1234,
+  "tier": 3
+}

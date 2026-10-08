@@ -1,0 +1,11 @@
+{
+  "canonical": {
+    "success": false,
+    "type": "auth_result"
+  },
+  "input": {
+    "success": false,
+    "type": "auth_result"
+  },
+  "type": "ServerMessage"
+}

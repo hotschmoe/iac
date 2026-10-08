@@ -1,0 +1,6 @@
+{
+  "player_id": 42,
+  "success": true,
+  "token": "tok-123",
+  "type": "auth_result"
+}

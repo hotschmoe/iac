@@ -1,0 +1,5 @@
+{
+  "code": "FleetLimitReached",
+  "message": "sample FleetLimitReached",
+  "type": "error"
+}

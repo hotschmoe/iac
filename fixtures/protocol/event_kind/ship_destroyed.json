@@ -1,0 +1,8 @@
+{
+  "is_npc": true,
+  "kind": "ShipDestroyed",
+  "owner_fleet_id": 9001,
+  "ship_class": "Corvette",
+  "ship_id": 22,
+  "tick": 1234
+}

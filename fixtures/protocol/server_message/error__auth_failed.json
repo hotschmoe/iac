@@ -1,0 +1,5 @@
+{
+  "code": "AuthFailed",
+  "message": "sample AuthFailed",
+  "type": "error"
+}

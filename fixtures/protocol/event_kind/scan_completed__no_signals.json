@@ -1,0 +1,11 @@
+{
+  "fleet_id": 1,
+  "hostiles_detected": 0,
+  "kind": "ScanCompleted",
+  "sector": {
+    "q": 1,
+    "r": 1
+  },
+  "sectors_revealed": 0,
+  "tick": 1234
+}

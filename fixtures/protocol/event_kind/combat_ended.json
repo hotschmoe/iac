@@ -1,0 +1,9 @@
+{
+  "kind": "CombatEnded",
+  "player_victory": false,
+  "sector": {
+    "q": 5,
+    "r": -5
+  },
+  "tick": 1234
+}

@@ -1,0 +1,8 @@
+{
+  "action": "scan",
+  "fleet_id": 3,
+  "kind": "PolicyAction",
+  "preset": "prospect",
+  "reason": "no unexplored neighbours known",
+  "tick": 1234
+}

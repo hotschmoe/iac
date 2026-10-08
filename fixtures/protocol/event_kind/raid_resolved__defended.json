@@ -1,0 +1,13 @@
+{
+  "defended": true,
+  "defense_power": 80.5,
+  "kind": "RaidResolved",
+  "player_id": 42,
+  "raid_power": 40.0,
+  "resources_lost": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "tick": 1234
+}

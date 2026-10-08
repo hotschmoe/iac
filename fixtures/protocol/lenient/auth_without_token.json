@@ -1,0 +1,11 @@
+{
+  "canonical": {
+    "player_name": "x",
+    "type": "auth"
+  },
+  "input": {
+    "player_name": "x",
+    "type": "auth"
+  },
+  "type": "ClientMessage"
+}

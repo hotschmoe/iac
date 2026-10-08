@@ -1,0 +1,7 @@
+{
+  "amount": 12.25,
+  "fleet_id": 1,
+  "kind": "ResourceHarvested",
+  "resource_type": "Crystal",
+  "tick": 1234
+}

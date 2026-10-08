@@ -1,0 +1,62 @@
+{
+  "canonical": {
+    "sector_updates": [
+      {
+        "connections": [],
+        "location": {
+          "q": 1,
+          "r": 1
+        },
+        "player_fleets": [
+          {
+            "id": 3,
+            "owner_name": "x",
+            "ship_classes": {
+              "corvette": 0,
+              "cruiser": 0,
+              "frigate": 0,
+              "hauler": 0,
+              "scout": 0
+            },
+            "ship_count": 2
+          }
+        ],
+        "resources": {
+          "crystal": "None",
+          "deuterium": "None",
+          "metal": "Sparse"
+        },
+        "terrain": "Nebula"
+      }
+    ],
+    "tick": 9,
+    "type": "tick_update"
+  },
+  "input": {
+    "sector_updates": [
+      {
+        "connections": [],
+        "location": {
+          "q": 1,
+          "r": 1
+        },
+        "player_fleets": [
+          {
+            "id": 3,
+            "owner_name": "x",
+            "ship_count": 2
+          }
+        ],
+        "resources": {
+          "crystal": "None",
+          "deuterium": "None",
+          "metal": "Sparse"
+        },
+        "terrain": "Nebula"
+      }
+    ],
+    "tick": 9,
+    "type": "tick_update"
+  },
+  "type": "ServerMessage"
+}

@@ -1,0 +1,4 @@
+{
+  "action": "cancel_build",
+  "queue_type": "Ship"
+}
