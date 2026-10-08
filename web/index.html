@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="IN AMBER CLAD — Fleet Command Interface (Dart/Flutter web demo)">
+  <meta name="theme-color" content="#060500">
+
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="IN AMBER CLAD">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>IN AMBER CLAD</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #060500;
+      overflow: hidden;
+    }
+    /* Brief loading phosphor before Flutter boots */
+    .boot-splash {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      background: #060500;
+      color: #FFB000;
+      font-family: ui-monospace, 'Cascadia Code', 'JetBrains Mono', monospace;
+      letter-spacing: 0.35em;
+      font-size: 13px;
+      z-index: 0;
+    }
+    .boot-splash .sub {
+      margin-top: 12px;
+      color: rgba(255, 176, 0, 0.35);
+      font-size: 10px;
+      letter-spacing: 0.2em;
+    }
+  </style>
+</head>
+<body>
+  <div class="boot-splash" id="boot-splash">
+    <div>IN AMBER CLAD</div>
+    <div class="sub">LOADING FLEET COMMAND INTERFACE…</div>
+  </div>
+  <script>
+    // Hide HTML splash once Flutter paints (best-effort)
+    window.addEventListener('flutter-first-frame', function () {
+      var el = document.getElementById('boot-splash');
+      if (el) el.remove();
+    });
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

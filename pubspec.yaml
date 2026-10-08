@@ -1,0 +1,24 @@
+name: iac_client
+description: "IN AMBER CLAD — Fleet Command Interface (Flutter web demo)"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_fonts: ^6.2.1
+  web_socket_channel: ^3.0.3
+  iac_shared:
+    path: packages/iac_shared
+  args: ^2.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
