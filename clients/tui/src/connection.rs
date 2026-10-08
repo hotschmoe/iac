@@ -146,6 +146,22 @@ pub fn parse_server_message(text: &str) -> Result<ServerMessage, Box<dyn std::er
     serde_json::from_str(text).map_err(|e| e.into())
 }
 
+/// The server said no. `raw` is its auth_result line, which headless mode
+/// still echoes to stdout so an agent can read the code.
+#[derive(Debug)]
+pub struct LoginRefused {
+    pub raw: String,
+    reason: String,
+}
+
+impl std::fmt::Display for LoginRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for LoginRefused {}
+
 /// Connect and log in as `name`. The token comes from `--token`, else from
 /// the saved token file for this server and name; a token issued by the
 /// server is saved there. Returns the connection and the raw auth_result
@@ -162,7 +178,8 @@ pub async fn login(
     let (raw, result) = conn.authenticate(name, token.as_deref()).await?;
 
     if !result.success {
-        return Err(login_error(&result, token.is_some(), cli_token.is_some()).into());
+        let reason = login_error(&result, token.is_some(), cli_token.is_some());
+        return Err(LoginRefused { raw, reason }.into());
     }
     if let Some(issued) = &result.token {
         match token_store::save(&server, name, issued) {

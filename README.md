@@ -80,8 +80,8 @@ bits, hex). There is no separate register step:
 - **Saved automatically**: the TUI and headless client store the token per
   server and name in `~/.config/iac/tokens.json` (`$XDG_CONFIG_HOME/iac/`;
   mode 0600) and reuse it. `--token` overrides the saved one. A refused
-  login prints the reason on stderr and exits 1 (headless emits no further
-  stdout).
+  login prints the `auth_result` (with its `code`) on stdout, the reason on
+  stderr, and exits 1.
 - **Servers upgraded from before tokens**: existing players have no token
   yet; the next login for that name claims the account and is issued one.
   Claim your name promptly: whoever logs in first owns it.

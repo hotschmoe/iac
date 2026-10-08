@@ -297,3 +297,45 @@ with geometry regression tests (cells on-ring, unique, disc coverage).
 
 **Testing**: 34 tests green (15 shared incl. 3 new hex-geometry, 14 engine,
 2 smoke, 3 headless), clippy clean, live tmux verification of plot + course.
+
+## Session — 2026-10-08: Server fixes (fleet list, harvest, caps, tick stalls, auth)
+
+Branch `server-fixes`, one commit per area, protocol changes migrated across
+server, TUI/headless, Flutter and fixtures each time.
+
+**Fleet list is authoritative.** `tick_update.fleet_updates` (omitted when
+empty) became a required `fleets` list sent whole every tick. Combat left
+wiped-out fleets in the engine with zero ships and they were still being
+listed (the Flutter FleetDestroyed workaround hid that); they are now never
+listed and are reaped one tick later (the owner's FleetDestroyed event still
+needs the fleet to route). The list is sorted by id so clients keep a stable
+selection.
+
+**Harvest honours the resource.** Fleets carry `harvest_target`
+(persisted: `fleets.harvest_resource`). Named resource mines only that one;
+a resource the sector lacks is `ResourceNotPresent` (1016). Command errors
+now explain themselves ("this sector has no deuterium to harvest").
+
+**Caps and rates on the wire.** `FleetState.cargo_capacity` and
+`HomeworldState.production` come from the same engine functions that apply
+them. No homeworld storage caps exist in the game, so none are sent.
+
+**Tick stalls.** Cause: per-arrival explored-edge INSERTs (autocommit, one
+fsync each, rollback-journal mode) inside `tick()` under the engine lock.
+Measured sim phase p50 80 ms / max 3.8 s before; 0.03 ms / 0.3 ms after. The
+dev disk's fsyncs sometimes take 8-16 s, which is what produced the 4-6 s
+gaps. Fix: WAL + synchronous=NORMAL, a persist thread fed a snapshot every
+tick, in-memory first-visit set, interval with MissedTickBehavior::Delay.
+`synchronous=FULL` was tried and rejected (writer lagged 16 s behind, which
+widens the process-crash window). Harness: raw-socket Python clients, one
+measuring `tick_update` arrivals, others issuing random moves.
+
+**Auth.** Server-issued 256-bit tokens, SHA-256 at rest, constant-time
+compare; unclaimed legacy accounts are claimed by their next login.
+`AuthResult.code` carries `InvalidName` / `TokenRequired` / `InvalidToken`.
+TUI/headless keep tokens in `~/.config/iac/tokens.json`; the web client uses
+localStorage behind try/catch and re-prompts on refusal. Not done: the
+spec's rate limits and lockout (see `docs/auth_spec.md`, "Implemented subset").
+
+**Known gaps noticed, not changed:** sector salvage and fleet move targets /
+cooldowns are not persisted across restarts.

@@ -8,7 +8,7 @@
 //
 // Auth happens automatically from --name/--token (or the saved token file);
 // the session ends when stdin closes or the server hangs up. A refused login
-// prints the reason on stderr and exits non-zero without touching stdout.
+// prints the auth_result on stdout, the reason on stderr, and exits non-zero.
 
 use std::io::Write;
 
@@ -24,7 +24,15 @@ pub async fn run(
     name: &str,
     token: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (conn, auth_line) = connection::login(config, name, token).await?;
+    let (conn, auth_line) = match connection::login(config, name, token).await {
+        Ok(ok) => ok,
+        Err(e) => {
+            if let Some(refused) = e.downcast_ref::<connection::LoginRefused>() {
+                println!("{}", refused.raw);
+            }
+            return Err(e);
+        }
+    };
     println!("{auth_line}");
 
     let conn_tx = conn.tx.clone();
