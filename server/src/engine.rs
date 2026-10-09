@@ -431,13 +431,6 @@ pub enum AuthError {
     Server,
 }
 
-/// Why the autopilot is entering a sector: passing through, or hunting what is there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Entry {
-    Passage,
-    Hunt,
-}
-
 /// See `GameEngine::home_route`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HomeRoute {
@@ -3381,8 +3374,9 @@ impl GameEngine {
         let tick = self.current_tick;
         let announce = match self.policies.get_mut(&fleet_id) {
             Some(p) => {
-                let repeat = matches!(&p.last_hold, Some((r, t)) if r == reason && tick < t + 60);
-                if !repeat { p.last_hold = Some((reason.to_string(), tick)); }
+                let key = hold_key(reason);
+                let repeat = matches!(&p.last_hold, Some((k, t)) if *k == key && tick < t + 60);
+                if !repeat { p.last_hold = Some((key, tick)); }
                 !repeat
             }
             None => true,
@@ -3459,8 +3453,7 @@ impl GameEngine {
         let Some(home) = self.players.get(&fleet.owner_id).map(|p| p.homeworld) else { return false; };
         let params = self.policies.get(&fleet_id).map(|p| p.params).unwrap_or_default();
         let homeward = target == home;
-        let end = if preset == PolicyPreset::PatrolHome { Entry::Hunt } else { Entry::Passage };
-        let enter = |n: Hex| n == home || self.policy_entry_check(fleet, &params, n, if n == target { end } else { Entry::Passage }).is_ok();
+        let enter = |n: Hex| n == home || self.policy_entry_check(fleet, &params, n).is_ok();
 
         let step = match self.bfs_first_hop(from, 16, &enter, &|n| n == target) {
             Some(step) => step,
@@ -3471,9 +3464,8 @@ impl GameEngine {
                 }
             }
             None => {
-                let entry_of = |n: Hex| if n == target { end } else { Entry::Passage };
                 let blocker = self.bfs_path(from, 16, &|_| true, &|n| n == target).and_then(|path| {
-                    path.iter().find_map(|&n| self.policy_entry_check(fleet, &params, n, entry_of(n)).err())
+                    path.iter().find_map(|&n| self.policy_entry_check(fleet, &params, n).err())
                 });
                 match (blocker, self.greedy_hop(from, target, &enter)) {
                     (None, Some(step)) => step,
@@ -3497,14 +3489,12 @@ impl GameEngine {
 
     /// Whether the autopilot may take `fleet` into `coord`, judged by the
     /// threat the player sees there (live, charted or the ring's estimate)
-    /// against the fleet's own power: at least the doctrine's engage ratio,
-    /// never RISKY or DEADLY, and SAFE where a hostile group sits (a lighter
-    /// class needs a wide margin against a heavier one), unless the fleet is
-    /// out hunting. Err carries the reason.
-    fn policy_entry_check(&self, fleet: &Fleet, params: &PolicyParams, coord: Hex, entry: Entry) -> Result<(), String> {
+    /// against the fleet's own power: exactly the doctrine's engage ratio,
+    /// whether or not hostiles sit there. A player who set it below EVEN is
+    /// honoured; a default or higher setting is the bar. Err carries the reason.
+    fn policy_entry_check(&self, fleet: &Fleet, params: &PolicyParams, coord: Hex) -> Result<(), String> {
         let hostile = self.sector_has_hostiles(coord);
-        let floor = if hostile && entry == Entry::Passage { scaling::RATIO_SAFE } else { scaling::RATIO_EVEN };
-        let need = floor.max(params.engage_ratio_x10 as f32 / 10.0);
+        let need = params.engage_ratio_x10 as f32 / 10.0;
         let threat = self.known_threat(fleet.owner_id, coord);
         let power = fleet_power(fleet);
         let ratio = power / threat.est_power.max(f32::EPSILON);
@@ -3655,7 +3645,7 @@ impl GameEngine {
         let in_range = move |n: Hex| Hex::distance(&n, &home) <= range as u16;
         let fleet = self.fleets.get(&fleet_id).unwrap();
         let uncharted = |n: Hex| n != home && !self.explored.contains(&(owner, n.to_key()));
-        let may_enter = |n: Hex| n == home || (in_range(n) && self.policy_entry_check(fleet, &params, n, Entry::Passage).is_ok());
+        let may_enter = |n: Hex| n == home || (in_range(n) && self.policy_entry_check(fleet, &params, n).is_ok());
         if let Some(step) = self.bfs_first_hop(location, 16, &may_enter, &uncharted) {
             return Ok(self.policy_move(fleet_id, step, false, PolicyPreset::Prospect, "pushing frontier"));
         }
@@ -3678,7 +3668,7 @@ impl GameEngine {
 
         if let Some(path) = self.bfs_path(from, 16, &in_range, &uncharted) {
             let near = *path.last().unwrap();
-            let hazard = path.iter().find_map(|&n| self.policy_entry_check(fleet, params, n, Entry::Passage).err());
+            let hazard = path.iter().find_map(|&n| self.policy_entry_check(fleet, params, n).err());
             if let Some(why) = hazard {
                 return format!(
                     "no safe way to the nearest uncharted sector {near} {}: {why}",
@@ -3871,7 +3861,7 @@ impl GameEngine {
         // Hunt hostiles inside the patrol radius.
         let fleet = &self.fleets[&fleet_id].clone();
         if let Some(target) = self.find_nearest_target(home, POLICY_PATROL_RADIUS, PolicyTarget::Hostiles)
-            && self.policy_entry_check(fleet, &params, target, Entry::Hunt).is_ok()
+            && self.policy_entry_check(fleet, &params, target).is_ok()
         {
             return Ok(self.policy_step_toward(fleet_id, target, PolicyPreset::PatrolHome, "intercepting contact"));
         }
@@ -3882,7 +3872,7 @@ impl GameEngine {
         );
         let candidates: Vec<Hex> = self.world_gen.connected_neighbors(location).slice().iter().copied()
             .filter(|n| Hex::distance(n, &home) <= POLICY_PATROL_RADIUS as u16)
-            .filter(|&n| n == home || self.policy_entry_check(fleet, &params, n, Entry::Passage).is_ok())
+            .filter(|&n| n == home || self.policy_entry_check(fleet, &params, n).is_ok())
             .collect();
         if candidates.is_empty() {
             return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::PatrolHome, "no safe sector on the beat"));
@@ -4554,6 +4544,22 @@ fn load_world(db: &Database, world_seed: u64) -> Result<LoadedWorld, Box<dyn std
 // ── Helper Functions ──────────────────────────────────────────────
 
 /// Stable id of the hostile a sector's template spawns; see `TEMPLATE_NPC_ID_BASE`.
+/// A hold reason without its parenthesised figures (power, ratio), which drift
+/// from tick to tick while the cause stays the same.
+fn hold_key(reason: &str) -> String {
+    let mut key = String::with_capacity(reason.len());
+    let mut depth = 0u32;
+    for c in reason.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => key.push(c),
+            _ => {}
+        }
+    }
+    key
+}
+
 /// Index of the earliest waiting order that can start now. An order that is
 /// ready but unaffordable is passed over unless it reserves, in which case it
 /// holds the line and nothing behind it starts.
@@ -5823,6 +5829,57 @@ mod tests {
         assert!(!seen_out, "the fleet left the charted ring into a sector it cannot beat");
         assert!(holds.iter().any(|h| h.contains("DEADLY")), "the refusal names the verdict: {holds:?}");
         assert!(holds[0].contains("doctrine needs"), "{}", holds[0]);
+    }
+
+    /// A sector holding hostiles, and the weapon power at which `fid` stands
+    /// at `ratio` times their threat.
+    fn tune_ratio_against_hostiles(engine: &mut GameEngine, pid: u64, fid: u64, ratio: f32) -> Hex {
+        let coord = (-12i16..12)
+            .flat_map(|q| (-12i16..12).map(move |r| Hex { q, r }))
+            .find(|&h| h.dist_from_origin() > 3 && engine.sector_has_hostiles(h))
+            .expect("a hostile sector");
+        let threat = engine.known_threat(pid, coord).est_power;
+        let (mut lo, mut hi) = (0.0f32, 1e6f32);
+        for _ in 0..60 {
+            let mid = (lo + hi) / 2.0;
+            set_weapons(engine, fid, mid);
+            if fleet_power(&engine.fleets[&fid]) / threat < ratio { lo = mid } else { hi = mid }
+        }
+        coord
+    }
+
+    #[test]
+    fn the_doctrine_enters_hostile_sectors_at_the_engage_ratio_the_player_set() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Dialled");
+        let coord = tune_ratio_against_hostiles(&mut engine, pid, fid, 1.6);
+        let fleet = engine.fleets[&fid].clone();
+        let with = |x10: u8| PolicyParams { engage_ratio_x10: x10, ..PolicyParams::default() };
+
+        assert!(engine.policy_entry_check(&fleet, &with(12), coord).is_ok(), "1.6x clears the default 1.2x; no 2.5x override");
+        assert!(engine.policy_entry_check(&fleet, &with(15), coord).is_ok());
+        let err = engine.policy_entry_check(&fleet, &with(20), coord).unwrap_err();
+        assert!(err.contains("the doctrine needs 2.0x"), "{err}");
+
+        let coord = tune_ratio_against_hostiles(&mut engine, pid, fid, 0.7);
+        let fleet = engine.fleets[&fid].clone();
+        assert!(engine.policy_entry_check(&fleet, &with(6), coord).is_ok(), "a setting below EVEN is honoured");
+        assert!(engine.policy_entry_check(&fleet, &with(8), coord).is_err());
+    }
+
+    #[test]
+    fn a_standing_hold_is_reported_once_a_minute_not_every_evaluation() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Patient");
+        set_weapons(&mut engine, fid, 0.1);
+        chart_around_home(&mut engine, pid, 2);
+        let params = PolicyParams { max_range: 4, ..PolicyParams::default() };
+        engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+        engine.drain_events();
+        let (_, first_minute) = run_policy(&mut engine, 55);
+        assert_eq!(first_minute.len(), 1, "one report, not one per evaluation: {first_minute:?}");
+        let (_, later) = run_policy(&mut engine, 125);
+        assert!(later.len() <= 3, "at most one a minute afterwards: {later:?}");
     }
 
     #[test]

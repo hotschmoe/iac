@@ -245,11 +245,12 @@ pub struct PolicyParams {
     /// Clamped to 1..=30. Default 4.
     pub max_range: u8,
     /// Engage hostiles only if our power >= theirs x (this / 10). It is also
-    /// the least power ratio, against the threat the player sees, at which any
-    /// doctrine will enter a sector: never below EVEN (1.1), and SAFE
-    /// (2.5) where hostiles sit unless the fleet is hunting. A refused sector
-    /// is reported as a `PolicyAction` hold with the reason. Clamped to
-    /// 1..=100. Default 12 (1.2x).
+    /// exactly the least power ratio, against the threat the player sees, at
+    /// which any doctrine will enter a sector, hostiles there or not: the
+    /// setting is honoured as given, including a deliberate value below EVEN
+    /// (1.1). A refused sector is reported as a `PolicyAction` hold with the
+    /// reason; a standing hold is repeated at most once a minute and again
+    /// only if its cause changes. Clamped to 1..=100. Default 12 (1.2x).
     pub engage_ratio_x10: u8,
 }
 
