@@ -100,6 +100,17 @@ fn main() {
         })).collect::<Vec<_>>(),
         "harvest_yield_per_level": harvest_yield(1) - 1.0,
     }));
+    out.insert("loot".into(), json!({
+        "split": LOOT_SPLIT,
+        "rings": (1..=60u16).map(|d| {
+            let rating = threat_rating(npc_power(d));
+            json!({
+                "dist": d, "wreck": wreck_value(npc_power(d)), "derelict": derelict_value(d), "tier": derelict_tier(d),
+                "ambush": derelict_ambush(rating), "recovery": recovery_chance(rating),
+                "data_core": data_core_chance(rating), "relic": relic_chance(rating),
+            })
+        }).collect::<Vec<_>>(),
+    }));
     out.insert("presets".into(), json!(PRESETS.iter().map(|p| (p.name.to_string(), json!(p.pace))).collect::<Map<_, _>>()));
     out.insert("raid_power_base".into(), json!(
         [1.0f32, 10.0, 100.0, 500.0, 1000.0, 2000.0].iter().map(|s| (s.to_string(), json!(raid_power_base(*s)))).collect::<Map<_, _>>()
@@ -121,6 +132,7 @@ fn main() {
         "shipyard_speed": SHIPYARD_SPEED,
         "production_growth": PRODUCTION_GROWTH,
         "queue_depth": QUEUE_DEPTH,
+        "finds_exponent": Pace::new(10000.0).unwrap().finds_mult().ln() / 10000.0f32.ln(),
     }));
     println!("{}", serde_json::to_string(&Value::Object(out)).unwrap());
 }

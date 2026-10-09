@@ -2837,6 +2837,9 @@ class SiteExploredEvent extends EventKind {
   final Resources resources;
   final ShipClass? recoveredShip;
   final ResearchType? techCache;
+
+  /// An ancient relic came aboard (a unique item; no other use yet).
+  final bool relic;
   const SiteExploredEvent({
     required this.fleetId,
     required this.sector,
@@ -2844,6 +2847,7 @@ class SiteExploredEvent extends EventKind {
     required this.resources,
     this.recoveredShip,
     this.techCache,
+    this.relic = false,
   });
 
   factory SiteExploredEvent.fromJson(Json m) => SiteExploredEvent(
@@ -2853,6 +2857,7 @@ class SiteExploredEvent extends EventKind {
         resources: Resources.fromJson(m['resources']),
         recoveredShip: _opt(m['recovered_ship'], ShipClass.fromJson),
         techCache: _opt(m['tech_cache'], ResearchType.fromJson),
+        relic: m['relic'] as bool? ?? false,
       );
 
   @override
@@ -2866,6 +2871,8 @@ class SiteExploredEvent extends EventKind {
     };
     _put(m, 'recovered_ship', recoveredShip?.toJson());
     _put(m, 'tech_cache', techCache?.toJson());
+    // skip_serializing_if = "Not::not"
+    if (relic) m['relic'] = true;
     return m;
   }
 }

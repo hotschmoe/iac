@@ -501,8 +501,7 @@ pub fn defense_grid_scout_units(level: u8) -> f32 {
     }
 }
 
-/// Salvage.
-pub const SALVAGE_FRACTION: f32 = 0.30;
+/// Wreckage piles drift away after this long.
 pub const SALVAGE_DESPAWN_TICKS: u32 = 60;
 
 /// Ticks of harvesting summed into one `ResourceHarvested` event.
@@ -525,33 +524,8 @@ pub const EXPLORE_SCOUT_AMBUSH_REDUCTION: f32 = 0.10;
 pub const EXPLORE_HAULER_LOOT_MULTIPLIER: f32 = 2.0;
 /// Each failed/aborted boarding leaves the site angrier.
 pub const EXPLORE_RETRY_AMBUSH_BUMP: f32 = 0.10;
-
-/// Derelict tier by distance from the hub: bigger wrecks drift farther out.
-pub fn derelict_tier(dist: u16) -> u8 {
-    match dist {
-        0..=8 => 1,
-        9..=20 => 2,
-        _ => 3,
-    }
-}
-
-/// (ambush chance, ship recovery chance, tech cache chance) per tier.
-pub fn derelict_tier_odds(tier: u8) -> (f32, f32, f32) {
-    match tier {
-        1 => (0.10, 0.00, 0.00),
-        2 => (0.20, 0.15, 0.00),
-        _ => (0.30, 0.25, 0.10),
-    }
-}
-
-/// Loot ranges per tier: (metal, crystal, deut) each as (min, max).
-pub fn derelict_loot_ranges(tier: u8) -> [(f32, f32); 3] {
-    match tier {
-        1 => [(300.0, 700.0), (80.0, 250.0), (0.0, 80.0)],
-        2 => [(800.0, 1800.0), (300.0, 900.0), (100.0, 400.0)],
-        _ => [(2000.0, 3500.0), (800.0, 1800.0), (300.0, 900.0)],
-    }
-}
+/// A stripped derelict is replaced after 120 game hours, finds class.
+pub const DERELICT_RESPAWN_TICKS: u64 = 432_000;
 
 /// Fleet standing orders: how often an auto-piloted fleet re-evaluates,
 /// and the default doctrine thresholds.

@@ -16,7 +16,7 @@ use iac_shared::constants::{
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
     FUEL_RATE_PER_MASS, FUEL_DEUT_PER_UNIT,
-    NPC_PATROL_INTERVAL, SALVAGE_FRACTION, SALVAGE_DESPAWN_TICKS, HARVEST_REPORT_TICKS,
+    NPC_PATROL_INTERVAL, SALVAGE_DESPAWN_TICKS, DERELICT_RESPAWN_TICKS, HARVEST_REPORT_TICKS,
     TEMPLATE_NPC_ID_BASE,
     HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST, MOVE_BASE_COOLDOWN,
     SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_SCOUT_RANGE, SCAN_REVEAL_TICKS,
@@ -27,7 +27,6 @@ use iac_shared::constants::{
     RAID_DEFENSE_SALVAGE_FRACTION, RAID_SUPPRESS_AFTER_LOSS,
     EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_PATROL_RADIUS, POLICY_PATROL_MIN_HULL,
-    derelict_tier, derelict_tier_odds, derelict_loot_ranges,
     defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
@@ -140,6 +139,8 @@ pub struct Player {
     /// Score from kills and from exploration, before the 25 percent cap.
     pub combat_points: f32,
     pub explore_points: f32,
+    /// Ancient relics found; reserved for the item system.
+    pub relics: u32,
 }
 
 /// A queued item holds no resources: it pays when it starts.
@@ -525,6 +526,7 @@ impl GameEngine {
         self.process_raids()?;
         self.process_defence_restore();
         self.process_salvage_despawn()?;
+        self.process_derelict_respawn();
         self.process_cooldowns()?;
         self.prune_scan_reveals();
 
@@ -1830,6 +1832,7 @@ impl GameEngine {
             agent: false,
             combat_points: 0.0,
             explore_points: 0.0,
+            relics: 0,
         };
 
         self.players.insert(player_id, player);
@@ -2658,16 +2661,33 @@ impl GameEngine {
         let ov = self.sector_overrides.get(&coord.to_key());
         if ov.map(|o| o.site_looted_tick.is_some()).unwrap_or(false) { return None; }
         let bumps = ov.map(|o| o.site_ambush_bumps).unwrap_or(0);
-        Some((derelict_tier(coord.dist_from_origin()), bumps))
+        Some((scaling::derelict_tier(coord.dist_from_origin()), bumps))
     }
 
-    /// Ambush odds for a boarding attempt by this fleet.
-    fn site_ambush_chance(&self, fleet: &Fleet, tier: u8, bumps: u8) -> f32 {
-        let (base, _, _) = derelict_tier_odds(tier);
+    /// Ambush odds for a boarding attempt by this fleet at `site`.
+    fn site_ambush_chance(&self, fleet: &Fleet, site: Hex, bumps: u8) -> f32 {
+        let base = scaling::derelict_ambush(ring_rating(site));
         let has_scout = fleet.ships[0..fleet.ship_count].iter()
             .any(|s| s.ship_class == ShipClass::Scout);
         let scout_bonus = if has_scout { EXPLORE_SCOUT_AMBUSH_REDUCTION } else { 0.0 };
         (base + bumps as f32 * EXPLORE_RETRY_AMBUSH_BUMP - scout_bonus).clamp(0.02, 0.95)
+    }
+
+    /// Stripped derelicts are replaced after `DERELICT_RESPAWN_TICKS` (finds class).
+    fn process_derelict_respawn(&mut self) {
+        let delay = self.world.pace.finds_ticks(DERELICT_RESPAWN_TICKS as f64);
+        let now = self.current_tick;
+        let due: Vec<u32> = self.sector_overrides.iter()
+            .filter(|(_, ov)| ov.site_looted_tick.is_some_and(|t| now >= t + delay))
+            .map(|(key, _)| *key)
+            .collect();
+        for key in due {
+            if let Some(ov) = self.sector_overrides.get_mut(&key) {
+                ov.site_looted_tick = None;
+                ov.site_ambush_bumps = 0;
+                self.dirty_sectors.insert(key, ());
+            }
+        }
     }
 
     /// Send a boarding party into the derelict in the fleet's sector.
@@ -2728,7 +2748,7 @@ impl GameEngine {
         };
 
         let fleet = self.fleets.get(&fleet_id).unwrap();
-        let ambush_chance = self.site_ambush_chance(fleet, tier, bumps);
+        let ambush_chance = self.site_ambush_chance(fleet, location, bumps);
         let has_hauler = fleet.ships[0..fleet.ship_count].iter()
             .any(|s| s.ship_class == ShipClass::Hauler);
 
@@ -2745,7 +2765,7 @@ impl GameEngine {
             ov.site_ambush_bumps = ov.site_ambush_bumps.saturating_add(1);
             self.dirty_sectors.insert(key, ());
 
-            let guardian = ambush_guardian_template(tier, &mut rng);
+            let guardian = ambush_guardian_template(location, &mut rng);
             let guardian_id = self.next_id();
             let npc = self.spawn_npc_fleet(location, guardian, guardian_id)?;
             if let Some(f) = self.fleets.get_mut(&fleet_id) {
@@ -2764,13 +2784,12 @@ impl GameEngine {
         }
 
         // Clean breach: roll the loot.
-        let ranges = derelict_loot_ranges(tier);
+        let dist = location.dist_from_origin();
+        let rating = ring_rating(location);
+        let base_value = scaling::derelict_value(dist)
+            * rng.random_range(scaling::DERELICT_ROLL_MIN..=scaling::DERELICT_ROLL_MAX);
         let loot_mult = self.world.pace.finds_mult() * if has_hauler { EXPLORE_HAULER_LOOT_MULTIPLIER } else { 1.0 };
-        let rolled = Resources {
-            metal: rng.random_range(ranges[0].0..=ranges[0].1) * loot_mult,
-            crystal: rng.random_range(ranges[1].0..=ranges[1].1) * loot_mult,
-            deuterium: rng.random_range(ranges[2].0..=ranges[2].1) * loot_mult,
-        };
+        let rolled = scaling::split_loot(base_value).scale(loot_mult);
 
         // Cargo-cap the haul; anything the hold can't take drifts loose
         // as salvage for a follow-up trip.
@@ -2788,16 +2807,16 @@ impl GameEngine {
         taken.deuterium = rolled.deuterium.min(remaining);
         let overflow = rolled.sub(taken);
 
-        // Ship recovery and tech caches, by tier.
-        let (_, recover_chance, cache_chance) = derelict_tier_odds(tier);
+        // Rare finds ride on top of the resources, by threat.
         let mut recovered_ship: Option<ShipClass> = None;
-        if recover_chance > 0.0 && rng.random_range(0.0..1.0) < recover_chance {
+        if rng.random_range(0.0..1.0) < scaling::recovery_chance(rating) {
             recovered_ship = Some(recoverable_ship_class(tier, &mut rng));
         }
         let mut tech_cache: Option<ResearchType> = None;
-        if cache_chance > 0.0 && rng.random_range(0.0..1.0) < cache_chance {
+        if rng.random_range(0.0..1.0) < scaling::data_core_chance(rating) {
             tech_cache = self.pick_tech_cache(owner_id, &mut rng);
         }
+        let relic = rng.random_range(0.0..1.0) < scaling::relic_chance(rating);
 
         // Apply: cargo, site consumed, overflow salvage.
         if let Some(f) = self.fleets.get_mut(&fleet_id) {
@@ -2822,6 +2841,11 @@ impl GameEngine {
             self.grant_tech_level(owner_id, tech);
         }
 
+        if relic && let Some(p) = self.players.get_mut(&owner_id) {
+            p.relics += 1;
+            self.dirty_players.insert(owner_id, ());
+        }
+
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
             kind: EventKind::SiteExplored(iac_shared::protocol::SiteExploredEvent {
@@ -2831,13 +2855,15 @@ impl GameEngine {
                 resources: taken,
                 recovered_ship,
                 tech_cache,
+                relic,
             }),
         });
         info!(
-            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{})",
+            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{}{})",
             fleet_id, tier, location, taken.metal, taken.crystal, taken.deuterium,
             recovered_ship.map(|c| format!(", recovered {}", c.label())).unwrap_or_default(),
             tech_cache.map(|t| format!(", data core: {:?}", t)).unwrap_or_default(),
+            if relic { ", relic" } else { "" },
         );
         Ok(())
     }
@@ -3379,8 +3405,8 @@ impl GameEngine {
         // Then the hulk, if the odds look survivable.
         if let Some((tier, bumps)) = self.derelict_site_at(location) {
             let fleet = self.fleets.get(&fleet_id).unwrap();
-            let chance = self.site_ambush_chance(fleet, tier, bumps);
-            let guardian_power = scaling::ship_power(ShipClass::Frigate) * 4.0 * tier as f32;
+            let chance = self.site_ambush_chance(fleet, location, bumps);
+            let guardian_power = scaling::AMBUSH_GUARD_SHARE * scaling::npc_power(location.dist_from_origin());
             let safe = chance < 0.25
                 || fleet_power(fleet) * 10.0 >= guardian_power * params.engage_ratio_x10 as f32;
             if safe && self.handle_explore_site(owner, fleet_id).is_ok() {
@@ -4105,9 +4131,14 @@ pub fn template_npc_id(coord: Hex) -> u64 {
     TEMPLATE_NPC_ID_BASE + u64::from(coord.to_key())
 }
 
-/// Wreckage a destroyed NPC fleet leaves behind.
+/// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.
 fn npc_salvage(npc: &NpcFleet, pace: &Pace) -> Resources {
-    npc.ships[0].ship_class.build_cost().scale(SALVAGE_FRACTION * pace.finds_mult())
+    scaling::split_loot(scaling::wreck_value(npc.power)).scale(pace.finds_mult())
+}
+
+/// The danger rating the ring alone gives a sector.
+fn ring_rating(coord: Hex) -> u8 {
+    scaling::threat_rating(scaling::npc_power(coord.dist_from_origin()))
 }
 
 fn behavior_threat_bonus(behavior: iac_shared::world::NpcBehaviorType) -> f32 {
@@ -4174,28 +4205,15 @@ pub fn fleet_power(fleet: &Fleet) -> f32 {
         .sum()
 }
 
-/// What jumps a careless boarding party, sized to the wreck's tier.
-fn ambush_guardian_template(tier: u8, rng: &mut StdRng) -> iac_shared::world::NpcTemplate {
-    use iac_shared::world::{NpcTemplate, NpcBehaviorType};
-    match tier {
-        1 => NpcTemplate {
-            ship_class: ShipClass::Corvette,
-            count: rng.random_range(2..=4),
-            behavior: NpcBehaviorType::Aggressive,
-            stat_multiplier: 0.8,
-        },
-        2 => NpcTemplate {
-            ship_class: ShipClass::Frigate,
-            count: rng.random_range(3..=6),
-            behavior: NpcBehaviorType::Aggressive,
-            stat_multiplier: 0.9,
-        },
-        _ => NpcTemplate {
-            ship_class: ShipClass::Cruiser,
-            count: rng.random_range(4..=8),
-            behavior: NpcBehaviorType::Aggressive,
-            stat_multiplier: 1.0,
-        },
+/// What jumps a careless boarding party: a share of the ring's group.
+fn ambush_guardian_template(site: Hex, rng: &mut StdRng) -> iac_shared::world::NpcTemplate {
+    let (ship_class, count, stat_multiplier) = scaling::ambush_guard(site.dist_from_origin());
+    let swing = rng.random_range(0.8..=1.2);
+    iac_shared::world::NpcTemplate {
+        ship_class,
+        count: ((f32::from(count) * swing).round() as usize).clamp(1, MAX_NPC_SHIPS) as u8,
+        behavior: iac_shared::world::NpcBehaviorType::Aggressive,
+        stat_multiplier,
     }
 }
 
@@ -4210,10 +4228,9 @@ fn recoverable_ship_class(tier: u8, rng: &mut StdRng) -> ShipClass {
 }
 
 /// The risk read a fleet on-site gets before boarding.
-pub fn site_risk_label(tier: u8, bumps: u8) -> iac_shared::protocol::SiteRisk {
+pub fn site_risk_label(site: Hex, bumps: u8) -> iac_shared::protocol::SiteRisk {
     use iac_shared::protocol::SiteRisk;
-    let (base, _, _) = derelict_tier_odds(tier);
-    let chance = base + bumps as f32 * EXPLORE_RETRY_AMBUSH_BUMP;
+    let chance = scaling::derelict_ambush(ring_rating(site)) + bumps as f32 * EXPLORE_RETRY_AMBUSH_BUMP;
     if chance < 0.15 {
         SiteRisk::Quiet
     } else if chance < 0.30 {
@@ -4986,15 +5003,16 @@ mod tests {
         let pile = engine.sector_overrides[&at.to_key()].salvage.unwrap();
 
         let cap = fleet_cargo_capacity(&engine.fleets[&fid]);
-        engine.fleets.get_mut(&fid).unwrap().cargo = Resources { metal: cap - 10.0, ..Default::default() };
+        let room = pile.metal / 2.0;
+        engine.fleets.get_mut(&fid).unwrap().cargo = Resources { metal: cap - room, ..Default::default() };
         engine.handle_collect_salvage(pid, fid).unwrap();
         let got = engine.drain_events().into_iter().find_map(|e| match e.kind {
             EventKind::SalvageCollected(c) => Some(c),
             _ => None,
         }).unwrap();
-        assert!((got.resources.metal - 10.0).abs() < 1e-3);
+        assert!((got.resources.metal - room).abs() < 1e-3);
         let left = got.remaining.expect("remainder reported");
-        assert!((left.metal - (pile.metal - 10.0)).abs() < 1e-3);
+        assert!((left.metal - (pile.metal - room)).abs() < 1e-3);
         assert_eq!(engine.sector_overrides[&at.to_key()].salvage, Some(left));
 
         assert_eq!(engine.handle_collect_salvage(pid, fid), Err(ErrorCode::CargoFull));
@@ -6372,6 +6390,218 @@ mod tests {
         let got = engine.fleets[&fid].cargo.metal;
         assert!(got <= step + 1e-3, "one tick never takes more than the level holds: {got} vs {step}");
         assert!((after.units + got - after.max_units).abs() < 1e-2);
+    }
+
+    /// A sector whose template holds a non-passive group of at least `min` ships.
+    fn find_group_sector(engine: &GameEngine, min: u8) -> Hex {
+        for q in -20i16..20 {
+            for r in -20i16..20 {
+                let coord = Hex { q, r };
+                if let Some(t) = engine.world_gen.generate_sector(coord).npc_template
+                    && t.count >= min
+                    && t.count <= 4
+                    && t.behavior != iac_shared::world::NpcBehaviorType::Passive
+                    && engine.derelict_site_at(coord).is_none()
+                    && !engine.players.values().any(|p| p.homeworld == coord)
+                {
+                    return coord;
+                }
+            }
+        }
+        panic!("no such group in the window");
+    }
+
+    #[test]
+    fn a_kill_pays_the_worth_of_the_whole_group_and_the_event_agrees() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Hunter");
+        let at = find_group_sector(&engine, 2);
+        let tmpl = engine.world_gen.generate_sector(at).npc_template.unwrap();
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        arm(&mut engine, fid);
+        engine.handle_attack(pid, fid, template_npc_id(at)).unwrap();
+        let group_power = engine.npc_fleets[&template_npc_id(at)].power;
+        assert!((group_power - tmpl.power()).abs() < 0.01 * tmpl.power());
+
+        let mut events = engine.drain_events();
+        for _ in 0..30 {
+            engine.tick().unwrap();
+            events.extend(engine.drain_events());
+            if engine.active_combats.is_empty() { break; }
+        }
+        let pile = engine.sector_overrides[&at.to_key()].salvage.expect("pile dropped");
+        let want = scaling::split_loot(scaling::wreck_value(group_power)).scale(engine.pace().finds_mult());
+        assert!((pile.metal - want.metal).abs() < 1e-3 && (pile.crystal - want.crystal).abs() < 1e-3 && (pile.deuterium - want.deuterium).abs() < 1e-3, "{pile:?} vs {want:?}");
+        let one_ship = scaling::wreck_value(scaling::ship_power(tmpl.ship_class) * tmpl.stat_multiplier);
+        assert!(pile.total() > one_ship * 1.5, "{} ships pay more than one", tmpl.count);
+        let advertised = events.iter().find_map(|e| match &e.kind {
+            EventKind::FleetDestroyed(d) if d.is_npc => Some(d.salvage),
+            _ => None,
+        }).unwrap();
+        assert_eq!(advertised, pile, "the event and the pile are one number");
+    }
+
+    #[test]
+    fn a_kill_scales_with_the_worlds_finds_factor() {
+        let pay = |pace: f64| {
+            let mut engine = engine_at_pace(pace);
+            let (pid, fid) = register(&mut engine, "Hunter");
+            let at = find_npc_sector(&engine, iac_shared::world::NpcBehaviorType::Passive);
+            win_a_fight(&mut engine, pid, fid, at);
+            engine.sector_overrides[&at.to_key()].salvage.unwrap().total()
+        };
+        assert!((pay(100.0) / pay(1.0) - 10.0).abs() < 0.01, "P^0.5");
+    }
+
+    /// Board the derelict at `site`; returns the event and everything the
+    /// roll was worth (what came aboard plus the overflow left as salvage).
+    fn board(engine: &mut GameEngine, pid: u64, fid: u64, site: Hex, tick: u64) -> Option<(iac_shared::protocol::SiteExploredEvent, f32)> {
+        engine.current_tick = tick;
+        engine.npc_fleets.clear();
+        engine.active_combats.clear();
+        let ov = engine.ensure_override(site.to_key());
+        ov.site_looted_tick = None;
+        ov.site_ambush_bumps = 0;
+        ov.salvage = None;
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        f.location = site;
+        f.state = FleetStatus::Exploring;
+        f.action_cooldown = 0;
+        f.cargo = Resources::default();
+        engine.drain_events();
+        let _ = pid;
+        engine.resolve_exploration(fid).unwrap();
+        let overflow = engine.sector_overrides[&site.to_key()].salvage.map_or(0.0, |s| s.total());
+        engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::SiteExplored(x) => Some((x.clone(), x.resources.total() + overflow)),
+            _ => None,
+        })
+    }
+
+    /// The fleet becomes `n` ships: a Scout (which helps against ambushes)
+    /// and Corvettes, or all Haulers.
+    fn shape_fleet(engine: &mut GameEngine, fid: u64, hauler: bool) {
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        f.ship_count = 4;
+        for i in 0..4 {
+            f.ships[i] = f.ships[0];
+            f.ships[i].id = 9_000 + i as u64;
+            f.ships[i].ship_class = if hauler { ShipClass::Hauler } else if i == 0 { ShipClass::Scout } else { ShipClass::Corvette };
+        }
+    }
+
+    /// The derelict nearest the hub that is at least `min_dist` out.
+    fn derelict_beyond(engine: &GameEngine, min_dist: u16) -> Hex {
+        let mut best: Option<Hex> = None;
+        for q in -45i16..45 {
+            for r in -45i16..45 {
+                let coord = Hex { q, r };
+                let d = coord.dist_from_origin();
+                if d >= min_dist && engine.derelict_site_at(coord).is_some() && best.is_none_or(|b| d < b.dist_from_origin()) {
+                    best = Some(coord);
+                }
+            }
+        }
+        best.unwrap_or_else(|| panic!("no derelict beyond {min_dist}"))
+    }
+
+    #[test]
+    fn a_derelict_pays_its_ring_value_between_60_and_140_percent() {
+        for (dist, pace) in [(4u16, 1.0f64), (14, 1.0), (24, 1.0), (14, 100.0)] {
+            let mut engine = engine_at_pace(pace);
+            let (pid, fid) = register(&mut engine, "Boarder");
+            shape_fleet(&mut engine, fid, false);
+            let site = derelict_beyond(&engine, dist);
+            let ring = site.dist_from_origin();
+            let mean = scaling::derelict_value(ring) * engine.pace().finds_mult();
+            let mut seen = Vec::new();
+            for tick in 1000..1400 {
+                shape_fleet(&mut engine, fid, false);
+                if let Some((_, rolled)) = board(&mut engine, pid, fid, site, tick) {
+                    seen.push(rolled / mean);
+                }
+            }
+            assert!(seen.len() > 100, "enough clean breaches: {}", seen.len());
+            let (lo, hi) = seen.iter().fold((f32::MAX, 0.0f32), |(l, h), &v| (l.min(v), h.max(v)));
+            assert!(lo >= 0.6 - 1e-3 && hi <= 1.4 + 1e-3, "d={ring}: {lo}..{hi}");
+            assert!(lo < 0.7 && hi > 1.3, "the whole range is used: {lo}..{hi}");
+            let avg = seen.iter().sum::<f32>() / seen.len() as f32;
+            assert!((avg - 1.0).abs() < 0.06, "mean is the table value: {avg}");
+        }
+    }
+
+    #[test]
+    fn a_hauler_doubles_a_derelicts_resources() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Boarder");
+        let site = derelict_beyond(&engine, 6);
+        shape_fleet(&mut engine, fid, false);
+        let (tick, (_, plain)) = (1000..1400).find_map(|t| board(&mut engine, pid, fid, site, t).map(|x| (t, x))).unwrap();
+        shape_fleet(&mut engine, fid, true);
+        let (_, hauled) = board(&mut engine, pid, fid, site, tick).expect("the same roll, no ambush");
+        assert!((hauled / plain - 2.0).abs() < 1e-3, "{hauled} vs {plain}");
+    }
+
+    #[test]
+    fn a_stripped_derelict_comes_back_on_the_finds_timer() {
+        for pace in [1.0, 100.0] {
+            let mut engine = engine_at_pace(pace);
+            let (pid, fid) = register(&mut engine, "Boarder");
+            shape_fleet(&mut engine, fid, true);
+            let site = derelict_beyond(&engine, 5);
+            let tick = (1000..1400).find(|&t| board(&mut engine, pid, fid, site, t).is_some()).unwrap();
+            assert!(engine.derelict_site_at(site).is_none(), "stripped");
+            engine.sector_overrides.get_mut(&site.to_key()).unwrap().site_ambush_bumps = 3;
+
+            let delay = engine.pace().finds_ticks(DERELICT_RESPAWN_TICKS as f64);
+            assert_eq!(delay, (432_000.0 / pace.sqrt()).ceil() as u64, "120 game hours over P^0.5");
+            engine.current_tick = tick + delay - 1;
+            engine.process_derelict_respawn();
+            assert!(engine.derelict_site_at(site).is_none(), "one tick early");
+            engine.current_tick = tick + delay;
+            engine.process_derelict_respawn();
+            let (tier, bumps) = engine.derelict_site_at(site).expect("back");
+            assert_eq!((tier, bumps), (scaling::derelict_tier(site.dist_from_origin()), 0), "calm again");
+            assert!(board(&mut engine, pid, fid, site, tick + delay + 5).is_some() || engine.derelict_site_at(site).is_some());
+        }
+    }
+
+    #[test]
+    fn deep_derelicts_hold_relics_and_shallow_ones_never_do() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Boarder");
+        shape_fleet(&mut engine, fid, true);
+        let deep = derelict_beyond(&engine, 30);
+        let shallow = derelict_beyond(&engine, 4);
+        let (mut deep_relics, mut shallow_relics, mut breaches) = (0, 0, 0);
+        for tick in 1000..2500 {
+            if let Some((x, _)) = board(&mut engine, pid, fid, deep, tick) {
+                breaches += 1;
+                deep_relics += u32::from(x.relic);
+            }
+            if let Some((x, _)) = board(&mut engine, pid, fid, shallow, tick) {
+                shallow_relics += u32::from(x.relic);
+            }
+        }
+        assert!(deep_relics > 0 && deep_relics < breaches / 4, "{deep_relics} of {breaches}");
+        assert_eq!(shallow_relics, 0);
+        assert_eq!(engine.players[&pid].relics, deep_relics);
+    }
+
+    #[test]
+    fn boarding_odds_follow_the_threat_and_a_scout_helps() {
+        let mut engine = test_engine();
+        let (_, fid) = register(&mut engine, "Boarder");
+        let near = Hex { q: 4, r: 0 };
+        let far = Hex { q: 30, r: 0 };
+        let fleet = engine.fleets[&fid].clone();
+        let near_odds = engine.site_ambush_chance(&fleet, near, 0);
+        let far_odds = engine.site_ambush_chance(&fleet, far, 0);
+        assert!((near_odds - 0.02).abs() < 1e-6, "T1 odds 0.10 less the scout's 0.10, floored: {near_odds}");
+        assert!((far_odds - 0.24).abs() < 1e-6, "T9 odds 0.34 less 0.10: {far_odds}");
+        assert!(engine.site_ambush_chance(&fleet, far, 2) > far_odds + 0.19);
+        assert_eq!(site_risk_label(near, 0), iac_shared::protocol::SiteRisk::Quiet);
+        assert_eq!(site_risk_label(far, 0), iac_shared::protocol::SiteRisk::Hot);
     }
 
     fn give_defences(engine: &mut GameEngine, pid: u64, turrets: u32, lancers: u32) {

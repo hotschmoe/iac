@@ -261,7 +261,8 @@ impl Database {
                 deuterium REAL DEFAULT 100,
                 agent INTEGER NOT NULL DEFAULT 0,
                 combat_points REAL NOT NULL DEFAULT 0,
-                explore_points REAL NOT NULL DEFAULT 0
+                explore_points REAL NOT NULL DEFAULT 0,
+                relics INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS fleets (
@@ -521,8 +522,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO players (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash,
-                                             agent, combat_points, explore_points)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                             agent, combat_points, explore_points, relics)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 player.id as i64,
                 &player.name,
@@ -535,6 +536,7 @@ impl Database {
                 player.agent,
                 player.combat_points as f64,
                 player.explore_points as f64,
+                player.relics as i64,
             ],
         )?;
         Ok(())
@@ -544,7 +546,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash,
-                    agent, combat_points, explore_points FROM players",
+                    agent, combat_points, explore_points, relics FROM players",
         )?;
         let players = stmt.query_map(params![], |row| {
             Ok(Player {
@@ -572,6 +574,7 @@ impl Database {
                 agent: row.get::<_, bool>(8)?,
                 combat_points: row.get::<_, f64>(9)? as f32,
                 explore_points: row.get::<_, f64>(10)? as f32,
+                relics: row.get::<_, i64>(11)? as u32,
             })
         })?;
         players.collect()

@@ -300,7 +300,7 @@ pub fn build_sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>) 
         salvage_despawn_tick: salvage.and(ov.and_then(|o| o.salvage_despawn_tick)),
         site: engine
             .derelict_site_at(coord)
-            .map(|(tier, bumps)| SiteBrief { tier, risk: site_risk_label(tier, bumps) }),
+            .map(|(tier, bumps)| SiteBrief { tier, risk: site_risk_label(coord, bumps) }),
         ore_reserve: engine.ore_reserve_at(coord),
         threat: engine.sector_threat(coord),
         last_seen: engine.current_tick,

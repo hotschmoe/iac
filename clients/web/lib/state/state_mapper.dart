@@ -243,7 +243,8 @@ class StateMapper {
       case proto.SiteExploredEvent():
         msg = '${_fleet(k.fleetId)} derelict yielded ${_res(k.resources)}'
             '${k.recoveredShip != null ? ', recovered ${k.recoveredShip!.label}' : ''}'
-            '${k.techCache != null ? ', data core: ${k.techCache!.label}' : ''}';
+            '${k.techCache != null ? ', data core: ${k.techCache!.label}' : ''}'
+            '${k.relic ? ', ANCIENT RELIC' : ''}';
         level = EventLevel.bright;
       case proto.SiteAmbushEvent():
         msg = '! ${_fleet(k.fleetId)} ambushed aboard derelict in ${k.sector} (hostile ${k.npcFleetId})';

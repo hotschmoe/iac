@@ -2,6 +2,7 @@
   "fleet_id": 1,
   "kind": "SiteExplored",
   "recovered_ship": "Frigate",
+  "relic": true,
   "resources": {
     "crystal": 80.0,
     "deuterium": 40.0,

@@ -1125,6 +1125,9 @@ pub struct SiteExploredEvent {
     /// Instant tech level granted by a recovered data core.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tech_cache: Option<ResearchType>,
+    /// An ancient relic came aboard (a unique item; no other use yet).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub relic: bool,
 }
 
 /// Whatever killed the crew is still aboard.

@@ -938,6 +938,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             resources: res(200.0, 80.0, 40.0),
             recovered_ship: Some(ShipClass::Frigate),
             tech_cache: Some(ResearchType::AdvancedShields),
+            relic: true,
         })),
         ("minimal", EventKind::SiteExplored(SiteExploredEvent {
             fleet_id: 1,
@@ -946,6 +947,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             resources: res(10.0, 0.0, 0.0),
             recovered_ship: None,
             tech_cache: None,
+            relic: false,
         })),
         ("", EventKind::SiteAmbush(SiteAmbushEvent { fleet_id: 1, sector: h(2, -4), npc_fleet_id: 9100 })),
         ("", EventKind::PolicyAction(PolicyActionEvent {

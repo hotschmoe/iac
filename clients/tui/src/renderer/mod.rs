@@ -433,6 +433,9 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             if let Some(tech) = e.tech_cache {
                 line.push_str(&format!("   + data core: {} +1\n", tech.label()));
             }
+            if e.relic {
+                line.push_str("   + ANCIENT RELIC\n");
+            }
             line
         }
         EventKind::SiteAmbush(e) => {

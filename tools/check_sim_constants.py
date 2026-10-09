@@ -204,6 +204,25 @@ def check_ore(sim, rust):
             check(f"density odds {key} d={d}", got, mix[key], 1e-5)
 
 
+def check_loot(sim, rust):
+    loot = rust["loot"]
+    check("loot split sum", sum(loot["split"]), 1.0, 1e-6)
+    for got, want in zip(loot["split"], (0.55, 0.30, 0.15)):
+        check("loot split", got, want, 1e-6)
+    for row in loot["rings"]:
+        d = row["dist"]
+        t = sim.threat(d)
+        check(f"wreck value d={d}", row["wreck"], sim.kill_loot_value(d), 1e-4)
+        check(f"derelict value d={d}", row["derelict"], sim.derelict_value(d), 1e-4)
+        check(f"derelict tier d={d}", row["tier"], sim.derelict_tier(d))
+        check(f"derelict ambush d={d}", row["ambush"], sim.derelict_ambush(d), 1e-5)
+        check(f"recovery chance T{t}", row["recovery"], min(0.30, max(0.0, 0.05 * (t - 2))), 1e-5)
+        check(f"data core chance T{t}", row["data_core"], min(0.15, max(0.0, 0.03 * (t - 5))), 1e-5)
+        check(f"relic chance T{t}", row["relic"], min(0.06, max(0.0, 0.02 * (t - 6))), 1e-5)
+    check("derelict respawn ticks", source_const("shared/src/constants.rs", "DERELICT_RESPAWN_TICKS"), sim.DERELICT_RESPAWN_H * 3600.0)
+    check("derelict respawn pace exponent", rust["misc"]["finds_exponent"], sim.DERELICT_PACE_EXP, 1e-6)
+
+
 def main():
     sim = load_sim()
     rust = rust_numbers()
@@ -213,13 +232,14 @@ def main():
     check_storage_raids_misc(sim, rust)
     check_npc_gradient(sim, rust)
     check_ore(sim, rust)
+    check_loot(sim, rust)
     if problems:
         print(f"{len(problems)} mismatch(es) between shared/ and docs/design/economy/sim.py:")
         for p in problems[:60]:
             print("  " + p)
         sys.exit(1)
     print("economy constants agree with sim.py "
-          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient, ore)")
+          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient, ore, loot)")
 
 
 if __name__ == "__main__":

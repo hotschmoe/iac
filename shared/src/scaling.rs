@@ -922,6 +922,70 @@ pub fn ore_density_odds(dist: u16) -> [f32; 4] {
     [0.40 - drift, 0.30 - 0.2 * drift, 0.20 + 0.6 * drift, 0.10 + 0.6 * drift]
 }
 
+// ── Loot ─────────────────────────────────────────────────────────
+
+pub const WRECK_VALUE_K: f32 = 1.2;
+pub const WRECK_VALUE_EXPONENT: f32 = 0.8;
+/// Metal, crystal and deuterium shares of any loot value.
+pub const LOOT_SPLIT: [f32; 3] = [0.55, 0.30, 0.15];
+pub const DERELICT_VALUE_BASE: f32 = 240.0;
+pub const DERELICT_VALUE_GROWTH: f32 = 1.14;
+/// A site pays between these shares of its value, uniformly.
+pub const DERELICT_ROLL_MIN: f32 = 0.6;
+pub const DERELICT_ROLL_MAX: f32 = 1.4;
+
+/// Units of loot (before the pace's finds factor) a destroyed group leaves:
+/// it grows slower than the danger, so far hunting stays a gamble.
+pub fn wreck_value(group_power: f32) -> f32 {
+    WRECK_VALUE_K * group_power.max(0.0).powf(WRECK_VALUE_EXPONENT)
+}
+
+/// `value` units as metal, crystal and deuterium.
+pub fn split_loot(value: f32) -> Resources {
+    Resources { metal: value * LOOT_SPLIT[0], crystal: value * LOOT_SPLIT[1], deuterium: value * LOOT_SPLIT[2] }
+}
+
+/// Mean loot value (units, before the finds factor) of a derelict `dist` rings out.
+pub fn derelict_value(dist: u16) -> f32 {
+    DERELICT_VALUE_BASE * DERELICT_VALUE_GROWTH.powi(i32::from(dist) - 4)
+}
+
+/// Tier follows the threat band of the ring: 1 for T1 to T3, 2 for T4 to T6, 3 above.
+pub fn derelict_tier(dist: u16) -> u8 {
+    threat_band(threat_rating(npc_power(dist)))
+}
+
+/// Chance a boarding wakes the guard, before scouts and earlier failures.
+pub fn derelict_ambush(rating: u8) -> f32 {
+    (0.10 + 0.03 * (f32::from(rating) - 1.0)).min(0.35)
+}
+
+/// Share of the ring's group power a derelict's guard fields.
+pub const AMBUSH_GUARD_SHARE: f32 = 0.6;
+
+/// (class, count, stat multiplier) of the guard waiting in a derelict `dist` rings out.
+pub fn ambush_guard(dist: u16) -> (ShipClass, u8, f32) {
+    let class = npc_class(dist);
+    let m = npc_stat_multiplier(dist);
+    let count = (AMBUSH_GUARD_SHARE * npc_power(dist) / (ship_power(class) * m)).round();
+    (class, count.clamp(1.0, NPC_MAX_SHIPS as f32) as u8, m)
+}
+
+/// Chance a clean boarding also finds a ship that can be recovered.
+pub fn recovery_chance(rating: u8) -> f32 {
+    (0.05 * (f32::from(rating) - 2.0)).clamp(0.0, 0.30)
+}
+
+/// Chance of a data core: a free research level.
+pub fn data_core_chance(rating: u8) -> f32 {
+    (0.03 * (f32::from(rating) - 5.0)).clamp(0.0, 0.15)
+}
+
+/// Chance of an ancient relic, from T7: 2 percent per rating point above 6.
+pub fn relic_chance(rating: u8) -> f32 {
+    (0.02 * (f32::from(rating) - 6.0)).clamp(0.0, 0.06)
+}
+
 // ── Threat and the NPC gradient ──────────────────────────────────
 
 pub const NPC_POWER_BASE: f32 = 4.0;
@@ -1439,6 +1503,55 @@ mod golden_tests {
                 }
                 assert_eq!(ore_regen_step(template, template, 0.0, 5.0, dist), (template, 0.0), "never above the template");
             }
+        }
+    }
+
+    #[test]
+    fn wreck_value_matches_the_table() {
+        for (dist, want) in [(1, 4), (2, 4), (4, 6), (6, 8), (8, 11), (12, 21), (15, 34), (18, 54), (20, 75), (21, 88), (25, 166), (30, 367), (35, 812)] {
+            assert_eq!(wreck_value(npc_power(dist)).round() as u32, want, "d={dist}");
+        }
+        let loot = split_loot(100.0);
+        assert!((loot.metal - 55.0).abs() < 1e-4 && (loot.crystal - 30.0).abs() < 1e-4 && (loot.deuterium - 15.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_big_group_pays_more_than_one_of_its_ships() {
+        let one = ship_power(ShipClass::Cruiser) * 1.3;
+        let (class, count, m) = npc_composition(35);
+        let group = ship_power(class) * m * f32::from(count);
+        assert!(wreck_value(group) > 10.0 * wreck_value(one));
+        assert!(wreck_value(group) / group < wreck_value(one) / one, "it pays less per unit of danger, though");
+    }
+
+    #[test]
+    fn derelicts_follow_the_value_and_tier_tables() {
+        for (dist, want) in [(1, 162), (2, 185), (4, 240), (6, 312), (8, 405), (10, 527), (12, 685), (15, 1014), (20, 1953), (25, 3760), (30, 7240), (35, 13940)] {
+            let got = derelict_value(dist);
+            assert!((got - want as f32).abs() <= want as f32 * 0.005, "d={dist}: {got}");
+        }
+        let tiers: Vec<u8> = [1, 11, 12, 21, 22, 40].iter().map(|&d| derelict_tier(d)).collect();
+        assert_eq!(tiers, vec![1, 1, 2, 2, 3, 3]);
+    }
+
+    #[test]
+    fn rare_finds_rise_with_the_rating() {
+        let t = |f: fn(u8) -> f32| (1..=MAX_THREAT).map(f).collect::<Vec<_>>();
+        let near = |a: Vec<f32>, b: Vec<f32>| assert!(a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-5), "{a:?} vs {b:?}");
+        near(t(derelict_ambush), vec![0.10, 0.13, 0.16, 0.19, 0.22, 0.25, 0.28, 0.31, 0.34]);
+        near(t(recovery_chance), vec![0.0, 0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.30]);
+        near(t(data_core_chance), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.03, 0.06, 0.09, 0.12]);
+        near(t(relic_chance), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.04, 0.06]);
+        assert_eq!(derelict_ambush(40), 0.35);
+    }
+
+    #[test]
+    fn a_guard_is_a_share_of_the_rings_group() {
+        for dist in [4u16, 12, 20, 30] {
+            let (class, count, m) = ambush_guard(dist);
+            let power = ship_power(class) * m * f32::from(count);
+            let unit = ship_power(class) * m;
+            assert!((power - AMBUSH_GUARD_SHARE * npc_power(dist)).abs() <= unit / 2.0 + 1e-3 || count == 1, "d={dist}");
         }
     }
 
