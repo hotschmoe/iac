@@ -10,7 +10,7 @@ use rand::rngs::StdRng;
 
 use iac_shared::hex::Hex;
 use iac_shared::constants::{
-    Resources, ShipClass, Density, Zone,
+    Resources, ResourceKind, ShipClass, Density, Zone,
     STARTING_RESOURCES, STARTING_SCOUTS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, STRANDED_RECOVERY_TICKS,
     HARVEST_COOLDOWN, SHIELD_REGEN_IDLE_TICKS,
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
@@ -35,7 +35,10 @@ use iac_shared::scaling::{
     self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION,
 };
-use iac_shared::protocol::{AlertEvent, AlertLevel, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams};
+use iac_shared::protocol::{
+    AlertEvent, AlertLevel, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
+    ResourceEta, StorageFullEvent, StorageNearCapEvent, StorageState,
+};
 
 use crate::auth::{self, TokenHash};
 use crate::combat;
@@ -327,6 +330,9 @@ pub struct GameEngine {
     /// Actively-scanned sectors per player: hex key → expiry tick.
     scan_reveals: HashMap<u64, HashMap<u32, u64>>,
     raid_states: HashMap<u64, RaidState>,
+    /// Per player and resource: 0 below 80 percent of the cap, 1 once
+    /// `StorageNearCap` fired, 2 once `StorageFull` fired.
+    storage_marks: HashMap<u64, [u8; 3]>,
     /// Harvest yield per fleet awaiting its next `ResourceHarvested` event.
     harvest_reports: HashMap<u64, HarvestReport>,
     /// Standing orders per fleet.
@@ -373,6 +379,7 @@ impl GameEngine {
             sector_overrides: world.sector_overrides,
             scan_reveals: HashMap::new(),
             raid_states: HashMap::new(),
+            storage_marks: HashMap::new(),
             harvest_reports: HashMap::new(),
             policies: world.policies,
             pending_events: Vec::new(),
@@ -1037,10 +1044,99 @@ impl GameEngine {
     fn process_homeworlds(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let pace = self.world.pace;
         for (_, player) in self.players.iter_mut() {
-            player.resources = player.resources.add(player.production_per_tick(&pace));
+            let cap = scaling::storage_cap(player.buildings.storage_vault, &pace);
+            player.resources = player.resources.add_capped(player.production_per_tick(&pace), cap);
             self.dirty_players.insert(player.id, ());
         }
+        let docked: Vec<u64> = self.fleets.values()
+            .filter(|f| f.cargo.total() > 0.0 && self.players.get(&f.owner_id).is_some_and(|p| p.homeworld == f.location))
+            .map(|f| f.id)
+            .collect();
+        for fid in docked {
+            self.unload_cargo(fid);
+        }
+        self.process_storage_alerts();
         Ok(())
+    }
+
+    /// Move as much of the fleet's cargo into its owner's stockpile as the
+    /// storage cap allows; the rest stays aboard.
+    fn unload_cargo(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let Some(player) = self.players.get_mut(&fleet.owner_id) else { return; };
+        let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+        let room = player.resources.shortfall(cap).min(fleet.cargo);
+        if room.total() <= 0.0 { return; }
+        player.resources = player.resources.add(room);
+        let owner = player.id;
+        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet.cargo = fleet.cargo.sub(room);
+        self.dirty_fleets.insert(fleet_id, ());
+        self.dirty_players.insert(owner, ());
+    }
+
+    pub fn storage_state(&self, player: &Player) -> StorageState {
+        let pace = &self.world.pace;
+        let cap = scaling::storage_cap(player.buildings.storage_vault, pace);
+        let rate = player.production_per_tick(pace);
+        let eta = |kind: ResourceKind| {
+            let (stock, cap, rate) = (player.resources.get(kind), cap.get(kind), rate.get(kind));
+            if stock >= cap { Some(0) } else if rate > 0.0 { Some(((cap - stock) / rate).ceil() as u64) } else { None }
+        };
+        StorageState {
+            cap,
+            protected: scaling::storage_protected(player.buildings.storage_vault, pace),
+            full_in_s: ResourceEta {
+                metal: eta(ResourceKind::Metal),
+                crystal: eta(ResourceKind::Crystal),
+                deuterium: eta(ResourceKind::Deuterium),
+            },
+            capped: ResourceKind::ALL.into_iter()
+                .filter(|&k| player.resources.get(k) >= cap.get(k))
+                .collect(),
+        }
+    }
+
+    /// `StorageNearCap` at 85 percent of a cap and `StorageFull` at the cap,
+    /// once per fill; hysteresis keeps a stockpile hovering at the cap from
+    /// repeating itself.
+    fn process_storage_alerts(&mut self) {
+        let tick = self.current_tick;
+        let mut events = Vec::new();
+        let ids: Vec<u64> = self.players.keys().copied().collect();
+        for pid in ids {
+            let player = &self.players[&pid];
+            let state = self.storage_state(player);
+            let marks = self.storage_marks.entry(pid).or_insert([0; 3]);
+            for (i, kind) in ResourceKind::ALL.into_iter().enumerate() {
+                let ratio = player.resources.get(kind) / state.cap.get(kind);
+                let full = ratio >= 1.0;
+                let eta = match kind {
+                    ResourceKind::Metal => state.full_in_s.metal,
+                    ResourceKind::Crystal => state.full_in_s.crystal,
+                    ResourceKind::Deuterium => state.full_in_s.deuterium,
+                };
+                let mut mark = marks[i];
+                if mark == 2 && ratio < 0.95 { mark = 1; }
+                if mark == 1 && ratio < 0.80 { mark = 0; }
+                if mark < 2 && full {
+                    mark = 2;
+                    events.push(EventKind::StorageFull(StorageFullEvent { player_id: Some(pid), resource: kind }));
+                } else if mark == 0 && ratio >= scaling::STORAGE_NEAR_CAP_RATIO {
+                    mark = 1;
+                    events.push(EventKind::StorageNearCap(StorageNearCapEvent {
+                        player_id: Some(pid),
+                        resource: kind,
+                        ratio,
+                        full_in_s: eta,
+                    }));
+                }
+                marks[i] = mark;
+            }
+        }
+        for kind in events {
+            self.pending_events.push(GameEvent { tick, kind });
+        }
     }
 
     // ── Build Queues ──────────────────────────────────────────────
@@ -1277,10 +1373,13 @@ impl GameEngine {
             }
         } else {
             let player_mut = self.players.get_mut(&player_id).unwrap();
+            let exposed = player_mut.resources.sub(
+                scaling::storage_protected(player_mut.buildings.storage_vault, &self.world.pace),
+            );
             resources_lost = Resources {
-                metal: player_mut.resources.metal * RAID_LOSS_CAP_METAL,
-                crystal: player_mut.resources.crystal * RAID_LOSS_CAP_CRYSTAL,
-                deuterium: player_mut.resources.deuterium * RAID_LOSS_CAP_DEUT,
+                metal: exposed.metal.max(0.0) * RAID_LOSS_CAP_METAL,
+                crystal: exposed.crystal.max(0.0) * RAID_LOSS_CAP_CRYSTAL,
+                deuterium: exposed.deuterium.max(0.0) * RAID_LOSS_CAP_DEUT,
             };
             player_mut.resources = player_mut.resources.sub(resources_lost);
             self.dirty_players.insert(player_id, ());
@@ -1862,6 +1961,37 @@ impl GameEngine {
         Ok(())
     }
 
+    /// A payment larger than a stockpile cap can never be made until the
+    /// Storage Vault grows.
+    fn ensure_fits_storage(&self, player: &Player, cost: Resources) -> Result<(), ErrorCode> {
+        let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+        if ResourceKind::ALL.into_iter().any(|k| cost.get(k) > cap.get(k)) {
+            return Err(ErrorCode::StorageTooSmall);
+        }
+        Ok(())
+    }
+
+    /// What `cmd` would cost, with a label for messages; None for commands
+    /// that cost nothing.
+    pub fn command_cost(&self, player_id: u64, cmd: &Command) -> Option<(String, Resources)> {
+        let p = self.players.get(&player_id)?;
+        match cmd {
+            Command::Build { building_type } => {
+                let level = p.buildings.get(*building_type) + 1;
+                Some((format!("{} Lv.{level}", building_type.label()), scaling::building_cost(*building_type, level)))
+            }
+            Command::Research { tech } => {
+                let level = p.research.get(*tech) + 1;
+                Some((format!("{} Lv.{level}", tech.label()), scaling::research_cost(*tech, level)))
+            }
+            Command::BuildShip { ship_class, count } => Some((
+                format!("{} x{}", ship_class.label(), count),
+                ship_class.build_cost().scale(*count as f32),
+            )),
+            _ => None,
+        }
+    }
+
     pub fn handle_build(&mut self, player_id: u64, building_type: BuildingType) -> Result<(), ErrorCode> {
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
         if player.building_queue.is_some() { return Err(ErrorCode::QueueFull); }
@@ -1874,6 +2004,7 @@ impl GameEngine {
 
         let target_level = current_level + 1;
         let cost = scaling::building_cost(building_type, target_level);
+        self.ensure_fits_storage(player, cost)?;
         if !player.resources.can_afford(cost) { return Err(ErrorCode::NoResources); }
 
         let player_mut = self.players.get_mut(&player_id).unwrap();
@@ -1903,6 +2034,7 @@ impl GameEngine {
 
         let target_level = current_level + 1;
         let cost = scaling::research_cost(tech, target_level);
+        self.ensure_fits_storage(player, cost)?;
         if !player.resources.can_afford(cost) { return Err(ErrorCode::NoResources); }
 
         let player_mut = self.players.get_mut(&player_id).unwrap();
@@ -1931,6 +2063,7 @@ impl GameEngine {
             crystal: unit_cost.crystal * count as f32,
             deuterium: unit_cost.deuterium * count as f32,
         };
+        self.ensure_fits_storage(player, total_cost)?;
         if !player.resources.can_afford(total_cost) { return Err(ErrorCode::NoResources); }
 
         // Copy needed data before mutable borrow
@@ -3015,14 +3148,9 @@ impl GameEngine {
 
         // Deposit cargo and refuel; docked fleets stay separate until the
         // player merges them.
-        let player = self.players.get_mut(&player_id).ok_or("Player not found")?;
-        let fleet = self.fleets.get(&fleet_id).unwrap();
-        player.resources = player.resources.add(fleet.cargo);
+        self.unload_cargo(fleet_id);
 
-        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
-        fleet.cargo = Resources::default();
-
-        let player = self.players.get(&player_id).unwrap();
+        let player = self.players.get(&player_id).ok_or("Player not found")?;
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.fuel_max = fleet_fuel_max(fleet, player);
         fleet.fuel = fleet.fuel_max;
@@ -5153,5 +5281,128 @@ mod tests {
         let ticks_a = a.players[&pa].building_queue.as_ref().unwrap().end_tick - a.current_tick;
         let ticks_b = b.players[&pb].building_queue.as_ref().unwrap().end_tick - b.current_tick;
         assert_eq!(ticks_b, ticks_a.div_ceil(10));
+    }
+
+    fn fund(engine: &mut GameEngine, pid: u64, m: f32, c: f32, d: f32) {
+        engine.players.get_mut(&pid).unwrap().resources = Resources { metal: m, crystal: c, deuterium: d };
+    }
+
+    fn events_of(engine: &mut GameEngine) -> Vec<EventKind> {
+        engine.drain_events().into_iter().map(|e| e.kind).collect()
+    }
+
+    #[test]
+    fn mines_stop_at_the_cap_and_waste_the_rest() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Hoarder");
+        fund(&mut engine, pid, 4999.999, 100.0, 100.0);
+        engine.tick().unwrap();
+        engine.tick().unwrap();
+        let r = engine.players[&pid].resources;
+        assert_eq!(r.metal, 5000.0, "metal stops at the no-vault cap");
+        assert!(r.crystal > 100.0, "other resources keep filling");
+        let state = engine.storage_state(&engine.players[&pid]);
+        assert_eq!(state.capped, vec![ResourceKind::Metal]);
+        assert_eq!(state.full_in_s.metal, Some(0));
+        assert!(state.full_in_s.crystal.unwrap() > 1000);
+        assert_eq!(state.full_in_s.deuterium, None, "no synthesizer: not filling");
+    }
+
+    #[test]
+    fn a_vault_raises_the_cap_by_half_per_level() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Banker");
+        engine.players.get_mut(&pid).unwrap().buildings.storage_vault = 2;
+        let state = engine.storage_state(&engine.players[&pid]);
+        assert_eq!(state.cap.metal, 11250.0);
+        assert_eq!(state.protected.metal, 11250.0 * 0.16);
+    }
+
+    #[test]
+    fn docking_unloads_only_what_fits_and_the_rest_waits() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Hauler");
+        fund(&mut engine, pid, 4900.0, 0.0, 0.0);
+        engine.fleets.get_mut(&fid).unwrap().cargo = Resources { metal: 300.0, crystal: 50.0, deuterium: 0.0 };
+        engine.dock_fleet(fid).unwrap();
+        let r = engine.players[&pid].resources;
+        assert_eq!(r.metal, 5000.0);
+        assert_eq!(r.crystal, 50.0, "crystal had room");
+        assert_eq!(engine.fleets[&fid].cargo.metal, 200.0, "the surplus stays aboard");
+        assert_eq!(engine.fleets[&fid].cargo.crystal, 0.0);
+
+        // Spending makes room; the next tick unloads without another dock.
+        fund(&mut engine, pid, 4000.0, 0.0, 0.0);
+        engine.tick().unwrap();
+        assert_eq!(engine.fleets[&fid].cargo.metal, 0.0);
+        assert!(engine.players[&pid].resources.metal >= 4200.0);
+    }
+
+    #[test]
+    fn a_payment_above_the_cap_names_the_vault_it_needs() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Planner");
+        {
+            let p = engine.players.get_mut(&pid).unwrap();
+            p.buildings.research_lab = 4;
+            p.buildings.shipyard = 6;
+            p.research.frigate_tech = 1;
+            p.resources = Resources { metal: 5000.0, crystal: 3500.0, deuterium: 2500.0 };
+        }
+        // Cruiser Tech costs 8000 metal; the base cap is 5000.
+        assert_eq!(engine.handle_research(pid, ResearchType::CruiserTech), Err(ErrorCode::StorageTooSmall));
+        engine.players.get_mut(&pid).unwrap().buildings.storage_vault = 2;
+        engine.players.get_mut(&pid).unwrap().resources = Resources { metal: 8000.0, crystal: 4999.0, deuterium: 2500.0 };
+        assert_eq!(engine.handle_research(pid, ResearchType::CruiserTech), Err(ErrorCode::NoResources), "fits now, crystal is short");
+    }
+
+    #[test]
+    fn storage_alerts_fire_once_per_fill() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Watcher");
+        engine.drain_events();
+        fund(&mut engine, pid, 4300.0, 0.0, 0.0);
+        engine.tick().unwrap();
+        let near: Vec<_> = events_of(&mut engine).into_iter()
+            .filter(|e| matches!(e, EventKind::StorageNearCap(n) if n.resource == ResourceKind::Metal && n.ratio >= 0.85))
+            .collect();
+        assert_eq!(near.len(), 1);
+        engine.tick().unwrap();
+        assert!(events_of(&mut engine).is_empty(), "no repeat while it stays near the cap");
+
+        fund(&mut engine, pid, 5000.0, 0.0, 0.0);
+        engine.tick().unwrap();
+        let full = events_of(&mut engine);
+        assert_eq!(full.iter().filter(|e| matches!(e, EventKind::StorageFull(f) if f.resource == ResourceKind::Metal)).count(), 1);
+
+        fund(&mut engine, pid, 4990.0, 0.0, 0.0);
+        engine.tick().unwrap();
+        assert!(events_of(&mut engine).is_empty(), "hovering at the cap does not repeat Full");
+
+        fund(&mut engine, pid, 100.0, 0.0, 0.0);
+        engine.tick().unwrap();
+        events_of(&mut engine);
+        fund(&mut engine, pid, 4400.0, 0.0, 0.0);
+        engine.tick().unwrap();
+        assert_eq!(events_of(&mut engine).iter().filter(|e| matches!(e, EventKind::StorageNearCap(_))).count(), 1, "re-arms after draining");
+    }
+
+    #[test]
+    fn a_lost_raid_cannot_skim_the_protected_stock() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Fortress");
+        {
+            let p = engine.players.get_mut(&pid).unwrap();
+            p.buildings.storage_vault = 2;
+            p.resources = Resources { metal: 10_000.0, crystal: 0.0, deuterium: 0.0 };
+        }
+        let protected = scaling::storage_protected(2, &engine.pace()).metal;
+        engine.resolve_raid(pid, 1_000_000.0).unwrap();
+        let lost = 10_000.0 - engine.players[&pid].resources.metal;
+        assert!((lost - (10_000.0 - protected) * RAID_LOSS_CAP_METAL).abs() < 0.5, "lost {lost}");
+
+        fund(&mut engine, pid, protected - 1.0, 0.0, 0.0);
+        engine.resolve_raid(pid, 1_000_000.0).unwrap();
+        assert_eq!(engine.players[&pid].resources.metal, protected - 1.0, "below the protected line nothing is skimmed");
     }
 }

@@ -158,6 +158,28 @@
               "need": 3
             }
           ]
+        },
+        {
+          "building_type": "StorageVault",
+          "level": 0,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 100.0,
+              "deuterium": 0.0,
+              "metal": 200.0
+            },
+            "level": 1,
+            "ticks": 1543
+          },
+          "requires": [
+            {
+              "have": 1,
+              "met": false,
+              "name": "Metal Mine",
+              "need": 2
+            }
+          ]
         }
       ],
       "research": [
@@ -608,7 +630,25 @@
       "deuterium": 0.0,
       "metal": 0.0
     },
-    "research": []
+    "research": [],
+    "storage": {
+      "cap": {
+        "crystal": 3500.0,
+        "deuterium": 2500.0,
+        "metal": 5000.0
+      },
+      "capped": [],
+      "full_in_s": {
+        "crystal": null,
+        "deuterium": null,
+        "metal": null
+      },
+      "protected": {
+        "crystal": 0.0,
+        "deuterium": 0.0,
+        "metal": 0.0
+      }
+    }
   },
   "known_sectors": [],
   "player": {

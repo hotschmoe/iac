@@ -169,13 +169,23 @@ class HomeworldView extends StatelessWidget {
 
   Widget _stockStrip() {
     final r = controller.state.resources;
-    Widget stock(String label, int amount, double rate) => RichText(
-          text: TextSpan(children: [
-            TextSpan(text: '$label ', style: Amber.mono(size: 10, color: Amber.dim)),
-            TextSpan(text: '$amount', style: Amber.mono(size: 12, color: Amber.full)),
-            TextSpan(text: '  +${rate.toStringAsFixed(1)}/t', style: Amber.mono(size: 10, color: Amber.dim)),
-          ]),
-        );
+    final storage = controller.state.hw?.storage;
+    Widget stock(String label, int amount, double rate, proto.ResourceKind kind, double? cap) {
+      final full = storage?.capped.contains(kind) ?? false;
+      final eta = storage?.fullInS.of(kind);
+      return RichText(
+        text: TextSpan(children: [
+          TextSpan(text: '$label ', style: Amber.mono(size: 10, color: Amber.dim)),
+          TextSpan(text: '$amount', style: Amber.mono(size: 12, color: full ? Amber.bright : Amber.full)),
+          if (cap != null) TextSpan(text: ' / ${cap.round()}', style: Amber.mono(size: 10, color: Amber.dim)),
+          TextSpan(text: '  +${rate.toStringAsFixed(1)}/t', style: Amber.mono(size: 10, color: Amber.dim)),
+          if (full)
+            TextSpan(text: '  FULL', style: Amber.mono(size: 10, color: Amber.bright))
+          else if (eta != null && eta < 3600)
+            TextSpan(text: '  full in ${eta}s', style: Amber.mono(size: 10, color: Amber.normal)),
+        ]),
+      );
+    }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(color: Amber.bgPanel, border: Border.all(color: Amber.border)),
@@ -183,9 +193,9 @@ class HomeworldView extends StatelessWidget {
         spacing: 24,
         runSpacing: 4,
         children: [
-          stock('METAL', r.metal.amount, r.metal.rate),
-          stock('CRYSTAL', r.crystal.amount, r.crystal.rate),
-          stock('DEUT', r.deut.amount, r.deut.rate),
+          stock('METAL', r.metal.amount, r.metal.rate, proto.ResourceKind.metal, storage?.cap.metal),
+          stock('CRYSTAL', r.crystal.amount, r.crystal.rate, proto.ResourceKind.crystal, storage?.cap.crystal),
+          stock('DEUT', r.deut.amount, r.deut.rate, proto.ResourceKind.deuterium, storage?.cap.deuterium),
         ],
       ),
     );

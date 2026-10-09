@@ -131,6 +131,10 @@ class GameState {
   /// first server message.
   final proto.HomeworldCatalog? catalog;
 
+  /// The server's whole homeworld snapshot (storage, queues, defences);
+  /// null before the first server message.
+  final proto.HomeworldState? hw;
+
   /// Fixed world settings (pace); null before the first full state.
   final proto.WorldInfo? world;
 
@@ -152,6 +156,7 @@ class GameState {
     this.signals = const {},
     this.stock = const proto.Resources(),
     this.catalog,
+    this.hw,
     this.world,
   });
 
@@ -182,6 +187,7 @@ class GameState {
     Map<proto.Hex, proto.SignalKind>? signals,
     proto.Resources? stock,
     proto.HomeworldCatalog? catalog,
+    proto.HomeworldState? hw,
     proto.WorldInfo? world,
   }) =>
       GameState(
@@ -202,6 +208,7 @@ class GameState {
         signals: signals ?? this.signals,
         stock: stock ?? this.stock,
         catalog: catalog ?? this.catalog,
+        hw: hw ?? this.hw,
         world: world ?? this.world,
       );
 }

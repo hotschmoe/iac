@@ -75,11 +75,11 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 21 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 23 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 21);
+      expect(kinds.length, 23);
     });
 
     test('command fixtures cover all 14 commands', () {
@@ -92,7 +92,10 @@ void main() {
       final s = ServerMessage.fromJson(readJson(f)) as GameState;
       expect(s.knownSectors.first.connections, isNotEmpty);
       expect(s.fleets.first.policy, isNotNull);
-      expect(s.homeworld.buildings.length, 8);
+      expect(s.homeworld.buildings.length, BuildingType.values.length);
+      expect(s.homeworld.storage.cap.metal, 7500);
+      expect(s.homeworld.storage.capped, [ResourceKind.deuterium]);
+      expect(s.homeworld.storage.fullInS.crystal, isNull);
     });
 
     test('full_state carries the homeworld catalog the server computed', () {
@@ -150,6 +153,7 @@ void main() {
     check('PolicyPreset', PolicyPreset.fromJson, (PolicyPreset e) => e.toJson());
     check('BuildingType', BuildingType.fromJson, (BuildingType e) => e.toJson());
     check('ResearchType', ResearchType.fromJson, (ResearchType e) => e.toJson());
+    check('ResourceKind', ResourceKind.fromJson, (ResourceKind e) => e.toJson());
     check('ErrorCode', ErrorCode.fromJson, (ErrorCode e) => e.toJson());
 
     test('Dart enums have no values Rust lacks', () {
@@ -167,6 +171,7 @@ void main() {
       same('PolicyPreset', PolicyPreset.values.length);
       same('BuildingType', BuildingType.values.length);
       same('ResearchType', ResearchType.values.length);
+      same('ResourceKind', ResourceKind.values.length);
       same('ErrorCode', ErrorCode.values.length);
     });
 

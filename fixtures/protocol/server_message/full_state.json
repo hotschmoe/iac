@@ -6,6 +6,7 @@
         "deuterium": 0.0,
         "metal": 12.5
       },
+      "cargo_blocked": false,
       "cargo_capacity": 220.0,
       "cooldown_remaining": 3,
       "fuel": 271.5,
@@ -46,6 +47,7 @@
         "deuterium": 0.0,
         "metal": 12.5
       },
+      "cargo_blocked": false,
       "cargo_capacity": 220.0,
       "cooldown_remaining": 3,
       "fuel": 271.5,
@@ -85,6 +87,7 @@
         "deuterium": 0.0,
         "metal": 12.5
       },
+      "cargo_blocked": false,
       "cargo_capacity": 220.0,
       "cooldown_remaining": 0,
       "fuel": 271.5,
@@ -139,6 +142,10 @@
       {
         "building_type": "DefenseGrid",
         "level": 7
+      },
+      {
+        "building_type": "StorageVault",
+        "level": 8
       }
     ],
     "catalog": {
@@ -295,6 +302,28 @@
               "met": true,
               "name": "Shipyard",
               "need": 3
+            }
+          ]
+        },
+        {
+          "building_type": "StorageVault",
+          "level": 8,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 6976.0,
+              "deuterium": 0.0,
+              "metal": 13952.0
+            },
+            "level": 9,
+            "ticks": 107630
+          },
+          "requires": [
+            {
+              "have": 0,
+              "met": false,
+              "name": "Metal Mine",
+              "need": 2
             }
           ]
         }
@@ -783,6 +812,26 @@
       "end_tick": 300,
       "ship_class": "Corvette",
       "start_tick": 120
+    },
+    "storage": {
+      "cap": {
+        "crystal": 5250.0,
+        "deuterium": 3750.0,
+        "metal": 7500.0
+      },
+      "capped": [
+        "deuterium"
+      ],
+      "full_in_s": {
+        "crystal": null,
+        "deuterium": 0,
+        "metal": 5400
+      },
+      "protected": {
+        "crystal": 420.0,
+        "deuterium": 300.0,
+        "metal": 600.0
+      }
     }
   },
   "known_sectors": [

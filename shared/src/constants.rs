@@ -317,6 +317,78 @@ impl Resources {
     }
 }
 
+/// One of the three stockpiled resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    Metal,
+    Crystal,
+    Deuterium,
+}
+
+impl ResourceKind {
+    pub const ALL: [ResourceKind; 3] = [ResourceKind::Metal, ResourceKind::Crystal, ResourceKind::Deuterium];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ResourceKind::Metal => "metal",
+            ResourceKind::Crystal => "crystal",
+            ResourceKind::Deuterium => "deuterium",
+        }
+    }
+}
+
+impl Resources {
+    pub fn get(&self, kind: ResourceKind) -> f32 {
+        match kind {
+            ResourceKind::Metal => self.metal,
+            ResourceKind::Crystal => self.crystal,
+            ResourceKind::Deuterium => self.deuterium,
+        }
+    }
+
+    pub fn get_mut(&mut self, kind: ResourceKind) -> &mut f32 {
+        match kind {
+            ResourceKind::Metal => &mut self.metal,
+            ResourceKind::Crystal => &mut self.crystal,
+            ResourceKind::Deuterium => &mut self.deuterium,
+        }
+    }
+
+    /// Add `gain` without pushing any component past `cap`; a component
+    /// already above its cap stays where it is.
+    pub fn add_capped(self, gain: Resources, cap: Resources) -> Resources {
+        let one = |stock: f32, gain: f32, cap: f32| if stock >= cap { stock } else { (stock + gain).min(cap) };
+        Resources {
+            metal: one(self.metal, gain.metal, cap.metal),
+            crystal: one(self.crystal, gain.crystal, cap.crystal),
+            deuterium: one(self.deuterium, gain.deuterium, cap.deuterium),
+        }
+    }
+
+    /// Component-wise minimum.
+    pub fn min(self, other: Resources) -> Resources {
+        Resources {
+            metal: self.metal.min(other.metal),
+            crystal: self.crystal.min(other.crystal),
+            deuterium: self.deuterium.min(other.deuterium),
+        }
+    }
+
+    /// What `self` lacks to pay `cost`: each component is clamped at 0.
+    pub fn shortfall(self, cost: Resources) -> Resources {
+        Resources {
+            metal: (cost.metal - self.metal).max(0.0),
+            crystal: (cost.crystal - self.crystal).max(0.0),
+            deuterium: (cost.deuterium - self.deuterium).max(0.0),
+        }
+    }
+
+    pub fn total(&self) -> f32 {
+        self.metal + self.crystal + self.deuterium
+    }
+}
+
 /// Starting resources for new players.
 pub const STARTING_RESOURCES: Resources = Resources {
     metal: 500.0,

@@ -18,7 +18,7 @@ use super::{
 };
 
 pub fn render(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(3)]).split(area);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(5)]).split(area);
 
     render_tab_bar(frame, state, rows[0]);
     render_card_grid(frame, state, rows[1]);
@@ -273,6 +273,19 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         "\n +{:.2} Fe/t  +{:.2} Cr/t  +{:.2} De/t",
         hw.production.metal, hw.production.crystal, hw.production.deuterium,
     ));
+
+    if let Some(p) = &state.player {
+        let st = &hw.storage;
+        text.push_str(&format!(
+            "\n Stock/cap: Fe {:.0}/{:.0}  Cr {:.0}/{:.0}  De {:.0}/{:.0}",
+            p.resources.metal, st.cap.metal, p.resources.crystal, st.cap.crystal,
+            p.resources.deuterium, st.cap.deuterium,
+        ));
+        if !st.capped.is_empty() {
+            let names: Vec<&str> = st.capped.iter().map(|k| k.label()).collect();
+            text.push_str(&format!("  FULL: {}", names.join(", ")));
+        }
+    }
 
     frame.render_widget(Paragraph::new(text).style(AMBER_BRIGHT), inner);
 }

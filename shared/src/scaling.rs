@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{Resources, ShipClass, ShipStats};
+use crate::constants::{ResourceKind, Resources, ShipClass, ShipStats};
 use crate::pace::Pace;
 
 pub const MAX_BUILDING_LEVEL: u8 = 20;
@@ -21,6 +21,7 @@ pub enum BuildingType {
     FuelDepot,
     SensorArray,
     DefenseGrid,
+    StorageVault,
 }
 
 impl BuildingType {
@@ -34,11 +35,12 @@ impl BuildingType {
             BuildingType::FuelDepot => "Fuel Depot",
             BuildingType::SensorArray => "Sensor Array",
             BuildingType::DefenseGrid => "Defense Grid",
+            BuildingType::StorageVault => "Storage Vault",
         }
     }
 
     /// Number of building types.
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
 
     pub fn short_label(self) -> &'static str {
         match self {
@@ -50,6 +52,7 @@ impl BuildingType {
             BuildingType::FuelDepot => "Depot",
             BuildingType::SensorArray => "Sensor",
             BuildingType::DefenseGrid => "DefGrd",
+            BuildingType::StorageVault => "Vault",
         }
     }
     pub fn from_usize(idx: usize) -> Option<Self> {
@@ -62,6 +65,7 @@ impl BuildingType {
             5 => Some(BuildingType::FuelDepot),
             6 => Some(BuildingType::SensorArray),
             7 => Some(BuildingType::DefenseGrid),
+            8 => Some(BuildingType::StorageVault),
             _ => None,
         }
     }
@@ -78,6 +82,7 @@ pub struct BuildingLevels {
     pub fuel_depot: u8,
     pub sensor_array: u8,
     pub defense_grid: u8,
+    pub storage_vault: u8,
 }
 
 impl Default for BuildingLevels {
@@ -92,6 +97,7 @@ impl Default for BuildingLevels {
             fuel_depot: 0,
             sensor_array: 0,
             defense_grid: 0,
+            storage_vault: 0,
         }
     }
 }
@@ -107,6 +113,7 @@ impl BuildingLevels {
             BuildingType::FuelDepot => self.fuel_depot,
             BuildingType::SensorArray => self.sensor_array,
             BuildingType::DefenseGrid => self.defense_grid,
+            BuildingType::StorageVault => self.storage_vault,
         }
     }
 
@@ -120,6 +127,7 @@ impl BuildingLevels {
             BuildingType::FuelDepot => self.fuel_depot = level,
             BuildingType::SensorArray => self.sensor_array = level,
             BuildingType::DefenseGrid => self.defense_grid = level,
+            BuildingType::StorageVault => self.storage_vault = level,
         }
     }
 }
@@ -137,6 +145,33 @@ pub const RESEARCH_RATE: f64 = 500.0;
 pub const SHIP_RATE: f64 = 1200.0;
 /// Shipyard level divides ship time by `1 + this * level`.
 pub const SHIPYARD_SPEED: f64 = 0.10;
+
+/// Stockpile cap with no Vault, before the pace multiplier.
+pub const STORAGE_BASE: Resources = Resources { metal: 5000.0, crystal: 3500.0, deuterium: 2500.0 };
+/// Each Vault level multiplies the caps by this.
+pub const STORAGE_GROWTH: f32 = 1.5;
+/// Share of the cap per Vault level that a raid cannot skim, up to the max.
+pub const STORAGE_PROTECT_PER_LEVEL: f32 = 0.08;
+pub const STORAGE_PROTECT_MAX: f32 = 0.60;
+/// `StorageNearCap` fires at this fill ratio.
+pub const STORAGE_NEAR_CAP_RATIO: f32 = 0.85;
+
+/// Stockpile cap per resource: `base * 1.5^vault * P^0.75`.
+pub fn storage_cap(vault_level: u8, pace: &Pace) -> Resources {
+    STORAGE_BASE.scale(STORAGE_GROWTH.powi(vault_level as i32) * pace.cap_mult())
+}
+
+/// Per resource, the stock a raid cannot take.
+pub fn storage_protected(vault_level: u8, pace: &Pace) -> Resources {
+    let share = (STORAGE_PROTECT_PER_LEVEL * vault_level as f32).min(STORAGE_PROTECT_MAX);
+    storage_cap(vault_level, pace).scale(share)
+}
+
+/// Smallest Vault level whose cap holds `amount` of `kind`; None when even
+/// level 20 cannot.
+pub fn vault_level_for(amount: f32, kind: ResourceKind, pace: &Pace) -> Option<u8> {
+    (0..=MAX_BUILDING_LEVEL).find(|&level| storage_cap(level, pace).get(kind) >= amount)
+}
 
 /// Mine output per tick at the world's pace.
 pub fn production_per_tick(building: BuildingType, level: u8, pace: &Pace) -> f32 {
@@ -164,6 +199,7 @@ pub fn building_cost_curve(building: BuildingType) -> ([f64; 3], f64) {
         BuildingType::FuelDepot => ([150.0, 50.0, 100.0], 1.7),
         BuildingType::SensorArray => ([100.0, 150.0, 75.0], 1.7),
         BuildingType::DefenseGrid => ([300.0, 200.0, 100.0], 1.8),
+        BuildingType::StorageVault => ([200.0, 100.0, 0.0], 1.7),
     }
 }
 
@@ -224,6 +260,10 @@ pub fn building_prerequisites(building: BuildingType) -> Option<Prerequisite> {
         BuildingType::DefenseGrid => Some(Prerequisite {
             building: BuildingType::Shipyard,
             level: 3,
+        }),
+        BuildingType::StorageVault => Some(Prerequisite {
+            building: BuildingType::MetalMine,
+            level: 2,
         }),
     }
 }
@@ -746,5 +786,47 @@ mod golden_tests {
         let ratio_cost = c(20) / c(10);
         let ratio_time = building_time(MetalMine, 20, &P1) as f64 / building_time(MetalMine, 10, &P1) as f64;
         assert!((ratio_cost / ratio_time - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn storage_caps_match_the_table() {
+        let cap = |level, pace: f64| storage_cap(level, &Pace::new(pace).unwrap());
+        let near = |got: Resources, m: f32, c: f32, d: f32| {
+            assert!((got.metal - m).abs() < 1.5 && (got.crystal - c).abs() < 1.5 && (got.deuterium - d).abs() < 1.5, "{got:?}");
+        };
+        near(cap(0, 1.0), 5000.0, 3500.0, 2500.0);
+        near(cap(1, 1.0), 7500.0, 5250.0, 3750.0);
+        near(cap(5, 1.0), 37968.0, 26578.0, 18984.0);
+        near(cap(10, 1.0), 288325.0, 201827.0, 144162.0);
+        near(cap(0, 10.0), 28117.0, 19681.0, 14058.0);
+        near(cap(3, 10.0), 94895.0, 66426.0, 47447.0);
+        near(cap(0, 600.0), 606154.0, 424308.0, 303077.0);
+        near(cap(14, 600.0), 176954278.0, 123867995.0, 88477139.0);
+    }
+
+    #[test]
+    fn vault_costs_match_the_table() {
+        assert_eq!(building_cost(StorageVault, 1), cost(200.0, 100.0, 0.0));
+        assert_eq!(building_cost(StorageVault, 2), cost(340.0, 170.0, 0.0));
+        assert_eq!(building_cost(StorageVault, 3), cost(578.0, 289.0, 0.0));
+        assert_eq!(building_cost(StorageVault, 6), cost(2840.0, 1420.0, 0.0), "the table truncates 2839.7");
+        assert_eq!(building_cost(StorageVault, 10), cost(23718.0, 11859.0, 0.0));
+    }
+
+    #[test]
+    fn raids_cannot_skim_the_protected_share() {
+        let p = storage_protected(5, &P1);
+        assert!((p.metal - 0.4 * 37968.75).abs() < 1.0);
+        assert_eq!(storage_protected(0, &P1).metal, 0.0);
+        let capped = storage_protected(12, &P1);
+        assert!((capped.metal / storage_cap(12, &P1).metal - 0.6).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_vault_level_a_payment_needs() {
+        assert_eq!(vault_level_for(5000.0, ResourceKind::Metal, &P1), Some(0));
+        assert_eq!(vault_level_for(8000.0, ResourceKind::Metal, &P1), Some(2));
+        assert_eq!(vault_level_for(3000.0, ResourceKind::Deuterium, &P1), Some(1));
+        assert_eq!(vault_level_for(1e12, ResourceKind::Metal, &P1), None);
     }
 }

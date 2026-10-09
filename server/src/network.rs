@@ -387,6 +387,49 @@ fn missing_prerequisites_message(engine: &GameEngine, player_id: u64, cmd: &Comm
     missing_requirements_message(subject, &requires)
 }
 
+/// "135 metal, 34 crystal": the nonzero parts of an amount.
+fn amounts(r: &iac_shared::Resources) -> String {
+    let parts: Vec<String> = iac_shared::constants::ResourceKind::ALL
+        .into_iter()
+        .filter(|&k| r.get(k) > 0.0)
+        .map(|k| format!("{} {}", r.get(k).ceil(), k.label()))
+        .collect();
+    parts.join(", ")
+}
+
+/// Names what a rejected order costs and which resources the stockpile lacks.
+fn shortfall_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
+    let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
+        return "not enough resources".to_string();
+    };
+    format!("not enough resources for {label}: costs {}; short {}", amounts(&cost), amounts(&p.resources.shortfall(cost)))
+}
+
+fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
+    use iac_shared::constants::ResourceKind;
+    let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
+        return "the payment is larger than a storage cap".to_string();
+    };
+    let cap = iac_shared::scaling::storage_cap(p.buildings.storage_vault, &engine.pace());
+    let worst = ResourceKind::ALL
+        .into_iter()
+        .filter(|&k| cost.get(k) > cap.get(k))
+        .max_by(|&a, &b| (cost.get(a) / cap.get(a)).total_cmp(&(cost.get(b) / cap.get(b))))
+        .unwrap_or(ResourceKind::Metal);
+    let need = ResourceKind::ALL
+        .into_iter()
+        .filter_map(|k| iac_shared::scaling::vault_level_for(cost.get(k), k, &engine.pace()))
+        .max();
+    let fix = match need {
+        Some(level) => format!("needs Storage Vault level {level}"),
+        None => "no Storage Vault can hold it".to_string(),
+    };
+    format!(
+        "{label} costs {} {}, more than the {} {} your stockpile holds; {fix}",
+        cost.get(worst).ceil(), worst.label(), cap.get(worst).floor(), worst.label(),
+    )
+}
+
 /// Human-readable explanation for a rejected command. The code stays the
 /// machine-readable part; this says which fleet, sector or queue is at fault.
 fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, code: ErrorCode) -> String {
@@ -447,7 +490,9 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         (ErrorCode::InvalidCommand, Command::Merge { .. }) => "the merged fleet would exceed 64 ships".to_string(),
         (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
-        (ErrorCode::NoResources, _) => "not enough resources".to_string(),
+        (ErrorCode::NoResources, Command::CancelBuild { .. }) => "nothing to cancel in that queue".to_string(),
+        (ErrorCode::NoResources, _) => shortfall_message(engine, player_id, cmd),
+        (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),
         (ErrorCode::ResourceNotPresent, Command::Harvest { resource, .. }) => {
             format!("this sector has no {} to harvest", harvest_label(*resource))
         }
@@ -636,6 +681,8 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             jump_fuel: engine.hop_fuel_cost(fleet),
             home_fuel: engine.route_home_cost(fleet, fleet.move_target.unwrap_or(fleet.location)),
             cooldown_remaining: fleet.action_cooldown,
+            cargo_blocked: fleet.cargo.total() > 0.0
+                && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
             policy: engine.policies.get(&fleet.id).map(|p| p.preset),
         });
     }
@@ -644,47 +691,15 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
 }
 
 fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) -> HomeworldState {
-    let mut buildings: Vec<BuildingState> = Vec::new();
-    for bt in 0..BuildingType::COUNT {
-        let bt: BuildingType = match bt {
-            0 => BuildingType::MetalMine,
-            1 => BuildingType::CrystalMine,
-            2 => BuildingType::DeuteriumSynthesizer,
-            3 => BuildingType::Shipyard,
-            4 => BuildingType::ResearchLab,
-            5 => BuildingType::FuelDepot,
-            6 => BuildingType::SensorArray,
-            7 => BuildingType::DefenseGrid,
-            _ => unreachable!(),
-        };
-        buildings.push(BuildingState {
-            building_type: bt,
-            level: player.buildings.get(bt),
-        });
-    }
+    let buildings: Vec<BuildingState> = (0..BuildingType::COUNT)
+        .filter_map(BuildingType::from_usize)
+        .map(|bt| BuildingState { building_type: bt, level: player.buildings.get(bt) })
+        .collect();
 
-    let mut research: Vec<ResearchState> = Vec::new();
-    for rt in 0..ResearchType::COUNT {
-        let rt: ResearchType = match rt {
-            0 => ResearchType::FuelEfficiency,
-            1 => ResearchType::ExtendedFuelTanks,
-            2 => ResearchType::ReinforcedHulls,
-            3 => ResearchType::AdvancedShields,
-            4 => ResearchType::WeaponsResearch,
-            5 => ResearchType::Navigation,
-            6 => ResearchType::HarvestingEfficiency,
-            7 => ResearchType::CorvetteTech,
-            8 => ResearchType::FrigateTech,
-            9 => ResearchType::CruiserTech,
-            10 => ResearchType::HaulerTech,
-            11 => ResearchType::EmergencyJump,
-            _ => unreachable!(),
-        };
-        research.push(ResearchState {
-            tech: rt,
-            level: player.research.get(rt),
-        });
-    }
+    let research: Vec<ResearchState> = (0..ResearchType::COUNT)
+        .filter_map(ResearchType::from_usize)
+        .map(|rt| ResearchState { tech: rt, level: player.research.get(rt) })
+        .collect();
 
     let build_queue: Option<BuildQueueItem> = player.building_queue.as_ref().map(|q| BuildQueueItem {
         building_type: q.building_type,
@@ -728,6 +743,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
     HomeworldState {
         location: player.homeworld,
         production: player.production_per_tick(&engine.pace()),
+        storage: engine.storage_state(player),
         buildings,
         research,
         build_queue,
@@ -794,6 +810,8 @@ fn event_for(event: &GameEvent, player: &crate::engine::Player, engine: &GameEng
         K::SiteExplored(e) => own_fleet(e.fleet_id),
         K::SiteAmbush(e) => own_fleet(e.fleet_id),
         K::PolicyAction(e) => own_fleet(e.fleet_id),
+        K::StorageNearCap(e) => e.player_id.is_none_or(|p| p == player.id),
+        K::StorageFull(e) => e.player_id.is_none_or(|p| p == player.id),
         K::Alert(e) => e.player_id.is_none_or(|p| p == player.id),
     };
     relevant.then_some(out)
@@ -1136,5 +1154,31 @@ mod tests {
         let tick = next_message(&mut rx);
         let updates = tick["sector_updates"].as_array().unwrap();
         assert!(updates.iter().all(|s| s["live"] == true), "settled stale sectors are not repeated");
+    }
+
+    #[test]
+    fn resource_errors_name_the_resource_and_the_amount() {
+        let (_net, engine, pid, _fid, _rx) = network_with_player();
+        let mut e = engine.lock().unwrap();
+        e.players.get_mut(&pid).unwrap().resources = iac_shared::Resources { metal: 100.0, crystal: 40.0, deuterium: 0.0 };
+
+        let cmd = Command::Build { building_type: BuildingType::MetalMine };
+        e.players.get_mut(&pid).unwrap().buildings.metal_mine = 2;
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::NoResources),
+            "not enough resources for Metal Mine Lv.3: costs 135 metal, 34 crystal; short 35 metal"
+        );
+        let cmd = Command::BuildShip { ship_class: ShipClass::Scout, count: 2 };
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::NoResources),
+            "not enough resources for Scout x2: costs 400 metal, 100 crystal, 60 deuterium; short 300 metal, 60 crystal, 60 deuterium"
+        );
+
+        e.players.get_mut(&pid).unwrap().buildings.research_lab = 4;
+        let cmd = Command::Research { tech: ResearchType::CruiserTech };
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::StorageTooSmall),
+            "Cruiser Tech Lv.1 costs 8000 metal, more than the 5000 metal your stockpile holds; needs Storage Vault level 2"
+        );
     }
 }

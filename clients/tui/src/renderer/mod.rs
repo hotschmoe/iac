@@ -393,6 +393,13 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
                 event.tick, e.sector.q, e.sector.r
             )
         }
+        EventKind::StorageNearCap(e) => {
+            let eta = e.full_in_s.map(|s| format!(", full in {s}s")).unwrap_or_default();
+            format!(" T{}: {} storage at {:.0}%{}\n", event.tick, e.resource.label(), e.ratio * 100.0, eta)
+        }
+        EventKind::StorageFull(e) => {
+            format!(" T{}: {} storage FULL: production is being wasted\n", event.tick, e.resource.label())
+        }
         EventKind::PolicyAction(e) => {
             format!(
                 " T{}: F{} auto-{}: {}\n",
@@ -429,6 +436,8 @@ pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
             (false, _) => AMBER_DIM,
         },
         EventKind::SalvageDespawned(_) => AMBER,
+        EventKind::StorageNearCap(_) => AMBER_FULL,
+        EventKind::StorageFull(_) => RED_ALERT,
         EventKind::RaidResolved(e) => if e.defended { GREEN_GOOD } else { RED_ALERT },
         EventKind::ResourceHarvested(_)
         | EventKind::SalvageCollected(_)

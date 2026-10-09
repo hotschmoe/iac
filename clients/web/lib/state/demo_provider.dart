@@ -7,9 +7,11 @@ import '../protocol/protocol.dart';
 /// (full_state, tick_update, error) so the UI has a single render path.
 /// It simulates just enough (move, scan, harvest, recall, stop, queues,
 /// policies) to click around; combat, salvage and derelicts are not modelled.
-/// Its catalog uses a rough cost model of its own, only meant to look like the
-/// real one; a live server sends the real numbers.
+/// Its catalog uses a rough cost model of its own (the economy spec's curves
+/// at the blitz pace), only meant to look like the real one; a live server
+/// sends the real numbers.
 class DemoProvider {
+  static const _pace = 600.0;
   static const _playerId = 1;
   static const _home = Hex(4, -2);
 
@@ -89,6 +91,7 @@ class DemoProvider {
     _hw = HomeworldState(
       location: _home,
       production: _production(buildings),
+      storage: _storage(buildings, _resources, _production(buildings)),
       buildings: buildings,
       research: research,
       catalog: _catalogFor(buildings, research),
@@ -185,9 +188,9 @@ class DemoProvider {
         fleets: List.of(_fleets),
         homeworld: _hw,
         knownSectors: _sectors.values.toList(),
-        world: const WorldInfo(
-          pace: 1,
-          preset: 'persistent',
+        world: WorldInfo(
+          pace: _pace,
+          preset: 'blitz',
           tickHz: 1,
           economyVersion: 2,
           worldgenVersion: 1,
@@ -209,11 +212,13 @@ class DemoProvider {
   void _step() {
     _tick++;
     final p = _hw.production;
+    final cap = _hw.storage.cap;
     _resources = Resources(
-      metal: _resources.metal + p.metal,
-      crystal: _resources.crystal + p.crystal,
-      deuterium: _resources.deuterium + p.deuterium,
+      metal: min(cap.metal, _resources.metal + p.metal),
+      crystal: min(cap.crystal, _resources.crystal + p.crystal),
+      deuterium: min(cap.deuterium, _resources.deuterium + p.deuterium),
     );
+    _hw = _hwWith();
 
     _fleets = [
       for (final f in _fleets)
@@ -323,6 +328,7 @@ class DemoProvider {
       HomeworldState(
         location: _hw.location,
         production: _production(buildings ?? _hw.buildings),
+        storage: _storage(buildings ?? _hw.buildings, _resources, _production(buildings ?? _hw.buildings)),
         buildings: buildings ?? _hw.buildings,
         research: research ?? _hw.research,
         buildQueue: clearBuild ? null : (build ?? _hw.buildQueue),
@@ -332,16 +338,17 @@ class DemoProvider {
         catalog: _catalogFor(buildings ?? _hw.buildings, research ?? _hw.research),
       );
 
-  // Per-level cost and prerequisite tables for the demo catalog.
+  // Level-1 cost and per-level growth for the demo catalog.
   static const _buildingBase = {
-    BuildingType.metalMine: Resources(metal: 60, crystal: 15),
-    BuildingType.crystalMine: Resources(metal: 48, crystal: 24),
-    BuildingType.deuteriumSynthesizer: Resources(metal: 225, crystal: 75),
-    BuildingType.shipyard: Resources(metal: 200, crystal: 100, deuterium: 50),
-    BuildingType.researchLab: Resources(metal: 100, crystal: 200, deuterium: 50),
-    BuildingType.fuelDepot: Resources(metal: 150, crystal: 50, deuterium: 100),
-    BuildingType.sensorArray: Resources(metal: 100, crystal: 150, deuterium: 75),
-    BuildingType.defenseGrid: Resources(metal: 300, crystal: 200, deuterium: 100),
+    BuildingType.metalMine: (Resources(metal: 60, crystal: 15), 1.5),
+    BuildingType.crystalMine: (Resources(metal: 48, crystal: 24), 1.6),
+    BuildingType.deuteriumSynthesizer: (Resources(metal: 150, crystal: 50), 1.5),
+    BuildingType.shipyard: (Resources(metal: 200, crystal: 100, deuterium: 50), 1.8),
+    BuildingType.researchLab: (Resources(metal: 100, crystal: 200, deuterium: 50), 1.8),
+    BuildingType.fuelDepot: (Resources(metal: 150, crystal: 50, deuterium: 100), 1.7),
+    BuildingType.sensorArray: (Resources(metal: 100, crystal: 150, deuterium: 75), 1.7),
+    BuildingType.defenseGrid: (Resources(metal: 300, crystal: 200, deuterium: 100), 1.8),
+    BuildingType.storageVault: (Resources(metal: 200, crystal: 100), 1.7),
   };
   static const _buildingNeeds = {
     BuildingType.shipyard: (BuildingType.metalMine, 2),
@@ -349,6 +356,7 @@ class DemoProvider {
     BuildingType.fuelDepot: (BuildingType.deuteriumSynthesizer, 2),
     BuildingType.sensorArray: (BuildingType.researchLab, 1),
     BuildingType.defenseGrid: (BuildingType.shipyard, 3),
+    BuildingType.storageVault: (BuildingType.metalMine, 2),
   };
   static const _shipCost = {
     ShipClass.scout: Resources(metal: 200, crystal: 50, deuterium: 30),
@@ -356,13 +364,6 @@ class DemoProvider {
     ShipClass.frigate: Resources(metal: 1000, crystal: 400, deuterium: 200),
     ShipClass.cruiser: Resources(metal: 3000, crystal: 1500, deuterium: 800),
     ShipClass.hauler: Resources(metal: 600, crystal: 200, deuterium: 150),
-  };
-  static const _shipTicks = {
-    ShipClass.scout: 30,
-    ShipClass.corvette: 60,
-    ShipClass.frigate: 120,
-    ShipClass.cruiser: 240,
-    ShipClass.hauler: 90,
   };
   static const _shipTech = {
     ShipClass.corvette: ResearchType.corvetteTech,
@@ -373,6 +374,43 @@ class DemoProvider {
 
   static Resources _times(Resources r, num n) =>
       Resources(metal: r.metal * n, crystal: r.crystal * n, deuterium: r.deuterium * n);
+
+  /// `base * growth^(level - 1)`, rounded.
+  static Resources _grown(Resources base, double growth, int level) {
+    final f = pow(growth, level - 1);
+    return Resources(
+      metal: (base.metal * f).roundToDouble(),
+      crystal: (base.crystal * f).roundToDouble(),
+      deuterium: (base.deuterium * f).roundToDouble(),
+    );
+  }
+
+  /// Whole ticks for a cost at [rate] cost units per game hour, at the demo pace.
+  static int _ticksFor(Resources cost, double rate, [double speed = 1]) =>
+      max(1, ((cost.metal + cost.crystal) / rate * 3600 / speed / _pace).ceil());
+
+  static StorageState _storage(List<BuildingState> buildings, Resources stock, Resources production) {
+    final vault = buildings.firstWhere((b) => b.buildingType == BuildingType.storageVault).level;
+    final scale = pow(1.5, vault) * pow(_pace, 0.75);
+    final cap = Resources(metal: 5000 * scale.toDouble(), crystal: 3500 * scale.toDouble(), deuterium: 2500 * scale.toDouble());
+    final share = min(0.6, 0.08 * vault);
+    int? eta(double have, double limit, double rate) =>
+        have >= limit ? 0 : (rate > 0 ? ((limit - have) / rate).ceil() : null);
+    return StorageState(
+      cap: cap,
+      protected: Resources(metal: cap.metal * share, crystal: cap.crystal * share, deuterium: cap.deuterium * share),
+      fullInS: ResourceEta(
+        metal: eta(stock.metal, cap.metal, production.metal),
+        crystal: eta(stock.crystal, cap.crystal, production.crystal),
+        deuterium: eta(stock.deuterium, cap.deuterium, production.deuterium),
+      ),
+      capped: [
+        if (stock.metal >= cap.metal) ResourceKind.metal,
+        if (stock.crystal >= cap.crystal) ResourceKind.crystal,
+        if (stock.deuterium >= cap.deuterium) ResourceKind.deuterium,
+      ],
+    );
+  }
 
   static HomeworldCatalog _catalogFor(List<BuildingState> buildings, List<ResearchState> research) {
     int bl(BuildingType t) => buildings.firstWhere((b) => b.buildingType == t).level;
@@ -389,7 +427,11 @@ class DemoProvider {
             maxLevel: 20,
             next: bl(t) >= 20
                 ? null
-                : UpgradeStep(level: bl(t) + 1, cost: _times(_buildingBase[t]!, bl(t) + 1), ticks: 30 * (bl(t) + 1)),
+                : () {
+                    final (base, growth) = _buildingBase[t]!;
+                    final cost = _grown(base, growth, bl(t) + 1);
+                    return UpgradeStep(level: bl(t) + 1, cost: cost, ticks: _ticksFor(cost, 700));
+                  }(),
             requires: [
               if (_buildingNeeds[t] case (final b, final l)) needBuilding(b, l),
             ],
@@ -403,14 +445,13 @@ class DemoProvider {
             maxLevel: _shipTech.containsValue(t) ? 1 : 5,
             next: rl(t) >= (_shipTech.containsValue(t) ? 1 : 5)
                 ? null
-                : UpgradeStep(
-                    level: rl(t) + 1,
-                    cost: _times(const Resources(metal: 200, crystal: 150, deuterium: 100), rl(t) + 1),
-                    ticks: 60 * (rl(t) + 1),
-                  ),
+                : () {
+                    final cost = _grown(const Resources(metal: 200, crystal: 150, deuterium: 100), 1.6, rl(t) + 1);
+                    return UpgradeStep(level: rl(t) + 1, cost: cost, ticks: _ticksFor(cost, 500));
+                  }(),
             requires: [
               needBuilding(BuildingType.researchLab, 1),
-              if (t == ResearchType.corvetteTech) needBuilding(BuildingType.shipyard, 2),
+              if (t == ResearchType.corvetteTech) needBuilding(BuildingType.shipyard, 1),
             ],
           ),
       ],
@@ -419,7 +460,7 @@ class DemoProvider {
           ShipOption(
             shipClass: c,
             unitCost: _shipCost[c]!,
-            ticksPerShip: _shipTicks[c]!,
+            ticksPerShip: _ticksFor(_shipCost[c]!, 1200, 1 + 0.1 * bl(BuildingType.shipyard)),
             requires: [
               needBuilding(BuildingType.shipyard, 1),
               if (_shipTech[c] case final t?) Requirement(name: t.label, need: 1, have: rl(t), met: rl(t) >= 1),
@@ -446,15 +487,15 @@ class DemoProvider {
 
   /// The demo plays the server: mine output at the given building levels.
   static Resources _production(List<BuildingState> buildings) {
-    double rate(BuildingType t, double base) {
+    double rate(BuildingType t, double perHour) {
       final l = buildings.firstWhere((b) => b.buildingType == t).level;
-      return l == 0 ? 0 : base * l * pow(1.1, l);
+      return l == 0 ? 0 : perHour / 3600 * l * pow(1.1, l) * _pace;
     }
 
     return Resources(
-      metal: rate(BuildingType.metalMine, 0.5),
-      crystal: rate(BuildingType.crystalMine, 0.3),
-      deuterium: rate(BuildingType.deuteriumSynthesizer, 0.15),
+      metal: rate(BuildingType.metalMine, 10),
+      crystal: rate(BuildingType.crystalMine, 7),
+      deuterium: rate(BuildingType.deuteriumSynthesizer, 5),
     );
   }
 

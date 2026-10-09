@@ -12,7 +12,8 @@
     "ResearchLab",
     "FuelDepot",
     "SensorArray",
-    "DefenseGrid"
+    "DefenseGrid",
+    "StorageVault"
   ],
   "Density": [
     "None",
@@ -39,6 +40,7 @@
     "NoResearchLab",
     "FleetLimitReached",
     "ResourceNotPresent",
+    "StorageTooSmall",
     "AuthFailed",
     "AlreadyAuthenticated",
     "InvalidName",
@@ -92,6 +94,11 @@
     "CruiserTech",
     "HaulerTech",
     "EmergencyJump"
+  ],
+  "ResourceKind": [
+    "metal",
+    "crystal",
+    "deuterium"
   ],
   "ShipClass": [
     "Scout",

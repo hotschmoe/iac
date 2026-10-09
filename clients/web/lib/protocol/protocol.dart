@@ -162,7 +162,8 @@ enum BuildingType {
   researchLab('Research Lab'),
   fuelDepot('Fuel Depot'),
   sensorArray('Sensor Array'),
-  defenseGrid('Defense Grid');
+  defenseGrid('Defense Grid'),
+  storageVault('Storage Vault');
 
   final String label;
   const BuildingType(this.label);
@@ -213,6 +214,7 @@ enum ErrorCode {
   noResearchLab(1014),
   fleetLimitReached(1015),
   resourceNotPresent(1016),
+  storageTooSmall(1017),
   authFailed(2000),
   alreadyAuthenticated(2001),
   invalidName(2002),
@@ -244,6 +246,17 @@ enum PolicyPreset {
   String get wire => _snake(name);
   String toJson() => wire;
   static PolicyPreset fromJson(Object? v) => _enumFrom(values, v, _snake);
+}
+
+/// One of the three stockpiled resources.
+enum ResourceKind {
+  metal,
+  crystal,
+  deuterium;
+
+  String get wire => _snake(name);
+  String toJson() => wire;
+  static ResourceKind fromJson(Object? v) => _enumFrom(values, v, _snake);
 }
 
 enum SiteRisk {
@@ -774,6 +787,9 @@ class FleetState {
   /// Fuel the way home costs over charted lanes (0 at the homeworld).
   final double homeFuel;
   final int cooldownRemaining;
+
+  /// At the homeworld with cargo the stockpile has no room for.
+  final bool cargoBlocked;
   final PolicyPreset? policy;
   const FleetState({
     required this.id,
@@ -787,6 +803,7 @@ class FleetState {
     this.jumpFuel = 0,
     this.homeFuel = 0,
     this.cooldownRemaining = 0,
+    this.cargoBlocked = false,
     this.policy,
   });
 
@@ -804,6 +821,7 @@ class FleetState {
       jumpFuel: m['jump_fuel'] == null ? 0 : _f(m['jump_fuel']),
       homeFuel: m['home_fuel'] == null ? 0 : _f(m['home_fuel']),
       cooldownRemaining: (m['cooldown_remaining'] as int?) ?? 0,
+      cargoBlocked: (m['cargo_blocked'] as bool?) ?? false,
       policy: _opt(m['policy'], PolicyPreset.fromJson),
     );
   }
@@ -821,6 +839,7 @@ class FleetState {
       'jump_fuel': jumpFuel,
       'home_fuel': homeFuel,
       'cooldown_remaining': cooldownRemaining,
+      'cargo_blocked': cargoBlocked,
     };
     _put(m, 'policy', policy?.toJson());
     return m;
@@ -1073,8 +1092,9 @@ class ShipClassCounts {
 class HomeworldState {
   final Hex location;
 
-  /// Mine output per tick at current levels. There are no storage caps.
+  /// Mine output per tick at current levels (the cap discards the excess).
   final Resources production;
+  final StorageState storage;
   final List<BuildingState> buildings;
   final List<ResearchState> research;
   final BuildQueueItem? buildQueue;
@@ -1087,6 +1107,7 @@ class HomeworldState {
   const HomeworldState({
     required this.location,
     required this.production,
+    required this.storage,
     required this.buildings,
     required this.research,
     this.buildQueue,
@@ -1101,6 +1122,7 @@ class HomeworldState {
     return HomeworldState(
       location: Hex.fromJson(m['location']),
       production: Resources.fromJson(m['production']),
+      storage: StorageState.fromJson(m['storage']),
       buildings: _list(m['buildings'], BuildingState.fromJson),
       research: _list(m['research'], ResearchState.fromJson),
       buildQueue: _opt(m['build_queue'], BuildQueueItem.fromJson),
@@ -1115,6 +1137,7 @@ class HomeworldState {
     final m = <String, dynamic>{
       'location': location.toJson(),
       'production': production.toJson(),
+      'storage': storage.toJson(),
       'buildings': buildings.map((e) => e.toJson()).toList(),
       'research': research.map((e) => e.toJson()).toList(),
       'docked_ships': dockedShips.map((e) => e.toJson()).toList(),
@@ -1132,6 +1155,63 @@ class HomeworldState {
     }
     return 0;
   }
+}
+
+/// Stockpile limits from the Storage Vault level and the world pace.
+class StorageState {
+  final Resources cap;
+
+  /// What a raid cannot skim.
+  final Resources protected;
+
+  /// Seconds until each stockpile is full at current production; 0 when it
+  /// is, null when it is not filling.
+  final ResourceEta fullInS;
+
+  /// Resources whose stockpile is at the cap right now.
+  final List<ResourceKind> capped;
+  const StorageState({required this.cap, required this.protected, required this.fullInS, required this.capped});
+
+  factory StorageState.fromJson(Object? json) {
+    final m = _obj(json);
+    return StorageState(
+      cap: Resources.fromJson(m['cap']),
+      protected: Resources.fromJson(m['protected']),
+      fullInS: ResourceEta.fromJson(m['full_in_s']),
+      capped: _list(m['capped'], ResourceKind.fromJson),
+    );
+  }
+
+  Json toJson() => {
+        'cap': cap.toJson(),
+        'protected': protected.toJson(),
+        'full_in_s': fullInS.toJson(),
+        'capped': capped.map((e) => e.toJson()).toList(),
+      };
+}
+
+class ResourceEta {
+  final int? metal;
+  final int? crystal;
+  final int? deuterium;
+  const ResourceEta({this.metal, this.crystal, this.deuterium});
+
+  factory ResourceEta.fromJson(Object? json) {
+    final m = _obj(json);
+    return ResourceEta(
+      metal: m['metal'] as int?,
+      crystal: m['crystal'] as int?,
+      deuterium: m['deuterium'] as int?,
+    );
+  }
+
+  Json toJson() => {'metal': metal, 'crystal': crystal, 'deuterium': deuterium};
+
+  int? of(ResourceKind k) => switch (k) {
+        ResourceKind.metal => metal,
+        ResourceKind.crystal => crystal,
+        ResourceKind.deuterium => deuterium,
+      };
 }
 
 /// Server-computed menu of homeworld actions (see `HomeworldCatalog` in
@@ -1476,6 +1556,8 @@ sealed class EventKind {
       'PolicyAction' => PolicyActionEvent.fromJson(m),
       'Alert' => AlertEvent.fromJson(m),
       'SalvageDespawned' => SalvageDespawnedEvent.fromJson(m),
+      'StorageNearCap' => StorageNearCapEvent.fromJson(m),
+      'StorageFull' => StorageFullEvent.fromJson(m),
       final k => throw FormatException('unknown EventKind "$k"'),
     };
   }
@@ -1799,6 +1881,49 @@ class SalvageDespawnedEvent extends EventKind {
 
   @override
   Json toJson() => {'kind': 'SalvageDespawned', 'sector': sector.toJson(), 'resources': resources.toJson()};
+}
+
+/// A stockpile passed 85 percent of its cap.
+class StorageNearCapEvent extends EventKind {
+  final int? playerId;
+  final ResourceKind resource;
+  final double ratio;
+
+  /// Seconds until full at current production; null when not filling.
+  final int? fullInS;
+  const StorageNearCapEvent({this.playerId, required this.resource, required this.ratio, this.fullInS});
+
+  factory StorageNearCapEvent.fromJson(Json m) => StorageNearCapEvent(
+        playerId: m['player_id'] as int?,
+        resource: ResourceKind.fromJson(m['resource']),
+        ratio: _f(m['ratio']),
+        fullInS: m['full_in_s'] as int?,
+      );
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{'kind': 'StorageNearCap', 'resource': resource.toJson(), 'ratio': ratio};
+    _put(m, 'player_id', playerId);
+    _put(m, 'full_in_s', fullInS);
+    return m;
+  }
+}
+
+/// A stockpile reached its cap; production beyond it is discarded.
+class StorageFullEvent extends EventKind {
+  final int? playerId;
+  final ResourceKind resource;
+  const StorageFullEvent({this.playerId, required this.resource});
+
+  factory StorageFullEvent.fromJson(Json m) =>
+      StorageFullEvent(playerId: m['player_id'] as int?, resource: ResourceKind.fromJson(m['resource']));
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{'kind': 'StorageFull', 'resource': resource.toJson()};
+    _put(m, 'player_id', playerId);
+    return m;
+  }
 }
 
 class FleetArrivedEvent extends EventKind {

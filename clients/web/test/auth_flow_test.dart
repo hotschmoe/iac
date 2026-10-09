@@ -82,6 +82,12 @@ class _FakeServer {
         'homeworld': {
           'location': {'q': 0, 'r': 0},
           'production': {'metal': 0.0, 'crystal': 0.0, 'deuterium': 0.0},
+          'storage': {
+            'cap': {'metal': 5000.0, 'crystal': 3500.0, 'deuterium': 2500.0},
+            'protected': {'metal': 0.0, 'crystal': 0.0, 'deuterium': 0.0},
+            'full_in_s': {'metal': null, 'crystal': null, 'deuterium': null},
+            'capped': <dynamic>[],
+          },
           'buildings': <dynamic>[],
           'research': <dynamic>[],
           'docked_ships': <dynamic>[],

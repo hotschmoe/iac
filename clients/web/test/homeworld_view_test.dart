@@ -54,6 +54,13 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  homeworldTest('shows the storage cap beside each stockpile', (tester, c) async {
+    expect(c.state.hw!.storage.cap.metal, greaterThan(5000));
+    expect(find.textContaining(' / ', findRichText: true), findsWidgets);
+    expect(find.text('Storage Vault'.toUpperCase()), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   homeworldTest('tapping a ship card queues the selected batch', (tester, c) async {
     await tester.tap(find.byKey(const ValueKey('hw-tab-shipyard')));
     await tester.pump();

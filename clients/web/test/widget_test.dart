@@ -137,6 +137,7 @@ void main() {
         homeworldUpdate: proto.HomeworldState(
           location: hw.location,
           production: const proto.Resources(metal: 7.5, crystal: 3.25, deuterium: 0.5),
+          storage: hw.storage,
           buildings: hw.buildings,
           research: hw.research,
           dockedShips: hw.dockedShips,

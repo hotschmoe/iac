@@ -927,18 +927,7 @@ impl Database {
             "INSERT OR REPLACE INTO buildings (player_id, building_type, level) VALUES (?1, ?2, ?3)",
         )?;
 
-        for bt in 0..BuildingType::COUNT {
-            let bt: BuildingType = match bt {
-                0 => BuildingType::MetalMine,
-                1 => BuildingType::CrystalMine,
-                2 => BuildingType::DeuteriumSynthesizer,
-                3 => BuildingType::Shipyard,
-                4 => BuildingType::ResearchLab,
-                5 => BuildingType::FuelDepot,
-                6 => BuildingType::SensorArray,
-                7 => BuildingType::DefenseGrid,
-                _ => unreachable!(),
-            };
+        for bt in (0..BuildingType::COUNT).filter_map(BuildingType::from_usize) {
             stmt.execute(params![
                 player_id as i64,
                 bt as i64,
@@ -961,18 +950,7 @@ impl Database {
 
         for row_result in rows {
             let (bt_int, level) = row_result?;
-            if bt_int >= 0 && bt_int < BuildingType::COUNT as i64 {
-                let bt: BuildingType = match bt_int {
-                    0 => BuildingType::MetalMine,
-                    1 => BuildingType::CrystalMine,
-                    2 => BuildingType::DeuteriumSynthesizer,
-                    3 => BuildingType::Shipyard,
-                    4 => BuildingType::ResearchLab,
-                    5 => BuildingType::FuelDepot,
-                    6 => BuildingType::SensorArray,
-                    7 => BuildingType::DefenseGrid,
-                    _ => unreachable!(),
-                };
+            if let Some(bt) = usize::try_from(bt_int).ok().and_then(BuildingType::from_usize) {
                 levels.set(bt, level as u8);
             }
         }
@@ -985,22 +963,7 @@ impl Database {
             "INSERT OR REPLACE INTO research (player_id, tech_type, level) VALUES (?1, ?2, ?3)",
         )?;
 
-        for rt in 0..ResearchType::COUNT {
-            let rt: ResearchType = match rt {
-                0 => ResearchType::FuelEfficiency,
-                1 => ResearchType::ExtendedFuelTanks,
-                2 => ResearchType::ReinforcedHulls,
-                3 => ResearchType::AdvancedShields,
-                4 => ResearchType::WeaponsResearch,
-                5 => ResearchType::Navigation,
-                6 => ResearchType::HarvestingEfficiency,
-                7 => ResearchType::CorvetteTech,
-                8 => ResearchType::FrigateTech,
-                9 => ResearchType::CruiserTech,
-                10 => ResearchType::HaulerTech,
-                11 => ResearchType::EmergencyJump,
-                _ => unreachable!(),
-            };
+        for rt in (0..ResearchType::COUNT).filter_map(ResearchType::from_usize) {
             let lvl = levels.get(rt);
             if lvl > 0 {
                 stmt.execute(params![
@@ -1026,22 +989,7 @@ impl Database {
 
         for row_result in rows {
             let (tech_int, level) = row_result?;
-            if tech_int >= 0 && tech_int < ResearchType::COUNT as i64 {
-                let tech: ResearchType = match tech_int {
-                    0 => ResearchType::FuelEfficiency,
-                    1 => ResearchType::ExtendedFuelTanks,
-                    2 => ResearchType::ReinforcedHulls,
-                    3 => ResearchType::AdvancedShields,
-                    4 => ResearchType::WeaponsResearch,
-                    5 => ResearchType::Navigation,
-                    6 => ResearchType::HarvestingEfficiency,
-                    7 => ResearchType::CorvetteTech,
-                    8 => ResearchType::FrigateTech,
-                    9 => ResearchType::CruiserTech,
-                    10 => ResearchType::HaulerTech,
-                    11 => ResearchType::EmergencyJump,
-                    _ => unreachable!(),
-                };
+            if let Some(tech) = usize::try_from(tech_int).ok().and_then(ResearchType::from_usize) {
                 levels.set(tech, level as u8);
             }
         }
@@ -1126,18 +1074,7 @@ impl Database {
             let (qt, item_type, target_level, count, built, start_tick, end_tick) = row_result?;
             match qt.as_str() {
                 "building" => {
-                    if item_type >= 0 && item_type < BuildingType::COUNT as i64 {
-                        let bt: BuildingType = match item_type {
-                            0 => BuildingType::MetalMine,
-                            1 => BuildingType::CrystalMine,
-                            2 => BuildingType::DeuteriumSynthesizer,
-                            3 => BuildingType::Shipyard,
-                            4 => BuildingType::ResearchLab,
-                            5 => BuildingType::FuelDepot,
-                            6 => BuildingType::SensorArray,
-                            7 => BuildingType::DefenseGrid,
-                            _ => unreachable!(),
-                        };
+                    if let Some(bt) = usize::try_from(item_type).ok().and_then(BuildingType::from_usize) {
                         data.building = Some(BuildQueueEntry {
                             building_type: bt,
                             target_level: target_level.unwrap_or(0) as u8,

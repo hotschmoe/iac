@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use iac_shared::Resources;
-use iac_shared::constants::{Density, ShipClass, TerrainType};
+use iac_shared::constants::{Density, ResourceKind, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::*;
@@ -108,6 +108,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<PolicyPres
         jump_fuel: 31.5,
         home_fuel: 63.0,
         cooldown_remaining: 3,
+        cargo_blocked: false,
         policy,
     }
 }
@@ -195,7 +196,7 @@ fn sample_homeworld() -> HomeworldState {
     use BuildingType::*;
     let buildings = [
         MetalMine, CrystalMine, DeuteriumSynthesizer, Shipyard, ResearchLab, FuelDepot,
-        SensorArray, DefenseGrid,
+        SensorArray, DefenseGrid, StorageVault,
     ]
     .iter()
     .enumerate()
@@ -222,6 +223,12 @@ fn sample_homeworld() -> HomeworldState {
     HomeworldState {
         location: h(4, -2),
         production: res(2.75, 1.25, 0.4),
+        storage: StorageState {
+            cap: res(7500.0, 5250.0, 3750.0),
+            protected: res(600.0, 420.0, 300.0),
+            full_in_s: ResourceEta { metal: Some(5400), crystal: None, deuterium: Some(0) },
+            capped: vec![ResourceKind::Deuterium],
+        },
         buildings,
         research,
         build_queue: Some(BuildQueueItem {
@@ -252,6 +259,12 @@ fn idle_homeworld() -> HomeworldState {
     HomeworldState {
         location: h(0, 0),
         production: res(0.0, 0.0, 0.0),
+        storage: StorageState {
+            cap: res(5000.0, 3500.0, 2500.0),
+            protected: res(0.0, 0.0, 0.0),
+            full_in_s: ResourceEta { metal: None, crystal: None, deuterium: None },
+            capped: vec![],
+        },
         buildings: vec![],
         research: vec![],
         build_queue: None,
@@ -329,6 +342,8 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::PolicyAction(_) => "policy_action",
         EventKind::Alert(_) => "alert",
         EventKind::SalvageDespawned(_) => "salvage_despawned",
+        EventKind::StorageNearCap(_) => "storage_near_cap",
+        EventKind::StorageFull(_) => "storage_full",
     }
 }
 
@@ -351,6 +366,7 @@ fn error_code_name(c: ErrorCode) -> &'static str {
         ErrorCode::NoResearchLab => "no_research_lab",
         ErrorCode::FleetLimitReached => "fleet_limit_reached",
         ErrorCode::ResourceNotPresent => "resource_not_present",
+        ErrorCode::StorageTooSmall => "storage_too_small",
         ErrorCode::AuthFailed => "auth_failed",
         ErrorCode::AlreadyAuthenticated => "already_authenticated",
         ErrorCode::InvalidName => "invalid_name",
@@ -360,7 +376,7 @@ fn error_code_name(c: ErrorCode) -> &'static str {
     }
 }
 
-const ALL_ERROR_CODES: [ErrorCode; 23] = [
+const ALL_ERROR_CODES: [ErrorCode; 24] = [
     ErrorCode::InvalidCommand,
     ErrorCode::InvalidTarget,
     ErrorCode::NoConnection,
@@ -378,6 +394,7 @@ const ALL_ERROR_CODES: [ErrorCode; 23] = [
     ErrorCode::NoResearchLab,
     ErrorCode::FleetLimitReached,
     ErrorCode::ResourceNotPresent,
+    ErrorCode::StorageTooSmall,
     ErrorCode::AuthFailed,
     ErrorCode::AlreadyAuthenticated,
     ErrorCode::InvalidName,
@@ -794,6 +811,19 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             sector: None,
             fleet_id: None,
         })),
+        ("", EventKind::StorageNearCap(StorageNearCapEvent {
+            player_id: Some(42),
+            resource: ResourceKind::Metal,
+            ratio: 0.85,
+            full_in_s: Some(5400),
+        })),
+        ("not_filling", EventKind::StorageNearCap(StorageNearCapEvent {
+            player_id: None,
+            resource: ResourceKind::Crystal,
+            ratio: 0.9,
+            full_in_s: None,
+        })),
+        ("", EventKind::StorageFull(StorageFullEvent { player_id: Some(42), resource: ResourceKind::Deuterium })),
         ("critical", EventKind::Alert(AlertEvent {
             player_id: Some(1),
             level: AlertLevel::Critical,
@@ -985,7 +1015,8 @@ fn generate() -> Files {
         "HarvestResource": [HarvestResource::Metal, HarvestResource::Crystal, HarvestResource::Deuterium, HarvestResource::Auto],
         "QueueType": [QueueType::Building, QueueType::Ship, QueueType::Research],
         "PolicyPreset": PolicyPreset::ALL,
-        "BuildingType": [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer, BuildingType::Shipyard, BuildingType::ResearchLab, BuildingType::FuelDepot, BuildingType::SensorArray, BuildingType::DefenseGrid],
+        "BuildingType": [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer, BuildingType::Shipyard, BuildingType::ResearchLab, BuildingType::FuelDepot, BuildingType::SensorArray, BuildingType::DefenseGrid, BuildingType::StorageVault],
+        "ResourceKind": ResourceKind::ALL,
         "ResearchType": [ResearchType::FuelEfficiency, ResearchType::ExtendedFuelTanks, ResearchType::ReinforcedHulls, ResearchType::AdvancedShields, ResearchType::WeaponsResearch, ResearchType::Navigation, ResearchType::HarvestingEfficiency, ResearchType::CorvetteTech, ResearchType::FrigateTech, ResearchType::CruiserTech, ResearchType::HaulerTech, ResearchType::EmergencyJump],
         "ErrorCode": ALL_ERROR_CODES,
     });

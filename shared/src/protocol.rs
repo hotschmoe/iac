@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{Density, ShipClass, TerrainType};
+use crate::constants::{Density, ResourceKind, ShipClass, TerrainType};
 use crate::scaling::{self, BuildingLevels, BuildingType, ResearchLevels, ResearchPrereqKind, ResearchType};
 use crate::hex::Hex;
 use crate::pace::Pace;
@@ -345,6 +345,10 @@ pub struct FleetState {
     pub home_fuel: f32,
     #[serde(default)]
     pub cooldown_remaining: u16,
+    /// At the homeworld with cargo the stockpile has no room for; it stays
+    /// aboard and unloads as space frees up.
+    #[serde(default)]
+    pub cargo_blocked: bool,
     /// Standing orders currently flying this fleet, if any.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub policy: Option<PolicyPreset>,
@@ -487,10 +491,10 @@ pub struct ShipClassCounts {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HomeworldState {
     pub location: Hex,
-    /// What the mines add to the player's stockpile each tick at current
-    /// levels. The homeworld has no storage caps, so there is no capacity
-    /// field: stockpiles grow without limit.
+    /// What the mines make each tick at current levels (before the storage
+    /// cap discards the excess; see `storage`).
     pub production: Resources,
+    pub storage: StorageState,
     pub buildings: Vec<BuildingState>,
     pub research: Vec<ResearchState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -502,6 +506,27 @@ pub struct HomeworldState {
     pub docked_ships: Vec<ShipState>,
     /// What can be queued right now and what it costs; see `HomeworldCatalog`.
     pub catalog: HomeworldCatalog,
+}
+
+/// Stockpile limits, from the Storage Vault level and the world pace.
+/// Mines stop at `cap`; docking cargo unloads only up to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StorageState {
+    pub cap: Resources,
+    /// What a raid cannot skim.
+    pub protected: Resources,
+    /// Seconds until each stockpile is full at the current production;
+    /// 0 when it is, null when it is not filling.
+    pub full_in_s: ResourceEta,
+    /// Resources whose stockpile is at the cap right now.
+    pub capped: Vec<ResourceKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ResourceEta {
+    pub metal: Option<u64>,
+    pub crystal: Option<u64>,
+    pub deuterium: Option<u64>,
 }
 
 /// Everything a client needs to offer homeworld actions without knowing any
@@ -783,6 +808,28 @@ pub enum EventKind {
     PolicyAction(PolicyActionEvent),
     Alert(AlertEvent),
     SalvageDespawned(SalvageDespawnedEvent),
+    StorageNearCap(StorageNearCapEvent),
+    StorageFull(StorageFullEvent),
+}
+
+/// A stockpile passed 85 percent of its cap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageNearCapEvent {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub player_id: Option<u64>,
+    pub resource: ResourceKind,
+    pub ratio: f32,
+    /// Seconds until full at the current production; absent when not filling.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub full_in_s: Option<u64>,
+}
+
+/// A stockpile reached its cap; further production is discarded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageFullEvent {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub player_id: Option<u64>,
+    pub resource: ResourceKind,
 }
 
 /// A boarding party is aboard the derelict; loot (or trouble) at end_tick.
@@ -1085,6 +1132,7 @@ pub enum ErrorCode {
     NoResearchLab = 1014,
     FleetLimitReached = 1015,
     ResourceNotPresent = 1016,
+    StorageTooSmall = 1017,
     AuthFailed = 2000,
     AlreadyAuthenticated = 2001,
     InvalidName = 2002,

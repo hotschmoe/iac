@@ -649,7 +649,7 @@ mod tests {
             id, location: at, state: FleetStatus::Idle,
             ships: ship_ids.iter().map(|i| ship(*i)).collect(),
             cargo: Resources::default(), cargo_capacity: 20.0, fuel: 10.0, fuel_max: 10.0,
-            jump_fuel: 1.0, home_fuel: 0.0, cooldown_remaining: 0, policy: None,
+            jump_fuel: 1.0, home_fuel: 0.0, cooldown_remaining: 0, cargo_blocked: false, policy: None,
         }
     }
 

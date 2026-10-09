@@ -1,0 +1,8 @@
+{
+  "full_in_s": 5400,
+  "kind": "StorageNearCap",
+  "player_id": 42,
+  "ratio": 0.8500000238418579,
+  "resource": "metal",
+  "tick": 1234
+}

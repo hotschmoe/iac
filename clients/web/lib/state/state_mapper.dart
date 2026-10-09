@@ -162,6 +162,15 @@ class StateMapper {
       case proto.SalvageDespawnedEvent():
         msg = 'Wreckage in ${k.sector} drifted away (${_res(k.resources)})';
         level = EventLevel.dim;
+      case proto.StorageNearCapEvent():
+        final eta = k.fullInS == null ? '' : ', full in ${_fmtTicks(k.fullInS!)}';
+        msg = '! ${k.resource.name} storage at ${(k.ratio * 100).round()}%$eta';
+        level = EventLevel.bright;
+        _pushAlert(Alert(icon: '!', message: '${k.resource.name} storage nearly full', detail: eta.isEmpty ? '' : eta.substring(2), level: AlertTone.bright));
+      case proto.StorageFullEvent():
+        msg = '!! ${k.resource.name} storage FULL: production is wasted';
+        level = EventLevel.bright;
+        _pushAlert(Alert(icon: '!', message: '${k.resource.name} storage full', detail: 'Spend it or build a Storage Vault', level: AlertTone.glow));
       case proto.FleetArrivedEvent():
         msg = '${_fleet(k.fleetId)} arrived at ${k.sector}';
       case proto.BuildingCompletedEvent():
@@ -288,6 +297,7 @@ class StateMapper {
       signals: {for (final e in signals.entries) proto.Hex.fromKey(e.key): e.value},
       stock: res,
       catalog: hw?.catalog,
+      hw: hw,
       world: world,
     );
   }
