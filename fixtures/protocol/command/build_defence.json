@@ -1,5 +1,6 @@
 {
   "action": "build_defence",
   "count": 4,
-  "kind": "LancerBattery"
+  "kind": "LancerBattery",
+  "reserve": true
 }

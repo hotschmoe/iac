@@ -118,6 +118,8 @@
           "deuterium": 162.0,
           "metal": 648.0
         },
+        "id": 330,
+        "reserve": true,
         "start_in": 95,
         "target_level": 3,
         "ticks": 1500,
@@ -135,6 +137,8 @@
           "deuterium": 0.0,
           "metal": 500.0
         },
+        "id": 331,
+        "reserve": false,
         "start_in": 95,
         "target_level": 6,
         "ticks": 900,
@@ -145,12 +149,14 @@
       {
         "building_type": "CrystalMine",
         "end_tick": 460,
+        "id": 311,
         "start_tick": 100,
         "target_level": 5
       },
       {
         "building_type": "FuelDepot",
         "end_tick": 400,
+        "id": 318,
         "start_tick": 130,
         "target_level": 2
       }
@@ -1012,6 +1018,7 @@
     ],
     "research_active": {
       "end_tick": 600,
+      "id": 325,
       "start_tick": 90,
       "target_level": 2,
       "tech": "FuelEfficiency"
@@ -1023,6 +1030,8 @@
           "deuterium": 2500.0,
           "metal": 8000.0
         },
+        "id": 340,
+        "reserve": false,
         "start_in": 1800,
         "target_level": 1,
         "tech": "CruiserTech",
@@ -1037,26 +1046,42 @@
     ],
     "shipyard_pending": [
       {
+        "built": 1,
         "cost": {
-          "crystal": 800.0,
-          "deuterium": 400.0,
-          "metal": 2000.0
+          "crystal": 400.0,
+          "deuterium": 200.0,
+          "metal": 1000.0
         },
         "count": 2,
+        "id": 335,
         "item": "Frigate",
+        "reserve": false,
         "start_in": 240,
         "ticks": 600,
+        "unit_cost": {
+          "crystal": 400.0,
+          "deuterium": 200.0,
+          "metal": 1000.0
+        },
         "waiting_on": "Slot"
       },
       {
+        "built": 0,
         "cost": {
           "crystal": 200.0,
           "deuterium": 0.0,
           "metal": 1200.0
         },
         "count": 10,
+        "id": 336,
         "item": "PulseTurret",
+        "reserve": false,
         "ticks": 70,
+        "unit_cost": {
+          "crystal": 20.0,
+          "deuterium": 0.0,
+          "metal": 120.0
+        },
         "waiting_for": {
           "crystal": 0.0,
           "deuterium": 0.0,
@@ -1069,6 +1094,7 @@
       "built": 1,
       "count": 2,
       "end_tick": 300,
+      "id": 322,
       "item": "Corvette",
       "start_tick": 120
     },

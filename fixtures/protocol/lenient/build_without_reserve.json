@@ -1,0 +1,12 @@
+{
+  "canonical": {
+    "action": "build",
+    "building_type": "MetalMine",
+    "reserve": false
+  },
+  "input": {
+    "action": "build",
+    "building_type": "MetalMine"
+  },
+  "type": "Command"
+}

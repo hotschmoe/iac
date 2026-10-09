@@ -261,7 +261,7 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     }
     if !hw.shipyard_pending.is_empty() {
         let names: Vec<String> = hw.shipyard_pending.iter()
-            .map(|q| waiting_label(&format!("{}x{}", q.count, q.item.label()), 0, &q.waiting_for, q.waiting_on, q.start_in))
+            .map(|q| waiting_label(&format!("{}/{} {}", q.built, q.count, q.item.label()), 0, &q.waiting_for, q.waiting_on, q.start_in))
             .collect();
         text.push_str(&format!(" +[{}]", names.join(", ")));
     }
@@ -326,7 +326,7 @@ fn waiting_label(name: &str, level: u8, short: &Option<Resources>, on: WaitReaso
         (WaitReason::Resources, None) => "need resources".to_string(),
         (WaitReason::Slot, _) => "slot busy".to_string(),
         (WaitReason::Prerequisite, _) => "needs prerequisite".to_string(),
-        (WaitReason::Order, _) => "next in line".to_string(),
+        (WaitReason::Order, _) => "held by a reserved order".to_string(),
     };
     match start_in {
         Some(t) => format!("{name}{lv} ({why}, ~{t}s)"),

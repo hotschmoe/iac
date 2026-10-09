@@ -224,12 +224,12 @@ impl Network {
             Command::Recall { fleet_id } => engine.handle_recall(pid, fleet_id),
             Command::CollectSalvage { fleet_id } => engine.handle_collect_salvage(pid, fleet_id),
             Command::Attack { fleet_id, target_fleet_id } => engine.handle_attack(pid, fleet_id, target_fleet_id),
-            Command::Build { building_type } => engine.handle_build(pid, building_type),
-            Command::Research { tech } => engine.handle_research(pid, tech),
-            Command::BuildShip { ship_class, count } => engine.handle_build_ship(pid, ship_class, count),
-            Command::BuildDefence { kind, count } => engine.handle_build_defence(pid, kind, count),
-            Command::CancelBuild { queue_type, index } => engine.handle_cancel_build(pid, queue_type, index),
-            Command::CancelQueued { queue_type, index } => engine.handle_cancel_queued(pid, queue_type, index),
+            Command::Build { building_type, reserve } => engine.handle_build(pid, building_type, reserve),
+            Command::Research { tech, reserve } => engine.handle_research(pid, tech, reserve),
+            Command::BuildShip { ship_class, count, reserve } => engine.handle_build_ship(pid, ship_class, count, reserve),
+            Command::BuildDefence { kind, count, reserve } => engine.handle_build_defence(pid, kind, count, reserve),
+            Command::CancelBuild { queue_type, id } => engine.handle_cancel_build(pid, queue_type, id),
+            Command::CancelQueued { queue_type, id } => engine.handle_cancel_queued(pid, queue_type, id),
             Command::Stop { fleet_id } => engine.handle_stop(pid, fleet_id),
             Command::Scan { fleet_id } => engine.handle_scan(pid, fleet_id),
             Command::ExploreSite { fleet_id } => engine.handle_explore_site(pid, fleet_id),
@@ -402,13 +402,63 @@ fn harvest_label(r: HarvestResource) -> &'static str {
 fn missing_prerequisites_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> Option<String> {
     use iac_shared::protocol::{building_requirements, missing_requirements_message, research_requirements, ship_requirements};
     let p = engine.players.get(&player_id)?;
+    let (buildings, research) = (p.projected_buildings(), p.projected_research());
     let (subject, requires) = match cmd {
-        Command::Build { building_type } => (building_type.label(), building_requirements(&p.buildings, *building_type)),
-        Command::Research { tech } => (tech.label(), research_requirements(&p.buildings, &p.research, *tech)),
-        Command::BuildShip { ship_class, .. } => (ship_class.label(), ship_requirements(&p.buildings, &p.research, *ship_class)),
+        Command::Build { building_type, .. } => (building_type.label(), building_requirements(&buildings, *building_type)),
+        Command::Research { tech, .. } => (tech.label(), research_requirements(&buildings, &research, *tech)),
+        Command::BuildShip { ship_class, .. } => (ship_class.label(), ship_requirements(&buildings, &research, *ship_class)),
         _ => return None,
     };
     missing_requirements_message(subject, &requires)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum QueueSlot {
+    Running,
+    Waiting,
+}
+
+/// Where a queue id actually lives, as (queue, slot).
+fn find_queue_item(engine: &GameEngine, player_id: u64, id: u64) -> Option<(iac_shared::protocol::QueueType, QueueSlot)> {
+    use iac_shared::protocol::QueueType;
+    let p = engine.players.get(&player_id)?;
+    if p.building_queue.iter().any(|q| q.id == id) { return Some((QueueType::Building, QueueSlot::Running)); }
+    if p.building_pending.iter().any(|q| q.id == id) { return Some((QueueType::Building, QueueSlot::Waiting)); }
+    if p.research_queue.as_ref().is_some_and(|q| q.id == id) { return Some((QueueType::Research, QueueSlot::Running)); }
+    if p.research_pending.iter().any(|q| q.id == id) { return Some((QueueType::Research, QueueSlot::Waiting)); }
+    if p.ship_queue.as_ref().is_some_and(|q| q.id == id) { return Some((QueueType::Ship, QueueSlot::Running)); }
+    if p.ship_pending.iter().any(|q| q.id == id) { return Some((QueueType::Ship, QueueSlot::Waiting)); }
+    None
+}
+
+fn queue_name(queue_type: iac_shared::protocol::QueueType) -> &'static str {
+    use iac_shared::protocol::QueueType;
+    match queue_type {
+        QueueType::Building => "building",
+        QueueType::Research => "research",
+        QueueType::Ship => "shipyard",
+    }
+}
+
+/// Why a cancel by id found nothing: the id is unknown (finished or already
+/// cancelled), in another queue, or in the other state.
+fn cancel_refusal(engine: &GameEngine, player_id: u64, queue_type: iac_shared::protocol::QueueType, id: u64, wanted: QueueSlot) -> String {
+    let (verb, other) = match wanted {
+        QueueSlot::Running => ("under way", "cancel_queued"),
+        QueueSlot::Waiting => ("waiting", "cancel_build"),
+    };
+    match find_queue_item(engine, player_id, id) {
+        None => format!("no order {id} in any queue: it finished, was cancelled, or the id is wrong"),
+        Some((found, _)) if found != queue_type => format!(
+            "order {id} is in the {} queue, not the {} queue; nothing was cancelled",
+            queue_name(found), queue_name(queue_type)
+        ),
+        Some((_, slot)) if slot != wanted => format!(
+            "order {id} is not {verb} in the {} queue; use {other} for it",
+            queue_name(queue_type)
+        ),
+        Some(_) => format!("order {id} cannot be cancelled"),
+    }
 }
 
 /// Names what a rejected order costs and which Storage Vault level would hold it.
@@ -531,13 +581,17 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
                 iac_shared::scaling::QUEUE_WAITING
             )
         }
-        (ErrorCode::InvalidTarget, Command::CancelBuild { .. }) => "nothing is under way at that position".to_string(),
-        (ErrorCode::InvalidTarget, Command::CancelQueued { .. }) => "nothing is waiting at that position".to_string(),
+        (ErrorCode::InvalidTarget, Command::CancelBuild { queue_type, id }) => {
+            cancel_refusal(engine, player_id, *queue_type, *id, QueueSlot::Running)
+        }
+        (ErrorCode::InvalidTarget, Command::CancelQueued { queue_type, id }) => {
+            cancel_refusal(engine, player_id, *queue_type, *id, QueueSlot::Waiting)
+        }
         (ErrorCode::InvalidCommand, Command::BuildShip { .. } | Command::BuildDefence { .. }) => "a shipyard order needs a count of at least 1".to_string(),
-        (ErrorCode::MaxLevelReached, Command::Build { building_type }) => {
+        (ErrorCode::MaxLevelReached, Command::Build { building_type, .. }) => {
             format!("{} is already at its maximum level", building_type.label())
         }
-        (ErrorCode::MaxLevelReached, Command::Research { tech }) => {
+        (ErrorCode::MaxLevelReached, Command::Research { tech, .. }) => {
             format!("{} is already at its maximum level", tech.label())
         }
         (
@@ -743,6 +797,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
 
     let pace = engine.pace();
     let build_queue: Vec<BuildQueueItem> = player.building_queue.iter().map(|q| BuildQueueItem {
+        id: q.id,
         building_type: q.building_type,
         target_level: q.target_level,
         start_tick: q.start_tick,
@@ -753,8 +808,10 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
     let build_pending: Vec<QueuedBuild> = player.building_pending.iter().zip(&waits.buildings).map(|(q, w)| {
         let cost = iac_shared::scaling::building_cost(q.building_type, q.target_level);
         QueuedBuild {
+            id: q.id,
             building_type: q.building_type,
             target_level: q.target_level,
+            reserve: q.reserve,
             cost,
             ticks: iac_shared::scaling::building_time(q.building_type, q.target_level, player.buildings.fabricator, &pace),
             waiting_for: w.short,
@@ -765,8 +822,10 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
     let research_pending: Vec<QueuedResearch> = player.research_pending.iter().zip(&waits.research).map(|(q, w)| {
         let cost = iac_shared::scaling::research_cost(q.tech, q.target_level);
         QueuedResearch {
+            id: q.id,
             tech: q.tech,
             target_level: q.target_level,
+            reserve: q.reserve,
             cost,
             ticks: iac_shared::scaling::research_time(q.tech, q.target_level, player.buildings.research_lab, &pace),
             waiting_for: w.short,
@@ -775,11 +834,15 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
         }
     }).collect();
     let shipyard_pending: Vec<QueuedShip> = player.ship_pending.iter().zip(&waits.ships).map(|(q, w)| {
-        let cost = q.item.unit_cost().scale(q.count as f32);
+        let cost = q.item.unit_cost().scale(f32::from(q.count - q.built));
         QueuedShip {
+            id: q.id,
             item: q.item,
             count: q.count,
+            built: q.built,
+            reserve: q.reserve,
             cost,
+            unit_cost: q.item.unit_cost(),
             ticks: q.item.unit_ticks(player.buildings.shipyard, &pace),
             waiting_for: w.short,
             waiting_on: w.reason,
@@ -788,6 +851,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
     }).collect();
 
     let shipyard_queue: Option<ShipyardQueueItem> = player.ship_queue.as_ref().map(|q| ShipyardQueueItem {
+        id: q.id,
         item: q.item,
         count: q.count,
         built: q.built,
@@ -796,6 +860,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
     });
 
     let research_active: Option<ResearchItem> = player.research_queue.as_ref().map(|q| ResearchItem {
+        id: q.id,
         tech: q.tech,
         target_level: q.target_level,
         start_tick: q.start_tick,
@@ -1080,21 +1145,43 @@ mod tests {
         let mut e = engine.lock().unwrap();
         e.players.get_mut(&pid).unwrap().buildings.shipyard = 2;
 
-        let cmd = Command::BuildShip { ship_class: ShipClass::Frigate, count: 1 };
+        let cmd = Command::BuildShip { ship_class: ShipClass::Frigate, count: 1, reserve: false };
         assert_eq!(
             command_error_message(&e, pid, &cmd, ErrorCode::ShipLocked),
             "Frigate needs Frigate Tech level 1 (you have 0)"
         );
-        let cmd = Command::Build { building_type: BuildingType::DefenseGrid };
+        let cmd = Command::Build { building_type: BuildingType::DefenseGrid, reserve: false };
         assert_eq!(
             command_error_message(&e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
             "Defense Grid needs Shipyard level 3 (you have 2)"
         );
-        let cmd = Command::Research { tech: ResearchType::FrigateTech };
+        let cmd = Command::Research { tech: ResearchType::FrigateTech, reserve: false };
         assert_eq!(
             command_error_message(&e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
             "Frigate Tech needs Research Lab level 1 (you have 0), Corvette Tech level 1 (you have 0) and Shipyard level 4 (you have 2)"
         );
+    }
+
+    #[test]
+    fn cancel_refusals_say_where_the_order_actually_is() {
+        use iac_shared::protocol::QueueType;
+        let (_net, engine, pid, _fid, _rx) = network_with_player();
+        let mut e = engine.lock().unwrap();
+        e.players.get_mut(&pid).unwrap().resources = iac_shared::constants::Resources { metal: 9e3, crystal: 9e3, deuterium: 9e3 };
+        e.handle_build(pid, BuildingType::MetalMine, false).unwrap();
+        e.handle_build(pid, BuildingType::CrystalMine, false).unwrap();
+        let running = e.players[&pid].building_queue[0].id;
+        let waiting = e.players[&pid].building_pending[0].id;
+
+        let msg = |e: &GameEngine, cmd: Command| command_error_message(e, pid, &cmd, ErrorCode::InvalidTarget);
+        let cmd = Command::CancelQueued { queue_type: QueueType::Ship, id: waiting };
+        assert_eq!(msg(&e, cmd), format!("order {waiting} is in the building queue, not the shipyard queue; nothing was cancelled"));
+        let cmd = Command::CancelQueued { queue_type: QueueType::Building, id: running };
+        assert_eq!(msg(&e, cmd), format!("order {running} is not waiting in the building queue; use cancel_build for it"));
+        let cmd = Command::CancelBuild { queue_type: QueueType::Building, id: waiting };
+        assert_eq!(msg(&e, cmd), format!("order {waiting} is not under way in the building queue; use cancel_queued for it"));
+        let cmd = Command::CancelQueued { queue_type: QueueType::Building, id: 999_999 };
+        assert!(msg(&e, cmd).starts_with("no order 999999 in any queue"));
     }
 
     fn fight_events(engine: &mut GameEngine, pid: u64, fid: u64, at: Hex) -> Vec<GameEvent> {
@@ -1270,7 +1357,7 @@ mod tests {
         e.players.get_mut(&pid).unwrap().resources = iac_shared::Resources { metal: 100.0, crystal: 40.0, deuterium: 0.0 };
 
         e.players.get_mut(&pid).unwrap().buildings.research_lab = 4;
-        let cmd = Command::Research { tech: ResearchType::CruiserTech };
+        let cmd = Command::Research { tech: ResearchType::CruiserTech, reserve: false };
         assert_eq!(
             command_error_message(&e, pid, &cmd, ErrorCode::StorageTooSmall),
             "Cruiser Tech Lv.1 costs 8000 metal, more than the 5000 metal your stockpile holds; needs Storage Vault level 2"

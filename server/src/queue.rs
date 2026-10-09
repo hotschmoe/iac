@@ -1,15 +1,16 @@
 // Queue projection: for every waiting order, why it has not started and
 // roughly when it will.
 //
-// The queues are first in, first out. An order starts when a slot is free,
-// what it needs is built and the stockpile covers its whole cost; an order
-// that is short of resources holds back the ones behind it, so the line
-// never reorders. An order that waits on a prerequisite does not hold the
-// line, because nothing else can make it start sooner.
+// A free slot starts the earliest waiting order that can start now: what it
+// needs is built and the stockpile covers its cost (one unit, for a ship
+// batch). An order that cannot start keeps its place and does not hold the
+// others back, unless it carries `reserve`: then, while it is ready and
+// short of resources, nothing behind it starts.
 //
-// The estimate walks the line once with the current production. It ignores
-// what the other two queues will spend and any building that raises
-// production meanwhile, so it is a guide, not a promise.
+// The estimate walks the line once with the current production, handing
+// earlier orders the stockpile first. It ignores what the other two queues
+// will spend and any building that raises production meanwhile, so it is a
+// guide, not a promise.
 
 use iac_shared::constants::Resources;
 use iac_shared::pace::Pace;
@@ -45,6 +46,7 @@ type Ready = Box<dyn Fn(&BuildingLevels, &ResearchLevels) -> bool>;
 
 struct Item {
     cost: Resources,
+    reserve: bool,
     duration: u64,
     ready: Ready,
     finishes: Option<Done>,
@@ -63,6 +65,7 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
         let (b, target) = (q.building_type, q.target_level);
         Item {
             cost: scaling::building_cost(b, target),
+            reserve: q.reserve,
             duration: scaling::building_time(b, target, player.buildings.fabricator, pace),
             ready: Box::new(move |bl, _| bl.get(b) + 1 == target && scaling::building_prerequisites_met(b, bl)),
             finishes: Some(Done::Building(b, target)),
@@ -79,6 +82,7 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
         let (t, target) = (q.tech, q.target_level);
         Item {
             cost: scaling::research_cost(t, target),
+            reserve: q.reserve,
             duration: scaling::research_time(t, target, player.buildings.research_lab, pace),
             ready: Box::new(move |bl, rl| {
                 bl.research_lab > 0 && rl.get(t) + 1 == target && scaling::research_prerequisites_met(t, bl, rl)
@@ -88,15 +92,13 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
     }).collect();
     let research = walk(player, &items, slots, &mut finishes, rate);
 
-    let running = player.ship_queue.as_ref().map_or(0, |q| {
-        let unit = q.item.unit_ticks(player.buildings.shipyard, pace);
-        q.end_tick.saturating_sub(tick) + u64::from(q.count - q.built).saturating_sub(1) * unit
-    });
+    let running = player.ship_queue.as_ref().map_or(0, |q| q.end_tick.saturating_sub(tick));
     let items: Vec<Item> = player.ship_pending.iter().map(|q| {
         let item = q.item;
         Item {
-            cost: item.unit_cost().scale(f32::from(q.count)),
-            duration: item.unit_ticks(player.buildings.shipyard, pace) * u64::from(q.count),
+            cost: item.unit_cost(),
+            reserve: q.reserve,
+            duration: item.unit_ticks(player.buildings.shipyard, pace),
             ready: Box::new(move |bl, rl| {
                 bl.shipyard > 0
                     && match item {
@@ -142,7 +144,7 @@ fn walk(
     rate: Resources,
 ) -> Vec<Wait> {
     let mut out = Vec::with_capacity(items.len());
-    let mut spent = Resources::default();
+    let mut claimed: Vec<(u64, Resources)> = Vec::new();
     let mut gate: Option<u64> = Some(0);
     for item in items {
         let ready_now = (item.ready)(&player.buildings, &player.research);
@@ -160,9 +162,14 @@ fn walk(
         };
 
         let start = ready_at(player, finishes, item.ready.as_ref()).and_then(|ready| {
-            let afford = afford_in(player.resources.sub(spent), item.cost, rate)?;
             let slot = slots.iter().copied().min().unwrap_or(0);
-            Some(ready.max(slot).max(afford).max(gate?))
+            let earliest = ready.max(slot).max(gate?);
+            let alone = afford_in(player.resources, item.cost, rate)?;
+            let ahead = claimed.iter()
+                .filter(|(at, _)| *at <= earliest.max(alone))
+                .fold(Resources::default(), |sum, (_, cost)| sum.add(*cost));
+            let afford = afford_in(player.resources.sub(ahead), item.cost, rate)?;
+            Some(earliest.max(afford))
         });
         out.push(Wait { reason, start_in: start, short });
 
@@ -174,13 +181,13 @@ fn walk(
                 if let Some(done) = item.finishes {
                     finishes.push((at + item.duration, done));
                 }
-                spent = spent.add(item.cost);
-                if ready_now {
+                claimed.push((at, item.cost));
+                if ready_now && item.reserve {
                     gate = Some(at);
                 }
             }
             None => {
-                if ready_now {
+                if ready_now && item.reserve {
                     gate = None;
                 }
             }

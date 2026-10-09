@@ -66,47 +66,63 @@ pub enum Command {
     #[serde(rename = "collect_salvage")]
     CollectSalvage { fleet_id: u64 },
     /// Queue a building level. The order is accepted whenever it fits the
-    /// queue, free slot or not, affordable or not: it waits first in, first
-    /// out, and pays when it starts. Refused only when it can never start
+    /// queue, free slot or not, affordable or not, and gets a stable `id`
+    /// (reported in the `Queue` event and the queue lists). A free slot
+    /// starts the earliest waiting order that can start now (prerequisites
+    /// built, stockpile covers it); an order that cannot start keeps its
+    /// place and is re-checked every tick. `reserve: true` makes the order
+    /// hold the line: while it is ready but short of resources, nothing
+    /// behind it in the same queue starts, so an expensive order cannot be
+    /// starved by cheap ones. Refused only when it can never start
     /// (`PrerequisitesNotMet`, `MaxLevelReached`, `StorageTooSmall`) or the
-    /// waiting line is full (`QueueFull`). A `Queue` event reports whether it
-    /// started or is waiting, with the exact shortfall and an estimated start.
+    /// waiting line is full (`QueueFull`).
     #[serde(rename = "build")]
-    Build { building_type: BuildingType },
+    Build {
+        building_type: BuildingType,
+        #[serde(default)]
+        reserve: bool,
+    },
     /// Queue a research level; same rule as `build`.
     #[serde(rename = "research")]
-    Research { tech: ResearchType },
-    /// Queue `count` ships as one batch; same rule as `build`. The whole
-    /// batch pays when it starts.
+    Research {
+        tech: ResearchType,
+        #[serde(default)]
+        reserve: bool,
+    },
+    /// Queue `count` ships as one batch; same rule as `build`. A batch pays
+    /// and starts one unit at a time: the batch is one order, and each unit
+    /// is paid when it starts, so a batch of 5 with money for 2 builds 2.
     #[serde(rename = "build_ship")]
     BuildShip {
         ship_class: ShipClass,
         #[serde(default = "default_ship_count")]
         count: u16,
+        #[serde(default)]
+        reserve: bool,
     },
     /// Queue `count` defence structures in the shipyard queue; same rule as
-    /// `build`. They stay at home and never burn fuel; rejected with
+    /// `build_ship`. They stay at home and never burn fuel; rejected with
     /// `DefenceLocked` until the Defense Grid and research it needs are in place.
     #[serde(rename = "build_defence")]
     BuildDefence {
         kind: DefenceKind,
         #[serde(default = "default_ship_count")]
         count: u16,
-    },
-    /// Cancel an item that has started; half of its payment comes back and a
-    /// `Queue` event with `action: Cancelled` says what was refunded. `index`
-    /// picks among the active buildings (always 0 for ships and research).
-    #[serde(rename = "cancel_build")]
-    CancelBuild {
-        queue_type: QueueType,
         #[serde(default)]
-        index: usize,
+        reserve: bool,
     },
-    /// Remove an item that is still waiting in the queue; nothing was paid,
-    /// so nothing is refunded (a `Queue` event with `action: Cancelled`
-    /// confirms it). `index` counts the waiting items from 0.
+    /// Cancel an item that has started, by its stable `id`; half of what it
+    /// paid comes back (one unit for a ship batch; units already built are
+    /// kept) and a `Queue` event with `action: Cancelled` says what was
+    /// refunded. `InvalidTarget` when `id` is not running in `queue_type`.
+    #[serde(rename = "cancel_build")]
+    CancelBuild { queue_type: QueueType, id: u64 },
+    /// Remove an item that is still waiting in the queue, by its stable `id`;
+    /// nothing was paid for it, so nothing is refunded (a `Queue` event with
+    /// `action: Cancelled` confirms it). `InvalidTarget` when `id` is not
+    /// waiting in `queue_type`, even if it exists in another queue.
     #[serde(rename = "cancel_queued")]
-    CancelQueued { queue_type: QueueType, index: usize },
+    CancelQueued { queue_type: QueueType, id: u64 },
     /// Ask for the score table. The reply is a `leaderboard` message.
     #[serde(rename = "leaderboard")]
     Leaderboard {
@@ -997,8 +1013,11 @@ pub struct ResearchState {
     pub level: u8,
 }
 
+/// A building under construction. `id` is the stable queue id: the one the
+/// order got when it was queued, kept when it started.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildQueueItem {
+    pub id: u64,
     pub building_type: BuildingType,
     pub target_level: u8,
     pub start_tick: u64,
@@ -1014,22 +1033,27 @@ pub enum WaitReason {
     Resources,
     /// A level, building or tech it needs is still being built.
     Prerequisite,
-    /// It could start, but an earlier order is first in line and short of
-    /// resources: the queue is first in, first out.
+    /// It could start, but an earlier order with `reserve` set is ready and
+    /// short of resources, and holds the line.
     Order,
 }
 
-/// A building waiting to start: the queue is first in, first out and an
-/// order pays when it starts. `cost` and `ticks` are what it would cost and
-/// take if it started now; `waiting_for` is the exact resources still
-/// missing (absent when nothing is short); `waiting_on` names the binding
-/// reason; `start_in` is the estimated ticks until it starts at the current
-/// production, ignoring what the other queues will spend (absent when it
-/// depends on something that cannot be estimated).
+/// A building waiting to start. A free slot starts the earliest waiting
+/// order that can start now; an order that cannot keeps its place unless it
+/// has `reserve` set, in which case it holds the line while short. `id` is
+/// stable for the life of the order (cancel by it). `cost` and `ticks` are
+/// what it would cost and take if it started now; `waiting_for` is the exact
+/// resources still missing (absent when nothing is short); `waiting_on`
+/// names the binding reason; `start_in` is the estimated ticks until it
+/// starts at the current production, ignoring what the other queues will
+/// spend (absent when it depends on something that cannot be estimated).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedBuild {
+    pub id: u64,
     pub building_type: BuildingType,
     pub target_level: u8,
+    #[serde(default)]
+    pub reserve: bool,
     pub cost: Resources,
     pub ticks: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1042,8 +1066,11 @@ pub struct QueuedBuild {
 /// A research level waiting to start; see `QueuedBuild`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedResearch {
+    pub id: u64,
     pub tech: ResearchType,
     pub target_level: u8,
+    #[serde(default)]
+    pub reserve: bool,
     pub cost: Resources,
     pub ticks: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1053,14 +1080,23 @@ pub struct QueuedResearch {
     pub start_in: Option<u64>,
 }
 
-/// A shipyard order waiting its turn; see `QueuedBuild`. `cost` is for the
-/// whole batch, `ticks` for one ship.
+/// A shipyard order waiting its turn; see `QueuedBuild`. The batch is one
+/// order that pays per unit: `built` of `count` are done, `cost` is the whole
+/// batch, `unit_cost` the next unit, `ticks` the time for one unit, and
+/// `waiting_for` the shortfall for the next unit only. A batch with some
+/// units built that cannot pay for the next one goes back to waiting here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedShip {
+    pub id: u64,
     /// A ship class or a defence structure: the wire carries just its name.
     pub item: ShipyardItem,
     pub count: u16,
+    #[serde(default)]
+    pub built: u16,
+    #[serde(default)]
+    pub reserve: bool,
     pub cost: Resources,
+    pub unit_cost: Resources,
     pub ticks: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub waiting_for: Option<Resources>,
@@ -1069,8 +1105,11 @@ pub struct QueuedShip {
     pub start_in: Option<u64>,
 }
 
+/// The unit in production. `built` units of `count` are finished; the one
+/// under way was paid for when it started.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipyardQueueItem {
+    pub id: u64,
     /// A ship class or a defence structure: the wire carries just its name.
     pub item: ShipyardItem,
     pub count: u16,
@@ -1081,6 +1120,7 @@ pub struct ShipyardQueueItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchItem {
+    pub id: u64,
     pub tech: ResearchType,
     pub target_level: u8,
     pub start_tick: u64,
@@ -1156,10 +1196,14 @@ pub struct QueueEvent {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub player_id: Option<u64>,
     pub queue_type: QueueType,
+    /// The stable queue id of the order; what `cancel_build` and
+    /// `cancel_queued` take.
+    pub id: u64,
     /// "Metal Mine Lv.5", "Corvette x3".
     pub item: String,
     pub action: QueueAction,
-    /// `Started`: what was paid.
+    /// `Started`: what was paid (a ship batch pays per unit: its first unit;
+    /// later units start without an event).
     #[serde(default)]
     pub paid: Resources,
     /// `Cancelled`: what came back (half of the payment for a started item,

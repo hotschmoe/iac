@@ -1,5 +1,5 @@
 {
   "action": "cancel_queued",
-  "index": 0,
+  "id": 340,
   "queue_type": "Research"
 }
