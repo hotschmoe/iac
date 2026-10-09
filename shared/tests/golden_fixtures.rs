@@ -795,6 +795,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owner: None,
             mine: false,
             salvage: res(60.0, 15.0, 9.0),
+            label: "3x corvette pack".into(),
         })),
         ("player_fleet", EventKind::FleetDestroyed(FleetDestroyedEvent {
             fleet_id: 4,
@@ -803,6 +804,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owner: Some("Admiral".into()),
             mine: true,
             salvage: res(0.0, 0.0, 0.0),
+            label: String::new(),
         })),
         ("", EventKind::ResourceHarvested(ResourceHarvestedEvent {
             fleet_id: 1,
@@ -814,6 +816,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             player_fleet_id: 1,
             owner: "Admiral".into(),
             enemy_fleet_id: 4294967400,
+            enemy: "scout patrol".into(),
             sector: h(5, -5),
             mine: true,
         })),

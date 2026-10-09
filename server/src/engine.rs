@@ -114,6 +114,8 @@ pub struct NpcFleet {
     /// What the group cost to build, and its combined power, fixed at spawn.
     pub bounty: Resources,
     pub power: f32,
+    /// "3x corvette pack": how messages name the group.
+    pub label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -707,6 +709,7 @@ impl GameEngine {
                         is_npc: false,
                         owner: self.players.get(&f.owner_id).map(|p| p.name.clone()),
                         salvage: Resources::default(),
+                        label: String::new(),
                         ships,
                     });
                 }
@@ -725,6 +728,7 @@ impl GameEngine {
                         is_npc: true,
                         owner: None,
                         salvage: npc_salvage(n, &self.world.pace),
+                        label: n.label.clone(),
                         ships,
                     });
                 }
@@ -918,14 +922,17 @@ impl GameEngine {
     /// Tell a fleet's owner, loudly, that the fleet is gone.
     fn alert_fleet_lost(&mut self, fleet_id: u64, sector: Hex, enemy_ids: &[u64]) {
         let Some(owner) = self.fleets.get(&fleet_id).map(|f| f.owner_id) else { return; };
-        let enemies = enemy_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ");
+        let enemies = enemy_ids.iter()
+            .map(|id| self.npc_fleets.get(id).map_or_else(|| "hostile group".to_string(), |n| n.label.clone()))
+            .collect::<Vec<_>>()
+            .join(", ");
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
             kind: EventKind::Alert(iac_shared::protocol::AlertEvent {
                 player_id: Some(owner),
                 level: iac_shared::protocol::AlertLevel::Critical,
                 message: format!(
-                    "FLEET LOST: fleet {fleet_id} destroyed at [{},{}] by hostile fleet {enemies}; every ship is gone",
+                    "FLEET LOST: fleet {fleet_id} destroyed at [{},{}] by hostile {enemies}; every ship is gone",
                     sector.q, sector.r
                 ),
                 sector: Some(sector),
@@ -3754,6 +3761,7 @@ impl GameEngine {
             home_sector: location,
             patrol_timer: 0,
             in_combat: false,
+            label: npc.label(),
             bounty: npc.ship_class.build_cost().scale(count as f32),
             power: ships[..count].iter().map(|s| s.weapon_power + (s.hull + s.shield) / 10.0).sum(),
         };
@@ -3798,6 +3806,7 @@ impl GameEngine {
                         player_fleet_id: fleet_id,
                         owner,
                         enemy_fleet_id: npc_id,
+                        enemy: self.npc_fleets.get(&npc_id).map(|n| n.label.clone()).unwrap_or_default(),
                         sector,
                         mine: false,
                     }),
@@ -3834,6 +3843,7 @@ impl GameEngine {
                 player_fleet_id: fleet_id,
                 owner,
                 enemy_fleet_id: npc_id,
+                enemy: self.npc_fleets.get(&npc_id).map(|n| n.label.clone()).unwrap_or_default(),
                 sector,
                 mine: false,
             }),

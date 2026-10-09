@@ -299,7 +299,24 @@ pub struct NpcTemplate {
     pub stat_multiplier: f32,
 }
 
+/// How a hostile group is named in messages: "scout patrol", "3x corvette
+/// pack". The numeric fleet id stays in the event fields.
+pub fn hostile_label(class: ShipClass, count: usize, behavior: NpcBehaviorType) -> String {
+    let noun = match behavior {
+        NpcBehaviorType::Passive => "convoy",
+        NpcBehaviorType::Patrol => "patrol",
+        NpcBehaviorType::Aggressive => "pack",
+        NpcBehaviorType::Swarm => "swarm",
+    };
+    let class = class.label().to_lowercase();
+    if count > 1 { format!("{count}x {class} {noun}") } else { format!("{class} {noun}") }
+}
+
 impl NpcTemplate {
+    pub fn label(&self) -> String {
+        hostile_label(self.ship_class, usize::from(self.count), self.behavior)
+    }
+
     /// Combined power of the group as spawned.
     pub fn power(&self) -> f32 {
         ship_power(self.ship_class) * self.stat_multiplier * f32::from(self.count)
@@ -442,6 +459,14 @@ mod tests {
         let (far_units, far_level) = mean(26, 40);
         assert!(near_units < mid_units && mid_units < far_units, "{near_units} {mid_units} {far_units}");
         assert!(near_level < mid_level && mid_level < far_level, "{near_level} {mid_level} {far_level}");
+    }
+
+    #[test]
+    fn hostiles_are_named_by_what_they_are() {
+        assert_eq!(hostile_label(ShipClass::Scout, 1, NpcBehaviorType::Patrol), "scout patrol");
+        assert_eq!(hostile_label(ShipClass::Corvette, 3, NpcBehaviorType::Aggressive), "3x corvette pack");
+        assert_eq!(hostile_label(ShipClass::Cruiser, 24, NpcBehaviorType::Swarm), "24x cruiser swarm");
+        assert_eq!(hostile_label(ShipClass::Frigate, 1, NpcBehaviorType::Passive), "frigate convoy");
     }
 
     #[test]

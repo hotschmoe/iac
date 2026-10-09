@@ -167,7 +167,7 @@ class StateMapper {
           msg = '!! YOUR FLEET ${_fleet(k.fleetId)} DESTROYED in ${k.sector}';
           level = EventLevel.bright;
         } else if (k.isNpc) {
-          msg = 'Hostile fleet ${k.fleetId} destroyed in ${k.sector} -- wreckage ${_res(k.salvage)}';
+          msg = 'Hostile ${k.label.isEmpty ? 'fleet ${k.fleetId}' : k.label} destroyed in ${k.sector} -- wreckage ${_res(k.salvage)}';
         } else {
           msg = "${k.owner}'s fleet ${_fleet(k.fleetId)} destroyed in ${k.sector}";
           level = EventLevel.dim;
@@ -177,7 +177,7 @@ class StateMapper {
       case proto.SectorEnteredEvent():
         msg = '${_fleet(k.fleetId)} entered ${k.sector}${k.firstVisit ? ' (first visit)' : ''}';
       case proto.CombatStartedEvent():
-        msg = '! Combat in ${k.sector}: ${k.mine ? 'your' : "${k.owner}'s"} ${_fleet(k.playerFleetId)} vs hostile ${k.enemyFleetId}';
+        msg = '! Combat in ${k.sector}: ${k.mine ? 'your' : "${k.owner}'s"} ${_fleet(k.playerFleetId)} vs hostile ${k.enemy.isEmpty ? 'fleet ${k.enemyFleetId}' : k.enemy}';
         level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.CombatEndedEvent():
         final outcome = k.mine ? (k.playerVictory ? 'victory' : 'defeat') : (k.playerVictory ? 'won by others' : 'lost by others');

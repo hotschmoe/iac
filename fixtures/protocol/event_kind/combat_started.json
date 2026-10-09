@@ -1,4 +1,5 @@
 {
+  "enemy": "scout patrol",
   "enemy_fleet_id": 4294967400,
   "kind": "CombatStarted",
   "mine": true,

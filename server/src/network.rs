@@ -1224,6 +1224,14 @@ mod tests {
         }).expect("owner is told");
         assert!(lost.mine);
         assert!(for_a.iter().any(|e| matches!(&e.kind, K::Alert(al) if matches!(al.level, AlertLevel::Critical))));
+        let id = crate::engine::template_npc_id(at).to_string();
+        let alert = for_a.iter().find_map(|e| match &e.kind {
+            K::Alert(al) if matches!(al.level, AlertLevel::Critical) => Some(al.message.clone()),
+            _ => None,
+        }).unwrap();
+        assert!(!alert.contains(&id), "{alert}");
+        assert!(alert.contains("by hostile ") && (alert.contains("patrol") || alert.contains("pack") || alert.contains("swarm") || alert.contains("convoy")), "{alert}");
+        assert!(events.iter().any(|e| matches!(&e.kind, K::CombatStarted(c) if !c.enemy.is_empty() && c.enemy_fleet_id.to_string() == id)));
         let for_b: Vec<_> = events.iter().filter_map(|e| event_for(e, &engine.players[&b], &engine)).collect();
         assert!(for_b.is_empty(), "{for_b:?}");
     }

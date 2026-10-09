@@ -2303,6 +2303,9 @@ class FleetDestroyedEvent extends EventKind {
   final String? owner;
   final bool mine;
   final Resources salvage;
+
+  /// What an NPC group was ("3x corvette pack"); empty for a player fleet.
+  final String label;
   const FleetDestroyedEvent({
     required this.fleetId,
     required this.isNpc,
@@ -2310,6 +2313,7 @@ class FleetDestroyedEvent extends EventKind {
     required this.owner,
     required this.mine,
     required this.salvage,
+    this.label = '',
   });
 
   factory FleetDestroyedEvent.fromJson(Json m) => FleetDestroyedEvent(
@@ -2319,6 +2323,7 @@ class FleetDestroyedEvent extends EventKind {
         owner: m['owner'] as String?,
         mine: m['mine'] as bool? ?? false,
         salvage: Resources.fromJson(m['salvage']),
+        label: m['label'] as String? ?? '',
       );
 
   @override
@@ -2330,6 +2335,7 @@ class FleetDestroyedEvent extends EventKind {
         'owner': owner,
         'mine': mine,
         'salvage': salvage.toJson(),
+        if (label.isNotEmpty) 'label': label,
       };
 }
 
@@ -2382,6 +2388,9 @@ class CombatStartedEvent extends EventKind {
   /// Empire owning [playerFleetId].
   final String owner;
   final int enemyFleetId;
+
+  /// What the hostile group is ("3x corvette pack"); may be empty.
+  final String enemy;
   final Hex sector;
 
   /// [playerFleetId] is the receiver's.
@@ -2390,6 +2399,7 @@ class CombatStartedEvent extends EventKind {
     required this.playerFleetId,
     required this.owner,
     required this.enemyFleetId,
+    this.enemy = '',
     required this.sector,
     required this.mine,
   });
@@ -2398,6 +2408,7 @@ class CombatStartedEvent extends EventKind {
         playerFleetId: _i(m['player_fleet_id']),
         owner: m['owner'] as String,
         enemyFleetId: _i(m['enemy_fleet_id']),
+        enemy: m['enemy'] as String? ?? '',
         sector: Hex.fromJson(m['sector']),
         mine: m['mine'] as bool? ?? false,
       );
@@ -2408,6 +2419,7 @@ class CombatStartedEvent extends EventKind {
         'player_fleet_id': playerFleetId,
         'owner': owner,
         'enemy_fleet_id': enemyFleetId,
+        if (enemy.isNotEmpty) 'enemy': enemy,
         'sector': sector.toJson(),
         'mine': mine,
       };

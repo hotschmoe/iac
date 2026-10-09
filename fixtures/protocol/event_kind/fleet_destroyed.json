@@ -2,6 +2,7 @@
   "fleet_id": 9001,
   "is_npc": true,
   "kind": "FleetDestroyed",
+  "label": "3x corvette pack",
   "mine": false,
   "owner": null,
   "salvage": {

@@ -50,6 +50,8 @@ pub struct CombatSide {
     pub owner: Option<String>,
     /// Wreckage this side leaves if it is destroyed by players.
     pub salvage: Resources,
+    /// What an NPC group is called in messages; empty for players.
+    pub label: String,
     pub ships: Vec<CombatShip>,
 }
 
@@ -230,6 +232,7 @@ fn fleet_destroyed(tick: u64, sector: Hex, side: &CombatSide, salvage: Resources
             owner: side.owner.clone(),
             mine: false,
             salvage,
+            label: side.label.clone(),
         }),
     }
 }

@@ -1219,6 +1219,9 @@ pub struct FleetDestroyedEvent {
     #[serde(default)]
     pub mine: bool,
     pub salvage: Resources,
+    /// What an NPC group was ("3x corvette pack"); empty for a player fleet.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub label: String,
 }
 
 /// What a harvesting fleet took aboard. Aggregated: one event per fleet
@@ -1245,6 +1248,9 @@ pub struct CombatStartedEvent {
     /// Empire owning `player_fleet_id`.
     pub owner: String,
     pub enemy_fleet_id: u64,
+    /// What the hostile group is ("3x corvette pack").
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub enemy: String,
     pub sector: Hex,
     /// `player_fleet_id` is the receiver's.
     #[serde(default)]

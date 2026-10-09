@@ -301,6 +301,11 @@ pub fn titled_block(title: &str, border_style: Style) -> Block<'_> {
         .border_style(border_style)
 }
 
+/// The group's name, or its fleet id when the server sent none.
+fn hostile_name(label: &str, id: u64) -> String {
+    if label.is_empty() { format!("fleet {id}") } else { label.to_string() }
+}
+
 /// Format a single event into a display string.
 pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
     use iac_shared::protocol::EventKind;
@@ -309,7 +314,7 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             let whose = if e.mine { "your".to_string() } else { format!("{}'s", e.owner) };
             format!(
                 " T{}: Combat at [{},{}]: {} F{} vs hostile {}\n",
-                event.tick, e.sector.q, e.sector.r, whose, e.player_fleet_id, e.enemy_fleet_id
+                event.tick, e.sector.q, e.sector.r, whose, e.player_fleet_id, hostile_name(&e.enemy, e.enemy_fleet_id)
             )
         }
         EventKind::CombatEnded(e) => {
@@ -344,8 +349,8 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
                 format!(" T{}: !! YOUR FLEET F{} DESTROYED at [{},{}] !!\n", event.tick, e.fleet_id, e.sector.q, e.sector.r)
             } else if e.is_npc {
                 format!(
-                    " T{}: Hostile fleet {} destroyed at [{},{}], wreckage {}\n",
-                    event.tick, e.fleet_id, e.sector.q, e.sector.r, res_short(&e.salvage)
+                    " T{}: Hostile {} destroyed at [{},{}], wreckage {}\n",
+                    event.tick, hostile_name(&e.label, e.fleet_id), e.sector.q, e.sector.r, res_short(&e.salvage)
                 )
             } else {
                 format!(
