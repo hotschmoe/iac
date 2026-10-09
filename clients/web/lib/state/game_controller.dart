@@ -57,6 +57,24 @@ class GameController extends ChangeNotifier {
   final TokenStore _tokens;
   final GameConnection connection = GameConnection();
   final StateMapper _mapper = StateMapper();
+  final StreamController<proto.GameEvent> _events = StreamController.broadcast(sync: true);
+
+  /// Every server game event as it arrives (combat rounds included, which
+  /// the log drops), for scenes that animate them.
+  Stream<proto.GameEvent> get gameEvents => _events.stream;
+
+  void _tap(proto.ServerMessage m) {
+    switch (m) {
+      case proto.TickUpdate(:final events):
+        for (final e in events ?? const <proto.GameEvent>[]) {
+          _events.add(e);
+        }
+      case proto.GameEvent():
+        _events.add(m);
+      default:
+        break;
+    }
+  }
   DemoProvider? _demo;
   StreamSubscription<proto.ServerMessage>? _msgSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
@@ -259,6 +277,7 @@ class GameController extends ChangeNotifier {
   void _onDemoMessages(List<proto.ServerMessage> msgs) {
     for (final m in msgs) {
       _mapper.apply(m);
+      _tap(m);
     }
     _refresh();
   }
@@ -307,6 +326,7 @@ class GameController extends ChangeNotifier {
       default:
         if (link != LinkState.live) return; // ignore strays before full_state
         _mapper.apply(msg);
+        _tap(msg);
     }
     _refresh();
   }
@@ -344,6 +364,7 @@ class GameController extends ChangeNotifier {
     _disposed = true;
     stop();
     connection.dispose();
+    _events.close();
     super.dispose();
   }
 
