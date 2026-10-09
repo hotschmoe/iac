@@ -1308,6 +1308,7 @@ mod tests {
         assert_eq!(msg["fleet_id"], fid);
         assert_eq!(msg["can_jump"], true);
         assert_eq!(msg["hops_home"], 1);
+        assert_eq!(msg["route_unexplored"], false);
         assert!(msg["fuel_cost"].as_f64().unwrap() > 0.0);
         let _ = home;
 
