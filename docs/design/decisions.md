@@ -3,6 +3,15 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-09 (queue payment)
+
+**Queued items pay when they start, not when they are queued.**
+- **Starting now:** an order that would start immediately must be affordable.
+- **Queued behind a running item:** it waits unpaid and shows what it is waiting
+  for, then starts and pays as soon as the slot is free and it is affordable.
+- **Why:** this suits slow persistent worlds, where players queue and leave
+  (OGame-style).
+
 ## 2026-10-09 (single player and built-in bots)
 
 Queued after the economy and exploration milestones land, in this order:
