@@ -1,0 +1,236 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IAC Overview (prototype)</title><link rel="stylesheet" href="iac.css">
+<style>
+.scroll{position:absolute;inset:0;overflow:auto;padding:16px 18px 40px}
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px;max-width:1500px;margin:0 auto}
+.c12{grid-column:span 12}.c8{grid-column:span 8}.c4{grid-column:span 4}.c3{grid-column:span 3}.c5{grid-column:span 5}.c7{grid-column:span 7}
+.hero{position:relative;height:244px;overflow:hidden;padding:0}
+.hero canvas{position:absolute;inset:0;width:100%;height:100%}
+.hero .tx{position:absolute;left:22px;top:16px;right:42%;z-index:2}
+.hero h1{font-family:var(--f-cond);font-weight:700;font-size:40px;letter-spacing:.1em;color:var(--a100);text-shadow:0 0 14px rgba(255,176,0,.3);line-height:1;text-transform:uppercase}
+.hero .sup{font-family:var(--f-cond);letter-spacing:.28em;font-size:10px;color:var(--text-3);margin-bottom:6px;text-transform:uppercase}
+.hero .chips{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 10px}
+.hero .voice{max-width:440px;font-size:11px}
+.hero .stat{position:absolute;left:22px;bottom:14px;z-index:2;display:flex;gap:0;border:1px solid var(--line);background:rgba(8,6,4,.8)}
+.hero .stat div{padding:5px 14px;border-right:1px solid var(--line-lo)}.hero .stat div:last-child{border:0}
+.hero .stat div b{display:block;font-family:var(--f-mono);font-size:20px;color:var(--a200);font-weight:500;letter-spacing:.04em}
+.hero .stat span{font-size:8.5px;letter-spacing:.2em;color:var(--text-3);font-family:var(--f-cond);text-transform:uppercase}
+.next{padding:0;overflow:hidden;display:flex;flex-direction:column}
+.next .bd{padding:10px 16px 16px}
+.next h3{font-family:var(--f-cond);font-weight:600;font-size:20px;color:var(--a100);letter-spacing:.06em;line-height:1.2;margin:2px 0 6px;text-transform:uppercase}
+.next .why{color:var(--text-2);font-size:11.5px;line-height:1.55;margin-bottom:12px}
+.kv2{display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em}.cost{display:inline-flex;gap:10px;font-size:11.5px;margin-right:8px}
+.rt{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.rtile{padding:12px 16px 14px;position:relative;overflow:hidden}
+.rtile .top{display:flex;align-items:center;gap:10px}
+.rtile .gem{font-family:var(--f-cond);font-weight:700;font-size:11px;color:#120a02;background:var(--c);padding:0 5px;letter-spacing:.06em}
+.rtile .nm{font-family:var(--f-cond);letter-spacing:.2em;font-size:11px;color:var(--text-2);text-transform:uppercase}
+.rtile .vault{margin-left:auto;font-size:9.5px;color:var(--text-3);letter-spacing:.04em}
+.rtile .big{font-family:var(--f-mono);font-weight:500;font-size:36px;color:var(--a100);margin:8px 0 2px;letter-spacing:.06em;font-variant-numeric:tabular-nums;line-height:1;text-shadow:0 0 10px rgba(255,200,100,.22)}
+.rtile .big small{font-size:12px;color:var(--text-3);margin-left:8px;font-weight:400;letter-spacing:.02em;text-shadow:none}
+.rtile .rate{font-size:11.5px;color:var(--c)}
+.rtile .rate span{color:var(--text-3)}
+.rtile .full{margin-top:10px;font-size:10.5px;display:flex;justify-content:space-between;color:var(--text-3);text-transform:uppercase;letter-spacing:.03em}
+.rtile canvas{position:absolute;right:12px;top:30px;width:132px;height:46px}
+.rtile .bar{margin-top:12px;height:10px}
+.rtile.warn{border-color:var(--ember)}
+.rtile.near{border-color:var(--t5)}.rtile.near .vault,.rtile.warn .vault{display:none}
+.rtile .lampw{position:absolute;right:14px;top:10px}
+.q4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.qc{padding:0;display:flex;flex-direction:column;min-height:216px}
+.qc .bd{padding:8px 14px 12px;flex:1;display:flex;flex-direction:column}
+.qc .t{font-family:var(--f-cond);font-weight:600;font-size:16px;color:var(--a100);letter-spacing:.06em;text-transform:uppercase}
+.qc .s{font-size:10.5px;color:var(--text-3);margin:2px 0 8px;text-transform:uppercase;letter-spacing:.03em}
+.ringw{display:flex;gap:14px;align-items:center}
+.ring{width:72px;height:72px;position:relative;flex:none}.ring svg{width:100%;height:100%}
+.ring b{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--f-mono);font-size:12.5px;color:var(--a100);font-weight:500}
+.cd{font-family:var(--f-mono);font-weight:500;font-size:24px;color:var(--a100);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+.qc.idle{border-color:var(--a500)}
+.qc.idle .badge{color:#1c1000;background:var(--a400);font-family:var(--f-cond);font-weight:700;letter-spacing:.16em;font-size:9.5px;padding:1px 6px;animation:blink 1.2s steps(1) infinite}
+.qc.lock{opacity:.8}.qc.lock .bd{align-items:center;justify-content:center;text-align:center;color:var(--text-3)}
+.qlist{margin-top:8px;border-top:1px dotted var(--line)}
+.qlist div{display:flex;gap:8px;padding:3px 0;font-size:10px;color:var(--text-2);border-bottom:1px dotted var(--line-lo);text-transform:uppercase;letter-spacing:.02em}.qlist div i{font-style:normal;color:var(--a600);min-width:18px}.qlist div span{margin-left:auto;color:var(--text-3)}
+.sug{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+.sug button{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:6px 9px;border:1px solid var(--line);font-size:11px;text-align:left;transition:background .1s,border-color .1s}
+.sug button:hover{border-color:var(--a500);background:rgba(255,176,0,.1)}
+.sug button small{color:var(--text-3);font-size:9.5px;display:block;text-transform:uppercase}
+.fl3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:10px 14px 14px}
+.flc{border:1px solid var(--line);padding:10px;background:rgba(0,0,0,.25);transition:border-color .1s}.flc:hover{border-color:var(--line-hi)}
+.flc .n{display:flex;align-items:center;gap:8px;font-family:var(--f-cond);font-weight:600;color:var(--a200);font-size:14px;letter-spacing:.12em;text-transform:uppercase}
+.flc .ships{display:flex;gap:6px;margin:9px 0;align-items:center;color:var(--own);min-height:22px}
+.flc .kvr{display:flex;justify-content:space-between;font-size:10px;color:var(--text-3);margin:7px 0 3px;font-family:var(--f-cond);letter-spacing:.16em;text-transform:uppercase}.flc .kvr b{color:var(--text);font-weight:500;font-family:var(--f-mono);letter-spacing:.02em}
+.flc .act{display:flex;gap:6px;margin-top:10px}
+.al{display:flex;gap:10px;padding:9px 12px;border-top:1px solid var(--line-lo);align-items:flex-start}
+.al .sq{width:8px;height:8px;margin-top:4px;flex:none;border:1px solid var(--c);background:var(--c)}
+.al.crit{background:rgba(255,90,60,.07)}.al.crit .sq{animation:blink 1s steps(1) infinite}
+.al b{font-family:var(--f-cond);font-weight:600;font-size:12.5px;letter-spacing:.08em;color:var(--text);text-transform:uppercase}.al p{font-size:10.5px;color:var(--text-2);margin-top:2px;line-height:1.45}
+.al .tm{margin-left:auto;font-family:var(--f-mono);font-weight:500;font-size:14px;color:var(--c);white-space:nowrap}
+.ev{max-height:300px;overflow:auto;padding:4px 10px 8px;text-transform:uppercase;letter-spacing:.02em}
+.ev div{display:flex;gap:8px;padding:2px 2px;font-size:10.5px;color:var(--text-2)}
+.ev div::before{content:">";color:var(--c,var(--a700))}
+.ev div i{font-style:normal;color:var(--text-4);min-width:44px}
+.ev div span{color:var(--tc,var(--text-2))}
+.filters{display:flex;gap:4px;padding:6px 10px 2px}
+#lb>div{display:flex;align-items:center;gap:8px;padding:5px 14px;border-top:1px solid var(--line-lo);font-size:11.5px}
+#lb>div.me{background:rgba(94,224,207,.08);color:var(--own)}
+.lb .rk{width:22px;color:var(--text-3);font-family:var(--f-mono)}.lb .sc{margin-left:auto;color:var(--a300)}
+.tag{font-size:8.5px;letter-spacing:.14em;padding:0 4px;border:1px solid var(--line);color:var(--text-3);font-family:var(--f-cond);font-weight:600}.tag.ai{color:var(--rare);border-color:#5c4690}
+#chat>div{padding:3px 14px;font-size:11px;line-height:1.45;color:var(--text-2)}.chat b{color:var(--a300);font-weight:500}.chat .trade{margin:6px 14px;padding:6px 10px;border:1px dashed var(--a600);color:var(--a200)}
+.radar{position:relative;height:262px;padding:0}.radar canvas{width:100%;height:100%;display:block;cursor:pointer}
+@media (max-width:1100px){.c8,.c4,.c3,.c5,.c7{grid-column:span 12}.q4{grid-template-columns:repeat(2,minmax(0,1fr))}.fl3{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:820px){.scroll{padding:10px 10px 30px}.rt{grid-template-columns:minmax(0,1fr)}.q4{grid-template-columns:minmax(0,1fr)}.hero .chips .chip:nth-child(n+3){display:none}.hero{height:210px}.hero .tx{right:12px}.hero h1{font-size:28px}.hero .stat{display:none}.rtile .big{font-size:30px}.rtile canvas{display:none}}
+</style></head><body>
+<script src="iac.js"></script>
+<script>
+const I=IAC; I.start();
+const main=I.mount('overview',{badges:{overview:2}});
+const t0=I.tick;
+const Q={a:{name:'Crystal Mine',to:8,s:t0-420,e:t0+260},qa:[{name:'Storage Vault',to:3,need:'3,420 Fe'}],res:null,yard:{cls:'Corvette',n:3,done:1,s:t0-200,e:t0+170,per:120},b:null};
+const SUG=[{n:'Navigation',to:2,cost:{m:600,c:800,d:0},t:760,why:'+1 scan range'},{n:'Harvesting Efficiency',to:3,cost:{m:900,c:500,d:120},t:1100,why:'+20% ore yield'},{n:'Modular Fabrication',to:1,cost:{m:1500,c:1200,d:500},t:2400,why:'Unlocks build slot B (needs Lab 4)'}];
+const raidAt=t0+252;
+main.innerHTML=`<div class="scroll"><div class="grid">
+<div class="c8 panel hero" id="hero"><canvas id="pl"></canvas><div class="tx"><div class="sup">Homeworld &middot; sector 4, -2</div><h1>Ember Landing</h1>
+ <div class="chips"><span class="chip on">Inner Ring</span><span class="chip">Sensor L3</span><span class="chip teal">Defence Grid L2</span><span class="chip">Vault L${I.VAULT}</span><span class="chip">Pace x${I.WORLD.pace}</span></div>
+ <div class="voice">Two fleets out, one docked. Lab idle.</div></div>
+ <div class="stat"><div><b id="st-b">${I.digits(48,3)}</b><span>Building levels</span></div><div><b id="st-r">${I.digits(9,3)}</b><span>Research</span></div><div><b id="st-s">${I.digits(14,3)}</b><span>Ships</span></div><div><b>${I.digits(165,3)}</b><span>Defence power</span></div></div></div>
+<div class="c4 panel next" id="next"></div>
+<div class="c12 rt" id="rt"></div>
+<div class="c12 q4" id="qs"></div>
+<div class="c8 panel" style="padding:0"><div class="ph">Fleets <span class="sub">3 / 3 slots</span></div><div class="fl3" id="fleets"></div></div>
+<div class="c4 panel radar" id="radarw"><div class="ph" style="position:absolute;z-index:2;left:0;right:0;border:0">Nearby space <span class="sub" style="margin-left:12px">click to open map</span></div><canvas id="radar"></canvas></div>
+<div class="c5 panel" style="padding:0"><div class="ph">Alerts <span class="sub" id="alc"></span></div><div id="alerts"></div></div>
+<div class="c7 panel" style="padding:0"><div class="ph">Event log</div><div class="filters" id="filters"></div><div class="ev" id="ev"></div></div>
+<div class="c4 panel lb" style="padding:0 0 6px"><div class="ph">Ranking <span class="sub">one world, humans + agents</span></div><div id="lb"></div></div>
+<div class="c4 panel chat" style="padding:0 0 10px"><div class="ph">Comms <span class="sub">Global &middot; 2 trade offers</span></div><div id="chat"></div></div>
+<div class="c4 panel" style="padding:0 0 10px"><div class="ph">Team-ups <span class="sub">PvE, open</span></div><div class="pb" style="font-size:11.5px;color:var(--text-2);line-height:1.5"><div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dotted var(--line-lo)"><span><b style="color:var(--a200)">Clear 9,-7</b> &middot; <span class="tc7">T7</span> swarm<br><span style="color:var(--text-3)">needs 272 power, has 190 pledged</span></span><button class="btn sm">Join</button></div><div style="display:flex;justify-content:space-between;padding:6px 0"><span><b style="color:var(--a200)">Escort haulers to 12,-9</b><br><span style="color:var(--text-3)">Sparrow [AI] &middot; 2 slots open</span></span><button class="btn sm">Join</button></div></div></div>
+</div></div>`;
+/* ---------- planet hero: wireframe sphere, meridians, hatched night side, orbit platforms ---------- */
+const pc=document.getElementById('pl'),px=pc.getContext('2d');let PW,PH;const RED=matchMedia('(prefers-reduced-motion:reduce)').matches;
+function sizeP(){const r=pc.getBoundingClientRect();PW=r.width;PH=r.height;pc.width=PW*2;pc.height=PH*2}
+const pst=[...Array(110)].map(()=>({x:Math.random(),y:Math.random(),t:Math.random()*6}));
+function drawPlanet(now){const t=RED?0:now/1000;px.setTransform(2,0,0,2,0,0);px.clearRect(0,0,PW,PH);
+  pst.forEach(s=>{px.fillStyle=`rgba(255,226,170,${.2+.3*Math.sin(t+s.t)**2})`;px.fillRect(Math.round(s.x*PW),Math.round(s.y*PH),1.2,1.2)});
+  const nar=PW<600,r=nar?PH*.19:Math.min(PH*.36,PW*.14),x=nar?PW*.8:PW*.76,y=nar?PH*.7:PH*.52,rot=t*.12;
+  /* graticule */
+  px.strokeStyle='rgba(255,176,0,.10)';px.lineWidth=1;px.beginPath();for(let k=1;k<12;k++){px.moveTo(PW*k/12,0);px.lineTo(PW*k/12,PH)}for(let k=1;k<6;k++){px.moveTo(0,PH*k/6);px.lineTo(PW,PH*k/6)}px.stroke();
+  px.strokeStyle='rgba(255,176,0,.22)';px.beginPath();px.moveTo(x-r*2.4,y);px.lineTo(x+r*2.4,y);px.moveTo(x,y-r*1.7);px.lineTo(x,y+r*1.7);px.stroke();
+  px.save();px.lineWidth=1.6;px.strokeStyle='rgba(255,210,120,.95)';px.beginPath();px.arc(x,y,r,0,6.2832);px.stroke();px.globalCompositeOperation='lighter';px.strokeStyle='rgba(255,176,0,.14)';px.lineWidth=7;px.stroke();px.restore();
+  px.lineWidth=1;
+  for(let i=0;i<6;i++){const a=rot+i*Math.PI/6,rx=Math.abs(Math.cos(a))*r;px.strokeStyle=`rgba(255,176,0,${.18+.35*Math.abs(Math.sin(a))})`;px.beginPath();px.ellipse(x,y,Math.max(.5,rx),r,0,0,6.2832);px.stroke()}
+  for(let k=-3;k<=3;k++){const yy=k*r*.25,rx=Math.sqrt(Math.max(0,r*r-yy*yy));px.strokeStyle=k===0?'rgba(255,210,120,.6)':'rgba(255,176,0,.3)';px.beginPath();px.ellipse(x,y+yy,rx,rx*.16,0,0,6.2832);px.stroke()}
+  px.save();px.beginPath();px.arc(x,y,r-1,0,6.2832);px.clip();px.strokeStyle='rgba(255,176,0,.22)';px.beginPath();for(let k=-r*2;k<r*2;k+=5){px.moveTo(x+r*.2+k,y+r);px.lineTo(x+r*.2+k+r*2,y-r)}px.stroke();px.globalCompositeOperation='destination-out';px.beginPath();px.ellipse(x-r*.55,y,r*1.25,r*1.3,0,0,6.2832);px.fill();px.restore();
+  [[1.7,.34,-.3,'rgba(255,200,100,.4)',3,0],[2.2,.46,-.3,'rgba(94,224,207,.4)',2,1]].forEach(([k,e,rt,c,n,ri])=>{px.strokeStyle=c;px.lineWidth=1;px.beginPath();px.ellipse(x,y,r*k,r*k*e,rt,0,6.2832);px.stroke();
+    for(let i=0;i<n;i++){const a=(RED?0:t*(.28-ri*.1))+i*6.2832/n;const ex=r*k*Math.cos(a),ey=r*k*e*Math.sin(a);const rx=x+ex*Math.cos(rt)-ey*Math.sin(rt),ry=y+ex*Math.sin(rt)+ey*Math.cos(rt);px.strokeStyle=ri?'#ff8a5c':'#5ee0cf';px.lineWidth=1.2;px.strokeRect(rx-3.5,ry-3.5,7,7)}});
+  px.fillStyle='rgba(190,163,112,.7)';px.font='400 9px "IBM Plex Mono"';px.fillText('HOME / ORBIT SCHEMATIC / NOT TO SCALE',PW-250,PH-12);
+  requestAnimationFrame(drawPlanet)}
+/* ---------- render helpers ---------- */
+const ORE={m:'--metal',c:'--crystal',d:'--deut'};const KN={m:'Metal',c:'Crystal',d:'Deuterium'};const KS={m:'Fe',c:'Cr',d:'De'};
+const hist={m:[],c:[],d:[]};
+function renderRes(){
+  const r=I.res();const el=document.getElementById('rt');
+  if(!el.children.length)el.innerHTML=['m','c','d'].map(k=>`<div class="panel rtile" style="--c:var(${ORE[k]})" data-k="${k}"><div class="top"><span class="gem">${KS[k]}</span><span class="nm">${KN[k]}</span><span class="vault">VAULT L${I.VAULT}</span></div><canvas></canvas><div class="big num"></div><div class="rate"></div><div class="bar" style="--gc:var(${ORE[k]})"><i></i></div><div class="full"></div></div>`).join('');
+  ['m','c','d'].forEach((k,i)=>{const e=el.children[i],v=r[k],cap=I.CAP[k],rate=I.PROD[k],left=(cap-v)/rate,pct=v/cap;
+    e.querySelector('.big').innerHTML=I.digits(v,6)+`<small>/ ${I.fmt(cap)}</small>`;
+    e.querySelector('.rate').innerHTML=`+${rate.toFixed(2)} / tick <span>&middot; ${I.fmt(rate*3600)} / hour</span>`;
+    e.querySelector('.bar i').style.width=pct*100+'%';
+    e.querySelector('.full').innerHTML=pct>.97?`<b style="color:var(--ember)">STORAGE FULL. PRODUCTION IS WASTED.</b>`:pct>=.85?`<b style="color:var(--t5)">NEAR CAP ${Math.round(pct*100)}%</b><span style="color:var(--t5)">full in ${I.clock(left)}</span>`:`<span>${Math.round(pct*100)}% full</span><span>full in ${I.clock(left)}</span>`;
+    e.classList.toggle('warn',pct>.97);e.classList.toggle('near',pct>=.85&&pct<=.97);
+    let lw=e.querySelector('.lampw');if(pct>=.85){if(!lw){lw=document.createElement('span');lw.className='lampw';e.appendChild(lw)}lw.innerHTML=`<span class="lamp on blink" style="--lc:${pct>.97?'var(--ember)':'var(--t5)'}">${pct>.97?'FULL':'NEAR CAP'}</span>`}else if(lw)lw.remove();
+    const h=hist[k];h.push(rate*(.8+Math.random()*.5));if(h.length>40)h.shift();spark(e.querySelector('canvas'),h,getComputedStyle(e).getPropertyValue('--c'))});
+}
+/* production trace: scope-style strip chart with graticule */
+function spark(c,h,col){const x=c.getContext('2d');c.width=264;c.height=92;x.clearRect(0,0,264,92);x.strokeStyle='rgba(255,176,0,.12)';x.lineWidth=1;x.beginPath();for(let k=1;k<6;k++){x.moveTo(k*44,0);x.lineTo(k*44,92)}for(let k=1;k<4;k++){x.moveTo(0,k*23);x.lineTo(264,k*23)}x.stroke();
+  const mx=Math.max(...h)*1.1,mn=Math.min(...h)*.8;x.strokeStyle=col.trim()||'#fa0';x.lineWidth=2;x.beginPath();h.forEach((v,i)=>{const px_=i/(Math.max(1,h.length-1))*260+2,py=88-(v-mn)/(mx-mn||1)*80;i?x.lineTo(px_,py):x.moveTo(px_,py)});x.stroke();x.save();x.globalCompositeOperation='lighter';x.lineWidth=7;x.globalAlpha=.12;x.stroke();x.restore()}
+/* progress ring drawn as a bezel of 40 ticks */
+function ring(p,txt){let t='';for(let i=0;i<40;i++){const a=i/40*Math.PI*2-Math.PI/2,on=i/40<p,r1=on?27:29,r2=33;t+=`<line x1="${(36+Math.cos(a)*r1).toFixed(1)}" y1="${(36+Math.sin(a)*r1).toFixed(1)}" x2="${(36+Math.cos(a)*r2).toFixed(1)}" y2="${(36+Math.sin(a)*r2).toFixed(1)}" stroke="${on?'var(--a400)':'var(--a800)'}" stroke-width="${on?1.8:1}"/>`}
+  return `<div class="ring"><svg viewBox="0 0 72 72">${t}</svg><b>${txt}</b></div>`}
+function costHtml(c){return `<span class="cost">${c.m?`<span class="fe">${I.fmt(c.m)} Fe</span>`:''}${c.c?`<span class="cr">${I.fmt(c.c)} Cr</span>`:''}${c.d?`<span class="de">${I.fmt(c.d)} De</span>`:''}</span>`}
+function afford(c){const r=I.res();return r.m>=c.m&&r.c>=c.c&&r.d>=c.d}
+function short(c){const r=I.res(),o=[];if(r.m<c.m)o.push(Math.ceil(c.m-r.m)+' Fe');if(r.c<c.c)o.push(Math.ceil(c.c-r.c)+' Cr');if(r.d<c.d)o.push(Math.ceil(c.d-r.d)+' De');return o.join(', ')}
+function renderQ(){
+  const T=I.tick,a=Q.a,y=Q.yard;let h='';
+  const depth=(a?1:0)+Q.qa.length;
+  h+=a?`<div class="panel qc"><div class="ph">Build slot A <span class="sub">queue ${depth}/3</span></div><div class="bd"><div class="ringw">${ring(Math.min(1,(T-a.s)/(a.e-a.s)),Math.round((T-a.s)/(a.e-a.s)*100)+'%')}<div><div class="cd">${I.clock(a.e-T)}</div><div class="s" style="margin:0">tick ${a.e}</div></div></div><div class="t" style="margin-top:10px">${a.name}</div><div class="s">Level ${a.to-1} &rarr; ${a.to} &middot; +0.31 Cr/tick</div>
+   <div class="qlist">${Q.qa.map((q,i)=>`<div><i>Q${i+2}</i>${q.name} L${q.to}<span>waits: ${q.need}</span></div>`).join('')}</div><div style="margin-top:auto;padding-top:8px"><button class="btn sm" data-x="a">Cancel (50% back)</button></div></div></div>`
+   :`<div class="panel qc idle"><div class="ph">Build slot A <span class="sub">queue ${depth}/3</span> <span class="badge">IDLE</span></div><div class="bd"><div class="t">Queue an upgrade</div><div class="s">Mines compound. An idle slot is lost production.</div><div class="sug"><button data-b="Metal Mine"><span>Metal Mine L10<small>+0.4 Fe/t</small></span><span>${costHtml({m:2400,c:600,d:0})}</span></button><button data-b="Defense Grid"><span>Defense Grid L3<small>structures +4% each level</small></span><span>${costHtml({m:1800,c:900,d:100})}</span></button></div></div></div>`;
+  h+=`<div class="panel qc lock"><div class="ph">Build slot B</div><div class="bd"><svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M5 11H19V20H5zM8 11V8a4 4 0 0 1 8 0v3"/></svg><div class="t" style="margin-top:8px;color:var(--text-2)">Second build slot</div><div class="s">Needs research: Modular Fabrication L1<br>(requires Research Lab 4, you have 3)</div><a class="btn sm" href="homeworld.html#research">View tech</a></div></div>`;
+  h+=Q.res?`<div class="panel qc"><div class="ph">Research <span class="sub">queue 1/3</span></div><div class="bd"><div class="ringw">${ring(Math.min(1,(T-Q.res.s)/(Q.res.e-Q.res.s)),Math.round((T-Q.res.s)/(Q.res.e-Q.res.s)*100)+'%')}<div><div class="cd">${I.clock(Q.res.e-T)}</div><div class="s" style="margin:0">tick ${Q.res.e}</div></div></div><div class="t" style="margin-top:10px">${Q.res.n}</div><div class="s">Level ${Q.res.to-1} &rarr; ${Q.res.to} &middot; ${Q.res.why}</div></div></div>`
+   :`<div class="panel qc idle"><div class="ph">Research <span class="sub">queue 0/3</span> <span class="badge">IDLE</span></div><div class="bd"><div class="t">Nothing in the lab</div><div class="s">Pick one. Grey = cannot afford yet.</div><div class="sug">${SUG.map((s,i)=>`<button data-r="${i}" style="${afford(s.cost)?'':'opacity:.5'}"><span>${s.n} L${s.to}<small>${s.why} &middot; ${I.clock(s.t)}</small></span><span>${costHtml(s.cost)}</span></button>`).join('')}</div></div></div>`;
+  const sp=Math.min(1,(T-y.s)/(y.e-y.s));
+  h+=`<div class="panel qc"><div class="ph">Shipyard <span class="sub">queue 1/3</span></div><div class="bd"><div class="ringw">${ring(sp,y.done+'/'+y.n)}<div><div class="cd">${I.clock(y.e-T)}</div><div class="s" style="margin:0">next ship in ${I.clock(y.per-((T-y.s)%y.per))}</div></div></div><div class="t" style="margin-top:10px">${y.n}x ${y.cls}</div><div class="s">Fleet slots 3/3 &middot; ships join dock</div><div style="margin-top:auto;display:flex;gap:6px"><button class="btn sm" data-x="y">+3 more</button></div></div></div>`;
+  document.getElementById('qs').innerHTML=h;
+  document.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>{const s=SUG[+b.dataset.r];if(!afford(s.cost)){I.toast('Cannot afford yet','Short by '+short(s.cost),'red');return}if(I.spend(s.cost)){Q.res={n:s.n,to:s.to,why:s.why,s:I.tick,e:I.tick+Math.round(s.t/6)};I.sfx('ok');I.toast('Research started',s.n+' L'+s.to,'teal');ev('Research started: '+s.n,'teal');renderAll()}});
+  document.querySelectorAll('[data-b]').forEach(b=>b.onclick=()=>{const c=b.dataset.b==='Metal Mine'?{m:2400,c:600,d:0}:{m:1800,c:900,d:100};if(!afford(c)){I.toast('Cannot afford yet','Short by '+short(c),'red');return}if(I.spend(c)){Q.a={name:b.dataset.b,to:b.dataset.b==='Metal Mine'?10:3,s:I.tick,e:I.tick+90};I.sfx('ok');ev('Build started: '+b.dataset.b,'teal');renderAll()}});
+  document.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>{if(b.dataset.x==='a'){Q.a=Q.qa.length?null:null;I.toast('Build cancelled','50% refunded; queued items move up','');renderAll()}else I.toast('Queued','+3 corvettes appended (batch)','teal')});
+}
+function nextUp(){
+  const r=I.res(),el=document.getElementById('next');
+  const raid=raidAt-I.tick;
+  let it;
+  if(raid>0&&raid<600)it={k:'RAID WARNING',cls:'red',h:`Raid in ${I.clock(raid)}`,why:'Raid fleet vectoring for Ember Landing. Home defence is 165 power: docked fleet 30, grid 23, structures 112. Estimated raid power 120.',btn:'Open Defence',href:'homeworld.html#defence'};
+  else if(!Q.res){const s=SUG[0];it={k:'NEXT UP',cls:'',h:`Research ${s.n} L${s.to}`,why:`The lab has been idle. ${s.why}. ${afford(s.cost)?'You can afford it now.':'Short by '+short(s.cost)+'.'}`,cost:s.cost,btn:'Queue it',act:()=>{document.querySelector('[data-r="0"]').click()}}}
+  else it={k:'ALL SYSTEMS',cls:'',h:'Everything is running',why:'Queues are full. Send a fleet out: exploring pays more the further you go.',btn:'Open windshield',href:'windshield.html'};
+  el.innerHTML=`<div class="ph" style="color:${it.cls==='red'?'var(--ember)':'var(--a400)'}">${it.k}</div><div class="bd"><h3>${it.h}</h3><div class="why">${it.why}</div>${it.k==='RAID WARNING'?'<div style="margin-bottom:14px"><div class="kv2"><span>Your defence</span><b class="tc1">165</b></div><div class="bar teal"><i style="width:100%"></i></div><div class="kv2" style="margin-top:12px"><span>Raid (est.)</span><b class="tc5">120</b></div><div class="bar" style="--gc:var(--t5)"><i style="width:73%"></i></div><div class="kv2" style="margin-top:12px"><span>Ratio</span><b class="safe">1.38 HELD</b></div></div>':''}${it.cost?`<div style="margin-bottom:12px">${costHtml(it.cost)}</div>`:''}${it.href?`<a class="btn primary" href="${it.href}">${it.btn}</a>`:`<button class="btn primary" id="nb">${it.btn} <span class="key">&#9166;</span></button>`}</div>`;
+  const nb=document.getElementById('nb');if(nb)nb.onclick=it.act;
+}
+function renderFleets(){
+  document.getElementById('fleets').innerHTML=I.fleets.map((f,i)=>{const cargo=Object.values(f.cargo).reduce((a,b)=>a+b,0),hops=Math.floor(f.fuel/f.fuelPerHop),home=I.hd(f.loc,I.HOME),need=home*f.fuelPerHop;
+   return `<div class="flc"><div class="n">${I.sym('fleet',{s:12,w:1.8})}${f.name}<span class="chip ${f.state==='Harvesting'?'on':f.state==='Docked'?'teal':''}" style="margin-left:auto">${f.state}</span></div>
+   <div style="font-size:10px;color:var(--text-3);margin-top:4px;text-transform:uppercase">${f.loc.q},${f.loc.r} &middot; ${I.sector(f.loc.q,f.loc.r).zone} &middot; ${home?home+' hops home':'at home'}</div>
+   <div class="ships">${f.ships.map(([c,n])=>Array(n).fill(I.sym('own.'+c,{s:22,w:1.3})).join('')).join('')}</div>
+   <div class="kvr"><span>Fuel</span><b>${hops} hops ${f.fuel<need*1.3?'<span class="tc6">low</span>':''}</b></div><div class="bar ${f.fuel<need*1.3?'red':'teal'}"><i style="width:${f.fuel/f.fuelMax*100}%"></i></div>
+   <div class="kvr"><span>Cargo</span><b>${Math.round(cargo)} / ${f.cap}</b></div><div class="bar"><i style="width:${cargo/f.cap*100}%"></i></div>
+   <div class="kvr"><span>Orders</span><b style="color:var(--a300)">${f.policy==='manual'?'manual':f.policy.replace(/_/g,' ')}</b></div>
+   <div class="act"><a class="btn sm" href="windshield.html">Pilot</a><a class="btn sm" href="map.html">Map</a><button class="btn sm" data-rec="${i}" ${home?'':'disabled'}>Recall</button></div></div>`}).join('');
+  document.querySelectorAll('[data-rec]').forEach(b=>b.onclick=()=>I.toast('Recall ordered','Fleet will return by the safest known lane.','teal'));
+}
+let EV=[],filt='all';
+function ev(t,c=''){const k=/Harvest|Salvage|Mined|Research|Build|built/i.test(t)?'econ':/combat|raid|destroyed|hostile/i.test(t)?'combat':'intel';EV.unshift({t:I.tick,txt:t,c,k});if(EV.length>40)EV.pop();renderEv()}
+function renderEv(){document.getElementById('filters').innerHTML=[['all','All'],['mine','Mine'],['combat','Combat'],['econ','Economy'],['intel','Intel']].map(([k,l])=>`<button class="chip ${filt===k?'on':''}" data-f="${k}">${l}</button>`).join('');
+  document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{filt=b.dataset.f;renderEv()});
+  document.getElementById('ev').innerHTML=EV.filter(e=>filt==='all'||filt==='mine'||e.k===filt).map(e=>`<div style="--c:${e.c==='red'?'var(--ember)':e.c==='teal'?'var(--own)':e.c==='violet'?'var(--rare)':'var(--a700)'};--tc:${e.c==='red'?'#ff9a86':'var(--text-2)'}"><i>${String(e.t%100000).padStart(5,'0')}</i><span>${e.txt}</span></div>`).join('')}
+function renderAlerts(){const T=I.tick,raid=raidAt-T;const A=[];
+  if(raid>0)A.push(['crit','var(--ember)','Raid incoming','Vectoring for homeworld. Power est. 120 vs your defence 165.',I.clock(raid),'homeworld.html#defence','Defence']);
+  const rs=I.res();if(rs.c/I.CAP.c>=.85)A.push(['','var(--t5)','Crystal storage near cap','87% of the Vault L2 cap. Production above the cap is discarded. Spend it or build Vault L3.',I.clock((I.CAP.c-rs.c)/I.PROD.c),'homeworld.html#storage','Vault']);
+  A.push(['','var(--t5)','Prospector fuel is low','14 hops left; mining range is 4. Policy will return it at 25%.','','map.html','Map']);
+  if(!Q.res)A.push(['','var(--a400)','Research lab idle','Queue something. Idle labs waste the longest timers.','','#','Queue']);
+  A.push(['','var(--rare)','Derelict signature','Vanguard is 0 hops from a tier 1 derelict (risk: uneasy).','','windshield.html','Board']);
+  document.getElementById('alc').textContent=A.length+' active';
+  document.getElementById('alerts').innerHTML=A.map(([c,col,h,p,tm,href,btn])=>`<div class="al ${c}" style="--c:${col}"><span class="sq"></span><div><b>${h}</b><p>${p}</p><a class="btn sm" style="margin-top:7px" href="${href}">${btn}</a></div>${tm?`<span class="tm">${tm}</span>`:''}</div>`).join('')}
+function renderSocial(){
+  const L=[['Quillfeather','AI',48210],['Marrow','HUM',44870],['Sparrow','AI',41020],['Tessaly','HUM',39550],['Holloway','HUM',31200]];
+  document.getElementById('lb').innerHTML=L.map(([n,t,s],i)=>`<div><span class="rk">${String(i+1).padStart(3,'0')}</span>${n}<span class="tag ${t==='AI'?'ai':''}">${t}</span><span class="sc num">${I.fmt(s)}</span></div>`).join('')+`<div class="me"><span class="rk">014</span>Designer<span class="tag">HUM</span><span class="sc num" style="color:var(--own)">${I.fmt(22140)}</span></div>`;
+  document.getElementById('chat').innerHTML=`<div><b>Marrow</b> anyone clearing 8,-6? T4 patrol</div><div><b>Sparrow</b> <span class="tag ai">AI</span> I can bring 3 corvettes at tick 1900.</div><div class="trade">Tessaly offers <span class="cr">500 Cr</span> for <span class="fe">800 Fe</span> <button class="btn sm" style="margin-left:8px">Review</button></div><div><b>Holloway</b> nice raid defence</div><div style="padding-top:6px"><input placeholder="Say something... (Enter)" style="width:100%;background:rgba(0,0,0,.35);border:1px solid var(--line);padding:7px 10px;color:var(--text);font:inherit"></div>`}
+/* nearby space: PPI scope with range rings, sweep, symbols */
+const rc=document.getElementById('radar'),rx=rc.getContext('2d');
+function drawRadar(now){const r=rc.getBoundingClientRect();if(!r.width){requestAnimationFrame(drawRadar);return}rc.width=r.width*2;rc.height=r.height*2;rx.setTransform(2,0,0,2,0,0);const Wd=r.width,Hd=r.height,t=RED?0:now/1000;
+  const cx=Wd/2,cy=Hd/2+14,U=14,R=Math.min(Wd,Hd)/2-18;const p=(q,r_)=>{const [x,y]=I.px(q-4,r_+2,U);return [cx+x,cy+y]};
+  rx.fillStyle='rgba(5,4,3,.7)';rx.fillRect(0,0,Wd,Hd);
+  rx.strokeStyle='rgba(255,176,0,.18)';rx.lineWidth=1;for(let k=1;k<=3;k++){rx.beginPath();rx.arc(cx,cy,R*k/3,0,6.2832);rx.stroke()}
+  rx.beginPath();rx.moveTo(cx-R,cy);rx.lineTo(cx+R,cy);rx.moveTo(cx,cy-R);rx.lineTo(cx,cy+R);rx.stroke();
+  rx.strokeStyle='rgba(255,176,0,.3)';rx.beginPath();for(let i=0;i<72;i++){const a=i/72*6.2832,L=i%6?3:6;rx.moveTo(cx+Math.cos(a)*R,cy+Math.sin(a)*R);rx.lineTo(cx+Math.cos(a)*(R-L),cy+Math.sin(a)*(R-L))}rx.stroke();
+  rx.save();rx.beginPath();rx.arc(cx,cy,R,0,6.2832);rx.clip();
+  for(let q=-2;q<=10;q++)for(let r_=-8;r_<=4;r_++){if(I.hd({q,r:r_},{q:4,r:-2})>5)continue;const it=I.intel(q,r_);if(!it.known)continue;const s=I.sector(q,r_),[x,y]=p(q,r_);
+    if(s.threat){const c=['','79,185,168','127,207,138','201,216,90','255,210,74','255,154,46','255,106,60','255,64,64','255,46,134','208,75,255'][s.threat];rx.strokeStyle=`rgba(${c},${.35+.6*it.f})`;rx.lineWidth=1.1;rx.save();rx.translate(x,y);rx.rotate(Math.PI/4);rx.strokeRect(-3.2,-3.2,6.4,6.4);rx.restore();rx.fillStyle=`rgba(${c},${.5+.5*it.f})`;rx.font='600 8px "IBM Plex Mono"';rx.textAlign='left';rx.fillText(s.threat,x+6,y+3)}
+    else{rx.fillStyle=`rgba(255,176,0,${.2+.5*it.f})`;rx.fillRect(Math.round(x)-1,Math.round(y)-1,2,2)}}
+  I.fleets.forEach(f=>{const [x,y]=p(f.loc.q,f.loc.r);I.vstroke(rx,I.SYM.fleet,x,y,7,0,'94,224,207',1,1.3,0)});
+  const [hx,hy]=p(4,-2);rx.strokeStyle='#ffb000';rx.lineWidth=1.3;rx.beginPath();rx.arc(hx,hy,6,0,6.2832);rx.stroke();rx.beginPath();rx.moveTo(hx-9,hy);rx.lineTo(hx+9,hy);rx.stroke();
+  const rp=(raidAt-I.tick)/252;if(rp>0){const [ax,ay]=p(9,-8);rx.strokeStyle='rgba(255,90,60,.85)';rx.setLineDash([4,4]);rx.lineDashOffset=-t*20;rx.beginPath();rx.moveTo(ax,ay);rx.lineTo(hx+(ax-hx)*rp,hy+(ay-hy)*rp);rx.stroke();rx.setLineDash([]);const [qx,qy]=[hx+(ax-hx)*rp,hy+(ay-hy)*rp];rx.fillStyle='#ff5a3c';rx.fillRect(qx-4,qy-4,8,8)}
+  /* sweep: fading wedge of lines */
+  for(let k=0;k<26;k++){const a=t*1.1-k*.04;rx.strokeStyle=`rgba(94,224,207,${(1-k/26)*.3})`;rx.beginPath();rx.moveTo(hx,hy);rx.lineTo(hx+Math.cos(a)*R*1.6,hy+Math.sin(a)*R*1.6);rx.stroke()}
+  rx.restore();
+  rx.strokeStyle='rgba(255,176,0,.5)';rx.lineWidth=1.2;rx.beginPath();rx.arc(cx,cy,R,0,6.2832);rx.stroke();
+  rx.fillStyle='rgba(190,163,112,.7)';rx.font='400 8.5px "IBM Plex Mono"';rx.textAlign='left';rx.fillText('R01',cx+R/3+3,cy-3);rx.fillText('R03',cx+R*2/3+3,cy-3);
+  requestAnimationFrame(drawRadar)}
+document.getElementById('radarw').onclick=()=>location.href='map.html';
+function renderAll(){renderRes();renderQ();nextUp();renderFleets();renderAlerts();document.getElementById('hudres')&&I.hudUpdate()}
+I.onTick(T=>{
+  const a=Q.a;if(a&&T>=a.e){ev(`Build complete: ${a.name} L${a.to}`,'teal');I.toast('Build complete',`${a.name} level ${a.to}`,'teal');I.sfx('ok');Q.a=null}
+  if(Q.res&&T>=Q.res.e){ev(`Research complete: ${Q.res.n} L${Q.res.to}`,'violet');I.toast('Research complete',Q.res.n+' L'+Q.res.to,'violet');Q.res=null}
+  if(T%4===0)ev(['Prospector harvested 14 Fe at 3,-1','Prospector harvested 6 Cr at 3,-1','Sensor sweep: 2 contacts, none hostile','Vanguard sector scan is 20 ticks old'][Math.floor(Math.random()*4)]);
+  if(T===raidAt-60){I.toast('Raid in 60 ticks','Raid fleet est. 120 power. Home defence 165.','red');I.sfx('alert')}
+  I.fleets[1].cargo.m+=.3;renderAll()});
+ev('Link established. Welcome back, Designer.','teal');ev('Vanguard jumped to 6,-4 (first visit)','violet');ev('Raid warning: fleet inbound, est. power 120','red');ev('Storage near cap: crystal 87%','');ev('Built 1x Corvette');ev('Harvested 41 Fe at 3,-1');
+sizeP();addEventListener('resize',sizeP);
+renderAll();renderEv();renderSocial();requestAnimationFrame(drawPlanet);requestAnimationFrame(drawRadar);
+</script></body></html>

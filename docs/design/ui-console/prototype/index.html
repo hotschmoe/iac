@@ -1,0 +1,56 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IAC Console</title><link rel="stylesheet" href="iac.css">
+<style>
+body{overflow:auto}
+.hero{min-height:100vh;padding:28px 20px 40px;background:var(--void);position:relative}
+.hero::before{content:"";position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px),radial-gradient(120% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55))}
+.in{max-width:1080px;margin:0 auto;position:relative}
+.bar0{display:flex;gap:0;border:1px solid var(--line);margin-bottom:26px;flex-wrap:wrap}
+.bar0 .field{border:0;border-right:1px solid var(--line-lo);background:none;flex:1;min-width:130px}
+.bar0 .field .v{font-size:12.5px}
+.head{display:grid;grid-template-columns:1fr 220px;gap:20px;align-items:center;margin-bottom:26px}
+h1{font-family:var(--f-cond);font-weight:700;font-size:clamp(30px,5.4vw,58px);letter-spacing:.14em;color:var(--a100);text-shadow:0 0 18px rgba(255,176,0,.35);line-height:1}
+.sub{font-family:var(--f-mono);font-size:12.5px;color:var(--text-2);margin:14px 0 0;max-width:640px;line-height:1.65}
+.sub b{color:var(--a300);font-weight:500}
+#orb{width:220px;height:220px;display:block}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.card{display:block;padding:0 0 16px;transition:border-color .12s}
+.card:hover{border-color:var(--a500)}.card:hover .go{background:var(--a500);color:#1c1000}
+.card .ic{height:92px;display:grid;place-items:center;border-bottom:1px solid var(--line-lo);margin-bottom:12px;color:var(--a400)}
+.card .k{font-family:var(--f-cond);letter-spacing:.24em;font-size:9.5px;color:var(--text-3);padding:0 14px}
+.card h2{font-family:var(--f-cond);font-size:24px;color:var(--a200);margin:4px 14px 8px;font-weight:600;letter-spacing:.1em;text-transform:uppercase}
+.card p{font-size:11.5px;color:var(--text-2);line-height:1.6;margin:0 14px}
+.card ul{margin:10px 14px 0 30px;font-size:11px;color:var(--text-3);line-height:1.7}
+.card .go{margin:14px 14px 0;display:inline-block;border:1px solid var(--line-hi);padding:4px 10px;color:var(--a300);font-family:var(--f-cond);font-weight:600;letter-spacing:.16em;font-size:11px;text-transform:uppercase}
+.tip{margin-top:26px;font-size:11.5px;color:var(--text-3);line-height:1.9;border-top:1px solid var(--line-lo);padding-top:14px}
+@media (max-width:640px){.head{grid-template-columns:1fr}#orb{display:none}}
+</style></head><body><div class="hero"><div class="in">
+<div class="bar0"><div class="field"><span class="l">System</span><span class="v">IAC / OPERATOR CONSOLE</span></div><div class="field"><span class="l">Module</span><span class="v">WEB CLIENT PROTOTYPE</span></div><div class="field"><span class="l">Data</span><span class="v">MOCK / 1 HZ TICK</span></div><div class="field"><span class="l">World</span><span class="v">PERSISTENT x1</span></div></div>
+<div class="head"><div><div class="lbl" style="margin-bottom:12px">In Amber Clad &middot; web client &middot; interactive prototypes</div>
+<h1>AMBER CONSOLE</h1>
+<p class="sub">Vector line-art, labelled fields, instrument gauges and a teleprinter log. <b>Operator ready</b><span class="cur"></span><br>Select a module.</p></div><canvas id="orb" width="440" height="440"></canvas></div>
+<div class="cards" id="cards"></div>
+<div class="tip">Global keys: <span class="key">G</span> then <span class="key">O</span> <span class="key">W</span> <span class="key">M</span> <span class="key">H</span> go to a screen &middot; <span class="key">?</span> all keys &middot; <span class="key">M</span> sound on or off (sound is off until you turn it on).<br>Everything here is mock data on a simulated 1 Hz tick. Works at phone width too.</div>
+</div></div>
+<script src="iac.js"></script>
+<script>
+const I=IAC;
+const C=[['windshield.html','TOP PRIORITY','Windshield','The sector you are in, the six gates out, hostiles, salvage and derelicts. Jump, scan, harvest, fight.',['Q W E / A S D to jump, V scan, F fire','Scan, then jump NW into the T5 pack and fight','Board the derelict, collect salvage'],'<svg viewBox="-50 -50 100 100" width="84" height="84" fill="none" stroke="currentColor" stroke-width="1.3" style="overflow:visible"><path vector-effect="non-scaling-stroke" d="M-40 0L-20-34.6H20L40 0L20 34.6H-20Z"/><path vector-effect="non-scaling-stroke" d="M-14 0H14M0-14V14" opacity=".5"/>'+I.sym('own.corvette',{s:26,c:'var(--own)'}).replace('<svg','<svg x="-13" y="-8" ')+'</svg>'],
+['map.html','TOP PRIORITY','Star map','Pan and zoom the lane graph. Threat layer T1 to T9, intel age, click-to-route with fuel, time and ratio preview.',['Hover for route preview, click to plan','L threat layer, I intel age, Shift+click waypoint','Enter to engage; T5+ sectors hold the route'],'<svg viewBox="-60 -50 120 100" width="100" height="84" fill="none" stroke="currentColor" stroke-width="1.3"><g vector-effect="non-scaling-stroke"><path vector-effect="non-scaling-stroke" d="M-30-8l9-5h9l9 5v10l-9 5h-9l-9-5zM0-8l9-5h9l9 5v10l-9 5h-9l-9-5zM-15 18l9-5h9l9 5v10l-9 5h-9l-9-5z"/></g></svg>'],
+['overview.html','HOME','Overview','Resources with caps and time-to-full, build queues with depth and slots, fleets, alerts, one ranking.',['Queue the idle research slot','Raid timer, next-up card, storage near cap'],'<svg viewBox="-50 -50 100 100" width="84" height="84" fill="none" stroke="currentColor" stroke-width="1.3"><path vector-effect="non-scaling-stroke" d="M-40-36H-4V-4H-40ZM4-36H40V-12H4ZM4 -4H40V36H4ZM-40 4H-4V36H-40Z"/></svg>'],
+['homeworld.html','ECONOMY','Homeworld','Schematic base plan, tech graph, shipyard, defence structures and the Storage Vault.',['Keys 1-5 switch tabs, Enter upgrades','Every disabled button says why'],'<svg viewBox="-50 -50 100 100" width="84" height="84" fill="none" stroke="currentColor" stroke-width="1.3"><circle r="22" vector-effect="non-scaling-stroke"/><ellipse rx="42" ry="14" transform="rotate(-20)" vector-effect="non-scaling-stroke"/><path vector-effect="non-scaling-stroke" d="M0-22V22M-22 0H22" opacity=".5"/></svg>']];
+document.getElementById('cards').innerHTML=C.map(c=>`<a class="panel card" href="${c[0]}"><div class="ic">${c[5]}</div><div class="k">${c[1]}</div><h2>${c[2]}</h2><p>${c[3]}</p><ul>${c[4].map(x=>`<li>${x}</li>`).join('')}</ul><span class="go">Open &#9656;</span></a>`).join('');
+/* wireframe sphere, slow meridian rotation */
+const cv=document.getElementById('orb'),x=cv.getContext('2d');const red=matchMedia('(prefers-reduced-motion:reduce)').matches;
+function draw(now){const t=red?0:now/1000;x.clearRect(0,0,440,440);x.save();x.translate(220,220);x.lineWidth=1.6;
+ const R=96;const col='255,176,0';
+ const st=(a,w)=>{x.strokeStyle=`rgba(${col},${a})`;x.lineWidth=w;x.stroke()};
+ x.beginPath();x.arc(0,0,R,0,7);st(.9,1.6);
+ for(let i=0;i<6;i++){const a=t*.35+i*Math.PI/6;x.beginPath();x.ellipse(0,0,Math.abs(Math.sin(a))*R,R,0,0,7);st(.35,1)}
+ for(let k=-2;k<=2;k++){const y=k*R*.3,rx=Math.sqrt(R*R-y*y);x.beginPath();x.ellipse(0,y,rx,rx*.14,0,0,7);st(.3,1)}
+ x.beginPath();x.ellipse(0,0,R*1.6,R*.42,-.35,0,7);st(.55,1.2);
+ const a=t*.5;const ex=R*1.6*Math.cos(a),ey=R*.42*Math.sin(a),ca=Math.cos(-.35),sa=Math.sin(-.35);x.strokeStyle='rgb(94,224,207)';x.lineWidth=1.4;x.strokeRect(ex*ca-ey*sa-4,ex*sa+ey*ca-4,8,8);
+ x.restore();requestAnimationFrame(draw)}
+requestAnimationFrame(draw);
+addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(k==='g')I._g=performance.now();else if(I._g&&performance.now()-I._g<1500){const m={o:'overview',w:'windshield',m:'map',h:'homeworld'}[k];if(m)location.href=m+'.html'}});
+</script></body></html>
