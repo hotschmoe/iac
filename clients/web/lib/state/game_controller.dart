@@ -634,14 +634,14 @@ class GameController extends ChangeNotifier {
   final Map<(int, proto.Hex), int> _previewAsked = {};
 
   /// Ask the server to rate the jump of [fleetId] into the adjacent [target]
-  /// (`preview_move`). Debounced, and skipped while a recent answer or request
+  /// (`preview_move`). Debounced, and skipped while a recent (under 3 ticks) answer or request
   /// for the same jump stands; the answer lands in [GameState.previews].
   void requestPreview(int fleetId, proto.Hex target) {
     if (fleetId == 0 || !hasState || !(isLive || isDemo)) return;
     final key = (fleetId, target);
-    if (state.previewFor(fleetId, target) != null) return;
+    if (!state.previewNeedsRefresh(fleetId, target)) return;
     final asked = _previewAsked[key];
-    if (asked != null && state.tick - asked < previewFreshTicks) return;
+    if (asked != null && state.tick - asked < previewRefreshTicks) return;
     _previewTimers[key]?.cancel();
     _previewTimers[key] = Timer(previewDebounce, () {
       _previewTimers.remove(key);

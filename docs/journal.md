@@ -652,3 +652,60 @@ console: the map and the route preview still derive the ratio from fleet and
 sector power instead of calling `preview_move`, and show the rating only for
 sectors with hostiles (`ringRating` is there for the rest); the ore reserve is
 not drawn.
+
+## 2026-10-10: autopilot safety, route warnings and threat bands
+
+From the second six-AI playtest (Haiku-1, Sonnet-1, Grok-1, Grok-2).
+
+**Root causes.**
+- A scout died on `prospect` because the autopilot only avoided sectors that
+  held hostiles at the moment it moved. It never compared the fleet's power
+  with the sector's threat, so it entered unscanned ring-6 sectors where a
+  corvette patrol (rapid fire 3 against scouts) shreds scouts.
+- `prospect` held "nothing uncharted and safe" with the frontier unvisited
+  because every sector with a lair, passive or beatable, was a wall: 40 to 45
+  percent of the sectors inside ring 8 hold one, and they cut the reachable
+  graph (in three worlds 14 to 48 free unexplored sectors stayed behind
+  lairs while the fleet held). The message named no constraint.
+- "The way home is 17 hops" was `known_hops_home`, which walks only sectors the
+  player has entered. The autopilot's return test used the same figure, so it
+  turned for home on a charted detour while the fleet then walked the direct
+  lane. Both now use the shortest real route.
+
+**Autopilot.** Every doctrine enters a sector only when fleet power divided by
+the threat the player sees there (live, charted or the ring estimate) is at
+least `engage_ratio_x10` (default 1.2), never below EVEN, and at least SAFE
+(2.5) where hostiles sit, unless a patrol is hunting. Heading home it prefers
+a safe lane and falls back to the shortest. Refusals are `hold`
+`PolicyAction`s naming sector, threat and ratio. `prospect` says whether a
+hazard, `max_range` or a fully charted board stops it. Over nine 6000-tick
+runs a two-scout prospector no longer died (before: 4 of 9 within 500 ticks)
+and charted 99 to 123 sectors. Live (blitz, port 7818, about 15 minutes):
+the scout fought passive scout patrols at 2.5x and refused sectors at
+0.96x to 0.99x (RISKY).
+
+**Label bands.** `ratio_label`: SAFE 2.5, FAVOURABLE 1.5, EVEN 1.1, RISKY 0.9,
+else DEADLY (was 3.0 / 2.0 / 1.2). From `combat::tests` (ignored
+`print_win_rates_by_ratio`, 400 fights per row, like-for-like classes): below
+0.9 the fleet wins 0 to 1 percent; at 0.94 to 1.0 wins swing from 25 to 99
+percent; from 1.1 it wins every time but keeps only 40 to 60 percent of its
+hull; at 1.5 it keeps 85 to 95; at 2.5 98 or more. Damage exchange is
+quadratic, so the bands crowd around 1.0. A lighter class against a heavier
+one (scouts v corvettes) needs about 1.5x the ratio.
+
+**Protocol.** `MovePreview` gains `charted_hops_home` (nullable) and
+`route_unexplored`; `hops_home` is now the shortest real route and
+`fuel_to_return` follows it. `RatioLabel` gains `even`. Warnings read "the
+charted route home is 17 hops, 46 fuel; the direct route is 2 hops, 12 fuel,
+across unexplored space". Fixture `protocol/ratio_labels.json` ties the web's
+`RatioLabel.forRatio` to the Rust bands.
+
+**Web.** Route preview and gate hover call `preview_move` for the selected
+fleet (200 ms debounce, refreshed every 3 ticks, shown for 8). The inspector
+shows the server verdict, basis and the way home; far hops of a route and the
+sector the fleet is in are still divided client-side from the server's
+`est_power` because `preview_move` takes adjacent sectors only. Scan contacts
+show `threat_band`, `ScanCompleted.threats` drives the contact banner, ore
+reserves with refill times appear in the inspector and the windshield contacts,
+and a waiting order no longer reads as the running one. Not done: `FleetState`
+does not carry both home routes, and `play.py` still needs the new labels.

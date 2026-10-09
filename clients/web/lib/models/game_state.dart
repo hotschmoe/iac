@@ -109,8 +109,10 @@ class PreviewEntry {
   const PreviewEntry(this.preview, this.tick);
 }
 
-/// Ticks a preview stays good for: fuel, power and the sector's threat move slowly.
-const previewFreshTicks = 5;
+/// Ticks a preview stays on screen, and how soon it is asked for again (the
+/// refresh lands well before it lapses, so the readout never blinks out).
+const previewFreshTicks = 8;
+const previewRefreshTicks = 3;
 
 class GameState {
   final int tick;
@@ -197,6 +199,11 @@ class GameState {
   proto.MovePreview? previewFor(int fleetId, proto.Hex target) {
     final e = previews[(fleetId, target)];
     return e != null && tick - e.tick <= previewFreshTicks ? e.preview : null;
+  }
+
+  bool previewNeedsRefresh(int fleetId, proto.Hex target) {
+    final e = previews[(fleetId, target)];
+    return e == null || tick - e.tick >= previewRefreshTicks;
   }
 
   String get clockDisplay {

@@ -532,7 +532,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
               right: 14,
               bottom: 14,
               width: 326,
-              child: ConstrainedBox(constraints: BoxConstraints(maxHeight: math.max(160, box.maxHeight - 340)), child: SingleChildScrollView(child: _routePanel()))),
+              child: ConstrainedBox(constraints: BoxConstraints(maxHeight: math.max(160, box.maxHeight - 470)), child: SingleChildScrollView(child: _routePanel()))),
         const Positioned(left: 14, bottom: 14, width: 262, child: LegendPanel()),
         Positioned(left: 0, right: 0, bottom: 14, child: Center(child: zoom)),
       ];
