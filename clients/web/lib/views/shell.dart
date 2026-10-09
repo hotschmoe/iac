@@ -5,6 +5,7 @@ import '../console/prefs.dart';
 import '../console/services.dart';
 import '../console/sfx.dart';
 import '../console/toasts.dart';
+import '../design/beat.dart';
 import '../design/lens.dart';
 import '../design/tokens.dart';
 import '../models/game_state.dart';
@@ -50,6 +51,8 @@ class _ShellState extends State<Shell> {
           _palette = true;
           _paletteText = t;
         });
+    _prefs.addListener(_onPrefs);
+    _onPrefs();
     HardwareKeyboard.instance.addHandler(_onKey);
     widget.controller.addListener(_onGame);
     _lastLogKey = _logKey();
@@ -57,12 +60,15 @@ class _ShellState extends State<Shell> {
 
   @override
   void dispose() {
+    _prefs.removeListener(_onPrefs);
     HardwareKeyboard.instance.removeHandler(_onKey);
     widget.controller.removeListener(_onGame);
     _gov.dispose();
     _con.dispose();
     super.dispose();
   }
+
+  void _onPrefs() => Beat.instance.interval = Duration(milliseconds: _prefs.quality == Quality.low ? 250 : 100);
 
   String _logKey() {
     final e = widget.controller.state.events;

@@ -133,6 +133,24 @@ class HelpOverlay extends StatelessWidget {
                     builder: (context, _) {
                       final p = con.prefs;
                       return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        const Lbl('Settings'),
+                        const SizedBox(height: 6),
+                        Wrap(spacing: 6, runSpacing: 6, children: [
+                          ConsoleButton('Sound ${p.sound ? 'on' : 'off'}', small: true, active: p.sound, onPressed: () => p.setSound(!p.sound)),
+                          ConsoleButton('Jump retrace ${p.retrace ? 'on' : 'off'}', small: true, active: p.retrace, onPressed: () => p.setRetrace(!p.retrace)),
+                          ConsoleButton('Scanlines ${p.scanlines ? 'on' : 'off'}', small: true, active: p.scanlines, onPressed: () => p.setScanlines(!p.scanlines)),
+                          ConsoleButton('Reduce motion ${p.reduceMotion ? 'on' : 'off'}', small: true, active: p.reduceMotion, onPressed: () => p.setReduceMotion(!p.reduceMotion)),
+                        ]),
+                        const SizedBox(height: 8),
+                        Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                          const Lbl('Quality'),
+                          ConsoleButton('Auto', small: true, active: p.pinned == null, onPressed: () => p.setQuality(null)),
+                          for (final q in Quality.values)
+                            ConsoleButton(q.name, small: true, active: p.pinned == q, onPressed: () => p.setQuality(q)),
+                        ]),
+                        const SizedBox(height: 8),
+                        Text('${governor.summary}  ${p.quality.name.toUpperCase()}', style: T.mono(size: 10, color: C.text3)),
+                        _rule(),
                         _row('G O', 'Overview'),
                         _row('G W', 'Windshield'),
                         _row('G M', 'Map'),
@@ -154,24 +172,6 @@ class HelpOverlay extends StatelessWidget {
                         _row('Enter', 'Map: engage route'),
                         _row('Esc', 'Cancel or close'),
                         _row('M', 'Sound on or off'),
-                        _rule(),
-                        const Lbl('Settings'),
-                        const SizedBox(height: 6),
-                        Wrap(spacing: 6, runSpacing: 6, children: [
-                          ConsoleButton('Sound ${p.sound ? 'on' : 'off'}', small: true, active: p.sound, onPressed: () => p.setSound(!p.sound)),
-                          ConsoleButton('Jump retrace ${p.retrace ? 'on' : 'off'}', small: true, active: p.retrace, onPressed: () => p.setRetrace(!p.retrace)),
-                          ConsoleButton('Scanlines ${p.scanlines ? 'on' : 'off'}', small: true, active: p.scanlines, onPressed: () => p.setScanlines(!p.scanlines)),
-                          ConsoleButton('Reduce motion ${p.reduceMotion ? 'on' : 'off'}', small: true, active: p.reduceMotion, onPressed: () => p.setReduceMotion(!p.reduceMotion)),
-                        ]),
-                        const SizedBox(height: 8),
-                        Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
-                          const Lbl('Quality'),
-                          ConsoleButton('Auto', small: true, active: p.pinned == null, onPressed: () => p.setQuality(null)),
-                          for (final q in Quality.values)
-                            ConsoleButton(q.name, small: true, active: p.pinned == q, onPressed: () => p.setQuality(q)),
-                        ]),
-                        const SizedBox(height: 8),
-                        Text('${governor.summary}  ${p.quality.name.toUpperCase()}', style: T.mono(size: 10, color: C.text3)),
                       ]);
                     },
                   ),

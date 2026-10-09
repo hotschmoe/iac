@@ -142,9 +142,11 @@ class KeyCap extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         constraints: BoxConstraints(minWidth: size, minHeight: size),
         padding: const EdgeInsets.symmetric(horizontal: 3),
-        alignment: Alignment.center,
         decoration: BoxDecoration(border: Border.all(color: color == null ? C.lineHi : color!.withValues(alpha: .5))),
-        child: Text(label.toUpperCase(), style: T.mono(size: 9.5, color: color ?? C.a300, weight: FontWeight.w500, height: 1.1)),
+        child: Center(
+            widthFactor: 1,
+            heightFactor: 1,
+            child: Text(label.toUpperCase(), style: T.mono(size: 9.5, color: color ?? C.a300, weight: FontWeight.w500, height: 1.1))),
       );
 }
 

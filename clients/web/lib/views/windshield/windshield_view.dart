@@ -512,13 +512,13 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         if (!narrow) Positioned(left: 16, bottom: 14, width: 340, child: Feed(events: st.events)),
         Positioned(left: 0, right: 0, top: narrow ? 90 : size.height * .21, child: IgnorePointer(child: Center(child: _BannerBox(c: _banner, h: _bannerH, p: _bannerP, red: _bannerRed)))),
         if (_hsub)
-          Positioned(left: 0, right: 0, bottom: narrow ? 66 : 80, child: Center(child: ConsolePanel(flat: true, child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Positioned(left: 0, right: 0, bottom: narrow ? 66 : 80, child: Center(child: IntrinsicWidth(child: ConsolePanel(flat: true, child: Row(mainAxisSize: MainAxisSize.min, children: [
             for (final k in const ['auto', 'm', 'c', 'd'])
               ConsoleButton(k == 'auto' ? 'Auto' : k == 'm' ? 'Fe' : k == 'c' ? 'Cr' : 'De', key: ValueKey('res-$k'), small: true, primary: _resPick == k, onPressed: () {
                 _resPick = k;
                 act('harvest', fromSub: true);
               }),
-          ])))),
+          ]))))),
         Positioned(
           left: narrow ? 6 : 0,
           right: narrow ? 6 : 0,

@@ -91,16 +91,7 @@ class _GameScreenState extends State<GameScreen> {
           );
         }
         if (!_controller.hasState) return _connecting();
-        return Stack(
-          children: [
-            Shell(controller: _controller),
-            Positioned(
-              right: 12,
-              bottom: 48,
-              child: IgnorePointer(child: _status()),
-            ),
-          ],
-        );
+        return Shell(controller: _controller);
       },
     );
   }
@@ -111,16 +102,6 @@ class _GameScreenState extends State<GameScreen> {
         'ESTABLISHING UPLINK ... ${_params.url}',
         style: T.mono(size: 11, color: C.text3, spacing: 1),
       ),
-    );
-  }
-
-  Widget _status() {
-    final err = _controller.connectionError;
-    final live = _controller.isLive;
-    final label = '${live ? '●' : '○'} ${_controller.linkLabel}${err != null && !live ? ' ($err)' : ''}';
-    return Text(
-      label,
-      style: T.mono(size: 9, color: live ? C.own : C.text3, spacing: 1),
     );
   }
 }

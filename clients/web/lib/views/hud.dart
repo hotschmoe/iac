@@ -58,7 +58,7 @@ class Hud extends StatelessWidget {
               ]),
             ),
             if (!narrow) ...[
-              _Field('World', eco.world?.label ?? (con.game.isDemo ? 'DEMO' : 'LIVE')),
+              _Field('World', con.game.isLive || con.game.isDemo ? (eco.world?.label ?? (con.game.isDemo ? 'DEMO' : 'LIVE')) : con.game.linkLabel, alert: !con.game.isLive && !con.game.isDemo),
               _TickField(),
               ...buttons.map((b) => Padding(padding: const EdgeInsets.symmetric(horizontal: 3), child: b)),
               _Who(eco),
@@ -92,7 +92,8 @@ class _LogoPainter extends CustomPainter {
 
 class _Field extends StatelessWidget {
   final String label, value;
-  const _Field(this.label, this.value);
+  final bool alert;
+  const _Field(this.label, this.value, {this.alert = false});
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -100,7 +101,7 @@ class _Field extends StatelessWidget {
         child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
           Lbl(label, size: 9),
           const SizedBox(height: 2),
-          Text(value, style: T.mono(size: 13, color: C.a200, spacing: .5)),
+          Text(value, style: T.mono(size: 13, color: alert ? C.ember : C.a200, spacing: .5)),
         ]),
       );
 }

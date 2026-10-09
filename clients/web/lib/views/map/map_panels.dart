@@ -27,7 +27,7 @@ class FleetChips extends StatelessWidget {
     return Row(children: [
       for (var i = 0; i < fleets.length && i < 9; i++) ...[
         if (i > 0) const SizedBox(width: 6),
-        Expanded(child: _chip(i, fleets[i], fleets[i].id == sel)),
+        Flexible(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 190), child: _chip(i, fleets[i], fleets[i].id == sel))),
       ],
     ]);
   }

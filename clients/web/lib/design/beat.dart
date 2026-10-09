@@ -11,15 +11,28 @@ class Beat extends ChangeNotifier {
   int step = 0;
   Timer? _timer;
   int _listeners = 0;
+  Duration _interval = const Duration(milliseconds: 100);
+
+  /// Step length; the quality governor slows it on weak machines.
+  set interval(Duration d) {
+    if (d == _interval) return;
+    _interval = d;
+    if (_timer != null) {
+      _timer!.cancel();
+      _timer = _start();
+    }
+  }
+
+  Timer _start() => Timer.periodic(_interval, (_) {
+        step++;
+        notifyListeners();
+      });
 
   @override
   void addListener(VoidCallback listener) {
     super.addListener(listener);
     _listeners++;
-    _timer ??= Timer.periodic(const Duration(milliseconds: 100), (_) {
-      step++;
-      notifyListeners();
-    });
+    _timer ??= _start();
   }
 
   @override

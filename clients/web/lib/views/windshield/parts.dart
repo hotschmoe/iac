@@ -147,7 +147,7 @@ class FleetRail extends StatelessWidget {
             if (!narrow) ...[
               const SizedBox(height: 3),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text('${f.status.label}${on && combat ? ' / COMBAT' : ''}', style: T.mono(size: 10, color: C.text2, spacing: .4)),
+                Text('${f.status.label}${on && combat && f.status != ui.FleetStatus.combat ? ' / COMBAT' : ''}', style: T.mono(size: 10, color: C.text2, spacing: .4)),
                 Text('${f.sector.q},${f.sector.r}', style: T.mono(size: 10, color: C.text3)),
               ]),
               const SizedBox(height: 5),
