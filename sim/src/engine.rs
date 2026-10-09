@@ -1,7 +1,7 @@
 // Game engine: tick loop, movement, combat, harvesting, NPC behavior, homeworlds, build queues.
 // Ported from Zig engine.zig.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,8 @@ use crate::snapshot::Snapshot;
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
 pub const MAX_NPC_SHIPS: usize = scaling::NPC_MAX_SHIPS;
 pub const MAX_COMBAT_FLEETS: usize = 8;
+/// Rings beyond `HOMEWORLD_MAX_DIST` a new homeworld may spill into once the home band is full.
+const HOMEWORLD_SPILL_RINGS: u16 = 4;
 /// Part-refilled tiles are written to disk this often (ticks).
 const REGEN_PERSIST_TICKS: u64 = 60;
 
@@ -470,24 +472,25 @@ pub struct GameEngine {
     persister: Option<Box<dyn Persist>>,
     pub current_tick: u64,
 
-    pub players: HashMap<u64, Player>,
-    pub fleets: HashMap<u64, Fleet>,
-    pub npc_fleets: HashMap<u64, NpcFleet>,
-    pub active_combats: HashMap<u64, Combat>,
-    pub sector_overrides: HashMap<u32, SectorOverride>,
+    pub players: BTreeMap<u64, Player>,
+    pub fleets: BTreeMap<u64, Fleet>,
+    pub npc_fleets: BTreeMap<u64, NpcFleet>,
+    pub active_combats: BTreeMap<u64, Combat>,
+    pub sector_overrides: BTreeMap<u32, SectorOverride>,
 
     /// Actively-scanned sectors per player: hex key → expiry tick.
-    scan_reveals: HashMap<u64, HashMap<u32, u64>>,
-    raid_states: HashMap<u64, RaidState>,
+    /// The entity maps are ordered: every pass walks them in id order.
+    scan_reveals: BTreeMap<u64, BTreeMap<u32, u64>>,
+    raid_states: BTreeMap<u64, RaidState>,
     /// Per player and resource: 0 below 80 percent of the cap, 1 once
     /// `StorageNearCap` fired, 2 once `StorageFull` fired.
-    storage_marks: HashMap<u64, [u8; 3]>,
+    storage_marks: BTreeMap<u64, [u8; 3]>,
     /// Per player: the despawn tick of the home pile already warned about.
-    home_salvage_warned: HashMap<u64, u64>,
+    home_salvage_warned: BTreeMap<u64, u64>,
     /// Harvest yield per fleet awaiting its next `ResourceHarvested` event.
-    harvest_reports: HashMap<u64, HarvestReport>,
+    harvest_reports: BTreeMap<u64, HarvestReport>,
     /// Standing orders per fleet.
-    pub policies: HashMap<u64, FleetPolicy>,
+    pub policies: BTreeMap<u64, FleetPolicy>,
 
     pending_events: Vec<GameEvent>,
     pending_arrivals: Vec<u64>,  // fleet IDs pending homeworld/NPC checks after movement
@@ -551,17 +554,17 @@ impl GameEngine {
             world: meta,
             persister: None,
             current_tick: tick,
-            players: players.into_iter().collect(),
-            fleets: fleets.into_iter().collect(),
-            npc_fleets: npc_fleets.into_iter().collect(),
-            active_combats: combats.into_iter().collect(),
-            sector_overrides: sector_overrides.into_iter().collect(),
-            scan_reveals: scan_reveals.into_iter().map(|(p, m)| (p, m.into_iter().collect())).collect(),
-            raid_states: raid_states.into_iter().collect(),
-            storage_marks: storage_marks.into_iter().collect(),
-            home_salvage_warned: home_salvage_warned.into_iter().collect(),
-            harvest_reports: harvest_reports.into_iter().collect(),
-            policies: policies.into_iter().collect(),
+            players,
+            fleets,
+            npc_fleets,
+            active_combats: combats,
+            sector_overrides,
+            scan_reveals,
+            raid_states,
+            storage_marks,
+            home_salvage_warned,
+            harvest_reports,
+            policies,
             pending_events,
             pending_arrivals: Vec::new(),
             next_id,
@@ -587,19 +590,17 @@ impl GameEngine {
             meta: self.world,
             tick: self.current_tick,
             next_id: self.next_id,
-            players: self.players.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            fleets: self.fleets.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            npc_fleets: self.npc_fleets.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            combats: self.active_combats.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            sector_overrides: self.sector_overrides.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            policies: self.policies.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            scan_reveals: self.scan_reveals.iter()
-                .map(|(p, m)| (*p, m.iter().map(|(k, v)| (*k, *v)).collect()))
-                .collect(),
-            raid_states: self.raid_states.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            storage_marks: self.storage_marks.iter().map(|(k, v)| (*k, *v)).collect(),
-            home_salvage_warned: self.home_salvage_warned.iter().map(|(k, v)| (*k, *v)).collect(),
-            harvest_reports: self.harvest_reports.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            players: self.players.clone(),
+            fleets: self.fleets.clone(),
+            npc_fleets: self.npc_fleets.clone(),
+            combats: self.active_combats.clone(),
+            sector_overrides: self.sector_overrides.clone(),
+            policies: self.policies.clone(),
+            scan_reveals: self.scan_reveals.clone(),
+            raid_states: self.raid_states.clone(),
+            storage_marks: self.storage_marks.clone(),
+            home_salvage_warned: self.home_salvage_warned.clone(),
+            harvest_reports: self.harvest_reports.clone(),
             pending_events: self.pending_events.clone(),
             explored: self.explored.iter().copied().collect(),
             credited: self.credited.iter().copied().collect(),
@@ -4136,21 +4137,25 @@ impl GameEngine {
         );
 
         let min = HOMEWORLD_MIN_DIST as i32;
-        let max = HOMEWORLD_MAX_DIST as i32;
+        // A crowded home band spills outward one ring at a time; a world below
+        // the band's capacity never reaches the extra rings, so its placements
+        // are exactly what they were.
+        for spill in 0..=HOMEWORLD_SPILL_RINGS {
+            let max = (HOMEWORLD_MAX_DIST + spill) as i32;
+            for _ in 0..100 {
+                let dist = rng.random_range(min..=max) as u16;
+                let q = rng.random_range((-(dist as i32))..=(dist as i32)) as i16;
+                let r_min = (-(dist as i32)).max(-q as i32 - dist as i32) as i16;
+                let r_max = (dist as i32).min(-q as i32 + dist as i32) as i16;
+                let r = rng.random_range(r_min..=r_max);
 
-        for _ in 0..100 {
-            let dist = rng.random_range(min..=max) as u16;
-            let q = rng.random_range((-(dist as i32))..=(dist as i32)) as i16;
-            let r_min = (-(dist as i32)).max(-q as i32 - dist as i32) as i16;
-            let r_max = (dist as i32).min(-q as i32 + dist as i32) as i16;
-            let r = rng.random_range(r_min..=r_max);
+                let candidate = Hex { q, r };
+                let d = candidate.dist_from_origin();
+                if !(HOMEWORLD_MIN_DIST..=HOMEWORLD_MAX_DIST + spill).contains(&d) { continue; }
 
-            let candidate = Hex { q, r };
-            let d = candidate.dist_from_origin();
-            if !(HOMEWORLD_MIN_DIST..=HOMEWORLD_MAX_DIST).contains(&d) { continue; }
-
-            let too_close = self.players.values().any(|p| Hex::distance(&p.homeworld, &candidate) <= 1);
-            if !too_close { return Some(candidate); }
+                let too_close = self.players.values().any(|p| Hex::distance(&p.homeworld, &candidate) <= 1);
+                if !too_close { return Some(candidate); }
+            }
         }
         None
     }
@@ -4538,31 +4543,7 @@ impl GameEngine {
     // ── Sensor / Map ──────────────────────────────────────────────
 
     pub fn get_sensor_revealed_coords(&self, origin: Hex, max_hops: u8) -> Vec<Hex> {
-        if max_hops == 0 { return Vec::new(); }
-
-        let mut visited: HashMap<u32, ()> = HashMap::new();
-        let mut current_frontier: Vec<Hex> = Vec::new();
-        let mut result: Vec<Hex> = Vec::new();
-
-        visited.insert(origin.to_key(), ());
-        current_frontier.push(origin);
-
-        for _ in 0..max_hops {
-            let mut next_frontier: Vec<Hex> = Vec::new();
-            for coord in &current_frontier {
-                let neighbors = self.world_gen.connected_neighbors(*coord);
-                for n in neighbors.slice() {
-                    let key = n.to_key();
-                    if visited.contains_key(&key) { continue; }
-                    visited.insert(key, ());
-                    next_frontier.push(*n);
-                    result.push(*n);
-                }
-            }
-            current_frontier = next_frontier;
-        }
-
-        result
+        self.world_gen.reachable_within(origin, max_hops).to_vec()
     }
 
     // ── Events ────────────────────────────────────────────────────

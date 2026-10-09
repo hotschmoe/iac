@@ -2,7 +2,10 @@
 // Sectors are generated from their coordinates + world seed.
 // Only modified sectors need database storage.
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::hash::Hasher;
+use std::sync::Arc;
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -11,18 +14,53 @@ use crate::scaling::{npc_composition, npc_passive_share, npc_presence_pct, ore_d
 use crate::hex::Hex;
 
 /// Seed-based sector generation. Pure function — same inputs always produce same output.
-#[derive(Clone, Copy)]
+/// Results are memoised per generator (the map is only ever read at the same
+/// sectors tick after tick), which changes speed and nothing else.
 pub struct WorldGen {
     pub world_seed: u64,
+    sectors: RefCell<HashMap<u32, SectorTemplate>>,
+    links: RefCell<HashMap<u32, ConnectedList>>,
+    reach: RefCell<HashMap<ReachKey, Arc<[Hex]>>>,
+}
+
+/// Origin sector key and hop count of a cached `reachable_within`.
+type ReachKey = (u32, u8);
+
+/// Entries kept per cache before it is emptied; far above any real play area.
+const CACHE_LIMIT: usize = 1 << 21;
+
+impl Clone for WorldGen {
+    fn clone(&self) -> WorldGen {
+        WorldGen::init(self.world_seed)
+    }
 }
 
 impl WorldGen {
     pub fn init(seed: u64) -> WorldGen {
-        WorldGen { world_seed: seed }
+        WorldGen {
+            world_seed: seed,
+            sectors: RefCell::default(),
+            links: RefCell::default(),
+            reach: RefCell::default(),
+        }
     }
 
     /// Generate the base properties of a sector from its coordinates.
     pub fn generate_sector(&self, coord: Hex) -> SectorTemplate {
+        let key = coord.to_key();
+        if let Some(found) = self.sectors.borrow().get(&key) {
+            return found.clone();
+        }
+        let made = self.compute_sector(coord);
+        let mut cache = self.sectors.borrow_mut();
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, made.clone());
+        made
+    }
+
+    fn compute_sector(&self, coord: Hex) -> SectorTemplate {
         let seed = self.sector_seed(coord);
         let mut rng = DeterministicRng::new(seed);
         let dist = coord.dist_from_origin();
@@ -71,6 +109,20 @@ impl WorldGen {
 
     /// Get list of traversable neighbor coordinates.
     pub fn connected_neighbors(&self, coord: Hex) -> ConnectedList {
+        let key = coord.to_key();
+        if let Some(found) = self.links.borrow().get(&key) {
+            return *found;
+        }
+        let made = self.compute_neighbors(coord);
+        let mut cache = self.links.borrow_mut();
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, made);
+        made
+    }
+
+    fn compute_neighbors(&self, coord: Hex) -> ConnectedList {
         let mask = self.sector_connections(coord);
         let mut result = ConnectedList::new();
 
@@ -81,6 +133,39 @@ impl WorldGen {
         }
 
         result
+    }
+
+    /// Every sector within `max_hops` jumps of `origin` along open lanes,
+    /// nearest first (the origin itself excluded).
+    pub fn reachable_within(&self, origin: Hex, max_hops: u8) -> Arc<[Hex]> {
+        let key = (origin.to_key(), max_hops);
+        if let Some(found) = self.reach.borrow().get(&key) {
+            return Arc::clone(found);
+        }
+        let mut visited: HashMap<u32, ()> = HashMap::new();
+        let mut frontier = vec![origin];
+        let mut result: Vec<Hex> = Vec::new();
+        visited.insert(origin.to_key(), ());
+        for _ in 0..max_hops {
+            let mut next = Vec::new();
+            for coord in &frontier {
+                for n in self.connected_neighbors(*coord).slice() {
+                    if visited.insert(n.to_key(), ()).is_some() {
+                        continue;
+                    }
+                    next.push(*n);
+                    result.push(*n);
+                }
+            }
+            frontier = next;
+        }
+        let found: Arc<[Hex]> = result.into();
+        let mut cache = self.reach.borrow_mut();
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, Arc::clone(&found));
+        found
     }
 
     /// Check if an edge exists between two adjacent hexes.

@@ -1,3 +1,10 @@
 [workspace]
 members = ["shared", "sim", "server", "clients/tui"]
 resolver = "2"
+
+# The determinism tests run tens of thousands of ticks; unoptimised they take minutes.
+[profile.dev.package.iac-sim]
+opt-level = 2
+
+[profile.dev.package.iac-shared]
+opt-level = 2

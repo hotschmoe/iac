@@ -1577,7 +1577,7 @@ mod tests {
     }
 
     fn world_error(path: &str, requested: Option<Pace>) -> String {
-        Database::init(path).unwrap().load_snapshot(42, requested).err().expect("the world must be refused").to_string()
+        Database::init(path).unwrap().load_snapshot(42, requested).expect_err("the world must be refused").to_string()
     }
 
     #[test]
