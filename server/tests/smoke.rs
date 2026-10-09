@@ -341,3 +341,37 @@ async fn a_world_refuses_a_different_pace() {
 
     remove_db(&db);
 }
+
+#[tokio::test]
+async fn leaderboard_ranks_humans_and_agents_together() {
+    let port = 17936;
+    let db = fresh_db(port);
+    let _guard = start_server(port, &db);
+
+    let (_human, reply) = login(port, "Person", None).await;
+    assert_eq!(reply["success"], true);
+
+    let mut ws = connect_with_retry(&format!("ws://127.0.0.1:{port}")).await;
+    let auth = json!({"type": "auth", "player_name": "Botty", "agent": true});
+    ws.send(Message::text(auth.to_string())).await.unwrap();
+    assert_eq!(next_json(&mut ws).await["success"], true);
+
+    ws.send(Message::text(json!({"type": "command", "action": "leaderboard", "limit": 5}).to_string())).await.unwrap();
+    let board = loop {
+        let msg = next_json(&mut ws).await;
+        if msg["type"] == "leaderboard" {
+            break msg;
+        }
+    };
+    let entries = board["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{board}");
+    let bot = entries.iter().find(|e| e["name"] == "Botty").unwrap();
+    let person = entries.iter().find(|e| e["name"] == "Person").unwrap();
+    assert_eq!(bot["agent"], true);
+    assert_eq!(person["agent"], false);
+    assert_eq!(bot["score"], person["score"], "same start, same formula, one table");
+    assert_eq!(entries[0]["rank"], 1);
+    assert!(board.get("you").is_none(), "{board}");
+
+    remove_db(&db);
+}

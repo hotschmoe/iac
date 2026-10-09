@@ -6,7 +6,7 @@ use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     Command, EventKind, FleetState, GameEvent, HomeworldState,
-    PlayerState, SectorState, ServerMessage, WorldInfo,
+    LeaderboardReply, PlayerState, SectorState, ServerMessage, WorldInfo,
 };
 use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
 
@@ -136,6 +136,9 @@ pub struct ClientState {
     pub homeworld: Option<HomeworldState>,
     pub known_sectors: HashMap<u32, SectorState>,
     pub world: Option<WorldInfo>,
+    /// The last score table the server sent, shown in an overlay.
+    pub leaderboard: Option<LeaderboardReply>,
+    pub show_leaderboard: bool,
     pub event_log: EventLog,
 
     // UI state
@@ -191,6 +194,8 @@ impl ClientState {
             homeworld: None,
             known_sectors: HashMap::new(),
             world: None,
+            leaderboard: None,
+            show_leaderboard: false,
             event_log: EventLog::new(),
             current_view: View::CommandCenter,
             active_fleet_idx: 0,
@@ -405,6 +410,10 @@ impl ClientState {
             }
             ServerMessage::Event(event) => {
                 self.note_event(event);
+            }
+            ServerMessage::Leaderboard(board) => {
+                self.leaderboard = Some(board.clone());
+                self.show_leaderboard = true;
             }
             ServerMessage::PreviewMove(p) => {
                 self.status_message = format!(

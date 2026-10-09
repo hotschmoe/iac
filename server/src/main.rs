@@ -19,6 +19,7 @@ mod database;
 mod engine;
 mod intel;
 mod network;
+mod score;
 
 const TICK_PERIOD: Duration = Duration::from_secs(1);
 /// A tick over this is slow enough to be worth a warning (budget is 1000 ms).

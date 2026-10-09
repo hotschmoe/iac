@@ -66,6 +66,7 @@ void main() {
         'server_message/event': GameEvent,
         'server_message/error__server_error': ErrorMessage,
         'server_message/preview_move': MovePreview,
+        'server_message/leaderboard': LeaderboardReply,
       };
       for (final e in expected.entries) {
         final dir = e.key.split('/')[0];
@@ -84,9 +85,9 @@ void main() {
       expect(kinds.length, 24);
     });
 
-    test('command fixtures cover all 17 commands', () {
+    test('command fixtures cover all 18 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 17);
+      expect(kinds.length, 18);
     });
 
     test('full_state exposes sector connections', () {
@@ -117,6 +118,16 @@ void main() {
       expect(hw.nextRaidEstimatePower, 300.25);
       expect(hw.catalog.defences.map((d) => d.count), [12, 0, 3]);
       expect(hw.catalog.defences.first.requires.first.label, 'Shipyard >= 1');
+    });
+
+    test('the mapper logs the table and keeps it, with the agent label', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'leaderboard');
+      final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
+      expect(mapper.leaderboard!.entries.length, 2);
+      expect(mapper.leaderboard!.entries[1].agent, isTrue);
+      expect(mapper.leaderboard!.you!.rank, 14);
+      expect(mapper.log.map((l) => l.message), contains(startsWith('#2 Claude-7 [AI]')));
+      expect(mapper.toUiState().leaderboard, same(mapper.leaderboard));
     });
 
     test('fleets carry power and range', () {

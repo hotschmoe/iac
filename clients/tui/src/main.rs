@@ -74,7 +74,7 @@ async fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Log in before taking over the terminal so a refusal prints normally.
-    let (conn, _) = connection::login(&config, &cli.name, cli.token.as_deref()).await?;
+    let (conn, _) = connection::login(&config, &cli.name, cli.token.as_deref(), false).await?;
 
     // Initialize terminal
     crossterm::terminal::enable_raw_mode()?;
@@ -238,6 +238,9 @@ async fn run(
                         let mut st = state.lock().await;
                         st.show_sector_info = !st.show_sector_info;
                         st.show_keybinds = false;
+                    }
+                    input::InputAction::CloseLeaderboard => {
+                        state.lock().await.show_leaderboard = false;
                     }
                     input::InputAction::ToggleKeybinds => {
                         let mut st = state.lock().await;

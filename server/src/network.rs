@@ -137,7 +137,7 @@ impl Network {
 
                 let outcome = {
                     let mut engine = self.engine.lock().unwrap();
-                    engine.authenticate(&auth.player_name, auth.token.as_deref())
+                    engine.authenticate(&auth.player_name, auth.token.as_deref(), auth.agent)
                 };
                 let granted = match outcome {
                     Ok(granted) => granted,
@@ -235,6 +235,15 @@ impl Network {
             Command::ExploreSite { fleet_id } => engine.handle_explore_site(pid, fleet_id),
             Command::Split { fleet_id, ref ship_ids } => engine.handle_split(pid, fleet_id, ship_ids).map(|_| ()),
             Command::Merge { fleet_id, other_fleet_id } => engine.handle_merge(pid, fleet_id, other_fleet_id),
+            Command::Leaderboard { limit } => {
+                let (entries, you) = crate::score::leaderboard(&engine, limit as usize, pid);
+                reply = Some(ServerMessage::Leaderboard(iac_shared::protocol::LeaderboardReply {
+                    tick: engine.current_tick(),
+                    entries,
+                    you,
+                }));
+                Ok(())
+            }
             Command::PreviewMove { fleet_id, target } => engine.preview_move(pid, fleet_id, target).map(|p| {
                 reply = Some(ServerMessage::PreviewMove(p));
             }),
@@ -373,6 +382,7 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Research { .. }
         | Command::BuildShip { .. }
         | Command::BuildDefence { .. }
+        | Command::Leaderboard { .. }
         | Command::CancelBuild { .. }
         | Command::CancelQueued { .. } => None,
     }

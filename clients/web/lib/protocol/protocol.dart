@@ -354,14 +354,21 @@ sealed class ClientMessage {
 class AuthRequest extends ClientMessage {
   final String playerName;
   final String? token;
-  const AuthRequest({required this.playerName, this.token});
 
-  factory AuthRequest.fromJson(Json m) =>
-      AuthRequest(playerName: m['player_name'] as String, token: m['token'] as String?);
+  /// True when an AI agent flies this account (read only at creation; it only
+  /// labels the leaderboard).
+  final bool agent;
+  const AuthRequest({required this.playerName, this.token, this.agent = false});
+
+  factory AuthRequest.fromJson(Json m) => AuthRequest(
+        playerName: m['player_name'] as String,
+        token: m['token'] as String?,
+        agent: (m['agent'] as bool?) ?? false,
+      );
 
   @override
   Json toJson() {
-    final m = <String, dynamic>{'type': 'auth', 'player_name': playerName};
+    final m = <String, dynamic>{'type': 'auth', 'player_name': playerName, 'agent': agent};
     _put(m, 'token', token);
     return m;
   }
@@ -471,6 +478,7 @@ sealed class Command {
           index: (m['index'] as int?) ?? 0,
         ),
       'cancel_queued' => CancelQueuedCommand(queueType: QueueType.fromJson(m['queue_type']), index: _i(m['index'])),
+      'leaderboard' => LeaderboardCommand(limit: (m['limit'] as int?) ?? 20),
       'preview_move' => PreviewMoveCommand(fleetId: _i(m['fleet_id']), target: Hex.fromJson(m['target'])),
       'stop' => StopCommand(fleetId: fleet()),
       'scan' => ScanCommand(fleetId: fleet()),
@@ -569,6 +577,14 @@ class CancelQueuedCommand extends Command {
   Json toJson() => {'action': 'cancel_queued', 'queue_type': queueType.toJson(), 'index': index};
 }
 
+/// Ask for the score table; the reply is a [LeaderboardReply].
+class LeaderboardCommand extends Command {
+  final int limit;
+  const LeaderboardCommand({this.limit = 20});
+  @override
+  Json toJson() => {'action': 'leaderboard', 'limit': limit};
+}
+
 /// Ask what one jump to the adjacent sector would cost; the reply is a
 /// [MovePreview].
 class PreviewMoveCommand extends Command {
@@ -639,6 +655,7 @@ sealed class ServerMessage {
       'full_state' => GameState.fromJson(m),
       'event' => GameEvent.fromJson(m),
       'preview_move' => MovePreview.fromJson(m),
+      'leaderboard' => LeaderboardReply.fromJson(m),
       'error' => ErrorMessage.fromJson(m),
       final t => throw FormatException('unknown ServerMessage type "$t"'),
     };
@@ -809,6 +826,77 @@ class WorldEstimate {
   }
 
   Json toJson() => {'first_cruiser_s': firstCruiserS, 'endgame_s': endgameS};
+}
+
+/// The score table: one ranking for every player, human or agent.
+class LeaderboardReply extends ServerMessage {
+  final int tick;
+  final List<LeaderboardEntry> entries;
+
+  /// The asking player's own row when it falls outside [entries].
+  final LeaderboardEntry? you;
+  const LeaderboardReply({required this.tick, required this.entries, this.you});
+
+  factory LeaderboardReply.fromJson(Json m) => LeaderboardReply(
+        tick: _i(m['tick']),
+        entries: _list(m['entries'], LeaderboardEntry.fromJson),
+        you: _opt(m['you'], LeaderboardEntry.fromJson),
+      );
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{
+      'type': 'leaderboard',
+      'tick': tick,
+      'entries': entries.map((e) => e.toJson()).toList(),
+    };
+    _put(m, 'you', you?.toJson());
+    return m;
+  }
+}
+
+class LeaderboardEntry {
+  final int rank;
+  final String name;
+  final bool agent;
+  final double score;
+  final double core;
+
+  /// Raw points before the 25 percent cap on combat plus exploration.
+  final double combat;
+  final double explore;
+  const LeaderboardEntry({
+    required this.rank,
+    required this.name,
+    required this.agent,
+    required this.score,
+    required this.core,
+    required this.combat,
+    required this.explore,
+  });
+
+  factory LeaderboardEntry.fromJson(Object? json) {
+    final m = _obj(json);
+    return LeaderboardEntry(
+      rank: _i(m['rank']),
+      name: m['name'] as String,
+      agent: m['agent'] as bool,
+      score: _f(m['score']),
+      core: _f(m['core']),
+      combat: _f(m['combat']),
+      explore: _f(m['explore']),
+    );
+  }
+
+  Json toJson() => {
+        'rank': rank,
+        'name': name,
+        'agent': agent,
+        'score': score,
+        'core': core,
+        'combat': combat,
+        'explore': explore,
+      };
 }
 
 /// Answer to [PreviewMoveCommand]: the fuel side of a jump. Threat for the

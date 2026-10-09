@@ -45,6 +45,11 @@ pub struct AuthRequest {
     pub player_name: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token: Option<String>,
+    /// True when an AI agent, not a person, flies this account. It is only
+    /// read when the account is created and only labels the leaderboard:
+    /// agents and humans are one population with one scoring formula.
+    #[serde(default)]
+    pub agent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +97,12 @@ pub enum Command {
     /// so nothing is refunded. `index` counts the waiting items from 0.
     #[serde(rename = "cancel_queued")]
     CancelQueued { queue_type: QueueType, index: usize },
+    /// Ask for the score table. The reply is a `leaderboard` message.
+    #[serde(rename = "leaderboard")]
+    Leaderboard {
+        #[serde(default = "default_leaderboard_limit")]
+        limit: u16,
+    },
     /// Ask what one jump of `fleet_id` to the adjacent sector `target` would
     /// cost, without moving. The reply is a `preview_move` message.
     #[serde(rename = "preview_move")]
@@ -132,6 +143,10 @@ pub enum Command {
 
 fn default_ship_count() -> u16 {
     1
+}
+
+fn default_leaderboard_limit() -> u16 {
+    20
 }
 
 /// Which resource a harvest order mines. `Auto` takes everything the sector
@@ -243,6 +258,35 @@ pub enum ServerMessage {
     Error(ErrorMessage),
     #[serde(rename = "preview_move")]
     PreviewMove(MovePreview),
+    #[serde(rename = "leaderboard")]
+    Leaderboard(LeaderboardReply),
+}
+
+/// The score table: one ranking for every player, human or agent.
+/// `score = core + min(combat + explore, 0.25 * core)`, where `core` counts
+/// completed building and research levels, living ships and half of the
+/// defence structures, each at its cost weighted 1 : 1.5 : 2 for
+/// metal : crystal : deuterium, per thousand.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeaderboardReply {
+    pub tick: u64,
+    pub entries: Vec<LeaderboardEntry>,
+    /// The asking player's own row, when it falls outside `entries`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub you: Option<LeaderboardEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeaderboardEntry {
+    pub rank: u32,
+    pub name: String,
+    pub agent: bool,
+    pub score: f32,
+    pub core: f32,
+    /// Raw combat points, before the 25 percent cap.
+    pub combat: f32,
+    /// Raw exploration points, before the 25 percent cap.
+    pub explore: f32,
 }
 
 /// Answer to `preview_move`: the fuel side of a jump.

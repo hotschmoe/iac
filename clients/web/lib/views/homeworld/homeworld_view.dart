@@ -343,6 +343,7 @@ class HomeworldView extends StatelessWidget {
           if (researchRunning != null) _queueRow(researchRunning, proto.QueueType.research),
           for (var i = 0; i < research.waiting.length; i++)
             _queueRow(research.waiting[i], proto.QueueType.research, index: i, waiting: true),
+          if (s.leaderboard != null) _leaderboard(s.leaderboard!),
           if (log.isNotEmpty) const SizedBox(height: 6),
           for (var i = 0; i < log.length; i++)
             Text(
@@ -352,6 +353,26 @@ class HomeworldView extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: Amber.mono(size: 10, color: log[i].level.color),
             ),
+        ],
+      ),
+    );
+  }
+
+  /// The score table the server last sent (ask with `leaderboard`).
+  Widget _leaderboard(proto.LeaderboardReply board) {
+    Widget row(proto.LeaderboardEntry e) => Text(
+          '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)}',
+          style: Amber.mono(size: 10, color: Amber.normal),
+        );
+    return Padding(
+      key: const ValueKey('hw-leaderboard'),
+      padding: const EdgeInsets.only(top: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('SCORE', style: Amber.mono(size: 10, color: Amber.dim).copyWith(letterSpacing: 1)),
+          for (final e in board.entries.take(5)) row(e),
+          if (board.you != null) ...[Text('...', style: Amber.mono(size: 10, color: Amber.dim)), row(board.you!)],
         ],
       ),
     );

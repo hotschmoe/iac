@@ -16,6 +16,7 @@ class StateMapper {
   List<proto.FleetState> fleets = [];
   proto.HomeworldState? homeworld;
   proto.WorldInfo? world;
+  proto.LeaderboardReply? leaderboard;
 
   /// Known sectors keyed by [proto.Hex.toKey].
   final Map<int, proto.SectorState> sectors = {};
@@ -35,6 +36,7 @@ class StateMapper {
     fleets = [];
     homeworld = null;
     world = null;
+    leaderboard = null;
     sectors.clear();
     signals.clear();
     log.clear();
@@ -54,6 +56,15 @@ class StateMapper {
         _applyError(msg);
       case proto.MovePreview():
         _applyPreview(msg);
+      case proto.LeaderboardReply():
+        leaderboard = msg;
+        for (final e in [...msg.entries.take(5), if (msg.you != null) msg.you!]) {
+          pushLog(
+            '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)} '
+            '(core ${e.core.toStringAsFixed(1)}, combat ${e.combat.toStringAsFixed(1)}, explore ${e.explore.toStringAsFixed(1)})',
+            EventLevel.bright,
+          );
+        }
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }
@@ -320,6 +331,7 @@ class StateMapper {
       catalog: hw?.catalog,
       hw: hw,
       world: world,
+      leaderboard: leaderboard,
     );
   }
 

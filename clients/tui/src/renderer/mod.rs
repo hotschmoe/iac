@@ -48,7 +48,9 @@ pub fn view(frame: &mut Frame<'_>, state: &ClientState) {
 
     render_header(frame, state, chunks[0]);
 
-    if state.show_keybinds {
+    if state.show_leaderboard {
+        render_leaderboard(frame, state, chunks[1]);
+    } else if state.show_keybinds {
         render_keybinds(frame, chunks[1]);
     } else if state.fleet_panel.is_some() {
         render_fleet_panel(frame, state, chunks[1]);
@@ -181,6 +183,7 @@ Arrows    Navigate cards
 Enter     Build/Research
 +/-       Ship batch size
 x/X/z     Cancel running bld/ship/res
+l         Leaderboard (any view)
 c/C/Z     Cancel next waiting bld/ship/res
 t         Tech tree
 
@@ -198,6 +201,38 @@ c         Center on fleet
     let inner = block.inner(area);
     frame.render_widget(&block, area);
     frame.render_widget(paragraph, inner);
+}
+
+// ── Leaderboard ────────────────────────────────────────────────────
+
+fn render_leaderboard(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
+    use ratatui::text::Line;
+    let block = titled_block(" LEADERBOARD ", AMBER_DIM);
+    let inner = block.inner(area);
+    frame.render_widget(&block, area);
+    let Some(board) = &state.leaderboard else { return };
+
+    let me = state.player.as_ref().map(|p| p.name.as_str());
+    let row = |e: &iac_shared::protocol::LeaderboardEntry| {
+        let style = if Some(e.name.as_str()) == me { AMBER_FULL } else { AMBER };
+        Line::styled(
+            format!(
+                " {:>3}  {:<20} {}  {:>8.1}  core {:>8.1}  combat {:>6.1}  explore {:>6.1}",
+                e.rank, e.name, if e.agent { "AI " } else { "   " }, e.score, e.core, e.combat, e.explore,
+            ),
+            style,
+        )
+    };
+    let mut lines = vec![Line::styled(
+        " rank  name                      score         core    combat   explore   (any key closes)",
+        AMBER_DIM,
+    )];
+    lines.extend(board.entries.iter().map(row));
+    if let Some(you) = &board.you {
+        lines.push(Line::styled(" ...", AMBER_DIM));
+        lines.push(row(you));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ── Fleet panel ────────────────────────────────────────────────────

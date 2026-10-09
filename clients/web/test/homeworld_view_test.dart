@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/theme/amber_theme.dart';
 import 'package:iac_client/views/shell.dart';
@@ -59,6 +60,15 @@ void main() {
     expect(find.textContaining(' / ', findRichText: true), findsWidgets);
     expect(find.text('Storage Vault'.toUpperCase()), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  homeworldTest('the score table shows once the server has sent it', (tester, c) async {
+    expect(find.byKey(const ValueKey('hw-leaderboard')), findsNothing);
+    c.sendCommand(const proto.LeaderboardCommand(limit: 2));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('hw-leaderboard')), findsOneWidget);
+    expect(find.text('#1 Vega [AI]  14.2'), findsOneWidget);
+    expect(find.text('#3 Orrin  4.1'), findsNothing, reason: 'limit 2');
   });
 
   homeworldTest('lists defence structures after the ships and queues them like ships', (tester, c) async {

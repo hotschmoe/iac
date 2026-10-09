@@ -21,6 +21,7 @@ pub enum InputAction {
     CenterFleet,
     ToggleInfo,
     ToggleKeybinds,
+    CloseLeaderboard,
     HomeworldNav(HomeworldNav),
     ToggleTechTree,
     /// Cycle the active fleet's standing orders to the next preset.
@@ -40,6 +41,14 @@ pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
     // Allow SHIFT — crossterm reports '?' and 'X' with SHIFT set.
     if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
         return InputAction::None;
+    }
+
+    // The score table covers the screen until any key closes it.
+    if state.show_leaderboard {
+        return match key.code {
+            KeyCode::Char('q') => InputAction::Quit,
+            _ => InputAction::CloseLeaderboard,
+        };
     }
 
     // Global keys
@@ -96,6 +105,9 @@ pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
 }
 
 fn map_char(c: char, state: &ClientState) -> InputAction {
+    if c == 'l' {
+        return InputAction::SendCommand(Command::Leaderboard { limit: 15 });
+    }
     // Route unconditionally in Homeworld view so 't' can close the tech tree.
     if state.current_view == View::Homeworld {
         return map_homeworld_char(c);

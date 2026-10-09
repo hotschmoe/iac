@@ -43,6 +43,7 @@ use iac_shared::protocol::{
 
 use crate::auth::{self, TokenHash};
 use crate::combat;
+use crate::score;
 use crate::database::{Database, ExploredEdge, PersistBatch, Persister, WorldMeta};
 use crate::intel::KnownSectors;
 
@@ -107,6 +108,9 @@ pub struct NpcFleet {
     pub home_sector: Hex,
     pub patrol_timer: u16,
     pub in_combat: bool,
+    /// What the group cost to build, and its combined power, fixed at spawn.
+    pub bounty: Resources,
+    pub power: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +132,12 @@ pub struct Player {
     /// SHA-256 of the account's token; None for accounts that predate
     /// tokens until their next login claims them.
     pub token_hash: Option<TokenHash>,
+    /// Self-declared when the account was created; labels the leaderboard
+    /// and nothing else.
+    pub agent: bool,
+    /// Score from kills and from exploration, before the 25 percent cap.
+    pub combat_points: f32,
+    pub explore_points: f32,
 }
 
 /// A queued item holds no resources: it pays when it starts.
@@ -242,6 +252,8 @@ pub struct Combat {
     pub player_fleet_ids: Vec<u64>,
     pub npc_fleet_ids: Vec<u64>,
     pub round: u16,
+    /// The most power the players' side has brought to bear, for scoring.
+    pub peak_power: f32,
 }
 
 impl Combat {
@@ -705,6 +717,14 @@ impl GameEngine {
                 continue;
             }
 
+            let engaged: f32 = player_sides.iter()
+                .flat_map(|s| s.ships.iter())
+                .map(|s| s.weapon_power + (s.hull + s.shield) / 10.0)
+                .sum();
+            if let Some(c) = self.active_combats.get_mut(&combat_id) {
+                c.peak_power = c.peak_power.max(engaged);
+            }
+
             // Resolve combat with copied data
             let result = combat::resolve_combat_round(
                 &player_sides, &npc_sides,
@@ -804,8 +824,8 @@ impl GameEngine {
                 });
 
                 if result.player_won {
-
                     let cleared_key = combat_sector.to_key();
+                    self.credit_kill(combat_id, &pf_ids, &npc_ids, cleared_key);
                     self.ensure_override(cleared_key)
                         .npc_cleared_tick = Some(self.current_tick);
                     self.dirty_sectors.insert(cleared_key, ());
@@ -823,6 +843,29 @@ impl GameEngine {
         }
 
         Ok(())
+    }
+
+    /// Score for destroying the NPC group, once per respawn of the sector and
+    /// to every player who fought (cooperation costs nothing).
+    fn credit_kill(&mut self, combat_id: u64, player_fleets: &[u64], npcs: &[u64], sector_key: u32) {
+        let fresh = self.sector_overrides.get(&sector_key).is_none_or(|o| o.npc_cleared_tick.is_none());
+        if !fresh { return; }
+        let (bounty, power) = npcs.iter()
+            .filter_map(|id| self.npc_fleets.get(id))
+            .fold((Resources::default(), 0.0), |(b, p), n| (b.add(n.bounty), p + n.power));
+        let engaged = self.active_combats.get(&combat_id).map_or(0.0, |c| c.peak_power);
+        let points = score::kill_points(bounty, engaged, power);
+        if points <= 0.0 { return; }
+        let owners: HashSet<u64> = player_fleets.iter()
+            .filter_map(|f| self.fleets.get(f))
+            .map(|f| f.owner_id)
+            .collect();
+        for pid in owners {
+            if let Some(p) = self.players.get_mut(&pid) {
+                p.combat_points += points;
+                self.dirty_players.insert(pid, ());
+            }
+        }
     }
 
     /// Turn the per-tick harvest tallies into events: one per fleet every
@@ -1706,10 +1749,13 @@ impl GameEngine {
 
     /// Resolve an auth request to a player (see `AuthRequest` for the rules),
     /// issuing a token when the account is new or still unclaimed.
-    pub fn authenticate(&mut self, name: &str, presented: Option<&str>) -> Result<Authenticated, AuthError> {
+    pub fn authenticate(&mut self, name: &str, presented: Option<&str>, agent: bool) -> Result<Authenticated, AuthError> {
         let Some(player_id) = self.find_player_by_name(name) else {
             auth::validate_name(name).map_err(AuthError::InvalidName)?;
             let player_id = self.register_player(name.to_string()).map_err(|_| AuthError::Server)?;
+            if let Some(p) = self.players.get_mut(&player_id) {
+                p.agent = agent;
+            }
             let token = self.issue_token(player_id);
             return Ok(Authenticated { player_id, new_token: Some(token), registered: true });
         };
@@ -1779,6 +1825,9 @@ impl GameEngine {
             research_queue: None,
             research_pending: Vec::new(),
             token_hash: None,
+            agent: false,
+            combat_points: 0.0,
+            explore_points: 0.0,
         };
 
         self.players.insert(player_id, player);
@@ -3538,6 +3587,8 @@ impl GameEngine {
             home_sector: location,
             patrol_timer: 0,
             in_combat: false,
+            bounty: npc.ship_class.build_cost().scale(count as f32),
+            power: ships[..count].iter().map(|s| s.weapon_power + (s.hull + s.shield) / 10.0).sum(),
         };
 
         self.npc_fleets.insert(npc_fleet_id, npc_fleet.clone());
@@ -3597,6 +3648,7 @@ impl GameEngine {
             player_fleet_ids: Vec::new(),
             npc_fleet_ids: Vec::new(),
             round: 0,
+            peak_power: 0.0,
         };
         new_combat.add_player_fleet(fleet_id);
         new_combat.add_npc_fleet(npc_id);
@@ -4362,12 +4414,12 @@ mod tests {
         let mut engine = test_engine();
 
         // New name: account created, token issued once.
-        let fresh = engine.authenticate("Fresh", None).unwrap();
+        let fresh = engine.authenticate("Fresh", None, false).unwrap();
         assert!(fresh.registered);
         let token = fresh.new_token.expect("token issued on registration");
-        assert_eq!(engine.authenticate("Fresh", None).err(), Some(AuthError::TokenRequired));
-        assert_eq!(engine.authenticate("Fresh", Some("nope")).err(), Some(AuthError::InvalidToken));
-        let back = engine.authenticate("Fresh", Some(&token)).unwrap();
+        assert_eq!(engine.authenticate("Fresh", None, false).err(), Some(AuthError::TokenRequired));
+        assert_eq!(engine.authenticate("Fresh", Some("nope"), false).err(), Some(AuthError::InvalidToken));
+        let back = engine.authenticate("Fresh", Some(&token), false).unwrap();
         assert_eq!(back.player_id, fresh.player_id);
         assert!(back.new_token.is_none());
         assert!(!back.registered);
@@ -4381,28 +4433,28 @@ mod tests {
         // next login, whatever it presents, and is protected afterwards.
         let (legacy_id, _) = register(&mut engine, "Legacy");
         assert!(engine.players[&legacy_id].token_hash.is_none());
-        let claimed = engine.authenticate("Legacy", Some("whatever")).unwrap();
+        let claimed = engine.authenticate("Legacy", Some("whatever"), false).unwrap();
         assert_eq!(claimed.player_id, legacy_id);
         let legacy_token = claimed.new_token.expect("claim issues a token");
         assert!(engine.dirty_players.contains_key(&legacy_id), "claim must be persisted");
-        assert_eq!(engine.authenticate("Legacy", None).err(), Some(AuthError::TokenRequired));
-        assert!(engine.authenticate("Legacy", Some(&legacy_token)).is_ok());
+        assert_eq!(engine.authenticate("Legacy", None, false).err(), Some(AuthError::TokenRequired));
+        assert!(engine.authenticate("Legacy", Some(&legacy_token), false).is_ok());
 
         // Bad names never register.
-        assert!(matches!(engine.authenticate("x", None), Err(AuthError::InvalidName(_))));
+        assert!(matches!(engine.authenticate("x", None, false), Err(AuthError::InvalidName(_))));
         assert_eq!(engine.players.values().filter(|p| p.name == "x").count(), 0);
     }
 
     #[test]
     fn names_are_case_insensitive_accounts() {
         let mut engine = test_engine();
-        let admiral = engine.authenticate("Admiral", None).unwrap();
+        let admiral = engine.authenticate("Admiral", None, false).unwrap();
         let token = admiral.new_token.unwrap();
 
         // Another casing is the same account, not a lookalike registration.
-        assert_eq!(engine.authenticate("ADMIRAL", None).err(), Some(AuthError::TokenRequired));
-        assert_eq!(engine.authenticate("admiral", Some("nope")).err(), Some(AuthError::InvalidToken));
-        let back = engine.authenticate("admiral", Some(&token)).unwrap();
+        assert_eq!(engine.authenticate("ADMIRAL", None, false).err(), Some(AuthError::TokenRequired));
+        assert_eq!(engine.authenticate("admiral", Some("nope"), false).err(), Some(AuthError::InvalidToken));
+        let back = engine.authenticate("admiral", Some(&token), false).unwrap();
         assert_eq!(back.player_id, admiral.player_id);
         assert!(!back.registered);
         assert!(engine.register_player("aDmIrAl".to_string()).is_err());
@@ -4416,8 +4468,8 @@ mod tests {
         twin.token_hash = None;
         let twin_id = twin.id;
         engine.players.insert(twin_id, twin);
-        assert_eq!(engine.authenticate("admiral", None).unwrap().player_id, twin_id);
-        assert_eq!(engine.authenticate("Admiral", Some(&token)).unwrap().player_id, admiral.player_id);
+        assert_eq!(engine.authenticate("admiral", None, false).unwrap().player_id, twin_id);
+        assert_eq!(engine.authenticate("Admiral", Some(&token), false).unwrap().player_id, admiral.player_id);
     }
 
     #[test]
@@ -6226,5 +6278,141 @@ mod tests {
         assert_eq!(p.ship_queue.as_ref().unwrap().item, ShipyardItem::Defence(DefenceKind::PulseTurret));
         assert_eq!(p.ship_pending.iter().map(|q| q.item).collect::<Vec<_>>(),
             vec![ShipyardItem::Ship(ShipClass::Scout), ShipyardItem::Defence(DefenceKind::PulseTurret)]);
+    }
+
+    fn score_of_player(engine: &GameEngine, pid: u64) -> score::Score {
+        score::score_of(&engine.players[&pid], engine.fleets.values())
+    }
+
+    #[test]
+    fn a_new_player_scores_for_the_mines_and_scouts_they_start_with() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Fresh");
+        let s = score_of_player(&engine, pid);
+        // metal L1 60/15 + crystal L1 48/24 -> (60 + 22.5 + 48 + 36) / 1000
+        assert!((s.econ - 0.1665).abs() < 1e-3, "{s:?}");
+        assert!((s.fleet - 2.0 * 0.335).abs() < 1e-4, "two scouts at 200/50/30: {s:?}");
+        assert_eq!((s.defence, s.combat, s.explore), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn only_completed_work_counts_and_losses_subtract() {
+        use iac_shared::protocol::QueueType;
+        let mut engine = fast_engine();
+        let (pid, fid) = register(&mut engine, "Honest");
+        rich(&mut engine, pid);
+        let before = score_of_player(&engine, pid).total();
+        engine.handle_build(pid, BuildingType::MetalMine).unwrap();
+        assert_eq!(score_of_player(&engine, pid).total(), before, "an item under construction scores nothing");
+        engine.handle_cancel_build(pid, QueueType::Building, 0).unwrap();
+        assert_eq!(score_of_player(&engine, pid).total(), before, "cancelling scores nothing either");
+        tick_n(&mut engine, 1);
+        engine.handle_build(pid, BuildingType::MetalMine).unwrap();
+        tick_n(&mut engine, 50);
+        let after = score_of_player(&engine, pid).total();
+        assert!(after > before, "the finished level counts: {before} -> {after}");
+
+        let fleet_before = score_of_player(&engine, pid).fleet;
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        f.ships[0].hull = 0.0;
+        assert!(score_of_player(&engine, pid).fleet < fleet_before, "a dead ship no longer counts");
+    }
+
+    #[test]
+    fn structures_count_for_half_and_extras_are_capped() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Builder");
+        give_defences(&mut engine, pid, 10, 0);
+        let s = score_of_player(&engine, pid);
+        let turret = scaling::resource_weight(&DefenceKind::PulseTurret.build_cost());
+        assert!((s.defence - 0.5 * 10.0 * turret).abs() < 1e-4);
+
+        engine.players.get_mut(&pid).unwrap().combat_points = 1.0e6;
+        let s = score_of_player(&engine, pid);
+        assert!((s.total() - 1.25 * s.core()).abs() < 1e-3, "combat adds at most a quarter of core");
+    }
+
+    #[test]
+    fn a_kill_scores_unless_the_force_was_overwhelming_or_the_sector_is_already_cleared() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Hunter");
+        let at = find_npc_sector(&engine, iac_shared::world::NpcBehaviorType::Patrol);
+
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        engine.handle_attack(pid, fid, template_npc_id(at)).unwrap();
+        for n in engine.npc_fleets.values_mut() {
+            for sh in n.ships[..n.ship_count as usize].iter_mut() {
+                sh.hull = 1.0;
+                sh.shield = 0.0;
+            }
+        }
+        let bounty = engine.npc_fleets.values().next().unwrap().bounty;
+        for _ in 0..6 {
+            engine.tick().unwrap();
+        }
+        assert!(engine.active_combats.is_empty());
+        let paid = engine.players[&pid].combat_points;
+        assert!((paid - 0.25 * scaling::resource_weight(&bounty)).abs() < 1e-5, "paid {paid}");
+        assert!(paid > 0.0);
+
+        // The same sector pays nothing again until the NPC respawns.
+        let key = at.to_key();
+        assert!(engine.sector_overrides[&key].npc_cleared_tick.is_some());
+        engine.active_combats.insert(77, Combat {
+            id: 77, sector: at, player_fleet_ids: vec![fid], npc_fleet_ids: vec![], round: 0, peak_power: 1.0,
+        });
+        engine.credit_kill(77, &[fid], &[], key);
+        assert_eq!(engine.players[&pid].combat_points, paid);
+    }
+
+    #[test]
+    fn overwhelming_force_does_not_farm_points() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Bully");
+        let at = find_npc_sector(&engine, iac_shared::world::NpcBehaviorType::Patrol);
+        win_a_fight(&mut engine, pid, fid, at);
+        assert_eq!(engine.players[&pid].combat_points, 0.0);
+    }
+
+    #[test]
+    fn the_leaderboard_ranks_one_population_and_labels_agents() {
+        let mut engine = test_engine();
+        let human = engine.authenticate("Human", None, false).unwrap().player_id;
+        let bot = engine.authenticate("Botty", None, true).unwrap().player_id;
+        engine.authenticate("Third", None, false).unwrap();
+        engine.players.get_mut(&bot).unwrap().buildings.metal_mine = 8;
+
+        let (rows, you) = score::leaderboard(&engine, 2, human);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "Botty");
+        assert!(rows[0].agent && !rows[1].agent);
+        assert_eq!((rows[0].rank, rows[1].rank), (1, 2));
+        assert!(rows[0].score > rows[1].score);
+        assert!(you.is_none(), "the viewer is already in the table");
+
+        let third = engine.players.values().find(|p| p.name == "Third").unwrap().id;
+        let (_, you) = score::leaderboard(&engine, 1, third);
+        assert_eq!(you.unwrap().rank, 3, "outside the limit the viewer still sees their row");
+        // The flag is read once, at creation.
+        assert!(!engine.authenticate("Human", None, true).map(|a| a.registered).unwrap_or(false) || engine.players[&human].agent);
+        assert!(!engine.players[&human].agent);
+    }
+
+    #[test]
+    fn score_state_survives_a_restart() {
+        let path = temp_world("score_restart");
+        let pid = {
+            let mut engine = engine_at(&path, None).unwrap();
+            let pid = engine.authenticate("Keeper", None, true).unwrap().player_id;
+            engine.players.get_mut(&pid).unwrap().combat_points = 3.25;
+            engine.players.get_mut(&pid).unwrap().explore_points = 1.5;
+            engine.persist_dirty_state().unwrap();
+            engine.flush_persistence().unwrap();
+            pid
+        };
+        let engine = engine_at(&path, None).unwrap();
+        let p = &engine.players[&pid];
+        assert!(p.agent);
+        assert_eq!((p.combat_points, p.explore_points), (3.25, 1.5));
     }
 }

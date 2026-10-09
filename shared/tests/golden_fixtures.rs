@@ -359,6 +359,7 @@ fn command_name(c: &Command) -> &'static str {
         Command::CancelBuild { .. } => "cancel_build",
         Command::CancelQueued { .. } => "cancel_queued",
         Command::PreviewMove { .. } => "preview_move",
+        Command::Leaderboard { .. } => "leaderboard",
         Command::Stop { .. } => "stop",
         Command::Scan { .. } => "scan",
         Command::ExploreSite { .. } => "explore_site",
@@ -375,6 +376,7 @@ fn server_message_name(m: &ServerMessage) -> &'static str {
         ServerMessage::Event(_) => "event",
         ServerMessage::Error(_) => "error",
         ServerMessage::PreviewMove(_) => "preview_move",
+        ServerMessage::Leaderboard(_) => "leaderboard",
     }
 }
 
@@ -488,6 +490,7 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::CancelQueued { queue_type: QueueType::Building, index: 2 }),
         ("research", Command::CancelQueued { queue_type: QueueType::Research, index: 0 }),
         ("", Command::PreviewMove { fleet_id: 3, target: h(2, -5) }),
+        ("", Command::Leaderboard { limit: 10 }),
         ("", Command::Stop { fleet_id: 6 }),
         ("", Command::Scan { fleet_id: 7 }),
         ("", Command::ExploreSite { fleet_id: 8 }),
@@ -498,10 +501,10 @@ fn commands() -> Vec<(&'static str, Command)> {
 
 fn client_messages() -> Vec<(&'static str, ClientMessage)> {
     vec![
-        ("", ClientMessage::Auth(AuthRequest { player_name: "Admiral".into(), token: None })),
+        ("", ClientMessage::Auth(AuthRequest { player_name: "Admiral".into(), token: None, agent: false })),
         (
             "with_token",
-            ClientMessage::Auth(AuthRequest { player_name: "Bot".into(), token: Some("9f2c4a7be1d8350c6a94f0b3d27e81c5a4b6e90f3d1c28a7b5e4f60918273645".into()) }),
+            ClientMessage::Auth(AuthRequest { player_name: "Bot".into(), token: Some("9f2c4a7be1d8350c6a94f0b3d27e81c5a4b6e90f3d1c28a7b5e4f60918273645".into()), agent: true }),
         ),
         ("", ClientMessage::Command(Command::Move { fleet_id: 1, target: h(1, -1) })),
         ("scan", ClientMessage::Command(Command::Scan { fleet_id: 1 })),
@@ -712,6 +715,21 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             fuel_to_return: 126.0,
             can_return: false,
         }),
+    ));
+    v.push((
+        "".into(),
+        ServerMessage::Leaderboard(LeaderboardReply {
+            tick: 4820,
+            entries: vec![
+                LeaderboardEntry { rank: 1, name: "Admiral".into(), agent: false, score: 412.5, core: 380.0, combat: 40.25, explore: 0.0 },
+                LeaderboardEntry { rank: 2, name: "Claude-7".into(), agent: true, score: 389.0, core: 389.0, combat: 0.0, explore: 0.0 },
+            ],
+            you: Some(LeaderboardEntry { rank: 14, name: "Newbie".into(), agent: false, score: 3.5, core: 3.5, combat: 0.0, explore: 0.0 }),
+        }),
+    ));
+    v.push((
+        "no_you".into(),
+        ServerMessage::Leaderboard(LeaderboardReply { tick: 1, entries: vec![], you: None }),
     ));
     for code in ALL_ERROR_CODES {
         v.push((
@@ -991,6 +1009,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
         ("build_defence_default_count", "Command", json!({"action": "build_defence", "kind": "PulseTurret"})),
         ("raid_incoming_without_power", "ServerMessage",
             json!({"type": "event", "tick": 3, "kind": "RaidIncoming", "player_id": 1, "arrival_tick": 90, "threat": "light"})),
+        ("leaderboard_default_limit", "Command", json!({"action": "leaderboard"})),
         ("auth_without_token", "ClientMessage", json!({"type": "auth", "player_name": "x"})),
         ("bare_auth_result", "ServerMessage", json!({"type": "auth_result", "success": false})),
     ]

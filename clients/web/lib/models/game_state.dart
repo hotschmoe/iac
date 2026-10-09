@@ -138,6 +138,9 @@ class GameState {
   /// Fixed world settings (pace); null before the first full state.
   final proto.WorldInfo? world;
 
+  /// The last score table the server sent, if asked for.
+  final proto.LeaderboardReply? leaderboard;
+
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -158,6 +161,7 @@ class GameState {
     this.catalog,
     this.hw,
     this.world,
+    this.leaderboard,
   });
 
   String get clockDisplay {
@@ -189,6 +193,7 @@ class GameState {
     proto.HomeworldCatalog? catalog,
     proto.HomeworldState? hw,
     proto.WorldInfo? world,
+    proto.LeaderboardReply? leaderboard,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -210,5 +215,6 @@ class GameState {
         catalog: catalog ?? this.catalog,
         hw: hw ?? this.hw,
         world: world ?? this.world,
+        leaderboard: leaderboard ?? this.leaderboard,
       );
 }

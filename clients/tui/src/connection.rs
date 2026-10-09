@@ -81,10 +81,12 @@ impl Connection {
         &self,
         player_name: &str,
         token: Option<&str>,
+        agent: bool,
     ) -> Result<(String, AuthResult), Box<dyn std::error::Error + Send + Sync>> {
         self.send_message(ClientMessage::Auth(AuthRequest {
             player_name: player_name.to_string(),
             token: token.map(str::to_string),
+            agent,
         }))
         .await?;
 
@@ -170,12 +172,13 @@ pub async fn login(
     config: &ConnectionConfig,
     name: &str,
     cli_token: Option<&str>,
+    agent: bool,
 ) -> Result<(Connection, String), Box<dyn std::error::Error + Send + Sync>> {
     let server = token_store::server_key(&config.host, config.port);
     let token = cli_token.map(str::to_string).or_else(|| token_store::load(&server, name));
 
     let conn = Connection::connect(config).await?;
-    let (raw, result) = conn.authenticate(name, token.as_deref()).await?;
+    let (raw, result) = conn.authenticate(name, token.as_deref(), agent).await?;
 
     if !result.success {
         let reason = login_error(&result, token.is_some(), cli_token.is_some());

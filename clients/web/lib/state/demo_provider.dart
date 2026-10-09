@@ -952,6 +952,13 @@ class DemoProvider {
           ),
         ));
         return [_tickUpdate()];
+      case LeaderboardCommand(:final limit):
+        final rows = [
+          const LeaderboardEntry(rank: 1, name: 'Vega', agent: true, score: 14.2, core: 12.8, combat: 1.4, explore: 0),
+          const LeaderboardEntry(rank: 2, name: 'Demo', agent: false, score: 9.6, core: 9.1, combat: 0.5, explore: 0),
+          const LeaderboardEntry(rank: 3, name: 'Orrin', agent: false, score: 4.1, core: 4.1, combat: 0, explore: 0),
+        ];
+        return [LeaderboardReply(tick: _tick, entries: rows.take(limit).toList())];
       case PreviewMoveCommand(:final fleetId, :final target):
         final f = fleet(fleetId);
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
