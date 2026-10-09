@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import '../models/fleet.dart';
 import '../models/game_state.dart';
 
 /// Presentation model for the economy features whose protocol fields are
@@ -103,20 +104,24 @@ class EconomyView {
   static EconomyView live(GameState s) => empty;
 
   /// Demo numbers shaped like the economy spec (Storage Vault L2 at pace 1).
+  /// Shared constants live next to the class so the demo provider cannot diverge.
   static EconomyView demo(GameState s) {
     final tick = s.tick;
-    final raidIn = 300 - (tick % 600) % 300 + 4;
+    final raidIn = demoRaidPeriod - tick % demoRaidPeriod;
+    final docked = s.fleets
+        .where((f) => f.sector == s.homeworld && f.status == FleetStatus.docked)
+        .fold<double>(0, (a, f) => a + demoFleetPower(f));
     return EconomyView(
       world: const WorldView(1, 'persistent'),
-      storage: const StorageView({'metal': 11250, 'crystal': 7875, 'deut': 5625}, {'metal': 2500, 'crystal': 1750, 'deut': 1250}, 2),
+      storage: const StorageView(demoCaps, demoProtected, 2),
       slots: const SlotsView(
         depth: 2,
         maxDepth: 3,
-        queued: [QueuedItemView('Metal Mine Lv.5', 'waits: 3,420 Fe'), QueuedItemView('Storage Vault Lv.3', 'waits: 5,100 Fe')],
+        queued: [QueuedItemView('Metal Mine Lv.10', 'waits: 3,420 Fe'), QueuedItemView('Storage Vault Lv.3', 'waits: 5,100 Fe')],
         slotBUnlocked: false,
         slotBRequirement: 'Needs Modular Fabrication (requires Research Lab 4)',
       ),
-      defence: DefenceView(30, 23, 112, 120, raidIn, const [
+      defence: DefenceView(docked, demoGridPower, demoStructurePower, demoRaidPower(tick), raidIn, const [
         DefenceStructure('Pulse Turret', 3, 10, 36, 'Defense Grid 1', '120 Fe 40 Cr'),
         DefenceStructure('Lancer Battery', 1, 10, 40, 'Defense Grid 2, Weapons 2', '400 Fe 160 Cr'),
         DefenceStructure('Ion Bastion', 0, 10, 0, 'Defense Grid 4, Advanced Shields 2', '900 Fe 500 Cr 120 De'),
@@ -130,4 +135,26 @@ class EconomyView {
       ]),
     );
   }
+}
+
+/// Demo stockpile caps (Storage Vault L2: 5000/3500/2500 x1.5^2).
+const Map<String, double> demoCaps = {'metal': 11250, 'crystal': 7875, 'deut': 5625};
+const Map<String, double> demoProtected = {'metal': 2500, 'crystal': 1750, 'deut': 1250};
+
+/// A raid arrives whenever the tick is a multiple of this.
+const int demoRaidPeriod = 300;
+const double demoGridPower = 23;
+const double demoStructurePower = 112;
+
+/// Estimated raid power for the raid arriving after [tick].
+double demoRaidPower(int tick) => 120 + 10 * (tick ~/ demoRaidPeriod - 16).clamp(0, 40).toDouble();
+
+const _demoShipPower = {'Scout': 9.0, 'Corvette': 22.0, 'Frigate': 48.0, 'Cruiser': 110.0, 'Hauler': 15.0};
+
+double demoFleetPower(FleetState f) {
+  var p = 0.0;
+  for (final g in f.ships) {
+    p += (_demoShipPower[g.shipClass] ?? 0) * g.count;
+  }
+  return p;
 }
