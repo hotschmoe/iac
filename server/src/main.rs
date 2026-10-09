@@ -9,18 +9,14 @@ use tokio::time::MissedTickBehavior;
 use iac_shared::constants::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_WORLD_SEED};
 use iac_shared::pace::Pace;
 
-use crate::database::Database;
-use crate::engine::GameEngine;
+use iac_sim::GameEngine;
+
+use crate::database::{Database, Persister};
 use crate::network::Network;
 
 mod auth;
-mod combat;
 mod database;
-mod engine;
-mod intel;
 mod network;
-mod queue;
-mod score;
 
 const TICK_PERIOD: Duration = Duration::from_secs(1);
 /// A tick over this is slow enough to be worth a warning (budget is 1000 ms).
@@ -89,13 +85,15 @@ async fn main() {
     info!("----------------------------------------------------");
 
     let db = Database::init(&args.db).expect("Failed to initialize database");
-    let engine = match GameEngine::init(world_seed, db, args.pace.or(args.world)) {
-        Ok(engine) => engine,
+    let snapshot = match db.load_snapshot(world_seed, args.pace.or(args.world)) {
+        Ok(snapshot) => snapshot,
         Err(e) => {
             eprintln!("iac-server: {e}");
             std::process::exit(2);
         }
     };
+    let mut engine = GameEngine::restore(snapshot);
+    engine.attach_persist(Box::new(Persister::spawn(db)));
     info!("World pace: {}", database::describe_pace(engine.pace()));
     let engine = Arc::new(Mutex::new(engine));
 
@@ -150,7 +148,8 @@ async fn main() {
                 info!("Shutdown signal received, persisting final state...");
                 let mut engine = engine.lock().unwrap();
                 engine.checkpoint_known_sectors();
-                let saved = engine.persist_dirty_state().and_then(|_| engine.flush_persistence());
+                engine.persist_dirty_state();
+                let saved = engine.flush_persistence();
                 match saved {
                     Ok(()) => info!("Server shutdown complete."),
                     Err(e) => warn!("Final persist failed: {}", e),
@@ -185,7 +184,7 @@ fn run_tick(network: &Network, engine: &Arc<Mutex<GameEngine>>) -> Result<(), Bo
     network.broadcast_updates()?;
     let t_broadcast = start.elapsed();
 
-    engine.lock().unwrap().persist_dirty_state()?;
+    engine.lock().unwrap().persist_dirty_state();
     let t_persist = start.elapsed();
 
     log::debug!(

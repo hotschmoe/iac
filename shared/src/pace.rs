@@ -88,8 +88,23 @@ pub fn preset_named(name: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|p| p.name.eq_ignore_ascii_case(name))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
 pub struct Pace(f64);
+
+impl TryFrom<f64> for Pace {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Pace, String> {
+        Pace::new(value)
+    }
+}
+
+impl From<Pace> for f64 {
+    fn from(pace: Pace) -> f64 {
+        pace.0
+    }
+}
 
 impl Pace {
     pub const PERSISTENT: Pace = Pace(1.0);

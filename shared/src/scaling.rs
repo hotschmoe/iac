@@ -76,7 +76,7 @@ impl BuildingType {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildingLevels {
     pub metal_mine: u8,
     pub crystal_mine: u8,
@@ -379,7 +379,7 @@ impl ResearchType {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResearchLevels {
     pub fuel_efficiency: u8,
     pub extended_fuel_tanks: u8,

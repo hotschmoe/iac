@@ -3,7 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use log::{info, warn};
+use log::info;
+use serde::{Deserialize, Serialize};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 
@@ -42,8 +43,9 @@ use iac_shared::protocol::{
 use crate::auth::{self, TokenHash};
 use crate::combat;
 use crate::score;
-use crate::database::{Database, ExploreCredit, ExploredEdge, PersistBatch, Persister, WorldMeta};
 use crate::intel::KnownSectors;
+use crate::persist::{ExploreCredit, ExploredEdge, Persist, PersistBatch, WorldMeta};
+use crate::snapshot::Snapshot;
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -55,7 +57,29 @@ const REGEN_PERSIST_TICKS: u64 = 60;
 
 // ── Core Data Types ───────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Serde for a fixed ship array: written up to the last non-default slot,
+/// padded back with defaults on read, so a snapshot stays small and exact.
+mod ship_slots {
+    use super::Ship;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer, const N: usize>(ships: &[Ship; N], out: S) -> Result<S::Ok, S::Error> {
+        let used = ships.iter().rposition(|s| *s != Ship::default()).map_or(0, |i| i + 1);
+        ships[..used].serialize(out)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(input: D) -> Result<[Ship; N], D::Error> {
+        let list = Vec::<Ship>::deserialize(input)?;
+        if list.len() > N {
+            return Err(serde::de::Error::invalid_length(list.len(), &"at most the fleet's ship capacity"));
+        }
+        let mut ships = [Ship::default(); N];
+        ships[..list.len()].copy_from_slice(&list);
+        Ok(ships)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FleetStatus {
     Idle,
     Moving,
@@ -66,7 +90,7 @@ pub enum FleetStatus {
     Exploring,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ship {
     pub id: u64,
     pub ship_class: ShipClass,
@@ -78,12 +102,13 @@ pub struct Ship {
     pub speed: u8,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fleet {
     pub id: u64,
     pub owner_id: u64,
     pub location: Hex,
     pub state: FleetStatus,
+    #[serde(with = "ship_slots")]
     pub ships: [Ship; MAX_SHIPS_PER_FLEET],
     pub ship_count: usize,
     pub cargo: Resources,
@@ -100,10 +125,11 @@ pub struct Fleet {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NpcFleet {
     pub id: u64,
     pub location: Hex,
+    #[serde(with = "ship_slots")]
     pub ships: [Ship; MAX_NPC_SHIPS],
     pub ship_count: u8,
     pub behavior: iac_shared::world::NpcBehaviorType,
@@ -117,7 +143,7 @@ pub struct NpcFleet {
     pub label: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: u64,
     pub name: String,
@@ -147,7 +173,7 @@ pub struct Player {
 }
 
 /// A queued item holds no resources: it pays when it starts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingBuilding {
     pub id: u64,
     pub building_type: BuildingType,
@@ -155,7 +181,7 @@ pub struct PendingBuilding {
     pub reserve: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingResearch {
     pub id: u64,
     pub tech: ResearchType,
@@ -165,7 +191,7 @@ pub struct PendingResearch {
 
 /// A shipyard order: a batch that pays per unit. `built` units are done; a
 /// batch between units sits here again until the next unit can be paid.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingShip {
     pub id: u64,
     pub item: ShipyardItem,
@@ -176,7 +202,7 @@ pub struct PendingShip {
 
 /// Defence structures standing at home, and those a repelled raid knocked
 /// out that come back free at `restore_tick`.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Defences {
     pub count: [u32; DefenceKind::COUNT],
     pub restoring: [u32; DefenceKind::COUNT],
@@ -235,7 +261,7 @@ impl Player {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildQueueEntry {
     pub id: u64,
     pub building_type: BuildingType,
@@ -244,7 +270,7 @@ pub struct BuildQueueEntry {
     pub end_tick: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipQueueEntry {
     pub id: u64,
     pub item: ShipyardItem,
@@ -256,7 +282,7 @@ pub struct ShipQueueEntry {
     pub end_tick: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchQueueEntry {
     pub id: u64,
     pub tech: ResearchType,
@@ -265,7 +291,7 @@ pub struct ResearchQueueEntry {
     pub end_tick: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Combat {
     pub id: u64,
     pub sector: Hex,
@@ -298,7 +324,7 @@ impl Combat {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SectorOverride {
     pub metal_density: Option<Density>,
     pub crystal_density: Option<Density>,
@@ -341,7 +367,7 @@ impl SectorOverride {
 
 /// Per-player raid pacing state. Deliberately not persisted: a server
 /// restart just resets the raid clock, which is always in the player's favor.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaidState {
     pub first_seen_tick: u64,
     pub next_roll_tick: u64,
@@ -374,8 +400,8 @@ impl RaidTimers {
 }
 
 /// Harvest yield not yet reported to the owner.
-#[derive(Debug, Clone, Default)]
-struct HarvestReport {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HarvestReport {
     resources: Resources,
     ticks: u16,
     /// Tick the first unreported harvest happened.
@@ -383,7 +409,7 @@ struct HarvestReport {
 }
 
 /// A fleet's standing orders plus the bit of memory the autopilot needs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetPolicy {
     pub preset: PolicyPreset,
     pub params: PolicyParams,
@@ -405,7 +431,7 @@ enum PolicyTarget {
     Hostiles,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct IncomingRaid {
     pub arrival_tick: u64,
     /// Combat power of the raid fleet, fixed at forecast time so the
@@ -441,7 +467,7 @@ pub struct HomeRoute {
 pub struct GameEngine {
     pub world_gen: WorldGen,
     pub world: WorldMeta,
-    persister: Persister,
+    persister: Option<Box<dyn Persist>>,
     pub current_tick: u64,
 
     pub players: HashMap<u64, Player>,
@@ -488,44 +514,103 @@ pub struct GameEngine {
 }
 
 impl GameEngine {
-    /// `pace` is the operator's request; a database that already holds a
-    /// world keeps its own pace and refuses a different one.
-    pub fn init(world_seed: u64, db: Database, pace: Option<Pace>) -> Result<GameEngine, Box<dyn std::error::Error>> {
-        let meta = db.open_world(pace)?;
-        let world = load_world(&db, world_seed)?;
-        db.save_server_state("world_seed", &world_seed.to_string())?;
+    /// A fresh world: no players, tick 0.
+    pub fn new(world_seed: u64, pace: Pace) -> GameEngine {
+        GameEngine::restore(Snapshot::new(world_seed, pace))
+    }
 
-        Ok(GameEngine {
+    /// Rebuild an engine from saved state: a `snapshot()` of a running one,
+    /// or a partial one a host assembled from its own storage (everything
+    /// the engine can regenerate or that a restart resets may be left empty).
+    /// No persistence is attached; see `attach_persist`.
+    pub fn restore(snapshot: Snapshot) -> GameEngine {
+        let Snapshot {
+            world_seed, meta, tick, mut next_id, mut players, mut fleets, npc_fleets, combats,
+            sector_overrides, mut policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
+            harvest_reports, pending_events, explored, credited, known,
+        } = snapshot;
+
+        for player in players.values_mut() {
+            assign_missing_queue_ids(player, &mut next_id);
+        }
+        // Fleets registered before the starting-fuel fix were stored with a
+        // 50000 tank; hold them to the real one.
+        for fleet in fleets.values_mut() {
+            if let Some(player) = players.get(&fleet.owner_id) {
+                let tank = fleet_fuel_max(fleet, player);
+                if fleet.fuel_max > tank {
+                    fleet.fuel_max = tank;
+                    fleet.fuel = fleet.fuel.min(tank);
+                }
+            }
+        }
+        policies.retain(|fleet_id, _| fleets.contains_key(fleet_id));
+
+        GameEngine {
             world_gen: WorldGen::init(world_seed),
             world: meta,
-            persister: Persister::spawn(db),
-            current_tick: world.tick,
-            players: world.players,
-            fleets: world.fleets,
-            npc_fleets: HashMap::new(),
-            active_combats: HashMap::new(),
-            sector_overrides: world.sector_overrides,
-            scan_reveals: HashMap::new(),
-            raid_states: HashMap::new(),
-            storage_marks: HashMap::new(),
-            home_salvage_warned: HashMap::new(),
-            harvest_reports: HashMap::new(),
-            policies: world.policies,
-            pending_events: Vec::new(),
+            persister: None,
+            current_tick: tick,
+            players: players.into_iter().collect(),
+            fleets: fleets.into_iter().collect(),
+            npc_fleets: npc_fleets.into_iter().collect(),
+            active_combats: combats.into_iter().collect(),
+            sector_overrides: sector_overrides.into_iter().collect(),
+            scan_reveals: scan_reveals.into_iter().map(|(p, m)| (p, m.into_iter().collect())).collect(),
+            raid_states: raid_states.into_iter().collect(),
+            storage_marks: storage_marks.into_iter().collect(),
+            home_salvage_warned: home_salvage_warned.into_iter().collect(),
+            harvest_reports: harvest_reports.into_iter().collect(),
+            policies: policies.into_iter().collect(),
+            pending_events,
             pending_arrivals: Vec::new(),
-            next_id: world.next_id,
+            next_id,
             dirty_players: HashMap::new(),
             dirty_fleets: HashMap::new(),
             dirty_sectors: HashMap::new(),
             deleted_fleet_ids: HashMap::new(),
             dirty_policies: HashMap::new(),
             deleted_policy_ids: HashMap::new(),
-            explored: world.explored,
+            explored: explored.into_iter().collect(),
             new_edges: Vec::new(),
-            credited: world.credited,
+            credited: credited.into_iter().collect(),
             new_credits: Vec::new(),
-            known: KnownSectors::load(world.known_sectors),
-        })
+            known: KnownSectors::load(known),
+        }
+    }
+
+    /// The complete world state in canonical order. Two engines that played
+    /// the same game have equal snapshots (compare `Snapshot::hash`).
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            world_seed: self.world_gen.world_seed,
+            meta: self.world,
+            tick: self.current_tick,
+            next_id: self.next_id,
+            players: self.players.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            fleets: self.fleets.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            npc_fleets: self.npc_fleets.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            combats: self.active_combats.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            sector_overrides: self.sector_overrides.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            policies: self.policies.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            scan_reveals: self.scan_reveals.iter()
+                .map(|(p, m)| (*p, m.iter().map(|(k, v)| (*k, *v)).collect()))
+                .collect(),
+            raid_states: self.raid_states.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            storage_marks: self.storage_marks.iter().map(|(k, v)| (*k, *v)).collect(),
+            home_salvage_warned: self.home_salvage_warned.iter().map(|(k, v)| (*k, *v)).collect(),
+            harvest_reports: self.harvest_reports.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            pending_events: self.pending_events.clone(),
+            explored: self.explored.iter().copied().collect(),
+            credited: self.credited.iter().copied().collect(),
+            known: self.known.rows(),
+        }
+    }
+
+    /// Send every later `persist_dirty_state` to `persist`. Without one the
+    /// engine just forgets what changed.
+    pub fn attach_persist(&mut self, persist: Box<dyn Persist>) {
+        self.persister = Some(persist);
     }
 
     pub fn current_tick(&self) -> u64 {
@@ -782,6 +867,7 @@ impl GameEngine {
             // Resolve combat with copied data
             let result = combat::resolve_combat_round(
                 &player_sides, &npc_sides,
+                self.world_gen.world_seed,
                 combat_sector,
                 self.current_tick,
                 combat_round as u32,
@@ -2044,21 +2130,27 @@ impl GameEngine {
 
     /// Resolve an auth request to a player (see `AuthRequest` for the rules),
     /// issuing a token when the account is new or still unclaimed.
-    pub fn authenticate(&mut self, name: &str, presented: Option<&str>, agent: bool) -> Result<Authenticated, AuthError> {
+    pub fn authenticate(
+        &mut self,
+        name: &str,
+        presented: Option<&str>,
+        agent: bool,
+        new_token: impl FnOnce() -> String,
+    ) -> Result<Authenticated, AuthError> {
         let Some(player_id) = self.find_player_by_name(name) else {
             auth::validate_name(name).map_err(AuthError::InvalidName)?;
             let player_id = self.register_player(name.to_string()).map_err(|_| AuthError::Server)?;
             if let Some(p) = self.players.get_mut(&player_id) {
                 p.agent = agent;
             }
-            let token = self.issue_token(player_id);
+            let token = self.issue_token(player_id, new_token());
             return Ok(Authenticated { player_id, new_token: Some(token), registered: true });
         };
 
         match self.players[&player_id].token_hash {
             None => {
                 info!("Player '{}' (id={}) claimed a token", name, player_id);
-                let token = self.issue_token(player_id);
+                let token = self.issue_token(player_id, new_token());
                 Ok(Authenticated { player_id, new_token: Some(token), registered: false })
             }
             Some(stored) => match presented {
@@ -2072,8 +2164,7 @@ impl GameEngine {
         }
     }
 
-    fn issue_token(&mut self, player_id: u64) -> String {
-        let token = auth::generate_token();
+    fn issue_token(&mut self, player_id: u64, token: String) -> String {
         if let Some(p) = self.players.get_mut(&player_id) {
             p.token_hash = Some(auth::hash_token(&token));
             self.dirty_players.insert(player_id, ());
@@ -4482,10 +4573,10 @@ impl GameEngine {
 
     // ── Persistence ───────────────────────────────────────────────
 
-    /// Hand everything dirty since the last call to the persist thread.
-    /// Cheap (clones the dirty rows); the SQLite write happens off-thread.
-    pub fn persist_dirty_state(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let batch = PersistBatch {
+    /// Hand everything dirty since the last call to the attached `Persist`.
+    /// Cheap (clones the dirty rows); the write itself happens elsewhere.
+    pub fn persist_dirty_state(&mut self) {
+        let batch = self.persister.is_some().then(|| PersistBatch {
             tick: self.current_tick,
             next_id: self.next_id,
             players: self.dirty_players.keys().filter_map(|id| self.players.get(id).cloned()).collect(),
@@ -4498,18 +4589,22 @@ impl GameEngine {
             sectors: self.dirty_sectors.keys()
                 .filter_map(|key| self.sector_overrides.get(key).map(|ov| (Hex::from_key(*key), ov.clone())))
                 .collect(),
-            explored_edges: std::mem::take(&mut self.new_edges),
-            known_sectors: self.known.take_dirty(),
-            explore_credits: std::mem::take(&mut self.new_credits),
-        };
+            explored_edges: self.new_edges.clone(),
+            known_sectors: self.known.dirty_rows(),
+            explore_credits: self.new_credits.clone(),
+        });
         self.dirty_players.clear();
         self.dirty_fleets.clear();
         self.dirty_sectors.clear();
         self.deleted_fleet_ids.clear();
         self.dirty_policies.clear();
         self.deleted_policy_ids.clear();
-        self.persister.submit(batch);
-        Ok(())
+        self.new_edges.clear();
+        self.new_credits.clear();
+        self.known.clear_dirty();
+        if let (Some(persist), Some(batch)) = (&self.persister, batch) {
+            persist.submit(batch);
+        }
     }
 
     /// Stamp every live sector for the next persist; call before the final
@@ -4519,21 +4614,9 @@ impl GameEngine {
     }
 
     /// Block until every submitted batch is committed (shutdown, tests).
-    pub fn flush_persistence(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.persister.flush().map_err(|e| e.into())
+    pub fn flush_persistence(&self) -> Result<(), String> {
+        self.persister.as_ref().map_or(Ok(()), |p| p.flush())
     }
-}
-
-struct LoadedWorld {
-    tick: u64,
-    next_id: u64,
-    players: HashMap<u64, Player>,
-    fleets: HashMap<u64, Fleet>,
-    sector_overrides: HashMap<u32, SectorOverride>,
-    policies: HashMap<u64, FleetPolicy>,
-    explored: HashSet<(u64, u32)>,
-    credited: HashSet<(u64, u32, ExploreCredit)>,
-    known_sectors: Vec<crate::database::KnownRow>,
 }
 
 /// Orders saved before queue ids existed come back with id 0; give each a
@@ -4551,76 +4634,6 @@ fn assign_missing_queue_ids(player: &mut Player, next_id: &mut u64) {
     player.research_pending.iter_mut().for_each(|q| fresh(&mut q.id));
     player.ship_queue.iter_mut().for_each(|q| fresh(&mut q.id));
     player.ship_pending.iter_mut().for_each(|q| fresh(&mut q.id));
-}
-
-fn load_world(db: &Database, world_seed: u64) -> Result<LoadedWorld, Box<dyn std::error::Error>> {
-    let tick = db.load_server_state("current_tick")?.and_then(|s| s.parse().ok()).unwrap_or(0);
-    let mut next_id: u64 = db.load_server_state("next_id")?.and_then(|s| s.parse().ok()).unwrap_or(1);
-    if let Some(seed_str) = db.load_server_state("world_seed")? {
-        let stored_seed: u64 = seed_str.parse().unwrap_or(0);
-        if stored_seed != world_seed {
-            warn!("World seed mismatch: DB has {}, config has {}", stored_seed, world_seed);
-        }
-    }
-
-    let mut players = HashMap::new();
-    for mut player in db.load_players()? {
-        player.buildings = db.load_buildings(player.id)?;
-        player.research = db.load_research(player.id)?;
-        let queues = db.load_build_queues(player.id)?;
-        player.building_queue = queues.building;
-        player.building_pending = queues.building_pending;
-        player.ship_queue = queues.ship;
-        player.ship_pending = queues.ship_pending;
-        player.research_queue = queues.research;
-        player.research_pending = queues.research_pending;
-        assign_missing_queue_ids(&mut player, &mut next_id);
-        player.defences = db.load_defences(player.id)?;
-        players.insert(player.id, player);
-    }
-
-    let mut fleets: HashMap<u64, Fleet> = db.load_fleets()?.into_iter().map(|f| (f.id, f)).collect();
-    // Fleets registered before the starting-fuel fix were stored with a
-    // 50000 tank; hold them to the real one.
-    for fleet in fleets.values_mut() {
-        if let Some(player) = players.get(&fleet.owner_id) {
-            let tank = fleet_fuel_max(fleet, player);
-            if fleet.fuel_max > tank {
-                fleet.fuel_max = tank;
-                fleet.fuel = fleet.fuel.min(tank);
-            }
-        }
-    }
-
-    let sector_overrides = db.load_sector_overrides()?
-        .into_iter()
-        .map(|row| (Hex { q: row.q, r: row.r }.to_key(), row.override_data))
-        .collect();
-
-    let policies = db.load_fleet_policies()?
-        .into_iter()
-        .filter(|(fleet_id, _)| fleets.contains_key(fleet_id))
-        .collect();
-
-    let explored = db.load_explored_sectors()?
-        .into_iter()
-        .map(|(pid, hex)| (pid, hex.to_key()))
-        .collect();
-
-    if players.is_empty() {
-        info!("State loaded (empty -- fresh world)");
-    } else {
-        info!("State loaded: {} players, {} fleets, tick {}", players.len(), fleets.len(), tick);
-    }
-
-    let credited = db.load_explore_credits()?
-        .into_iter()
-        .map(|(pid, hex, kind)| (pid, hex.to_key(), kind))
-        .collect();
-
-    let known_sectors = db.load_known_sectors()?;
-
-    Ok(LoadedWorld { tick, next_id, players, fleets, sector_overrides, policies, explored, credited, known_sectors })
 }
 
 // ── Helper Functions ──────────────────────────────────────────────
@@ -4807,8 +4820,31 @@ mod tests {
     use super::*;
 
     fn test_engine() -> GameEngine {
-        let db = Database::init(":memory:").expect("in-memory db");
-        GameEngine::init(42, db, None).expect("engine init")
+        GameEngine::new(42, Pace::default())
+    }
+
+    fn engine_at_pace(pace: f64) -> GameEngine {
+        GameEngine::new(42, Pace::new(pace).unwrap())
+    }
+
+    /// The engine as a server restart rebuilds it: only what the database
+    /// keeps (NPC groups, combats, scans, raid clocks and alerts reset).
+    fn restart(engine: &GameEngine) -> GameEngine {
+        let json = serde_json::to_string(&engine.snapshot()).unwrap();
+        let mut snapshot: Snapshot = serde_json::from_str(&json).unwrap();
+        snapshot.npc_fleets.clear();
+        snapshot.combats.clear();
+        snapshot.scan_reveals.clear();
+        snapshot.raid_states.clear();
+        snapshot.storage_marks.clear();
+        snapshot.home_salvage_warned.clear();
+        snapshot.harvest_reports.clear();
+        snapshot.pending_events.clear();
+        GameEngine::restore(snapshot)
+    }
+
+    fn issue() -> String {
+        "t".repeat(64)
     }
 
     fn register(engine: &mut GameEngine, name: &str) -> (u64, u64) {
@@ -4966,62 +5002,30 @@ mod tests {
 
     #[test]
     fn harvest_choice_survives_restart() {
-        let path = std::env::temp_dir().join(format!(
-            "iac_harvest_restart_test_{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Persistent");
+        let site = find_sector_with(&engine, |m, c, _| m != Density::None && c != Density::None);
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+        engine.handle_harvest(pid, fid, HarvestResource::Crystal).unwrap();
 
-        let fid = {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db, None).unwrap();
-            let (pid, fid) = register(&mut engine, "Persistent");
-            let site = find_sector_with(&engine, |m, c, _| m != Density::None && c != Density::None);
-            engine.fleets.get_mut(&fid).unwrap().location = site;
-            engine.handle_harvest(pid, fid, HarvestResource::Crystal).unwrap();
-            engine.persist_dirty_state().unwrap();
-            fid
-        };
-
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db, None).expect("reload");
+        let engine = restart(&engine);
         let fleet = &engine.fleets[&fid];
         assert_eq!(fleet.state, FleetStatus::Harvesting);
         assert_eq!(fleet.harvest_target, HarvestResource::Crystal);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn first_visit_memory_survives_restart_without_db_reads() {
-        let path = std::env::temp_dir().join(format!(
-            "iac_explored_restart_test_{}.db",
-            std::process::id()
-        ));
-        for ext in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
-        }
+    fn first_visit_memory_survives_restart() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Wanderer");
+        let home = engine.fleets[&fid].location;
+        let visited = engine.world_gen.connected_neighbors(home).slice()[0];
+        assert!(!engine.explored.contains(&(pid, visited.to_key())));
+        engine.record_explored(pid, visited).unwrap();
+        assert!(engine.explored.contains(&(pid, visited.to_key())), "visible at once, before any write");
 
-        let (pid, visited) = {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db, None).unwrap();
-            let (pid, fid) = register(&mut engine, "Wanderer");
-            let home = engine.fleets[&fid].location;
-            let visited = engine.world_gen.connected_neighbors(home).slice()[0];
-            assert!(!engine.explored.contains(&(pid, visited.to_key())));
-            engine.record_explored(pid, visited).unwrap();
-            assert!(engine.explored.contains(&(pid, visited.to_key())), "visible at once, before any write");
-            engine.persist_dirty_state().unwrap();
-            (pid, visited)
-        };
-
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db, None).unwrap();
-        assert!(engine.explored.contains(&(pid, visited.to_key())), "explored sectors reload from explored_edges");
-
-        for ext in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
-        }
+        let engine = restart(&engine);
+        assert!(engine.explored.contains(&(pid, visited.to_key())));
     }
 
     #[test]
@@ -5029,12 +5033,12 @@ mod tests {
         let mut engine = test_engine();
 
         // New name: account created, token issued once.
-        let fresh = engine.authenticate("Fresh", None, false).unwrap();
+        let fresh = engine.authenticate("Fresh", None, false, issue).unwrap();
         assert!(fresh.registered);
         let token = fresh.new_token.expect("token issued on registration");
-        assert_eq!(engine.authenticate("Fresh", None, false).err(), Some(AuthError::TokenRequired));
-        assert_eq!(engine.authenticate("Fresh", Some("nope"), false).err(), Some(AuthError::InvalidToken));
-        let back = engine.authenticate("Fresh", Some(&token), false).unwrap();
+        assert_eq!(engine.authenticate("Fresh", None, false, issue).err(), Some(AuthError::TokenRequired));
+        assert_eq!(engine.authenticate("Fresh", Some("nope"), false, issue).err(), Some(AuthError::InvalidToken));
+        let back = engine.authenticate("Fresh", Some(&token), false, issue).unwrap();
         assert_eq!(back.player_id, fresh.player_id);
         assert!(back.new_token.is_none());
         assert!(!back.registered);
@@ -5048,28 +5052,28 @@ mod tests {
         // next login, whatever it presents, and is protected afterwards.
         let (legacy_id, _) = register(&mut engine, "Legacy");
         assert!(engine.players[&legacy_id].token_hash.is_none());
-        let claimed = engine.authenticate("Legacy", Some("whatever"), false).unwrap();
+        let claimed = engine.authenticate("Legacy", Some("whatever"), false, issue).unwrap();
         assert_eq!(claimed.player_id, legacy_id);
         let legacy_token = claimed.new_token.expect("claim issues a token");
         assert!(engine.dirty_players.contains_key(&legacy_id), "claim must be persisted");
-        assert_eq!(engine.authenticate("Legacy", None, false).err(), Some(AuthError::TokenRequired));
-        assert!(engine.authenticate("Legacy", Some(&legacy_token), false).is_ok());
+        assert_eq!(engine.authenticate("Legacy", None, false, issue).err(), Some(AuthError::TokenRequired));
+        assert!(engine.authenticate("Legacy", Some(&legacy_token), false, issue).is_ok());
 
         // Bad names never register.
-        assert!(matches!(engine.authenticate("x", None, false), Err(AuthError::InvalidName(_))));
+        assert!(matches!(engine.authenticate("x", None, false, issue), Err(AuthError::InvalidName(_))));
         assert_eq!(engine.players.values().filter(|p| p.name == "x").count(), 0);
     }
 
     #[test]
     fn names_are_case_insensitive_accounts() {
         let mut engine = test_engine();
-        let admiral = engine.authenticate("Admiral", None, false).unwrap();
+        let admiral = engine.authenticate("Admiral", None, false, issue).unwrap();
         let token = admiral.new_token.unwrap();
 
         // Another casing is the same account, not a lookalike registration.
-        assert_eq!(engine.authenticate("ADMIRAL", None, false).err(), Some(AuthError::TokenRequired));
-        assert_eq!(engine.authenticate("admiral", Some("nope"), false).err(), Some(AuthError::InvalidToken));
-        let back = engine.authenticate("admiral", Some(&token), false).unwrap();
+        assert_eq!(engine.authenticate("ADMIRAL", None, false, issue).err(), Some(AuthError::TokenRequired));
+        assert_eq!(engine.authenticate("admiral", Some("nope"), false, issue).err(), Some(AuthError::InvalidToken));
+        let back = engine.authenticate("admiral", Some(&token), false, issue).unwrap();
         assert_eq!(back.player_id, admiral.player_id);
         assert!(!back.registered);
         assert!(engine.register_player("aDmIrAl".to_string()).is_err());
@@ -5083,8 +5087,8 @@ mod tests {
         twin.token_hash = None;
         let twin_id = twin.id;
         engine.players.insert(twin_id, twin);
-        assert_eq!(engine.authenticate("admiral", None, false).unwrap().player_id, twin_id);
-        assert_eq!(engine.authenticate("Admiral", Some(&token), false).unwrap().player_id, admiral.player_id);
+        assert_eq!(engine.authenticate("admiral", None, false, issue).unwrap().player_id, twin_id);
+        assert_eq!(engine.authenticate("Admiral", Some(&token), false, issue).unwrap().player_id, admiral.player_id);
     }
 
     #[test]
@@ -5151,32 +5155,16 @@ mod tests {
 
     #[test]
     fn state_survives_server_restart() {
-        // Regression: REAL-affinity columns were read back as i64, which
-        // made every restart with saved players panic with
-        // InvalidColumnType.
-        let path = std::env::temp_dir().join(format!(
-            "iac_restart_test_{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Restarter");
+        let resources = engine.players[&pid].resources;
 
-        let (pid, fid, resources) = {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db, None).unwrap();
-            let (pid, fid) = register(&mut engine, "Restarter");
-            engine.persist_dirty_state().unwrap();
-            (pid, fid, engine.players[&pid].resources)
-        };
-
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db, None).expect("engine must reload saved state");
+        let engine = restart(&engine);
         let player = engine.players.get(&pid).expect("player survived restart");
         assert!((player.resources.metal - resources.metal).abs() < 0.01);
         let fleet = engine.fleets.get(&fid).expect("fleet survived restart");
         assert_eq!(fleet.ship_count, STARTING_SCOUTS);
         assert!(fleet.fuel > 0.0);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -5369,29 +5357,16 @@ mod tests {
 
     #[test]
     fn policies_and_sites_survive_restart() {
-        let path = std::env::temp_dir().join(format!(
-            "iac_policy_restart_test_{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Persistent");
+        engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
 
-        let (fid, site) = {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db, None).unwrap();
-            let (pid, fid) = register(&mut engine, "Persistent");
-            engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
+        let site = find_derelict_sector(&engine);
+        let ov = engine.ensure_override(site.to_key());
+        ov.site_looted_tick = Some(7);
+        ov.site_ambush_bumps = 2;
 
-            let site = find_derelict_sector(&engine);
-            let ov = engine.ensure_override(site.to_key());
-            ov.site_looted_tick = Some(7);
-            ov.site_ambush_bumps = 2;
-            engine.dirty_sectors.insert(site.to_key(), ());
-            engine.persist_dirty_state().unwrap();
-            (fid, site)
-        };
-
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db, None).expect("reload");
+        let engine = restart(&engine);
         let policy = engine.policies.get(&fid).expect("policy survived restart");
         assert_eq!(policy.preset, PolicyPreset::PatrolHome);
 
@@ -5399,8 +5374,6 @@ mod tests {
         assert_eq!(ov.site_looted_tick, Some(7));
         assert_eq!(ov.site_ambush_bumps, 2);
         assert!(engine.derelict_site_at(site).is_none(), "looted site stays looted");
-
-        let _ = std::fs::remove_file(&path);
     }
 
     // ── Hostile ids, salvage and chart memory ─────────────────────
@@ -5745,22 +5718,13 @@ mod tests {
 
     #[test]
     fn salvage_survives_restart() {
-        let path = std::env::temp_dir().join(format!("iac_salvage_restart_test_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
         let at = Hex { q: 2, r: 5 };
-        let (pile, despawn) = {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db, None).unwrap();
-            let dropped = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
-            engine.persist_dirty_state().unwrap();
-            dropped
-        };
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db, None).unwrap();
+        let mut engine = test_engine();
+        let (pile, despawn) = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
+        let engine = restart(&engine);
         let ov = &engine.sector_overrides[&at.to_key()];
         assert_eq!(ov.salvage, Some(pile));
         assert_eq!(ov.salvage_despawn_tick, Some(despawn));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -5883,23 +5847,15 @@ mod tests {
 
     #[test]
     fn chart_survives_server_restart_marked_stale() {
-        let path = std::env::temp_dir().join(format!("iac_chart_restart_test_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let (pid, seen) = {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db, None).unwrap();
-            let (pid, fid) = register(&mut engine, "Veteran");
-            engine.handle_scan(pid, fid).unwrap();
-            for _ in 0..3 { engine.tick().unwrap(); }
-            engine.checkpoint_known_sectors();
-            engine.persist_dirty_state().unwrap();
-            engine.flush_persistence().unwrap();
-            (pid, chart_of(&engine, pid))
-        };
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Veteran");
+        engine.handle_scan(pid, fid).unwrap();
+        for _ in 0..3 { engine.tick().unwrap(); }
+        engine.checkpoint_known_sectors();
+        let seen = chart_of(&engine, pid);
         assert!(seen.len() > 1);
 
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let mut engine = GameEngine::init(42, db, None).unwrap();
+        let mut engine = restart(&engine);
         // The scan reveal itself is memory-only, so only the sensor/fleet sectors are live now.
         let after = chart_of(&engine, pid);
         assert_eq!(after.len(), seen.len(), "every remembered sector reloaded");
@@ -5915,7 +5871,6 @@ mod tests {
         engine.tick().unwrap();
         let again = chart_of(&engine, pid);
         assert!(again.len() >= seen.len());
-        let _ = std::fs::remove_file(&path);
     }
 
     // ── Fleets, fuel and autopilot ────────────────────────────────
@@ -6557,117 +6512,39 @@ mod tests {
 
     #[test]
     fn registered_before_the_fix_clamps_on_reload() {
-        let path = std::env::temp_dir().join(format!("iac_fuel_reload_test_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let fid = {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db, None).unwrap();
-            let (_, fid) = register(&mut engine, "Old");
-            let f = engine.fleets.get_mut(&fid).unwrap();
-            f.fuel = 50_000.0;
-            f.fuel_max = 50_000.0;
-            engine.dirty_fleets.insert(fid, ());
-            engine.persist_dirty_state().unwrap();
-            fid
-        };
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db, None).unwrap();
+        let mut engine = test_engine();
+        let (_, fid) = register(&mut engine, "Old");
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        f.fuel = 50_000.0;
+        f.fuel_max = 50_000.0;
+
+        let engine = restart(&engine);
         assert!(engine.fleets[&fid].fuel_max < 1000.0);
         assert!(engine.fleets[&fid].fuel <= engine.fleets[&fid].fuel_max);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn split_and_merge_survive_persistence_and_restart() {
-        let path = std::env::temp_dir().join(format!("iac_split_persist_test_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let (pid, fid, new_id) = {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db, None).unwrap();
-            let (pid, fid) = register(&mut engine, "Splitter");
-            engine.add_ship_to_homeworld(pid, ShipClass::Hauler).unwrap();
-            engine.persist_dirty_state().unwrap();
-            let ship = engine.fleets[&fid].ships[2].id;
-            let new_id = engine.handle_split(pid, fid, &[ship]).unwrap();
-            engine.persist_dirty_state().unwrap();
-            engine.flush_persistence().unwrap();
-            (pid, fid, new_id)
-        };
+    fn split_and_merge_survive_a_restart() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Splitter");
+        engine.add_ship_to_homeworld(pid, ShipClass::Hauler).unwrap();
+        let ship = engine.fleets[&fid].ships[2].id;
+        let new_id = engine.handle_split(pid, fid, &[ship]).unwrap();
 
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let mut engine = GameEngine::init(42, db, None).unwrap();
+        let mut engine = restart(&engine);
         assert_eq!(engine.fleets[&fid].ship_count, 2);
         assert_eq!(engine.fleets[&new_id].ship_count, 1);
 
         engine.handle_merge(pid, fid, new_id).unwrap();
-        engine.persist_dirty_state().unwrap();
-        engine.flush_persistence().unwrap();
-        drop(engine);
-
-        let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db, None).unwrap();
+        let engine = restart(&engine);
         assert_eq!(engine.fleets[&fid].ship_count, 3);
         assert!(!engine.fleets.contains_key(&new_id));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    fn temp_world(tag: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("iac_{tag}_{}.db", std::process::id()));
-        for ext in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
-        }
-        path
-    }
-
-    fn engine_at(path: &std::path::Path, pace: Option<Pace>) -> Result<GameEngine, Box<dyn std::error::Error>> {
-        GameEngine::init(42, Database::init(path.to_str().unwrap()).unwrap(), pace)
-    }
-
-    #[test]
-    fn a_world_keeps_the_pace_it_was_created_with() {
-        let path = temp_world("pace_fixed");
-        {
-            let mut engine = engine_at(&path, Some(Pace::parse("blitz").unwrap())).unwrap();
-            register(&mut engine, "Pacer");
-            engine.persist_dirty_state().unwrap();
-            engine.flush_persistence().unwrap();
-        }
-        let engine = engine_at(&path, None).unwrap();
-        assert_eq!(engine.pace().value(), 600.0, "no --pace keeps the stored one");
-        drop(engine);
-        let engine = engine_at(&path, Some(Pace::new(600.0).unwrap())).unwrap();
-        assert_eq!(engine.pace().value(), 600.0);
-        drop(engine);
-        let err = engine_at(&path, Some(Pace::new(10.0).unwrap())).err().expect("a different pace is refused");
-        let text = err.to_string();
-        assert!(text.contains("600 (blitz)") && text.contains("10 (season)") && text.contains("new --db"), "{text}");
-    }
-
-    #[test]
-    fn a_database_without_world_meta_is_refused() {
-        let path = temp_world("old_world");
-        {
-            let db = Database::init(path.to_str().unwrap()).unwrap();
-            db.save_server_state("world_seed", "42").unwrap();
-        }
-        {
-            let conn = rusqlite::Connection::open(&path).unwrap();
-            conn.execute_batch("DROP TABLE world_meta").unwrap();
-        }
-        let err = engine_at(&path, None).err().expect("an old world must not start");
-        let text = err.to_string();
-        assert!(text.contains("not migrated") && text.contains("new world"), "{text}");
     }
 
     #[test]
     fn pace_scales_production_and_economy_timers() {
-        let slow = test_engine();
-        let fast = {
-            let db = Database::init(":memory:").unwrap();
-            GameEngine::init(42, db, Some(Pace::new(10.0).unwrap())).unwrap()
-        };
-        let mut a = slow;
-        let mut b = fast;
+        let mut a = test_engine();
+        let mut b = engine_at_pace(10.0);
         let (pa, _) = register(&mut a, "Slow");
         let (pb, _) = register(&mut b, "Fast");
         let prod_a = a.players[&pa].production_per_tick(&a.pace());
@@ -6808,8 +6685,7 @@ mod tests {
     }
 
     fn fast_engine() -> GameEngine {
-        let db = Database::init(":memory:").unwrap();
-        GameEngine::init(42, db, Some(Pace::new(100.0).unwrap())).unwrap()
+        engine_at_pace(100.0)
     }
 
     fn rich(engine: &mut GameEngine, pid: u64) {
@@ -7282,22 +7158,16 @@ mod tests {
 
     #[test]
     fn queues_survive_a_restart() {
-        let path = temp_world("queue_restart");
-        let pid = {
-            let mut engine = engine_at(&path, Some(Pace::new(100.0).unwrap())).unwrap();
-            let (pid, _) = register(&mut engine, "Durable");
-            rich(&mut engine, pid);
-            engine.players.get_mut(&pid).unwrap().buildings.shipyard = 1;
-            engine.handle_build(pid, BuildingType::MetalMine, false).unwrap();
-            engine.handle_build(pid, BuildingType::MetalMine, false).unwrap();
-            engine.handle_build(pid, BuildingType::CrystalMine, false).unwrap();
-            engine.handle_build_ship(pid, ShipClass::Scout, 2, false).unwrap();
-            engine.handle_build_ship(pid, ShipClass::Scout, 1, false).unwrap();
-            engine.persist_dirty_state().unwrap();
-            engine.flush_persistence().unwrap();
-            pid
-        };
-        let engine = engine_at(&path, None).unwrap();
+        let mut engine = fast_engine();
+        let (pid, _) = register(&mut engine, "Durable");
+        rich(&mut engine, pid);
+        engine.players.get_mut(&pid).unwrap().buildings.shipyard = 1;
+        engine.handle_build(pid, BuildingType::MetalMine, false).unwrap();
+        engine.handle_build(pid, BuildingType::MetalMine, false).unwrap();
+        engine.handle_build(pid, BuildingType::CrystalMine, false).unwrap();
+        engine.handle_build_ship(pid, ShipClass::Scout, 2, false).unwrap();
+        engine.handle_build_ship(pid, ShipClass::Scout, 1, false).unwrap();
+        let engine = restart(&engine);
         let p = &engine.players[&pid];
         assert_eq!(p.building_queue.len(), 1);
         assert_eq!(p.building_pending.iter().map(|q| (q.building_type, q.target_level)).collect::<Vec<_>>(),
@@ -7517,23 +7387,6 @@ mod tests {
             assert_eq!(signal.threat_band, scaling::threat_band(engine.sector_threat(signal.sector).rating));
             assert!((1..=3).contains(&signal.threat_band));
         }
-    }
-
-    #[test]
-    fn a_world_from_another_generator_is_refused() {
-        let path = temp_world("old_worldgen");
-        drop(engine_at(&path, None).unwrap());
-        {
-            let conn = rusqlite::Connection::open(&path).unwrap();
-            conn.execute("UPDATE world_meta SET worldgen_version = 1", []).unwrap();
-        }
-        let err = engine_at(&path, None).err().expect("a world from the old generator must not start");
-        assert!(err.to_string().contains("worldgen version 1"), "{err}");
-    }
-
-    fn engine_at_pace(pace: f64) -> GameEngine {
-        let db = Database::init(":memory:").unwrap();
-        GameEngine::init(42, db, Some(Pace::new(pace).unwrap())).unwrap()
     }
 
     /// A sector far enough out for the ring factor to bite, with rich metal.
@@ -8064,23 +7917,15 @@ mod tests {
 
     #[test]
     fn credits_charts_and_relics_survive_a_restart() {
-        let path = temp_world("explore_restart");
-        let (pid, fid, a, credited) = {
-            let mut engine = engine_at(&path, None).unwrap();
-            let (pid, fid) = register(&mut engine, "Keeper");
-            let (a, _) = out_and_back(&engine, pid);
-            fly(&mut engine, pid, fid, a);
-            engine.players.get_mut(&pid).unwrap().relics = 2;
-            engine.dirty_players.insert(pid, ());
-            let site = derelict_beyond(&engine, 5);
-            let credit = engine.credited.insert((pid, site.to_key(), ExploreCredit::Boarded));
-            engine.new_credits.push((pid, site, ExploreCredit::Boarded));
-            assert!(credit);
-            engine.persist_dirty_state().unwrap();
-            engine.flush_persistence().unwrap();
-            (pid, fid, a, (pid, site.to_key(), ExploreCredit::Boarded))
-        };
-        let engine = engine_at(&path, None).unwrap();
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Keeper");
+        let (a, _) = out_and_back(&engine, pid);
+        fly(&mut engine, pid, fid, a);
+        engine.players.get_mut(&pid).unwrap().relics = 2;
+        let site = derelict_beyond(&engine, 5);
+        let credited = (pid, site.to_key(), ExploreCredit::Boarded);
+        assert!(engine.credited.insert(credited));
+        let engine = restart(&engine);
         assert_eq!(engine.players[&pid].relics, 2);
         assert!(engine.fleets[&fid].charts.contains(&a.to_key()));
         assert!(engine.credited.contains(&credited));
@@ -8208,8 +8053,7 @@ mod tests {
     /// Raid forecasts per player over `ticks`, for `players` fresh empires
     /// that all have Shipyard 2.
     fn raid_counts(pace: &str, ticks: u64, players: usize) -> Vec<usize> {
-        let db = Database::init(":memory:").unwrap();
-        let mut engine = GameEngine::init(42, db, Some(Pace::parse(pace).unwrap())).unwrap();
+        let mut engine = GameEngine::new(42, Pace::parse(pace).unwrap());
         let pids: Vec<u64> = (0..players).map(|i| register(&mut engine, &format!("Raided{i}")).0).collect();
         for pid in &pids {
             engine.players.get_mut(pid).unwrap().buildings.shipyard = 2;
@@ -8363,27 +8207,21 @@ mod tests {
 
     #[test]
     fn defences_and_their_queue_survive_a_restart() {
-        let path = temp_world("defence_restart");
-        let pid = {
-            let mut engine = engine_at(&path, Some(Pace::new(100.0).unwrap())).unwrap();
-            let (pid, _) = register(&mut engine, "Keeper");
-            rich(&mut engine, pid);
-            {
-                let p = engine.players.get_mut(&pid).unwrap();
-                p.buildings.shipyard = 1;
-                p.buildings.defense_grid = 1;
-            }
-            give_defences(&mut engine, pid, 7, 0);
-            engine.players.get_mut(&pid).unwrap().defences.restoring[0] = 2;
-            engine.players.get_mut(&pid).unwrap().defences.restore_tick[0] = 999;
-            engine.handle_build_defence(pid, DefenceKind::PulseTurret, 3, false).unwrap();
-            engine.handle_build_ship(pid, ShipClass::Scout, 1, false).unwrap();
-            engine.handle_build_defence(pid, DefenceKind::PulseTurret, 1, false).unwrap();
-            engine.persist_dirty_state().unwrap();
-            engine.flush_persistence().unwrap();
-            pid
-        };
-        let engine = engine_at(&path, None).unwrap();
+        let mut engine = fast_engine();
+        let (pid, _) = register(&mut engine, "Keeper");
+        rich(&mut engine, pid);
+        {
+            let p = engine.players.get_mut(&pid).unwrap();
+            p.buildings.shipyard = 1;
+            p.buildings.defense_grid = 1;
+        }
+        give_defences(&mut engine, pid, 7, 0);
+        engine.players.get_mut(&pid).unwrap().defences.restoring[0] = 2;
+        engine.players.get_mut(&pid).unwrap().defences.restore_tick[0] = 999;
+        engine.handle_build_defence(pid, DefenceKind::PulseTurret, 3, false).unwrap();
+        engine.handle_build_ship(pid, ShipClass::Scout, 1, false).unwrap();
+        engine.handle_build_defence(pid, DefenceKind::PulseTurret, 1, false).unwrap();
+        let engine = restart(&engine);
         let p = &engine.players[&pid];
         assert_eq!(p.defences.count, [7, 0, 0]);
         assert_eq!((p.defences.restoring[0], p.defences.restore_tick[0]), (2, 999));
@@ -8531,9 +8369,9 @@ mod tests {
     #[test]
     fn the_leaderboard_ranks_one_population_and_labels_agents() {
         let mut engine = test_engine();
-        let human = engine.authenticate("Human", None, false).unwrap().player_id;
-        let bot = engine.authenticate("Botty", None, true).unwrap().player_id;
-        engine.authenticate("Third", None, false).unwrap();
+        let human = engine.authenticate("Human", None, false, issue).unwrap().player_id;
+        let bot = engine.authenticate("Botty", None, true, issue).unwrap().player_id;
+        engine.authenticate("Third", None, false, issue).unwrap();
         engine.players.get_mut(&bot).unwrap().buildings.metal_mine = 8;
 
         let (rows, you) = score::leaderboard(&engine, 2, human);
@@ -8548,23 +8386,17 @@ mod tests {
         let (_, you) = score::leaderboard(&engine, 1, third);
         assert_eq!(you.unwrap().rank, 3, "outside the limit the viewer still sees their row");
         // The flag is read once, at creation.
-        assert!(!engine.authenticate("Human", None, true).map(|a| a.registered).unwrap_or(false) || engine.players[&human].agent);
+        assert!(!engine.authenticate("Human", None, true, issue).map(|a| a.registered).unwrap_or(false) || engine.players[&human].agent);
         assert!(!engine.players[&human].agent);
     }
 
     #[test]
     fn score_state_survives_a_restart() {
-        let path = temp_world("score_restart");
-        let pid = {
-            let mut engine = engine_at(&path, None).unwrap();
-            let pid = engine.authenticate("Keeper", None, true).unwrap().player_id;
-            engine.players.get_mut(&pid).unwrap().combat_points = 3.25;
-            engine.players.get_mut(&pid).unwrap().explore_points = 1.5;
-            engine.persist_dirty_state().unwrap();
-            engine.flush_persistence().unwrap();
-            pid
-        };
-        let engine = engine_at(&path, None).unwrap();
+        let mut engine = test_engine();
+        let pid = engine.authenticate("Keeper", None, true, issue).unwrap().player_id;
+        engine.players.get_mut(&pid).unwrap().combat_points = 3.25;
+        engine.players.get_mut(&pid).unwrap().explore_points = 1.5;
+        let engine = restart(&engine);
         let p = &engine.players[&pid];
         assert!(p.agent);
         assert_eq!((p.combat_points, p.explore_points), (3.25, 1.5));

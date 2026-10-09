@@ -17,7 +17,7 @@ use iac_shared::protocol::{
 use iac_shared::scaling;
 use iac_shared::world::{NpcBehaviorType, NpcTemplate};
 
-use crate::database::KnownRow;
+use crate::persist::KnownRow;
 use crate::engine::{site_risk_label, template_npc_id, GameEngine, SectorOverride};
 
 /// Live sectors are rewritten to disk this often even if nothing about them
@@ -127,20 +127,35 @@ impl KnownSectors {
         }
     }
 
-    pub fn take_dirty(&mut self) -> Vec<KnownRow> {
-        let dirty: Vec<(u64, u32)> = self.dirty.drain().collect();
-        dirty
-            .into_iter()
-            .filter_map(|(pid, key)| {
-                let r = self.by_player.get(&pid)?.get(&key)?;
-                Some(KnownRow {
-                    player_id: pid,
-                    sector: Hex::from_key(key),
-                    last_seen: r.last_seen,
-                    state: r.state.clone(),
-                })
-            })
-            .collect()
+    /// The remembered rows changed since the last `clear_dirty`.
+    pub fn dirty_rows(&self) -> Vec<KnownRow> {
+        let mut dirty: Vec<(u64, u32)> = self.dirty.iter().copied().collect();
+        dirty.sort_unstable();
+        dirty.into_iter().filter_map(|(pid, key)| self.row(pid, key)).collect()
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty.clear();
+    }
+
+    /// Every remembered sector, ordered by player and sector.
+    pub fn rows(&self) -> Vec<KnownRow> {
+        let mut keys: Vec<(u64, u32)> = self.by_player
+            .iter()
+            .flat_map(|(&pid, memory)| memory.keys().map(move |&key| (pid, key)))
+            .collect();
+        keys.sort_unstable();
+        keys.into_iter().filter_map(|(pid, key)| self.row(pid, key)).collect()
+    }
+
+    fn row(&self, player_id: u64, key: u32) -> Option<KnownRow> {
+        let r = self.by_player.get(&player_id)?.get(&key)?;
+        Some(KnownRow {
+            player_id,
+            sector: Hex::from_key(key),
+            last_seen: r.last_seen,
+            state: r.state.clone(),
+        })
     }
 
     /// The whole chart: live sectors as they are now, everything else as

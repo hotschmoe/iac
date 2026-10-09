@@ -13,11 +13,13 @@ use iac_shared::constants::{Density, Resources, ShipClass, ECONOMY_VERSION, WORL
 use iac_shared::pace::Pace;
 use iac_shared::scaling::{BuildingType, BuildingLevels, DefenceKind, ResearchType, ResearchLevels, ShipyardItem};
 
-use crate::engine::{
+use iac_sim::engine::{
     Player, Fleet, Ship, SectorOverride, BuildQueueEntry, ShipQueueEntry, ResearchQueueEntry, FleetStatus, FleetPolicy,
     PendingBuilding, PendingResearch, PendingShip, Defences,
 };
 use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams, SectorState};
+use iac_sim::persist::{ExploreCredit, KnownRow, Persist, PersistBatch, WorldMeta};
+use iac_sim::snapshot::Snapshot;
 
 /// Float storage: multiply by 1000 and store as integer for precision.
 fn float_to_stored(val: f32) -> i64 {
@@ -152,14 +154,6 @@ fn ship_class_to_str(s: ShipClass) -> &'static str {
 
 pub struct Database {
     conn: Mutex<Connection>,
-}
-
-/// Settings fixed when a world is created.
-#[derive(Debug, Clone, Copy)]
-pub struct WorldMeta {
-    pub pace: Pace,
-    pub economy_version: u32,
-    pub worldgen_version: u32,
 }
 
 #[derive(Debug)]
@@ -494,6 +488,64 @@ impl Database {
         Ok(meta)
     }
 
+    // ── Loading a world ───────────────────────────────────────────
+
+    /// Everything this database holds, as engine state: the world's settings
+    /// (a fresh database takes `requested`), then players, fleets, sector
+    /// damage, standing orders and charts. What the engine regenerates or
+    /// resets on a restart (NPC groups, raid clocks, scans) is left empty.
+    pub fn load_snapshot(&self, world_seed: u64, requested: Option<Pace>) -> Result<Snapshot, Box<dyn std::error::Error>> {
+        let meta = self.open_world(requested)?;
+        let mut snapshot = Snapshot::new(world_seed, meta.pace);
+        snapshot.meta = meta;
+
+        snapshot.tick = self.load_server_state("current_tick")?.and_then(|s| s.parse().ok()).unwrap_or(0);
+        snapshot.next_id = self.load_server_state("next_id")?.and_then(|s| s.parse().ok()).unwrap_or(1);
+        if let Some(seed_str) = self.load_server_state("world_seed")? {
+            let stored_seed: u64 = seed_str.parse().unwrap_or(0);
+            if stored_seed != world_seed {
+                warn!("World seed mismatch: DB has {}, config has {}", stored_seed, world_seed);
+            }
+        }
+        self.save_server_state("world_seed", &world_seed.to_string())?;
+
+        for mut player in self.load_players()? {
+            player.buildings = self.load_buildings(player.id)?;
+            player.research = self.load_research(player.id)?;
+            let queues = self.load_build_queues(player.id)?;
+            player.building_queue = queues.building;
+            player.building_pending = queues.building_pending;
+            player.ship_queue = queues.ship;
+            player.ship_pending = queues.ship_pending;
+            player.research_queue = queues.research;
+            player.research_pending = queues.research_pending;
+            player.defences = self.load_defences(player.id)?;
+            snapshot.players.insert(player.id, player);
+        }
+        snapshot.fleets = self.load_fleets()?.into_iter().map(|f| (f.id, f)).collect();
+        snapshot.sector_overrides = self.load_sector_overrides()?
+            .into_iter()
+            .map(|row| (Hex { q: row.q, r: row.r }.to_key(), row.override_data))
+            .collect();
+        snapshot.policies = self.load_fleet_policies()?.into_iter().collect();
+        snapshot.explored = self.load_explored_sectors()?
+            .into_iter()
+            .map(|(pid, hex)| (pid, hex.to_key()))
+            .collect();
+        snapshot.credited = self.load_explore_credits()?
+            .into_iter()
+            .map(|(pid, hex, kind)| (pid, hex.to_key(), kind))
+            .collect();
+        snapshot.known = self.load_known_sectors()?;
+
+        if snapshot.players.is_empty() {
+            info!("State loaded (empty -- fresh world)");
+        } else {
+            info!("State loaded: {} players, {} fleets, tick {}", snapshot.players.len(), snapshot.fleets.len(), snapshot.tick);
+        }
+        Ok(snapshot)
+    }
+
     // ── Server State ──────────────────────────────────────────────
 
     /// Run `f` inside a single transaction; rolls back if it errors.
@@ -683,7 +735,7 @@ impl Database {
                 owner_id: pid as u64,
                 location: Hex { q: q as i16, r: r as i16 },
                 state: parse_fleet_status(&state_str),
-                ships: [Ship::default(); crate::engine::MAX_SHIPS_PER_FLEET],
+                ships: [Ship::default(); iac_sim::engine::MAX_SHIPS_PER_FLEET],
                 ship_count: 0,
                 cargo: Resources {
                     metal: stored_to_float(cm),
@@ -1276,49 +1328,6 @@ pub struct BuildQueueData {
 
 // ── Background persistence ────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-pub struct ExploredEdge {
-    pub player_id: u64,
-    pub from: Hex,
-    pub to: Hex,
-    pub tick: u64,
-}
-
-/// What an explore credit was paid for: it is paid once per player and sector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ExploreCredit {
-    /// First successful boarding of the derelict here.
-    Boarded = 0,
-    /// The sector's chart was delivered to a dock.
-    Charted = 1,
-}
-
-/// One sector of one player's chart.
-#[derive(Debug, Clone)]
-pub struct KnownRow {
-    pub player_id: u64,
-    pub sector: Hex,
-    pub last_seen: u64,
-    pub state: SectorState,
-}
-
-/// A snapshot of everything that changed since the previous batch. Rows are
-/// whole-row upserts, so replaying batches in order is idempotent.
-#[derive(Debug, Default)]
-pub struct PersistBatch {
-    pub tick: u64,
-    pub next_id: u64,
-    pub players: Vec<Player>,
-    pub fleets: Vec<Fleet>,
-    pub deleted_fleets: Vec<u64>,
-    pub policies: Vec<(u64, FleetPolicy)>,
-    pub deleted_policies: Vec<u64>,
-    pub sectors: Vec<(Hex, SectorOverride)>,
-    pub explored_edges: Vec<ExploredEdge>,
-    pub known_sectors: Vec<KnownRow>,
-    pub explore_credits: Vec<(u64, Hex, ExploreCredit)>,
-}
-
 impl Database {
     /// Fold the WAL into the main database file and fsync it.
     fn checkpoint(&self) -> Result<(), rusqlite::Error> {
@@ -1396,8 +1405,10 @@ impl Persister {
             .expect("spawn persist thread");
         Persister { tx: Some(tx), handle: Some(handle) }
     }
+}
 
-    pub fn submit(&self, batch: PersistBatch) {
+impl Persist for Persister {
+    fn submit(&self, batch: PersistBatch) {
         if let Some(tx) = &self.tx
             && tx.send(WriterMsg::Batch(Box::new(batch))).is_err()
         {
@@ -1405,8 +1416,7 @@ impl Persister {
         }
     }
 
-    /// Block until everything submitted so far is committed.
-    pub fn flush(&self) -> Result<(), String> {
+    fn flush(&self) -> Result<(), String> {
         let tx = self.tx.as_ref().ok_or("persister already shut down")?;
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
         tx.send(WriterMsg::Flush(ack_tx)).map_err(|_| "persist thread is gone".to_string())?;
@@ -1564,6 +1574,149 @@ mod tests {
         }
         let reader = Database::init(&path).unwrap();
         assert_eq!(reader.load_server_state("current_tick").unwrap().as_deref(), Some("7"));
+    }
+
+    fn world_error(path: &str, requested: Option<Pace>) -> String {
+        Database::init(path).unwrap().load_snapshot(42, requested).err().expect("the world must be refused").to_string()
+    }
+
+    #[test]
+    fn a_world_keeps_the_pace_it_was_created_with() {
+        let path = temp_db("pace_fixed");
+        let snapshot = Database::init(&path).unwrap().load_snapshot(42, Some(Pace::parse("blitz").unwrap())).unwrap();
+        assert_eq!(snapshot.meta.pace.value(), 600.0);
+
+        let kept = Database::init(&path).unwrap().load_snapshot(42, None).unwrap();
+        assert_eq!(kept.meta.pace.value(), 600.0, "no --pace keeps the stored one");
+        let same = Database::init(&path).unwrap().load_snapshot(42, Some(Pace::new(600.0).unwrap())).unwrap();
+        assert_eq!(same.meta.pace.value(), 600.0);
+
+        let text = world_error(&path, Some(Pace::new(10.0).unwrap()));
+        assert!(text.contains("600 (blitz)") && text.contains("10 (season)") && text.contains("new --db"), "{text}");
+    }
+
+    #[test]
+    fn a_database_without_world_meta_is_refused() {
+        let path = temp_db("old_world");
+        {
+            let db = Database::init(&path).unwrap();
+            db.save_server_state("world_seed", "42").unwrap();
+            db.conn.lock().unwrap().execute_batch("DROP TABLE world_meta").unwrap();
+        }
+        let text = world_error(&path, None);
+        assert!(text.contains("not migrated") && text.contains("new world"), "{text}");
+    }
+
+    #[test]
+    fn a_world_from_another_generator_is_refused() {
+        let path = temp_db("old_worldgen");
+        Database::init(&path).unwrap().load_snapshot(42, None).unwrap();
+        Connection::open(&path).unwrap().execute("UPDATE world_meta SET worldgen_version = 1", []).unwrap();
+        let text = world_error(&path, None);
+        assert!(text.contains("worldgen version 1"), "{text}");
+    }
+
+    fn js<T: serde::Serialize>(v: &T) -> serde_json::Value {
+        serde_json::to_value(v).unwrap()
+    }
+
+    /// Equal up to the database's fixed-point rounding of floats.
+    fn same_json(a: &serde_json::Value, b: &serde_json::Value, at: &str) {
+        use serde_json::Value::{Array, Number, Object};
+        match (a, b) {
+            (Number(x), Number(y)) => {
+                let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
+                assert!((x - y).abs() <= 0.002 + x.abs() * 1e-5, "{at}: {x} vs {y}");
+            }
+            (Array(x), Array(y)) => {
+                assert_eq!(x.len(), y.len(), "{at}: length");
+                for (i, (x, y)) in x.iter().zip(y).enumerate() {
+                    same_json(x, y, &format!("{at}[{i}]"));
+                }
+            }
+            (Object(x), Object(y)) => {
+                assert_eq!(x.keys().collect::<Vec<_>>(), y.keys().collect::<Vec<_>>(), "{at}: keys");
+                for (k, v) in x {
+                    same_json(v, &y[k], &format!("{at}.{k}"));
+                }
+            }
+            _ => assert_eq!(a, b, "{at}"),
+        }
+    }
+
+    #[test]
+    fn a_played_world_reloads_from_sqlite_as_it_was_saved() {
+        use iac_shared::constants::Resources;
+        use iac_shared::protocol::{Command, PolicyPreset};
+        use iac_shared::scaling::{BuildingType, ResearchType};
+        use iac_sim::GameEngine;
+
+        let path = temp_db("reload");
+        let mut engine = GameEngine::restore(Database::init(&path).unwrap().load_snapshot(42, Some(Pace::new(100.0).unwrap())).unwrap());
+        engine.attach_persist(Box::new(Persister::spawn(Database::init(&path).unwrap())));
+
+        let token = || "f".repeat(64);
+        let keeper = engine.authenticate("Keeper", None, true, token).unwrap().player_id;
+        let rival = engine.authenticate("Rival", None, false, token).unwrap().player_id;
+        let fleet = engine.fleets.values().find(|f| f.owner_id == keeper).unwrap().id;
+        for pid in [keeper, rival] {
+            engine.players.get_mut(&pid).unwrap().resources = Resources { metal: 5e4, crystal: 5e4, deuterium: 5e4 };
+            engine.players.get_mut(&pid).unwrap().buildings.shipyard = 2;
+            engine.players.get_mut(&pid).unwrap().buildings.research_lab = 2;
+        }
+        let home = engine.fleets[&fleet].location;
+        let next = engine.world_gen.connected_neighbors(home).slice()[0];
+        for cmd in [
+            Command::Build { building_type: BuildingType::MetalMine, reserve: false },
+            Command::Build { building_type: BuildingType::MetalMine, reserve: true },
+            Command::Build { building_type: BuildingType::CrystalMine, reserve: false },
+            Command::Research { tech: ResearchType::Navigation, reserve: false },
+            Command::BuildShip { ship_class: iac_shared::constants::ShipClass::Scout, count: 3, reserve: false },
+            Command::BuildShip { ship_class: iac_shared::constants::ShipClass::Scout, count: 1, reserve: true },
+            Command::Move { fleet_id: fleet, target: next },
+        ] {
+            let outcome = engine.execute(keeper, cmd.clone());
+            assert!(outcome.error.is_none(), "{cmd:?}: {:?}", outcome.error);
+        }
+        engine.handle_policy_update(rival, engine.fleets.values().find(|f| f.owner_id == rival).unwrap().id, PolicyPreset::PatrolHome, None).unwrap();
+        for _ in 0..400 {
+            engine.tick().unwrap();
+            engine.drain_events();
+            engine.persist_dirty_state();
+        }
+        engine.checkpoint_known_sectors();
+        engine.persist_dirty_state();
+        engine.flush_persistence().unwrap();
+
+        let mut saved = engine.snapshot();
+        let mut loaded = Database::init(&path).unwrap().load_snapshot(42, None).unwrap();
+        for snapshot in [&mut saved, &mut loaded] {
+            for p in snapshot.policies.values_mut() {
+                p.next_eval_tick = 0;
+                p.last_hold = None;
+            }
+            for f in snapshot.fleets.values_mut() {
+                let count = f.ship_count;
+                f.ships[count..].fill(Default::default());
+                f.idle_ticks = 0;
+            }
+        }
+        assert_eq!(saved.tick, loaded.tick);
+        assert_eq!(saved.next_id, loaded.next_id);
+        assert_eq!(saved.meta, loaded.meta);
+        assert!(saved.players.len() == 2 && !saved.sector_overrides.is_empty() && !saved.explored.is_empty());
+        same_json(&js(&saved.players), &js(&loaded.players), "players");
+        same_json(&js(&saved.fleets), &js(&loaded.fleets), "fleets");
+        same_json(&js(&saved.sector_overrides), &js(&loaded.sector_overrides), "sector_overrides");
+        same_json(&js(&saved.policies), &js(&loaded.policies), "policies");
+        assert_eq!(saved.explored, loaded.explored);
+        assert_eq!(saved.credited, loaded.credited);
+        let keys = |s: &Snapshot| {
+            let mut keys: Vec<_> = s.known.iter().map(|r| (r.player_id, r.sector.to_key(), r.last_seen)).collect();
+            keys.sort_unstable();
+            keys
+        };
+        assert_eq!(keys(&saved), keys(&loaded));
     }
 
     #[test]

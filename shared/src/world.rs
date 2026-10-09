@@ -1,6 +1,7 @@
 // Deterministic procedural world generation.
 // Sectors are generated from their coordinates + world seed.
 // Only modified sectors need database storage.
+use serde::{Deserialize, Serialize};
 use std::hash::Hasher;
 
 use xxhash_rust::xxh3::Xxh3;
@@ -323,7 +324,7 @@ impl NpcTemplate {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NpcBehaviorType {
     Passive,
     Patrol,

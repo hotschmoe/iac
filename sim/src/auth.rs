@@ -1,26 +1,18 @@
-// Player authentication primitives: name rules and bearer tokens.
+// Player authentication primitives: name rules and bearer token checks. Token
+// issuing needs OS entropy, so the host supplies it (see `GameEngine::authenticate`).
 // Design and rationale: docs/auth_spec.md ("Implemented subset").
 
-use rand::RngCore;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 pub type TokenHash = [u8; 32];
 
-const TOKEN_BYTES: usize = 32;
 pub const NAME_MIN_LEN: usize = 3;
 pub const NAME_MAX_LEN: usize = 24;
 
 const RESERVED_NAMES: [&str; 10] = [
     "admin", "administrator", "server", "system", "moderator", "mod", "npc", "mlm", "gm", "gamemaster",
 ];
-
-/// 256 random bits from the OS-seeded CSPRNG, hex encoded (64 characters).
-pub fn generate_token() -> String {
-    let mut bytes = [0u8; TOKEN_BYTES];
-    rand::rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
 
 /// SHA-256 of the token text. Tokens are 256 random bits, so no salt or
 /// slow KDF is needed.
@@ -56,20 +48,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_are_64_hex_chars_and_unique() {
-        let a = generate_token();
-        let b = generate_token();
-        assert_eq!(a.len(), 64);
-        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(a, b);
-    }
-
-    #[test]
     fn only_the_issued_token_matches() {
-        let token = generate_token();
+        let token = "a".repeat(64);
         let stored = hash_token(&token);
         assert!(token_matches(&stored, &token));
-        assert!(!token_matches(&stored, &generate_token()));
+        assert!(!token_matches(&stored, &"b".repeat(64)));
         assert!(!token_matches(&stored, ""));
         assert!(!token_matches(&stored, &token.to_uppercase()));
     }

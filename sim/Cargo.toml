@@ -1,0 +1,18 @@
+[package]
+name = "iac-sim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iac-shared = { path = "../shared" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
+sha2 = "0.10"
+subtle = "2"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[[bin]]
+name = "sim-run"
+path = "src/bin/sim-run.rs"

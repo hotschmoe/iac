@@ -73,15 +73,15 @@ pub struct CombatRoundResult {
 pub fn resolve_combat_round(
     player_sides: &[CombatSide],
     npc_sides: &[CombatSide],
+    world_seed: u64,
     sector: Hex,
     tick: u64,
     round: u32,
 ) -> CombatRoundResult {
-    let seed = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64)
-        ^ round as u64;
+    let seed = world_seed
+        ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ u64::from(sector.to_key()).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ u64::from(round).wrapping_mul(0x1656_67B1_9E37_79F9);
     let mut rng = StdRng::seed_from_u64(seed);
 
     let mut events: Vec<GameEvent> = Vec::new();
@@ -336,7 +336,7 @@ mod tests {
             let n = vec![side(npc.to_vec(), true)];
             let (mut ps, mut ns) = (p, n);
             for round in 0..200u32 {
-                let r = resolve_combat_round(&ps, &ns, Hex::new(0, 0), 0, round.wrapping_add(t * 1000));
+                let r = resolve_combat_round(&ps, &ns, 0, Hex::new(0, 0), 0, round.wrapping_add(t * 1000));
                 for (s, ships) in ps.iter_mut().zip(r.player_ships) { s.ships = ships; }
                 for (s, ships) in ns.iter_mut().zip(r.npc_ships) { s.ships = ships; }
                 if r.concluded {

@@ -701,6 +701,7 @@ dependencies = [
  "env_logger",
  "futures-util",
  "iac-shared",
+ "iac-sim",
  "log",
  "rand",
  "rusqlite",
@@ -719,6 +720,20 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "iac-sim"
+version = "0.1.0"
+dependencies = [
+ "iac-shared",
+ "log",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
  "xxhash-rust",
 ]
 
