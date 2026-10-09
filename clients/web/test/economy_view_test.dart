@@ -11,7 +11,7 @@ void main() {
     });
     final e = EconomyView.of(c.state);
     expect(e.world, isNotNull);
-    expect(e.world!.label, contains('X'));
+    expect(e.world!.label, contains('x1'));
     final st = e.storage!;
     expect(st.cap['metal'], greaterThan(0));
     expect(st.protected['metal'], lessThan(st.cap['metal']!));
