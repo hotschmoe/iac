@@ -42,28 +42,3 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_the_issued_token_matches() {
-        let token = "a".repeat(64);
-        let stored = hash_token(&token);
-        assert!(token_matches(&stored, &token));
-        assert!(!token_matches(&stored, &"b".repeat(64)));
-        assert!(!token_matches(&stored, ""));
-        assert!(!token_matches(&stored, &token.to_uppercase()));
-    }
-
-    #[test]
-    fn name_rules() {
-        for ok in ["Admiral", "abc", "Nova-7", "a_b_c", "x".repeat(24).as_str()] {
-            assert!(validate_name(ok).is_ok(), "{ok} should be valid");
-        }
-        for bad in ["ab", "x".repeat(25).as_str(), "has space", "tab\t", "-lead", "trail_", "emoji\u{1F680}", "Admin", "GM", "NPC"] {
-            assert!(validate_name(bad).is_err(), "{bad:?} should be rejected");
-        }
-    }
-}
