@@ -3,6 +3,27 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-10 (play styles and balance)
+
+**Two play styles, one world:**
+- **Check-in players (OGame).** You should not need to be at the computer all day: check
+  in, queue, and leave.
+- **Hands-on players (The Infinite Black).** They can drive fleets, fight and explore
+  themselves for fun and reward.
+- **Hybrids.** Hybrid play should be natural.
+
+**How to balance the two:**
+- **Per day, not per hour.** Active players may earn more per hour of attention. A
+  check-in player must not fall hopelessly behind over a week: tens of percent, not
+  multiples. Field yield should have diminishing returns over a day.
+- **Standing orders are the bridge.** Delegated exploring, salvage and mining should
+  earn roughly 50-70% of hands-on piloting.
+- **Pace matters.** Blitz is attention-heavy by nature: judge it on fun and use it as a
+  stress test. Check-in balance is tuned for the persistent and season presets.
+- **Balance is ongoing.** Get close, keep developing, and re-measure after significant
+  changes. After the `iac-sim` split, scripted check-in, hybrid and active bots give a
+  balance report per change.
+
 ## 2026-10-10 (the map pays; combat and exploration scoring)
 
 Second playtest: staying home won; combat plus exploration never exceeded 4.8
