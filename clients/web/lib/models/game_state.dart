@@ -102,6 +102,16 @@ class Waypoint {
   });
 }
 
+/// A `preview_move` answer and the tick it arrived.
+class PreviewEntry {
+  final proto.MovePreview preview;
+  final int tick;
+  const PreviewEntry(this.preview, this.tick);
+}
+
+/// Ticks a preview stays good for: fuel, power and the sector's threat move slowly.
+const previewFreshTicks = 5;
+
 class GameState {
   final int tick;
   final int clockSec;
@@ -123,6 +133,12 @@ class GameState {
 
   /// Faint scan contacts in not-yet-explored sectors.
   final Map<proto.Hex, proto.SignalKind> signals;
+
+  /// Faint scan contacts' coarse danger (1: T1-3, 2: T4-6, 3: T7-9), by sector.
+  final Map<proto.Hex, int> signalBands;
+
+  /// The server's latest `preview_move` per (fleet id, target sector).
+  final Map<(int, proto.Hex), PreviewEntry> previews;
 
   /// Exact stockpile (the resource stocks above are rounded for display).
   final proto.Resources stock;
@@ -160,6 +176,8 @@ class GameState {
     required this.waypoints,
     this.sectors = const {},
     this.signals = const {},
+    this.signalBands = const {},
+    this.previews = const {},
     this.stock = const proto.Resources(),
     this.catalog,
     this.hw,
@@ -167,6 +185,19 @@ class GameState {
     this.leaderboard,
     this.raid,
   });
+
+  /// The order the slot is working on; waiting orders follow it in the list
+  /// but are not running, so `buildQueue.first` is not "the running order".
+  QueueItem? get runningBuild => buildQueue.where((q) => q.active).firstOrNull;
+  QueueItem? get runningShip => shipyard.where((q) => q.active).firstOrNull;
+  List<QueueItem> get waitingBuild => [for (final q in buildQueue) if (!q.active) q];
+  List<QueueItem> get waitingShips => [for (final q in shipyard) if (!q.active) q];
+
+  /// The preview for (fleet, target) if it is recent enough to show.
+  proto.MovePreview? previewFor(int fleetId, proto.Hex target) {
+    final e = previews[(fleetId, target)];
+    return e != null && tick - e.tick <= previewFreshTicks ? e.preview : null;
+  }
 
   String get clockDisplay {
     final h = clockSec ~/ 3600;
@@ -193,6 +224,8 @@ class GameState {
     List<Waypoint>? waypoints,
     Map<proto.Hex, proto.SectorState>? sectors,
     Map<proto.Hex, proto.SignalKind>? signals,
+    Map<proto.Hex, int>? signalBands,
+    Map<(int, proto.Hex), PreviewEntry>? previews,
     proto.Resources? stock,
     proto.HomeworldCatalog? catalog,
     proto.HomeworldState? hw,
@@ -216,6 +249,8 @@ class GameState {
         waypoints: waypoints ?? this.waypoints,
         sectors: sectors ?? this.sectors,
         signals: signals ?? this.signals,
+        signalBands: signalBands ?? this.signalBands,
+        previews: previews ?? this.previews,
         stock: stock ?? this.stock,
         catalog: catalog ?? this.catalog,
         hw: hw ?? this.hw,

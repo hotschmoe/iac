@@ -270,6 +270,17 @@ String zoneOf(proto.Hex h) {
   return d == 0 ? 'Central Hub' : d <= 8 ? 'Inner Ring' : d <= 20 ? 'Outer Ring' : 'The Wandering';
 }
 
+/// "2 hops direct (17 charted), through unexplored space, 12 fuel".
+String _wayHome(proto.MovePreview p) {
+  final charted = p.chartedHopsHome;
+  final route = charted == null
+      ? '${p.hopsHome} hops direct, none charted'
+      : charted == p.hopsHome
+          ? '${p.hopsHome} hops'
+          : '${p.hopsHome} hops direct ($charted charted)';
+  return '$route${p.routeUnexplored ? ', through unexplored space' : ''}, ${p.fuelToReturn.round()} fuel${p.canReturn ? '' : ' - CANNOT RETURN'}';
+}
+
 class Inspector extends StatelessWidget {
   final Console con;
   final MapPlan plan;
@@ -293,7 +304,9 @@ class Inspector extends StatelessWidget {
     final th = SectorThreat.of(sec);
     final fleet = con.game.currentFleet;
     final pw = fleet.power;
-    final odds = th.hostile ? RatioInfo.of(pw, th.power) : null;
+    final pv = fleet.id == 0 ? null : st.previewFor(fleet.id, h);
+    final odds = pv != null ? RatioInfo.fromPreview(pv) : th.hostile ? RatioInfo.of(pw, th.power) : null;
+    final oddsPower = pv?.threat.estPower ?? th.power;
     final d = h.distFromOrigin;
     final rich = sec == null ? 0 : sec.resources.metal.index + sec.resources.crystal.index + sec.resources.deuterium.index;
     final expect = 1.2 + d * .11;
@@ -316,19 +329,27 @@ class Inspector extends StatelessWidget {
         else
           _box('SEEN ${ago(it.ticksOld).toUpperCase()} AGO. HOSTILES MAY HAVE MOVED; ORE MAY HAVE BEEN MINED.', const Color(0xFFC9B284), const Color(0xFF6F5C3E), fossil: true),
         if (sec != null) ...[
-          Kv('Threat', vw: ThreatBadge(th.rating)),
-          if (th.hostile) ...[
-            Kv(th.compLabel, vc: C.threat(th.rating), v: th.behavior?.wire.toUpperCase() ?? ''),
+          Kv('Threat',
+              vw: Row(mainAxisSize: MainAxisSize.min, children: [
+                ThreatBadge(th.ringRating),
+                const SizedBox(width: 8),
+                Text(th.basisLabel, key: const Key('inspector-basis'), style: T.mono(size: 9.5, color: C.text3, spacing: .6)),
+              ])),
+          if (th.hostile) Kv(th.compLabel, vc: C.threat(th.rating), v: th.behavior?.wire.toUpperCase() ?? ''),
+          if (odds != null) ...[
             Kv('Ratio',
-                vw: Text.rich(TextSpan(children: [
-                  TextSpan(text: '${odds!.r.toStringAsFixed(2)} ${odds.label}', style: T.mono(size: 11, color: odds.color, weight: FontWeight.w500)),
-                  TextSpan(text: '  ${th.power.round()} vs ${pw.round()}', style: T.mono(size: 11, color: C.text3)),
+                vw: Text.rich(key: const Key('inspector-ratio'), TextSpan(children: [
+                  TextSpan(text: '${odds.r.toStringAsFixed(2)} ${odds.label}', style: T.mono(size: 11, color: odds.color, weight: FontWeight.w500)),
+                  TextSpan(text: '  ${oddsPower.round()} vs ${pw.round()} (${fleet.name})', style: T.mono(size: 11, color: C.text3)),
                 ]))),
             RatioGauge(odds.r),
           ],
-          _oreRow('Metal', sec.resources.metal, C.metal),
-          _oreRow('Crystal', sec.resources.crystal, C.crystal),
-          _oreRow('Deut', sec.resources.deuterium, C.deut),
+          if (pv != null)
+            Kv('Way home',
+                vw: Text(_wayHome(pv), key: const Key('inspector-home'), style: T.mono(size: 10.5, color: pv.canReturn ? C.text2 : C.threat(7)))),
+          _oreRow('Metal', sec.resources.metal, C.metal, sec.oreReserve?.metal),
+          _oreRow('Crystal', sec.resources.crystal, C.crystal, sec.oreReserve?.crystal),
+          _oreRow('Deut', sec.resources.deuterium, C.deut, sec.oreReserve?.deuterium),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Text('${rich >= expect * 3 ? 'RICH' : rich <= expect ? 'POOR' : 'TYPICAL'} FOR THIS DISTANCE - LOOT TIER x${1 + math.min(3, d ~/ 6)}',
@@ -360,8 +381,14 @@ class Inspector extends StatelessWidget {
     );
   }
 
-  Widget _oreRow(String k, proto.Density d, Color col) => Kv(k,
-      vw: SegBar(4, d.index, color: col, w: 20, h: 7));
+  Widget _oreRow(String k, proto.Density d, Color col, proto.TileReserve? r) => Kv(k,
+      vw: Row(mainAxisSize: MainAxisSize.min, children: [
+        if (r != null && r.maxUnits > 0) ...[
+          Text(reserveText(r), key: Key('ore-reserve-$k'), style: T.mono(size: 10, color: r.units < r.maxUnits ? C.text2 : C.text3)),
+          const SizedBox(width: 8),
+        ],
+        SegBar(4, d.index, color: col, w: 20, h: 7),
+      ]));
 
   Widget _box(String text, Color col, Color border, {bool fossil = false, bool fill = true}) => Container(
         margin: const EdgeInsets.symmetric(vertical: 6),
@@ -407,10 +434,18 @@ class RoutePanel extends StatelessWidget {
     final secs = [for (final h in plan.path) (h, st.sectors[h])];
     final worst = plan.worstHop >= 0 ? plan.path[plan.worstHop] : null;
     final worstTh = worst == null ? SectorThreat.clear : SectorThreat.of(st.sectors[worst]);
-    final wi = worstTh.hostile ? RatioInfo.of(plan.fleetPower, worstTh.power) : null;
+    // The server rates the jump out of the fleet's sector; hops beyond it
+    // are rated from the server's threat power.
+    final first = fleet.id == 0 || plan.path.isEmpty ? null : st.previewFor(fleet.id, plan.path.first);
+    final wi = plan.worstHop == 0 && first != null
+        ? RatioInfo.fromPreview(first)
+        : worstTh.hostile ? RatioInfo.of(plan.fleetPower, worstTh.power) : null;
     final destSec = st.sectors[info.dest];
     final dth = SectorThreat.of(destSec);
-    final di = dth.hostile ? RatioInfo.of(plan.fleetPower, dth.power) : null;
+    final di = plan.hops == 1 && first != null
+        ? RatioInfo.fromPreview(first)
+        : dth.hostile ? RatioInfo.of(plan.fleetPower, dth.power) : null;
+    final retOk = plan.hops == 1 && first != null ? first.canReturn : plan.canReturn;
     final fuelPct = fleet.fuelMax > 0 ? math.max(0, plan.fuelLeft) / fleet.fuelMax : 0.0;
     final per = math.max(1, fleet.jumpFuel);
     final hopsLeft = math.max(0, plan.fuelLeft ~/ per);
@@ -454,8 +489,13 @@ class RoutePanel extends StatelessWidget {
             ]))),
         Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: LedBar(fuelPct, color: fuelPct < .2 ? C.ember : C.a400, height: 7)),
         Kv('Return trip',
-            vw: Text(plan.canReturn ? 'OK, margin ${plan.returnMargin} fuel' : 'NO FUEL TO COME HOME (needs ${plan.backFuel})',
-                key: const Key('route-return'), style: T.mono(size: 10.5, color: plan.canReturn ? C.threat(1) : C.threat(7)))),
+            vw: Text(
+                plan.hops == 1 && first != null
+                    ? (first.canReturn ? 'OK, ${first.fuelToReturn.round()} fuel home' : 'NO FUEL TO COME HOME (needs ${first.fuelToReturn.round()})')
+                    : (plan.canReturn ? 'OK, margin ${plan.returnMargin} fuel' : 'NO FUEL TO COME HOME (needs ${plan.backFuel})'),
+                key: const Key('route-return'), style: T.mono(size: 10.5, color: retOk ? C.threat(1) : C.threat(7)))),
+        if (first != null)
+          Kv('Way home', vw: Text(_wayHome(first), key: const Key('route-home'), style: T.mono(size: 10.5, color: C.text2))),
         Kv('ETA', vw: Text(clockFmt(plan.etaTicks), style: T.mono(size: 11.5, weight: FontWeight.w500))),
         Kv('Threat along route', vw: ThreatBadge(plan.maxThreat, sm: true)),
         _Strip(plan: plan, secs: secs),
@@ -480,6 +520,7 @@ class RoutePanel extends StatelessWidget {
                   text: '> SECTOR (${info.dest.q},${info.dest.r}) THREAT ${destSec == null ? 'UNKNOWN' : dth.hostile ? 'T${dth.rating}' : 'CLEAR'}'
                       '${dth.hostile ? ', EST NPC POWER ${dth.power.round()}, FLEET ${plan.fleetPower.round()}, RATIO ${di!.r.toStringAsFixed(1)} ' : ''}'),
               if (di != null) TextSpan(text: di.label, style: TextStyle(color: di.color)),
+              if (first != null && plan.hops > 1) TextSpan(text: '. NEXT HOP (${first.target.q},${first.target.r}) T${first.threat.rating} ${first.threat.basis.wire.toUpperCase()}, RATIO ${first.ratio.toStringAsFixed(1)} ${first.label.label}'),
               TextSpan(text: '. FUEL ${plan.fuel} OF ${fleet.fuel} ($hopsLeft HOPS LEFT TO RETURN)'),
             ]),
             style: T.mono(size: 10.5, color: C.text2, height: 1.55),

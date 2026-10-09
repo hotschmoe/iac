@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../protocol/protocol.dart' as proto;
 import 'beat.dart';
 import 'tokens.dart';
 
@@ -183,25 +184,48 @@ class Lamp extends StatelessWidget {
   }
 }
 
+/// A ratio verdict in the console's colours. The bands mirror the server's
+/// `scaling::ratio_label` (fixtures/protocol/ratio_labels.json guards the
+/// match); [RatioInfo.ofLabel] takes the server's own verdict.
 class RatioInfo {
   final double r;
-  final String label;
+  final proto.RatioLabel verdict;
   final Color color;
   final int winPct;
-  const RatioInfo(this.r, this.label, this.color, this.winPct);
+  const RatioInfo(this.r, this.verdict, this.color, this.winPct);
 
-  bool get deadly => label == 'DEADLY';
+  String get label => verdict.label;
+  bool get deadly => verdict == proto.RatioLabel.deadly;
 
+  /// Sim win rate (like-for-like fleets) behind each verdict.
+  static RatioInfo ofLabel(double r, proto.RatioLabel v) => switch (v) {
+        proto.RatioLabel.safe => RatioInfo(r, v, C.ratioSafe, 99),
+        proto.RatioLabel.favourable => RatioInfo(r, v, C.ratioFav, 97),
+        proto.RatioLabel.even => RatioInfo(r, v, C.ratioEven, 90),
+        proto.RatioLabel.risky => RatioInfo(r, v, C.ratioRisky, 50),
+        proto.RatioLabel.deadly => RatioInfo(r, v, C.ratioDeadly, 5),
+      };
+
+  /// Power against power, for sectors the server cannot preview (the one
+  /// the fleet is in, or a far hop of a route).
   static RatioInfo of(double mine, double theirs) {
     final r = mine / math.max(1, theirs);
-    if (r >= 3) return RatioInfo(r, 'SAFE', C.ratioSafe, 96);
-    if (r >= 2) return RatioInfo(r, 'FAVOURABLE', C.ratioFav, 80);
-    if (r >= 1.2) return RatioInfo(r, 'RISKY', C.ratioRisky, 52);
-    return RatioInfo(r, 'DEADLY', C.ratioDeadly, r >= .9 ? 34 : 14);
+    return ofLabel(r, proto.RatioLabel.forRatio(r));
   }
+
+  /// The server's `preview_move` verdict.
+  static RatioInfo fromPreview(proto.MovePreview p) => ofLabel(p.ratio, p.label);
 }
 
-/// Ratio gauge: four zones (<1.2, 1.2-2, 2-3, >=3) with a pointer.
+/// Raw ore left on a tile and when it refills, as the server reports it.
+String reserveText(proto.TileReserve r) {
+  if (r.maxUnits <= 0) return '';
+  final refill = r.refillsInS;
+  final eta = refill == null ? '' : ' REFILL ${refill ~/ 60}:${(refill % 60).toString().padLeft(2, '0')}';
+  return '${r.units.round()}/${r.maxUnits.round()}$eta';
+}
+
+/// Ratio gauge: five zones (<0.9, 0.9-1.1, 1.1-1.5, 1.5-2.5, >=2.5) with a pointer.
 class RatioGauge extends StatelessWidget {
   final double ratio;
   const RatioGauge(this.ratio, {super.key});
@@ -217,7 +241,7 @@ class _RatioPainter extends CustomPainter {
   _RatioPainter(this.r);
   @override
   void paint(Canvas c, Size s) {
-    const zones = [(.30, C.ratioDeadly), (.20, C.ratioRisky), (.25, C.ratioFav), (.25, C.ratioSafe)];
+    const zones = [(.225, C.ratioDeadly), (.05, C.ratioRisky), (.10, C.ratioEven), (.25, C.ratioFav), (.375, C.ratioSafe)];
     var x = 0.0;
     for (final z in zones) {
       final rect = Rect.fromLTWH(x, 6, s.width * z.$1, 8);
@@ -229,7 +253,7 @@ class _RatioPainter extends CustomPainter {
     }
     final px = (math.min(4.0, r) / 4) * s.width;
     c.drawPath(Path()..moveTo(px - 4, 0)..lineTo(px + 4, 0)..lineTo(px, 6.5)..close(), Paint()..color = C.a100);
-    for (final m in const [(.30, '1.2'), (.50, '2.0'), (.75, '3.0')]) {
+    for (final m in const [(.225, '0.9'), (.375, '1.5'), (.625, '2.5')]) {
       final tp = TextPainter(text: TextSpan(text: m.$2, style: T.mono(size: 8.5, color: C.text3)), textDirection: TextDirection.ltr)..layout();
       tp.paint(c, Offset(s.width * m.$1 - tp.width / 2, 15));
     }

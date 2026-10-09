@@ -1201,6 +1201,14 @@ fn generate() -> Files {
         );
     }
 
+    // Edges 0.9 and 1.1 are not exact in f32, so the cases sit just beside them.
+    let ratios = [0.0, 0.5, 0.89, 0.91, 1.0, 1.09, 1.11, 1.3, 1.49, 1.5, 2.0, 2.49, 2.5, 4.0, 40.0];
+    let labels: Vec<Value> = ratios
+        .iter()
+        .map(|&r| json!({"ratio": r, "label": serde_json::to_value(iac_shared::scaling::ratio_label(r)).unwrap()}))
+        .collect();
+    put(&mut f, "protocol/ratio_labels.json".into(), &Value::Array(labels));
+
     hex_fixtures(&mut f);
     f
 }

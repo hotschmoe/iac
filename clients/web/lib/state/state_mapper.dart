@@ -27,6 +27,12 @@ class StateMapper {
   /// Faint scan contacts for sectors we have no data on yet.
   final Map<int, proto.SignalKind> signals = {};
 
+  /// Coarse danger band of each faint contact, from the scan that heard it.
+  final Map<int, int> signalBands = {};
+
+  /// `preview_move` answers by (fleet id, target key).
+  final Map<(int, int), PreviewEntry> previews = {};
+
   final List<LogEntry> log = [];
   final List<Alert> alerts = [];
 
@@ -43,6 +49,8 @@ class StateMapper {
     raid = null;
     sectors.clear();
     signals.clear();
+    signalBands.clear();
+    previews.clear();
     log.clear();
     alerts.clear();
   }
@@ -86,6 +94,8 @@ class StateMapper {
       sectors[sec.location.toKey()] = sec;
     }
     signals.removeWhere((k, _) => sectors.containsKey(k));
+    signalBands.removeWhere((k, _) => sectors.containsKey(k));
+    previews.clear();
     pushLog('Full state sync: tick $tick, homeworld ${s.player.homeworld}', EventLevel.bright);
   }
 
@@ -98,6 +108,7 @@ class StateMapper {
       final key = sec.location.toKey();
       sectors[key] = sec;
       signals.remove(key);
+      signalBands.remove(key);
     }
     for (final e in u.events ?? const <proto.GameEvent>[]) {
       _ingestEvent(e);
@@ -105,18 +116,8 @@ class StateMapper {
   }
 
   void _applyPreview(proto.MovePreview p) {
-    final verdict = !p.canJump
-        ? 'not enough fuel for the jump'
-        : p.canReturn
-            ? 'fuel to return is covered'
-            : 'CANNOT RETURN after this jump';
-    pushLog(
-      'F${p.fleetId} -> ${p.target}: burns ${p.fuelCost.round()} fuel, ${p.fuelAfter.round()} left; '
-      '${p.hopsHome} hops home need ${p.fuelToReturn.round()} ($verdict); '
-      'threat T${p.threat.rating} (${p.threat.basis.wire}, power ${p.threat.estPower.round()}) '
-      'vs your ${p.fleetPower.round()}: ratio ${p.ratio.toStringAsFixed(1)} ${p.label.label}',
-      p.canReturn && p.label != proto.RatioLabel.deadly ? EventLevel.bright : EventLevel.normal,
-    );
+    previews[(p.fleetId, p.target.toKey())] = PreviewEntry(p, tick);
+    previews.removeWhere((_, e) => tick - e.tick > 60);
   }
 
   void _applyError(proto.ErrorMessage err) {
@@ -223,7 +224,10 @@ class StateMapper {
             '${k.signals.isEmpty ? '' : ', ${k.signals.length} faint contacts (threat band ${k.signals.map((s) => s.threatBand).join('/')})'}';
         for (final s in k.signals) {
           final key = s.sector.toKey();
-          if (!sectors.containsKey(key)) signals[key] = s.signal;
+          if (!sectors.containsKey(key)) {
+            signals[key] = s.signal;
+            signalBands[key] = s.threatBand;
+          }
         }
       case proto.RaidIncomingEvent():
         raid = k;
@@ -341,6 +345,8 @@ class StateMapper {
       ],
       sectors: {for (final s in sectors.values) s.location: s},
       signals: {for (final e in signals.entries) proto.Hex.fromKey(e.key): e.value},
+      signalBands: {for (final e in signalBands.entries) proto.Hex.fromKey(e.key): e.value},
+      previews: {for (final e in previews.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       stock: res,
       catalog: hw?.catalog,
       hw: hw,

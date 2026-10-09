@@ -177,13 +177,18 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       case proto.ScanCompletedEvent():
         final f = _fleet;
         if (f != null && k.fleetId == f.id) {
+          final near = {for (final d in dirs) f.sector + d.v};
           var worst = 0;
-          for (final d in dirs) {
-            worst = math.max(worst, SectorThreat.of(_sec(f.sector + d.v)).rating);
+          for (final t in k.threats) {
+            if (near.contains(t.sector) && (_sec(t.sector)?.hostiles?.isNotEmpty ?? false)) worst = math.max(worst, t.threat.rating);
           }
+          final faint = k.signals.where((c) => c.signal == proto.SignalKind.hostileMass).fold<int>(0, (m, c) => math.max(m, c.threatBand));
           if (worst >= 5) {
             con.play('alert');
             _showBanner('CONTACT', 'T$worst mass reading on the scope.', true);
+          } else if (faint >= 3) {
+            con.play('alert');
+            _showBanner('CONTACT', 'Faint hostile mass at the edge of range, danger band $faint.', true);
           }
         }
       default:
@@ -403,11 +408,18 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               fuel: f.jumpFuel,
               isHome: homeNext == nh,
               hint: !known && st.signals[nh] == proto.SignalKind.hostileMass,
+              band: known ? null : st.signalBands[nh],
+              preview: st.previewFor(f.id, nh),
               hover: sim.hover == d.i,
               onTap: () => jump(d),
               onHover: (v) {
                 sim.hover = v ? d.i : (sim.hover == d.i ? -1 : sim.hover);
-                if (v) con.play('click');
+                if (v) {
+                  con.play('click');
+                  con.game.requestPreview(f.id, nh);
+                } else {
+                  con.game.cancelPreview(f.id, nh);
+                }
               },
             ),
           ),

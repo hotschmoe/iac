@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'dart:ui' show PointerDeviceKind;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,6 +38,8 @@ class FakeController extends GameController {
   Stream<proto.GameEvent> get gameEvents => ev.stream;
   @override
   bool get hasState => true;
+  @override
+  bool get isDemo => true;
 
   void push(GameState s) {
     fake = s;
@@ -148,7 +152,100 @@ Future<void> finish(WidgetTester tester, FakeController c) async {
   await c.ev.close();
 }
 
+proto.MovePreview preview(int fleetId, proto.Hex target, {double ratio = 1.3, proto.RatioLabel label = proto.RatioLabel.even, int hops = 2, int? charted = 17}) => proto.MovePreview(
+      fleetId: fleetId,
+      target: target,
+      fuelCost: 5,
+      fuelAfter: 75,
+      canJump: true,
+      hopsHome: hops,
+      chartedHopsHome: charted,
+      routeUnexplored: true,
+      fuelToReturn: hops * 5.0,
+      canReturn: true,
+      threat: const proto.ThreatInfo(rating: 3, estPower: 20, basis: proto.ThreatBasis.estimate),
+      fleetPower: 26,
+      ratio: ratio,
+      label: label,
+    );
+
+Future<TestGesture> mouseOver(WidgetTester tester, Finder f) async {
+  final g = await tester.createGesture(kind: PointerDeviceKind.mouse);
+  await g.addPointer(location: Offset.zero);
+  await g.moveTo(tester.getCenter(f));
+  await tester.pump(const Duration(milliseconds: 20));
+  return g;
+}
+
 void main() {
+  testWidgets('hovering a gate asks the server for that fleet\'s preview once it rests, and shows the verdict', (tester) async {
+    final c = await pumpFake(tester, calm());
+    final e = find.byKey(const ValueKey('gate-e'));
+    final g = await mouseOver(tester, e);
+    expect(c.commands.whereType<proto.PreviewMoveCommand>(), isEmpty, reason: 'debounced');
+    await tester.pump(const Duration(milliseconds: 250));
+    final asked = c.commands.whereType<proto.PreviewMoveCommand>().toList();
+    expect(asked, hasLength(1));
+    expect(asked.single.fleetId, 1, reason: 'the selected fleet, not the strongest');
+    expect(asked.single.target, const proto.Hex(3, -1));
+
+    final s = c.fake;
+    c.push(s.copyWith(previews: {(1, const proto.Hex(3, -1)): PreviewEntry(preview(1, const proto.Hex(3, -1)), s.tick)}));
+    await tester.pump(const Duration(milliseconds: 50));
+    final odds = tester.widget<Text>(find.descendant(of: find.byKey(const ValueKey('gate-odds-e')), matching: find.byType(Text)).first);
+    expect(odds.textSpan!.toPlainText(), contains('1.3X EVEN'));
+    expect(odds.textSpan!.toPlainText(), contains('HOME 2H'));
+    await g.removePointer();
+    await tester.pump(const Duration(seconds: 1));
+    await finish(tester, c);
+  });
+
+  testWidgets('a hover that moves on before the debounce asks nothing', (tester) async {
+    final c = await pumpFake(tester, calm());
+    final g = await mouseOver(tester, find.byKey(const ValueKey('gate-e')));
+    await tester.pump(const Duration(milliseconds: 80));
+    await g.moveTo(const Offset(5, 5));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(c.commands.whereType<proto.PreviewMoveCommand>(), isEmpty);
+    await g.removePointer();
+    await finish(tester, c);
+  });
+
+  testWidgets('a faint contact shows its danger band on the uncharted gate', (tester) async {
+    final s = calm();
+    final c = await pumpFake(tester, s.copyWith(
+      sectors: {...s.sectors}..remove(const proto.Hex(3, 0)),
+      signals: {const proto.Hex(3, 0): proto.SignalKind.hostileMass},
+      signalBands: {const proto.Hex(3, 0): 3},
+    ));
+    expect(find.textContaining('FAINT MASS READING / BAND 3'), findsOneWidget);
+    await finish(tester, c);
+  });
+
+  testWidgets('ore tiles show what is left and when they refill', (tester) async {
+    final s = calm();
+    final here2 = proto.SectorState(
+      location: here,
+      terrain: proto.TerrainType.asteroidField,
+      resources: const proto.SectorResources(metal: proto.Density.rich, crystal: proto.Density.sparse, deuterium: proto.Density.none),
+      connections: const [proto.Hex(2, -1), proto.Hex(3, -1), proto.Hex(3, 0)],
+      oreReserve: const proto.OreReserve(
+        metal: proto.TileReserve(units: 12, maxUnits: 22, refillsInS: 105),
+        crystal: proto.TileReserve(units: 3, maxUnits: 3),
+        deuterium: proto.TileReserve(units: 0, maxUnits: 0),
+      ),
+      threat: const proto.ThreatInfo(rating: 1, estPower: 4, basis: proto.ThreatBasis.estimate),
+      lastSeen: 100,
+      live: true,
+    );
+    final c = await pumpFake(tester, s.copyWith(sectors: {...s.sectors, here: here2}));
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(tester.widget<Text>(find.byKey(const Key('contact-reserve-metal'))).data, 'FE LEFT 12/22 REFILL 1:45');
+    expect(tester.widget<Text>(find.byKey(const Key('contact-reserve-crystal'))).data, 'CR LEFT 3/3');
+    expect(find.byKey(const Key('contact-reserve-deuterium')), findsNothing);
+    await finish(tester, c);
+  });
+
   testWidgets('idle shots at 1440 and 390', (tester) async {
     final c = await pumpFake(tester, calm());
     await tester.pump(const Duration(milliseconds: 500));

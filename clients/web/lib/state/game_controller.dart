@@ -352,6 +352,10 @@ class GameController extends ChangeNotifier {
   }
 
   void stop() {
+    for (final t in _previewTimers.values) {
+      t.cancel();
+    }
+    _previewTimers.clear();
     _retry?.cancel();
     _demo?.stop();
     _msgSub?.cancel();
@@ -623,6 +627,32 @@ class GameController extends ChangeNotifier {
   }
 
   void sendCommand(proto.Command c) => send(proto.CommandMessage(c));
+
+  /// How long a hover or a new route must rest before the server is asked.
+  static const previewDebounce = Duration(milliseconds: 200);
+  final Map<(int, proto.Hex), Timer> _previewTimers = {};
+  final Map<(int, proto.Hex), int> _previewAsked = {};
+
+  /// Ask the server to rate the jump of [fleetId] into the adjacent [target]
+  /// (`preview_move`). Debounced, and skipped while a recent answer or request
+  /// for the same jump stands; the answer lands in [GameState.previews].
+  void requestPreview(int fleetId, proto.Hex target) {
+    if (fleetId == 0 || !hasState || !(isLive || isDemo)) return;
+    final key = (fleetId, target);
+    if (state.previewFor(fleetId, target) != null) return;
+    final asked = _previewAsked[key];
+    if (asked != null && state.tick - asked < previewFreshTicks) return;
+    _previewTimers[key]?.cancel();
+    _previewTimers[key] = Timer(previewDebounce, () {
+      _previewTimers.remove(key);
+      if (_disposed || !(isLive || isDemo)) return;
+      _previewAsked[key] = state.tick;
+      sendCommand(proto.PreviewMoveCommand(fleetId: fleetId, target: target));
+    });
+  }
+
+  /// Drop a request that has not fired yet (the hover ended).
+  void cancelPreview(int fleetId, proto.Hex target) => _previewTimers.remove((fleetId, target))?.cancel();
 
   /// Windshield: fly the active fleet one hop in [direction] (0-5, same
   /// order as [proto.HexDirection]) if the server lists that lane.

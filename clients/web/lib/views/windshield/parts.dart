@@ -353,6 +353,9 @@ class ContactsPanel extends StatelessWidget {
                     TextSpan(text: '|' * (4 - e.value), style: TextStyle(color: C.ore(e.key).withValues(alpha: .25))),
                   ]), style: _ds.copyWith(color: C.ore(e.key))),
             ]),
+            for (final e in [('metal', 'Fe', s?.oreReserve?.metal), ('crystal', 'Cr', s?.oreReserve?.crystal), ('deuterium', 'De', s?.oreReserve?.deuterium)])
+              if (e.$3 != null && e.$3!.maxUnits > 0)
+                Text('${e.$2.toUpperCase()} LEFT ${reserveText(e.$3!)}', key: Key('contact-reserve-${e.$1}'), style: _ds.copyWith(color: C.ore(e.$1))),
             Text(harvesting ? 'HARVESTING' : 'IDLE - HOLD FREE $free', style: _ds.copyWith(color: harvesting ? C.threat(1) : C.text3)),
           ])),
         ]),
@@ -596,10 +599,16 @@ class GateCard extends StatelessWidget {
   final int fuel;
   final bool isHome;
   final bool hint;
+
+  /// Danger band (1 to 3) of the faint contact heard in an uncharted gate.
+  final int? band;
+
+  /// The server's `preview_move` for this jump, once asked for (on hover).
+  final proto.MovePreview? preview;
   final bool hover;
   final VoidCallback onTap;
   final void Function(bool) onHover;
-  const GateCard({super.key, required this.dir, required this.narrow, required this.known, required this.sector, required this.threat, required this.intel, required this.fuel, required this.isHome, required this.hint, required this.hover, required this.onTap, required this.onHover});
+  const GateCard({super.key, required this.dir, required this.narrow, required this.known, required this.sector, required this.threat, required this.intel, required this.fuel, required this.isHome, required this.hint, this.band, this.preview, required this.hover, required this.onTap, required this.onHover});
 
   @override
   Widget build(BuildContext context) {
@@ -623,7 +632,7 @@ class GateCard extends StatelessWidget {
     if (!narrow) {
       body.add(Container(height: 1, color: C.lineLo));
       if (!known) {
-        body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 0), child: Text(hint ? 'FAINT MASS READING' : 'SCAN TO REVEAL', style: T.mono(size: 9.5, color: hint ? C.threat(6) : C.text3))));
+        body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 0), child: Text(hint ? 'FAINT MASS READING${band == null ? '' : ' / BAND $band'}' : 'SCAN TO REVEAL', style: T.mono(size: 9.5, color: hint ? C.threat(6) : C.text3))));
         body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 4), child: Text('${dir.name} - -${fuel}F', style: T.mono(size: 9.5, color: C.text3))));
       } else {
         final dens = [sector?.resources.metal.index ?? 0, sector?.resources.crystal.index ?? 0, sector?.resources.deuterium.index ?? 0];
@@ -642,6 +651,18 @@ class GateCard extends StatelessWidget {
             ),
           ]),
         ));
+        final pv = preview;
+        if (pv != null) {
+          final o = RatioInfo.fromPreview(pv);
+          body.add(Padding(
+            key: ValueKey('gate-odds-${dir.key}'),
+            padding: const EdgeInsets.fromLTRB(6, 3, 6, 0),
+            child: Text.rich(TextSpan(children: [
+              TextSpan(text: '${pv.ratio.toStringAsFixed(1)}X ${o.label}', style: TextStyle(color: o.color, fontWeight: FontWeight.w600)),
+              TextSpan(text: pv.canReturn ? '  HOME ${pv.hopsHome}H' : '  NO RETURN', style: TextStyle(color: pv.canReturn ? C.text3 : C.threat(7))),
+            ]), overflow: TextOverflow.ellipsis, style: lineStyle),
+          ));
+        }
         final sv = sector?.salvage;
         body.add(Padding(
           padding: const EdgeInsets.fromLTRB(6, 3, 6, 4),
