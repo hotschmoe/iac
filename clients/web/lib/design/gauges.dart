@@ -308,9 +308,9 @@ class _DialPainter extends CustomPainter {
     c.drawCircle(const Offset(cx, cy), 4, Paint()..color = C.void_);
     c.drawCircle(const Offset(cx, cy), 4, stroke(C.a300, 1.2));
     final vt = TextPainter(text: TextSpan(text: value, style: T.mono(size: 9.5, color: C.a100)), textDirection: TextDirection.ltr)..layout();
-    vt.paint(c, Offset(cx - vt.width / 2, 78 - vt.height / 2));
+    vt.paint(c, Offset(cx - vt.width / 2, 78 - vt.computeDistanceToActualBaseline(TextBaseline.alphabetic)));
     final lt = TextPainter(text: TextSpan(text: label, style: T.cond(size: 7.5, color: C.text3, weight: FontWeight.w400, spacing: 1.5)), textDirection: TextDirection.ltr)..layout();
-    lt.paint(c, Offset(cx - lt.width / 2, 86 - lt.height / 2));
+    lt.paint(c, Offset(cx - lt.width / 2, 88 - lt.computeDistanceToActualBaseline(TextBaseline.alphabetic)));
     c.restore();
   }
 

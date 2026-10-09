@@ -43,7 +43,7 @@ class ConsolePanel extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (title != null) PanelHeader(title!, sub: sub, subText: subText, color: titleColor, trailing: trailing),
-            body,
+            Flexible(child: body),
           ],
         ),
       ),
