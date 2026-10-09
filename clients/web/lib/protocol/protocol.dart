@@ -163,7 +163,8 @@ enum BuildingType {
   fuelDepot('Fuel Depot'),
   sensorArray('Sensor Array'),
   defenseGrid('Defense Grid'),
-  storageVault('Storage Vault');
+  storageVault('Storage Vault'),
+  fabricator('Fabricator');
 
   final String label;
   const BuildingType(this.label);
@@ -185,7 +186,8 @@ enum ResearchType {
   frigateTech('Frigate Tech'),
   cruiserTech('Cruiser Tech'),
   haulerTech('Hauler Tech'),
-  emergencyJump('Emergency Jump');
+  emergencyJump('Emergency Jump'),
+  modularFabrication('Modular Fabrication');
 
   final String label;
   const ResearchType(this.label);
@@ -421,7 +423,11 @@ sealed class Command {
           shipClass: ShipClass.fromJson(m['ship_class']),
           count: (m['count'] as int?) ?? 1,
         ),
-      'cancel_build' => CancelBuildCommand(queueType: QueueType.fromJson(m['queue_type'])),
+      'cancel_build' => CancelBuildCommand(
+          queueType: QueueType.fromJson(m['queue_type']),
+          index: (m['index'] as int?) ?? 0,
+        ),
+      'cancel_queued' => CancelQueuedCommand(queueType: QueueType.fromJson(m['queue_type']), index: _i(m['index'])),
       'stop' => StopCommand(fleetId: fleet()),
       'scan' => ScanCommand(fleetId: fleet()),
       'explore_site' => ExploreSiteCommand(fleetId: fleet()),
@@ -492,11 +498,23 @@ class BuildShipCommand extends Command {
   Json toJson() => {'action': 'build_ship', 'ship_class': shipClass.toJson(), 'count': count};
 }
 
+/// Cancel an item that has started (half refunded); [index] picks among the
+/// running buildings.
 class CancelBuildCommand extends Command {
   final QueueType queueType;
-  const CancelBuildCommand({required this.queueType});
+  final int index;
+  const CancelBuildCommand({required this.queueType, this.index = 0});
   @override
-  Json toJson() => {'action': 'cancel_build', 'queue_type': queueType.toJson()};
+  Json toJson() => {'action': 'cancel_build', 'queue_type': queueType.toJson(), 'index': index};
+}
+
+/// Remove an item still waiting in a queue; nothing was paid.
+class CancelQueuedCommand extends Command {
+  final QueueType queueType;
+  final int index;
+  const CancelQueuedCommand({required this.queueType, required this.index});
+  @override
+  Json toJson() => {'action': 'cancel_queued', 'queue_type': queueType.toJson(), 'index': index};
 }
 
 class StopCommand extends Command {
@@ -1097,9 +1115,20 @@ class HomeworldState {
   final StorageState storage;
   final List<BuildingState> buildings;
   final List<ResearchState> research;
-  final BuildQueueItem? buildQueue;
+
+  /// Buildings under construction, at most [buildSlots] of them.
+  final List<BuildQueueItem> buildQueue;
+
+  /// Waiting behind them; nothing is paid until an item starts.
+  final List<QueuedBuild> buildPending;
+  final int buildSlots;
+
+  /// Items per queue, the running ones included.
+  final int queueDepth;
   final ShipyardQueueItem? shipyardQueue;
+  final List<QueuedShip> shipyardPending;
   final ResearchItem? researchActive;
+  final List<QueuedResearch> researchPending;
   final List<ShipState> dockedShips;
 
   /// Costs, times and prerequisites for every building, tech and ship class.
@@ -1110,9 +1139,14 @@ class HomeworldState {
     required this.storage,
     required this.buildings,
     required this.research,
-    this.buildQueue,
+    this.buildQueue = const [],
+    this.buildPending = const [],
+    this.buildSlots = 1,
+    this.queueDepth = 3,
     this.shipyardQueue,
+    this.shipyardPending = const [],
     this.researchActive,
+    this.researchPending = const [],
     required this.dockedShips,
     required this.catalog,
   });
@@ -1125,9 +1159,14 @@ class HomeworldState {
       storage: StorageState.fromJson(m['storage']),
       buildings: _list(m['buildings'], BuildingState.fromJson),
       research: _list(m['research'], ResearchState.fromJson),
-      buildQueue: _opt(m['build_queue'], BuildQueueItem.fromJson),
+      buildQueue: _list(m['build_queue'], BuildQueueItem.fromJson),
+      buildPending: _list(m['build_pending'], QueuedBuild.fromJson),
+      buildSlots: _i(m['build_slots']),
+      queueDepth: _i(m['queue_depth']),
       shipyardQueue: _opt(m['shipyard_queue'], ShipyardQueueItem.fromJson),
+      shipyardPending: _list(m['shipyard_pending'], QueuedShip.fromJson),
       researchActive: _opt(m['research_active'], ResearchItem.fromJson),
+      researchPending: _list(m['research_pending'], QueuedResearch.fromJson),
       dockedShips: _list(m['docked_ships'], ShipState.fromJson),
       catalog: HomeworldCatalog.fromJson(m['catalog']),
     );
@@ -1140,14 +1179,54 @@ class HomeworldState {
       'storage': storage.toJson(),
       'buildings': buildings.map((e) => e.toJson()).toList(),
       'research': research.map((e) => e.toJson()).toList(),
+      'build_queue': buildQueue.map((e) => e.toJson()).toList(),
+      'build_pending': buildPending.map((e) => e.toJson()).toList(),
+      'build_slots': buildSlots,
+      'queue_depth': queueDepth,
+      'shipyard_pending': shipyardPending.map((e) => e.toJson()).toList(),
+      'research_pending': researchPending.map((e) => e.toJson()).toList(),
       'docked_ships': dockedShips.map((e) => e.toJson()).toList(),
       'catalog': catalog.toJson(),
     };
-    _put(m, 'build_queue', buildQueue?.toJson());
     _put(m, 'shipyard_queue', shipyardQueue?.toJson());
     _put(m, 'research_active', researchActive?.toJson());
     return m;
   }
+
+  /// A copy with some fields replaced (for tests and the offline demo).
+  HomeworldState copyWith({
+    Resources? production,
+    StorageState? storage,
+    List<BuildingState>? buildings,
+    List<ResearchState>? research,
+    List<BuildQueueItem>? buildQueue,
+    List<QueuedBuild>? buildPending,
+    int? buildSlots,
+    ShipyardQueueItem? shipyardQueue,
+    bool clearShipyardQueue = false,
+    List<QueuedShip>? shipyardPending,
+    ResearchItem? researchActive,
+    bool clearResearchActive = false,
+    List<QueuedResearch>? researchPending,
+    HomeworldCatalog? catalog,
+  }) =>
+      HomeworldState(
+        location: location,
+        production: production ?? this.production,
+        storage: storage ?? this.storage,
+        buildings: buildings ?? this.buildings,
+        research: research ?? this.research,
+        buildQueue: buildQueue ?? this.buildQueue,
+        buildPending: buildPending ?? this.buildPending,
+        buildSlots: buildSlots ?? this.buildSlots,
+        queueDepth: queueDepth,
+        shipyardQueue: clearShipyardQueue ? null : (shipyardQueue ?? this.shipyardQueue),
+        shipyardPending: shipyardPending ?? this.shipyardPending,
+        researchActive: clearResearchActive ? null : (researchActive ?? this.researchActive),
+        researchPending: researchPending ?? this.researchPending,
+        dockedShips: dockedShips,
+        catalog: catalog ?? this.catalog,
+      );
 
   int buildingLevel(BuildingType t) {
     for (final b in buildings) {
@@ -1439,6 +1518,123 @@ class BuildQueueItem {
         'start_tick': startTick,
         'end_tick': endTick,
       };
+}
+
+/// A building waiting for a free slot, resources or a prerequisite.
+/// [cost] and [ticks] are what it would cost and take if it started now;
+/// [waitingFor] is the resources still missing (null when it waits for
+/// something else).
+class QueuedBuild {
+  final BuildingType buildingType;
+  final int targetLevel;
+  final Resources cost;
+  final int ticks;
+  final Resources? waitingFor;
+  const QueuedBuild({
+    required this.buildingType,
+    required this.targetLevel,
+    required this.cost,
+    required this.ticks,
+    this.waitingFor,
+  });
+
+  factory QueuedBuild.fromJson(Object? json) {
+    final m = _obj(json);
+    return QueuedBuild(
+      buildingType: BuildingType.fromJson(m['building_type']),
+      targetLevel: _i(m['target_level']),
+      cost: Resources.fromJson(m['cost']),
+      ticks: _i(m['ticks']),
+      waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'building_type': buildingType.toJson(),
+      'target_level': targetLevel,
+      'cost': cost.toJson(),
+      'ticks': ticks,
+    };
+    _put(m, 'waiting_for', waitingFor?.toJson());
+    return m;
+  }
+}
+
+class QueuedResearch {
+  final ResearchType tech;
+  final int targetLevel;
+  final Resources cost;
+  final int ticks;
+  final Resources? waitingFor;
+  const QueuedResearch({
+    required this.tech,
+    required this.targetLevel,
+    required this.cost,
+    required this.ticks,
+    this.waitingFor,
+  });
+
+  factory QueuedResearch.fromJson(Object? json) {
+    final m = _obj(json);
+    return QueuedResearch(
+      tech: ResearchType.fromJson(m['tech']),
+      targetLevel: _i(m['target_level']),
+      cost: Resources.fromJson(m['cost']),
+      ticks: _i(m['ticks']),
+      waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'tech': tech.toJson(),
+      'target_level': targetLevel,
+      'cost': cost.toJson(),
+      'ticks': ticks,
+    };
+    _put(m, 'waiting_for', waitingFor?.toJson());
+    return m;
+  }
+}
+
+/// A shipyard order waiting its turn. [cost] is for the whole batch,
+/// [ticks] for one ship.
+class QueuedShip {
+  final ShipClass shipClass;
+  final int count;
+  final Resources cost;
+  final int ticks;
+  final Resources? waitingFor;
+  const QueuedShip({
+    required this.shipClass,
+    required this.count,
+    required this.cost,
+    required this.ticks,
+    this.waitingFor,
+  });
+
+  factory QueuedShip.fromJson(Object? json) {
+    final m = _obj(json);
+    return QueuedShip(
+      shipClass: ShipClass.fromJson(m['ship_class']),
+      count: _i(m['count']),
+      cost: Resources.fromJson(m['cost']),
+      ticks: _i(m['ticks']),
+      waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'ship_class': shipClass.toJson(),
+      'count': count,
+      'cost': cost.toJson(),
+      'ticks': ticks,
+    };
+    _put(m, 'waiting_for', waitingFor?.toJson());
+    return m;
+  }
 }
 
 class ShipyardQueueItem {

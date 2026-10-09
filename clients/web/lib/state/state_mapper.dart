@@ -372,16 +372,38 @@ class StateMapper {
     );
   }
 
+  /// A queue entry that has not started: [need] says what it waits for.
+  QueueItem _waitingItem(String name, proto.Resources? need, int ticks) => QueueItem(
+        name: name,
+        time: need == null ? 'waiting, ${_fmtTicks(ticks)}' : 'waiting for ${_need(need)}',
+        pct: 0,
+        active: false,
+      );
+
+  static String _need(proto.Resources r) => [
+        if (r.metal > 0) '${r.metal.ceil()} metal',
+        if (r.crystal > 0) '${r.crystal.ceil()} crystal',
+        if (r.deuterium > 0) '${r.deuterium.ceil()} deuterium',
+      ].join(', ');
+
   List<QueueItem> _mapBuildQueue(proto.HomeworldState? hw) {
-    final q = hw?.buildQueue;
-    if (q == null) return const [];
-    return [_queueItem('${q.buildingType.label} Lv.${q.targetLevel}', q.startTick, q.endTick)];
+    if (hw == null) return const [];
+    return [
+      for (final q in hw.buildQueue)
+        _queueItem('${q.buildingType.label} Lv.${q.targetLevel}', q.startTick, q.endTick),
+      for (final q in hw.buildPending)
+        _waitingItem('${q.buildingType.label} Lv.${q.targetLevel}', q.waitingFor, q.ticks),
+    ];
   }
 
   List<QueueItem> _mapShipyard(proto.HomeworldState? hw) {
-    final q = hw?.shipyardQueue;
-    if (q == null) return const [];
-    return [_queueItem('${q.shipClass.label} x${q.count} (${q.built} built)', q.startTick, q.endTick)];
+    if (hw == null) return const [];
+    final q = hw.shipyardQueue;
+    return [
+      if (q != null) _queueItem('${q.shipClass.label} x${q.count} (${q.built} built)', q.startTick, q.endTick),
+      for (final p in hw.shipyardPending)
+        _waitingItem('${p.shipClass.label} x${p.count}', p.waitingFor, p.ticks * p.count),
+    ];
   }
 
   String _dockedSummary(proto.HomeworldState? hw) {
@@ -398,12 +420,16 @@ class StateMapper {
       for (final r in hw?.research ?? const <proto.ResearchState>[])
         if (r.level > 0) '${r.tech.label} ${r.level}',
     ];
+    final waiting = [
+      for (final p in hw?.researchPending ?? const <proto.QueuedResearch>[])
+        _waitingItem('${p.tech.label} Lv.${p.targetLevel}', p.waitingFor, p.ticks),
+    ];
     final a = hw?.researchActive;
     if (a == null) {
-      return ResearchState(name: 'Idle', time: '—', pct: 0, completed: completed);
+      return ResearchState(name: 'Idle', time: '—', pct: 0, completed: completed, waiting: waiting);
     }
     final item = _queueItem('${a.tech.label} Lv.${a.targetLevel}', a.startTick, a.endTick);
-    return ResearchState(name: item.name, time: item.time, pct: item.pct, completed: completed);
+    return ResearchState(name: item.name, time: item.time, pct: item.pct, completed: completed, waiting: waiting);
   }
 
   SectorInfo _mapSector(proto.Hex loc) {

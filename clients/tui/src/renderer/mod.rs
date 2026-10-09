@@ -124,7 +124,7 @@ fn render_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
             crate::state::View::CommandCenter => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
             crate::state::View::Windshield => " WINDSHIELD | [1-6] Move  [v] Scan  [h] Harvest  [x] Board  [a] Attack  [p] Orders  [f] Fleets  [?] Keys",
             crate::state::View::StarMap => " STAR MAP | [Arrows] Crosshair  [Enter] Plot Course  [z/x] Zoom  [?] Keys",
-            crate::state::View::Homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [+/-] Count  [x/X/z] Cancel  [t] Tree  [?] Keys",
+            crate::state::View::Homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [+/-] Count  [x/X/z] Cancel running  [c/C/Z] Cancel waiting  [t] Tree  [?] Keys",
         }
     };
     let paragraph = Paragraph::new(text).style(AMBER_DIM);
@@ -180,7 +180,8 @@ Tab       Cycle panel
 Arrows    Navigate cards
 Enter     Build/Research
 +/-       Ship batch size
-x/X/z     Cancel bld/ship/res
+x/X/z     Cancel running bld/ship/res
+c/C/Z     Cancel next waiting bld/ship/res
 t         Tech tree
 
 STAR MAP

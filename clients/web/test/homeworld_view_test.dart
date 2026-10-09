@@ -84,10 +84,24 @@ void main() {
     await tester.pump();
     expect(c.state.events.first.message, contains('locked: needs Shipyard >= 3'));
 
-    // The demo already has a building in progress: the server's refusal shows up.
+    // The demo has one of its two slots free: Metal Mine starts at once, the
+    // next order waits (and builds on the first), the fourth hits the depth.
+    expect(c.state.buildQueue.length, 1);
     await tester.tap(find.byKey(const ValueKey('hw-card-0')));
     await tester.pump();
-    expect(c.state.events.first.message, contains('Build queue busy'));
+    expect(c.state.buildQueue.where((q) => q.active).length, 2);
+    await tester.tap(find.byKey(const ValueKey('hw-card-0')));
+    await tester.pump();
+    final waiting = c.state.buildQueue.where((q) => !q.active).toList();
+    expect(waiting.single.name, contains('Lv.6'));
+    await tester.tap(find.byKey(const ValueKey('hw-card-1')));
+    await tester.pump();
+    expect(c.state.events.first.message, contains('queue is full'));
+
+    await tester.tap(find.byKey(const ValueKey('hw-cancel-waiting-building-0')));
+    await tester.pump();
+    expect(c.state.buildQueue.where((q) => !q.active), isEmpty);
+    expect(c.state.buildQueue.where((q) => q.active).length, 2, reason: 'running items are untouched');
   });
 
   homeworldTest('keyboard: arrows select, brackets switch tab, Enter queues research', (tester, c) async {
@@ -98,15 +112,14 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.bracketRight);
     expect(c.hwTab, HomeworldTab.research);
     expect(c.hwCursor, 0);
-    // Demo research is busy with Fuel Efficiency: Enter reports the server's answer.
+    // Demo research is busy with Fuel Efficiency: another order waits behind it.
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
-    expect(c.state.events.first.message, contains('Lab busy'));
+    expect(c.state.research.waiting.length, 1);
+    // Cancelling the running project starts the waiting one, a level lower.
     await tester.sendKeyEvent(LogicalKeyboardKey.delete);
     await tester.pump();
-    expect(c.state.research.name, 'Idle');
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tester.pump();
-    expect(c.state.research.name, isNot('Idle'));
+    expect(c.state.research.name, 'Fuel Efficiency Lv.2');
+    expect(c.state.research.waiting, isEmpty);
   });
 }

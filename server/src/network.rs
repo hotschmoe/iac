@@ -27,6 +27,7 @@ use iac_shared::protocol::{
     ClientMessage, ServerMessage, Command, ErrorCode, HarvestResource,
     GameState, PlayerState, FleetState, ShipState,
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
+    QueuedBuild, QueuedResearch, QueuedShip,
     GameEvent, AuthResult, WorldInfo,
 };
 use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
@@ -224,7 +225,8 @@ impl Network {
             Command::Build { building_type } => engine.handle_build(pid, building_type),
             Command::Research { tech } => engine.handle_research(pid, tech),
             Command::BuildShip { ship_class, count } => engine.handle_build_ship(pid, ship_class, count),
-            Command::CancelBuild { queue_type } => engine.handle_cancel_build(pid, queue_type),
+            Command::CancelBuild { queue_type, index } => engine.handle_cancel_build(pid, queue_type, index),
+            Command::CancelQueued { queue_type, index } => engine.handle_cancel_queued(pid, queue_type, index),
             Command::Stop { fleet_id } => engine.handle_stop(pid, fleet_id),
             Command::Scan { fleet_id } => engine.handle_scan(pid, fleet_id),
             Command::ExploreSite { fleet_id } => engine.handle_explore_site(pid, fleet_id),
@@ -360,7 +362,8 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         Command::Build { .. }
         | Command::Research { .. }
         | Command::BuildShip { .. }
-        | Command::CancelBuild { .. } => None,
+        | Command::CancelBuild { .. }
+        | Command::CancelQueued { .. } => None,
     }
 }
 
@@ -490,7 +493,6 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         (ErrorCode::InvalidCommand, Command::Merge { .. }) => "the merged fleet would exceed 64 ships".to_string(),
         (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
-        (ErrorCode::NoResources, Command::CancelBuild { .. }) => "nothing to cancel in that queue".to_string(),
         (ErrorCode::NoResources, _) => shortfall_message(engine, player_id, cmd),
         (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),
         (ErrorCode::ResourceNotPresent, Command::Harvest { resource, .. }) => {
@@ -502,9 +504,18 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         }
         (ErrorCode::InvalidTarget, Command::ExploreSite { .. }) => "no derelict to board in this sector".to_string(),
         (ErrorCode::InvalidCommand, Command::Stop { .. }) => format!("fleet {fid} has nothing to stop"),
-        (ErrorCode::QueueFull, Command::Build { .. }) => "a building is already under construction".to_string(),
-        (ErrorCode::QueueFull, Command::Research { .. }) => "a research project is already running".to_string(),
-        (ErrorCode::QueueFull, Command::BuildShip { .. }) => "the shipyard is already building".to_string(),
+        (ErrorCode::QueueFull, Command::Build { .. }) => {
+            format!("the building queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+        }
+        (ErrorCode::QueueFull, Command::Research { .. }) => {
+            format!("the research queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+        }
+        (ErrorCode::QueueFull, Command::BuildShip { .. }) => {
+            format!("the shipyard queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+        }
+        (ErrorCode::InvalidTarget, Command::CancelBuild { .. }) => "nothing is under way at that position".to_string(),
+        (ErrorCode::InvalidTarget, Command::CancelQueued { .. }) => "nothing is waiting at that position".to_string(),
+        (ErrorCode::InvalidCommand, Command::BuildShip { .. }) => "a shipyard order needs a count of at least 1".to_string(),
         (ErrorCode::MaxLevelReached, Command::Build { building_type }) => {
             format!("{} is already at its maximum level", building_type.label())
         }
@@ -701,12 +712,48 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
         .map(|rt| ResearchState { tech: rt, level: player.research.get(rt) })
         .collect();
 
-    let build_queue: Option<BuildQueueItem> = player.building_queue.as_ref().map(|q| BuildQueueItem {
+    let pace = engine.pace();
+    let build_queue: Vec<BuildQueueItem> = player.building_queue.iter().map(|q| BuildQueueItem {
         building_type: q.building_type,
         target_level: q.target_level,
         start_tick: q.start_tick,
         end_tick: q.end_tick,
-    });
+    }).collect();
+
+    let missing = |cost: iac_shared::Resources| {
+        let short = player.resources.shortfall(cost);
+        (short.total() > 0.0).then_some(short)
+    };
+    let build_pending: Vec<QueuedBuild> = player.building_pending.iter().map(|q| {
+        let cost = iac_shared::scaling::building_cost(q.building_type, q.target_level);
+        QueuedBuild {
+            building_type: q.building_type,
+            target_level: q.target_level,
+            cost,
+            ticks: iac_shared::scaling::building_time(q.building_type, q.target_level, player.buildings.fabricator, &pace),
+            waiting_for: missing(cost),
+        }
+    }).collect();
+    let research_pending: Vec<QueuedResearch> = player.research_pending.iter().map(|q| {
+        let cost = iac_shared::scaling::research_cost(q.tech, q.target_level);
+        QueuedResearch {
+            tech: q.tech,
+            target_level: q.target_level,
+            cost,
+            ticks: iac_shared::scaling::research_time(q.tech, q.target_level, player.buildings.research_lab, &pace),
+            waiting_for: missing(cost),
+        }
+    }).collect();
+    let shipyard_pending: Vec<QueuedShip> = player.ship_pending.iter().map(|q| {
+        let cost = q.ship_class.build_cost().scale(q.count as f32);
+        QueuedShip {
+            ship_class: q.ship_class,
+            count: q.count,
+            cost,
+            ticks: iac_shared::scaling::ship_build_time(q.ship_class, player.buildings.shipyard, &pace),
+            waiting_for: missing(cost),
+        }
+    }).collect();
 
     let shipyard_queue: Option<ShipyardQueueItem> = player.ship_queue.as_ref().map(|q| ShipyardQueueItem {
         ship_class: q.ship_class,
@@ -747,10 +794,15 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
         buildings,
         research,
         build_queue,
+        build_pending,
+        build_slots: player.building_slots() as u8,
+        queue_depth: iac_shared::scaling::QUEUE_DEPTH as u8,
         shipyard_queue,
+        shipyard_pending,
         research_active,
+        research_pending,
         docked_ships,
-        catalog: iac_shared::protocol::HomeworldCatalog::new(&player.buildings, &player.research, &engine.pace()),
+        catalog: iac_shared::protocol::HomeworldCatalog::new(&player.buildings, &player.research, &pace),
     }
 }
 

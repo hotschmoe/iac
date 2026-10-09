@@ -67,8 +67,19 @@ pub enum Command {
         #[serde(default = "default_ship_count")]
         count: u16,
     },
+    /// Cancel an item that has started; its payment is refunded at 50
+    /// percent. `index` picks among the active buildings (always 0 for
+    /// ships and research).
     #[serde(rename = "cancel_build")]
-    CancelBuild { queue_type: QueueType },
+    CancelBuild {
+        queue_type: QueueType,
+        #[serde(default)]
+        index: usize,
+    },
+    /// Remove an item that is still waiting in the queue; nothing was paid,
+    /// so nothing is refunded. `index` counts the waiting items from 0.
+    #[serde(rename = "cancel_queued")]
+    CancelQueued { queue_type: QueueType, index: usize },
     #[serde(rename = "stop")]
     Stop {
         #[serde(default)]
@@ -497,12 +508,20 @@ pub struct HomeworldState {
     pub storage: StorageState,
     pub buildings: Vec<BuildingState>,
     pub research: Vec<ResearchState>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub build_queue: Option<BuildQueueItem>,
+    /// Buildings under construction, at most `build_slots` of them.
+    pub build_queue: Vec<BuildQueueItem>,
+    /// Waiting behind them; nothing is paid until an item starts.
+    pub build_pending: Vec<QueuedBuild>,
+    /// How many buildings may be under construction at once.
+    pub build_slots: u8,
+    /// Items per queue, the active ones included.
+    pub queue_depth: u8,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub shipyard_queue: Option<ShipyardQueueItem>,
+    pub shipyard_pending: Vec<QueuedShip>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub research_active: Option<ResearchItem>,
+    pub research_pending: Vec<QueuedResearch>,
     pub docked_ships: Vec<ShipState>,
     /// What can be queued right now and what it costs; see `HomeworldCatalog`.
     pub catalog: HomeworldCatalog,
@@ -682,7 +701,7 @@ impl HomeworldCatalog {
                     next: (level < scaling::MAX_BUILDING_LEVEL).then(|| UpgradeStep {
                         level: level + 1,
                         cost: scaling::building_cost(b, level + 1),
-                        ticks: scaling::building_time(b, level + 1, pace),
+                        ticks: scaling::building_time(b, level + 1, buildings.fabricator, pace),
                     }),
                     requires: building_requirements(buildings, b),
                 }
@@ -701,7 +720,7 @@ impl HomeworldCatalog {
                     next: (level < max_level).then(|| UpgradeStep {
                         level: level + 1,
                         cost: scaling::research_cost(t, level + 1),
-                        ticks: scaling::research_time(t, level + 1, pace),
+                        ticks: scaling::research_time(t, level + 1, buildings.research_lab, pace),
                     }),
                     requires: research_requirements(buildings, research, t),
                 }
@@ -744,6 +763,43 @@ pub struct BuildQueueItem {
     pub target_level: u8,
     pub start_tick: u64,
     pub end_tick: u64,
+}
+
+/// A building waiting for a free slot, resources or a prerequisite.
+/// `cost` and `ticks` are what it would cost and take if it started now;
+/// `waiting_for` is the resources still missing, absent when it is
+/// waiting for something else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueuedBuild {
+    pub building_type: BuildingType,
+    pub target_level: u8,
+    pub cost: Resources,
+    pub ticks: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub waiting_for: Option<Resources>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueuedResearch {
+    pub tech: ResearchType,
+    pub target_level: u8,
+    pub cost: Resources,
+    pub ticks: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub waiting_for: Option<Resources>,
+}
+
+/// A shipyard order waiting its turn. `cost` is for the whole batch,
+/// `ticks` for one ship.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueuedShip {
+    #[serde(rename = "ship_class")]
+    pub ship_class: ShipClass,
+    pub count: u16,
+    pub cost: Resources,
+    pub ticks: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub waiting_for: Option<Resources>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1163,7 +1219,7 @@ mod catalog_tests {
         assert_eq!(mine.level, 1);
         assert_eq!(next.level, 2);
         assert_eq!(next.cost, scaling::building_cost(BuildingType::MetalMine, 2));
-        assert_eq!(next.ticks, scaling::building_time(BuildingType::MetalMine, 2, &Pace::PERSISTENT));
+        assert_eq!(next.ticks, scaling::building_time(BuildingType::MetalMine, 2, 0, &Pace::PERSISTENT));
     }
 
     #[test]

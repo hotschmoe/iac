@@ -104,12 +104,48 @@
     }
   ],
   "homeworld": {
-    "build_queue": {
-      "building_type": "CrystalMine",
-      "end_tick": 460,
-      "start_tick": 100,
-      "target_level": 5
-    },
+    "build_pending": [
+      {
+        "building_type": "Shipyard",
+        "cost": {
+          "crystal": 324.0,
+          "deuterium": 162.0,
+          "metal": 648.0
+        },
+        "target_level": 3,
+        "ticks": 1500,
+        "waiting_for": {
+          "crystal": 120.5,
+          "deuterium": 0.0,
+          "metal": 0.0
+        }
+      },
+      {
+        "building_type": "CrystalMine",
+        "cost": {
+          "crystal": 250.0,
+          "deuterium": 0.0,
+          "metal": 500.0
+        },
+        "target_level": 6,
+        "ticks": 900
+      }
+    ],
+    "build_queue": [
+      {
+        "building_type": "CrystalMine",
+        "end_tick": 460,
+        "start_tick": 100,
+        "target_level": 5
+      },
+      {
+        "building_type": "FuelDepot",
+        "end_tick": 400,
+        "start_tick": 130,
+        "target_level": 2
+      }
+    ],
+    "build_slots": 2,
     "buildings": [
       {
         "building_type": "MetalMine",
@@ -146,6 +182,10 @@
       {
         "building_type": "StorageVault",
         "level": 8
+      },
+      {
+        "building_type": "Fabricator",
+        "level": 9
       }
     ],
     "catalog": {
@@ -161,7 +201,7 @@
               "metal": 60.0
             },
             "level": 1,
-            "ticks": 386
+            "ticks": 165
           },
           "requires": []
         },
@@ -176,7 +216,7 @@
               "metal": 77.0
             },
             "level": 2,
-            "ticks": 592
+            "ticks": 252
           },
           "requires": []
         },
@@ -191,7 +231,7 @@
               "metal": 338.0
             },
             "level": 3,
-            "ticks": 2315
+            "ticks": 985
           },
           "requires": []
         },
@@ -206,7 +246,7 @@
               "metal": 1166.0
             },
             "level": 4,
-            "ticks": 8995
+            "ticks": 3828
           },
           "requires": [
             {
@@ -228,7 +268,7 @@
               "metal": 1050.0
             },
             "level": 5,
-            "ticks": 16200
+            "ticks": 6894
           },
           "requires": [
             {
@@ -250,7 +290,7 @@
               "metal": 2130.0
             },
             "level": 6,
-            "ticks": 14606
+            "ticks": 6216
           },
           "requires": [
             {
@@ -272,7 +312,7 @@
               "metal": 2414.0
             },
             "level": 7,
-            "ticks": 31038
+            "ticks": 13208
           },
           "requires": [
             {
@@ -294,7 +334,7 @@
               "metal": 18367.0
             },
             "level": 8,
-            "ticks": 157428
+            "ticks": 66991
           },
           "requires": [
             {
@@ -316,13 +356,35 @@
               "metal": 13952.0
             },
             "level": 9,
-            "ticks": 107630
+            "ticks": 45800
           },
           "requires": [
             {
               "have": 0,
               "met": false,
               "name": "Metal Mine",
+              "need": 2
+            }
+          ]
+        },
+        {
+          "building_type": "Fabricator",
+          "level": 9,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 25815.0,
+              "deuterium": 12908.0,
+              "metal": 38723.0
+            },
+            "level": 10,
+            "ticks": 141239
+          },
+          "requires": [
+            {
+              "have": 3,
+              "met": true,
+              "name": "Shipyard",
               "need": 2
             }
           ]
@@ -339,7 +401,7 @@
               "metal": 200.0
             },
             "level": 1,
-            "ticks": 2160
+            "ticks": 1543
           },
           "requires": [
             {
@@ -367,7 +429,7 @@
               "metal": 240.0
             },
             "level": 2,
-            "ticks": 2592
+            "ticks": 1852
           },
           "requires": [
             {
@@ -395,7 +457,7 @@
               "metal": 768.0
             },
             "level": 3,
-            "ticks": 7373
+            "ticks": 5267
           },
           "requires": [
             {
@@ -423,7 +485,7 @@
               "metal": 410.0
             },
             "level": 4,
-            "ticks": 11801
+            "ticks": 8430
           },
           "requires": [
             {
@@ -445,7 +507,7 @@
               "metal": 200.0
             },
             "level": 1,
-            "ticks": 2880
+            "ticks": 2058
           },
           "requires": [
             {
@@ -467,7 +529,7 @@
               "metal": 160.0
             },
             "level": 2,
-            "ticks": 2880
+            "ticks": 2058
           },
           "requires": [
             {
@@ -489,7 +551,7 @@
               "metal": 384.0
             },
             "level": 3,
-            "ticks": 4608
+            "ticks": 3292
           },
           "requires": [
             {
@@ -530,7 +592,7 @@
               "metal": 2000.0
             },
             "level": 1,
-            "ticks": 23040
+            "ticks": 16458
           },
           "requires": [
             {
@@ -616,6 +678,28 @@
             }
           ],
           "tech": "EmergencyJump"
+        },
+        {
+          "level": 0,
+          "max_level": 2,
+          "next": {
+            "cost": {
+              "crystal": 1200.0,
+              "deuterium": 500.0,
+              "metal": 1500.0
+            },
+            "level": 1,
+            "ticks": 13886
+          },
+          "requires": [
+            {
+              "have": 4,
+              "met": true,
+              "name": "Research Lab",
+              "need": 4
+            }
+          ],
+          "tech": "ModularFabrication"
         }
       ],
       "ships": [
@@ -750,6 +834,7 @@
       "deuterium": 0.4000000059604645,
       "metal": 2.75
     },
+    "queue_depth": 3,
     "research": [
       {
         "level": 0,
@@ -798,6 +883,10 @@
       {
         "level": 3,
         "tech": "EmergencyJump"
+      },
+      {
+        "level": 0,
+        "tech": "ModularFabrication"
       }
     ],
     "research_active": {
@@ -806,6 +895,35 @@
       "target_level": 2,
       "tech": "FuelEfficiency"
     },
+    "research_pending": [
+      {
+        "cost": {
+          "crystal": 5000.0,
+          "deuterium": 2500.0,
+          "metal": 8000.0
+        },
+        "target_level": 1,
+        "tech": "CruiserTech",
+        "ticks": 90000,
+        "waiting_for": {
+          "crystal": 0.0,
+          "deuterium": 1200.0,
+          "metal": 0.0
+        }
+      }
+    ],
+    "shipyard_pending": [
+      {
+        "cost": {
+          "crystal": 800.0,
+          "deuterium": 400.0,
+          "metal": 2000.0
+        },
+        "count": 2,
+        "ship_class": "Frigate",
+        "ticks": 600
+      }
+    ],
     "shipyard_queue": {
       "built": 1,
       "count": 2,

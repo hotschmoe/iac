@@ -95,12 +95,15 @@ class DemoProvider {
       buildings: buildings,
       research: research,
       catalog: _catalogFor(buildings, research),
-      buildQueue: BuildQueueItem(
-        buildingType: BuildingType.crystalMine,
-        targetLevel: 4,
-        startTick: _tick - 100,
-        endTick: _tick + 140,
-      ),
+      buildSlots: 2,
+      buildQueue: [
+        BuildQueueItem(
+          buildingType: BuildingType.crystalMine,
+          targetLevel: 4,
+          startTick: _tick - 100,
+          endTick: _tick + 140,
+        ),
+      ],
       shipyardQueue: ShipyardQueueItem(
         shipClass: ShipClass.corvette,
         count: 2,
@@ -232,8 +235,7 @@ class DemoProvider {
           f,
     ];
 
-    final b = _hw.buildQueue;
-    if (b != null && _tick >= b.endTick) {
+    for (final b in _hw.buildQueue.where((b) => _tick >= b.endTick).toList()) {
       _pending.add(GameEvent(
         tick: _tick,
         kind: BuildingCompletedEvent(buildingType: b.buildingType, newLevel: b.targetLevel),
@@ -243,7 +245,7 @@ class DemoProvider {
           for (final e in _hw.buildings)
             e.buildingType == b.buildingType ? BuildingState(buildingType: e.buildingType, level: b.targetLevel) : e,
         ],
-        clearBuild: true,
+        buildQueue: [for (final q in _hw.buildQueue) if (q != b) q],
       );
     }
     final r = _hw.researchActive;
@@ -260,6 +262,7 @@ class DemoProvider {
         clearResearch: true,
       );
     }
+    _startWaiting();
 
     if (_tick % 15 == 0) {
       _pending.add(GameEvent(
@@ -318,25 +321,136 @@ class DemoProvider {
   HomeworldState _hwWith({
     List<BuildingState>? buildings,
     List<ResearchState>? research,
-    BuildQueueItem? build,
+    List<BuildQueueItem>? buildQueue,
+    List<QueuedBuild>? buildPending,
     ShipyardQueueItem? ship,
+    List<QueuedShip>? shipPending,
     ResearchItem? researchItem,
-    bool clearBuild = false,
+    List<QueuedResearch>? researchPending,
     bool clearShip = false,
     bool clearResearch = false,
-  }) =>
-      HomeworldState(
-        location: _hw.location,
-        production: _production(buildings ?? _hw.buildings),
-        storage: _storage(buildings ?? _hw.buildings, _resources, _production(buildings ?? _hw.buildings)),
-        buildings: buildings ?? _hw.buildings,
-        research: research ?? _hw.research,
-        buildQueue: clearBuild ? null : (build ?? _hw.buildQueue),
-        shipyardQueue: clearShip ? null : (ship ?? _hw.shipyardQueue),
-        researchActive: clearResearch ? null : (researchItem ?? _hw.researchActive),
-        dockedShips: _hw.dockedShips,
-        catalog: _catalogFor(buildings ?? _hw.buildings, research ?? _hw.research),
+  }) {
+    final b = buildings ?? _hw.buildings;
+    final r = research ?? _hw.research;
+    final slots = 1 + r.firstWhere((e) => e.tech == ResearchType.modularFabrication).level;
+    return _hw.copyWith(
+      production: _production(b),
+      storage: _storage(b, _resources, _production(b)),
+      buildings: b,
+      research: r,
+      buildQueue: buildQueue,
+      buildPending: buildPending,
+      buildSlots: slots,
+      shipyardQueue: ship,
+      clearShipyardQueue: clearShip,
+      shipyardPending: shipPending,
+      researchActive: researchItem,
+      clearResearchActive: clearResearch,
+      researchPending: researchPending,
+      catalog: _catalogFor(b, r),
+    );
+  }
+
+  int _bl(BuildingType t) => _hw.buildings.firstWhere((b) => b.buildingType == t).level;
+  int _rl(ResearchType t) => _hw.research.firstWhere((r) => r.tech == t).level;
+
+  int _projectedBuilding(BuildingType t) => [
+        _bl(t),
+        for (final q in _hw.buildQueue) if (q.buildingType == t) q.targetLevel,
+        for (final q in _hw.buildPending) if (q.buildingType == t) q.targetLevel,
+      ].reduce(max);
+
+  int _projectedResearch(ResearchType t) => [
+        _rl(t),
+        if (_hw.researchActive?.tech == t) _hw.researchActive!.targetLevel,
+        for (final q in _hw.researchPending) if (q.tech == t) q.targetLevel,
+      ].reduce(max);
+
+  bool _buildingPrereqs(BuildingType t, int Function(BuildingType) level) {
+    final need = _buildingNeeds[t];
+    return need == null || level(need.$1) >= need.$2;
+  }
+
+  bool _canStartBuilding(BuildingType t, int target) =>
+      _hw.buildQueue.length < _hw.buildSlots &&
+      _hw.buildQueue.every((q) => q.buildingType != t) &&
+      _bl(t) + 1 == target &&
+      _buildingPrereqs(t, _bl);
+
+  bool _canStartResearch(ResearchType t, int target) =>
+      _hw.researchActive == null && _bl(BuildingType.researchLab) > 0 && _rl(t) + 1 == target;
+
+  bool _affordable(Resources c) =>
+      _resources.metal >= c.metal && _resources.crystal >= c.crystal && _resources.deuterium >= c.deuterium;
+
+  Resources? _missing(Resources c) {
+    final m = Resources(
+      metal: max(0, c.metal - _resources.metal),
+      crystal: max(0, c.crystal - _resources.crystal),
+      deuterium: max(0, c.deuterium - _resources.deuterium),
+    );
+    return m.total > 0 ? m : null;
+  }
+
+  static (Resources, int) _buildingStep(BuildingType t, int level) {
+    final (base, growth) = _buildingBase[t]!;
+    final cost = _grown(base, growth, level);
+    return (cost, _ticksFor(cost, 700));
+  }
+
+  static (Resources, int) _researchStep(ResearchType t, int level) {
+    final cost = t == ResearchType.modularFabrication
+        ? _grown(const Resources(metal: 1500, crystal: 1200, deuterium: 500), 2, level)
+        : _grown(const Resources(metal: 200, crystal: 150, deuterium: 100), 1.6, level);
+    return (cost, _ticksFor(cost, 500));
+  }
+
+  void _startBuilding(BuildingType t, int target) {
+    final (cost, ticks) = _buildingStep(t, target);
+    _pay(cost);
+    _hw = _hwWith(buildQueue: [
+      ..._hw.buildQueue,
+      BuildQueueItem(buildingType: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks),
+    ]);
+  }
+
+  void _startResearch(ResearchType t, int target) {
+    final (cost, ticks) = _researchStep(t, target);
+    _pay(cost);
+    _hw = _hwWith(researchItem: ResearchItem(tech: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks));
+  }
+
+  /// Start the first waiting item of each queue that can run now.
+  void _startWaiting() {
+    for (final q in _hw.buildPending) {
+      if (_canStartBuilding(q.buildingType, q.targetLevel) && _affordable(q.cost)) {
+        _hw = _hwWith(buildPending: [for (final e in _hw.buildPending) if (e != q) e]);
+        _startBuilding(q.buildingType, q.targetLevel);
+        break;
+      }
+    }
+    for (final q in _hw.researchPending) {
+      if (_canStartResearch(q.tech, q.targetLevel) && _affordable(q.cost)) {
+        _hw = _hwWith(researchPending: [for (final e in _hw.researchPending) if (e != q) e]);
+        _startResearch(q.tech, q.targetLevel);
+        break;
+      }
+    }
+    final ship = _hw.shipyardPending.firstOrNull;
+    if (_hw.shipyardQueue == null && ship != null && _affordable(ship.cost)) {
+      _pay(ship.cost);
+      _hw = _hwWith(
+        shipPending: _hw.shipyardPending.skip(1).toList(),
+        ship: ShipyardQueueItem(
+          shipClass: ship.shipClass,
+          count: ship.count,
+          built: 0,
+          startTick: _tick,
+          endTick: _tick + ship.ticks,
+        ),
       );
+    }
+  }
 
   // Level-1 cost and per-level growth for the demo catalog.
   static const _buildingBase = {
@@ -349,6 +463,7 @@ class DemoProvider {
     BuildingType.sensorArray: (Resources(metal: 100, crystal: 150, deuterium: 75), 1.7),
     BuildingType.defenseGrid: (Resources(metal: 300, crystal: 200, deuterium: 100), 1.8),
     BuildingType.storageVault: (Resources(metal: 200, crystal: 100), 1.7),
+    BuildingType.fabricator: (Resources(metal: 120, crystal: 80, deuterium: 40), 1.9),
   };
   static const _buildingNeeds = {
     BuildingType.shipyard: (BuildingType.metalMine, 2),
@@ -357,6 +472,7 @@ class DemoProvider {
     BuildingType.sensorArray: (BuildingType.researchLab, 1),
     BuildingType.defenseGrid: (BuildingType.shipyard, 3),
     BuildingType.storageVault: (BuildingType.metalMine, 2),
+    BuildingType.fabricator: (BuildingType.shipyard, 2),
   };
   static const _shipCost = {
     ShipClass.scout: Resources(metal: 200, crystal: 50, deuterium: 30),
@@ -371,6 +487,9 @@ class DemoProvider {
     ShipClass.cruiser: ResearchType.cruiserTech,
     ShipClass.hauler: ResearchType.haulerTech,
   };
+
+  static int _researchMax(ResearchType t) =>
+      _shipTech.containsValue(t) ? 1 : (t == ResearchType.modularFabrication ? 2 : 5);
 
   static Resources _times(Resources r, num n) =>
       Resources(metal: r.metal * n, crystal: r.crystal * n, deuterium: r.deuterium * n);
@@ -428,9 +547,8 @@ class DemoProvider {
             next: bl(t) >= 20
                 ? null
                 : () {
-                    final (base, growth) = _buildingBase[t]!;
-                    final cost = _grown(base, growth, bl(t) + 1);
-                    return UpgradeStep(level: bl(t) + 1, cost: cost, ticks: _ticksFor(cost, 700));
+                    final (cost, ticks) = _buildingStep(t, bl(t) + 1);
+                    return UpgradeStep(level: bl(t) + 1, cost: cost, ticks: ticks);
                   }(),
             requires: [
               if (_buildingNeeds[t] case (final b, final l)) needBuilding(b, l),
@@ -442,16 +560,17 @@ class DemoProvider {
           ResearchOption(
             tech: t,
             level: rl(t),
-            maxLevel: _shipTech.containsValue(t) ? 1 : 5,
-            next: rl(t) >= (_shipTech.containsValue(t) ? 1 : 5)
+            maxLevel: _researchMax(t),
+            next: rl(t) >= _researchMax(t)
                 ? null
                 : () {
-                    final cost = _grown(const Resources(metal: 200, crystal: 150, deuterium: 100), 1.6, rl(t) + 1);
-                    return UpgradeStep(level: rl(t) + 1, cost: cost, ticks: _ticksFor(cost, 500));
+                    final (cost, ticks) = _researchStep(t, rl(t) + 1);
+                    return UpgradeStep(level: rl(t) + 1, cost: cost, ticks: ticks);
                   }(),
             requires: [
               needBuilding(BuildingType.researchLab, 1),
               if (t == ResearchType.corvetteTech) needBuilding(BuildingType.shipyard, 1),
+              if (t == ResearchType.modularFabrication) needBuilding(BuildingType.researchLab, 4),
             ],
           ),
       ],
@@ -578,61 +697,126 @@ class DemoProvider {
         ));
         return [_tickUpdate(sectors: true)];
       case BuildCommand(:final buildingType):
-        if (_hw.buildQueue != null) return [_err(ErrorCode.queueFull, 'Build queue busy')];
-        final o = _hw.catalog.buildings.firstWhere((o) => o.buildingType == buildingType);
-        if (o.next == null) return [_err(ErrorCode.maxLevelReached, '${buildingType.label} is maxed')];
-        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
-        final broke = _pay(o.next!.cost);
-        if (broke != null) return [broke];
-        _hw = _hwWith(
-          build: BuildQueueItem(
-            buildingType: buildingType,
-            targetLevel: o.next!.level,
-            startTick: _tick,
-            endTick: _tick + o.next!.ticks,
-          ),
-        );
+        final proj = _projectedBuilding(buildingType);
+        if (proj >= 20) return [_err(ErrorCode.maxLevelReached, '${buildingType.label} is maxed')];
+        if (!_buildingPrereqs(buildingType, _projectedBuilding)) {
+          return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
+        }
+        if (_hw.buildQueue.length + _hw.buildPending.length >= _hw.queueDepth) {
+          return [_err(ErrorCode.queueFull, 'The building queue is full')];
+        }
+        final (cost, ticks) = _buildingStep(buildingType, proj + 1);
+        if (_canStartBuilding(buildingType, proj + 1)) {
+          if (!_affordable(cost)) return [_err(ErrorCode.noResources, 'Not enough resources')];
+          _startBuilding(buildingType, proj + 1);
+        } else {
+          _hw = _hwWith(buildPending: [
+            ..._hw.buildPending,
+            QueuedBuild(buildingType: buildingType, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+          ]);
+        }
         return [_tickUpdate()];
       case ResearchCommand(:final tech):
-        if (_hw.researchActive != null) return [_err(ErrorCode.queueFull, 'Lab busy')];
-        final o = _hw.catalog.research.firstWhere((o) => o.tech == tech);
-        if (o.requires.first.met == false) return [_err(ErrorCode.noResearchLab, 'Build a research lab first')];
-        if (o.next == null) return [_err(ErrorCode.maxLevelReached, '${tech.label} is maxed')];
-        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
-        final broke = _pay(o.next!.cost);
-        if (broke != null) return [broke];
-        _hw = _hwWith(
-          researchItem: ResearchItem(
-            targetLevel: o.next!.level,
-            tech: tech,
-            startTick: _tick,
-            endTick: _tick + o.next!.ticks,
-          ),
-        );
+        if (_bl(BuildingType.researchLab) == 0) return [_err(ErrorCode.noResearchLab, 'Build a research lab first')];
+        final maxLevel = _shipTech.containsValue(tech) ? 1 : (tech == ResearchType.modularFabrication ? 2 : 5);
+        final proj = _projectedResearch(tech);
+        if (proj >= maxLevel) return [_err(ErrorCode.maxLevelReached, '${tech.label} is maxed')];
+        if (_hw.catalog.research.firstWhere((o) => o.tech == tech).requires.any((r) => !r.met)) {
+          return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
+        }
+        if ((_hw.researchActive == null ? 0 : 1) + _hw.researchPending.length >= _hw.queueDepth) {
+          return [_err(ErrorCode.queueFull, 'The research queue is full')];
+        }
+        final (cost, ticks) = _researchStep(tech, proj + 1);
+        if (_canStartResearch(tech, proj + 1)) {
+          if (!_affordable(cost)) return [_err(ErrorCode.noResources, 'Not enough resources')];
+          _startResearch(tech, proj + 1);
+        } else {
+          _hw = _hwWith(researchPending: [
+            ..._hw.researchPending,
+            QueuedResearch(tech: tech, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+          ]);
+        }
         return [_tickUpdate()];
       case BuildShipCommand(:final shipClass, :final count):
-        if (_hw.shipyardQueue != null) return [_err(ErrorCode.queueFull, 'Shipyard busy')];
         final o = _hw.catalog.ships.firstWhere((o) => o.shipClass == shipClass);
         if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.shipLocked, 'Ship class not unlocked')];
-        final broke = _pay(_times(o.unitCost, count));
-        if (broke != null) return [broke];
-        _hw = _hwWith(
-          ship: ShipyardQueueItem(
-            shipClass: shipClass,
-            count: count,
-            built: 0,
-            startTick: _tick,
-            endTick: _tick + o.ticksPerShip * count,
-          ),
-        );
+        if ((_hw.shipyardQueue == null ? 0 : 1) + _hw.shipyardPending.length >= _hw.queueDepth) {
+          return [_err(ErrorCode.queueFull, 'The shipyard queue is full')];
+        }
+        final cost = _times(o.unitCost, count);
+        if (_hw.shipyardQueue == null) {
+          final broke = _pay(cost);
+          if (broke != null) return [broke];
+          _hw = _hwWith(
+            ship: ShipyardQueueItem(
+              shipClass: shipClass,
+              count: count,
+              built: 0,
+              startTick: _tick,
+              endTick: _tick + o.ticksPerShip * count,
+            ),
+          );
+        } else {
+          _hw = _hwWith(shipPending: [
+            ..._hw.shipyardPending,
+            QueuedShip(shipClass: shipClass, count: count, cost: cost, ticks: o.ticksPerShip, waitingFor: _missing(cost)),
+          ]);
+        }
         return [_tickUpdate()];
-      case CancelBuildCommand(:final queueType):
-        _hw = _hwWith(
-          clearBuild: queueType == QueueType.building,
-          clearShip: queueType == QueueType.ship,
-          clearResearch: queueType == QueueType.research,
-        );
+      case CancelBuildCommand(:final queueType, :final index):
+        switch (queueType) {
+          case QueueType.building:
+            if (index >= _hw.buildQueue.length) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            final gone = _hw.buildQueue[index];
+            _hw = _hwWith(
+              buildQueue: [for (var i = 0; i < _hw.buildQueue.length; i++) if (i != index) _hw.buildQueue[i]],
+              buildPending: [
+                for (final q in _hw.buildPending)
+                  q.buildingType == gone.buildingType && q.targetLevel > gone.targetLevel
+                      ? QueuedBuild(
+                          buildingType: q.buildingType,
+                          targetLevel: q.targetLevel - 1,
+                          cost: q.cost,
+                          ticks: q.ticks,
+                          waitingFor: q.waitingFor)
+                      : q,
+              ],
+            );
+          case QueueType.ship:
+            if (_hw.shipyardQueue == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            _hw = _hwWith(clearShip: true);
+          case QueueType.research:
+            final gone = _hw.researchActive;
+            if (gone == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            _hw = _hwWith(clearResearch: true, researchPending: [
+              for (final q in _hw.researchPending)
+                q.tech == gone.tech && q.targetLevel > gone.targetLevel
+                    ? QueuedResearch(
+                        tech: q.tech, targetLevel: q.targetLevel - 1, cost: q.cost, ticks: q.ticks, waitingFor: q.waitingFor)
+                    : q,
+            ]);
+        }
+        _startWaiting();
+        return [_tickUpdate()];
+      case CancelQueuedCommand(:final queueType, :final index):
+        switch (queueType) {
+          case QueueType.building when index < _hw.buildPending.length:
+            _hw = _hwWith(buildPending: [
+              for (var i = 0; i < _hw.buildPending.length; i++) if (i != index) _hw.buildPending[i],
+            ]);
+          case QueueType.ship when index < _hw.shipyardPending.length:
+            _hw = _hwWith(shipPending: [
+              for (var i = 0; i < _hw.shipyardPending.length; i++) if (i != index) _hw.shipyardPending[i],
+            ]);
+          case QueueType.research when index < _hw.researchPending.length:
+            _hw = _hwWith(researchPending: [
+              for (var i = 0; i < _hw.researchPending.length; i++) if (i != index) _hw.researchPending[i],
+            ]);
+          default:
+            return [_err(ErrorCode.invalidTarget, 'Nothing is waiting there')];
+        }
         return [_tickUpdate()];
       case SplitCommand(:final fleetId, :final shipIds):
         final f = fleet(fleetId);

@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/protocol/protocol.dart';
+import 'package:iac_client/state/state_mapper.dart';
 
 import 'fixtures_util.dart';
 
@@ -82,9 +83,9 @@ void main() {
       expect(kinds.length, 23);
     });
 
-    test('command fixtures cover all 14 commands', () {
+    test('command fixtures cover all 15 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 14);
+      expect(kinds.length, 15);
     });
 
     test('full_state exposes sector connections', () {
@@ -96,6 +97,29 @@ void main() {
       expect(s.homeworld.storage.cap.metal, 7500);
       expect(s.homeworld.storage.capped, [ResourceKind.deuterium]);
       expect(s.homeworld.storage.fullInS.crystal, isNull);
+    });
+
+    test('full_state carries running and waiting queue items', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;
+      expect(hw.buildSlots, 2);
+      expect(hw.queueDepth, 3);
+      expect(hw.buildQueue.length, 2);
+      expect(hw.buildPending.first.waitingFor!.crystal, 120.5);
+      expect(hw.buildPending.last.waitingFor, isNull);
+      expect(hw.shipyardPending.single.count, 2);
+      expect(hw.researchPending.single.tech, ResearchType.cruiserTech);
+    });
+
+    test('the mapper lists waiting items after the running ones and says what they wait for', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
+      final ui = mapper.toUiState();
+      expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
+      expect(ui.buildQueue[2].time, 'waiting for 121 crystal');
+      expect(ui.buildQueue[3].time, startsWith('waiting, '));
+      expect(ui.shipyard.last.name, 'Frigate x2');
+      expect(ui.research.waiting.single.time, 'waiting for 1200 deuterium');
     });
 
     test('full_state carries the homeworld catalog the server computed', () {

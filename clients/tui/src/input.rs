@@ -168,15 +168,31 @@ fn map_homeworld_char(c: char) -> InputAction {
         't' => InputAction::ToggleTechTree,
         'f' => InputAction::ToggleFleetPanel,
 
-        // Cancel queues
+        // Cancel the oldest running item (half refunded) ...
         'x' => InputAction::SendCommand(Command::CancelBuild {
             queue_type: iac_shared::protocol::QueueType::Building,
+            index: 0,
         }),
         'X' => InputAction::SendCommand(Command::CancelBuild {
             queue_type: iac_shared::protocol::QueueType::Ship,
+            index: 0,
         }),
         'z' => InputAction::SendCommand(Command::CancelBuild {
             queue_type: iac_shared::protocol::QueueType::Research,
+            index: 0,
+        }),
+        // ... or the next waiting one (nothing was paid)
+        'c' => InputAction::SendCommand(Command::CancelQueued {
+            queue_type: iac_shared::protocol::QueueType::Building,
+            index: 0,
+        }),
+        'C' => InputAction::SendCommand(Command::CancelQueued {
+            queue_type: iac_shared::protocol::QueueType::Ship,
+            index: 0,
+        }),
+        'Z' => InputAction::SendCommand(Command::CancelQueued {
+            queue_type: iac_shared::protocol::QueueType::Research,
+            index: 0,
         }),
 
         // Shipyard batch size

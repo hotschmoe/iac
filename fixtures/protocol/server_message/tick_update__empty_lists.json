@@ -2,6 +2,9 @@
   "events": [],
   "fleets": [],
   "homeworld_update": {
+    "build_pending": [],
+    "build_queue": [],
+    "build_slots": 1,
     "buildings": [],
     "catalog": {
       "buildings": [
@@ -178,6 +181,28 @@
               "have": 1,
               "met": false,
               "name": "Metal Mine",
+              "need": 2
+            }
+          ]
+        },
+        {
+          "building_type": "Fabricator",
+          "level": 0,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 80.0,
+              "deuterium": 40.0,
+              "metal": 120.0
+            },
+            "level": 1,
+            "ticks": 1029
+          },
+          "requires": [
+            {
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
               "need": 2
             }
           ]
@@ -507,6 +532,28 @@
             }
           ],
           "tech": "EmergencyJump"
+        },
+        {
+          "level": 0,
+          "max_level": 2,
+          "next": {
+            "cost": {
+              "crystal": 1200.0,
+              "deuterium": 500.0,
+              "metal": 1500.0
+            },
+            "level": 1,
+            "ticks": 19440
+          },
+          "requires": [
+            {
+              "have": 0,
+              "met": false,
+              "name": "Research Lab",
+              "need": 4
+            }
+          ],
+          "tech": "ModularFabrication"
         }
       ],
       "ships": [
@@ -631,7 +678,10 @@
       "deuterium": 0.0,
       "metal": 0.0
     },
+    "queue_depth": 3,
     "research": [],
+    "research_pending": [],
+    "shipyard_pending": [],
     "storage": {
       "cap": {
         "crystal": 3500.0,

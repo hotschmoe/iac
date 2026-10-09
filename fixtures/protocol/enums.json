@@ -13,7 +13,8 @@
     "FuelDepot",
     "SensorArray",
     "DefenseGrid",
-    "StorageVault"
+    "StorageVault",
+    "Fabricator"
   ],
   "Density": [
     "None",
@@ -93,7 +94,8 @@
     "FrigateTech",
     "CruiserTech",
     "HaulerTech",
-    "EmergencyJump"
+    "EmergencyJump",
+    "ModularFabrication"
   ],
   "ResourceKind": [
     "metal",

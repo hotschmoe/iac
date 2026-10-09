@@ -22,6 +22,7 @@ pub enum BuildingType {
     SensorArray,
     DefenseGrid,
     StorageVault,
+    Fabricator,
 }
 
 impl BuildingType {
@@ -36,11 +37,12 @@ impl BuildingType {
             BuildingType::SensorArray => "Sensor Array",
             BuildingType::DefenseGrid => "Defense Grid",
             BuildingType::StorageVault => "Storage Vault",
+            BuildingType::Fabricator => "Fabricator",
         }
     }
 
     /// Number of building types.
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 10;
 
     pub fn short_label(self) -> &'static str {
         match self {
@@ -53,6 +55,7 @@ impl BuildingType {
             BuildingType::SensorArray => "Sensor",
             BuildingType::DefenseGrid => "DefGrd",
             BuildingType::StorageVault => "Vault",
+            BuildingType::Fabricator => "Fab",
         }
     }
     pub fn from_usize(idx: usize) -> Option<Self> {
@@ -66,6 +69,7 @@ impl BuildingType {
             6 => Some(BuildingType::SensorArray),
             7 => Some(BuildingType::DefenseGrid),
             8 => Some(BuildingType::StorageVault),
+            9 => Some(BuildingType::Fabricator),
             _ => None,
         }
     }
@@ -83,6 +87,7 @@ pub struct BuildingLevels {
     pub sensor_array: u8,
     pub defense_grid: u8,
     pub storage_vault: u8,
+    pub fabricator: u8,
 }
 
 impl Default for BuildingLevels {
@@ -98,6 +103,7 @@ impl Default for BuildingLevels {
             sensor_array: 0,
             defense_grid: 0,
             storage_vault: 0,
+            fabricator: 0,
         }
     }
 }
@@ -114,6 +120,7 @@ impl BuildingLevels {
             BuildingType::SensorArray => self.sensor_array,
             BuildingType::DefenseGrid => self.defense_grid,
             BuildingType::StorageVault => self.storage_vault,
+            BuildingType::Fabricator => self.fabricator,
         }
     }
 
@@ -128,6 +135,7 @@ impl BuildingLevels {
             BuildingType::SensorArray => self.sensor_array = level,
             BuildingType::DefenseGrid => self.defense_grid = level,
             BuildingType::StorageVault => self.storage_vault = level,
+            BuildingType::Fabricator => self.fabricator = level,
         }
     }
 }
@@ -145,6 +153,12 @@ pub const RESEARCH_RATE: f64 = 500.0;
 pub const SHIP_RATE: f64 = 1200.0;
 /// Shipyard level divides ship time by `1 + this * level`.
 pub const SHIPYARD_SPEED: f64 = 0.10;
+/// Fabricator level divides building time by `1 + this * level`.
+pub const FABRICATOR_SPEED: f64 = 0.15;
+/// Research Lab level divides research time by `1 + this * level`.
+pub const LAB_SPEED: f64 = 0.10;
+/// Items per queue (building, research, shipyard), the active ones included.
+pub const QUEUE_DEPTH: usize = 3;
 
 /// Stockpile cap with no Vault, before the pace multiplier.
 pub const STORAGE_BASE: Resources = Resources { metal: 5000.0, crystal: 3500.0, deuterium: 2500.0 };
@@ -200,6 +214,7 @@ pub fn building_cost_curve(building: BuildingType) -> ([f64; 3], f64) {
         BuildingType::SensorArray => ([100.0, 150.0, 75.0], 1.7),
         BuildingType::DefenseGrid => ([300.0, 200.0, 100.0], 1.8),
         BuildingType::StorageVault => ([200.0, 100.0, 0.0], 1.7),
+        BuildingType::Fabricator => ([120.0, 80.0, 40.0], 1.9),
     }
 }
 
@@ -223,11 +238,12 @@ fn cost_seconds(cost: Resources, rate: f64, speed_divisor: f64) -> f64 {
 
 /// Ticks to build level N: derived from the cost, so time and cost share an
 /// exponent.
-pub fn building_time(building: BuildingType, level: u8, pace: &Pace) -> u64 {
+pub fn building_time(building: BuildingType, level: u8, fabricator_level: u8, pace: &Pace) -> u64 {
     if level == 0 {
         return 0;
     }
-    pace.econ_ticks(cost_seconds(building_cost(building, level), BUILD_RATE, 1.0))
+    let divisor = 1.0 + FABRICATOR_SPEED * fabricator_level as f64;
+    pace.econ_ticks(cost_seconds(building_cost(building, level), BUILD_RATE, divisor))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -265,6 +281,10 @@ pub fn building_prerequisites(building: BuildingType) -> Option<Prerequisite> {
             building: BuildingType::MetalMine,
             level: 2,
         }),
+        BuildingType::Fabricator => Some(Prerequisite {
+            building: BuildingType::Shipyard,
+            level: 2,
+        }),
     }
 }
 
@@ -293,10 +313,11 @@ pub enum ResearchType {
     CruiserTech,
     HaulerTech,
     EmergencyJump,
+    ModularFabrication,
 }
 
 impl ResearchType {
-    pub const ALL: [ResearchType; 12] = [
+    pub const ALL: [ResearchType; 13] = [
         ResearchType::FuelEfficiency,
         ResearchType::ExtendedFuelTanks,
         ResearchType::ReinforcedHulls,
@@ -309,6 +330,7 @@ impl ResearchType {
         ResearchType::CruiserTech,
         ResearchType::HaulerTech,
         ResearchType::EmergencyJump,
+        ResearchType::ModularFabrication,
     ];
 
     pub fn label(self) -> &'static str {
@@ -325,11 +347,12 @@ impl ResearchType {
             ResearchType::CruiserTech => "Cruiser Tech",
             ResearchType::HaulerTech => "Hauler Tech",
             ResearchType::EmergencyJump => "Emergency Jump",
+            ResearchType::ModularFabrication => "Modular Fabrication",
         }
     }
 
     /// Number of research types.
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 13;
 
     pub fn from_usize(idx: usize) -> Option<Self> {
         match idx {
@@ -345,6 +368,7 @@ impl ResearchType {
             9 => Some(ResearchType::CruiserTech),
             10 => Some(ResearchType::HaulerTech),
             11 => Some(ResearchType::EmergencyJump),
+            12 => Some(ResearchType::ModularFabrication),
             _ => None,
         }
     }
@@ -364,6 +388,7 @@ pub struct ResearchLevels {
     pub cruiser_tech: u8,
     pub hauler_tech: u8,
     pub emergency_jump: u8,
+    pub modular_fabrication: u8,
 }
 
 impl ResearchLevels {
@@ -381,6 +406,7 @@ impl ResearchLevels {
             ResearchType::CruiserTech => self.cruiser_tech,
             ResearchType::HaulerTech => self.hauler_tech,
             ResearchType::EmergencyJump => self.emergency_jump,
+            ResearchType::ModularFabrication => self.modular_fabrication,
         }
     }
 
@@ -398,6 +424,7 @@ impl ResearchLevels {
             ResearchType::CruiserTech => self.cruiser_tech = level,
             ResearchType::HaulerTech => self.hauler_tech = level,
             ResearchType::EmergencyJump => self.emergency_jump = level,
+            ResearchType::ModularFabrication => self.modular_fabrication = level,
         }
     }
 }
@@ -409,6 +436,7 @@ pub fn research_max_level(tech: ResearchType) -> u8 {
         | ResearchType::CruiserTech
         | ResearchType::HaulerTech => 1,
         ResearchType::EmergencyJump => 3,
+        ResearchType::ModularFabrication => 2,
         _ => 5,
     }
 }
@@ -428,6 +456,7 @@ pub fn research_cost_curve(tech: ResearchType) -> ([f64; 3], f64) {
         ResearchType::Navigation => ([100.0, 150.0, 50.0], RESEARCH_GROWTH),
         ResearchType::HarvestingEfficiency => ([150.0, 100.0, 75.0], RESEARCH_GROWTH),
         ResearchType::EmergencyJump => ([500.0, 400.0, 300.0], RESEARCH_GROWTH),
+        ResearchType::ModularFabrication => ([1500.0, 1200.0, 500.0], 2.0),
     }
 }
 
@@ -439,11 +468,12 @@ pub fn research_cost(tech: ResearchType, level: u8) -> Resources {
     grown_cost(base, growth, level)
 }
 
-pub fn research_time(tech: ResearchType, level: u8, pace: &Pace) -> u64 {
+pub fn research_time(tech: ResearchType, level: u8, lab_level: u8, pace: &Pace) -> u64 {
     if level == 0 {
         return 0;
     }
-    pace.econ_ticks(cost_seconds(research_cost(tech, level), RESEARCH_RATE, 1.0))
+    let divisor = 1.0 + LAB_SPEED * lab_level as f64;
+    pace.econ_ticks(cost_seconds(research_cost(tech, level), RESEARCH_RATE, divisor))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -547,6 +577,13 @@ pub fn research_prerequisites(tech: ResearchType) -> [Option<ResearchPrereqKind>
                 level: 4,
             })),
         ],
+        ResearchType::ModularFabrication => [
+            Some(ResearchPrereqKind::Building(Prerequisite {
+                building: BuildingType::ResearchLab,
+                level: 4,
+            })),
+            None,
+        ],
     }
 }
 
@@ -587,6 +624,12 @@ pub fn apply_research_to_stats(base: ShipStats, research: &ResearchLevels) -> Sh
         cargo: base.cargo,
         fuel: (base.fuel as f32 * fuel_cap) as u16,
     }
+}
+
+/// Buildings that can be under construction at once: one, plus one per
+/// Modular Fabrication level.
+pub fn building_slots(research: &ResearchLevels) -> u8 {
+    1 + research.modular_fabrication
 }
 
 pub fn fuel_rate_modifier(fuel_eff_level: u8) -> f32 {
@@ -711,16 +754,16 @@ mod golden_tests {
 
     #[test]
     fn building_times_match_the_table() {
-        assert_eq!(building_time(MetalMine, 2, &P1), 576, "(90 + 22) / 700 h");
-        assert!((hours(building_time(MetalMine, 1, &P1)) * 60.0 - 6.4).abs() < 0.1);
-        assert!((hours(building_time(MetalMine, 5, &P1)) * 60.0 - 33.0).abs() < 1.0);
-        assert!((hours(building_time(MetalMine, 10, &P1)) - 4.1).abs() < 0.1);
-        assert!((hours(building_time(MetalMine, 15, &P1)) - 31.3).abs() < 0.1);
-        assert!((hours(building_time(Shipyard, 1, &P1)) * 60.0 - 26.0).abs() < 1.0);
-        assert!((hours(building_time(Shipyard, 5, &P1)) - 4.5).abs() < 0.05);
-        assert!((hours(building_time(Shipyard, 8, &P1)) - 26.2).abs() < 0.1);
-        assert!((hours(building_time(ResearchLab, 8, &P1)) - 26.2).abs() < 0.1);
-        assert_eq!(building_time(MetalMine, 0, &P1), 0);
+        assert_eq!(building_time(MetalMine, 2, 0, &P1), 576, "(90 + 22) / 700 h");
+        assert!((hours(building_time(MetalMine, 1, 0, &P1)) * 60.0 - 6.4).abs() < 0.1);
+        assert!((hours(building_time(MetalMine, 5, 0, &P1)) * 60.0 - 33.0).abs() < 1.0);
+        assert!((hours(building_time(MetalMine, 10, 0, &P1)) - 4.1).abs() < 0.1);
+        assert!((hours(building_time(MetalMine, 15, 0, &P1)) - 31.3).abs() < 0.1);
+        assert!((hours(building_time(Shipyard, 1, 0, &P1)) * 60.0 - 26.0).abs() < 1.0);
+        assert!((hours(building_time(Shipyard, 5, 0, &P1)) - 4.5).abs() < 0.05);
+        assert!((hours(building_time(Shipyard, 8, 0, &P1)) - 26.2).abs() < 0.1);
+        assert!((hours(building_time(ResearchLab, 8, 0, &P1)) - 26.2).abs() < 0.1);
+        assert_eq!(building_time(MetalMine, 0, 0, &P1), 0);
     }
 
     #[test]
@@ -728,12 +771,12 @@ mod golden_tests {
         let season = Pace::new(10.0).unwrap();
         let blitz = Pace::new(600.0).unwrap();
         let test = Pace::new(8000.0).unwrap();
-        assert_eq!(building_time(MetalMine, 2, &season), 58, "58s");
-        assert_eq!(building_time(MetalMine, 2, &blitz), 1);
-        assert_eq!(building_time(MetalMine, 2, &test), 1);
-        assert_eq!(building_time(MetalMine, 10, &blitz), 25, "25s");
-        assert_eq!(building_time(Shipyard, 4, &blitz), 15, "15s");
-        assert_eq!(building_time(MetalMine, 15, &test), 15, "14s in the table, which rounds");
+        assert_eq!(building_time(MetalMine, 2, 0, &season), 58, "58s");
+        assert_eq!(building_time(MetalMine, 2, 0, &blitz), 1);
+        assert_eq!(building_time(MetalMine, 2, 0, &test), 1);
+        assert_eq!(building_time(MetalMine, 10, 0, &blitz), 25, "25s");
+        assert_eq!(building_time(Shipyard, 4, 0, &blitz), 15, "15s");
+        assert_eq!(building_time(MetalMine, 15, 0, &test), 15, "14s in the table, which rounds");
     }
 
     #[test]
@@ -749,7 +792,7 @@ mod golden_tests {
 
     #[test]
     fn research_times_match_the_table() {
-        let t = |tech, pace: &Pace| research_time(tech, 1, pace);
+        let t = |tech, pace: &Pace| research_time(tech, 1, 0, pace);
         assert_eq!(t(ResearchType::CorvetteTech, &P1), 4320, "72 minutes");
         assert!((hours(t(ResearchType::FrigateTech, &P1)) - 6.4).abs() < 0.01);
         assert!((hours(t(ResearchType::CruiserTech, &P1)) - 26.0).abs() < 0.01);
@@ -784,7 +827,7 @@ mod golden_tests {
             (k.metal + k.crystal) as f64
         };
         let ratio_cost = c(20) / c(10);
-        let ratio_time = building_time(MetalMine, 20, &P1) as f64 / building_time(MetalMine, 10, &P1) as f64;
+        let ratio_time = building_time(MetalMine, 20, 0, &P1) as f64 / building_time(MetalMine, 10, 0, &P1) as f64;
         assert!((ratio_cost / ratio_time - 1.0).abs() < 0.01);
     }
 
@@ -828,5 +871,36 @@ mod golden_tests {
         assert_eq!(vault_level_for(8000.0, ResourceKind::Metal, &P1), Some(2));
         assert_eq!(vault_level_for(3000.0, ResourceKind::Deuterium, &P1), Some(1));
         assert_eq!(vault_level_for(1e12, ResourceKind::Metal, &P1), None);
+    }
+
+    #[test]
+    fn fabricator_and_lab_divide_time() {
+        let base = building_time(MetalMine, 10, 0, &P1) as f64;
+        let fab4 = building_time(MetalMine, 10, 4, &P1) as f64;
+        assert!((base / fab4 - 1.6).abs() < 0.01, "fabricator 4 is 1.6x faster");
+        let r0 = research_time(ResearchType::CruiserTech, 1, 0, &P1) as f64;
+        let r5 = research_time(ResearchType::CruiserTech, 1, 5, &P1) as f64;
+        assert!((r0 / r5 - 1.5).abs() < 0.01, "lab 5 is 1.5x faster");
+    }
+
+    #[test]
+    fn modular_fabrication_costs_and_slots() {
+        let t = ResearchType::ModularFabrication;
+        assert_eq!(research_cost(t, 1), cost(1500.0, 1200.0, 500.0));
+        assert_eq!(research_cost(t, 2), cost(3000.0, 2400.0, 1000.0));
+        assert_eq!(research_max_level(t), 2);
+        assert_eq!(building_cost(Fabricator, 1), cost(120.0, 80.0, 40.0));
+        assert_eq!(building_cost(Fabricator, 3), cost(433.0, 289.0, 144.0));
+        let mut r = ResearchLevels::default();
+        assert_eq!(building_slots(&r), 1);
+        r.set(t, 2);
+        assert_eq!(building_slots(&r), 3);
+        let mut b = BuildingLevels::default();
+        assert!(!research_prerequisites_met(t, &b, &r));
+        b.set(ResearchLab, 4);
+        assert!(research_prerequisites_met(t, &b, &r));
+        assert!(!building_prerequisites_met(Fabricator, &b));
+        b.set(Shipyard, 2);
+        assert!(building_prerequisites_met(Fabricator, &b));
     }
 }

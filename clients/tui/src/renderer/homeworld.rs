@@ -3,7 +3,7 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     text::Line,
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 
@@ -222,25 +222,26 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
 
     let mut text = String::new();
 
-    // Building queue
-    if let Some(q) = &hw.build_queue {
-        let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
-        text.push_str(&format!(
-            " Bld: {} Lv{} {}/{}t [x]",
-            q.building_type.label(),
-            q.target_level,
-            elapsed,
-            total,
-        ));
-    } else {
-        text.push_str(" Bld: idle");
+    // Building queue: running items (up to the slot count), then waiting ones
+    text.push_str(&format!(" Bld[{}/{}]:", hw.build_queue.len(), hw.build_slots));
+    if hw.build_queue.is_empty() {
+        text.push_str(" idle");
     }
+    for q in &hw.build_queue {
+        let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
+        text.push_str(&format!(" {} Lv{} {}/{}t", q.building_type.label(), q.target_level, elapsed, total));
+    }
+    if !hw.build_pending.is_empty() {
+        let names: Vec<String> = hw.build_pending.iter().map(|q| waiting_label(q.building_type.short_label(), q.target_level, &q.waiting_for)).collect();
+        text.push_str(&format!(" +[{}]", names.join(", ")));
+    }
+    text.push_str(" [x/c]");
 
     // Shipyard queue
     if let Some(q) = &hw.shipyard_queue {
         let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
         text.push_str(&format!(
-            " | Ship: {} {}/{}b {}/{}t [X]",
+            " | Ship: {} {}/{}b {}/{}t",
             q.ship_class.label(),
             q.built,
             q.count,
@@ -250,19 +251,26 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     } else {
         text.push_str(" | Ship: idle");
     }
+    if !hw.shipyard_pending.is_empty() {
+        let names: Vec<String> = hw.shipyard_pending.iter()
+            .map(|q| waiting_label(&format!("{}x{}", q.count, q.ship_class.label()), 0, &q.waiting_for))
+            .collect();
+        text.push_str(&format!(" +[{}]", names.join(", ")));
+    }
+    text.push_str(" [X/C]");
 
     // Research queue
     if let Some(q) = &hw.research_active {
         let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
-        text.push_str(&format!(
-            " | Res: {} {}/{}t [z]",
-            q.tech.label(),
-            elapsed,
-            total,
-        ));
+        text.push_str(&format!(" | Res: {} {}/{}t", q.tech.label(), elapsed, total));
     } else {
         text.push_str(" | Res: idle");
     }
+    if !hw.research_pending.is_empty() {
+        let names: Vec<String> = hw.research_pending.iter().map(|q| waiting_label(q.tech.label(), q.target_level, &q.waiting_for)).collect();
+        text.push_str(&format!(" +[{}]", names.join(", ")));
+    }
+    text.push_str(" [z/Z]");
 
     if state.homeworld_tab == HomeworldTab::Shipyard {
         text.push_str(&format!(" | Batch: x{} [+/-]", state.ship_build_count));
@@ -287,7 +295,22 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         }
     }
 
-    frame.render_widget(Paragraph::new(text).style(AMBER_BRIGHT), inner);
+    frame.render_widget(Paragraph::new(text).style(AMBER_BRIGHT).wrap(Wrap { trim: false }), inner);
+}
+
+/// "Metal Lv3 (need 35 Fe)" for a waiting queue entry; level 0 omits the level.
+fn waiting_label(name: &str, level: u8, waiting: &Option<Resources>) -> String {
+    let lv = if level > 0 { format!(" Lv{level}") } else { String::new() };
+    match waiting {
+        Some(r) => {
+            let mut need = Vec::new();
+            if r.metal > 0.0 { need.push(format!("{:.0} Fe", r.metal.ceil())); }
+            if r.crystal > 0.0 { need.push(format!("{:.0} Cr", r.crystal.ceil())); }
+            if r.deuterium > 0.0 { need.push(format!("{:.0} De", r.deuterium.ceil())); }
+            format!("{name}{lv} (need {})", need.join(" "))
+        }
+        None => format!("{name}{lv}"),
+    }
 }
 
 // ── Tech Tree ──────────────────────────────────────────────────────

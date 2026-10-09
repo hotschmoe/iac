@@ -284,21 +284,35 @@ class HomeworldView extends StatelessWidget {
 
   Widget _queues() {
     final s = controller.state;
+    final hw = s.hw;
     final log = s.events.take(3).toList();
+    final running = s.buildQueue.where((q) => q.active).toList();
+    final waiting = s.buildQueue.where((q) => !q.active).toList();
+    final research = s.research;
+    final researchRunning =
+        research.name == 'Idle' ? null : QueueItem(name: research.name, time: research.time, pct: research.pct, active: true);
+    final yardRunning = s.shipyard.where((q) => q.active).toList();
+    final yardWaiting = s.shipyard.where((q) => !q.active).toList();
     return AmberPanel(
       title: 'QUEUES',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _queueRow('BUILD', s.buildQueue.firstOrNull, proto.QueueType.building),
-          _queueRow('SHIPS', s.shipyard.firstOrNull, proto.QueueType.ship),
-          _queueRow(
-            'RESEARCH',
-            s.research.name == 'Idle'
-                ? null
-                : QueueItem(name: s.research.name, time: s.research.time, pct: s.research.pct, active: true),
-            proto.QueueType.research,
-          ),
+          _queueHeader('BUILD', hw == null ? null : '${running.length}/${hw.buildSlots} slots'),
+          if (running.isEmpty && waiting.isEmpty) _queueRow(null, proto.QueueType.building),
+          for (var i = 0; i < running.length; i++) _queueRow(running[i], proto.QueueType.building, index: i),
+          for (var i = 0; i < waiting.length; i++)
+            _queueRow(waiting[i], proto.QueueType.building, index: i, waiting: true),
+          _queueHeader('SHIPS', null),
+          if (yardRunning.isEmpty && yardWaiting.isEmpty) _queueRow(null, proto.QueueType.ship),
+          for (final q in yardRunning) _queueRow(q, proto.QueueType.ship),
+          for (var i = 0; i < yardWaiting.length; i++)
+            _queueRow(yardWaiting[i], proto.QueueType.ship, index: i, waiting: true),
+          _queueHeader('RESEARCH', null),
+          if (researchRunning == null && research.waiting.isEmpty) _queueRow(null, proto.QueueType.research),
+          if (researchRunning != null) _queueRow(researchRunning, proto.QueueType.research),
+          for (var i = 0; i < research.waiting.length; i++)
+            _queueRow(research.waiting[i], proto.QueueType.research, index: i, waiting: true),
           if (log.isNotEmpty) const SizedBox(height: 6),
           for (var i = 0; i < log.length; i++)
             Text(
@@ -313,7 +327,18 @@ class HomeworldView extends StatelessWidget {
     );
   }
 
-  Widget _queueRow(String label, QueueItem? item, proto.QueueType queue) {
+  Widget _queueHeader(String label, String? note) => Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Row(children: [
+          Text(label, style: Amber.mono(size: 10, color: Amber.dim).copyWith(letterSpacing: 1)),
+          if (note != null) ...[
+            const SizedBox(width: 8),
+            Text(note, style: Amber.mono(size: 9, color: Amber.normal)),
+          ],
+        ]),
+      );
+
+  Widget _queueRow(QueueItem? item, proto.QueueType queue, {int index = 0, bool waiting = false}) {
     final dim = Amber.mono(size: 10, color: Amber.dim);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -322,7 +347,7 @@ class HomeworldView extends StatelessWidget {
         children: [
           Row(
             children: [
-              SizedBox(width: 64, child: Text(label, style: dim)),
+              SizedBox(width: waiting ? 16 : 0, child: Text(waiting ? '+' : '', style: dim)),
               if (item == null)
                 Expanded(child: Text('idle', style: Amber.mono(size: 10, color: Amber.faint)))
               else ...[
@@ -332,8 +357,10 @@ class HomeworldView extends StatelessWidget {
                 Text(item.time, style: Amber.mono(size: 10, color: Amber.full)),
                 const SizedBox(width: 8),
                 GestureDetector(
-                  key: ValueKey('hw-cancel-${queue.name}'),
-                  onTap: () => controller.cancelHomeworldQueue(queue),
+                  key: ValueKey(waiting
+                      ? 'hw-cancel-waiting-${queue.name}-$index'
+                      : (index == 0 ? 'hw-cancel-${queue.name}' : 'hw-cancel-${queue.name}-$index')),
+                  onTap: () => controller.cancelHomeworldQueue(queue, index: index, waiting: waiting),
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                     decoration: BoxDecoration(border: Border.all(color: Amber.dim, width: 0.5)),
@@ -345,10 +372,7 @@ class HomeworldView extends StatelessWidget {
           ),
           if (item != null) ...[
             const SizedBox(height: 3),
-            Padding(
-              padding: const EdgeInsets.only(left: 64),
-              child: AmberProgressBar(fraction: item.pct / 100, height: 4),
-            ),
+            if (!waiting) AmberProgressBar(fraction: item.pct / 100, height: 4),
           ],
         ],
       ),

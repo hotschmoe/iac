@@ -552,9 +552,13 @@ class GameController extends ChangeNotifier {
     sendCommand(proto.MergeCommand(fleetId: id, otherFleetId: otherFleetId));
   }
 
-  void cancelHomeworldQueue(proto.QueueType queue) {
-    note('> cancel ${queue.name}', level: EventLevel.full);
-    sendCommand(proto.CancelBuildCommand(queueType: queue));
+  /// Cancel the [index]th running item of [queue] (half refunded), or with
+  /// [waiting] the [index]th item still waiting (nothing was paid).
+  void cancelHomeworldQueue(proto.QueueType queue, {int index = 0, bool waiting = false}) {
+    note('> cancel ${waiting ? 'waiting ' : ''}${queue.name}', level: EventLevel.full);
+    sendCommand(waiting
+        ? proto.CancelQueuedCommand(queueType: queue, index: index)
+        : proto.CancelBuildCommand(queueType: queue, index: index));
   }
 
   /// Cancel the queue that belongs to the open homeworld tab.

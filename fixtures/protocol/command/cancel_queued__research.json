@@ -1,5 +1,5 @@
 {
-  "action": "cancel_build",
+  "action": "cancel_queued",
   "index": 0,
   "queue_type": "Research"
 }

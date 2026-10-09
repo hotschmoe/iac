@@ -196,7 +196,7 @@ fn sample_homeworld() -> HomeworldState {
     use BuildingType::*;
     let buildings = [
         MetalMine, CrystalMine, DeuteriumSynthesizer, Shipyard, ResearchLab, FuelDepot,
-        SensorArray, DefenseGrid, StorageVault,
+        SensorArray, DefenseGrid, StorageVault, Fabricator,
     ]
     .iter()
     .enumerate()
@@ -210,7 +210,7 @@ fn sample_homeworld() -> HomeworldState {
     let research = [
         FuelEfficiency, ExtendedFuelTanks, ReinforcedHulls, AdvancedShields, WeaponsResearch,
         Navigation, HarvestingEfficiency, CorvetteTech, FrigateTech, CruiserTech, HaulerTech,
-        EmergencyJump,
+        EmergencyJump, ModularFabrication,
     ]
     .iter()
     .enumerate()
@@ -231,12 +231,42 @@ fn sample_homeworld() -> HomeworldState {
         },
         buildings,
         research,
-        build_queue: Some(BuildQueueItem {
-            building_type: BuildingType::CrystalMine,
-            target_level: 5,
-            start_tick: 100,
-            end_tick: 460,
-        }),
+        build_queue: vec![
+            BuildQueueItem { building_type: BuildingType::CrystalMine, target_level: 5, start_tick: 100, end_tick: 460 },
+            BuildQueueItem { building_type: BuildingType::FuelDepot, target_level: 2, start_tick: 130, end_tick: 400 },
+        ],
+        build_pending: vec![
+            QueuedBuild {
+                building_type: BuildingType::Shipyard,
+                target_level: 3,
+                cost: res(648.0, 324.0, 162.0),
+                ticks: 1500,
+                waiting_for: Some(res(0.0, 120.5, 0.0)),
+            },
+            QueuedBuild {
+                building_type: BuildingType::CrystalMine,
+                target_level: 6,
+                cost: res(500.0, 250.0, 0.0),
+                ticks: 900,
+                waiting_for: None,
+            },
+        ],
+        build_slots: 2,
+        queue_depth: 3,
+        shipyard_pending: vec![QueuedShip {
+            ship_class: ShipClass::Frigate,
+            count: 2,
+            cost: res(2000.0, 800.0, 400.0),
+            ticks: 600,
+            waiting_for: None,
+        }],
+        research_pending: vec![QueuedResearch {
+            tech: ResearchType::CruiserTech,
+            target_level: 1,
+            cost: res(8000.0, 5000.0, 2500.0),
+            ticks: 90000,
+            waiting_for: Some(res(0.0, 0.0, 1200.0)),
+        }],
         shipyard_queue: Some(ShipyardQueueItem {
             ship_class: ShipClass::Corvette,
             count: 2,
@@ -267,9 +297,14 @@ fn idle_homeworld() -> HomeworldState {
         },
         buildings: vec![],
         research: vec![],
-        build_queue: None,
+        build_queue: vec![],
+        build_pending: vec![],
+        build_slots: 1,
+        queue_depth: 3,
         shipyard_queue: None,
+        shipyard_pending: vec![],
         research_active: None,
+        research_pending: vec![],
         docked_ships: vec![],
         catalog: HomeworldCatalog::new(&BuildingLevels::default(), &ResearchLevels::default(), &Pace::PERSISTENT),
     }
@@ -301,6 +336,7 @@ fn command_name(c: &Command) -> &'static str {
         Command::Research { .. } => "research",
         Command::BuildShip { .. } => "build_ship",
         Command::CancelBuild { .. } => "cancel_build",
+        Command::CancelQueued { .. } => "cancel_queued",
         Command::Stop { .. } => "stop",
         Command::Scan { .. } => "scan",
         Command::ExploreSite { .. } => "explore_site",
@@ -419,9 +455,11 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::Build { building_type: BuildingType::DefenseGrid }),
         ("", Command::Research { tech: ResearchType::EmergencyJump }),
         ("", Command::BuildShip { ship_class: ShipClass::Frigate, count: 3 }),
-        ("", Command::CancelBuild { queue_type: QueueType::Building }),
-        ("ship", Command::CancelBuild { queue_type: QueueType::Ship }),
-        ("research", Command::CancelBuild { queue_type: QueueType::Research }),
+        ("", Command::CancelBuild { queue_type: QueueType::Building, index: 1 }),
+        ("ship", Command::CancelBuild { queue_type: QueueType::Ship, index: 0 }),
+        ("research", Command::CancelBuild { queue_type: QueueType::Research, index: 0 }),
+        ("", Command::CancelQueued { queue_type: QueueType::Building, index: 2 }),
+        ("research", Command::CancelQueued { queue_type: QueueType::Research, index: 0 }),
         ("", Command::Stop { fleet_id: 6 }),
         ("", Command::Scan { fleet_id: 7 }),
         ("", Command::ExploreSite { fleet_id: 8 }),
@@ -882,6 +920,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             "ClientMessage",
             json!({"type": "policy_update", "fleet_id": 3, "preset": "prospect", "params": {}}),
         ),
+        ("cancel_without_index", "Command", json!({"action": "cancel_build", "queue_type": "Ship"})),
         ("auth_without_token", "ClientMessage", json!({"type": "auth", "player_name": "x"})),
         ("bare_auth_result", "ServerMessage", json!({"type": "auth_result", "success": false})),
     ]
@@ -1015,9 +1054,9 @@ fn generate() -> Files {
         "HarvestResource": [HarvestResource::Metal, HarvestResource::Crystal, HarvestResource::Deuterium, HarvestResource::Auto],
         "QueueType": [QueueType::Building, QueueType::Ship, QueueType::Research],
         "PolicyPreset": PolicyPreset::ALL,
-        "BuildingType": [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer, BuildingType::Shipyard, BuildingType::ResearchLab, BuildingType::FuelDepot, BuildingType::SensorArray, BuildingType::DefenseGrid, BuildingType::StorageVault],
+        "BuildingType": [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer, BuildingType::Shipyard, BuildingType::ResearchLab, BuildingType::FuelDepot, BuildingType::SensorArray, BuildingType::DefenseGrid, BuildingType::StorageVault, BuildingType::Fabricator],
         "ResourceKind": ResourceKind::ALL,
-        "ResearchType": [ResearchType::FuelEfficiency, ResearchType::ExtendedFuelTanks, ResearchType::ReinforcedHulls, ResearchType::AdvancedShields, ResearchType::WeaponsResearch, ResearchType::Navigation, ResearchType::HarvestingEfficiency, ResearchType::CorvetteTech, ResearchType::FrigateTech, ResearchType::CruiserTech, ResearchType::HaulerTech, ResearchType::EmergencyJump],
+        "ResearchType": [ResearchType::FuelEfficiency, ResearchType::ExtendedFuelTanks, ResearchType::ReinforcedHulls, ResearchType::AdvancedShields, ResearchType::WeaponsResearch, ResearchType::Navigation, ResearchType::HarvestingEfficiency, ResearchType::CorvetteTech, ResearchType::FrigateTech, ResearchType::CruiserTech, ResearchType::HaulerTech, ResearchType::EmergencyJump, ResearchType::ModularFabrication],
         "ErrorCode": ALL_ERROR_CODES,
     });
     put(&mut f, "protocol/enums.json".into(), &enums);

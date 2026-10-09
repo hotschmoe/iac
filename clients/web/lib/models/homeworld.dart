@@ -25,11 +25,15 @@ class ResearchState {
   final double pct;
   final List<String> completed;
 
+  /// Projects waiting behind the running one.
+  final List<QueueItem> waiting;
+
   const ResearchState({
     required this.name,
     required this.time,
     required this.pct,
     required this.completed,
+    this.waiting = const [],
   });
 
   ResearchState withPct(double newPct) => ResearchState(
@@ -37,5 +41,6 @@ class ResearchState {
         time: time,
         pct: newPct.clamp(0, 100),
         completed: completed,
+        waiting: waiting,
       );
 }
