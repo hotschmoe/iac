@@ -772,3 +772,28 @@ show `threat_band`, `ScanCompleted.threats` drives the contact banner, ore
 reserves with refill times appear in the inspector and the windshield contacts,
 and a waiting order no longer reads as the running one. Not done: `FleetState`
 does not carry both home routes, and `play.py` still needs the new labels.
+
+### Live check of the rules pass (port 7817, blitz, 16 minutes, three scripted players)
+
+Scripts in the session scratchpad drive three headless clients with the same
+economy loop; the explorer and mixed players also fly scouts out, scan, board
+derelicts, collect salvage and fight what they out-power by 3x. Final
+leaderboard (score = core + capped extra):
+
+| player | score | core | combat | explore (raw) |
+|---|---|---|---|---|
+| Run-Mixed | 22.5 | 18.0 | 2.7 | 50.8 |
+| Run-Explorer | 21.1 | 16.9 | 0.8 | 40.8 |
+| Run-Builder | 15.0 | 15.0 | 0 | 0 |
+
+Reading: queue orders never errored with `NoResources`; only the real refusals
+(prerequisites, `QueueFull`) appeared. Raw explore points ran at 40 to 50
+against a cap of 25% of a 17-point core, so the cap bound from the first
+minutes: at 16 minutes (about a quarter of the blitz arc) piloting was worth
++41% (explorer) and +50% (mixed) over the builder, and the pilots' core was
+also 13 to 20% higher from loot. The simulation's 100 to 124% assumed a
+chart tempo of 30 sectors per hour; the script charts about 250 per hour (66
+to 86 sectors in 16 minutes). If the board should stay closer, lower the cap,
+not the point values; the values only matter before the cap binds. Not
+measured: the full hour, Haulers in a fleet, raids (one RaidIncoming and
+RaidResolved for the builder).
