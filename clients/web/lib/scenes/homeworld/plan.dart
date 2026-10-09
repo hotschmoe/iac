@@ -17,6 +17,8 @@ final Map<proto.BuildingType, Path> _buildingIcons = {
   proto.BuildingType.fuelDepot: parseSvgPathData('M8 4H16V20H8ZM8 9H16M16 7L19 9V15'),
   proto.BuildingType.sensorArray: parseSvgPathData('M4 14A8 8 0 0 0 20 14ZM12 14V20M8 20H16M12 6V3'),
   proto.BuildingType.defenseGrid: parseSvgPathData('M12 3L20 6V12C20 17 12 21 12 21C12 21 4 17 4 12V6ZM12 8V14M9 11H15'),
+  proto.BuildingType.storageVault: parseSvgPathData('M4 7H20V20H4ZM4 7L12 3L20 7M8 11H16M8 15H16'),
+  proto.BuildingType.fabricator: parseSvgPathData('M4 20H20M6 20V10L12 6L18 10V20M10 20V14H14V20M3 10H21'),
 };
 
 /// Axial plan positions: core at the centre, six around it, two outer.
@@ -29,6 +31,8 @@ const Map<proto.BuildingType, (int, int)> planSlots = {
   proto.BuildingType.fuelDepot: (-1, 0),
   proto.BuildingType.sensorArray: (2, -1),
   proto.BuildingType.defenseGrid: (-2, 1),
+  proto.BuildingType.storageVault: (2, 0),
+  proto.BuildingType.fabricator: (-2, 0),
 };
 
 Offset planCenter(int q, int r, double s) => Offset(1.5 * s * q, s * (math.sqrt(3) / 2 * q + math.sqrt(3) * r));

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math';
 
-import '../console/economy_view.dart';
 import '../protocol/protocol.dart';
 
 /// A hostile ship while a fight is running.
@@ -34,8 +33,10 @@ class _Explore {
 /// (full_state, tick_update, error, game events) so the UI has a single
 /// render path. It simulates move, scan, harvest, recall, stop, queues,
 /// policies (as labels), NPC fights, salvage, derelict boarding and a raid
-/// cycle. Its catalog uses a rough cost model of its own, only meant to look
-/// like the real one; a live server sends the real numbers.
+/// cycle, and the economy rework (storage caps, build slots, pending queues,
+/// defences, raids). Its numbers follow the economy formulas at pace 1, with
+/// a demo time-lapse on production and build times so things move; a live
+/// server sends the real ones.
 ///
 /// Layout (home H=(4,-2); fleet 101 starts at S0=(6,-4)):
 ///   N (6,-5) T3 corvette patrol    NE (7,-5) nebula, derelict tier 1
@@ -48,6 +49,13 @@ class DemoProvider {
   static const _home = Hex(4, -2);
   static const _s0 = Hex(6, -4);
   static const _hubRadius = 24;
+  static const _pace = 1.0;
+
+  /// Demo-only time-lapse on mine output and build times.
+  static const _lapse = 30.0;
+  static const _raidPeriod = 300;
+  static const _raidEstimate = 120.0;
+  static const _gridPowerPerLevel = 20.0;
 
   final void Function(List<ServerMessage>) _emit;
   final Random _rng = Random(7);
@@ -74,7 +82,8 @@ class DemoProvider {
   int _nextNpcFleet = 9100;
   int _nextShip = 3000;
   int _raidArrival = 0;
-  final Set<String> _capAlerted = {};
+  final Set<ResourceKind> _capAlerted = {};
+  final Set<ResourceKind> _fullAlerted = {};
 
   late Resources _resources = const Resources(metal: 7340, crystal: 6900, deuterium: 880);
   late List<FleetState> _fleets;
@@ -150,21 +159,33 @@ class DemoProvider {
     _hw = HomeworldState(
       location: _home,
       production: _production(buildings),
+      storage: _storage(buildings, _resources, _production(buildings)),
       buildings: buildings,
       research: research,
       catalog: _catalogFor(buildings, research),
-      buildQueue: BuildQueueItem(buildingType: BuildingType.crystalMine, targetLevel: 8, startTick: _tick - 420, endTick: _tick + 260),
-      shipyardQueue: ShipyardQueueItem(shipClass: ShipClass.corvette, count: 3, built: 1, startTick: _tick - 200, endTick: _tick + 170),
+      buildSlots: 1,
+      buildQueue: [BuildQueueItem(buildingType: BuildingType.crystalMine, targetLevel: 8, startTick: _tick - 420, endTick: _tick + 260)],
+      shipyardQueue: ShipyardQueueItem(item: const ShipyardItem.ship(ShipClass.corvette), count: 3, built: 1, startTick: _tick - 200, endTick: _tick + 170),
       researchActive: ResearchItem(tech: ResearchType.weaponsResearch, targetLevel: 4, startTick: _tick - 300, endTick: _tick + 410),
       dockedShips: const [],
+      defences: [
+        for (final k in DefenceKind.values) DefenceState(kind: k, count: _defenceCount[k] ?? 0, power: _defencePower[k]! * (1 + 0.04 * (_buildingLevels[BuildingType.defenseGrid] ?? 0))),
+      ],
+      nextRaidEstimatePower: _raidEstimate,
     );
+    final pendingBuilds = <QueuedBuild>[];
+    for (final t in const [BuildingType.metalMine, BuildingType.storageVault]) {
+      final (cost, ticks) = _buildingStep(t, (_buildingLevels[t] ?? 0) + 1);
+      pendingBuilds.add(QueuedBuild(buildingType: t, targetLevel: (_buildingLevels[t] ?? 0) + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)));
+    }
+    _hw = _hwWith(buildPending: pendingBuilds);
 
     _seedWorld();
     _liveNow = _computeLive();
     for (final k in _liveNow) {
       _seen[k] = _tick;
     }
-    _raidArrival = (_tick ~/ demoRaidPeriod + 1) * demoRaidPeriod;
+    _raidArrival = (_tick ~/ _raidPeriod + 1) * _raidPeriod;
     _pending.add(GameEvent(tick: _tick, kind: _raidIncoming()));
   }
 
@@ -177,6 +198,7 @@ class DemoProvider {
     BuildingType.fuelDepot: 2,
     BuildingType.sensorArray: 3,
     BuildingType.defenseGrid: 2,
+    BuildingType.storageVault: 2,
   };
   static const _researchLevels = {
     ResearchType.fuelEfficiency: 5,
@@ -195,7 +217,7 @@ class DemoProvider {
   }
 
   RaidIncomingEvent _raidIncoming() =>
-      RaidIncomingEvent(playerId: _playerId, arrivalTick: _raidArrival, threat: 'moderate');
+      RaidIncomingEvent(playerId: _playerId, arrivalTick: _raidArrival, threat: 'moderate', estPower: _raidEstimate);
 
   // ── World ─────────────────────────────────────────────────────
 
@@ -381,6 +403,7 @@ class DemoProvider {
         fleets: [for (final f in _fleets) _norm(f)],
         homeworld: _hw,
         knownSectors: _knownSectors(),
+        world: const WorldInfo(pace: _pace, preset: 'persistent', tickHz: 1, economyVersion: 2, worldgenVersion: 1),
       );
 
   PlayerState _player() => PlayerState(id: _playerId, name: 'Demo', resources: _resources, homeworld: _home);
@@ -397,11 +420,10 @@ class DemoProvider {
 
   void _ev(EventKind k) => _pending.add(GameEvent(tick: _tick, kind: k));
 
-  static Resources _clampCaps(Resources r) => Resources(
-        metal: min(r.metal, demoCaps['metal']!),
-        crystal: min(r.crystal, demoCaps['crystal']!),
-        deuterium: min(r.deuterium, demoCaps['deut']!),
-      );
+  Resources _clampCaps(Resources r) {
+    final cap = _hw.storage.cap;
+    return Resources(metal: min(r.metal, cap.metal), crystal: min(r.crystal, cap.crystal), deuterium: min(r.deuterium, cap.deuterium));
+  }
 
   /// One server tick. Public so tests can drive the simulation.
   void step() {
@@ -441,15 +463,23 @@ class DemoProvider {
   }
 
   void _capAlerts() {
-    for (final e in [('metal', _resources.metal, 'Metal'), ('crystal', _resources.crystal, 'Crystal'), ('deut', _resources.deuterium, 'Deuterium')]) {
-      final cap = demoCaps[e.$1]!;
-      final key = e.$1;
-      if (e.$2 >= cap * .85) {
-        if (_capAlerted.add(key)) {
-          _ev(AlertEvent(level: AlertLevel.warning, message: '${e.$3} storage ${(e.$2 / cap * 100).floor()}% full'));
-        }
-      } else if (e.$2 < cap * .8) {
-        _capAlerted.remove(key);
+    final cap = _hw.storage.cap;
+    final eta = _hw.storage.fullInS;
+    for (final e in [
+      (ResourceKind.metal, _resources.metal, cap.metal, eta.metal),
+      (ResourceKind.crystal, _resources.crystal, cap.crystal, eta.crystal),
+      (ResourceKind.deuterium, _resources.deuterium, cap.deuterium, eta.deuterium),
+    ]) {
+      final ratio = e.$2 / e.$3;
+      if (ratio >= .85) {
+        if (_capAlerted.add(e.$1)) _ev(StorageNearCapEvent(playerId: _playerId, resource: e.$1, ratio: ratio, fullInS: e.$4));
+      } else if (ratio < .8) {
+        _capAlerted.remove(e.$1);
+      }
+      if (ratio >= .999) {
+        if (_fullAlerted.add(e.$1)) _ev(StorageFullEvent(playerId: _playerId, resource: e.$1));
+      } else {
+        _fullAlerted.remove(e.$1);
       }
     }
   }
@@ -460,6 +490,7 @@ class DemoProvider {
     final secs = [for (final k in _dirty) _sector(Hex.fromKey(k))];
     _dirty.clear();
     _fleets = [for (final f in _fleets) _norm(f)];
+    _hw = _hwWith();
     return TickUpdate(
       tick: _tick,
       player: _player(),
@@ -596,15 +627,14 @@ class DemoProvider {
   }
 
   void _stepQueues() {
-    final b = _hw.buildQueue;
-    if (b != null && _tick >= b.endTick) {
+    for (final b in _hw.buildQueue.where((b) => _tick >= b.endTick).toList()) {
       _ev(BuildingCompletedEvent(buildingType: b.buildingType, newLevel: b.targetLevel));
       _hw = _hwWith(
         buildings: [
           for (final e in _hw.buildings)
             e.buildingType == b.buildingType ? BuildingState(buildingType: e.buildingType, level: b.targetLevel) : e,
         ],
-        clearBuild: true,
+        buildQueue: [for (final q in _hw.buildQueue) if (q != b) q],
       );
     }
     final r = _hw.researchActive;
@@ -620,23 +650,47 @@ class DemoProvider {
       final per = (s.endTick - s.startTick) / s.count;
       final built = min(s.count, ((_tick - s.startTick) / per).floor());
       if (built > s.built) {
-        final add = [for (var i = s.built; i < built; i++) _ship(_nextShip++, s.shipClass)];
-        _ev(ShipBuiltEvent(shipClass: s.shipClass, count: add.length));
-        _hw = HomeworldState(
-          location: _hw.location,
-          production: _hw.production,
-          buildings: _hw.buildings,
-          research: _hw.research,
-          buildQueue: _hw.buildQueue,
-          shipyardQueue: built >= s.count
-              ? null
-              : ShipyardQueueItem(shipClass: s.shipClass, count: s.count, built: built, startTick: s.startTick, endTick: s.endTick),
-          researchActive: _hw.researchActive,
-          dockedShips: [..._hw.dockedShips, ...add],
-          catalog: _hw.catalog,
-        );
+        final n = built - s.built;
+        if (s.item.ship case final cls?) {
+          _setDocked([..._hw.dockedShips, for (var i = 0; i < n; i++) _ship(_nextShip++, cls)]);
+          _ev(ShipBuiltEvent(shipClass: cls, count: n));
+        } else {
+          final k = s.item.defence!;
+          _hw = _hwWith(defences: [
+            for (final d in _hw.defences) d.kind == k ? DefenceState(kind: k, count: d.count + n, restoring: d.restoring, power: d.power) : d,
+          ]);
+          _ev(DefenceBuiltEvent(defence: k, count: n, playerId: _playerId));
+        }
+        _hw = built >= s.count
+            ? _hwWith(clearShip: true)
+            : _hwWith(ship: ShipyardQueueItem(item: s.item, count: s.count, built: built, startTick: s.startTick, endTick: s.endTick));
       }
     }
+    _startWaiting();
+  }
+
+  void _setDocked(List<ShipState> docked) {
+    final h = _hw;
+    _hw = HomeworldState(
+      location: h.location,
+      production: h.production,
+      storage: h.storage,
+      buildings: h.buildings,
+      research: h.research,
+      buildQueue: h.buildQueue,
+      buildPending: h.buildPending,
+      buildSlots: h.buildSlots,
+      queueDepth: h.queueDepth,
+      shipyardQueue: h.shipyardQueue,
+      shipyardPending: h.shipyardPending,
+      researchActive: h.researchActive,
+      researchPending: h.researchPending,
+      dockedShips: docked,
+      defences: h.defences,
+      homeDefencePower: h.homeDefencePower,
+      nextRaidEstimatePower: h.nextRaidEstimatePower,
+      catalog: h.catalog,
+    );
   }
 
   double _dockedPower() {
@@ -656,17 +710,20 @@ class DemoProvider {
 
   void _stepRaid() {
     if (_tick < _raidArrival) return;
-    final raid = demoRaidPower(_raidArrival);
-    final defense = _dockedPower() + demoGridPower + demoStructurePower;
+    final raid = _raidEstimate * (.85 + .3 * _h01(_raidArrival, 3, 7));
+    final defense = _homePower(_hw.defences, _hw.buildings);
     final defended = defense >= raid;
     var lost = const Resources();
+    var kept = const Resources();
     if (!defended) {
-      double skim(double v, String k) => max(0, min(v - demoProtected[k]!, v * .15));
-      lost = Resources(metal: skim(_resources.metal, 'metal'), crystal: skim(_resources.crystal, 'crystal'), deuterium: skim(_resources.deuterium, 'deut'));
+      final prot = _hw.storage.protected;
+      double skim(double v, double p) => max(0, min(v - p, v * .15));
+      lost = Resources(metal: skim(_resources.metal, prot.metal), crystal: skim(_resources.crystal, prot.crystal), deuterium: skim(_resources.deuterium, prot.deuterium));
+      kept = prot;
       _resources = Resources(metal: _resources.metal - lost.metal, crystal: _resources.crystal - lost.crystal, deuterium: _resources.deuterium - lost.deuterium);
     }
-    _ev(RaidResolvedEvent(playerId: _playerId, defended: defended, resourcesLost: lost, raidPower: raid, defensePower: defense));
-    _raidArrival += demoRaidPeriod;
+    _ev(RaidResolvedEvent(playerId: _playerId, defended: defended, resourcesLost: lost, raidPower: raid, defensePower: defense, protectedKept: kept));
+    _raidArrival += _raidPeriod;
     _ev(_raidIncoming());
   }
 
@@ -823,6 +880,8 @@ class DemoProvider {
         jumpFuel: _jump(f.ships).toDouble(),
         homeFuel: f.location == _home ? 0 : (Hex.distance(f.location, _home) * _jump(f.ships)).toDouble(),
         cooldownRemaining: f.cooldownRemaining,
+        power: f.ships.fold<double>(0, (p, s) => p + _power[s.shipClass]!),
+        rangeHops: f.fuel ~/ _jump(f.ships),
         policy: f.policy,
       );
 
@@ -849,6 +908,8 @@ class DemoProvider {
         jumpFuel: f.jumpFuel,
         homeFuel: f.homeFuel,
         cooldownRemaining: cooldown ?? f.cooldownRemaining,
+        power: f.power,
+        rangeHops: f.rangeHops,
         policy: clearPolicy ? null : (policy ?? f.policy),
       );
 
@@ -935,41 +996,188 @@ class DemoProvider {
   HomeworldState _hwWith({
     List<BuildingState>? buildings,
     List<ResearchState>? research,
-    BuildQueueItem? build,
+    List<BuildQueueItem>? buildQueue,
+    List<QueuedBuild>? buildPending,
     ShipyardQueueItem? ship,
+    List<QueuedShip>? shipPending,
     ResearchItem? researchItem,
-    bool clearBuild = false,
+    List<QueuedResearch>? researchPending,
+    List<DefenceState>? defences,
     bool clearShip = false,
     bool clearResearch = false,
-  }) =>
-      HomeworldState(
-        location: _hw.location,
-        production: _production(buildings ?? _hw.buildings),
-        buildings: buildings ?? _hw.buildings,
-        research: research ?? _hw.research,
-        buildQueue: clearBuild ? null : (build ?? _hw.buildQueue),
-        shipyardQueue: clearShip ? null : (ship ?? _hw.shipyardQueue),
-        researchActive: clearResearch ? null : (researchItem ?? _hw.researchActive),
-        dockedShips: _hw.dockedShips,
-        catalog: _catalogFor(buildings ?? _hw.buildings, research ?? _hw.research),
-      );
+  }) {
+    final b = buildings ?? _hw.buildings;
+    final r = research ?? _hw.research;
+    final slots = 1 + r.firstWhere((e) => e.tech == ResearchType.modularFabrication).level;
+    final power = _homePower(defences ?? _hw.defences, b);
+    return _hw.copyWith(
+      homeDefencePower: power,
+      production: _production(b),
+      storage: _storage(b, _resources, _production(b)),
+      buildings: b,
+      research: r,
+      buildQueue: buildQueue,
+      buildPending: buildPending,
+      buildSlots: slots,
+      shipyardQueue: ship,
+      clearShipyardQueue: clearShip,
+      shipyardPending: shipPending,
+      researchActive: researchItem,
+      clearResearchActive: clearResearch,
+      researchPending: researchPending,
+      defences: defences,
+      catalog: _catalogFor(b, r),
+    );
+  }
 
+  List<ServerMessage> _queueYard(ShipyardItem item, Resources unitCost, int ticksPerUnit, int count) {
+    if ((_hw.shipyardQueue == null ? 0 : 1) + _hw.shipyardPending.length >= _hw.queueDepth) {
+      return [_err(ErrorCode.queueFull, 'The shipyard queue is full')];
+    }
+    final cost = _times(unitCost, count);
+    if (_hw.shipyardQueue == null) {
+      final broke = _pay(cost);
+      if (broke != null) return [broke];
+      _hw = _hwWith(
+        ship: ShipyardQueueItem(
+          item: item,
+          count: count,
+          built: 0,
+          startTick: _tick,
+          endTick: _tick + ticksPerUnit * count,
+        ),
+      );
+    } else {
+      _hw = _hwWith(shipPending: [
+        ..._hw.shipyardPending,
+        QueuedShip(item: item, count: count, cost: cost, ticks: ticksPerUnit, waitingFor: _missing(cost)),
+      ]);
+    }
+    return [_tickUpdate()];
+  }
+
+  int _bl(BuildingType t) => _hw.buildings.firstWhere((b) => b.buildingType == t).level;
+  int _rl(ResearchType t) => _hw.research.firstWhere((r) => r.tech == t).level;
+
+  int _projectedBuilding(BuildingType t) => [
+        _bl(t),
+        for (final q in _hw.buildQueue) if (q.buildingType == t) q.targetLevel,
+        for (final q in _hw.buildPending) if (q.buildingType == t) q.targetLevel,
+      ].reduce(max);
+
+  int _projectedResearch(ResearchType t) => [
+        _rl(t),
+        if (_hw.researchActive?.tech == t) _hw.researchActive!.targetLevel,
+        for (final q in _hw.researchPending) if (q.tech == t) q.targetLevel,
+      ].reduce(max);
+
+  bool _buildingPrereqs(BuildingType t, int Function(BuildingType) level) {
+    final need = _buildingNeeds[t];
+    return need == null || level(need.$1) >= need.$2;
+  }
+
+  bool _canStartBuilding(BuildingType t, int target) =>
+      _hw.buildQueue.length < _hw.buildSlots &&
+      _hw.buildQueue.every((q) => q.buildingType != t) &&
+      _bl(t) + 1 == target &&
+      _buildingPrereqs(t, _bl);
+
+  bool _canStartResearch(ResearchType t, int target) =>
+      _hw.researchActive == null && _bl(BuildingType.researchLab) > 0 && _rl(t) + 1 == target;
+
+  bool _affordable(Resources c) =>
+      _resources.metal >= c.metal && _resources.crystal >= c.crystal && _resources.deuterium >= c.deuterium;
+
+  Resources? _missing(Resources c) {
+    final m = Resources(
+      metal: max(0, c.metal - _resources.metal),
+      crystal: max(0, c.crystal - _resources.crystal),
+      deuterium: max(0, c.deuterium - _resources.deuterium),
+    );
+    return m.total > 0 ? m : null;
+  }
+
+  static (Resources, int) _buildingStep(BuildingType t, int level) {
+    final (base, growth) = _buildingBase[t]!;
+    final cost = _grown(base, growth, level);
+    return (cost, _ticksFor(cost, 700));
+  }
+
+  static (Resources, int) _researchStep(ResearchType t, int level) {
+    final cost = t == ResearchType.modularFabrication
+        ? _grown(const Resources(metal: 1500, crystal: 1200, deuterium: 500), 2, level)
+        : _grown(const Resources(metal: 200, crystal: 150, deuterium: 100), 1.6, level);
+    return (cost, _ticksFor(cost, 500));
+  }
+
+  void _startBuilding(BuildingType t, int target) {
+    final (cost, ticks) = _buildingStep(t, target);
+    _pay(cost);
+    _hw = _hwWith(buildQueue: [
+      ..._hw.buildQueue,
+      BuildQueueItem(buildingType: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks),
+    ]);
+  }
+
+  void _startResearch(ResearchType t, int target) {
+    final (cost, ticks) = _researchStep(t, target);
+    _pay(cost);
+    _hw = _hwWith(researchItem: ResearchItem(tech: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks));
+  }
+
+  /// Start the first waiting item of each queue that can run now.
+  void _startWaiting() {
+    for (final q in _hw.buildPending) {
+      if (_canStartBuilding(q.buildingType, q.targetLevel) && _affordable(q.cost)) {
+        _hw = _hwWith(buildPending: [for (final e in _hw.buildPending) if (e != q) e]);
+        _startBuilding(q.buildingType, q.targetLevel);
+        break;
+      }
+    }
+    for (final q in _hw.researchPending) {
+      if (_canStartResearch(q.tech, q.targetLevel) && _affordable(q.cost)) {
+        _hw = _hwWith(researchPending: [for (final e in _hw.researchPending) if (e != q) e]);
+        _startResearch(q.tech, q.targetLevel);
+        break;
+      }
+    }
+    final ship = _hw.shipyardPending.firstOrNull;
+    if (_hw.shipyardQueue == null && ship != null && _affordable(ship.cost)) {
+      _pay(ship.cost);
+      _hw = _hwWith(
+        shipPending: _hw.shipyardPending.skip(1).toList(),
+        ship: ShipyardQueueItem(
+          item: ship.item,
+          count: ship.count,
+          built: 0,
+          startTick: _tick,
+          endTick: _tick + ship.ticks,
+        ),
+      );
+    }
+  }
+
+  // Level-1 cost and per-level growth for the demo catalog.
   static const _buildingBase = {
-    BuildingType.metalMine: Resources(metal: 60, crystal: 15),
-    BuildingType.crystalMine: Resources(metal: 48, crystal: 24),
-    BuildingType.deuteriumSynthesizer: Resources(metal: 225, crystal: 75),
-    BuildingType.shipyard: Resources(metal: 200, crystal: 100, deuterium: 50),
-    BuildingType.researchLab: Resources(metal: 100, crystal: 200, deuterium: 50),
-    BuildingType.fuelDepot: Resources(metal: 150, crystal: 50, deuterium: 100),
-    BuildingType.sensorArray: Resources(metal: 100, crystal: 150, deuterium: 75),
-    BuildingType.defenseGrid: Resources(metal: 300, crystal: 200, deuterium: 100),
+    BuildingType.metalMine: (Resources(metal: 60, crystal: 15), 1.5),
+    BuildingType.crystalMine: (Resources(metal: 48, crystal: 24), 1.6),
+    BuildingType.deuteriumSynthesizer: (Resources(metal: 150, crystal: 50), 1.5),
+    BuildingType.shipyard: (Resources(metal: 200, crystal: 100, deuterium: 50), 1.8),
+    BuildingType.researchLab: (Resources(metal: 100, crystal: 200, deuterium: 50), 1.8),
+    BuildingType.fuelDepot: (Resources(metal: 150, crystal: 50, deuterium: 100), 1.7),
+    BuildingType.sensorArray: (Resources(metal: 100, crystal: 150, deuterium: 75), 1.7),
+    BuildingType.defenseGrid: (Resources(metal: 300, crystal: 200, deuterium: 100), 1.8),
+    BuildingType.storageVault: (Resources(metal: 200, crystal: 100), 1.7),
+    BuildingType.fabricator: (Resources(metal: 120, crystal: 80, deuterium: 40), 1.9),
   };
   static const _buildingNeeds = {
     BuildingType.shipyard: (BuildingType.metalMine, 2),
     BuildingType.researchLab: (BuildingType.crystalMine, 2),
     BuildingType.fuelDepot: (BuildingType.deuteriumSynthesizer, 2),
-    BuildingType.sensorArray: (BuildingType.researchLab, 4),
+    BuildingType.sensorArray: (BuildingType.researchLab, 1),
     BuildingType.defenseGrid: (BuildingType.shipyard, 3),
+    BuildingType.storageVault: (BuildingType.metalMine, 2),
+    BuildingType.fabricator: (BuildingType.shipyard, 2),
   };
   static const _shipCost = {
     ShipClass.scout: Resources(metal: 200, crystal: 50, deuterium: 30),
@@ -978,12 +1186,22 @@ class DemoProvider {
     ShipClass.cruiser: Resources(metal: 3000, crystal: 1500, deuterium: 800),
     ShipClass.hauler: Resources(metal: 600, crystal: 200, deuterium: 150),
   };
-  static const _shipTicks = {
-    ShipClass.scout: 30,
-    ShipClass.corvette: 60,
-    ShipClass.frigate: 120,
-    ShipClass.cruiser: 240,
-    ShipClass.hauler: 90,
+  static const _defenceCost = {
+    DefenceKind.pulseTurret: Resources(metal: 120, crystal: 20),
+    DefenceKind.lancerBattery: Resources(metal: 400, crystal: 120, deuterium: 20),
+    DefenceKind.ionBastion: Resources(metal: 1200, crystal: 500, deuterium: 100),
+  };
+  static const _defencePower = {
+    DefenceKind.pulseTurret: 17.0,
+    DefenceKind.lancerBattery: 51.0,
+    DefenceKind.ionBastion: 135.0,
+  };
+  static const _defenceCount = {DefenceKind.pulseTurret: 6};
+  static const _techShipyard = {
+    ResearchType.corvetteTech: 2,
+    ResearchType.frigateTech: 4,
+    ResearchType.cruiserTech: 6,
+    ResearchType.haulerTech: 2,
   };
   static const _shipTech = {
     ShipClass.corvette: ResearchType.corvetteTech,
@@ -991,24 +1209,55 @@ class DemoProvider {
     ShipClass.cruiser: ResearchType.cruiserTech,
     ShipClass.hauler: ResearchType.haulerTech,
   };
-  static const _techShipyard = {
-    ResearchType.corvetteTech: 2,
-    ResearchType.frigateTech: 4,
-    ResearchType.cruiserTech: 6,
-    ResearchType.haulerTech: 2,
-  };
 
-  static Resources _times(Resources r, num n) => Resources(
-        metal: (r.metal * n).roundToDouble(),
-        crystal: (r.crystal * n).roundToDouble(),
-        deuterium: (r.deuterium * n).roundToDouble(),
-      );
+  static int _researchMax(ResearchType t) =>
+      _shipTech.containsValue(t) ? 1 : (t == ResearchType.modularFabrication ? 2 : 5);
+
+  static Resources _times(Resources r, num n) =>
+      Resources(metal: r.metal * n, crystal: r.crystal * n, deuterium: r.deuterium * n);
+
+  /// `base * growth^(level - 1)`, rounded.
+  static Resources _grown(Resources base, double growth, int level) {
+    final f = pow(growth, level - 1);
+    return Resources(
+      metal: (base.metal * f).roundToDouble(),
+      crystal: (base.crystal * f).roundToDouble(),
+      deuterium: (base.deuterium * f).roundToDouble(),
+    );
+  }
+
+  /// Whole ticks for a cost at [rate] cost units per game hour, at the demo pace.
+  static int _ticksFor(Resources cost, double rate, [double speed = 1]) =>
+      max(1, ((cost.metal + cost.crystal) / rate * 3600 / speed / _pace / _lapse).ceil());
+
+  static StorageState _storage(List<BuildingState> buildings, Resources stock, Resources production) {
+    final vault = buildings.firstWhere((b) => b.buildingType == BuildingType.storageVault).level;
+    final scale = pow(1.5, vault) * pow(_pace, 0.75);
+    final cap = Resources(metal: 5000 * scale.toDouble(), crystal: 3500 * scale.toDouble(), deuterium: 2500 * scale.toDouble());
+    final share = min(0.6, 0.08 * vault);
+    int? eta(double have, double limit, double rate) =>
+        have >= limit ? 0 : (rate > 0 ? ((limit - have) / rate).ceil() : null);
+    return StorageState(
+      cap: cap,
+      protected: Resources(metal: cap.metal * share, crystal: cap.crystal * share, deuterium: cap.deuterium * share),
+      fullInS: ResourceEta(
+        metal: eta(stock.metal, cap.metal, production.metal),
+        crystal: eta(stock.crystal, cap.crystal, production.crystal),
+        deuterium: eta(stock.deuterium, cap.deuterium, production.deuterium),
+      ),
+      capped: [
+        if (stock.metal >= cap.metal) ResourceKind.metal,
+        if (stock.crystal >= cap.crystal) ResourceKind.crystal,
+        if (stock.deuterium >= cap.deuterium) ResourceKind.deuterium,
+      ],
+    );
+  }
 
   static HomeworldCatalog _catalogFor(List<BuildingState> buildings, List<ResearchState> research) {
     int bl(BuildingType t) => buildings.firstWhere((b) => b.buildingType == t).level;
     int rl(ResearchType t) => research.firstWhere((r) => r.tech == t).level;
-    Requirement needBuilding(BuildingType t, int l) => Requirement(name: t.label, need: l, have: bl(t), met: bl(t) >= l);
-    Requirement needTech(ResearchType t, int l) => Requirement(name: t.label, need: l, have: rl(t), met: rl(t) >= l);
+    Requirement needBuilding(BuildingType t, int l) =>
+        Requirement(name: t.label, need: l, have: bl(t), met: bl(t) >= l);
 
     return HomeworldCatalog(
       buildings: [
@@ -1019,7 +1268,10 @@ class DemoProvider {
             maxLevel: 20,
             next: bl(t) >= 20
                 ? null
-                : UpgradeStep(level: bl(t) + 1, cost: _times(_buildingBase[t]!, pow(1.6, bl(t))), ticks: (40 * pow(1.25, bl(t))).round()),
+                : () {
+                    final (cost, ticks) = _buildingStep(t, bl(t) + 1);
+                    return UpgradeStep(level: bl(t) + 1, cost: cost, ticks: ticks);
+                  }(),
             requires: [
               if (_buildingNeeds[t] case (final b, final l)) needBuilding(b, l),
             ],
@@ -1030,18 +1282,18 @@ class DemoProvider {
           ResearchOption(
             tech: t,
             level: rl(t),
-            maxLevel: _shipTech.containsValue(t) ? 1 : 5,
-            next: rl(t) >= (_shipTech.containsValue(t) ? 1 : 5)
+            maxLevel: _researchMax(t),
+            next: rl(t) >= _researchMax(t)
                 ? null
-                : UpgradeStep(
-                    level: rl(t) + 1,
-                    cost: _times(const Resources(metal: 200, crystal: 150, deuterium: 100), pow(1.7, rl(t))),
-                    ticks: (60 * pow(1.4, rl(t))).round(),
-                  ),
+                : () {
+                    final (cost, ticks) = _researchStep(t, rl(t) + 1);
+                    return UpgradeStep(level: rl(t) + 1, cost: cost, ticks: ticks);
+                  }(),
             requires: [
               needBuilding(BuildingType.researchLab, 1),
               if (_techShipyard[t] case final l?) needBuilding(BuildingType.shipyard, l),
-              if (t == ResearchType.emergencyJump) needTech(ResearchType.navigation, 3),
+              if (t == ResearchType.modularFabrication) needBuilding(BuildingType.researchLab, 4),
+              if (t == ResearchType.emergencyJump) Requirement(name: ResearchType.navigation.label, need: 3, have: rl(ResearchType.navigation), met: rl(ResearchType.navigation) >= 3),
             ],
           ),
       ],
@@ -1050,10 +1302,28 @@ class DemoProvider {
           ShipOption(
             shipClass: c,
             unitCost: _shipCost[c]!,
-            ticksPerShip: _shipTicks[c]!,
+            ticksPerShip: _ticksFor(_shipCost[c]!, 1200, 1 + 0.1 * bl(BuildingType.shipyard)),
             requires: [
               needBuilding(BuildingType.shipyard, 1),
               if (_shipTech[c] case final t?) Requirement(name: t.label, need: 1, have: rl(t), met: rl(t) >= 1),
+            ],
+          ),
+      ],
+      defences: [
+        for (final k in DefenceKind.values)
+          DefenceOption(
+            kind: k,
+            count: _defenceCount[k] ?? 0,
+            unitCost: _defenceCost[k]!,
+            ticksPerUnit: _ticksFor(_defenceCost[k]!, 1200, 1 + 0.1 * bl(BuildingType.shipyard)),
+            power: _defencePower[k]! * (1 + 0.04 * bl(BuildingType.defenseGrid)),
+            requires: [
+              needBuilding(BuildingType.shipyard, 1),
+              needBuilding(BuildingType.defenseGrid, switch (k) {
+                DefenceKind.pulseTurret => 1,
+                DefenceKind.lancerBattery => 2,
+                DefenceKind.ionBastion => 4,
+              }),
             ],
           ),
       ],
@@ -1062,7 +1332,9 @@ class DemoProvider {
 
   /// Spend [cost] if the stockpile covers it; otherwise the error to send.
   ServerMessage? _pay(Resources cost) {
-    if (_resources.metal < cost.metal || _resources.crystal < cost.crystal || _resources.deuterium < cost.deuterium) {
+    if (_resources.metal < cost.metal ||
+        _resources.crystal < cost.crystal ||
+        _resources.deuterium < cost.deuterium) {
       return _err(ErrorCode.noResources, 'Not enough resources');
     }
     _resources = Resources(
@@ -1073,17 +1345,27 @@ class DemoProvider {
     return null;
   }
 
+  /// Docked ships, the Defense Grid and structures.
+  double _homePower(List<DefenceState> defences, List<BuildingState> buildings) {
+    var p = _dockedPower();
+    p += _gridPowerPerLevel * buildings.firstWhere((e) => e.buildingType == BuildingType.defenseGrid).level;
+    for (final d in defences) {
+      p += d.count * d.power;
+    }
+    return p;
+  }
+
   /// The demo plays the server: mine output at the given building levels.
   static Resources _production(List<BuildingState> buildings) {
-    double rate(BuildingType t, double k) {
+    double rate(BuildingType t, double perHour) {
       final l = buildings.firstWhere((b) => b.buildingType == t).level;
-      return l == 0 ? 0 : k * pow(1.1, l);
+      return l == 0 ? 0 : perHour / 3600 * l * pow(1.1, l) * _pace * _lapse;
     }
 
     return Resources(
-      metal: rate(BuildingType.metalMine, 1.04),
-      crystal: rate(BuildingType.crystalMine, .575),
-      deuterium: rate(BuildingType.deuteriumSynthesizer, .267),
+      metal: rate(BuildingType.metalMine, 10),
+      crystal: rate(BuildingType.crystalMine, 7),
+      deuterium: rate(BuildingType.deuteriumSynthesizer, 5),
     );
   }
 
@@ -1249,45 +1531,109 @@ class DemoProvider {
         _ev(SiteExplorationStartedEvent(fleetId: fleetId, sector: f.location, tier: site.tier, endTick: end));
         return [_tickUpdate()];
       case BuildCommand(:final buildingType):
-        if (_hw.buildQueue != null) return [_err(ErrorCode.queueFull, 'Build queue busy')];
-        final o = _hw.catalog.buildings.firstWhere((o) => o.buildingType == buildingType);
-        if (o.next == null) return [_err(ErrorCode.maxLevelReached, '${buildingType.label} is maxed')];
-        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
-        final broke = _pay(o.next!.cost);
-        if (broke != null) return [broke];
-        _hw = _hwWith(
-          build: BuildQueueItem(buildingType: buildingType, targetLevel: o.next!.level, startTick: _tick, endTick: _tick + o.next!.ticks),
-        );
+        final proj = _projectedBuilding(buildingType);
+        if (proj >= 20) return [_err(ErrorCode.maxLevelReached, '${buildingType.label} is maxed')];
+        if (!_buildingPrereqs(buildingType, _projectedBuilding)) {
+          return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
+        }
+        if (_hw.buildQueue.length + _hw.buildPending.length >= _hw.queueDepth) {
+          return [_err(ErrorCode.queueFull, 'The building queue is full')];
+        }
+        final (cost, ticks) = _buildingStep(buildingType, proj + 1);
+        if (_canStartBuilding(buildingType, proj + 1)) {
+          if (!_affordable(cost)) return [_err(ErrorCode.noResources, 'Not enough resources')];
+          _startBuilding(buildingType, proj + 1);
+        } else {
+          _hw = _hwWith(buildPending: [
+            ..._hw.buildPending,
+            QueuedBuild(buildingType: buildingType, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+          ]);
+        }
         return [_tickUpdate()];
       case ResearchCommand(:final tech):
-        if (_hw.researchActive != null) return [_err(ErrorCode.queueFull, 'Lab busy')];
-        final o = _hw.catalog.research.firstWhere((o) => o.tech == tech);
-        if (o.requires.first.met == false) return [_err(ErrorCode.noResearchLab, 'Build a research lab first')];
-        if (o.next == null) return [_err(ErrorCode.maxLevelReached, '${tech.label} is maxed')];
-        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
-        final broke = _pay(o.next!.cost);
-        if (broke != null) return [broke];
-        _hw = _hwWith(
-          researchItem: ResearchItem(targetLevel: o.next!.level, tech: tech, startTick: _tick, endTick: _tick + o.next!.ticks),
-        );
+        if (_bl(BuildingType.researchLab) == 0) return [_err(ErrorCode.noResearchLab, 'Build a research lab first')];
+        final maxLevel = _shipTech.containsValue(tech) ? 1 : (tech == ResearchType.modularFabrication ? 2 : 5);
+        final proj = _projectedResearch(tech);
+        if (proj >= maxLevel) return [_err(ErrorCode.maxLevelReached, '${tech.label} is maxed')];
+        if (_hw.catalog.research.firstWhere((o) => o.tech == tech).requires.any((r) => !r.met)) {
+          return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
+        }
+        if ((_hw.researchActive == null ? 0 : 1) + _hw.researchPending.length >= _hw.queueDepth) {
+          return [_err(ErrorCode.queueFull, 'The research queue is full')];
+        }
+        final (cost, ticks) = _researchStep(tech, proj + 1);
+        if (_canStartResearch(tech, proj + 1)) {
+          if (!_affordable(cost)) return [_err(ErrorCode.noResources, 'Not enough resources')];
+          _startResearch(tech, proj + 1);
+        } else {
+          _hw = _hwWith(researchPending: [
+            ..._hw.researchPending,
+            QueuedResearch(tech: tech, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+          ]);
+        }
         return [_tickUpdate()];
       case BuildShipCommand(:final shipClass, :final count):
-        if (_hw.shipyardQueue != null) return [_err(ErrorCode.queueFull, 'Shipyard busy')];
         final o = _hw.catalog.ships.firstWhere((o) => o.shipClass == shipClass);
         if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.shipLocked, 'Ship class not unlocked')];
-        final broke = _pay(_times(o.unitCost, count));
-        if (broke != null) return [broke];
-        _hw = _hwWith(
-          ship: ShipyardQueueItem(shipClass: shipClass, count: count, built: 0, startTick: _tick, endTick: _tick + o.ticksPerShip * count),
-        );
+        return _queueYard(ShipyardItem.ship(shipClass), o.unitCost, o.ticksPerShip, count);
+      case BuildDefenceCommand(:final kind, :final count):
+        final o = _hw.catalog.defences.firstWhere((o) => o.kind == kind);
+        if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
+        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.defenceLocked, '${kind.label} is locked')];
+        return _queueYard(ShipyardItem.defence(kind), o.unitCost, o.ticksPerUnit, count);
+      case CancelBuildCommand(:final queueType, :final index):
+        switch (queueType) {
+          case QueueType.building:
+            if (index >= _hw.buildQueue.length) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            final gone = _hw.buildQueue[index];
+            _hw = _hwWith(
+              buildQueue: [for (var i = 0; i < _hw.buildQueue.length; i++) if (i != index) _hw.buildQueue[i]],
+              buildPending: [
+                for (final q in _hw.buildPending)
+                  q.buildingType == gone.buildingType && q.targetLevel > gone.targetLevel
+                      ? QueuedBuild(
+                          buildingType: q.buildingType,
+                          targetLevel: q.targetLevel - 1,
+                          cost: q.cost,
+                          ticks: q.ticks,
+                          waitingFor: q.waitingFor)
+                      : q,
+              ],
+            );
+          case QueueType.ship:
+            if (_hw.shipyardQueue == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            _hw = _hwWith(clearShip: true);
+          case QueueType.research:
+            final gone = _hw.researchActive;
+            if (gone == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            _hw = _hwWith(clearResearch: true, researchPending: [
+              for (final q in _hw.researchPending)
+                q.tech == gone.tech && q.targetLevel > gone.targetLevel
+                    ? QueuedResearch(
+                        tech: q.tech, targetLevel: q.targetLevel - 1, cost: q.cost, ticks: q.ticks, waitingFor: q.waitingFor)
+                    : q,
+            ]);
+        }
+        _startWaiting();
         return [_tickUpdate()];
-      case CancelBuildCommand(:final queueType):
-        _hw = _hwWith(
-          clearBuild: queueType == QueueType.building,
-          clearShip: queueType == QueueType.ship,
-          clearResearch: queueType == QueueType.research,
-        );
+      case CancelQueuedCommand(:final queueType, :final index):
+        switch (queueType) {
+          case QueueType.building when index < _hw.buildPending.length:
+            _hw = _hwWith(buildPending: [
+              for (var i = 0; i < _hw.buildPending.length; i++) if (i != index) _hw.buildPending[i],
+            ]);
+          case QueueType.ship when index < _hw.shipyardPending.length:
+            _hw = _hwWith(shipPending: [
+              for (var i = 0; i < _hw.shipyardPending.length; i++) if (i != index) _hw.shipyardPending[i],
+            ]);
+          case QueueType.research when index < _hw.researchPending.length:
+            _hw = _hwWith(researchPending: [
+              for (var i = 0; i < _hw.researchPending.length; i++) if (i != index) _hw.researchPending[i],
+            ]);
+          default:
+            return [_err(ErrorCode.invalidTarget, 'Nothing is waiting there')];
+        }
         return [_tickUpdate()];
       case SplitCommand(:final fleetId, :final shipIds):
         final f = _find(fleetId);
@@ -1372,6 +1718,37 @@ class DemoProvider {
           ),
         ));
         return [_tickUpdate()];
+      case LeaderboardCommand(:final limit):
+        const rows = [
+          LeaderboardEntry(rank: 1, name: 'Vega', agent: true, score: 14.2, core: 12.8, combat: 1.4, explore: 0),
+          LeaderboardEntry(rank: 2, name: 'Kestrel', agent: false, score: 11.6, core: 9.4, combat: 0.9, explore: 1.3),
+          LeaderboardEntry(rank: 3, name: 'Orrery', agent: true, score: 9.9, core: 8.7, combat: 0.6, explore: 0.6),
+          LeaderboardEntry(rank: 4, name: 'Demo', agent: false, score: 9.6, core: 9.1, combat: 0.5, explore: 0),
+          LeaderboardEntry(rank: 5, name: 'Orrin', agent: false, score: 4.1, core: 4.1, combat: 0, explore: 0),
+          LeaderboardEntry(rank: 6, name: 'Pike-2', agent: true, score: 3.4, core: 3.0, combat: 0.4, explore: 0),
+        ];
+        return [LeaderboardReply(tick: _tick, entries: rows.take(limit).toList(), you: rows[3])];
+      case PreviewMoveCommand(:final fleetId, :final target):
+        final f = _find(fleetId);
+        if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
+        final here = _base(f.location);
+        if (!here.connections.contains(target)) {
+          return [_err(ErrorCode.noConnection, 'No lane from ${f.location} to $target')];
+        }
+        final hops = Hex.distance(target, _home);
+        final left = f.fuel - f.jumpFuel;
+        return [
+          MovePreview(
+            fleetId: fleetId,
+            target: target,
+            fuelCost: f.jumpFuel,
+            fuelAfter: max(0, left),
+            canJump: left >= 0,
+            hopsHome: hops,
+            fuelToReturn: hops * f.jumpFuel,
+            canReturn: left >= hops * f.jumpFuel,
+          ),
+        ];
     }
   }
 }

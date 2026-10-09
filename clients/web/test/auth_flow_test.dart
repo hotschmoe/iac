@@ -14,6 +14,8 @@ import 'package:iac_client/state/token_store.dart';
 import 'package:iac_client/design/theme.dart';
 import 'package:iac_client/views/login_screen.dart';
 
+import 'fixtures_util.dart';
+
 final _issued = 'a' * 64;
 
 class _FakeServer {
@@ -68,26 +70,13 @@ class _FakeServer {
     await _http.close(force: true);
   }
 
-  Map<String, dynamic> _fullState(String name) => {
-        'type': 'full_state',
-        'tick': 1,
-        'player': {
-          'id': 7,
-          'name': name,
-          'resources': {'metal': 1.0, 'crystal': 1.0, 'deuterium': 1.0},
-          'homeworld': {'q': 0, 'r': 0},
-        },
-        'fleets': <dynamic>[],
-        'homeworld': {
-          'location': {'q': 0, 'r': 0},
-          'production': {'metal': 0.0, 'crystal': 0.0, 'deuterium': 0.0},
-          'buildings': <dynamic>[],
-          'research': <dynamic>[],
-          'docked_ships': <dynamic>[],
-          'catalog': {'buildings': <dynamic>[], 'research': <dynamic>[], 'ships': <dynamic>[]},
-        },
-        'known_sectors': <dynamic>[],
-      };
+  /// The golden full_state, so this fake never drifts from the Rust shapes.
+  Map<String, dynamic> _fullState(String name) {
+    final file = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+    final state = readJson(file) as Map<String, dynamic>;
+    (state['player'] as Map<String, dynamic>)['name'] = name;
+    return state;
+  }
 }
 
 Future<void> _until(bool Function() cond) async {

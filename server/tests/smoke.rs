@@ -84,6 +84,9 @@ async fn auth_state_and_command_roundtrip() {
         state["player"].is_object() || state["players"].is_array(),
         "full_state has no player data: {state}"
     );
+    assert_eq!(state["world"]["pace"], 1.0, "default world is persistent: {state}");
+    assert_eq!(state["world"]["preset"], "persistent");
+    assert_eq!(state["world"]["economy_version"], 2);
 
     // Server should stream tick updates (1 Hz tick loop).
     let tick = loop {
@@ -301,6 +304,74 @@ async fn token_survives_restart_and_pre_token_databases_are_claimed() {
         let (_ws, ok) = login(port, "OldTimer", Some(&claimed)).await;
         assert_eq!(ok["success"], true, "{ok}");
     }
+
+    remove_db(&db);
+}
+
+#[tokio::test]
+async fn a_world_refuses_a_different_pace() {
+    let port = 17935;
+    let db = fresh_db(port);
+    {
+        let child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
+            .args(["--port", &port.to_string(), "--db", db.to_str().unwrap(), "--pace", "blitz"])
+            .spawn()
+            .expect("failed to spawn server");
+        let _guard = ServerGuard(child);
+        let (mut ws, reply) = login(port, "Pacer", None).await;
+        assert_eq!(reply["success"], true, "{reply}");
+        let state = loop {
+            let msg = next_json(&mut ws).await;
+            if msg["type"] == "full_state" {
+                break msg;
+            }
+        };
+        assert_eq!(state["world"]["pace"], 600.0);
+        assert_eq!(state["world"]["preset"], "blitz");
+        assert!(state["world"]["estimate"]["first_cruiser_s"].is_u64());
+    }
+
+    let out = Command::new(env!("CARGO_BIN_EXE_iac-server"))
+        .args(["--port", &port.to_string(), "--db", db.to_str().unwrap(), "--pace", "10"])
+        .output()
+        .expect("failed to run server");
+    assert!(!out.status.success(), "a different pace must stop the server");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot change") && err.contains("600 (blitz)"), "unclear refusal: {err}");
+
+    remove_db(&db);
+}
+
+#[tokio::test]
+async fn leaderboard_ranks_humans_and_agents_together() {
+    let port = 17936;
+    let db = fresh_db(port);
+    let _guard = start_server(port, &db);
+
+    let (_human, reply) = login(port, "Person", None).await;
+    assert_eq!(reply["success"], true);
+
+    let mut ws = connect_with_retry(&format!("ws://127.0.0.1:{port}")).await;
+    let auth = json!({"type": "auth", "player_name": "Botty", "agent": true});
+    ws.send(Message::text(auth.to_string())).await.unwrap();
+    assert_eq!(next_json(&mut ws).await["success"], true);
+
+    ws.send(Message::text(json!({"type": "command", "action": "leaderboard", "limit": 5}).to_string())).await.unwrap();
+    let board = loop {
+        let msg = next_json(&mut ws).await;
+        if msg["type"] == "leaderboard" {
+            break msg;
+        }
+    };
+    let entries = board["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{board}");
+    let bot = entries.iter().find(|e| e["name"] == "Botty").unwrap();
+    let person = entries.iter().find(|e| e["name"] == "Person").unwrap();
+    assert_eq!(bot["agent"], true);
+    assert_eq!(person["agent"], false);
+    assert_eq!(bot["score"], person["score"], "same start, same formula, one table");
+    assert_eq!(entries[0]["rank"], 1);
+    assert!(board.get("you").is_none(), "{board}");
 
     remove_db(&db);
 }

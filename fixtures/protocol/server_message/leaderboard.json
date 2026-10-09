@@ -1,0 +1,33 @@
+{
+  "entries": [
+    {
+      "agent": false,
+      "combat": 40.25,
+      "core": 380.0,
+      "explore": 0.0,
+      "name": "Admiral",
+      "rank": 1,
+      "score": 412.5
+    },
+    {
+      "agent": true,
+      "combat": 0.0,
+      "core": 389.0,
+      "explore": 0.0,
+      "name": "Claude-7",
+      "rank": 2,
+      "score": 389.0
+    }
+  ],
+  "tick": 4820,
+  "type": "leaderboard",
+  "you": {
+    "agent": false,
+    "combat": 0.0,
+    "core": 3.5,
+    "explore": 0.0,
+    "name": "Newbie",
+    "rank": 14,
+    "score": 3.5
+  }
+}

@@ -58,7 +58,7 @@ SHIP_RATE = 1200.0     # ships: (m+c) per game-hour per ship
 SY_SPEED = 0.10        # ship time divisor 1 + 0.10 * shipyard
 
 RESEARCH = {   # L1 cost, growth, max, prereqs (b=building, r=research)
-    'corvette': ((400, 200, 100),  1.0, 1, [('b', 'shipyard', 2)]),
+    'corvette': ((400, 200, 100),  1.0, 1, [('b', 'shipyard', 1)]),   # decisions.md: Corvettes unlock at Shipyard 1
     'hauler':   ((600, 300, 200),  1.0, 1, [('b', 'shipyard', 3)]),
     'frigate':  ((2000, 1200, 600), 1.0, 1, [('r', 'corvette', 1), ('b', 'shipyard', 4)]),
     'cruiser':  ((8000, 5000, 2500), 1.0, 1, [('r', 'frigate', 1), ('b', 'shipyard', 6)]),

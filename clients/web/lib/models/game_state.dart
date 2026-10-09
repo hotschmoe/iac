@@ -131,6 +131,19 @@ class GameState {
   /// first server message.
   final proto.HomeworldCatalog? catalog;
 
+  /// The server's whole homeworld snapshot (storage, queues, defences);
+  /// null before the first server message.
+  final proto.HomeworldState? hw;
+
+  /// Fixed world settings (pace); null before the first full state.
+  final proto.WorldInfo? world;
+
+  /// The last score table the server sent, if asked for.
+  final proto.LeaderboardReply? leaderboard;
+
+  /// The announced, unresolved raid.
+  final proto.RaidIncomingEvent? raid;
+
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -149,6 +162,10 @@ class GameState {
     this.signals = const {},
     this.stock = const proto.Resources(),
     this.catalog,
+    this.hw,
+    this.world,
+    this.leaderboard,
+    this.raid,
   });
 
   String get clockDisplay {
@@ -178,6 +195,10 @@ class GameState {
     Map<proto.Hex, proto.SignalKind>? signals,
     proto.Resources? stock,
     proto.HomeworldCatalog? catalog,
+    proto.HomeworldState? hw,
+    proto.WorldInfo? world,
+    proto.LeaderboardReply? leaderboard,
+    proto.RaidIncomingEvent? raid,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -197,5 +218,9 @@ class GameState {
         signals: signals ?? this.signals,
         stock: stock ?? this.stock,
         catalog: catalog ?? this.catalog,
+        hw: hw ?? this.hw,
+        world: world ?? this.world,
+        leaderboard: leaderboard ?? this.leaderboard,
+        raid: raid ?? this.raid,
       );
 }

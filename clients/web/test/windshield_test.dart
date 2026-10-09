@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/threat.dart';
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/models/fleet.dart' as ui;
 import 'package:iac_client/models/game_state.dart';
@@ -67,6 +68,7 @@ ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui
       fuelMax: 120,
       jumpFuel: 5,
       homeFuel: 10,
+      power: groups.fold(0.0, (a, g) => a + shipStats[proto.ShipClass.values.firstWhere((c) => c.label == g.$1)]!.power * g.$2),
     );
 
 GameState world(List<ui.FleetState> fleets, Map<proto.Hex, proto.SectorState> sectors, {int tick = 500}) => GameState(

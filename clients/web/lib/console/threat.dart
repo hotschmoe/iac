@@ -70,12 +70,4 @@ class SectorThreat {
   String get compLabel => composition.map((e) => '${e.$2}${shipAbbr(e.$1)}').join(' ');
 }
 
-double fleetPower(proto.FleetState f) {
-  var p = 0.0;
-  for (final s in f.ships) {
-    p += s.weaponPower + (s.hull + s.shield) / 10;
-  }
-  return p;
-}
-
 String winLabel(double ratio) => ratio >= 3 ? 'SAFE' : ratio >= 2 ? 'FAVOURABLE' : ratio >= 1.2 ? 'RISKY' : 'DEADLY';

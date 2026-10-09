@@ -56,12 +56,12 @@ class ParsedError extends ParsedCommand {
 const helpLines = [
   'fleet:  h[arvest] [metal|crystal|deut]  a[ttack] [n]  r[ecall]  s[alvage]  v|scan  x|explore  stop',
   'move:   m[ove] <e|ne|nw|w|sw|se | 1-6 | q r>      (one hop along a known lane)',
-  'base:   b[uild] <metal|crystal|deut|shipyard|lab|fuel|sensor|defense>',
-  '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump>',
-  '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research>',
+  'base:   b[uild] <metal|crystal|deut|shipyard|lab|fuel|sensor|defense|vault|fab>',
+  '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump|modfab>',
+  '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research> [n]  [waiting]',
   'fleets: f[leet] [n]  select/list   p[olicy] [manual|prospect|mine|salvage|patrol]  (no arg cycles)',
   '        split <class> [count]  detach ships into a new fleet   merge <fleet id>  fold a fleet in this sector into the active one',
-  'other:  status  refresh  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
+  'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
 ];
 
 const _dirs = {
@@ -87,6 +87,10 @@ const _buildings = {
   'sensor': BuildingType.sensorArray,
   'defense': BuildingType.defenseGrid,
   'grid': BuildingType.defenseGrid,
+  'vault': BuildingType.storageVault,
+  'storage': BuildingType.storageVault,
+  'fab': BuildingType.fabricator,
+  'fabricator': BuildingType.fabricator,
 };
 
 const _techs = {
@@ -106,6 +110,8 @@ const _techs = {
   'cruiser': ResearchType.cruiserTech,
   'hauler': ResearchType.haulerTech,
   'jump': ResearchType.emergencyJump,
+  'modfab': ResearchType.modularFabrication,
+  'slots': ResearchType.modularFabrication,
 };
 
 const _policies = {
@@ -139,6 +145,11 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
         'Tick ${ctx.tick} | fleets ${ctx.fleets.length}'
             '${f == null ? '' : ' | active F${f.id} ${f.state.wire} at ${f.location}, fuel ${f.fuel.round()}/${f.fuelMax.round()}, cooldown ${f.cooldownRemaining}'}',
       ]);
+
+    case 'leaderboard' || 'lb' || 'rank' || 'score':
+      final n = args.isEmpty ? 10 : int.tryParse(args.first);
+      if (n == null || n < 1 || n > 100) return const ParsedError('leaderboard: how many rows, 1-100');
+      return ParsedSend([CommandMessage(LeaderboardCommand(limit: n))]);
 
     case 'refresh' || 'sync':
       return const ParsedSend([RequestFullState()]);
@@ -253,8 +264,15 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
         'research' || 'res' || 'r' => QueueType.research,
         _ => null,
       };
-      if (q == null) return const ParsedError('cancel: building|ship|research');
-      return ParsedSend([CommandMessage(CancelBuildCommand(queueType: q))]);
+      if (q == null) return const ParsedError('cancel: building|ship|research [n] [waiting]');
+      final waiting = args.contains('waiting') || args.contains('queued');
+      final nums = args.skip(1).map(int.tryParse).whereType<int>();
+      final index = nums.isEmpty ? 0 : nums.first;
+      return ParsedSend([
+        CommandMessage(waiting
+            ? CancelQueuedCommand(queueType: q, index: index)
+            : CancelBuildCommand(queueType: q, index: index)),
+      ]);
 
     case 'split':
       final fleet = ctx.fleet;

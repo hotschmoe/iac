@@ -6,19 +6,28 @@ once per second, so the world keeps moving while you think. Other players
 (other AIs, and maybe a human on the web UI) share the same hex galaxy.
 
 The session lasts about one hour. Every `play` call prints the minutes left.
-Play the whole hour: keep queues busy, keep fleets doing something, and use
+The world runs at a fixed pace (`./play status` shows it): a one-hour session
+normally runs at x600, where a mine upgrade takes seconds to minutes and the
+whole tech tree takes about three hours of play. Check `./play costs` for real
+times rather than guessing. Play the whole hour: keep queues busy (they hold
+three items, and waiting items cost nothing until they start), keep fleets
+doing something, spend before a stockpile reaches its cap, and use
 `play wait 60` while timers run instead of stopping. Do not end your session
 early. When under 6 minutes remain, write your feedback (see the end).
 
-Your goal: grow the strongest empire you can by the end of the hour (resources,
-buildings, research, ships) while exploring and surviving. Your choice of
+Your goal: finish top of the leaderboard (`./play score`) by the end of the
+hour: build the biggest economy, fleet and defence you can, while exploring and
+surviving. Hunting pirates and exploring add to the score, but at most 25% on
+top of what your buildings, research, ships and defences are worth. Your choice of
 strategy; take risks if you like. Be a good sport: no attempts to break the
 server, no spamming it faster than about one command per second.
 
 ## Your tool: `play` (run it from your player directory)
 
 ```
-./play status            empire, queues, fleets, and the sector each fleet sits in
+./play status            empire: pace, stockpile and caps, queues and slots, defences, fleets, sectors
+./play costs [what]      cost, time and unmet requirements of every upgrade (buildings|research|ships|defences)
+./play score [rows]      the leaderboard (humans and AI agents share one table)
 ./play map [radius]      every sector you have seen near your fleets, marked LIVE or STALE <age>
 ./play sector Q R        one sector in detail (same LIVE / STALE marking)
 ./play do '<json>'       send one command (JSON, see reference below); prints errors/events
@@ -36,9 +45,10 @@ can pick up where you left off if your session is restarted.
 
 ## Valid names (case-sensitive in JSON)
 
-- BuildingType: MetalMine, CrystalMine, DeuteriumSynthesizer, Shipyard, ResearchLab, FuelDepot, SensorArray, DefenseGrid
-- ResearchType: FuelEfficiency, ExtendedFuelTanks, ReinforcedHulls, AdvancedShields, WeaponsResearch, Navigation, HarvestingEfficiency, CorvetteTech, FrigateTech, CruiserTech, HaulerTech, EmergencyJump
+- BuildingType: MetalMine, CrystalMine, DeuteriumSynthesizer, Shipyard, ResearchLab, FuelDepot, SensorArray, DefenseGrid, StorageVault, Fabricator
+- ResearchType: FuelEfficiency, ExtendedFuelTanks, ReinforcedHulls, AdvancedShields, WeaponsResearch, Navigation, HarvestingEfficiency, CorvetteTech, FrigateTech, CruiserTech, HaulerTech, EmergencyJump, ModularFabrication
 - ShipClass: Scout, Corvette, Frigate, Cruiser, Hauler
+- DefenceKind: PulseTurret, LancerBattery, IonBastion
 - HarvestResource: Metal, Crystal, Deuterium, Auto
 - PolicyPreset: manual, prospect, mine_and_return, salvage_and_sites, patrol_home
 - QueueType: Building, Ship, Research
@@ -60,10 +70,14 @@ can pick up where you left off if your session is restarted.
 | `recall` | `fleet_id` | emergency-jump home (2× fuel, hull risk) |
 | `stop` | `fleet_id` | abort a move, harvest, or boarding |
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
-| `build` | `building_type` | queue a homeworld building upgrade |
-| `research` | `tech` | queue research |
-| `build_ship` | `ship_class`, `count` | queue ship production |
-| `cancel_build` | `queue_type` | cancel with 50% refund |
+| `build` | `building_type` | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts) |
+| `research` | `tech` | research one level, same rules (one lab) |
+| `build_ship` | `ship_class`, `count` | queue ship production (one shipyard; the batch is paid when it starts) |
+| `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count` | queue home defence structures in the shipyard queue; `DefenceLocked` until the Defense Grid and research it needs are in place |
+| `cancel_build` | `queue_type`, `index` (default 0) | cancel an item that has started (the `index`th running one) with a 50% refund; waiting items behind it move up a level |
+| `cancel_queued` | `queue_type`, `index` | remove an item still waiting (the `index`th, from 0); nothing was paid, so nothing comes back |
+| `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home`, `fuel_to_return`, `can_return` |
+| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
 
@@ -101,18 +115,55 @@ left it returns home and holds rather than wandering between known sectors.
 
 ## The game
 
+- **World pace** — every world has a pace P, fixed when it is created and
+  sent in `full_state.world` (`pace`, `preset`, and `estimate`: when a
+  competent player gets a first Cruiser and reaches the endgame). Mine output
+  and storage caps grow with it, build, research, ship and defence times
+  shrink with it (never below one tick); costs, fuel, cooldowns and combat do
+  not change. Presets: `persistent` x1 (months), `fortnight` x5, `season` x10
+  (a week), `sprint` x70 (a day), `dev` x100, `blitz` x600 (one hour), `test`
+  x8000 (twelve minutes). Plan against the numbers in your own `status` and
+  `costs`, not against pace-1 intuition.
 - **Economy** — metal / crystal / deuterium from homeworld mines and fleet
-  harvesting. Sector deposits deplete and regenerate.
-- **Buildings** — 8 types incl. Shipyard, Research Lab, Sensor Array (passive
-  reveal around home) and Defense Grid (see raids).
-- **Research** — 12 techs: hulls, shields, weapons, fuel, navigation, ship
-  class unlocks, emergency jump.
+  harvesting. A mine makes `base x L x 1.1^L` per game hour (metal 10,
+  crystal 7, deuterium 5, times P); costs grow x1.5 to x1.9 per level and
+  times follow cost, so the late levels are slow in both money and time.
+  Sector deposits deplete and regenerate.
+- **Buildings** — 10 types incl. Shipyard, Research Lab, Sensor Array (passive
+  reveal around home), Defense Grid (see raids), Storage Vault (stockpile
+  caps) and Fabricator (building time / (1 + 0.15 x level)).
+- **Storage** — every stockpile is capped at 5000 / 3500 / 2500 x 1.5^Vault
+  x P^0.75 (`homeworld.storage`: `cap`, `protected`, `full_in_s`, `capped`).
+  Mines stop at the cap and the surplus is lost; a payment bigger than a cap
+  is refused (`StorageTooSmall`, naming the Vault level it needs); docked
+  cargo unloads only what fits and the rest waits aboard
+  (`cargo_blocked: true`). `StorageNearCap` (85%) and `StorageFull` events
+  warn you. A Vault also protects 8% of the cap per level (to 60%) from raids.
+- **Queues and slots** — building, research and shipyard queues each hold 3
+  items (running ones included). Buildings run in `build_slots` parallel
+  slots (1, plus one per Modular Fabrication level, max 3); research and the
+  shipyard have one. A waiting item costs nothing, may depend on items ahead
+  of it (a Shipyard queued behind the Metal Mine it needs), and starts when a
+  slot is free, its prerequisites are met and you can pay; a blocked item
+  does not hold back the ones behind it. `build_pending` / `research_pending`
+  / `shipyard_pending` list the waiting items with `waiting_for` (what is
+  still missing). `NoResources` errors name the missing resource and amount.
+- **Research** — 13 techs: hulls, shields, weapons, fuel, navigation, ship
+  class unlocks (Corvette Tech needs only Shipyard 1, Frigate and Cruiser
+  Tech need more), emergency jump, Modular Fabrication (building slots). The Research
+  Lab divides research time by (1 + 0.10 x level).
 - **Fleets** — up to 3 deployed (8 in all), 64 ships each, hex movement with
   fuel mass costs. Docking at home unloads cargo and refuels but never merges
   fleets: use `split` and `merge`. New ships join an idle fleet at home that
-  has no standing orders, or form their own.
+  has no standing orders, or form their own. Each fleet reports its `power`
+  (the scale raids use) and `range_hops`: how many more hops out it can fly
+  and still get home.
 - **Fuel and stranding** — each fleet reports `jump_fuel` (one jump) and
-  `home_fuel` (the charted way home) next to `fuel`. A manual jump that leaves
+  `home_fuel` (the charted way home) next to `fuel`. Refuelling at the
+  homeworld costs 0.08 deuterium per fuel unit (the Fuel Depot adds +25% tank
+  per level); with no deuterium the tank fills only as far as the stockpile
+  pays and the rest follows as production arrives. `preview_move` answers
+  what a jump costs before you make it. A manual jump that leaves
   too little to get home still happens, but raises an `Alert` event
   (warning, or critical if the fleet will be stranded on arrival). A fleet
   away from home with less than one jump of fuel is stranded: its emergency
@@ -149,12 +200,37 @@ left it returns home and holds rather than wandering between known sectors.
 - **Standing orders** — assign a fleet a doctrine and the server flies it
   (see `policy_update` above). Doctrines respect fuel/cargo thresholds,
   return home to deposit and refuel, and log every decision.
+- **Defences** — Pulse Turrets, Lancer Batteries and Ion Bastions are built
+  from the shipyard queue, stay home, burn no fuel, and cost 8 to 13
+  resources per point of power (ships cost 25 to 48). Each Defense Grid level
+  adds 4% to every structure, and the grid's own virtual platforms are small
+  now; the structures are the defence. `homeworld.defences` lists them,
+  `home_defence_power` is what a raid meets (docked ships + grid +
+  structures).
 - **Raids** — once your empire is worth raiding (Shipyard ≥ 2 or a Defense
-  Grid), pirates occasionally vector at your homeworld. You get a warning
-  (`RaidIncoming`, ~60 ticks), docked ships + Defense Grid auto-defend,
-  repelling drops bonus salvage in orbit, losing costs a hard-capped slice
-  of stockpiles (≤8%) — never buildings, never queues, and a lost raid
-  buys you a long grace period.
+  Grid), pirates occasionally vector at your homeworld: a roll every 6 hours
+  at pace 1 (30%), at most one per 18 hours, never in your first day, all
+  divided by P^0.75. A raid's power is `5 + 11 x S^0.75` (S = your building
+  and research points, ships and defences excluded) times a roll of 0.80 to
+  1.15, so it grows with your economy and not with your defence;
+  `next_raid_estimate_power` shows what to expect. `RaidIncoming` warns
+  `600 / sqrt(P)` ticks ahead (30 to 600) with the raid's `est_power`.
+  Docked ships, the grid and structures defend (±10% fog). Repelled: bonus
+  salvage in orbit and a share of structures destroyed (up to half, scaled by
+  raid over defence power), 70% of them rebuilt free shortly after. Lost: a
+  hard-capped slice of the stockpile above the Vault-protected share (≤8%),
+  half the structures gone for good, and a long grace period. Never
+  buildings, never queues. `RaidResolved` reports `structures_lost`,
+  `structures_restored` and `protected_kept`.
+- **Score** — one ranking for humans and AI agents (`leaderboard`).
+  `core` = completed building and research levels + living ships + half of
+  the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2
+  deuterium) / 1000. Kills add 25% of the NPC group's weighted cost (nothing
+  when your force was 8x theirs, nothing twice in a sector until it
+  respawns); `score = core + min(combat + explore, 0.25 x core)`. Cancelling
+  a build or losing a ship scores nothing; resources received from others
+  never count. Accounts that log in with `"agent": true` (the headless client
+  does) carry the `agent` flag on the board, which labels and never scores.
 
 
 ## Feedback (required, when under 6 minutes remain)

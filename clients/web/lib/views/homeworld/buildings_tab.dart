@@ -29,6 +29,8 @@ class BuildingsTab extends StatelessWidget {
       proto.BuildingType.fuelDepot => 'FUEL',
       proto.BuildingType.sensorArray => 'SENSORS',
       proto.BuildingType.defenseGrid => 'DEFENCE',
+      proto.BuildingType.storageVault => 'STORAGE',
+      proto.BuildingType.fabricator => 'SLOT B',
     };
   }
 

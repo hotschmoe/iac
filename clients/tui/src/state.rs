@@ -6,9 +6,9 @@ use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     Command, EventKind, FleetState, GameEvent, HomeworldState,
-    PlayerState, SectorState, ServerMessage,
+    LeaderboardReply, PlayerState, SectorState, ServerMessage, WorldInfo,
 };
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
 
 /// UI view modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl HomeworldTab {
     pub fn item_count(self) -> usize {
         match self {
             HomeworldTab::Buildings => BuildingType::COUNT,
-            HomeworldTab::Shipyard => ShipClass::ALL.len(),
+            HomeworldTab::Shipyard => ShipClass::ALL.len() + DefenceKind::COUNT,
             HomeworldTab::Research => ResearchType::COUNT,
         }
     }
@@ -135,6 +135,10 @@ pub struct ClientState {
     pub fleets: Vec<FleetState>,
     pub homeworld: Option<HomeworldState>,
     pub known_sectors: HashMap<u32, SectorState>,
+    pub world: Option<WorldInfo>,
+    /// The last score table the server sent, shown in an overlay.
+    pub leaderboard: Option<LeaderboardReply>,
+    pub show_leaderboard: bool,
     pub event_log: EventLog,
 
     // UI state
@@ -189,6 +193,9 @@ impl ClientState {
             fleets: Vec::new(),
             homeworld: None,
             known_sectors: HashMap::new(),
+            world: None,
+            leaderboard: None,
+            show_leaderboard: false,
             event_log: EventLog::new(),
             current_view: View::CommandCenter,
             active_fleet_idx: 0,
@@ -388,6 +395,7 @@ impl ClientState {
                 self.tick = state.tick;
                 self.player = Some(state.player.clone());
                 self.homeworld = Some(state.homeworld.clone());
+                self.world = Some(state.world.clone());
                 self.replace_fleets(&state.fleets);
 
                 self.known_sectors.clear();
@@ -402,6 +410,18 @@ impl ClientState {
             }
             ServerMessage::Event(event) => {
                 self.note_event(event);
+            }
+            ServerMessage::Leaderboard(board) => {
+                self.leaderboard = Some(board.clone());
+                self.show_leaderboard = true;
+            }
+            ServerMessage::PreviewMove(p) => {
+                self.status_message = format!(
+                    "F{} to [{},{}]: fuel -{:.0}, {:.0} left, {} hops home need {:.0}{}",
+                    p.fleet_id, p.target.q, p.target.r, p.fuel_cost, p.fuel_after, p.hops_home, p.fuel_to_return,
+                    if p.can_return { "" } else { "  CANNOT RETURN" },
+                );
+                self.status_set_tick = self.tick;
             }
             // Login is settled before the TUI starts (connection::login).
             ServerMessage::AuthResult(_) => {}
@@ -615,9 +635,15 @@ impl ClientState {
                         open.then_some(Command::Research { tech: o.tech })
                     }
                     HomeworldTab::Shipyard => {
-                        let o = cat.ships.get(i)?;
-                        o.requires.iter().all(|r| r.met).then_some(Command::BuildShip {
-                            ship_class: o.ship_class,
+                        if let Some(o) = cat.ships.get(i) {
+                            return o.requires.iter().all(|r| r.met).then_some(Command::BuildShip {
+                                ship_class: o.ship_class,
+                                count: self.ship_build_count,
+                            });
+                        }
+                        let o = cat.defences.get(i - cat.ships.len())?;
+                        o.requires.iter().all(|r| r.met).then_some(Command::BuildDefence {
+                            kind: o.kind,
                             count: self.ship_build_count,
                         })
                     }
@@ -646,7 +672,7 @@ mod tests {
             id, location: at, state: FleetStatus::Idle,
             ships: ship_ids.iter().map(|i| ship(*i)).collect(),
             cargo: Resources::default(), cargo_capacity: 20.0, fuel: 10.0, fuel_max: 10.0,
-            jump_fuel: 1.0, home_fuel: 0.0, cooldown_remaining: 0, policy: None,
+            jump_fuel: 1.0, home_fuel: 0.0, cooldown_remaining: 0, power: 0.0, range_hops: 0, cargo_blocked: false, policy: None,
         }
     }
 

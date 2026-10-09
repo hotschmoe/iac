@@ -78,14 +78,15 @@ void main() {
   testWidgets('buildings: tile selects, queue button sends BuildCommand after the queue is cleared', (tester) async {
     final c = await open(tester);
     expect(find.text('METAL MINE'), findsWidgets);
-    // demo has a build running: queueing is blocked with a reason
     await tester.tap(find.byKey(const ValueKey('hw-card-0')));
     await tester.pump();
     expect(c.hwCursor, 0);
-    expect(find.textContaining('Build queue busy'), findsWidgets);
+    // the demo queue is full (3 of 3): queueing is blocked with a reason
+    expect(find.textContaining('Queue full'), findsWidgets);
     await tester.tap(find.byKey(const ValueKey('hw-cancel-building')));
     await tester.pump();
-    expect(c.state.buildQueue, isEmpty);
+    c.cancelHomeworldQueue(proto.QueueType.building, waiting: true);
+    await tester.pump();
     await tester.tap(find.byKey(const ValueKey('hw-queue')));
     await tester.pump();
     expect(c.state.events.any((e) => e.message.contains('> build Metal Mine')), isTrue);
@@ -98,7 +99,9 @@ void main() {
     final c = await open(tester);
     await cancelAll(tester);
     final cat = c.state.catalog!;
-    final i = cat.buildings.indexWhere((b) => b.requires.any((r) => !r.met));
+    await tester.tap(find.byKey(const ValueKey('hw-tab-research')));
+    await tester.pump();
+    final i = cat.research.indexWhere((b) => b.requires.any((r) => !r.met));
     expect(i, greaterThanOrEqualTo(0));
     await tester.tap(find.byKey(ValueKey('hw-card-$i')));
     await tester.pump();
@@ -162,8 +165,9 @@ void main() {
     final c = await open(tester);
     await tester.tap(find.byKey(const ValueKey('hw-tab-defence')));
     await tester.pump();
-    expect(find.textContaining('RAID IN'), findsOneWidget);
-    expect(find.textContaining('Defence structures cannot be built'), findsWidgets);
+    expect(find.textContaining('RAID'), findsWidgets);
+    expect(find.text('PULSE TURRET'), findsWidgets);
+    expect(find.textContaining('BUILD X'), findsWidgets);
     await snap(tester, 'homeworld/defence-1440');
     await tester.tap(find.byKey(const ValueKey('hw-tab-storage')));
     await tester.pump();
@@ -173,12 +177,14 @@ void main() {
   });
 
   testWidgets('defence and storage show the not-reported state without server data', (tester) async {
+    final g = GameController();
+    addTearDown(g.dispose);
     await tester.pumpWidget(MaterialApp(
       theme: consoleTheme(),
       home: Material(
         child: Column(children: [
-          const Expanded(child: DefenceTab(eco: EconomyView.empty)),
-          Expanded(child: StorageTab(eco: EconomyView.empty, state: _emptyState())),
+          Expanded(child: DefenceTab(eco: EconomyView.empty, ctrl: g, onSelect: (_) {})),
+          Expanded(child: StorageTab(eco: EconomyView.empty, state: _emptyState(), ctrl: g)),
         ]),
       ),
     ));

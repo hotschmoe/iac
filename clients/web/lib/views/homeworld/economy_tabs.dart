@@ -6,6 +6,9 @@ import '../../design/gauges.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
 import '../../models/game_state.dart';
+import '../../protocol/protocol.dart' as proto;
+import '../../state/game_controller.dart';
+import 'spec.dart';
 
 Widget _notReported(String what) => Padding(
       padding: const EdgeInsets.all(12),
@@ -21,17 +24,18 @@ Widget _notReported(String what) => Padding(
       ),
     );
 
-const _noDefenceBuild = 'Defence structures cannot be built yet: the server has no defence build command';
-
 class DefenceTab extends StatelessWidget {
   final EconomyView eco;
-  const DefenceTab({super.key, required this.eco});
+  final GameController ctrl;
+  final ValueChanged<int> onSelect;
+  const DefenceTab({super.key, required this.eco, required this.ctrl, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
     final d = eco.defence;
     if (d == null) return _notReported('Defence');
     final info = RatioInfo.of(d.total, d.raidEstimate);
+    final raidIn = d.raidInTicks;
     return Padding(
       padding: const EdgeInsets.all(12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -41,18 +45,20 @@ class DefenceTab extends StatelessWidget {
           padding: const EdgeInsets.all(14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text('RAID IN ${clockFmt(d.raidInTicks)}', style: T.cond(size: 26, color: C.ember, weight: FontWeight.w700, spacing: 2)),
-              const Spacer(),
+              Flexible(
+                child: Text(raidIn == null ? 'NO RAID ANNOUNCED' : 'RAID IN ${clockFmt(raidIn)}',
+                    overflow: TextOverflow.ellipsis, style: T.cond(size: 26, color: raidIn == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 2)),
+              ),
+              const SizedBox(width: 8),
               Text('${info.label}  ${info.r.toStringAsFixed(2)}', style: T.cond(size: 13, color: info.color, spacing: 1.4)),
             ]),
             const SizedBox(height: 10),
             _breakdown(d),
             const SizedBox(height: 6),
             Wrap(spacing: 14, runSpacing: 4, children: [
-              _legend('Docked fleet', d.dockedFleet, C.own),
-              _legend('Grid', d.grid, C.a400),
+              _legend('Docked fleet and grid', d.other, C.own),
               _legend('Structures', d.structures, C.crystal),
-              _legend('Raid est.', d.raidEstimate, C.ember),
+              _legend('Next raid est.', d.raidEstimate, C.ember),
             ]),
             const SizedBox(height: 4),
             RatioGauge(info.r),
@@ -61,7 +67,8 @@ class DefenceTab extends StatelessWidget {
         const SizedBox(height: 10),
         ConsolePanel(
           title: 'Structures',
-          child: Column(children: [for (final s in d.structureList) _structure(s)]),
+          subText: 'BATCH x${ctrl.shipBatch}',
+          child: Column(children: [for (var i = 0; i < d.rows.length; i++) _structure(i, d.rows[i])]),
         ),
       ]),
     );
@@ -78,8 +85,7 @@ class DefenceTab extends StatelessWidget {
     Widget seg(double v, Color c) => Expanded(flex: (v / max * 1000).round().clamp(1, 1000), child: Container(height: 12, color: c.withValues(alpha: .75)));
     return Column(children: [
       Row(children: [
-        seg(d.dockedFleet, C.own),
-        seg(d.grid, C.a400),
+        seg(d.other, C.own),
         seg(d.structures, C.crystal),
         Expanded(flex: ((max - d.total) / max * 1000).round().clamp(1, 1000), child: const SizedBox()),
       ]),
@@ -91,29 +97,47 @@ class DefenceTab extends StatelessWidget {
     ]);
   }
 
-  Widget _structure(DefenceStructure s) => Container(
+  Widget _structure(int i, DefenceRow r) {
+    final spec = specFor(ctrl, index: i);
+    final sel = ctrl.hwCursor == i;
+    final o = r.option;
+    return GestureDetector(
+      key: ValueKey('hw-card-$i'),
+      behavior: HitTestBehavior.opaque,
+      onTap: () => onSelect(i),
+      child: Container(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.lineLo))),
+        decoration: BoxDecoration(color: sel ? C.a(C.a500, .06) : null, border: const Border(bottom: BorderSide(color: C.lineLo))),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
-            Expanded(child: Text(s.name.toUpperCase(), style: T.cond(size: 13, color: C.a200, spacing: 1.2))),
-            Text('L${s.level}/${s.maxLevel}', style: T.mono(size: 12, color: C.a100)),
+            Expanded(child: Text(r.kind.label.toUpperCase(), style: T.cond(size: 13, color: sel ? C.a100 : C.a200, spacing: 1.2))),
+            Flexible(child: Text('x${r.count}${r.restoring > 0 ? ' (+${r.restoring} restoring)' : ''}', overflow: TextOverflow.ellipsis, style: T.mono(size: 12, color: C.a100))),
             const SizedBox(width: 12),
-            Text('PWR ${s.power.round()}', style: T.mono(size: 11, color: C.text2)),
+            Text('PWR ${r.power.round()}', style: T.mono(size: 11, color: C.text2)),
           ]),
           const SizedBox(height: 2),
-          Text('NEEDS ${s.needs.toUpperCase()}   COST ${s.cost.toUpperCase()}', style: T.mono(size: 10, color: C.text3)),
+          if (o != null)
+            Text(
+                'UNIT ${o.power.round()} PWR   COST ${o.unitCost.metal.round()} FE ${o.unitCost.crystal.round()} CR ${o.unitCost.deuterium.round()} DE   ${clockFmt(o.ticksPerUnit)}',
+                style: T.mono(size: 10, color: C.text3)),
           const SizedBox(height: 6),
-          ConsoleButton('Build', small: true, reason: _noDefenceBuild),
-          const WhyText(_noDefenceBuild),
+          ConsoleButton('Build x${ctrl.shipBatch}',
+              small: true,
+              keyHint: sel ? 'Enter' : null,
+              onPressed: spec != null && spec.canQueue ? () => ctrl.activateHomeworldCard(i) : null,
+              reason: spec?.reason),
+          if (spec?.reason != null) WhyText(spec!.reason!),
         ]),
-      );
+      ),
+    );
+  }
 }
 
 class StorageTab extends StatelessWidget {
   final EconomyView eco;
   final GameState state;
-  const StorageTab({super.key, required this.eco, required this.state});
+  final GameController ctrl;
+  const StorageTab({super.key, required this.eco, required this.state, required this.ctrl});
 
   @override
   Widget build(BuildContext context) {
@@ -134,14 +158,42 @@ class StorageTab extends StatelessWidget {
           child: Column(children: [for (final r in rows) _row(st, r.$1, r.$2, r.$3, r.$4, r.$5)]),
         ),
         const SizedBox(height: 10),
-        ConsolePanel(
-          title: 'Upgrade',
-          padding: const EdgeInsets.all(14),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const ConsoleButton('Upgrade vault', small: true, reason: 'The server catalog has no Storage Vault building yet'),
-            const WhyText('The server catalog has no Storage Vault building yet'),
-          ]),
-        ),
+        _upgrade(),
+      ]),
+    );
+  }
+
+  Widget _upgrade() {
+    final cat = state.catalog;
+    final o = cat?.buildings.where((b) => b.buildingType == proto.BuildingType.storageVault).firstOrNull;
+    final hw = state.hw;
+    String? reason;
+    if (o == null) {
+      reason = 'The server catalog has no Storage Vault';
+    } else {
+      reason = whyNot(
+          requires: o.requires,
+          maxed: o.next == null,
+          queued: hw == null ? 0 : hw.buildQueue.length + hw.buildPending.length,
+          depth: hw?.queueDepth ?? 0,
+          idle: !state.buildQueue.any((q) => q.active),
+          cost: o.next?.cost,
+          stock: state.stock);
+    }
+    return ConsolePanel(
+      title: 'Upgrade',
+      padding: const EdgeInsets.all(14),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (o?.next != null)
+          Text('L${o!.level} > L${o.next!.level}   ${o.next!.cost.metal.round()} FE ${o.next!.cost.crystal.round()} CR ${o.next!.cost.deuterium.round()} DE   ${clockFmt(o.next!.ticks)}',
+              style: T.mono(size: 11, color: C.text2)),
+        const SizedBox(height: 6),
+        ConsoleButton('Upgrade vault',
+            key: const ValueKey('hw-upgrade-vault'),
+            small: true,
+            onPressed: reason == null ? () => ctrl.sendCommand(proto.BuildCommand(buildingType: proto.BuildingType.storageVault)) : null,
+            reason: reason),
+        if (reason != null) WhyText(reason),
       ]),
     );
   }

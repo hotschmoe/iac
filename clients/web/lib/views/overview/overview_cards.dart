@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../console/economy_view.dart';
 import '../../console/intel.dart';
 import '../../console/services.dart';
 import '../../design/beat.dart';
@@ -352,22 +353,7 @@ class _BuildSlotA extends StatelessWidget {
           const SizedBox(height: 10),
           _qTitle(_base(q.name)),
           _qSub(to == null ? 'in progress' : 'Level ${to - 1} -> $to'),
-          if (slots != null && slots.queued.isNotEmpty)
-            Container(
-              decoration: const BoxDecoration(border: Border(top: BorderSide(color: C.line))),
-              child: Column(children: [
-                for (var i = 0; i < slots.queued.length; i++)
-                  Container(
-                    padding: const EdgeInsets.symmetric(vertical: 3),
-                    decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.lineLo))),
-                    child: Row(children: [
-                      SizedBox(width: 22, child: Text('Q${i + 2}', style: T.mono(size: 10, color: C.a600))),
-                      Expanded(child: Text(slots.queued[i].name.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: C.text2))),
-                      Text(slots.queued[i].waits, style: T.mono(size: 10, color: C.text3)),
-                    ]),
-                  ),
-              ]),
-            ),
+          if (slots != null) _queuedRows(slots.queued),
         ]),
       );
     }
@@ -395,6 +381,25 @@ class _BuildSlotA extends StatelessWidget {
       ]),
     );
   }
+}
+
+Widget _queuedRows(List<QueuedItemView> items) {
+  if (items.isEmpty) return const SizedBox.shrink();
+  return Container(
+    decoration: const BoxDecoration(border: Border(top: BorderSide(color: C.line))),
+    child: Column(children: [
+      for (var i = 0; i < items.length; i++)
+        Container(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.lineLo))),
+          child: Row(children: [
+            SizedBox(width: 22, child: Text('Q${i + 2}', style: T.mono(size: 10, color: C.a600))),
+            Expanded(child: Text(items[i].name.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: C.text2))),
+            Text(items[i].waits, style: T.mono(size: 10, color: C.text3)),
+          ]),
+        ),
+    ]),
+  );
 }
 
 class _BuildSlotB extends StatelessWidget {
@@ -454,7 +459,7 @@ class _ResearchCard extends StatelessWidget {
     final act = OvActions(con);
     final r = s.research;
     final slots = con.economy.slots;
-    final sub = slots == null ? null : 'queue ${r.name == 'Idle' ? 0 : 1}/${slots.maxDepth}';
+    final sub = slots == null ? null : 'queue ${(r.name == 'Idle' ? 0 : 1) + slots.researchQueued.length}/${slots.maxDepth}';
     if (r.name != 'Idle') {
       final to = int.tryParse(_lvl(r.name) ?? '');
       return OvPanel(
@@ -468,6 +473,7 @@ class _ResearchCard extends StatelessWidget {
           const SizedBox(height: 10),
           _qTitle(_base(r.name)),
           _qSub(to == null ? 'in progress' : 'Level ${to - 1} -> $to'),
+          if (slots != null) _queuedRows(slots.researchQueued),
         ]),
       );
     }
@@ -507,7 +513,7 @@ class _ShipyardCard extends StatelessWidget {
     final act = OvActions(con);
     final slots = con.economy.slots;
     final q = s.shipyard.isEmpty ? null : s.shipyard.first;
-    final sub = slots == null ? null : 'queue ${q == null ? 0 : 1}/${slots.maxDepth}';
+    final sub = slots == null ? null : 'queue ${(q == null ? 0 : 1) + slots.shipQueued.length}/${slots.maxDepth}';
     if (q != null) {
       final m = RegExp(r'^(.*?) x(\d+) \((\d+) built\)').firstMatch(q.name);
       final label = m?.group(1) ?? q.name;
@@ -540,6 +546,7 @@ class _ShipyardCard extends StatelessWidget {
           const SizedBox(height: 10),
           _qTitle('${n}x $label'),
           _qSub('Ships join the dock on completion'),
+          if (slots != null) _queuedRows(slots.shipQueued),
         ]),
       );
     }

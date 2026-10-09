@@ -1,0 +1,10 @@
+{
+  "canonical": {
+    "action": "leaderboard",
+    "limit": 20
+  },
+  "input": {
+    "action": "leaderboard"
+  },
+  "type": "Command"
+}

@@ -139,11 +139,12 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 
 | Path | What |
 |---|---|
-| `shared/` | `iac-shared`: protocol, constants, scaling, hex math, worldgen |
-| `server/` | `iac-server`: engine, combat, network, SQLite (tests in `server/tests/`: `smoke.rs` game flow, `web.rs` static hosting + WS paths) |
+| `shared/` | `iac-shared`: protocol, constants, scaling (all cost/time/production formulas), pace, hex math, worldgen |
+| `server/` | `iac-server`: engine, combat, score, network, SQLite (tests in `server/tests/`: `smoke.rs` game flow, `web.rs` static hosting + WS paths) |
 | `clients/tui/` | `iac-client`: ratatui TUI, `--headless` NDJSON mode |
 | `clients/web/` | Flutter web client on the Rust wire protocol (`lib/protocol/` mirrors `shared/src/protocol.rs`) |
 | `fixtures/` | Golden JSON generated from `shared/`; checked by Rust and Flutter tests |
+| `tools/` | `playtest/` (live multi-agent sessions), `check_sim_constants.py` (Rust economy numbers vs `docs/design/economy/sim.py`) |
 | `docs/` | Design docs; `PORTING.md` and `journal.md` are the Rust dev log |
 | `SPEC.md` | Original technical spec (Zig era; the Rust wire protocol has intentionally diverged) |
 
@@ -153,7 +154,9 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 cargo build --workspace
 cargo test --workspace            # unit + end-to-end smoke tests
 cargo clippy --workspace
-cargo run -p iac-server           # port 7777, iac_world.db
+cargo run -p iac-server           # port 7777, iac_world.db, pace x1
+cargo run -p iac-server -- --pace blitz --db blitz.db   # pace is fixed per database
+python3 tools/check_sim_constants.py                    # after touching costs, times or production
 cargo run -p iac-client -- --name Admiral
 cargo run -p iac-client -- --headless --name Agent   # NDJSON on stdin/stdout
 
@@ -186,7 +189,8 @@ Server (Rust, tokio)       Clients
 - **Hex grid**: Axial coords (q,r), infinite, procedurally generated from `hash(world_seed, q, r)`
 - **Zones**: Central Hub (0), Inner Ring (1-8), Outer Ring (9-20), The Wandering (21+)
 - **Edge pruning**: Connectivity decreases with distance, creating maze-like deep space
-- **Resources**: Metal, Crystal, Deuterium (passive homeworld production + active harvesting)
+- **Resources**: Metal, Crystal, Deuterium (passive homeworld production + active harvesting), capped by the Storage Vault
+- **Pace**: one per-world multiplier (`shared/src/pace.rs`) scales economy timers; every duration constant declares a `PaceClass`
 - **Combat**: Fleet-based, stochastic rounds per tick, OGame-style rapid-fire
 - **Standing orders**: Per-fleet policy presets run by the server (`policy_update`)
 - **Derelicts, raids, scanning**: see the "The game" section of README.md

@@ -24,7 +24,7 @@ pub async fn run(
     name: &str,
     token: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (conn, auth_line) = match connection::login(config, name, token).await {
+    let (conn, auth_line) = match connection::login(config, name, token, true).await {
         Ok(ok) => ok,
         Err(e) => {
             if let Some(refused) = e.downcast_ref::<connection::LoginRefused>() {

@@ -37,16 +37,6 @@ ui.ShipState? groupOf(ui.FleetState f, proto.ShipClass c) {
   return null;
 }
 
-double uiFleetPower(ui.FleetState f) {
-  var p = 0.0;
-  for (final g in f.ships) {
-    final cls = proto.ShipClass.values.firstWhere((c) => c.label.toLowerCase() == g.shipClass.toLowerCase(), orElse: () => proto.ShipClass.scout);
-    final st = shipStats[cls]!;
-    p += g.count * st.weapon + (g.hull + g.count * st.shield) / 10;
-  }
-  return p;
-}
-
 // ── Sector head ────────────────────────────────────────────────
 
 class SectorHead extends StatelessWidget {
@@ -240,7 +230,7 @@ class StatusPanel extends StatelessWidget {
             LedBar(shieldFrac, color: C.crystal),
             const SizedBox(height: 8),
             Kv('Hops / home needs', v: '$hops / ${need}F${need > 0 && f.fuel < need * 1.2 ? '  LOW' : ''}', vc: need > 0 && f.fuel < need * 1.2 ? C.threat(6) : null),
-            Kv('Fleet power', v: uiFleetPower(f).round().toString()),
+            Kv('Fleet power', v: f.power.round().toString()),
             Kv('Scan range', v: '$scanRange'),
             Kv('Orders', v: pol, vc: C.a300),
             if (footer != null) Padding(padding: const EdgeInsets.only(top: 10), child: Align(alignment: Alignment.centerLeft, child: footer)),

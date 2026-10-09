@@ -137,6 +137,7 @@ void main() {
         homeworldUpdate: proto.HomeworldState(
           location: hw.location,
           production: const proto.Resources(metal: 7.5, crystal: 3.25, deuterium: 0.5),
+          storage: hw.storage,
           buildings: hw.buildings,
           research: hw.research,
           dockedShips: hw.dockedShips,
@@ -229,6 +230,7 @@ void main() {
         fleets: const [],
         homeworld: mapper.homeworld!,
         knownSectors: [stale],
+        world: mapper.world!,
       ));
       expect(mapper.sectors[where.toKey()]!.live, isFalse);
       final info = mapper.toUiState().sectors[where]!;

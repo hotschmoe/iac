@@ -113,7 +113,7 @@ class _HomeworldViewState extends State<HomeworldView> {
           final strip = QueueStrip(state: c.state, eco: eco, ctrl: c, narrow: narrow);
           final tabs = _Tabs(ctrl: c, narrow: narrow);
           final main = _main(c, eco, con);
-          final listTab = c.hwTab == HomeworldTab.buildings || c.hwTab == HomeworldTab.research || c.hwTab == HomeworldTab.shipyard;
+          final listTab = c.hwTab != HomeworldTab.storage;
           final insp = listTab ? Inspector(spec: specFor(c), ctrl: c, onQueue: _queue) : null;
           if (narrow) {
             return Container(
@@ -155,8 +155,8 @@ class _HomeworldViewState extends State<HomeworldView> {
         HomeworldTab.buildings => BuildingsTab(ctrl: c, onSelect: _select, prefs: con.prefs),
         HomeworldTab.research => ResearchTab(ctrl: c, onSelect: _select),
         HomeworldTab.shipyard => ShipyardTab(ctrl: c, onSelect: _select),
-        HomeworldTab.defence => DefenceTab(eco: eco),
-        HomeworldTab.storage => StorageTab(eco: eco, state: c.state),
+        HomeworldTab.defence => DefenceTab(eco: eco, ctrl: c, onSelect: _select),
+        HomeworldTab.storage => StorageTab(eco: eco, state: c.state, ctrl: c),
       };
 }
 

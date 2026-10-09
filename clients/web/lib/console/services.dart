@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../models/game_state.dart';
+import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
 import 'economy_view.dart';
 import 'prefs.dart';
@@ -37,13 +38,19 @@ class Console {
     if (game.state.tick != _lastTick) {
       _lastTick = game.state.tick;
       lastTickAt = DateTime.now();
+      if (game.hasState && (game.isLive || game.isDemo) && (_lastBoard < 0 || game.state.tick - _lastBoard >= 30)) {
+        _lastBoard = game.state.tick;
+        game.sendCommand(proto.LeaderboardCommand(limit: 10));
+      }
     }
   }
 
   /// Seconds since the last server tick, for interpolating between 1 Hz snapshots.
   double get sinceTick => DateTime.now().difference(lastTickAt).inMicroseconds / 1e6;
 
-  EconomyView get economy => game.isDemo ? EconomyView.demo(game.state) : EconomyView.live(game.state);
+  EconomyView get economy => EconomyView.of(game.state);
+
+  int _lastBoard = -1;
 
   GameState get state => game.state;
 

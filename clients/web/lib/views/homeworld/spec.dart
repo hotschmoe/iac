@@ -1,6 +1,5 @@
 import '../../console/intel.dart';
 import '../../console/threat.dart';
-import '../../models/homeworld.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
 
@@ -46,27 +45,29 @@ String shortfall(proto.Resources cost, proto.Resources stock) {
   return parts.join(', ');
 }
 
+/// Locked, maxed and queue-full block queueing. Cost only blocks when
+/// nothing is running (queued items pay when they start and wait otherwise).
 String? whyNot({
   required List<proto.Requirement> requires,
   required bool maxed,
-  required bool busy,
-  required String busyLeft,
-  required String busyName,
+  required int queued,
+  required int depth,
+  required bool idle,
   required proto.Resources? cost,
   required proto.Resources stock,
 }) {
   final unmet = [for (final r in requires) if (!r.met) r.label];
   if (unmet.isNotEmpty) return 'Locked: needs ${unmet.join(', ')}';
   if (maxed) return 'Already at maximum level';
-  if (busy) return '$busyName busy ($busyLeft left)';
-  if (cost != null) {
+  if (depth > 0 && queued >= depth) return 'Queue full ($queued/$depth)';
+  if (idle && cost != null) {
     final s = shortfall(cost, stock);
     if (s.isNotEmpty) return 'Cannot afford: needs $s';
   }
   return null;
 }
 
-const buildingNotes = {
+const buildingNotes = <proto.BuildingType, String>{
   proto.BuildingType.metalMine: 'Primary metal income.',
   proto.BuildingType.crystalMine: 'Crystal income for research and hulls.',
   proto.BuildingType.deuteriumSynthesizer: 'Deuterium is fleet fuel and a build cost.',
@@ -75,20 +76,21 @@ const buildingNotes = {
   proto.BuildingType.fuelDepot: 'Fuel handling at the homeworld.',
   proto.BuildingType.sensorArray: 'Longer sensor reach around home.',
   proto.BuildingType.defenseGrid: 'Raises homeworld defence power.',
+  proto.BuildingType.storageVault: 'Raises the stockpile caps and the protected share.',
+  proto.BuildingType.fabricator: 'Speeds up shipyard builds.',
 };
-
-String _busyLeft(QueueItem q) => q.time;
 
 ItemSpec? specFor(GameController c, {int? index}) {
   final cat = c.state.catalog;
   final i = index ?? c.hwCursor;
   if (cat == null) return null;
   final stock = c.state.stock;
+  final hw = c.state.hw;
   switch (c.hwTab) {
     case HomeworldTab.buildings:
       if (i < 0 || i >= cat.buildings.length) return null;
       final o = cat.buildings[i];
-      final busy = c.state.buildQueue.isNotEmpty;
+      final busy = c.state.buildQueue.any((q) => q.active);
       return ItemSpec(
         kind: 'Building',
         title: o.buildingType.label,
@@ -99,9 +101,9 @@ ItemSpec? specFor(GameController c, {int? index}) {
         reason: whyNot(
             requires: o.requires,
             maxed: o.next == null,
-            busy: busy,
-            busyLeft: busy ? _busyLeft(c.state.buildQueue.first) : '',
-            busyName: 'Build queue',
+            queued: hw == null ? 0 : hw.buildQueue.length + hw.buildPending.length,
+            depth: hw?.queueDepth ?? 0,
+            idle: !busy,
             cost: o.next?.cost,
             stock: stock),
         actionLabel: o.next == null ? 'Maxed' : 'Queue to L${o.next!.level}',
@@ -121,9 +123,9 @@ ItemSpec? specFor(GameController c, {int? index}) {
         reason: whyNot(
             requires: o.requires,
             maxed: o.next == null,
-            busy: busy,
-            busyLeft: busy ? c.state.research.time : '',
-            busyName: 'Lab',
+            queued: hw == null ? 0 : (hw.researchActive == null ? 0 : 1) + hw.researchPending.length,
+            depth: hw?.queueDepth ?? 0,
+            idle: !busy,
             cost: o.next?.cost,
             stock: stock),
         actionLabel: o.next == null ? 'Maxed' : 'Research L${o.next!.level}',
@@ -134,7 +136,7 @@ ItemSpec? specFor(GameController c, {int? index}) {
       final n = c.shipBatch;
       final total = proto.Resources(
           metal: o.unitCost.metal * n, crystal: o.unitCost.crystal * n, deuterium: o.unitCost.deuterium * n);
-      final busy = c.state.shipyard.isNotEmpty;
+      final busy = c.state.shipyard.any((q) => q.active);
       return ItemSpec(
         kind: 'Ship',
         title: o.shipClass.label,
@@ -145,9 +147,9 @@ ItemSpec? specFor(GameController c, {int? index}) {
         reason: whyNot(
             requires: o.requires,
             maxed: false,
-            busy: busy,
-            busyLeft: busy ? c.state.shipyard.first.time : '',
-            busyName: 'Shipyard',
+            queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
+            depth: hw?.queueDepth ?? 0,
+            idle: !busy,
             cost: total,
             stock: stock),
         actionLabel: 'Build x$n',
@@ -155,6 +157,29 @@ ItemSpec? specFor(GameController c, {int? index}) {
         ship: o.shipClass,
       );
     case HomeworldTab.defence:
+      if (i < 0 || i >= cat.defences.length) return null;
+      final o = cat.defences[i];
+      final n = c.shipBatch;
+      final total = proto.Resources(metal: o.unitCost.metal * n, crystal: o.unitCost.crystal * n, deuterium: o.unitCost.deuterium * n);
+      final busy = c.state.shipyard.any((q) => q.active);
+      return ItemSpec(
+        kind: 'Defence',
+        title: o.kind.label,
+        subtitle: 'BATCH x$n',
+        cost: total,
+        ticks: o.ticksPerUnit * n,
+        requires: o.requires,
+        reason: whyNot(
+            requires: o.requires,
+            maxed: false,
+            queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
+            depth: hw?.queueDepth ?? 0,
+            idle: !busy,
+            cost: total,
+            stock: stock),
+        actionLabel: 'Build x$n',
+        note: 'Built in the shipyard queue. Power ${o.power.toStringAsFixed(0)} each.',
+      );
     case HomeworldTab.storage:
       return null;
   }

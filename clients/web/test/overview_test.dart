@@ -9,19 +9,43 @@ import 'support/harness.dart';
 
 /// Demo-backed controller with controllable stock and economy availability.
 class _Fake extends GameController {
-  _Fake({this.demoSeam = true, this.stockOverride});
-  final bool demoSeam;
+  _Fake({this.noEco = false, this.stockOverride});
+  final bool noEco;
   final proto.Resources? stockOverride;
 
   @override
-  bool get isDemo => demoSeam;
-
-  @override
-  GameState get state => stockOverride == null ? super.state : super.state.copyWith(stock: stockOverride);
+  GameState get state {
+    final s = super.state;
+    if (noEco) {
+      return GameState(
+        tick: s.tick,
+        clockSec: s.clockSec,
+        resources: s.resources,
+        fleets: s.fleets,
+        buildQueue: s.buildQueue,
+        shipyard: s.shipyard,
+        docked: s.docked,
+        research: s.research,
+        events: s.events,
+        alerts: s.alerts,
+        sector: s.sector,
+        homeworld: s.homeworld,
+        waypoints: s.waypoints,
+        sectors: s.sectors,
+        stock: stockOverride ?? s.stock,
+        catalog: s.catalog,
+      );
+    }
+    return s.copyWith(
+      stock: stockOverride,
+      raid: proto.RaidIncomingEvent(playerId: 1, arrivalTick: s.tick + 270, threat: 'Moderate', estPower: 120),
+    );
+  }
 }
 
-Future<_Fake> _boot(WidgetTester tester, {Size size = const Size(1440, 900), bool demoSeam = true, proto.Resources? stock}) async {
-  final c = _Fake(demoSeam: demoSeam, stockOverride: stock)..startDemo();
+Future<_Fake> _boot(WidgetTester tester, {Size size = const Size(1440, 900), bool noEco = false, proto.Resources? stock}) async {
+  final c = _Fake(noEco: noEco, stockOverride: stock)..startDemo();
+  c.sendCommand(const proto.LeaderboardCommand(limit: 10));
   await pumpShell(tester, size: size, controller: c);
   return c;
 }
@@ -148,7 +172,7 @@ void main() {
   });
 
   testWidgets('without economy data: no raid card, no ranking, uncapped, slot B explains', (tester) async {
-    final c = await _boot(tester, demoSeam: false);
+    final c = await _boot(tester, noEco: true);
     expect(find.byKey(const Key('raid-card')), findsNothing);
     expect(find.byKey(const Key('rank-panel')), findsNothing);
     expect(find.text('UNCAPPED'), findsNWidgets(3));

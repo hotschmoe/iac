@@ -162,7 +162,9 @@ enum BuildingType {
   researchLab('Research Lab'),
   fuelDepot('Fuel Depot'),
   sensorArray('Sensor Array'),
-  defenseGrid('Defense Grid');
+  defenseGrid('Defense Grid'),
+  storageVault('Storage Vault'),
+  fabricator('Fabricator');
 
   final String label;
   const BuildingType(this.label);
@@ -170,6 +172,44 @@ enum BuildingType {
   String get wire => _pascal(name);
   String toJson() => wire;
   static BuildingType fromJson(Object? v) => _enumFrom(values, v, _pascal);
+}
+
+/// Home defence structures, built from the shipyard queue.
+enum DefenceKind {
+  pulseTurret('Pulse Turret'),
+  lancerBattery('Lancer Battery'),
+  ionBastion('Ion Bastion');
+
+  final String label;
+  const DefenceKind(this.label);
+
+  String get wire => _pascal(name);
+  String toJson() => wire;
+  static DefenceKind fromJson(Object? v) => _enumFrom(values, v, _pascal);
+}
+
+/// What the shipyard queue builds: a ship class or a defence structure.
+/// On the wire it is just the name ("Corvette", "PulseTurret").
+class ShipyardItem {
+  final ShipClass? ship;
+  final DefenceKind? defence;
+  const ShipyardItem.ship(ShipClass this.ship) : defence = null;
+  const ShipyardItem.defence(DefenceKind this.defence) : ship = null;
+
+  factory ShipyardItem.fromJson(Object? v) {
+    for (final c in ShipClass.values) {
+      if (c.wire == v) return ShipyardItem.ship(c);
+    }
+    return ShipyardItem.defence(DefenceKind.fromJson(v));
+  }
+
+  String get label => ship?.label ?? defence!.label;
+  String toJson() => ship?.toJson() ?? defence!.toJson();
+
+  @override
+  bool operator ==(Object other) => other is ShipyardItem && other.ship == ship && other.defence == defence;
+  @override
+  int get hashCode => Object.hash(ship, defence);
 }
 
 enum ResearchType {
@@ -184,7 +224,8 @@ enum ResearchType {
   frigateTech('Frigate Tech'),
   cruiserTech('Cruiser Tech'),
   haulerTech('Hauler Tech'),
-  emergencyJump('Emergency Jump');
+  emergencyJump('Emergency Jump'),
+  modularFabrication('Modular Fabrication');
 
   final String label;
   const ResearchType(this.label);
@@ -213,6 +254,8 @@ enum ErrorCode {
   noResearchLab(1014),
   fleetLimitReached(1015),
   resourceNotPresent(1016),
+  storageTooSmall(1017),
+  defenceLocked(1018),
   authFailed(2000),
   alreadyAuthenticated(2001),
   invalidName(2002),
@@ -244,6 +287,17 @@ enum PolicyPreset {
   String get wire => _snake(name);
   String toJson() => wire;
   static PolicyPreset fromJson(Object? v) => _enumFrom(values, v, _snake);
+}
+
+/// One of the three stockpiled resources.
+enum ResourceKind {
+  metal,
+  crystal,
+  deuterium;
+
+  String get wire => _snake(name);
+  String toJson() => wire;
+  static ResourceKind fromJson(Object? v) => _enumFrom(values, v, _snake);
 }
 
 enum SiteRisk {
@@ -300,14 +354,21 @@ sealed class ClientMessage {
 class AuthRequest extends ClientMessage {
   final String playerName;
   final String? token;
-  const AuthRequest({required this.playerName, this.token});
 
-  factory AuthRequest.fromJson(Json m) =>
-      AuthRequest(playerName: m['player_name'] as String, token: m['token'] as String?);
+  /// True when an AI agent flies this account (read only at creation; it only
+  /// labels the leaderboard).
+  final bool agent;
+  const AuthRequest({required this.playerName, this.token, this.agent = false});
+
+  factory AuthRequest.fromJson(Json m) => AuthRequest(
+        playerName: m['player_name'] as String,
+        token: m['token'] as String?,
+        agent: (m['agent'] as bool?) ?? false,
+      );
 
   @override
   Json toJson() {
-    final m = <String, dynamic>{'type': 'auth', 'player_name': playerName};
+    final m = <String, dynamic>{'type': 'auth', 'player_name': playerName, 'agent': agent};
     _put(m, 'token', token);
     return m;
   }
@@ -408,7 +469,17 @@ sealed class Command {
           shipClass: ShipClass.fromJson(m['ship_class']),
           count: (m['count'] as int?) ?? 1,
         ),
-      'cancel_build' => CancelBuildCommand(queueType: QueueType.fromJson(m['queue_type'])),
+      'build_defence' => BuildDefenceCommand(
+          kind: DefenceKind.fromJson(m['kind']),
+          count: (m['count'] as int?) ?? 1,
+        ),
+      'cancel_build' => CancelBuildCommand(
+          queueType: QueueType.fromJson(m['queue_type']),
+          index: (m['index'] as int?) ?? 0,
+        ),
+      'cancel_queued' => CancelQueuedCommand(queueType: QueueType.fromJson(m['queue_type']), index: _i(m['index'])),
+      'leaderboard' => LeaderboardCommand(limit: (m['limit'] as int?) ?? 20),
+      'preview_move' => PreviewMoveCommand(fleetId: _i(m['fleet_id']), target: Hex.fromJson(m['target'])),
       'stop' => StopCommand(fleetId: fleet()),
       'scan' => ScanCommand(fleetId: fleet()),
       'explore_site' => ExploreSiteCommand(fleetId: fleet()),
@@ -479,11 +550,49 @@ class BuildShipCommand extends Command {
   Json toJson() => {'action': 'build_ship', 'ship_class': shipClass.toJson(), 'count': count};
 }
 
+class BuildDefenceCommand extends Command {
+  final DefenceKind kind;
+  final int count;
+  const BuildDefenceCommand({required this.kind, this.count = 1});
+  @override
+  Json toJson() => {'action': 'build_defence', 'kind': kind.toJson(), 'count': count};
+}
+
+/// Cancel an item that has started (half refunded); [index] picks among the
+/// running buildings.
 class CancelBuildCommand extends Command {
   final QueueType queueType;
-  const CancelBuildCommand({required this.queueType});
+  final int index;
+  const CancelBuildCommand({required this.queueType, this.index = 0});
   @override
-  Json toJson() => {'action': 'cancel_build', 'queue_type': queueType.toJson()};
+  Json toJson() => {'action': 'cancel_build', 'queue_type': queueType.toJson(), 'index': index};
+}
+
+/// Remove an item still waiting in a queue; nothing was paid.
+class CancelQueuedCommand extends Command {
+  final QueueType queueType;
+  final int index;
+  const CancelQueuedCommand({required this.queueType, required this.index});
+  @override
+  Json toJson() => {'action': 'cancel_queued', 'queue_type': queueType.toJson(), 'index': index};
+}
+
+/// Ask for the score table; the reply is a [LeaderboardReply].
+class LeaderboardCommand extends Command {
+  final int limit;
+  const LeaderboardCommand({this.limit = 20});
+  @override
+  Json toJson() => {'action': 'leaderboard', 'limit': limit};
+}
+
+/// Ask what one jump to the adjacent sector would cost; the reply is a
+/// [MovePreview].
+class PreviewMoveCommand extends Command {
+  final int fleetId;
+  final Hex target;
+  const PreviewMoveCommand({required this.fleetId, required this.target});
+  @override
+  Json toJson() => {'action': 'preview_move', 'fleet_id': fleetId, 'target': target.toJson()};
 }
 
 class StopCommand extends Command {
@@ -545,6 +654,8 @@ sealed class ServerMessage {
       'tick_update' => TickUpdate.fromJson(m),
       'full_state' => GameState.fromJson(m),
       'event' => GameEvent.fromJson(m),
+      'preview_move' => MovePreview.fromJson(m),
+      'leaderboard' => LeaderboardReply.fromJson(m),
       'error' => ErrorMessage.fromJson(m),
       final t => throw FormatException('unknown ServerMessage type "$t"'),
     };
@@ -624,12 +735,14 @@ class GameState extends ServerMessage {
   final List<FleetState> fleets;
   final HomeworldState homeworld;
   final List<SectorState> knownSectors;
+  final WorldInfo world;
   const GameState({
     required this.tick,
     required this.player,
     required this.fleets,
     required this.homeworld,
     required this.knownSectors,
+    required this.world,
   });
 
   factory GameState.fromJson(Json m) => GameState(
@@ -638,6 +751,7 @@ class GameState extends ServerMessage {
         fleets: _list(m['fleets'], FleetState.fromJson),
         homeworld: HomeworldState.fromJson(m['homeworld']),
         knownSectors: _list(m['known_sectors'], SectorState.fromJson),
+        world: WorldInfo.fromJson(m['world']),
       );
 
   @override
@@ -648,6 +762,187 @@ class GameState extends ServerMessage {
         'fleets': fleets.map((e) => e.toJson()).toList(),
         'homeworld': homeworld.toJson(),
         'known_sectors': knownSectors.map((e) => e.toJson()).toList(),
+        'world': world.toJson(),
+      };
+}
+
+/// The world's fixed settings. [pace] scales economy timers and never
+/// changes for the life of a world.
+class WorldInfo {
+  final double pace;
+  final String? preset;
+  final int tickHz;
+  final int economyVersion;
+  final int worldgenVersion;
+  final WorldEstimate? estimate;
+  const WorldInfo({
+    required this.pace,
+    this.preset,
+    required this.tickHz,
+    required this.economyVersion,
+    required this.worldgenVersion,
+    this.estimate,
+  });
+
+  factory WorldInfo.fromJson(Object? json) {
+    final m = _obj(json);
+    return WorldInfo(
+      pace: _f(m['pace']),
+      preset: m['preset'] as String?,
+      tickHz: _i(m['tick_hz']),
+      economyVersion: _i(m['economy_version']),
+      worldgenVersion: _i(m['worldgen_version']),
+      estimate: _opt(m['estimate'], WorldEstimate.fromJson),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'pace': pace,
+      'tick_hz': tickHz,
+      'economy_version': economyVersion,
+      'worldgen_version': worldgenVersion,
+    };
+    _put(m, 'preset', preset);
+    _put(m, 'estimate', estimate?.toJson());
+    return m;
+  }
+
+  /// "x600 blitz" or "x42".
+  String get label {
+    final n = pace == pace.roundToDouble() ? pace.round().toString() : pace.toString();
+    return preset == null ? 'x$n' : 'x$n $preset';
+  }
+}
+
+class WorldEstimate {
+  final int firstCruiserS;
+  final int endgameS;
+  const WorldEstimate({required this.firstCruiserS, required this.endgameS});
+
+  factory WorldEstimate.fromJson(Object? json) {
+    final m = _obj(json);
+    return WorldEstimate(firstCruiserS: _i(m['first_cruiser_s']), endgameS: _i(m['endgame_s']));
+  }
+
+  Json toJson() => {'first_cruiser_s': firstCruiserS, 'endgame_s': endgameS};
+}
+
+/// The score table: one ranking for every player, human or agent.
+class LeaderboardReply extends ServerMessage {
+  final int tick;
+  final List<LeaderboardEntry> entries;
+
+  /// The asking player's own row when it falls outside [entries].
+  final LeaderboardEntry? you;
+  const LeaderboardReply({required this.tick, required this.entries, this.you});
+
+  factory LeaderboardReply.fromJson(Json m) => LeaderboardReply(
+        tick: _i(m['tick']),
+        entries: _list(m['entries'], LeaderboardEntry.fromJson),
+        you: _opt(m['you'], LeaderboardEntry.fromJson),
+      );
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{
+      'type': 'leaderboard',
+      'tick': tick,
+      'entries': entries.map((e) => e.toJson()).toList(),
+    };
+    _put(m, 'you', you?.toJson());
+    return m;
+  }
+}
+
+class LeaderboardEntry {
+  final int rank;
+  final String name;
+  final bool agent;
+  final double score;
+  final double core;
+
+  /// Raw points before the 25 percent cap on combat plus exploration.
+  final double combat;
+  final double explore;
+  const LeaderboardEntry({
+    required this.rank,
+    required this.name,
+    required this.agent,
+    required this.score,
+    required this.core,
+    required this.combat,
+    required this.explore,
+  });
+
+  factory LeaderboardEntry.fromJson(Object? json) {
+    final m = _obj(json);
+    return LeaderboardEntry(
+      rank: _i(m['rank']),
+      name: m['name'] as String,
+      agent: m['agent'] as bool,
+      score: _f(m['score']),
+      core: _f(m['core']),
+      combat: _f(m['combat']),
+      explore: _f(m['explore']),
+    );
+  }
+
+  Json toJson() => {
+        'rank': rank,
+        'name': name,
+        'agent': agent,
+        'score': score,
+        'core': core,
+        'combat': combat,
+        'explore': explore,
+      };
+}
+
+/// Answer to [PreviewMoveCommand]: the fuel side of a jump. Threat for the
+/// destination comes with the threat rating work and is not sent yet.
+class MovePreview extends ServerMessage {
+  final int fleetId;
+  final Hex target;
+  final double fuelCost;
+  final double fuelAfter;
+  final bool canJump;
+  final int hopsHome;
+  final double fuelToReturn;
+  final bool canReturn;
+  const MovePreview({
+    required this.fleetId,
+    required this.target,
+    required this.fuelCost,
+    required this.fuelAfter,
+    required this.canJump,
+    required this.hopsHome,
+    required this.fuelToReturn,
+    required this.canReturn,
+  });
+
+  factory MovePreview.fromJson(Json m) => MovePreview(
+        fleetId: _i(m['fleet_id']),
+        target: Hex.fromJson(m['target']),
+        fuelCost: _f(m['fuel_cost']),
+        fuelAfter: _f(m['fuel_after']),
+        canJump: m['can_jump'] as bool,
+        hopsHome: _i(m['hops_home']),
+        fuelToReturn: _f(m['fuel_to_return']),
+        canReturn: m['can_return'] as bool,
+      );
+
+  @override
+  Json toJson() => {
+        'type': 'preview_move',
+        'fleet_id': fleetId,
+        'target': target.toJson(),
+        'fuel_cost': fuelCost,
+        'fuel_after': fuelAfter,
+        'can_jump': canJump,
+        'hops_home': hopsHome,
+        'fuel_to_return': fuelToReturn,
+        'can_return': canReturn,
       };
 }
 
@@ -708,6 +1003,15 @@ class FleetState {
   /// Fuel the way home costs over charted lanes (0 at the homeworld).
   final double homeFuel;
   final int cooldownRemaining;
+
+  /// Combat power of the whole fleet (the raid and threat scale).
+  final double power;
+
+  /// Outward hops the fleet can still fly and get home.
+  final int rangeHops;
+
+  /// At the homeworld with cargo the stockpile has no room for.
+  final bool cargoBlocked;
   final PolicyPreset? policy;
   const FleetState({
     required this.id,
@@ -721,6 +1025,9 @@ class FleetState {
     this.jumpFuel = 0,
     this.homeFuel = 0,
     this.cooldownRemaining = 0,
+    this.power = 0,
+    this.rangeHops = 0,
+    this.cargoBlocked = false,
     this.policy,
   });
 
@@ -738,6 +1045,9 @@ class FleetState {
       jumpFuel: m['jump_fuel'] == null ? 0 : _f(m['jump_fuel']),
       homeFuel: m['home_fuel'] == null ? 0 : _f(m['home_fuel']),
       cooldownRemaining: (m['cooldown_remaining'] as int?) ?? 0,
+      power: m['power'] == null ? 0 : _f(m['power']),
+      rangeHops: (m['range_hops'] as int?) ?? 0,
+      cargoBlocked: (m['cargo_blocked'] as bool?) ?? false,
       policy: _opt(m['policy'], PolicyPreset.fromJson),
     );
   }
@@ -755,6 +1065,9 @@ class FleetState {
       'jump_fuel': jumpFuel,
       'home_fuel': homeFuel,
       'cooldown_remaining': cooldownRemaining,
+      'power': power,
+      'range_hops': rangeHops,
+      'cargo_blocked': cargoBlocked,
     };
     _put(m, 'policy', policy?.toJson());
     return m;
@@ -1007,26 +1320,56 @@ class ShipClassCounts {
 class HomeworldState {
   final Hex location;
 
-  /// Mine output per tick at current levels. There are no storage caps.
+  /// Mine output per tick at current levels (the cap discards the excess).
   final Resources production;
+  final StorageState storage;
   final List<BuildingState> buildings;
   final List<ResearchState> research;
-  final BuildQueueItem? buildQueue;
+
+  /// Buildings under construction, at most [buildSlots] of them.
+  final List<BuildQueueItem> buildQueue;
+
+  /// Waiting behind them; nothing is paid until an item starts.
+  final List<QueuedBuild> buildPending;
+  final int buildSlots;
+
+  /// Items per queue, the running ones included.
+  final int queueDepth;
   final ShipyardQueueItem? shipyardQueue;
+  final List<QueuedShip> shipyardPending;
   final ResearchItem? researchActive;
+  final List<QueuedResearch> researchPending;
   final List<ShipState> dockedShips;
+
+  /// Structures standing at home.
+  final List<DefenceState> defences;
+
+  /// Docked ships, the Defense Grid and structures: what the next raid meets.
+  final double homeDefencePower;
+
+  /// Typical power of the next raid at the empire's current size.
+  final double nextRaidEstimatePower;
 
   /// Costs, times and prerequisites for every building, tech and ship class.
   final HomeworldCatalog catalog;
   const HomeworldState({
     required this.location,
     required this.production,
+    required this.storage,
     required this.buildings,
     required this.research,
-    this.buildQueue,
+    this.buildQueue = const [],
+    this.buildPending = const [],
+    this.buildSlots = 1,
+    this.queueDepth = 3,
     this.shipyardQueue,
+    this.shipyardPending = const [],
     this.researchActive,
+    this.researchPending = const [],
     required this.dockedShips,
+    this.defences = const [],
+    this.homeDefencePower = 0,
+    this.nextRaidEstimatePower = 0,
     required this.catalog,
   });
 
@@ -1035,12 +1378,21 @@ class HomeworldState {
     return HomeworldState(
       location: Hex.fromJson(m['location']),
       production: Resources.fromJson(m['production']),
+      storage: StorageState.fromJson(m['storage']),
       buildings: _list(m['buildings'], BuildingState.fromJson),
       research: _list(m['research'], ResearchState.fromJson),
-      buildQueue: _opt(m['build_queue'], BuildQueueItem.fromJson),
+      buildQueue: _list(m['build_queue'], BuildQueueItem.fromJson),
+      buildPending: _list(m['build_pending'], QueuedBuild.fromJson),
+      buildSlots: _i(m['build_slots']),
+      queueDepth: _i(m['queue_depth']),
       shipyardQueue: _opt(m['shipyard_queue'], ShipyardQueueItem.fromJson),
+      shipyardPending: _list(m['shipyard_pending'], QueuedShip.fromJson),
       researchActive: _opt(m['research_active'], ResearchItem.fromJson),
+      researchPending: _list(m['research_pending'], QueuedResearch.fromJson),
       dockedShips: _list(m['docked_ships'], ShipState.fromJson),
+      defences: _list(m['defences'], DefenceState.fromJson),
+      homeDefencePower: _f(m['home_defence_power']),
+      nextRaidEstimatePower: _f(m['next_raid_estimate_power']),
       catalog: HomeworldCatalog.fromJson(m['catalog']),
     );
   }
@@ -1049,16 +1401,65 @@ class HomeworldState {
     final m = <String, dynamic>{
       'location': location.toJson(),
       'production': production.toJson(),
+      'storage': storage.toJson(),
       'buildings': buildings.map((e) => e.toJson()).toList(),
       'research': research.map((e) => e.toJson()).toList(),
+      'build_queue': buildQueue.map((e) => e.toJson()).toList(),
+      'build_pending': buildPending.map((e) => e.toJson()).toList(),
+      'build_slots': buildSlots,
+      'queue_depth': queueDepth,
+      'shipyard_pending': shipyardPending.map((e) => e.toJson()).toList(),
+      'research_pending': researchPending.map((e) => e.toJson()).toList(),
       'docked_ships': dockedShips.map((e) => e.toJson()).toList(),
+      'defences': defences.map((e) => e.toJson()).toList(),
+      'home_defence_power': homeDefencePower,
+      'next_raid_estimate_power': nextRaidEstimatePower,
       'catalog': catalog.toJson(),
     };
-    _put(m, 'build_queue', buildQueue?.toJson());
     _put(m, 'shipyard_queue', shipyardQueue?.toJson());
     _put(m, 'research_active', researchActive?.toJson());
     return m;
   }
+
+  /// A copy with some fields replaced (for tests and the offline demo).
+  HomeworldState copyWith({
+    Resources? production,
+    StorageState? storage,
+    List<BuildingState>? buildings,
+    List<ResearchState>? research,
+    List<DefenceState>? defences,
+    double? homeDefencePower,
+    List<BuildQueueItem>? buildQueue,
+    List<QueuedBuild>? buildPending,
+    int? buildSlots,
+    ShipyardQueueItem? shipyardQueue,
+    bool clearShipyardQueue = false,
+    List<QueuedShip>? shipyardPending,
+    ResearchItem? researchActive,
+    bool clearResearchActive = false,
+    List<QueuedResearch>? researchPending,
+    HomeworldCatalog? catalog,
+  }) =>
+      HomeworldState(
+        location: location,
+        production: production ?? this.production,
+        storage: storage ?? this.storage,
+        buildings: buildings ?? this.buildings,
+        research: research ?? this.research,
+        buildQueue: buildQueue ?? this.buildQueue,
+        buildPending: buildPending ?? this.buildPending,
+        buildSlots: buildSlots ?? this.buildSlots,
+        queueDepth: queueDepth,
+        shipyardQueue: clearShipyardQueue ? null : (shipyardQueue ?? this.shipyardQueue),
+        shipyardPending: shipyardPending ?? this.shipyardPending,
+        researchActive: clearResearchActive ? null : (researchActive ?? this.researchActive),
+        researchPending: researchPending ?? this.researchPending,
+        dockedShips: dockedShips,
+        defences: defences ?? this.defences,
+        homeDefencePower: homeDefencePower ?? this.homeDefencePower,
+        nextRaidEstimatePower: nextRaidEstimatePower,
+        catalog: catalog ?? this.catalog,
+      );
 
   int buildingLevel(BuildingType t) {
     for (final b in buildings) {
@@ -1068,6 +1469,87 @@ class HomeworldState {
   }
 }
 
+class DefenceState {
+  final DefenceKind kind;
+  final int count;
+
+  /// Structures a repelled raid destroyed that come back for free.
+  final int restoring;
+
+  /// Power of one structure at the current Defense Grid level.
+  final double power;
+  const DefenceState({required this.kind, required this.count, this.restoring = 0, required this.power});
+
+  factory DefenceState.fromJson(Object? json) {
+    final m = _obj(json);
+    return DefenceState(
+      kind: DefenceKind.fromJson(m['kind']),
+      count: _i(m['count']),
+      restoring: _i(m['restoring']),
+      power: _f(m['power']),
+    );
+  }
+
+  Json toJson() => {'kind': kind.toJson(), 'count': count, 'restoring': restoring, 'power': power};
+}
+
+/// Stockpile limits from the Storage Vault level and the world pace.
+class StorageState {
+  final Resources cap;
+
+  /// What a raid cannot skim.
+  final Resources protected;
+
+  /// Seconds until each stockpile is full at current production; 0 when it
+  /// is, null when it is not filling.
+  final ResourceEta fullInS;
+
+  /// Resources whose stockpile is at the cap right now.
+  final List<ResourceKind> capped;
+  const StorageState({required this.cap, required this.protected, required this.fullInS, required this.capped});
+
+  factory StorageState.fromJson(Object? json) {
+    final m = _obj(json);
+    return StorageState(
+      cap: Resources.fromJson(m['cap']),
+      protected: Resources.fromJson(m['protected']),
+      fullInS: ResourceEta.fromJson(m['full_in_s']),
+      capped: _list(m['capped'], ResourceKind.fromJson),
+    );
+  }
+
+  Json toJson() => {
+        'cap': cap.toJson(),
+        'protected': protected.toJson(),
+        'full_in_s': fullInS.toJson(),
+        'capped': capped.map((e) => e.toJson()).toList(),
+      };
+}
+
+class ResourceEta {
+  final int? metal;
+  final int? crystal;
+  final int? deuterium;
+  const ResourceEta({this.metal, this.crystal, this.deuterium});
+
+  factory ResourceEta.fromJson(Object? json) {
+    final m = _obj(json);
+    return ResourceEta(
+      metal: m['metal'] as int?,
+      crystal: m['crystal'] as int?,
+      deuterium: m['deuterium'] as int?,
+    );
+  }
+
+  Json toJson() => {'metal': metal, 'crystal': crystal, 'deuterium': deuterium};
+
+  int? of(ResourceKind k) => switch (k) {
+        ResourceKind.metal => metal,
+        ResourceKind.crystal => crystal,
+        ResourceKind.deuterium => deuterium,
+      };
+}
+
 /// Server-computed menu of homeworld actions (see `HomeworldCatalog` in
 /// shared/src/protocol.rs). Whether the player can pay is the client's call:
 /// compare a cost with the stockpile.
@@ -1075,7 +1557,13 @@ class HomeworldCatalog {
   final List<BuildingOption> buildings;
   final List<ResearchOption> research;
   final List<ShipOption> ships;
-  const HomeworldCatalog({required this.buildings, required this.research, required this.ships});
+  final List<DefenceOption> defences;
+  const HomeworldCatalog({
+    required this.buildings,
+    required this.research,
+    required this.ships,
+    this.defences = const [],
+  });
 
   factory HomeworldCatalog.fromJson(Object? json) {
     final m = _obj(json);
@@ -1083,6 +1571,7 @@ class HomeworldCatalog {
       buildings: _list(m['buildings'], BuildingOption.fromJson),
       research: _list(m['research'], ResearchOption.fromJson),
       ships: _list(m['ships'], ShipOption.fromJson),
+      defences: _list(m['defences'], DefenceOption.fromJson),
     );
   }
 
@@ -1090,6 +1579,7 @@ class HomeworldCatalog {
         'buildings': buildings.map((e) => e.toJson()).toList(),
         'research': research.map((e) => e.toJson()).toList(),
         'ships': ships.map((e) => e.toJson()).toList(),
+        'defences': defences.map((e) => e.toJson()).toList(),
       };
 }
 
@@ -1239,6 +1729,46 @@ class ShipOption {
       };
 }
 
+class DefenceOption {
+  final DefenceKind kind;
+
+  /// Standing now.
+  final int count;
+  final Resources unitCost;
+  final int ticksPerUnit;
+  final double power;
+  final List<Requirement> requires;
+  const DefenceOption({
+    required this.kind,
+    required this.count,
+    required this.unitCost,
+    required this.ticksPerUnit,
+    required this.power,
+    required this.requires,
+  });
+
+  factory DefenceOption.fromJson(Object? json) {
+    final m = _obj(json);
+    return DefenceOption(
+      kind: DefenceKind.fromJson(m['kind']),
+      count: _i(m['count']),
+      unitCost: Resources.fromJson(m['unit_cost']),
+      ticksPerUnit: _i(m['ticks_per_unit']),
+      power: _f(m['power']),
+      requires: _requirements(m['requires']),
+    );
+  }
+
+  Json toJson() => {
+        'kind': kind.toJson(),
+        'count': count,
+        'unit_cost': unitCost.toJson(),
+        'ticks_per_unit': ticksPerUnit,
+        'power': power,
+        'requires': requires.map((e) => e.toJson()).toList(),
+      };
+}
+
 class BuildingState {
   final BuildingType buildingType;
   final int level;
@@ -1295,14 +1825,131 @@ class BuildQueueItem {
       };
 }
 
+/// A building waiting for a free slot, resources or a prerequisite.
+/// [cost] and [ticks] are what it would cost and take if it started now;
+/// [waitingFor] is the resources still missing (null when it waits for
+/// something else).
+class QueuedBuild {
+  final BuildingType buildingType;
+  final int targetLevel;
+  final Resources cost;
+  final int ticks;
+  final Resources? waitingFor;
+  const QueuedBuild({
+    required this.buildingType,
+    required this.targetLevel,
+    required this.cost,
+    required this.ticks,
+    this.waitingFor,
+  });
+
+  factory QueuedBuild.fromJson(Object? json) {
+    final m = _obj(json);
+    return QueuedBuild(
+      buildingType: BuildingType.fromJson(m['building_type']),
+      targetLevel: _i(m['target_level']),
+      cost: Resources.fromJson(m['cost']),
+      ticks: _i(m['ticks']),
+      waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'building_type': buildingType.toJson(),
+      'target_level': targetLevel,
+      'cost': cost.toJson(),
+      'ticks': ticks,
+    };
+    _put(m, 'waiting_for', waitingFor?.toJson());
+    return m;
+  }
+}
+
+class QueuedResearch {
+  final ResearchType tech;
+  final int targetLevel;
+  final Resources cost;
+  final int ticks;
+  final Resources? waitingFor;
+  const QueuedResearch({
+    required this.tech,
+    required this.targetLevel,
+    required this.cost,
+    required this.ticks,
+    this.waitingFor,
+  });
+
+  factory QueuedResearch.fromJson(Object? json) {
+    final m = _obj(json);
+    return QueuedResearch(
+      tech: ResearchType.fromJson(m['tech']),
+      targetLevel: _i(m['target_level']),
+      cost: Resources.fromJson(m['cost']),
+      ticks: _i(m['ticks']),
+      waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'tech': tech.toJson(),
+      'target_level': targetLevel,
+      'cost': cost.toJson(),
+      'ticks': ticks,
+    };
+    _put(m, 'waiting_for', waitingFor?.toJson());
+    return m;
+  }
+}
+
+/// A shipyard order waiting its turn. [cost] is for the whole batch,
+/// [ticks] for one ship.
+class QueuedShip {
+  final ShipyardItem item;
+  final int count;
+  final Resources cost;
+  final int ticks;
+  final Resources? waitingFor;
+  const QueuedShip({
+    required this.item,
+    required this.count,
+    required this.cost,
+    required this.ticks,
+    this.waitingFor,
+  });
+
+  factory QueuedShip.fromJson(Object? json) {
+    final m = _obj(json);
+    return QueuedShip(
+      item: ShipyardItem.fromJson(m['item']),
+      count: _i(m['count']),
+      cost: Resources.fromJson(m['cost']),
+      ticks: _i(m['ticks']),
+      waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'item': item.toJson(),
+      'count': count,
+      'cost': cost.toJson(),
+      'ticks': ticks,
+    };
+    _put(m, 'waiting_for', waitingFor?.toJson());
+    return m;
+  }
+}
+
 class ShipyardQueueItem {
-  final ShipClass shipClass;
+  final ShipyardItem item;
   final int count;
   final int built;
   final int startTick;
   final int endTick;
   const ShipyardQueueItem({
-    required this.shipClass,
+    required this.item,
     required this.count,
     required this.built,
     required this.startTick,
@@ -1312,7 +1959,7 @@ class ShipyardQueueItem {
   factory ShipyardQueueItem.fromJson(Object? json) {
     final m = _obj(json);
     return ShipyardQueueItem(
-      shipClass: ShipClass.fromJson(m['ship_class']),
+      item: ShipyardItem.fromJson(m['item']),
       count: _i(m['count']),
       built: _i(m['built']),
       startTick: _i(m['start_tick']),
@@ -1321,7 +1968,7 @@ class ShipyardQueueItem {
   }
 
   Json toJson() => {
-        'ship_class': shipClass.toJson(),
+        'item': item.toJson(),
         'count': count,
         'built': built,
         'start_tick': startTick,
@@ -1401,6 +2048,7 @@ sealed class EventKind {
       'BuildingCompleted' => BuildingCompletedEvent.fromJson(m),
       'ResearchCompleted' => ResearchCompletedEvent.fromJson(m),
       'ShipBuilt' => ShipBuiltEvent.fromJson(m),
+      'DefenceBuilt' => DefenceBuiltEvent.fromJson(m),
       'ScanCompleted' => ScanCompletedEvent.fromJson(m),
       'RaidIncoming' => RaidIncomingEvent.fromJson(m),
       'RaidResolved' => RaidResolvedEvent.fromJson(m),
@@ -1410,6 +2058,8 @@ sealed class EventKind {
       'PolicyAction' => PolicyActionEvent.fromJson(m),
       'Alert' => AlertEvent.fromJson(m),
       'SalvageDespawned' => SalvageDespawnedEvent.fromJson(m),
+      'StorageNearCap' => StorageNearCapEvent.fromJson(m),
+      'StorageFull' => StorageFullEvent.fromJson(m),
       final k => throw FormatException('unknown EventKind "$k"'),
     };
   }
@@ -1735,6 +2385,49 @@ class SalvageDespawnedEvent extends EventKind {
   Json toJson() => {'kind': 'SalvageDespawned', 'sector': sector.toJson(), 'resources': resources.toJson()};
 }
 
+/// A stockpile passed 85 percent of its cap.
+class StorageNearCapEvent extends EventKind {
+  final int? playerId;
+  final ResourceKind resource;
+  final double ratio;
+
+  /// Seconds until full at current production; null when not filling.
+  final int? fullInS;
+  const StorageNearCapEvent({this.playerId, required this.resource, required this.ratio, this.fullInS});
+
+  factory StorageNearCapEvent.fromJson(Json m) => StorageNearCapEvent(
+        playerId: m['player_id'] as int?,
+        resource: ResourceKind.fromJson(m['resource']),
+        ratio: _f(m['ratio']),
+        fullInS: m['full_in_s'] as int?,
+      );
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{'kind': 'StorageNearCap', 'resource': resource.toJson(), 'ratio': ratio};
+    _put(m, 'player_id', playerId);
+    _put(m, 'full_in_s', fullInS);
+    return m;
+  }
+}
+
+/// A stockpile reached its cap; production beyond it is discarded.
+class StorageFullEvent extends EventKind {
+  final int? playerId;
+  final ResourceKind resource;
+  const StorageFullEvent({this.playerId, required this.resource});
+
+  factory StorageFullEvent.fromJson(Json m) =>
+      StorageFullEvent(playerId: m['player_id'] as int?, resource: ResourceKind.fromJson(m['resource']));
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{'kind': 'StorageFull', 'resource': resource.toJson()};
+    _put(m, 'player_id', playerId);
+    return m;
+  }
+}
+
 class FleetArrivedEvent extends EventKind {
   final int fleetId;
   final Hex sector;
@@ -1811,6 +2504,26 @@ class ShipBuiltEvent extends EventKind {
   }
 }
 
+class DefenceBuiltEvent extends EventKind {
+  final DefenceKind defence;
+  final int count;
+  final int? playerId;
+  const DefenceBuiltEvent({required this.defence, required this.count, this.playerId});
+
+  factory DefenceBuiltEvent.fromJson(Json m) => DefenceBuiltEvent(
+        defence: DefenceKind.fromJson(m['defence']),
+        count: _i(m['count']),
+        playerId: m['player_id'] as int?,
+      );
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{'kind': 'DefenceBuilt', 'defence': defence.toJson(), 'count': count};
+    _put(m, 'player_id', playerId);
+    return m;
+  }
+}
+
 class ScanCompletedEvent extends EventKind {
   final int fleetId;
   final Hex sector;
@@ -1865,12 +2578,21 @@ class RaidIncomingEvent extends EventKind {
   final int playerId;
   final int arrivalTick;
   final String threat;
-  const RaidIncomingEvent({required this.playerId, required this.arrivalTick, required this.threat});
+
+  /// The raid fleet's power, on the same scale as the homeworld's defence.
+  final double estPower;
+  const RaidIncomingEvent({
+    required this.playerId,
+    required this.arrivalTick,
+    required this.threat,
+    this.estPower = 0,
+  });
 
   factory RaidIncomingEvent.fromJson(Json m) => RaidIncomingEvent(
         playerId: _i(m['player_id']),
         arrivalTick: _i(m['arrival_tick']),
         threat: m['threat'] as String,
+        estPower: m['est_power'] == null ? 0 : _f(m['est_power']),
       );
 
   @override
@@ -1879,6 +2601,7 @@ class RaidIncomingEvent extends EventKind {
         'player_id': playerId,
         'arrival_tick': arrivalTick,
         'threat': threat,
+        'est_power': estPower,
       };
 }
 
@@ -1889,6 +2612,9 @@ class RaidResolvedEvent extends EventKind {
   final Resources? salvageDropped;
   final double raidPower;
   final double defensePower;
+  final int structuresLost;
+  final int structuresRestored;
+  final Resources protectedKept;
   const RaidResolvedEvent({
     required this.playerId,
     required this.defended,
@@ -1896,6 +2622,9 @@ class RaidResolvedEvent extends EventKind {
     this.salvageDropped,
     required this.raidPower,
     required this.defensePower,
+    this.structuresLost = 0,
+    this.structuresRestored = 0,
+    this.protectedKept = const Resources(),
   });
 
   factory RaidResolvedEvent.fromJson(Json m) => RaidResolvedEvent(
@@ -1905,6 +2634,9 @@ class RaidResolvedEvent extends EventKind {
         salvageDropped: _opt(m['salvage_dropped'], Resources.fromJson),
         raidPower: _f(m['raid_power']),
         defensePower: _f(m['defense_power']),
+        structuresLost: (m['structures_lost'] as int?) ?? 0,
+        structuresRestored: (m['structures_restored'] as int?) ?? 0,
+        protectedKept: m['protected_kept'] == null ? const Resources() : Resources.fromJson(m['protected_kept']),
       );
 
   @override
@@ -1916,6 +2648,9 @@ class RaidResolvedEvent extends EventKind {
       'resources_lost': resourcesLost.toJson(),
       'raid_power': raidPower,
       'defense_power': defensePower,
+      'structures_lost': structuresLost,
+      'structures_restored': structuresRestored,
+      'protected_kept': protectedKept.toJson(),
     };
     _put(m, 'salvage_dropped', salvageDropped?.toJson());
     return m;

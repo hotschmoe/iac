@@ -1,5 +1,6 @@
 {
   "canonical": {
+    "agent": false,
     "player_name": "x",
     "type": "auth"
   },

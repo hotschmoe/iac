@@ -102,7 +102,7 @@ def digest(msgs, mine_only=False):
         t = m.get("type")
         if t == "tick_update":
             events = [("event", e) for e in m.get("events") or []]
-        elif t in ("event", "error", "connection_closed", "client_error"):
+        elif t in ("event", "error", "connection_closed", "client_error", "preview_move", "leaderboard"):
             events = [(t, m)]
         else:
             continue
@@ -156,9 +156,10 @@ def fresh_state(name, timeout=8):
 
 
 def age(ticks):
-    """Ticks are seconds: 45s, 7m, 3h."""
+    """Ticks are seconds: 45s, 7m, 3h, 2d."""
     ticks = max(int(ticks), 0)
-    return f"{ticks}s" if ticks < 120 else f"{ticks // 60}m" if ticks < 7200 else f"{ticks // 3600}h"
+    return (f"{ticks}s" if ticks < 120 else f"{ticks // 60}m" if ticks < 7200
+            else f"{ticks // 3600}h" if ticks < 172800 else f"{ticks // 86400}d")
 
 
 def freshness(sec, now):
@@ -170,19 +171,56 @@ def res(r):
     return "/".join(f"{(r or {}).get(k, 0):.0f}" for k in ("metal", "crystal", "deuterium"))
 
 
+def waiting(short):
+    """'(needs 35 metal)' for a queued item the stockpile cannot pay yet."""
+    parts = [f"{short[k]:.0f} {k}" for k in ("metal", "crystal", "deuterium") if (short or {}).get(k, 0) > 0]
+    return f" (needs {', '.join(parts)})" if parts else ""
+
+
+def world_line(world):
+    pace = world["pace"]
+    label = f"x{pace:g}" + (f" {world['preset']}" if world.get("preset") else "")
+    est = world.get("estimate")
+    tail = f"; a competent player reaches a Cruiser in about {age(est['first_cruiser_s'])} and the endgame in about {age(est['endgame_s'])}" if est else ""
+    return f"World: pace {label} (build, research and ship times, and mine output, scale with it; fuel, cooldowns and combat do not){tail}"
+
+
 def summarize(fs):
     hw = fs["homeworld"]
     p = fs["player"]
     print(f"Empire {p['name']} (id {p['id']})  homeworld {hw['location']['q']},{hw['location']['r']}")
-    print(f"Resources metal/crystal/deut: {res(p['resources'])}   production per tick: "
-          + "/".join(f"{hw['production'].get(k, 0):.2f}" for k in ("metal", "crystal", "deuterium")))
+    if fs.get("world"):
+        print(world_line(fs["world"]))
+    st = hw["storage"]
+    stock = p["resources"]
+    caps = "  ".join(f"{k} {stock[k]:.0f}/{st['cap'][k]:.0f}" + (" FULL" if k in st["capped"] else "")
+                     for k in ("metal", "crystal", "deuterium"))
+    per_tick = [hw["production"].get(k, 0) for k in ("metal", "crystal", "deuterium")]
+    print(f"Stockpile: {caps}   production per tick: " + "/".join(f"{x:.4g}" for x in per_tick)
+          + "  (per hour: " + "/".join(f"{x * 3600:.4g}" for x in per_tick) + ")")
+    eta = [f"{k} full in {age(v)}" for k, v in st["full_in_s"].items() if v]
+    print(f"Raid-protected stock: {res(st['protected'])}" + (f"   ({', '.join(eta)})" if eta else ""))
     print("Buildings: " + ", ".join(f"{b['building_type']} {b['level']}" for b in hw["buildings"]))
     print("Research:  " + (", ".join(f"{r['tech']} {r['level']}" for r in hw["research"]) or "none"))
     t = fs["tick"]
-    for label, q, what in (("Build queue", hw.get("build_queue"), lambda q: f"{q['building_type']} -> L{q['target_level']}"),
-                           ("Research",    hw.get("research_active"), lambda q: f"{q['tech']} -> L{q['target_level']}"),
-                           ("Shipyard",    hw.get("shipyard_queue"), lambda q: f"{q['ship_class']} {q['built']}/{q['count']}")):
-        print(f"{label}: " + (f"{what(q)}, done in {q['end_tick'] - t} ticks" if q else "idle"))
+    depth = hw.get("queue_depth", 3)
+    running = hw.get("build_queue") or []
+    print(f"Build queue ({len(running)}/{hw.get('build_slots', 1)} slots, {depth} items max): "
+          + ("; ".join(f"{q['building_type']} -> L{q['target_level']} done in {age(q['end_tick'] - t)}" for q in running) or "idle"))
+    for i, q in enumerate(hw.get("build_pending") or []):
+        print(f"  waiting [{i}]: {q['building_type']} -> L{q['target_level']} ({age(q['ticks'])}){waiting(q.get('waiting_for'))}")
+    q = hw.get("research_active")
+    print("Research queue: " + (f"{q['tech']} -> L{q['target_level']} done in {age(q['end_tick'] - t)}" if q else "idle"))
+    for i, q in enumerate(hw.get("research_pending") or []):
+        print(f"  waiting [{i}]: {q['tech']} -> L{q['target_level']} ({age(q['ticks'])}){waiting(q.get('waiting_for'))}")
+    q = hw.get("shipyard_queue")
+    print("Shipyard queue: " + (f"{q['item']} {q['built']}/{q['count']}, next unit in {age(q['end_tick'] - t)}" if q else "idle"))
+    for i, q in enumerate(hw.get("shipyard_pending") or []):
+        print(f"  waiting [{i}]: {q['count']}x {q['item']} ({age(q['ticks'])} each){waiting(q.get('waiting_for'))}")
+    stand = [f"{d['count']}x {d['kind']}" + (f" (+{d['restoring']} being rebuilt)" if d.get("restoring") else "")
+             for d in hw.get("defences") or [] if d["count"] or d.get("restoring")]
+    print(f"Defence power {hw.get('home_defence_power', 0):.0f} against an expected raid of about "
+          f"{hw.get('next_raid_estimate_power', 0):.0f}; structures: " + (", ".join(stand) or "none"))
     docked = {}
     for s in hw.get("docked_ships") or []:
         docked[s["class"]] = docked.get(s["class"], 0) + 1
@@ -198,7 +236,9 @@ def summarize(fs):
             classes[s["class"]] = classes.get(s["class"], 0) + 1
             hull += s["hull"]; hull_max += s["hull_max"]
         cargo = sum((f.get("cargo") or {}).values())
-        print(f"\nFleet {f['id']} at {loc[0]},{loc[1]}  {f['state']}  policy={f.get('policy') or 'manual'}  cooldown={f.get('cooldown_remaining', 0)}")
+        print(f"\nFleet {f['id']} at {loc[0]},{loc[1]}  {f['state']}  policy={f.get('policy') or 'manual'}  cooldown={f.get('cooldown_remaining', 0)}"
+              f"  power {f.get('power', 0):.0f}  range {f.get('range_hops', 0)} hops out and back"
+              + ("  CARGO BLOCKED: stockpile full, spend something" if f.get("cargo_blocked") else ""))
         print(f"  ships: " + ", ".join(f"{n}x {c}" for c, n in classes.items())
               + f"  hull {hull:.0f}/{hull_max:.0f}  fuel {f['fuel']:.0f}/{f['fuel_max']:.0f}"
               + f"  cargo {cargo:.0f}/{f['cargo_capacity']:.0f} ({res(f.get('cargo'))})")
@@ -247,6 +287,61 @@ def describe(sec, loc, sectors, now, indent=""):
         print(f"{indent}salvage: {res(sec['salvage'])}{left}")
     if sec.get("site"):
         print(f"{indent}derelict site tier {sec['site']['tier']} risk {sec['site']['risk']}")
+
+
+def cmd_costs(name, what=None):
+    """Costs, build times and unmet requirements from the server's catalog."""
+    fs = fresh_state(name)
+    header(name, fs["tick"] if fs else None)
+    if not fs:
+        print("No state received (server or client down?). Try again shortly.")
+        return
+    cat, stock = fs["homeworld"]["catalog"], fs["player"]["resources"]
+
+    def need(requires):
+        unmet = [f"{r['name']} {r['need']} (have {r['have']})" for r in requires if not r["met"]]
+        return f"  LOCKED: needs {', '.join(unmet)}" if unmet else ""
+
+    def afford(cost):
+        return "" if all(stock[k] >= cost.get(k, 0) for k in stock) else "  cannot pay yet"
+
+    sections = (
+        ("buildings", [(o["building_type"], f"L{o['level']}", o.get("next"), o["requires"]) for o in cat["buildings"]]),
+        ("research", [(o["tech"], f"L{o['level']}/{o['max_level']}", o.get("next"), o["requires"]) for o in cat["research"]]),
+        ("ships", [(o["ship_class"], "per ship", {"cost": o["unit_cost"], "ticks": o["ticks_per_ship"]}, o["requires"]) for o in cat["ships"]]),
+        ("defences", [(o["kind"], f"{o['count']} standing, power {o['power']:.0f} each",
+                       {"cost": o["unit_cost"], "ticks": o["ticks_per_unit"]}, o["requires"]) for o in cat.get("defences") or []]),
+    )
+    for title, rows in sections:
+        if what and what != title:
+            continue
+        print(f"{title}:")
+        for label, state, nxt, requires in rows:
+            if nxt is None:
+                print(f"  {label:<22} {state:<28} maxed")
+                continue
+            lvl = f" -> L{nxt['level']}" if "level" in nxt else ""
+            print(f"  {label:<22} {state:<28}{lvl} costs {res(nxt['cost'])} in {age(nxt['ticks'])}{afford(nxt['cost'])}{need(requires)}")
+
+
+def cmd_score(name, limit=10):
+    start = log_size(name)
+    send(name, {"action": "leaderboard", "limit": int(limit)})
+    board = None
+    for _ in range(20):
+        time.sleep(0.4)
+        lines, _ = log_lines(name, start)
+        board = next((m for m in lines if m.get("type") == "leaderboard"), None)
+        if board:
+            break
+    header(name, last_tick(name))
+    if not board:
+        print("No answer from the server yet. Try again shortly.")
+        return
+    print("rank  name                  score    core  combat  explore   (one table for humans and AI agents)")
+    for e in board["entries"] + ([board["you"]] if board.get("you") else []):
+        tag = "AI " if e["agent"] else "   "
+        print(f"{e['rank']:>4}  {e['name']:<20} {tag}{e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
 
 
 def cmd_status(name):
@@ -351,11 +446,14 @@ def daemon(name):
 
 USAGE = """usage: play <command>
   status                 your empire, queues, fleets and the sector each fleet is in
+  costs [buildings|research|ships|defences]  what each upgrade costs, how long it takes, what is locked
+  score [rows]           the leaderboard (default 10 rows); your own row is added if you are below it
   map [radius]           known sectors near your fleets (default radius 4)
   sector Q R             details of one known sector
   do '<json>'            send a command, e.g. play do '{"action":"scan","fleet_id":2}'
                          or standing orders: play do '{"type":"policy_update","fleet_id":2,"preset":"prospect"}'
                          or split ships off: play do '{"action":"split","fleet_id":2,"ship_ids":[41,42]}'
+                         or check a jump's fuel: play do '{"action":"preview_move","fleet_id":2,"target":{"q":3,"r":-1}}'
   events [--mine]        events since you last looked; --mine drops fights you only witnessed
   wait [seconds] [--mine] sleep (5-90s, default 45) then show events; use while timers run
   rules                  print RULES.md"""
@@ -371,6 +469,8 @@ def main():
         return
     cmd, rest = a[0], a[1:]
     if cmd == "status": cmd_status(name)
+    elif cmd == "costs": cmd_costs(name, *rest[:1])
+    elif cmd == "score" or cmd == "leaderboard": cmd_score(name, *rest[:1])
     elif cmd == "map": cmd_map(name, *rest[:1])
     elif cmd == "sector" and len(rest) == 2: cmd_sector(name, *rest)
     elif cmd == "do" and rest: cmd_do(name, " ".join(rest))

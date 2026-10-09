@@ -27,10 +27,12 @@ use iac_shared::protocol::{
     ClientMessage, ServerMessage, Command, ErrorCode, HarvestResource,
     GameState, PlayerState, FleetState, ShipState,
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
-    GameEvent, AuthResult,
+    QueuedBuild, QueuedResearch, QueuedShip, DefenceState,
+    GameEvent, AuthResult, WorldInfo,
 };
 use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
+use iac_shared::constants::{RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
 
 use crate::engine::{fleet_cargo_capacity, AuthError, GameEngine, FleetStatus};
 
@@ -135,7 +137,7 @@ impl Network {
 
                 let outcome = {
                     let mut engine = self.engine.lock().unwrap();
-                    engine.authenticate(&auth.player_name, auth.token.as_deref())
+                    engine.authenticate(&auth.player_name, auth.token.as_deref(), auth.agent)
                 };
                 let granted = match outcome {
                     Ok(granted) => granted,
@@ -215,6 +217,7 @@ impl Network {
         };
 
         let mut engine = self.engine.lock().unwrap();
+        let mut reply: Option<ServerMessage> = None;
         let result = match cmd {
             Command::Move { fleet_id, target } => engine.handle_move(pid, fleet_id, target),
             Command::Harvest { fleet_id, resource } => engine.handle_harvest(pid, fleet_id, resource),
@@ -224,16 +227,33 @@ impl Network {
             Command::Build { building_type } => engine.handle_build(pid, building_type),
             Command::Research { tech } => engine.handle_research(pid, tech),
             Command::BuildShip { ship_class, count } => engine.handle_build_ship(pid, ship_class, count),
-            Command::CancelBuild { queue_type } => engine.handle_cancel_build(pid, queue_type),
+            Command::BuildDefence { kind, count } => engine.handle_build_defence(pid, kind, count),
+            Command::CancelBuild { queue_type, index } => engine.handle_cancel_build(pid, queue_type, index),
+            Command::CancelQueued { queue_type, index } => engine.handle_cancel_queued(pid, queue_type, index),
             Command::Stop { fleet_id } => engine.handle_stop(pid, fleet_id),
             Command::Scan { fleet_id } => engine.handle_scan(pid, fleet_id),
             Command::ExploreSite { fleet_id } => engine.handle_explore_site(pid, fleet_id),
             Command::Split { fleet_id, ref ship_ids } => engine.handle_split(pid, fleet_id, ship_ids).map(|_| ()),
             Command::Merge { fleet_id, other_fleet_id } => engine.handle_merge(pid, fleet_id, other_fleet_id),
+            Command::Leaderboard { limit } => {
+                let (entries, you) = crate::score::leaderboard(&engine, limit as usize, pid);
+                reply = Some(ServerMessage::Leaderboard(iac_shared::protocol::LeaderboardReply {
+                    tick: engine.current_tick(),
+                    entries,
+                    you,
+                }));
+                Ok(())
+            }
+            Command::PreviewMove { fleet_id, target } => engine.preview_move(pid, fleet_id, target).map(|p| {
+                reply = Some(ServerMessage::PreviewMove(p));
+            }),
         };
         let failure = result.err().map(|code| (code, command_error_message(&engine, pid, &cmd, code)));
         drop(engine);
 
+        if let Some(reply) = reply {
+            self.send_to_session(session, reply)?;
+        }
         if let Some((code, message)) = failure {
             self.send_error_to_session(session, code, &message)?;
         }
@@ -325,6 +345,7 @@ impl Network {
             fleets: fleet_states,
             homeworld: hw_state,
             known_sectors,
+            world: WorldInfo::new(engine.pace(), engine.world.economy_version, engine.world.worldgen_version),
         });
 
         drop(engine);
@@ -355,11 +376,15 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Scan { fleet_id }
         | Command::ExploreSite { fleet_id }
         | Command::Split { fleet_id, .. }
+        | Command::PreviewMove { fleet_id, .. }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
         | Command::BuildShip { .. }
-        | Command::CancelBuild { .. } => None,
+        | Command::BuildDefence { .. }
+        | Command::Leaderboard { .. }
+        | Command::CancelBuild { .. }
+        | Command::CancelQueued { .. } => None,
     }
 }
 
@@ -384,6 +409,49 @@ fn missing_prerequisites_message(engine: &GameEngine, player_id: u64, cmd: &Comm
         _ => return None,
     };
     missing_requirements_message(subject, &requires)
+}
+
+/// "135 metal, 34 crystal": the nonzero parts of an amount.
+fn amounts(r: &iac_shared::Resources) -> String {
+    let parts: Vec<String> = iac_shared::constants::ResourceKind::ALL
+        .into_iter()
+        .filter(|&k| r.get(k) > 0.0)
+        .map(|k| format!("{} {}", r.get(k).ceil(), k.label()))
+        .collect();
+    parts.join(", ")
+}
+
+/// Names what a rejected order costs and which resources the stockpile lacks.
+fn shortfall_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
+    let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
+        return "not enough resources".to_string();
+    };
+    format!("not enough resources for {label}: costs {}; short {}", amounts(&cost), amounts(&p.resources.shortfall(cost)))
+}
+
+fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
+    use iac_shared::constants::ResourceKind;
+    let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
+        return "the payment is larger than a storage cap".to_string();
+    };
+    let cap = iac_shared::scaling::storage_cap(p.buildings.storage_vault, &engine.pace());
+    let worst = ResourceKind::ALL
+        .into_iter()
+        .filter(|&k| cost.get(k) > cap.get(k))
+        .max_by(|&a, &b| (cost.get(a) / cap.get(a)).total_cmp(&(cost.get(b) / cap.get(b))))
+        .unwrap_or(ResourceKind::Metal);
+    let need = ResourceKind::ALL
+        .into_iter()
+        .filter_map(|k| iac_shared::scaling::vault_level_for(cost.get(k), k, &engine.pace()))
+        .max();
+    let fix = match need {
+        Some(level) => format!("needs Storage Vault level {level}"),
+        None => "no Storage Vault can hold it".to_string(),
+    };
+    format!(
+        "{label} costs {} {}, more than the {} {} your stockpile holds; {fix}",
+        cost.get(worst).ceil(), worst.label(), cap.get(worst).floor(), worst.label(),
+    )
 }
 
 /// Human-readable explanation for a rejected command. The code stays the
@@ -411,7 +479,7 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
             }
             _ => format!("fleet {fid} is busy"),
         },
-        (ErrorCode::NoConnection, Command::Move { target, .. }) => match fleet {
+        (ErrorCode::NoConnection, Command::Move { target, .. } | Command::PreviewMove { target, .. }) => match fleet {
             Some(f) => format!("no lane from {} to {}", f.location, target),
             None => format!("no lane to {target}"),
         },
@@ -446,7 +514,13 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         (ErrorCode::InvalidCommand, Command::Merge { .. }) => "the merged fleet would exceed 64 ships".to_string(),
         (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
-        (ErrorCode::NoResources, _) => "not enough resources".to_string(),
+        (ErrorCode::NoResources, _) => shortfall_message(engine, player_id, cmd),
+        (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),
+        (ErrorCode::DefenceLocked, Command::BuildDefence { kind, .. }) => engine
+            .players
+            .get(&player_id)
+            .and_then(|p| iac_shared::protocol::missing_requirements_message(kind.label(), &iac_shared::protocol::defence_requirements(&p.buildings, &p.research, *kind)))
+            .unwrap_or_else(|| format!("{} is locked", kind.label())),
         (ErrorCode::ResourceNotPresent, Command::Harvest { resource, .. }) => {
             format!("this sector has no {} to harvest", harvest_label(*resource))
         }
@@ -456,9 +530,18 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         }
         (ErrorCode::InvalidTarget, Command::ExploreSite { .. }) => "no derelict to board in this sector".to_string(),
         (ErrorCode::InvalidCommand, Command::Stop { .. }) => format!("fleet {fid} has nothing to stop"),
-        (ErrorCode::QueueFull, Command::Build { .. }) => "a building is already under construction".to_string(),
-        (ErrorCode::QueueFull, Command::Research { .. }) => "a research project is already running".to_string(),
-        (ErrorCode::QueueFull, Command::BuildShip { .. }) => "the shipyard is already building".to_string(),
+        (ErrorCode::QueueFull, Command::Build { .. }) => {
+            format!("the building queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+        }
+        (ErrorCode::QueueFull, Command::Research { .. }) => {
+            format!("the research queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+        }
+        (ErrorCode::QueueFull, Command::BuildShip { .. } | Command::BuildDefence { .. }) => {
+            format!("the shipyard queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+        }
+        (ErrorCode::InvalidTarget, Command::CancelBuild { .. }) => "nothing is under way at that position".to_string(),
+        (ErrorCode::InvalidTarget, Command::CancelQueued { .. }) => "nothing is waiting at that position".to_string(),
+        (ErrorCode::InvalidCommand, Command::BuildShip { .. } | Command::BuildDefence { .. }) => "a shipyard order needs a count of at least 1".to_string(),
         (ErrorCode::MaxLevelReached, Command::Build { building_type }) => {
             format!("{} is already at its maximum level", building_type.label())
         }
@@ -596,6 +679,13 @@ async fn run_session(socket: WebSocket, state: HttpState) {
 
 // ── State Builders ────────────────────────────────────────────────
 
+/// Outward hops that still leave the fuel to come back: each costs a jump
+/// out and a jump home.
+fn range_hops(fuel: f32, home_fuel: f32, jump_fuel: f32) -> u32 {
+    if jump_fuel <= 0.0 { return 0; }
+    ((fuel - home_fuel) / (2.0 * jump_fuel)).floor().max(0.0) as u32
+}
+
 fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState> {
     let mut list = Vec::new();
     for fleet in engine.fleets.values() {
@@ -623,6 +713,8 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             FleetStatus::Exploring => iac_shared::protocol::FleetStatus::Exploring,
         };
 
+        let jump_fuel = engine.hop_fuel_cost(fleet);
+        let home_fuel = engine.route_home_cost(fleet, fleet.move_target.unwrap_or(fleet.location));
         list.push(FleetState {
             id: fleet.id,
             location: fleet.location,
@@ -632,9 +724,13 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             cargo_capacity: fleet_cargo_capacity(fleet),
             fuel: fleet.fuel,
             fuel_max: fleet.fuel_max,
-            jump_fuel: engine.hop_fuel_cost(fleet),
-            home_fuel: engine.route_home_cost(fleet, fleet.move_target.unwrap_or(fleet.location)),
+            jump_fuel,
+            home_fuel,
             cooldown_remaining: fleet.action_cooldown,
+            power: crate::engine::fleet_power(fleet),
+            range_hops: range_hops(fleet.fuel, home_fuel, jump_fuel),
+            cargo_blocked: fleet.cargo.total() > 0.0
+                && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
             policy: engine.policies.get(&fleet.id).map(|p| p.preset),
         });
     }
@@ -643,57 +739,61 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
 }
 
 fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) -> HomeworldState {
-    let mut buildings: Vec<BuildingState> = Vec::new();
-    for bt in 0..BuildingType::COUNT {
-        let bt: BuildingType = match bt {
-            0 => BuildingType::MetalMine,
-            1 => BuildingType::CrystalMine,
-            2 => BuildingType::DeuteriumSynthesizer,
-            3 => BuildingType::Shipyard,
-            4 => BuildingType::ResearchLab,
-            5 => BuildingType::FuelDepot,
-            6 => BuildingType::SensorArray,
-            7 => BuildingType::DefenseGrid,
-            _ => unreachable!(),
-        };
-        buildings.push(BuildingState {
-            building_type: bt,
-            level: player.buildings.get(bt),
-        });
-    }
+    let buildings: Vec<BuildingState> = (0..BuildingType::COUNT)
+        .filter_map(BuildingType::from_usize)
+        .map(|bt| BuildingState { building_type: bt, level: player.buildings.get(bt) })
+        .collect();
 
-    let mut research: Vec<ResearchState> = Vec::new();
-    for rt in 0..ResearchType::COUNT {
-        let rt: ResearchType = match rt {
-            0 => ResearchType::FuelEfficiency,
-            1 => ResearchType::ExtendedFuelTanks,
-            2 => ResearchType::ReinforcedHulls,
-            3 => ResearchType::AdvancedShields,
-            4 => ResearchType::WeaponsResearch,
-            5 => ResearchType::Navigation,
-            6 => ResearchType::HarvestingEfficiency,
-            7 => ResearchType::CorvetteTech,
-            8 => ResearchType::FrigateTech,
-            9 => ResearchType::CruiserTech,
-            10 => ResearchType::HaulerTech,
-            11 => ResearchType::EmergencyJump,
-            _ => unreachable!(),
-        };
-        research.push(ResearchState {
-            tech: rt,
-            level: player.research.get(rt),
-        });
-    }
+    let research: Vec<ResearchState> = (0..ResearchType::COUNT)
+        .filter_map(ResearchType::from_usize)
+        .map(|rt| ResearchState { tech: rt, level: player.research.get(rt) })
+        .collect();
 
-    let build_queue: Option<BuildQueueItem> = player.building_queue.as_ref().map(|q| BuildQueueItem {
+    let pace = engine.pace();
+    let build_queue: Vec<BuildQueueItem> = player.building_queue.iter().map(|q| BuildQueueItem {
         building_type: q.building_type,
         target_level: q.target_level,
         start_tick: q.start_tick,
         end_tick: q.end_tick,
-    });
+    }).collect();
+
+    let missing = |cost: iac_shared::Resources| {
+        let short = player.resources.shortfall(cost);
+        (short.total() > 0.0).then_some(short)
+    };
+    let build_pending: Vec<QueuedBuild> = player.building_pending.iter().map(|q| {
+        let cost = iac_shared::scaling::building_cost(q.building_type, q.target_level);
+        QueuedBuild {
+            building_type: q.building_type,
+            target_level: q.target_level,
+            cost,
+            ticks: iac_shared::scaling::building_time(q.building_type, q.target_level, player.buildings.fabricator, &pace),
+            waiting_for: missing(cost),
+        }
+    }).collect();
+    let research_pending: Vec<QueuedResearch> = player.research_pending.iter().map(|q| {
+        let cost = iac_shared::scaling::research_cost(q.tech, q.target_level);
+        QueuedResearch {
+            tech: q.tech,
+            target_level: q.target_level,
+            cost,
+            ticks: iac_shared::scaling::research_time(q.tech, q.target_level, player.buildings.research_lab, &pace),
+            waiting_for: missing(cost),
+        }
+    }).collect();
+    let shipyard_pending: Vec<QueuedShip> = player.ship_pending.iter().map(|q| {
+        let cost = q.item.unit_cost().scale(q.count as f32);
+        QueuedShip {
+            item: q.item,
+            count: q.count,
+            cost,
+            ticks: q.item.unit_ticks(player.buildings.shipyard, &pace),
+            waiting_for: missing(cost),
+        }
+    }).collect();
 
     let shipyard_queue: Option<ShipyardQueueItem> = player.ship_queue.as_ref().map(|q| ShipyardQueueItem {
-        ship_class: q.ship_class,
+        item: q.item,
         count: q.count,
         built: q.built,
         start_tick: q.start_tick,
@@ -726,14 +826,32 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
 
     HomeworldState {
         location: player.homeworld,
-        production: player.production_per_tick(),
+        production: player.production_per_tick(&engine.pace()),
+        storage: engine.storage_state(player),
         buildings,
         research,
         build_queue,
+        build_pending,
+        build_slots: player.building_slots() as u8,
+        queue_depth: iac_shared::scaling::QUEUE_DEPTH as u8,
         shipyard_queue,
+        shipyard_pending,
         research_active,
+        research_pending,
         docked_ships,
-        catalog: iac_shared::protocol::HomeworldCatalog::new(&player.buildings, &player.research),
+        defences: DefenceKind::ALL.iter().map(|&kind| DefenceState {
+            kind,
+            count: player.defences.count[kind as usize],
+            restoring: player.defences.restoring[kind as usize],
+            power: iac_shared::scaling::structure_power(kind, player.buildings.defense_grid),
+        }).collect(),
+        home_defence_power: engine.home_defense_power(player.id),
+        next_raid_estimate_power: iac_shared::scaling::raid_power_base(
+            iac_shared::scaling::econ_points(&player.buildings, &player.research),
+        ) * (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0,
+        catalog: iac_shared::protocol::HomeworldCatalog::new(
+            &player.buildings, &player.research, &player.defences.count, &pace,
+        ),
     }
 }
 
@@ -786,6 +904,7 @@ fn event_for(event: &GameEvent, player: &crate::engine::Player, engine: &GameEng
         K::BuildingCompleted(e) => e.player_id.is_none_or(|p| p == player.id),
         K::ResearchCompleted(e) => e.player_id.is_none_or(|p| p == player.id),
         K::ShipBuilt(e) => e.player_id.is_none_or(|p| p == player.id),
+        K::DefenceBuilt(e) => e.player_id.is_none_or(|p| p == player.id),
         K::ScanCompleted(e) => own_fleet(e.fleet_id),
         K::RaidIncoming(e) => e.player_id == player.id,
         K::RaidResolved(e) => e.player_id == player.id,
@@ -793,6 +912,8 @@ fn event_for(event: &GameEvent, player: &crate::engine::Player, engine: &GameEng
         K::SiteExplored(e) => own_fleet(e.fleet_id),
         K::SiteAmbush(e) => own_fleet(e.fleet_id),
         K::PolicyAction(e) => own_fleet(e.fleet_id),
+        K::StorageNearCap(e) => e.player_id.is_none_or(|p| p == player.id),
+        K::StorageFull(e) => e.player_id.is_none_or(|p| p == player.id),
         K::Alert(e) => e.player_id.is_none_or(|p| p == player.id),
     };
     relevant.then_some(out)
@@ -806,7 +927,7 @@ mod tests {
     use serde_json::Value;
 
     fn network_with_player() -> (Network, Arc<Mutex<GameEngine>>, u64, u64, mpsc::UnboundedReceiver<Message>) {
-        let engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let engine = GameEngine::init(42, Database::init(":memory:").unwrap(), None).unwrap();
         let engine = Arc::new(Mutex::new(engine));
         let (pid, fid) = {
             let mut e = engine.lock().unwrap();
@@ -1006,7 +1127,7 @@ mod tests {
     #[test]
     fn combat_reaches_only_the_players_involved_or_present() {
         use iac_shared::protocol::EventKind as K;
-        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap(), None).unwrap();
         let a = engine.register_player("Alpha".to_string()).unwrap();
         let b = engine.register_player("Bravo".to_string()).unwrap();
         let c = engine.register_player("Charlie".to_string()).unwrap();
@@ -1070,7 +1191,7 @@ mod tests {
     #[test]
     fn a_players_own_loss_reaches_them_even_when_nobody_else_is_there() {
         use iac_shared::protocol::{AlertLevel, EventKind as K};
-        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap(), None).unwrap();
         let a = engine.register_player("Alpha".to_string()).unwrap();
         let b = engine.register_player("Bravo".to_string()).unwrap();
         let fa = engine.fleets.values().find(|f| f.owner_id == a).unwrap().id;
@@ -1135,5 +1256,82 @@ mod tests {
         let tick = next_message(&mut rx);
         let updates = tick["sector_updates"].as_array().unwrap();
         assert!(updates.iter().all(|s| s["live"] == true), "settled stale sectors are not repeated");
+    }
+
+    #[test]
+    fn resource_errors_name_the_resource_and_the_amount() {
+        let (_net, engine, pid, _fid, _rx) = network_with_player();
+        let mut e = engine.lock().unwrap();
+        e.players.get_mut(&pid).unwrap().resources = iac_shared::Resources { metal: 100.0, crystal: 40.0, deuterium: 0.0 };
+
+        let cmd = Command::Build { building_type: BuildingType::MetalMine };
+        e.players.get_mut(&pid).unwrap().buildings.metal_mine = 2;
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::NoResources),
+            "not enough resources for Metal Mine Lv.3: costs 135 metal, 34 crystal; short 35 metal"
+        );
+        let cmd = Command::BuildShip { ship_class: ShipClass::Scout, count: 2 };
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::NoResources),
+            "not enough resources for Scout x2: costs 400 metal, 100 crystal, 60 deuterium; short 300 metal, 60 crystal, 60 deuterium"
+        );
+
+        e.players.get_mut(&pid).unwrap().buildings.research_lab = 4;
+        let cmd = Command::Research { tech: ResearchType::CruiserTech };
+        assert_eq!(
+            command_error_message(&e, pid, &cmd, ErrorCode::StorageTooSmall),
+            "Cruiser Tech Lv.1 costs 8000 metal, more than the 5000 metal your stockpile holds; needs Storage Vault level 2"
+        );
+    }
+
+    #[test]
+    fn preview_move_answers_with_fuel_numbers_and_fleets_carry_range() {
+        let (net, engine, pid, fid, mut rx) = network_with_player();
+        let (home, neighbour) = {
+            let e = engine.lock().unwrap();
+            let home = e.players[&pid].homeworld;
+            (home, e.world_gen.connected_neighbors(home).slice()[0])
+        };
+        let session = net.sessions.lock().unwrap().get(&1).cloned().unwrap();
+        net.route_command(&session, Command::PreviewMove { fleet_id: fid, target: neighbour }).unwrap();
+        let msg = next_message(&mut rx);
+        assert_eq!(msg["type"], "preview_move", "{msg}");
+        assert_eq!(msg["fleet_id"], fid);
+        assert_eq!(msg["can_jump"], true);
+        assert_eq!(msg["hops_home"], 1);
+        assert!(msg["fuel_cost"].as_f64().unwrap() > 0.0);
+        let _ = home;
+
+        net.broadcast_updates().unwrap();
+        let tick = next_message(&mut rx);
+        let fleet = &tick["fleets"][0];
+        // 2 Scouts: 120 fuel, 6 per jump -> 10 round trips out and back.
+        assert_eq!(fleet["range_hops"], 10, "{fleet}");
+        assert!(fleet["power"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn the_homeworld_reports_defences_and_the_expected_raid() {
+        let (net, engine, pid, _fid, mut rx) = network_with_player();
+        {
+            let mut e = engine.lock().unwrap();
+            let p = e.players.get_mut(&pid).unwrap();
+            p.buildings.defense_grid = 2;
+            p.defences.count[0] = 5;
+            p.defences.restoring[0] = 1;
+        }
+        net.broadcast_updates().unwrap();
+        let tick = next_message(&mut rx);
+        let hw = &tick["homeworld_update"];
+        assert_eq!(hw["defences"][0]["kind"], "PulseTurret");
+        assert_eq!(hw["defences"][0]["count"], 5);
+        assert_eq!(hw["defences"][0]["restoring"], 1);
+        assert!((hw["defences"][0]["power"].as_f64().unwrap() - 17.0 * 1.08).abs() < 1e-3);
+        let defence = hw["home_defence_power"].as_f64().unwrap();
+        let ships_and_grid = engine.lock().unwrap().home_defense_power(pid) as f64;
+        assert!((defence - ships_and_grid).abs() < 1e-3);
+        assert!(defence > 5.0 * 17.0 * 1.08, "structures count toward home defence: {defence}");
+        assert!(hw["next_raid_estimate_power"].as_f64().unwrap() > 5.0);
+        assert_eq!(hw["catalog"]["defences"][0]["count"], 5);
     }
 }

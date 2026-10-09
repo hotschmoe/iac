@@ -48,7 +48,9 @@ pub fn view(frame: &mut Frame<'_>, state: &ClientState) {
 
     render_header(frame, state, chunks[0]);
 
-    if state.show_keybinds {
+    if state.show_leaderboard {
+        render_leaderboard(frame, state, chunks[1]);
+    } else if state.show_keybinds {
         render_keybinds(frame, chunks[1]);
     } else if state.fleet_panel.is_some() {
         render_fleet_panel(frame, state, chunks[1]);
@@ -77,7 +79,8 @@ fn render_header(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     };
     let player_name = state.player.as_ref().map(|p| p.name.as_str()).unwrap_or("---");
 
-    let text = format!(" IN AMBER CLAD v0.1 | TICK: {} | {} | {}", state.tick, player_name, view_label);
+    let pace = state.world.as_ref().map(pace_label).unwrap_or_default();
+    let text = format!(" IN AMBER CLAD v0.1 | TICK: {}{} | {} | {}", state.tick, pace, player_name, view_label);
 
     // Inbound raid: a countdown blinks in the header wherever you are.
     if let Some(remaining) = state.raid_countdown() {
@@ -93,6 +96,14 @@ fn render_header(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
 
     let paragraph = Paragraph::new(text).style(AMBER_FULL);
     frame.render_widget(paragraph, area);
+}
+
+/// " x600 blitz" for the header; the pace is fixed per world.
+fn pace_label(world: &iac_shared::protocol::WorldInfo) -> String {
+    match &world.preset {
+        Some(name) => format!(" x{} {}", world.pace, name),
+        None => format!(" x{}", world.pace),
+    }
 }
 
 // ── Footer ─────────────────────────────────────────────────────────
@@ -115,7 +126,7 @@ fn render_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
             crate::state::View::CommandCenter => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
             crate::state::View::Windshield => " WINDSHIELD | [1-6] Move  [v] Scan  [h] Harvest  [x] Board  [a] Attack  [p] Orders  [f] Fleets  [?] Keys",
             crate::state::View::StarMap => " STAR MAP | [Arrows] Crosshair  [Enter] Plot Course  [z/x] Zoom  [?] Keys",
-            crate::state::View::Homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [+/-] Count  [x/X/z] Cancel  [t] Tree  [?] Keys",
+            crate::state::View::Homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [+/-] Count  [x/X/z] Cancel running  [c/C/Z] Cancel waiting  [t] Tree  [?] Keys",
         }
     };
     let paragraph = Paragraph::new(text).style(AMBER_DIM);
@@ -171,7 +182,9 @@ Tab       Cycle panel
 Arrows    Navigate cards
 Enter     Build/Research
 +/-       Ship batch size
-x/X/z     Cancel bld/ship/res
+x/X/z     Cancel running bld/ship/res
+l         Leaderboard (any view)
+c/C/Z     Cancel next waiting bld/ship/res
 t         Tech tree
 
 STAR MAP
@@ -188,6 +201,38 @@ c         Center on fleet
     let inner = block.inner(area);
     frame.render_widget(&block, area);
     frame.render_widget(paragraph, inner);
+}
+
+// ── Leaderboard ────────────────────────────────────────────────────
+
+fn render_leaderboard(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
+    use ratatui::text::Line;
+    let block = titled_block(" LEADERBOARD ", AMBER_DIM);
+    let inner = block.inner(area);
+    frame.render_widget(&block, area);
+    let Some(board) = &state.leaderboard else { return };
+
+    let me = state.player.as_ref().map(|p| p.name.as_str());
+    let row = |e: &iac_shared::protocol::LeaderboardEntry| {
+        let style = if Some(e.name.as_str()) == me { AMBER_FULL } else { AMBER };
+        Line::styled(
+            format!(
+                " {:>3}  {:<20} {}  {:>8.1}  core {:>8.1}  combat {:>6.1}  explore {:>6.1}",
+                e.rank, e.name, if e.agent { "AI " } else { "   " }, e.score, e.core, e.combat, e.explore,
+            ),
+            style,
+        )
+    };
+    let mut lines = vec![Line::styled(
+        " rank  name                      score         core    combat   explore   (any key closes)",
+        AMBER_DIM,
+    )];
+    lines.extend(board.entries.iter().map(row));
+    if let Some(you) = &board.you {
+        lines.push(Line::styled(" ...", AMBER_DIM));
+        lines.push(row(you));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ── Fleet panel ────────────────────────────────────────────────────
@@ -345,18 +390,29 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             }
             line
         }
+        EventKind::DefenceBuilt(e) => {
+            format!(" T{}: {} online\n", event.tick, e.defence.label())
+        }
         EventKind::RaidIncoming(e) => {
             format!(
-                " T{}: !! {} RAID inbound, ETA T{} !!\n",
-                event.tick, e.threat.to_uppercase(), e.arrival_tick
+                " T{}: !! {} RAID inbound (power {:.0}), ETA T{} !!\n",
+                event.tick, e.threat.to_uppercase(), e.est_power, e.arrival_tick
             )
         }
         EventKind::RaidResolved(e) => {
+            let structures = if e.structures_lost > 0 {
+                format!(", {} structure(s) lost, {} will be rebuilt", e.structures_lost, e.structures_restored)
+            } else {
+                String::new()
+            };
             if e.defended {
-                format!(" T{}: Raid REPELLED — salvage in orbit\n", event.tick)
+                format!(" T{}: Raid REPELLED ({:.0} vs {:.0}) — salvage in orbit{}\n", event.tick, e.raid_power, e.defense_power, structures)
             } else {
                 let lost = e.resources_lost.metal + e.resources_lost.crystal + e.resources_lost.deuterium;
-                format!(" T{}: Raid breached defenses — {:.0} resources lost\n", event.tick, lost)
+                format!(
+                    " T{}: Raid breached defenses ({:.0} vs {:.0}) — {:.0} resources lost{}\n",
+                    event.tick, e.raid_power, e.defense_power, lost, structures
+                )
             }
         }
         EventKind::SiteExplorationStarted(e) => {
@@ -383,6 +439,13 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
                 " T{}: !! AMBUSH — the wreck was bait! [{},{}] !!\n",
                 event.tick, e.sector.q, e.sector.r
             )
+        }
+        EventKind::StorageNearCap(e) => {
+            let eta = e.full_in_s.map(|s| format!(", full in {s}s")).unwrap_or_default();
+            format!(" T{}: {} storage at {:.0}%{}\n", event.tick, e.resource.label(), e.ratio * 100.0, eta)
+        }
+        EventKind::StorageFull(e) => {
+            format!(" T{}: {} storage FULL: production is being wasted\n", event.tick, e.resource.label())
         }
         EventKind::PolicyAction(e) => {
             format!(
@@ -420,6 +483,9 @@ pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
             (false, _) => AMBER_DIM,
         },
         EventKind::SalvageDespawned(_) => AMBER,
+        EventKind::DefenceBuilt(_) => GREEN_GOOD,
+        EventKind::StorageNearCap(_) => AMBER_FULL,
+        EventKind::StorageFull(_) => RED_ALERT,
         EventKind::RaidResolved(e) => if e.defended { GREEN_GOOD } else { RED_ALERT },
         EventKind::ResourceHarvested(_)
         | EventKind::SalvageCollected(_)

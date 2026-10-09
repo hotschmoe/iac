@@ -15,6 +15,11 @@ class StateMapper {
   proto.PlayerState? player;
   List<proto.FleetState> fleets = [];
   proto.HomeworldState? homeworld;
+  proto.WorldInfo? world;
+  proto.LeaderboardReply? leaderboard;
+
+  /// The raid the server last announced and has not yet resolved.
+  proto.RaidIncomingEvent? raid;
 
   /// Known sectors keyed by [proto.Hex.toKey].
   final Map<int, proto.SectorState> sectors = {};
@@ -33,6 +38,9 @@ class StateMapper {
     player = null;
     fleets = [];
     homeworld = null;
+    world = null;
+    leaderboard = null;
+    raid = null;
     sectors.clear();
     signals.clear();
     log.clear();
@@ -50,6 +58,17 @@ class StateMapper {
         _ingestEvent(msg);
       case proto.ErrorMessage():
         _applyError(msg);
+      case proto.MovePreview():
+        _applyPreview(msg);
+      case proto.LeaderboardReply():
+        leaderboard = msg;
+        for (final e in [...msg.entries.take(5), if (msg.you != null) msg.you!]) {
+          pushLog(
+            '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)} '
+            '(core ${e.core.toStringAsFixed(1)}, combat ${e.combat.toStringAsFixed(1)}, explore ${e.explore.toStringAsFixed(1)})',
+            EventLevel.bright,
+          );
+        }
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }
@@ -61,6 +80,7 @@ class StateMapper {
     player = s.player;
     fleets = List.of(s.fleets);
     homeworld = s.homeworld;
+    world = s.world;
     sectors.clear();
     for (final sec in s.knownSectors) {
       sectors[sec.location.toKey()] = sec;
@@ -82,6 +102,19 @@ class StateMapper {
     for (final e in u.events ?? const <proto.GameEvent>[]) {
       _ingestEvent(e);
     }
+  }
+
+  void _applyPreview(proto.MovePreview p) {
+    final verdict = !p.canJump
+        ? 'not enough fuel for the jump'
+        : p.canReturn
+            ? 'fuel to return is covered'
+            : 'CANNOT RETURN after this jump';
+    pushLog(
+      'F${p.fleetId} -> ${p.target}: burns ${p.fuelCost.round()} fuel, ${p.fuelAfter.round()} left; '
+      '${p.hopsHome} hops home need ${p.fuelToReturn.round()} ($verdict)',
+      p.canReturn ? EventLevel.bright : EventLevel.normal,
+    );
   }
 
   void _applyError(proto.ErrorMessage err) {
@@ -159,6 +192,15 @@ class StateMapper {
       case proto.SalvageDespawnedEvent():
         msg = 'Wreckage in ${k.sector} drifted away (${_res(k.resources)})';
         level = EventLevel.dim;
+      case proto.StorageNearCapEvent():
+        final eta = k.fullInS == null ? '' : ', full in ${_fmtTicks(k.fullInS!)}';
+        msg = '! ${k.resource.name} storage at ${(k.ratio * 100).round()}%$eta';
+        level = EventLevel.bright;
+        _pushAlert(Alert(icon: '!', message: '${k.resource.name} storage nearly full', detail: eta.isEmpty ? '' : eta.substring(2), level: AlertTone.bright));
+      case proto.StorageFullEvent():
+        msg = '!! ${k.resource.name} storage FULL: production is wasted';
+        level = EventLevel.bright;
+        _pushAlert(Alert(icon: '!', message: '${k.resource.name} storage full', detail: 'Spend it or build a Storage Vault', level: AlertTone.glow));
       case proto.FleetArrivedEvent():
         msg = '${_fleet(k.fleetId)} arrived at ${k.sector}';
       case proto.BuildingCompletedEvent():
@@ -170,6 +212,9 @@ class StateMapper {
       case proto.ShipBuiltEvent():
         msg = 'Shipyard: ${k.count}x ${k.shipClass.label} ready';
         level = EventLevel.bright;
+      case proto.DefenceBuiltEvent():
+        msg = 'Defence online: ${k.defence.label}';
+        level = EventLevel.bright;
       case proto.ScanCompletedEvent():
         msg = '${_fleet(k.fleetId)} scan at ${k.sector}: ${k.sectorsRevealed} sectors revealed, '
             '${k.hostilesDetected} hostiles${k.signals.isEmpty ? '' : ', ${k.signals.length} faint contacts'}';
@@ -178,18 +223,23 @@ class StateMapper {
           if (!sectors.containsKey(key)) signals[key] = s.signal;
         }
       case proto.RaidIncomingEvent():
-        msg = '! RAID INCOMING (${k.threat}) -- arrival tick ${k.arrivalTick}';
+        raid = k;
+        msg = '! RAID INCOMING (${k.threat}, power ${k.estPower.round()}) -- arrival tick ${k.arrivalTick}';
         level = EventLevel.bright;
         _pushAlert(Alert(
           icon: '!',
-          message: 'Raid incoming (${k.threat})',
+          message: 'Raid incoming (${k.threat}, power ${k.estPower.round()})',
           detail: 'Arrives tick ${k.arrivalTick} -- ${math.max(0, k.arrivalTick - tick)}s',
           level: AlertTone.glow,
         ));
       case proto.RaidResolvedEvent():
+        raid = null;
+        final structures = k.structuresLost == 0
+            ? ''
+            : ', ${k.structuresLost} structures lost (${k.structuresRestored} will be rebuilt)';
         msg = k.defended
-            ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})'
-            : '! Raid broke through: lost ${_res(k.resourcesLost)}';
+            ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})$structures'
+            : '! Raid broke through (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}): lost ${_res(k.resourcesLost)}$structures';
         level = EventLevel.bright;
       case proto.SiteExplorationStartedEvent():
         msg = '${_fleet(k.fleetId)} boarding derelict (tier ${k.tier}) in ${k.sector}, done tick ${k.endTick}';
@@ -285,6 +335,10 @@ class StateMapper {
       signals: {for (final e in signals.entries) proto.Hex.fromKey(e.key): e.value},
       stock: res,
       catalog: hw?.catalog,
+      hw: hw,
+      world: world,
+      leaderboard: leaderboard,
+      raid: raid,
     );
   }
 
@@ -343,6 +397,8 @@ class StateMapper {
       jumpFuel: f.jumpFuel.round(),
       homeFuel: f.homeFuel.round(),
       cooldown: f.cooldownRemaining,
+      power: f.power,
+      rangeHops: f.rangeHops,
       policy: f.policy?.label,
     );
   }
@@ -358,16 +414,38 @@ class StateMapper {
     );
   }
 
+  /// A queue entry that has not started: [need] says what it waits for.
+  QueueItem _waitingItem(String name, proto.Resources? need, int ticks) => QueueItem(
+        name: name,
+        time: need == null ? 'waiting, ${_fmtTicks(ticks)}' : 'waiting for ${_need(need)}',
+        pct: 0,
+        active: false,
+      );
+
+  static String _need(proto.Resources r) => [
+        if (r.metal > 0) '${r.metal.ceil()} metal',
+        if (r.crystal > 0) '${r.crystal.ceil()} crystal',
+        if (r.deuterium > 0) '${r.deuterium.ceil()} deuterium',
+      ].join(', ');
+
   List<QueueItem> _mapBuildQueue(proto.HomeworldState? hw) {
-    final q = hw?.buildQueue;
-    if (q == null) return const [];
-    return [_queueItem('${q.buildingType.label} Lv.${q.targetLevel}', q.startTick, q.endTick)];
+    if (hw == null) return const [];
+    return [
+      for (final q in hw.buildQueue)
+        _queueItem('${q.buildingType.label} Lv.${q.targetLevel}', q.startTick, q.endTick),
+      for (final q in hw.buildPending)
+        _waitingItem('${q.buildingType.label} Lv.${q.targetLevel}', q.waitingFor, q.ticks),
+    ];
   }
 
   List<QueueItem> _mapShipyard(proto.HomeworldState? hw) {
-    final q = hw?.shipyardQueue;
-    if (q == null) return const [];
-    return [_queueItem('${q.shipClass.label} x${q.count} (${q.built} built)', q.startTick, q.endTick)];
+    if (hw == null) return const [];
+    final q = hw.shipyardQueue;
+    return [
+      if (q != null) _queueItem('${q.item.label} x${q.count} (${q.built} built)', q.startTick, q.endTick),
+      for (final p in hw.shipyardPending)
+        _waitingItem('${p.item.label} x${p.count}', p.waitingFor, p.ticks * p.count),
+    ];
   }
 
   String _dockedSummary(proto.HomeworldState? hw) {
@@ -384,12 +462,16 @@ class StateMapper {
       for (final r in hw?.research ?? const <proto.ResearchState>[])
         if (r.level > 0) '${r.tech.label} ${r.level}',
     ];
+    final waiting = [
+      for (final p in hw?.researchPending ?? const <proto.QueuedResearch>[])
+        _waitingItem('${p.tech.label} Lv.${p.targetLevel}', p.waitingFor, p.ticks),
+    ];
     final a = hw?.researchActive;
     if (a == null) {
-      return ResearchState(name: 'Idle', time: '—', pct: 0, completed: completed);
+      return ResearchState(name: 'Idle', time: '—', pct: 0, completed: completed, waiting: waiting);
     }
     final item = _queueItem('${a.tech.label} Lv.${a.targetLevel}', a.startTick, a.endTick);
-    return ResearchState(name: item.name, time: item.time, pct: item.pct, completed: completed);
+    return ResearchState(name: item.name, time: item.time, pct: item.pct, completed: completed, waiting: waiting);
   }
 
   SectorInfo _mapSector(proto.Hex loc) {

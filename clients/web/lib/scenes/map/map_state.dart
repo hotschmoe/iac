@@ -4,7 +4,6 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 
 import '../../console/route_planner.dart';
-import '../../console/threat.dart';
 import '../../hex/hex_math.dart' as hm;
 import '../../models/fleet.dart' as ui;
 import '../../protocol/protocol.dart' as proto;
@@ -190,17 +189,6 @@ class MapPlan extends ChangeNotifier {
   }
 
   void touch() => notifyListeners();
-}
-
-extension FleetPower on ui.FleetState {
-  double get power {
-    var p = 0.0;
-    for (final g in ships) {
-      final c = proto.ShipClass.values.where((e) => e.label == g.shipClass).firstOrNull;
-      if (c != null) p += shipStats[c]!.power * g.count;
-    }
-    return p;
-  }
 }
 
 double dist(proto.Hex a, proto.Hex b) => math.max((a.q - b.q).abs(), math.max((a.r - b.r).abs(), (a.s - b.s).abs())).toDouble();

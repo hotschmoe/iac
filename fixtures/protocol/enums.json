@@ -12,7 +12,14 @@
     "ResearchLab",
     "FuelDepot",
     "SensorArray",
-    "DefenseGrid"
+    "DefenseGrid",
+    "StorageVault",
+    "Fabricator"
+  ],
+  "DefenceKind": [
+    "PulseTurret",
+    "LancerBattery",
+    "IonBastion"
   ],
   "Density": [
     "None",
@@ -39,6 +46,8 @@
     "NoResearchLab",
     "FleetLimitReached",
     "ResourceNotPresent",
+    "StorageTooSmall",
+    "DefenceLocked",
     "AuthFailed",
     "AlreadyAuthenticated",
     "InvalidName",
@@ -91,7 +100,13 @@
     "FrigateTech",
     "CruiserTech",
     "HaulerTech",
-    "EmergencyJump"
+    "EmergencyJump",
+    "ModularFabrication"
+  ],
+  "ResourceKind": [
+    "metal",
+    "crystal",
+    "deuterium"
   ],
   "ShipClass": [
     "Scout",

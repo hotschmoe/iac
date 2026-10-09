@@ -9,10 +9,14 @@ use rusqlite::{Connection, params, OptionalExtension};
 use log::{debug, error, info, warn};
 
 use iac_shared::hex::Hex;
-use iac_shared::constants::{Density, Resources, ShipClass};
-use iac_shared::scaling::{BuildingType, BuildingLevels, ResearchType, ResearchLevels};
+use iac_shared::constants::{Density, Resources, ShipClass, ECONOMY_VERSION, WORLDGEN_VERSION};
+use iac_shared::pace::Pace;
+use iac_shared::scaling::{BuildingType, BuildingLevels, DefenceKind, ResearchType, ResearchLevels, ShipyardItem};
 
-use crate::engine::{Player, Fleet, Ship, SectorOverride, BuildQueueEntry, ShipQueueEntry, ResearchQueueEntry, FleetStatus, FleetPolicy};
+use crate::engine::{
+    Player, Fleet, Ship, SectorOverride, BuildQueueEntry, ShipQueueEntry, ResearchQueueEntry, FleetStatus, FleetPolicy,
+    PendingBuilding, PendingResearch, PendingShip, Defences,
+};
 use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams, SectorState};
 
 /// Float storage: multiply by 1000 and store as integer for precision.
@@ -109,6 +113,22 @@ fn parse_policy_preset(s: &str) -> PolicyPreset {
     }
 }
 
+/// Queue rows store ships as ("ship", class index) and structures as
+/// ("defence", kind index).
+fn shipyard_item_to_row(item: ShipyardItem) -> (&'static str, i64) {
+    match item {
+        ShipyardItem::Ship(c) => ("ship", c as i64),
+        ShipyardItem::Defence(d) => ("defence", d as i64),
+    }
+}
+
+fn shipyard_item_from_row(queue_type: &str, index: usize) -> Option<ShipyardItem> {
+    match queue_type {
+        "ship" => ShipClass::ALL.get(index).copied().map(ShipyardItem::Ship),
+        _ => DefenceKind::from_usize(index).map(ShipyardItem::Defence),
+    }
+}
+
 fn parse_ship_class(s: &str) -> ShipClass {
     match s {
         "scout" => ShipClass::Scout,
@@ -132,6 +152,63 @@ fn ship_class_to_str(s: ShipClass) -> &'static str {
 
 pub struct Database {
     conn: Mutex<Connection>,
+}
+
+/// Settings fixed when a world is created.
+#[derive(Debug, Clone, Copy)]
+pub struct WorldMeta {
+    pub pace: Pace,
+    pub economy_version: u32,
+    pub worldgen_version: u32,
+}
+
+#[derive(Debug)]
+pub enum WorldError {
+    /// The database holds a world from before `world_meta` existed or from
+    /// another economy version.
+    OldWorld { found: Option<u32> },
+    PaceMismatch { stored: Pace, requested: Pace },
+    Db(rusqlite::Error),
+}
+
+impl std::fmt::Display for WorldError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorldError::OldWorld { found: None } => write!(
+                f,
+                "this database was created before the economy rework (it has no world_meta); \
+                 old worlds are not migrated. Start a new world with a new --db path"
+            ),
+            WorldError::OldWorld { found: Some(v) } => write!(
+                f,
+                "this database is economy version {v}, this server runs version {ECONOMY_VERSION}; \
+                 old worlds are not migrated. Start a new world with a new --db path"
+            ),
+            WorldError::PaceMismatch { stored, requested } => write!(
+                f,
+                "this world was created at pace {} and cannot change; refusing --pace {}. \
+                 Omit --pace to keep it, or start a new world with a new --db path",
+                describe_pace(*stored),
+                describe_pace(*requested),
+            ),
+            WorldError::Db(e) => write!(f, "database error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for WorldError {}
+
+impl From<rusqlite::Error> for WorldError {
+    fn from(e: rusqlite::Error) -> Self {
+        WorldError::Db(e)
+    }
+}
+
+pub fn describe_pace(p: Pace) -> String {
+    match p.preset() {
+        Some(preset) => format!("{} ({})", p.value(), preset.name),
+        None => p.value().to_string(),
+    }
 }
 
 impl Database {
@@ -159,6 +236,13 @@ impl Database {
                 value TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS world_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                pace REAL NOT NULL,
+                economy_version INTEGER NOT NULL,
+                worldgen_version INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS players (
                 id INTEGER PRIMARY KEY,
                 name TEXT UNIQUE NOT NULL,
@@ -166,7 +250,10 @@ impl Database {
                 homeworld_r INTEGER NOT NULL,
                 metal REAL DEFAULT 500,
                 crystal REAL DEFAULT 300,
-                deuterium REAL DEFAULT 100
+                deuterium REAL DEFAULT 100,
+                agent INTEGER NOT NULL DEFAULT 0,
+                combat_points REAL NOT NULL DEFAULT 0,
+                explore_points REAL NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS fleets (
@@ -249,8 +336,18 @@ impl Database {
                 target_level INTEGER,
                 count INTEGER DEFAULT 1,
                 built INTEGER DEFAULT 0,
+                pending INTEGER NOT NULL DEFAULT 0,
                 start_tick INTEGER NOT NULL,
                 end_tick INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS player_defences (
+                player_id INTEGER NOT NULL REFERENCES players(id),
+                kind INTEGER NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                restoring INTEGER NOT NULL DEFAULT 0,
+                restore_tick INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (player_id, kind)
             );
 
             CREATE TABLE IF NOT EXISTS fleet_policies (
@@ -324,6 +421,54 @@ impl Database {
         Ok(())
     }
 
+    // ── World ─────────────────────────────────────────────────────
+
+    /// Read this database's world settings, creating them on a fresh
+    /// database. `requested` is the operator's `--pace`; a world keeps the
+    /// pace it was created with, so a different request is an error.
+    pub fn open_world(&self, requested: Option<Pace>) -> Result<WorldMeta, WorldError> {
+        let conn = self.conn.lock().unwrap();
+        let row: Option<(f64, i64, i64)> = conn
+            .query_row(
+                "SELECT pace, economy_version, worldgen_version FROM world_meta WHERE id = 1",
+                params![],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((pace, economy, worldgen)) = row {
+            if economy as u32 != ECONOMY_VERSION {
+                return Err(WorldError::OldWorld { found: Some(economy as u32) });
+            }
+            let stored = Pace::new(pace).map_err(|_| WorldError::OldWorld { found: Some(economy as u32) })?;
+            if let Some(requested) = requested
+                && requested != stored
+            {
+                return Err(WorldError::PaceMismatch { stored, requested });
+            }
+            return Ok(WorldMeta { pace: stored, economy_version: economy as u32, worldgen_version: worldgen as u32 });
+        }
+
+        let has_data: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM players) OR EXISTS(SELECT 1 FROM server_state)",
+            params![],
+            |r| r.get(0),
+        )?;
+        if has_data {
+            return Err(WorldError::OldWorld { found: None });
+        }
+        let meta = WorldMeta {
+            pace: requested.unwrap_or_default(),
+            economy_version: ECONOMY_VERSION,
+            worldgen_version: WORLDGEN_VERSION,
+        };
+        conn.execute(
+            "INSERT INTO world_meta (id, pace, economy_version, worldgen_version) VALUES (1, ?1, ?2, ?3)",
+            params![meta.pace.value(), meta.economy_version as i64, meta.worldgen_version as i64],
+        )?;
+        info!("New world: pace {}", describe_pace(meta.pace));
+        Ok(meta)
+    }
+
     // ── Server State ──────────────────────────────────────────────
 
     /// Run `f` inside a single transaction; rolls back if it errors.
@@ -364,8 +509,9 @@ impl Database {
     pub fn save_player(&self, player: &Player) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO players (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO players (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash,
+                                             agent, combat_points, explore_points)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 player.id as i64,
                 &player.name,
@@ -375,6 +521,9 @@ impl Database {
                 float_to_stored(player.resources.crystal),
                 float_to_stored(player.resources.deuterium),
                 player.token_hash.as_ref().map(|h| h.as_slice()),
+                player.agent,
+                player.combat_points as f64,
+                player.explore_points as f64,
             ],
         )?;
         Ok(())
@@ -383,7 +532,8 @@ impl Database {
     pub fn load_players(&self) -> Result<Vec<Player>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash FROM players",
+            "SELECT id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash,
+                    agent, combat_points, explore_points FROM players",
         )?;
         let players = stmt.query_map(params![], |row| {
             Ok(Player {
@@ -400,10 +550,17 @@ impl Database {
                 },
                 buildings: BuildingLevels::default(),
                 research: ResearchLevels::default(),
-                building_queue: None,
+                building_queue: Vec::new(),
+                building_pending: Vec::new(),
                 ship_queue: None,
+                ship_pending: Vec::new(),
+                defences: Defences::default(),
                 research_queue: None,
+                research_pending: Vec::new(),
                 token_hash: row.get::<_, Option<Vec<u8>>>(7)?.and_then(|v| v.try_into().ok()),
+                agent: row.get::<_, bool>(8)?,
+                combat_points: row.get::<_, f64>(9)? as f32,
+                explore_points: row.get::<_, f64>(10)? as f32,
             })
         })?;
         players.collect()
@@ -814,18 +971,7 @@ impl Database {
             "INSERT OR REPLACE INTO buildings (player_id, building_type, level) VALUES (?1, ?2, ?3)",
         )?;
 
-        for bt in 0..BuildingType::COUNT {
-            let bt: BuildingType = match bt {
-                0 => BuildingType::MetalMine,
-                1 => BuildingType::CrystalMine,
-                2 => BuildingType::DeuteriumSynthesizer,
-                3 => BuildingType::Shipyard,
-                4 => BuildingType::ResearchLab,
-                5 => BuildingType::FuelDepot,
-                6 => BuildingType::SensorArray,
-                7 => BuildingType::DefenseGrid,
-                _ => unreachable!(),
-            };
+        for bt in (0..BuildingType::COUNT).filter_map(BuildingType::from_usize) {
             stmt.execute(params![
                 player_id as i64,
                 bt as i64,
@@ -848,18 +994,7 @@ impl Database {
 
         for row_result in rows {
             let (bt_int, level) = row_result?;
-            if bt_int >= 0 && bt_int < BuildingType::COUNT as i64 {
-                let bt: BuildingType = match bt_int {
-                    0 => BuildingType::MetalMine,
-                    1 => BuildingType::CrystalMine,
-                    2 => BuildingType::DeuteriumSynthesizer,
-                    3 => BuildingType::Shipyard,
-                    4 => BuildingType::ResearchLab,
-                    5 => BuildingType::FuelDepot,
-                    6 => BuildingType::SensorArray,
-                    7 => BuildingType::DefenseGrid,
-                    _ => unreachable!(),
-                };
+            if let Some(bt) = usize::try_from(bt_int).ok().and_then(BuildingType::from_usize) {
                 levels.set(bt, level as u8);
             }
         }
@@ -872,22 +1007,7 @@ impl Database {
             "INSERT OR REPLACE INTO research (player_id, tech_type, level) VALUES (?1, ?2, ?3)",
         )?;
 
-        for rt in 0..ResearchType::COUNT {
-            let rt: ResearchType = match rt {
-                0 => ResearchType::FuelEfficiency,
-                1 => ResearchType::ExtendedFuelTanks,
-                2 => ResearchType::ReinforcedHulls,
-                3 => ResearchType::AdvancedShields,
-                4 => ResearchType::WeaponsResearch,
-                5 => ResearchType::Navigation,
-                6 => ResearchType::HarvestingEfficiency,
-                7 => ResearchType::CorvetteTech,
-                8 => ResearchType::FrigateTech,
-                9 => ResearchType::CruiserTech,
-                10 => ResearchType::HaulerTech,
-                11 => ResearchType::EmergencyJump,
-                _ => unreachable!(),
-            };
+        for rt in (0..ResearchType::COUNT).filter_map(ResearchType::from_usize) {
             let lvl = levels.get(rt);
             if lvl > 0 {
                 stmt.execute(params![
@@ -913,26 +1033,47 @@ impl Database {
 
         for row_result in rows {
             let (tech_int, level) = row_result?;
-            if tech_int >= 0 && tech_int < ResearchType::COUNT as i64 {
-                let tech: ResearchType = match tech_int {
-                    0 => ResearchType::FuelEfficiency,
-                    1 => ResearchType::ExtendedFuelTanks,
-                    2 => ResearchType::ReinforcedHulls,
-                    3 => ResearchType::AdvancedShields,
-                    4 => ResearchType::WeaponsResearch,
-                    5 => ResearchType::Navigation,
-                    6 => ResearchType::HarvestingEfficiency,
-                    7 => ResearchType::CorvetteTech,
-                    8 => ResearchType::FrigateTech,
-                    9 => ResearchType::CruiserTech,
-                    10 => ResearchType::HaulerTech,
-                    11 => ResearchType::EmergencyJump,
-                    _ => unreachable!(),
-                };
+            if let Some(tech) = usize::try_from(tech_int).ok().and_then(ResearchType::from_usize) {
                 levels.set(tech, level as u8);
             }
         }
         Ok(levels)
+    }
+
+    /// Rows are written in queue order (active items first, then the ones
+    /// waiting) and read back by id.
+    pub fn save_defences(&self, player_id: u64, d: &Defences) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "INSERT OR REPLACE INTO player_defences (player_id, kind, count, restoring, restore_tick)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for kind in DefenceKind::ALL {
+            let i = kind as usize;
+            stmt.execute(params![player_id as i64, i as i64, d.count[i] as i64, d.restoring[i] as i64, d.restore_tick[i] as i64])?;
+        }
+        Ok(())
+    }
+
+    pub fn load_defences(&self, player_id: u64) -> Result<Defences, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut d = Defences::default();
+        let mut stmt = conn.prepare(
+            "SELECT kind, count, restoring, restore_tick FROM player_defences WHERE player_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![player_id as i64], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+        })?;
+        for row in rows {
+            let (kind, count, restoring, tick) = row?;
+            if let Some(kind) = usize::try_from(kind).ok().and_then(DefenceKind::from_usize) {
+                let i = kind as usize;
+                d.count[i] = count as u32;
+                d.restoring[i] = restoring as u32;
+                d.restore_tick[i] = tick as u64;
+            }
+        }
+        Ok(d)
     }
 
     pub fn save_build_queue(&self, player_id: u64, player: &Player) -> Result<(), rusqlite::Error> {
@@ -943,47 +1084,31 @@ impl Database {
         )?;
 
         let mut stmt = conn.prepare(
-            "INSERT INTO build_queue (player_id, queue_type, item_type, target_level, count, built, start_tick, end_tick)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO build_queue (player_id, queue_type, item_type, target_level, count, built, pending, start_tick, end_tick)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
+        let pid = player_id as i64;
+        let none = rusqlite::types::Value::Null;
 
-        if let Some(ref q) = player.building_queue {
-            stmt.execute(params![
-                player_id as i64,
-                "building",
-                q.building_type as i64,
-                q.target_level as i64,
-                1i64,
-                0i64,
-                q.start_tick as i64,
-                q.end_tick as i64,
-            ])?;
+        for q in &player.building_queue {
+            stmt.execute(params![pid, "building", q.building_type as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
         }
-
-        if let Some(ref q) = player.ship_queue {
-            stmt.execute(params![
-                player_id as i64,
-                "ship",
-                q.ship_class as i64,
-                rusqlite::types::Value::Null,
-                q.count as i64,
-                q.built as i64,
-                q.start_tick as i64,
-                q.end_tick as i64,
-            ])?;
+        for q in &player.building_pending {
+            stmt.execute(params![pid, "building", q.building_type as i64, q.target_level as i64, 1i64, 0i64, 1i64, 0i64, 0i64])?;
         }
-
-        if let Some(ref q) = player.research_queue {
-            stmt.execute(params![
-                player_id as i64,
-                "research",
-                q.tech as i64,
-                q.target_level as i64,
-                1i64,
-                0i64,
-                q.start_tick as i64,
-                q.end_tick as i64,
-            ])?;
+        if let Some(q) = &player.ship_queue {
+            let (kind, item) = shipyard_item_to_row(q.item);
+            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
+        }
+        for q in &player.ship_pending {
+            let (kind, item) = shipyard_item_to_row(q.item);
+            stmt.execute(params![pid, kind, item, none, q.count as i64, 0i64, 1i64, 0i64, 0i64])?;
+        }
+        if let Some(q) = &player.research_queue {
+            stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
+        }
+        for q in &player.research_pending {
+            stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 1i64, 0i64, 0i64])?;
         }
 
         Ok(())
@@ -993,8 +1118,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut data = BuildQueueData::default();
         let mut stmt = conn.prepare(
-            "SELECT queue_type, item_type, target_level, count, built, start_tick, end_tick
-             FROM build_queue WHERE player_id = ?1",
+            "SELECT queue_type, item_type, target_level, count, built, pending, start_tick, end_tick
+             FROM build_queue WHERE player_id = ?1 ORDER BY id",
         )?;
 
         let rows = stmt.query_map(params![player_id as i64], |row| {
@@ -1004,47 +1129,37 @@ impl Database {
                 row.get::<_, Option<i64>>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(5)? != 0,
                 row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
             ))
         })?;
 
         for row_result in rows {
-            let (qt, item_type, target_level, count, built, start_tick, end_tick) = row_result?;
+            let (qt, item_type, target_level, count, built, pending, start_tick, end_tick) = row_result?;
+            let item = usize::try_from(item_type).ok();
+            let level = target_level.unwrap_or(0) as u8;
             match qt.as_str() {
                 "building" => {
-                    if item_type >= 0 && item_type < BuildingType::COUNT as i64 {
-                        let bt: BuildingType = match item_type {
-                            0 => BuildingType::MetalMine,
-                            1 => BuildingType::CrystalMine,
-                            2 => BuildingType::DeuteriumSynthesizer,
-                            3 => BuildingType::Shipyard,
-                            4 => BuildingType::ResearchLab,
-                            5 => BuildingType::FuelDepot,
-                            6 => BuildingType::SensorArray,
-                            7 => BuildingType::DefenseGrid,
-                            _ => unreachable!(),
-                        };
-                        data.building = Some(BuildQueueEntry {
+                    let Some(bt) = item.and_then(BuildingType::from_usize) else { continue; };
+                    if pending {
+                        data.building_pending.push(PendingBuilding { building_type: bt, target_level: level });
+                    } else {
+                        data.building.push(BuildQueueEntry {
                             building_type: bt,
-                            target_level: target_level.unwrap_or(0) as u8,
+                            target_level: level,
                             start_tick: start_tick as u64,
                             end_tick: end_tick as u64,
                         });
                     }
                 }
-                "ship" => {
-                    if (0..5).contains(&item_type) {
-                        let sc: ShipClass = match item_type {
-                            0 => ShipClass::Scout,
-                            1 => ShipClass::Corvette,
-                            2 => ShipClass::Frigate,
-                            3 => ShipClass::Cruiser,
-                            4 => ShipClass::Hauler,
-                            _ => unreachable!(),
-                        };
+                "ship" | "defence" => {
+                    let Some(sc) = item.and_then(|i| shipyard_item_from_row(&qt, i)) else { continue; };
+                    if pending {
+                        data.ship_pending.push(PendingShip { item: sc, count: count as u16 });
+                    } else {
                         data.ship = Some(ShipQueueEntry {
-                            ship_class: sc,
+                            item: sc,
                             count: count as u16,
                             built: built as u16,
                             start_tick: start_tick as u64,
@@ -1052,26 +1167,14 @@ impl Database {
                         });
                     }
                 }
-                "research" if (0..ResearchType::COUNT as i64).contains(&item_type) => {
-                    {
-                        let tech: ResearchType = match item_type {
-                            0 => ResearchType::FuelEfficiency,
-                            1 => ResearchType::ExtendedFuelTanks,
-                            2 => ResearchType::ReinforcedHulls,
-                            3 => ResearchType::AdvancedShields,
-                            4 => ResearchType::WeaponsResearch,
-                            5 => ResearchType::Navigation,
-                            6 => ResearchType::HarvestingEfficiency,
-                            7 => ResearchType::CorvetteTech,
-                            8 => ResearchType::FrigateTech,
-                            9 => ResearchType::CruiserTech,
-                            10 => ResearchType::HaulerTech,
-                            11 => ResearchType::EmergencyJump,
-                            _ => unreachable!(),
-                        };
+                "research" => {
+                    let Some(tech) = item.and_then(ResearchType::from_usize) else { continue; };
+                    if pending {
+                        data.research_pending.push(PendingResearch { tech, target_level: level });
+                    } else {
                         data.research = Some(ResearchQueueEntry {
                             tech,
-                            target_level: target_level.unwrap_or(0) as u8,
+                            target_level: level,
                             start_tick: start_tick as u64,
                             end_tick: end_tick as u64,
                         });
@@ -1093,9 +1196,12 @@ pub struct SectorOverrideRow {
 
 #[derive(Debug, Default)]
 pub struct BuildQueueData {
-    pub building: Option<BuildQueueEntry>,
+    pub building: Vec<BuildQueueEntry>,
+    pub building_pending: Vec<PendingBuilding>,
     pub ship: Option<ShipQueueEntry>,
+    pub ship_pending: Vec<PendingShip>,
     pub research: Option<ResearchQueueEntry>,
+    pub research_pending: Vec<PendingResearch>,
 }
 
 
@@ -1150,6 +1256,7 @@ impl Database {
             self.save_buildings(player.id, &player.buildings)?;
             self.save_research(player.id, &player.research)?;
             self.save_build_queue(player.id, player)?;
+            self.save_defences(player.id, &player.defences)?;
         }
         for fleet in &batch.fleets {
             self.save_fleet(fleet)?;

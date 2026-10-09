@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:iac_client/console/economy_view.dart';
 import 'package:iac_client/protocol/protocol.dart' as p;
 import 'package:iac_client/state/demo_provider.dart';
 
@@ -184,26 +183,72 @@ void main() {
     expect(home.cargo.total, 0);
   });
 
-  test('stockpiles clamp at the caps and near-cap raises an alert', () {
+  test('stockpiles clamp at the storage caps and near-cap raises the storage events', () {
     final r = Rig();
+    final cap = r.initial.homeworld.storage.cap;
+    expect(cap.metal, closeTo(11250, 1e-6));
     r.step(1200);
     final res = r.player.resources;
-    expect(res.metal, lessThanOrEqualTo(demoCaps['metal']!));
-    expect(res.crystal, closeTo(demoCaps['crystal']!, 1e-6));
-    expect(res.deuterium, lessThanOrEqualTo(demoCaps['deut']!));
-    expect(r.of<p.AlertEvent>().any((a) => a.message.contains('storage')), isTrue);
+    expect(res.metal, lessThanOrEqualTo(cap.metal));
+    expect(res.crystal, lessThanOrEqualTo(cap.crystal));
+    expect(res.deuterium, lessThanOrEqualTo(cap.deuterium));
+    expect(r.of<p.StorageNearCapEvent>().any((e) => e.resource == p.ResourceKind.crystal), isTrue);
   });
 
-  test('raid cycle announces and resolves', () {
+  test('raid cycle announces with an estimate and resolves against home defence', () {
     final r = Rig();
     r.step(5);
     final inc = r.of<p.RaidIncomingEvent>().first;
-    expect(inc.arrivalTick % demoRaidPeriod, 0);
+    expect(inc.estPower, greaterThan(0));
+    expect(r.initial.homeworld.nextRaidEstimatePower, inc.estPower);
     r.step(inc.arrivalTick - r.ticks.last.tick);
     final res = r.of<p.RaidResolvedEvent>().first;
     expect(res.defended, isTrue);
     expect(res.defensePower, greaterThan(res.raidPower));
     expect(r.of<p.RaidIncomingEvent>().length, 2);
+  });
+
+  test('opening economy: slot B locked, pending builds wait, defences stand', () {
+    final r = Rig();
+    final hw = r.initial.homeworld;
+    expect(hw.buildSlots, 1);
+    expect(hw.buildQueue.length, 1);
+    expect(hw.buildPending.length, 2);
+    expect(hw.buildPending.every((q) => q.cost.total > 0), isTrue);
+    expect(hw.defences.firstWhere((d) => d.kind == p.DefenceKind.pulseTurret).count, 6);
+    expect(hw.homeDefencePower, greaterThan(hw.nextRaidEstimatePower));
+    expect(r.initial.world.pace, 1);
+    expect(r.initial.fleets.every((f) => f.power > 0 && f.rangeHops >= 0), isTrue);
+  });
+
+  test('queued items wait behind the running one, then run and a built defence adds power', () {
+    final r = Rig();
+    final before = r.initial.homeworld.homeDefencePower;
+    expect(r.errorOf(r.send(const p.BuildDefenceCommand(kind: p.DefenceKind.pulseTurret, count: 2))), isNull);
+    expect(r.ticks.last.homeworldUpdate!.shipyardPending.length, 1);
+    r.step(400);
+    expect(r.of<p.DefenceBuiltEvent>(), isNotEmpty);
+    final hw = r.ticks.last.homeworldUpdate!;
+    expect(hw.defences.firstWhere((d) => d.kind == p.DefenceKind.pulseTurret).count, 8);
+    expect(hw.homeDefencePower, greaterThan(before));
+    expect(hw.shipyardPending, isEmpty);
+  });
+
+  test('a waiting item can be cancelled for free', () {
+    final r = Rig();
+    expect(r.errorOf(r.send(const p.BuildDefenceCommand(kind: p.DefenceKind.pulseTurret, count: 1))), isNull);
+    final stock = r.player.resources.metal;
+    expect(r.errorOf(r.send(const p.CancelQueuedCommand(queueType: p.QueueType.ship, index: 0))), isNull);
+    expect(r.ticks.last.homeworldUpdate!.shipyardPending, isEmpty);
+    expect(r.player.resources.metal, stock);
+  });
+
+  test('leaderboard reply mixes humans and agents', () {
+    final r = Rig();
+    final reply = r.send(const p.LeaderboardCommand()).whereType<p.LeaderboardReply>().single;
+    expect(reply.entries.any((e) => e.agent), isTrue);
+    expect(reply.entries.any((e) => !e.agent), isTrue);
+    expect(reply.entries.map((e) => e.rank), orderedEquals([1, 2, 3, 4, 5, 6]));
   });
 
   test('aggressive groups engage on arrival and the player can lose', () {
@@ -235,7 +280,7 @@ void main() {
   test('catalog shows locked, unaffordable and maxed entries', () {
     final r = Rig();
     final cat = r.initial.homeworld.catalog;
-    expect(cat.buildings.any((b) => b.requires.any((q) => !q.met)), isTrue);
+    expect(cat.defences.any((d) => d.requires.any((q) => !q.met)), isTrue);
     expect(cat.research.any((o) => o.next == null), isTrue);
     expect(cat.research.any((o) => o.requires.any((q) => !q.met)), isTrue);
     expect(cat.ships.any((s) => s.requires.any((q) => !q.met)), isTrue);

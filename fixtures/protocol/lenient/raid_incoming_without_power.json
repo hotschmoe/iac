@@ -1,0 +1,20 @@
+{
+  "canonical": {
+    "arrival_tick": 90,
+    "est_power": 0.0,
+    "kind": "RaidIncoming",
+    "player_id": 1,
+    "threat": "light",
+    "tick": 3,
+    "type": "event"
+  },
+  "input": {
+    "arrival_tick": 90,
+    "kind": "RaidIncoming",
+    "player_id": 1,
+    "threat": "light",
+    "tick": 3,
+    "type": "event"
+  },
+  "type": "ServerMessage"
+}

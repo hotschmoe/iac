@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/protocol/protocol.dart';
+import 'package:iac_client/state/state_mapper.dart';
 
 import 'fixtures_util.dart';
 
@@ -64,6 +65,8 @@ void main() {
         'server_message/full_state': GameState,
         'server_message/event': GameEvent,
         'server_message/error__server_error': ErrorMessage,
+        'server_message/preview_move': MovePreview,
+        'server_message/leaderboard': LeaderboardReply,
       };
       for (final e in expected.entries) {
         final dir = e.key.split('/')[0];
@@ -75,16 +78,16 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 21 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 24 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 21);
+      expect(kinds.length, 24);
     });
 
-    test('command fixtures cover all 14 commands', () {
+    test('command fixtures cover all 18 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 14);
+      expect(kinds.length, 18);
     });
 
     test('full_state exposes sector connections', () {
@@ -92,7 +95,70 @@ void main() {
       final s = ServerMessage.fromJson(readJson(f)) as GameState;
       expect(s.knownSectors.first.connections, isNotEmpty);
       expect(s.fleets.first.policy, isNotNull);
-      expect(s.homeworld.buildings.length, 8);
+      expect(s.homeworld.buildings.length, BuildingType.values.length);
+      expect(s.homeworld.storage.cap.metal, 7500);
+      expect(s.homeworld.storage.capped, [ResourceKind.deuterium]);
+      expect(s.homeworld.storage.fullInS.crystal, isNull);
+    });
+
+    test('a move preview reaches the log with the fuel numbers', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'preview_move__stranding');
+      final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
+      expect(mapper.log.first.message, contains('burns 32 fuel'));
+      expect(mapper.log.first.message, contains('not enough fuel'));
+    });
+
+    test('the homeworld lists defences, defence power and the next raid estimate', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;
+      expect(hw.defences.first.kind, DefenceKind.pulseTurret);
+      expect(hw.defences.first.count, 12);
+      expect(hw.defences.first.restoring, 2);
+      expect(hw.homeDefencePower, 340.5);
+      expect(hw.nextRaidEstimatePower, 300.25);
+      expect(hw.catalog.defences.map((d) => d.count), [12, 0, 3]);
+      expect(hw.catalog.defences.first.requires.first.label, 'Shipyard >= 1');
+    });
+
+    test('the mapper logs the table and keeps it, with the agent label', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'leaderboard');
+      final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
+      expect(mapper.leaderboard!.entries.length, 2);
+      expect(mapper.leaderboard!.entries[1].agent, isTrue);
+      expect(mapper.leaderboard!.you!.rank, 14);
+      expect(mapper.log.map((l) => l.message), contains(startsWith('#2 Claude-7 [AI]')));
+      expect(mapper.toUiState().leaderboard, same(mapper.leaderboard));
+    });
+
+    test('fleets carry power and range', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final fleet = (ServerMessage.fromJson(readJson(f)) as GameState).fleets.first;
+      expect(fleet.power, 61.5);
+      expect(fleet.rangeHops, 4);
+    });
+
+    test('full_state carries running and waiting queue items', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;
+      expect(hw.buildSlots, 2);
+      expect(hw.queueDepth, 3);
+      expect(hw.buildQueue.length, 2);
+      expect(hw.buildPending.first.waitingFor!.crystal, 120.5);
+      expect(hw.buildPending.last.waitingFor, isNull);
+      expect(hw.shipyardPending.map((q) => q.item.label), ['Frigate', 'Pulse Turret']);
+      expect(hw.shipyardPending.first.count, 2);
+      expect(hw.researchPending.single.tech, ResearchType.cruiserTech);
+    });
+
+    test('the mapper lists waiting items after the running ones and says what they wait for', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
+      final ui = mapper.toUiState();
+      expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
+      expect(ui.buildQueue[2].time, 'waiting for 121 crystal');
+      expect(ui.buildQueue[3].time, startsWith('waiting, '));
+      expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2', 'Pulse Turret x10']);
+      expect(ui.research.waiting.single.time, 'waiting for 1200 deuterium');
     });
 
     test('full_state carries the homeworld catalog the server computed', () {
@@ -150,6 +216,8 @@ void main() {
     check('PolicyPreset', PolicyPreset.fromJson, (PolicyPreset e) => e.toJson());
     check('BuildingType', BuildingType.fromJson, (BuildingType e) => e.toJson());
     check('ResearchType', ResearchType.fromJson, (ResearchType e) => e.toJson());
+    check('ResourceKind', ResourceKind.fromJson, (ResourceKind e) => e.toJson());
+    check('DefenceKind', DefenceKind.fromJson, (DefenceKind e) => e.toJson());
     check('ErrorCode', ErrorCode.fromJson, (ErrorCode e) => e.toJson());
 
     test('Dart enums have no values Rust lacks', () {
@@ -167,6 +235,8 @@ void main() {
       same('PolicyPreset', PolicyPreset.values.length);
       same('BuildingType', BuildingType.values.length);
       same('ResearchType', ResearchType.values.length);
+      same('ResourceKind', ResourceKind.values.length);
+      same('DefenceKind', DefenceKind.values.length);
       same('ErrorCode', ErrorCode.values.length);
     });
 

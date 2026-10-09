@@ -306,11 +306,11 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final s = _sec(f.sector);
     final id = s?.hostiles?.firstOrNull?.id;
     if (id == null || f.status == ui.FleetStatus.combat) return;
-    final o = RatioInfo.of(uiFleetPower(f), th.power);
+    final o = RatioInfo.of(f.power, th.power);
     final armed = _armedUntil != null && DateTime.now().isBefore(_armedUntil!);
     if (o.winPct < 40 && !armed) {
       _armedUntil = DateTime.now().add(const Duration(seconds: 3));
-      _toast('Poor odds: ${o.label}', 'Power ${uiFleetPower(f).round()} vs ${th.power.round()}, ratio ${o.r.toStringAsFixed(2)}, est win ${o.winPct}%. Press F again to commit, or jump away.', tone: ToastTone.red);
+      _toast('Poor odds: ${o.label}', 'Power ${f.power.round()} vs ${th.power.round()}, ratio ${o.r.toStringAsFixed(2)}, est win ${o.winPct}%. Press F again to commit, or jump away.', tone: ToastTone.red);
       con.play('alert');
       return;
     }
@@ -366,7 +366,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final st = con.state;
       final s = _sec(f.sector);
       final th = SectorThreat.of(s);
-      final myPower = uiFleetPower(f);
+      final myPower = f.power;
       sim.layout(g);
       final lanes = [for (final d in dirs) s?.connections.contains(f.sector + d.v) ?? false];
       final homePath = f.sector == st.homeworld

@@ -2,6 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Bumped when costs, times or production formulas change; a database from
+/// another economy version is refused (start a new world).
+pub const ECONOMY_VERSION: u32 = 2;
+/// Bumped when sector generation changes.
+pub const WORLDGEN_VERSION: u32 = 1;
+
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
 pub const TICK_DURATION_NS: u64 = 1_000_000_000 / TICK_RATE_HZ;
@@ -311,6 +317,78 @@ impl Resources {
     }
 }
 
+/// One of the three stockpiled resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    Metal,
+    Crystal,
+    Deuterium,
+}
+
+impl ResourceKind {
+    pub const ALL: [ResourceKind; 3] = [ResourceKind::Metal, ResourceKind::Crystal, ResourceKind::Deuterium];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ResourceKind::Metal => "metal",
+            ResourceKind::Crystal => "crystal",
+            ResourceKind::Deuterium => "deuterium",
+        }
+    }
+}
+
+impl Resources {
+    pub fn get(&self, kind: ResourceKind) -> f32 {
+        match kind {
+            ResourceKind::Metal => self.metal,
+            ResourceKind::Crystal => self.crystal,
+            ResourceKind::Deuterium => self.deuterium,
+        }
+    }
+
+    pub fn get_mut(&mut self, kind: ResourceKind) -> &mut f32 {
+        match kind {
+            ResourceKind::Metal => &mut self.metal,
+            ResourceKind::Crystal => &mut self.crystal,
+            ResourceKind::Deuterium => &mut self.deuterium,
+        }
+    }
+
+    /// Add `gain` without pushing any component past `cap`; a component
+    /// already above its cap stays where it is.
+    pub fn add_capped(self, gain: Resources, cap: Resources) -> Resources {
+        let one = |stock: f32, gain: f32, cap: f32| if stock >= cap { stock } else { (stock + gain).min(cap) };
+        Resources {
+            metal: one(self.metal, gain.metal, cap.metal),
+            crystal: one(self.crystal, gain.crystal, cap.crystal),
+            deuterium: one(self.deuterium, gain.deuterium, cap.deuterium),
+        }
+    }
+
+    /// Component-wise minimum.
+    pub fn min(self, other: Resources) -> Resources {
+        Resources {
+            metal: self.metal.min(other.metal),
+            crystal: self.crystal.min(other.crystal),
+            deuterium: self.deuterium.min(other.deuterium),
+        }
+    }
+
+    /// What `self` lacks to pay `cost`: each component is clamped at 0.
+    pub fn shortfall(self, cost: Resources) -> Resources {
+        Resources {
+            metal: (cost.metal - self.metal).max(0.0),
+            crystal: (cost.crystal - self.crystal).max(0.0),
+            deuterium: (cost.deuterium - self.deuterium).max(0.0),
+        }
+    }
+
+    pub fn total(&self) -> f32 {
+        self.metal + self.crystal + self.deuterium
+    }
+}
+
 /// Starting resources for new players.
 pub const STARTING_RESOURCES: Resources = Resources {
     metal: 500.0,
@@ -352,6 +430,10 @@ pub const STRANDED_RECOVERY_TICKS: u64 = 300;
 /// Fuel consumption per hex: fleet_mass * this value.
 pub const FUEL_RATE_PER_MASS: f32 = 0.1;
 
+/// Deuterium paid per fuel unit topped up at the homeworld. Not scaled by
+/// pace: fuel is the price of range, not an economy timer.
+pub const FUEL_DEUT_PER_UNIT: f32 = 0.08;
+
 /// Resource regeneration: sectors regen this fraction per tick.
 pub const SECTOR_REGEN_RATE: f32 = 0.0001;
 
@@ -377,35 +459,47 @@ pub const SCAN_SCOUT_RANGE: u8 = 2;
 /// How long actively-scanned sectors keep streaming live updates.
 pub const SCAN_REVEAL_TICKS: u64 = 120;
 
-/// Homeworld raids: forecasted pressure, never a random tax.
-/// A raid is rolled periodically, announced in advance, resolves against
-/// docked ships + DefenseGrid, and losses are hard-capped.
-pub const RAID_ROLL_INTERVAL: u64 = 300;
-pub const RAID_ROLL_CHANCE: f32 = 0.20;
-pub const RAID_WARNING_TICKS: u64 = 60;
-pub const RAID_MIN_INTERVAL: u64 = 900;
-pub const RAID_MIN_PLAYER_AGE: u64 = 600;
-/// Raid fleet targets this fraction of the player's home defense power.
-pub const RAID_POWER_FRACTION_MIN: f32 = 0.35;
-pub const RAID_POWER_FRACTION_MAX: f32 = 0.55;
-/// Loss caps when a raid succeeds (fraction of stockpile).
+/// Homeworld raids: forecasted pressure, never a random tax. A raid is
+/// rolled periodically, announced in advance, sized from the player's
+/// economy points (`scaling::raid_power_base`) and resolved against docked
+/// ships, the Defense Grid and defence structures. Losses are hard-capped.
+/// The cadence is attention-class: it follows P^0.75, not P.
+pub const RAID_ROLL_INTERVAL: u64 = 21_600;
+pub const RAID_ROLL_CHANCE: f32 = 0.30;
+pub const RAID_MIN_INTERVAL: u64 = 64_800;
+pub const RAID_MIN_PLAYER_AGE: u64 = 86_400;
+/// The raid fleet's power is `raid_power_base` times a roll in this range.
+pub const RAID_POWER_ROLL_MIN: f32 = 0.80;
+pub const RAID_POWER_ROLL_MAX: f32 = 1.15;
+/// Loss caps when a raid succeeds (fraction of stockpile above the
+/// protected share).
 pub const RAID_LOSS_CAP_METAL: f32 = 0.08;
 pub const RAID_LOSS_CAP_CRYSTAL: f32 = 0.08;
 pub const RAID_LOSS_CAP_DEUT: f32 = 0.05;
 /// Salvage reward for repelling a raid (fraction of raid fleet value).
 pub const RAID_DEFENSE_SALVAGE_FRACTION: f32 = 0.30;
 /// After losing a raid, no raids for this long (no death spiral).
-pub const RAID_SUPPRESS_AFTER_LOSS: u64 = 1800;
+pub const RAID_SUPPRESS_AFTER_LOSS: u64 = 172_800;
+/// A repelled raid wears down structures: this fraction of them, scaled by
+/// raid power over defence power (at most 1), is destroyed.
+pub const RAID_STRUCTURE_DAMAGE: f32 = 0.5;
+/// Of the structures a repelled raid destroys, this share is rebuilt free.
+pub const RAID_STRUCTURE_RESTORE: f32 = 0.7;
+/// Delay before they are rebuilt, in pace-1 ticks (finds class).
+pub const RAID_RESTORE_TICKS: u64 = 600;
+/// A lost raid destroys this fraction of the structures, with no rebuild.
+pub const RAID_LOST_STRUCTURE_FRACTION: f32 = 0.5;
 
 /// DefenseGrid: virtual defensive power per level (in "scout units",
-/// multiplied by scout combat power). Levels 4+ scale by +35%/level.
+/// multiplied by scout combat power). Levels 4+ scale by +30%/level. Real
+/// structures provide the bulk of home defence.
 pub fn defense_grid_scout_units(level: u8) -> f32 {
     match level {
         0 => 0.0,
-        1 => 2.0,   // ≈ 2 scouts
-        2 => 5.0,   // ≈ 1 corvette + 2 scouts
-        3 => 8.0,   // ≈ 2 corvettes
-        n => 8.0 * 1.35f32.powi(n as i32 - 3),
+        1 => 1.0,
+        2 => 2.5,
+        3 => 4.0,
+        n => 4.0 * 1.3f32.powi(n as i32 - 3),
     }
 }
 

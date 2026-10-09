@@ -3,7 +3,7 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     text::Line,
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 
@@ -18,7 +18,7 @@ use super::{
 };
 
 pub fn render(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(3)]).split(area);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(5)]).split(area);
 
     render_tab_bar(frame, state, rows[0]);
     render_card_grid(frame, state, rows[1]);
@@ -102,14 +102,22 @@ fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &Hom
             cost_info = o.next.map(|n| (n.cost, n.ticks));
         }
         HomeworldTab::Shipyard => {
-            let Some(o) = catalog.ships.get(idx) else { return };
             let batch = state.ship_build_count;
+            let (label, unit_cost, unit_ticks, reqs, extra): (&str, Resources, u64, &[Requirement], String) =
+                if let Some(o) = catalog.ships.get(idx) {
+                    (o.ship_class.label(), o.unit_cost, o.ticks_per_ship, &o.requires, String::new())
+                } else if let Some(o) = catalog.defences.get(idx - catalog.ships.len()) {
+                    (o.kind.label(), o.unit_cost, o.ticks_per_unit, &o.requires, format!(" Power {:.0}  standing {}\n", o.power, o.count))
+                } else {
+                    return;
+                };
             title = if batch > 1 {
-                format!(" {} x{} ", o.ship_class.label(), batch)
+                format!(" {} x{} ", label, batch)
             } else {
-                format!(" {} ", o.ship_class.label())
+                format!(" {} ", label)
             };
-            requires = &o.requires;
+            content.push_str(&extra);
+            requires = reqs;
             if requires.iter().all(|r| r.met) {
                 if batch > 1 {
                     content.push_str(&format!(" READY - Enter queues {}\n", batch));
@@ -120,7 +128,7 @@ fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &Hom
                 content.push_str(" LOCKED\n");
             }
             maxed = false;
-            cost_info = Some((o.unit_cost.scale(batch as f32), o.ticks_per_ship * batch as u64));
+            cost_info = Some((unit_cost.scale(batch as f32), unit_ticks * batch as u64));
         }
         HomeworldTab::Research => {
             let Some(o) = catalog.research.get(idx) else { return };
@@ -222,26 +230,27 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
 
     let mut text = String::new();
 
-    // Building queue
-    if let Some(q) = &hw.build_queue {
-        let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
-        text.push_str(&format!(
-            " Bld: {} Lv{} {}/{}t [x]",
-            q.building_type.label(),
-            q.target_level,
-            elapsed,
-            total,
-        ));
-    } else {
-        text.push_str(" Bld: idle");
+    // Building queue: running items (up to the slot count), then waiting ones
+    text.push_str(&format!(" Bld[{}/{}]:", hw.build_queue.len(), hw.build_slots));
+    if hw.build_queue.is_empty() {
+        text.push_str(" idle");
     }
+    for q in &hw.build_queue {
+        let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
+        text.push_str(&format!(" {} Lv{} {}/{}t", q.building_type.label(), q.target_level, elapsed, total));
+    }
+    if !hw.build_pending.is_empty() {
+        let names: Vec<String> = hw.build_pending.iter().map(|q| waiting_label(q.building_type.short_label(), q.target_level, &q.waiting_for)).collect();
+        text.push_str(&format!(" +[{}]", names.join(", ")));
+    }
+    text.push_str(" [x/c]");
 
     // Shipyard queue
     if let Some(q) = &hw.shipyard_queue {
         let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
         text.push_str(&format!(
-            " | Ship: {} {}/{}b {}/{}t [X]",
-            q.ship_class.label(),
+            " | Ship: {} {}/{}b {}/{}t",
+            q.item.label(),
             q.built,
             q.count,
             elapsed,
@@ -250,19 +259,26 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     } else {
         text.push_str(" | Ship: idle");
     }
+    if !hw.shipyard_pending.is_empty() {
+        let names: Vec<String> = hw.shipyard_pending.iter()
+            .map(|q| waiting_label(&format!("{}x{}", q.count, q.item.label()), 0, &q.waiting_for))
+            .collect();
+        text.push_str(&format!(" +[{}]", names.join(", ")));
+    }
+    text.push_str(" [X/C]");
 
     // Research queue
     if let Some(q) = &hw.research_active {
         let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
-        text.push_str(&format!(
-            " | Res: {} {}/{}t [z]",
-            q.tech.label(),
-            elapsed,
-            total,
-        ));
+        text.push_str(&format!(" | Res: {} {}/{}t", q.tech.label(), elapsed, total));
     } else {
         text.push_str(" | Res: idle");
     }
+    if !hw.research_pending.is_empty() {
+        let names: Vec<String> = hw.research_pending.iter().map(|q| waiting_label(q.tech.label(), q.target_level, &q.waiting_for)).collect();
+        text.push_str(&format!(" +[{}]", names.join(", ")));
+    }
+    text.push_str(" [z/Z]");
 
     if state.homeworld_tab == HomeworldTab::Shipyard {
         text.push_str(&format!(" | Batch: x{} [+/-]", state.ship_build_count));
@@ -274,7 +290,41 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         hw.production.metal, hw.production.crystal, hw.production.deuterium,
     ));
 
-    frame.render_widget(Paragraph::new(text).style(AMBER_BRIGHT), inner);
+    text.push_str(&format!(
+        "\n Defence {:.0} (next raid ~{:.0})  structures: {}",
+        hw.home_defence_power,
+        hw.next_raid_estimate_power,
+        hw.defences.iter().map(|d| format!("{}x{}", d.count, d.kind.label())).collect::<Vec<_>>().join(" "),
+    ));
+    if let Some(p) = &state.player {
+        let st = &hw.storage;
+        text.push_str(&format!(
+            "\n Stock/cap: Fe {:.0}/{:.0}  Cr {:.0}/{:.0}  De {:.0}/{:.0}",
+            p.resources.metal, st.cap.metal, p.resources.crystal, st.cap.crystal,
+            p.resources.deuterium, st.cap.deuterium,
+        ));
+        if !st.capped.is_empty() {
+            let names: Vec<&str> = st.capped.iter().map(|k| k.label()).collect();
+            text.push_str(&format!("  FULL: {}", names.join(", ")));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(text).style(AMBER_BRIGHT).wrap(Wrap { trim: false }), inner);
+}
+
+/// "Metal Lv3 (need 35 Fe)" for a waiting queue entry; level 0 omits the level.
+fn waiting_label(name: &str, level: u8, waiting: &Option<Resources>) -> String {
+    let lv = if level > 0 { format!(" Lv{level}") } else { String::new() };
+    match waiting {
+        Some(r) => {
+            let mut need = Vec::new();
+            if r.metal > 0.0 { need.push(format!("{:.0} Fe", r.metal.ceil())); }
+            if r.crystal > 0.0 { need.push(format!("{:.0} Cr", r.crystal.ceil())); }
+            if r.deuterium > 0.0 { need.push(format!("{:.0} De", r.deuterium.ceil())); }
+            format!("{name}{lv} (need {})", need.join(" "))
+        }
+        None => format!("{name}{lv}"),
+    }
 }
 
 // ── Tech Tree ──────────────────────────────────────────────────────

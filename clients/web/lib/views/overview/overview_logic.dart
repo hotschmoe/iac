@@ -111,11 +111,12 @@ class NextUp {
 /// fleet, storage near cap, idle lab, idle build slot, unscanned lanes.
 NextUp nextUp(GameState s, EconomyView eco) {
   final d = eco.defence;
-  if (d != null && d.raidInTicks > 0 && d.raidInTicks < 600) {
+  final raidIn = d?.raidInTicks;
+  if (d != null && raidIn != null && raidIn > 0 && raidIn < 600) {
     return NextUp(
       'RAID WARNING',
-      'Raid in ${clockFmt(d.raidInTicks)}',
-      'Raid fleet vectoring for ${s.homeworld}. Home defence is ${d.total.round()} power: docked fleet ${d.dockedFleet.round()}, grid ${d.grid.round()}, structures ${d.structures.round()}. Estimated raid power ${d.raidEstimate.round()}.',
+      'Raid in ${clockFmt(raidIn)}',
+      'Raid fleet vectoring for ${s.homeworld}. Home defence is ${d.total.round()} power: docked fleet and grid ${d.other.round()}, structures ${d.structures.round()}. Estimated raid power ${d.raidEstimate.round()}.',
       'Open defence',
       NextAction.openDefence,
       urgent: true,
@@ -174,8 +175,9 @@ class OvAlert {
 List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
   final out = <OvAlert>[];
   final d = eco.defence;
-  if (d != null && d.raidInTicks > 0) {
-    out.add(OvAlert('Raid incoming', 'Power est. ${d.raidEstimate.round()} vs your defence ${d.total.round()}.', critical: true, time: clockFmt(d.raidInTicks), tab: 'defence'));
+  final raidIn = d?.raidInTicks;
+  if (d != null && raidIn != null && raidIn > 0) {
+    out.add(OvAlert('Raid incoming', 'Power est. ${d.raidEstimate.round()} vs your defence ${d.total.round()}.', critical: true, time: clockFmt(raidIn), tab: 'defence'));
   }
   final st = eco.storage;
   if (st != null) {
