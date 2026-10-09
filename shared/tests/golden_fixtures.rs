@@ -108,6 +108,8 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<PolicyPres
         jump_fuel: 31.5,
         home_fuel: 63.0,
         cooldown_remaining: 3,
+        power: 61.5,
+        range_hops: 4,
         cargo_blocked: false,
         policy,
     }
@@ -337,6 +339,7 @@ fn command_name(c: &Command) -> &'static str {
         Command::BuildShip { .. } => "build_ship",
         Command::CancelBuild { .. } => "cancel_build",
         Command::CancelQueued { .. } => "cancel_queued",
+        Command::PreviewMove { .. } => "preview_move",
         Command::Stop { .. } => "stop",
         Command::Scan { .. } => "scan",
         Command::ExploreSite { .. } => "explore_site",
@@ -352,6 +355,7 @@ fn server_message_name(m: &ServerMessage) -> &'static str {
         ServerMessage::FullState(_) => "full_state",
         ServerMessage::Event(_) => "event",
         ServerMessage::Error(_) => "error",
+        ServerMessage::PreviewMove(_) => "preview_move",
     }
 }
 
@@ -460,6 +464,7 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("research", Command::CancelBuild { queue_type: QueueType::Research, index: 0 }),
         ("", Command::CancelQueued { queue_type: QueueType::Building, index: 2 }),
         ("research", Command::CancelQueued { queue_type: QueueType::Research, index: 0 }),
+        ("", Command::PreviewMove { fleet_id: 3, target: h(2, -5) }),
         ("", Command::Stop { fleet_id: 6 }),
         ("", Command::Scan { fleet_id: 7 }),
         ("", Command::ExploreSite { fleet_id: 8 }),
@@ -659,6 +664,32 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             }),
         ),
     ];
+    v.push((
+        "".into(),
+        ServerMessage::PreviewMove(MovePreview {
+            fleet_id: 3,
+            target: h(2, -5),
+            fuel_cost: 31.5,
+            fuel_after: 240.0,
+            can_jump: true,
+            hops_home: 3,
+            fuel_to_return: 94.5,
+            can_return: true,
+        }),
+    ));
+    v.push((
+        "stranding".into(),
+        ServerMessage::PreviewMove(MovePreview {
+            fleet_id: 3,
+            target: h(2, -6),
+            fuel_cost: 31.5,
+            fuel_after: 0.0,
+            can_jump: false,
+            hops_home: 4,
+            fuel_to_return: 126.0,
+            can_return: false,
+        }),
+    ));
     for code in ALL_ERROR_CODES {
         v.push((
             error_code_name(code).to_string(),

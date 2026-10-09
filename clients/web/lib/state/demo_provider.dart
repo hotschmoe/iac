@@ -45,6 +45,8 @@ class DemoProvider {
         fuelMax: 500,
         jumpFuel: 25,
         homeFuel: 50,
+        power: 48,
+        rangeHops: 4,
       ),
       FleetState(
         id: 102,
@@ -67,6 +69,8 @@ class DemoProvider {
         fuelMax: 500,
         jumpFuel: 15,
         homeFuel: 45,
+        power: 14,
+        rangeHops: 7,
         policy: PolicyPreset.prospect,
       ),
     ];
@@ -315,6 +319,8 @@ class DemoProvider {
         jumpFuel: f.jumpFuel,
         homeFuel: f.homeFuel,
         cooldownRemaining: f.cooldownRemaining,
+        power: f.power,
+        rangeHops: f.rangeHops,
         policy: clearPolicy ? null : (policy ?? f.policy),
       );
 
@@ -901,6 +907,27 @@ class DemoProvider {
           ),
         ));
         return [_tickUpdate()];
+      case PreviewMoveCommand(:final fleetId, :final target):
+        final f = fleet(fleetId);
+        if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
+        final here = _sectors[f.location.toKey()];
+        if (here == null || !here.connections.contains(target)) {
+          return [_err(ErrorCode.noConnection, 'No lane from ${f.location} to $target')];
+        }
+        final hops = Hex.distance(target, _home);
+        final left = f.fuel - f.jumpFuel;
+        return [
+          MovePreview(
+            fleetId: fleetId,
+            target: target,
+            fuelCost: f.jumpFuel,
+            fuelAfter: max(0, left),
+            canJump: left >= 0,
+            hopsHome: hops,
+            fuelToReturn: hops * f.jumpFuel,
+            canReturn: left >= hops * f.jumpFuel,
+          ),
+        ];
       case AttackCommand() || CollectSalvageCommand() || ExploreSiteCommand():
         return [_err(ErrorCode.invalidCommand, 'Demo mode: not simulated')];
     }

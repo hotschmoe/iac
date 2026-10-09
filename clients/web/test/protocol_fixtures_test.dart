@@ -65,6 +65,7 @@ void main() {
         'server_message/full_state': GameState,
         'server_message/event': GameEvent,
         'server_message/error__server_error': ErrorMessage,
+        'server_message/preview_move': MovePreview,
       };
       for (final e in expected.entries) {
         final dir = e.key.split('/')[0];
@@ -83,9 +84,9 @@ void main() {
       expect(kinds.length, 23);
     });
 
-    test('command fixtures cover all 15 commands', () {
+    test('command fixtures cover all 16 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 15);
+      expect(kinds.length, 16);
     });
 
     test('full_state exposes sector connections', () {
@@ -97,6 +98,20 @@ void main() {
       expect(s.homeworld.storage.cap.metal, 7500);
       expect(s.homeworld.storage.capped, [ResourceKind.deuterium]);
       expect(s.homeworld.storage.fullInS.crystal, isNull);
+    });
+
+    test('a move preview reaches the log with the fuel numbers', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'preview_move__stranding');
+      final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
+      expect(mapper.log.first.message, contains('burns 32 fuel'));
+      expect(mapper.log.first.message, contains('not enough fuel'));
+    });
+
+    test('fleets carry power and range', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final fleet = (ServerMessage.fromJson(readJson(f)) as GameState).fleets.first;
+      expect(fleet.power, 61.5);
+      expect(fleet.rangeHops, 4);
     });
 
     test('full_state carries running and waiting queue items', () {

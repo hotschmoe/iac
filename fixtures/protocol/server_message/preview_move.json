@@ -1,0 +1,14 @@
+{
+  "can_jump": true,
+  "can_return": true,
+  "fleet_id": 3,
+  "fuel_after": 240.0,
+  "fuel_cost": 31.5,
+  "fuel_to_return": 94.5,
+  "hops_home": 3,
+  "target": {
+    "q": 2,
+    "r": -5
+  },
+  "type": "preview_move"
+}

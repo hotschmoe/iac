@@ -216,6 +216,7 @@ impl Network {
         };
 
         let mut engine = self.engine.lock().unwrap();
+        let mut reply: Option<ServerMessage> = None;
         let result = match cmd {
             Command::Move { fleet_id, target } => engine.handle_move(pid, fleet_id, target),
             Command::Harvest { fleet_id, resource } => engine.handle_harvest(pid, fleet_id, resource),
@@ -232,10 +233,16 @@ impl Network {
             Command::ExploreSite { fleet_id } => engine.handle_explore_site(pid, fleet_id),
             Command::Split { fleet_id, ref ship_ids } => engine.handle_split(pid, fleet_id, ship_ids).map(|_| ()),
             Command::Merge { fleet_id, other_fleet_id } => engine.handle_merge(pid, fleet_id, other_fleet_id),
+            Command::PreviewMove { fleet_id, target } => engine.preview_move(pid, fleet_id, target).map(|p| {
+                reply = Some(ServerMessage::PreviewMove(p));
+            }),
         };
         let failure = result.err().map(|code| (code, command_error_message(&engine, pid, &cmd, code)));
         drop(engine);
 
+        if let Some(reply) = reply {
+            self.send_to_session(session, reply)?;
+        }
         if let Some((code, message)) = failure {
             self.send_error_to_session(session, code, &message)?;
         }
@@ -358,6 +365,7 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Scan { fleet_id }
         | Command::ExploreSite { fleet_id }
         | Command::Split { fleet_id, .. }
+        | Command::PreviewMove { fleet_id, .. }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
@@ -458,7 +466,7 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
             }
             _ => format!("fleet {fid} is busy"),
         },
-        (ErrorCode::NoConnection, Command::Move { target, .. }) => match fleet {
+        (ErrorCode::NoConnection, Command::Move { target, .. } | Command::PreviewMove { target, .. }) => match fleet {
             Some(f) => format!("no lane from {} to {}", f.location, target),
             None => format!("no lane to {target}"),
         },
@@ -653,6 +661,13 @@ async fn run_session(socket: WebSocket, state: HttpState) {
 
 // ── State Builders ────────────────────────────────────────────────
 
+/// Outward hops that still leave the fuel to come back: each costs a jump
+/// out and a jump home.
+fn range_hops(fuel: f32, home_fuel: f32, jump_fuel: f32) -> u32 {
+    if jump_fuel <= 0.0 { return 0; }
+    ((fuel - home_fuel) / (2.0 * jump_fuel)).floor().max(0.0) as u32
+}
+
 fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState> {
     let mut list = Vec::new();
     for fleet in engine.fleets.values() {
@@ -680,6 +695,8 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             FleetStatus::Exploring => iac_shared::protocol::FleetStatus::Exploring,
         };
 
+        let jump_fuel = engine.hop_fuel_cost(fleet);
+        let home_fuel = engine.route_home_cost(fleet, fleet.move_target.unwrap_or(fleet.location));
         list.push(FleetState {
             id: fleet.id,
             location: fleet.location,
@@ -689,9 +706,11 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             cargo_capacity: fleet_cargo_capacity(fleet),
             fuel: fleet.fuel,
             fuel_max: fleet.fuel_max,
-            jump_fuel: engine.hop_fuel_cost(fleet),
-            home_fuel: engine.route_home_cost(fleet, fleet.move_target.unwrap_or(fleet.location)),
+            jump_fuel,
+            home_fuel,
             cooldown_remaining: fleet.action_cooldown,
+            power: crate::engine::fleet_power(fleet),
+            range_hops: range_hops(fleet.fuel, home_fuel, jump_fuel),
             cargo_blocked: fleet.cargo.total() > 0.0
                 && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
             policy: engine.policies.get(&fleet.id).map(|p| p.preset),
@@ -1232,5 +1251,31 @@ mod tests {
             command_error_message(&e, pid, &cmd, ErrorCode::StorageTooSmall),
             "Cruiser Tech Lv.1 costs 8000 metal, more than the 5000 metal your stockpile holds; needs Storage Vault level 2"
         );
+    }
+
+    #[test]
+    fn preview_move_answers_with_fuel_numbers_and_fleets_carry_range() {
+        let (net, engine, pid, fid, mut rx) = network_with_player();
+        let (home, neighbour) = {
+            let e = engine.lock().unwrap();
+            let home = e.players[&pid].homeworld;
+            (home, e.world_gen.connected_neighbors(home).slice()[0])
+        };
+        let session = net.sessions.lock().unwrap().get(&1).cloned().unwrap();
+        net.route_command(&session, Command::PreviewMove { fleet_id: fid, target: neighbour }).unwrap();
+        let msg = next_message(&mut rx);
+        assert_eq!(msg["type"], "preview_move", "{msg}");
+        assert_eq!(msg["fleet_id"], fid);
+        assert_eq!(msg["can_jump"], true);
+        assert_eq!(msg["hops_home"], 1);
+        assert!(msg["fuel_cost"].as_f64().unwrap() > 0.0);
+        let _ = home;
+
+        net.broadcast_updates().unwrap();
+        let tick = next_message(&mut rx);
+        let fleet = &tick["fleets"][0];
+        // 2 Scouts: 120 fuel, 6 per jump -> 10 round trips out and back.
+        assert_eq!(fleet["range_hops"], 10, "{fleet}");
+        assert!(fleet["power"].as_f64().unwrap() > 0.0);
     }
 }

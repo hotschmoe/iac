@@ -52,6 +52,8 @@ class StateMapper {
         _ingestEvent(msg);
       case proto.ErrorMessage():
         _applyError(msg);
+      case proto.MovePreview():
+        _applyPreview(msg);
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }
@@ -85,6 +87,19 @@ class StateMapper {
     for (final e in u.events ?? const <proto.GameEvent>[]) {
       _ingestEvent(e);
     }
+  }
+
+  void _applyPreview(proto.MovePreview p) {
+    final verdict = !p.canJump
+        ? 'not enough fuel for the jump'
+        : p.canReturn
+            ? 'fuel to return is covered'
+            : 'CANNOT RETURN after this jump';
+    pushLog(
+      'F${p.fleetId} -> ${p.target}: burns ${p.fuelCost.round()} fuel, ${p.fuelAfter.round()} left; '
+      '${p.hopsHome} hops home need ${p.fuelToReturn.round()} ($verdict)',
+      p.canReturn ? EventLevel.bright : EventLevel.normal,
+    );
   }
 
   void _applyError(proto.ErrorMessage err) {
@@ -357,6 +372,8 @@ class StateMapper {
       jumpFuel: f.jumpFuel.round(),
       homeFuel: f.homeFuel.round(),
       cooldown: f.cooldownRemaining,
+      power: f.power,
+      rangeHops: f.rangeHops,
       policy: f.policy?.label,
     );
   }

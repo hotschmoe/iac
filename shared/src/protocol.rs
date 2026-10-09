@@ -80,6 +80,10 @@ pub enum Command {
     /// so nothing is refunded. `index` counts the waiting items from 0.
     #[serde(rename = "cancel_queued")]
     CancelQueued { queue_type: QueueType, index: usize },
+    /// Ask what one jump of `fleet_id` to the adjacent sector `target` would
+    /// cost, without moving. The reply is a `preview_move` message.
+    #[serde(rename = "preview_move")]
+    PreviewMove { fleet_id: u64, target: Hex },
     #[serde(rename = "stop")]
     Stop {
         #[serde(default)]
@@ -225,6 +229,31 @@ pub enum ServerMessage {
     Event(GameEvent),
     #[serde(rename = "error")]
     Error(ErrorMessage),
+    #[serde(rename = "preview_move")]
+    PreviewMove(MovePreview),
+}
+
+/// Answer to `preview_move`: the fuel side of a jump.
+///
+/// Threat, power ratio and a verdict label for the destination are reserved
+/// for the threat rating work (`docs/design/economy/spec.md` section 7) and
+/// are not sent yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MovePreview {
+    pub fleet_id: u64,
+    pub target: Hex,
+    /// Fuel the jump burns.
+    pub fuel_cost: f32,
+    /// Fuel left afterwards (0 when the fleet cannot afford the jump).
+    pub fuel_after: f32,
+    /// The fleet holds enough fuel for the jump.
+    pub can_jump: bool,
+    /// Hops from `target` back to the homeworld over charted lanes.
+    pub hops_home: u32,
+    /// Fuel that way home costs.
+    pub fuel_to_return: f32,
+    /// After the jump the fleet still holds enough fuel to get home.
+    pub can_return: bool,
 }
 
 /// Reply to `AuthRequest`. On success `token` is set only when the server just
@@ -356,6 +385,15 @@ pub struct FleetState {
     pub home_fuel: f32,
     #[serde(default)]
     pub cooldown_remaining: u16,
+    /// Combat power of the whole fleet on the scale raids and threat ratings
+    /// share: each ship counts `weapon + (hull + shield) / 10`.
+    #[serde(default)]
+    pub power: f32,
+    /// How many more hops outward the fleet can fly and still get home:
+    /// `(fuel - home_fuel) / (2 * jump_fuel)`, rounded down, 0 when it
+    /// cannot. At the homeworld it is the round-trip reach.
+    #[serde(default)]
+    pub range_hops: u32,
     /// At the homeworld with cargo the stockpile has no room for; it stays
     /// aboard and unloads as space frees up.
     #[serde(default)]

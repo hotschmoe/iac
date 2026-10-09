@@ -1,0 +1,8 @@
+{
+  "action": "preview_move",
+  "fleet_id": 3,
+  "target": {
+    "q": 2,
+    "r": -5
+  }
+}

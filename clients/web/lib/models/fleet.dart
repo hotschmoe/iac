@@ -69,6 +69,8 @@ class FleetState {
   final int jumpFuel;
   final int homeFuel;
   final int cooldown;
+  final double power;
+  final int rangeHops;
   final String? policy;
 
   const FleetState({
@@ -86,6 +88,8 @@ class FleetState {
     this.jumpFuel = 0,
     this.homeFuel = 0,
     this.cooldown = 0,
+    this.power = 0,
+    this.rangeHops = 0,
     this.policy,
   });
 

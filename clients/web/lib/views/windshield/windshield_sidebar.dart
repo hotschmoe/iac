@@ -146,6 +146,8 @@ class WindshieldSidebar extends StatelessWidget {
               value: '${fleet.homeFuel}${fleet.shortOfHomeFuel ? '  SHORT' : ''}',
               valueColor: fleet.shortOfHomeFuel ? Amber.danger : Amber.normal,
             ),
+          LabeledRow(label: 'Range', value: '${fleet.rangeHops} hops out and back', valueColor: Amber.normal),
+          LabeledRow(label: 'Power', value: fleet.power.toStringAsFixed(0), valueColor: Amber.normal),
           if (fleet.stranded)
             Text('STRANDED: reserve recharging', style: Amber.mono(size: 11, color: Amber.danger)),
           const SizedBox(height: 4),

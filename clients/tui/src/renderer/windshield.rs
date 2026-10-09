@@ -391,6 +391,7 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     if fleet.home_fuel > 0.0 {
         fuel_line.push_str(&format!("  home {:.0}", fleet.home_fuel));
     }
+    fuel_line.push_str(&format!("  range {} hops  power {:.0}", fleet.range_hops, fleet.power));
     if fleet.jump_fuel > 0.0 && fleet.fuel < fleet.jump_fuel && fleet.home_fuel > 0.0 {
         fuel_line.push_str("  STRANDED, reserve recharging");
     }

@@ -428,6 +428,7 @@ sealed class Command {
           index: (m['index'] as int?) ?? 0,
         ),
       'cancel_queued' => CancelQueuedCommand(queueType: QueueType.fromJson(m['queue_type']), index: _i(m['index'])),
+      'preview_move' => PreviewMoveCommand(fleetId: _i(m['fleet_id']), target: Hex.fromJson(m['target'])),
       'stop' => StopCommand(fleetId: fleet()),
       'scan' => ScanCommand(fleetId: fleet()),
       'explore_site' => ExploreSiteCommand(fleetId: fleet()),
@@ -517,6 +518,16 @@ class CancelQueuedCommand extends Command {
   Json toJson() => {'action': 'cancel_queued', 'queue_type': queueType.toJson(), 'index': index};
 }
 
+/// Ask what one jump to the adjacent sector would cost; the reply is a
+/// [MovePreview].
+class PreviewMoveCommand extends Command {
+  final int fleetId;
+  final Hex target;
+  const PreviewMoveCommand({required this.fleetId, required this.target});
+  @override
+  Json toJson() => {'action': 'preview_move', 'fleet_id': fleetId, 'target': target.toJson()};
+}
+
 class StopCommand extends Command {
   final int fleetId;
   const StopCommand({this.fleetId = 0});
@@ -576,6 +587,7 @@ sealed class ServerMessage {
       'tick_update' => TickUpdate.fromJson(m),
       'full_state' => GameState.fromJson(m),
       'event' => GameEvent.fromJson(m),
+      'preview_move' => MovePreview.fromJson(m),
       'error' => ErrorMessage.fromJson(m),
       final t => throw FormatException('unknown ServerMessage type "$t"'),
     };
@@ -748,6 +760,53 @@ class WorldEstimate {
   Json toJson() => {'first_cruiser_s': firstCruiserS, 'endgame_s': endgameS};
 }
 
+/// Answer to [PreviewMoveCommand]: the fuel side of a jump. Threat for the
+/// destination comes with the threat rating work and is not sent yet.
+class MovePreview extends ServerMessage {
+  final int fleetId;
+  final Hex target;
+  final double fuelCost;
+  final double fuelAfter;
+  final bool canJump;
+  final int hopsHome;
+  final double fuelToReturn;
+  final bool canReturn;
+  const MovePreview({
+    required this.fleetId,
+    required this.target,
+    required this.fuelCost,
+    required this.fuelAfter,
+    required this.canJump,
+    required this.hopsHome,
+    required this.fuelToReturn,
+    required this.canReturn,
+  });
+
+  factory MovePreview.fromJson(Json m) => MovePreview(
+        fleetId: _i(m['fleet_id']),
+        target: Hex.fromJson(m['target']),
+        fuelCost: _f(m['fuel_cost']),
+        fuelAfter: _f(m['fuel_after']),
+        canJump: m['can_jump'] as bool,
+        hopsHome: _i(m['hops_home']),
+        fuelToReturn: _f(m['fuel_to_return']),
+        canReturn: m['can_return'] as bool,
+      );
+
+  @override
+  Json toJson() => {
+        'type': 'preview_move',
+        'fleet_id': fleetId,
+        'target': target.toJson(),
+        'fuel_cost': fuelCost,
+        'fuel_after': fuelAfter,
+        'can_jump': canJump,
+        'hops_home': hopsHome,
+        'fuel_to_return': fuelToReturn,
+        'can_return': canReturn,
+      };
+}
+
 class ErrorMessage extends ServerMessage {
   final ErrorCode code;
   final String message;
@@ -806,6 +865,12 @@ class FleetState {
   final double homeFuel;
   final int cooldownRemaining;
 
+  /// Combat power of the whole fleet (the raid and threat scale).
+  final double power;
+
+  /// Outward hops the fleet can still fly and get home.
+  final int rangeHops;
+
   /// At the homeworld with cargo the stockpile has no room for.
   final bool cargoBlocked;
   final PolicyPreset? policy;
@@ -821,6 +886,8 @@ class FleetState {
     this.jumpFuel = 0,
     this.homeFuel = 0,
     this.cooldownRemaining = 0,
+    this.power = 0,
+    this.rangeHops = 0,
     this.cargoBlocked = false,
     this.policy,
   });
@@ -839,6 +906,8 @@ class FleetState {
       jumpFuel: m['jump_fuel'] == null ? 0 : _f(m['jump_fuel']),
       homeFuel: m['home_fuel'] == null ? 0 : _f(m['home_fuel']),
       cooldownRemaining: (m['cooldown_remaining'] as int?) ?? 0,
+      power: m['power'] == null ? 0 : _f(m['power']),
+      rangeHops: (m['range_hops'] as int?) ?? 0,
       cargoBlocked: (m['cargo_blocked'] as bool?) ?? false,
       policy: _opt(m['policy'], PolicyPreset.fromJson),
     );
@@ -857,6 +926,8 @@ class FleetState {
       'jump_fuel': jumpFuel,
       'home_fuel': homeFuel,
       'cooldown_remaining': cooldownRemaining,
+      'power': power,
+      'range_hops': rangeHops,
       'cargo_blocked': cargoBlocked,
     };
     _put(m, 'policy', policy?.toJson());

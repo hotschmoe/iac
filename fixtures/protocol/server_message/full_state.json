@@ -19,6 +19,8 @@
         "r": -2
       },
       "policy": "salvage_and_sites",
+      "power": 61.5,
+      "range_hops": 4,
       "ships": [
         {
           "class": "Scout",
@@ -59,6 +61,8 @@
         "q": 4,
         "r": -2
       },
+      "power": 61.5,
+      "range_hops": 4,
       "ships": [
         {
           "class": "Scout",
@@ -99,6 +103,8 @@
         "q": -5,
         "r": 7
       },
+      "power": 61.5,
+      "range_hops": 4,
       "ships": [],
       "state": "InCombat"
     }

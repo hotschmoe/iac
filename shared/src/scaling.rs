@@ -641,7 +641,7 @@ pub fn fuel_capacity_modifier(tanks_level: u8) -> f32 {
 }
 
 pub fn fuel_depot_modifier(depot_level: u8) -> f32 {
-    1.0 + 0.10 * depot_level as f32
+    1.0 + 0.25 * depot_level as f32
 }
 
 pub fn sensor_range(sensor_level: u8) -> u8 {
@@ -902,5 +902,11 @@ mod golden_tests {
         assert!(!building_prerequisites_met(Fabricator, &b));
         b.set(Shipyard, 2);
         assert!(building_prerequisites_met(Fabricator, &b));
+    }
+
+    #[test]
+    fn the_fuel_depot_adds_a_quarter_per_level() {
+        assert_eq!(fuel_depot_modifier(0), 1.0);
+        assert_eq!(fuel_depot_modifier(4), 2.0);
     }
 }

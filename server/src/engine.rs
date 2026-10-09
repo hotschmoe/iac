@@ -15,7 +15,7 @@ use iac_shared::constants::{
     HARVEST_COOLDOWN, SHIELD_REGEN_IDLE_TICKS,
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
-    FUEL_RATE_PER_MASS, SECTOR_REGEN_RATE,
+    FUEL_RATE_PER_MASS, FUEL_DEUT_PER_UNIT, SECTOR_REGEN_RATE,
     NPC_PATROL_INTERVAL, SALVAGE_FRACTION, SALVAGE_DESPAWN_TICKS, HARVEST_REPORT_TICKS,
     TEMPLATE_NPC_ID_BASE,
     HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST, MOVE_BASE_COOLDOWN,
@@ -37,7 +37,7 @@ use iac_shared::scaling::{
 };
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
-    ResourceEta, StorageFullEvent, StorageNearCapEvent, StorageState,
+    MovePreview, ResourceEta, StorageFullEvent, StorageNearCapEvent, StorageState,
 };
 
 use crate::auth::{self, TokenHash};
@@ -1106,6 +1106,13 @@ impl GameEngine {
         for fid in docked {
             self.unload_cargo(fid);
         }
+        let thirsty: Vec<u64> = self.fleets.values()
+            .filter(|f| f.fuel < f.fuel_max && self.players.get(&f.owner_id).is_some_and(|p| p.homeworld == f.location))
+            .map(|f| f.id)
+            .collect();
+        for fid in thirsty {
+            self.refuel_fleet(fid);
+        }
         self.process_storage_alerts();
         Ok(())
     }
@@ -1122,6 +1129,22 @@ impl GameEngine {
         let owner = player.id;
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.cargo = fleet.cargo.sub(room);
+        self.dirty_fleets.insert(fleet_id, ());
+        self.dirty_players.insert(owner, ());
+    }
+
+    /// Fill the tank at the homeworld, paying `FUEL_DEUT_PER_UNIT` deuterium
+    /// per unit. A dry stockpile fills it only as far as it can.
+    fn refuel_fleet(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let Some(player) = self.players.get_mut(&fleet.owner_id) else { return; };
+        let missing = fleet.fuel_max - fleet.fuel;
+        let units = missing.min(player.resources.deuterium / FUEL_DEUT_PER_UNIT);
+        if units <= 0.0 { return; }
+        player.resources.deuterium = (player.resources.deuterium - units * FUEL_DEUT_PER_UNIT).max(0.0);
+        let owner = player.id;
+        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet.fuel = if units >= missing { fleet.fuel_max } else { fleet.fuel + units };
         self.dirty_fleets.insert(fleet_id, ());
         self.dirty_players.insert(owner, ());
     }
@@ -1750,6 +1773,29 @@ impl GameEngine {
 
         self.warn_if_cannot_return(fleet_id, target, fuel_cost);
         Ok(())
+    }
+
+    /// The fuel side of moving to the adjacent sector `target`; nothing moves.
+    pub fn preview_move(&self, player_id: u64, fleet_id: u64, target: Hex) -> Result<MovePreview, ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if !self.world_gen.connected_neighbors(fleet.location).slice().contains(&target) {
+            return Err(ErrorCode::NoConnection);
+        }
+        let fuel_cost = self.hop_fuel_cost(fleet);
+        let can_jump = fleet.fuel >= fuel_cost;
+        let fuel_after = if can_jump { fleet.fuel - fuel_cost } else { 0.0 };
+        let hops_home = self.known_hops_home(player_id, target);
+        let fuel_to_return = hops_home as f32 * fuel_cost;
+        Ok(MovePreview {
+            fleet_id,
+            target,
+            fuel_cost,
+            fuel_after,
+            can_jump,
+            hops_home,
+            fuel_to_return,
+            can_return: can_jump && fuel_after >= fuel_to_return,
+        })
     }
 
     /// Fuel for one jump of this fleet.
@@ -3297,7 +3343,8 @@ impl GameEngine {
         let player = self.players.get(&player_id).ok_or("Player not found")?;
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.fuel_max = fleet_fuel_max(fleet, player);
-        fleet.fuel = fleet.fuel_max;
+        fleet.fuel = fleet.fuel.min(fleet.fuel_max);
+        self.refuel_fleet(fleet_id);
 
         self.dirty_players.insert(player_id, ());
         self.dirty_fleets.insert(fleet_id, ());
@@ -3622,8 +3669,9 @@ impl GameEngine {
         fleet.ship_count += 1;
 
         let player = self.players.get(&player_id).unwrap();
+        let old_max = fleet.fuel_max;
         fleet.fuel_max = fleet_fuel_max(fleet, player);
-        fleet.fuel = fleet.fuel_max;
+        fleet.fuel = (fleet.fuel + (fleet.fuel_max - old_max)).min(fleet.fuel_max);
 
         self.dirty_fleets.insert(fleet.id, ());
         Ok(())
@@ -3871,7 +3919,7 @@ fn ship_class_power(class: ShipClass) -> f32 {
 }
 
 /// Live combat power of a whole fleet.
-fn fleet_power(fleet: &Fleet) -> f32 {
+pub fn fleet_power(fleet: &Fleet) -> f32 {
     fleet.ships[0..fleet.ship_count].iter()
         .filter(|s| s.hull > 0.0)
         .map(|s| s.weapon_power + (s.hull + s.shield) / 10.0)
@@ -5764,5 +5812,87 @@ mod tests {
         let docked_after: usize = engine.fleets.values().map(|f| f.ship_count).sum();
         assert_eq!(docked_after - docked_before, 2);
         assert!(engine.players[&pid].ship_pending.is_empty() && engine.players[&pid].ship_queue.is_none());
+    }
+
+    #[test]
+    fn docking_pays_deuterium_for_fuel() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Tanker");
+        fund(&mut engine, pid, 0.0, 0.0, 100.0);
+        engine.fleets.get_mut(&fid).unwrap().fuel = 20.0;
+        let missing = engine.fleets[&fid].fuel_max - 20.0;
+        engine.dock_fleet(fid).unwrap();
+        let paid = 100.0 - engine.players[&pid].resources.deuterium;
+        assert!((paid - missing * FUEL_DEUT_PER_UNIT).abs() < 1e-3, "paid {paid} for {missing} fuel");
+        assert_eq!(engine.fleets[&fid].fuel, engine.fleets[&fid].fuel_max);
+    }
+
+    #[test]
+    fn a_dry_stockpile_refuels_as_far_as_it_can_and_the_rest_follows() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Thirsty");
+        fund(&mut engine, pid, 0.0, 0.0, 0.8);
+        engine.fleets.get_mut(&fid).unwrap().fuel = 0.0;
+        engine.dock_fleet(fid).unwrap();
+        assert!((engine.fleets[&fid].fuel - 10.0).abs() < 1e-3, "0.8 deuterium buys 10 fuel");
+        assert!(engine.players[&pid].resources.deuterium < 1e-4);
+
+        // Production keeps arriving; a docked fleet drinks it a little each tick.
+        engine.players.get_mut(&pid).unwrap().buildings.deuterium_synthesizer = 5;
+        tick_n(&mut engine, 5);
+        assert!(engine.fleets[&fid].fuel > 10.0);
+    }
+
+    #[test]
+    fn a_new_hull_brings_its_own_tank_not_a_free_refill() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Builder");
+        engine.fleets.get_mut(&fid).unwrap().fuel = 30.0;
+        engine.add_ship_to_homeworld(pid, ShipClass::Hauler).unwrap();
+        let f = &engine.fleets[&fid];
+        assert_eq!(f.ship_count, 3);
+        let hauler_tank = ShipClass::Hauler.base_stats().fuel as f32;
+        assert_eq!(f.fuel, 30.0 + hauler_tank);
+        assert!(f.fuel < f.fuel_max);
+    }
+
+    #[test]
+    fn the_fuel_depot_raises_the_tank_by_a_quarter_per_level() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Depot");
+        let before = engine.fleets[&fid].fuel_max;
+        engine.players.get_mut(&pid).unwrap().buildings.fuel_depot = 2;
+        engine.dock_fleet(fid).unwrap();
+        assert_eq!(engine.fleets[&fid].fuel_max, before * 1.5);
+    }
+
+    #[test]
+    fn preview_move_reports_fuel_and_the_way_home() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Scout");
+        let chain = charted_chain(&mut engine, pid, 3);
+        let cost = engine.hop_fuel_cost(&engine.fleets[&fid]);
+        place(&mut engine, fid, chain[0], 3.5 * cost);
+
+        let p = engine.preview_move(pid, fid, chain[1]).unwrap();
+        assert_eq!(p.fuel_cost, cost);
+        assert_eq!(p.fuel_after, 2.5 * cost);
+        assert!(p.can_jump);
+        assert_eq!(p.hops_home, 2);
+        assert_eq!(p.fuel_to_return, 2.0 * cost);
+        assert!(p.can_return);
+        assert_eq!(engine.fleets[&fid].location, chain[0], "a preview moves nothing");
+        assert_eq!(engine.fleets[&fid].fuel, 3.5 * cost);
+
+        place(&mut engine, fid, chain[0], 2.5 * cost);
+        let p = engine.preview_move(pid, fid, chain[1]).unwrap();
+        assert!(p.can_jump && !p.can_return, "1.5 jumps left cannot pay two hops home");
+
+        place(&mut engine, fid, chain[0], 0.5 * cost);
+        let p = engine.preview_move(pid, fid, chain[1]).unwrap();
+        assert!(!p.can_jump);
+        assert_eq!(p.fuel_after, 0.0);
+
+        assert_eq!(engine.preview_move(pid, fid, chain[2]), Err(ErrorCode::NoConnection), "only adjacent sectors");
     }
 }

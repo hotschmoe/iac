@@ -430,6 +430,10 @@ pub const STRANDED_RECOVERY_TICKS: u64 = 300;
 /// Fuel consumption per hex: fleet_mass * this value.
 pub const FUEL_RATE_PER_MASS: f32 = 0.1;
 
+/// Deuterium paid per fuel unit topped up at the homeworld. Not scaled by
+/// pace: fuel is the price of range, not an economy timer.
+pub const FUEL_DEUT_PER_UNIT: f32 = 0.08;
+
 /// Resource regeneration: sectors regen this fraction per tick.
 pub const SECTOR_REGEN_RATE: f32 = 0.0001;
 

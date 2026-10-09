@@ -406,6 +406,14 @@ impl ClientState {
             ServerMessage::Event(event) => {
                 self.note_event(event);
             }
+            ServerMessage::PreviewMove(p) => {
+                self.status_message = format!(
+                    "F{} to [{},{}]: fuel -{:.0}, {:.0} left, {} hops home need {:.0}{}",
+                    p.fleet_id, p.target.q, p.target.r, p.fuel_cost, p.fuel_after, p.hops_home, p.fuel_to_return,
+                    if p.can_return { "" } else { "  CANNOT RETURN" },
+                );
+                self.status_set_tick = self.tick;
+            }
             // Login is settled before the TUI starts (connection::login).
             ServerMessage::AuthResult(_) => {}
             ServerMessage::Error(err) => {
@@ -649,7 +657,7 @@ mod tests {
             id, location: at, state: FleetStatus::Idle,
             ships: ship_ids.iter().map(|i| ship(*i)).collect(),
             cargo: Resources::default(), cargo_capacity: 20.0, fuel: 10.0, fuel_max: 10.0,
-            jump_fuel: 1.0, home_fuel: 0.0, cooldown_remaining: 0, cargo_blocked: false, policy: None,
+            jump_fuel: 1.0, home_fuel: 0.0, cooldown_remaining: 0, power: 0.0, range_hops: 0, cargo_blocked: false, policy: None,
         }
     }
 
