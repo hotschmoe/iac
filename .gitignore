@@ -13,3 +13,4 @@ clients/web/.dart_tool/
 .archive/
 # Playtest run directories
 tools/playtest/run/
+__pycache__/

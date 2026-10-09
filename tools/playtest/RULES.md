@@ -12,7 +12,7 @@ whole tech tree takes about three hours of play. Check `./play costs` for real
 times rather than guessing. Play the whole hour: keep queues busy (they hold
 three items, and waiting items cost nothing until they start), keep fleets
 doing something, spend before a stockpile reaches its cap, and use
-`play wait 60` while timers run instead of stopping. Do not end your session
+`play wait --until idle` while timers run instead of stopping. Do not end your session
 early. When under 6 minutes remain, write your feedback (see the end).
 
 Your goal: finish top of the leaderboard (`./play score`) by the end of the
@@ -20,24 +20,44 @@ hour: build the biggest economy, fleet and defence you can, while exploring and
 surviving. Hunting pirates and exploring add to the score, but at most 25% on
 top of what your buildings, research, ships and defences are worth. Your choice of
 strategy; take risks if you like. Be a good sport: no attempts to break the
-server, no spamming it faster than about one command per second. Other players
+server, no spamming it (the tool spaces the orders of a batch for you). Other players
 run on the same machine: never kill, signal or inspect processes (no `kill`,
 `pkill`, `ps`); interact with the game only through `./play`.
 
 ## Your tool: `play` (run it from your player directory)
 
 ```
-./play status            empire: pace, stockpile and caps, queues and slots, defences, fleets, sectors
-./play costs [what]      cost, time and unmet requirements of every upgrade (buildings|research|ships|defences)
+./play state             ONE compact JSON line, instant: stock, caps, income/s, levels, queues (running, waiting, shortfalls),
+                         idle queues, next costs, fleets, score and rank, minutes left, alerts. Read this every loop.
+./play status [--brief]  the same for reading: score/rank/time/idle queues/scoring rule first, then queues with their waiting items
+./play costs [what]      next 3 levels of every upgrade: cost, time, what each unlocks, mine payback (buildings|research|ships|defences)
 ./play score [rows]      the leaderboard (humans and AI agents share one table)
 ./play map [radius]      every sector you have seen near your fleets, marked LIVE or STALE <age>, with threat T1-T9 and the odds of your strongest fleet
 ./play sector Q R        one sector in detail (LIVE / STALE marking, threat and odds, ore reserve and refill time)
-./play preview F Q R     what fleet F's jump to the adjacent sector Q,R costs and meets (fuel, threat, ratio SAFE/FAVOURABLE/EVEN/RISKY/DEADLY)
-./play do '<json>'       send one command (JSON, see reference below); prints errors/events
-./play events [--mine]   events since you last looked; --mine hides fights you only witnessed
-./play wait [5-90]       sleep, then show events (use this to pass time)
+./play preview F [Q R..] fuel, threat and odds for fleet F jumping to adjacent sectors; with no Q R, every exit
+./play do '<json>' ['<json>' ...]  send commands in order (or one JSON array); one result line each; returns at the server's next tick
+./play events [--mine]   events since you last looked, collapsed (scans become one line, combat rounds one line per fight)
+./play wait [secs] [--until idle|event|done]  sleep up to 45 s (max 60), return early when something needs you
 ./play rules             this file
 ```
+
+Playing fast. The server handles a command at its next tick (about once a second),
+and a mine at this pace finishes in seconds, so do not poll in a loop of single
+commands. The loop that works:
+
+1. `./play state` (instant). Look at `idle` (queues with a free slot and nothing waiting), `queues.*.room`
+   (items you can still add; each queue holds 3) and `next.*.<name>.ok` (unlocked and payable now).
+2. Send every order you want in ONE call: `./play do '{"action":"build","building_type":"MetalMine"}'
+   '{"action":"research","tech":"Navigation"}' '{"action":"build_ship","ship_class":"Scout","count":1}'`.
+   You get one line per command (`ok ... -> started, done in 3s`, `queued [0] waiting for 35 metal`, or `ERR ...`) and
+   a `queues:` line. Orders are spaced about 0.25 s apart by the tool, so a batch stays polite.
+3. `./play wait --until idle` returns as soon as a queue frees up or becomes payable (an alert returns it too),
+   so a 3-second build does not cost you a 45-second sleep. `wait` never sleeps longer than 60 s, so it will not
+   hit your shell's timeout; call it again if nothing happened. `--until event` also returns on completions,
+   arrivals and fights; `--until done` returns when all queues and fleets have finished.
+
+Scoring is shown at the top of `status`: unspent stockpile scores nothing, and combat plus exploration together
+add at most 25% of core. `state.score` is refreshed every few seconds.
 
 Moving: `move` targets must be a sector listed in your fleet's `exits` (the
 direction labels E/NE/NW/W/SW/SE are shown). Each jump costs fuel and puts the
