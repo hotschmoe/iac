@@ -28,8 +28,9 @@ server, no spamming it faster than about one command per second.
 ./play status            empire: pace, stockpile and caps, queues and slots, defences, fleets, sectors
 ./play costs [what]      cost, time and unmet requirements of every upgrade (buildings|research|ships|defences)
 ./play score [rows]      the leaderboard (humans and AI agents share one table)
-./play map [radius]      every sector you have seen near your fleets, marked LIVE or STALE <age>
-./play sector Q R        one sector in detail (same LIVE / STALE marking)
+./play map [radius]      every sector you have seen near your fleets, marked LIVE or STALE <age>, with threat T1-T9 and the odds of your strongest fleet
+./play sector Q R        one sector in detail (LIVE / STALE marking, threat and odds, ore reserve and refill time)
+./play preview F Q R     what fleet F's jump to the adjacent sector Q,R costs and meets (fuel, threat, ratio SAFE/FAVOURABLE/RISKY/DEADLY)
 ./play do '<json>'       send one command (JSON, see reference below); prints errors/events
 ./play events [--mine]   events since you last looked; --mine hides fights you only witnessed
 ./play wait [5-90]       sleep, then show events (use this to pass time)
@@ -76,7 +77,7 @@ can pick up where you left off if your session is restarted.
 | `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count` | queue home defence structures in the shipyard queue; `DefenceLocked` until the Defense Grid and research it needs are in place |
 | `cancel_build` | `queue_type`, `index` (default 0) | cancel an item that has started (the `index`th running one) with a 50% refund; waiting items behind it move up a level |
 | `cancel_queued` | `queue_type`, `index` | remove an item still waiting (the `index`th, from 0); nothing was paid, so nothing comes back |
-| `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home`, `fuel_to_return`, `can_return` |
+| `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home`, `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, `ratio` and `label` (`safe`, `favourable`, `risky`, `deadly`) |
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
@@ -128,7 +129,29 @@ left it returns home and holds rather than wandering between known sectors.
   harvesting. A mine makes `base x L x 1.1^L` per game hour (metal 10,
   crystal 7, deuterium 5, times P); costs grow x1.5 to x1.9 per level and
   times follow cost, so the late levels are slow in both money and time.
-  Sector deposits deplete and regenerate.
+  Sector deposits are small nuggets (see Ore and loot below).
+- **Ore** — an ore tile holds 3 / 10 / 22 / 42 raw units (Sparse to Pristine)
+  times 1.10 per ring from ring 3 (x5 from ring 20), and the further out the
+  richer the density rolls. Harvesting takes units out of the tile (depletion
+  counts raw units; Harvesting Efficiency raises what lands in the hold, not
+  how fast the tile empties) and the density drops a level at a time.
+  A stripped tile refills completely in `120 + 24 x ring` game hours divided
+  by P, but not while a fleet sits on it, and never above its generated
+  density. Sector views carry `ore_reserve` per resource: `units`,
+  `max_units` and `refills_in_s`. Ore is a bonus on top of the mines, not a
+  living.
+- **Threat** — NPC group power grows 1.22x per ring (`4 x 1.22^(ring-1)`),
+  with no cliff; ships, count and stats follow (scouts to ring 5, corvettes to
+  12, frigates to 20, cruisers beyond). Every sector carries `threat`:
+  `rating` T1 to T9 (one step per doubling of power over 4), `est_power` and
+  `basis` (`observed`: a group is there, its own power, Aggressive and Swarm
+  +25%; `template`: a lair that is away or cleared; `estimate`: ring only).
+  A stale chart entry keeps the rating last seen. Scans list the threat of
+  every revealed sector (`threats`) and each faint contact has a
+  `threat_band` (1: T1-3, 2: T4-6, 3: T7-9). `preview_move` returns the
+  target's `threat`, your `fleet_power`, `ratio` and a `label`: SAFE from 3.0,
+  FAVOURABLE from 2.0, RISKY from 1.2, else DEADLY. Pirates return
+  `2 + 0.25 x ring` game hours (divided by P) after a kill.
 - **Buildings** — 10 types incl. Shipyard, Research Lab, Sensor Array (passive
   reveal around home), Defense Grid (see raids), Storage Vault (stockpile
   caps) and Fabricator (building time / (1 + 0.15 x level)).
@@ -179,7 +202,8 @@ left it returns home and holds rather than wandering between known sectors.
   sector where you have a fleet or your homeworld. Each carries `owner`
   (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
   `Critical` `Alert`. Hostile ids in a sector view are the ids `attack` and
-  `CombatStarted.enemy_fleet_id` use. `ResourceHarvested` is one event per fleet
+  `CombatStarted.enemy_fleet_id` use; messages name a hostile by its `label`
+  ("3x corvette pack"), not by id. `ResourceHarvested` is one event per fleet
   every 10 ticks (and when harvesting stops).
 - **Scanning** — active `scan` reveals connected sectors (2 hops with a Scout
   in fleet, 1 without) and picks up *signals* one hop farther: rich ore,
@@ -197,6 +221,14 @@ left it returns home and holds rather than wandering between known sectors.
   recoverable ship or an instant-tech data core — or an ambush by whatever
   killed the crew. Aborted/failed boardings leave the site *hotter*. A
   Scout aboard reads the risk down; a Hauler doubles the haul.
+- **Loot** — a kill pays `1.2 x group_power^0.8` units (55% metal, 30%
+  crystal, 15% deuterium) times P^0.5, for the whole group; far hunting pays
+  more but the odds fall faster than the pay rises. Derelict tier follows the
+  threat (T1-3, T4-6, T7-9). A site pays `240 x 1.14^(ring-4)` units at 60 to
+  140% times P^0.5; ambush odds `0.10 + 0.03 x (T-1)` (max 0.35); a recovered
+  ship `0.05 x (T-2)` (max 0.30), a data core `0.03 x (T-5)` (max 0.15), and
+  from T7 an ancient relic (2% per point above 6, worth 25 explore points, no
+  other use yet). A stripped derelict is replaced after 120 game hours / P^0.5.
 - **Standing orders** — assign a fleet a doctrine and the server flies it
   (see `policy_update` above). Doctrines respect fuel/cargo thresholds,
   return home to deposit and refuel, and log every decision.
@@ -227,7 +259,10 @@ left it returns home and holds rather than wandering between known sectors.
   the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2
   deuterium) / 1000. Kills add 25% of the NPC group's weighted cost (nothing
   when your force was 8x theirs, nothing twice in a sector until it
-  respawns); `score = core + min(combat + explore, 0.25 x core)`. Cancelling
+  respawns). Exploration adds `0.15 x loot/1000 + 0.02 x T^1.5` for the first
+  boarding of each derelict, 25 for a relic, and `0.01 x T^1.5` for each new
+  sector whose chart you deliver to the homeworld (the fleet must dock alive:
+  `ChartDelivered`). `score = core + min(combat + explore, 0.25 x core)`. Cancelling
   a build or losing a ship scores nothing; resources received from others
   never count. Accounts that log in with `"agent": true` (the headless client
   does) carry the `agent` flag on the board, which labels and never scores.

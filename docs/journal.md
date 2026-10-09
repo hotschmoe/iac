@@ -557,3 +557,98 @@ editing the stockpile in the stopped world's database.
   `Pace::finds_mult` (applied today to NPC salvage and derelict loot).
 - `world_meta.worldgen_version` is 1; bump `WORLDGEN_VERSION` when generation
   changes.
+
+## Exploration economy: threat, ore, loot, exploration score (2026-10-09)
+
+Implements steps 6 to 8 of `docs/design/economy/spec.md` section 14 plus the
+exploration points of section 9, one commit per step (branch `world-explore`).
+The worldgen version is 2 and a world from another generator is refused at
+startup like an old economy (`WorldError::OldWorldgen`).
+
+**Threat.** `npc_power(d) = 4 x 1.22^(d-1)`; composition per the spec (class by
+ring, stat multiplier `min(1.3, 0.6 + 0.02 d)`, count rounded to hit the power,
+presence `25 + 2.5 d` percent, passive share, respawn `2 + 0.25 d` game hours
+over P, which replaced `NPC_RESPAWN_*`). `threat_rating` is T1..T9. Every
+`SectorState` has `threat {rating, est_power, basis}`: `observed` (a group is
+there or its template is about to spawn; Aggressive and Swarm +25 percent),
+`template` (a lair whose group is away or cleared) or `estimate` (ring only).
+`preview_move` rates the target as the player knows it (live: the truth;
+charted: the rating last seen; otherwise the ring estimate, so it leaks
+nothing) and returns `fleet_power`, `ratio` and `label`. Scans carry
+`threats` and faint contacts a `threat_band`.
+
+**Ore.** Tile steps 3 / 7 / 12 / 20 raw units (totals 3 / 10 / 22 / 42) times
+`ring_mult`; density odds drift with distance; `harvest_yield` replaces
+`harvest_rate_modifier` (research raises cargo, not extraction speed); a
+harvest tick takes at most what is left in the current density level.
+Regeneration is `scaling::ore_regen_step`: each tick the stripped tile regains
+`total_reserve x P / (regen_hours x 3600)` raw units, walking back up the
+levels, paused under a fleet. Sectors carry `ore_reserve {metal, crystal,
+deuterium: {units, max_units, refills_in_s}}`. The old regen never revived a
+tile emptied to None (threshold 0) and refilled partial levels at once; both
+are gone.
+
+**Loot.** `wreck_value = 1.2 x group_power^0.8` split 55/30/15 times
+`finds_mult`, from the group actually spawned (`NpcFleet.power`), for the event
+and the pile. Derelicts: tier by threat band, value `240 x 1.14^(d-4)` at 60 to
+140 percent, ambush `0.10 + 0.03 (T-1)` (cap 0.35), recovery, data core and
+relic chances per the spec, guards at 0.6 x the ring's group power, respawn
+`DERELICT_RESPAWN_TICKS` (120 h) over P^0.5. The relic is a persisted counter
+(`players.relics`) and a `relic` flag on `SiteExplored`.
+
+**Exploration score.** First successful boarding of a derelict by a player pays
+`0.15 value/1000 + 0.02 T^1.5` (value without the pace factor, so fast worlds
+do not inflate it), a relic 25, and every sector newly charted pays
+`0.01 T^1.5` when the charting fleet docks at the homeworld
+(`Fleet.charts`, copied on split, unioned on merge, lost with the fleet;
+`ChartDelivered`). Credits live in `explore_credits`. The 25 percent cap and the
+leaderboard column were already there.
+
+**Hostile names.** `CombatStarted.enemy` and `FleetDestroyed.label` carry
+"3x corvette pack"; the fleet-lost alert and the TUI and web logs use it.
+
+**Deviations from the spec text.**
+- Regeneration refills the whole tile in `regen_hours` (what section 6.3's
+  sentence and `sim.py` do); the formula "threshold of the current step x ..."
+  would take up to four times as long. Documented here, not in the spec.
+- `ore_reserve` is per resource, not one `refills_in_s` for the sector.
+- `age_ticks` is not sent: `last_seen` and `live` say the same.
+- The spec's "NPC power" column is the target; the real group differs by up to
+  half a ship (a lone frigate at ring 15 is 43 against 65). Observed threat
+  uses the real group, so T4 shows there where the table says T5.
+- Ambush guards are 0.6 x the ring group (the sim's figure) instead of the old
+  tier tables.
+
+**Live check** (port 7816, pace test, one player, a ladder bot to 14 Cruisers
+and 10 Scouts; the finds factor is sqrt(8000) = 89.4 and divided out below).
+
+| ring | spec group (target power, T) | seen (real power, T) | pile per kill, seen / spec | mean ore tile, seen / spec |
+|---|---|---|---|---|
+| 6 | scout..corvette, 11, T2 | 1 corvette 16, T2 | 11 / 8 | 30 / 20 (n=6) |
+| 9 | corvette, 20, T3 | 1 corvette 17, T3 | 12 / 13 | 25 / 29 |
+| 12 | 2 corvettes, 36, T4 | 2 corvettes 37, T4 | 21 / 18 (ring 11) | 38 / 42 |
+| 15 | frigate, 65, T5 | 1 frigate 43, T4 | 24 / 34 | 79 / 59 |
+| 18 | 3 frigates, 118, T5 | 3 frigates 138 (173 aggressive), T6 | 62 / 54 | 80 / 84 |
+| 20 | 4 frigates, 175, T6 | 4 frigates 192 (240), T7 | n/a | 102 / 105 |
+| 22 | 2 cruisers, 260, T7 | 2 cruisers 229 (286), T7 | 93 / 103 | 111 / 109 |
+| 25 | 4 cruisers, 473, T7 | 4 cruisers 484 (605), T8 | 169 / 166 (18 kills) | n/a |
+| 27 | 6 cruisers, 704, T8 | 6 cruisers 752 (940), T9 | not fought | 179 / 115 (n=3) |
+
+Ore means come from few tiles per ring and are noisy; the density mix and the
+means over the whole generated world match the spec's column in
+`scaling::golden_tests`. A derelict at ring 11 paid 807 (spec mean 601, range
+360 to 841) and at ring 16 1085 (mean 1156, range 694 to 1619). A tile
+stripped at ring 5 refilled in 106 s against the schedule's 108 s
+((120 + 24 x 5) x 3600 / 8000) and `refills_in_s` counted down with it. The
+leaderboard explore column went from 0 to 0.92 on the first chart delivery
+(12 sectors), then 1.18 and 1.56 for two first boardings; combat stayed 0
+because the fleet was 64x the groups it killed. The derelict respawn is 80
+minutes at the test pace (432000 s over sqrt(8000)), so it was only checked in
+unit tests.
+
+**Web.** `lib/protocol` and the mapper carry the new fields; the console reads
+the server's rating in `console/threat.dart` (`SectorThreat.of`). Left for the
+console: the map and the route preview still derive the ratio from fleet and
+sector power instead of calling `preview_move`, and show the rating only for
+sectors with hostiles (`ringRating` is there for the rest); the ore reserve is
+not drawn.

@@ -171,6 +171,40 @@ def res(r):
     return "/".join(f"{(r or {}).get(k, 0):.0f}" for k in ("metal", "crystal", "deuterium"))
 
 
+def verdict(ratio):
+    """The server's ratio labels: fleet power over the sector's threat power."""
+    return "SAFE" if ratio >= 3 else "FAVOURABLE" if ratio >= 2 else "RISKY" if ratio >= 1.2 else "DEADLY"
+
+
+def threat_text(t, power=None):
+    """'T4 (power 46, observed)', plus the odds when you pass your fleet's power."""
+    if not t:
+        return "T? (no rating)"
+    text = f"T{t['rating']} (power {t['est_power']:.0f}, {t['basis']})"
+    if power:
+        ratio = power / max(t["est_power"], 1e-6)
+        text += f"; your {power:.0f} is {ratio:.1f}x: {verdict(ratio)}"
+    return text
+
+
+def ore_text(reserve, now_age=0):
+    """Units left on each tile and when a stripped one is full again."""
+    if not reserve:
+        return None
+    parts = []
+    for k in ("metal", "crystal", "deuterium"):
+        t = reserve[k]
+        if t["max_units"] <= 0:
+            continue
+        refill = f", full in {age(t['refills_in_s'] - now_age)}" if t.get("refills_in_s") else ""
+        parts.append(f"{k} {t['units']:.1f}/{t['max_units']:.1f}{refill}")
+    return "; ".join(parts) or None
+
+
+def best_power(fs):
+    return max([f.get("power", 0) for f in fs.get("fleets") or []] or [0])
+
+
 def waiting(short):
     """'(needs 35 metal)' for a queued item the stockpile cannot pay yet."""
     parts = [f"{short[k]:.0f} {k}" for k in ("metal", "crystal", "deuterium") if (short or {}).get(k, 0) > 0]
@@ -253,12 +287,16 @@ def summarize(fs):
             print(f"  fuel cost: jump {jump:.0f}, way home {home:.0f}{note}")
         sec = sectors.get(loc)
         if sec:
-            describe(sec, loc, sectors, fs["tick"], indent="  ")
+            describe(sec, loc, sectors, fs["tick"], indent="  ", power=f.get("power"))
 
 
-def describe(sec, loc, sectors, now, indent=""):
+def describe(sec, loc, sectors, now, indent="", power=None):
     r = sec.get("resources") or {}
     print(f"{indent}sector {loc[0]},{loc[1]} [{freshness(sec, now)}]: {sec['terrain']}  ore metal={r.get('metal')} crystal={r.get('crystal')} deut={r.get('deuterium')}")
+    print(f"{indent}threat {threat_text(sec.get('threat'), power)}")
+    ore = ore_text(sec.get("ore_reserve"), 0 if sec.get("live") else max(now - sec.get("last_seen", now), 0))
+    if ore:
+        print(f"{indent}ore reserve (raw units{'' if sec.get('live') else ', as last seen'}): {ore}")
     if not sec.get("live"):
         print(f"{indent}(remembered: ore, hostiles, salvage and derelict below are as last seen, not current)")
     exits = []
@@ -267,10 +305,11 @@ def describe(sec, loc, sectors, now, indent=""):
         known = sectors.get((c["q"], c["r"]))
         tag = ""
         if known:
+            rating = f" T{known['threat']['rating']}" if known.get("threat") else ""
             if known.get("hostiles"):
-                tag = f" hostiles:{len(known['hostiles'])}"
+                tag = f" hostiles:{len(known['hostiles'])}{rating}"
             elif known.get("terrain"):
-                tag = f" {known['terrain']}"
+                tag = f" {known['terrain']}{rating}"
             if not known.get("live"):
                 tag += f" (stale {age(now - known.get('last_seen', now))})"
         exits.append(f"{d}->{c['q']},{c['r']}{tag}")
@@ -364,7 +403,7 @@ def cmd_sector(name, q, r):
     if not sec:
         print(f"sector {q},{r} was never seen by you (scan or visit it)")
         return
-    describe(sec, (int(q), int(r)), sectors, fs["tick"])
+    describe(sec, (int(q), int(r)), sectors, fs["tick"], power=best_power(fs))
 
 
 def cmd_map(name, radius=4):
@@ -380,19 +419,53 @@ def cmd_map(name, radius=4):
         return (abs(dq) + abs(dr) + abs(dq + dr)) // 2
     shown = sorted(k for k in sectors if min(dist(k, c) for c in centers) <= int(radius))
     now = fs["tick"]
+    power = best_power(fs)
     live = sum(1 for s in sectors.values() if s.get("live"))
     print(f"{len(shown)} known sectors within {radius} of your fleets "
           f"(of {len(sectors)} ever seen: {live} live, {len(sectors) - live} remembered). "
-          "LIVE = current; STALE Nm = as last seen N ago.")
+          "LIVE = current; STALE Nm = as last seen N ago. "
+          f"T = threat rating 1-9; odds use your strongest fleet (power {power:.0f}).")
     for k in shown:
         s = sectors[k]
         r = s.get("resources") or {}
         bits = [freshness(s, now), s["terrain"], f"m={r.get('metal')} c={r.get('crystal')} d={r.get('deuterium')}"]
+        t = s.get("threat")
+        if t:
+            ratio = power / max(t["est_power"], 1e-6)
+            bits.append(f"T{t['rating']} {ratio:.1f}x {verdict(ratio)}")
         if s.get("hostiles"): bits.append(f"HOSTILES x{len(s['hostiles'])}")
         if s.get("player_fleets"): bits.append("players: " + ",".join(p["owner_name"] for p in s["player_fleets"]))
         if s.get("salvage"): bits.append("salvage")
         if s.get("site"): bits.append(f"derelict t{s['site']['tier']} {s['site']['risk']}")
         print(f"  {k[0]},{k[1]}: " + "  ".join(bits))
+
+
+def cmd_preview(name, fleet_id, q, r):
+    """Ask the server what jumping a fleet to an adjacent sector costs and meets."""
+    start = log_size(name)
+    send(name, {"action": "preview_move", "fleet_id": int(fleet_id), "target": {"q": int(q), "r": int(r)}})
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        time.sleep(0.4)
+        lines, _ = log_lines(name, start)
+        for m in lines:
+            if m.get("type") == "error":
+                header(name, last_tick(name))
+                print(f"refused: {m.get('code')} {m.get('message')}")
+                return
+            if m.get("type") == "preview_move":
+                header(name, last_tick(name))
+                t = m["threat"]
+                print(f"fleet {m['fleet_id']} -> {m['target']['q']},{m['target']['r']}: "
+                      f"fuel {m['fuel_cost']:.0f} (leaves {m['fuel_after']:.0f}), "
+                      f"{m['hops_home']} hops home need {m['fuel_to_return']:.0f}"
+                      + ("" if m["can_jump"] else "  CANNOT JUMP: not enough fuel")
+                      + ("" if m["can_return"] else "  CANNOT RETURN afterwards"))
+                print(f"threat T{t['rating']}, estimated NPC power {t['est_power']:.0f} ({t['basis']}); "
+                      f"your fleet power {m['fleet_power']:.0f}; ratio {m['ratio']:.1f}: {m['label'].upper()}")
+                return
+    header(name, last_tick(name))
+    print("no answer; try again")
 
 
 def cmd_do(name, payload):
@@ -450,6 +523,9 @@ USAGE = """usage: play <command>
   score [rows]           the leaderboard (default 10 rows); your own row is added if you are below it
   map [radius]           known sectors near your fleets (default radius 4)
   sector Q R             details of one known sector
+  preview FLEET Q R      what jumping to the adjacent sector Q,R costs and meets: fuel, threat T1-T9,
+                         the NPC power there, your fleet's power and the ratio (SAFE >= 3, FAVOURABLE >= 2,
+                         RISKY >= 1.2, else DEADLY)
   do '<json>'            send a command, e.g. play do '{"action":"scan","fleet_id":2}'
                          or standing orders: play do '{"type":"policy_update","fleet_id":2,"preset":"prospect"}'
                          or split ships off: play do '{"action":"split","fleet_id":2,"ship_ids":[41,42]}'
@@ -473,6 +549,7 @@ def main():
     elif cmd == "score" or cmd == "leaderboard": cmd_score(name, *rest[:1])
     elif cmd == "map": cmd_map(name, *rest[:1])
     elif cmd == "sector" and len(rest) == 2: cmd_sector(name, *rest)
+    elif cmd == "preview" and len(rest) == 3: cmd_preview(name, *rest)
     elif cmd == "do" and rest: cmd_do(name, " ".join(rest))
     elif cmd == "events": cmd_events(name, "--mine" in rest)
     elif cmd == "wait":
