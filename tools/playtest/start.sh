@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Start a timed live playtest: server, one headless client per player, the
-# session clock, and supervisors for CLI agents (grok, pi).
+# session clock, supervisors for CLI agents (grok, pi) and a watchdog that restarts
+# dead supervisors and clients. Harness actions go to $RUN/events.log.
 # Usage: tools/playtest/start.sh MINUTES PLAYER:KIND...
-#   KIND = grok | pi | manual   (manual: you drive it, e.g. a Claude subagent)
+#   KIND = grok | pi | manual | dummy   (manual: you drive it, e.g. a Claude subagent;
+#          dummy: a placeholder agent that only sleeps, to test the harness)
 # Example: tools/playtest/start.sh 60 Grok-1:grok Pi-1:pi Sonnet-1:manual
 # Env: IAC_RUN (run dir, default tools/playtest/run), IAC_PORT (default 7777),
 #      IAC_PACE (world pace for the new world: a number or a preset such as
@@ -35,19 +37,29 @@ done
 python3 -c "import json,time,sys;t=time.time();json.dump({'start':t,'end':t+60*int(sys.argv[1])},open(sys.argv[2],'w'))" \
   "$MINUTES" "$RUN/session.json"
 
+. "$HERE/lib.sh"
+mkdir -p "$RUN/bin"
+hlog harness "session start: $MINUTES min, pace ${PACE:-persistent}, port $PORT, players: $*"
+hlog harness "server pid $(cat "$RUN/state/server.pid")"
+
+i=0
 for spec in "$@"; do
   name="${spec%%:*}" kind="${spec#*:}"
   mkdir -p "$RUN/players/$name"
   printf '#!/usr/bin/env bash\nIAC_RUN=%q IAC_PORT=%q IAC_PLAYER=%q exec python3 %q "$@"\n' \
     "$RUN" "$PORT" "$name" "$HERE/play.py" >"$RUN/players/$name/play"
   chmod +x "$RUN/players/$name/play"
-  nohup python3 "$HERE/play.py" daemon "$name" >"$RUN/logs/$name.daemon" 2>&1 &
-  echo $! >"$RUN/state/$name.daemon.pid"
-  if [ "$kind" != manual ]; then
-    nohup setsid "$HERE/supervise.sh" "$kind" "$name" >"$RUN/logs/$name.supervise" 2>&1 &
-    echo $! >"$RUN/state/$name.supervise.pid"
-  fi
+  printf '%s %s\n' "$name" "$kind" >"$RUN/state/slot$i.conf"
+  ln -sf "$HERE/supervise.sh" "$RUN/bin/h$i"
+  ln -sf "$HERE/play.py" "$RUN/bin/c$i"
+  launch_daemon "$i"
+  i=$((i + 1))
 done
+ln -sf "$HERE/watchdog.sh" "$RUN/bin/w"
+for ((j = 0; j < i; j++)); do
+  [ "$(slot_kind "$j")" != manual ] && launch_supervisor "$j"
+done
+launch_watchdog
 
 ip=$(hostname -I | awk '{print $1}')
 echo "playtest running for $MINUTES min in $RUN (pace ${PACE:-persistent})"
