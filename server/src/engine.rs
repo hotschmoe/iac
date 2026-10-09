@@ -10,7 +10,7 @@ use rand::rngs::StdRng;
 
 use iac_shared::hex::Hex;
 use iac_shared::constants::{
-    Resources, ResourceKind, ShipClass, Density, Zone,
+    Resources, ResourceKind, ShipClass, Density,
     STARTING_RESOURCES, STARTING_SCOUTS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, STRANDED_RECOVERY_TICKS,
     HARVEST_COOLDOWN, SHIELD_REGEN_IDLE_TICKS,
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
@@ -28,7 +28,7 @@ use iac_shared::constants::{
     EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_PATROL_RADIUS, POLICY_PATROL_MIN_HULL,
     derelict_tier, derelict_tier_odds, derelict_loot_ranges,
-    defense_grid_scout_units, npc_respawn_delay,
+    defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
 use iac_shared::world::WorldGen;
@@ -38,7 +38,7 @@ use iac_shared::scaling::{
 };
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
-    MovePreview, ResourceEta, StorageFullEvent, StorageNearCapEvent, StorageState,
+    MovePreview, ResourceEta, ThreatBasis, ThreatInfo, StorageFullEvent, StorageNearCapEvent, StorageState,
 };
 
 use crate::auth::{self, TokenHash};
@@ -50,7 +50,7 @@ use crate::intel::KnownSectors;
 // ── Constants ─────────────────────────────────────────────────────
 
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
-pub const MAX_NPC_SHIPS: usize = 32;
+pub const MAX_NPC_SHIPS: usize = scaling::NPC_MAX_SHIPS;
 pub const MAX_COMBAT_FLEETS: usize = 8;
 
 // ── Core Data Types ───────────────────────────────────────────────
@@ -1100,8 +1100,8 @@ impl GameEngine {
             let Some(ov) = self.sector_overrides.get(&key) else { continue; };
             let Some(cleared_tick) = ov.npc_cleared_tick else { continue; };
             let coord = Hex::from_key(key);
-            let zone = Zone::from_distance(coord.dist_from_origin());
-            let delay = self.world.pace.econ_ticks(npc_respawn_delay(zone) as f64);
+            let hours = scaling::npc_respawn_hours(coord.dist_from_origin());
+            let delay = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
             if self.current_tick >= cleared_tick + delay
                 && let Some(ov_mut) = self.sector_overrides.get_mut(&key)
             {
@@ -1565,7 +1565,7 @@ impl GameEngine {
         let defended = effective_defense >= raid_power;
 
         // Raid fleet value, for salvage: treat it as corvette-equivalents.
-        let corvette_power = ship_class_power(ShipClass::Corvette);
+        let corvette_power = scaling::ship_power(ShipClass::Corvette);
         let corvettes = (raid_power / corvette_power).ceil().max(1.0);
         let raid_value = ShipClass::Corvette.build_cost().scale(corvettes);
 
@@ -1719,7 +1719,7 @@ impl GameEngine {
             }
         }
         power += defense_grid_scout_units(player.buildings.defense_grid)
-            * ship_class_power(ShipClass::Scout);
+            * scaling::ship_power(ShipClass::Scout);
         power + player.defences.power(player.buildings.defense_grid)
     }
 
@@ -1928,7 +1928,7 @@ impl GameEngine {
         Ok(())
     }
 
-    /// The fuel side of moving to the adjacent sector `target`; nothing moves.
+    /// What moving to the adjacent sector `target` would cost and meet; nothing moves.
     pub fn preview_move(&self, player_id: u64, fleet_id: u64, target: Hex) -> Result<MovePreview, ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         if !self.world_gen.connected_neighbors(fleet.location).slice().contains(&target) {
@@ -1939,6 +1939,9 @@ impl GameEngine {
         let fuel_after = if can_jump { fleet.fuel - fuel_cost } else { 0.0 };
         let hops_home = self.known_hops_home(player_id, target);
         let fuel_to_return = hops_home as f32 * fuel_cost;
+        let threat = self.known_threat(player_id, target);
+        let fleet_power = fleet_power(fleet);
+        let ratio = fleet_power / threat.est_power.max(f32::EPSILON);
         Ok(MovePreview {
             fleet_id,
             target,
@@ -1948,7 +1951,48 @@ impl GameEngine {
             hops_home,
             fuel_to_return,
             can_return: can_jump && fuel_after >= fuel_to_return,
+            threat,
+            fleet_power,
+            ratio,
+            label: scaling::ratio_label(ratio),
         })
+    }
+
+    /// The threat of `coord` as this player knows it: the truth while the
+    /// sector is live for them, the rating last seen if charted, otherwise
+    /// the ring's estimate.
+    pub fn known_threat(&self, player_id: u64, coord: Hex) -> ThreatInfo {
+        if crate::intel::live_coords(self, player_id).contains(&coord) {
+            return self.sector_threat(coord);
+        }
+        self.known
+            .threat(player_id, coord)
+            .unwrap_or_else(|| ring_threat(coord, ThreatBasis::Estimate))
+    }
+
+    /// The threat of `coord` right now. A group on the spot (or its template
+    /// before it materialises) is rated by its own power; otherwise the ring's.
+    pub fn sector_threat(&self, coord: Hex) -> ThreatInfo {
+        let mut observed: Option<f32> = None;
+        for npc in self.npc_fleets.values().filter(|n| n.location == coord && n.ship_count > 0) {
+            let power: f32 = npc.ships[..npc.ship_count as usize].iter()
+                .filter(|s| s.hull > 0.0)
+                .map(|s| s.weapon_power + (s.hull + s.shield) / 10.0)
+                .sum();
+            *observed.get_or_insert(0.0) += power * behavior_threat_bonus(npc.behavior);
+        }
+        if observed.is_none()
+            && let Some(tmpl) = self.pending_template_npc(coord)
+        {
+            observed = Some(tmpl.power() * behavior_threat_bonus(tmpl.behavior));
+        }
+        match observed {
+            Some(est_power) => ThreatInfo { rating: scaling::threat_rating(est_power), est_power, basis: ThreatBasis::Observed },
+            None => {
+                let lair = self.world_gen.generate_sector(coord).npc_template.is_some();
+                ring_threat(coord, if lair { ThreatBasis::Template } else { ThreatBasis::Estimate })
+            }
+        }
     }
 
     /// Fuel for one jump of this fleet.
@@ -2506,14 +2550,17 @@ impl GameEngine {
         };
 
         let mut hostiles_detected: u16 = 0;
+        let mut threats = Vec::with_capacity(revealed.len());
         for coord in &revealed {
             if self.sector_has_hostiles(*coord) { hostiles_detected += 1; }
+            threats.push(iac_shared::protocol::SectorThreat { sector: *coord, threat: self.sector_threat(*coord) });
         }
 
         let mut signals: Vec<iac_shared::protocol::SignalContact> = Vec::new();
         for coord in &fringe {
             if let Some(signal) = self.faint_signal_at(*coord) {
-                signals.push(iac_shared::protocol::SignalContact { sector: *coord, signal });
+                let threat_band = scaling::threat_band(self.sector_threat(*coord).rating);
+                signals.push(iac_shared::protocol::SignalContact { sector: *coord, signal, threat_band });
             }
         }
 
@@ -2538,6 +2585,7 @@ impl GameEngine {
                 sector: origin,
                 sectors_revealed,
                 hostiles_detected,
+                threats,
                 signals,
             }),
         });
@@ -3150,7 +3198,7 @@ impl GameEngine {
             .unwrap_or(false);
         if cleared { return 0.0; }
         if let Some(tmpl) = &self.world_gen.generate_sector(coord).npc_template {
-            return ship_class_power(tmpl.ship_class) * tmpl.count as f32 * tmpl.stat_multiplier;
+            return tmpl.power();
         }
         0.0
     }
@@ -3308,7 +3356,7 @@ impl GameEngine {
         if let Some((tier, bumps)) = self.derelict_site_at(location) {
             let fleet = self.fleets.get(&fleet_id).unwrap();
             let chance = self.site_ambush_chance(fleet, tier, bumps);
-            let guardian_power = ship_class_power(ShipClass::Frigate) * 4.0 * tier as f32;
+            let guardian_power = scaling::ship_power(ShipClass::Frigate) * 4.0 * tier as f32;
             let safe = chance < 0.25
                 || fleet_power(fleet) * 10.0 >= guardian_power * params.engage_ratio_x10 as f32;
             if safe && self.handle_explore_site(owner, fleet_id).is_ok() {
@@ -4038,6 +4086,17 @@ fn npc_salvage(npc: &NpcFleet, pace: &Pace) -> Resources {
     npc.ships[0].ship_class.build_cost().scale(SALVAGE_FRACTION * pace.finds_mult())
 }
 
+fn behavior_threat_bonus(behavior: iac_shared::world::NpcBehaviorType) -> f32 {
+    use iac_shared::world::NpcBehaviorType::{Aggressive, Swarm};
+    if matches!(behavior, Aggressive | Swarm) { scaling::THREAT_AGGRESSIVE_BONUS } else { 1.0 }
+}
+
+/// The threat the ring alone implies, whoever lives in the sector.
+fn ring_threat(coord: Hex, basis: ThreatBasis) -> ThreatInfo {
+    let est_power = scaling::npc_power(coord.dist_from_origin());
+    ThreatInfo { rating: scaling::threat_rating(est_power), est_power, basis }
+}
+
 fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
     let mut min_speed: u8 = 255;
     for ship in &fleet.ships[0..fleet.ship_count] {
@@ -4086,12 +4145,6 @@ fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f32 {
     total_fuel
         * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
         * scaling::fuel_depot_modifier(player.buildings.fuel_depot)
-}
-
-/// Rough combat power of one ship of this class, used for raid sizing.
-fn ship_class_power(class: ShipClass) -> f32 {
-    let s = class.base_stats();
-    s.weapon + (s.hull + s.shield) / 10.0
 }
 
 /// Live combat power of a whole fleet.
@@ -4503,7 +4556,7 @@ mod tests {
         let with_grid = engine.home_defense_power(pid);
         assert!(with_grid > base, "grid should add power: {base} -> {with_grid}");
 
-        let expected_bonus = defense_grid_scout_units(3) * ship_class_power(ShipClass::Scout);
+        let expected_bonus = defense_grid_scout_units(3) * scaling::ship_power(ShipClass::Scout);
         assert!((with_grid - base - expected_bonus).abs() < 0.01);
     }
 
@@ -4798,6 +4851,7 @@ mod tests {
                 if let Some(t) = engine.world_gen.generate_sector(coord).npc_template
                     && t.behavior == behavior
                     && t.count == 1
+                    && t.ship_class == ShipClass::Scout
                     && engine.derelict_site_at(coord).is_none()
                 {
                     return coord;
@@ -6070,6 +6124,132 @@ mod tests {
         assert_eq!(p.fuel_after, 0.0);
 
         assert_eq!(engine.preview_move(pid, fid, chain[2]), Err(ErrorCode::NoConnection), "only adjacent sectors");
+    }
+
+    /// A sector and a connected neighbour whose template holds a group.
+    fn lair_next_to(engine: &GameEngine) -> (Hex, Hex) {
+        for q in -12i16..12 {
+            for r in -12i16..12 {
+                let from = Hex { q, r };
+                for &to in engine.world_gen.connected_neighbors(from).slice() {
+                    let lair = engine.world_gen.generate_sector(to).npc_template.is_some();
+                    if lair && to.dist_from_origin() >= 3 && !engine.players.values().any(|p| p.homeworld == to) {
+                        return (from, to);
+                    }
+                }
+            }
+        }
+        panic!("no lair in the window");
+    }
+
+    #[test]
+    fn preview_move_rates_the_destination_and_the_ratio() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Rater");
+        let (from, to) = lair_next_to(&engine);
+        place(&mut engine, fid, from, 1000.0);
+
+        let unseen = engine.preview_move(pid, fid, to).unwrap();
+        assert_eq!(unseen.threat.basis, ThreatBasis::Estimate, "an unseen sector is rated by distance alone");
+        let ring = scaling::npc_power(to.dist_from_origin());
+        assert_eq!(unseen.threat.est_power, ring);
+        assert_eq!(unseen.threat.rating, scaling::threat_rating(ring));
+
+        engine.handle_scan(pid, fid).unwrap();
+        let seen = engine.preview_move(pid, fid, to).unwrap();
+        let tmpl = engine.world_gen.generate_sector(to).npc_template.unwrap();
+        assert_eq!(seen.threat.basis, ThreatBasis::Observed);
+        let want = tmpl.power() * behavior_threat_bonus(tmpl.behavior);
+        assert!((seen.threat.est_power - want).abs() < 1e-3);
+        assert_eq!(seen.threat.rating, scaling::threat_rating(want));
+        assert_eq!(seen.fleet_power, fleet_power(&engine.fleets[&fid]));
+        assert!((seen.ratio - seen.fleet_power / seen.threat.est_power).abs() < 1e-5);
+        assert_eq!(seen.label, scaling::ratio_label(seen.ratio));
+
+        for ship in &mut engine.fleets.get_mut(&fid).unwrap().ships[..] {
+            ship.weapon_power = 5000.0;
+        }
+        assert_eq!(engine.preview_move(pid, fid, to).unwrap().label, scaling::RatioLabel::Safe);
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        for ship in &mut f.ships[..] {
+            ship.weapon_power = 0.0;
+            ship.hull = 1.0;
+            ship.shield = 0.0;
+        }
+        assert_eq!(engine.preview_move(pid, fid, to).unwrap().label, scaling::RatioLabel::Deadly);
+    }
+
+    #[test]
+    fn a_sector_is_rated_by_its_group_else_by_its_ring() {
+        let mut engine = test_engine();
+        let (_, to) = lair_next_to(&engine);
+        let tmpl = engine.world_gen.generate_sector(to).npc_template.unwrap();
+        let before = engine.sector_threat(to);
+        assert_eq!(before.basis, ThreatBasis::Observed, "the template group counts before it spawns");
+
+        engine.ensure_override(to.to_key()).npc_cleared_tick = Some(0);
+        let cleared = engine.sector_threat(to);
+        assert_eq!(cleared.basis, ThreatBasis::Template);
+        assert_eq!(cleared.est_power, scaling::npc_power(to.dist_from_origin()));
+
+        engine.ensure_override(to.to_key()).npc_cleared_tick = None;
+        let npc = engine.spawn_npc_fleet(to, tmpl.clone(), template_npc_id(to)).unwrap();
+        let live = engine.sector_threat(to);
+        assert!((live.est_power - npc.power * behavior_threat_bonus(tmpl.behavior)).abs() < 1e-3);
+
+        engine.npc_fleets.get_mut(&npc.id).unwrap().ships[0].hull = 0.0;
+        let hurt = engine.sector_threat(to);
+        assert!(hurt.est_power <= live.est_power);
+    }
+
+    #[test]
+    fn a_spawned_group_has_the_templates_power_and_follows_the_ring() {
+        let mut engine = test_engine();
+        let mut last = 0.0;
+        for dist in [1u16, 4, 8, 12, 16, 20, 25, 30] {
+            let (ship_class, count, stat_multiplier) = scaling::npc_composition(dist);
+            let tmpl = iac_shared::world::NpcTemplate {
+                ship_class, count, stat_multiplier,
+                behavior: iac_shared::world::NpcBehaviorType::Patrol,
+            };
+            let npc = engine.spawn_npc_fleet(Hex { q: dist as i16, r: 0 }, tmpl.clone(), 9_000 + u64::from(dist)).unwrap();
+            assert!((npc.power - tmpl.power()).abs() < 0.01 * tmpl.power(), "d={dist}");
+            assert!(npc.power > last, "power never drops going out: d={dist}");
+            last = npc.power;
+        }
+    }
+
+    #[test]
+    fn scans_report_the_threat_of_what_they_reveal() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Scanner");
+        let (from, _) = lair_next_to(&engine);
+        place(&mut engine, fid, from, 1000.0);
+        engine.handle_scan(pid, fid).unwrap();
+        let scan = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::ScanCompleted(s) => Some(s),
+            _ => None,
+        }).unwrap();
+        assert_eq!(scan.threats.len(), scan.sectors_revealed as usize);
+        for t in &scan.threats {
+            assert_eq!(t.threat, engine.sector_threat(t.sector));
+        }
+        for signal in &scan.signals {
+            assert_eq!(signal.threat_band, scaling::threat_band(engine.sector_threat(signal.sector).rating));
+            assert!((1..=3).contains(&signal.threat_band));
+        }
+    }
+
+    #[test]
+    fn a_world_from_another_generator_is_refused() {
+        let path = temp_world("old_worldgen");
+        drop(engine_at(&path, None).unwrap());
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute("UPDATE world_meta SET worldgen_version = 1", []).unwrap();
+        }
+        let err = engine_at(&path, None).err().expect("a world from the old generator must not start");
+        assert!(err.to_string().contains("worldgen version 1"), "{err}");
     }
 
     fn give_defences(engine: &mut GameEngine, pid: u64, turrets: u32, lancers: u32) {

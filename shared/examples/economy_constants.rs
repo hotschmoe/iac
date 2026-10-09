@@ -84,6 +84,14 @@ fn main() {
     }
     out.insert("storage_caps".into(), Value::Object(storage));
 
+    out.insert("npc".into(), json!((1..=60u16).map(|d| {
+        let (class, count, mult) = npc_composition(d);
+        json!({
+            "dist": d, "power": npc_power(d), "class": format!("{class:?}"), "count": count, "mult": mult,
+            "presence": npc_presence_pct(d) / 100.0, "passive": npc_passive_share(d),
+            "respawn_h": npc_respawn_hours(d), "threat": threat_rating(npc_power(d)),
+        })
+    }).collect::<Vec<_>>()));
     out.insert("presets".into(), json!(PRESETS.iter().map(|p| (p.name.to_string(), json!(p.pace))).collect::<Map<_, _>>()));
     out.insert("raid_power_base".into(), json!(
         [1.0f32, 10.0, 100.0, 500.0, 1000.0, 2000.0].iter().map(|s| (s.to_string(), json!(raid_power_base(*s)))).collect::<Map<_, _>>()

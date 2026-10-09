@@ -22,7 +22,7 @@ use iac_shared::constants::{Density, ResourceKind, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::*;
-use iac_shared::scaling::{BuildingLevels, BuildingType, DefenceKind, ResearchLevels, ResearchType, ShipyardItem};
+use iac_shared::scaling::{BuildingLevels, BuildingType, DefenceKind, RatioLabel, ResearchLevels, ResearchType, ShipyardItem};
 
 // ── Plumbing ──────────────────────────────────────────────────────
 
@@ -149,6 +149,7 @@ fn rich_sector() -> SectorState {
         salvage: Some(res(40.0, 12.0, 2.5)),
         salvage_despawn_tick: Some(4880),
         site: Some(SiteBrief { tier: 2, risk: SiteRisk::Uneasy }),
+        threat: ThreatInfo { rating: 4, est_power: 46.5, basis: ThreatBasis::Observed },
         last_seen: 4821,
         live: true,
     }
@@ -169,6 +170,7 @@ fn bare_sector() -> SectorState {
         salvage: None,
         salvage_despawn_tick: None,
         site: None,
+        threat: ThreatInfo { rating: 1, est_power: 4.0, basis: ThreatBasis::Estimate },
         last_seen: 4821,
         live: true,
     }
@@ -189,6 +191,7 @@ fn anomaly_sector() -> SectorState {
         salvage: Some(res(60.0, 15.0, 9.0)),
         salvage_despawn_tick: Some(4300),
         site: Some(SiteBrief { tier: 5, risk: SiteRisk::Hot }),
+        threat: ThreatInfo { rating: 5, est_power: 65.0, basis: ThreatBasis::Template },
         last_seen: 4240,
         live: false,
     }
@@ -701,6 +704,10 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             hops_home: 3,
             fuel_to_return: 94.5,
             can_return: true,
+            threat: ThreatInfo { rating: 3, est_power: 20.0, basis: ThreatBasis::Estimate },
+            fleet_power: 60.0,
+            ratio: 3.0,
+            label: RatioLabel::Safe,
         }),
     ));
     v.push((
@@ -714,6 +721,10 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             hops_home: 4,
             fuel_to_return: 126.0,
             can_return: false,
+            threat: ThreatInfo { rating: 4, est_power: 46.5, basis: ThreatBasis::Observed },
+            fleet_power: 60.0,
+            ratio: 1.29,
+            label: RatioLabel::Risky,
         }),
     ));
     v.push((
@@ -856,11 +867,15 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             sector: h(1, 1),
             sectors_revealed: 7,
             hostiles_detected: 2,
+            threats: vec![
+                SectorThreat { sector: h(2, 1), threat: ThreatInfo { rating: 2, est_power: 7.5, basis: ThreatBasis::Observed } },
+                SectorThreat { sector: h(1, 2), threat: ThreatInfo { rating: 1, est_power: 4.9, basis: ThreatBasis::Estimate } },
+            ],
             signals: vec![
-                SignalContact { sector: h(4, 1), signal: SignalKind::RichOre },
-                SignalContact { sector: h(-3, 2), signal: SignalKind::HostileMass },
-                SignalContact { sector: h(0, 5), signal: SignalKind::Derelict },
-                SignalContact { sector: h(6, -6), signal: SignalKind::Anomaly },
+                SignalContact { sector: h(4, 1), signal: SignalKind::RichOre, threat_band: 1 },
+                SignalContact { sector: h(-3, 2), signal: SignalKind::HostileMass, threat_band: 2 },
+                SignalContact { sector: h(0, 5), signal: SignalKind::Derelict, threat_band: 1 },
+                SignalContact { sector: h(6, -6), signal: SignalKind::Anomaly, threat_band: 3 },
             ],
         })),
         ("no_signals", EventKind::ScanCompleted(ScanCompletedEvent {
@@ -868,6 +883,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             sector: h(1, 1),
             sectors_revealed: 0,
             hostiles_detected: 0,
+            threats: vec![],
             signals: vec![],
         })),
         ("", EventKind::RaidIncoming(RaidIncomingEvent {
@@ -986,6 +1002,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
                 "location": {"q": 1, "r": 1}, "terrain": "Nebula",
                 "resources": {"metal": "Sparse", "crystal": "None", "deuterium": "None"},
                 "connections": [], "last_seen": 9, "live": true,
+                "threat": {"rating": 1, "est_power": 4.0, "basis": "estimate"},
                 "player_fleets": [{"id": 3, "owner_name": "x", "ship_count": 2}]
             }]}),
         ),

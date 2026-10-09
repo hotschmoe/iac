@@ -174,6 +174,22 @@ def check_storage_raids_misc(sim, rust):
             problems.append(f"sim preset {p.name} (P={p.P}) is not a Rust preset: {rust['presets']}")
 
 
+def check_npc_gradient(sim, rust):
+    for row in rust["npc"]:
+        d = row["dist"]
+        check(f"npc power d={d}", row["power"], sim.npc_power(d), 1e-4)
+        check(f"threat d={d}", row["threat"], sim.threat(d))
+        if row["class"].lower() != sim.npc_class(d):
+            problems.append(f"npc class d={d}: rust {row['class']} vs sim {sim.npc_class(d)}")
+        mult = min(1.3, 0.6 + 0.02 * d)
+        want = min(32, max(1, round(sim.npc_power(d) / (sim.ship_power(sim.npc_class(d)) * mult))))
+        check(f"npc count d={d}", row["count"], want)
+        check(f"npc stat multiplier d={d}", row["mult"], mult, 1e-5)
+        check(f"npc presence d={d}", row["presence"], sim.npc_presence(d), 1e-5)
+        check(f"npc passive share d={d}", row["passive"], sim.npc_passive_frac(d), 1e-5)
+        check(f"npc respawn d={d}", row["respawn_h"], sim.npc_respawn_h(d), 1e-5)
+
+
 def main():
     sim = load_sim()
     rust = rust_numbers()
@@ -181,13 +197,14 @@ def main():
     check_research(sim, rust)
     check_ships_and_defences(sim, rust)
     check_storage_raids_misc(sim, rust)
+    check_npc_gradient(sim, rust)
     if problems:
         print(f"{len(problems)} mismatch(es) between shared/ and docs/design/economy/sim.py:")
         for p in problems[:60]:
             print("  " + p)
         sys.exit(1)
     print("economy constants agree with sim.py "
-          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets)")
+          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient)")
 
 
 if __name__ == "__main__":

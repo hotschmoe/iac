@@ -29,7 +29,12 @@
           "deuterium": "None",
           "metal": "Sparse"
         },
-        "terrain": "Nebula"
+        "terrain": "Nebula",
+        "threat": {
+          "basis": "estimate",
+          "est_power": 4.0,
+          "rating": 1
+        }
       }
     ],
     "tick": 9,
@@ -58,7 +63,12 @@
           "deuterium": "None",
           "metal": "Sparse"
         },
-        "terrain": "Nebula"
+        "terrain": "Nebula",
+        "threat": {
+          "basis": "estimate",
+          "est_power": 4.0,
+          "rating": 1
+        }
       }
     ],
     "tick": 9,

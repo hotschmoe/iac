@@ -842,6 +842,112 @@ pub fn raid_power_base(econ: f32) -> f32 {
     5.0 + 11.0 * econ.powf(0.75)
 }
 
+// ── Threat and the NPC gradient ──────────────────────────────────
+
+pub const NPC_POWER_BASE: f32 = 4.0;
+/// NPC group power grows by this factor per ring.
+pub const NPC_POWER_GROWTH: f32 = 1.22;
+pub const NPC_MAX_SHIPS: usize = 32;
+pub const MAX_THREAT: u8 = 9;
+/// Observed Aggressive and Swarm groups are rated this much stronger than
+/// their ships add up to: they come to you.
+pub const THREAT_AGGRESSIVE_BONUS: f32 = 1.25;
+
+/// How much one ship counts on the scale raids, threat and ratios share.
+pub fn ship_power(class: ShipClass) -> f32 {
+    let s = class.base_stats();
+    s.weapon + (s.hull + s.shield) / 10.0
+}
+
+/// Target combat power of the NPC group guarding a sector `dist` rings out.
+pub fn npc_power(dist: u16) -> f32 {
+    NPC_POWER_BASE * NPC_POWER_GROWTH.powi(dist.max(1) as i32 - 1)
+}
+
+pub fn npc_class(dist: u16) -> ShipClass {
+    match dist {
+        0..=5 => ShipClass::Scout,
+        6..=12 => ShipClass::Corvette,
+        13..=20 => ShipClass::Frigate,
+        _ => ShipClass::Cruiser,
+    }
+}
+
+pub fn npc_stat_multiplier(dist: u16) -> f32 {
+    (0.6 + 0.02 * dist as f32).min(1.3)
+}
+
+/// (class, ship count, stat multiplier) of the group at `dist`. The count
+/// makes the group's real power land on `npc_power(dist)`.
+pub fn npc_composition(dist: u16) -> (ShipClass, u8, f32) {
+    let class = npc_class(dist);
+    let m = npc_stat_multiplier(dist);
+    let count = (npc_power(dist) / (ship_power(class) * m)).round();
+    (class, count.clamp(1.0, NPC_MAX_SHIPS as f32) as u8, m)
+}
+
+/// Chance in percent that a sector at `dist` holds a group.
+pub fn npc_presence_pct(dist: u16) -> f32 {
+    (25.0 + 2.5 * dist as f32).min(85.0)
+}
+
+/// Share (0 to 1) of groups that stay passive.
+pub fn npc_passive_share(dist: u16) -> f32 {
+    (0.5 - 0.08 * (dist as f32 - 8.0)).clamp(0.0, 0.5)
+}
+
+/// Game hours before a cleared group returns.
+pub fn npc_respawn_hours(dist: u16) -> f32 {
+    2.0 + 0.25 * dist as f32
+}
+
+/// T1 to T9: one step per doubling of `power` over 4.
+pub fn threat_rating(power: f32) -> u8 {
+    if power.is_nan() || power <= NPC_POWER_BASE {
+        return 1;
+    }
+    (1.0 + (power / NPC_POWER_BASE).log2().floor()).clamp(1.0, MAX_THREAT as f32) as u8
+}
+
+/// Coarse band of a rating: 1 for T1 to T3, 2 for T4 to T6, 3 for T7 to T9.
+/// Derelict tiers follow it.
+pub fn threat_band(rating: u8) -> u8 {
+    rating.clamp(1, MAX_THREAT).div_ceil(3)
+}
+
+/// How a fleet's power compares with what waits in a sector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RatioLabel {
+    Safe,
+    Favourable,
+    Risky,
+    Deadly,
+}
+
+impl RatioLabel {
+    pub fn label(self) -> &'static str {
+        match self {
+            RatioLabel::Safe => "SAFE",
+            RatioLabel::Favourable => "FAVOURABLE",
+            RatioLabel::Risky => "RISKY",
+            RatioLabel::Deadly => "DEADLY",
+        }
+    }
+}
+
+pub fn ratio_label(ratio: f32) -> RatioLabel {
+    if ratio >= 3.0 {
+        RatioLabel::Safe
+    } else if ratio >= 2.0 {
+        RatioLabel::Favourable
+    } else if ratio >= 1.2 {
+        RatioLabel::Risky
+    } else {
+        RatioLabel::Deadly
+    }
+}
+
 #[cfg(test)]
 mod golden_tests {
     //! Values copied from the generated tables in docs/design/economy/spec.md.
@@ -1125,6 +1231,76 @@ mod golden_tests {
         assert_eq!(econ_points(&b, &r), 0.0);
         r.set(ResearchType::CruiserTech, 1);
         assert!((econ_points(&b, &r) - (8000.0 + 7500.0 + 5000.0) / 1000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn npc_power_grows_a_fixed_step_per_ring_with_no_cliff() {
+        for (dist, want) in [(1, 4), (2, 5), (4, 7), (6, 11), (8, 16), (9, 20), (10, 24), (12, 36), (15, 65), (18, 118), (20, 175), (21, 213), (25, 473), (30, 1278), (35, 3454)] {
+            assert_eq!(npc_power(dist).round() as u32, want, "d={dist}");
+        }
+        for dist in 1..60 {
+            let step = npc_power(dist + 1) / npc_power(dist);
+            assert!((step - 1.22).abs() < 1e-3, "ring {dist} to {}: {step}", dist + 1);
+        }
+    }
+
+    #[test]
+    fn threat_ratings_start_at_the_spec_distances() {
+        let first: Vec<u16> = (1..=MAX_THREAT)
+            .map(|t| (1..200).find(|&d| threat_rating(npc_power(d)) >= t).unwrap())
+            .collect();
+        assert_eq!(first, vec![1, 5, 8, 12, 15, 19, 22, 26, 29]);
+        assert_eq!(threat_rating(npc_power(500)), MAX_THREAT);
+        assert_eq!(threat_rating(0.0), 1);
+        assert_eq!((threat_band(3), threat_band(4), threat_band(6), threat_band(7), threat_band(9)), (1, 2, 2, 3, 3));
+    }
+
+    #[test]
+    fn npc_composition_matches_the_table() {
+        for (dist, class, count) in [
+            (1, ShipClass::Scout, 1), (4, ShipClass::Scout, 1), (6, ShipClass::Corvette, 1), (9, ShipClass::Corvette, 1),
+            (12, ShipClass::Corvette, 2), (15, ShipClass::Frigate, 1), (18, ShipClass::Frigate, 3), (20, ShipClass::Frigate, 4),
+            (21, ShipClass::Cruiser, 2), (25, ShipClass::Cruiser, 4), (30, ShipClass::Cruiser, 10), (35, ShipClass::Cruiser, 24),
+        ] {
+            let (c, n, m) = npc_composition(dist);
+            assert_eq!((c, n), (class, count), "d={dist}");
+            assert!((m - (0.6 + 0.02 * dist as f32).min(1.3)).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn the_composition_adds_up_to_the_power() {
+        for dist in 1..=40 {
+            let (class, count, m) = npc_composition(dist);
+            let real = ship_power(class) * m * f32::from(count);
+            let unit = ship_power(class) * m;
+            let target = npc_power(dist);
+            let capped = usize::from(count) == NPC_MAX_SHIPS;
+            assert!(count == 1 || capped || (real - target).abs() <= unit / 2.0 + 1e-3, "d={dist}: {real} vs {target}");
+            if count == 1 {
+                assert!(real >= target * 0.5, "d={dist}");
+            }
+        }
+    }
+
+    #[test]
+    fn presence_passive_share_and_respawn_follow_the_ring() {
+        assert_eq!(npc_presence_pct(1), 27.5);
+        assert_eq!(npc_presence_pct(20), 75.0);
+        assert_eq!(npc_presence_pct(60), 85.0);
+        assert_eq!(npc_passive_share(3), 0.5);
+        assert_eq!(npc_passive_share(8), 0.5);
+        assert!((npc_passive_share(10) - 0.34).abs() < 1e-6);
+        assert_eq!(npc_passive_share(15), 0.0);
+        assert_eq!(npc_respawn_hours(4), 3.0);
+        assert_eq!(npc_respawn_hours(35), 10.75);
+    }
+
+    #[test]
+    fn ratios_get_the_spec_labels() {
+        let labels: Vec<_> = [3.0, 2.99, 2.0, 1.99, 1.2, 1.19, 0.0].iter().map(|&r| ratio_label(r)).collect();
+        use RatioLabel::*;
+        assert_eq!(labels, vec![Safe, Favourable, Favourable, Risky, Risky, Deadly, Deadly]);
     }
 
     #[test]

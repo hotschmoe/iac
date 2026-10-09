@@ -1169,7 +1169,12 @@
         "risk": "uneasy",
         "tier": 2
       },
-      "terrain": "AsteroidField"
+      "terrain": "AsteroidField",
+      "threat": {
+        "basis": "observed",
+        "est_power": 46.5,
+        "rating": 4
+      }
     },
     {
       "connections": [],
@@ -1184,7 +1189,12 @@
         "deuterium": "None",
         "metal": "None"
       },
-      "terrain": "Empty"
+      "terrain": "Empty",
+      "threat": {
+        "basis": "estimate",
+        "est_power": 4.0,
+        "rating": 1
+      }
     },
     {
       "connections": [
@@ -1220,7 +1230,12 @@
         "risk": "hot",
         "tier": 5
       },
-      "terrain": "Anomaly"
+      "terrain": "Anomaly",
+      "threat": {
+        "basis": "template",
+        "est_power": 65.0,
+        "rating": 5
+      }
     }
   ],
   "player": {

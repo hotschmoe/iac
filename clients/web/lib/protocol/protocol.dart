@@ -311,7 +311,52 @@ enum SiteRisk {
   static SiteRisk fromJson(Object? v) => _enumFrom(values, v, _snake);
 }
 
+enum ThreatBasis {
+  observed,
+  template,
+  estimate;
+
+  String get wire => _snake(name);
+  String toJson() => wire;
+  static ThreatBasis fromJson(Object? v) => _enumFrom(values, v, _snake);
+}
+
+/// Verdict on a fleet-power to threat-power ratio: safe from 3.0, favourable
+/// from 2.0, risky from 1.2, deadly below.
+enum RatioLabel {
+  safe('SAFE'),
+  favourable('FAVOURABLE'),
+  risky('RISKY'),
+  deadly('DEADLY');
+
+  final String label;
+  const RatioLabel(this.label);
+
+  String get wire => _snake(name);
+  String toJson() => wire;
+  static RatioLabel fromJson(Object? v) => _enumFrom(values, v, _snake);
+}
+
 // ── Shared structs ────────────────────────────────────────────────
+
+/// How dangerous a sector is: T1 to T9 from the power of what is there.
+class ThreatInfo {
+  final int rating;
+  final double estPower;
+  final ThreatBasis basis;
+  const ThreatInfo({required this.rating, required this.estPower, required this.basis});
+
+  factory ThreatInfo.fromJson(Object? json) {
+    final m = _obj(json);
+    return ThreatInfo(
+      rating: _i(m['rating']),
+      estPower: _f(m['est_power']),
+      basis: ThreatBasis.fromJson(m['basis']),
+    );
+  }
+
+  Json toJson() => {'rating': rating, 'est_power': estPower, 'basis': basis.toJson()};
+}
 
 class Resources {
   final double metal;
@@ -910,6 +955,10 @@ class MovePreview extends ServerMessage {
   final int hopsHome;
   final double fuelToReturn;
   final bool canReturn;
+  final ThreatInfo threat;
+  final double fleetPower;
+  final double ratio;
+  final RatioLabel label;
   const MovePreview({
     required this.fleetId,
     required this.target,
@@ -919,6 +968,10 @@ class MovePreview extends ServerMessage {
     required this.hopsHome,
     required this.fuelToReturn,
     required this.canReturn,
+    required this.threat,
+    required this.fleetPower,
+    required this.ratio,
+    required this.label,
   });
 
   factory MovePreview.fromJson(Json m) => MovePreview(
@@ -930,6 +983,10 @@ class MovePreview extends ServerMessage {
         hopsHome: _i(m['hops_home']),
         fuelToReturn: _f(m['fuel_to_return']),
         canReturn: m['can_return'] as bool,
+        threat: ThreatInfo.fromJson(m['threat']),
+        fleetPower: _f(m['fleet_power']),
+        ratio: _f(m['ratio']),
+        label: RatioLabel.fromJson(m['label']),
       );
 
   @override
@@ -943,6 +1000,10 @@ class MovePreview extends ServerMessage {
         'hops_home': hopsHome,
         'fuel_to_return': fuelToReturn,
         'can_return': canReturn,
+        'threat': threat.toJson(),
+        'fleet_power': fleetPower,
+        'ratio': ratio,
+        'label': label.toJson(),
       };
 }
 
@@ -1132,6 +1193,9 @@ class SectorState {
   final int? salvageDespawnTick;
   final SiteBrief? site;
 
+  /// Danger of the sector; when not [live] it is the rating last seen.
+  final ThreatInfo threat;
+
   /// Tick this sector was last observed; the current tick when [live].
   final int lastSeen;
 
@@ -1149,6 +1213,7 @@ class SectorState {
     this.salvage,
     this.salvageDespawnTick,
     this.site,
+    required this.threat,
     required this.lastSeen,
     required this.live,
   });
@@ -1165,6 +1230,7 @@ class SectorState {
       salvage: _opt(m['salvage'], Resources.fromJson),
       salvageDespawnTick: _opt(m['salvage_despawn_tick'], _i),
       site: _opt(m['site'], SiteBrief.fromJson),
+      threat: ThreatInfo.fromJson(m['threat']),
       lastSeen: _i(m['last_seen']),
       live: m['live'] as bool,
     );
@@ -1176,6 +1242,7 @@ class SectorState {
       'terrain': terrain.toJson(),
       'resources': resources.toJson(),
       'connections': connections.map((e) => e.toJson()).toList(),
+      'threat': threat.toJson(),
       'last_seen': lastSeen,
       'live': live,
     };
@@ -2529,12 +2596,14 @@ class ScanCompletedEvent extends EventKind {
   final Hex sector;
   final int sectorsRevealed;
   final int hostilesDetected;
+  final List<SectorThreat> threats;
   final List<SignalContact> signals;
   const ScanCompletedEvent({
     required this.fleetId,
     required this.sector,
     required this.sectorsRevealed,
     required this.hostilesDetected,
+    this.threats = const [],
     this.signals = const [],
   });
 
@@ -2543,6 +2612,7 @@ class ScanCompletedEvent extends EventKind {
         sector: Hex.fromJson(m['sector']),
         sectorsRevealed: _i(m['sectors_revealed']),
         hostilesDetected: _i(m['hostiles_detected']),
+        threats: m['threats'] == null ? const [] : _list(m['threats'], SectorThreat.fromJson),
         signals: m['signals'] == null ? const [] : _list(m['signals'], SignalContact.fromJson),
       );
 
@@ -2556,6 +2626,7 @@ class ScanCompletedEvent extends EventKind {
       'hostiles_detected': hostilesDetected,
     };
     // skip_serializing_if = "Vec::is_empty"
+    if (threats.isNotEmpty) m['threats'] = threats.map((e) => e.toJson()).toList();
     if (signals.isNotEmpty) m['signals'] = signals.map((e) => e.toJson()).toList();
     return m;
   }
@@ -2564,14 +2635,34 @@ class ScanCompletedEvent extends EventKind {
 class SignalContact {
   final Hex sector;
   final SignalKind signal;
-  const SignalContact({required this.sector, required this.signal});
+
+  /// Coarse danger: 1 for T1 to T3, 2 for T4 to T6, 3 for T7 to T9.
+  final int threatBand;
+  const SignalContact({required this.sector, required this.signal, required this.threatBand});
 
   factory SignalContact.fromJson(Object? json) {
     final m = _obj(json);
-    return SignalContact(sector: Hex.fromJson(m['sector']), signal: SignalKind.fromJson(m['signal']));
+    return SignalContact(
+      sector: Hex.fromJson(m['sector']),
+      signal: SignalKind.fromJson(m['signal']),
+      threatBand: _i(m['threat_band']),
+    );
   }
 
-  Json toJson() => {'sector': sector.toJson(), 'signal': signal.toJson()};
+  Json toJson() => {'sector': sector.toJson(), 'signal': signal.toJson(), 'threat_band': threatBand};
+}
+
+class SectorThreat {
+  final Hex sector;
+  final ThreatInfo threat;
+  const SectorThreat({required this.sector, required this.threat});
+
+  factory SectorThreat.fromJson(Object? json) {
+    final m = _obj(json);
+    return SectorThreat(sector: Hex.fromJson(m['sector']), threat: ThreatInfo.fromJson(m['threat']));
+  }
+
+  Json toJson() => {'sector': sector.toJson(), 'threat': threat.toJson()};
 }
 
 class RaidIncomingEvent extends EventKind {

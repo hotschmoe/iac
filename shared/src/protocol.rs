@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{Density, ResourceKind, ShipClass, TerrainType};
 use crate::scaling::{
-    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, ResearchLevels, ResearchPrereqKind, ResearchType,
-    ShipyardItem,
+    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, RatioLabel, ResearchLevels, ResearchPrereqKind,
+    ResearchType, ShipyardItem,
 };
 use crate::hex::Hex;
 use crate::pace::Pace;
@@ -289,11 +289,12 @@ pub struct LeaderboardEntry {
     pub explore: f32,
 }
 
-/// Answer to `preview_move`: the fuel side of a jump.
+/// Answer to `preview_move`: what a jump costs and what waits at the far end.
 ///
-/// Threat, power ratio and a verdict label for the destination are reserved
-/// for the threat rating work (`docs/design/economy/spec.md` section 7) and
-/// are not sent yet.
+/// `threat` is what the player knows of the target sector (observed if it is
+/// live, the remembered rating if charted, else the distance estimate);
+/// `ratio` is `fleet_power / threat.est_power` and `label` its verdict
+/// (>= 3 safe, >= 2 favourable, >= 1.2 risky, else deadly).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MovePreview {
     pub fleet_id: u64,
@@ -310,6 +311,33 @@ pub struct MovePreview {
     pub fuel_to_return: f32,
     /// After the jump the fleet still holds enough fuel to get home.
     pub can_return: bool,
+    pub threat: ThreatInfo,
+    /// Combat power of the whole fleet, on the scale of `threat.est_power`.
+    pub fleet_power: f32,
+    pub ratio: f32,
+    pub label: RatioLabel,
+}
+
+/// How dangerous a sector is: T1 to T9 from the power of what is there.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ThreatInfo {
+    pub rating: u8,
+    pub est_power: f32,
+    pub basis: ThreatBasis,
+}
+
+/// Where a `ThreatInfo` comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreatBasis {
+    /// A hostile group was seen; the power is the group's own (Aggressive and
+    /// Swarm groups count 25 percent more).
+    Observed,
+    /// The sector's seed holds a group that is away or cleared; the power is
+    /// the ring's.
+    Template,
+    /// Distance only: the ring's group power.
+    Estimate,
 }
 
 /// Reply to `AuthRequest`. On success `token` is set only when the server just
@@ -514,6 +542,9 @@ pub struct SectorState {
     /// A boardable derelict hulk drifting in this sector.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub site: Option<SiteBrief>,
+    /// How dangerous the sector is. When not `live` it is the rating last
+    /// seen, as old as `last_seen`.
+    pub threat: ThreatInfo,
     /// Tick this sector was last observed; the current tick when `live`.
     pub last_seen: u64,
     /// See the struct docs.
@@ -1258,6 +1289,9 @@ pub struct ScanCompletedEvent {
     pub sector: Hex,
     pub sectors_revealed: u16,
     pub hostiles_detected: u16,
+    /// The threat of every revealed sector.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub threats: Vec<SectorThreat>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub signals: Vec<SignalContact>,
 }
@@ -1267,6 +1301,14 @@ pub struct ScanCompletedEvent {
 pub struct SignalContact {
     pub sector: Hex,
     pub signal: SignalKind,
+    /// Coarse danger of the sector: 1 for T1 to T3, 2 for T4 to T6, 3 for T7 to T9.
+    pub threat_band: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectorThreat {
+    pub sector: Hex,
+    pub threat: ThreatInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

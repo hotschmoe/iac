@@ -281,9 +281,12 @@ fn classify_hex(state: &ClientState, coord: Hex) -> HexCell {
     }
 }
 
+/// Hostile sectors show their threat rating in place of a terrain glyph.
+const THREAT_DIGITS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+
 fn classify_known(sector: &iac_shared::protocol::SectorState) -> HexCell {
     if sector.hostiles.is_some() {
-        return HexCell { symbol: "!", style: RED_ALERT };
+        return HexCell { symbol: THREAT_DIGITS[usize::from(sector.threat.rating.clamp(1, 9)) - 1], style: RED_ALERT };
     }
     if sector.salvage.is_some() {
         return HexCell { symbol: "$", style: GREEN_GOOD };
@@ -338,7 +341,7 @@ fn render_map_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
 
     // Line 3: legend.
     frame.render_widget(
-        Paragraph::new(" @You AFleet HHome !Hostile $Salvage DDerelict %OrePing ?Anomaly ·Fog  bright=live dim=memory")
+        Paragraph::new(" @You AFleet HHome 1-9 Hostile(threat) $Salvage DDerelict %OrePing ?Anomaly ·Fog  bright=live dim=memory")
             .style(AMBER_DIM),
         rows[2],
     );
@@ -374,6 +377,7 @@ fn inspect_line(state: &ClientState) -> (String, Style) {
             let ships: u16 = h.iter().flat_map(|f| f.ships.iter().map(|s| s.count)).sum();
             line.push_str(&format!("  HOSTILES:{}", ships));
         }
+        line.push_str(&format!("  THREAT T{} ({:.0} power)", sector.threat.rating, sector.threat.est_power));
         if sector.salvage.is_some() {
             line.push_str("  SALVAGE");
         }

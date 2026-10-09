@@ -12,7 +12,7 @@ use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     FleetBrief, NpcBehavior, NpcFleetInfo, NpcShipInfo, SectorResources, SectorState, ShipClassCounts,
-    SiteBrief,
+    SiteBrief, ThreatInfo,
 };
 use iac_shared::scaling;
 use iac_shared::world::{NpcBehaviorType, NpcTemplate};
@@ -93,6 +93,11 @@ impl KnownSectors {
             self.lapsed.insert(pid, lapsed);
             self.live.insert(pid, now_live);
         }
+    }
+
+    /// The threat of a charted sector as last seen.
+    pub fn threat(&self, player_id: u64, coord: Hex) -> Option<ThreatInfo> {
+        self.by_player.get(&player_id)?.get(&coord.to_key()).map(|r| r.state.threat)
     }
 
     /// Queue every live sector for the next persist (clean shutdown).
@@ -293,6 +298,7 @@ pub fn build_sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>) 
         site: engine
             .derelict_site_at(coord)
             .map(|(tier, bumps)| SiteBrief { tier, risk: site_risk_label(tier, bumps) }),
+        threat: engine.sector_threat(coord),
         last_seen: engine.current_tick,
         live: true,
     }

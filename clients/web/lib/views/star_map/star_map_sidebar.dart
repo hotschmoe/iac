@@ -59,7 +59,7 @@ class StarMapSidebar extends StatelessWidget {
             const SizedBox(height: 6),
             LabeledRow(
               label: 'Threat',
-              value: hostiles > 0 ? '$hostiles hostile ships' : 'Clear',
+              value: 'T${sec.threat.rating}, ${hostiles > 0 ? '$hostiles hostile ships' : 'clear'}',
               valueColor: hostiles > 0 ? Amber.danger : Amber.dim,
             ),
             LabeledRow(label: 'Exits', value: '${sec.connections.length} of 6', valueColor: Amber.normal),

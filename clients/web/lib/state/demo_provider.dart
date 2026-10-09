@@ -147,6 +147,7 @@ class DemoProvider {
       terrain: s.terrain,
       resources: s.resources,
       connections: s.connections,
+      threat: const ThreatInfo(rating: 4, estPower: 66, basis: ThreatBasis.observed),
       lastSeen: s.lastSeen,
       live: s.live,
       hostiles: const [
@@ -158,6 +159,18 @@ class DemoProvider {
       ],
     );
   }
+
+  /// The ring's group power and its rating, as the server's `npc_power` and
+  /// `threat_rating` compute them.
+  static ThreatInfo _ringThreat(Hex h, {ThreatBasis basis = ThreatBasis.estimate}) {
+    final power = 4.0 * pow(1.22, max(1, h.distFromOrigin) - 1);
+    return ThreatInfo(rating: _rating(power), estPower: power, basis: basis);
+  }
+
+  static int _rating(double power) => power <= 4 ? 1 : (1 + (log(power / 4) / ln2).floor()).clamp(1, 9);
+
+  static double _fleetPower(FleetState f) =>
+      f.ships.fold(0.0, (n, s) => n + s.weaponPower + (s.hull + s.shield) / 10);
 
   ShipState _ship(int id, ShipClass c, double hull) =>
       ShipState(id: id, shipClass: c, hull: hull, hullMax: 100, shield: 20, shieldMax: 20, weaponPower: 5);
@@ -183,6 +196,7 @@ class DemoProvider {
       terrain: terrain,
       resources: SectorResources(metal: d(3), crystal: d(6), deuterium: d(9)),
       connections: [for (final n in h.neighbors()) if (_edge(h, n)) n],
+      threat: _ringThreat(h),
       lastSeen: live ? _tick : _tick - 90 - x % 600,
       live: live,
     );
@@ -207,7 +221,7 @@ class DemoProvider {
           preset: 'blitz',
           tickHz: 1,
           economyVersion: 2,
-          worldgenVersion: 1,
+          worldgenVersion: 2,
         ),
       );
 
@@ -760,7 +774,12 @@ class DemoProvider {
             sector: f.location,
             sectorsRevealed: _sectors.length - before,
             hostilesDetected: 0,
-            signals: [SignalContact(sector: far, signal: SignalKind.richOre)],
+            threats: [
+              for (final h in hexSpiral(f.location, 2)) SectorThreat(sector: h, threat: _sectors[h.toKey()]!.threat),
+            ],
+            signals: [
+              SignalContact(sector: far, signal: SignalKind.richOre, threatBand: (_ringThreat(far).rating + 2) ~/ 3),
+            ],
           ),
         ));
         return [_tickUpdate(sectors: true)];
@@ -968,6 +987,9 @@ class DemoProvider {
         }
         final hops = Hex.distance(target, _home);
         final left = f.fuel - f.jumpFuel;
+        final threat = _sectors[target.toKey()]?.threat ?? _ringThreat(target);
+        final power = _fleetPower(f);
+        final ratio = power / threat.estPower;
         return [
           MovePreview(
             fleetId: fleetId,
@@ -978,6 +1000,16 @@ class DemoProvider {
             hopsHome: hops,
             fuelToReturn: hops * f.jumpFuel,
             canReturn: left >= hops * f.jumpFuel,
+            threat: threat,
+            fleetPower: power,
+            ratio: ratio,
+            label: ratio >= 3
+                ? RatioLabel.safe
+                : ratio >= 2
+                    ? RatioLabel.favourable
+                    : ratio >= 1.2
+                        ? RatioLabel.risky
+                        : RatioLabel.deadly,
           ),
         ];
       case AttackCommand() || CollectSalvageCommand() || ExploreSiteCommand():

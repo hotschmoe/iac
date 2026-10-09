@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// another economy version is refused (start a new world).
 pub const ECONOMY_VERSION: u32 = 2;
 /// Bumped when sector generation changes.
-pub const WORLDGEN_VERSION: u32 = 1;
+pub const WORLDGEN_VERSION: u32 = 2;
 
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
@@ -437,19 +437,7 @@ pub const FUEL_DEUT_PER_UNIT: f32 = 0.08;
 /// Resource regeneration: sectors regen this fraction per tick.
 pub const SECTOR_REGEN_RATE: f32 = 0.0001;
 
-/// NPC respawn delays (in ticks at 1Hz).
-pub const NPC_RESPAWN_INNER: u64 = 300;
-pub const NPC_RESPAWN_OUTER: u64 = 600;
-pub const NPC_RESPAWN_WANDERING: u64 = 1200;
 pub const NPC_PATROL_INTERVAL: u16 = 15;
-
-pub fn npc_respawn_delay(zone: Zone) -> u64 {
-    match zone {
-        Zone::CentralHub | Zone::InnerRing => NPC_RESPAWN_INNER,
-        Zone::OuterRing => NPC_RESPAWN_OUTER,
-        Zone::Wandering => NPC_RESPAWN_WANDERING,
-    }
-}
 
 /// Active scan: hops revealed from the scanning fleet's position.
 /// Fleets carrying a Scout get the extended range; signals are faint

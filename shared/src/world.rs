@@ -6,6 +6,7 @@ use std::hash::Hasher;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::constants::{Density, ShipClass, TerrainType, Zone};
+use crate::scaling::{npc_composition, npc_passive_share, npc_presence_pct, ship_power};
 use crate::hex::Hex;
 
 /// Seed-based sector generation. Pure function — same inputs always produce same output.
@@ -28,7 +29,7 @@ impl WorldGen {
 
         let terrain = self.roll_terrain(&mut rng, zone);
         let resources = self.roll_resources(&mut rng, zone, terrain);
-        let npc_template = self.roll_npc_presence(&mut rng, zone, dist);
+        let npc_template = self.roll_npc_presence(&mut rng, dist);
         let has_derelict = self.roll_derelict(&mut rng, terrain, dist);
 
         SectorTemplate {
@@ -197,57 +198,21 @@ impl WorldGen {
         }
     }
 
-    fn roll_npc_presence(
-        &self,
-        rng: &mut DeterministicRng,
-        zone: Zone,
-        dist: u16,
-    ) -> Option<NpcTemplate> {
-        let presence_chance: u8 = match zone {
-            Zone::CentralHub => 0,
-            Zone::InnerRing => 30,
-            Zone::OuterRing => 70,
-            Zone::Wandering => 80,
-        };
-
-        if rng.range(0..=100) >= presence_chance {
+    fn roll_npc_presence(&self, rng: &mut DeterministicRng, dist: u16) -> Option<NpcTemplate> {
+        if dist == 0 || f32::from(rng.range(0..=99)) >= npc_presence_pct(dist) {
             return None;
         }
-
-        if dist <= 8 {
-            let behavior = if rng.bool() {
-                NpcBehaviorType::Passive
-            } else {
-                NpcBehaviorType::Patrol
-            };
-            Some(NpcTemplate {
-                ship_class: ShipClass::Scout,
-                count: 1,
-                behavior,
-                stat_multiplier: 0.6,
-            })
+        let (ship_class, count, stat_multiplier) = npc_composition(dist);
+        let behavior = if f32::from(rng.range(0..=99)) < npc_passive_share(dist) * 100.0 {
+            NpcBehaviorType::Passive
         } else if dist <= 15 {
-            Some(NpcTemplate {
-                ship_class: ShipClass::Corvette,
-                count: rng.range(3..=8),
-                behavior: NpcBehaviorType::Patrol,
-                stat_multiplier: 0.8,
-            })
+            NpcBehaviorType::Patrol
         } else if dist <= 25 {
-            Some(NpcTemplate {
-                ship_class: ShipClass::Frigate,
-                count: rng.range(5..=15),
-                behavior: NpcBehaviorType::Aggressive,
-                stat_multiplier: 1.0,
-            })
+            NpcBehaviorType::Aggressive
         } else {
-            Some(NpcTemplate {
-                ship_class: ShipClass::Cruiser,
-                count: rng.range(10..=30),
-                behavior: NpcBehaviorType::Swarm,
-                stat_multiplier: 1.2,
-            })
-        }
+            NpcBehaviorType::Swarm
+        };
+        Some(NpcTemplate { ship_class, count, behavior, stat_multiplier })
     }
 
     /// Dead ships drift where other ships died: debris fields and the
@@ -319,10 +284,6 @@ impl DeterministicRng {
         let span = (hi - lo + 1) as u64;
         lo + (self.next_u64() % span) as u8
     }
-
-    fn bool(&mut self) -> bool {
-        self.next_u64() & 1 == 0
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -331,6 +292,13 @@ pub struct NpcTemplate {
     pub count: u8,
     pub behavior: NpcBehaviorType,
     pub stat_multiplier: f32,
+}
+
+impl NpcTemplate {
+    /// Combined power of the group as spawned.
+    pub fn power(&self) -> f32 {
+        ship_power(self.ship_class) * self.stat_multiplier * f32::from(self.count)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,6 +360,49 @@ mod tests {
         let s2 = world_gen.generate_sector(coord);
         assert_eq!(s1.terrain, s2.terrain);
         assert_eq!(s1.metal_density, s2.metal_density);
+    }
+
+    #[test]
+    fn generated_groups_follow_the_gradient() {
+        use crate::scaling::{npc_power, ship_power};
+        let world_gen = WorldGen::init(12345);
+        let mut seen = 0;
+        for q in -40i16..40 {
+            for r in -40i16..40 {
+                let coord = Hex { q, r };
+                let dist = coord.dist_from_origin();
+                let Some(t) = world_gen.generate_sector(coord).npc_template else { continue };
+                seen += 1;
+                assert!(dist > 0);
+                let unit = ship_power(t.ship_class) * t.stat_multiplier;
+                assert!(t.count == 1 || t.count as usize == crate::scaling::NPC_MAX_SHIPS || (t.power() - npc_power(dist)).abs() <= unit / 2.0 + 1e-3, "{coord:?}");
+                if dist > 15 {
+                    assert_ne!(t.behavior, NpcBehaviorType::Passive);
+                }
+            }
+        }
+        assert!(seen > 500);
+    }
+
+    #[test]
+    fn group_presence_rises_with_distance() {
+        let world_gen = WorldGen::init(777);
+        let share = |lo: u16, hi: u16| {
+            let (mut groups, mut total) = (0u32, 0u32);
+            for q in -50i16..50 {
+                for r in -50i16..50 {
+                    let c = Hex { q, r };
+                    if (lo..=hi).contains(&c.dist_from_origin()) {
+                        total += 1;
+                        groups += u32::from(world_gen.generate_sector(c).npc_template.is_some());
+                    }
+                }
+            }
+            groups as f32 / total as f32
+        };
+        let (near, mid, far) = (share(1, 4), share(10, 14), share(30, 40));
+        assert!(near < mid && mid < far, "{near} {mid} {far}");
+        assert!((near - 0.31).abs() < 0.08 && (far - 0.85).abs() < 0.05);
     }
 
     #[test]

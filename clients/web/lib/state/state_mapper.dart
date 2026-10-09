@@ -108,8 +108,10 @@ class StateMapper {
             : 'CANNOT RETURN after this jump';
     pushLog(
       'F${p.fleetId} -> ${p.target}: burns ${p.fuelCost.round()} fuel, ${p.fuelAfter.round()} left; '
-      '${p.hopsHome} hops home need ${p.fuelToReturn.round()} ($verdict)',
-      p.canReturn ? EventLevel.bright : EventLevel.normal,
+      '${p.hopsHome} hops home need ${p.fuelToReturn.round()} ($verdict); '
+      'threat T${p.threat.rating} (${p.threat.basis.wire}, power ${p.threat.estPower.round()}) '
+      'vs your ${p.fleetPower.round()}: ratio ${p.ratio.toStringAsFixed(1)} ${p.label.label}',
+      p.canReturn && p.label != proto.RatioLabel.deadly ? EventLevel.bright : EventLevel.normal,
     );
   }
 
@@ -213,7 +215,8 @@ class StateMapper {
         level = EventLevel.bright;
       case proto.ScanCompletedEvent():
         msg = '${_fleet(k.fleetId)} scan at ${k.sector}: ${k.sectorsRevealed} sectors revealed, '
-            '${k.hostilesDetected} hostiles${k.signals.isEmpty ? '' : ', ${k.signals.length} faint contacts'}';
+            '${k.hostilesDetected} hostiles, worst T${k.threats.fold<int>(0, (m, t) => math.max(m, t.threat.rating))}'
+            '${k.signals.isEmpty ? '' : ', ${k.signals.length} faint contacts (threat band ${k.signals.map((s) => s.threatBand).join('/')})'}';
         for (final s in k.signals) {
           final key = s.sector.toKey();
           if (!sectors.containsKey(key)) signals[key] = s.signal;

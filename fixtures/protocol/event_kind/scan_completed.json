@@ -13,28 +13,56 @@
         "q": 4,
         "r": 1
       },
-      "signal": "RichOre"
+      "signal": "RichOre",
+      "threat_band": 1
     },
     {
       "sector": {
         "q": -3,
         "r": 2
       },
-      "signal": "HostileMass"
+      "signal": "HostileMass",
+      "threat_band": 2
     },
     {
       "sector": {
         "q": 0,
         "r": 5
       },
-      "signal": "Derelict"
+      "signal": "Derelict",
+      "threat_band": 1
     },
     {
       "sector": {
         "q": 6,
         "r": -6
       },
-      "signal": "Anomaly"
+      "signal": "Anomaly",
+      "threat_band": 3
+    }
+  ],
+  "threats": [
+    {
+      "sector": {
+        "q": 2,
+        "r": 1
+      },
+      "threat": {
+        "basis": "observed",
+        "est_power": 7.5,
+        "rating": 2
+      }
+    },
+    {
+      "sector": {
+        "q": 1,
+        "r": 2
+      },
+      "threat": {
+        "basis": "estimate",
+        "est_power": 4.900000095367432,
+        "rating": 1
+      }
     }
   ],
   "tick": 1234

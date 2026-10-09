@@ -378,14 +378,15 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             format!(" T{}: Fleet arrived at [{},{}]\n", event.tick, e.sector.q, e.sector.r)
         }
         EventKind::ScanCompleted(e) => {
+            let worst = e.threats.iter().map(|t| t.threat.rating).max().unwrap_or(1);
             let mut line = format!(
-                " T{}: Scan: {} sectors, {} hostile\n",
-                event.tick, e.sectors_revealed, e.hostiles_detected
+                " T{}: Scan: {} sectors, {} hostile, worst T{}\n",
+                event.tick, e.sectors_revealed, e.hostiles_detected, worst
             );
             for s in &e.signals {
                 line.push_str(&format!(
-                    "   ~ {} at [{},{}]\n",
-                    s.signal.label(), s.sector.q, s.sector.r
+                    "   ~ {} at [{},{}] (threat band {})\n",
+                    s.signal.label(), s.sector.q, s.sector.r, s.threat_band
                 ));
             }
             line

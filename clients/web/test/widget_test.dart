@@ -221,6 +221,7 @@ void main() {
         connections: const [],
         salvage: const proto.Resources(metal: 60),
         salvageDespawnTick: 100,
+        threat: const proto.ThreatInfo(rating: 2, estPower: 7, basis: proto.ThreatBasis.estimate),
         lastSeen: 40,
         live: false,
       );
@@ -245,6 +246,7 @@ void main() {
           terrain: stale.terrain,
           resources: stale.resources,
           connections: const [],
+          threat: stale.threat,
           lastSeen: 402,
           live: true,
         ),

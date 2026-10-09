@@ -2,13 +2,21 @@
   "can_jump": false,
   "can_return": false,
   "fleet_id": 3,
+  "fleet_power": 60.0,
   "fuel_after": 0.0,
   "fuel_cost": 31.5,
   "fuel_to_return": 126.0,
   "hops_home": 4,
+  "label": "risky",
+  "ratio": 1.2899999618530273,
   "target": {
     "q": 2,
     "r": -6
+  },
+  "threat": {
+    "basis": "observed",
+    "est_power": 46.5,
+    "rating": 4
   },
   "type": "preview_move"
 }
