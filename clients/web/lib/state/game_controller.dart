@@ -591,12 +591,20 @@ class GameController extends ChangeNotifier {
   }
 
   /// Cancel the [index]th running item of [queue] (half refunded), or with
-  /// [waiting] the [index]th item still waiting (nothing was paid).
+  /// [waiting] the [index]th item still waiting (nothing was paid). The
+  /// command carries the item's stable id, so a line that moves under the
+  /// click cannot change what is cancelled.
   void cancelHomeworldQueue(proto.QueueType queue, {int index = 0, bool waiting = false}) {
     note('> cancel ${waiting ? 'waiting ' : ''}${queue.name}', level: EventLevel.full);
+    final ids = _mapper.queueIds(queue);
+    final id = (waiting ? ids.waiting : ids.running).elementAtOrNull(index);
+    if (id == null) {
+      note('cancel: nothing ${waiting ? 'waiting' : 'running'} in the ${queue.name} queue', level: EventLevel.bright);
+      return;
+    }
     sendCommand(waiting
-        ? proto.CancelQueuedCommand(queueType: queue, index: index)
-        : proto.CancelBuildCommand(queueType: queue, index: index));
+        ? proto.CancelQueuedCommand(queueType: queue, id: id)
+        : proto.CancelBuildCommand(queueType: queue, id: id));
   }
 
   /// Cancel the queue that belongs to the open homeworld tab.
@@ -702,6 +710,7 @@ class GameController extends ChangeNotifier {
       fleets: _mapper.fleets,
       cursor: cursorHex,
       tick: _mapper.tick,
+      queues: {for (final q in proto.QueueType.values) q: _mapper.queueIds(q)},
     );
     final result = parseCommand(cmd, ctx);
     switch (result) {

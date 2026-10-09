@@ -249,6 +249,9 @@ class ContactsPanel extends StatelessWidget {
   final bool combat;
   final bool atHome;
   final proto.SectorState? sector;
+
+  /// Current tick, for despawn countdowns.
+  final int tick;
   final ui.FleetState fleet;
   final bool hasOre;
   final bool hasSalvage;
@@ -268,6 +271,7 @@ class ContactsPanel extends StatelessWidget {
     required this.combat,
     required this.atHome,
     required this.sector,
+    this.tick = 0,
     required this.fleet,
     required this.hasOre,
     required this.hasSalvage,
@@ -374,6 +378,10 @@ class ContactsPanel extends StatelessWidget {
             TextSpan(text: 'Cr ${r?.crystal.round() ?? 0} ', style: const TextStyle(color: C.crystal)),
             TextSpan(text: 'De ${r?.deuterium.round() ?? 0}', style: const TextStyle(color: C.deut)),
           ]), style: _ds)),
+          if (despawnLabel(sector, tick) case final d?)
+            Text(d.toUpperCase(),
+                key: const Key('contact-salvage-despawn'),
+                style: _ds.copyWith(color: (salvageSecondsLeft(sector, tick) ?? 999) <= 60 ? C.ember : C.text3)),
         ]),
         actions: ConsoleButton('Collect', small: true, keyHint: 'C', onPressed: () => onAct('collect')),
       ));
@@ -599,6 +607,7 @@ class GateCard extends StatelessWidget {
   final int fuel;
   final bool isHome;
   final bool hint;
+  final int tick;
 
   /// Danger band (1 to 3) of the faint contact heard in an uncharted gate.
   final int? band;
@@ -608,7 +617,7 @@ class GateCard extends StatelessWidget {
   final bool hover;
   final VoidCallback onTap;
   final void Function(bool) onHover;
-  const GateCard({super.key, required this.dir, required this.narrow, required this.known, required this.sector, required this.threat, required this.intel, required this.fuel, required this.isHome, required this.hint, this.band, this.preview, required this.hover, required this.onTap, required this.onHover});
+  const GateCard({super.key, required this.dir, required this.narrow, required this.known, required this.sector, required this.threat, required this.intel, required this.fuel, required this.isHome, required this.hint, this.tick = 0, this.band, this.preview, required this.hover, required this.onTap, required this.onHover});
 
   @override
   Widget build(BuildContext context) {
@@ -663,12 +672,16 @@ class GateCard extends StatelessWidget {
             ]), overflow: TextOverflow.ellipsis, style: lineStyle),
           ));
         }
-        final sv = sector?.salvage;
         body.add(Padding(
           padding: const EdgeInsets.fromLTRB(6, 3, 6, 4),
           child: Row(children: [
             if (intel.live) const Lamp('LIVE', color: C.own, blink: true) else Text('SEEN ${ago(intel.ticksOld).toUpperCase()} AGO', style: T.mono(size: 9.5, color: intel.aged ? C.fossil : C.text3)),
-            if (sv != null && sv.total > 0) Text(' +SALV', style: T.mono(size: 9.5, color: C.a400)),
+            if (salvagePinVisible(sector, tick))
+              Text(
+                  despawnLabel(sector, tick) == null
+                      ? ' +SALV'
+                      : ' +SALV ${clockFmt(salvageSecondsLeft(sector, tick)!)}',
+                  style: T.mono(size: 9.5, color: C.a400)),
             if (sector?.site != null) Text(' +DRLCT', style: T.mono(size: 9.5, color: C.rare)),
             const Spacer(),
             Text('-${fuel}F', style: T.mono(size: 9.5, color: C.text3)),

@@ -362,11 +362,11 @@ class MapPainter extends CustomPainter {
         }
       }
       if (near) {
-        if (sec.salvage != null && sec.salvage!.total > 0) {
-          Draw.symbol(c, Sym.salvage, p.dx - rn * 1.2, p.dy - rn * .75, math.max(6, hr * .3), color: const Color(0xFFFFBE3C), alpha: math.max(.5, f), bloom: false);
+        if (salvagePinVisible(sec, data.tick)) {
+          Draw.symbol(c, Sym.salvage, p.dx - rn * 1.2, p.dy - rn * .75, math.max(6, hr * .3), color: const Color(0xFFFFBE3C), alpha: sec.pinsStale ? .35 : math.max(.5, f), bloom: false);
         }
         if (sec.site != null && layers.derelict) {
-          Draw.symbol(c, Sym.derelict, p.dx + rn * 1.3, p.dy - rn * .6, math.max(8, hr * .4), color: C.rare, alpha: math.max(.6, f), lw: 1.1, bloom: false);
+          Draw.symbol(c, Sym.derelict, p.dx + rn * 1.3, p.dy - rn * .6, math.max(8, hr * .4), color: C.rare, alpha: sec.pinsStale ? .35 : math.max(.6, f), lw: 1.1, bloom: false);
         }
         if (s > 1.6 && it.ticksOld > 6 && layers.age) {
           Draw.text(c, ago(it.ticksOld), p.dx, p.dy - rn * 1.25,
@@ -376,7 +376,7 @@ class MapPainter extends CustomPainter {
         if (sec.site != null && layers.derelict && s >= .62) {
           c.drawRect(Rect.fromLTWH(p.dx + rn, p.dy - rn * 1.1, 4, 4), Draw.line(C.rare, 1, .95));
         }
-        if (sec.salvage != null && sec.salvage!.total > 0 && s >= .62) {
+        if (salvagePinVisible(sec, data.tick) && s >= .62) {
           c.drawRect(Rect.fromLTWH(p.dx - rn * 1.4, p.dy - rn * 1.1, 4, 4), Paint()..color = const Color(0xF2FFBE3C));
         }
       }

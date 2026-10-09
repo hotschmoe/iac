@@ -1,5 +1,12 @@
 import '../protocol/protocol.dart';
 
+/// Stable queue ids of one queue: the running items, then the waiting ones.
+class QueueIds {
+  final List<int> running;
+  final List<int> waiting;
+  const QueueIds({this.running = const [], this.waiting = const []});
+}
+
 /// What the command bar needs to know to resolve a typed command.
 class CommandContext {
   final int? fleetId;
@@ -8,6 +15,7 @@ class CommandContext {
   final List<FleetState> fleets;
   final Hex cursor;
   final int tick;
+  final Map<QueueType, QueueIds> queues;
   const CommandContext({
     required this.fleetId,
     required this.fleetSector,
@@ -15,6 +23,7 @@ class CommandContext {
     required this.fleets,
     required this.cursor,
     required this.tick,
+    this.queues = const {},
   });
 
   FleetState? get fleet {
@@ -58,7 +67,7 @@ const helpLines = [
   'move:   m[ove] <e|ne|nw|w|sw|se | 1-6 | q r>      (one hop along a known lane)',
   'base:   b[uild] <metal|crystal|deut|shipyard|lab|fuel|sensor|defense|vault|fab>',
   '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump|modfab>',
-  '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research> [n]  [waiting]',
+  '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research> [id]  [waiting]',
   'fleets: f[leet] [n]  select/list   p[olicy] [manual|prospect|mine|salvage|patrol]  (no arg cycles)',
   '        split <class> [count]  detach ships into a new fleet   merge <fleet id>  fold a fleet in this sector into the active one',
   'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
@@ -264,14 +273,14 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
         'research' || 'res' || 'r' => QueueType.research,
         _ => null,
       };
-      if (q == null) return const ParsedError('cancel: building|ship|research [n] [waiting]');
+      if (q == null) return const ParsedError('cancel: building|ship|research [id] [waiting]');
       final waiting = args.contains('waiting') || args.contains('queued');
       final nums = args.skip(1).map(int.tryParse).whereType<int>();
-      final index = nums.isEmpty ? 0 : nums.first;
+      final ids = ctx.queues[q];
+      final id = nums.isNotEmpty ? nums.first : (waiting ? ids?.waiting : ids?.running)?.firstOrNull;
+      if (id == null) return ParsedError('cancel: nothing ${waiting ? 'waiting' : 'running'} in the ${q.name} queue');
       return ParsedSend([
-        CommandMessage(waiting
-            ? CancelQueuedCommand(queueType: q, index: index)
-            : CancelBuildCommand(queueType: q, index: index)),
+        CommandMessage(waiting ? CancelQueuedCommand(queueType: q, id: id) : CancelBuildCommand(queueType: q, id: id)),
       ]);
 
     case 'split':

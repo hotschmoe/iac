@@ -172,8 +172,8 @@ void main() {
       final ui = mapper.toUiState();
       expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
       expect(ui.buildQueue[2].time, 'short 121 crystal, starts in about 01:35');
-      expect(ui.buildQueue[3].time, 'next in line, starts in about 01:35');
-      expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2', 'Pulse Turret x10']);
+      expect(ui.buildQueue[3].time, 'held by a reserved order, starts in about 01:35');
+      expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2 (1 built)', 'Pulse Turret x10']);
       expect(ui.research.waiting.single.time, 'short 1200 deuterium, starts in about 30:00');
     });
 
