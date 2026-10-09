@@ -54,8 +54,8 @@ If that audit trail is missing, then you must act as if the operation never happ
 - Subtle/complex changes: edit by hand, file-by-file, with careful reasoning.
 - **NO EMOJIS** - do not use emojis or non-textual characters.
 - ASCII diagrams are encouraged for visualizing flows.
-- Keep in-line comments to a minimum. Use external documentation for complex logic.
-- In-line commentary should be value-add, concise, and focused on info not easily gleaned from the code.
+- No casual or explanatory comments. A comment is rare and only for something the code cannot say (a non-obvious invariant, a protocol constraint). Use external documentation for complex logic.
+- Always write idiomatic Rust and idiomatic Dart.
 <!-- END:code-discipline -->
 
 <!-- BEGIN:no-legacy -->
@@ -85,6 +85,10 @@ We optimize for clean architecture, not backwards compatibility. **When we refac
 <!-- END:dev-philosophy -->
 
 <!-- BEGIN:testing-philosophy -->
+## Testing: End-to-End Only
+
+**No unit tests and no TDD.** They weigh the codebase down. Verify with end-to-end tests: a real server, real clients over the real protocol, whole-engine scenario runs, the cross-language protocol fixtures, and the playtest harness. Do not add unit tests or module-level `#[cfg(test)]` cases, and do not delete existing ones without the owner's say (archive instead).
+
 ## Testing Philosophy: Diagnostics, Not Verdicts
 
 **Tests are diagnostic tools, not success criteria.** A passing test suite does not mean the code is good. A failing test does not mean the code is wrong.
