@@ -3,6 +3,31 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-09 (economy spec and UI review)
+
+Context: `economy/spec.md` and `ui-redesign/spec.md`.
+
+1. **Pacing.**
+   - **Persistent world:** pace 1 reaches an endgame around day 74 and keeps
+     progressing for a year.
+   - **Presets:** persistent 1, fortnight 5, season 10 (weekly), sprint 70,
+     dev 100, blitz 600 (one-hour arc), test 8000.
+   - **Fixed per world:** pace is set when a world is created and is not
+     changed afterwards.
+2. **Faster start:** Corvettes unlock at Shipyard 1, so a persistent-world player
+   has a combat ship on day one.
+3. **Tech tree:** a bigger tree is wanted, in a later milestone. The economy ships
+   first.
+4. **Smaller questions:** the economy spec's defaults apply to its smaller open
+   questions (raid cadence, the 25% combat and exploration score cap, derelict
+   finds scaling) until the owner says otherwise.
+5. **Web UI direction.**
+   - **Basis:** the Amber Glass prototypes are approved as the basis. Keep the
+     palette and the animations.
+   - **Tone:** tone down the cartoony graphics. Design it as the interface a
+     1970s IBM engineer would want to play: an operator console with vector
+     line-art, schematic symbols and labelled readouts.
+
 ## 2026-10-09
 
 Context: `gap-analysis-2026-10-09.md` and the 2026-10-09 six-agent playtest.
