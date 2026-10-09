@@ -1,4 +1,5 @@
 {
   "action": "build",
-  "building_type": "DefenseGrid"
+  "building_type": "DefenseGrid",
+  "reserve": false
 }

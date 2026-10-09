@@ -208,6 +208,12 @@ async fn run(
                         let msg = ClientMessage::Command(cmd);
                         let _ = cmd_tx.send(msg);
                     }
+                    input::InputAction::CancelOldest { queue_type, waiting } => {
+                        let cmd = state.lock().await.cancel_command(queue_type, waiting);
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
                     input::InputAction::Scroll(dir) => {
                         let mut st = state.lock().await;
                         st.scroll_map(dir);

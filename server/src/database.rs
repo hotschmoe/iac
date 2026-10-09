@@ -401,6 +401,8 @@ impl Database {
         Self::ensure_column(&conn, "sectors_modified", "kill_heat_tick", "INTEGER DEFAULT 0")?;
         Self::ensure_column(&conn, "fleets", "harvest_resource", "TEXT DEFAULT 'auto'")?;
         Self::ensure_column(&conn, "players", "token_hash", "BLOB")?;
+        Self::ensure_column(&conn, "build_queue", "item_id", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "build_queue", "reserve", "INTEGER NOT NULL DEFAULT 0")?;
 
         info!("Schema verified");
         Ok(())
@@ -1145,31 +1147,31 @@ impl Database {
         )?;
 
         let mut stmt = conn.prepare(
-            "INSERT INTO build_queue (player_id, queue_type, item_type, target_level, count, built, pending, start_tick, end_tick)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO build_queue (player_id, queue_type, item_type, target_level, count, built, pending, start_tick, end_tick, item_id, reserve)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
         let pid = player_id as i64;
         let none = rusqlite::types::Value::Null;
 
         for q in &player.building_queue {
-            stmt.execute(params![pid, "building", q.building_type as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
+            stmt.execute(params![pid, "building", q.building_type as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, 0i64])?;
         }
         for q in &player.building_pending {
-            stmt.execute(params![pid, "building", q.building_type as i64, q.target_level as i64, 1i64, 0i64, 1i64, 0i64, 0i64])?;
+            stmt.execute(params![pid, "building", q.building_type as i64, q.target_level as i64, 1i64, 0i64, 1i64, 0i64, 0i64, q.id as i64, q.reserve as i64])?;
         }
         if let Some(q) = &player.ship_queue {
             let (kind, item) = shipyard_item_to_row(q.item);
-            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
+            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, q.reserve as i64])?;
         }
         for q in &player.ship_pending {
             let (kind, item) = shipyard_item_to_row(q.item);
-            stmt.execute(params![pid, kind, item, none, q.count as i64, 0i64, 1i64, 0i64, 0i64])?;
+            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 1i64, 0i64, 0i64, q.id as i64, q.reserve as i64])?;
         }
         if let Some(q) = &player.research_queue {
-            stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
+            stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, 0i64])?;
         }
         for q in &player.research_pending {
-            stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 1i64, 0i64, 0i64])?;
+            stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 1i64, 0i64, 0i64, q.id as i64, q.reserve as i64])?;
         }
 
         Ok(())
@@ -1179,7 +1181,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut data = BuildQueueData::default();
         let mut stmt = conn.prepare(
-            "SELECT queue_type, item_type, target_level, count, built, pending, start_tick, end_tick
+            "SELECT queue_type, item_type, target_level, count, built, pending, start_tick, end_tick, item_id, reserve
              FROM build_queue WHERE player_id = ?1 ORDER BY id",
         )?;
 
@@ -1193,20 +1195,23 @@ impl Database {
                 row.get::<_, i64>(5)? != 0,
                 row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)? as u64,
+                row.get::<_, i64>(9)? != 0,
             ))
         })?;
 
         for row_result in rows {
-            let (qt, item_type, target_level, count, built, pending, start_tick, end_tick) = row_result?;
+            let (qt, item_type, target_level, count, built, pending, start_tick, end_tick, id, reserve) = row_result?;
             let item = usize::try_from(item_type).ok();
             let level = target_level.unwrap_or(0) as u8;
             match qt.as_str() {
                 "building" => {
                     let Some(bt) = item.and_then(BuildingType::from_usize) else { continue; };
                     if pending {
-                        data.building_pending.push(PendingBuilding { building_type: bt, target_level: level });
+                        data.building_pending.push(PendingBuilding { id, building_type: bt, target_level: level, reserve });
                     } else {
                         data.building.push(BuildQueueEntry {
+                            id,
                             building_type: bt,
                             target_level: level,
                             start_tick: start_tick as u64,
@@ -1217,9 +1222,11 @@ impl Database {
                 "ship" | "defence" => {
                     let Some(sc) = item.and_then(|i| shipyard_item_from_row(&qt, i)) else { continue; };
                     if pending {
-                        data.ship_pending.push(PendingShip { item: sc, count: count as u16 });
+                        data.ship_pending.push(PendingShip { id, item: sc, count: count as u16, built: built as u16, reserve });
                     } else {
                         data.ship = Some(ShipQueueEntry {
+                            id,
+                            reserve,
                             item: sc,
                             count: count as u16,
                             built: built as u16,
@@ -1231,9 +1238,10 @@ impl Database {
                 "research" => {
                     let Some(tech) = item.and_then(ResearchType::from_usize) else { continue; };
                     if pending {
-                        data.research_pending.push(PendingResearch { tech, target_level: level });
+                        data.research_pending.push(PendingResearch { id, tech, target_level: level, reserve });
                     } else {
                         data.research = Some(ResearchQueueEntry {
+                            id,
                             tech,
                             target_level: level,
                             start_tick: start_tick as u64,

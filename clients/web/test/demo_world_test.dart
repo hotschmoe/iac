@@ -238,22 +238,22 @@ void main() {
     final r = Rig();
     expect(r.errorOf(r.send(const p.BuildDefenceCommand(kind: p.DefenceKind.pulseTurret, count: 1))), isNull);
     final stock = r.player.resources.metal;
-    expect(r.errorOf(r.send(const p.CancelQueuedCommand(queueType: p.QueueType.ship, index: 0))), isNull);
+    final waiting = r.ticks.last.homeworldUpdate!.shipyardPending.first.id;
+    expect(r.errorOf(r.send(p.CancelQueuedCommand(queueType: p.QueueType.ship, id: waiting))), isNull);
     expect(r.ticks.last.homeworldUpdate!.shipyardPending, isEmpty);
     expect(r.player.resources.metal, stock);
   });
 
-  test('an order that cannot be paid yet is accepted, says what it waits for, and cancels with a confirmation', () {
+  test('a batch behind a running one is accepted, says what it waits for (one unit, not the batch), and cancels with a confirmation', () {
     final r = Rig();
     expect(r.errorOf(r.send(const p.BuildShipCommand(shipClass: p.ShipClass.scout, count: 200))), isNull,
         reason: 'unaffordable is not a refusal');
     final q = r.ticks.last.homeworldUpdate!.shipyardPending.last;
-    expect(q.waitingFor, isNotNull);
-    expect(q.waitingOn, p.WaitReason.resources);
+    expect(q.waitingFor, isNull, reason: 'one unit is affordable; the batch pays per unit');
+    expect(q.waitingOn, p.WaitReason.slot);
     final wait = r.of<p.QueueEvent>().last;
     expect((wait.action, wait.item), (p.QueueAction.waiting, 'Scout x200'));
-    final index = r.ticks.last.homeworldUpdate!.shipyardPending.length - 1;
-    r.send(p.CancelQueuedCommand(queueType: p.QueueType.ship, index: index));
+    r.send(p.CancelQueuedCommand(queueType: p.QueueType.ship, id: q.id));
     final gone = r.of<p.QueueEvent>().last;
     expect((gone.action, gone.item), (p.QueueAction.cancelled, 'Scout x200'));
   });

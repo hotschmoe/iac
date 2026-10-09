@@ -3,6 +3,66 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-10 (mechanics pass: free slots start what can pay)
+
+Amends the one-queue rule below on the line it drew: the queue is no longer
+strictly first in, first out.
+- **Order:** a free slot starts the earliest waiting order that can start now
+  (prerequisites built, stockpile covers it). An order that cannot start keeps
+  its place and is re-checked every tick. Playtest 2026-10-10b: strict FIFO left
+  the second and third building slots idle behind one order that could not pay.
+- **Starvation guard: `reserve`, a per-order flag.** An order sent with
+  `reserve: true` holds the line while it is ready and short of resources:
+  nothing behind it in that queue starts (orders ahead still do). Chosen over
+  automatically reserving "nearly affordable" resources because it is explicit,
+  needs no hidden accounting that an agent cannot see, keeps the start estimate
+  honest, and leaves the default behaviour (use every slot) to the player who
+  did not ask for anything else. The cost is that cheap orders can delay an
+  unflagged expensive one; the flag is how a player says "save for this".
+- **Stable ids:** every order gets an id, kept from the waiting line into the
+  running slot and carried by `Queue` events. `cancel_build` and `cancel_queued`
+  take the id; an id that is not in the named queue and state is refused with
+  a message that says where it is (cancel by position raced the tick).
+- **Ships pay per unit:** a batch is one order and each unit pays when it
+  starts. A batch that cannot pay for the next unit goes back to waiting with
+  its progress (`built` of `count`) and does not hold the yard. Cancelling a
+  running batch refunds half of the unit under way.
+- **Consistency:** research, shipyard and defence orders accept a queued Lab or
+  Shipyard as a prerequisite, as buildings already did, and a running tech can
+  be queued for its next level.
+- **Doctrines honour `engage_ratio_x10`:** the entry rule is exactly the
+  player's ratio, hostiles there or not. The old max(engage, 2.5x) override
+  and the EVEN floor are gone, so a deliberately low setting works. The default
+  is 15 (1.5x, the FAVOURABLE band: a fight keeps 85-95% of hull), so default
+  doctrines are careful and players who want to gamble lower it. A standing hold is
+  reported at most once a minute while its cause is unchanged.
+- **Pins and salvage:** a remembered pile past its despawn tick leaves the
+  chart; other remembered pins out of sight carry `pins_stale`. A fleet docked
+  at home scoops a home salvage pile into storage by itself (it is the
+  player's own planet, and the drop comes from a defended raid), with an alert
+  at 60 s when it cannot.
+
+## 2026-10-10 (play styles and balance)
+
+**Two play styles, one world:**
+- **Check-in players (OGame).** You should not need to be at the computer all day: check
+  in, queue, and leave.
+- **Hands-on players (The Infinite Black).** They can drive fleets, fight and explore
+  themselves for fun and reward.
+- **Hybrids.** Hybrid play should be natural.
+
+**How to balance the two:**
+- **Per day, not per hour.** Active players may earn more per hour of attention. A
+  check-in player must not fall hopelessly behind over a week: tens of percent, not
+  multiples. Field yield should have diminishing returns over a day.
+- **Standing orders are the bridge.** Delegated exploring, salvage and mining should
+  earn roughly 50-70% of hands-on piloting.
+- **Pace matters.** Blitz is attention-heavy by nature: judge it on fun and use it as a
+  stress test. Check-in balance is tuned for the persistent and season presets.
+- **Balance is ongoing.** Get close, keep developing, and re-measure after significant
+  changes. After the `iac-sim` split, scripted check-in, hybrid and active bots give a
+  balance report per change.
+
 ## 2026-10-10 (the map pays; combat and exploration scoring)
 
 Second playtest: staying home won; combat plus exploration never exceeded 4.8
@@ -25,6 +85,7 @@ about 15% of a pure builder, and a mixed player should beat both.
 ## 2026-10-10 (one queue rule)
 
 **Every order that can ever start is accepted; it pays when it starts.**
+The strict first-in-first-out line is amended by the mechanics pass above.
 Supersedes the 2026-10-09 queue-payment rule below, which refused an order that
 had a free slot but no money while letting the same order wait behind a running
 item.

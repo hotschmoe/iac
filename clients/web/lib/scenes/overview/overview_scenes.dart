@@ -194,7 +194,7 @@ class PpiPainter extends CustomPainter {
       }
       if (e.value.site != null) Draw.symbol(c, Sym.derelict, o.dx, o.dy - 5, 4, color: C.rare, lw: 1, bloom: false);
       final sv = e.value.salvage;
-      if (sv != null && sv.total > 0) Draw.symbol(c, Sym.salvage, o.dx + 5, o.dy + 5, 4, color: C.gold, lw: 1, bloom: false);
+      if (sv != null && sv.total > 0 && salvagePinVisible(e.value, tick)) Draw.symbol(c, Sym.salvage, o.dx + 5, o.dy + 5, 4, color: C.gold, lw: 1, bloom: false);
     }
     for (final f in fleets) {
       final o = p(f.sector);

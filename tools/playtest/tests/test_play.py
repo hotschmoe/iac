@@ -117,6 +117,23 @@ class Commands(unittest.TestCase):
         got, left = play.match_errors([{"action": "scan", "fleet_id": 2}], [{"code": "X", "message": "a"}, {"code": "Y", "message": "b"}])
         self.assertEqual(len(left) + sum(g is not None for g in got), 2)
 
+    def test_spaced_server_names_match_their_order(self):
+        cmds = [{"action": "build", "building_type": "MetalMine"}, {"action": "research", "tech": "CorvetteTech"}]
+        errs = [{"code": "NoResearchLab", "message": "Corvette Tech needs Research Lab level 1 (you have 0)"}]
+        got, left = play.match_errors(cmds, errs)
+        self.assertEqual([g and g["code"] for g in got], [None, "NoResearchLab"])
+        self.assertEqual(left, [])
+
+    def test_cancel_errors_match_by_order_id_not_queue_name(self):
+        cmds = [{"action": "cancel_queued", "queue_type": "Building", "id": 6},
+                {"action": "cancel_queued", "queue_type": "Research", "id": 7}]
+        errs = [{"code": "InvalidTarget", "message": "order 7 is in the building queue, not the research queue"}]
+        got, _ = play.match_errors(cmds, errs)
+        self.assertEqual([g and g["code"] for g in got], [None, "InvalidTarget"])
+        qev = [{"action": "Cancelled", "item": "Crystal Mine Lv.2", "id": 6}]
+        self.assertIn("#6", play.queue_outcome(cmds[0], qev, set()))
+        self.assertIsNone(play.queue_outcome(cmds[1], qev, set()))
+
 
 class State(unittest.TestCase):
     def test_state_document_has_the_agent_fields(self):
@@ -151,7 +168,7 @@ class State(unittest.TestCase):
         self.assertEqual(len(q["running"]), 1)
         self.assertEqual(q["waiting"][0]["short"], {"metal": 35})
         self.assertEqual(q["waiting"][0]["covered_in_s"], 7)
-        self.assertEqual(q["room"], hw.get("queue_depth", 3) - 2)
+        self.assertEqual(q["room"], hw.get("build_slots", 1) + hw.get("queue_waiting_max", 3) - 2)
         self.assertEqual(q["open"], 0)
         line = play.queue_line("build", q)
         self.assertIn("waiting[0]", line)

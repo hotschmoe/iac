@@ -157,7 +157,12 @@ fn rich_sector() -> SectorState {
         threat: ThreatInfo { rating: 4, est_power: 46.5, basis: ThreatBasis::Observed },
         last_seen: 4821,
         live: true,
+        pins_stale: false,
     }
+}
+
+fn stale_pins_sector() -> SectorState {
+    SectorState { location: h(5, 1), live: false, last_seen: 4700, pins_stale: true, ..rich_sector() }
 }
 
 fn bare_sector() -> SectorState {
@@ -179,6 +184,7 @@ fn bare_sector() -> SectorState {
         threat: ThreatInfo { rating: 1, est_power: 4.0, basis: ThreatBasis::Estimate },
         last_seen: 4821,
         live: true,
+        pins_stale: false,
     }
 }
 
@@ -205,6 +211,7 @@ fn anomaly_sector() -> SectorState {
         threat: ThreatInfo { rating: 5, est_power: 65.0, basis: ThreatBasis::Template },
         last_seen: 4240,
         live: false,
+        pins_stale: false,
     }
 }
 
@@ -248,13 +255,15 @@ fn sample_homeworld() -> HomeworldState {
         buildings,
         research,
         build_queue: vec![
-            BuildQueueItem { building_type: BuildingType::CrystalMine, target_level: 5, start_tick: 100, end_tick: 460 },
-            BuildQueueItem { building_type: BuildingType::FuelDepot, target_level: 2, start_tick: 130, end_tick: 400 },
+            BuildQueueItem { id: 311, building_type: BuildingType::CrystalMine, target_level: 5, start_tick: 100, end_tick: 460 },
+            BuildQueueItem { id: 318, building_type: BuildingType::FuelDepot, target_level: 2, start_tick: 130, end_tick: 400 },
         ],
         build_pending: vec![
             QueuedBuild {
+                id: 330,
                 building_type: BuildingType::Shipyard,
                 target_level: 3,
+                reserve: true,
                 cost: res(648.0, 324.0, 162.0),
                 ticks: 1500,
                 waiting_for: Some(res(0.0, 120.5, 0.0)),
@@ -262,8 +271,10 @@ fn sample_homeworld() -> HomeworldState {
                 start_in: Some(95),
             },
             QueuedBuild {
+                id: 331,
                 building_type: BuildingType::CrystalMine,
                 target_level: 6,
+                reserve: false,
                 cost: res(500.0, 250.0, 0.0),
                 ticks: 900,
                 waiting_for: None,
@@ -275,18 +286,26 @@ fn sample_homeworld() -> HomeworldState {
         queue_waiting_max: 3,
         shipyard_pending: vec![
             QueuedShip {
+                id: 335,
                 item: ShipyardItem::Ship(ShipClass::Frigate),
                 count: 2,
-                cost: res(2000.0, 800.0, 400.0),
+                built: 1,
+                reserve: false,
+                cost: res(1000.0, 400.0, 200.0),
+                unit_cost: res(1000.0, 400.0, 200.0),
                 ticks: 600,
                 waiting_for: None,
                 waiting_on: WaitReason::Slot,
                 start_in: Some(240),
             },
             QueuedShip {
+                id: 336,
                 item: ShipyardItem::Defence(DefenceKind::PulseTurret),
                 count: 10,
+                built: 0,
+                reserve: false,
                 cost: res(1200.0, 200.0, 0.0),
+                unit_cost: res(120.0, 20.0, 0.0),
                 ticks: 70,
                 waiting_for: Some(res(0.0, 0.0, 0.0)),
                 waiting_on: WaitReason::Prerequisite,
@@ -294,8 +313,10 @@ fn sample_homeworld() -> HomeworldState {
             },
         ],
         research_pending: vec![QueuedResearch {
+            id: 340,
             tech: ResearchType::CruiserTech,
             target_level: 1,
+            reserve: false,
             cost: res(8000.0, 5000.0, 2500.0),
             ticks: 90000,
             waiting_for: Some(res(0.0, 0.0, 1200.0)),
@@ -303,6 +324,7 @@ fn sample_homeworld() -> HomeworldState {
             start_in: Some(1800),
         }],
         shipyard_queue: Some(ShipyardQueueItem {
+            id: 322,
             item: ShipyardItem::Ship(ShipClass::Corvette),
             count: 2,
             built: 1,
@@ -310,6 +332,7 @@ fn sample_homeworld() -> HomeworldState {
             end_tick: 300,
         }),
         research_active: Some(ResearchItem {
+            id: 325,
             tech: ResearchType::FuelEfficiency,
             target_level: 2,
             start_tick: 90,
@@ -506,15 +529,16 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::Attack { fleet_id: 1, target_fleet_id: 9001 }),
         ("", Command::Recall { fleet_id: 4 }),
         ("", Command::CollectSalvage { fleet_id: 5 }),
-        ("", Command::Build { building_type: BuildingType::DefenseGrid }),
-        ("", Command::Research { tech: ResearchType::EmergencyJump }),
-        ("", Command::BuildShip { ship_class: ShipClass::Frigate, count: 3 }),
-        ("", Command::BuildDefence { kind: DefenceKind::LancerBattery, count: 4 }),
-        ("", Command::CancelBuild { queue_type: QueueType::Building, index: 1 }),
-        ("ship", Command::CancelBuild { queue_type: QueueType::Ship, index: 0 }),
-        ("research", Command::CancelBuild { queue_type: QueueType::Research, index: 0 }),
-        ("", Command::CancelQueued { queue_type: QueueType::Building, index: 2 }),
-        ("research", Command::CancelQueued { queue_type: QueueType::Research, index: 0 }),
+        ("", Command::Build { building_type: BuildingType::DefenseGrid, reserve: false }),
+        ("reserve", Command::Build { building_type: BuildingType::ResearchLab, reserve: true }),
+        ("", Command::Research { tech: ResearchType::EmergencyJump, reserve: false }),
+        ("", Command::BuildShip { ship_class: ShipClass::Frigate, count: 3, reserve: false }),
+        ("", Command::BuildDefence { kind: DefenceKind::LancerBattery, count: 4, reserve: true }),
+        ("", Command::CancelBuild { queue_type: QueueType::Building, id: 311 }),
+        ("ship", Command::CancelBuild { queue_type: QueueType::Ship, id: 322 }),
+        ("research", Command::CancelBuild { queue_type: QueueType::Research, id: 325 }),
+        ("", Command::CancelQueued { queue_type: QueueType::Building, id: 331 }),
+        ("research", Command::CancelQueued { queue_type: QueueType::Research, id: 340 }),
         ("", Command::PreviewMove { fleet_id: 3, target: h(2, -5) }),
         ("", Command::Leaderboard { limit: 10 }),
         ("", Command::Stop { fleet_id: 6 }),
@@ -686,7 +710,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     },
                 ],
                 homeworld: sample_homeworld(),
-                known_sectors: vec![rich_sector(), bare_sector(), anomaly_sector()],
+                known_sectors: vec![rich_sector(), bare_sector(), anomaly_sector(), stale_pins_sector()],
                 world: WorldInfo::new(Pace::new(10.0).unwrap(), 2, 1),
             }),
         ),
@@ -927,6 +951,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             defended: false,
             resources_lost: res(100.0, 50.0, 25.0),
             salvage_dropped: Some(res(10.0, 5.0, 0.0)),
+            salvage_despawn_tick: Some(4940),
             raid_power: 120.0,
             defense_power: 80.5,
             structures_lost: 6,
@@ -939,6 +964,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             defended: true,
             resources_lost: res(0.0, 0.0, 0.0),
             salvage_dropped: None,
+            salvage_despawn_tick: None,
             raid_power: 40.0,
             defense_power: 80.5,
             structures_lost: 3,
@@ -966,6 +992,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
         ("started", EventKind::Queue(QueueEvent {
             player_id: Some(7),
             queue_type: QueueType::Building,
+            id: 311,
             item: "Metal Mine Lv.5".into(),
             action: QueueAction::Started,
             paid: res(759.0, 190.0, 0.0),
@@ -977,6 +1004,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
         ("waiting", EventKind::Queue(QueueEvent {
             player_id: None,
             queue_type: QueueType::Ship,
+            id: 335,
             item: "Corvette x3".into(),
             action: QueueAction::Waiting,
             paid: res(0.0, 0.0, 0.0),
@@ -988,6 +1016,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
         ("cancelled", EventKind::Queue(QueueEvent {
             player_id: Some(7),
             queue_type: QueueType::Research,
+            id: 340,
             item: "Cruiser Tech Lv.1".into(),
             action: QueueAction::Cancelled,
             paid: res(0.0, 0.0, 0.0),
@@ -1092,7 +1121,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             "ClientMessage",
             json!({"type": "policy_update", "fleet_id": 3, "preset": "prospect", "params": {}}),
         ),
-        ("cancel_without_index", "Command", json!({"action": "cancel_build", "queue_type": "Ship"})),
+        ("build_without_reserve", "Command", json!({"action": "build", "building_type": "MetalMine"})),
         ("build_defence_default_count", "Command", json!({"action": "build_defence", "kind": "PulseTurret"})),
         ("raid_incoming_without_power", "ServerMessage",
             json!({"type": "event", "tick": 3, "kind": "RaidIncoming", "player_id": 1, "arrival_tick": 90, "threat": "light"})),

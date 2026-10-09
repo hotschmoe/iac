@@ -513,7 +513,7 @@ class PolicyParams {
     this.minFuelPct = 10,
     this.cargoReturnPct = 85,
     this.maxRange = 4,
-    this.engageRatioX10 = 12,
+    this.engageRatioX10 = 15,
   });
 
   factory PolicyParams.fromJson(Object? json) {
@@ -522,7 +522,7 @@ class PolicyParams {
       minFuelPct: (m['min_fuel_pct'] as int?) ?? 10,
       cargoReturnPct: (m['cargo_return_pct'] as int?) ?? 85,
       maxRange: (m['max_range'] as int?) ?? 4,
-      engageRatioX10: (m['engage_ratio_x10'] as int?) ?? 12,
+      engageRatioX10: (m['engage_ratio_x10'] as int?) ?? 15,
     );
   }
 
@@ -551,21 +551,20 @@ sealed class Command {
       'attack' => AttackCommand(fleetId: _i(m['fleet_id']), targetFleetId: _i(m['target_fleet_id'])),
       'recall' => RecallCommand(fleetId: _i(m['fleet_id'])),
       'collect_salvage' => CollectSalvageCommand(fleetId: _i(m['fleet_id'])),
-      'build' => BuildCommand(buildingType: BuildingType.fromJson(m['building_type'])),
-      'research' => ResearchCommand(tech: ResearchType.fromJson(m['tech'])),
+      'build' => BuildCommand(buildingType: BuildingType.fromJson(m['building_type']), reserve: (m['reserve'] as bool?) ?? false),
+      'research' => ResearchCommand(tech: ResearchType.fromJson(m['tech']), reserve: (m['reserve'] as bool?) ?? false),
       'build_ship' => BuildShipCommand(
           shipClass: ShipClass.fromJson(m['ship_class']),
           count: (m['count'] as int?) ?? 1,
+          reserve: (m['reserve'] as bool?) ?? false,
         ),
       'build_defence' => BuildDefenceCommand(
           kind: DefenceKind.fromJson(m['kind']),
           count: (m['count'] as int?) ?? 1,
+          reserve: (m['reserve'] as bool?) ?? false,
         ),
-      'cancel_build' => CancelBuildCommand(
-          queueType: QueueType.fromJson(m['queue_type']),
-          index: (m['index'] as int?) ?? 0,
-        ),
-      'cancel_queued' => CancelQueuedCommand(queueType: QueueType.fromJson(m['queue_type']), index: _i(m['index'])),
+      'cancel_build' => CancelBuildCommand(queueType: QueueType.fromJson(m['queue_type']), id: _i(m['id'])),
+      'cancel_queued' => CancelQueuedCommand(queueType: QueueType.fromJson(m['queue_type']), id: _i(m['id'])),
       'leaderboard' => LeaderboardCommand(limit: (m['limit'] as int?) ?? 20),
       'preview_move' => PreviewMoveCommand(fleetId: _i(m['fleet_id']), target: Hex.fromJson(m['target'])),
       'stop' => StopCommand(fleetId: fleet()),
@@ -618,51 +617,57 @@ class CollectSalvageCommand extends Command {
 
 class BuildCommand extends Command {
   final BuildingType buildingType;
-  const BuildCommand({required this.buildingType});
+
+  /// Hold the line: nothing behind this order in the queue starts while it is
+  /// ready and short of resources.
+  final bool reserve;
+  const BuildCommand({required this.buildingType, this.reserve = false});
   @override
-  Json toJson() => {'action': 'build', 'building_type': buildingType.toJson()};
+  Json toJson() => {'action': 'build', 'building_type': buildingType.toJson(), 'reserve': reserve};
 }
 
 class ResearchCommand extends Command {
   final ResearchType tech;
-  const ResearchCommand({required this.tech});
+  final bool reserve;
+  const ResearchCommand({required this.tech, this.reserve = false});
   @override
-  Json toJson() => {'action': 'research', 'tech': tech.toJson()};
+  Json toJson() => {'action': 'research', 'tech': tech.toJson(), 'reserve': reserve};
 }
 
 class BuildShipCommand extends Command {
   final ShipClass shipClass;
   final int count;
-  const BuildShipCommand({required this.shipClass, this.count = 1});
+  final bool reserve;
+  const BuildShipCommand({required this.shipClass, this.count = 1, this.reserve = false});
   @override
-  Json toJson() => {'action': 'build_ship', 'ship_class': shipClass.toJson(), 'count': count};
+  Json toJson() => {'action': 'build_ship', 'ship_class': shipClass.toJson(), 'count': count, 'reserve': reserve};
 }
 
 class BuildDefenceCommand extends Command {
   final DefenceKind kind;
   final int count;
-  const BuildDefenceCommand({required this.kind, this.count = 1});
+  final bool reserve;
+  const BuildDefenceCommand({required this.kind, this.count = 1, this.reserve = false});
   @override
-  Json toJson() => {'action': 'build_defence', 'kind': kind.toJson(), 'count': count};
+  Json toJson() => {'action': 'build_defence', 'kind': kind.toJson(), 'count': count, 'reserve': reserve};
 }
 
-/// Cancel an item that has started (half refunded); [index] picks among the
-/// running buildings.
+/// Cancel an item that has started (half refunded), by its stable queue [id].
 class CancelBuildCommand extends Command {
   final QueueType queueType;
-  final int index;
-  const CancelBuildCommand({required this.queueType, this.index = 0});
+  final int id;
+  const CancelBuildCommand({required this.queueType, required this.id});
   @override
-  Json toJson() => {'action': 'cancel_build', 'queue_type': queueType.toJson(), 'index': index};
+  Json toJson() => {'action': 'cancel_build', 'queue_type': queueType.toJson(), 'id': id};
 }
 
 /// Remove an item still waiting in a queue; nothing was paid.
 class CancelQueuedCommand extends Command {
   final QueueType queueType;
-  final int index;
-  const CancelQueuedCommand({required this.queueType, required this.index});
+  final int id;
+  const CancelQueuedCommand({required this.queueType, required this.id});
   @override
-  Json toJson() => {'action': 'cancel_queued', 'queue_type': queueType.toJson(), 'index': index};
+  Json toJson() => {'action': 'cancel_queued', 'queue_type': queueType.toJson(), 'id': id};
 }
 
 /// Ask for the score table; the reply is a [LeaderboardReply].
@@ -1263,6 +1268,9 @@ class SectorState {
   /// memory: resources, hostiles, salvage and site are as last observed at
   /// [lastSeen] and may have changed since.
   final bool live;
+
+  /// The salvage or site pin is chart memory nothing has confirmed since.
+  final bool pinsStale;
   const SectorState({
     required this.location,
     required this.terrain,
@@ -1277,6 +1285,7 @@ class SectorState {
     required this.threat,
     required this.lastSeen,
     required this.live,
+    this.pinsStale = false,
   });
 
   factory SectorState.fromJson(Object? json) {
@@ -1295,6 +1304,7 @@ class SectorState {
       threat: ThreatInfo.fromJson(m['threat']),
       lastSeen: _i(m['last_seen']),
       live: m['live'] as bool,
+      pinsStale: (m['pins_stale'] as bool?) ?? false,
     );
   }
 
@@ -1314,6 +1324,7 @@ class SectorState {
     _put(m, 'salvage_despawn_tick', salvageDespawnTick);
     _put(m, 'site', site?.toJson());
     _put(m, 'ore_reserve', oreReserve?.toJson());
+    if (pinsStale) m['pins_stale'] = true;
     return m;
   }
 }
@@ -1974,11 +1985,14 @@ class ResearchState {
 }
 
 class BuildQueueItem {
+  /// Stable queue id; what the cancel commands take.
+  final int id;
   final BuildingType buildingType;
   final int targetLevel;
   final int startTick;
   final int endTick;
   const BuildQueueItem({
+    required this.id,
     required this.buildingType,
     required this.targetLevel,
     required this.startTick,
@@ -1988,6 +2002,7 @@ class BuildQueueItem {
   factory BuildQueueItem.fromJson(Object? json) {
     final m = _obj(json);
     return BuildQueueItem(
+      id: _i(m['id']),
       buildingType: BuildingType.fromJson(m['building_type']),
       targetLevel: _i(m['target_level']),
       startTick: _i(m['start_tick']),
@@ -1996,6 +2011,7 @@ class BuildQueueItem {
   }
 
   Json toJson() => {
+        'id': id,
         'building_type': buildingType.toJson(),
         'target_level': targetLevel,
         'start_tick': startTick,
@@ -2008,16 +2024,20 @@ class BuildQueueItem {
 /// [waitingFor] is the resources still missing (null when it waits for
 /// something else).
 class QueuedBuild {
+  final int id;
   final BuildingType buildingType;
   final int targetLevel;
+  final bool reserve;
   final Resources cost;
   final int ticks;
   final Resources? waitingFor;
   final WaitReason waitingOn;
   final int? startIn;
   const QueuedBuild({
+    required this.id,
     required this.buildingType,
     required this.targetLevel,
+    this.reserve = false,
     required this.cost,
     required this.ticks,
     this.waitingFor,
@@ -2028,8 +2048,10 @@ class QueuedBuild {
   factory QueuedBuild.fromJson(Object? json) {
     final m = _obj(json);
     return QueuedBuild(
+      id: _i(m['id']),
       buildingType: BuildingType.fromJson(m['building_type']),
       targetLevel: _i(m['target_level']),
+      reserve: (m['reserve'] as bool?) ?? false,
       cost: Resources.fromJson(m['cost']),
       ticks: _i(m['ticks']),
       waitingFor: _opt(m['waiting_for'], Resources.fromJson),
@@ -2040,8 +2062,10 @@ class QueuedBuild {
 
   Json toJson() {
     final m = <String, dynamic>{
+      'id': id,
       'building_type': buildingType.toJson(),
       'target_level': targetLevel,
+      'reserve': reserve,
       'cost': cost.toJson(),
       'ticks': ticks,
     };
@@ -2053,16 +2077,20 @@ class QueuedBuild {
 }
 
 class QueuedResearch {
+  final int id;
   final ResearchType tech;
   final int targetLevel;
+  final bool reserve;
   final Resources cost;
   final int ticks;
   final Resources? waitingFor;
   final WaitReason waitingOn;
   final int? startIn;
   const QueuedResearch({
+    required this.id,
     required this.tech,
     required this.targetLevel,
+    this.reserve = false,
     required this.cost,
     required this.ticks,
     this.waitingFor,
@@ -2073,8 +2101,10 @@ class QueuedResearch {
   factory QueuedResearch.fromJson(Object? json) {
     final m = _obj(json);
     return QueuedResearch(
+      id: _i(m['id']),
       tech: ResearchType.fromJson(m['tech']),
       targetLevel: _i(m['target_level']),
+      reserve: (m['reserve'] as bool?) ?? false,
       cost: Resources.fromJson(m['cost']),
       ticks: _i(m['ticks']),
       waitingFor: _opt(m['waiting_for'], Resources.fromJson),
@@ -2085,8 +2115,10 @@ class QueuedResearch {
 
   Json toJson() {
     final m = <String, dynamic>{
+      'id': id,
       'tech': tech.toJson(),
       'target_level': targetLevel,
+      'reserve': reserve,
       'cost': cost.toJson(),
       'ticks': ticks,
     };
@@ -2097,20 +2129,29 @@ class QueuedResearch {
   }
 }
 
-/// A shipyard order waiting its turn. [cost] is for the whole batch,
-/// [ticks] for one ship.
+/// A shipyard order waiting its turn. The batch pays per unit: [built] of
+/// [count] are done, [cost] is the rest of the batch, [unitCost] the next
+/// unit, [ticks] one ship, and [waitingFor] the shortfall for the next unit.
 class QueuedShip {
+  final int id;
   final ShipyardItem item;
   final int count;
+  final int built;
+  final bool reserve;
   final Resources cost;
+  final Resources unitCost;
   final int ticks;
   final Resources? waitingFor;
   final WaitReason waitingOn;
   final int? startIn;
   const QueuedShip({
+    required this.id,
     required this.item,
     required this.count,
+    this.built = 0,
+    this.reserve = false,
     required this.cost,
+    required this.unitCost,
     required this.ticks,
     this.waitingFor,
     this.waitingOn = WaitReason.slot,
@@ -2120,9 +2161,13 @@ class QueuedShip {
   factory QueuedShip.fromJson(Object? json) {
     final m = _obj(json);
     return QueuedShip(
+      id: _i(m['id']),
       item: ShipyardItem.fromJson(m['item']),
       count: _i(m['count']),
+      built: (m['built'] as int?) ?? 0,
+      reserve: (m['reserve'] as bool?) ?? false,
       cost: Resources.fromJson(m['cost']),
+      unitCost: Resources.fromJson(m['unit_cost']),
       ticks: _i(m['ticks']),
       waitingFor: _opt(m['waiting_for'], Resources.fromJson),
       waitingOn: WaitReason.fromJson(m['waiting_on']),
@@ -2132,9 +2177,13 @@ class QueuedShip {
 
   Json toJson() {
     final m = <String, dynamic>{
+      'id': id,
       'item': item.toJson(),
       'count': count,
+      'built': built,
+      'reserve': reserve,
       'cost': cost.toJson(),
+      'unit_cost': unitCost.toJson(),
       'ticks': ticks,
     };
     _put(m, 'waiting_for', waitingFor?.toJson());
@@ -2145,12 +2194,14 @@ class QueuedShip {
 }
 
 class ShipyardQueueItem {
+  final int id;
   final ShipyardItem item;
   final int count;
   final int built;
   final int startTick;
   final int endTick;
   const ShipyardQueueItem({
+    required this.id,
     required this.item,
     required this.count,
     required this.built,
@@ -2161,6 +2212,7 @@ class ShipyardQueueItem {
   factory ShipyardQueueItem.fromJson(Object? json) {
     final m = _obj(json);
     return ShipyardQueueItem(
+      id: _i(m['id']),
       item: ShipyardItem.fromJson(m['item']),
       count: _i(m['count']),
       built: _i(m['built']),
@@ -2170,6 +2222,7 @@ class ShipyardQueueItem {
   }
 
   Json toJson() => {
+        'id': id,
         'item': item.toJson(),
         'count': count,
         'built': built,
@@ -2179,11 +2232,13 @@ class ShipyardQueueItem {
 }
 
 class ResearchItem {
+  final int id;
   final ResearchType tech;
   final int targetLevel;
   final int startTick;
   final int endTick;
   const ResearchItem({
+    required this.id,
     required this.tech,
     required this.targetLevel,
     required this.startTick,
@@ -2193,6 +2248,7 @@ class ResearchItem {
   factory ResearchItem.fromJson(Object? json) {
     final m = _obj(json);
     return ResearchItem(
+      id: _i(m['id']),
       tech: ResearchType.fromJson(m['tech']),
       targetLevel: _i(m['target_level']),
       startTick: _i(m['start_tick']),
@@ -2201,6 +2257,7 @@ class ResearchItem {
   }
 
   Json toJson() => {
+        'id': id,
         'tech': tech.toJson(),
         'target_level': targetLevel,
         'start_tick': startTick,
@@ -2850,6 +2907,9 @@ class RaidResolvedEvent extends EventKind {
   final bool defended;
   final Resources resourcesLost;
   final Resources? salvageDropped;
+
+  /// Tick the pile on the homeworld despawns.
+  final int? salvageDespawnTick;
   final double raidPower;
   final double defensePower;
   final int structuresLost;
@@ -2863,6 +2923,7 @@ class RaidResolvedEvent extends EventKind {
     required this.defended,
     required this.resourcesLost,
     this.salvageDropped,
+    this.salvageDespawnTick,
     required this.raidPower,
     required this.defensePower,
     this.structuresLost = 0,
@@ -2876,6 +2937,7 @@ class RaidResolvedEvent extends EventKind {
         defended: m['defended'] as bool,
         resourcesLost: Resources.fromJson(m['resources_lost']),
         salvageDropped: _opt(m['salvage_dropped'], Resources.fromJson),
+        salvageDespawnTick: _opt(m['salvage_despawn_tick'], _i),
         raidPower: _f(m['raid_power']),
         defensePower: _f(m['defense_power']),
         structuresLost: (m['structures_lost'] as int?) ?? 0,
@@ -2899,6 +2961,7 @@ class RaidResolvedEvent extends EventKind {
       'ships_lost': shipsLost,
     };
     _put(m, 'salvage_dropped', salvageDropped?.toJson());
+    _put(m, 'salvage_despawn_tick', salvageDespawnTick);
     return m;
   }
 }
@@ -3008,6 +3071,9 @@ class QueueEvent extends EventKind {
   final int? playerId;
   final QueueType queueType;
 
+  /// Stable queue id of the order.
+  final int id;
+
   /// "Metal Mine Lv.5", "Corvette x3".
   final String item;
   final QueueAction action;
@@ -3027,6 +3093,7 @@ class QueueEvent extends EventKind {
   const QueueEvent({
     this.playerId,
     required this.queueType,
+    required this.id,
     required this.item,
     required this.action,
     this.paid = const Resources(),
@@ -3039,6 +3106,7 @@ class QueueEvent extends EventKind {
   factory QueueEvent.fromJson(Json m) => QueueEvent(
         playerId: _opt(m['player_id'], _i),
         queueType: QueueType.fromJson(m['queue_type']),
+        id: _i(m['id']),
         item: m['item'] as String,
         action: QueueAction.fromJson(m['action']),
         paid: m['paid'] == null ? const Resources() : Resources.fromJson(m['paid']),
@@ -3053,6 +3121,7 @@ class QueueEvent extends EventKind {
     final m = <String, dynamic>{
       'kind': 'Queue',
       'queue_type': queueType.toJson(),
+      'id': id,
       'item': item,
       'action': action.toJson(),
       'paid': paid.toJson(),

@@ -600,6 +600,22 @@ impl ClientState {
 
     // ── Homeworld navigation ─────────────────────────────────────────
 
+    /// The cancel command for the first running (or waiting) item of a queue,
+    /// by its stable id.
+    pub fn cancel_command(&self, queue_type: iac_shared::protocol::QueueType, waiting: bool) -> Option<Command> {
+        use iac_shared::protocol::QueueType;
+        let hw = self.homeworld.as_ref()?;
+        let id = match (queue_type, waiting) {
+            (QueueType::Building, false) => hw.build_queue.first().map(|q| q.id),
+            (QueueType::Building, true) => hw.build_pending.first().map(|q| q.id),
+            (QueueType::Ship, false) => hw.shipyard_queue.as_ref().map(|q| q.id),
+            (QueueType::Ship, true) => hw.shipyard_pending.first().map(|q| q.id),
+            (QueueType::Research, false) => hw.research_active.as_ref().map(|q| q.id),
+            (QueueType::Research, true) => hw.research_pending.first().map(|q| q.id),
+        }?;
+        Some(if waiting { Command::CancelQueued { queue_type, id } } else { Command::CancelBuild { queue_type, id } })
+    }
+
     pub fn homeworld_nav(&mut self, nav: HomeworldNav) -> Option<Command> {
         let hw = self.homeworld.as_ref()?;
         let count = self.homeworld_tab.item_count();
@@ -634,24 +650,26 @@ impl ClientState {
                     HomeworldTab::Buildings => {
                         let o = cat.buildings.get(i)?;
                         let open = o.next.is_some() && o.requires.iter().all(|r| r.met);
-                        open.then_some(Command::Build { building_type: o.building_type })
+                        open.then_some(Command::Build { building_type: o.building_type, reserve: false })
                     }
                     HomeworldTab::Research => {
                         let o = cat.research.get(i)?;
                         let open = o.next.is_some() && o.requires.iter().all(|r| r.met);
-                        open.then_some(Command::Research { tech: o.tech })
+                        open.then_some(Command::Research { tech: o.tech, reserve: false })
                     }
                     HomeworldTab::Shipyard => {
                         if let Some(o) = cat.ships.get(i) {
                             return o.requires.iter().all(|r| r.met).then_some(Command::BuildShip {
                                 ship_class: o.ship_class,
                                 count: self.ship_build_count,
+                                reserve: false,
                             });
                         }
                         let o = cat.defences.get(i - cat.ships.len())?;
                         o.requires.iter().all(|r| r.met).then_some(Command::BuildDefence {
                             kind: o.kind,
                             count: self.ship_build_count,
+                            reserve: false,
                         })
                     }
                 };

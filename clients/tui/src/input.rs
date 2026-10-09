@@ -13,6 +13,9 @@ pub enum InputAction {
     Quit,
     SwitchView(View),
     SendCommand(Command),
+    /// Cancel the first running or waiting item of a queue, resolved to its id
+    /// from the latest state.
+    CancelOldest { queue_type: iac_shared::protocol::QueueType, waiting: bool },
     Scroll(ScrollDirection),
     Zoom(ZoomLevel),
     CycleFleet,
@@ -181,31 +184,13 @@ fn map_homeworld_char(c: char) -> InputAction {
         'f' => InputAction::ToggleFleetPanel,
 
         // Cancel the oldest running item (half refunded) ...
-        'x' => InputAction::SendCommand(Command::CancelBuild {
-            queue_type: iac_shared::protocol::QueueType::Building,
-            index: 0,
-        }),
-        'X' => InputAction::SendCommand(Command::CancelBuild {
-            queue_type: iac_shared::protocol::QueueType::Ship,
-            index: 0,
-        }),
-        'z' => InputAction::SendCommand(Command::CancelBuild {
-            queue_type: iac_shared::protocol::QueueType::Research,
-            index: 0,
-        }),
+        'x' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Building, waiting: false },
+        'X' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Ship, waiting: false },
+        'z' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Research, waiting: false },
         // ... or the next waiting one (nothing was paid)
-        'c' => InputAction::SendCommand(Command::CancelQueued {
-            queue_type: iac_shared::protocol::QueueType::Building,
-            index: 0,
-        }),
-        'C' => InputAction::SendCommand(Command::CancelQueued {
-            queue_type: iac_shared::protocol::QueueType::Ship,
-            index: 0,
-        }),
-        'Z' => InputAction::SendCommand(Command::CancelQueued {
-            queue_type: iac_shared::protocol::QueueType::Research,
-            index: 0,
-        }),
+        'c' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Building, waiting: true },
+        'C' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Ship, waiting: true },
+        'Z' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Research, waiting: true },
 
         // Shipyard batch size
         '+' | '=' => InputAction::AdjustBuildCount(1),

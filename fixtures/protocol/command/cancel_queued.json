@@ -1,5 +1,5 @@
 {
   "action": "cancel_queued",
-  "index": 2,
+  "id": 331,
   "queue_type": "Building"
 }

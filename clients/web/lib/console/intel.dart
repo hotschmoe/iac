@@ -33,6 +33,27 @@ class Intel {
   String get label => live ? 'LIVE' : 'seen ${ago(ticksOld)} ago';
 }
 
+/// Seconds until the salvage pile in [s] despawns, null when there is no pile
+/// or no countdown. Zero or less means the pile is gone.
+int? salvageSecondsLeft(proto.SectorState? s, int tick) {
+  if (s == null || s.salvage == null || s.salvageDespawnTick == null) return null;
+  return s.salvageDespawnTick! - tick;
+}
+
+/// A salvage pin worth drawing: a pile that exists and has not run out of time.
+bool salvagePinVisible(proto.SectorState? s, int tick) {
+  final pile = s?.salvage;
+  if (pile == null || pile.total <= 0) return false;
+  final left = salvageSecondsLeft(s, tick);
+  return left == null || left > 0;
+}
+
+/// "drifts away in 1:05" for a pile with a countdown.
+String? despawnLabel(proto.SectorState? s, int tick) {
+  final left = salvageSecondsLeft(s, tick);
+  return left == null || left <= 0 ? null : 'drifts away in ${clockFmt(left)}';
+}
+
 String ago(int t) => t < 60
     ? '${t}s'
     : t < 3600

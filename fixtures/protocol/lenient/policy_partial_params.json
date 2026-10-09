@@ -3,7 +3,7 @@
     "fleet_id": 3,
     "params": {
       "cargo_return_pct": 85,
-      "engage_ratio_x10": 12,
+      "engage_ratio_x10": 15,
       "max_range": 2,
       "min_fuel_pct": 10
     },

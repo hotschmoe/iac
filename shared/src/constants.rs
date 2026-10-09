@@ -513,6 +513,10 @@ pub fn defense_grid_scout_units(level: u8) -> f32 {
 /// minute, so 60 s lost most of them.
 pub const SALVAGE_DESPAWN_TICKS: u32 = 180;
 
+/// A pile on the owner's own homeworld that nobody can scoop raises an alert
+/// when it has this long left.
+pub const HOME_SALVAGE_WARN_TICKS: u32 = 60;
+
 /// Ticks of harvesting summed into one `ResourceHarvested` event.
 pub const HARVEST_REPORT_TICKS: u64 = 10;
 
@@ -543,7 +547,7 @@ pub const POLICY_DEFAULT_MIN_FUEL_PCT: u8 = 10;
 pub const POLICY_DEFAULT_CARGO_RETURN_PCT: u8 = 85;
 pub const POLICY_DEFAULT_MAX_RANGE: u8 = 4;
 /// Engage only if our power ≥ theirs × (this / 10).
-pub const POLICY_DEFAULT_ENGAGE_RATIO_X10: u8 = 12;
+pub const POLICY_DEFAULT_ENGAGE_RATIO_X10: u8 = 15;
 /// PatrolHome keeps within this many hops of the homeworld.
 pub const POLICY_PATROL_RADIUS: u8 = 2;
 /// PatrolHome heads home to lick wounds below this average hull fraction.

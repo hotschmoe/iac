@@ -2,7 +2,8 @@
   "canonical": {
     "action": "build_defence",
     "count": 1,
-    "kind": "PulseTurret"
+    "kind": "PulseTurret",
+    "reserve": false
   },
   "input": {
     "action": "build_defence",

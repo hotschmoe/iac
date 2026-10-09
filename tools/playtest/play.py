@@ -23,7 +23,9 @@ WAIT_DEFAULT, WAIT_MAX = 45, 60
 SEND_GAP = 0.25
 ACK_CAP = 1.6
 SCORE_RULE = ("score = core + min(combat + explore, 25% of core); core = built levels, living ships and half of "
-              "defences at cost (metal 1: crystal 1.5: deut 2). Unspent stock scores 0: spend it.")
+              "defences at cost (metal 1: crystal 1.5: deut 2). Unspent stock scores 0: spend it. Kills pay in full "
+              "up to 4x your strength and less above; repeat kills in one sector pay less; charts pay when a fleet "
+              "docks with them; derelicts pay on first boarding.")
 QUEUE_NAMES = {"build": "Building", "research": "Research", "ship": "Ship"}
 ALERT_LEVELS = ("Warning", "Critical")
 NOTABLE = {"BuildingCompleted", "ResearchCompleted", "ShipBuilt", "DefenceBuilt", "FleetArrived", "CombatStarted",
@@ -425,18 +427,21 @@ def summarize(fs):
     print("Buildings: " + ", ".join(f"{b['building_type']} {b['level']}" for b in hw["buildings"]))
     print("Research:  " + (", ".join(f"{r['tech']} {r['level']}" for r in hw["research"]) or "none"))
     t = fs["tick"]
-    depth = hw.get("queue_depth", 3)
+    waiting_max = hw.get("queue_waiting_max", 3)
     running = hw.get("build_queue") or []
-    print(f"Build queue ({len(running)}/{hw.get('build_slots', 1)} slots, {depth} items max): "
-          + ("; ".join(f"{q['building_type']} -> L{q['target_level']} done in {age(q['end_tick'] - t)}" for q in running) or "idle"))
+    print(f"Build queue ({len(running)}/{hw.get('build_slots', 1)} slots, {waiting_max} may wait): "
+          + ("; ".join(f"{q['building_type']} -> L{q['target_level']} done in {age(q['end_tick'] - t)}" for q in running)
+             or ("none running" if hw.get("build_pending") else "idle")))
     for i, q in enumerate(hw.get("build_pending") or []):
         print(f"  waiting [{i}]: {q['building_type']} -> L{q['target_level']} ({age(q['ticks'])}){waiting(q.get('waiting_for'))}")
     q = hw.get("research_active")
-    print("Research queue: " + (f"{q['tech']} -> L{q['target_level']} done in {age(q['end_tick'] - t)}" if q else "idle"))
+    print("Research queue: " + (f"{q['tech']} -> L{q['target_level']} done in {age(q['end_tick'] - t)}" if q
+                                else "none running" if hw.get("research_pending") else "idle"))
     for i, q in enumerate(hw.get("research_pending") or []):
         print(f"  waiting [{i}]: {q['tech']} -> L{q['target_level']} ({age(q['ticks'])}){waiting(q.get('waiting_for'))}")
     q = hw.get("shipyard_queue")
-    print("Shipyard queue: " + (f"{q['item']} {q['built']}/{q['count']}, next unit in {age(q['end_tick'] - t)}" if q else "idle"))
+    print("Shipyard queue: " + (f"{q['item']} {q['built']}/{q['count']}, next unit in {age(q['end_tick'] - t)}" if q
+                                else "none running" if hw.get("shipyard_pending") else "idle"))
     for i, q in enumerate(hw.get("shipyard_pending") or []):
         print(f"  waiting [{i}]: {q['count']}x {q['item']} ({age(q['ticks'])} each){waiting(q.get('waiting_for'))}")
     stand = [f"{d['count']}x {d['kind']}" + (f" (+{d['restoring']} being rebuilt)" if d.get("restoring") else "")
@@ -513,7 +518,8 @@ def describe(sec, loc, sectors, now, indent="", power=None):
             left = f", despawns in {t}s" if t > 0 else ", despawn time passed (probably gone)"
         print(f"{indent}salvage: {res(sec['salvage'])}{left}")
     if sec.get("site"):
-        print(f"{indent}derelict site tier {sec['site']['tier']} risk {sec['site']['risk']}")
+        stale = " (remembered, may be gone)" if sec.get("pins_stale") else ""
+        print(f"{indent}derelict site tier {sec['site']['tier']} risk {sec['site']['risk']}{stale}")
 
 
 
@@ -538,15 +544,24 @@ def queues_of(fs):
     """The three homeworld queues as plain dicts: running items, waiting items, room."""
     hw, t = fs["homeworld"], fs["tick"]
     prod = hw.get("production") or {}
-    depth = hw.get("queue_depth", 3)
+    waiting_max = hw.get("queue_waiting_max", 3)
 
     def mk(slots, running, waiting):
+        depth = slots + waiting_max
         room = max(depth - len(running) - len(waiting), 0)
         free = max(slots - len(running), 0) if not waiting else 0
         return {"slots": slots, "depth": depth, "running": running, "waiting": waiting, "room": room, "open": free}
 
-    def wait_item(i, item, to, each, w):
+    def wait_item(i, item, to, each, w, q=None):
         d = {"index": i, "item": item, "ticks": each}
+        if q and q.get("id") is not None:
+            d["id"] = q["id"]
+        if q and q.get("reserve"):
+            d["reserve"] = True
+        if q and q.get("waiting_on"):
+            d["waiting_on"] = q["waiting_on"]
+        if q and q.get("start_in") is not None:
+            d["start_in_s"] = q["start_in"]
         if to is not None:
             d["to"] = to
         short = {k: round(w[k]) for k in RES if (w or {}).get(k, 0) > 0.5}
@@ -558,16 +573,18 @@ def queues_of(fs):
         return d
 
     run_b = [{"item": q["building_type"], "to": q["target_level"], "eta_s": max(q["end_tick"] - t, 0)} for q in hw.get("build_queue") or []]
-    wait_b = [wait_item(i, q["building_type"], q["target_level"], q["ticks"], q.get("waiting_for")) for i, q in enumerate(hw.get("build_pending") or [])]
+    wait_b = [wait_item(i, q["building_type"], q["target_level"], q["ticks"], q.get("waiting_for"), q) for i, q in enumerate(hw.get("build_pending") or [])]
     ra = hw.get("research_active")
     run_r = [{"item": ra["tech"], "to": ra["target_level"], "eta_s": max(ra["end_tick"] - t, 0)}] if ra else []
-    wait_r = [wait_item(i, q["tech"], q["target_level"], q["ticks"], q.get("waiting_for")) for i, q in enumerate(hw.get("research_pending") or [])]
+    wait_r = [wait_item(i, q["tech"], q["target_level"], q["ticks"], q.get("waiting_for"), q) for i, q in enumerate(hw.get("research_pending") or [])]
     sq = hw.get("shipyard_queue")
     run_s = [{"item": sq["item"], "done": sq["built"], "of": sq["count"], "eta_s": max(sq["end_tick"] - t, 0)}] if sq else []
     wait_s = []
     for i, q in enumerate(hw.get("shipyard_pending") or []):
-        d = wait_item(i, q["item"], None, q["ticks"], q.get("waiting_for"))
+        d = wait_item(i, q["item"], None, q["ticks"], q.get("waiting_for"), q)
         d["count"] = q["count"]
+        if q.get("built"):
+            d["built"] = q["built"]
         wait_s.append(d)
     return {"build": mk(hw.get("build_slots", 1), run_b, wait_b), "research": mk(1, run_r, wait_r), "ship": mk(1, run_s, wait_s)}
 
@@ -738,7 +755,8 @@ def queue_line(label, q):
         if w.get("short"):
             need = " needs " + ", ".join(f"{v} {k}" for k, v in w["short"].items())
             need += f" (~{age(w['covered_in_s'])} of production)" if "covered_in_s" in w else " (no income of it)"
-        parts.append(f"waiting[{w['index']}] {what}{w['item']}{to}{need}")
+        tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
+        parts.append(f"waiting{tag} {what}{w['item']}{to}{need}")
     if q["room"] and not q["open"]:
         parts.append(f"{q['room']} more fit")
     return " | ".join(parts)
@@ -778,7 +796,7 @@ def wait_reasons(base, cur, events, until="any"):
             why.append(f"{n} queue idle")
         else:
             new = c["aff"] - b["aff"]
-            if c["open"] > 0 and new:
+            if c["open"] > 0 and new and not b["aff"]:
                 why.append(f"{n} queue idle and now payable: {', '.join(sorted(new))}")
     if until not in ("idle", "done"):
         for fid, f in cur["fleets"].items():
@@ -876,7 +894,7 @@ def summarize(fs, doc):
     for n, q in doc["queues"].items():
         head = f"{labels[n]} ({len(q['running'])}/{q['slots']} slots, {q['depth']} items max, {q['room']} free): "
         run = "; ".join(f"{r['item']}" + (f" -> L{r['to']}" if "to" in r else f" {r['done']}/{r['of']}") + f" done in {age(r['eta_s'])}" for r in q["running"])
-        print(head + (run or "idle"))
+        print(head + (run or ("none running" if q["waiting"] else "idle")))
         for w in q["waiting"]:
             what = f"{w['count']}x " if "count" in w else ""
             to = f" -> L{w['to']}" if "to" in w else ""
@@ -886,7 +904,12 @@ def summarize(fs, doc):
                 need += f" (about {age(w['covered_in_s'])} of income)" if "covered_in_s" in w else " (no income of it yet)"
             if not need and q["open"] == 0 and len(q["running"]) >= q["slots"]:
                 need = " (starts when a slot frees up; paid then)"
-            print(f"    waiting [{w['index']}]: {what}{w['item']}{to} ({age(w['ticks'])}{' each' if what else ''}){need}")
+            why = f" [waits on {str(w['waiting_on']).lower()}" + (f", starts in ~{age(w['start_in_s'])}]" if "start_in_s" in w else "]") \
+                if w.get("waiting_on") else ""
+            tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
+            done = f" ({w['built']}/{w['count']} built)" if w.get("built") else ""
+            hold = " RESERVE (holds the line)" if w.get("reserve") else ""
+            print(f"    waiting {tag}: {what}{w['item']}{to}{done} ({age(w['ticks'])}{' each' if what else ''}){need}{why}{hold}")
     stand = [f"{d['count']}x {d['kind']}" + (f" (+{d['restoring']} being rebuilt)" if d.get("restoring") else "")
              for d in hw.get("defences") or [] if d["count"] or d.get("restoring")]
     print(f"Defence power {hw.get('home_defence_power', 0):.0f} against an expected raid of about "
@@ -1195,7 +1218,10 @@ def mentions(c, msg):
     fid = c.get("fleet_id")
     if fid is not None and re.search(rf"\bfleet {fid}\b", msg):
         return True
-    return any(v in msg for k, v in c.items() if isinstance(v, str) and k not in ("action", "type"))
+    if c.get("id") is not None:   # cancels name their order by id; queue_type is not an item name
+        return re.search(rf"\border {c['id']}\b", msg) is not None
+    flat = re.sub(r"[\s_]", "", msg).lower()   # the server writes "Corvette Tech" for CorvetteTech
+    return any(re.sub(r"[\s_]", "", v).lower() in flat for k, v in c.items() if isinstance(v, str) and k not in ("action", "type"))
 
 
 def match_errors(cmds, errors):
@@ -1227,6 +1253,38 @@ def match_errors(cmds, errors):
     return got, left
 
 
+def flat(text):
+    return re.sub(r"[\s_]", "", str(text)).lower()
+
+
+def queue_outcome(cmd, queue_events, used):
+    """The server's own Queue event for an order: the authoritative 'started' or 'waiting'."""
+    if cmd.get("action") in ("cancel_queued", "cancel_build"):
+        for i, q in enumerate(queue_events):
+            if i not in used and str(q.get("action", "")).lower() == "cancelled" \
+                    and (cmd.get("id") is None or q.get("id") == cmd.get("id")):
+                used.add(i)
+                back = {k: v for k, v in (q.get("refunded") or {}).items() if v}
+                return f"cancelled {q['item']} #{q.get('id', '?')}" + (f", refunded {res(back)}" if back else ", nothing was paid yet")
+        return None
+    name = cmd.get("building_type") or cmd.get("tech") or cmd.get("ship_class") or cmd.get("kind")
+    if not name:
+        return None
+    for i, q in enumerate(queue_events):
+        if i in used or not flat(q.get("item", "")).startswith(flat(name)):
+            continue
+        used.add(i)
+        act = str(q.get("action", "")).lower()
+        if act == "started":
+            paid = {k: v for k, v in (q.get("paid") or {}).items() if v}
+            return f"{q['item']} #{q.get('id', '?')} started" + (f", paid {res(paid)}" if paid else "")
+        if act == "waiting":
+            eta = f", starts in ~{age(q['start_in'])}" if q.get("start_in") is not None else ""
+            return f"{q['item']} #{q.get('id', '?')} queued, waits on {str(q.get('waiting_on', '?')).lower()}{eta}"
+        return f"{q['item']} {act}"
+    return None
+
+
 def outcome(cmd, qs):
     """What became of a queue order, read from the queues after the server's next tick."""
     a = cmd.get("action")
@@ -1241,8 +1299,9 @@ def outcome(cmd, qs):
     for w in reversed(q["waiting"]):
         if w["item"] == key[1]:
             if w.get("short"):
-                return f"queued [{w['index']}] waiting for " + ", ".join(f"{v} {k}" for k, v in w["short"].items())
-            return f"queued [{w['index']}]"
+                tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
+                return f"queued {tag} waiting for " + ", ".join(f"{v} {k}" for k, v in w["short"].items())
+            return f"queued #{w['id']}" if "id" in w else f"queued [{w['index']}]"
     return "accepted (already finished or not visible yet)"
 
 
@@ -1299,6 +1358,8 @@ def cmd_do(name, args):
     client_errs = [e for e in errors if e["type"] == "client_error"]
     server_errs = [e for e in errors if e["type"] == "error"]
     per, left = match_errors(cmds, server_errs)
+    qev = [e for m in lines if m.get("type") == "tick_update" for e in (m.get("events") or []) if e.get("kind") == "Queue"]
+    used = set()
     n = len(cmds)
     for i, c in enumerate(cmds):
         tag = f"[{i + 1}/{n}] " if n > 1 else ""
@@ -1307,7 +1368,8 @@ def cmd_do(name, args):
         elif fast:
             print(f"{tag}sent {cmd_label(c)}")
         else:
-            print(f"{tag}ok {cmd_label(c)}" + (f" -> {o}" if (o := outcome(c, qs)) else ""))
+            o = queue_outcome(c, qev, used) or outcome(c, qs)
+            print(f"{tag}ok {cmd_label(c)}" + (f" -> {o}" if o else ""))
     for e in client_errs + left:
         print("  rejected: " + " ".join(x for x in (e.get("code"), e.get("message")) if x))
     for m in lines:

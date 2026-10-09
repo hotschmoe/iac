@@ -797,3 +797,49 @@ to 86 sectors in 16 minutes). If the board should stay closer, lower the cap,
 not the point values; the values only matter before the cap binds. Not
 measured: the full hour, Haulers in a fleet, raids (one RaidIncoming and
 RaidResolved for the builder).
+
+## 2026-10-10: mechanics pass after the third six-AI playtest (branch `mechanics-2`)
+
+Findings 1-6 of `docs/playtests/2026-10-10b/`; no balance numbers changed.
+
+**Queues.** `advance_queues` now takes the first waiting order that is ready
+and affordable (`first_startable`), per queue, instead of stopping at the first
+ready one. `reserve` (a field on `build`, `research`, `build_ship`,
+`build_defence`) makes a ready-but-unaffordable order stop the scan. Every
+order has an id from the engine's `next_id()` counter, so ids are unique across
+the world and persist (`build_queue.item_id`, `reserve` columns; ids missing
+from an old database are assigned on load). `cancel_build` / `cancel_queued`
+take `id`; the refusal text is built from where the id really lives. Ship
+batches: the running entry is one paid unit; on completion the batch re-enters
+`ship_pending` at the front with `built + 1`. The projection (`queue.rs`)
+estimates each order against the stockpile minus earlier orders that start no
+later, and treats only reserving orders as gates. Research and shipyard orders
+now accept a queued Lab/Shipyard (they already used projected levels for the
+other checks). The "tech that just started" `MaxLevelReached` in the playtest
+was a tech at its real maximum; a multi-level tech queues its next level.
+
+**Doctrines.** `policy_entry_check` needs exactly `engage_ratio_x10`; the
+`Entry::{Passage,Hunt}` distinction existed only for the 2.5x override and is
+removed. The repeated hold was mostly the same cause with drifting figures in
+the reason text ("your 18" then "your 19"), so the dedupe key now drops
+parenthesised figures (`hold_key`) and a cause reports at most once a minute.
+`patrol_home` and `salvage_and_sites` go through the same entry check and hold
+path, so they share both fixes.
+
+**Salvage and pins.** `SectorState.pins_stale`; `KnownSectors::refresh` drops a
+remembered pile past its despawn tick and `tick_updates` sends that sector once.
+`RaidResolved.salvage_despawn_tick`. `process_home_salvage` scoops a home pile
+into storage for a player with a fleet docked at home (what fits under the
+cap), and otherwise alerts once at 60 s left (`HOME_SALVAGE_WARN_TICKS`,
+RealTime). Scan `signals` already excluded the scanning sector (they come from a
+ring one hop beyond the scanned range); the confusion was the event's own
+`sector` field, now documented, and a test pins it.
+
+**Clients.** The TUI cancels the first running or waiting item by looking up its
+id in the latest state. The web changes are in the web commit.
+
+**For `play.py` (not done here):** cancel by `id`; read `id`, `reserve`, `built`,
+`unit_cost` from the queue lists and `id` from `Queue` events; optional
+`reserve` on build commands; `pins_stale`, `RaidResolved.salvage_despawn_tick`
+and the home-salvage `Alert`.
+

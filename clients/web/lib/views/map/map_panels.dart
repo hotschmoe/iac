@@ -355,15 +355,21 @@ class Inspector extends StatelessWidget {
             child: Text('${rich >= expect * 3 ? 'RICH' : rich <= expect ? 'POOR' : 'TYPICAL'} FOR THIS DISTANCE - LOOT TIER x${1 + math.min(3, d ~/ 6)}',
                 style: T.mono(size: 10, color: C.text3)),
           ),
-          if (sec.salvage != null && sec.salvage!.total > 0)
+          if (salvagePinVisible(sec, st.tick))
             Kv('Salvage',
                 vw: Text.rich(TextSpan(children: [
                   TextSpan(text: '${sec.salvage!.metal.round()} ', style: T.mono(size: 11, color: C.metal)),
                   TextSpan(text: '${sec.salvage!.crystal.round()} ', style: T.mono(size: 11, color: C.crystal)),
                   TextSpan(text: '${sec.salvage!.deuterium.round()}', style: T.mono(size: 11, color: C.deut)),
                 ]))),
+          if (salvagePinVisible(sec, st.tick) && despawnLabel(sec, st.tick) != null)
+            Kv('Despawns',
+                v: clockFmt(salvageSecondsLeft(sec, st.tick)!),
+                vc: salvageSecondsLeft(sec, st.tick)! <= 60 ? C.ember : C.text2),
           if (sec.site != null)
             Kv('Derelict', v: 'tier ${sec.site!.tier} - risk ${sec.site!.risk.label}', vc: sec.site!.risk == proto.SiteRisk.hot ? C.ember : sec.site!.risk == proto.SiteRisk.uneasy ? C.threat(5) : C.ok),
+          if (sec.pinsStale && (salvagePinVisible(sec, st.tick) || sec.site != null))
+            Kv('Pins', v: 'STALE - unconfirmed since ${ago(it.ticksOld)} ago', vc: C.fossil),
         ],
         Kv('Distance', v: '${proto.Hex.distance(fleet.sector, h)} from ${fleet.name}\n${proto.Hex.distance(h, st.homeworld)} from home - $d from hub'),
         if (plan.why != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text(plan.why!, key: const Key('route-why'), style: T.mono(size: 10.5, color: C.ember, height: 1.3))),

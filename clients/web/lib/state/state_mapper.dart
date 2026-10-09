@@ -5,8 +5,10 @@ import 'package:clock/clock.dart';
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
+import '../console/intel.dart' show clockFmt, despawnLabel;
 import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
+import 'command_parser.dart' show QueueIds;
 
 /// Holds the latest protocol snapshots (full_state + tick_update deltas) and
 /// maps them to the amber UI presentation models.
@@ -24,7 +26,7 @@ String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
     proto.WaitReason.resources => need.isEmpty ? 'waiting for resources' : 'short $need',
     proto.WaitReason.slot => 'waiting for a free slot',
     proto.WaitReason.prerequisite => 'waiting for a prerequisite',
-    proto.WaitReason.order => 'next in line',
+    proto.WaitReason.order => 'held by a reserved order',
   };
   if (startIn == null) return why;
   final m = (startIn ~/ 60).toString().padLeft(2, '0');
@@ -58,6 +60,9 @@ class StateMapper {
   final Map<(int, int), PreviewEntry> previews = {};
 
   final List<LogEntry> log = [];
+
+  /// Last hold reason shown per fleet; a repeat is not logged again.
+  final Map<int, String> _lastHold = {};
   final List<Alert> alerts = [];
 
   bool get hasState => player != null;
@@ -74,6 +79,7 @@ class StateMapper {
     sectors.clear();
     signals.clear();
     signalBands.clear();
+    _lastHold.clear();
     previews.clear();
     log.clear();
     alerts.clear();
@@ -277,8 +283,11 @@ class StateMapper {
         final structures = k.structuresLost == 0
             ? ''
             : ', ${k.structuresLost} structures lost (${k.structuresRestored} will be rebuilt)';
+        final pile = k.salvageDropped == null
+            ? ''
+            : ', wreckage ${_res(k.salvageDropped!)}${k.salvageDespawnTick == null ? '' : ' drifts away in ${clockFmt(math.max(0, k.salvageDespawnTick! - tick))}'}';
         msg = k.defended
-            ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})$structures'
+            ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})$structures$pile'
             : '! Raid broke through (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}): lost ${_res(k.resourcesLost)}$structures${k.shipsLost > 0 ? ', ${k.shipsLost} docked ships destroyed' : ''}';
         level = EventLevel.bright;
       case proto.SiteExplorationStartedEvent():
@@ -297,6 +306,13 @@ class StateMapper {
         msg = '! ${_fleet(k.fleetId)} ambushed aboard derelict in ${k.sector} (hostile ${k.npcFleetId})';
         level = EventLevel.bright;
       case proto.PolicyActionEvent():
+        if (k.action == 'hold') {
+          final key = '${k.preset.name}|${holdKey(k.reason)}';
+          if (_lastHold[k.fleetId] == key) return;
+          _lastHold[k.fleetId] = key;
+        } else {
+          _lastHold.remove(k.fleetId);
+        }
         msg = '${_fleet(k.fleetId)} [${k.preset.label}] ${k.action}: ${k.reason}';
         level = EventLevel.dim;
       case proto.AlertEvent():
@@ -316,6 +332,10 @@ class StateMapper {
     log.insert(0, LogEntry(tick: e.tick, message: msg, level: level));
     if (log.length > 14) log.removeRange(14, log.length);
   }
+
+  /// A hold reason without its parenthesised figures, which drift while the
+  /// cause stays the same.
+  static String holdKey(String reason) => reason.replaceAll(RegExp(r'\([^)]*\)'), '');
 
   static String _age(int ticks) {
     final t = math.max(0, ticks);
@@ -470,6 +490,26 @@ class StateMapper {
         active: false,
       );
 
+  /// Stable ids of a queue's running and waiting items, in line order.
+  QueueIds queueIds(proto.QueueType queue) {
+    final hw = homeworld;
+    if (hw == null) return const QueueIds();
+    return switch (queue) {
+      proto.QueueType.building =>
+        QueueIds(running: [for (final q in hw.buildQueue) q.id], waiting: [for (final q in hw.buildPending) q.id]),
+      proto.QueueType.ship => QueueIds(
+          running: [if (hw.shipyardQueue != null) hw.shipyardQueue!.id],
+          waiting: [for (final q in hw.shipyardPending) q.id]),
+      proto.QueueType.research => QueueIds(
+          running: [if (hw.researchActive != null) hw.researchActive!.id],
+          waiting: [for (final q in hw.researchPending) q.id]),
+    };
+  }
+
+  /// "Scout x5 (2 built)": a batch pays per unit, so progress is units built.
+  static String shipOrderLabel(proto.QueuedShip p) =>
+      p.built > 0 ? '${p.item.label} x${p.count} (${p.built} built)' : '${p.item.label} x${p.count}';
+
   List<QueueItem> _mapBuildQueue(proto.HomeworldState? hw) {
     if (hw == null) return const [];
     return [
@@ -486,7 +526,7 @@ class StateMapper {
     return [
       if (q != null) _queueItem('${q.item.label} x${q.count} (${q.built} built)', q.startTick, q.endTick),
       for (final p in hw.shipyardPending)
-        _waitingItem('${p.item.label} x${p.count}', p.waitingFor, p.waitingOn, p.startIn),
+        _waitingItem(shipOrderLabel(p), p.waitingFor, p.waitingOn, p.startIn),
     ];
   }
 
@@ -549,7 +589,7 @@ class StateMapper {
       exits: '${sec.connections.length} of 6',
       salvage: (salvage == null || salvage.total <= 0)
           ? 'none'
-          : '${_res(salvage)}${!sec.live && (sec.salvageDespawnTick ?? 1 << 60) <= tick ? ' (since gone)' : ''}',
+          : '${_res(salvage)}${despawnLabel(sec, tick) == null ? '' : ', ${despawnLabel(sec, tick)}'}${sec.pinsStale ? ' (stale)' : ''}',
       site: site == null ? 'none' : 'tier ${site.tier} (${site.risk.label})',
     );
   }

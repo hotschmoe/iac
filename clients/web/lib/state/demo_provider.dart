@@ -71,6 +71,8 @@ class DemoProvider {
   final Map<int, List<NpcFleetInfo>> _hostiles = {};
   final Map<int, (Resources, int)> _salvage = {};
   final Map<int, SiteBrief> _sites = {};
+  int _queueId = 500;
+  int _newQueueId() => _queueId++;
   final Set<int> _dirty = {};
   Set<int> _liveNow = {};
 
@@ -164,9 +166,9 @@ class DemoProvider {
       research: research,
       catalog: _catalogFor(buildings, research),
       buildSlots: 1,
-      buildQueue: [BuildQueueItem(buildingType: BuildingType.crystalMine, targetLevel: 8, startTick: _tick - 420, endTick: _tick + 260)],
-      shipyardQueue: ShipyardQueueItem(item: const ShipyardItem.ship(ShipClass.corvette), count: 3, built: 1, startTick: _tick - 200, endTick: _tick + 170),
-      researchActive: ResearchItem(tech: ResearchType.weaponsResearch, targetLevel: 4, startTick: _tick - 300, endTick: _tick + 410),
+      buildQueue: [BuildQueueItem(id: 401, buildingType: BuildingType.crystalMine, targetLevel: 8, startTick: _tick - 420, endTick: _tick + 260)],
+      shipyardQueue: ShipyardQueueItem(id: 402, item: const ShipyardItem.ship(ShipClass.corvette), count: 3, built: 1, startTick: _tick - 200, endTick: _tick + 170),
+      researchActive: ResearchItem(id: 403, tech: ResearchType.weaponsResearch, targetLevel: 4, startTick: _tick - 300, endTick: _tick + 410),
       dockedShips: const [],
       defences: [
         for (final k in DefenceKind.values) DefenceState(kind: k, count: _defenceCount[k] ?? 0, power: _defencePower[k]! * (1 + 0.04 * (_buildingLevels[BuildingType.defenseGrid] ?? 0))),
@@ -176,7 +178,7 @@ class DemoProvider {
     final pendingBuilds = <QueuedBuild>[];
     for (final t in const [BuildingType.metalMine, BuildingType.storageVault]) {
       final (cost, ticks) = _buildingStep(t, (_buildingLevels[t] ?? 0) + 1);
-      pendingBuilds.add(QueuedBuild(buildingType: t, targetLevel: (_buildingLevels[t] ?? 0) + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)));
+      pendingBuilds.add(QueuedBuild(id: _newQueueId(), buildingType: t, targetLevel: (_buildingLevels[t] ?? 0) + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)));
     }
     _hw = _hwWith(buildPending: pendingBuilds);
 
@@ -430,6 +432,7 @@ class DemoProvider {
       site: _sites[k],
       lastSeen: isLive ? _tick : (_seen[k] ?? 0),
       live: isLive,
+      pinsStale: !isLive && (sv != null || _sites[k] != null),
     );
   }
 
@@ -686,25 +689,24 @@ class DemoProvider {
       );
     }
     final s = _hw.shipyardQueue;
-    if (s != null) {
-      final per = (s.endTick - s.startTick) / s.count;
-      final built = min(s.count, ((_tick - s.startTick) / per).floor());
-      if (built > s.built) {
-        final n = built - s.built;
-        if (s.item.ship case final cls?) {
-          _setDocked([..._hw.dockedShips, for (var i = 0; i < n; i++) _ship(_nextShip++, cls)]);
-          _ev(ShipBuiltEvent(shipClass: cls, count: n));
-        } else {
-          final k = s.item.defence!;
-          _hw = _hwWith(defences: [
-            for (final d in _hw.defences) d.kind == k ? DefenceState(kind: k, count: d.count + n, restoring: d.restoring, power: d.power) : d,
-          ]);
-          _ev(DefenceBuiltEvent(defence: k, count: n, playerId: _playerId));
-        }
-        _hw = built >= s.count
-            ? _hwWith(clearShip: true)
-            : _hwWith(ship: ShipyardQueueItem(item: s.item, count: s.count, built: built, startTick: s.startTick, endTick: s.endTick));
+    if (s != null && _tick >= s.endTick) {
+      if (s.item.ship case final cls?) {
+        _setDocked([..._hw.dockedShips, _ship(_nextShip++, cls)]);
+        _ev(ShipBuiltEvent(shipClass: cls, count: 1));
+      } else {
+        final k = s.item.defence!;
+        _hw = _hwWith(defences: [
+          for (final d in _hw.defences) d.kind == k ? DefenceState(kind: k, count: d.count + 1, restoring: d.restoring, power: d.power) : d,
+        ]);
+        _ev(DefenceBuiltEvent(defence: k, count: 1, playerId: _playerId));
       }
+      // A batch pays per unit: between units it goes back to the front of the
+      // line with its progress, and the next unit starts when it can be paid.
+      final rest = s.count - s.built - 1;
+      _hw = _hwWith(clearShip: true, shipPending: [
+        if (rest > 0) _waitingShip(s.id, s.item, s.count, s.built + 1, false),
+        ..._hw.shipyardPending,
+      ]);
     }
     _startWaiting();
   }
@@ -1070,23 +1072,38 @@ class DemoProvider {
     );
   }
 
-  List<ServerMessage> _queueYard(ShipyardItem item, Resources unitCost, int ticksPerUnit, int count) {
+  Resources _unitCostOf(ShipyardItem item) => item.ship != null ? _shipCost[item.ship]! : _defenceCost[item.defence]!;
+
+  QueuedShip _waitingShip(int id, ShipyardItem item, int count, int built, bool reserve) {
+    final unit = _unitCostOf(item);
+    return QueuedShip(
+      id: id,
+      item: item,
+      count: count,
+      built: built,
+      reserve: reserve,
+      cost: _times(unit, count - built),
+      unitCost: unit,
+      ticks: item.ship != null ? _hw.catalog.ships.firstWhere((o) => o.shipClass == item.ship).ticksPerShip : _hw.catalog.defences.firstWhere((o) => o.kind == item.defence).ticksPerUnit,
+      waitingFor: _missing(unit),
+      waitingOn: WaitReason.slot,
+    );
+  }
+
+  List<ServerMessage> _queueYard(ShipyardItem item, int count, bool reserve) {
     if ((_hw.shipyardQueue == null ? 0 : 1) + _hw.shipyardPending.length >= 1 + _hw.queueWaitingMax) {
       return [_err(ErrorCode.queueFull, 'The shipyard queue is full (1 running + ${_hw.queueWaitingMax} waiting)')];
     }
-    final cost = _times(unitCost, count);
-    _hw = _hwWith(shipPending: [
-      ..._hw.shipyardPending,
-      QueuedShip(item: item, count: count, cost: cost, ticks: ticksPerUnit, waitingFor: _missing(cost), waitingOn: WaitReason.slot),
-    ]);
+    final order = _waitingShip(_newQueueId(), item, count, 0, reserve);
+    _hw = _hwWith(shipPending: [..._hw.shipyardPending, order]);
     _startWaiting();
-    final waiting = _hw.shipyardPending.isNotEmpty && _hw.shipyardPending.last.cost == cost;
-    if (waiting) _announceWait(QueueType.ship, '${item.label} x$count', _hw.shipyardPending.last.waitingFor, _hw.shipyardPending.last.waitingOn);
+    final waiting = _hw.shipyardPending.where((q) => q.id == order.id).firstOrNull;
+    if (waiting != null) _announceWait(order.id, QueueType.ship, '${item.label} x$count', waiting.waitingFor, waiting.waitingOn);
     return [_tickUpdate()];
   }
 
-  void _announceWait(QueueType type, String item, Resources? short, WaitReason on) {
-    _ev(QueueEvent(playerId: _playerId, queueType: type, item: item, action: QueueAction.waiting, waitingFor: short, waitingOn: on));
+  void _announceWait(int id, QueueType type, String item, Resources? short, WaitReason on) {
+    _ev(QueueEvent(playerId: _playerId, queueType: type, id: id, item: item, action: QueueAction.waiting, waitingFor: short, waitingOn: on));
   }
 
   int _bl(BuildingType t) => _hw.buildings.firstWhere((b) => b.buildingType == t).level;
@@ -1146,62 +1163,71 @@ class DemoProvider {
     return (cost, _ticksFor(cost, 500));
   }
 
-  void _startBuilding(BuildingType t, int target) {
+  void _startBuilding(int id, BuildingType t, int target) {
     final (cost, ticks) = _buildingStep(t, target);
     _pay(cost);
     _hw = _hwWith(buildQueue: [
       ..._hw.buildQueue,
-      BuildQueueItem(buildingType: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks),
+      BuildQueueItem(id: id, buildingType: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks),
     ]);
-    _ev(QueueEvent(playerId: _playerId, queueType: QueueType.building, item: '${t.label} Lv.$target', action: QueueAction.started, paid: cost));
+    _ev(QueueEvent(playerId: _playerId, queueType: QueueType.building, id: id, item: '${t.label} Lv.$target', action: QueueAction.started, paid: cost));
   }
 
-  void _startResearch(ResearchType t, int target) {
+  void _startResearch(int id, ResearchType t, int target) {
     final (cost, ticks) = _researchStep(t, target);
     _pay(cost);
-    _hw = _hwWith(researchItem: ResearchItem(tech: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks));
-    _ev(QueueEvent(playerId: _playerId, queueType: QueueType.research, item: '${t.label} Lv.$target', action: QueueAction.started, paid: cost));
+    _hw = _hwWith(researchItem: ResearchItem(id: id, tech: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks));
+    _ev(QueueEvent(playerId: _playerId, queueType: QueueType.research, id: id, item: '${t.label} Lv.$target', action: QueueAction.started, paid: cost));
   }
 
-  /// Start waiting orders in line (first in, first out): the first order
-  /// whose prerequisites are in place starts when a slot is free and it is
-  /// affordable, otherwise it holds the line.
+  /// A free slot starts the earliest waiting order that can start now. An
+  /// order that cannot keeps its place, unless it reserves: then nothing
+  /// behind it starts while it is ready and short.
+  int _firstStartable<T>(List<T> orders, bool Function(T) ready, bool Function(T) affordable, bool Function(T) reserve) {
+    for (var i = 0; i < orders.length; i++) {
+      if (!ready(orders[i])) continue;
+      if (affordable(orders[i])) return i;
+      if (reserve(orders[i])) return -1;
+    }
+    return -1;
+  }
+
   void _startWaiting() {
     var again = true;
     while (again) {
       again = false;
-      final bi = _hw.buildPending.indexWhere((q) => _buildingReady(q.buildingType, q.targetLevel));
+      if (_hw.buildQueue.length >= _hw.buildSlots) break;
+      final bi = _firstStartable<QueuedBuild>(
+          _hw.buildPending, (q) => _buildingReady(q.buildingType, q.targetLevel), (q) => _affordable(q.cost), (q) => q.reserve);
       if (bi >= 0) {
         final q = _hw.buildPending[bi];
-        if (_hw.buildQueue.length < _hw.buildSlots && _affordable(q.cost)) {
-          _hw = _hwWith(buildPending: [for (var i = 0; i < _hw.buildPending.length; i++) if (i != bi) _hw.buildPending[i]]);
-          _startBuilding(q.buildingType, q.targetLevel);
-          again = true;
+        _hw = _hwWith(buildPending: [for (var i = 0; i < _hw.buildPending.length; i++) if (i != bi) _hw.buildPending[i]]);
+        _startBuilding(q.id, q.buildingType, q.targetLevel);
+        again = true;
+      }
+    }
+    if (_hw.researchActive == null) {
+      final ri = _firstStartable<QueuedResearch>(
+          _hw.researchPending, (q) => _researchReady(q.tech, q.targetLevel), (q) => _affordable(q.cost), (q) => q.reserve);
+      if (ri >= 0) {
+        final q = _hw.researchPending[ri];
+        _hw = _hwWith(researchPending: [for (var i = 0; i < _hw.researchPending.length; i++) if (i != ri) _hw.researchPending[i]]);
+        _startResearch(q.id, q.tech, q.targetLevel);
+      }
+    }
+    if (_hw.shipyardQueue == null) {
+      final si = _firstStartable<QueuedShip>(_hw.shipyardPending, (_) => true, (q) => _affordable(q.unitCost), (q) => q.reserve);
+      if (si >= 0) {
+        final q = _hw.shipyardPending[si];
+        _pay(q.unitCost);
+        _hw = _hwWith(
+          shipPending: [for (var i = 0; i < _hw.shipyardPending.length; i++) if (i != si) _hw.shipyardPending[i]],
+          ship: ShipyardQueueItem(id: q.id, item: q.item, count: q.count, built: q.built, startTick: _tick, endTick: _tick + q.ticks),
+        );
+        if (q.built == 0) {
+          _ev(QueueEvent(playerId: _playerId, queueType: QueueType.ship, id: q.id, item: '${q.item.label} x${q.count}', action: QueueAction.started, paid: q.unitCost));
         }
       }
-    }
-    final ri = _hw.researchPending.indexWhere((q) => _researchReady(q.tech, q.targetLevel));
-    if (ri >= 0 && _hw.researchActive == null) {
-      final q = _hw.researchPending[ri];
-      if (_affordable(q.cost)) {
-        _hw = _hwWith(researchPending: [for (var i = 0; i < _hw.researchPending.length; i++) if (i != ri) _hw.researchPending[i]]);
-        _startResearch(q.tech, q.targetLevel);
-      }
-    }
-    final ship = _hw.shipyardPending.firstOrNull;
-    if (_hw.shipyardQueue == null && ship != null && _affordable(ship.cost)) {
-      _pay(ship.cost);
-      _hw = _hwWith(
-        shipPending: _hw.shipyardPending.skip(1).toList(),
-        ship: ShipyardQueueItem(
-          item: ship.item,
-          count: ship.count,
-          built: 0,
-          startTick: _tick,
-          endTick: _tick + ship.ticks * ship.count,
-        ),
-      );
-      _ev(QueueEvent(playerId: _playerId, queueType: QueueType.ship, item: '${ship.item.label} x${ship.count}', action: QueueAction.started, paid: ship.cost));
     }
     _refreshWaits();
   }
@@ -1209,39 +1235,63 @@ class DemoProvider {
   /// Bring every waiting order's shortfall and reason up to date.
   void _refreshWaits() {
     final slotFree = _hw.buildQueue.length < _hw.buildSlots;
+    // A reserving order that is ready and short holds back everything behind it.
+    WaitReason on<T>(List<T> line, int i, bool ready, Resources cost, bool slotFree, bool Function(T) reserve) {
+      final base = _waitOn(ready: ready, cost: cost, slotFree: slotFree);
+      if (base != WaitReason.slot && base != WaitReason.order) return base;
+      return line.take(i).any((e) => reserve(e)) && slotFree ? WaitReason.order : base;
+    }
+
     _hw = _hwWith(
       buildPending: [
-        for (final q in _hw.buildPending)
-          QueuedBuild(
-            buildingType: q.buildingType,
-            targetLevel: q.targetLevel,
-            cost: q.cost,
-            ticks: q.ticks,
-            waitingFor: _missing(q.cost),
-            waitingOn: _waitOn(ready: _buildingReady(q.buildingType, q.targetLevel), cost: q.cost, slotFree: slotFree),
-          ),
+        for (var i = 0; i < _hw.buildPending.length; i++)
+          () {
+            final q = _hw.buildPending[i];
+            return QueuedBuild(
+              id: q.id,
+              buildingType: q.buildingType,
+              targetLevel: q.targetLevel,
+              reserve: q.reserve,
+              cost: q.cost,
+              ticks: q.ticks,
+              waitingFor: _missing(q.cost),
+              waitingOn: on<QueuedBuild>(_hw.buildPending, i, _buildingReady(q.buildingType, q.targetLevel), q.cost, slotFree, (e) => e.reserve),
+            );
+          }(),
       ],
       researchPending: [
-        for (final q in _hw.researchPending)
-          QueuedResearch(
-            tech: q.tech,
-            targetLevel: q.targetLevel,
-            cost: q.cost,
-            ticks: q.ticks,
-            waitingFor: _missing(q.cost),
-            waitingOn: _waitOn(ready: _researchReady(q.tech, q.targetLevel), cost: q.cost, slotFree: _hw.researchActive == null),
-          ),
+        for (var i = 0; i < _hw.researchPending.length; i++)
+          () {
+            final q = _hw.researchPending[i];
+            return QueuedResearch(
+              id: q.id,
+              tech: q.tech,
+              targetLevel: q.targetLevel,
+              reserve: q.reserve,
+              cost: q.cost,
+              ticks: q.ticks,
+              waitingFor: _missing(q.cost),
+              waitingOn: on<QueuedResearch>(_hw.researchPending, i, _researchReady(q.tech, q.targetLevel), q.cost, _hw.researchActive == null, (e) => e.reserve),
+            );
+          }(),
       ],
       shipPending: [
-        for (final q in _hw.shipyardPending)
-          QueuedShip(
-            item: q.item,
-            count: q.count,
-            cost: q.cost,
-            ticks: q.ticks,
-            waitingFor: _missing(q.cost),
-            waitingOn: _waitOn(ready: true, cost: q.cost, slotFree: _hw.shipyardQueue == null),
-          ),
+        for (var i = 0; i < _hw.shipyardPending.length; i++)
+          () {
+            final q = _hw.shipyardPending[i];
+            return QueuedShip(
+              id: q.id,
+              item: q.item,
+              count: q.count,
+              built: q.built,
+              reserve: q.reserve,
+              cost: q.cost,
+              unitCost: q.unitCost,
+              ticks: q.ticks,
+              waitingFor: _missing(q.unitCost),
+              waitingOn: on<QueuedShip>(_hw.shipyardPending, i, true, q.unitCost, _hw.shipyardQueue == null, (e) => e.reserve),
+            );
+          }(),
       ],
     );
   }
@@ -1630,7 +1680,7 @@ class DemoProvider {
         _setFleet(_copy(f, state: FleetStatus.exploring));
         _ev(SiteExplorationStartedEvent(fleetId: fleetId, sector: f.location, tier: site.tier, endTick: end));
         return [_tickUpdate()];
-      case BuildCommand(:final buildingType):
+      case BuildCommand(:final buildingType, :final reserve):
         final proj = _projectedBuilding(buildingType);
         if (proj >= 20) return [_err(ErrorCode.maxLevelReached, '${buildingType.label} is maxed')];
         if (!_buildingPrereqs(buildingType, _projectedBuilding)) {
@@ -1640,15 +1690,16 @@ class DemoProvider {
           return [_err(ErrorCode.queueFull, 'The building queue is full (${_hw.buildSlots} running + ${_hw.queueWaitingMax} waiting)')];
         }
         final (cost, ticks) = _buildingStep(buildingType, proj + 1);
+        final id = _newQueueId();
         _hw = _hwWith(buildPending: [
           ..._hw.buildPending,
-          QueuedBuild(buildingType: buildingType, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+          QueuedBuild(id: id, buildingType: buildingType, targetLevel: proj + 1, reserve: reserve, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
         ]);
         _startWaiting();
-        final waiting = _hw.buildPending.where((q) => q.buildingType == buildingType && q.targetLevel == proj + 1).firstOrNull;
-        if (waiting != null) _announceWait(QueueType.building, '${buildingType.label} Lv.${proj + 1}', waiting.waitingFor, waiting.waitingOn);
+        final waiting = _hw.buildPending.where((q) => q.id == id).firstOrNull;
+        if (waiting != null) _announceWait(id, QueueType.building, '${buildingType.label} Lv.${proj + 1}', waiting.waitingFor, waiting.waitingOn);
         return [_tickUpdate()];
-      case ResearchCommand(:final tech):
+      case ResearchCommand(:final tech, :final reserve):
         if (_bl(BuildingType.researchLab) == 0) return [_err(ErrorCode.noResearchLab, 'Build a research lab first')];
         final maxLevel = _shipTech.containsValue(tech) ? 1 : (tech == ResearchType.modularFabrication ? 2 : 5);
         final proj = _projectedResearch(tech);
@@ -1660,41 +1711,44 @@ class DemoProvider {
           return [_err(ErrorCode.queueFull, 'The research queue is full (1 running + ${_hw.queueWaitingMax} waiting)')];
         }
         final (cost, ticks) = _researchStep(tech, proj + 1);
+        final id = _newQueueId();
         _hw = _hwWith(researchPending: [
           ..._hw.researchPending,
-          QueuedResearch(tech: tech, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+          QueuedResearch(id: id, tech: tech, targetLevel: proj + 1, reserve: reserve, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
         ]);
         _startWaiting();
-        final waiting = _hw.researchPending.where((q) => q.tech == tech && q.targetLevel == proj + 1).firstOrNull;
-        if (waiting != null) _announceWait(QueueType.research, '${tech.label} Lv.${proj + 1}', waiting.waitingFor, waiting.waitingOn);
+        final waiting = _hw.researchPending.where((q) => q.id == id).firstOrNull;
+        if (waiting != null) _announceWait(id, QueueType.research, '${tech.label} Lv.${proj + 1}', waiting.waitingFor, waiting.waitingOn);
         return [_tickUpdate()];
-      case BuildShipCommand(:final shipClass, :final count):
+      case BuildShipCommand(:final shipClass, :final count, :final reserve):
         final o = _hw.catalog.ships.firstWhere((o) => o.shipClass == shipClass);
         if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.shipLocked, 'Ship class not unlocked')];
-        return _queueYard(ShipyardItem.ship(shipClass), o.unitCost, o.ticksPerShip, count);
-      case BuildDefenceCommand(:final kind, :final count):
+        return _queueYard(ShipyardItem.ship(shipClass), count, reserve);
+      case BuildDefenceCommand(:final kind, :final count, :final reserve):
         final o = _hw.catalog.defences.firstWhere((o) => o.kind == kind);
         if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.defenceLocked, '${kind.label} is locked')];
-        return _queueYard(ShipyardItem.defence(kind), o.unitCost, o.ticksPerUnit, count);
-      case CancelBuildCommand(:final queueType, :final index):
+        return _queueYard(ShipyardItem.defence(kind), count, reserve);
+      case CancelBuildCommand(:final queueType, :final id):
         late final String label;
         late final Resources paid;
         switch (queueType) {
           case QueueType.building:
-            if (index >= _hw.buildQueue.length) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
-            final gone = _hw.buildQueue[index];
+            final gone = _hw.buildQueue.where((q) => q.id == id).firstOrNull;
+            if (gone == null) return [_err(ErrorCode.invalidTarget, 'No order $id is under way in the building queue')];
             label = '${gone.buildingType.label} Lv.${gone.targetLevel}';
             paid = _buildingStep(gone.buildingType, gone.targetLevel).$1;
             _hw = _hwWith(
-              buildQueue: [for (var i = 0; i < _hw.buildQueue.length; i++) if (i != index) _hw.buildQueue[i]],
+              buildQueue: [for (final q in _hw.buildQueue) if (q.id != id) q],
               buildPending: [
                 for (final q in _hw.buildPending)
                   q.buildingType == gone.buildingType && q.targetLevel > gone.targetLevel
                       ? QueuedBuild(
+                          id: q.id,
                           buildingType: q.buildingType,
                           targetLevel: q.targetLevel - 1,
+                          reserve: q.reserve,
                           cost: q.cost,
                           ticks: q.ticks,
                           waitingFor: q.waitingFor)
@@ -1703,20 +1757,20 @@ class DemoProvider {
             );
           case QueueType.ship:
             final gone = _hw.shipyardQueue;
-            if (gone == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
-            label = '${gone.item.label} x${gone.count}';
-            paid = _times(gone.item.ship != null ? _shipCost[gone.item.ship]! : _defenceCost[gone.item.defence]!, gone.count - gone.built);
+            if (gone == null || gone.id != id) return [_err(ErrorCode.invalidTarget, 'No order $id is under way in the shipyard queue')];
+            label = gone.built > 0 ? '${gone.item.label} x${gone.count} (${gone.built} already built and kept)' : '${gone.item.label} x${gone.count}';
+            paid = _unitCostOf(gone.item);
             _hw = _hwWith(clearShip: true);
           case QueueType.research:
             final gone = _hw.researchActive;
-            if (gone == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            if (gone == null || gone.id != id) return [_err(ErrorCode.invalidTarget, 'No order $id is under way in the research queue')];
             label = '${gone.tech.label} Lv.${gone.targetLevel}';
             paid = _researchStep(gone.tech, gone.targetLevel).$1;
             _hw = _hwWith(clearResearch: true, researchPending: [
               for (final q in _hw.researchPending)
                 q.tech == gone.tech && q.targetLevel > gone.targetLevel
                     ? QueuedResearch(
-                        tech: q.tech, targetLevel: q.targetLevel - 1, cost: q.cost, ticks: q.ticks, waitingFor: q.waitingFor)
+                        id: q.id, tech: q.tech, targetLevel: q.targetLevel - 1, reserve: q.reserve, cost: q.cost, ticks: q.ticks, waitingFor: q.waitingFor)
                     : q,
             ]);
         }
@@ -1726,34 +1780,37 @@ class DemoProvider {
           crystal: _resources.crystal + refund.crystal,
           deuterium: _resources.deuterium + refund.deuterium,
         ));
-        _ev(QueueEvent(playerId: _playerId, queueType: queueType, item: label, action: QueueAction.cancelled, refunded: refund));
+        _ev(QueueEvent(playerId: _playerId, queueType: queueType, id: id, item: label, action: QueueAction.cancelled, refunded: refund));
         _startWaiting();
         return [_tickUpdate()];
-      case CancelQueuedCommand(:final queueType, :final index):
+      case CancelQueuedCommand(:final queueType, :final id):
         late final String label;
         switch (queueType) {
-          case QueueType.building when index < _hw.buildPending.length:
-            final q = _hw.buildPending[index];
+          case QueueType.building when _hw.buildPending.any((q) => q.id == id):
+            final q = _hw.buildPending.firstWhere((q) => q.id == id);
             label = '${q.buildingType.label} Lv.${q.targetLevel}';
             _hw = _hwWith(buildPending: [
-              for (var i = 0; i < _hw.buildPending.length; i++) if (i != index) _hw.buildPending[i],
+              for (final e in _hw.buildPending)
+                if (e.id != id) e,
             ]);
-          case QueueType.ship when index < _hw.shipyardPending.length:
-            final q = _hw.shipyardPending[index];
+          case QueueType.ship when _hw.shipyardPending.any((q) => q.id == id):
+            final q = _hw.shipyardPending.firstWhere((q) => q.id == id);
             label = '${q.item.label} x${q.count}';
             _hw = _hwWith(shipPending: [
-              for (var i = 0; i < _hw.shipyardPending.length; i++) if (i != index) _hw.shipyardPending[i],
+              for (final e in _hw.shipyardPending)
+                if (e.id != id) e,
             ]);
-          case QueueType.research when index < _hw.researchPending.length:
-            final q = _hw.researchPending[index];
+          case QueueType.research when _hw.researchPending.any((q) => q.id == id):
+            final q = _hw.researchPending.firstWhere((q) => q.id == id);
             label = '${q.tech.label} Lv.${q.targetLevel}';
             _hw = _hwWith(researchPending: [
-              for (var i = 0; i < _hw.researchPending.length; i++) if (i != index) _hw.researchPending[i],
+              for (final e in _hw.researchPending)
+                if (e.id != id) e,
             ]);
           default:
-            return [_err(ErrorCode.invalidTarget, 'Nothing is waiting there')];
+            return [_err(ErrorCode.invalidTarget, 'No order $id is waiting in the ${queueType.name} queue')];
         }
-        _ev(QueueEvent(playerId: _playerId, queueType: queueType, item: label, action: QueueAction.cancelled));
+        _ev(QueueEvent(playerId: _playerId, queueType: queueType, id: id, item: label, action: QueueAction.cancelled));
         _startWaiting();
         return [_tickUpdate()];
       case SplitCommand(:final fleetId, :final shipIds):
