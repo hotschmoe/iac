@@ -79,11 +79,18 @@ class _FakeServer {
   }
 }
 
-Future<void> _until(bool Function() cond) async {
-  final deadline = DateTime.now().add(const Duration(seconds: 5));
-  while (!cond()) {
-    if (DateTime.now().isAfter(deadline)) fail('condition not reached in time');
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+Future<void> _until(Listenable source, bool Function() cond) async {
+  if (cond()) return;
+  final done = Completer<void>();
+  void check() {
+    if (cond() && !done.isCompleted) done.complete();
+  }
+
+  source.addListener(check);
+  try {
+    await done.future;
+  } finally {
+    source.removeListener(check);
   }
 }
 
@@ -158,7 +165,7 @@ void main() {
 
     final first = controller(tokens);
     await first.start(params: params, name: 'Admiral');
-    await _until(() => first.isLive);
+    await _until(first, () => first.isLive);
     expect(server.authRequests.single.containsKey('token'), isFalse);
     expect(tokens.load(server.url, 'Admiral'), _issued);
     expect(first.authRejection, isNull);
@@ -167,7 +174,7 @@ void main() {
 
     final second = controller(tokens);
     await second.start(params: params, name: 'Admiral');
-    await _until(() => second.isLive);
+    await _until(second, () => second.isLive);
     expect(server.authRequests.last['token'], _issued);
     expect(second.state.alerts.any((a) => a.message == 'New account token'), isFalse, reason: 'token is shown once');
   });
@@ -176,13 +183,13 @@ void main() {
     server.accounts['Taken'] = _issued;
     final c = controller(MemoryTokenStore());
     await c.start(params: ConnectParams(url: server.url), name: 'Taken');
-    await _until(() => c.authRejection != null);
+    await _until(c, () => c.authRejection != null);
     expect(c.authRejection!.needsToken, isTrue);
     expect(c.authRejection!.message, contains('already registered'));
     expect(c.isLive, isFalse);
 
     await c.start(params: ConnectParams(url: server.url), name: 'Taken', token: _issued);
-    await _until(() => c.isLive);
+    await _until(c, () => c.isLive);
     expect(c.authRejection, isNull);
   });
 
@@ -191,7 +198,7 @@ void main() {
     final tokens = MemoryTokenStore()..save(server.url, 'Taken', 'f' * 64);
     final c = controller(tokens);
     await c.start(params: ConnectParams(url: server.url), name: 'Taken');
-    await _until(() => c.authRejection != null);
+    await _until(c, () => c.authRejection != null);
     expect(c.authRejection!.code, proto.ErrorCode.invalidToken);
     await Future<void>.delayed(const Duration(milliseconds: 300));
     expect(server.authRequests, hasLength(1));
@@ -202,7 +209,7 @@ void main() {
     final tokens = MemoryTokenStore();
     final c = controller(tokens);
     await c.start(params: ConnectParams(url: server.url, token: _issued), name: 'Agent');
-    await _until(() => c.isLive);
+    await _until(c, () => c.isLive);
     expect(tokens.load(server.url, 'Agent'), _issued);
   });
 

@@ -1,3 +1,4 @@
+import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 
 enum ToastTone { amber, red, teal, violet }
@@ -16,7 +17,7 @@ class ToastController extends ChangeNotifier {
   int _id = 0;
 
   void show(String title, String message, {ToastTone tone = ToastTone.amber, Duration life = const Duration(milliseconds: 4200)}) {
-    items.add(Toast(++_id, title, message, tone, DateTime.now().add(life)));
+    items.add(Toast(++_id, title, message, tone, clock.now().add(life)));
     while (items.length > 4) {
       items.removeAt(0);
     }

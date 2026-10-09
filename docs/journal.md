@@ -885,3 +885,18 @@ covered in `server/src/database.rs`. Pace and world-version refusal tests moved
 there too.
 
 **Next:** bots on `ScriptedPlayer` (sees `GameState`, emits `Command`s only).
+
+## 2026-10-10: Flutter test flakiness on the dev host
+
+- **Symptom:** the Flutter suite failed about 10% of full runs on this aarch64 host
+  (vendor 6.6.10 kernel), with assertions that cannot fail by program logic: NaN from
+  constants, sizes "not meeting" equal constraints.
+- **Cause:** it correlates with the Dart VM profiler's SIGPROF storm (about 600/s
+  into `flutter_tester`). Throttling it removed the failures in 30 of 30 runs:
+  `DART_VM_OPTIONS=--profile_period=100000000 flutter test`.
+- **Real bugs found on the way, now fixed:**
+  - the app read wall time directly (HUD interpolation, toasts, scan timers, map clock);
+    it now goes through `package:clock`;
+  - the windshield sim used an unseeded `Random()`.
+- **Status:** after the fix, 8 of 8 runs pass with and without the flag. If the host
+  flakiness returns, use the flag before chasing the code.

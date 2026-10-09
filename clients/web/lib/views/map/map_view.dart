@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:clock/clock.dart' as time;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -32,7 +33,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
   final plan = MapPlan();
   final clock = ValueNotifier<double>(0);
   final cache = MapStaticCache();
-  final Stopwatch _sw = Stopwatch()..start();
+  final Stopwatch _sw = time.clock.stopwatch()..start();
 
   late Console con;
   bool _init = false;

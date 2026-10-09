@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -55,7 +56,7 @@ class _ToastTileState extends State<_ToastTile> with SingleTickerProviderStateMi
   @override
   void initState() {
     super.initState();
-    _timer = Timer(widget.t.until.difference(DateTime.now()), () {
+    _timer = Timer(widget.t.until.difference(clock.now()), () {
       if (mounted) widget.toasts.dismiss(widget.t.id);
     });
   }

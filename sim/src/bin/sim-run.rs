@@ -59,6 +59,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(args)
 }
 
+#[expect(clippy::disallowed_methods, reason = "the runner measures its own wall-clock speed; the engine never reads the clock")]
 fn main() {
     let args = match parse_args() {
         Ok(args) => args,

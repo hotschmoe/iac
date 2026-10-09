@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -98,7 +99,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     sim.tick(dt, d.inMicroseconds / 1e6);
     final at = _scanAt;
     if (at != null) {
-      final p = DateTime.now().difference(at).inMilliseconds / 1000 / _scanDur;
+      final p = clock.now().difference(at).inMilliseconds / 1000 / _scanDur;
       if (p >= 1) {
         _scanAt = null;
         _scanFill.value = 0;
@@ -262,7 +263,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     }
     switch (id) {
       case 'scan':
-        _scanAt = DateTime.now();
+        _scanAt = clock.now();
         _scanFill.value = 1;
         _scanSecs.value = _scanDur.toInt();
         sim.startScan();
@@ -312,9 +313,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final id = s?.hostiles?.firstOrNull?.id;
     if (id == null || f.status == ui.FleetStatus.combat) return;
     final o = RatioInfo.of(f.power, th.power);
-    final armed = _armedUntil != null && DateTime.now().isBefore(_armedUntil!);
+    final armed = _armedUntil != null && clock.now().isBefore(_armedUntil!);
     if (o.winPct < 40 && !armed) {
-      _armedUntil = DateTime.now().add(const Duration(seconds: 3));
+      _armedUntil = clock.now().add(const Duration(seconds: 3));
       _toast('Poor odds: ${o.label}', 'Power ${f.power.round()} vs ${th.power.round()}, ratio ${o.r.toStringAsFixed(2)}, est win ${o.winPct}%. Press F again to commit, or jump away.', tone: ToastTone.red);
       con.play('alert');
       return;
