@@ -7,10 +7,12 @@ pub mod auth;
 pub mod combat;
 pub mod commands;
 pub mod engine;
+pub mod headless;
 pub mod intel;
 pub mod persist;
 pub mod queue;
 pub mod score;
+pub mod script;
 pub mod snapshot;
 pub mod views;
 
