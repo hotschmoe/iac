@@ -25,8 +25,10 @@ enum MapZoom {
 
 enum HomeworldTab {
   buildings('BUILDINGS'),
+  research('RESEARCH'),
   shipyard('SHIPYARD'),
-  research('RESEARCH');
+  defence('DEFENCE'),
+  storage('STORAGE');
 
   final String label;
   const HomeworldTab(this.label);
@@ -409,6 +411,7 @@ class GameController extends ChangeNotifier {
       HomeworldTab.buildings => c.buildings.length,
       HomeworldTab.shipyard => c.ships.length,
       HomeworldTab.research => c.research.length,
+      HomeworldTab.defence || HomeworldTab.storage => 0,
     };
   }
 
@@ -420,7 +423,7 @@ class GameController extends ChangeNotifier {
   }
 
   void cycleHomeworldTab(int delta) {
-    const n = 3;
+    final n = HomeworldTab.values.length;
     selectHomeworldTab(HomeworldTab.values[(hwTab.index + delta + n) % n]);
   }
 
@@ -484,6 +487,8 @@ class GameController extends ChangeNotifier {
         name = o.shipClass.label;
         command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
         echo = 'ship ${o.shipClass.label} x$shipBatch';
+      case HomeworldTab.defence || HomeworldTab.storage:
+        return;
     }
 
     final unmet = [for (final r in requires) if (!r.met) r.label];
@@ -562,6 +567,7 @@ class GameController extends ChangeNotifier {
         HomeworldTab.buildings => proto.QueueType.building,
         HomeworldTab.shipyard => proto.QueueType.ship,
         HomeworldTab.research => proto.QueueType.research,
+        HomeworldTab.defence || HomeworldTab.storage => proto.QueueType.building,
       });
 
   // ── Commands ──────────────────────────────────────────────────

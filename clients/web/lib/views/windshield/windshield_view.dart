@@ -1,75 +1,22 @@
 import 'package:flutter/material.dart';
 
-import '../../state/game_controller.dart';
-import '../../theme/amber_theme.dart';
-import 'windshield_painter.dart';
-import 'windshield_sidebar.dart';
+import '../../console/services.dart';
+import '../../design/tokens.dart';
 
-class WindshieldView extends StatelessWidget {
-  final GameController controller;
-  const WindshieldView({super.key, required this.controller});
+class WindshieldView extends StatefulWidget {
+  const WindshieldView({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final state = controller.state;
-    final fleet = controller.currentFleet;
+  State<WindshieldView> createState() => _WindshieldViewState();
+}
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-          child: Text(
-            'FLEET CONTROL -- DIRECT PILOTING -- THE WINDSHIELD',
-            style: Amber.mono(size: 9, color: Amber.dim).copyWith(
-              letterSpacing: 1,
-            ),
-          ),
-        ),
-        Expanded(
-          child: Row(
-            children: [
-              Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Amber.bgInset,
-                    border: const Border(
-                      right: BorderSide(color: Amber.border),
-                    ),
-                  ),
-                  child: ClipRect(
-                    child: CustomPaint(
-                      painter: WindshieldPainter(
-                        fleetSector: fleet.sector,
-                        sectors: state.sectors,
-                      ),
-                      child: const SizedBox.expand(),
-                    ),
-                  ),
-                ),
-              ),
-              SizedBox(
-                width: 220,
-                child: WindshieldSidebar(
-                  fleet: fleet,
-                  sector: state.sector,
-                  controller: controller,
-                ),
-              ),
-            ],
-          ),
-        ),
-        Container(
-          decoration: const BoxDecoration(
-            border: Border(top: BorderSide(color: Amber.border)),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          child: Text(
-            'move: [1]E  [2]NE  [3]NW  [4]W  [5]SW  [6]SE     [h]arvest [a]ttack [v]scan [s]alvage [x]plore [r]ecall [esc]back',
-            style: Amber.mono(size: 10, color: Amber.dim),
-          ),
-        ),
-      ],
+class _WindshieldViewState extends State<WindshieldView> {
+  @override
+  Widget build(BuildContext context) {
+    final con = Console.of(context);
+    return ListenableBuilder(
+      listenable: con.game,
+      builder: (context, _) => Center(child: Text('Windshield t=${con.state.tick}', style: T.mono())),
     );
   }
 }

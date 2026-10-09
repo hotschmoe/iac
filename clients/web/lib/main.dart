@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'state/connection_provider.dart';
 import 'state/game_controller.dart';
-import 'theme/amber_theme.dart';
+import 'design/theme.dart';
+import 'design/tokens.dart';
 import 'views/boot_screen.dart';
 import 'views/login_screen.dart';
 import 'views/shell.dart';
@@ -18,7 +19,7 @@ class IacApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'IN AMBER CLAD',
-      theme: Amber.themeData(),
+      theme: consoleTheme(),
       debugShowCheckedModeBanner: false,
       home: const GameScreen(),
     );
@@ -62,7 +63,7 @@ class _GameScreenState extends State<GameScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Amber.bg,
+      backgroundColor: C.void_,
       body: Stack(
         children: [
           if (!_booting) _body(),
@@ -108,7 +109,7 @@ class _GameScreenState extends State<GameScreen> {
     return Center(
       child: Text(
         'ESTABLISHING UPLINK ... ${_params.url}',
-        style: Amber.mono(size: 11, color: Amber.dim).copyWith(letterSpacing: 1),
+        style: T.mono(size: 11, color: C.text3, spacing: 1),
       ),
     );
   }
@@ -119,7 +120,7 @@ class _GameScreenState extends State<GameScreen> {
     final label = '${live ? '●' : '○'} ${_controller.linkLabel}${err != null && !live ? ' ($err)' : ''}';
     return Text(
       label,
-      style: Amber.mono(size: 9, color: live ? Amber.full : Amber.dim).copyWith(letterSpacing: 1),
+      style: T.mono(size: 9, color: live ? C.own : C.text3, spacing: 1),
     );
   }
 }
