@@ -18,6 +18,9 @@ class StateMapper {
   proto.WorldInfo? world;
   proto.LeaderboardReply? leaderboard;
 
+  /// The raid the server last announced and has not yet resolved.
+  proto.RaidIncomingEvent? raid;
+
   /// Known sectors keyed by [proto.Hex.toKey].
   final Map<int, proto.SectorState> sectors = {};
 
@@ -37,6 +40,7 @@ class StateMapper {
     homeworld = null;
     world = null;
     leaderboard = null;
+    raid = null;
     sectors.clear();
     signals.clear();
     log.clear();
@@ -222,6 +226,7 @@ class StateMapper {
           if (!sectors.containsKey(key)) signals[key] = s.signal;
         }
       case proto.RaidIncomingEvent():
+        raid = k;
         msg = '! RAID INCOMING (${k.threat}, power ${k.estPower.round()}) -- arrival tick ${k.arrivalTick}';
         level = EventLevel.bright;
         _pushAlert(Alert(
@@ -231,6 +236,7 @@ class StateMapper {
           level: AlertTone.glow,
         ));
       case proto.RaidResolvedEvent():
+        raid = null;
         final structures = k.structuresLost == 0
             ? ''
             : ', ${k.structuresLost} structures lost (${k.structuresRestored} will be rebuilt)';
@@ -340,6 +346,7 @@ class StateMapper {
       hw: hw,
       world: world,
       leaderboard: leaderboard,
+      raid: raid,
     );
   }
 

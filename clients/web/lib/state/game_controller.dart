@@ -25,8 +25,10 @@ enum MapZoom {
 
 enum HomeworldTab {
   buildings('BUILDINGS'),
+  research('RESEARCH'),
   shipyard('SHIPYARD'),
-  research('RESEARCH');
+  defence('DEFENCE'),
+  storage('STORAGE');
 
   final String label;
   const HomeworldTab(this.label);
@@ -55,6 +57,24 @@ class GameController extends ChangeNotifier {
   final TokenStore _tokens;
   final GameConnection connection = GameConnection();
   final StateMapper _mapper = StateMapper();
+  final StreamController<proto.GameEvent> _events = StreamController.broadcast(sync: true);
+
+  /// Every server game event as it arrives (combat rounds included, which
+  /// the log drops), for scenes that animate them.
+  Stream<proto.GameEvent> get gameEvents => _events.stream;
+
+  void _tap(proto.ServerMessage m) {
+    switch (m) {
+      case proto.TickUpdate(:final events):
+        for (final e in events ?? const <proto.GameEvent>[]) {
+          _events.add(e);
+        }
+      case proto.GameEvent():
+        _events.add(m);
+      default:
+        break;
+    }
+  }
   DemoProvider? _demo;
   StreamSubscription<proto.ServerMessage>? _msgSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
@@ -257,6 +277,7 @@ class GameController extends ChangeNotifier {
   void _onDemoMessages(List<proto.ServerMessage> msgs) {
     for (final m in msgs) {
       _mapper.apply(m);
+      _tap(m);
     }
     _refresh();
   }
@@ -305,6 +326,7 @@ class GameController extends ChangeNotifier {
       default:
         if (link != LinkState.live) return; // ignore strays before full_state
         _mapper.apply(msg);
+        _tap(msg);
     }
     _refresh();
   }
@@ -342,6 +364,7 @@ class GameController extends ChangeNotifier {
     _disposed = true;
     stop();
     connection.dispose();
+    _events.close();
     super.dispose();
   }
 
@@ -407,8 +430,10 @@ class GameController extends ChangeNotifier {
     if (c == null) return 0;
     return switch (hwTab) {
       HomeworldTab.buildings => c.buildings.length,
-      HomeworldTab.shipyard => c.ships.length + c.defences.length,
+      HomeworldTab.shipyard => c.ships.length,
+      HomeworldTab.defence => c.defences.length,
       HomeworldTab.research => c.research.length,
+      HomeworldTab.storage => 0,
     };
   }
 
@@ -420,7 +445,7 @@ class GameController extends ChangeNotifier {
   }
 
   void cycleHomeworldTab(int delta) {
-    const n = 3;
+    final n = HomeworldTab.values.length;
     selectHomeworldTab(HomeworldTab.values[(hwTab.index + delta + n) % n]);
   }
 
@@ -477,20 +502,22 @@ class GameController extends ChangeNotifier {
         name = o.tech.label;
         command = proto.ResearchCommand(tech: o.tech);
         echo = 'research ${o.tech.label}';
-      case HomeworldTab.shipyard when i < c.ships.length:
+      case HomeworldTab.shipyard:
         final o = c.ships[i];
         requires = o.requires;
         maxed = false;
         name = o.shipClass.label;
         command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
         echo = 'ship ${o.shipClass.label} x$shipBatch';
-      case HomeworldTab.shipyard:
-        final o = c.defences[i - c.ships.length];
+      case HomeworldTab.defence:
+        final o = c.defences[i];
         requires = o.requires;
         maxed = false;
         name = o.kind.label;
         command = proto.BuildDefenceCommand(kind: o.kind, count: shipBatch);
         echo = 'defence ${o.kind.label} x$shipBatch';
+      case HomeworldTab.storage:
+        return;
     }
 
     final unmet = [for (final r in requires) if (!r.met) r.label];
@@ -573,6 +600,7 @@ class GameController extends ChangeNotifier {
         HomeworldTab.buildings => proto.QueueType.building,
         HomeworldTab.shipyard => proto.QueueType.ship,
         HomeworldTab.research => proto.QueueType.research,
+        HomeworldTab.defence || HomeworldTab.storage => proto.QueueType.building,
       });
 
   // ── Commands ──────────────────────────────────────────────────

@@ -7,12 +7,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/connection_provider.dart';
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/state/token_store.dart';
-import 'package:iac_client/theme/amber_theme.dart';
+import 'package:iac_client/design/theme.dart';
 import 'package:iac_client/views/login_screen.dart';
 
 import 'fixtures_util.dart';
@@ -104,12 +103,10 @@ class _MapStorage implements KeyValueStorage {
 }
 
 void main() {
-  setUpAll(() => GoogleFonts.config.allowRuntimeFetching = false);
-
   testWidgets('login form re-prompts with the refusal and passes the typed token on', (tester) async {
     String? sentName, sentToken;
     await tester.pumpWidget(MaterialApp(
-      theme: Amber.themeData(),
+      theme: consoleTheme(),
       home: Scaffold(
         body: LoginScreen(
           url: 'ws://x/ws',
@@ -133,7 +130,7 @@ void main() {
 
   testWidgets('first-time login form has no token field', (tester) async {
     await tester.pumpWidget(MaterialApp(
-      theme: Amber.themeData(),
+      theme: consoleTheme(),
       home: Scaffold(body: LoginScreen(url: 'ws://x/ws', initialName: 'Admiral', onConnect: (_, _) {}, onDemo: () {})),
     ));
     expect(find.byKey(const Key('token-field')), findsNothing);

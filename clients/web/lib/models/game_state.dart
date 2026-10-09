@@ -141,6 +141,9 @@ class GameState {
   /// The last score table the server sent, if asked for.
   final proto.LeaderboardReply? leaderboard;
 
+  /// The announced, unresolved raid.
+  final proto.RaidIncomingEvent? raid;
+
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -162,6 +165,7 @@ class GameState {
     this.hw,
     this.world,
     this.leaderboard,
+    this.raid,
   });
 
   String get clockDisplay {
@@ -194,6 +198,7 @@ class GameState {
     proto.HomeworldState? hw,
     proto.WorldInfo? world,
     proto.LeaderboardReply? leaderboard,
+    proto.RaidIncomingEvent? raid,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -216,5 +221,6 @@ class GameState {
         hw: hw ?? this.hw,
         world: world ?? this.world,
         leaderboard: leaderboard ?? this.leaderboard,
+        raid: raid ?? this.raid,
       );
 }
