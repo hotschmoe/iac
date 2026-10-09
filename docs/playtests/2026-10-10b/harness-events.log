@@ -1,0 +1,36 @@
+2026-10-10 03:47:30 harness    session start: 60 min, pace blitz, port 7777, players: Grok-1:grok Grok-2:grok Builder:manual Mixed:manual Explorer:manual Raider:manual
+2026-10-10 03:47:30 harness    server pid 1662886
+2026-10-10 03:47:30 harness    launched client daemon slot 0 (Grok-1) pid 1662915
+2026-10-10 03:47:30 harness    launched client daemon slot 1 (Grok-2) pid 1662922
+2026-10-10 03:47:30 harness    launched client daemon slot 2 (Builder) pid 1662929
+2026-10-10 03:47:30 harness    launched client daemon slot 3 (Mixed) pid 1662939
+2026-10-10 03:47:30 harness    launched client daemon slot 4 (Explorer) pid 1662966
+2026-10-10 03:47:30 harness    launched client daemon slot 5 (Raider) pid 1662983
+2026-10-10 03:47:30 harness    launched supervisor slot 0 (Grok-1, grok) pid 1663000
+2026-10-10 03:47:30 harness    launched supervisor slot 1 (Grok-2, grok) pid 1663008
+2026-10-10 03:47:30 harness    launched watchdog pid 1663045
+2026-10-10 03:47:31 sv0        supervisor up for Grok-1 (grok) pid 1663000 parent 1662869
+2026-10-10 03:47:31 sv1        supervisor up for Grok-2 (grok) pid 1663008 parent 1662869
+2026-10-10 03:47:31 sv0        Grok-1 launch 1 (grok) budget=3839s
+2026-10-10 03:47:31 sv1        Grok-2 launch 1 (grok) budget=3839s
+2026-10-10 03:47:31 watchdog   watching, session ends 04:47:30
+2026-10-10 04:43:45 sv1        Grok-2 agent exit 0 after 3374s
+2026-10-10 04:43:50 sv1        Grok-2 launch 2 (grok) budget=460s
+2026-10-10 04:44:04 sv0        Grok-1 agent exit 0 after 3393s
+2026-10-10 04:44:09 sv0        Grok-1 launch 2 (grok) budget=441s
+2026-10-10 04:44:40 sv1        Grok-2 agent exit 0 after 50s
+2026-10-10 04:44:45 sv1        Grok-2 launch 3 (grok) budget=405s
+2026-10-10 04:44:54 sv0        Grok-1 agent exit 0 after 45s
+2026-10-10 04:44:59 sv0        Grok-1 launch 3 (grok) budget=391s
+2026-10-10 04:46:08 sv1        Grok-2 agent exit 0 after 83s
+2026-10-10 04:46:13 sv1        supervisor done for Grok-2 launches=3 feedback=yes
+2026-10-10 04:47:51 harness    stop requested
+2026-10-10 04:47:51 watchdog   received SIGTERM, exiting
+2026-10-10 04:47:51 daemon client Builder exited code -15; restarting
+2026-10-10 04:47:51 daemon client Explorer exited code -15; restarting
+2026-10-10 04:47:51 daemon client Grok-1 exited code -15; restarting
+2026-10-10 04:47:51 daemon client Grok-2 exited code -15; restarting
+2026-10-10 04:47:52 daemon client Mixed exited code -15; restarting
+2026-10-10 04:47:52 daemon client Raider exited code -15; restarting
+2026-10-10 04:47:52 sv0        supervisor for Grok-1 received SIGTERM; exiting (a running agent is left alone; the watchdog restarts the supervisor)
+2026-10-10 04:47:53 harness    stopped
