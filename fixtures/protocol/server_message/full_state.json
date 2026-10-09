@@ -154,7 +154,7 @@
               "metal": 60.0
             },
             "level": 1,
-            "ticks": 45
+            "ticks": 386
           },
           "requires": []
         },
@@ -164,12 +164,12 @@
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 48.0,
+              "crystal": 38.0,
               "deuterium": 0.0,
-              "metal": 96.0
+              "metal": 77.0
             },
             "level": 2,
-            "ticks": 135
+            "ticks": 592
           },
           "requires": []
         },
@@ -179,12 +179,12 @@
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 225.0,
+              "crystal": 112.0,
               "deuterium": 0.0,
-              "metal": 675.0
+              "metal": 338.0
             },
             "level": 3,
-            "ticks": 304
+            "ticks": 2315
           },
           "requires": []
         },
@@ -194,12 +194,12 @@
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 400.0,
-              "deuterium": 200.0,
-              "metal": 800.0
+              "crystal": 583.0,
+              "deuterium": 292.0,
+              "metal": 1166.0
             },
             "level": 4,
-            "ticks": 1215
+            "ticks": 8995
           },
           "requires": [
             {
@@ -216,12 +216,12 @@
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 1000.0,
-              "deuterium": 250.0,
-              "metal": 500.0
+              "crystal": 2100.0,
+              "deuterium": 525.0,
+              "metal": 1050.0
             },
             "level": 5,
-            "ticks": 2279
+            "ticks": 16200
           },
           "requires": [
             {
@@ -238,12 +238,12 @@
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 300.0,
-              "deuterium": 600.0,
-              "metal": 900.0
+              "crystal": 710.0,
+              "deuterium": 1420.0,
+              "metal": 2130.0
             },
             "level": 6,
-            "ticks": 2734
+            "ticks": 14606
           },
           "requires": [
             {
@@ -260,12 +260,12 @@
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 1050.0,
-              "deuterium": 525.0,
-              "metal": 700.0
+              "crystal": 3621.0,
+              "deuterium": 1810.0,
+              "metal": 2414.0
             },
             "level": 7,
-            "ticks": 5981
+            "ticks": 31038
           },
           "requires": [
             {
@@ -282,12 +282,12 @@
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 1600.0,
-              "deuterium": 800.0,
-              "metal": 2400.0
+              "crystal": 12244.0,
+              "deuterium": 6122.0,
+              "metal": 18367.0
             },
             "level": 8,
-            "ticks": 18453
+            "ticks": 157428
           },
           "requires": [
             {
@@ -310,7 +310,7 @@
               "metal": 200.0
             },
             "level": 1,
-            "ticks": 90
+            "ticks": 2160
           },
           "requires": [
             {
@@ -333,12 +333,12 @@
           "max_level": 5,
           "next": {
             "cost": {
-              "crystal": 150.0,
-              "deuterium": 300.0,
-              "metal": 300.0
+              "crystal": 120.0,
+              "deuterium": 240.0,
+              "metal": 240.0
             },
             "level": 2,
-            "ticks": 270
+            "ticks": 2592
           },
           "requires": [
             {
@@ -361,12 +361,12 @@
           "max_level": 5,
           "next": {
             "cost": {
-              "crystal": 300.0,
+              "crystal": 256.0,
               "deuterium": 0.0,
-              "metal": 900.0
+              "metal": 768.0
             },
             "level": 3,
-            "ticks": 608
+            "ticks": 7373
           },
           "requires": [
             {
@@ -389,12 +389,12 @@
           "max_level": 5,
           "next": {
             "cost": {
-              "crystal": 1200.0,
-              "deuterium": 200.0,
-              "metal": 400.0
+              "crystal": 1229.0,
+              "deuterium": 205.0,
+              "metal": 410.0
             },
             "level": 4,
-            "ticks": 1215
+            "ticks": 11801
           },
           "requires": [
             {
@@ -416,7 +416,7 @@
               "metal": 200.0
             },
             "level": 1,
-            "ticks": 90
+            "ticks": 2880
           },
           "requires": [
             {
@@ -433,12 +433,12 @@
           "max_level": 5,
           "next": {
             "cost": {
-              "crystal": 300.0,
-              "deuterium": 100.0,
-              "metal": 200.0
+              "crystal": 240.0,
+              "deuterium": 80.0,
+              "metal": 160.0
             },
             "level": 2,
-            "ticks": 270
+            "ticks": 2880
           },
           "requires": [
             {
@@ -455,12 +455,12 @@
           "max_level": 5,
           "next": {
             "cost": {
-              "crystal": 300.0,
-              "deuterium": 225.0,
-              "metal": 450.0
+              "crystal": 256.0,
+              "deuterium": 192.0,
+              "metal": 384.0
             },
             "level": 3,
-            "ticks": 608
+            "ticks": 4608
           },
           "requires": [
             {
@@ -486,7 +486,7 @@
               "have": 3,
               "met": true,
               "name": "Shipyard",
-              "need": 2
+              "need": 1
             }
           ],
           "tech": "CorvetteTech"
@@ -496,12 +496,12 @@
           "max_level": 1,
           "next": {
             "cost": {
-              "crystal": 600.0,
-              "deuterium": 300.0,
-              "metal": 1000.0
+              "crystal": 1200.0,
+              "deuterium": 600.0,
+              "metal": 2000.0
             },
             "level": 1,
-            "ticks": 120
+            "ticks": 23040
           },
           "requires": [
             {
@@ -600,7 +600,7 @@
             }
           ],
           "ship_class": "Scout",
-          "ticks_per_ship": 24,
+          "ticks_per_ship": 577,
           "unit_cost": {
             "crystal": 50.0,
             "deuterium": 30.0,
@@ -623,7 +623,7 @@
             }
           ],
           "ship_class": "Corvette",
-          "ticks_per_ship": 47,
+          "ticks_per_ship": 1154,
           "unit_cost": {
             "crystal": 100.0,
             "deuterium": 60.0,
@@ -646,7 +646,7 @@
             }
           ],
           "ship_class": "Frigate",
-          "ticks_per_ship": 93,
+          "ticks_per_ship": 3231,
           "unit_cost": {
             "crystal": 400.0,
             "deuterium": 200.0,
@@ -669,7 +669,7 @@
             }
           ],
           "ship_class": "Cruiser",
-          "ticks_per_ship": 185,
+          "ticks_per_ship": 10385,
           "unit_cost": {
             "crystal": 1500.0,
             "deuterium": 800.0,
@@ -692,7 +692,7 @@
             }
           ],
           "ship_class": "Hauler",
-          "ticks_per_ship": 70,
+          "ticks_per_ship": 1847,
           "unit_cost": {
             "crystal": 200.0,
             "deuterium": 150.0,
