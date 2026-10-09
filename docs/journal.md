@@ -843,3 +843,45 @@ id in the latest state. The web changes are in the web commit.
 `reserve` on build commands; `pins_stale`, `RaidResolved.salvage_despawn_tick`
 and the home-salvage `Alert`.
 
+
+## 2026-10-10: `iac-sim` extracted (roadmap step 1 of single player and bots)
+
+All game rules and state now live in `sim/` (`iac-sim`); `server/` is a host
+(axum WebSockets, SQLite writer thread, tokio tick timer). Wire protocol and
+behaviour are unchanged; a live blitz session on 7821 (build, move, scan, fight,
+restart with the world kept) matched before and after.
+
+**Seams.** `GameEngine::new(seed, pace)`, `restore(Snapshot)`, `snapshot()`,
+`attach_persist(Box<dyn Persist>)`, `execute(player, Command) -> CommandOutcome`
+(reply and wording of refusals, moved from `network.rs`), `views::{full_state,
+tick_update}`, `persist_dirty_state()`. `Persist` (`submit(PersistBatch)`,
+`flush()`) is implemented by the server's `Persister`;
+`Database::load_snapshot` turns SQLite into a partial `Snapshot` (NPC groups,
+combats, scans, raid clocks stay empty, as before) and `restore` applies the
+old load-time fixes. `Snapshot` is serde, canonical (ordered maps) and has
+`hash()`. Token issuing stays in the server (needs OS entropy); `authenticate`
+takes the token source as an argument; hashing and checks are in `sim/auth.rs`.
+
+**Purity.** No tokio/axum/rusqlite/getrandom dependency (rand without OS
+entropy); `sim/clippy.toml` bans `SystemTime::now` and `Instant::now`. Builds
+for `wasm32-unknown-unknown`; no bindings yet (milestone 3).
+
+**Bugs found on the way.** Combat rounds were seeded from the wall clock; they
+now use world seed, tick, sector and round. Engine maps were `HashMap`s walked in
+random order (ship ids differed between two identical runs); they are
+`BTreeMap`s now. A world past about 28 empires could not register more players
+(home band rings 3-6); homeworlds now spill outward ring by ring, worlds under
+capacity place as before.
+
+**Speed.** The per-tick chart refresh (`KnownSectors::refresh`) is about 95
+percent of tick time with many players; `WorldGen` now memoises sectors, lanes
+and sensor reach (about 10x). Remaining cost grows with sensor footprints, so
+long runs slow as empires grow. Next lever: refresh charts only when observed.
+
+**Tests.** `sim/tests/determinism.rs` (same seed and script, equal hashes every
+1000 ticks; mid-run snapshot through JSON resumes identically). The SQLite-based
+restart tests in the engine now restart from a snapshot; SQLite round trips are
+covered in `server/src/database.rs`. Pace and world-version refusal tests moved
+there too.
+
+**Next:** bots on `ScriptedPlayer` (sees `GameState`, emits `Command`s only).

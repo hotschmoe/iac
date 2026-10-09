@@ -20,7 +20,7 @@ matters for a LAN game, with these differences:
   from before this rule stay reachable. Clients key saved tokens by the
   lowercased name.
 - **Tokens and hashing as specified**: 32 random bytes, hex, SHA-256 stored in
-  `players.token_hash`, constant-time compare (`server/src/auth.rs`).
+  `players.token_hash`, constant-time compare (`sim/src/auth.rs`; token issuing in `server/src/auth.rs`).
 - **Accounts from before tokens** (NULL `token_hash`): the next login for the
   name claims the account and is issued a token. The column is added to old
   databases on startup; no data is touched.

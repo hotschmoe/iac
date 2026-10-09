@@ -168,7 +168,7 @@ def check_storage_raids_misc(sim, rust):
     for i, m in enumerate(sim.START_RES):
         check(f"starting resources[{i}]", rust["starting_resources"][i], m)
     check("resource weight of 1000 each", rust["resource_weight_unit"], sum(sim.W_RES), 1e-6)
-    check("score extra cap", source_const("server/src/score.rs", "EXTRA_CAP"), sim.SCORE_EXTRA_CAP, 1e-6)
+    check("score extra cap", source_const("sim/src/score.rs", "EXTRA_CAP"), sim.SCORE_EXTRA_CAP, 1e-6)
     for p in sim.PRESETS:
         if p.P not in rust["presets"].values():
             problems.append(f"sim preset {p.name} (P={p.P}) is not a Rust preset: {rust['presets']}")
@@ -224,7 +224,7 @@ def check_loot(sim, rust):
         ("CHART_BASE_POINTS", sim.CHART_BASE_POINTS), ("CHART_THREAT_POINTS", sim.CHART_THREAT_POINTS),
         ("KILL_SHARE", sim.KILL_SHARE), ("FULL_PAY_RATIO", sim.FULL_PAY_RATIO), ("MIN_PAY", sim.MIN_PAY),
     ):
-        check(name, source_const("server/src/score.rs", name), want, 1e-6)
+        check(name, source_const("sim/src/score.rs", name), want, 1e-6)
     for name, want in (("RELIC_POINTS", sim.RELIC_POINTS), ("FARM_DECAY", sim.FARM_DECAY),
                        ("FARM_HALF_LIFE_RESPAWNS", sim.FARM_HALF_LIFE_RESPAWNS)):
         check(name, source_const("shared/src/scaling.rs", name), want, 1e-6)

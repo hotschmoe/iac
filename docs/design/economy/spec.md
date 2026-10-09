@@ -461,7 +461,7 @@ No other tree changes. Observed in the simulation: the whole 13-tech tree is fin
 
 `shared/src/protocol.rs`: section 12.
 
-`server/src/engine.rs` (function names as today):
+`sim/src/engine.rs` (function names as today):
 * `Player` and `process_homeworlds`: `building_queue` becomes `Vec<BuildQueueEntry>` plus pending lists; production multiplies by pace; apply caps and waste accounting; `StorageNearCap`/`StorageFull` events.
 * `handle_build`, `handle_research`, `handle_build_ship`, `handle_cancel_build`, `process_build_queues`: slots, depth 3, auto-start, defence builds, new errors.
 * `process_harvesting`, `accumulate_harvest`, `process_sector_regen`, `regen_resource`: ring-scaled thresholds, refine yield, time-based regeneration.

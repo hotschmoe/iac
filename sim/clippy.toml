@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "iac-sim is pure: time enters only as ticks" },
+    { path = "std::time::Instant::now", reason = "iac-sim is pure: time enters only as ticks" },
+]

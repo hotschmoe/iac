@@ -11,7 +11,8 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling, hex math, world generation |
-| `server/` | `iac-server`: authoritative engine, combat, WebSocket network, SQLite persistence |
+| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, scripted players, headless runner `sim-run`); no I/O, builds for WebAssembly |
+| `server/` | `iac-server`: a thin host around `iac-sim`: WebSocket network, SQLite persistence, the 1 Hz tick timer |
 | `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
 | `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server` |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
@@ -409,11 +410,25 @@ Change the Rust protocol, regenerate, then fix the Dart side until
 ```sh
 cargo test --workspace       # engine unit tests + end-to-end smoke tests
 cargo clippy --workspace
+
+# Headless: the real engine, scripted players, as fast as the CPU allows
+cargo run -p iac-sim --release --bin sim-run -- --pace season --builders 50 --days 7
+
+# The engine must build for the browser (no bindings yet)
+cargo build -p iac-sim --target wasm32-unknown-unknown --release
 ```
 
 Crates: `iac-shared` (`shared/`) (protocol, constants, scaling, hex math, worldgen) ·
-`iac-server` (engine, combat, network, SQLite) · `iac-client` (ratatui TUI +
+`iac-sim` (`sim/`) (every game rule and all world state: no I/O, no async, no clock; time is ticks, every random draw is seeded) ·
+`iac-server` (network, SQLite, tick timer around `iac-sim`) · `iac-client` (ratatui TUI +
 headless mode).
+
+`iac-sim` talks to its host through three seams: `GameEngine::execute` (a protocol
+`Command` in, reply or refusal out), `views::{full_state, tick_update}` (what a player
+sees), and persistence. The engine hands `PersistBatch` deltas to a `Persist` trait the
+host implements (the server's SQLite writer); `snapshot()` / `GameEngine::restore()`
+save and rebuild the whole world as serde data, and `Snapshot::hash()` is a digest of
+it. Same seed, pace and command script give the same hash.
 
 ## Other versions
 

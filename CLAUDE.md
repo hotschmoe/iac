@@ -140,7 +140,8 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling (all cost/time/production formulas), pace, hex math, worldgen |
-| `server/` | `iac-server`: engine, combat, score, network, SQLite (tests in `server/tests/`: `smoke.rs` game flow, `web.rs` static hosting + WS paths) |
+| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait + idle and check-in builder), `headless.rs`, `bin/sim-run.rs`. Tests in `sim/tests/`: `determinism.rs` |
+| `server/` | `iac-server`: thin host. `network.rs` (axum WebSockets + static hosting), `database.rs` (SQLite, writer thread, `load_snapshot`), `auth.rs` (token issuing), `main.rs` (clap, tokio tick loop). Tests in `server/tests/`: `smoke.rs` game flow, `web.rs` static hosting + WS paths |
 | `clients/tui/` | `iac-client`: ratatui TUI, `--headless` NDJSON mode |
 | `clients/web/` | Flutter web client on the Rust wire protocol (`lib/protocol/` mirrors `shared/src/protocol.rs`) |
 | `fixtures/` | Golden JSON generated from `shared/`; checked by Rust and Flutter tests |
@@ -153,7 +154,9 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 ```sh
 cargo build --workspace
 cargo test --workspace            # unit + end-to-end smoke tests
-cargo clippy --workspace
+cargo clippy --workspace --all-targets
+cargo run -p iac-sim --release --bin sim-run -- --pace season --builders 50 --days 7   # headless scripted-player run, JSON summary
+cargo build -p iac-sim --target wasm32-unknown-unknown --release   # iac-sim must stay buildable for the browser
 cargo run -p iac-server           # port 7777, iac_world.db, pace x1
 cargo run -p iac-server -- --pace blitz --db blitz.db   # pace is fixed per database
 python3 tools/check_sim_constants.py                    # after touching costs, times or production
@@ -181,6 +184,7 @@ Server (Rust, tokio)       Clients
 ```
 
 - Server runs the authoritative simulation at 1 tick/second; clients send commands and receive `full_state` / `tick_update`.
+- All rules live in `iac-sim`, which must stay pure: no tokio, axum, rusqlite, wall clock (`std::time`) or OS entropy (`sim/clippy.toml` bans clock reads). Time is ticks; every RNG is seeded from the world seed, tick or ids; entity maps are `BTreeMap` so passes walk in id order. Persistence is the `Persist` trait; the server loads SQLite into a `Snapshot` and calls `GameEngine::restore`. Anything that must survive a restart goes in `PersistBatch` and the SQLite schema as well as in `Snapshot`.
 - Wire protocol types are defined once in `shared/` and used by server and TUI. The Flutter client mirrors them by hand in `clients/web/lib/protocol/`; `fixtures/` catches drift on both sides, so a protocol change means: edit Rust, regenerate fixtures, fix Dart until `flutter test` passes.
 - Only modified sectors persisted; unvisited sectors generated from the world seed.
 
