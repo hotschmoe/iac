@@ -420,6 +420,7 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::SalvageDespawned(_) => "salvage_despawned",
         EventKind::StorageNearCap(_) => "storage_near_cap",
         EventKind::StorageFull(_) => "storage_full",
+        EventKind::ChartDelivered(_) => "chart_delivered",
     }
 }
 
@@ -939,7 +940,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             recovered_ship: Some(ShipClass::Frigate),
             tech_cache: Some(ResearchType::AdvancedShields),
             relic: true,
+            points: 25.2,
         })),
+        ("", EventKind::ChartDelivered(ChartDeliveredEvent { fleet_id: 1, sectors: 12, points: 0.4 })),
         ("minimal", EventKind::SiteExplored(SiteExploredEvent {
             fleet_id: 1,
             sector: h(2, -4),
@@ -948,6 +951,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             recovered_ship: None,
             tech_cache: None,
             relic: false,
+            points: 0.0,
         })),
         ("", EventKind::SiteAmbush(SiteAmbushEvent { fleet_id: 1, sector: h(2, -4), npc_fleet_id: 9100 })),
         ("", EventKind::PolicyAction(PolicyActionEvent {

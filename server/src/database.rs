@@ -275,7 +275,8 @@ impl Database {
                 fuel_max REAL NOT NULL,
                 cargo_metal REAL DEFAULT 0,
                 cargo_crystal REAL DEFAULT 0,
-                cargo_deuterium REAL DEFAULT 0
+                cargo_deuterium REAL DEFAULT 0,
+                charts TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS ships (
@@ -312,6 +313,14 @@ impl Database {
                 r2 INTEGER NOT NULL,
                 discovered_tick INTEGER NOT NULL,
                 PRIMARY KEY (player_id, q1, r1, q2, r2)
+            );
+
+            CREATE TABLE IF NOT EXISTS explore_credits (
+                player_id INTEGER NOT NULL REFERENCES players(id),
+                q INTEGER NOT NULL,
+                r INTEGER NOT NULL,
+                kind INTEGER NOT NULL,
+                PRIMARY KEY (player_id, q, r, kind)
             );
 
             CREATE TABLE IF NOT EXISTS known_sectors (
@@ -586,8 +595,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO fleets (id, player_id, q, r, state, fuel, fuel_max,
-             cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource, charts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 fleet.id as i64,
                 fleet.owner_id as i64,
@@ -600,6 +609,7 @@ impl Database {
                 float_to_stored(fleet.cargo.crystal),
                 float_to_stored(fleet.cargo.deuterium),
                 harvest_resource_to_str(fleet.harvest_target),
+                fleet.charts.iter().map(u32::to_string).collect::<Vec<_>>().join(","),
             ],
         )?;
         self.save_ships_inner(&conn, fleet)
@@ -640,7 +650,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, player_id, q, r, state, fuel, fuel_max,
-                    cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource
+                    cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource, charts
              FROM fleets",
         )?;
 
@@ -658,11 +668,12 @@ impl Database {
                 row.get::<_, f64>(8)?,
                 row.get::<_, f64>(9)?,
                 row.get::<_, Option<String>>(10)?,
+                row.get::<_, String>(11)?,
             ))
         })?;
 
         for row_result in fleet_rows {
-            let (fid, pid, q, r, state_str, fuel, fuel_max, cm, cc, cd, harvest) = row_result?;
+            let (fid, pid, q, r, state_str, fuel, fuel_max, cm, cc, cd, harvest, charts) = row_result?;
             let mut fleet = Fleet {
                 id: fid as u64,
                 owner_id: pid as u64,
@@ -682,6 +693,7 @@ impl Database {
                 move_target: None,
                 idle_ticks: 0,
                 harvest_target: parse_harvest_resource(harvest.as_deref().unwrap_or("auto")),
+                charts: charts.split(',').filter_map(|k| k.parse().ok()).collect(),
             };
             fleet.ship_count = self.load_ships_into_inner(&conn, fid, &mut fleet.ships)?;
             fleets.push(fleet);
@@ -919,6 +931,31 @@ impl Database {
         let mut stmt = conn.prepare("SELECT DISTINCT player_id, q1, r1 FROM explored_edges")?;
         let rows = stmt.query_map(params![], |row| {
             Ok((row.get::<_, i64>(0)? as u64, Hex { q: row.get::<_, i64>(1)? as i16, r: row.get::<_, i64>(2)? as i16 }))
+        })?;
+        rows.collect()
+    }
+
+    // ── Explore credits ───────────────────────────────────────────
+
+    pub fn save_explore_credit(&self, player_id: u64, sector: Hex, kind: ExploreCredit) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO explore_credits (player_id, q, r, kind) VALUES (?1, ?2, ?3, ?4)",
+            params![player_id as i64, sector.q as i64, sector.r as i64, kind as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_explore_credits(&self) -> Result<Vec<(u64, Hex, ExploreCredit)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT player_id, q, r, kind FROM explore_credits")?;
+        let rows = stmt.query_map(params![], |row| {
+            let kind = if row.get::<_, i64>(3)? == ExploreCredit::Boarded as i64 { ExploreCredit::Boarded } else { ExploreCredit::Charted };
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                Hex { q: row.get::<_, i64>(1)? as i16, r: row.get::<_, i64>(2)? as i16 },
+                kind,
+            ))
         })?;
         rows.collect()
     }
@@ -1229,6 +1266,15 @@ pub struct ExploredEdge {
     pub tick: u64,
 }
 
+/// What an explore credit was paid for: it is paid once per player and sector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExploreCredit {
+    /// First successful boarding of the derelict here.
+    Boarded = 0,
+    /// The sector's chart was delivered to a dock.
+    Charted = 1,
+}
+
 /// One sector of one player's chart.
 #[derive(Debug, Clone)]
 pub struct KnownRow {
@@ -1252,6 +1298,7 @@ pub struct PersistBatch {
     pub sectors: Vec<(Hex, SectorOverride)>,
     pub explored_edges: Vec<ExploredEdge>,
     pub known_sectors: Vec<KnownRow>,
+    pub explore_credits: Vec<(u64, Hex, ExploreCredit)>,
 }
 
 impl Database {
@@ -1294,6 +1341,9 @@ impl Database {
         }
         for row in &batch.known_sectors {
             self.save_known_sector(row)?;
+        }
+        for &(player_id, sector, kind) in &batch.explore_credits {
+            self.save_explore_credit(player_id, sector, kind)?;
         }
         Ok(())
     }

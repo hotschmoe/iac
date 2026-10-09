@@ -2180,6 +2180,7 @@ sealed class EventKind {
       'SalvageDespawned' => SalvageDespawnedEvent.fromJson(m),
       'StorageNearCap' => StorageNearCapEvent.fromJson(m),
       'StorageFull' => StorageFullEvent.fromJson(m),
+      'ChartDelivered' => ChartDeliveredEvent.fromJson(m),
       final k => throw FormatException('unknown EventKind "$k"'),
     };
   }
@@ -2838,8 +2839,11 @@ class SiteExploredEvent extends EventKind {
   final ShipClass? recoveredShip;
   final ResearchType? techCache;
 
-  /// An ancient relic came aboard (a unique item; no other use yet).
+  /// An ancient relic came aboard (worth 25 explore points).
   final bool relic;
+
+  /// Explore points this boarding earned (0 when boarded before).
+  final double points;
   const SiteExploredEvent({
     required this.fleetId,
     required this.sector,
@@ -2848,6 +2852,7 @@ class SiteExploredEvent extends EventKind {
     this.recoveredShip,
     this.techCache,
     this.relic = false,
+    this.points = 0,
   });
 
   factory SiteExploredEvent.fromJson(Json m) => SiteExploredEvent(
@@ -2858,6 +2863,7 @@ class SiteExploredEvent extends EventKind {
         recoveredShip: _opt(m['recovered_ship'], ShipClass.fromJson),
         techCache: _opt(m['tech_cache'], ResearchType.fromJson),
         relic: m['relic'] as bool? ?? false,
+        points: m['points'] == null ? 0 : _f(m['points']),
       );
 
   @override
@@ -2871,10 +2877,28 @@ class SiteExploredEvent extends EventKind {
     };
     _put(m, 'recovered_ship', recoveredShip?.toJson());
     _put(m, 'tech_cache', techCache?.toJson());
-    // skip_serializing_if = "Not::not"
+    // skip_serializing_if = "Not::not" / "is_zero"
     if (relic) m['relic'] = true;
+    if (points != 0) m['points'] = points;
     return m;
   }
+}
+
+/// A fleet docked and handed over the sectors it charted.
+class ChartDeliveredEvent extends EventKind {
+  final int fleetId;
+  final int sectors;
+  final double points;
+  const ChartDeliveredEvent({required this.fleetId, required this.sectors, required this.points});
+
+  factory ChartDeliveredEvent.fromJson(Json m) => ChartDeliveredEvent(
+        fleetId: _i(m['fleet_id']),
+        sectors: _i(m['sectors']),
+        points: _f(m['points']),
+      );
+
+  @override
+  Json toJson() => {'kind': 'ChartDelivered', 'fleet_id': fleetId, 'sectors': sectors, 'points': points};
 }
 
 class SiteAmbushEvent extends EventKind {

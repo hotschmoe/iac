@@ -1,6 +1,7 @@
 {
   "fleet_id": 1,
   "kind": "SiteExplored",
+  "points": 25.200000762939453,
   "recovered_ship": "Frigate",
   "relic": true,
   "resources": {

@@ -244,7 +244,11 @@ class StateMapper {
         msg = '${_fleet(k.fleetId)} derelict yielded ${_res(k.resources)}'
             '${k.recoveredShip != null ? ', recovered ${k.recoveredShip!.label}' : ''}'
             '${k.techCache != null ? ', data core: ${k.techCache!.label}' : ''}'
-            '${k.relic ? ', ANCIENT RELIC' : ''}';
+            '${k.relic ? ', ANCIENT RELIC' : ''}${k.points > 0 ? ' (+${k.points.toStringAsFixed(2)} explore)' : ''}';
+        level = EventLevel.bright;
+      case proto.ChartDeliveredEvent():
+        msg = '${_fleet(k.fleetId)} delivered the chart of ${k.sectors} sectors '
+            '(+${k.points.toStringAsFixed(2)} explore)';
         level = EventLevel.bright;
       case proto.SiteAmbushEvent():
         msg = '! ${_fleet(k.fleetId)} ambushed aboard derelict in ${k.sector} (hostile ${k.npcFleetId})';

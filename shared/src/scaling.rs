@@ -933,6 +933,8 @@ pub const DERELICT_VALUE_GROWTH: f32 = 1.14;
 /// A site pays between these shares of its value, uniformly.
 pub const DERELICT_ROLL_MIN: f32 = 0.6;
 pub const DERELICT_ROLL_MAX: f32 = 1.4;
+/// Score points an ancient relic is worth.
+pub const RELIC_POINTS: f32 = 25.0;
 
 /// Units of loot (before the pace's finds factor) a destroyed group leaves:
 /// it grows slower than the danger, so far hunting stays a gamble.

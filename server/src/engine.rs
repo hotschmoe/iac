@@ -43,7 +43,7 @@ use iac_shared::protocol::{
 use crate::auth::{self, TokenHash};
 use crate::combat;
 use crate::score;
-use crate::database::{Database, ExploredEdge, PersistBatch, Persister, WorldMeta};
+use crate::database::{Database, ExploreCredit, ExploredEdge, PersistBatch, Persister, WorldMeta};
 use crate::intel::KnownSectors;
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -96,6 +96,8 @@ pub struct Fleet {
     pub idle_ticks: u16,
     /// What the current (or last) harvest order mines.
     pub harvest_target: HarvestResource,
+    /// Sectors this fleet has charted and not yet delivered to a dock.
+    pub charts: Vec<u32>,
 }
 
 #[allow(dead_code)]
@@ -447,6 +449,9 @@ pub struct GameEngine {
     explored: HashSet<(u64, u32)>,
     /// Explored edges not yet handed to the persister.
     new_edges: Vec<ExploredEdge>,
+    /// Explore credits already paid: once per player and sector.
+    credited: HashSet<(u64, u32, ExploreCredit)>,
+    new_credits: Vec<(u64, Hex, ExploreCredit)>,
     /// What each player has seen of the galaxy, live or remembered.
     pub known: KnownSectors,
 }
@@ -485,6 +490,8 @@ impl GameEngine {
             deleted_policy_ids: HashMap::new(),
             explored: world.explored,
             new_edges: Vec::new(),
+            credited: world.credited,
+            new_credits: Vec::new(),
             known: KnownSectors::load(world.known_sectors),
         })
     }
@@ -631,6 +638,7 @@ impl GameEngine {
         for (fleet_id, target, owner_id) in arrived {
             let first_visit = !self.explored.contains(&(owner_id, target.to_key()));
             self.record_explored(owner_id, target)?;
+            self.note_chart(fleet_id, owner_id, target);
 
             self.pending_events.push(GameEvent {
                 tick: self.current_tick,
@@ -1856,6 +1864,7 @@ impl GameEngine {
             move_target: None,
             idle_ticks: 0,
             harvest_target: HarvestResource::Auto,
+            charts: Vec::new(),
         };
 
         for i in 0..STARTING_SCOUTS {
@@ -2282,6 +2291,7 @@ impl GameEngine {
             move_target: None,
             idle_ticks: fleet.idle_ticks,
             harvest_target: fleet.harvest_target,
+            charts: fleet.charts.clone(),
         };
         new_fleet.ships[..taken.len()].copy_from_slice(&taken);
         let mut rest = fleet.clone();
@@ -2335,6 +2345,11 @@ impl GameEngine {
         merged.fuel = (a.fuel + b.fuel).min(merged.fuel_max);
         merged.move_cooldown = a.move_cooldown.max(b.move_cooldown);
         merged.action_cooldown = a.action_cooldown.max(b.action_cooldown);
+        for key in &b.charts {
+            if !merged.charts.contains(key) {
+                merged.charts.push(*key);
+            }
+        }
         let location = merged.location;
         let count = merged.ship_count;
 
@@ -2690,6 +2705,48 @@ impl GameEngine {
         }
     }
 
+    /// Remember a sector the fleet has entered that its empire has never had
+    /// credited; it pays when the fleet docks at the homeworld.
+    fn note_chart(&mut self, fleet_id: u64, owner_id: u64, sector: Hex) {
+        let key = sector.to_key();
+        let at_home = self.players.get(&owner_id).is_none_or(|p| p.homeworld == sector);
+        if at_home || self.credited.contains(&(owner_id, key, ExploreCredit::Charted)) { return; }
+        if let Some(fleet) = self.fleets.get_mut(&fleet_id)
+            && !fleet.charts.contains(&key)
+        {
+            fleet.charts.push(key);
+            self.dirty_fleets.insert(fleet_id, ());
+        }
+    }
+
+    /// Pay explore points for the charts a docked fleet carries.
+    fn deliver_charts(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
+        if fleet.charts.is_empty() { return; }
+        let owner = fleet.owner_id;
+        let charts = std::mem::take(&mut fleet.charts);
+        self.dirty_fleets.insert(fleet_id, ());
+
+        let (mut sectors, mut points) = (0u32, 0.0f32);
+        for key in charts {
+            if self.credited.insert((owner, key, ExploreCredit::Charted)) {
+                let sector = Hex::from_key(key);
+                self.new_credits.push((owner, sector, ExploreCredit::Charted));
+                points += score::chart_points(ring_rating(sector));
+                sectors += 1;
+            }
+        }
+        if sectors == 0 { return; }
+        if let Some(p) = self.players.get_mut(&owner) {
+            p.explore_points += points;
+            self.dirty_players.insert(owner, ());
+        }
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::ChartDelivered(iac_shared::protocol::ChartDeliveredEvent { fleet_id, sectors, points }),
+        });
+    }
+
     /// Send a boarding party into the derelict in the fleet's sector.
     pub fn handle_explore_site(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
@@ -2841,8 +2898,17 @@ impl GameEngine {
             self.grant_tech_level(owner_id, tech);
         }
 
-        if relic && let Some(p) = self.players.get_mut(&owner_id) {
-            p.relics += 1;
+        let mut points = 0.0;
+        if self.credited.insert((owner_id, key, ExploreCredit::Boarded)) {
+            self.new_credits.push((owner_id, location, ExploreCredit::Boarded));
+            points += score::board_points(base_value, rating);
+        }
+        if relic {
+            points += scaling::RELIC_POINTS;
+        }
+        if let Some(p) = self.players.get_mut(&owner_id) {
+            p.explore_points += points;
+            p.relics += u32::from(relic);
             self.dirty_players.insert(owner_id, ());
         }
 
@@ -2856,14 +2922,16 @@ impl GameEngine {
                 recovered_ship,
                 tech_cache,
                 relic,
+                points,
             }),
         });
         info!(
-            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{}{})",
+            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{}{}, +{:.2} explore)",
             fleet_id, tier, location, taken.metal, taken.crystal, taken.deuterium,
             recovered_ship.map(|c| format!(", recovered {}", c.label())).unwrap_or_default(),
             tech_cache.map(|t| format!(", data core: {:?}", t)).unwrap_or_default(),
             if relic { ", relic" } else { "" },
+            points,
         );
         Ok(())
     }
@@ -3609,6 +3677,7 @@ impl GameEngine {
         // Deposit cargo and refuel; docked fleets stay separate until the
         // player merges them.
         self.unload_cargo(fleet_id);
+        self.deliver_charts(fleet_id);
 
         let player = self.players.get(&player_id).ok_or("Player not found")?;
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
@@ -3915,6 +3984,7 @@ impl GameEngine {
                 move_target: None,
                 idle_ticks: 0,
                 harvest_target: HarvestResource::Auto,
+                charts: Vec::new(),
             };
             self.fleets.insert(new_id, new_fleet);
             new_id
@@ -4026,6 +4096,7 @@ impl GameEngine {
                 .collect(),
             explored_edges: std::mem::take(&mut self.new_edges),
             known_sectors: self.known.take_dirty(),
+            explore_credits: std::mem::take(&mut self.new_credits),
         };
         self.dirty_players.clear();
         self.dirty_fleets.clear();
@@ -4057,6 +4128,7 @@ struct LoadedWorld {
     sector_overrides: HashMap<u32, SectorOverride>,
     policies: HashMap<u64, FleetPolicy>,
     explored: HashSet<(u64, u32)>,
+    credited: HashSet<(u64, u32, ExploreCredit)>,
     known_sectors: Vec<crate::database::KnownRow>,
 }
 
@@ -4119,9 +4191,14 @@ fn load_world(db: &Database, world_seed: u64) -> Result<LoadedWorld, Box<dyn std
         info!("State loaded: {} players, {} fleets, tick {}", players.len(), fleets.len(), tick);
     }
 
+    let credited = db.load_explore_credits()?
+        .into_iter()
+        .map(|(pid, hex, kind)| (pid, hex.to_key(), kind))
+        .collect();
+
     let known_sectors = db.load_known_sectors()?;
 
-    Ok(LoadedWorld { tick, next_id, players, fleets, sector_overrides, policies, explored, known_sectors })
+    Ok(LoadedWorld { tick, next_id, players, fleets, sector_overrides, policies, explored, credited, known_sectors })
 }
 
 // ── Helper Functions ──────────────────────────────────────────────
@@ -6602,6 +6679,180 @@ mod tests {
         assert!(engine.site_ambush_chance(&fleet, far, 2) > far_odds + 0.19);
         assert_eq!(site_risk_label(near, 0), iac_shared::protocol::SiteRisk::Quiet);
         assert_eq!(site_risk_label(far, 0), iac_shared::protocol::SiteRisk::Hot);
+    }
+
+    /// Fly one hop and wait for the arrival.
+    fn fly(engine: &mut GameEngine, pid: u64, fid: u64, to: Hex) {
+        engine.fleets.get_mut(&fid).unwrap().action_cooldown = 0;
+        engine.fleets.get_mut(&fid).unwrap().fuel = 1e6;
+        engine.handle_move(pid, fid, to).unwrap();
+        for _ in 0..60 {
+            engine.tick().unwrap();
+            if engine.fleets[&fid].location == to { return; }
+        }
+        panic!("never arrived");
+    }
+
+    /// Two hops out and back on lanes the world really has.
+    fn out_and_back(engine: &GameEngine, pid: u64) -> (Hex, Hex) {
+        let home = engine.players[&pid].homeworld;
+        let quiet = |h: Hex| engine.world_gen.generate_sector(h).npc_template.is_none();
+        for &a in engine.world_gen.connected_neighbors(home).slice().iter().filter(|&&h| quiet(h)) {
+            for &b in engine.world_gen.connected_neighbors(a).slice().iter().filter(|&&h| quiet(h)) {
+                if b != home && !engine.players.values().any(|p| p.homeworld == a || p.homeworld == b) {
+                    return (a, b);
+                }
+            }
+        }
+        panic!("no lane");
+    }
+
+    fn explore_of(engine: &GameEngine, pid: u64) -> f32 {
+        engine.players[&pid].explore_points
+    }
+
+    #[test]
+    fn a_chart_pays_only_when_delivered_to_a_dock() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Cartographer");
+        let home = engine.players[&pid].homeworld;
+        let (a, b) = out_and_back(&engine, pid);
+        fly(&mut engine, pid, fid, a);
+        fly(&mut engine, pid, fid, b);
+        assert!(engine.fleets[&fid].charts.len() >= 2 || b == home);
+        assert_eq!(explore_of(&engine, pid), 0.0, "nothing is credited in the field");
+
+        let carried = engine.fleets[&fid].charts.clone();
+        fly(&mut engine, pid, fid, a);
+        fly(&mut engine, pid, fid, home);
+        let want: f32 = carried.iter().map(|&k| score::chart_points(ring_rating(Hex::from_key(k)))).sum();
+        assert!(want > 0.0);
+        assert!((explore_of(&engine, pid) - want).abs() < 1e-5, "{} vs {want}", explore_of(&engine, pid));
+        assert!(engine.fleets[&fid].charts.is_empty());
+        let delivered = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::ChartDelivered(d) => Some(d),
+            _ => None,
+        }).expect("event");
+        assert_eq!(delivered.sectors as usize, carried.len());
+
+        fly(&mut engine, pid, fid, a);
+        fly(&mut engine, pid, fid, home);
+        assert!((explore_of(&engine, pid) - want).abs() < 1e-5, "the same sectors never pay twice");
+    }
+
+    #[test]
+    fn a_fleet_lost_in_the_field_takes_its_chart_with_it() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Suicide");
+        let home = engine.players[&pid].homeworld;
+        let (a, b) = out_and_back(&engine, pid);
+        fly(&mut engine, pid, fid, a);
+        fly(&mut engine, pid, fid, b);
+        engine.remove_fleet(fid);
+
+        let (_, fid2) = register(&mut engine, "Second");
+        let home2 = engine.players[&engine.fleets[&fid2].owner_id].homeworld;
+        assert_ne!(home, home2);
+        assert_eq!(explore_of(&engine, pid), 0.0);
+        assert!(engine.credited.iter().all(|c| c.0 != pid), "nothing was ever credited");
+    }
+
+    #[test]
+    fn a_chart_follows_a_split_and_a_merge_without_paying_twice() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Splitter");
+        let home = engine.players[&pid].homeworld;
+        let (a, _) = out_and_back(&engine, pid);
+        fly(&mut engine, pid, fid, a);
+        let ship = engine.fleets[&fid].ships[1].id;
+        engine.fleets.get_mut(&fid).unwrap().action_cooldown = 0;
+        let child = engine.handle_split(pid, fid, &[ship]).unwrap();
+        assert_eq!(engine.fleets[&child].charts, engine.fleets[&fid].charts);
+        for id in [fid, child] {
+            fly(&mut engine, pid, id, home);
+        }
+        let once = explore_of(&engine, pid);
+        assert!((once - score::chart_points(ring_rating(a))).abs() < 1e-5, "both carried it, one payment");
+    }
+
+    #[test]
+    fn the_first_boarding_pays_points_and_a_respawned_site_pays_only_resources() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Boarder");
+        let site = derelict_beyond(&engine, 5);
+        let tick = (1000..1400).find(|&t| {
+            shape_fleet(&mut engine, fid, true);
+            board(&mut engine, pid, fid, site, t).is_some()
+        }).unwrap();
+        let rating = ring_rating(site);
+        let first = explore_of(&engine, pid);
+        assert!(first >= 0.02 * f32::from(rating).powf(1.5), "{first}");
+
+        let tick = (tick + 1..tick + 400).find(|&t| {
+            shape_fleet(&mut engine, fid, true);
+            board(&mut engine, pid, fid, site, t).is_some()
+        }).unwrap();
+        let _ = tick;
+        let relic_bonus = engine.players[&pid].relics as f32 * scaling::RELIC_POINTS;
+        assert!((explore_of(&engine, pid) - first - relic_bonus).abs() < 1e-4, "no second payment for the same site");
+    }
+
+    #[test]
+    fn a_relic_is_worth_25_points() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Boarder");
+        let site = derelict_beyond(&engine, 30);
+        let mut before = 0.0;
+        let found = (1000..4000).find_map(|t| {
+            shape_fleet(&mut engine, fid, true);
+            before = explore_of(&engine, pid);
+            board(&mut engine, pid, fid, site, t).filter(|(x, _)| x.relic).map(|(x, _)| x)
+        }).expect("a relic turns up in a few thousand boardings at T9");
+        assert!(found.points >= scaling::RELIC_POINTS);
+        assert!((explore_of(&engine, pid) - before - found.points).abs() < 1e-4);
+    }
+
+    #[test]
+    fn exploration_shows_on_the_leaderboard_inside_the_cap() {
+        let mut engine = test_engine();
+        let (a, _) = register(&mut engine, "Explorer");
+        let (b, _) = register(&mut engine, "Builder");
+        engine.players.get_mut(&a).unwrap().explore_points = 0.5;
+        let (rows, _) = score::leaderboard(&engine, 10, a);
+        let mine = rows.iter().find(|r| r.name == "Explorer").unwrap();
+        assert_eq!(mine.explore, 0.5);
+        let other = rows.iter().find(|r| r.name == "Builder").unwrap();
+        assert!(mine.score > other.score);
+
+        engine.players.get_mut(&a).unwrap().explore_points = 1.0e6;
+        let (rows, _) = score::leaderboard(&engine, 10, a);
+        let mine = rows.iter().find(|r| r.name == "Explorer").unwrap();
+        assert!((mine.score - 1.25 * mine.core).abs() < 1e-3, "exploration adds at most a quarter of core");
+        let _ = b;
+    }
+
+    #[test]
+    fn credits_charts_and_relics_survive_a_restart() {
+        let path = temp_world("explore_restart");
+        let (pid, fid, a, credited) = {
+            let mut engine = engine_at(&path, None).unwrap();
+            let (pid, fid) = register(&mut engine, "Keeper");
+            let (a, _) = out_and_back(&engine, pid);
+            fly(&mut engine, pid, fid, a);
+            engine.players.get_mut(&pid).unwrap().relics = 2;
+            engine.dirty_players.insert(pid, ());
+            let site = derelict_beyond(&engine, 5);
+            let credit = engine.credited.insert((pid, site.to_key(), ExploreCredit::Boarded));
+            engine.new_credits.push((pid, site, ExploreCredit::Boarded));
+            assert!(credit);
+            engine.persist_dirty_state().unwrap();
+            engine.flush_persistence().unwrap();
+            (pid, fid, a, (pid, site.to_key(), ExploreCredit::Boarded))
+        };
+        let engine = engine_at(&path, None).unwrap();
+        assert_eq!(engine.players[&pid].relics, 2);
+        assert!(engine.fleets[&fid].charts.contains(&a.to_key()));
+        assert!(engine.credited.contains(&credited));
     }
 
     fn give_defences(engine: &mut GameEngine, pid: u64, turrets: u32, lancers: u32) {

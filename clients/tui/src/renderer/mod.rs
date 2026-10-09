@@ -436,7 +436,13 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             if e.relic {
                 line.push_str("   + ANCIENT RELIC\n");
             }
+            if e.points > 0.0 {
+                line.push_str(&format!("   + {:.2} explore points\n", e.points));
+            }
             line
+        }
+        EventKind::ChartDelivered(e) => {
+            format!(" T{}: Chart delivered: {} sectors, +{:.2} explore points\n", event.tick, e.sectors, e.points)
         }
         EventKind::SiteAmbush(e) => {
             format!(
@@ -498,7 +504,7 @@ pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
         | EventKind::ShipBuilt(_) => GREEN_GOOD,
         EventKind::ScanCompleted(_) => CYAN_INTEL,
         EventKind::SiteExplorationStarted(_) => CYAN_INTEL,
-        EventKind::SiteExplored(_) => GREEN_GOOD,
+        EventKind::SiteExplored(_) | EventKind::ChartDelivered(_) => GREEN_GOOD,
         EventKind::SiteAmbush(_) => RED_ALERT,
         EventKind::PolicyAction(_) => AMBER,
         EventKind::SectorEntered(_) | EventKind::FleetArrived(_) => AMBER_BRIGHT,

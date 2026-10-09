@@ -910,6 +910,7 @@ fn event_for(event: &GameEvent, player: &crate::engine::Player, engine: &GameEng
         K::RaidResolved(e) => e.player_id == player.id,
         K::SiteExplorationStarted(e) => own_fleet(e.fleet_id),
         K::SiteExplored(e) => own_fleet(e.fleet_id),
+        K::ChartDelivered(e) => own_fleet(e.fleet_id),
         K::SiteAmbush(e) => own_fleet(e.fleet_id),
         K::PolicyAction(e) => own_fleet(e.fleet_id),
         K::StorageNearCap(e) => e.player_id.is_none_or(|p| p == player.id),

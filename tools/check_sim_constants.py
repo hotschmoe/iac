@@ -219,6 +219,11 @@ def check_loot(sim, rust):
         check(f"recovery chance T{t}", row["recovery"], min(0.30, max(0.0, 0.05 * (t - 2))), 1e-5)
         check(f"data core chance T{t}", row["data_core"], min(0.15, max(0.0, 0.03 * (t - 5))), 1e-5)
         check(f"relic chance T{t}", row["relic"], min(0.06, max(0.0, 0.02 * (t - 6))), 1e-5)
+    # sim.py prices exploration as 0.15 * derelict_value / 1000 + 0.02 * T^1.5 (see explore_raw)
+    check("board value share", source_const("server/src/score.rs", "BOARD_VALUE_SHARE"), 0.15, 1e-6)
+    check("board threat points", source_const("server/src/score.rs", "BOARD_THREAT_POINTS"), 0.02, 1e-6)
+    check("chart threat points", source_const("server/src/score.rs", "CHART_THREAT_POINTS"), 0.01, 1e-6)
+    check("relic points", source_const("shared/src/scaling.rs", "RELIC_POINTS"), 25.0, 1e-6)
     check("derelict respawn ticks", source_const("shared/src/constants.rs", "DERELICT_RESPAWN_TICKS"), sim.DERELICT_RESPAWN_H * 3600.0)
     check("derelict respawn pace exponent", rust["misc"]["finds_exponent"], sim.DERELICT_PACE_EXP, 1e-6)
 

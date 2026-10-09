@@ -1081,6 +1081,7 @@ pub enum EventKind {
     SalvageDespawned(SalvageDespawnedEvent),
     StorageNearCap(StorageNearCapEvent),
     StorageFull(StorageFullEvent),
+    ChartDelivered(ChartDeliveredEvent),
 }
 
 /// A stockpile passed 85 percent of its cap.
@@ -1125,9 +1126,26 @@ pub struct SiteExploredEvent {
     /// Instant tech level granted by a recovered data core.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tech_cache: Option<ResearchType>,
-    /// An ancient relic came aboard (a unique item; no other use yet).
+    /// An ancient relic came aboard (worth 25 explore points; no other use yet).
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub relic: bool,
+    /// Explore points this boarding earned (0 when the site was boarded before).
+    #[serde(skip_serializing_if = "is_zero", default)]
+    pub points: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+/// A fleet docked at the homeworld and handed over the sectors it charted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChartDeliveredEvent {
+    pub fleet_id: u64,
+    /// Sectors newly credited to the empire.
+    pub sectors: u32,
+    /// Explore points they earned.
+    pub points: f32,
 }
 
 /// Whatever killed the crew is still aboard.

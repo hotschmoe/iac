@@ -21,6 +21,12 @@ pub const KILL_SHARE: f32 = 0.25;
 /// A kill pays nothing when the engaged power is at least this many times
 /// the NPC group's: trivial targets are not a score farm.
 pub const OVERWHELMING_RATIO: f32 = 8.0;
+/// A first boarding pays this share of the site's loot value (per 1000
+/// units) plus `BOARD_THREAT_POINTS * T^1.5`.
+pub const BOARD_VALUE_SHARE: f32 = 0.15;
+pub const BOARD_THREAT_POINTS: f32 = 0.02;
+/// A sector's chart, once delivered to a dock, pays `CHART_THREAT_POINTS * T^1.5`.
+pub const CHART_THREAT_POINTS: f32 = 0.01;
 /// Defence structures count at half value, so farming defenceless-looking
 /// players with a wall of cheap turrets does not pay.
 pub const DEFENCE_SHARE: f32 = 0.5;
@@ -75,6 +81,17 @@ pub fn kill_points(bounty: Resources, engaged_power: f32, npc_power: f32) -> f32
     KILL_SHARE * scaling::resource_weight(&bounty)
 }
 
+/// Points for the first boarding of a derelict worth `value` units (before
+/// the pace's finds factor, so a fast world pays the same) at threat `rating`.
+pub fn board_points(value: f32, rating: u8) -> f32 {
+    BOARD_VALUE_SHARE * value / 1000.0 + BOARD_THREAT_POINTS * f32::from(rating).powf(1.5)
+}
+
+/// Points for delivering the chart of one new sector at threat `rating`.
+pub fn chart_points(rating: u8) -> f32 {
+    CHART_THREAT_POINTS * f32::from(rating).powf(1.5)
+}
+
 /// The table, best first. `viewer`'s own row is returned separately when it
 /// does not make the first `limit`.
 pub fn leaderboard(engine: &GameEngine, limit: usize, viewer: u64) -> (Vec<LeaderboardEntry>, Option<LeaderboardEntry>) {
@@ -116,6 +133,14 @@ mod tests {
         assert_eq!(s.total(), 135.0, "under the cap everything counts");
         s.combat = 80.0;
         assert_eq!(s.total(), 150.0, "over the cap only 25 percent of core is added");
+    }
+
+    #[test]
+    fn exploration_points_follow_the_spec_formulas() {
+        assert!((board_points(240.0, 1) - (0.15 * 0.24 + 0.02)).abs() < 1e-6);
+        assert!((board_points(13940.0, 9) - (0.15 * 13.94 + 0.02 * 27.0)).abs() < 1e-5);
+        assert!((chart_points(4) - 0.08).abs() < 1e-6);
+        assert!(chart_points(9) > chart_points(2));
     }
 
     #[test]
