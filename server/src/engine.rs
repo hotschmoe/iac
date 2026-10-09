@@ -1147,7 +1147,10 @@ impl GameEngine {
         // Patrol movement
         let mut rng = StdRng::seed_from_u64(self.current_tick.wrapping_mul(0x9E3779B97F4A7C15));
 
-        let npc_ids: Vec<u64> = self.npc_fleets.keys().copied().collect();
+        // Sorted so the per-tick rng draws land on the same patrols on every run:
+        // HashMap order is randomised per process.
+        let mut npc_ids: Vec<u64> = self.npc_fleets.keys().copied().collect();
+        npc_ids.sort_unstable();
         for npc_id in npc_ids {
             let Some(npc) = self.npc_fleets.get(&npc_id) else { continue; };
             if npc.in_combat { continue; }
@@ -1842,7 +1845,7 @@ impl GameEngine {
         }
 
         let player_id = self.next_id();
-        let homeworld = self.find_homeworld_location().ok_or(ErrorCode::ServerError)?;
+        let homeworld = self.find_homeworld_location(player_id).ok_or(ErrorCode::ServerError)?;
 
         let player = Player {
             id: player_id,
@@ -3764,9 +3767,11 @@ impl GameEngine {
         }).count()
     }
 
-    fn find_homeworld_location(&self) -> Option<Hex> {
+    /// Seeded from the world and the new player's id, so a world replays the
+    /// same placements (tests, catch-up) while each world and player differ.
+    fn find_homeworld_location(&self, player_id: u64) -> Option<Hex> {
         let mut rng = StdRng::seed_from_u64(
-            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+            self.world_gen.world_seed ^ player_id.wrapping_mul(0x9E3779B97F4A7C15)
         );
 
         let min = HOMEWORLD_MIN_DIST as i32;
