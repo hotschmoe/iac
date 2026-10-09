@@ -444,3 +444,116 @@ error.
 
 **Touched outside this scope (merge note):** `is_event_relevant` Alert arm
 (now scoped by `fleet_id` when present), since the new alerts carry a fleet id.
+
+## Economy core: pace, formulas, storage, queues, fuel, defences, score (2026-10-09)
+
+Implements steps 1 to 5, 9 and 10 of `docs/design/economy/spec.md` section 14
+plus the docs and harness part of step 11, one commit per step. Threat and the
+NPC gradient, ore and loot (steps 6 to 8) and the migration tool are left out
+on purpose; see "Hooks" below.
+
+**Pace** (`shared/src/pace.rs`). `Pace` with the four helper classes (economy
+x1, attention x0.75, finds x0.5, real time), the presets of decisions.md
+(persistent 1, fortnight 5, season 10, sprint 70, dev 100, blitz 600, test
+8000) and their simulation estimates. The world's pace lives in the new
+`world_meta` table beside `economy_version` 2 and `worldgen_version` 1. The
+server takes `--pace <number|preset>` (or `--world <preset>`), keeps the stored
+pace, refuses a different one, and refuses a database without `world_meta`
+(an old world) with "start a new world". Every duration constant in
+`constants.rs` must appear in `pace::TIMER_CLASSES`; a test scans the file and
+fails when one is missing.
+
+**Formulas** (`shared/src/scaling.rs`). Costs are `base x growth^(L-1)`
+rounded to whole units with ties to even (`22.5` is `22`, as the spec's tables
+print it); times are `(metal + crystal) / rate` hours per pace, with the
+Fabricator, Research Lab and Shipyard as divisors; production is per game hour
+times `L x 1.1^L` times P. Golden tests copy the spec's tables.
+`tools/check_sim_constants.py` runs `cargo run -p iac-shared --example
+economy_constants` and compares costs, times, production, prerequisites,
+storage caps, defences, raid power, grid units and presets with `sim.py`. Run
+it after touching any of them. The spec's vault table truncates costs
+(`2839`) where the rest of its tables round (`2840` is right for L6); the code
+rounds everywhere.
+
+**Decisions that differ from the spec text.**
+- Corvette Tech needs Shipyard 1 (decisions.md item 2); `sim.py` was changed
+  to match.
+- An order that would start at once must be affordable now, otherwise it is
+  refused with `NoResources` naming the shortfall. An order behind a running
+  item queues and waits, unpaid, with `waiting_for` showing what is missing.
+  The spec is ambiguous about a free slot with an unaffordable order; always
+  queueing would let a player queue and leave, which suits the slow worlds
+  better. Open question for the owner.
+- `QueueFull` now means "three items already"; there is no `QueueDepthReached`
+  or `NoBuildSlot` code (a busy slot just queues).
+- Storage `capped` and `full_in_s` sit inside `homeworld.storage`; `production`
+  stays the mine output. The catalog has no `storage`/`slots` entries because
+  the Storage Vault and Modular Fabrication already appear in it.
+- `FleetState` keeps the existing `home_fuel` as the spec's `fuel_to_return`.
+  `range_hops = floor((fuel - home_fuel) / (2 x jump_fuel))`.
+- `cancel_queued` takes `queue_type` like `cancel_build` (the spec says
+  `queue`); `cancel_build` gained `index`.
+- Shipyard queue items carry `item` (a ship class or a defence name, untagged)
+  instead of `ship_class`. `DefenceBuilt.defence` avoids clashing with the
+  event tag `kind`.
+- Aegis Dome, the season history table and exploration points are not built.
+  Exploration points and chart-delivery points need the threat rating; the
+  `explore` column exists, is persisted, and stays 0 until the derelict work
+  adds to `Player::explore_points`.
+- Emergency Jump follows the other leveled techs (x1.6 per level).
+- A new hull adds only its own tank to a fleet at home; docking refuels at
+  0.08 deuterium per unit and the rest follows as deuterium arrives.
+
+**Score** (`server/src/score.rs`). econ + fleet + defence (half) as core,
+combat and exploration capped at 25 percent of core. Kills credit every
+participant, pay nothing when the force was 8x the NPC group's power, and
+nothing twice in a sector until it respawns. The `agent` flag is declared at
+login (`AuthRequest.agent`; the headless client sets it), stored once, shown on
+the leaderboard, never used for scoring.
+
+**Clients.** TUI: status bar shows caps, slots, queues, defences; `c/C/Z`
+cancel waiting items, `l` shows the leaderboard overlay, defences are on the
+Shipyard tab. Flutter: protocol and mapper migrated, the homeworld view shows
+caps, queues with waiting items and slots, defences, the leaderboard; the demo
+provider plays a blitz-pace world. The auth test fake now serves the golden
+`full_state` so it cannot drift.
+
+**Live check** (port 7812, `IAC_PACE=test`, two scripted players following the
+simulation's ladder, buildings only, no piloting). Seconds since server start;
+the spec's prediction is the blitz row divided by 13.3 (8000/600):
+
+| milestone | spec (test) | measured |
+|---|---|---|
+| Lab 2 | 14 s | 24 s |
+| Shipyard 4 | 86 s | 53 s |
+| Corvette Tech / first Corvette | 41 s | 49 s / 73 s |
+| building slot 2 (Modular Fabrication 1) | 122 s | 137 s |
+| building slot 3 | n/a | 223 to 228 s |
+| Cruiser Tech, first Cruiser | 240 s | 299 to 306 s, 300 to 307 s |
+| 12 Cruisers | n/a | 412 to 428 s |
+| endgame kit (buildings, research) | 720 s | not complete at 840 s (Metal 19, Crystal 16, Deuterium 13, Yard 11, Fab 8 at about 790 s; Lab 10 of 11) |
+
+The bot has no piloting income and starves crystal (stock of metal piles up
+unused), so a Cruiser 25 percent late and an endgame about 15 percent late
+fits the simulation's own spread (buildings-only is 13 percent behind a
+competent player). Raids arrived from 100 s, as the attention timers predict
+(`RaidIncoming` 30 s before arrival), and were mostly repelled with turrets,
+lancers and bastions; one Alpha raid (3711 against 3273, after the stockpile edit
+below) was lost for 8 percent of its metal, the hard cap. A persistent world (x1) showed Metal Mine 2 in 9 minutes
+(`576` ticks, the spec's pace-1 figure), and the 8000 world capped Bravo's
+metal at 4229485 with `StorageFull`. A cap cannot be reached naturally in a
+ten-minute run (caps grow as P^0.75, production as P); that part was driven by
+editing the stockpile in the stopped world's database.
+
+**Hooks for the threat, ore and loot work.**
+- `protocol::MovePreview` reserves threat, ratio and label (see its doc);
+  `GameEngine::preview_move` is where to fill them.
+- `NpcFleet.bounty` and `.power` are set in `spawn_npc_fleet` from the ships
+  actually spawned; the score reads them, so a new composition needs no score
+  change.
+- `Player::explore_points` (persisted, shown as `explore`) is the place for
+  first-boarding and charting points; `score::EXTRA_CAP` already applies.
+- `scaling::resource_weight` prices loot for score; the finds multiplier is
+  `Pace::finds_mult` (applied today to NPC salvage and derelict loot).
+- `world_meta.worldgen_version` is 1; bump `WORLDGEN_VERSION` when generation
+  changes.
