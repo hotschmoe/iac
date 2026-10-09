@@ -518,7 +518,8 @@ def describe(sec, loc, sectors, now, indent="", power=None):
             left = f", despawns in {t}s" if t > 0 else ", despawn time passed (probably gone)"
         print(f"{indent}salvage: {res(sec['salvage'])}{left}")
     if sec.get("site"):
-        print(f"{indent}derelict site tier {sec['site']['tier']} risk {sec['site']['risk']}")
+        stale = " (remembered, may be gone)" if sec.get("pins_stale") else ""
+        print(f"{indent}derelict site tier {sec['site']['tier']} risk {sec['site']['risk']}{stale}")
 
 
 
@@ -553,6 +554,10 @@ def queues_of(fs):
 
     def wait_item(i, item, to, each, w, q=None):
         d = {"index": i, "item": item, "ticks": each}
+        if q and q.get("id") is not None:
+            d["id"] = q["id"]
+        if q and q.get("reserve"):
+            d["reserve"] = True
         if q and q.get("waiting_on"):
             d["waiting_on"] = q["waiting_on"]
         if q and q.get("start_in") is not None:
@@ -578,6 +583,8 @@ def queues_of(fs):
     for i, q in enumerate(hw.get("shipyard_pending") or []):
         d = wait_item(i, q["item"], None, q["ticks"], q.get("waiting_for"), q)
         d["count"] = q["count"]
+        if q.get("built"):
+            d["built"] = q["built"]
         wait_s.append(d)
     return {"build": mk(hw.get("build_slots", 1), run_b, wait_b), "research": mk(1, run_r, wait_r), "ship": mk(1, run_s, wait_s)}
 
@@ -748,7 +755,8 @@ def queue_line(label, q):
         if w.get("short"):
             need = " needs " + ", ".join(f"{v} {k}" for k, v in w["short"].items())
             need += f" (~{age(w['covered_in_s'])} of production)" if "covered_in_s" in w else " (no income of it)"
-        parts.append(f"waiting[{w['index']}] {what}{w['item']}{to}{need}")
+        tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
+        parts.append(f"waiting{tag} {what}{w['item']}{to}{need}")
     if q["room"] and not q["open"]:
         parts.append(f"{q['room']} more fit")
     return " | ".join(parts)
@@ -788,7 +796,7 @@ def wait_reasons(base, cur, events, until="any"):
             why.append(f"{n} queue idle")
         else:
             new = c["aff"] - b["aff"]
-            if c["open"] > 0 and new:
+            if c["open"] > 0 and new and not b["aff"]:
                 why.append(f"{n} queue idle and now payable: {', '.join(sorted(new))}")
     if until not in ("idle", "done"):
         for fid, f in cur["fleets"].items():
@@ -898,7 +906,10 @@ def summarize(fs, doc):
                 need = " (starts when a slot frees up; paid then)"
             why = f" [waits on {str(w['waiting_on']).lower()}" + (f", starts in ~{age(w['start_in_s'])}]" if "start_in_s" in w else "]") \
                 if w.get("waiting_on") else ""
-            print(f"    waiting [{w['index']}]: {what}{w['item']}{to} ({age(w['ticks'])}{' each' if what else ''}){need}{why}")
+            tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
+            done = f" ({w['built']}/{w['count']} built)" if w.get("built") else ""
+            hold = " RESERVE (holds the line)" if w.get("reserve") else ""
+            print(f"    waiting {tag}: {what}{w['item']}{to}{done} ({age(w['ticks'])}{' each' if what else ''}){need}{why}{hold}")
     stand = [f"{d['count']}x {d['kind']}" + (f" (+{d['restoring']} being rebuilt)" if d.get("restoring") else "")
              for d in hw.get("defences") or [] if d["count"] or d.get("restoring")]
     print(f"Defence power {hw.get('home_defence_power', 0):.0f} against an expected raid of about "
@@ -1207,6 +1218,8 @@ def mentions(c, msg):
     fid = c.get("fleet_id")
     if fid is not None and re.search(rf"\bfleet {fid}\b", msg):
         return True
+    if c.get("id") is not None:   # cancels name their order by id; queue_type is not an item name
+        return re.search(rf"\border {c['id']}\b", msg) is not None
     flat = re.sub(r"[\s_]", "", msg).lower()   # the server writes "Corvette Tech" for CorvetteTech
     return any(re.sub(r"[\s_]", "", v).lower() in flat for k, v in c.items() if isinstance(v, str) and k not in ("action", "type"))
 
@@ -1248,10 +1261,11 @@ def queue_outcome(cmd, queue_events, used):
     """The server's own Queue event for an order: the authoritative 'started' or 'waiting'."""
     if cmd.get("action") in ("cancel_queued", "cancel_build"):
         for i, q in enumerate(queue_events):
-            if i not in used and str(q.get("action", "")).lower() == "cancelled":
+            if i not in used and str(q.get("action", "")).lower() == "cancelled" \
+                    and (cmd.get("id") is None or q.get("id") == cmd.get("id")):
                 used.add(i)
                 back = {k: v for k, v in (q.get("refunded") or {}).items() if v}
-                return f"cancelled {q['item']}" + (f", refunded {res(back)}" if back else ", nothing was paid yet")
+                return f"cancelled {q['item']} #{q.get('id', '?')}" + (f", refunded {res(back)}" if back else ", nothing was paid yet")
         return None
     name = cmd.get("building_type") or cmd.get("tech") or cmd.get("ship_class") or cmd.get("kind")
     if not name:
@@ -1263,10 +1277,10 @@ def queue_outcome(cmd, queue_events, used):
         act = str(q.get("action", "")).lower()
         if act == "started":
             paid = {k: v for k, v in (q.get("paid") or {}).items() if v}
-            return f"{q['item']} started" + (f", paid {res(paid)}" if paid else "")
+            return f"{q['item']} #{q.get('id', '?')} started" + (f", paid {res(paid)}" if paid else "")
         if act == "waiting":
             eta = f", starts in ~{age(q['start_in'])}" if q.get("start_in") is not None else ""
-            return f"{q['item']} queued, waits on {str(q.get('waiting_on', '?')).lower()}{eta}"
+            return f"{q['item']} #{q.get('id', '?')} queued, waits on {str(q.get('waiting_on', '?')).lower()}{eta}"
         return f"{q['item']} {act}"
     return None
 
@@ -1285,8 +1299,9 @@ def outcome(cmd, qs):
     for w in reversed(q["waiting"]):
         if w["item"] == key[1]:
             if w.get("short"):
-                return f"queued [{w['index']}] waiting for " + ", ".join(f"{v} {k}" for k, v in w["short"].items())
-            return f"queued [{w['index']}]"
+                tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
+                return f"queued {tag} waiting for " + ", ".join(f"{v} {k}" for k, v in w["short"].items())
+            return f"queued #{w['id']}" if "id" in w else f"queued [{w['index']}]"
     return "accepted (already finished or not visible yet)"
 
 
