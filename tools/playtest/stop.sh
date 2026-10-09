@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stop a playtest started by start.sh: watchdog first (so nothing is restarted), then
 # supervisors and their agents, player clients, and the server. Feedback, notes and
-# events.log stay in the run dir; the world database is removed unless --keep-world.
+# events.log stay in the run dir; the world database and login tokens are removed unless --keep-world.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUN="$(cd "${IAC_RUN:-$HERE/run}" && pwd)"
@@ -16,7 +16,7 @@ for f in "$RUN"/state/*.pid; do
   [ -f "$f" ] && kill_tree "$(cat "$f")"
 done
 sleep 1
-rm -rf "$RUN"/fifo "$RUN"/cfg "$RUN"/state "$RUN"/session.json "$RUN"/bin
-[ "$keep" = 1 ] || rm -f "$RUN"/world.db*
+rm -rf "$RUN"/fifo "$RUN"/state "$RUN"/session.json "$RUN"/bin
+[ "$keep" = 1 ] || rm -rf "$RUN"/world.db* "$RUN"/cfg
 hlog harness "stopped"
 echo "stopped; feedback: $(ls "$RUN"/players/*/feedback.md 2>/dev/null | wc -l) files in $RUN/players"
