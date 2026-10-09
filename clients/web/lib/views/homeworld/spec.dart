@@ -1,0 +1,165 @@
+import '../../console/intel.dart';
+import '../../console/threat.dart';
+import '../../models/homeworld.dart';
+import '../../protocol/protocol.dart' as proto;
+import '../../state/game_controller.dart';
+
+/// What the inspector shows for the selected card, and whether queueing it
+/// is possible. Built from the server catalog; the reason string is the
+/// single source for tooltip, caption and keyboard toast.
+class ItemSpec {
+  final String kind;
+  final String title;
+  final String subtitle;
+  final proto.Resources? cost;
+  final int ticks;
+  final List<proto.Requirement> requires;
+  final String? reason;
+  final String actionLabel;
+  final String note;
+  final proto.ShipClass? ship;
+  const ItemSpec({
+    required this.kind,
+    required this.title,
+    required this.subtitle,
+    this.cost,
+    this.ticks = 0,
+    this.requires = const [],
+    this.reason,
+    required this.actionLabel,
+    this.note = '',
+    this.ship,
+  });
+
+  bool get canQueue => reason == null;
+}
+
+String shortfall(proto.Resources cost, proto.Resources stock) {
+  final parts = <String>[];
+  void add(double need, double have, String n) {
+    if (need > have) parts.add('${(need - have).ceil()} more $n');
+  }
+
+  add(cost.metal, stock.metal, 'Fe');
+  add(cost.crystal, stock.crystal, 'Cr');
+  add(cost.deuterium, stock.deuterium, 'De');
+  return parts.join(', ');
+}
+
+String? whyNot({
+  required List<proto.Requirement> requires,
+  required bool maxed,
+  required bool busy,
+  required String busyLeft,
+  required String busyName,
+  required proto.Resources? cost,
+  required proto.Resources stock,
+}) {
+  final unmet = [for (final r in requires) if (!r.met) r.label];
+  if (unmet.isNotEmpty) return 'Locked: needs ${unmet.join(', ')}';
+  if (maxed) return 'Already at maximum level';
+  if (busy) return '$busyName busy ($busyLeft left)';
+  if (cost != null) {
+    final s = shortfall(cost, stock);
+    if (s.isNotEmpty) return 'Cannot afford: needs $s';
+  }
+  return null;
+}
+
+const buildingNotes = {
+  proto.BuildingType.metalMine: 'Primary metal income.',
+  proto.BuildingType.crystalMine: 'Crystal income for research and hulls.',
+  proto.BuildingType.deuteriumSynthesizer: 'Deuterium is fleet fuel and a build cost.',
+  proto.BuildingType.shipyard: 'Higher levels build ships faster and unlock classes.',
+  proto.BuildingType.researchLab: 'Higher levels speed research and unlock techs.',
+  proto.BuildingType.fuelDepot: 'Fuel handling at the homeworld.',
+  proto.BuildingType.sensorArray: 'Longer sensor reach around home.',
+  proto.BuildingType.defenseGrid: 'Raises homeworld defence power.',
+};
+
+String _busyLeft(QueueItem q) => q.time;
+
+ItemSpec? specFor(GameController c, {int? index}) {
+  final cat = c.state.catalog;
+  final i = index ?? c.hwCursor;
+  if (cat == null) return null;
+  final stock = c.state.stock;
+  switch (c.hwTab) {
+    case HomeworldTab.buildings:
+      if (i < 0 || i >= cat.buildings.length) return null;
+      final o = cat.buildings[i];
+      final busy = c.state.buildQueue.isNotEmpty;
+      return ItemSpec(
+        kind: 'Building',
+        title: o.buildingType.label,
+        subtitle: o.next == null ? 'L${o.level}  MAX' : 'L${o.level} > L${o.next!.level}',
+        cost: o.next?.cost,
+        ticks: o.next?.ticks ?? 0,
+        requires: o.requires,
+        reason: whyNot(
+            requires: o.requires,
+            maxed: o.next == null,
+            busy: busy,
+            busyLeft: busy ? _busyLeft(c.state.buildQueue.first) : '',
+            busyName: 'Build queue',
+            cost: o.next?.cost,
+            stock: stock),
+        actionLabel: o.next == null ? 'Maxed' : 'Queue to L${o.next!.level}',
+        note: buildingNotes[o.buildingType] ?? '',
+      );
+    case HomeworldTab.research:
+      if (i < 0 || i >= cat.research.length) return null;
+      final o = cat.research[i];
+      final busy = c.state.research.name != 'Idle';
+      return ItemSpec(
+        kind: 'Research',
+        title: o.tech.label,
+        subtitle: o.next == null ? 'L${o.level}  MAX' : 'L${o.level} > L${o.next!.level}',
+        cost: o.next?.cost,
+        ticks: o.next?.ticks ?? 0,
+        requires: o.requires,
+        reason: whyNot(
+            requires: o.requires,
+            maxed: o.next == null,
+            busy: busy,
+            busyLeft: busy ? c.state.research.time : '',
+            busyName: 'Lab',
+            cost: o.next?.cost,
+            stock: stock),
+        actionLabel: o.next == null ? 'Maxed' : 'Research L${o.next!.level}',
+      );
+    case HomeworldTab.shipyard:
+      if (i < 0 || i >= cat.ships.length) return null;
+      final o = cat.ships[i];
+      final n = c.shipBatch;
+      final total = proto.Resources(
+          metal: o.unitCost.metal * n, crystal: o.unitCost.crystal * n, deuterium: o.unitCost.deuterium * n);
+      final busy = c.state.shipyard.isNotEmpty;
+      return ItemSpec(
+        kind: 'Ship',
+        title: o.shipClass.label,
+        subtitle: 'BATCH x$n',
+        cost: total,
+        ticks: o.ticksPerShip * n,
+        requires: o.requires,
+        reason: whyNot(
+            requires: o.requires,
+            maxed: false,
+            busy: busy,
+            busyLeft: busy ? c.state.shipyard.first.time : '',
+            busyName: 'Shipyard',
+            cost: total,
+            stock: stock),
+        actionLabel: 'Build x$n',
+        note: 'Ships join the dock fleet when built.',
+        ship: o.shipClass,
+      );
+    case HomeworldTab.defence:
+    case HomeworldTab.storage:
+      return null;
+  }
+}
+
+String fmtTicks(int t) => clockFmt(t);
+
+double powerOf(proto.ShipClass c) => shipStats[c]!.power;
