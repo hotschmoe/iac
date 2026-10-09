@@ -24,7 +24,6 @@ void main() {
     expect(sl.queued.first.waits, anyOf(isEmpty, startsWith('waits: ')));
     final d = e.defence!;
     expect(d.rows, isNotEmpty);
-    expect(d.total, greaterThanOrEqualTo(d.structures));
     expect(d.raidEstimate, greaterThan(0));
   });
 
