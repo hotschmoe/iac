@@ -1,0 +1,62 @@
+[
+  {
+    "label": "deadly",
+    "ratio": 0.0
+  },
+  {
+    "label": "deadly",
+    "ratio": 0.5
+  },
+  {
+    "label": "deadly",
+    "ratio": 0.8899999856948853
+  },
+  {
+    "label": "risky",
+    "ratio": 0.9100000262260437
+  },
+  {
+    "label": "risky",
+    "ratio": 1.0
+  },
+  {
+    "label": "risky",
+    "ratio": 1.090000033378601
+  },
+  {
+    "label": "even",
+    "ratio": 1.1100000143051147
+  },
+  {
+    "label": "even",
+    "ratio": 1.2999999523162842
+  },
+  {
+    "label": "even",
+    "ratio": 1.4900000095367432
+  },
+  {
+    "label": "favourable",
+    "ratio": 1.5
+  },
+  {
+    "label": "favourable",
+    "ratio": 2.0
+  },
+  {
+    "label": "favourable",
+    "ratio": 2.490000009536743
+  },
+  {
+    "label": "safe",
+    "ratio": 2.5
+  },
+  {
+    "label": "safe",
+    "ratio": 4.0
+  },
+  {
+    "label": "safe",
+    "ratio": 40.0
+  }
+]

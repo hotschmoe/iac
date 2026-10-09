@@ -351,13 +351,15 @@ enum ThreatBasis {
   static ThreatBasis fromJson(Object? v) => _enumFrom(values, v, _snake);
 }
 
-/// Verdict on a fleet-power to threat-power ratio: safe from 3.0, favourable
-/// from 2.0, risky from 1.2, deadly below.
+/// Verdict on a fleet-power to threat-power ratio: safe from 2.5, favourable
+/// from 1.5, even from 1.1, risky from 0.9, deadly below. Ordered from worst
+/// to best, so `label.index` compares verdicts.
 enum RatioLabel {
-  safe('SAFE'),
-  favourable('FAVOURABLE'),
+  deadly('DEADLY'),
   risky('RISKY'),
-  deadly('DEADLY');
+  even('EVEN'),
+  favourable('FAVOURABLE'),
+  safe('SAFE');
 
   final String label;
   const RatioLabel(this.label);
@@ -365,6 +367,17 @@ enum RatioLabel {
   String get wire => _snake(name);
   String toJson() => wire;
   static RatioLabel fromJson(Object? v) => _enumFrom(values, v, _snake);
+
+  /// The verdict for a ratio, where the server's `scaling::ratio_label` has
+  /// none to give (the sector the fleet is in, a far hop of a route).
+  /// fixtures/protocol/ratio_labels.json keeps the two in step.
+  static RatioLabel forRatio(double r) {
+    if (r >= 2.5) return safe;
+    if (r >= 1.5) return favourable;
+    if (r >= 1.1) return even;
+    if (r >= 0.9) return risky;
+    return deadly;
+  }
 }
 
 // ── Shared structs ────────────────────────────────────────────────
@@ -974,15 +987,23 @@ class LeaderboardEntry {
       };
 }
 
-/// Answer to [PreviewMoveCommand]: the fuel side of a jump. Threat for the
-/// destination comes with the threat rating work and is not sent yet.
+/// Answer to [PreviewMoveCommand]: what a jump costs and what waits at the far
+/// end, rated for the fleet asked about.
 class MovePreview extends ServerMessage {
   final int fleetId;
   final Hex target;
   final double fuelCost;
   final double fuelAfter;
   final bool canJump;
+
+  /// Hops home by the shortest real route, charted or not.
   final int hopsHome;
+
+  /// Hops home over sectors the player has entered; null when none exists.
+  final int? chartedHopsHome;
+
+  /// The [hopsHome] route crosses sectors the player has never entered.
+  final bool routeUnexplored;
   final double fuelToReturn;
   final bool canReturn;
   final ThreatInfo threat;
@@ -996,6 +1017,8 @@ class MovePreview extends ServerMessage {
     required this.fuelAfter,
     required this.canJump,
     required this.hopsHome,
+    this.chartedHopsHome,
+    this.routeUnexplored = false,
     required this.fuelToReturn,
     required this.canReturn,
     required this.threat,
@@ -1011,6 +1034,8 @@ class MovePreview extends ServerMessage {
         fuelAfter: _f(m['fuel_after']),
         canJump: m['can_jump'] as bool,
         hopsHome: _i(m['hops_home']),
+        chartedHopsHome: _opt(m['charted_hops_home'], _i),
+        routeUnexplored: m['route_unexplored'] as bool? ?? false,
         fuelToReturn: _f(m['fuel_to_return']),
         canReturn: m['can_return'] as bool,
         threat: ThreatInfo.fromJson(m['threat']),
@@ -1028,6 +1053,8 @@ class MovePreview extends ServerMessage {
         'fuel_after': fuelAfter,
         'can_jump': canJump,
         'hops_home': hopsHome,
+        'charted_hops_home': chartedHopsHome,
+        'route_unexplored': routeUnexplored,
         'fuel_to_return': fuelToReturn,
         'can_return': canReturn,
         'threat': threat.toJson(),

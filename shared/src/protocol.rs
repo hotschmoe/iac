@@ -228,7 +228,11 @@ pub struct PolicyParams {
     /// claim, prospect or wander to; never measured from the last claim.
     /// Clamped to 1..=30. Default 4.
     pub max_range: u8,
-    /// Engage hostiles only if our power >= theirs x (this / 10). Clamped to
+    /// Engage hostiles only if our power >= theirs x (this / 10). It is also
+    /// the least power ratio, against the threat the player sees, at which any
+    /// doctrine will enter a sector: never below EVEN (1.1), and SAFE
+    /// (2.5) where hostiles sit unless the fleet is hunting. A refused sector
+    /// is reported as a `PolicyAction` hold with the reason. Clamped to
     /// 1..=100. Default 12 (1.2x).
     pub engage_ratio_x10: u8,
 }
@@ -303,8 +307,10 @@ pub struct LeaderboardEntry {
 ///
 /// `threat` is what the player knows of the target sector (observed if it is
 /// live, the remembered rating if charted, else the distance estimate);
-/// `ratio` is `fleet_power / threat.est_power` and `label` its verdict
-/// (>= 3 safe, >= 2 favourable, >= 1.2 risky, else deadly).
+/// `ratio` is `fleet_power / threat.est_power` of the fleet named by
+/// `fleet_id` (not the strongest one). `label` is its verdict: at least 2.5
+/// is safe, 1.5 favourable, 1.1 even, 0.9 risky, below that deadly. The
+/// cutoffs come from simulated fights, see `scaling::ratio_label`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MovePreview {
     pub fleet_id: u64,
@@ -315,9 +321,17 @@ pub struct MovePreview {
     pub fuel_after: f32,
     /// The fleet holds enough fuel for the jump.
     pub can_jump: bool,
-    /// Hops from `target` back to the homeworld over charted lanes.
+    /// Hops from `target` back to the homeworld by the shortest real route,
+    /// charted or not: what the fleet can actually fly.
     pub hops_home: u32,
-    /// Fuel that way home costs.
+    /// Hops of the shortest route over sectors the player has entered; None
+    /// when no such route exists. Never shorter than `hops_home`.
+    #[serde(default)]
+    pub charted_hops_home: Option<u32>,
+    /// The `hops_home` route crosses a sector the player has never entered.
+    #[serde(default)]
+    pub route_unexplored: bool,
+    /// Fuel the `hops_home` route costs.
     pub fuel_to_return: f32,
     /// After the jump the fleet still holds enough fuel to get home.
     pub can_return: bool,

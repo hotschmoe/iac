@@ -725,6 +725,8 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             fuel_after: 240.0,
             can_jump: true,
             hops_home: 3,
+            charted_hops_home: Some(3),
+            route_unexplored: false,
             fuel_to_return: 94.5,
             can_return: true,
             threat: ThreatInfo { rating: 3, est_power: 20.0, basis: ThreatBasis::Estimate },
@@ -742,12 +744,14 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             fuel_after: 0.0,
             can_jump: false,
             hops_home: 4,
+            charted_hops_home: Some(17),
+            route_unexplored: true,
             fuel_to_return: 126.0,
             can_return: false,
             threat: ThreatInfo { rating: 4, est_power: 46.5, basis: ThreatBasis::Observed },
             fleet_power: 60.0,
             ratio: 1.29,
-            label: RatioLabel::Risky,
+            label: RatioLabel::Even,
         }),
     ));
     v.push((
@@ -1244,6 +1248,14 @@ fn generate() -> Files {
             &json!({"type": kind, "input": input, "canonical": canonical}),
         );
     }
+
+    // Edges 0.9 and 1.1 are not exact in f32, so the cases sit just beside them.
+    let ratios = [0.0, 0.5, 0.89, 0.91, 1.0, 1.09, 1.11, 1.3, 1.49, 1.5, 2.0, 2.49, 2.5, 4.0, 40.0];
+    let labels: Vec<Value> = ratios
+        .iter()
+        .map(|&r| json!({"ratio": r, "label": serde_json::to_value(iac_shared::scaling::ratio_label(r)).unwrap()}))
+        .collect();
+    put(&mut f, "protocol/ratio_labels.json".into(), &Value::Array(labels));
 
     hex_fixtures(&mut f);
     f

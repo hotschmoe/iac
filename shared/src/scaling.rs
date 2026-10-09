@@ -1087,14 +1087,30 @@ pub fn threat_band(rating: u8) -> u8 {
     rating.clamp(1, MAX_THREAT).div_ceil(3)
 }
 
-/// How a fleet's power compares with what waits in a sector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Ratio at and above which a fight is SAFE: the winner keeps 98 percent of its hull.
+pub const RATIO_SAFE: f32 = 2.5;
+/// FAVOURABLE from here: a sure win that costs about 5 to 15 percent of the hull.
+pub const RATIO_FAVOURABLE: f32 = 1.5;
+/// EVEN from here: a win in practice, but 15 to 60 percent of the hull is lost.
+pub const RATIO_EVEN: f32 = 1.1;
+/// RISKY from here: win odds swing from nil to near-certain across this band.
+/// Below it (DEADLY) like-for-like fleets lose every time.
+pub const RATIO_RISKY: f32 = 0.9;
+
+/// How a fleet's power compares with what waits in a sector. Damage
+/// exchange is quadratic in fleet size, so the bands sit close together
+/// around 1.0 and a fight is decided long before the ratio reaches 2.
+/// The cutoffs come from simulated fights (`combat::tests`) between like
+/// ship classes; a lighter class facing a heavier one (rapid fire, bigger
+/// hulls) needs about 1.5 times the ratio for the same result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RatioLabel {
-    Safe,
-    Favourable,
-    Risky,
     Deadly,
+    Risky,
+    Even,
+    Favourable,
+    Safe,
 }
 
 impl RatioLabel {
@@ -1102,6 +1118,7 @@ impl RatioLabel {
         match self {
             RatioLabel::Safe => "SAFE",
             RatioLabel::Favourable => "FAVOURABLE",
+            RatioLabel::Even => "EVEN",
             RatioLabel::Risky => "RISKY",
             RatioLabel::Deadly => "DEADLY",
         }
@@ -1109,11 +1126,13 @@ impl RatioLabel {
 }
 
 pub fn ratio_label(ratio: f32) -> RatioLabel {
-    if ratio >= 3.0 {
+    if ratio >= RATIO_SAFE {
         RatioLabel::Safe
-    } else if ratio >= 2.0 {
+    } else if ratio >= RATIO_FAVOURABLE {
         RatioLabel::Favourable
-    } else if ratio >= 1.2 {
+    } else if ratio >= RATIO_EVEN {
+        RatioLabel::Even
+    } else if ratio >= RATIO_RISKY {
         RatioLabel::Risky
     } else {
         RatioLabel::Deadly
@@ -1469,10 +1488,12 @@ mod golden_tests {
     }
 
     #[test]
-    fn ratios_get_the_spec_labels() {
-        let labels: Vec<_> = [3.0, 2.99, 2.0, 1.99, 1.2, 1.19, 0.0].iter().map(|&r| ratio_label(r)).collect();
+    fn ratios_get_the_simulated_labels() {
+        let ratios = [3.0, 2.5, 2.49, 1.5, 1.49, 1.1, 1.09, 0.9, 0.89, 0.0];
+        let labels: Vec<_> = ratios.iter().map(|&r| ratio_label(r)).collect();
         use RatioLabel::*;
-        assert_eq!(labels, vec![Safe, Favourable, Favourable, Risky, Risky, Deadly, Deadly]);
+        assert_eq!(labels, vec![Safe, Safe, Favourable, Favourable, Even, Even, Risky, Risky, Deadly, Deadly]);
+        assert!(Deadly < Risky && Risky < Even && Even < Favourable && Favourable < Safe);
     }
 
     #[test]

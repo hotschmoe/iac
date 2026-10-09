@@ -18,17 +18,19 @@ class QueueStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final slots = eco.slots;
-    final b = state.buildQueue.isEmpty ? null : state.buildQueue.first;
-    final sh = state.shipyard.isEmpty ? null : state.shipyard.first;
+    final b = state.runningBuild;
+    final sh = state.runningShip;
+    final bWait = state.waitingBuild.firstOrNull;
+    final shWait = state.waitingShips.firstOrNull;
     final rs = state.research.name == 'Idle' ? null : state.research;
     final pills = <Widget>[
       _Pill(
           label: 'Build slot A${slots == null ? '' : ' - queue ${slots.depth}/${slots.maxDepth}'}',
-          title: b?.name ?? 'Idle: pick a building',
-          time: b?.time,
+          title: b?.name ?? (bWait == null ? 'Idle: pick a building' : 'Idle, waiting: ${bWait.name}'),
+          time: b?.time ?? bWait?.time,
           pct: b?.pct,
           cancelKey: 'hw-cancel-building',
-          onCancel: b == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.building),
+          onCancel: b == null && bWait == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.building),
           onTap: () => ctrl.selectHomeworldTab(HomeworldTab.buildings)),
       if (slots != null)
         _Pill(
@@ -48,11 +50,11 @@ class QueueStrip extends StatelessWidget {
           onTap: () => ctrl.selectHomeworldTab(HomeworldTab.research)),
       _Pill(
           label: 'Shipyard',
-          title: sh?.name ?? 'Idle: build a ship',
-          time: sh?.time,
+          title: sh?.name ?? (shWait == null ? 'Idle: build a ship' : 'Idle, waiting: ${shWait.name}'),
+          time: sh?.time ?? shWait?.time,
           pct: sh?.pct,
           cancelKey: 'hw-cancel-ship',
-          onCancel: sh == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.ship),
+          onCancel: sh == null && shWait == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.ship),
           onTap: () => ctrl.selectHomeworldTab(HomeworldTab.shipyard)),
     ];
     return Container(

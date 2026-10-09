@@ -294,14 +294,6 @@ class DemoProvider {
 
   static double _fleetPower(FleetState f) => f.ships.fold(0.0, (n, s) => n + s.weaponPower + (s.hull + s.shield) / 10);
 
-  static RatioLabel _label(double ratio) => ratio >= 3
-      ? RatioLabel.safe
-      : ratio >= 2
-          ? RatioLabel.favourable
-          : ratio >= 1.2
-              ? RatioLabel.risky
-              : RatioLabel.deadly;
-
   static const _ratingPower = {ShipClass.scout: 9, ShipClass.corvette: 22, ShipClass.frigate: 48, ShipClass.cruiser: 110, ShipClass.hauler: 15};
 
   /// Authored opening neighbourhood (terrain, ore m/c/d, hostiles, salvage, site).
@@ -1877,12 +1869,13 @@ class DemoProvider {
             fuelAfter: max(0, left),
             canJump: left >= 0,
             hopsHome: hops,
+            chartedHopsHome: hops,
             fuelToReturn: hops * f.jumpFuel,
             canReturn: left >= hops * f.jumpFuel,
             threat: threat,
             fleetPower: power,
             ratio: ratio,
-            label: _label(ratio),
+            label: RatioLabel.forRatio(ratio),
           ),
         ];
     }

@@ -136,6 +136,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
       plan.clear();
     }
     _recompute();
+    _askServer(plan.hover);
     setState(() => data = _data());
   }
 
@@ -181,6 +182,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
     plan.set(stops, p);
     plan.selected = h;
     _alts = {for (final m in RouteMode.values) m: _chain(stops, m)};
+    _askServer(plan.hover);
     con.play('ok');
     setState(() => _sheet = true);
   }
@@ -357,7 +359,28 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
           : RoutePlanner.plan(
               sectors: con.state.sectors, tick: con.state.tick, fleet: f, from: f.sector, to: h, home: con.state.homeworld, power: f.power, mode: plan.mode);
     }
+    _askServer(ok ? h : null);
     setState(() {});
+  }
+
+  proto.Hex? _asked;
+
+  /// Ask the server to rate the first hop of the route on show, and the
+  /// hovered sector when it is next door; the controller debounces.
+  void _askServer([proto.Hex? hovered]) {
+    final f = con.game.currentFleet;
+    if (f.id == 0) return;
+    final p = plan.planning ? plan.plan : plan.preview;
+    final want = <proto.Hex>{
+      if (p != null && p.path.isNotEmpty) p.path.first,
+      if (hovered != null && proto.Hex.distance(hovered, f.sector) == 1 && (con.state.sectors[f.sector]?.connections.contains(hovered) ?? false)) hovered,
+    };
+    final old = _asked;
+    if (old != null && !want.contains(old)) con.game.cancelPreview(f.id, old);
+    for (final h in want) {
+      con.game.requestPreview(f.id, h);
+    }
+    _asked = want.isEmpty ? null : want.last;
   }
 
   static const mapRRange = mapRMax;
@@ -509,7 +532,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
               right: 14,
               bottom: 14,
               width: 326,
-              child: ConstrainedBox(constraints: BoxConstraints(maxHeight: math.max(160, box.maxHeight - 340)), child: SingleChildScrollView(child: _routePanel()))),
+              child: ConstrainedBox(constraints: BoxConstraints(maxHeight: math.max(160, box.maxHeight - 470)), child: SingleChildScrollView(child: _routePanel()))),
         const Positioned(left: 14, bottom: 14, width: 262, child: LegendPanel()),
         Positioned(left: 0, right: 0, bottom: 14, child: Center(child: zoom)),
       ];

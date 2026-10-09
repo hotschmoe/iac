@@ -333,6 +333,9 @@ def preview_line(m):
     t = m["threat"]
     return (f"preview fleet {m['fleet_id']} -> {m['target']['q']},{m['target']['r']}: fuel {m['fuel_cost']:.0f} "
             f"(leaves {m['fuel_after']:.0f}), {m['hops_home']} hops home need {m['fuel_to_return']:.0f}"
+            + (f" (charted route {m['charted_hops_home']} hops)"
+               if m.get("charted_hops_home") not in (None, m["hops_home"]) else "")
+            + (" across unexplored space" if m.get("route_unexplored") else "")
             + ("" if m["can_jump"] else "  CANNOT JUMP: not enough fuel")
             + ("" if m["can_return"] else "  CANNOT RETURN afterwards")
             + f"; T{t['rating']} NPC power {t['est_power']:.0f} ({t['basis']}), your power {m['fleet_power']:.0f}, "
@@ -357,7 +360,8 @@ def res(r):
 
 def verdict(ratio):
     """The server's ratio labels: fleet power over the sector's threat power."""
-    return "SAFE" if ratio >= 3 else "FAVOURABLE" if ratio >= 2 else "RISKY" if ratio >= 1.2 else "DEADLY"
+    return ("SAFE" if ratio >= 2.5 else "FAVOURABLE" if ratio >= 1.5 else "EVEN" if ratio >= 1.1
+            else "RISKY" if ratio >= 0.9 else "DEADLY")
 
 
 def threat_text(t, power=None):
@@ -1470,7 +1474,7 @@ USAGE = """usage: play <command>
   map [radius]           known sectors near your fleets (default radius 4)
   sector Q R             details of one known sector
   preview FLEET [Q R..]  jump cost and threat for adjacent sectors; with no Q R, every exit of the fleet's sector
-                         (SAFE >= 3x, FAVOURABLE >= 2x, RISKY >= 1.2x, else DEADLY)
+                         (SAFE >= 2.5x, FAVOURABLE >= 1.5x, EVEN >= 1.1x, RISKY >= 0.9x, else DEADLY)
   do '<json>' ['<json>' ...]   send commands in order (or one JSON array: do '[{...},{...}]'); one result line each,
                          returns at the server's next tick (about 0.5 s) or at once on an error; --fast skips that wait
                          e.g. play do '{"action":"build","building_type":"MetalMine"}' '{"action":"research","tech":"Navigation"}'

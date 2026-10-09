@@ -336,7 +336,7 @@ class _BuildSlotA extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = con.state;
     final slots = con.economy.slots;
-    final q = s.buildQueue.isEmpty ? null : s.buildQueue.first;
+    final q = s.runningBuild;
     final depth = slots?.depth ?? (q == null ? 0 : 1);
     final sub = slots == null ? null : 'queue $depth/${slots.maxDepth}';
     final act = OvActions(con);
@@ -361,12 +361,14 @@ class _BuildSlotA extends StatelessWidget {
     return OvPanel(
       key: const Key('card-slot-a'),
       title: 'Build slot A',
+      subText: sub,
       trailing: _idleBadge(),
       border: C.a500,
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _qTitle('Queue an upgrade'),
-        _qSub('Mines compound. An idle slot is lost production.'),
+        _qTitle(slots == null || slots.queued.isEmpty ? 'Queue an upgrade' : 'Idle, ${slots.queued.length} waiting'),
+        _qSub(slots == null || slots.queued.isEmpty ? 'Mines compound. An idle slot is lost production.' : 'Waiting orders start when the shortfall is covered.'),
+        if (slots != null) _queuedRows(slots.queued, first: 1),
         if (choices.isEmpty) const WhyText('Nothing to build: every available building is maxed or locked.'),
         for (final o in choices)
           _SugTile(
@@ -382,7 +384,7 @@ class _BuildSlotA extends StatelessWidget {
   }
 }
 
-Widget _queuedRows(List<QueuedItemView> items) {
+Widget _queuedRows(List<QueuedItemView> items, {int first = 2}) {
   if (items.isEmpty) return const SizedBox.shrink();
   return Container(
     decoration: const BoxDecoration(border: Border(top: BorderSide(color: C.line))),
@@ -392,7 +394,7 @@ Widget _queuedRows(List<QueuedItemView> items) {
           padding: const EdgeInsets.symmetric(vertical: 3),
           decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.lineLo))),
           child: Row(children: [
-            SizedBox(width: 22, child: Text('Q${i + 2}', style: T.mono(size: 10, color: C.a600))),
+            SizedBox(width: 22, child: Text('Q${i + first}', style: T.mono(size: 10, color: C.a600))),
             Expanded(child: Text(items[i].name.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: C.text2))),
             Text(items[i].waits, style: T.mono(size: 10, color: C.text3)),
           ]),
@@ -510,7 +512,7 @@ class _ShipyardCard extends StatelessWidget {
     final s = con.state;
     final act = OvActions(con);
     final slots = con.economy.slots;
-    final q = s.shipyard.isEmpty ? null : s.shipyard.first;
+    final q = s.runningShip;
     final sub = slots == null ? null : 'queue ${(q == null ? 0 : 1) + slots.shipQueued.length}/${slots.maxDepth}';
     if (q != null) {
       final m = RegExp(r'^(.*?) x(\d+) \((\d+) built\)').firstMatch(q.name);
@@ -552,12 +554,14 @@ class _ShipyardCard extends StatelessWidget {
     return OvPanel(
       key: const Key('card-shipyard'),
       title: 'Shipyard',
+      subText: sub,
       trailing: _idleBadge(),
       border: C.a500,
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _qTitle('Yard idle'),
-        _qSub('Build ships for the dock'),
+        _qTitle(slots == null || slots.shipQueued.isEmpty ? 'Yard idle' : 'Yard idle, ${slots.shipQueued.length} waiting'),
+        _qSub(slots == null || slots.shipQueued.isEmpty ? 'Build ships for the dock' : 'Waiting orders start when the shortfall is covered.'),
+        if (slots != null) _queuedRows(slots.shipQueued, first: 1),
         if (choices.isEmpty) const WhyText('No ship class is unlocked yet. Upgrade the Shipyard.'),
         for (final o in choices)
           _SugTile(

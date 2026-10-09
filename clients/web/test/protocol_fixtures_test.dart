@@ -101,11 +101,27 @@ void main() {
       expect(s.homeworld.storage.fullInS.crystal, isNull);
     });
 
-    test('a move preview reaches the log with the fuel numbers', () {
+    test('the ratio verdict bands match the server', () {
+      final cases = readJson(File('${fixturesDir().path}/protocol/ratio_labels.json')) as List;
+      expect(cases, isNotEmpty);
+      for (final c in cases) {
+        final r = (c['ratio'] as num).toDouble();
+        expect(RatioLabel.forRatio(r).wire, c['label'], reason: 'ratio $r');
+      }
+    });
+
+    test('a move preview is kept for the screens, with both ways home and the verdict', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'preview_move__stranding');
-      final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
-      expect(mapper.log.first.message, contains('burns 32 fuel'));
-      expect(mapper.log.first.message, contains('not enough fuel'));
+      final msg = ServerMessage.fromJson(readJson(f)) as MovePreview;
+      final mapper = StateMapper()..apply(msg);
+      final kept = mapper.previews[(msg.fleetId, msg.target.toKey())]!.preview;
+      expect(kept.fuelCost, 31.5);
+      expect(kept.canJump, isFalse);
+      expect(kept.hopsHome, 4);
+      expect(kept.chartedHopsHome, 17);
+      expect(kept.routeUnexplored, isTrue);
+      expect(kept.label, RatioLabel.even);
+      expect(mapper.log, isEmpty, reason: 'previews are asked for by hovering; they do not write to the log');
     });
 
     test('the homeworld lists defences, defence power and the next raid estimate', () {

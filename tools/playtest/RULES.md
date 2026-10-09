@@ -99,7 +99,7 @@ can pick up where you left off if your session is restarted.
 | `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count` | queue home defence structures in the shipyard queue; `DefenceLocked` until the Defense Grid and research it needs are in place |
 | `cancel_build` | `queue_type`, `index` (default 0) | cancel an item that has started (the `index`th running one) with a 50% refund; waiting items behind it move up a level; a `Queue` event confirms what was refunded |
 | `cancel_queued` | `queue_type`, `index` | remove an item still waiting (the `index`th, from 0); nothing was paid, so nothing comes back; a `Queue` event confirms it |
-| `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home`, `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, `ratio` and `label` (`safe`, `favourable`, `risky`, `deadly`) |
+| `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest |
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
@@ -119,10 +119,10 @@ change (`"params":{"max_range":2}`) and the rest take their defaults.
 | `min_fuel_pct` | 10 | spare fuel, as a percent of the tank, kept on top of the exact fuel cost of the route home (clamped 0-90) |
 | `cargo_return_pct` | 85 | head home to unload when the hold is this full (10-100) |
 | `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting and salvage runs (1-30); never measured from the last claim |
-| `engage_ratio_x10` | 12 | fight only if your power is at least enemy power x this/10 (1-100) |
+| `engage_ratio_x10` | 12 | fight only if your power is at least enemy power x this/10 (1-100); also the least ratio at which any doctrine will enter a sector, never below EVEN (1.1) and SAFE (2.5) where hostiles sit |
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
-the shortest charted route home plus the `min_fuel_pct` reserve, and it
+the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
 refuses any outward jump that would leave less than that. A range limit
 shorter than `max_range` (the tank cannot afford the round trip) is reported
 in the hold reason. Whenever a doctrine stands still it says why in a
@@ -135,6 +135,12 @@ Every autopilot act emits a `PolicyAction` event with a human-readable
 `reason` — an audit trail for agents (and captains). `prospect` walks to the
 nearest sector you have never entered inside `max_range` of home; when none is
 left it returns home and holds rather than wandering between known sectors.
+No doctrine moves a fleet into a sector whose threat (as `preview_move` shows
+it) the fleet would not beat at `engage_ratio_x10`, and none passes through a
+sector holding hostiles below SAFE odds. A refusal is a `hold` `PolicyAction`
+saying which sector, its threat and the ratio; `prospect` names whether a
+hazard, `max_range` or a fully charted board stops it. Heading home it takes
+the safest lane and falls back to the shortest.
 
 ## The game
 
@@ -171,8 +177,10 @@ left it returns home and holds rather than wandering between known sectors.
   A stale chart entry keeps the rating last seen. Scans list the threat of
   every revealed sector (`threats`) and each faint contact has a
   `threat_band` (1: T1-3, 2: T4-6, 3: T7-9). `preview_move` returns the
-  target's `threat`, your `fleet_power`, `ratio` and a `label`: SAFE from 3.0,
-  FAVOURABLE from 2.0, RISKY from 1.2, else DEADLY. Pirates return
+  target's `threat`, the named fleet's `fleet_power`, `ratio` and a `label`: SAFE from
+  2.5, FAVOURABLE from 1.5, EVEN from 1.1, RISKY from 0.9, else DEADLY (simulated
+  fights: a win at EVEN costs half the hull, below 0.9 like-for-like fleets
+  lose; a lighter class against a heavier one needs about 1.5x more). Pirates return
   `2 + 0.25 x ring` game hours (divided by P) after a kill.
 - **Buildings** — 10 types incl. Shipyard, Research Lab, Sensor Array (passive
   reveal around home), Defense Grid (see raids), Storage Vault (stockpile

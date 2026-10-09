@@ -38,6 +38,8 @@ class FakeGame extends GameController {
   @override
   bool get isLive => false;
   @override
+  bool get hasState => true;
+  @override
   ui.FleetState get currentFleet => fake.fleets.isEmpty ? super.currentFleet : fake.fleets.first;
   @override
   void sendCommand(proto.Command c) => sent.add(c);
@@ -84,6 +86,13 @@ GameState _state(int tick, List<ui.FleetState> fleets) {
           : minor
               ? const proto.ThreatInfo(rating: 2, estPower: 9, basis: proto.ThreatBasis.observed)
               : const proto.ThreatInfo(rating: 1, estPower: 4, basis: proto.ThreatBasis.estimate),
+      oreReserve: h == const proto.Hex(2, -2)
+          ? const proto.OreReserve(
+              metal: proto.TileReserve(units: 12, maxUnits: 22, refillsInS: 105),
+              crystal: proto.TileReserve(units: 3, maxUnits: 3),
+              deuterium: proto.TileReserve(units: 0, maxUnits: 0),
+            )
+          : null,
       salvage: h == const proto.Hex(2, 1) ? const proto.Resources(metal: 40, crystal: 10) : null,
       site: h == const proto.Hex(-2, 2) ? const proto.SiteBrief(tier: 1, risk: proto.SiteRisk.uneasy) : null,
       lastSeen: h.distFromOrigin <= 2 ? tick : tick - (h.distFromOrigin * 400),
@@ -146,7 +155,94 @@ Future<void> clickHex(WidgetTester tester, proto.Hex h, {Size size = _win}) asyn
 
 String _text(WidgetTester t, String key) => (t.widget(find.byKey(Key(key))) as Text).textSpan?.toPlainText() ?? (t.widget(find.byKey(Key(key))) as Text).data ?? '';
 
+proto.MovePreview _preview(proto.Hex target, {double ratio = 1.3, proto.RatioLabel label = proto.RatioLabel.even, int hops = 1, int? charted = 9}) => proto.MovePreview(
+      fleetId: 7,
+      target: target,
+      fuelCost: 5,
+      fuelAfter: 95,
+      canJump: true,
+      hopsHome: hops,
+      chartedHopsHome: charted,
+      routeUnexplored: true,
+      fuelToReturn: hops * 5.0,
+      canReturn: true,
+      threat: const proto.ThreatInfo(rating: 3, estPower: 20, basis: proto.ThreatBasis.template),
+      fleetPower: 26,
+      ratio: ratio,
+      label: label,
+    );
+
+void _answer(FakeGame g, proto.MovePreview p) {
+  g.fake = g.fake.copyWith(previews: {...g.fake.previews, (p.fleetId, p.target): PreviewEntry(p, g.fake.tick)});
+  g.notifyListeners();
+}
+
+Iterable<proto.PreviewMoveCommand> _asked(FakeGame g) => g.sent.whereType<proto.PreviewMoveCommand>();
+
 void main() {
+  testWidgets('a route asks the server about its first hop and shows the verdict, both ways home included', (tester) async {
+    final g = await openMap(tester);
+    await clickHex(tester, const proto.Hex(4, -1));
+    await tester.pump(const Duration(milliseconds: 300));
+    final first = painterOf(tester).route!.path.first;
+    expect(_asked(g), hasLength(1));
+    expect(_asked(g).single.fleetId, 7, reason: 'the selected fleet');
+    expect(_asked(g).single.target, first);
+
+    // More ticks while the answer is pending or fresh do not ask again.
+    g.push(1001);
+    g.push(1002);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(_asked(g), hasLength(1));
+
+    _answer(g, _preview(first, hops: 2, charted: 17));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(_text(tester, 'route-home'), '2 hops direct (17 charted), through unexplored space, 10 fuel');
+    expect(_text(tester, 'route-preview-text'), contains('NEXT HOP'));
+    expect(_text(tester, 'route-preview-text'), contains('1.3 EVEN'));
+    await endShell(tester, g);
+  });
+
+  testWidgets('a hover sweep asks once, for the first hop of the route it ends on', (tester) async {
+    final g = await openMap(tester);
+    final m = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await m.addPointer(location: Offset.zero);
+    for (final h in const [proto.Hex(3, 0), proto.Hex(2, 0), proto.Hex(2, 1)]) {
+      await m.moveTo(at(h, _win));
+      await tester.pump(const Duration(milliseconds: 40));
+    }
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(_asked(g).map((c) => c.target), [const proto.Hex(2, 0)], reason: 'the first hop of the route on show, asked once');
+
+    await m.moveTo(at(const proto.Hex(5, 0), _win));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(_asked(g), hasLength(1), reason: 'a far sector is not a jump the server can preview; its first hop is already asked');
+    await m.removePointer();
+    await endShell(tester, g);
+  });
+
+  testWidgets('the inspector rates an adjacent sector with the server verdict for the selected fleet and lists ore left', (tester) async {
+    final g = await openMap(tester);
+    final tile = const proto.Hex(2, -2);
+    final m = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await m.addPointer(location: Offset.zero);
+    await m.moveTo(at(const proto.Hex(2, -1), _win));
+    await tester.pump(const Duration(milliseconds: 300));
+    _answer(g, _preview(const proto.Hex(2, -1), ratio: 0.95, label: proto.RatioLabel.risky));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(_text(tester, 'inspector-ratio'), contains('0.95 RISKY'));
+    expect(_text(tester, 'inspector-ratio'), contains('(F7)'));
+    expect(_text(tester, 'inspector-basis'), 'ESTIMATE');
+
+    await m.moveTo(at(tile, _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(_text(tester, 'ore-reserve-Metal'), '12/22 REFILL 1:45');
+    expect(_text(tester, 'ore-reserve-Crystal'), '3/3');
+    expect(find.byKey(const Key('ore-reserve-Deut')), findsNothing);
+    await m.removePointer();
+    await endShell(tester, g);
+  });
+
   testWidgets('clicking a known sector plans a route with hops and fuel', (tester) async {
     final g = await openMap(tester);
     await clickHex(tester, const proto.Hex(4, -1));

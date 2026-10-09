@@ -1,6 +1,7 @@
 {
   "can_jump": true,
   "can_return": true,
+  "charted_hops_home": 3,
   "fleet_id": 3,
   "fleet_power": 60.0,
   "fuel_after": 240.0,
@@ -9,6 +10,7 @@
   "hops_home": 3,
   "label": "safe",
   "ratio": 3.0,
+  "route_unexplored": false,
   "target": {
     "q": 2,
     "r": -5

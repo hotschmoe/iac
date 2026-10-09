@@ -416,9 +416,15 @@ impl ClientState {
                 self.show_leaderboard = true;
             }
             ServerMessage::PreviewMove(p) => {
+                let across = if p.route_unexplored { " across unexplored space" } else { "" };
+                let home = match p.charted_hops_home {
+                    Some(c) if c != p.hops_home => format!("{} hops home direct{across} ({c} charted)", p.hops_home),
+                    Some(_) => format!("{} hops home", p.hops_home),
+                    None => format!("{} hops home direct{across}, none charted", p.hops_home),
+                };
                 self.status_message = format!(
-                    "F{} to [{},{}]: fuel -{:.0}, {:.0} left, {} hops home need {:.0}{}; T{} power {:.0} vs your {:.0}: ratio {:.1} {}",
-                    p.fleet_id, p.target.q, p.target.r, p.fuel_cost, p.fuel_after, p.hops_home, p.fuel_to_return,
+                    "F{} to [{},{}]: fuel -{:.0}, {:.0} left, {home} need {:.0}{}; T{} power {:.0} vs your {:.0}: ratio {:.1} {}",
+                    p.fleet_id, p.target.q, p.target.r, p.fuel_cost, p.fuel_after, p.fuel_to_return,
                     if p.can_return { "" } else { "  CANNOT RETURN" },
                     p.threat.rating, p.threat.est_power, p.fleet_power, p.ratio, p.label.label(),
                 );

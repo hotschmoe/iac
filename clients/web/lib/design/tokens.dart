@@ -64,6 +64,7 @@ class C {
 
   static const ratioDeadly = Color(0xFFFF2E86);
   static const ratioRisky = Color(0xFFFF9A2E);
+  static const ratioEven = Color(0xFFFFD24A);
   static const ratioFav = Color(0xFF8FE388);
   static const ratioSafe = Color(0xFF5EE0CF);
 

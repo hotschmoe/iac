@@ -417,6 +417,21 @@ pub enum AuthError {
     Server,
 }
 
+/// Why the autopilot is entering a sector: passing through, or hunting what is there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    Passage,
+    Hunt,
+}
+
+/// See `GameEngine::home_route`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HomeRoute {
+    pub charted: Option<u32>,
+    pub direct: u32,
+    pub unexplored: bool,
+}
+
 pub struct GameEngine {
     pub world_gen: WorldGen,
     pub world: WorldMeta,
@@ -1170,7 +1185,10 @@ impl GameEngine {
         // Patrol movement
         let mut rng = StdRng::seed_from_u64(self.current_tick.wrapping_mul(0x9E3779B97F4A7C15));
 
-        let npc_ids: Vec<u64> = self.npc_fleets.keys().copied().collect();
+        // Sorted so the per-tick rng draws land on the same patrols on every run:
+        // HashMap order is randomised per process.
+        let mut npc_ids: Vec<u64> = self.npc_fleets.keys().copied().collect();
+        npc_ids.sort_unstable();
         for npc_id in npc_ids {
             let Some(npc) = self.npc_fleets.get(&npc_id) else { continue; };
             if npc.in_combat { continue; }
@@ -1987,7 +2005,7 @@ impl GameEngine {
         }
 
         let player_id = self.next_id();
-        let homeworld = self.find_homeworld_location().ok_or(ErrorCode::ServerError)?;
+        let homeworld = self.find_homeworld_location(player_id).ok_or(ErrorCode::ServerError)?;
 
         let player = Player {
             id: player_id,
@@ -2118,7 +2136,8 @@ impl GameEngine {
         let fuel_cost = self.hop_fuel_cost(fleet);
         let can_jump = fleet.fuel >= fuel_cost;
         let fuel_after = if can_jump { fleet.fuel - fuel_cost } else { 0.0 };
-        let hops_home = self.known_hops_home(player_id, target);
+        let route = self.home_route(player_id, target);
+        let hops_home = route.direct;
         let fuel_to_return = hops_home as f32 * fuel_cost;
         let threat = self.known_threat(player_id, target);
         let fleet_power = fleet_power(fleet);
@@ -2130,6 +2149,8 @@ impl GameEngine {
             fuel_after,
             can_jump,
             hops_home,
+            charted_hops_home: route.charted,
+            route_unexplored: route.unexplored,
             fuel_to_return,
             can_return: can_jump && fuel_after >= fuel_to_return,
             threat,
@@ -2204,35 +2225,42 @@ impl GameEngine {
         fleet_fuel_cost(fleet, research)
     }
 
-    /// Fewest hops from `from` to the owner's homeworld over lanes the owner
-    /// has charted (sectors they have entered). Falls back to the straight
-    /// distance when no charted route exists.
-    pub fn known_hops_home(&self, owner: u64, from: Hex) -> u32 {
-        let Some(player) = self.players.get(&owner) else { return 0; };
+    /// The ways home from `from`. `direct` is the fewest hops over the real
+    /// lanes, charted or not, and is what a fleet can actually fly; `charted`
+    /// is the fewest over sectors the owner has entered, None when no such
+    /// route exists. `unexplored` says whether the direct route crosses a
+    /// sector the owner has never entered.
+    pub fn home_route(&self, owner: u64, from: Hex) -> HomeRoute {
+        let Some(player) = self.players.get(&owner) else {
+            return HomeRoute { charted: None, direct: 0, unexplored: false };
+        };
         let home = player.homeworld;
-        if from == home { return 0; }
-        let mut seen: HashSet<u32> = HashSet::new();
-        seen.insert(from.to_key());
-        let mut frontier = vec![from];
-        let mut hops = 0u32;
-        while !frontier.is_empty() && hops < 64 {
-            hops += 1;
-            let mut next = Vec::new();
-            for coord in &frontier {
-                for &n in self.world_gen.connected_neighbors(*coord).slice() {
-                    if n == home { return hops; }
-                    if !self.explored.contains(&(owner, n.to_key())) { continue; }
-                    if seen.insert(n.to_key()) { next.push(n); }
-                }
-            }
-            frontier = next;
+        if from == home {
+            return HomeRoute { charted: Some(0), direct: 0, unexplored: false };
         }
-        Hex::distance(&from, &home) as u32
+        let entered = |n: Hex| self.explored.contains(&(owner, n.to_key()));
+        let direct = self.lane_path(from, home, 64, &|_| true);
+        let charted = self.lane_path(from, home, 64, &entered).map(|p| p.len() as u32);
+        match direct {
+            Some(path) => HomeRoute {
+                charted,
+                direct: path.len() as u32,
+                unexplored: path.iter().take(path.len() - 1).any(|&n| !entered(n)),
+            },
+            None => HomeRoute { charted, direct: Hex::distance(&from, &home) as u32, unexplored: true },
+        }
+    }
+
+    /// Shortest lane path from `from` to `to` (excluding `from`, including
+    /// `to`), stepping only through sectors `passable` accepts. `to` itself
+    /// need not pass.
+    fn lane_path(&self, from: Hex, to: Hex, max_hops: u8, passable: &dyn Fn(Hex) -> bool) -> Option<Vec<Hex>> {
+        self.bfs_path(from, max_hops, &|n| n == to || passable(n), &|n| n == to)
     }
 
     /// Fuel the fleet would burn getting home from `from`, one jump per hop.
     pub fn route_home_cost(&self, fleet: &Fleet, from: Hex) -> f32 {
-        self.known_hops_home(fleet.owner_id, from) as f32 * self.hop_fuel_cost(fleet)
+        self.home_route(fleet.owner_id, from).direct as f32 * self.hop_fuel_cost(fleet)
     }
 
     fn push_alert(&mut self, level: AlertLevel, fleet_id: u64, sector: Hex, message: String) {
@@ -2250,13 +2278,14 @@ impl GameEngine {
     }
 
     /// A jump that leaves the fleet unable to afford the way home is
-    /// allowed, but never silent.
+    /// allowed, but never silent. "The way home" is the shortest real route,
+    /// charted or not; a longer charted route is quoted alongside.
     fn warn_if_cannot_return(&mut self, fleet_id: u64, target: Hex, hop_cost: f32) {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
         let Some(player) = self.players.get(&fleet.owner_id) else { return; };
         if target == player.homeworld { return; }
-        let hops = self.known_hops_home(fleet.owner_id, target);
-        let need = hops as f32 * hop_cost;
+        let route = self.home_route(fleet.owner_id, target);
+        let need = route.direct as f32 * hop_cost;
         let have = fleet.fuel;
         if have + 0.001 >= need { return; }
         let (level, outcome) = if have + 0.001 < hop_cost {
@@ -2264,9 +2293,16 @@ impl GameEngine {
         } else {
             (AlertLevel::Warning, "it cannot reach home without help")
         };
-        let message = format!(
-            "fleet {fleet_id} jumping to {target} with {have:.0} fuel after the jump; the way home is {hops} hops, {need:.0} fuel: {outcome}",
-        );
+        let across = if route.unexplored { ", across unexplored space" } else { "" };
+        let way = match route.charted {
+            Some(c) if c != route.direct => format!(
+                "the charted route home is {c} hops, {:.0} fuel; the direct route is {} hops, {need:.0} fuel{across}",
+                c as f32 * hop_cost, route.direct,
+            ),
+            None => format!("no charted route home; the direct route is {} hops, {need:.0} fuel{across}", route.direct),
+            _ => format!("the way home is {} hops, {need:.0} fuel{across}", route.direct),
+        };
+        let message = format!("fleet {fleet_id} jumping to {target} with {have:.0} fuel after the jump; {way}: {outcome}");
         self.push_alert(level, fleet_id, target, message);
     }
 
@@ -3330,17 +3366,17 @@ impl GameEngine {
         false
     }
 
-    /// First hop of the shortest path from `from` to a sector satisfying
-    /// `goal`, walking only through sectors satisfying `passable` (BFS with
-    /// predecessors, bounded). The hex graph is sparse: pure greedy
-    /// distance-chasing bounces off missing edges.
-    fn bfs_first_hop(
+    /// The shortest path (excluding `from`, including the goal) from `from`
+    /// to a sector satisfying `goal`, walking only through sectors satisfying
+    /// `passable` (BFS with predecessors, bounded). The hex graph is sparse:
+    /// pure greedy distance-chasing bounces off missing edges.
+    fn bfs_path(
         &self,
         from: Hex,
         max_hops: u8,
         passable: &dyn Fn(Hex) -> bool,
         goal: &dyn Fn(Hex) -> bool,
-    ) -> Option<Hex> {
+    ) -> Option<Vec<Hex>> {
         let mut prev: HashMap<u32, u32> = HashMap::new();
         let mut frontier = vec![from];
         prev.insert(from.to_key(), from.to_key());
@@ -3360,13 +3396,25 @@ impl GameEngine {
             frontier = next;
         }
 
-        // Walk back from the goal to the hop right after `from`.
         let from_key = from.to_key();
+        let mut path = vec![found?];
         let mut cur = found?.to_key();
         while prev[&cur] != from_key {
             cur = prev[&cur];
+            path.push(Hex::from_key(cur));
         }
-        Some(Hex::from_key(cur))
+        path.reverse();
+        Some(path)
+    }
+
+    fn bfs_first_hop(
+        &self,
+        from: Hex,
+        max_hops: u8,
+        passable: &dyn Fn(Hex) -> bool,
+        goal: &dyn Fn(Hex) -> bool,
+    ) -> Option<Hex> {
+        self.bfs_path(from, max_hops, passable, goal)?.first().copied()
     }
 
     fn first_hop_toward(&self, from: Hex, target: Hex, max_hops: u8) -> Option<Hex> {
@@ -3374,24 +3422,73 @@ impl GameEngine {
         self.bfs_first_hop(from, max_hops, &|_| true, &|n| n == target)
     }
 
-    /// One hop along the connected graph toward `target`. True if the
-    /// autopilot acted (moved, or reported why it cannot).
+    /// One hop along the connected graph toward `target`, through sectors
+    /// the fleet may enter. Heading home falls back to the plain shortest
+    /// lane when no safe route exists; any other target is refused with the
+    /// reason. True if the autopilot acted (moved, or reported why it
+    /// cannot).
     fn policy_step_toward(&mut self, fleet_id: u64, target: Hex, preset: PolicyPreset, reason: &str) -> bool {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return false; };
         let from = fleet.location;
         if from == target { return false; }
         let Some(home) = self.players.get(&fleet.owner_id).map(|p| p.homeworld) else { return false; };
+        let params = self.policies.get(&fleet_id).map(|p| p.params).unwrap_or_default();
+        let homeward = target == home;
+        let end = if preset == PolicyPreset::PatrolHome { Entry::Hunt } else { Entry::Passage };
+        let enter = |n: Hex| n == home || self.policy_entry_check(fleet, &params, n, if n == target { end } else { Entry::Passage }).is_ok();
 
-        // Real path first; greedy distance-descent as a fallback when the
-        // target is beyond the BFS budget.
-        let step = self.first_hop_toward(from, target, 16).or_else(|| {
-            self.world_gen.connected_neighbors(from).slice().iter().copied()
-                .min_by_key(|n| Hex::distance(n, &target))
-        });
-        let Some(step) = step else {
-            return self.hold_policy(fleet_id, preset, &format!("no lane toward {target}"));
+        let step = match self.bfs_first_hop(from, 16, &enter, &|n| n == target) {
+            Some(step) => step,
+            None if homeward => {
+                match self.first_hop_toward(from, target, 16).or_else(|| self.greedy_hop(from, target, &|_| true)) {
+                    Some(step) => step,
+                    None => return self.hold_policy(fleet_id, preset, &format!("no lane toward {target}")),
+                }
+            }
+            None => {
+                let entry_of = |n: Hex| if n == target { end } else { Entry::Passage };
+                let blocker = self.bfs_path(from, 16, &|_| true, &|n| n == target).and_then(|path| {
+                    path.iter().find_map(|&n| self.policy_entry_check(fleet, &params, n, entry_of(n)).err())
+                });
+                match (blocker, self.greedy_hop(from, target, &enter)) {
+                    (None, Some(step)) => step,
+                    (why, _) => {
+                        let why = why.unwrap_or_else(|| "no lane it may take".to_string());
+                        return self.hold_policy(fleet_id, preset, &format!("refusing the way to {target}: {why}"));
+                    }
+                }
+            }
         };
-        self.policy_move(fleet_id, step, target == home, preset, reason)
+        self.policy_move(fleet_id, step, homeward, preset, reason)
+    }
+
+    /// Neighbour of `from` closest to `target` among those `allow`s; the
+    /// fallback when `target` lies beyond the search budget.
+    fn greedy_hop(&self, from: Hex, target: Hex, allow: &dyn Fn(Hex) -> bool) -> Option<Hex> {
+        self.world_gen.connected_neighbors(from).slice().iter().copied()
+            .filter(|&n| allow(n))
+            .min_by_key(|n| Hex::distance(n, &target))
+    }
+
+    /// Whether the autopilot may take `fleet` into `coord`, judged by the
+    /// threat the player sees there (live, charted or the ring's estimate)
+    /// against the fleet's own power: at least the doctrine's engage ratio,
+    /// never RISKY or DEADLY, and SAFE where a hostile group sits (a lighter
+    /// class needs a wide margin against a heavier one), unless the fleet is
+    /// out hunting. Err carries the reason.
+    fn policy_entry_check(&self, fleet: &Fleet, params: &PolicyParams, coord: Hex, entry: Entry) -> Result<(), String> {
+        let hostile = self.sector_has_hostiles(coord);
+        let floor = if hostile && entry == Entry::Passage { scaling::RATIO_SAFE } else { scaling::RATIO_EVEN };
+        let need = floor.max(params.engage_ratio_x10 as f32 / 10.0);
+        let threat = self.known_threat(fleet.owner_id, coord);
+        let power = fleet_power(fleet);
+        let ratio = power / threat.est_power.max(f32::EPSILON);
+        if ratio >= need { return Ok(()); }
+        let what = if hostile { "holds hostiles" } else { "is unscouted or unsafe" };
+        Err(format!(
+            "{coord} {what} (T{} power {:.0} against your {:.0}: {ratio:.2}x {}, the doctrine needs {need:.1}x)",
+            threat.rating, threat.est_power, power, scaling::ratio_label(ratio).label(),
+        ))
     }
 
     /// Issue one jump for the autopilot. A jump that is not heading home
@@ -3405,7 +3502,7 @@ impl GameEngine {
         if !homeward {
             let min_pct = self.policies.get(&fleet_id).map(|p| p.params.min_fuel_pct).unwrap_or_default();
             let reserve = fleet.fuel_max * min_pct as f32 / 100.0;
-            let need = self.known_hops_home(owner, step) as f32 * hop + reserve;
+            let need = self.home_route(owner, step).direct as f32 * hop + reserve;
             if fuel - hop < need {
                 let why = format!(
                     "a jump to {step} would leave {:.0} fuel against {:.0} needed to return home",
@@ -3531,24 +3628,48 @@ impl GameEngine {
         }
 
         let in_range = move |n: Hex| Hex::distance(&n, &home) <= range as u16;
-        let step = self.bfs_first_hop(
-            location,
-            16,
-            &|n| in_range(n) && !self.sector_has_hostiles(n),
-            &|n| n != home && !self.explored.contains(&(owner, n.to_key())),
-        );
-        if let Some(step) = step {
+        let fleet = self.fleets.get(&fleet_id).unwrap();
+        let uncharted = |n: Hex| n != home && !self.explored.contains(&(owner, n.to_key()));
+        let may_enter = |n: Hex| n == home || (in_range(n) && self.policy_entry_check(fleet, &params, n, Entry::Passage).is_ok());
+        if let Some(step) = self.bfs_first_hop(location, 16, &may_enter, &uncharted) {
             return Ok(self.policy_move(fleet_id, step, false, PolicyPreset::Prospect, "pushing frontier"));
         }
 
-        let why = format!(
-            "nothing uncharted and safe {}; raise max_range or pick another doctrine",
-            Self::range_phrase(range, &params),
-        );
+        let why = format!("{}; raise max_range or pick another doctrine", self.prospect_blocker(fleet, &params, range));
         if location != home {
             return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::Prospect, &format!("returning: {why}")));
         }
         Ok(self.hold_policy(fleet_id, PolicyPreset::Prospect, &why))
+    }
+
+    /// Which constraint stops prospect: the nearest uncharted sector is
+    /// either behind a hazard, beyond the range limit, or there is none.
+    fn prospect_blocker(&self, fleet: &Fleet, params: &PolicyParams, range: u8) -> String {
+        let owner = fleet.owner_id;
+        let Some(home) = self.players.get(&owner).map(|p| p.homeworld) else { return "no homeworld".to_string(); };
+        let from = fleet.location;
+        let uncharted = |n: Hex| n != home && !self.explored.contains(&(owner, n.to_key()));
+        let in_range = |n: Hex| Hex::distance(&n, &home) <= range as u16;
+
+        if let Some(path) = self.bfs_path(from, 16, &in_range, &uncharted) {
+            let near = *path.last().unwrap();
+            let hazard = path.iter().find_map(|&n| self.policy_entry_check(fleet, params, n, Entry::Passage).err());
+            if let Some(why) = hazard {
+                return format!(
+                    "no safe way to the nearest uncharted sector {near} {}: {why}",
+                    Self::range_phrase(range, params),
+                );
+            }
+        }
+        if let Some(path) = self.bfs_path(from, 16, &|_| true, &uncharted) {
+            let near = *path.last().unwrap();
+            let d = Hex::distance(&near, &home);
+            return format!(
+                "the nearest uncharted sector {near} is {d} hexes from home, outside {}",
+                Self::range_phrase(range, params),
+            );
+        }
+        format!("every lane within 16 hops of {from} is charted {}", Self::range_phrase(range, params))
     }
 
     /// MineAndReturn: shuttle between the work sector and home. Every claim
@@ -3723,11 +3844,11 @@ impl GameEngine {
         }
 
         // Hunt hostiles inside the patrol radius.
-        if let Some(target) = self.find_nearest_target(home, POLICY_PATROL_RADIUS, PolicyTarget::Hostiles) {
-            let threat = self.hostile_power_at(target);
-            if ours * 10.0 >= threat * params.engage_ratio_x10 as f32 {
-                return Ok(self.policy_step_toward(fleet_id, target, PolicyPreset::PatrolHome, "intercepting contact"));
-            }
+        let fleet = &self.fleets[&fleet_id].clone();
+        if let Some(target) = self.find_nearest_target(home, POLICY_PATROL_RADIUS, PolicyTarget::Hostiles)
+            && self.policy_entry_check(fleet, &params, target, Entry::Hunt).is_ok()
+        {
+            return Ok(self.policy_step_toward(fleet_id, target, PolicyPreset::PatrolHome, "intercepting contact"));
         }
 
         // Quiet night: wander the beat.
@@ -3736,9 +3857,10 @@ impl GameEngine {
         );
         let candidates: Vec<Hex> = self.world_gen.connected_neighbors(location).slice().iter().copied()
             .filter(|n| Hex::distance(n, &home) <= POLICY_PATROL_RADIUS as u16)
+            .filter(|&n| n == home || self.policy_entry_check(fleet, &params, n, Entry::Passage).is_ok())
             .collect();
         if candidates.is_empty() {
-            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::PatrolHome, "drifted off the beat"));
+            return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::PatrolHome, "no safe sector on the beat"));
         }
         let target = candidates[rng.random_range(0..candidates.len())];
         if target != location {
@@ -3818,9 +3940,11 @@ impl GameEngine {
         }).count()
     }
 
-    fn find_homeworld_location(&self) -> Option<Hex> {
+    /// Seeded from the world and the new player's id, so a world replays the
+    /// same placements (tests, catch-up) while each world and player differ.
+    fn find_homeworld_location(&self, player_id: u64) -> Option<Hex> {
         let mut rng = StdRng::seed_from_u64(
-            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+            self.world_gen.world_seed ^ player_id.wrapping_mul(0x9E3779B97F4A7C15)
         );
 
         let min = HOMEWORLD_MIN_DIST as i32;
@@ -5574,6 +5698,210 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Everything within `radius` of home counts as entered.
+    fn chart_around_home(engine: &mut GameEngine, pid: u64, radius: u16) {
+        let home = engine.players[&pid].homeworld;
+        for q in -(radius as i16)..=radius as i16 {
+            for r in -(radius as i16)..=radius as i16 {
+                let h = Hex { q: home.q + q, r: home.r + r };
+                if Hex::distance(&h, &home) <= radius { engine.explored.insert((pid, h.to_key())); }
+            }
+        }
+    }
+
+    fn set_weapons(engine: &mut GameEngine, fid: u64, weapon: f32) {
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        for ship in f.ships[..f.ship_count].iter_mut() {
+            ship.weapon_power = weapon;
+            if weapon < 1.0 { ship.hull = 1.0; ship.shield = 0.0; }
+        }
+    }
+
+    /// Runs the autopilot and returns (moves, hold reasons).
+    fn run_policy(engine: &mut GameEngine, ticks: u32) -> (u32, Vec<String>) {
+        let (mut moves, mut holds) = (0, Vec::new());
+        for _ in 0..ticks {
+            engine.tick().unwrap();
+            for ev in policy_events(engine) {
+                match ev.action.as_str() {
+                    "move" => moves += 1,
+                    "hold" => holds.push(ev.reason),
+                    _ => {}
+                }
+            }
+        }
+        (moves, holds)
+    }
+
+    #[test]
+    fn prospect_never_enters_a_sector_it_would_lose_in() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Weakling");
+        let home = engine.players[&pid].homeworld;
+        set_weapons(&mut engine, fid, 0.1);
+        chart_around_home(&mut engine, pid, 2);
+        let params = PolicyParams { max_range: 4, ..PolicyParams::default() };
+        engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+        engine.drain_events();
+
+        let mut seen_out = false;
+        let mut holds = Vec::new();
+        for _ in 0..300 {
+            engine.tick().unwrap();
+            let at = engine.fleets[&fid].location;
+            seen_out |= !engine.explored.contains(&(pid, at.to_key())) && at != home;
+            holds.extend(policy_events(&mut engine).into_iter().filter(|e| e.action == "hold").map(|e| e.reason));
+        }
+        assert!(!seen_out, "the fleet left the charted ring into a sector it cannot beat");
+        assert!(holds.iter().any(|h| h.contains("DEADLY")), "the refusal names the verdict: {holds:?}");
+        assert!(holds[0].contains("doctrine needs"), "{}", holds[0]);
+    }
+
+    #[test]
+    fn prospect_pushes_the_frontier_when_a_safe_path_exists() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Bruiser");
+        let home = engine.players[&pid].homeworld;
+        set_weapons(&mut engine, fid, 5000.0);
+        chart_around_home(&mut engine, pid, 2);
+        let params = PolicyParams { max_range: 4, ..PolicyParams::default() };
+        engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+        engine.drain_events();
+
+        let (moves, _) = run_policy(&mut engine, 400);
+        assert!(moves > 0);
+        let beyond = engine.explored.iter()
+            .filter(|(p, k)| *p == pid && Hex::distance(&Hex::from_key(*k), &home) > 2)
+            .count();
+        assert!(beyond >= 3, "a strong fleet charts past the ring: {beyond}");
+    }
+
+    #[test]
+    fn the_prospect_hold_names_the_constraint_that_blocks_it() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Boxed");
+        set_weapons(&mut engine, fid, 5000.0);
+        chart_around_home(&mut engine, pid, 2);
+        let params = PolicyParams { max_range: 2, ..PolicyParams::default() };
+        engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+        engine.drain_events();
+        let (_, holds) = run_policy(&mut engine, 100);
+        assert!(holds[0].contains("outside within 2 hops of home"), "range: {}", holds[0]);
+
+        let (pid, fid) = register(&mut engine, "Hunted");
+        set_weapons(&mut engine, fid, 0.1);
+        chart_around_home(&mut engine, pid, 2);
+        let params = PolicyParams { max_range: 4, ..PolicyParams::default() };
+        engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+        engine.drain_events();
+        let (_, holds) = run_policy(&mut engine, 100);
+        assert!(holds[0].contains("no safe way to the nearest uncharted sector"), "hazard: {}", holds[0]);
+    }
+
+    #[test]
+    fn standing_orders_refuse_a_lane_through_a_sector_they_would_lose_in() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Hauler");
+        let home = engine.players[&pid].homeworld;
+        let lair = engine.find_nearest_target(home, 8, PolicyTarget::Hostiles).expect("a lair near home");
+        set_weapons(&mut engine, fid, 0.1);
+        engine.drain_events();
+
+        for preset in [PolicyPreset::MineAndReturn, PolicyPreset::SalvageAndSites] {
+            assert!(!engine.policy_step_toward(fid, lair, preset, "test"));
+            let events = policy_events(&mut engine);
+            assert_eq!(events.len(), 1, "{events:?}");
+            assert_eq!(events[0].action, "hold");
+            assert!(events[0].reason.contains("refusing the way to"), "{}", events[0].reason);
+            assert_eq!(engine.fleets[&fid].location, home);
+            if let Some(p) = engine.policies.get_mut(&fid) { p.last_hold = None; }
+        }
+
+        set_weapons(&mut engine, fid, 5000.0);
+        assert!(engine.policy_step_toward(fid, lair, PolicyPreset::SalvageAndSites, "test"));
+    }
+
+    #[test]
+    fn hopes_of_getting_home_use_the_shortest_real_route() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Wanderer");
+        let home = engine.players[&pid].homeworld;
+        // A sector with a direct lane home and a longer charted detour.
+        let mut found = None;
+        'search: for q in -4i16..=4 {
+            for r in -4i16..=4 {
+                let x = Hex { q: home.q + q, r: home.r + r };
+                let d = Hex::distance(&x, &home);
+                if !(2..=3).contains(&d) { continue; }
+                let Some(direct) = engine.lane_path(x, home, 64, &|_| true) else { continue; };
+                let mid: Vec<Hex> = direct[..direct.len() - 1].to_vec();
+                if let Some(detour) = engine.lane_path(x, home, 64, &|n| !mid.contains(&n))
+                    && detour.len() > direct.len()
+                {
+                    found = Some((x, direct.len() as u32, detour));
+                    break 'search;
+                }
+            }
+        }
+        let (x, direct, detour) = found.expect("a sector with a longer charted detour");
+        for h in &detour { engine.explored.insert((pid, h.to_key())); }
+        engine.explored.insert((pid, x.to_key()));
+
+        let route = engine.home_route(pid, x);
+        assert_eq!(route.direct, direct);
+        assert_eq!(route.charted, Some(detour.len() as u32));
+        assert!(route.unexplored, "the direct lanes cross uncharted space");
+
+        // Fuel for the direct route, not for the detour: no warning, no early return.
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+        place(&mut engine, fid, x, hop * (direct as f32 + 0.5));
+        let fleet = engine.fleets[&fid].clone();
+        let params = PolicyParams { min_fuel_pct: 0, ..PolicyParams::default() };
+        assert!(engine.policy_return_reason(&fleet, &params).is_none(), "the direct route is affordable");
+
+        // One hop short even of the direct route: the warning quotes both.
+        engine.fleets.get_mut(&fid).unwrap().fuel = hop * (direct as f32 - 0.5);
+        engine.drain_events();
+        engine.warn_if_cannot_return(fid, x, hop);
+        let msg = alerts(&mut engine).remove(0).message;
+        assert!(msg.contains(&format!("the charted route home is {} hops", detour.len())), "{msg}");
+        assert!(msg.contains(&format!("the direct route is {direct} hops")), "{msg}");
+        assert!(msg.contains("across unexplored space"), "{msg}");
+    }
+
+    #[test]
+    fn warnings_without_a_charted_route_say_so() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Pathfinder");
+        let chain = charted_chain(&mut engine, pid, 2);
+        engine.explored.remove(&(pid, chain[0].to_key()));
+        let hop = engine.hop_fuel_cost(&engine.fleets[&fid]);
+        place(&mut engine, fid, chain[1], hop * 1.5);
+        engine.drain_events();
+        engine.warn_if_cannot_return(fid, chain[1], hop);
+        let a = alerts(&mut engine).remove(0);
+        assert!(a.message.contains("no charted route home; the direct route is 2 hops"), "{}", a.message);
+        assert!(a.message.contains("across unexplored space"), "{}", a.message);
+    }
+
+    #[test]
+    fn previews_rate_the_odds_of_the_fleet_asked_about() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Twins");
+        let home = engine.players[&pid].homeworld;
+        let ids: Vec<u64> = engine.fleets[&fid].ships[..engine.fleets[&fid].ship_count].iter().map(|s| s.id).collect();
+        let other = engine.handle_split(pid, fid, &ids[..1]).unwrap();
+        set_weapons(&mut engine, other, 400.0);
+        let target = engine.world_gen.connected_neighbors(home).slice()[0];
+
+        let weak = engine.preview_move(pid, fid, target).unwrap();
+        let strong = engine.preview_move(pid, other, target).unwrap();
+        assert_eq!(weak.fleet_id, fid);
+        assert!(strong.fleet_power > weak.fleet_power * 10.0);
+        assert!(strong.ratio > weak.ratio * 10.0);
+        assert!(strong.label > weak.label, "{:?} vs {:?}", strong.label, weak.label);
     }
 
     #[test]

@@ -1,14 +1,16 @@
 {
   "can_jump": false,
   "can_return": false,
+  "charted_hops_home": 17,
   "fleet_id": 3,
   "fleet_power": 60.0,
   "fuel_after": 0.0,
   "fuel_cost": 31.5,
   "fuel_to_return": 126.0,
   "hops_home": 4,
-  "label": "risky",
+  "label": "even",
   "ratio": 1.2899999618530273,
+  "route_unexplored": true,
   "target": {
     "q": 2,
     "r": -6
