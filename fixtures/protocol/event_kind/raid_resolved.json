@@ -19,6 +19,7 @@
     "deuterium": 0.0,
     "metal": 10.0
   },
+  "ships_lost": 3,
   "structures_lost": 6,
   "structures_restored": 0,
   "tick": 1234

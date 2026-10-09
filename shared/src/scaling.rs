@@ -939,7 +939,28 @@ pub const DERELICT_VALUE_GROWTH: f32 = 1.14;
 pub const DERELICT_ROLL_MIN: f32 = 0.6;
 pub const DERELICT_ROLL_MAX: f32 = 1.4;
 /// Score points an ancient relic is worth.
-pub const RELIC_POINTS: f32 = 25.0;
+pub const RELIC_POINTS: f32 = 30.0;
+
+/// Anti-farming: every kill in a sector adds one point of heat, and the next
+/// kill's loot and score are multiplied by `FARM_DECAY^heat`. Heat halves
+/// every `FARM_HALF_LIFE_RESPAWNS` respawn delays, so a group left to respawn
+/// a few times pays in full again but one sector is not an endless tap: at
+/// the respawn rate its steady yield is about a fifth of a fresh kill.
+pub const FARM_DECAY: f32 = 0.75;
+pub const FARM_HALF_LIFE_RESPAWNS: f32 = 4.0;
+
+/// Share of a fresh kill's loot and score a sector with `heat` pays.
+pub fn farm_factor(heat: f32) -> f32 {
+    FARM_DECAY.powf(heat.max(0.0))
+}
+
+/// `heat` after `elapsed` ticks with the given half-life.
+pub fn farm_heat_after(heat: f32, elapsed: u64, half_life_ticks: u64) -> f32 {
+    if heat <= 0.0 || half_life_ticks == 0 {
+        return 0.0;
+    }
+    heat * 0.5f32.powf(elapsed as f32 / half_life_ticks as f32)
+}
 
 /// Units of loot (before the pace's finds factor) a destroyed group leaves:
 /// it grows slower than the danger, so far hunting stays a gamble.
@@ -988,9 +1009,9 @@ pub fn data_core_chance(rating: u8) -> f32 {
     (0.03 * (f32::from(rating) - 5.0)).clamp(0.0, 0.15)
 }
 
-/// Chance of an ancient relic, from T7: 2 percent per rating point above 6.
+/// Chance of an ancient relic, from T6: 2 percent per rating point above 5.
 pub fn relic_chance(rating: u8) -> f32 {
-    (0.02 * (f32::from(rating) - 6.0)).clamp(0.0, 0.06)
+    (0.02 * (f32::from(rating) - 5.0)).clamp(0.0, 0.08)
 }
 
 // ── Threat and the NPC gradient ──────────────────────────────────
@@ -1259,8 +1280,8 @@ mod golden_tests {
         near(cap(10, 1.0), 288325.0, 201827.0, 144162.0);
         near(cap(0, 10.0), 28117.0, 19681.0, 14058.0);
         near(cap(3, 10.0), 94895.0, 66426.0, 47447.0);
-        near(cap(0, 600.0), 606154.0, 424308.0, 303077.0);
-        near(cap(14, 600.0), 176954278.0, 123867995.0, 88477139.0);
+        near(cap(0, 600.0), 78254.0, 54778.0, 39127.0);
+        near(cap(14, 600.0), 22844699.0, 15991289.0, 11422350.0);
     }
 
     #[test]
@@ -1548,7 +1569,7 @@ mod golden_tests {
         near(t(derelict_ambush), vec![0.10, 0.13, 0.16, 0.19, 0.22, 0.25, 0.28, 0.31, 0.34]);
         near(t(recovery_chance), vec![0.0, 0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.30]);
         near(t(data_core_chance), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.03, 0.06, 0.09, 0.12]);
-        near(t(relic_chance), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.04, 0.06]);
+        near(t(relic_chance), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.04, 0.06, 0.08]);
         assert_eq!(derelict_ambush(40), 0.35);
     }
 

@@ -152,10 +152,10 @@ def check_ships_and_defences(sim, rust):
 def check_storage_raids_misc(sim, rust):
     misc = rust["misc"]
     check("VAULT_GROWTH", misc["vault_growth"], sim.VAULT_GROWTH, 1e-6)
-    check("CAP_PACE_EXP", misc["cap_pace_exponent"], sim.CAP_PACE_EXP, 1e-4)
+    check("cargo pace factor (pace 10000)", misc["cargo_exponent"], 0.5, 1e-4)
     for pace, rows in rust["storage_caps"].items():
         for v, cap in enumerate(rows):
-            scale = sim.VAULT_GROWTH ** v * float(pace) ** sim.CAP_PACE_EXP
+            scale = sim.VAULT_GROWTH ** v * sim.cap_mult(float(pace))
             for i, k in enumerate(("metal", "crystal", "deut")):
                 check(f"cap {k} vault {v} pace {pace}", cap[i], sim.VAULT_BASE_CAP[k] * scale, rel=1e-4)
     for s, power in rust["raid_power_base"].items():
@@ -218,12 +218,16 @@ def check_loot(sim, rust):
         check(f"derelict ambush d={d}", row["ambush"], sim.derelict_ambush(d), 1e-5)
         check(f"recovery chance T{t}", row["recovery"], min(0.30, max(0.0, 0.05 * (t - 2))), 1e-5)
         check(f"data core chance T{t}", row["data_core"], min(0.15, max(0.0, 0.03 * (t - 5))), 1e-5)
-        check(f"relic chance T{t}", row["relic"], min(0.06, max(0.0, 0.02 * (t - 6))), 1e-5)
-    # sim.py prices exploration as 0.15 * derelict_value / 1000 + 0.02 * T^1.5 (see explore_raw)
-    check("board value share", source_const("server/src/score.rs", "BOARD_VALUE_SHARE"), 0.15, 1e-6)
-    check("board threat points", source_const("server/src/score.rs", "BOARD_THREAT_POINTS"), 0.02, 1e-6)
-    check("chart threat points", source_const("server/src/score.rs", "CHART_THREAT_POINTS"), 0.01, 1e-6)
-    check("relic points", source_const("shared/src/scaling.rs", "RELIC_POINTS"), 25.0, 1e-6)
+        check(f"relic chance T{t}", row["relic"], sim.relic_chance(t), 1e-5)
+    for name, want in (
+        ("BOARD_VALUE_SHARE", sim.BOARD_VALUE_SHARE), ("DISCOVERY_POINTS", sim.DISCOVERY_POINTS),
+        ("CHART_BASE_POINTS", sim.CHART_BASE_POINTS), ("CHART_THREAT_POINTS", sim.CHART_THREAT_POINTS),
+        ("KILL_SHARE", sim.KILL_SHARE), ("FULL_PAY_RATIO", sim.FULL_PAY_RATIO), ("MIN_PAY", sim.MIN_PAY),
+    ):
+        check(name, source_const("server/src/score.rs", name), want, 1e-6)
+    for name, want in (("RELIC_POINTS", sim.RELIC_POINTS), ("FARM_DECAY", sim.FARM_DECAY),
+                       ("FARM_HALF_LIFE_RESPAWNS", sim.FARM_HALF_LIFE_RESPAWNS)):
+        check(name, source_const("shared/src/scaling.rs", name), want, 1e-6)
     check("derelict respawn ticks", source_const("shared/src/constants.rs", "DERELICT_RESPAWN_TICKS"), sim.DERELICT_RESPAWN_H * 3600.0)
     check("derelict respawn pace exponent", rust["misc"]["finds_exponent"], sim.DERELICT_PACE_EXP, 1e-6)
 

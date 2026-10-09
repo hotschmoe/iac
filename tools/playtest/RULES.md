@@ -158,7 +158,8 @@ left it returns home and holds rather than wandering between known sectors.
   reveal around home), Defense Grid (see raids), Storage Vault (stockpile
   caps) and Fabricator (building time / (1 + 0.15 x level)).
 - **Storage** — every stockpile is capped at 5000 / 3500 / 2500 x 1.5^Vault
-  x P^0.75 (`homeworld.storage`: `cap`, `protected`, `full_in_s`, `capped`).
+  x P^0.75 up to pace 10, then growing as P^0.25 (a blitz Vault 0 holds 78k
+  metal, not 606k) (`homeworld.storage`: `cap`, `protected`, `full_in_s`, `capped`).
   Mines stop at the cap and the surplus is lost; a payment bigger than a cap
   is refused (`StorageTooSmall`, naming the Vault level it needs); docked
   cargo unloads only what fits and the rest waits aboard
@@ -212,7 +213,7 @@ left it returns home and holds rather than wandering between known sectors.
   `recall` costs 2x the jump fuel per hex, all or nothing.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
   chains (corvettes shred scouts…), victors drop salvage (`FleetDestroyed.salvage`
-  is exactly the pile `collect_salvage` can take; it lasts 60 ticks and a
+  is exactly the pile `collect_salvage` can take; it lasts 180 ticks and a
   `SalvageDespawned` event says when one expires). You only receive combat
   events for fights your fleets or homeworld are in, or that happen in a
   sector where you have a fleet or your homeworld. Each carries `owner`
@@ -229,7 +230,7 @@ left it returns home and holds rather than wandering between known sectors.
   them. Each entry has `live` (true: current this tick; false: remembered) and
   `last_seen` (tick it was last observed). A stale entry shows ore, hostiles,
   wreckage and derelict **as last seen**, which may be out of date (wreckage
-  lasts 60 ticks; `salvage_despawn_tick` says when). Tick updates add a
+  lasts 180 ticks; `salvage_despawn_tick` says when). Tick updates add a
   sector to `sector_updates` once more when it turns stale.
 - **Derelicts** — dead ships drift in debris fields and empty space beyond
   the shipping lanes (`D` on the map, "derelict transponder" on scans).
@@ -240,11 +241,15 @@ left it returns home and holds rather than wandering between known sectors.
 - **Loot** — a kill pays `1.2 x group_power^0.8` units (55% metal, 30%
   crystal, 15% deuterium) times P^0.5, for the whole group; far hunting pays
   more but the odds fall faster than the pay rises. Derelict tier follows the
-  threat (T1-3, T4-6, T7-9). A site pays `240 x 1.14^(ring-4)` units at 60 to
+  threat (T1-3, T4-6, T7-9). A kill in a sector that has been killed in
+  recently pays less: each recent kill multiplies the next one's loot and
+  score by 0.75 (heat halves every 4 respawn delays), so a sector is not an
+  endless tap. Holds grow with the pace like the loot: a ship's cargo is
+  multiplied by P^0.5 (a blitz Hauler holds 4900, a Scout 245). A site pays `240 x 1.14^(ring-4)` units at 60 to
   140% times P^0.5; ambush odds `0.10 + 0.03 x (T-1)` (max 0.35); a recovered
   ship `0.05 x (T-2)` (max 0.30), a data core `0.03 x (T-5)` (max 0.15), and
-  from T7 an ancient relic (2% per point above 6, worth 25 explore points, no
-  other use yet). A stripped derelict is replaced after 120 game hours / P^0.5.
+  from T6 an ancient relic (2% per point above 5, max 8%, worth 30 explore
+  points, no other use yet). A stripped derelict is replaced after 120 game hours / P^0.5.
 - **Standing orders** — assign a fleet a doctrine and the server flies it
   (see `policy_update` above). Doctrines respect fuel/cargo thresholds,
   return home to deposit and refuel, and log every decision.
@@ -258,7 +263,8 @@ left it returns home and holds rather than wandering between known sectors.
 - **Raids** — once your empire is worth raiding (Shipyard ≥ 2 or a Defense
   Grid), pirates occasionally vector at your homeworld: a roll every 6 hours
   at pace 1 (30%), at most one per 18 hours, never in your first day, all
-  divided by P^0.75. A raid's power is `5 + 11 x S^0.75` (S = your building
+  divided by P^0.75; each eligible roll that misses raises the next one's odds
+  by 15 points, so a raid is never long overdue. A raid's power is `5 + 11 x S^0.75` (S = your building
   and research points, ships and defences excluded) times a roll of 0.80 to
   1.15, so it grows with your economy and not with your defence;
   `next_raid_estimate_power` shows what to expect. `RaidIncoming` warns
@@ -267,18 +273,20 @@ left it returns home and holds rather than wandering between known sectors.
   salvage in orbit and a share of structures destroyed (up to half, scaled by
   raid over defence power), 70% of them rebuilt free shortly after. Lost: a
   hard-capped slice of the stockpile above the Vault-protected share (≤8%),
-  half the structures gone for good, and a long grace period. Never
+  half the structures gone for good, a quarter of the ships docked at home
+  destroyed (at least one), and a long grace period. Never
   buildings, never queues. `RaidResolved` reports `structures_lost`,
-  `structures_restored` and `protected_kept`.
+  `structures_restored`, `protected_kept` and `ships_lost`.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
   the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2
-  deuterium) / 1000. Kills add 25% of the NPC group's weighted cost (nothing
-  when your force was 8x theirs, nothing twice in a sector until it
-  respawns). Exploration adds `0.15 x loot/1000 + 0.02 x T^1.5` for the first
-  boarding of each derelict, 25 for a relic, and `0.01 x T^1.5` for each new
-  sector whose chart you deliver to the homeworld (the fleet must dock alive:
-  `ChartDelivered`). `score = core + min(combat + explore, 0.25 x core)`. Cancelling
+  deuterium) / 1000. Kills add the weight of the pile they leave (so points
+  follow the finds factor and the sector's heat), in full up to 4x the NPC
+  group's power and falling as 4/ratio beyond (half at 8x, a 5% floor, never
+  zero), once per respawn. Exploration adds `0.5 x weight(loot) + 1.5 x T^1.5`
+  for the first boarding of each derelict, 30 for a relic, and
+  `0.15 + 0.10 x T^1.5` for each new sector whose chart you deliver to the
+  homeworld (the fleet must dock alive: `ChartDelivered`). `score = core + min(combat + explore, 0.25 x core)`. Cancelling
   a build or losing a ship scores nothing; resources received from others
   never count. Accounts that log in with `"agent": true` (the headless client
   does) carry the `agent` flag on the board, which labels and never scores.

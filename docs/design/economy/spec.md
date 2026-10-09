@@ -406,9 +406,11 @@ weight(m, c, d)  = (1.0 m + 1.5 c + 2.0 d) / 1000          # production ratio 10
 econ     = sum over completed building levels and research levels of weight(cost paid)
 fleet    = sum over living ships of weight(build cost)
 defence  = 0.5 * sum over living structures of weight(build cost)
-combat   = sum over kills of 0.25 * weight(NPC group build cost)       (with the rules below)
-explore  = sum over first-time derelict boardings of 0.15 * loot_value/1000 + 0.02 * T^1.5
-         + 0.01 * T^1.5 per newly charted sector delivered to a dock
+combat   = sum over kills of weight(pile left) * pay(ratio)          # pile includes the finds factor and the sector's heat
+pay(r)   = clamp(4 / r, 0.05, 1)                                       # r = engaged power / NPC group power
+explore  = sum over first-time derelict boardings of 0.5 * weight(rolled loot) + 1.5 * T^1.5
+         + 30 per relic
+         + (0.15 + 0.10 * T^1.5) per newly charted sector delivered to a dock
 core     = econ + fleet + defence
 score    = core + min(combat + explore, 0.25 * core)
 ```
@@ -420,7 +422,7 @@ What makes it hard to game:
 | Build and cancel to farm points | only completed levels count; cancelling an active item returns 50 percent resources and 0 points |
 | Spend on ships and scuttle them | fleet points count living ships, so losses subtract |
 | Cheap defence spam | defences count 50 percent |
-| Farming trivial NPCs | a kill pays 0 if your engaged power is >= 8x the NPC power, and 0 again in the same sector until it respawns |
+| Farming trivial NPCs | pay falls as 4/ratio beyond 4x the NPC power (5% floor), pays once per respawn, and every recent kill in a sector multiplies the next kill's loot and score by 0.75 (heat halves every 4 respawn delays) |
 | Suicide scouts to chart space | charting points are credited only when the chart is delivered to a dock |
 | Exploring instead of building | the combat plus exploration share is capped at 25 percent of core points. In the simulation the cap binds from the middle of the arc, so exploration is a tie-breaker and a differentiator, not the ladder |
 | Alt feeding (later, with trade) | transfers move resources but points are computed from what was *built*; resources received from another player never count |
@@ -964,3 +966,35 @@ Values are pace-1 unless stated. "unchanged" rows are listed so a reviewer sees 
 8. **Loot**: wreck `1.2 x power^0.8` (was 30 percent of one ship), derelicts `240 x 1.14^(d-4)` by threat tier, respawning, with rare finds; all x `P^0.5`.
 9. **Refuel costs 0.08 deuterium per fuel unit**, Fuel Depot +25 percent per level.
 10. **Cruiser gates**: Cruiser Tech 3000/2000/1000 to 8000/5000/2500 and Frigate Tech 1000/600/300 to 2000/1200/600, plus the raid and score rework (raids sized from points, structures, `core + min(extra, 25 percent)`).
+
+
+---
+
+## 18. Rules pass, 2026-10-10 (after the second six-AI playtest)
+
+Changes, with the simulation behind them (`python3 sim.py --compare`). Section 16 above was pasted before this pass; rerun `sim.py` for current tables.
+
+* **Queue:** one rule, see section 4 and `decisions.md`.
+* **Cargo:** ship holds are multiplied by P^0.5 (`Pace::cargo_mult`), the same factor as loot. A blitz Hauler holds 4900, a Scout 245; ratio of pile to hold is a constant of the rules at any pace (a ring-20 kill is under half a Hauler hold). Salvage piles last 180 ticks (was 60).
+* **Anti-farming:** each kill adds 1 heat to its sector; the next kill's pile and score are multiplied by 0.75^heat; heat halves every 4 respawn delays. A group killed on every respawn pays about 22 percent of a fresh kill; one killed every fourth respawn pays 75 percent. Total yield from instant repeats is bounded at 1/(1-0.75) = 4 fresh kills.
+* **Combat points:** weight of the pile times pay(r) (section 9); old rule was 0.25 of the NPC build cost and zero from 8x.
+* **Exploration points:** chart 0.15 + 0.10 T^1.5 (T4: 0.95), first boarding 0.5 of the loot weight + 1.5 T^1.5 (a ring-8 derelict at a blitz is about 13 points), relic 30, chance 2 percent per T above 5 (max 8). All of it scales with finds the way income does, except the flat parts, which the cap equalises.
+* **Cap:** stays 25 percent. The simulation puts a skilled explorer or raider within 90 to 110 percent of a pure builder at blitz and season with it; a higher cap lets an explorer with the same core overtake (35 percent gave +41 percent at season). The cap binds for explorers at season pace (about 1000 explore points against 360 allowed) and not at blitz (about 30 against 50).
+* **Raids:** the scheduler fires (engine tests: mean 1.2 to 3 forecasts per blitz hour, about 3 per season day). Pity: each eligible roll that misses raises the next one's odds by 15 points. A lost raid destroys a quarter of the ships docked at home (at least one). A turtle that out-defends the raid stays safe by design; its cost is that docked ships earn nothing while the map pays.
+* **Storage:** the cap multiplier is P^0.75 up to pace 10 and P^0.25 above it. Cap/production-per-look-in-window grew as P^0.5; at a blitz the base cap was four hours of mine output. Now it is 78k metal at Vault 0 (about half an hour at Metal 10) and the Vault matters for the last mines and for the protected share.
+* **Not changed (explained in the journal):** mine costs (payback of Metal 12 to 15 is 8 to 18 minutes at a blitz; past 17 it exceeds an hour, which is where a player should stop), the loot split (players disagree on whether crystal or deuterium is short).
+
+Sim model of the play styles (PILOT_SKILL 0.5 of the ideal tempo, ATTENTION_PENALTY 0.2 of building income at full field attention, CHART_RATE_PER_FLEET_H 60; assumptions the live test checks):
+
+| world | style | core | combat | explore | extra after cap | total | vs builder |
+|---|---|---|---|---|---|---|---|
+| blitz-1h | builder | 224 | 0 | 0 | 0 | 224 | 100% |
+| blitz-1h | explorer | 190 | 5 | 28 | 33 | 223 | 99% |
+| blitz-1h | raider | 190 | 5 | 5 | 11 | 201 | 90% |
+| blitz-1h | mixed | 213 | 3 | 10 | 14 | 227 | 101% |
+| season-7d | builder | 1631 | 0 | 0 | 0 | 1631 | 100% |
+| season-7d | explorer | 1437 | 25 | 1045 | 359 | 1797 | 110% |
+| season-7d | raider | 1437 | 25 | 281 | 306 | 1743 | 107% |
+| season-7d | mixed | 1621 | 25 | 396 | 405 | 2026 | 124% |
+
+Honest limits: a level lands in a step, so a one-hour comparison carries about 10 percent noise (the blitz rows are averaged over 54 to 66 minutes); the sim's builder (224) is weaker than the playtest's best human-planned builders (about 375), so only ratios carry meaning; mixed beats both at season but ties the builder at blitz.

@@ -397,6 +397,8 @@ impl Database {
         Self::ensure_column(&conn, "sectors_modified", "salvage_crystal", "REAL")?;
         Self::ensure_column(&conn, "sectors_modified", "salvage_deut", "REAL")?;
         Self::ensure_column(&conn, "sectors_modified", "salvage_despawn_tick", "INTEGER")?;
+        Self::ensure_column(&conn, "sectors_modified", "kill_heat", "REAL DEFAULT 0")?;
+        Self::ensure_column(&conn, "sectors_modified", "kill_heat_tick", "INTEGER DEFAULT 0")?;
         Self::ensure_column(&conn, "fleets", "harvest_resource", "TEXT DEFAULT 'auto'")?;
         Self::ensure_column(&conn, "players", "token_hash", "BLOB")?;
 
@@ -755,8 +757,9 @@ impl Database {
             "INSERT OR REPLACE INTO sectors_modified (q, r, metal_density, crystal_density, deut_density,
              metal_harvested, crystal_harvested, deut_harvested, npc_cleared_tick,
              site_looted_tick, site_ambush_bumps,
-             salvage_metal, salvage_crystal, salvage_deut, salvage_despawn_tick)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             salvage_metal, salvage_crystal, salvage_deut, salvage_despawn_tick,
+             kill_heat, kill_heat_tick)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 q as i64,
                 r as i64,
@@ -773,6 +776,8 @@ impl Database {
                 ov.salvage.map(|r| r.crystal as f64),
                 ov.salvage.map(|r| r.deuterium as f64),
                 ov.salvage_despawn_tick.map(|t| t as i64),
+                ov.kill_heat as f64,
+                ov.kill_heat_tick as i64,
             ],
         )?;
         Ok(())
@@ -784,7 +789,8 @@ impl Database {
             "SELECT q, r, metal_density, crystal_density, deut_density,
                     metal_harvested, crystal_harvested, deut_harvested,
                     npc_cleared_tick, site_looted_tick, site_ambush_bumps,
-                    salvage_metal, salvage_crystal, salvage_deut, salvage_despawn_tick
+                    salvage_metal, salvage_crystal, salvage_deut, salvage_despawn_tick,
+                    kill_heat, kill_heat_tick
              FROM sectors_modified",
         )?;
 
@@ -806,11 +812,13 @@ impl Database {
                 row.get::<_, Option<f64>>(12)?,
                 row.get::<_, Option<f64>>(13)?,
                 row.get::<_, Option<i64>>(14)?,
+                row.get::<_, Option<f64>>(15)?,
+                row.get::<_, Option<i64>>(16)?,
             ))
         })?;
 
         for row_result in rows {
-            let (q, r, md, cd, dd, mh, ch, dh, nct, slt, sab, sm, sc, sd, sdt) = row_result?;
+            let (q, r, md, cd, dd, mh, ch, dh, nct, slt, sab, sm, sc, sd, sdt, heat, heat_tick) = row_result?;
             overrides.push(SectorOverrideRow {
                 q: q as i16,
                 r: r as i16,
@@ -830,6 +838,8 @@ impl Database {
                     npc_cleared_tick: nct.map(|t| t as u64),
                     site_looted_tick: slt.map(|t| t as u64),
                     site_ambush_bumps: sab.unwrap_or(0).clamp(0, 255) as u8,
+                    kill_heat: heat.unwrap_or(0.0) as f32,
+                    kill_heat_tick: heat_tick.unwrap_or(0).max(0) as u64,
                 },
             });
         }

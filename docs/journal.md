@@ -683,3 +683,36 @@ commit of the `rules-pass` branch.
   `QueuedResearch` and `QueuedShip` gained `waiting_on` and `start_in`.
 - Bug found by the raid-cadence test: `fleet.idle_ticks` overflowed (debug
   panic) after 65535 idle ticks; it saturates now.
+
+### The map pays (combat, exploration, cargo, raids, storage)
+
+- **Why it was dead:** loot scales with P^0.5 and cargo did not, so a blitz
+  pile of thousands met holds of 10 to 40, and points were priced off the
+  unscaled NPC build cost. `Pace::cargo_mult` (= P^0.5) now multiplies every
+  hold (`fleet_cargo_capacity(fleet, pace)`). Salvage piles last 180 ticks.
+- **Combat points:** `KILL_SHARE x weight(pile) x clamp(4 / ratio, 0.05, 1)`;
+  the pile already carries the finds factor and the sector's heat.
+- **Anti-farming:** `SectorOverride.kill_heat` / `kill_heat_tick` (new columns,
+  migrated by `ensure_column`). 0.75 per recent kill, half-life 4 respawn delays.
+  The playtest's "same template NPC destroyed repeatedly" was this tap.
+- **Exploration:** chart `0.15 + 0.10 T^1.5`; first boarding `0.5 x weight(loot
+  incl. finds) + 1.5 T^1.5`; relic 30 at 2% per T above 5 (max 8%).
+- **Cap:** kept at 25% (`sim.py --compare`, spec section 18). Raising it to 35%
+  made a season explorer 141% of a builder.
+- **Raids:** the scheduler was not broken: engine tests over 12 blitz players
+  give 1.2 to 3 forecasts an hour and about 3 a season day. The playtest's quiet
+  hours were luck (a 30% roll about 13 times) plus nobody reading
+  `RaidIncoming`. Pity (+15 points per missed roll) removes the bad tail. A lost
+  raid destroys a quarter of the docked ships (`RaidResolved.ships_lost`). Not
+  done: hull wear on a repelled raid (no repair exists, so it would be a creeping
+  tax); an over-defended turtle stays safe on purpose.
+- **Storage:** cap multiplier is P^0.75 to pace 10, then P^0.25. The sim now
+  shows the blitz Vault in use (3.7% of the time above 90% of cap, was 0).
+- **Mines:** payback at a blitz (cost over extra output): Metal 12 about 8 min,
+  15 about 18 min, 18 about 42 min. Players stopping near 12 to 13 were limited
+  by queue and metal, not by payback; no change.
+- **Sim:** `PILOT_SKILL`, `ATTENTION_PENALTY`, `CHART_RATE_PER_FLEET_H` and the
+  four styles are assumptions, flagged in `sim.py`. `check_sim_constants.py`
+  now compares the score, farm and cap constants.
+- **Protocol:** `RaidResolved.ships_lost`; `Queue` event; `queue_waiting_max`;
+  `waiting_on` and `start_in` on queued orders.

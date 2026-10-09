@@ -20,7 +20,7 @@ use iac_shared::constants::{
     TEMPLATE_NPC_ID_BASE,
     HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST, MOVE_BASE_COOLDOWN,
     SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_SCOUT_RANGE, SCAN_REVEAL_TICKS,
-    RAID_ROLL_INTERVAL, RAID_ROLL_CHANCE, RAID_MIN_INTERVAL,
+    RAID_ROLL_INTERVAL, RAID_ROLL_CHANCE, RAID_PITY_STEP, RAID_LOST_SHIP_FRACTION, RAID_MIN_INTERVAL,
     RAID_MIN_PLAYER_AGE, RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX,
     RAID_STRUCTURE_DAMAGE, RAID_STRUCTURE_RESTORE, RAID_RESTORE_TICKS, RAID_LOST_STRUCTURE_FRACTION,
     RAID_LOSS_CAP_METAL, RAID_LOSS_CAP_CRYSTAL, RAID_LOSS_CAP_DEUT,
@@ -300,6 +300,10 @@ pub struct SectorOverride {
     pub site_looted_tick: Option<u64>,
     /// Failed boardings so far — each makes the next attempt hotter.
     pub site_ambush_bumps: u8,
+    /// Anti-farming heat: kills of this sector's group, decaying; see
+    /// `scaling::farm_factor`. `kill_heat_tick` is when it was last updated.
+    pub kill_heat: f32,
+    pub kill_heat_tick: u64,
 }
 
 impl SectorOverride {
@@ -330,6 +334,8 @@ pub struct RaidState {
     pub next_roll_tick: u64,
     pub last_raid_tick: u64,
     pub suppress_until: u64,
+    /// Eligible rolls in a row that missed; each raises the next one's odds.
+    pub missed_rolls: u32,
     pub incoming: Option<IncomingRaid>,
 }
 
@@ -716,6 +722,7 @@ impl GameEngine {
             }
 
             // Collect NPC fleet ship data (read-only)
+            let farm = self.sector_farm_factor(combat_sector);
             let mut npc_sides: Vec<combat::CombatSide> = Vec::new();
             for &nid in &npc_ids {
                 if let Some(n) = self.npc_fleets.get(&nid) {
@@ -727,7 +734,7 @@ impl GameEngine {
                         fleet_id: nid,
                         is_npc: true,
                         owner: None,
-                        salvage: npc_salvage(n, &self.world.pace),
+                        salvage: npc_salvage(n, &self.world.pace).scale(farm),
                         label: n.label.clone(),
                         ships,
                     });
@@ -847,7 +854,9 @@ impl GameEngine {
 
                 if result.player_won {
                     let cleared_key = combat_sector.to_key();
-                    self.credit_kill(combat_id, &pf_ids, &npc_ids, cleared_key);
+                    let pile = npc_sides.iter().fold(Resources::default(), |acc, s| acc.add(s.salvage));
+                    self.credit_kill(combat_id, &pf_ids, &npc_ids, cleared_key, pile);
+                    self.heat_sector(combat_sector);
                     self.ensure_override(cleared_key)
                         .npc_cleared_tick = Some(self.current_tick);
                     self.dirty_sectors.insert(cleared_key, ());
@@ -868,15 +877,15 @@ impl GameEngine {
     }
 
     /// Score for destroying the NPC group, once per respawn of the sector and
-    /// to every player who fought (cooperation costs nothing).
-    fn credit_kill(&mut self, combat_id: u64, player_fleets: &[u64], npcs: &[u64], sector_key: u32) {
+    /// to every player who fought (cooperation costs nothing). It follows the
+    /// pile the kill left (finds factor and anti-farming heat included), so
+    /// points and resources rise and fall together.
+    fn credit_kill(&mut self, combat_id: u64, player_fleets: &[u64], npcs: &[u64], sector_key: u32, pile: Resources) {
         let fresh = self.sector_overrides.get(&sector_key).is_none_or(|o| o.npc_cleared_tick.is_none());
         if !fresh { return; }
-        let (bounty, power) = npcs.iter()
-            .filter_map(|id| self.npc_fleets.get(id))
-            .fold((Resources::default(), 0.0), |(b, p), n| (b.add(n.bounty), p + n.power));
+        let power: f32 = npcs.iter().filter_map(|id| self.npc_fleets.get(id)).map(|n| n.power).sum();
         let engaged = self.active_combats.get(&combat_id).map_or(0.0, |c| c.peak_power);
-        let points = score::kill_points(bounty, engaged, power);
+        let points = score::kill_points(pile, engaged, power);
         if points <= 0.0 { return; }
         let owners: HashSet<u64> = player_fleets.iter()
             .filter_map(|f| self.fleets.get(f))
@@ -888,6 +897,35 @@ impl GameEngine {
                 self.dirty_players.insert(pid, ());
             }
         }
+    }
+
+    /// Ticks for a sector's heat to halve.
+    fn farm_half_life(&self, sector: Hex) -> u64 {
+        let hours = scaling::npc_respawn_hours(sector.dist_from_origin());
+        let respawn = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
+        (respawn as f32 * scaling::FARM_HALF_LIFE_RESPAWNS).ceil() as u64
+    }
+
+    fn sector_heat(&self, sector: Hex) -> f32 {
+        self.sector_overrides.get(&sector.to_key()).map_or(0.0, |o| {
+            scaling::farm_heat_after(o.kill_heat, self.current_tick.saturating_sub(o.kill_heat_tick), self.farm_half_life(sector))
+        })
+    }
+
+    /// What a kill here pays now, as a share of a fresh sector's.
+    fn sector_farm_factor(&self, sector: Hex) -> f32 {
+        scaling::farm_factor(self.sector_heat(sector))
+    }
+
+    /// Record a kill: the next one here pays less until the heat decays.
+    fn heat_sector(&mut self, sector: Hex) {
+        let heat = self.sector_heat(sector) + 1.0;
+        let tick = self.current_tick;
+        let key = sector.to_key();
+        let ov = self.ensure_override(key);
+        ov.kill_heat = heat;
+        ov.kill_heat_tick = tick;
+        self.dirty_sectors.insert(key, ());
     }
 
     /// Turn the per-tick harvest tallies into events: one per fleet every
@@ -964,7 +1002,7 @@ impl GameEngine {
                 .map_or(1.0, |p| scaling::harvest_yield(p.research.harvesting_efficiency));
             let harvest_power = fleet_harvest_power(fleet);
             let dist = location.dist_from_origin();
-            let max_cargo = fleet_cargo_capacity(fleet);
+            let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
             let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
             let mut remaining = max_cargo - used;
 
@@ -1568,6 +1606,7 @@ impl GameEngine {
                 next_roll_tick: tick + timers.roll_interval,
                 last_raid_tick: 0,
                 suppress_until: 0,
+                missed_rolls: 0,
                 incoming: None,
             });
 
@@ -1599,13 +1638,21 @@ impl GameEngine {
             let mut rng = StdRng::seed_from_u64(
                 tick.wrapping_mul(0xA24BAED4963EE407).wrapping_add(pid),
             );
-            if rng.random_range(0.0..1.0) >= RAID_ROLL_CHANCE { continue; }
+            let missed = self.raid_states.get(&pid).map_or(0, |s| s.missed_rolls);
+            let chance = (RAID_ROLL_CHANCE + RAID_PITY_STEP * missed as f32).min(1.0);
+            if rng.random_range(0.0..1.0) >= chance {
+                if let Some(state) = self.raid_states.get_mut(&pid) {
+                    state.missed_rolls += 1;
+                }
+                continue;
+            }
 
             let power = base * rng.random_range(RAID_POWER_ROLL_MIN..RAID_POWER_ROLL_MAX);
             let arrival_tick = tick + timers.warning;
 
             if let Some(state) = self.raid_states.get_mut(&pid) {
                 state.incoming = Some(IncomingRaid { arrival_tick, power });
+                state.missed_rolls = 0;
             }
 
             let threat = if power < defense * 0.5 {
@@ -1653,6 +1700,7 @@ impl GameEngine {
         let raid_value = ShipClass::Corvette.build_cost().scale(corvettes);
 
         let mut resources_lost = Resources::default();
+        let mut ships_lost = 0;
         let mut salvage_dropped: Option<Resources> = None;
         let mut protected_kept = Resources::default();
         let (structures_lost, structures_restored);
@@ -1680,6 +1728,7 @@ impl GameEngine {
         } else {
             (structures_lost, structures_restored) =
                 self.damage_structures(player_id, RAID_LOST_STRUCTURE_FRACTION, false);
+            ships_lost = self.destroy_docked_ships(player_id, RAID_LOST_SHIP_FRACTION, &mut rng);
             let player_mut = self.players.get_mut(&player_id).unwrap();
             let protected = scaling::storage_protected(player_mut.buildings.storage_vault, &self.world.pace);
             protected_kept = protected.min(player_mut.resources);
@@ -1700,6 +1749,7 @@ impl GameEngine {
             next_roll_tick: tick + timers.roll_interval,
             last_raid_tick: 0,
             suppress_until: 0,
+            missed_rolls: 0,
             incoming: None,
         });
         state.last_raid_tick = tick;
@@ -1719,6 +1769,7 @@ impl GameEngine {
                 structures_lost,
                 structures_restored,
                 protected_kept,
+                ships_lost,
             }),
         });
         info!(
@@ -1754,6 +1805,51 @@ impl GameEngine {
             self.dirty_players.insert(player_id, ());
         }
         (lost, coming)
+    }
+
+    /// A lost raid reaches the ships docked at home: `fraction` of them (at
+    /// least one) are destroyed, chosen at random. Returns how many.
+    fn destroy_docked_ships(&mut self, player_id: u64, fraction: f32, rng: &mut StdRng) -> u32 {
+        let Some(home) = self.players.get(&player_id).map(|p| p.homeworld) else { return 0; };
+        let mut docked: Vec<(u64, usize)> = Vec::new();
+        let mut fleet_ids: Vec<u64> = self.fleets.values()
+            .filter(|f| f.owner_id == player_id && f.location == home && f.ship_count > 0)
+            .map(|f| f.id)
+            .collect();
+        fleet_ids.sort_unstable();
+        for fid in &fleet_ids {
+            docked.extend((0..self.fleets[fid].ship_count).map(|i| (*fid, i)));
+        }
+        if docked.is_empty() { return 0; }
+        let lose = ((docked.len() as f32 * fraction).ceil() as usize).clamp(1, docked.len());
+        let mut doomed: Vec<(u64, usize)> = Vec::with_capacity(lose);
+        for _ in 0..lose {
+            doomed.push(docked.swap_remove(rng.random_range(0..docked.len())));
+        }
+        // Highest index first so removals do not shift the rest.
+        doomed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        for (fid, i) in doomed {
+            if let Some(f) = self.fleets.get_mut(&fid) {
+                let n = f.ship_count;
+                f.ships.copy_within(i + 1..n, i);
+                f.ships[n - 1] = Ship::default();
+                f.ship_count = n - 1;
+                self.dirty_fleets.insert(fid, ());
+            }
+        }
+        for fid in fleet_ids {
+            if let Some(f) = self.fleets.get(&fid) {
+                if f.ship_count == 0 {
+                    self.remove_fleet(fid);
+                } else {
+                    let fuel_max = fleet_fuel_max(f, &self.players[&player_id]);
+                    let f = self.fleets.get_mut(&fid).unwrap();
+                    f.fuel_max = fuel_max;
+                    f.fuel = f.fuel.min(fuel_max);
+                }
+            }
+        }
+        lose as u32
     }
 
     /// Structures a repelled raid knocked out return when their time is up.
@@ -2194,7 +2290,7 @@ impl GameEngine {
         };
         if !present { return Err(ErrorCode::ResourceNotPresent); }
 
-        let max_cargo = fleet_cargo_capacity(fleet);
+        let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
         let current_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
         if current_cargo >= max_cargo { return Err(ErrorCode::CargoFull); }
 
@@ -2216,7 +2312,7 @@ impl GameEngine {
         let ov = self.sector_overrides.get(&key).ok_or(ErrorCode::NoResources)?;
         if ov.salvage.is_none() { return Err(ErrorCode::NoResources); }
         let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
-        if used >= fleet_cargo_capacity(fleet) { return Err(ErrorCode::CargoFull); }
+        if used >= fleet_cargo_capacity(fleet, &self.world.pace) { return Err(ErrorCode::CargoFull); }
 
         self.collect_salvage(fleet_id).map_err(|_| ErrorCode::ServerError)?;
 
@@ -2371,9 +2467,9 @@ impl GameEngine {
         rest.ship_count = kept.len();
 
         let old_tank = fleet_fuel_max(fleet, player);
-        let old_hold = fleet_cargo_capacity(fleet);
+        let old_hold = fleet_cargo_capacity(fleet, &self.world.pace);
         let tank_share = if old_tank > 0.0 { fleet_fuel_max(&new_fleet, player) / old_tank } else { 0.0 };
-        let hold_share = if old_hold > 0.0 { fleet_cargo_capacity(&new_fleet) / old_hold } else { 0.0 };
+        let hold_share = if old_hold > 0.0 { fleet_cargo_capacity(&new_fleet, &self.world.pace) / old_hold } else { 0.0 };
 
         new_fleet.fuel_max = fleet_fuel_max(&new_fleet, player);
         new_fleet.fuel = (fleet.fuel * tank_share).min(new_fleet.fuel_max);
@@ -2512,7 +2608,7 @@ impl GameEngine {
         if !scaling::research_prerequisites_met(tech, &player.projected_buildings(), &projected) {
             return Err(ErrorCode::PrerequisitesNotMet);
         }
-        if player.research_queue.iter().count() + player.research_pending.len() >= 1 + scaling::QUEUE_WAITING {
+        if player.research_queue.iter().count() + player.research_pending.len() > scaling::QUEUE_WAITING {
             return Err(ErrorCode::QueueFull);
         }
 
@@ -2551,7 +2647,7 @@ impl GameEngine {
         use iac_shared::protocol::QueueType;
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
         if count == 0 { return Err(ErrorCode::InvalidCommand); }
-        if player.ship_queue.iter().count() + player.ship_pending.len() >= 1 + scaling::QUEUE_WAITING {
+        if player.ship_queue.iter().count() + player.ship_pending.len() > scaling::QUEUE_WAITING {
             return Err(ErrorCode::QueueFull);
         }
         self.ensure_fits_storage(player, item.unit_cost().scale(count as f32))?;
@@ -2935,7 +3031,7 @@ impl GameEngine {
         // Cargo-cap the haul; anything the hold can't take drifts loose
         // as salvage for a follow-up trip.
         let fleet = self.fleets.get(&fleet_id).unwrap();
-        let max_cargo = fleet_cargo_capacity(fleet);
+        let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
         let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
         let mut remaining = (max_cargo - used).max(0.0);
         let mut taken = Resources {
@@ -2985,7 +3081,7 @@ impl GameEngine {
         let mut points = 0.0;
         if self.credited.insert((owner_id, key, ExploreCredit::Boarded)) {
             self.new_credits.push((owner_id, location, ExploreCredit::Boarded));
-            points += score::board_points(base_value, rating);
+            points += score::board_points(scaling::split_loot(base_value).scale(self.world.pace.finds_mult()), rating);
         }
         if relic {
             points += scaling::RELIC_POINTS;
@@ -3207,7 +3303,7 @@ impl GameEngine {
                 fleet.fuel, need, reserve,
             ));
         }
-        let max_cargo = fleet_cargo_capacity(fleet);
+        let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
         if max_cargo > 0.0 {
             let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
             let cargo_pct = used / max_cargo * 100.0;
@@ -3962,7 +4058,7 @@ impl GameEngine {
         let salvage = ov.salvage.ok_or("No salvage")?;
 
         let fleet = self.fleets.get(&fleet_id).unwrap();
-        let max_cargo = fleet_cargo_capacity(fleet);
+        let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
         let used_cargo = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
         let mut remaining = (max_cargo - used_cargo).max(0.0);
         if remaining <= 0.0 { return Ok(()); }
@@ -4404,10 +4500,13 @@ pub fn site_risk_label(site: Hex, bumps: u8) -> iac_shared::protocol::SiteRisk {
     }
 }
 
-pub fn fleet_cargo_capacity(fleet: &Fleet) -> f32 {
-    fleet.ships[0..fleet.ship_count].iter()
+/// The hold: each ship's base cargo times the pace's cargo factor (P^0.5,
+/// like the loot it carries).
+pub fn fleet_cargo_capacity(fleet: &Fleet, pace: &Pace) -> f32 {
+    let base: f32 = fleet.ships[0..fleet.ship_count].iter()
         .map(|s| s.ship_class.base_stats().cargo as f32)
-        .sum()
+        .sum();
+    base * pace.cargo_mult()
 }
 
 fn regen_resource(
@@ -5166,7 +5265,7 @@ mod tests {
         win_a_fight(&mut engine, pid, fid, at);
         let pile = engine.sector_overrides[&at.to_key()].salvage.unwrap();
 
-        let cap = fleet_cargo_capacity(&engine.fleets[&fid]);
+        let cap = fleet_cargo_capacity(&engine.fleets[&fid], &engine.world.pace);
         let room = pile.metal / 2.0;
         engine.fleets.get_mut(&fid).unwrap().cargo = Resources { metal: cap - room, ..Default::default() };
         engine.handle_collect_salvage(pid, fid).unwrap();
@@ -6743,6 +6842,34 @@ mod tests {
     }
 
     #[test]
+    fn holds_grow_with_the_pace_like_the_loot_they_carry() {
+        let (mut engine, mut blitz) = (test_engine(), engine_at_pace(600.0));
+        let (_, fid) = register(&mut engine, "Slow");
+        let (_, bid) = register(&mut blitz, "Fast");
+        let slow = fleet_cargo_capacity(&engine.fleets[&fid], &engine.world.pace);
+        let fast = fleet_cargo_capacity(&blitz.fleets[&bid], &blitz.world.pace);
+        assert_eq!(slow, 40.0, "two scouts at pace 1");
+        assert!((fast / slow - 600f32.sqrt()).abs() < 1e-3, "{fast}");
+        assert_eq!(fleet_cargo_capacity(&blitz.fleets[&bid], &blitz.world.pace), fast);
+    }
+
+    #[test]
+    fn a_hauler_lifts_the_deepest_pile_a_fleet_can_win_at_any_pace() {
+        // Pile and hold both scale with P^0.5, so the ratio is a constant of the rules.
+        for pace in [1.0, 10.0, 600.0] {
+            let pace = Pace::new(pace).unwrap();
+            let hold = f32::from(ShipClass::Hauler.base_stats().cargo) * pace.cargo_mult();
+            for ring in [8u16, 14, 20, 30] {
+                let pile = scaling::wreck_value(scaling::npc_power(ring)) * pace.finds_mult();
+                assert!(pile < hold * 0.5 || ring > 20, "ring {ring} pile {pile} against a hauler's {hold}");
+            }
+            let scouts = 2.0 * f32::from(ShipClass::Scout.base_stats().cargo) * pace.cargo_mult();
+            let ring8 = scaling::wreck_value(scaling::npc_power(8)) * pace.finds_mult();
+            assert!(ring8 < scouts, "two scouts lift a ring-8 pile");
+        }
+    }
+
+    #[test]
     fn a_kill_scales_with_the_worlds_finds_factor() {
         let pay = |pace: f64| {
             let mut engine = engine_at_pace(pace);
@@ -7022,7 +7149,30 @@ mod tests {
     }
 
     #[test]
-    fn a_relic_is_worth_25_points() {
+    fn a_first_boarding_pays_the_loot_share_and_a_discovery_bonus_at_the_worlds_scale() {
+        for pace in [1.0, 600.0] {
+            let mut engine = engine_at_pace(pace);
+            let (pid, fid) = register(&mut engine, "Boarder");
+            let site = derelict_beyond(&engine, 10);
+            let (event, total) = (1000..1400).find_map(|t| {
+                shape_fleet(&mut engine, fid, false);
+                board(&mut engine, pid, fid, site, t)
+            }).expect("a clean boarding");
+            let rating = f32::from(ring_rating(site));
+            // Without a hauler the whole roll is the finds-scaled base value.
+            let weight = scaling::resource_weight(&scaling::split_loot(total));
+            let relic = if event.relic { scaling::RELIC_POINTS } else { 0.0 };
+            let want = score::BOARD_VALUE_SHARE * weight + score::DISCOVERY_POINTS * rating.powf(1.5) + relic;
+            assert!((event.points - want).abs() < 1e-3 * want, "pace {pace}: {} vs {want}", event.points);
+            assert!(event.points > score::DISCOVERY_POINTS * rating.powf(1.5) * 0.99, "pace {pace}");
+            if pace > 100.0 {
+                assert!(weight > 5.0, "a derelict at a blitz is worth real points, not hundredths: {weight}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_relic_is_worth_its_points() {
         let mut engine = test_engine();
         let (pid, fid) = register(&mut engine, "Boarder");
         let site = derelict_beyond(&engine, 30);
@@ -7051,7 +7201,7 @@ mod tests {
         engine.players.get_mut(&a).unwrap().explore_points = 1.0e6;
         let (rows, _) = score::leaderboard(&engine, 10, a);
         let mine = rows.iter().find(|r| r.name == "Explorer").unwrap();
-        assert!((mine.score - 1.25 * mine.core).abs() < 1e-3, "exploration adds at most a quarter of core");
+        assert!((mine.score - (1.0 + score::EXTRA_CAP) * mine.core).abs() < 1e-3, "exploration adds at most the cap share of core");
         let _ = b;
     }
 
@@ -7153,6 +7303,7 @@ mod tests {
                 next_roll_tick: engine.current_tick,
                 last_raid_tick: 0,
                 suppress_until: 0,
+                missed_rolls: 0,
                 incoming: None,
             });
             engine.process_raids().unwrap();
@@ -7233,6 +7384,63 @@ mod tests {
         let counts = raid_counts("season", 24 * 3600, 6);
         let mean = counts.iter().sum::<usize>() as f32 / counts.len() as f32;
         assert!((1.8..=4.5).contains(&mean), "mean {mean} raids per 24 h of season: {counts:?}");
+    }
+
+    #[test]
+    fn missed_rolls_raise_the_chance_until_a_raid_comes() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Overdue");
+        engine.players.get_mut(&pid).unwrap().buildings.shipyard = 2;
+        engine.current_tick = 10_000_000;
+        engine.raid_states.insert(pid, RaidState {
+            first_seen_tick: 0,
+            next_roll_tick: engine.current_tick,
+            last_raid_tick: 0,
+            suppress_until: 0,
+            missed_rolls: 6,
+            incoming: None,
+        });
+        engine.process_raids().unwrap();
+        let state = &engine.raid_states[&pid];
+        assert!(state.incoming.is_some(), "six misses make the next roll certain (0.30 + 6 x 0.15)");
+        assert_eq!(state.missed_rolls, 0);
+    }
+
+    #[test]
+    fn a_lost_raid_destroys_a_quarter_of_the_docked_ships() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Overrun");
+        {
+            let f = engine.fleets.get_mut(&fid).unwrap();
+            f.ship_count = 8;
+            for i in 0..8 {
+                f.ships[i] = f.ships[0];
+                f.ships[i].id = 8_000 + i as u64;
+            }
+        }
+        engine.drain_events();
+        engine.resolve_raid(pid, 1.0e9).unwrap();
+        let ev = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::RaidResolved(r) => Some(r),
+            _ => None,
+        }).unwrap();
+        assert!(!ev.defended);
+        assert_eq!(ev.ships_lost, 2, "a quarter of 8");
+        assert_eq!(engine.fleets[&fid].ship_count, 6);
+        assert!(engine.fleets[&fid].ships[6..].iter().all(|s| s.hull == 0.0), "the slots behind are cleared");
+
+        // A defended raid costs no ships.
+        for s in &mut engine.fleets.get_mut(&fid).unwrap().ships[..6] {
+            s.weapon_power = 1.0e6;
+        }
+        engine.resolve_raid(pid, 10.0).unwrap();
+        let ev = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::RaidResolved(r) => Some(r),
+            _ => None,
+        }).unwrap();
+        assert!(ev.defended);
+        assert_eq!(ev.ships_lost, 0);
+        assert_eq!(engine.fleets[&fid].ship_count, 6);
     }
 
     #[test]
@@ -7375,49 +7583,90 @@ mod tests {
 
         engine.players.get_mut(&pid).unwrap().combat_points = 1.0e6;
         let s = score_of_player(&engine, pid);
-        assert!((s.total() - 1.25 * s.core()).abs() < 1e-3, "combat adds at most a quarter of core");
+        assert!((s.total() - (1.0 + score::EXTRA_CAP) * s.core()).abs() < 1e-3, "combat adds at most the cap share of core");
     }
 
     #[test]
-    fn a_kill_scores_unless_the_force_was_overwhelming_or_the_sector_is_already_cleared() {
+    fn a_kill_scores_the_pile_once_per_respawn() {
         let mut engine = test_engine();
         let (pid, fid) = register(&mut engine, "Hunter");
         let at = find_npc_sector(&engine, iac_shared::world::NpcBehaviorType::Patrol);
 
         engine.fleets.get_mut(&fid).unwrap().location = at;
         engine.handle_attack(pid, fid, template_npc_id(at)).unwrap();
+        let npc_power = engine.npc_fleets.values().map(|n| n.power).sum::<f32>();
+        let engaged = fleet_power(&engine.fleets[&fid]);
         for n in engine.npc_fleets.values_mut() {
             for sh in n.ships[..n.ship_count as usize].iter_mut() {
                 sh.hull = 1.0;
                 sh.shield = 0.0;
             }
         }
-        let bounty = engine.npc_fleets.values().next().unwrap().bounty;
         for _ in 0..6 {
             engine.tick().unwrap();
         }
         assert!(engine.active_combats.is_empty());
+        let key = at.to_key();
+        let pile = engine.sector_overrides[&key].salvage.expect("pile");
         let paid = engine.players[&pid].combat_points;
-        assert!((paid - 0.25 * scaling::resource_weight(&bounty)).abs() < 1e-5, "paid {paid}");
         assert!(paid > 0.0);
+        let want = score::kill_points(pile, engaged, npc_power);
+        assert!((paid - want).abs() < 0.2 * want, "paid {paid}, pile and ratio say {want}");
 
         // The same sector pays nothing again until the NPC respawns.
-        let key = at.to_key();
         assert!(engine.sector_overrides[&key].npc_cleared_tick.is_some());
         engine.active_combats.insert(77, Combat {
             id: 77, sector: at, player_fleet_ids: vec![fid], npc_fleet_ids: vec![], round: 0, peak_power: 1.0,
         });
-        engine.credit_kill(77, &[fid], &[], key);
+        engine.credit_kill(77, &[fid], &[], key, pile);
         assert_eq!(engine.players[&pid].combat_points, paid);
     }
 
     #[test]
-    fn overwhelming_force_does_not_farm_points() {
+    fn overwhelming_force_earns_a_little_not_nothing() {
         let mut engine = test_engine();
         let (pid, fid) = register(&mut engine, "Bully");
         let at = find_npc_sector(&engine, iac_shared::world::NpcBehaviorType::Patrol);
         win_a_fight(&mut engine, pid, fid, at);
-        assert_eq!(engine.players[&pid].combat_points, 0.0);
+        let pile = engine.sector_overrides[&at.to_key()].salvage.unwrap();
+        let paid = engine.players[&pid].combat_points;
+        let floor = score::KILL_SHARE * scaling::resource_weight(&pile) * score::MIN_PAY;
+        assert!(paid > 0.0, "a dominant fleet still earns something");
+        assert!((paid - floor).abs() < 1e-3 * floor.max(1.0), "5000-damage hulls against a scout: the floor {floor}, paid {paid}");
+    }
+
+    #[test]
+    fn killing_the_respawning_group_again_and_again_pays_less_each_time() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Farmer");
+        let at = find_npc_sector(&engine, iac_shared::world::NpcBehaviorType::Patrol);
+        let key = at.to_key();
+        let mut piles = Vec::new();
+        let mut points = Vec::new();
+        for _ in 0..4 {
+            let before = engine.players[&pid].combat_points;
+            engine.sector_overrides.entry(key).or_default().salvage = None;
+            win_a_fight(&mut engine, pid, fid, at);
+            piles.push(engine.sector_overrides[&key].salvage.unwrap().total());
+            points.push(engine.players[&pid].combat_points - before);
+            // The group respawns at once; no time passes, so the heat stays.
+            engine.sector_overrides.get_mut(&key).unwrap().npc_cleared_tick = None;
+            engine.npc_fleets.clear();
+        }
+        for i in 1..4 {
+            assert!((piles[i] / piles[i - 1] - scaling::FARM_DECAY).abs() < 1e-3, "pile {i}: {piles:?}");
+            assert!((points[i] / points[i - 1] - scaling::FARM_DECAY).abs() < 1e-3, "points {i}: {points:?}");
+        }
+        let total: f32 = piles.iter().sum();
+        assert!(total < piles[0] / (1.0 - scaling::FARM_DECAY), "the tap is bounded");
+
+        // Left alone for four respawn delays the heat has halved; long enough and it is gone.
+        let half = engine.farm_half_life(at);
+        engine.current_tick += half;
+        let one_half = engine.sector_heat(at);
+        engine.current_tick += 10 * half;
+        assert!(engine.sector_heat(at) < one_half / 500.0);
+        assert!(engine.sector_farm_factor(at) > 0.99);
     }
 
     #[test]

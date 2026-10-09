@@ -16,17 +16,22 @@ use crate::engine::{Fleet, GameEngine, Player};
 
 /// Combat and exploration together may add at most this share of `core`.
 pub const EXTRA_CAP: f32 = 0.25;
-/// A kill pays this share of the NPC group's build-cost weight.
-pub const KILL_SHARE: f32 = 0.25;
-/// A kill pays nothing when the engaged power is at least this many times
-/// the NPC group's: trivial targets are not a score farm.
-pub const OVERWHELMING_RATIO: f32 = 8.0;
-/// A first boarding pays this share of the site's loot value (per 1000
-/// units) plus `BOARD_THREAT_POINTS * T^1.5`.
-pub const BOARD_VALUE_SHARE: f32 = 0.15;
-pub const BOARD_THREAT_POINTS: f32 = 0.02;
-/// A sector's chart, once delivered to a dock, pays `CHART_THREAT_POINTS * T^1.5`.
-pub const CHART_THREAT_POINTS: f32 = 0.01;
+/// A kill pays this share of the weight of the pile it leaves, so points
+/// track the resources the same kill yields.
+pub const KILL_SHARE: f32 = 1.0;
+/// A kill earns full points up to this ratio of engaged power to the NPC
+/// group's power; beyond it pay falls as `FULL_PAY_RATIO / ratio`, down to
+/// `MIN_PAY`. The old rule paid nothing from 8x.
+pub const FULL_PAY_RATIO: f32 = 4.0;
+pub const MIN_PAY: f32 = 0.05;
+/// A first boarding pays this share of the weight of the loot it rolled
+/// (finds factor included), plus `DISCOVERY_POINTS * T^1.5`.
+pub const BOARD_VALUE_SHARE: f32 = 0.5;
+pub const DISCOVERY_POINTS: f32 = 1.5;
+/// A sector's chart, once delivered to a dock, pays
+/// `CHART_BASE_POINTS + CHART_THREAT_POINTS * T^1.5`.
+pub const CHART_BASE_POINTS: f32 = 0.15;
+pub const CHART_THREAT_POINTS: f32 = 0.10;
 /// Defence structures count at half value, so farming defenceless-looking
 /// players with a wall of cheap turrets does not pay.
 pub const DEFENCE_SHARE: f32 = 0.5;
@@ -72,24 +77,29 @@ pub fn score_of<'a>(player: &Player, fleets: impl Iterator<Item = &'a Fleet>) ->
     }
 }
 
-/// Points for destroying an NPC group worth `bounty` in build cost while
-/// `engaged_power` of the player's ships fought its `npc_power`.
-pub fn kill_points(bounty: Resources, engaged_power: f32, npc_power: f32) -> f32 {
-    if engaged_power >= OVERWHELMING_RATIO * npc_power {
-        return 0.0;
+/// Share of a kill's points paid when `engaged_power` of the player's ships
+/// fought a group of `npc_power`.
+pub fn kill_pay_factor(engaged_power: f32, npc_power: f32) -> f32 {
+    if npc_power <= 0.0 {
+        return MIN_PAY;
     }
-    KILL_SHARE * scaling::resource_weight(&bounty)
+    (FULL_PAY_RATIO * npc_power / engaged_power.max(1e-3)).clamp(MIN_PAY, 1.0)
 }
 
-/// Points for the first boarding of a derelict worth `value` units (before
-/// the pace's finds factor, so a fast world pays the same) at threat `rating`.
-pub fn board_points(value: f32, rating: u8) -> f32 {
-    BOARD_VALUE_SHARE * value / 1000.0 + BOARD_THREAT_POINTS * f32::from(rating).powf(1.5)
+/// Points for a kill that left `pile` behind.
+pub fn kill_points(pile: Resources, engaged_power: f32, npc_power: f32) -> f32 {
+    KILL_SHARE * scaling::resource_weight(&pile) * kill_pay_factor(engaged_power, npc_power)
+}
+
+/// Points for the first boarding of a derelict that rolled `loot` (finds
+/// factor included) at threat `rating`.
+pub fn board_points(loot: Resources, rating: u8) -> f32 {
+    BOARD_VALUE_SHARE * scaling::resource_weight(&loot) + DISCOVERY_POINTS * f32::from(rating).powf(1.5)
 }
 
 /// Points for delivering the chart of one new sector at threat `rating`.
 pub fn chart_points(rating: u8) -> f32 {
-    CHART_THREAT_POINTS * f32::from(rating).powf(1.5)
+    CHART_BASE_POINTS + CHART_THREAT_POINTS * f32::from(rating).powf(1.5)
 }
 
 /// The table, best first. `viewer`'s own row is returned separately when it
@@ -132,23 +142,36 @@ mod tests {
         assert_eq!(s.core(), 120.0);
         assert_eq!(s.total(), 135.0, "under the cap everything counts");
         s.combat = 80.0;
-        assert_eq!(s.total(), 150.0, "over the cap only 25 percent of core is added");
+        assert!((s.total() - 1.25 * 120.0).abs() < 1e-4, "over the cap only 25 percent of core is added");
     }
 
     #[test]
-    fn exploration_points_follow_the_spec_formulas() {
-        assert!((board_points(240.0, 1) - (0.15 * 0.24 + 0.02)).abs() < 1e-6);
-        assert!((board_points(13940.0, 9) - (0.15 * 13.94 + 0.02 * 27.0)).abs() < 1e-5);
-        assert!((chart_points(4) - 0.08).abs() < 1e-6);
+    fn exploration_points_follow_the_formulas() {
+        let loot = Resources { metal: 1000.0, crystal: 400.0, deuterium: 200.0 };
+        let weight = (1000.0 + 600.0 + 400.0) / 1000.0;
+        assert!((board_points(loot, 1) - (0.5 * weight + 1.5)).abs() < 1e-5);
+        assert!((board_points(loot, 9) - (0.5 * weight + 1.5 * 27.0)).abs() < 1e-4);
+        assert!((chart_points(1) - 0.25).abs() < 1e-6);
+        assert!((chart_points(4) - 0.95).abs() < 1e-5);
         assert!(chart_points(9) > chart_points(2));
+        assert!(board_points(Resources::default(), 1) > 1.0, "a derelict that paid nothing is still a discovery");
     }
 
     #[test]
-    fn overwhelming_force_earns_nothing() {
-        let bounty = Resources { metal: 1000.0, crystal: 400.0, deuterium: 200.0 };
-        let paid = kill_points(bounty, 70.0, 10.0);
-        assert!((paid - 0.25 * (1000.0 + 600.0 + 400.0) / 1000.0).abs() < 1e-5);
-        assert_eq!(kill_points(bounty, 80.0, 10.0), 0.0, "8x the NPC's power");
-        assert_eq!(kill_points(bounty, 800.0, 10.0), 0.0);
+    fn kills_fall_off_smoothly_with_the_power_ratio() {
+        let pile = Resources { metal: 1000.0, crystal: 400.0, deuterium: 200.0 };
+        let full = kill_points(pile, 40.0, 10.0);
+        assert!((full - 2.0).abs() < 1e-5, "{full}");
+        assert_eq!(kill_points(pile, 10.0, 10.0), full, "an even fight pays in full");
+        assert_eq!(kill_points(pile, 40.0, 10.0), full, "so does 4x");
+        let eight = kill_points(pile, 80.0, 10.0);
+        assert!((eight - full / 2.0).abs() < 1e-5, "8x pays half, not nothing: {eight}");
+        let mut last = full;
+        for ratio in [5.0, 8.0, 12.0, 20.0, 40.0] {
+            let paid = kill_points(pile, ratio * 10.0, 10.0);
+            assert!(paid < last && paid > 0.0, "ratio {ratio}: {paid} after {last}");
+            last = paid;
+        }
+        assert!((kill_points(pile, 10_000.0, 10.0) - full * MIN_PAY).abs() < 1e-5, "a dominant fleet still earns the floor");
     }
 }

@@ -41,10 +41,12 @@ enum Done {
     Research(ResearchType, u8),
 }
 
+type Ready = Box<dyn Fn(&BuildingLevels, &ResearchLevels) -> bool>;
+
 struct Item {
     cost: Resources,
     duration: u64,
-    ready: Box<dyn Fn(&BuildingLevels, &ResearchLevels) -> bool>,
+    ready: Ready,
     finishes: Option<Done>,
 }
 
@@ -146,7 +148,7 @@ fn walk(
         let ready_now = (item.ready)(&player.buildings, &player.research);
         let short_now = player.resources.shortfall(item.cost);
         let short = (short_now.total() > 0.0).then_some(short_now);
-        let free_slot_now = slots.iter().any(|&s| s == 0);
+        let free_slot_now = slots.contains(&0);
         let reason = if !ready_now {
             WaitReason::Prerequisite
         } else if short.is_some() {

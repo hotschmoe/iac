@@ -464,6 +464,9 @@ pub const SCAN_REVEAL_TICKS: u64 = 120;
 /// The cadence is attention-class: it follows P^0.75, not P.
 pub const RAID_ROLL_INTERVAL: u64 = 21_600;
 pub const RAID_ROLL_CHANCE: f32 = 0.30;
+/// Each eligible roll that misses raises the next roll's chance by this much,
+/// so a raid is never more than a few rolls late (30, 45, 60, 75 percent ...).
+pub const RAID_PITY_STEP: f32 = 0.15;
 pub const RAID_MIN_INTERVAL: u64 = 64_800;
 pub const RAID_MIN_PLAYER_AGE: u64 = 86_400;
 /// The raid fleet's power is `raid_power_base` times a roll in this range.
@@ -487,6 +490,10 @@ pub const RAID_STRUCTURE_RESTORE: f32 = 0.7;
 pub const RAID_RESTORE_TICKS: u64 = 600;
 /// A lost raid destroys this fraction of the structures, with no rebuild.
 pub const RAID_LOST_STRUCTURE_FRACTION: f32 = 0.5;
+/// A lost raid also destroys this fraction of the ships docked at home
+/// (at least one): ships parked at home defend, and when the defence fails
+/// they are what the raiders reach.
+pub const RAID_LOST_SHIP_FRACTION: f32 = 0.25;
 
 /// DefenseGrid: virtual defensive power per level (in "scout units",
 /// multiplied by scout combat power). Levels 4+ scale by +30%/level. Real
@@ -501,8 +508,10 @@ pub fn defense_grid_scout_units(level: u8) -> f32 {
     }
 }
 
-/// Wreckage piles drift away after this long.
-pub const SALVAGE_DESPAWN_TICKS: u32 = 60;
+/// Wreckage piles drift away after this long. Piles are worth thousands at
+/// a fast pace and a hauler round trip from the outer ring takes about a
+/// minute, so 60 s lost most of them.
+pub const SALVAGE_DESPAWN_TICKS: u32 = 180;
 
 /// Ticks of harvesting summed into one `ResourceHarvested` event.
 pub const HARVEST_REPORT_TICKS: u64 = 10;

@@ -713,7 +713,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             state: status,
             ships: ship_states,
             cargo: fleet.cargo,
-            cargo_capacity: fleet_cargo_capacity(fleet),
+            cargo_capacity: fleet_cargo_capacity(fleet, &engine.pace()),
             fuel: fleet.fuel,
             fuel_max: fleet.fuel_max,
             jump_fuel,

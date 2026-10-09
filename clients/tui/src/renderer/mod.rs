@@ -443,8 +443,9 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             } else {
                 let lost = e.resources_lost.metal + e.resources_lost.crystal + e.resources_lost.deuterium;
                 format!(
-                    " T{}: Raid breached defenses ({:.0} vs {:.0}) — {:.0} resources lost{}\n",
-                    event.tick, e.raid_power, e.defense_power, lost, structures
+                    " T{}: Raid breached defenses ({:.0} vs {:.0}) — {:.0} resources lost{}{}\n",
+                    event.tick, e.raid_power, e.defense_power, lost, structures,
+                    if e.ships_lost > 0 { format!(", {} docked ship(s) destroyed", e.ships_lost) } else { String::new() }
                 )
             }
         }

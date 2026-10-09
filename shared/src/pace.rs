@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const PACE_MIN: f64 = 0.05;
+/// Pace above which the storage cap grows with P^0.25 instead of P^0.75.
+pub const CAP_KNEE: f64 = 10.0;
 pub const PACE_MAX: f64 = 20_000.0;
 
 /// How a timer or quantity reacts to the world pace. The exponent is the
@@ -134,8 +136,24 @@ impl Pace {
         ((base / self.0.powf(0.75)).ceil() as u64).max(1)
     }
 
+    /// Storage cap multiplier: P^0.75 up to the season pace, then P^0.25.
+    /// Production grows with P while a human's look-in window shrinks, so
+    /// beyond a season the cap must grow much slower than P^0.75 to stay
+    /// within a few windows of production; at a blitz P^0.75 (121x) held four
+    /// hours of mine output and the Storage Vault never mattered.
     pub fn cap_mult(&self) -> f32 {
-        self.0.powf(0.75) as f32
+        let p = self.0;
+        if p <= CAP_KNEE {
+            p.powf(0.75) as f32
+        } else {
+            (CAP_KNEE.powf(0.75) * (p / CAP_KNEE).powf(0.25)) as f32
+        }
+    }
+
+    /// Ship holds scale like finds (P^0.5): loot per find grows with the
+    /// pace, so the hold that carries it must too.
+    pub fn cargo_mult(&self) -> f32 {
+        self.finds_mult()
     }
 
     pub fn finds_mult(&self) -> f32 {
@@ -204,7 +222,8 @@ mod tests {
         assert_eq!(p.raid_warning_ticks(), 189);
         let blitz = Pace::new(600.0).unwrap();
         assert_eq!(blitz.raid_warning_ticks(), 30);
-        assert!((blitz.cap_mult() - 121.23).abs() < 0.05);
+        assert!((blitz.cap_mult() - 15.65).abs() < 0.05, "{}", blitz.cap_mult());
+        assert_eq!(blitz.cargo_mult(), blitz.finds_mult());
     }
 
     #[test]

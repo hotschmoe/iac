@@ -3,6 +3,25 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-10 (the map pays; combat and exploration scoring)
+
+Second playtest: staying home won; combat plus exploration never exceeded 4.8
+points against cores near 400. Skilled explorers and raiders should be within
+about 15% of a pure builder, and a mixed player should beat both.
+- **Combat:** points follow the pile a kill leaves; full pay up to 4x the NPC
+  group's power, then `4 / ratio` down to a 5% floor (the hard 8x zero is gone).
+- **Anti-farming:** repeated kills in one sector pay less (0.75 per recent kill,
+  heat halves every 4 respawn delays), for loot and points alike.
+- **Exploration:** charts, first boardings, derelicts and relics pay points
+  that scale with the finds factor (see `economy/spec.md` section 18).
+- **Cap:** stays at 25% of core. The simulation shows it is enough: it binds for
+  an explorer at season pace and not at blitz, and a higher cap would let an
+  explorer overtake the builder with a lower core.
+- **Cargo:** ship holds scale by P^0.5 like loot, so finds can be lifted and
+  Haulers matter to a raider.
+- **Raids:** a lost raid also destroys a quarter of the ships docked at home;
+  missed rolls raise the next roll's odds.
+
 ## 2026-10-10 (one queue rule)
 
 **Every order that can ever start is accepted; it pays when it starts.**

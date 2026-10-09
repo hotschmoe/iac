@@ -97,7 +97,13 @@ KIT_CRUISERS = 12
 # storage
 VAULT_BASE_CAP = {'metal': 5000.0, 'crystal': 3500.0, 'deut': 2500.0}
 VAULT_GROWTH = 1.5
-CAP_PACE_EXP = 0.75          # cap multiplier = P ** this
+CAP_PACE_EXP = 0.75          # cap multiplier = P ** this up to CAP_KNEE ...
+CAP_KNEE = 10.0              # ... and 10**0.75 * (P / 10) ** CAP_EXP_HIGH above it
+CAP_EXP_HIGH = 0.25
+def cap_mult(P):
+    if P <= CAP_KNEE:
+        return P ** CAP_PACE_EXP
+    return CAP_KNEE ** CAP_PACE_EXP * (P / CAP_KNEE) ** CAP_EXP_HIGH
 
 # pilot-economy scale: ore/loot/salvage values and fuel price scale with P ** BETA
 BETA = 0.5
@@ -186,8 +192,34 @@ def raid_power(econ_pts):
     return 5.0 + 11.0 * econ_pts ** 0.75
 
 # score
-SCORE_EXTRA_CAP = 0.25     # combat+exploration points may add at most 25% of core points
 W_RES = (1.0, 1.5, 2.0)
+SCORE_EXTRA_CAP = 0.25     # combat+exploration points may add at most 25% of core points
+KILL_SHARE = 1.0           # a kill pays this share of the weight of the pile it leaves
+FULL_PAY_RATIO, MIN_PAY = 4.0, 0.05   # full pay up to 4x the NPC power, then 4/ratio down to 5%
+BOARD_VALUE_SHARE = 0.5    # first boarding: share of the loot weight ...
+DISCOVERY_POINTS = 1.5     # ... plus this * T^1.5
+CHART_BASE_POINTS, CHART_THREAT_POINTS = 0.15, 0.10   # per delivered new sector: base + threat * T^1.5
+RELIC_POINTS = 30.0
+def relic_chance(t):
+    return min(0.08, max(0.0, 0.02 * (t - 5)))
+FARM_DECAY = 0.75          # each recent kill in a sector multiplies the next kill's loot and score by this
+FARM_HALF_LIFE_RESPAWNS = 4.0
+def farm_steady(u):
+    """Mean loot/score share of a sector worked at utilisation u (kills taken / respawns offered)."""
+    if u <= 0: return 1.0
+    d = 0.5 ** (1.0 / (FARM_HALF_LIFE_RESPAWNS * u))
+    h = d / (1.0 - d) if d < 1 else 1e9
+    return FARM_DECAY ** h
+def kill_pay(r):
+    return max(MIN_PAY, min(1.0, FULL_PAY_RATIO / max(r, 1e-3)))
+def chart_points(t):
+    return CHART_BASE_POINTS + CHART_THREAT_POINTS * t ** 1.5
+PILOT_SKILL = 0.5     # share of the ideal piloting tempo a skilled human or agent reaches (assumption; the live test checks it)
+ATTENTION_PENALTY = 0.20   # building income lost by a player who spends all his attention in the field (scaled by his pilot share)
+PILOT_SHARE = {'none': 0.0, 'near': 0.4, 'explore': 0.85, 'raid': 0.85, 'far': 0.85}   # share of attention spent piloting
+CHART_RATE_PER_FLEET_H = 60.0   # new sectors a scouting fleet charts and delivers per active hour (assumption; live test checks it)
+LOOT_WEIGHT = 0.55 * W_RES[0] + 0.30 * W_RES[1] + 0.15 * W_RES[2]   # weight per unit of loot
+
 def wv(c):
     return (c[0] * W_RES[0] + c[1] * W_RES[1] + c[2] * W_RES[2]) / 1000.0
 
@@ -219,7 +251,7 @@ class Sim:
         self.phase = phase_h * 3600.0
         self.p = preset
         self.P = preset.P
-        self.mode = mode           # 'none' | 'near' | 'far'
+        self.mode = mode           # 'none' builder | 'near' mixed | 'explore' explorer | 'raid' raider | 'far' greedy far-miner
         self.t = 0.0               # real seconds
         self.res = list(START_RES)
         self.b = defaultdict(int); self.b['metal'] = 1; self.b['crystal'] = 1
@@ -232,6 +264,10 @@ class Sim:
         self.depth = max_depth
         self.spent = {'b': 1.0, 'r': 1.0, 's': 1.0}
         self.share = {'b': 0.55, 'r': 0.15, 's': 0.30}
+        if mode in ('explore', 'raid', 'far'):
+            self.share = {'b': 0.40, 'r': 0.10, 's': 0.50}   # fleet first: ships instead of mines
+        self.charted = 3 * HOME_DIST * (HOME_DIST + 1)       # sectors within the sensors at start
+        self.boarded = defaultdict(float)                    # first boardings per ring
         self.milestones = {}
         self.income = defaultdict(float)     # source -> units (value-weighted by raw sum)
         self.income_by_ring = defaultdict(float)
@@ -258,7 +294,7 @@ class Sim:
     def slots(self):
         return 1 + self.r['modfab']
     def cap(self):
-        s = self.P ** CAP_PACE_EXP
+        s = cap_mult(self.P)
         g = VAULT_GROWTH ** self.b['vault']
         return [VAULT_BASE_CAP['metal'] * g * s, VAULT_BASE_CAP['crystal'] * g * s, VAULT_BASE_CAP['deut'] * g * s]
     def prod_h(self):   # per game hour
@@ -630,13 +666,13 @@ class Sim:
         mode 'near' = competent (engage at >=2x power, mine <=ring 8, avoid guarded tiles);
         mode 'far'  = greedy (engage at >=1x, pick the farthest ring whose net value is within 80% of best)."""
         out = dict(ore=[0, 0, 0], salv=[0, 0, 0], der=[0, 0, 0], fuel=0.0, loss=0.0, reach=HOME_DIST,
-                   ore_ring={}, salv_ring={}, der_ring={}, hunt_d=0, kills_ring={}, sites_ring={})
+                   ore_ring={}, salv_ring={}, der_ring={}, hunt_d=0, kills_ring={}, sites_ring={}, farm={})
         if self.mode == 'none':
             return out
         s = self.pilot_scale(); P = self.P
         eff, capm = self.fuel_params()
         sh = self.ships
-        far = (self.mode == 'far')
+        far = self.mode == 'far'
         ratio_req = 1.5 if far else 3.0
         hunt_ring_cap = 40 if far else 20
         harvest_mod = 1 + 0.2 * self.r['harvest']
@@ -727,7 +763,10 @@ class Sim:
                 k = min(sup, room)
                 if k <= 0: break
                 room -= k
-                val = kill_loot_value(d) * s * k
+                util = k / sup if sup > 0 else 0.0
+                f = farm_steady(util)
+                out['farm'][d] = f
+                val = kill_loot_value(d) * s * k * f
                 salv += val
                 out['salv_ring'][d] = val
                 out['kills_ring'][d] = k
@@ -763,7 +802,7 @@ class Sim:
     def active_frac(self):
         p = self.p
         if p.continuous:
-            return 0.85
+            return PILOT_SHARE[self.mode]
         return p.sessions * p.session_min / 1440.0
 
     def apply_pilot(self, dt):
@@ -784,7 +823,8 @@ class Sim:
         f = 1.0
         if need > 0:
             allow = 0.5 * self.prod_h()[2] * self.P * dt / 3600.0 + max(0.0, self.res[2] - 0.08 * self.cap()[2])
-            f = max(0.0, min(1.0, allow / need))
+            f = max(0.0, min(1.0, allow / (need * PILOT_SKILL)))
+        f *= PILOT_SKILL
         r = dict(r)
         for k in ('ore', 'salv', 'der'):
             r[k] = [x * f for x in r[k]]
@@ -803,10 +843,29 @@ class Sim:
         self.loss_value += loss
         for i in range(3):
             self.res[i] -= loss * (0.55, 0.3, 0.15)[i]
+        cps = self.combat_power()
         for d, k in r['kills_ring'].items():
-            self.combat_raw += k * dt / 3600.0 * 0.25 * npc_cost(d) / 1000.0
+            ratio = cps / npc_power(d)
+            v = kill_loot_value(d) * self.pilot_scale()
+            self.combat_raw += PILOT_SKILL * k * dt / 3600.0 * KILL_SHARE * v * LOOT_WEIGHT / 1000.0 * kill_pay(ratio) * r['farm'].get(d, 1.0)
         for d, k in r['sites_ring'].items():
-            self.explore_raw += k * dt / 3600.0 * (0.15 * derelict_value(d) / 1000.0 + 0.02 * threat(d) ** 1.5)
+            t = threat(d)
+            n = k * dt / 3600.0
+            n *= PILOT_SKILL
+            self.explore_raw += n * relic_chance(t) * RELIC_POINTS
+            total = derelict_sites_per_ring(d) * ring_coverage(d)
+            new = max(0.0, min(n, total - self.boarded[d]))
+            self.boarded[d] += new
+            v = derelict_value(d) * self.pilot_scale()
+            self.explore_raw += new * (BOARD_VALUE_SHARE * v * LOOT_WEIGHT / 1000.0 + DISCOVERY_POINTS * t ** 1.5)
+        fleets = {'explore': 2.0, 'near': 1.0}.get(self.mode, 0.0)
+        if fleets and self.charted < 3 * (r['reach'] + 2) * (r['reach'] + 3):
+            n = PILOT_SKILL * fleets * CHART_RATE_PER_FLEET_H * self.active_frac() * dt / 3600.0 * (0.5 if self.mode == 'near' else 1.0)
+            d = 1
+            while 3 * d * (d + 1) < self.charted:
+                d += 1
+            self.charted += n
+            self.explore_raw += n * chart_points(threat(d))
         for rg, v in r['ore_ring'].items():
             self.income_by_ring[('ore', rg)] += v * dt / 3600.0
         for rg, v in r['salv_ring'].items():
@@ -836,7 +895,7 @@ class Sim:
         cap = self.cap()
         press = False; full = False
         for i in range(3):
-            inc = ph[i] * self.P * dt / 3600.0
+            inc = ph[i] * self.P * dt / 3600.0 * (1.0 - ATTENTION_PENALTY * PILOT_SHARE[self.mode])
             self.income['buildings'] += inc
             self.res[i] += inc
         self.apply_pilot(dt)
@@ -1238,8 +1297,36 @@ def sensitivity():
                      f" | {100*sum(s0.waste)/prod:.1f}% |")
     return '\n'.join(L)
 
+COMPARE_MODES = (('none', 'builder'), ('explore', 'explorer'), ('raid', 'raider'), ('near', 'mixed'))
+
+def compare_scores(cases=(('blitz-1h', 3600.0), ('season-7d', 7 * 86400.0)), phases=(0.0, 6.0, 12.0)):
+    """Score at a fixed time (the arc a player is judged on) for the four play styles."""
+    L = ['| world | style | core | combat pts | explore pts | extra after cap | total | vs builder |', '|---|---|---|---|---|---|---|---|']
+    for pname, until in cases:
+        p = next(x for x in PRESETS if x.name == pname)
+        rows = {}
+        for mode, label in COMPARE_MODES:
+            acc = []
+            # season: three session-schedule offsets; blitz has none, so average the
+            # score over the last 20 percent of the hour (levels land in steps)
+            runs = [(ph, until) for ph in phases] if not p.continuous else [(0.0, until * f) for f in (0.9, 1.0, 1.1)]
+            for ph, stop in runs:
+                sm = Sim(p, mode=mode, phase_h=ph)
+                while sm.t < stop:
+                    sm.step(p.dt)
+                core, extra = sm.score()
+                acc.append((core, sm.combat_raw, sm.explore_raw, extra))
+            n = len(acc)
+            rows[label] = tuple(sum(a[i] for a in acc) / n for i in range(4))
+        base = rows['builder'][0]
+        for _, label in COMPARE_MODES:
+            core, c, e, extra = rows[label]
+            L.append(f"| {pname} | {label} | {core:.0f} | {c:.0f} | {e:.0f} | {extra:.0f} | {core + extra:.0f} | {100 * (core + extra) / base:.0f}% |")
+    return '\n'.join(L)
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--compare', action='store_true', help='builder / explorer / raider / mixed score at 1 h blitz and 7 d season')
     ap.add_argument('--preset')
     ap.add_argument('--pace', type=float, help='custom pace multiplier (adds a preset named x<pace>)')
     ap.add_argument('--horizon-h', type=float, help='horizon in real hours for --pace')
@@ -1253,6 +1340,8 @@ def main():
     for kv in a.set:
         k, v = kv.split('=', 1)
         globals()[k] = eval(v, globals())
+    if a.compare:
+        print(compare_scores()); return
     if a.longrun:
         print(long_run()); return
     if a.sensitivity:

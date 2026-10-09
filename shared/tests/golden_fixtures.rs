@@ -928,6 +928,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             structures_lost: 6,
             structures_restored: 0,
             protected_kept: res(2400.0, 1680.0, 0.0),
+            ships_lost: 3,
         })),
         ("defended", EventKind::RaidResolved(RaidResolvedEvent {
             player_id: 42,
@@ -939,6 +940,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             structures_lost: 3,
             structures_restored: 2,
             protected_kept: res(0.0, 0.0, 0.0),
+            ships_lost: 0,
         })),
         ("", EventKind::SiteExplorationStarted(SiteExplorationStartedEvent {
             fleet_id: 1,

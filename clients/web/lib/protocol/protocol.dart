@@ -2828,6 +2828,9 @@ class RaidResolvedEvent extends EventKind {
   final int structuresLost;
   final int structuresRestored;
   final Resources protectedKept;
+
+  /// Ships docked at home that a lost raid destroyed.
+  final int shipsLost;
   const RaidResolvedEvent({
     required this.playerId,
     required this.defended,
@@ -2838,6 +2841,7 @@ class RaidResolvedEvent extends EventKind {
     this.structuresLost = 0,
     this.structuresRestored = 0,
     this.protectedKept = const Resources(),
+    this.shipsLost = 0,
   });
 
   factory RaidResolvedEvent.fromJson(Json m) => RaidResolvedEvent(
@@ -2850,6 +2854,7 @@ class RaidResolvedEvent extends EventKind {
         structuresLost: (m['structures_lost'] as int?) ?? 0,
         structuresRestored: (m['structures_restored'] as int?) ?? 0,
         protectedKept: m['protected_kept'] == null ? const Resources() : Resources.fromJson(m['protected_kept']),
+        shipsLost: (m['ships_lost'] as int?) ?? 0,
       );
 
   @override
@@ -2864,6 +2869,7 @@ class RaidResolvedEvent extends EventKind {
       'structures_lost': structuresLost,
       'structures_restored': structuresRestored,
       'protected_kept': protectedKept.toJson(),
+      'ships_lost': shipsLost,
     };
     _put(m, 'salvage_dropped', salvageDropped?.toJson());
     return m;

@@ -1493,6 +1493,9 @@ pub struct RaidResolvedEvent {
     /// Stockpile the Storage Vault kept out of reach of a successful raid.
     #[serde(default)]
     pub protected_kept: Resources,
+    /// Ships docked at home that a lost raid destroyed.
+    #[serde(default)]
+    pub ships_lost: u32,
 }
 
 /// A message for the player. `player_id` names the recipient; `None` is a

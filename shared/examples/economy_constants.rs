@@ -122,7 +122,7 @@ fn main() {
         "fuel_deut_per_unit": FUEL_DEUT_PER_UNIT,
         "fuel_rate_per_mass": FUEL_RATE_PER_MASS,
         "fuel_depot_per_level": fuel_depot_modifier(1) - 1.0,
-        "cap_pace_exponent": Pace::new(100.0).unwrap().cap_mult().ln() / 100.0f32.ln(),
+        "cargo_exponent": Pace::new(10000.0).unwrap().cargo_mult().ln() / 10000.0f32.ln(),
         "vault_growth": STORAGE_GROWTH,
         "build_rate": BUILD_RATE,
         "research_rate": RESEARCH_RATE,
