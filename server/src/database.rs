@@ -9,7 +9,8 @@ use rusqlite::{Connection, params, OptionalExtension};
 use log::{debug, error, info, warn};
 
 use iac_shared::hex::Hex;
-use iac_shared::constants::{Density, Resources, ShipClass};
+use iac_shared::constants::{Density, Resources, ShipClass, ECONOMY_VERSION, WORLDGEN_VERSION};
+use iac_shared::pace::Pace;
 use iac_shared::scaling::{BuildingType, BuildingLevels, ResearchType, ResearchLevels};
 
 use crate::engine::{Player, Fleet, Ship, SectorOverride, BuildQueueEntry, ShipQueueEntry, ResearchQueueEntry, FleetStatus, FleetPolicy};
@@ -134,6 +135,63 @@ pub struct Database {
     conn: Mutex<Connection>,
 }
 
+/// Settings fixed when a world is created.
+#[derive(Debug, Clone, Copy)]
+pub struct WorldMeta {
+    pub pace: Pace,
+    pub economy_version: u32,
+    pub worldgen_version: u32,
+}
+
+#[derive(Debug)]
+pub enum WorldError {
+    /// The database holds a world from before `world_meta` existed or from
+    /// another economy version.
+    OldWorld { found: Option<u32> },
+    PaceMismatch { stored: Pace, requested: Pace },
+    Db(rusqlite::Error),
+}
+
+impl std::fmt::Display for WorldError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorldError::OldWorld { found: None } => write!(
+                f,
+                "this database was created before the economy rework (it has no world_meta); \
+                 old worlds are not migrated. Start a new world with a new --db path"
+            ),
+            WorldError::OldWorld { found: Some(v) } => write!(
+                f,
+                "this database is economy version {v}, this server runs version {ECONOMY_VERSION}; \
+                 old worlds are not migrated. Start a new world with a new --db path"
+            ),
+            WorldError::PaceMismatch { stored, requested } => write!(
+                f,
+                "this world was created at pace {} and cannot change; refusing --pace {}. \
+                 Omit --pace to keep it, or start a new world with a new --db path",
+                describe_pace(*stored),
+                describe_pace(*requested),
+            ),
+            WorldError::Db(e) => write!(f, "database error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for WorldError {}
+
+impl From<rusqlite::Error> for WorldError {
+    fn from(e: rusqlite::Error) -> Self {
+        WorldError::Db(e)
+    }
+}
+
+pub fn describe_pace(p: Pace) -> String {
+    match p.preset() {
+        Some(preset) => format!("{} ({})", p.value(), preset.name),
+        None => p.value().to_string(),
+    }
+}
+
 impl Database {
     pub fn init(db_path: &str) -> Result<Database, rusqlite::Error> {
         let conn = Connection::open(db_path)?;
@@ -157,6 +215,13 @@ impl Database {
             CREATE TABLE IF NOT EXISTS server_state (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS world_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                pace REAL NOT NULL,
+                economy_version INTEGER NOT NULL,
+                worldgen_version INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS players (
@@ -322,6 +387,54 @@ impl Database {
         )?;
         info!("Pragmas applied: WAL, synchronous=NORMAL, cache_size=8MB, wal_autocheckpoint=1000");
         Ok(())
+    }
+
+    // ── World ─────────────────────────────────────────────────────
+
+    /// Read this database's world settings, creating them on a fresh
+    /// database. `requested` is the operator's `--pace`; a world keeps the
+    /// pace it was created with, so a different request is an error.
+    pub fn open_world(&self, requested: Option<Pace>) -> Result<WorldMeta, WorldError> {
+        let conn = self.conn.lock().unwrap();
+        let row: Option<(f64, i64, i64)> = conn
+            .query_row(
+                "SELECT pace, economy_version, worldgen_version FROM world_meta WHERE id = 1",
+                params![],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((pace, economy, worldgen)) = row {
+            if economy as u32 != ECONOMY_VERSION {
+                return Err(WorldError::OldWorld { found: Some(economy as u32) });
+            }
+            let stored = Pace::new(pace).map_err(|_| WorldError::OldWorld { found: Some(economy as u32) })?;
+            if let Some(requested) = requested
+                && requested != stored
+            {
+                return Err(WorldError::PaceMismatch { stored, requested });
+            }
+            return Ok(WorldMeta { pace: stored, economy_version: economy as u32, worldgen_version: worldgen as u32 });
+        }
+
+        let has_data: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM players) OR EXISTS(SELECT 1 FROM server_state)",
+            params![],
+            |r| r.get(0),
+        )?;
+        if has_data {
+            return Err(WorldError::OldWorld { found: None });
+        }
+        let meta = WorldMeta {
+            pace: requested.unwrap_or_default(),
+            economy_version: ECONOMY_VERSION,
+            worldgen_version: WORLDGEN_VERSION,
+        };
+        conn.execute(
+            "INSERT INTO world_meta (id, pace, economy_version, worldgen_version) VALUES (1, ?1, ?2, ?3)",
+            params![meta.pace.value(), meta.economy_version as i64, meta.worldgen_version as i64],
+        )?;
+        info!("New world: pace {}", describe_pace(meta.pace));
+        Ok(meta)
     }
 
     // ── Server State ──────────────────────────────────────────────

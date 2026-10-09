@@ -88,6 +88,7 @@ class _FakeServer {
           'catalog': {'buildings': <dynamic>[], 'research': <dynamic>[], 'ships': <dynamic>[]},
         },
         'known_sectors': <dynamic>[],
+        'world': {'pace': 1.0, 'preset': 'persistent', 'tick_hz': 1, 'economy_version': 2, 'worldgen_version': 1},
       };
 }
 

@@ -271,7 +271,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
               children: [
                 Column(
                   children: [
-                    _buildHeader(state.tick, state.clockDisplay),
+                    _buildHeader(state.tick, state.clockDisplay, state.world?.label),
                     _buildTabBar(),
                     Expanded(child: _buildView()),
                     _buildCommandBar(),
@@ -307,7 +307,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
     );
   }
 
-  Widget _buildHeader(int tick, String clock) {
+  Widget _buildHeader(int tick, String clock, String? pace) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: const BoxDecoration(
@@ -334,7 +334,7 @@ class _ShellState extends State<Shell> with SingleTickerProviderStateMixin {
               ),
               const Spacer(),
               Text(
-                'TICK $tick',
+                '${pace == null ? '' : '${pace.toUpperCase()} | '}TICK $tick',
                 style: Amber.mono(size: 11, color: Amber.dim),
               ),
               Text(

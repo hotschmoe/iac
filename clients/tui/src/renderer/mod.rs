@@ -77,7 +77,8 @@ fn render_header(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     };
     let player_name = state.player.as_ref().map(|p| p.name.as_str()).unwrap_or("---");
 
-    let text = format!(" IN AMBER CLAD v0.1 | TICK: {} | {} | {}", state.tick, player_name, view_label);
+    let pace = state.world.as_ref().map(pace_label).unwrap_or_default();
+    let text = format!(" IN AMBER CLAD v0.1 | TICK: {}{} | {} | {}", state.tick, pace, player_name, view_label);
 
     // Inbound raid: a countdown blinks in the header wherever you are.
     if let Some(remaining) = state.raid_countdown() {
@@ -93,6 +94,14 @@ fn render_header(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
 
     let paragraph = Paragraph::new(text).style(AMBER_FULL);
     frame.render_widget(paragraph, area);
+}
+
+/// " x600 blitz" for the header; the pace is fixed per world.
+fn pace_label(world: &iac_shared::protocol::WorldInfo) -> String {
+    match &world.preset {
+        Some(name) => format!(" x{} {}", world.pace, name),
+        None => format!(" x{}", world.pace),
+    }
 }
 
 // ── Footer ─────────────────────────────────────────────────────────

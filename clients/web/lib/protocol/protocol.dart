@@ -624,12 +624,14 @@ class GameState extends ServerMessage {
   final List<FleetState> fleets;
   final HomeworldState homeworld;
   final List<SectorState> knownSectors;
+  final WorldInfo world;
   const GameState({
     required this.tick,
     required this.player,
     required this.fleets,
     required this.homeworld,
     required this.knownSectors,
+    required this.world,
   });
 
   factory GameState.fromJson(Json m) => GameState(
@@ -638,6 +640,7 @@ class GameState extends ServerMessage {
         fleets: _list(m['fleets'], FleetState.fromJson),
         homeworld: HomeworldState.fromJson(m['homeworld']),
         knownSectors: _list(m['known_sectors'], SectorState.fromJson),
+        world: WorldInfo.fromJson(m['world']),
       );
 
   @override
@@ -648,7 +651,70 @@ class GameState extends ServerMessage {
         'fleets': fleets.map((e) => e.toJson()).toList(),
         'homeworld': homeworld.toJson(),
         'known_sectors': knownSectors.map((e) => e.toJson()).toList(),
+        'world': world.toJson(),
       };
+}
+
+/// The world's fixed settings. [pace] scales economy timers and never
+/// changes for the life of a world.
+class WorldInfo {
+  final double pace;
+  final String? preset;
+  final int tickHz;
+  final int economyVersion;
+  final int worldgenVersion;
+  final WorldEstimate? estimate;
+  const WorldInfo({
+    required this.pace,
+    this.preset,
+    required this.tickHz,
+    required this.economyVersion,
+    required this.worldgenVersion,
+    this.estimate,
+  });
+
+  factory WorldInfo.fromJson(Object? json) {
+    final m = _obj(json);
+    return WorldInfo(
+      pace: _f(m['pace']),
+      preset: m['preset'] as String?,
+      tickHz: _i(m['tick_hz']),
+      economyVersion: _i(m['economy_version']),
+      worldgenVersion: _i(m['worldgen_version']),
+      estimate: _opt(m['estimate'], WorldEstimate.fromJson),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'pace': pace,
+      'tick_hz': tickHz,
+      'economy_version': economyVersion,
+      'worldgen_version': worldgenVersion,
+    };
+    _put(m, 'preset', preset);
+    _put(m, 'estimate', estimate?.toJson());
+    return m;
+  }
+
+  /// "x600 blitz" or "x42".
+  String get label {
+    final n = pace == pace.roundToDouble() ? pace.round().toString() : pace.toString();
+    return preset == null ? 'x$n' : 'x$n $preset';
+  }
+}
+
+class WorldEstimate {
+  final int firstCruiserS;
+  final int endgameS;
+  const WorldEstimate({required this.firstCruiserS, required this.endgameS});
+
+  factory WorldEstimate.fromJson(Object? json) {
+    final m = _obj(json);
+    return WorldEstimate(firstCruiserS: _i(m['first_cruiser_s']), endgameS: _i(m['endgame_s']));
+  }
+
+  Json toJson() => {'first_cruiser_s': firstCruiserS, 'endgame_s': endgameS};
 }
 
 class ErrorMessage extends ServerMessage {

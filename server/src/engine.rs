@@ -29,6 +29,7 @@ use iac_shared::constants::{
     derelict_tier, derelict_tier_odds, derelict_loot_ranges,
     defense_grid_scout_units, npc_respawn_delay,
 };
+use iac_shared::pace::Pace;
 use iac_shared::world::WorldGen;
 use iac_shared::scaling::{
     self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
@@ -38,7 +39,7 @@ use iac_shared::protocol::{AlertEvent, AlertLevel, GameEvent, EventKind, ErrorCo
 
 use crate::auth::{self, TokenHash};
 use crate::combat;
-use crate::database::{Database, ExploredEdge, PersistBatch, Persister};
+use crate::database::{Database, ExploredEdge, PersistBatch, Persister, WorldMeta};
 use crate::intel::KnownSectors;
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -122,13 +123,14 @@ pub struct Player {
 
 impl Player {
     /// What the homeworld mines add to the stockpile each tick.
-    pub fn production_per_tick(&self) -> Resources {
+    pub fn production_per_tick(&self, pace: &Pace) -> Resources {
         Resources {
-            metal: scaling::production_per_tick(BuildingType::MetalMine, self.buildings.metal_mine),
-            crystal: scaling::production_per_tick(BuildingType::CrystalMine, self.buildings.crystal_mine),
+            metal: scaling::production_per_tick(BuildingType::MetalMine, self.buildings.metal_mine, pace),
+            crystal: scaling::production_per_tick(BuildingType::CrystalMine, self.buildings.crystal_mine, pace),
             deuterium: scaling::production_per_tick(
                 BuildingType::DeuteriumSynthesizer,
                 self.buildings.deuterium_synthesizer,
+                pace,
             ),
         }
     }
@@ -232,6 +234,27 @@ pub struct RaidState {
     pub incoming: Option<IncomingRaid>,
 }
 
+/// Raid cadence at the world's pace (attention class, except the warning).
+struct RaidTimers {
+    roll_interval: u64,
+    warning: u64,
+    min_interval: u64,
+    min_player_age: u64,
+    suppress_after_loss: u64,
+}
+
+impl RaidTimers {
+    fn new(pace: &Pace) -> Self {
+        RaidTimers {
+            roll_interval: pace.attention_ticks(RAID_ROLL_INTERVAL as f64),
+            warning: pace.finds_ticks(RAID_WARNING_TICKS as f64),
+            min_interval: pace.attention_ticks(RAID_MIN_INTERVAL as f64),
+            min_player_age: pace.attention_ticks(RAID_MIN_PLAYER_AGE as f64),
+            suppress_after_loss: pace.attention_ticks(RAID_SUPPRESS_AFTER_LOSS as f64),
+        }
+    }
+}
+
 /// Harvest yield not yet reported to the owner.
 #[derive(Debug, Clone, Default)]
 struct HarvestReport {
@@ -291,6 +314,7 @@ pub enum AuthError {
 
 pub struct GameEngine {
     pub world_gen: WorldGen,
+    pub world: WorldMeta,
     persister: Persister,
     pub current_tick: u64,
 
@@ -330,12 +354,16 @@ pub struct GameEngine {
 }
 
 impl GameEngine {
-    pub fn init(world_seed: u64, db: Database) -> Result<GameEngine, Box<dyn std::error::Error>> {
+    /// `pace` is the operator's request; a database that already holds a
+    /// world keeps its own pace and refuses a different one.
+    pub fn init(world_seed: u64, db: Database, pace: Option<Pace>) -> Result<GameEngine, Box<dyn std::error::Error>> {
+        let meta = db.open_world(pace)?;
         let world = load_world(&db, world_seed)?;
         db.save_server_state("world_seed", &world_seed.to_string())?;
 
         Ok(GameEngine {
             world_gen: WorldGen::init(world_seed),
+            world: meta,
             persister: Persister::spawn(db),
             current_tick: world.tick,
             players: world.players,
@@ -364,6 +392,10 @@ impl GameEngine {
 
     pub fn current_tick(&self) -> u64 {
         self.current_tick
+    }
+
+    pub fn pace(&self) -> Pace {
+        self.world.pace
     }
 
     fn next_id(&mut self) -> u64 {
@@ -583,7 +615,7 @@ impl GameEngine {
                         fleet_id: nid,
                         is_npc: true,
                         owner: None,
-                        salvage: npc_salvage(n),
+                        salvage: npc_salvage(n, &self.world.pace),
                         ships,
                     });
                 }
@@ -896,12 +928,13 @@ impl GameEngine {
             if fleet_present { continue; }
 
             let template = self.world_gen.generate_sector(coord);
+            let rate = self.world.pace.rate(SECTOR_REGEN_RATE);
             let ov_mut = self.sector_overrides.get_mut(&sector_key).unwrap();
             let mut changed = false;
 
-            changed = regen_resource(&mut ov_mut.metal_harvested, &mut ov_mut.metal_density, template.metal_density) || changed;
-            changed = regen_resource(&mut ov_mut.crystal_harvested, &mut ov_mut.crystal_density, template.crystal_density) || changed;
-            changed = regen_resource(&mut ov_mut.deut_harvested, &mut ov_mut.deut_density, template.deut_density) || changed;
+            changed = regen_resource(&mut ov_mut.metal_harvested, &mut ov_mut.metal_density, template.metal_density, rate) || changed;
+            changed = regen_resource(&mut ov_mut.crystal_harvested, &mut ov_mut.crystal_density, template.crystal_density, rate) || changed;
+            changed = regen_resource(&mut ov_mut.deut_harvested, &mut ov_mut.deut_density, template.deut_density, rate) || changed;
 
             if changed {
                 self.dirty_sectors.insert(sector_key, ());
@@ -946,7 +979,7 @@ impl GameEngine {
             let Some(cleared_tick) = ov.npc_cleared_tick else { continue; };
             let coord = Hex::from_key(key);
             let zone = Zone::from_distance(coord.dist_from_origin());
-            let delay = npc_respawn_delay(zone);
+            let delay = self.world.pace.econ_ticks(npc_respawn_delay(zone) as f64);
             if self.current_tick >= cleared_tick + delay
                 && let Some(ov_mut) = self.sector_overrides.get_mut(&key)
             {
@@ -1002,8 +1035,9 @@ impl GameEngine {
     // ── Homeworlds ────────────────────────────────────────────────
 
     fn process_homeworlds(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let pace = self.world.pace;
         for (_, player) in self.players.iter_mut() {
-            player.resources = player.resources.add(player.production_per_tick());
+            player.resources = player.resources.add(player.production_per_tick(&pace));
             self.dirty_players.insert(player.id, ());
         }
         Ok(())
@@ -1065,6 +1099,7 @@ impl GameEngine {
         }
 
         // Phase 3: Apply completed ships
+        let pace = self.world.pace;
         for (pid, ship_class) in completed_ships {
             self.add_ship_to_homeworld(pid, ship_class)?;
             self.dirty_players.insert(pid, ());
@@ -1085,7 +1120,7 @@ impl GameEngine {
                 if q.built >= q.count {
                     player.ship_queue = None;
                 } else {
-                    let per_ship = scaling::ship_build_time(q.ship_class, player.buildings.shipyard);
+                    let per_ship = scaling::ship_build_time(q.ship_class, player.buildings.shipyard, &pace);
                     q.end_tick = self.current_tick + per_ship;
                 }
             }
@@ -1125,12 +1160,13 @@ impl GameEngine {
 
     fn process_raids(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let tick = self.current_tick;
+        let timers = RaidTimers::new(&self.world.pace);
         let player_ids: Vec<u64> = self.players.keys().copied().collect();
 
         for pid in player_ids {
             let state = self.raid_states.entry(pid).or_insert_with(|| RaidState {
                 first_seen_tick: tick,
-                next_roll_tick: tick + RAID_ROLL_INTERVAL,
+                next_roll_tick: tick + timers.roll_interval,
                 last_raid_tick: 0,
                 suppress_until: 0,
                 incoming: None,
@@ -1145,12 +1181,12 @@ impl GameEngine {
             }
 
             if tick < state.next_roll_tick { continue; }
-            state.next_roll_tick = tick + RAID_ROLL_INTERVAL;
+            state.next_roll_tick = tick + timers.roll_interval;
 
             let age = tick.saturating_sub(state.first_seen_tick);
-            if age < RAID_MIN_PLAYER_AGE { continue; }
+            if age < timers.min_player_age { continue; }
             if tick < state.suppress_until { continue; }
-            if tick.saturating_sub(state.last_raid_tick) < RAID_MIN_INTERVAL { continue; }
+            if tick.saturating_sub(state.last_raid_tick) < timers.min_interval { continue; }
 
             let Some(player) = self.players.get(&pid) else { continue; };
             // Raids only threaten empires worth raiding — and defenseless
@@ -1168,7 +1204,7 @@ impl GameEngine {
 
             let fraction = rng.random_range(RAID_POWER_FRACTION_MIN..RAID_POWER_FRACTION_MAX);
             let power = defense * fraction;
-            let arrival_tick = tick + RAID_WARNING_TICKS;
+            let arrival_tick = tick + timers.warning;
 
             if let Some(state) = self.raid_states.get_mut(&pid) {
                 state.incoming = Some(IncomingRaid { arrival_tick, power });
@@ -1251,16 +1287,17 @@ impl GameEngine {
         }
 
         let tick = self.current_tick;
+        let timers = RaidTimers::new(&self.world.pace);
         let state = self.raid_states.entry(player_id).or_insert_with(|| RaidState {
             first_seen_tick: tick,
-            next_roll_tick: tick + RAID_ROLL_INTERVAL,
+            next_roll_tick: tick + timers.roll_interval,
             last_raid_tick: 0,
             suppress_until: 0,
             incoming: None,
         });
         state.last_raid_tick = tick;
         if !defended {
-            state.suppress_until = tick + RAID_SUPPRESS_AFTER_LOSS;
+            state.suppress_until = tick + timers.suppress_after_loss;
         }
 
         self.pending_events.push(GameEvent {
@@ -1841,7 +1878,7 @@ impl GameEngine {
 
         let player_mut = self.players.get_mut(&player_id).unwrap();
         player_mut.resources = player_mut.resources.sub(cost);
-        let duration = scaling::building_time(building_type, target_level);
+        let duration = scaling::building_time(building_type, target_level, &self.world.pace);
         player_mut.building_queue = Some(BuildQueueEntry {
             building_type,
             target_level,
@@ -1870,7 +1907,7 @@ impl GameEngine {
 
         let player_mut = self.players.get_mut(&player_id).unwrap();
         player_mut.resources = player_mut.resources.sub(cost);
-        let duration = scaling::research_time(tech, target_level);
+        let duration = scaling::research_time(tech, target_level, &self.world.pace);
         player_mut.research_queue = Some(ResearchQueueEntry {
             tech,
             target_level,
@@ -1901,7 +1938,7 @@ impl GameEngine {
 
         let player_mut = self.players.get_mut(&player_id).unwrap();
         player_mut.resources = player_mut.resources.sub(total_cost);
-        let per_ship = scaling::ship_build_time(ship_class, shipyard_level);
+        let per_ship = scaling::ship_build_time(ship_class, shipyard_level, &self.world.pace);
         player_mut.ship_queue = Some(ShipQueueEntry {
             ship_class,
             count,
@@ -2161,7 +2198,7 @@ impl GameEngine {
 
         // Clean breach: roll the loot.
         let ranges = derelict_loot_ranges(tier);
-        let loot_mult = if has_hauler { EXPLORE_HAULER_LOOT_MULTIPLIER } else { 1.0 };
+        let loot_mult = self.world.pace.finds_mult() * if has_hauler { EXPLORE_HAULER_LOOT_MULTIPLIER } else { 1.0 };
         let rolled = Resources {
             metal: rng.random_range(ranges[0].0..=ranges[0].1) * loot_mult,
             crystal: rng.random_range(ranges[1].0..=ranges[1].1) * loot_mult,
@@ -3498,8 +3535,8 @@ pub fn template_npc_id(coord: Hex) -> u64 {
 }
 
 /// Wreckage a destroyed NPC fleet leaves behind.
-fn npc_salvage(npc: &NpcFleet) -> Resources {
-    npc.ships[0].ship_class.build_cost().scale(SALVAGE_FRACTION)
+fn npc_salvage(npc: &NpcFleet, pace: &Pace) -> Resources {
+    npc.ships[0].ship_class.build_cost().scale(SALVAGE_FRACTION * pace.finds_mult())
 }
 
 fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
@@ -3632,6 +3669,7 @@ fn regen_resource(
     harvested: &mut f32,
     override_density: &mut Option<Density>,
     template_density: Density,
+    rate: f32,
 ) -> bool {
     let current = match *override_density {
         Some(d) => d,
@@ -3643,7 +3681,7 @@ fn regen_resource(
     let template_val = template_density as u8;
     if current_val >= template_val { return false; }
 
-    let regen_amount = SECTOR_REGEN_RATE * current.depletion_threshold();
+    let regen_amount = rate * current.depletion_threshold();
     *harvested -= regen_amount;
     if *harvested < 0.0 {
         let new_density = current.upgrade();
@@ -3664,7 +3702,7 @@ mod tests {
 
     fn test_engine() -> GameEngine {
         let db = Database::init(":memory:").expect("in-memory db");
-        GameEngine::init(42, db).expect("engine init")
+        GameEngine::init(42, db, None).expect("engine init")
     }
 
     fn register(engine: &mut GameEngine, name: &str) -> (u64, u64) {
@@ -3822,7 +3860,7 @@ mod tests {
 
         let fid = {
             let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db).unwrap();
+            let mut engine = GameEngine::init(42, db, None).unwrap();
             let (pid, fid) = register(&mut engine, "Persistent");
             let site = find_sector_with(&engine, |m, c, _| m != Density::None && c != Density::None);
             engine.fleets.get_mut(&fid).unwrap().location = site;
@@ -3832,7 +3870,7 @@ mod tests {
         };
 
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db).expect("reload");
+        let engine = GameEngine::init(42, db, None).expect("reload");
         let fleet = &engine.fleets[&fid];
         assert_eq!(fleet.state, FleetStatus::Harvesting);
         assert_eq!(fleet.harvest_target, HarvestResource::Crystal);
@@ -3852,7 +3890,7 @@ mod tests {
 
         let (pid, visited) = {
             let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db).unwrap();
+            let mut engine = GameEngine::init(42, db, None).unwrap();
             let (pid, fid) = register(&mut engine, "Wanderer");
             let home = engine.fleets[&fid].location;
             let visited = engine.world_gen.connected_neighbors(home).slice()[0];
@@ -3864,7 +3902,7 @@ mod tests {
         };
 
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db).unwrap();
+        let engine = GameEngine::init(42, db, None).unwrap();
         assert!(engine.explored.contains(&(pid, visited.to_key())), "explored sectors reload from explored_edges");
 
         for ext in ["", "-wal", "-shm"] {
@@ -4010,14 +4048,14 @@ mod tests {
 
         let (pid, fid, resources) = {
             let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db).unwrap();
+            let mut engine = GameEngine::init(42, db, None).unwrap();
             let (pid, fid) = register(&mut engine, "Restarter");
             engine.persist_dirty_state().unwrap();
             (pid, fid, engine.players[&pid].resources)
         };
 
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db).expect("engine must reload saved state");
+        let engine = GameEngine::init(42, db, None).expect("engine must reload saved state");
         let player = engine.players.get(&pid).expect("player survived restart");
         assert!((player.resources.metal - resources.metal).abs() < 0.01);
         let fleet = engine.fleets.get(&fid).expect("fleet survived restart");
@@ -4225,7 +4263,7 @@ mod tests {
 
         let (fid, site) = {
             let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db).unwrap();
+            let mut engine = GameEngine::init(42, db, None).unwrap();
             let (pid, fid) = register(&mut engine, "Persistent");
             engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
 
@@ -4239,7 +4277,7 @@ mod tests {
         };
 
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db).expect("reload");
+        let engine = GameEngine::init(42, db, None).expect("reload");
         let policy = engine.policies.get(&fid).expect("policy survived restart");
         assert_eq!(policy.preset, PolicyPreset::PatrolHome);
 
@@ -4444,13 +4482,13 @@ mod tests {
         let at = Hex { q: 2, r: 5 };
         let (pile, despawn) = {
             let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db).unwrap();
+            let mut engine = GameEngine::init(42, db, None).unwrap();
             let dropped = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
             engine.persist_dirty_state().unwrap();
             dropped
         };
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db).unwrap();
+        let engine = GameEngine::init(42, db, None).unwrap();
         let ov = &engine.sector_overrides[&at.to_key()];
         assert_eq!(ov.salvage, Some(pile));
         assert_eq!(ov.salvage_despawn_tick, Some(despawn));
@@ -4576,7 +4614,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (pid, seen) = {
             let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db).unwrap();
+            let mut engine = GameEngine::init(42, db, None).unwrap();
             let (pid, fid) = register(&mut engine, "Veteran");
             engine.handle_scan(pid, fid).unwrap();
             for _ in 0..3 { engine.tick().unwrap(); }
@@ -4588,7 +4626,7 @@ mod tests {
         assert!(seen.len() > 1);
 
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let mut engine = GameEngine::init(42, db).unwrap();
+        let mut engine = GameEngine::init(42, db, None).unwrap();
         // The scan reveal itself is memory-only, so only the sensor/fleet sectors are live now.
         let after = chart_of(&engine, pid);
         assert_eq!(after.len(), seen.len(), "every remembered sector reloaded");
@@ -4995,7 +5033,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let fid = {
             let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db).unwrap();
+            let mut engine = GameEngine::init(42, db, None).unwrap();
             let (_, fid) = register(&mut engine, "Old");
             let f = engine.fleets.get_mut(&fid).unwrap();
             f.fuel = 50_000.0;
@@ -5005,7 +5043,7 @@ mod tests {
             fid
         };
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db).unwrap();
+        let engine = GameEngine::init(42, db, None).unwrap();
         assert!(engine.fleets[&fid].fuel_max < 1000.0);
         assert!(engine.fleets[&fid].fuel <= engine.fleets[&fid].fuel_max);
         let _ = std::fs::remove_file(&path);
@@ -5017,7 +5055,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (pid, fid, new_id) = {
             let db = Database::init(path.to_str().unwrap()).unwrap();
-            let mut engine = GameEngine::init(42, db).unwrap();
+            let mut engine = GameEngine::init(42, db, None).unwrap();
             let (pid, fid) = register(&mut engine, "Splitter");
             engine.add_ship_to_homeworld(pid, ShipClass::Hauler).unwrap();
             engine.persist_dirty_state().unwrap();
@@ -5029,7 +5067,7 @@ mod tests {
         };
 
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let mut engine = GameEngine::init(42, db).unwrap();
+        let mut engine = GameEngine::init(42, db, None).unwrap();
         assert_eq!(engine.fleets[&fid].ship_count, 2);
         assert_eq!(engine.fleets[&new_id].ship_count, 1);
 
@@ -5039,9 +5077,81 @@ mod tests {
         drop(engine);
 
         let db = Database::init(path.to_str().unwrap()).unwrap();
-        let engine = GameEngine::init(42, db).unwrap();
+        let engine = GameEngine::init(42, db, None).unwrap();
         assert_eq!(engine.fleets[&fid].ship_count, 3);
         assert!(!engine.fleets.contains_key(&new_id));
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn temp_world(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("iac_{tag}_{}.db", std::process::id()));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
+        path
+    }
+
+    fn engine_at(path: &std::path::Path, pace: Option<Pace>) -> Result<GameEngine, Box<dyn std::error::Error>> {
+        GameEngine::init(42, Database::init(path.to_str().unwrap()).unwrap(), pace)
+    }
+
+    #[test]
+    fn a_world_keeps_the_pace_it_was_created_with() {
+        let path = temp_world("pace_fixed");
+        {
+            let mut engine = engine_at(&path, Some(Pace::parse("blitz").unwrap())).unwrap();
+            register(&mut engine, "Pacer");
+            engine.persist_dirty_state().unwrap();
+            engine.flush_persistence().unwrap();
+        }
+        let engine = engine_at(&path, None).unwrap();
+        assert_eq!(engine.pace().value(), 600.0, "no --pace keeps the stored one");
+        drop(engine);
+        let engine = engine_at(&path, Some(Pace::new(600.0).unwrap())).unwrap();
+        assert_eq!(engine.pace().value(), 600.0);
+        drop(engine);
+        let err = engine_at(&path, Some(Pace::new(10.0).unwrap())).err().expect("a different pace is refused");
+        let text = err.to_string();
+        assert!(text.contains("600 (blitz)") && text.contains("10 (season)") && text.contains("new --db"), "{text}");
+    }
+
+    #[test]
+    fn a_database_without_world_meta_is_refused() {
+        let path = temp_world("old_world");
+        {
+            let db = Database::init(path.to_str().unwrap()).unwrap();
+            db.save_server_state("world_seed", "42").unwrap();
+        }
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("DROP TABLE world_meta").unwrap();
+        }
+        let err = engine_at(&path, None).err().expect("an old world must not start");
+        let text = err.to_string();
+        assert!(text.contains("not migrated") && text.contains("new world"), "{text}");
+    }
+
+    #[test]
+    fn pace_scales_production_and_economy_timers() {
+        let slow = test_engine();
+        let fast = {
+            let db = Database::init(":memory:").unwrap();
+            GameEngine::init(42, db, Some(Pace::new(10.0).unwrap())).unwrap()
+        };
+        let mut a = slow;
+        let mut b = fast;
+        let (pa, _) = register(&mut a, "Slow");
+        let (pb, _) = register(&mut b, "Fast");
+        let prod_a = a.players[&pa].production_per_tick(&a.pace());
+        let prod_b = b.players[&pb].production_per_tick(&b.pace());
+        assert!((prod_b.metal / prod_a.metal - 10.0).abs() < 1e-4);
+
+        a.players.get_mut(&pa).unwrap().resources = Resources { metal: 1e6, crystal: 1e6, deuterium: 1e6 };
+        b.players.get_mut(&pb).unwrap().resources = Resources { metal: 1e6, crystal: 1e6, deuterium: 1e6 };
+        a.handle_build(pa, BuildingType::MetalMine).unwrap();
+        b.handle_build(pb, BuildingType::MetalMine).unwrap();
+        let ticks_a = a.players[&pa].building_queue.as_ref().unwrap().end_tick - a.current_tick;
+        let ticks_b = b.players[&pb].building_queue.as_ref().unwrap().end_tick - b.current_tick;
+        assert_eq!(ticks_b, ticks_a.div_ceil(10));
     }
 }

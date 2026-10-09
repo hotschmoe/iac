@@ -6,7 +6,7 @@ use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     Command, EventKind, FleetState, GameEvent, HomeworldState,
-    PlayerState, SectorState, ServerMessage,
+    PlayerState, SectorState, ServerMessage, WorldInfo,
 };
 use iac_shared::scaling::{BuildingType, ResearchType};
 
@@ -135,6 +135,7 @@ pub struct ClientState {
     pub fleets: Vec<FleetState>,
     pub homeworld: Option<HomeworldState>,
     pub known_sectors: HashMap<u32, SectorState>,
+    pub world: Option<WorldInfo>,
     pub event_log: EventLog,
 
     // UI state
@@ -189,6 +190,7 @@ impl ClientState {
             fleets: Vec::new(),
             homeworld: None,
             known_sectors: HashMap::new(),
+            world: None,
             event_log: EventLog::new(),
             current_view: View::CommandCenter,
             active_fleet_idx: 0,
@@ -388,6 +390,7 @@ impl ClientState {
                 self.tick = state.tick;
                 self.player = Some(state.player.clone());
                 self.homeworld = Some(state.homeworld.clone());
+                self.world = Some(state.world.clone());
                 self.replace_fleets(&state.fleets);
 
                 self.known_sectors.clear();

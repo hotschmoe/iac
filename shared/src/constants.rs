@@ -2,6 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Bumped when costs, times or production formulas change; a database from
+/// another economy version is refused (start a new world).
+pub const ECONOMY_VERSION: u32 = 2;
+/// Bumped when sector generation changes.
+pub const WORLDGEN_VERSION: u32 = 1;
+
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
 pub const TICK_DURATION_NS: u64 = 1_000_000_000 / TICK_RATE_HZ;

@@ -7,6 +7,7 @@ use log::{info, warn};
 use tokio::time::MissedTickBehavior;
 
 use iac_shared::constants::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_WORLD_SEED};
+use iac_shared::pace::Pace;
 
 use crate::database::Database;
 use crate::engine::GameEngine;
@@ -46,6 +47,26 @@ struct Args {
     /// Database path
     #[arg(short, long, default_value = "iac_world.db")]
     db: String,
+
+    /// World pace for a NEW database: a multiplier or a preset name
+    /// (persistent, fortnight, season, sprint, dev, blitz, test). Fixed once
+    /// the world exists; an existing database refuses a different value.
+    #[arg(long, value_parser = Pace::parse, conflicts_with = "world")]
+    pace: Option<Pace>,
+
+    /// Preset name for a new database (same as --pace <preset>)
+    #[arg(long, value_parser = parse_preset)]
+    world: Option<Pace>,
+}
+
+fn parse_preset(name: &str) -> Result<Pace, String> {
+    match iac_shared::pace::preset_named(name) {
+        Some(p) => Pace::new(p.pace),
+        None => {
+            let names: Vec<&str> = iac_shared::pace::PRESETS.iter().map(|p| p.name).collect();
+            Err(format!("unknown preset '{name}' ({})", names.join(", ")))
+        }
+    }
 }
 
 #[tokio::main]
@@ -66,7 +87,14 @@ async fn main() {
     info!("----------------------------------------------------");
 
     let db = Database::init(&args.db).expect("Failed to initialize database");
-    let engine = GameEngine::init(world_seed, db).expect("Failed to initialize engine");
+    let engine = match GameEngine::init(world_seed, db, args.pace.or(args.world)) {
+        Ok(engine) => engine,
+        Err(e) => {
+            eprintln!("iac-server: {e}");
+            std::process::exit(2);
+        }
+    };
+    info!("World pace: {}", database::describe_pace(engine.pace()));
     let engine = Arc::new(Mutex::new(engine));
 
     let web_dir = match args.web_dir.clone() {

@@ -131,6 +131,9 @@ class GameState {
   /// first server message.
   final proto.HomeworldCatalog? catalog;
 
+  /// Fixed world settings (pace); null before the first full state.
+  final proto.WorldInfo? world;
+
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -149,6 +152,7 @@ class GameState {
     this.signals = const {},
     this.stock = const proto.Resources(),
     this.catalog,
+    this.world,
   });
 
   String get clockDisplay {
@@ -178,6 +182,7 @@ class GameState {
     Map<proto.Hex, proto.SignalKind>? signals,
     proto.Resources? stock,
     proto.HomeworldCatalog? catalog,
+    proto.WorldInfo? world,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -197,5 +202,6 @@ class GameState {
         signals: signals ?? this.signals,
         stock: stock ?? this.stock,
         catalog: catalog ?? this.catalog,
+        world: world ?? this.world,
       );
 }

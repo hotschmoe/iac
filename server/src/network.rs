@@ -27,7 +27,7 @@ use iac_shared::protocol::{
     ClientMessage, ServerMessage, Command, ErrorCode, HarvestResource,
     GameState, PlayerState, FleetState, ShipState,
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
-    GameEvent, AuthResult,
+    GameEvent, AuthResult, WorldInfo,
 };
 use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
 use iac_shared::scaling::{BuildingType, ResearchType};
@@ -325,6 +325,7 @@ impl Network {
             fleets: fleet_states,
             homeworld: hw_state,
             known_sectors,
+            world: WorldInfo::new(engine.pace(), engine.world.economy_version, engine.world.worldgen_version),
         });
 
         drop(engine);
@@ -726,14 +727,14 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
 
     HomeworldState {
         location: player.homeworld,
-        production: player.production_per_tick(),
+        production: player.production_per_tick(&engine.pace()),
         buildings,
         research,
         build_queue,
         shipyard_queue,
         research_active,
         docked_ships,
-        catalog: iac_shared::protocol::HomeworldCatalog::new(&player.buildings, &player.research),
+        catalog: iac_shared::protocol::HomeworldCatalog::new(&player.buildings, &player.research, &engine.pace()),
     }
 }
 
@@ -806,7 +807,7 @@ mod tests {
     use serde_json::Value;
 
     fn network_with_player() -> (Network, Arc<Mutex<GameEngine>>, u64, u64, mpsc::UnboundedReceiver<Message>) {
-        let engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let engine = GameEngine::init(42, Database::init(":memory:").unwrap(), None).unwrap();
         let engine = Arc::new(Mutex::new(engine));
         let (pid, fid) = {
             let mut e = engine.lock().unwrap();
@@ -1006,7 +1007,7 @@ mod tests {
     #[test]
     fn combat_reaches_only_the_players_involved_or_present() {
         use iac_shared::protocol::EventKind as K;
-        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap(), None).unwrap();
         let a = engine.register_player("Alpha".to_string()).unwrap();
         let b = engine.register_player("Bravo".to_string()).unwrap();
         let c = engine.register_player("Charlie".to_string()).unwrap();
@@ -1070,7 +1071,7 @@ mod tests {
     #[test]
     fn a_players_own_loss_reaches_them_even_when_nobody_else_is_there() {
         use iac_shared::protocol::{AlertLevel, EventKind as K};
-        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap()).unwrap();
+        let mut engine = GameEngine::init(42, Database::init(":memory:").unwrap(), None).unwrap();
         let a = engine.register_player("Alpha".to_string()).unwrap();
         let b = engine.register_player("Bravo".to_string()).unwrap();
         let fa = engine.fleets.values().find(|f| f.owner_id == a).unwrap().id;

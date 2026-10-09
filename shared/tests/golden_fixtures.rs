@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use iac_shared::Resources;
 use iac_shared::constants::{Density, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
+use iac_shared::pace::Pace;
 use iac_shared::protocol::*;
 use iac_shared::scaling::{BuildingLevels, BuildingType, ResearchLevels, ResearchType};
 
@@ -243,7 +244,7 @@ fn sample_homeworld() -> HomeworldState {
             end_tick: 600,
         }),
         docked_ships: vec![ship(501, ShipClass::Cruiser, 100.0, 50.0, 18.0)],
-        catalog: HomeworldCatalog::new(&levels, &researched),
+        catalog: HomeworldCatalog::new(&levels, &researched, &Pace::PERSISTENT),
     }
 }
 
@@ -257,7 +258,7 @@ fn idle_homeworld() -> HomeworldState {
         shipyard_queue: None,
         research_active: None,
         docked_ships: vec![],
-        catalog: HomeworldCatalog::new(&BuildingLevels::default(), &ResearchLevels::default()),
+        catalog: HomeworldCatalog::new(&BuildingLevels::default(), &ResearchLevels::default(), &Pace::PERSISTENT),
     }
 }
 
@@ -574,6 +575,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 ],
                 homeworld: sample_homeworld(),
                 known_sectors: vec![rich_sector(), bare_sector(), anomaly_sector()],
+                world: WorldInfo::new(Pace::new(10.0).unwrap(), 2, 1),
             }),
         ),
         (
@@ -584,6 +586,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 fleets: vec![],
                 homeworld: idle_homeworld(),
                 known_sectors: vec![],
+                world: WorldInfo::new(Pace::new(42.0).unwrap(), 2, 1),
             }),
         ),
         (

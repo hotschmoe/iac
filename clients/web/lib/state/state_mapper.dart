@@ -15,6 +15,7 @@ class StateMapper {
   proto.PlayerState? player;
   List<proto.FleetState> fleets = [];
   proto.HomeworldState? homeworld;
+  proto.WorldInfo? world;
 
   /// Known sectors keyed by [proto.Hex.toKey].
   final Map<int, proto.SectorState> sectors = {};
@@ -33,6 +34,7 @@ class StateMapper {
     player = null;
     fleets = [];
     homeworld = null;
+    world = null;
     sectors.clear();
     signals.clear();
     log.clear();
@@ -61,6 +63,7 @@ class StateMapper {
     player = s.player;
     fleets = List.of(s.fleets);
     homeworld = s.homeworld;
+    world = s.world;
     sectors.clear();
     for (final sec in s.knownSectors) {
       sectors[sec.location.toKey()] = sec;
@@ -285,6 +288,7 @@ class StateMapper {
       signals: {for (final e in signals.entries) proto.Hex.fromKey(e.key): e.value},
       stock: res,
       catalog: hw?.catalog,
+      world: world,
     );
   }
 

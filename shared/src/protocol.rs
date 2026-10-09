@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::constants::{Density, ShipClass, TerrainType};
 use crate::scaling::{self, BuildingLevels, BuildingType, ResearchLevels, ResearchPrereqKind, ResearchType};
 use crate::hex::Hex;
+use crate::pace::Pace;
 use crate::Resources;
 
 // ── Client → Server Messages ──────────────────────────────────────
@@ -268,6 +269,47 @@ pub struct GameState {
     pub fleets: Vec<FleetState>,
     pub homeworld: HomeworldState,
     pub known_sectors: Vec<SectorState>,
+    pub world: WorldInfo,
+}
+
+/// The world's fixed settings, sent with every `full_state`. `pace` scales
+/// economy timers (see `docs/design/economy/spec.md` section 1) and never
+/// changes for the life of a world.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldInfo {
+    pub pace: f64,
+    /// Name of the preset the pace equals, if it equals one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub preset: Option<String>,
+    pub tick_hz: u32,
+    pub economy_version: u32,
+    pub worldgen_version: u32,
+    /// Simulation estimate for a competent player; present for presets.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub estimate: Option<WorldEstimate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldEstimate {
+    pub first_cruiser_s: u64,
+    pub endgame_s: u64,
+}
+
+impl WorldInfo {
+    pub fn new(pace: Pace, economy_version: u32, worldgen_version: u32) -> Self {
+        let preset = pace.preset();
+        WorldInfo {
+            pace: pace.value(),
+            preset: preset.map(|p| p.name.to_string()),
+            tick_hz: crate::constants::TICK_RATE_HZ as u32,
+            economy_version,
+            worldgen_version,
+            estimate: preset.map(|p| WorldEstimate {
+                first_cruiser_s: p.first_cruiser_s,
+                endgame_s: p.endgame_s,
+            }),
+        }
+    }
 }
 
 // ── State Types ───────────────────────────────────────────────────
@@ -603,7 +645,7 @@ pub struct ShipOption {
 }
 
 impl HomeworldCatalog {
-    pub fn new(buildings: &BuildingLevels, research: &ResearchLevels) -> Self {
+    pub fn new(buildings: &BuildingLevels, research: &ResearchLevels, pace: &Pace) -> Self {
         let building_options = (0..BuildingType::COUNT)
             .filter_map(BuildingType::from_usize)
             .map(|b| {
@@ -615,7 +657,7 @@ impl HomeworldCatalog {
                     next: (level < scaling::MAX_BUILDING_LEVEL).then(|| UpgradeStep {
                         level: level + 1,
                         cost: scaling::building_cost(b, level + 1),
-                        ticks: scaling::building_time(b, level + 1),
+                        ticks: scaling::building_time(b, level + 1, pace),
                     }),
                     requires: building_requirements(buildings, b),
                 }
@@ -634,7 +676,7 @@ impl HomeworldCatalog {
                     next: (level < max_level).then(|| UpgradeStep {
                         level: level + 1,
                         cost: scaling::research_cost(t, level + 1),
-                        ticks: scaling::research_time(t, level + 1),
+                        ticks: scaling::research_time(t, level + 1, pace),
                     }),
                     requires: research_requirements(buildings, research, t),
                 }
@@ -646,7 +688,7 @@ impl HomeworldCatalog {
             .map(|&c| ShipOption {
                 ship_class: c,
                 unit_cost: c.build_cost(),
-                ticks_per_ship: scaling::ship_build_time(c, buildings.get(BuildingType::Shipyard)),
+                ticks_per_ship: scaling::ship_build_time(c, buildings.get(BuildingType::Shipyard), pace),
                 requires: ship_requirements(buildings, research, c),
             })
             .collect();
@@ -1066,20 +1108,20 @@ mod catalog_tests {
     #[test]
     fn building_costs_match_scaling() {
         let (b, r) = fresh();
-        let cat = HomeworldCatalog::new(&b, &r);
+        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         assert_eq!(cat.buildings.len(), BuildingType::COUNT);
         let mine = building(&cat, BuildingType::MetalMine);
         let next = mine.next.unwrap();
         assert_eq!(mine.level, 1);
         assert_eq!(next.level, 2);
         assert_eq!(next.cost, scaling::building_cost(BuildingType::MetalMine, 2));
-        assert_eq!(next.ticks, scaling::building_time(BuildingType::MetalMine, 2));
+        assert_eq!(next.ticks, scaling::building_time(BuildingType::MetalMine, 2, &Pace::PERSISTENT));
     }
 
     #[test]
     fn building_prerequisite_unmet_then_met() {
         let (mut b, r) = fresh();
-        let before = HomeworldCatalog::new(&b, &r);
+        let before = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         let yard = building(&before, BuildingType::Shipyard);
         assert_eq!(yard.requires.len(), 1);
         assert_eq!(yard.requires[0].name, "Metal Mine");
@@ -1087,7 +1129,7 @@ mod catalog_tests {
         assert!(!yard.requires[0].met);
 
         b.set(BuildingType::MetalMine, 2);
-        let after = HomeworldCatalog::new(&b, &r);
+        let after = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         assert!(building(&after, BuildingType::Shipyard).requires.iter().all(|q| q.met));
     }
 
@@ -1096,7 +1138,7 @@ mod catalog_tests {
         let (mut b, mut r) = fresh();
         b.set(BuildingType::MetalMine, scaling::MAX_BUILDING_LEVEL);
         r.set(ResearchType::CorvetteTech, 1);
-        let cat = HomeworldCatalog::new(&b, &r);
+        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         assert!(building(&cat, BuildingType::MetalMine).next.is_none());
         let corvette = cat.research.iter().find(|o| o.tech == ResearchType::CorvetteTech).unwrap();
         assert!(corvette.next.is_none());
@@ -1106,7 +1148,7 @@ mod catalog_tests {
     #[test]
     fn research_requires_lab_and_chain() {
         let (mut b, mut r) = fresh();
-        let cat = HomeworldCatalog::new(&b, &r);
+        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         let frigate = cat.research.iter().find(|o| o.tech == ResearchType::FrigateTech).unwrap();
         let unmet: Vec<_> = frigate.requires.iter().filter(|q| !q.met).map(|q| (q.name.as_str(), q.need)).collect();
         assert_eq!(unmet, [("Research Lab", 1), ("Corvette Tech", 1), ("Shipyard", 4)]);
@@ -1118,7 +1160,7 @@ mod catalog_tests {
         b.set(BuildingType::ResearchLab, 1);
         b.set(BuildingType::Shipyard, 4);
         r.set(ResearchType::CorvetteTech, 1);
-        let cat = HomeworldCatalog::new(&b, &r);
+        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         let frigate = cat.research.iter().find(|o| o.tech == ResearchType::FrigateTech).unwrap();
         assert!(frigate.requires.iter().all(|q| q.met));
     }
@@ -1126,7 +1168,7 @@ mod catalog_tests {
     #[test]
     fn research_lists_one_lab_requirement_at_the_highest_level() {
         let (b, r) = fresh();
-        let cat = HomeworldCatalog::new(&b, &r);
+        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         for opt in &cat.research {
             let labs: Vec<u8> = opt.requires.iter().filter(|q| q.name == "Research Lab").map(|q| q.need).collect();
             assert_eq!(labs.len(), 1, "{:?} lists the lab {} times", opt.tech, labs.len());
@@ -1138,20 +1180,20 @@ mod catalog_tests {
     #[test]
     fn ships_follow_shipyard_level_and_unlocks() {
         let (mut b, mut r) = fresh();
-        let cat = HomeworldCatalog::new(&b, &r);
+        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         assert_eq!(cat.ships.len(), ShipClass::ALL.len());
         let corvette = cat.ships.iter().find(|o| o.ship_class == ShipClass::Corvette).unwrap();
         assert_eq!(corvette.unit_cost, ShipClass::Corvette.build_cost());
-        assert_eq!(corvette.ticks_per_ship, scaling::ship_build_time(ShipClass::Corvette, 0));
+        assert_eq!(corvette.ticks_per_ship, scaling::ship_build_time(ShipClass::Corvette, 0, &Pace::PERSISTENT));
         assert_eq!(corvette.requires.iter().filter(|q| !q.met).count(), 2);
         let scout = cat.ships.iter().find(|o| o.ship_class == ShipClass::Scout).unwrap();
         assert_eq!(scout.requires.len(), 1);
 
         b.set(BuildingType::Shipyard, 3);
         r.set(ResearchType::CorvetteTech, 1);
-        let cat = HomeworldCatalog::new(&b, &r);
+        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
         let corvette = cat.ships.iter().find(|o| o.ship_class == ShipClass::Corvette).unwrap();
-        assert_eq!(corvette.ticks_per_ship, scaling::ship_build_time(ShipClass::Corvette, 3));
+        assert_eq!(corvette.ticks_per_ship, scaling::ship_build_time(ShipClass::Corvette, 3, &Pace::PERSISTENT));
         assert!(corvette.requires.iter().all(|q| q.met));
     }
 

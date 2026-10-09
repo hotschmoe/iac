@@ -625,5 +625,11 @@
     }
   },
   "tick": 0,
-  "type": "full_state"
+  "type": "full_state",
+  "world": {
+    "economy_version": 2,
+    "pace": 42.0,
+    "tick_hz": 1,
+    "worldgen_version": 1
+  }
 }

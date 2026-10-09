@@ -184,7 +184,7 @@
               "metal": 675.0
             },
             "level": 3,
-            "ticks": 303
+            "ticks": 304
           },
           "requires": []
         },
@@ -221,7 +221,7 @@
               "metal": 500.0
             },
             "level": 5,
-            "ticks": 2278
+            "ticks": 2279
           },
           "requires": [
             {
@@ -243,7 +243,7 @@
               "metal": 900.0
             },
             "level": 6,
-            "ticks": 2733
+            "ticks": 2734
           },
           "requires": [
             {
@@ -265,7 +265,7 @@
               "metal": 700.0
             },
             "level": 7,
-            "ticks": 5980
+            "ticks": 5981
           },
           "requires": [
             {
@@ -287,7 +287,7 @@
               "metal": 2400.0
             },
             "level": 8,
-            "ticks": 18452
+            "ticks": 18453
           },
           "requires": [
             {
@@ -366,7 +366,7 @@
               "metal": 900.0
             },
             "level": 3,
-            "ticks": 607
+            "ticks": 608
           },
           "requires": [
             {
@@ -460,7 +460,7 @@
               "metal": 450.0
             },
             "level": 3,
-            "ticks": 607
+            "ticks": 608
           },
           "requires": [
             {
@@ -600,7 +600,7 @@
             }
           ],
           "ship_class": "Scout",
-          "ticks_per_ship": 23,
+          "ticks_per_ship": 24,
           "unit_cost": {
             "crystal": 50.0,
             "deuterium": 30.0,
@@ -623,7 +623,7 @@
             }
           ],
           "ship_class": "Corvette",
-          "ticks_per_ship": 46,
+          "ticks_per_ship": 47,
           "unit_cost": {
             "crystal": 100.0,
             "deuterium": 60.0,
@@ -646,7 +646,7 @@
             }
           ],
           "ship_class": "Frigate",
-          "ticks_per_ship": 92,
+          "ticks_per_ship": 93,
           "unit_cost": {
             "crystal": 400.0,
             "deuterium": 200.0,
@@ -669,7 +669,7 @@
             }
           ],
           "ship_class": "Cruiser",
-          "ticks_per_ship": 184,
+          "ticks_per_ship": 185,
           "unit_cost": {
             "crystal": 1500.0,
             "deuterium": 800.0,
@@ -692,7 +692,7 @@
             }
           ],
           "ship_class": "Hauler",
-          "ticks_per_ship": 69,
+          "ticks_per_ship": 70,
           "unit_cost": {
             "crystal": 200.0,
             "deuterium": 150.0,
@@ -938,5 +938,16 @@
     }
   },
   "tick": 4820,
-  "type": "full_state"
+  "type": "full_state",
+  "world": {
+    "economy_version": 2,
+    "estimate": {
+      "endgame_s": 622000,
+      "first_cruiser_s": 165600
+    },
+    "pace": 10.0,
+    "preset": "season",
+    "tick_hz": 1,
+    "worldgen_version": 1
+  }
 }

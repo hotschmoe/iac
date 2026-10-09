@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{Resources, ShipClass, ShipStats};
+use crate::pace::Pace;
 
 pub const MAX_BUILDING_LEVEL: u8 = 20;
 
@@ -124,7 +125,7 @@ impl BuildingLevels {
 }
 
 /// production_per_tick(level) = base_rate * level * 1.1^level
-pub fn production_per_tick(building: BuildingType, level: u8) -> f32 {
+pub fn production_per_tick(building: BuildingType, level: u8, pace: &Pace) -> f32 {
     if level == 0 {
         return 0.0;
     }
@@ -134,7 +135,7 @@ pub fn production_per_tick(building: BuildingType, level: u8) -> f32 {
         BuildingType::DeuteriumSynthesizer => 0.15,
         _ => 0.0,
     };
-    base * level as f32 * pow_f32(1.1, level)
+    pace.rate(base * level as f32 * pow_f32(1.1, level))
 }
 
 /// Cost to build level N.
@@ -185,7 +186,7 @@ pub fn building_cost(building: BuildingType, level: u8) -> Resources {
 }
 
 /// build_ticks = base_ticks * level * 1.5^level
-pub fn building_time(building: BuildingType, level: u8) -> u64 {
+pub fn building_time(building: BuildingType, level: u8, pace: &Pace) -> u64 {
     if level == 0 {
         return 0;
     }
@@ -199,7 +200,7 @@ pub fn building_time(building: BuildingType, level: u8) -> u64 {
         BuildingType::DefenseGrid => 90,
     };
     let ticks = base as f32 * level as f32 * pow_f32(1.5, level);
-    (ticks.max(1.0)) as u64
+    pace.econ_ticks(ticks as f64)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -447,21 +448,18 @@ pub fn research_cost(tech: ResearchType, level: u8) -> Resources {
     }
 }
 
-pub fn research_time(tech: ResearchType, level: u8) -> u64 {
+pub fn research_time(tech: ResearchType, level: u8, pace: &Pace) -> u64 {
     if level == 0 {
         return 0;
     }
-    match tech {
-        ResearchType::CorvetteTech => 60,
-        ResearchType::FrigateTech => 120,
-        ResearchType::CruiserTech => 240,
-        ResearchType::HaulerTech => 90,
-        _ => {
-            let base: u64 = 60;
-            let ticks = base as f32 * level as f32 * pow_f32(1.5, level);
-            (ticks.max(1.0)) as u64
-        }
-    }
+    let ticks = match tech {
+        ResearchType::CorvetteTech => 60.0,
+        ResearchType::FrigateTech => 120.0,
+        ResearchType::CruiserTech => 240.0,
+        ResearchType::HaulerTech => 90.0,
+        _ => 60.0 * level as f32 * pow_f32(1.5, level),
+    };
+    pace.econ_ticks(ticks as f64)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -650,7 +648,7 @@ pub fn ship_class_unlocked(class: ShipClass, research: &ResearchLevels) -> bool 
     ship_class_tech(class).is_none_or(|tech| research.get(tech) >= 1)
 }
 
-pub fn ship_build_time(class: ShipClass, shipyard_level: u8) -> u64 {
+pub fn ship_build_time(class: ShipClass, shipyard_level: u8, pace: &Pace) -> u64 {
     let base: f32 = match class {
         ShipClass::Scout => 30.0,
         ShipClass::Corvette => 60.0,
@@ -659,7 +657,7 @@ pub fn ship_build_time(class: ShipClass, shipyard_level: u8) -> u64 {
         ShipClass::Hauler => 90.0,
     };
     let divisor = 1.0 + 0.1 * shipyard_level as f32;
-    (base / divisor).max(1.0) as u64
+    pace.econ_ticks((base / divisor) as f64)
 }
 
 pub const CANCEL_REFUND_FRACTION: f32 = 0.50;

@@ -229,6 +229,7 @@ void main() {
         fleets: const [],
         homeworld: mapper.homeworld!,
         knownSectors: [stale],
+        world: mapper.world!,
       ));
       expect(mapper.sectors[where.toKey()]!.live, isFalse);
       final info = mapper.toUiState().sectors[where]!;

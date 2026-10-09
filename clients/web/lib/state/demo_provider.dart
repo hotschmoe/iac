@@ -185,6 +185,13 @@ class DemoProvider {
         fleets: List.of(_fleets),
         homeworld: _hw,
         knownSectors: _sectors.values.toList(),
+        world: const WorldInfo(
+          pace: 1,
+          preset: 'persistent',
+          tickHz: 1,
+          economyVersion: 2,
+          worldgenVersion: 1,
+        ),
       );
 
   PlayerState _player() => PlayerState(id: _playerId, name: 'Demo', resources: _resources, homeworld: _home);

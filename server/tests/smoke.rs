@@ -84,6 +84,9 @@ async fn auth_state_and_command_roundtrip() {
         state["player"].is_object() || state["players"].is_array(),
         "full_state has no player data: {state}"
     );
+    assert_eq!(state["world"]["pace"], 1.0, "default world is persistent: {state}");
+    assert_eq!(state["world"]["preset"], "persistent");
+    assert_eq!(state["world"]["economy_version"], 2);
 
     // Server should stream tick updates (1 Hz tick loop).
     let tick = loop {
@@ -301,6 +304,40 @@ async fn token_survives_restart_and_pre_token_databases_are_claimed() {
         let (_ws, ok) = login(port, "OldTimer", Some(&claimed)).await;
         assert_eq!(ok["success"], true, "{ok}");
     }
+
+    remove_db(&db);
+}
+
+#[tokio::test]
+async fn a_world_refuses_a_different_pace() {
+    let port = 17935;
+    let db = fresh_db(port);
+    {
+        let child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
+            .args(["--port", &port.to_string(), "--db", db.to_str().unwrap(), "--pace", "blitz"])
+            .spawn()
+            .expect("failed to spawn server");
+        let _guard = ServerGuard(child);
+        let (mut ws, reply) = login(port, "Pacer", None).await;
+        assert_eq!(reply["success"], true, "{reply}");
+        let state = loop {
+            let msg = next_json(&mut ws).await;
+            if msg["type"] == "full_state" {
+                break msg;
+            }
+        };
+        assert_eq!(state["world"]["pace"], 600.0);
+        assert_eq!(state["world"]["preset"], "blitz");
+        assert!(state["world"]["estimate"]["first_cruiser_s"].is_u64());
+    }
+
+    let out = Command::new(env!("CARGO_BIN_EXE_iac-server"))
+        .args(["--port", &port.to_string(), "--db", db.to_str().unwrap(), "--pace", "10"])
+        .output()
+        .expect("failed to run server");
+    assert!(!out.status.success(), "a different pace must stop the server");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot change") && err.contains("600 (blitz)"), "unclear refusal: {err}");
 
     remove_db(&db);
 }
