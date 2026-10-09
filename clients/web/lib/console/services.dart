@@ -1,3 +1,4 @@
+import 'package:clock/clock.dart';
 import 'package:flutter/widgets.dart';
 
 import '../models/game_state.dart';
@@ -27,17 +28,17 @@ class Console {
 
   Console({required this.game, required this.prefs, required this.toasts, required this.sfx}) {
     _lastTick = game.state.tick;
-    lastTickAt = DateTime.now();
+    lastTickAt = clock.now();
     game.addListener(_onGame);
   }
 
   int _lastTick = -1;
-  DateTime lastTickAt = DateTime.now();
+  DateTime lastTickAt = clock.now();
 
   void _onGame() {
     if (game.state.tick != _lastTick) {
       _lastTick = game.state.tick;
-      lastTickAt = DateTime.now();
+      lastTickAt = clock.now();
       if (game.hasState && (game.isLive || game.isDemo) && (_lastBoard < 0 || game.state.tick - _lastBoard >= 30)) {
         _lastBoard = game.state.tick;
         game.sendCommand(proto.LeaderboardCommand(limit: 10));
@@ -46,7 +47,7 @@ class Console {
   }
 
   /// Seconds since the last server tick, for interpolating between 1 Hz snapshots.
-  double get sinceTick => DateTime.now().difference(lastTickAt).inMicroseconds / 1e6;
+  double get sinceTick => clock.now().difference(lastTickAt).inMicroseconds / 1e6;
 
   EconomyView get economy => EconomyView.of(game.state, me: game.playerName);
 

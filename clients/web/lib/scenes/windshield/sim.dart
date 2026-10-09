@@ -111,14 +111,14 @@ math.Random _seeded(proto.Hex h) => math.Random((h.q * 73856093) ^ (h.r * 193496
 /// Presentation-only scene state for the sector the active fleet is in.
 /// Everything shown is derived from server data; this class owns the motion.
 class WindshieldSim {
-  WindshieldSim() {
+  WindshieldSim({int seed = 11}) : rng = math.Random(seed) {
     final r = math.Random(3);
     for (var l = 0; l < 3; l++) {
       stars.add([for (var i = 0; i < 70 + l * 20; i++) Star(r.nextDouble(), r.nextDouble(), r.nextDouble() * 1.4 + .3, r.nextDouble() * tau)]);
     }
   }
 
-  final math.Random rng = math.Random();
+  final math.Random rng;
   final List<List<Star>> stars = [];
 
   int? fleetId;

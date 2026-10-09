@@ -1,3 +1,4 @@
+import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -148,7 +149,7 @@ class _ShellState extends State<Shell> {
       return true;
     }
     final lc = ch?.toLowerCase();
-    if (_gAt != null && DateTime.now().difference(_gAt!) < const Duration(milliseconds: 1500)) {
+    if (_gAt != null && clock.now().difference(_gAt!) < const Duration(milliseconds: 1500)) {
       _gAt = null;
       final t = switch (lc) {
         'o' => Screen.overview,
@@ -163,7 +164,7 @@ class _ShellState extends State<Shell> {
       }
     }
     if (lc == 'g') {
-      _gAt = DateTime.now();
+      _gAt = clock.now();
       _toasts.show('Go to', 'O overview, W windshield, M map, H homeworld', life: const Duration(milliseconds: 1500));
       return true;
     }

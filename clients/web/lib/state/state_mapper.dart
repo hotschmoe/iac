@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'package:clock/clock.dart';
+
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
@@ -106,7 +108,7 @@ class StateMapper {
 
   void _applyFull(proto.GameState s) {
     tick = s.tick;
-    connectedAt = DateTime.now();
+    connectedAt = clock.now();
     player = s.player;
     fleets = List.of(s.fleets);
     homeworld = s.homeworld;
@@ -326,7 +328,7 @@ class StateMapper {
       '${r.metal.round()}M ${r.crystal.round()}C ${r.deuterium.round()}D';
 
   int get clockSec =>
-      connectedAt == null ? tick : DateTime.now().difference(connectedAt!).inSeconds;
+      connectedAt == null ? tick : clock.now().difference(connectedAt!).inSeconds;
 
   // ── UI mapping ────────────────────────────────────────────────
 
