@@ -123,12 +123,12 @@ Example session:
 | `recall` | `fleet_id` | emergency-jump home (2× fuel, hull risk) |
 | `stop` | `fleet_id` | abort a move, harvest, or boarding |
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
-| `build` | `building_type` | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts) |
-| `research` | `tech` | research one level, same rules (one lab) |
-| `build_ship` | `ship_class`, `count` | queue ship production (one shipyard; the batch is paid when it starts) |
-| `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count` | queue home defence structures in the shipyard queue; `DefenceLocked` until the Defense Grid and research it needs are in place |
-| `cancel_build` | `queue_type`, `index` (default 0) | cancel an item that has started (the `index`th running one) with a 50% refund; waiting items behind it move up a level; a `Queue` event confirms what was refunded |
-| `cancel_queued` | `queue_type`, `index` | remove an item still waiting (the `index`th, from 0); nothing was paid, so nothing comes back; a `Queue` event confirms it |
+| `build` | `building_type`, `reserve` (default false) | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts). Every order gets a stable `id`, reported in its `Queue` event and in the queue lists. `reserve: true` makes the order hold the line while it is short (see Queues and slots) |
+| `research` | `tech`, `reserve` | research one level, same rules (one lab) |
+| `build_ship` | `ship_class`, `count`, `reserve` | queue a ship batch (one shipyard). The batch is one order that pays and starts one unit at a time, so 5 ordered with money for 2 builds 2 and waits for the third |
+| `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count`, `reserve` | queue home defence structures in the shipyard queue, paid per unit like ships; `DefenceLocked` until the Defense Grid and research it needs are in place |
+| `cancel_build` | `queue_type`, `id` | cancel the item with that `id` once it has started, with a 50% refund (one unit for a ship batch; units already built are kept); waiting items of the same building or tech move up a level; a `Queue` event confirms what was refunded. `InvalidTarget` names where the id actually is (another queue, still waiting, or gone) |
+| `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits; nothing was paid, so nothing comes back; a `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest |
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
@@ -149,7 +149,7 @@ change (`"params":{"max_range":2}`) and the rest take their defaults.
 | `min_fuel_pct` | 10 | spare fuel, as a percent of the tank, kept on top of the exact fuel cost of the route home (clamped 0-90) |
 | `cargo_return_pct` | 85 | head home to unload when the hold is this full (10-100) |
 | `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting and salvage runs (1-30); never measured from the last claim |
-| `engage_ratio_x10` | 12 | fight only if your power is at least enemy power x this/10 (1-100); also the least ratio at which any doctrine will enter a sector, never below EVEN (1.1) and SAFE (2.5) where hostiles sit |
+| `engage_ratio_x10` | 12 | fight only if your power is at least enemy power x this/10 (1-100); also exactly the least ratio at which any doctrine will enter a sector, hostiles there or not. A value below EVEN (1.1) that you set deliberately is honoured |
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
@@ -166,9 +166,11 @@ Every autopilot act emits a `PolicyAction` event with a human-readable
 nearest sector you have never entered inside `max_range` of home; when none is
 left it returns home and holds rather than wandering between known sectors.
 No doctrine moves a fleet into a sector whose threat (as `preview_move` shows
-it) the fleet would not beat at `engage_ratio_x10`, and none passes through a
-sector holding hostiles below SAFE odds. A refusal is a `hold` `PolicyAction`
-saying which sector, its threat and the ratio; `prospect` names whether a
+it) the fleet would not beat at `engage_ratio_x10`; the setting is the bar
+whether or not hostiles sit there, so lower it to push a scout through, raise
+it to be careful. A refusal is a `hold` `PolicyAction` saying which sector,
+its threat and the ratio, repeated at most once a minute while the cause
+stays the same; `prospect` names whether a
 hazard, `max_range` or a fully charted board stops it. Heading home it takes
 the safest lane and falls back to the shortest.
 
@@ -256,13 +258,25 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   warn you. A Vault also protects 8% of the cap per level (to 60%) from raids.
 - **Queues and slots** — one rule for buildings, research, ships and
   defences. An order that can ever start is always accepted, whether or not a
-  slot is free or you can pay yet. It waits, strictly first in, first out, and
-  starts and pays in full the moment a slot is free, what it needs is built and
-  the stockpile covers the cost; an order short of resources holds back the
-  ones behind it, so the line never reorders (an order that waits only on a
-  prerequisite, such as a Shipyard behind the Metal Mine it needs, does not
-  hold the line). Buildings run in `build_slots` parallel slots (1, plus one
-  per Modular Fabrication level, max 3); research and the shipyard have one.
+  slot is free or you can pay yet. Each order has a stable `id` (cancel by it,
+  never by position). Whenever a slot is free, the server starts the earliest
+  waiting order that can start now: what it needs is built and the stockpile
+  covers its cost, which it pays in full at that moment. An order that cannot
+  start keeps its place and is checked again every tick, so a free slot never
+  idles behind an order that cannot pay. The catch is that cheaper orders
+  behind an expensive one can keep winning the race for the stockpile. To make
+  an order wait its turn instead, send it with `reserve: true`: while it is
+  ready but short of resources, nothing behind it in the same queue starts
+  (orders ahead of it still do). An order that waits only on a prerequisite,
+  such as a Shipyard behind the Metal Mine it needs, never holds the line.
+  Research and buildings can both be queued behind a prerequisite that is
+  itself still queued, and a tech that is running can be queued again for its
+  next level. A ship batch is one order that pays and starts one unit at a
+  time: it shows `built` of `count`, and when it cannot pay for the next unit
+  it goes back to waiting (`waiting_for` is the next unit's shortfall) and
+  lets another order use the yard. Buildings run in `build_slots` parallel
+  slots (1, plus one per Modular Fabrication level, max 3); research and the
+  shipyard have one.
   Each queue holds its running items plus `queue_waiting_max` (3) waiting ones,
   so the building queue holds `build_slots + 3` and the others 4; a full queue
   refuses with `QueueFull`. Orders that can never start are refused with a
@@ -270,8 +284,9 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   `MaxLevelReached`, `StorageTooSmall` (naming the Vault level it needs),
   `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`.
   `build_pending` / `research_pending` / `shipyard_pending` list each waiting
-  order with `waiting_for` (the exact shortfall), `waiting_on` (`Slot`,
-  `Resources`, `Prerequisite` or `Order`: held behind an earlier order) and
+  order with its `id`, `waiting_for` (the exact shortfall), `waiting_on` (`Slot`,
+  `Resources`, `Prerequisite` or `Order`: held behind an earlier `reserve`
+  order) and
   `start_in` (estimated ticks to start at current production, ignoring what the
   other queues spend). Every order, start and cancel is answered by a `Queue`
   event: `Started` (what was paid), `Waiting` (shortfall and estimate) or
@@ -302,8 +317,9 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   `recall` costs 2x the jump fuel per hex, all or nothing.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
   chains (corvettes shred scouts…), victors drop salvage (`FleetDestroyed.salvage`
-  is exactly the pile `collect_salvage` can take; it lasts 180 ticks and a
-  `SalvageDespawned` event says when one expires). You only receive combat
+  is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
+  sector view carries `salvage_despawn_tick`, and a `SalvageDespawned` event
+  says when one expires). You only receive combat
   events for fights your fleets or homeworld are in, or that happen in a
   sector where you have a fleet or your homeworld. Each carries `owner`
   (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
@@ -318,9 +334,13 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   sector you have had eyes on, and `full_state.known_sectors` returns all of
   them. Each entry has `live` (true: current this tick; false: remembered) and
   `last_seen` (tick it was last observed). A stale entry shows ore, hostiles,
-  wreckage and derelict **as last seen**, which may be out of date (wreckage
-  lasts 180 ticks; `salvage_despawn_tick` says when). Tick updates add a
-  sector to `sector_updates` once more when it turns stale.
+  wreckage and derelict **as last seen**, which may be out of date, and says
+  so with `pins_stale: true`. A remembered pile whose `salvage_despawn_tick`
+  has passed is dropped from the chart, and so is any pin you watched go (a
+  boarding, a collection, a scan that finds nothing there). Tick updates add a
+  sector to `sector_updates` once more when it turns stale or loses a pin.
+  The `signals` of a scan lie one hop beyond the scanned range and never name
+  the scanning sector, which is `ScanCompleted.sector`.
 - **Derelicts** — dead ships drift in debris fields and empty space beyond
   the shipping lanes (`D` on the map, "derelict transponder" on scans).
   Board one (`explore_site`, 20 ticks) for tiered loot, sometimes a
@@ -365,7 +385,11 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   half the structures gone for good, a quarter of the ships docked at home
   destroyed (at least one), and a long grace period. Never
   buildings, never queues. `RaidResolved` reports `structures_lost`,
-  `structures_restored`, `protected_kept` and `ships_lost`.
+  `structures_restored`, `protected_kept`, `ships_lost` and, for a repelled
+  raid, `salvage_despawn_tick`. The orbital salvage is on your own planet, so
+  a fleet docked at home scoops it into storage by itself, up to what the
+  Vault holds (`SalvageCollected` says what); with no fleet docked, or the
+  Vault full, an `Alert` fires once when 60 s are left.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
   the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2
