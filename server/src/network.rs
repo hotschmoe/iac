@@ -27,11 +27,12 @@ use iac_shared::protocol::{
     ClientMessage, ServerMessage, Command, ErrorCode, HarvestResource,
     GameState, PlayerState, FleetState, ShipState,
     HomeworldState, BuildingState, ResearchState, BuildQueueItem, ShipyardQueueItem, ResearchItem,
-    QueuedBuild, QueuedResearch, QueuedShip,
+    QueuedBuild, QueuedResearch, QueuedShip, DefenceState,
     GameEvent, AuthResult, WorldInfo,
 };
 use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
+use iac_shared::constants::{RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
 
 use crate::engine::{fleet_cargo_capacity, AuthError, GameEngine, FleetStatus};
 
@@ -226,6 +227,7 @@ impl Network {
             Command::Build { building_type } => engine.handle_build(pid, building_type),
             Command::Research { tech } => engine.handle_research(pid, tech),
             Command::BuildShip { ship_class, count } => engine.handle_build_ship(pid, ship_class, count),
+            Command::BuildDefence { kind, count } => engine.handle_build_defence(pid, kind, count),
             Command::CancelBuild { queue_type, index } => engine.handle_cancel_build(pid, queue_type, index),
             Command::CancelQueued { queue_type, index } => engine.handle_cancel_queued(pid, queue_type, index),
             Command::Stop { fleet_id } => engine.handle_stop(pid, fleet_id),
@@ -370,6 +372,7 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         Command::Build { .. }
         | Command::Research { .. }
         | Command::BuildShip { .. }
+        | Command::BuildDefence { .. }
         | Command::CancelBuild { .. }
         | Command::CancelQueued { .. } => None,
     }
@@ -503,6 +506,11 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
         (ErrorCode::NoResources, _) => shortfall_message(engine, player_id, cmd),
         (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),
+        (ErrorCode::DefenceLocked, Command::BuildDefence { kind, .. }) => engine
+            .players
+            .get(&player_id)
+            .and_then(|p| iac_shared::protocol::missing_requirements_message(kind.label(), &iac_shared::protocol::defence_requirements(&p.buildings, &p.research, *kind)))
+            .unwrap_or_else(|| format!("{} is locked", kind.label())),
         (ErrorCode::ResourceNotPresent, Command::Harvest { resource, .. }) => {
             format!("this sector has no {} to harvest", harvest_label(*resource))
         }
@@ -518,12 +526,12 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         (ErrorCode::QueueFull, Command::Research { .. }) => {
             format!("the research queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
         }
-        (ErrorCode::QueueFull, Command::BuildShip { .. }) => {
+        (ErrorCode::QueueFull, Command::BuildShip { .. } | Command::BuildDefence { .. }) => {
             format!("the shipyard queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
         }
         (ErrorCode::InvalidTarget, Command::CancelBuild { .. }) => "nothing is under way at that position".to_string(),
         (ErrorCode::InvalidTarget, Command::CancelQueued { .. }) => "nothing is waiting at that position".to_string(),
-        (ErrorCode::InvalidCommand, Command::BuildShip { .. }) => "a shipyard order needs a count of at least 1".to_string(),
+        (ErrorCode::InvalidCommand, Command::BuildShip { .. } | Command::BuildDefence { .. }) => "a shipyard order needs a count of at least 1".to_string(),
         (ErrorCode::MaxLevelReached, Command::Build { building_type }) => {
             format!("{} is already at its maximum level", building_type.label())
         }
@@ -764,18 +772,18 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
         }
     }).collect();
     let shipyard_pending: Vec<QueuedShip> = player.ship_pending.iter().map(|q| {
-        let cost = q.ship_class.build_cost().scale(q.count as f32);
+        let cost = q.item.unit_cost().scale(q.count as f32);
         QueuedShip {
-            ship_class: q.ship_class,
+            item: q.item,
             count: q.count,
             cost,
-            ticks: iac_shared::scaling::ship_build_time(q.ship_class, player.buildings.shipyard, &pace),
+            ticks: q.item.unit_ticks(player.buildings.shipyard, &pace),
             waiting_for: missing(cost),
         }
     }).collect();
 
     let shipyard_queue: Option<ShipyardQueueItem> = player.ship_queue.as_ref().map(|q| ShipyardQueueItem {
-        ship_class: q.ship_class,
+        item: q.item,
         count: q.count,
         built: q.built,
         start_tick: q.start_tick,
@@ -821,7 +829,19 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
         research_active,
         research_pending,
         docked_ships,
-        catalog: iac_shared::protocol::HomeworldCatalog::new(&player.buildings, &player.research, &pace),
+        defences: DefenceKind::ALL.iter().map(|&kind| DefenceState {
+            kind,
+            count: player.defences.count[kind as usize],
+            restoring: player.defences.restoring[kind as usize],
+            power: iac_shared::scaling::structure_power(kind, player.buildings.defense_grid),
+        }).collect(),
+        home_defence_power: engine.home_defense_power(player.id),
+        next_raid_estimate_power: iac_shared::scaling::raid_power_base(
+            iac_shared::scaling::econ_points(&player.buildings, &player.research),
+        ) * (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0,
+        catalog: iac_shared::protocol::HomeworldCatalog::new(
+            &player.buildings, &player.research, &player.defences.count, &pace,
+        ),
     }
 }
 
@@ -874,6 +894,7 @@ fn event_for(event: &GameEvent, player: &crate::engine::Player, engine: &GameEng
         K::BuildingCompleted(e) => e.player_id.is_none_or(|p| p == player.id),
         K::ResearchCompleted(e) => e.player_id.is_none_or(|p| p == player.id),
         K::ShipBuilt(e) => e.player_id.is_none_or(|p| p == player.id),
+        K::DefenceBuilt(e) => e.player_id.is_none_or(|p| p == player.id),
         K::ScanCompleted(e) => own_fleet(e.fleet_id),
         K::RaidIncoming(e) => e.player_id == player.id,
         K::RaidResolved(e) => e.player_id == player.id,
@@ -1277,5 +1298,30 @@ mod tests {
         // 2 Scouts: 120 fuel, 6 per jump -> 10 round trips out and back.
         assert_eq!(fleet["range_hops"], 10, "{fleet}");
         assert!(fleet["power"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn the_homeworld_reports_defences_and_the_expected_raid() {
+        let (net, engine, pid, _fid, mut rx) = network_with_player();
+        {
+            let mut e = engine.lock().unwrap();
+            let p = e.players.get_mut(&pid).unwrap();
+            p.buildings.defense_grid = 2;
+            p.defences.count[0] = 5;
+            p.defences.restoring[0] = 1;
+        }
+        net.broadcast_updates().unwrap();
+        let tick = next_message(&mut rx);
+        let hw = &tick["homeworld_update"];
+        assert_eq!(hw["defences"][0]["kind"], "PulseTurret");
+        assert_eq!(hw["defences"][0]["count"], 5);
+        assert_eq!(hw["defences"][0]["restoring"], 1);
+        assert!((hw["defences"][0]["power"].as_f64().unwrap() - 17.0 * 1.08).abs() < 1e-3);
+        let defence = hw["home_defence_power"].as_f64().unwrap();
+        let ships_and_grid = engine.lock().unwrap().home_defense_power(pid) as f64;
+        assert!((defence - ships_and_grid).abs() < 1e-3);
+        assert!(defence > 5.0 * 17.0 * 1.08, "structures count toward home defence: {defence}");
+        assert!(hw["next_raid_estimate_power"].as_f64().unwrap() > 5.0);
+        assert_eq!(hw["catalog"]["defences"][0]["count"], 5);
     }
 }

@@ -197,6 +197,9 @@ class StateMapper {
       case proto.ShipBuiltEvent():
         msg = 'Shipyard: ${k.count}x ${k.shipClass.label} ready';
         level = EventLevel.bright;
+      case proto.DefenceBuiltEvent():
+        msg = 'Defence online: ${k.defence.label}';
+        level = EventLevel.bright;
       case proto.ScanCompletedEvent():
         msg = '${_fleet(k.fleetId)} scan at ${k.sector}: ${k.sectorsRevealed} sectors revealed, '
             '${k.hostilesDetected} hostiles${k.signals.isEmpty ? '' : ', ${k.signals.length} faint contacts'}';
@@ -205,18 +208,21 @@ class StateMapper {
           if (!sectors.containsKey(key)) signals[key] = s.signal;
         }
       case proto.RaidIncomingEvent():
-        msg = '! RAID INCOMING (${k.threat}) -- arrival tick ${k.arrivalTick}';
+        msg = '! RAID INCOMING (${k.threat}, power ${k.estPower.round()}) -- arrival tick ${k.arrivalTick}';
         level = EventLevel.bright;
         _pushAlert(Alert(
           icon: '!',
-          message: 'Raid incoming (${k.threat})',
+          message: 'Raid incoming (${k.threat}, power ${k.estPower.round()})',
           detail: 'Arrives tick ${k.arrivalTick} -- ${math.max(0, k.arrivalTick - tick)}s',
           level: AlertTone.glow,
         ));
       case proto.RaidResolvedEvent():
+        final structures = k.structuresLost == 0
+            ? ''
+            : ', ${k.structuresLost} structures lost (${k.structuresRestored} will be rebuilt)';
         msg = k.defended
-            ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})'
-            : '! Raid broke through: lost ${_res(k.resourcesLost)}';
+            ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})$structures'
+            : '! Raid broke through (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}): lost ${_res(k.resourcesLost)}$structures';
         level = EventLevel.bright;
       case proto.SiteExplorationStartedEvent():
         msg = '${_fleet(k.fleetId)} boarding derelict (tier ${k.tier}) in ${k.sector}, done tick ${k.endTick}';
@@ -417,9 +423,9 @@ class StateMapper {
     if (hw == null) return const [];
     final q = hw.shipyardQueue;
     return [
-      if (q != null) _queueItem('${q.shipClass.label} x${q.count} (${q.built} built)', q.startTick, q.endTick),
+      if (q != null) _queueItem('${q.item.label} x${q.count} (${q.built} built)', q.startTick, q.endTick),
       for (final p in hw.shipyardPending)
-        _waitingItem('${p.shipClass.label} x${p.count}', p.waitingFor, p.ticks * p.count),
+        _waitingItem('${p.item.label} x${p.count}', p.waitingFor, p.ticks * p.count),
     ];
   }
 

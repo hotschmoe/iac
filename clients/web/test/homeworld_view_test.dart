@@ -61,6 +61,25 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  homeworldTest('lists defence structures after the ships and queues them like ships', (tester, c) async {
+    expect(find.byKey(const ValueKey('hw-defence')), findsOneWidget);
+    expect(c.state.hw!.homeDefencePower, greaterThan(100));
+    await tester.tap(find.byKey(const ValueKey('hw-tab-shipyard')));
+    await tester.pump();
+    expect(find.text('PULSE TURRET'), findsOneWidget);
+    expect(find.text('ION BASTION'), findsOneWidget);
+    expect(c.hwCardCount, 5 + 3);
+    // The demo shipyard is busy, so the turret order waits behind the corvettes.
+    await tester.tap(find.byKey(const ValueKey('hw-card-5')));
+    await tester.pump();
+    expect(c.state.shipyard.last.name, 'Pulse Turret x1');
+    expect(c.state.shipyard.last.active, isFalse);
+    // Lancer batteries need Defense Grid 2; the demo has 1.
+    await tester.tap(find.byKey(const ValueKey('hw-card-6')));
+    await tester.pump();
+    expect(c.state.events.first.message, contains('locked: needs Defense Grid >= 2'));
+  });
+
   homeworldTest('tapping a ship card queues the selected batch', (tester, c) async {
     await tester.tap(find.byKey(const ValueKey('hw-tab-shipyard')));
     await tester.pump();

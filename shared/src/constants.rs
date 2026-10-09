@@ -459,35 +459,47 @@ pub const SCAN_SCOUT_RANGE: u8 = 2;
 /// How long actively-scanned sectors keep streaming live updates.
 pub const SCAN_REVEAL_TICKS: u64 = 120;
 
-/// Homeworld raids: forecasted pressure, never a random tax.
-/// A raid is rolled periodically, announced in advance, resolves against
-/// docked ships + DefenseGrid, and losses are hard-capped.
-pub const RAID_ROLL_INTERVAL: u64 = 300;
-pub const RAID_ROLL_CHANCE: f32 = 0.20;
-pub const RAID_WARNING_TICKS: u64 = 60;
-pub const RAID_MIN_INTERVAL: u64 = 900;
-pub const RAID_MIN_PLAYER_AGE: u64 = 600;
-/// Raid fleet targets this fraction of the player's home defense power.
-pub const RAID_POWER_FRACTION_MIN: f32 = 0.35;
-pub const RAID_POWER_FRACTION_MAX: f32 = 0.55;
-/// Loss caps when a raid succeeds (fraction of stockpile).
+/// Homeworld raids: forecasted pressure, never a random tax. A raid is
+/// rolled periodically, announced in advance, sized from the player's
+/// economy points (`scaling::raid_power_base`) and resolved against docked
+/// ships, the Defense Grid and defence structures. Losses are hard-capped.
+/// The cadence is attention-class: it follows P^0.75, not P.
+pub const RAID_ROLL_INTERVAL: u64 = 21_600;
+pub const RAID_ROLL_CHANCE: f32 = 0.30;
+pub const RAID_MIN_INTERVAL: u64 = 64_800;
+pub const RAID_MIN_PLAYER_AGE: u64 = 86_400;
+/// The raid fleet's power is `raid_power_base` times a roll in this range.
+pub const RAID_POWER_ROLL_MIN: f32 = 0.80;
+pub const RAID_POWER_ROLL_MAX: f32 = 1.15;
+/// Loss caps when a raid succeeds (fraction of stockpile above the
+/// protected share).
 pub const RAID_LOSS_CAP_METAL: f32 = 0.08;
 pub const RAID_LOSS_CAP_CRYSTAL: f32 = 0.08;
 pub const RAID_LOSS_CAP_DEUT: f32 = 0.05;
 /// Salvage reward for repelling a raid (fraction of raid fleet value).
 pub const RAID_DEFENSE_SALVAGE_FRACTION: f32 = 0.30;
 /// After losing a raid, no raids for this long (no death spiral).
-pub const RAID_SUPPRESS_AFTER_LOSS: u64 = 1800;
+pub const RAID_SUPPRESS_AFTER_LOSS: u64 = 172_800;
+/// A repelled raid wears down structures: this fraction of them, scaled by
+/// raid power over defence power (at most 1), is destroyed.
+pub const RAID_STRUCTURE_DAMAGE: f32 = 0.5;
+/// Of the structures a repelled raid destroys, this share is rebuilt free.
+pub const RAID_STRUCTURE_RESTORE: f32 = 0.7;
+/// Delay before they are rebuilt, in pace-1 ticks (finds class).
+pub const RAID_RESTORE_TICKS: u64 = 600;
+/// A lost raid destroys this fraction of the structures, with no rebuild.
+pub const RAID_LOST_STRUCTURE_FRACTION: f32 = 0.5;
 
 /// DefenseGrid: virtual defensive power per level (in "scout units",
-/// multiplied by scout combat power). Levels 4+ scale by +35%/level.
+/// multiplied by scout combat power). Levels 4+ scale by +30%/level. Real
+/// structures provide the bulk of home defence.
 pub fn defense_grid_scout_units(level: u8) -> f32 {
     match level {
         0 => 0.0,
-        1 => 2.0,   // ≈ 2 scouts
-        2 => 5.0,   // ≈ 1 corvette + 2 scouts
-        3 => 8.0,   // ≈ 2 corvettes
-        n => 8.0 * 1.35f32.powi(n as i32 - 3),
+        1 => 1.0,
+        2 => 2.5,
+        3 => 4.0,
+        n => 4.0 * 1.3f32.powi(n as i32 - 3),
     }
 }
 

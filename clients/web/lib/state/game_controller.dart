@@ -407,7 +407,7 @@ class GameController extends ChangeNotifier {
     if (c == null) return 0;
     return switch (hwTab) {
       HomeworldTab.buildings => c.buildings.length,
-      HomeworldTab.shipyard => c.ships.length,
+      HomeworldTab.shipyard => c.ships.length + c.defences.length,
       HomeworldTab.research => c.research.length,
     };
   }
@@ -477,13 +477,20 @@ class GameController extends ChangeNotifier {
         name = o.tech.label;
         command = proto.ResearchCommand(tech: o.tech);
         echo = 'research ${o.tech.label}';
-      case HomeworldTab.shipyard:
+      case HomeworldTab.shipyard when i < c.ships.length:
         final o = c.ships[i];
         requires = o.requires;
         maxed = false;
         name = o.shipClass.label;
         command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
         echo = 'ship ${o.shipClass.label} x$shipBatch';
+      case HomeworldTab.shipyard:
+        final o = c.defences[i - c.ships.length];
+        requires = o.requires;
+        maxed = false;
+        name = o.kind.label;
+        command = proto.BuildDefenceCommand(kind: o.kind, count: shipBatch);
+        echo = 'defence ${o.kind.label} x$shipBatch';
     }
 
     final unmet = [for (final r in requires) if (!r.met) r.label];

@@ -208,6 +208,101 @@
           ]
         }
       ],
+      "defences": [
+        {
+          "count": 0,
+          "kind": "PulseTurret",
+          "power": 17.0,
+          "requires": [
+            {
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 1
+            },
+            {
+              "have": 0,
+              "met": false,
+              "name": "Defense Grid",
+              "need": 1
+            }
+          ],
+          "ticks_per_unit": 420,
+          "unit_cost": {
+            "crystal": 20.0,
+            "deuterium": 0.0,
+            "metal": 120.0
+          }
+        },
+        {
+          "count": 0,
+          "kind": "LancerBattery",
+          "power": 51.0,
+          "requires": [
+            {
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 1
+            },
+            {
+              "have": 0,
+              "met": false,
+              "name": "Defense Grid",
+              "need": 2
+            },
+            {
+              "have": 0,
+              "met": false,
+              "name": "Weapons Research",
+              "need": 2
+            }
+          ],
+          "ticks_per_unit": 1560,
+          "unit_cost": {
+            "crystal": 120.0,
+            "deuterium": 20.0,
+            "metal": 400.0
+          }
+        },
+        {
+          "count": 0,
+          "kind": "IonBastion",
+          "power": 135.0,
+          "requires": [
+            {
+              "have": 0,
+              "met": false,
+              "name": "Shipyard",
+              "need": 1
+            },
+            {
+              "have": 0,
+              "met": false,
+              "name": "Defense Grid",
+              "need": 4
+            },
+            {
+              "have": 0,
+              "met": false,
+              "name": "Weapons Research",
+              "need": 4
+            },
+            {
+              "have": 0,
+              "met": false,
+              "name": "Advanced Shields",
+              "need": 3
+            }
+          ],
+          "ticks_per_unit": 5100,
+          "unit_cost": {
+            "crystal": 500.0,
+            "deuterium": 100.0,
+            "metal": 1200.0
+          }
+        }
+      ],
       "research": [
         {
           "level": 0,
@@ -668,11 +763,14 @@
         }
       ]
     },
+    "defences": [],
     "docked_ships": [],
+    "home_defence_power": 0.0,
     "location": {
       "q": 0,
       "r": 0
     },
+    "next_raid_estimate_power": 15.5,
     "production": {
       "crystal": 0.0,
       "deuterium": 0.0,

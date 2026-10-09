@@ -83,6 +83,7 @@ class DemoProvider {
             BuildingType.crystalMine => 3,
             BuildingType.deuteriumSynthesizer => 2,
             BuildingType.shipyard => 1,
+            BuildingType.defenseGrid => 1,
             BuildingType.researchLab => 1,
             _ => 0,
           },
@@ -109,7 +110,7 @@ class DemoProvider {
         ),
       ],
       shipyardQueue: ShipyardQueueItem(
-        shipClass: ShipClass.corvette,
+        item: const ShipyardItem.ship(ShipClass.corvette),
         count: 2,
         built: 1,
         startTick: _tick - 40,
@@ -122,6 +123,12 @@ class DemoProvider {
         endTick: _tick + 400,
       ),
       dockedShips: [_ship(2001, ShipClass.cruiser, 100)],
+      defences: [
+        for (final k in DefenceKind.values)
+          DefenceState(kind: k, count: _defenceCount[k] ?? 0, power: _defencePower[k]! * 1.04),
+      ],
+      homeDefencePower: 6 * 17 * 1.04 + 40,
+      nextRaidEstimatePower: 80,
     );
     for (final f in _fleets) {
       _reveal(f.location, 2);
@@ -357,6 +364,32 @@ class DemoProvider {
     );
   }
 
+  List<ServerMessage> _queueYard(ShipyardItem item, Resources unitCost, int ticksPerUnit, int count) {
+    if ((_hw.shipyardQueue == null ? 0 : 1) + _hw.shipyardPending.length >= _hw.queueDepth) {
+      return [_err(ErrorCode.queueFull, 'The shipyard queue is full')];
+    }
+    final cost = _times(unitCost, count);
+    if (_hw.shipyardQueue == null) {
+      final broke = _pay(cost);
+      if (broke != null) return [broke];
+      _hw = _hwWith(
+        ship: ShipyardQueueItem(
+          item: item,
+          count: count,
+          built: 0,
+          startTick: _tick,
+          endTick: _tick + ticksPerUnit * count,
+        ),
+      );
+    } else {
+      _hw = _hwWith(shipPending: [
+        ..._hw.shipyardPending,
+        QueuedShip(item: item, count: count, cost: cost, ticks: ticksPerUnit, waitingFor: _missing(cost)),
+      ]);
+    }
+    return [_tickUpdate()];
+  }
+
   int _bl(BuildingType t) => _hw.buildings.firstWhere((b) => b.buildingType == t).level;
   int _rl(ResearchType t) => _hw.research.firstWhere((r) => r.tech == t).level;
 
@@ -448,7 +481,7 @@ class DemoProvider {
       _hw = _hwWith(
         shipPending: _hw.shipyardPending.skip(1).toList(),
         ship: ShipyardQueueItem(
-          shipClass: ship.shipClass,
+          item: ship.item,
           count: ship.count,
           built: 0,
           startTick: _tick,
@@ -487,6 +520,17 @@ class DemoProvider {
     ShipClass.cruiser: Resources(metal: 3000, crystal: 1500, deuterium: 800),
     ShipClass.hauler: Resources(metal: 600, crystal: 200, deuterium: 150),
   };
+  static const _defenceCost = {
+    DefenceKind.pulseTurret: Resources(metal: 120, crystal: 20),
+    DefenceKind.lancerBattery: Resources(metal: 400, crystal: 120, deuterium: 20),
+    DefenceKind.ionBastion: Resources(metal: 1200, crystal: 500, deuterium: 100),
+  };
+  static const _defencePower = {
+    DefenceKind.pulseTurret: 17.0,
+    DefenceKind.lancerBattery: 51.0,
+    DefenceKind.ionBastion: 135.0,
+  };
+  static const _defenceCount = {DefenceKind.pulseTurret: 6};
   static const _shipTech = {
     ShipClass.corvette: ResearchType.corvetteTech,
     ShipClass.frigate: ResearchType.frigateTech,
@@ -589,6 +633,24 @@ class DemoProvider {
             requires: [
               needBuilding(BuildingType.shipyard, 1),
               if (_shipTech[c] case final t?) Requirement(name: t.label, need: 1, have: rl(t), met: rl(t) >= 1),
+            ],
+          ),
+      ],
+      defences: [
+        for (final k in DefenceKind.values)
+          DefenceOption(
+            kind: k,
+            count: _defenceCount[k] ?? 0,
+            unitCost: _defenceCost[k]!,
+            ticksPerUnit: _ticksFor(_defenceCost[k]!, 1200, 1 + 0.1 * bl(BuildingType.shipyard)),
+            power: _defencePower[k]! * (1 + 0.04 * bl(BuildingType.defenseGrid)),
+            requires: [
+              needBuilding(BuildingType.shipyard, 1),
+              needBuilding(BuildingType.defenseGrid, switch (k) {
+                DefenceKind.pulseTurret => 1,
+                DefenceKind.lancerBattery => 2,
+                DefenceKind.ionBastion => 4,
+              }),
             ],
           ),
       ],
@@ -748,29 +810,12 @@ class DemoProvider {
         final o = _hw.catalog.ships.firstWhere((o) => o.shipClass == shipClass);
         if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.shipLocked, 'Ship class not unlocked')];
-        if ((_hw.shipyardQueue == null ? 0 : 1) + _hw.shipyardPending.length >= _hw.queueDepth) {
-          return [_err(ErrorCode.queueFull, 'The shipyard queue is full')];
-        }
-        final cost = _times(o.unitCost, count);
-        if (_hw.shipyardQueue == null) {
-          final broke = _pay(cost);
-          if (broke != null) return [broke];
-          _hw = _hwWith(
-            ship: ShipyardQueueItem(
-              shipClass: shipClass,
-              count: count,
-              built: 0,
-              startTick: _tick,
-              endTick: _tick + o.ticksPerShip * count,
-            ),
-          );
-        } else {
-          _hw = _hwWith(shipPending: [
-            ..._hw.shipyardPending,
-            QueuedShip(shipClass: shipClass, count: count, cost: cost, ticks: o.ticksPerShip, waitingFor: _missing(cost)),
-          ]);
-        }
-        return [_tickUpdate()];
+        return _queueYard(ShipyardItem.ship(shipClass), o.unitCost, o.ticksPerShip, count);
+      case BuildDefenceCommand(:final kind, :final count):
+        final o = _hw.catalog.defences.firstWhere((o) => o.kind == kind);
+        if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
+        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.defenceLocked, '${kind.label} is locked')];
+        return _queueYard(ShipyardItem.defence(kind), o.unitCost, o.ticksPerUnit, count);
       case CancelBuildCommand(:final queueType, :final index):
         switch (queueType) {
           case QueueType.building:

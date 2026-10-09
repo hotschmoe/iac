@@ -48,7 +48,7 @@ pub const TIMER_CLASSES: &[(&str, PaceClass)] = &[
     ("NPC_PATROL_INTERVAL", PaceClass::RealTime),
     ("SCAN_REVEAL_TICKS", PaceClass::RealTime),
     ("RAID_ROLL_INTERVAL", PaceClass::Attention),
-    ("RAID_WARNING_TICKS", PaceClass::Finds),
+    ("RAID_RESTORE_TICKS", PaceClass::Finds),
     ("RAID_MIN_INTERVAL", PaceClass::Attention),
     ("RAID_MIN_PLAYER_AGE", PaceClass::Attention),
     ("RAID_SUPPRESS_AFTER_LOSS", PaceClass::Attention),

@@ -355,18 +355,29 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             }
             line
         }
+        EventKind::DefenceBuilt(e) => {
+            format!(" T{}: {} online\n", event.tick, e.defence.label())
+        }
         EventKind::RaidIncoming(e) => {
             format!(
-                " T{}: !! {} RAID inbound, ETA T{} !!\n",
-                event.tick, e.threat.to_uppercase(), e.arrival_tick
+                " T{}: !! {} RAID inbound (power {:.0}), ETA T{} !!\n",
+                event.tick, e.threat.to_uppercase(), e.est_power, e.arrival_tick
             )
         }
         EventKind::RaidResolved(e) => {
+            let structures = if e.structures_lost > 0 {
+                format!(", {} structure(s) lost, {} will be rebuilt", e.structures_lost, e.structures_restored)
+            } else {
+                String::new()
+            };
             if e.defended {
-                format!(" T{}: Raid REPELLED — salvage in orbit\n", event.tick)
+                format!(" T{}: Raid REPELLED ({:.0} vs {:.0}) — salvage in orbit{}\n", event.tick, e.raid_power, e.defense_power, structures)
             } else {
                 let lost = e.resources_lost.metal + e.resources_lost.crystal + e.resources_lost.deuterium;
-                format!(" T{}: Raid breached defenses — {:.0} resources lost\n", event.tick, lost)
+                format!(
+                    " T{}: Raid breached defenses ({:.0} vs {:.0}) — {:.0} resources lost{}\n",
+                    event.tick, e.raid_power, e.defense_power, lost, structures
+                )
             }
         }
         EventKind::SiteExplorationStarted(e) => {
@@ -437,6 +448,7 @@ pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
             (false, _) => AMBER_DIM,
         },
         EventKind::SalvageDespawned(_) => AMBER,
+        EventKind::DefenceBuilt(_) => GREEN_GOOD,
         EventKind::StorageNearCap(_) => AMBER_FULL,
         EventKind::StorageFull(_) => RED_ALERT,
         EventKind::RaidResolved(e) => if e.defended { GREEN_GOOD } else { RED_ALERT },

@@ -683,6 +683,165 @@ pub fn ship_build_time(class: ShipClass, shipyard_level: u8, pace: &Pace) -> u64
 
 pub const CANCEL_REFUND_FRACTION: f32 = 0.50;
 
+// ── Defence structures ───────────────────────────────────────────
+
+/// Home defences built from the shipyard queue. They never move, burn no
+/// fuel, and a raid can wear them down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum DefenceKind {
+    PulseTurret = 0,
+    LancerBattery,
+    IonBastion,
+}
+
+impl DefenceKind {
+    pub const COUNT: usize = 3;
+    pub const ALL: [DefenceKind; 3] = [DefenceKind::PulseTurret, DefenceKind::LancerBattery, DefenceKind::IonBastion];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DefenceKind::PulseTurret => "Pulse Turret",
+            DefenceKind::LancerBattery => "Lancer Battery",
+            DefenceKind::IonBastion => "Ion Bastion",
+        }
+    }
+
+    pub fn from_usize(idx: usize) -> Option<Self> {
+        Self::ALL.get(idx).copied()
+    }
+
+    pub fn build_cost(self) -> Resources {
+        match self {
+            DefenceKind::PulseTurret => Resources { metal: 120.0, crystal: 20.0, deuterium: 0.0 },
+            DefenceKind::LancerBattery => Resources { metal: 400.0, crystal: 120.0, deuterium: 20.0 },
+            DefenceKind::IonBastion => Resources { metal: 1200.0, crystal: 500.0, deuterium: 100.0 },
+        }
+    }
+
+    /// (weapon, hull, shield), the same stats ships carry.
+    fn stats(self) -> (f32, f32, f32) {
+        match self {
+            DefenceKind::PulseTurret => (12.0, 40.0, 10.0),
+            DefenceKind::LancerBattery => (35.0, 120.0, 40.0),
+            DefenceKind::IonBastion => (90.0, 300.0, 150.0),
+        }
+    }
+
+    /// `weapon + (hull + shield) / 10`, the scale ships, raids and threat
+    /// ratings share.
+    pub fn power(self) -> f32 {
+        let (weapon, hull, shield) = self.stats();
+        weapon + (hull + shield) / 10.0
+    }
+
+    /// Building and research levels needed before this can be ordered.
+    pub fn prerequisites(self) -> &'static [(PrereqRef, u8)] {
+        match self {
+            DefenceKind::PulseTurret => &[(PrereqRef::Building(BuildingType::DefenseGrid), 1)],
+            DefenceKind::LancerBattery => &[
+                (PrereqRef::Building(BuildingType::DefenseGrid), 2),
+                (PrereqRef::Research(ResearchType::WeaponsResearch), 2),
+            ],
+            DefenceKind::IonBastion => &[
+                (PrereqRef::Building(BuildingType::DefenseGrid), 4),
+                (PrereqRef::Research(ResearchType::WeaponsResearch), 4),
+                (PrereqRef::Research(ResearchType::AdvancedShields), 3),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrereqRef {
+    Building(BuildingType),
+    Research(ResearchType),
+}
+
+pub fn defence_prerequisites_met(kind: DefenceKind, buildings: &BuildingLevels, research: &ResearchLevels) -> bool {
+    kind.prerequisites().iter().all(|(p, need)| match p {
+        PrereqRef::Building(b) => buildings.get(*b) >= *need,
+        PrereqRef::Research(t) => research.get(*t) >= *need,
+    })
+}
+
+/// Ticks to build one structure; the Shipyard speeds it like ships.
+pub fn defence_build_time(kind: DefenceKind, shipyard_level: u8, pace: &Pace) -> u64 {
+    let divisor = 1.0 + SHIPYARD_SPEED * shipyard_level as f64;
+    pace.econ_ticks(cost_seconds(kind.build_cost(), SHIP_RATE, divisor))
+}
+
+/// Each Defense Grid level strengthens every structure by this much.
+pub const DEFENCE_GRID_BONUS: f32 = 0.04;
+
+/// Power of one structure at a Defense Grid level.
+pub fn structure_power(kind: DefenceKind, grid_level: u8) -> f32 {
+    kind.power() * (1.0 + DEFENCE_GRID_BONUS * grid_level as f32)
+}
+
+/// What the shipyard queue builds: a ship class or a defence structure.
+/// On the wire it is just the name ("Corvette", "PulseTurret").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ShipyardItem {
+    Ship(ShipClass),
+    Defence(DefenceKind),
+}
+
+impl ShipyardItem {
+    pub fn label(self) -> &'static str {
+        match self {
+            ShipyardItem::Ship(c) => c.label(),
+            ShipyardItem::Defence(d) => d.label(),
+        }
+    }
+
+    pub fn unit_cost(self) -> Resources {
+        match self {
+            ShipyardItem::Ship(c) => c.build_cost(),
+            ShipyardItem::Defence(d) => d.build_cost(),
+        }
+    }
+
+    pub fn unit_ticks(self, shipyard_level: u8, pace: &Pace) -> u64 {
+        match self {
+            ShipyardItem::Ship(c) => ship_build_time(c, shipyard_level, pace),
+            ShipyardItem::Defence(d) => defence_build_time(d, shipyard_level, pace),
+        }
+    }
+}
+
+// ── Raids and score points ───────────────────────────────────────
+
+/// How much a bundle of resources counts toward score and raid sizing:
+/// crystal and deuterium are scarcer than metal.
+pub fn resource_weight(r: &Resources) -> f32 {
+    (r.metal + 1.5 * r.crystal + 2.0 * r.deuterium) / 1000.0
+}
+
+/// Points for every completed building and research level, at the cost paid.
+/// Fleets and defences do not count.
+pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32 {
+    let mut points = 0.0;
+    for b in (0..BuildingType::COUNT).filter_map(BuildingType::from_usize) {
+        for level in 1..=buildings.get(b) {
+            points += resource_weight(&building_cost(b, level));
+        }
+    }
+    for t in ResearchType::ALL {
+        for level in 1..=research.get(t) {
+            points += resource_weight(&research_cost(t, level));
+        }
+    }
+    points
+}
+
+/// Mean power of the next raid on a player with `econ` points; the actual
+/// raid is rolled between 0.80 and 1.15 times this.
+pub fn raid_power_base(econ: f32) -> f32 {
+    5.0 + 11.0 * econ.powf(0.75)
+}
+
 #[cfg(test)]
 mod golden_tests {
     //! Values copied from the generated tables in docs/design/economy/spec.md.
@@ -908,5 +1067,74 @@ mod golden_tests {
     fn the_fuel_depot_adds_a_quarter_per_level() {
         assert_eq!(fuel_depot_modifier(0), 1.0);
         assert_eq!(fuel_depot_modifier(4), 2.0);
+    }
+
+    #[test]
+    fn defence_structures_match_the_table() {
+        assert_eq!(DefenceKind::PulseTurret.power(), 17.0);
+        assert_eq!(DefenceKind::LancerBattery.power(), 51.0);
+        assert_eq!(DefenceKind::IonBastion.power(), 135.0);
+        assert_eq!(DefenceKind::LancerBattery.build_cost(), cost(400.0, 120.0, 20.0));
+        let cost_per_power = |k: DefenceKind| {
+            let c = k.build_cost();
+            (c.metal + c.crystal + c.deuterium) / k.power()
+        };
+        assert!((cost_per_power(DefenceKind::PulseTurret) - 8.2).abs() < 0.1);
+        assert!((cost_per_power(DefenceKind::LancerBattery) - 10.6).abs() < 0.1);
+        assert!((cost_per_power(DefenceKind::IonBastion) - 13.3).abs() < 0.1);
+        assert!((structure_power(DefenceKind::PulseTurret, 5) - 17.0 * 1.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn defences_unlock_with_grid_and_research() {
+        let mut b = BuildingLevels::default();
+        let mut r = ResearchLevels::default();
+        assert!(!defence_prerequisites_met(DefenceKind::PulseTurret, &b, &r));
+        b.set(DefenseGrid, 1);
+        assert!(defence_prerequisites_met(DefenceKind::PulseTurret, &b, &r));
+        b.set(DefenseGrid, 4);
+        r.set(ResearchType::WeaponsResearch, 4);
+        assert!(defence_prerequisites_met(DefenceKind::LancerBattery, &b, &r));
+        assert!(!defence_prerequisites_met(DefenceKind::IonBastion, &b, &r), "needs Shields 3");
+        r.set(ResearchType::AdvancedShields, 3);
+        assert!(defence_prerequisites_met(DefenceKind::IonBastion, &b, &r));
+    }
+
+    #[test]
+    fn defence_build_time_follows_cost_and_shipyard() {
+        assert_eq!(defence_build_time(DefenceKind::PulseTurret, 0, &P1), 420, "(120 + 20) / 1200 h");
+        assert_eq!(defence_build_time(DefenceKind::PulseTurret, 5, &P1), 280);
+    }
+
+    #[test]
+    fn raid_power_follows_economy_points() {
+        for (points, want) in [(1.0, 16.0), (10.0, 67.0), (100.0, 353.0), (500.0, 1168.0), (1000.0, 1961.0), (2000.0, 3295.0)] {
+            assert!((raid_power_base(points) - want).abs() < 1.0, "S={points}");
+        }
+    }
+
+    #[test]
+    fn economy_points_count_levels_at_the_cost_paid() {
+        let mut b = BuildingLevels::default();
+        let mut r = ResearchLevels::default();
+        b.set(CrystalMine, 0);
+        b.set(MetalMine, 2);
+        // metal L1 60/15 + L2 90/22 = 150 m + 37 c -> (150 + 55.5) / 1000
+        assert!((econ_points(&b, &r) - 0.2055).abs() < 1e-4);
+        b.set(MetalMine, 0);
+        assert_eq!(econ_points(&b, &r), 0.0);
+        r.set(ResearchType::CruiserTech, 1);
+        assert!((econ_points(&b, &r) - (8000.0 + 7500.0 + 5000.0) / 1000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn shipyard_items_serialize_as_bare_names() {
+        let ship = serde_json::to_string(&ShipyardItem::Ship(ShipClass::Corvette)).unwrap();
+        let defence = serde_json::to_string(&ShipyardItem::Defence(DefenceKind::PulseTurret)).unwrap();
+        assert_eq!((ship.as_str(), defence.as_str()), ("\"Corvette\"", "\"PulseTurret\""));
+        let back: ShipyardItem = serde_json::from_str(&defence).unwrap();
+        assert_eq!(back, ShipyardItem::Defence(DefenceKind::PulseTurret));
+        let back: ShipyardItem = serde_json::from_str(&ship).unwrap();
+        assert_eq!(back, ShipyardItem::Ship(ShipClass::Corvette));
     }
 }

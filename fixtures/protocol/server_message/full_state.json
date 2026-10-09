@@ -396,6 +396,101 @@
           ]
         }
       ],
+      "defences": [
+        {
+          "count": 12,
+          "kind": "PulseTurret",
+          "power": 21.760000228881836,
+          "requires": [
+            {
+              "have": 3,
+              "met": true,
+              "name": "Shipyard",
+              "need": 1
+            },
+            {
+              "have": 7,
+              "met": true,
+              "name": "Defense Grid",
+              "need": 1
+            }
+          ],
+          "ticks_per_unit": 324,
+          "unit_cost": {
+            "crystal": 20.0,
+            "deuterium": 0.0,
+            "metal": 120.0
+          }
+        },
+        {
+          "count": 0,
+          "kind": "LancerBattery",
+          "power": 65.27999877929688,
+          "requires": [
+            {
+              "have": 3,
+              "met": true,
+              "name": "Shipyard",
+              "need": 1
+            },
+            {
+              "have": 7,
+              "met": true,
+              "name": "Defense Grid",
+              "need": 2
+            },
+            {
+              "have": 0,
+              "met": false,
+              "name": "Weapons Research",
+              "need": 2
+            }
+          ],
+          "ticks_per_unit": 1200,
+          "unit_cost": {
+            "crystal": 120.0,
+            "deuterium": 20.0,
+            "metal": 400.0
+          }
+        },
+        {
+          "count": 3,
+          "kind": "IonBastion",
+          "power": 172.8000030517578,
+          "requires": [
+            {
+              "have": 3,
+              "met": true,
+              "name": "Shipyard",
+              "need": 1
+            },
+            {
+              "have": 7,
+              "met": true,
+              "name": "Defense Grid",
+              "need": 4
+            },
+            {
+              "have": 0,
+              "met": false,
+              "name": "Weapons Research",
+              "need": 4
+            },
+            {
+              "have": 3,
+              "met": true,
+              "name": "Advanced Shields",
+              "need": 3
+            }
+          ],
+          "ticks_per_unit": 3924,
+          "unit_cost": {
+            "crystal": 500.0,
+            "deuterium": 100.0,
+            "metal": 1200.0
+          }
+        }
+      ],
       "research": [
         {
           "level": 0,
@@ -820,6 +915,20 @@
         }
       ]
     },
+    "defences": [
+      {
+        "count": 12,
+        "kind": "PulseTurret",
+        "power": 17.68000030517578,
+        "restoring": 2
+      },
+      {
+        "count": 0,
+        "kind": "LancerBattery",
+        "power": 53.040000915527344,
+        "restoring": 0
+      }
+    ],
     "docked_ships": [
       {
         "class": "Cruiser",
@@ -831,10 +940,12 @@
         "weapon_power": 18.0
       }
     ],
+    "home_defence_power": 340.5,
     "location": {
       "q": 4,
       "r": -2
     },
+    "next_raid_estimate_power": 300.25,
     "production": {
       "crystal": 1.25,
       "deuterium": 0.4000000059604645,
@@ -926,15 +1037,30 @@
           "metal": 2000.0
         },
         "count": 2,
-        "ship_class": "Frigate",
+        "item": "Frigate",
         "ticks": 600
+      },
+      {
+        "cost": {
+          "crystal": 200.0,
+          "deuterium": 0.0,
+          "metal": 1200.0
+        },
+        "count": 10,
+        "item": "PulseTurret",
+        "ticks": 70,
+        "waiting_for": {
+          "crystal": 0.0,
+          "deuterium": 0.0,
+          "metal": 0.0
+        }
       }
     ],
     "shipyard_queue": {
       "built": 1,
       "count": 2,
       "end_tick": 300,
-      "ship_class": "Corvette",
+      "item": "Corvette",
       "start_tick": 120
     },
     "storage": {

@@ -1,0 +1,12 @@
+{
+  "canonical": {
+    "action": "build_defence",
+    "count": 1,
+    "kind": "PulseTurret"
+  },
+  "input": {
+    "action": "build_defence",
+    "kind": "PulseTurret"
+  },
+  "type": "Command"
+}

@@ -4,7 +4,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{Density, ResourceKind, ShipClass, TerrainType};
-use crate::scaling::{self, BuildingLevels, BuildingType, ResearchLevels, ResearchPrereqKind, ResearchType};
+use crate::scaling::{
+    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, ResearchLevels, ResearchPrereqKind, ResearchType,
+    ShipyardItem,
+};
 use crate::hex::Hex;
 use crate::pace::Pace;
 use crate::Resources;
@@ -70,6 +73,15 @@ pub enum Command {
     /// Cancel an item that has started; its payment is refunded at 50
     /// percent. `index` picks among the active buildings (always 0 for
     /// ships and research).
+    /// Build `count` defence structures from the shipyard queue. They stay
+    /// at home and never burn fuel; rejected with `DefenceLocked` until the
+    /// Defense Grid and research it needs are in place.
+    #[serde(rename = "build_defence")]
+    BuildDefence {
+        kind: DefenceKind,
+        #[serde(default = "default_ship_count")]
+        count: u16,
+    },
     #[serde(rename = "cancel_build")]
     CancelBuild {
         queue_type: QueueType,
@@ -561,8 +573,27 @@ pub struct HomeworldState {
     pub research_active: Option<ResearchItem>,
     pub research_pending: Vec<QueuedResearch>,
     pub docked_ships: Vec<ShipState>,
+    /// Structures standing at home (those being rebuilt after a raid are
+    /// counted in `restoring`, not `count`).
+    pub defences: Vec<DefenceState>,
+    /// Docked ships, the Defense Grid and all structures together: what the
+    /// next raid meets.
+    pub home_defence_power: f32,
+    /// Typical power of the next raid, from the empire's building and
+    /// research points; the actual raid rolls 0.80 to 1.15 times this.
+    pub next_raid_estimate_power: f32,
     /// What can be queued right now and what it costs; see `HomeworldCatalog`.
     pub catalog: HomeworldCatalog,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DefenceState {
+    pub kind: DefenceKind,
+    pub count: u32,
+    /// Structures a repelled raid destroyed that come back for free.
+    pub restoring: u32,
+    /// Power of one structure at the current Defense Grid level.
+    pub power: f32,
 }
 
 /// Stockpile limits, from the Storage Vault level and the world pace.
@@ -600,6 +631,8 @@ pub struct HomeworldCatalog {
     pub research: Vec<ResearchOption>,
     /// One entry per `ShipClass`, in declaration order.
     pub ships: Vec<ShipOption>,
+    /// One entry per `DefenceKind`, in declaration order.
+    pub defences: Vec<DefenceOption>,
 }
 
 /// One prerequisite: a building or tech that must reach `need`, with the
@@ -726,8 +759,38 @@ pub struct ShipOption {
     pub requires: Vec<Requirement>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DefenceOption {
+    pub kind: DefenceKind,
+    /// Standing now.
+    pub count: u32,
+    pub unit_cost: Resources,
+    pub ticks_per_unit: u64,
+    /// Power of one structure at the current Defense Grid level.
+    pub power: f32,
+    /// Includes the Shipyard the server requires before anything is built.
+    pub requires: Vec<Requirement>,
+}
+
+/// Prerequisites for a defence structure: a Shipyard plus its own list.
+pub fn defence_requirements(buildings: &BuildingLevels, research: &ResearchLevels, kind: DefenceKind) -> Vec<Requirement> {
+    let mut requires = vec![building_req(buildings, BuildingType::Shipyard, 1)];
+    for (p, need) in kind.prerequisites() {
+        requires.push(match p {
+            PrereqRef::Building(b) => building_req(buildings, *b, *need),
+            PrereqRef::Research(t) => tech_req(research, *t, *need),
+        });
+    }
+    requires
+}
+
 impl HomeworldCatalog {
-    pub fn new(buildings: &BuildingLevels, research: &ResearchLevels, pace: &Pace) -> Self {
+    pub fn new(
+        buildings: &BuildingLevels,
+        research: &ResearchLevels,
+        defences: &[u32; DefenceKind::COUNT],
+        pace: &Pace,
+    ) -> Self {
         let building_options = (0..BuildingType::COUNT)
             .filter_map(BuildingType::from_usize)
             .map(|b| {
@@ -775,10 +838,24 @@ impl HomeworldCatalog {
             })
             .collect();
 
+        let grid = buildings.get(BuildingType::DefenseGrid);
+        let defence_options = DefenceKind::ALL
+            .iter()
+            .map(|&kind| DefenceOption {
+                kind,
+                count: defences[kind as usize],
+                unit_cost: kind.build_cost(),
+                ticks_per_unit: scaling::defence_build_time(kind, buildings.get(BuildingType::Shipyard), pace),
+                power: scaling::structure_power(kind, grid),
+                requires: defence_requirements(buildings, research, kind),
+            })
+            .collect();
+
         HomeworldCatalog {
             buildings: building_options,
             research: research_options,
             ships: ship_options,
+            defences: defence_options,
         }
     }
 }
@@ -831,8 +908,8 @@ pub struct QueuedResearch {
 /// `ticks` for one ship.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedShip {
-    #[serde(rename = "ship_class")]
-    pub ship_class: ShipClass,
+    /// A ship class or a defence structure: the wire carries just its name.
+    pub item: ShipyardItem,
     pub count: u16,
     pub cost: Resources,
     pub ticks: u64,
@@ -842,8 +919,8 @@ pub struct QueuedShip {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipyardQueueItem {
-    #[serde(rename = "ship_class")]
-    pub ship_class: ShipClass,
+    /// A ship class or a defence structure: the wire carries just its name.
+    pub item: ShipyardItem,
     pub count: u16,
     pub built: u16,
     pub start_tick: u64,
@@ -893,6 +970,7 @@ pub enum EventKind {
     BuildingCompleted(BuildingCompletedEvent),
     ResearchCompleted(ResearchCompletedEvent),
     ShipBuilt(ShipBuiltEvent),
+    DefenceBuilt(DefenceBuiltEvent),
     ScanCompleted(ScanCompletedEvent),
     RaidIncoming(RaidIncomingEvent),
     RaidResolved(RaidResolvedEvent),
@@ -1120,6 +1198,14 @@ pub struct ShipBuiltEvent {
     pub player_id: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefenceBuiltEvent {
+    pub defence: DefenceKind,
+    pub count: u16,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub player_id: Option<u64>,
+}
+
 /// Result of an active fleet scan: sectors revealed plus faint signal
 /// contacts detected one hop beyond scan range.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1163,8 +1249,13 @@ impl SignalKind {
 pub struct RaidIncomingEvent {
     pub player_id: u64,
     pub arrival_tick: u64,
-    /// Rough size read: "light" / "moderate" / "heavy"
+    /// Rough size read against the defence standing now: "light" (under
+    /// half of it), "moderate" (under all of it) or "heavy".
     pub threat: String,
+    /// The raid fleet's power, fixed at forecast time, on the same scale as
+    /// `home_defence_power`.
+    #[serde(default)]
+    pub est_power: f32,
 }
 
 /// Outcome of a homeworld raid.
@@ -1177,6 +1268,15 @@ pub struct RaidResolvedEvent {
     pub salvage_dropped: Option<Resources>,
     pub raid_power: f32,
     pub defense_power: f32,
+    /// Structures the raid destroyed.
+    #[serde(default)]
+    pub structures_lost: u32,
+    /// Of those, how many are rebuilt for free after a short delay.
+    #[serde(default)]
+    pub structures_restored: u32,
+    /// Stockpile the Storage Vault kept out of reach of a successful raid.
+    #[serde(default)]
+    pub protected_kept: Resources,
 }
 
 /// A message for the player. `player_id` names the recipient; `None` is a
@@ -1227,6 +1327,7 @@ pub enum ErrorCode {
     FleetLimitReached = 1015,
     ResourceNotPresent = 1016,
     StorageTooSmall = 1017,
+    DefenceLocked = 1018,
     AuthFailed = 2000,
     AlreadyAuthenticated = 2001,
     InvalidName = 2002,
@@ -1250,7 +1351,7 @@ mod catalog_tests {
     #[test]
     fn building_costs_match_scaling() {
         let (b, r) = fresh();
-        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let cat = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         assert_eq!(cat.buildings.len(), BuildingType::COUNT);
         let mine = building(&cat, BuildingType::MetalMine);
         let next = mine.next.unwrap();
@@ -1263,7 +1364,7 @@ mod catalog_tests {
     #[test]
     fn building_prerequisite_unmet_then_met() {
         let (mut b, r) = fresh();
-        let before = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let before = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         let yard = building(&before, BuildingType::Shipyard);
         assert_eq!(yard.requires.len(), 1);
         assert_eq!(yard.requires[0].name, "Metal Mine");
@@ -1271,7 +1372,7 @@ mod catalog_tests {
         assert!(!yard.requires[0].met);
 
         b.set(BuildingType::MetalMine, 2);
-        let after = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let after = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         assert!(building(&after, BuildingType::Shipyard).requires.iter().all(|q| q.met));
     }
 
@@ -1280,7 +1381,7 @@ mod catalog_tests {
         let (mut b, mut r) = fresh();
         b.set(BuildingType::MetalMine, scaling::MAX_BUILDING_LEVEL);
         r.set(ResearchType::CorvetteTech, 1);
-        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let cat = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         assert!(building(&cat, BuildingType::MetalMine).next.is_none());
         let corvette = cat.research.iter().find(|o| o.tech == ResearchType::CorvetteTech).unwrap();
         assert!(corvette.next.is_none());
@@ -1290,7 +1391,7 @@ mod catalog_tests {
     #[test]
     fn research_requires_lab_and_chain() {
         let (mut b, mut r) = fresh();
-        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let cat = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         let frigate = cat.research.iter().find(|o| o.tech == ResearchType::FrigateTech).unwrap();
         let unmet: Vec<_> = frigate.requires.iter().filter(|q| !q.met).map(|q| (q.name.as_str(), q.need)).collect();
         assert_eq!(unmet, [("Research Lab", 1), ("Corvette Tech", 1), ("Shipyard", 4)]);
@@ -1302,7 +1403,7 @@ mod catalog_tests {
         b.set(BuildingType::ResearchLab, 1);
         b.set(BuildingType::Shipyard, 4);
         r.set(ResearchType::CorvetteTech, 1);
-        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let cat = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         let frigate = cat.research.iter().find(|o| o.tech == ResearchType::FrigateTech).unwrap();
         assert!(frigate.requires.iter().all(|q| q.met));
     }
@@ -1310,7 +1411,7 @@ mod catalog_tests {
     #[test]
     fn research_lists_one_lab_requirement_at_the_highest_level() {
         let (b, r) = fresh();
-        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let cat = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         for opt in &cat.research {
             let labs: Vec<u8> = opt.requires.iter().filter(|q| q.name == "Research Lab").map(|q| q.need).collect();
             assert_eq!(labs.len(), 1, "{:?} lists the lab {} times", opt.tech, labs.len());
@@ -1322,7 +1423,7 @@ mod catalog_tests {
     #[test]
     fn ships_follow_shipyard_level_and_unlocks() {
         let (mut b, mut r) = fresh();
-        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let cat = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         assert_eq!(cat.ships.len(), ShipClass::ALL.len());
         let corvette = cat.ships.iter().find(|o| o.ship_class == ShipClass::Corvette).unwrap();
         assert_eq!(corvette.unit_cost, ShipClass::Corvette.build_cost());
@@ -1333,7 +1434,7 @@ mod catalog_tests {
 
         b.set(BuildingType::Shipyard, 3);
         r.set(ResearchType::CorvetteTech, 1);
-        let cat = HomeworldCatalog::new(&b, &r, &Pace::PERSISTENT);
+        let cat = HomeworldCatalog::new(&b, &r, &[0; DefenceKind::COUNT], &Pace::PERSISTENT);
         let corvette = cat.ships.iter().find(|o| o.ship_class == ShipClass::Corvette).unwrap();
         assert_eq!(corvette.ticks_per_ship, scaling::ship_build_time(ShipClass::Corvette, 3, &Pace::PERSISTENT));
         assert!(corvette.requires.iter().all(|q| q.met));

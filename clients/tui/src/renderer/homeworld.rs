@@ -102,14 +102,22 @@ fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &Hom
             cost_info = o.next.map(|n| (n.cost, n.ticks));
         }
         HomeworldTab::Shipyard => {
-            let Some(o) = catalog.ships.get(idx) else { return };
             let batch = state.ship_build_count;
+            let (label, unit_cost, unit_ticks, reqs, extra): (&str, Resources, u64, &[Requirement], String) =
+                if let Some(o) = catalog.ships.get(idx) {
+                    (o.ship_class.label(), o.unit_cost, o.ticks_per_ship, &o.requires, String::new())
+                } else if let Some(o) = catalog.defences.get(idx - catalog.ships.len()) {
+                    (o.kind.label(), o.unit_cost, o.ticks_per_unit, &o.requires, format!(" Power {:.0}  standing {}\n", o.power, o.count))
+                } else {
+                    return;
+                };
             title = if batch > 1 {
-                format!(" {} x{} ", o.ship_class.label(), batch)
+                format!(" {} x{} ", label, batch)
             } else {
-                format!(" {} ", o.ship_class.label())
+                format!(" {} ", label)
             };
-            requires = &o.requires;
+            content.push_str(&extra);
+            requires = reqs;
             if requires.iter().all(|r| r.met) {
                 if batch > 1 {
                     content.push_str(&format!(" READY - Enter queues {}\n", batch));
@@ -120,7 +128,7 @@ fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &Hom
                 content.push_str(" LOCKED\n");
             }
             maxed = false;
-            cost_info = Some((o.unit_cost.scale(batch as f32), o.ticks_per_ship * batch as u64));
+            cost_info = Some((unit_cost.scale(batch as f32), unit_ticks * batch as u64));
         }
         HomeworldTab::Research => {
             let Some(o) = catalog.research.get(idx) else { return };
@@ -242,7 +250,7 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
         text.push_str(&format!(
             " | Ship: {} {}/{}b {}/{}t",
-            q.ship_class.label(),
+            q.item.label(),
             q.built,
             q.count,
             elapsed,
@@ -253,7 +261,7 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     }
     if !hw.shipyard_pending.is_empty() {
         let names: Vec<String> = hw.shipyard_pending.iter()
-            .map(|q| waiting_label(&format!("{}x{}", q.count, q.ship_class.label()), 0, &q.waiting_for))
+            .map(|q| waiting_label(&format!("{}x{}", q.count, q.item.label()), 0, &q.waiting_for))
             .collect();
         text.push_str(&format!(" +[{}]", names.join(", ")));
     }
@@ -282,6 +290,12 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         hw.production.metal, hw.production.crystal, hw.production.deuterium,
     ));
 
+    text.push_str(&format!(
+        "\n Defence {:.0} (next raid ~{:.0})  structures: {}",
+        hw.home_defence_power,
+        hw.next_raid_estimate_power,
+        hw.defences.iter().map(|d| format!("{}x{}", d.count, d.kind.label())).collect::<Vec<_>>().join(" "),
+    ));
     if let Some(p) = &state.player {
         let st = &hw.storage;
         text.push_str(&format!(

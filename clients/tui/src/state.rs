@@ -8,7 +8,7 @@ use iac_shared::protocol::{
     Command, EventKind, FleetState, GameEvent, HomeworldState,
     PlayerState, SectorState, ServerMessage, WorldInfo,
 };
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
 
 /// UI view modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl HomeworldTab {
     pub fn item_count(self) -> usize {
         match self {
             HomeworldTab::Buildings => BuildingType::COUNT,
-            HomeworldTab::Shipyard => ShipClass::ALL.len(),
+            HomeworldTab::Shipyard => ShipClass::ALL.len() + DefenceKind::COUNT,
             HomeworldTab::Research => ResearchType::COUNT,
         }
     }
@@ -626,9 +626,15 @@ impl ClientState {
                         open.then_some(Command::Research { tech: o.tech })
                     }
                     HomeworldTab::Shipyard => {
-                        let o = cat.ships.get(i)?;
-                        o.requires.iter().all(|r| r.met).then_some(Command::BuildShip {
-                            ship_class: o.ship_class,
+                        if let Some(o) = cat.ships.get(i) {
+                            return o.requires.iter().all(|r| r.met).then_some(Command::BuildShip {
+                                ship_class: o.ship_class,
+                                count: self.ship_build_count,
+                            });
+                        }
+                        let o = cat.defences.get(i - cat.ships.len())?;
+                        o.requires.iter().all(|r| r.met).then_some(Command::BuildDefence {
+                            kind: o.kind,
                             count: self.ship_build_count,
                         })
                     }

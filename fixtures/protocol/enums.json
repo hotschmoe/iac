@@ -16,6 +16,11 @@
     "StorageVault",
     "Fabricator"
   ],
+  "DefenceKind": [
+    "PulseTurret",
+    "LancerBattery",
+    "IonBastion"
+  ],
   "Density": [
     "None",
     "Sparse",
@@ -42,6 +47,7 @@
     "FleetLimitReached",
     "ResourceNotPresent",
     "StorageTooSmall",
+    "DefenceLocked",
     "AuthFailed",
     "AlreadyAuthenticated",
     "InvalidName",

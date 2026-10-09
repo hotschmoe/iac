@@ -77,16 +77,16 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 23 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 24 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 23);
+      expect(kinds.length, 24);
     });
 
-    test('command fixtures cover all 16 commands', () {
+    test('command fixtures cover all 17 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 16);
+      expect(kinds.length, 17);
     });
 
     test('full_state exposes sector connections', () {
@@ -107,6 +107,18 @@ void main() {
       expect(mapper.log.first.message, contains('not enough fuel'));
     });
 
+    test('the homeworld lists defences, defence power and the next raid estimate', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;
+      expect(hw.defences.first.kind, DefenceKind.pulseTurret);
+      expect(hw.defences.first.count, 12);
+      expect(hw.defences.first.restoring, 2);
+      expect(hw.homeDefencePower, 340.5);
+      expect(hw.nextRaidEstimatePower, 300.25);
+      expect(hw.catalog.defences.map((d) => d.count), [12, 0, 3]);
+      expect(hw.catalog.defences.first.requires.first.label, 'Shipyard >= 1');
+    });
+
     test('fleets carry power and range', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
       final fleet = (ServerMessage.fromJson(readJson(f)) as GameState).fleets.first;
@@ -122,7 +134,8 @@ void main() {
       expect(hw.buildQueue.length, 2);
       expect(hw.buildPending.first.waitingFor!.crystal, 120.5);
       expect(hw.buildPending.last.waitingFor, isNull);
-      expect(hw.shipyardPending.single.count, 2);
+      expect(hw.shipyardPending.map((q) => q.item.label), ['Frigate', 'Pulse Turret']);
+      expect(hw.shipyardPending.first.count, 2);
       expect(hw.researchPending.single.tech, ResearchType.cruiserTech);
     });
 
@@ -133,7 +146,7 @@ void main() {
       expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
       expect(ui.buildQueue[2].time, 'waiting for 121 crystal');
       expect(ui.buildQueue[3].time, startsWith('waiting, '));
-      expect(ui.shipyard.last.name, 'Frigate x2');
+      expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2', 'Pulse Turret x10']);
       expect(ui.research.waiting.single.time, 'waiting for 1200 deuterium');
     });
 
@@ -193,6 +206,7 @@ void main() {
     check('BuildingType', BuildingType.fromJson, (BuildingType e) => e.toJson());
     check('ResearchType', ResearchType.fromJson, (ResearchType e) => e.toJson());
     check('ResourceKind', ResourceKind.fromJson, (ResourceKind e) => e.toJson());
+    check('DefenceKind', DefenceKind.fromJson, (DefenceKind e) => e.toJson());
     check('ErrorCode', ErrorCode.fromJson, (ErrorCode e) => e.toJson());
 
     test('Dart enums have no values Rust lacks', () {
@@ -211,6 +225,7 @@ void main() {
       same('BuildingType', BuildingType.values.length);
       same('ResearchType', ResearchType.values.length);
       same('ResourceKind', ResourceKind.values.length);
+      same('DefenceKind', DefenceKind.values.length);
       same('ErrorCode', ErrorCode.values.length);
     });
 

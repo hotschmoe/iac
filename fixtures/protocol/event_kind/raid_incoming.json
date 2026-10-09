@@ -1,5 +1,6 @@
 {
   "arrival_tick": 5000,
+  "est_power": 353.5,
   "kind": "RaidIncoming",
   "player_id": 42,
   "threat": "moderate",

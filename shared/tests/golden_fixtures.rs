@@ -22,7 +22,7 @@ use iac_shared::constants::{Density, ResourceKind, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::*;
-use iac_shared::scaling::{BuildingLevels, BuildingType, ResearchLevels, ResearchType};
+use iac_shared::scaling::{BuildingLevels, BuildingType, DefenceKind, ResearchLevels, ResearchType, ShipyardItem};
 
 // ── Plumbing ──────────────────────────────────────────────────────
 
@@ -255,13 +255,22 @@ fn sample_homeworld() -> HomeworldState {
         ],
         build_slots: 2,
         queue_depth: 3,
-        shipyard_pending: vec![QueuedShip {
-            ship_class: ShipClass::Frigate,
-            count: 2,
-            cost: res(2000.0, 800.0, 400.0),
-            ticks: 600,
-            waiting_for: None,
-        }],
+        shipyard_pending: vec![
+            QueuedShip {
+                item: ShipyardItem::Ship(ShipClass::Frigate),
+                count: 2,
+                cost: res(2000.0, 800.0, 400.0),
+                ticks: 600,
+                waiting_for: None,
+            },
+            QueuedShip {
+                item: ShipyardItem::Defence(DefenceKind::PulseTurret),
+                count: 10,
+                cost: res(1200.0, 200.0, 0.0),
+                ticks: 70,
+                waiting_for: Some(res(0.0, 0.0, 0.0)),
+            },
+        ],
         research_pending: vec![QueuedResearch {
             tech: ResearchType::CruiserTech,
             target_level: 1,
@@ -270,7 +279,7 @@ fn sample_homeworld() -> HomeworldState {
             waiting_for: Some(res(0.0, 0.0, 1200.0)),
         }],
         shipyard_queue: Some(ShipyardQueueItem {
-            ship_class: ShipClass::Corvette,
+            item: ShipyardItem::Ship(ShipClass::Corvette),
             count: 2,
             built: 1,
             start_tick: 120,
@@ -283,7 +292,13 @@ fn sample_homeworld() -> HomeworldState {
             end_tick: 600,
         }),
         docked_ships: vec![ship(501, ShipClass::Cruiser, 100.0, 50.0, 18.0)],
-        catalog: HomeworldCatalog::new(&levels, &researched, &Pace::PERSISTENT),
+        defences: vec![
+            DefenceState { kind: DefenceKind::PulseTurret, count: 12, restoring: 2, power: 17.68 },
+            DefenceState { kind: DefenceKind::LancerBattery, count: 0, restoring: 0, power: 53.04 },
+        ],
+        home_defence_power: 340.5,
+        next_raid_estimate_power: 300.25,
+        catalog: HomeworldCatalog::new(&levels, &researched, &[12, 0, 3], &Pace::PERSISTENT),
     }
 }
 
@@ -308,7 +323,10 @@ fn idle_homeworld() -> HomeworldState {
         research_active: None,
         research_pending: vec![],
         docked_ships: vec![],
-        catalog: HomeworldCatalog::new(&BuildingLevels::default(), &ResearchLevels::default(), &Pace::PERSISTENT),
+        defences: vec![],
+        home_defence_power: 0.0,
+        next_raid_estimate_power: 15.5,
+        catalog: HomeworldCatalog::new(&BuildingLevels::default(), &ResearchLevels::default(), &[0; 3], &Pace::PERSISTENT),
     }
 }
 
@@ -337,6 +355,7 @@ fn command_name(c: &Command) -> &'static str {
         Command::Build { .. } => "build",
         Command::Research { .. } => "research",
         Command::BuildShip { .. } => "build_ship",
+        Command::BuildDefence { .. } => "build_defence",
         Command::CancelBuild { .. } => "cancel_build",
         Command::CancelQueued { .. } => "cancel_queued",
         Command::PreviewMove { .. } => "preview_move",
@@ -373,6 +392,7 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::BuildingCompleted(_) => "building_completed",
         EventKind::ResearchCompleted(_) => "research_completed",
         EventKind::ShipBuilt(_) => "ship_built",
+        EventKind::DefenceBuilt(_) => "defence_built",
         EventKind::ScanCompleted(_) => "scan_completed",
         EventKind::RaidIncoming(_) => "raid_incoming",
         EventKind::RaidResolved(_) => "raid_resolved",
@@ -407,6 +427,7 @@ fn error_code_name(c: ErrorCode) -> &'static str {
         ErrorCode::FleetLimitReached => "fleet_limit_reached",
         ErrorCode::ResourceNotPresent => "resource_not_present",
         ErrorCode::StorageTooSmall => "storage_too_small",
+        ErrorCode::DefenceLocked => "defence_locked",
         ErrorCode::AuthFailed => "auth_failed",
         ErrorCode::AlreadyAuthenticated => "already_authenticated",
         ErrorCode::InvalidName => "invalid_name",
@@ -416,7 +437,7 @@ fn error_code_name(c: ErrorCode) -> &'static str {
     }
 }
 
-const ALL_ERROR_CODES: [ErrorCode; 24] = [
+const ALL_ERROR_CODES: [ErrorCode; 25] = [
     ErrorCode::InvalidCommand,
     ErrorCode::InvalidTarget,
     ErrorCode::NoConnection,
@@ -435,6 +456,7 @@ const ALL_ERROR_CODES: [ErrorCode; 24] = [
     ErrorCode::FleetLimitReached,
     ErrorCode::ResourceNotPresent,
     ErrorCode::StorageTooSmall,
+    ErrorCode::DefenceLocked,
     ErrorCode::AuthFailed,
     ErrorCode::AlreadyAuthenticated,
     ErrorCode::InvalidName,
@@ -459,6 +481,7 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::Build { building_type: BuildingType::DefenseGrid }),
         ("", Command::Research { tech: ResearchType::EmergencyJump }),
         ("", Command::BuildShip { ship_class: ShipClass::Frigate, count: 3 }),
+        ("", Command::BuildDefence { kind: DefenceKind::LancerBattery, count: 4 }),
         ("", Command::CancelBuild { queue_type: QueueType::Building, index: 1 }),
         ("ship", Command::CancelBuild { queue_type: QueueType::Ship, index: 0 }),
         ("research", Command::CancelBuild { queue_type: QueueType::Research, index: 0 }),
@@ -804,6 +827,12 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             count: 1,
             player_id: Some(42),
         })),
+        ("", EventKind::DefenceBuilt(DefenceBuiltEvent { defence: DefenceKind::IonBastion, count: 1, player_id: None })),
+        ("with_player", EventKind::DefenceBuilt(DefenceBuiltEvent {
+            defence: DefenceKind::PulseTurret,
+            count: 1,
+            player_id: Some(42),
+        })),
         ("", EventKind::ScanCompleted(ScanCompletedEvent {
             fleet_id: 1,
             sector: h(1, 1),
@@ -827,6 +856,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             player_id: 42,
             arrival_tick: 5000,
             threat: "moderate".into(),
+            est_power: 353.5,
         })),
         ("", EventKind::RaidResolved(RaidResolvedEvent {
             player_id: 42,
@@ -835,6 +865,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             salvage_dropped: Some(res(10.0, 5.0, 0.0)),
             raid_power: 120.0,
             defense_power: 80.5,
+            structures_lost: 6,
+            structures_restored: 0,
+            protected_kept: res(2400.0, 1680.0, 0.0),
         })),
         ("defended", EventKind::RaidResolved(RaidResolvedEvent {
             player_id: 42,
@@ -843,6 +876,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             salvage_dropped: None,
             raid_power: 40.0,
             defense_power: 80.5,
+            structures_lost: 3,
+            structures_restored: 2,
+            protected_kept: res(0.0, 0.0, 0.0),
         })),
         ("", EventKind::SiteExplorationStarted(SiteExplorationStartedEvent {
             fleet_id: 1,
@@ -952,6 +988,9 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             json!({"type": "policy_update", "fleet_id": 3, "preset": "prospect", "params": {}}),
         ),
         ("cancel_without_index", "Command", json!({"action": "cancel_build", "queue_type": "Ship"})),
+        ("build_defence_default_count", "Command", json!({"action": "build_defence", "kind": "PulseTurret"})),
+        ("raid_incoming_without_power", "ServerMessage",
+            json!({"type": "event", "tick": 3, "kind": "RaidIncoming", "player_id": 1, "arrival_tick": 90, "threat": "light"})),
         ("auth_without_token", "ClientMessage", json!({"type": "auth", "player_name": "x"})),
         ("bare_auth_result", "ServerMessage", json!({"type": "auth_result", "success": false})),
     ]
@@ -1083,6 +1122,7 @@ fn generate() -> Files {
         "SignalKind": [SignalKind::RichOre, SignalKind::HostileMass, SignalKind::Derelict, SignalKind::Anomaly],
         "AlertLevel": [AlertLevel::Info, AlertLevel::Warning, AlertLevel::Critical],
         "HarvestResource": [HarvestResource::Metal, HarvestResource::Crystal, HarvestResource::Deuterium, HarvestResource::Auto],
+        "DefenceKind": DefenceKind::ALL,
         "QueueType": [QueueType::Building, QueueType::Ship, QueueType::Research],
         "PolicyPreset": PolicyPreset::ALL,
         "BuildingType": [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer, BuildingType::Shipyard, BuildingType::ResearchLab, BuildingType::FuelDepot, BuildingType::SensorArray, BuildingType::DefenseGrid, BuildingType::StorageVault, BuildingType::Fabricator],

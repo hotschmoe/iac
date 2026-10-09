@@ -11,11 +11,11 @@ use log::{debug, error, info, warn};
 use iac_shared::hex::Hex;
 use iac_shared::constants::{Density, Resources, ShipClass, ECONOMY_VERSION, WORLDGEN_VERSION};
 use iac_shared::pace::Pace;
-use iac_shared::scaling::{BuildingType, BuildingLevels, ResearchType, ResearchLevels};
+use iac_shared::scaling::{BuildingType, BuildingLevels, DefenceKind, ResearchType, ResearchLevels, ShipyardItem};
 
 use crate::engine::{
     Player, Fleet, Ship, SectorOverride, BuildQueueEntry, ShipQueueEntry, ResearchQueueEntry, FleetStatus, FleetPolicy,
-    PendingBuilding, PendingResearch, PendingShip,
+    PendingBuilding, PendingResearch, PendingShip, Defences,
 };
 use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams, SectorState};
 
@@ -110,6 +110,22 @@ fn parse_policy_preset(s: &str) -> PolicyPreset {
         "salvage_and_sites" => PolicyPreset::SalvageAndSites,
         "patrol_home" => PolicyPreset::PatrolHome,
         _ => PolicyPreset::Manual,
+    }
+}
+
+/// Queue rows store ships as ("ship", class index) and structures as
+/// ("defence", kind index).
+fn shipyard_item_to_row(item: ShipyardItem) -> (&'static str, i64) {
+    match item {
+        ShipyardItem::Ship(c) => ("ship", c as i64),
+        ShipyardItem::Defence(d) => ("defence", d as i64),
+    }
+}
+
+fn shipyard_item_from_row(queue_type: &str, index: usize) -> Option<ShipyardItem> {
+    match queue_type {
+        "ship" => ShipClass::ALL.get(index).copied().map(ShipyardItem::Ship),
+        _ => DefenceKind::from_usize(index).map(ShipyardItem::Defence),
     }
 }
 
@@ -322,6 +338,15 @@ impl Database {
                 end_tick INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS player_defences (
+                player_id INTEGER NOT NULL REFERENCES players(id),
+                kind INTEGER NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                restoring INTEGER NOT NULL DEFAULT 0,
+                restore_tick INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (player_id, kind)
+            );
+
             CREATE TABLE IF NOT EXISTS fleet_policies (
                 fleet_id INTEGER PRIMARY KEY REFERENCES fleets(id),
                 preset TEXT NOT NULL,
@@ -521,6 +546,7 @@ impl Database {
                 building_pending: Vec::new(),
                 ship_queue: None,
                 ship_pending: Vec::new(),
+                defences: Defences::default(),
                 research_queue: None,
                 research_pending: Vec::new(),
                 token_hash: row.get::<_, Option<Vec<u8>>>(7)?.and_then(|v| v.try_into().ok()),
@@ -1005,6 +1031,40 @@ impl Database {
 
     /// Rows are written in queue order (active items first, then the ones
     /// waiting) and read back by id.
+    pub fn save_defences(&self, player_id: u64, d: &Defences) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "INSERT OR REPLACE INTO player_defences (player_id, kind, count, restoring, restore_tick)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for kind in DefenceKind::ALL {
+            let i = kind as usize;
+            stmt.execute(params![player_id as i64, i as i64, d.count[i] as i64, d.restoring[i] as i64, d.restore_tick[i] as i64])?;
+        }
+        Ok(())
+    }
+
+    pub fn load_defences(&self, player_id: u64) -> Result<Defences, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut d = Defences::default();
+        let mut stmt = conn.prepare(
+            "SELECT kind, count, restoring, restore_tick FROM player_defences WHERE player_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![player_id as i64], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+        })?;
+        for row in rows {
+            let (kind, count, restoring, tick) = row?;
+            if let Some(kind) = usize::try_from(kind).ok().and_then(DefenceKind::from_usize) {
+                let i = kind as usize;
+                d.count[i] = count as u32;
+                d.restoring[i] = restoring as u32;
+                d.restore_tick[i] = tick as u64;
+            }
+        }
+        Ok(d)
+    }
+
     pub fn save_build_queue(&self, player_id: u64, player: &Player) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -1026,10 +1086,12 @@ impl Database {
             stmt.execute(params![pid, "building", q.building_type as i64, q.target_level as i64, 1i64, 0i64, 1i64, 0i64, 0i64])?;
         }
         if let Some(q) = &player.ship_queue {
-            stmt.execute(params![pid, "ship", q.ship_class as i64, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
+            let (kind, item) = shipyard_item_to_row(q.item);
+            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
         }
         for q in &player.ship_pending {
-            stmt.execute(params![pid, "ship", q.ship_class as i64, none, q.count as i64, 0i64, 1i64, 0i64, 0i64])?;
+            let (kind, item) = shipyard_item_to_row(q.item);
+            stmt.execute(params![pid, kind, item, none, q.count as i64, 0i64, 1i64, 0i64, 0i64])?;
         }
         if let Some(q) = &player.research_queue {
             stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64])?;
@@ -1080,13 +1142,13 @@ impl Database {
                         });
                     }
                 }
-                "ship" => {
-                    let Some(sc) = item.and_then(|i| ShipClass::ALL.get(i).copied()) else { continue; };
+                "ship" | "defence" => {
+                    let Some(sc) = item.and_then(|i| shipyard_item_from_row(&qt, i)) else { continue; };
                     if pending {
-                        data.ship_pending.push(PendingShip { ship_class: sc, count: count as u16 });
+                        data.ship_pending.push(PendingShip { item: sc, count: count as u16 });
                     } else {
                         data.ship = Some(ShipQueueEntry {
-                            ship_class: sc,
+                            item: sc,
                             count: count as u16,
                             built: built as u16,
                             start_tick: start_tick as u64,
@@ -1183,6 +1245,7 @@ impl Database {
             self.save_buildings(player.id, &player.buildings)?;
             self.save_research(player.id, &player.research)?;
             self.save_build_queue(player.id, player)?;
+            self.save_defences(player.id, &player.defences)?;
         }
         for fleet in &batch.fleets {
             self.save_fleet(fleet)?;

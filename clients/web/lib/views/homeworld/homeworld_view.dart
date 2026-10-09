@@ -169,7 +169,8 @@ class HomeworldView extends StatelessWidget {
 
   Widget _stockStrip() {
     final r = controller.state.resources;
-    final storage = controller.state.hw?.storage;
+    final hw = controller.state.hw;
+    final storage = hw?.storage;
     Widget stock(String label, int amount, double rate, proto.ResourceKind kind, double? cap) {
       final full = storage?.capped.contains(kind) ?? false;
       final eta = storage?.fullInS.of(kind);
@@ -196,8 +197,26 @@ class HomeworldView extends StatelessWidget {
           stock('METAL', r.metal.amount, r.metal.rate, proto.ResourceKind.metal, storage?.cap.metal),
           stock('CRYSTAL', r.crystal.amount, r.crystal.rate, proto.ResourceKind.crystal, storage?.cap.crystal),
           stock('DEUT', r.deut.amount, r.deut.rate, proto.ResourceKind.deuterium, storage?.cap.deuterium),
+          if (hw != null) _defenceStrip(hw),
         ],
       ),
+    );
+  }
+
+  /// Defence power at home against the raid the economy's size predicts.
+  Widget _defenceStrip(proto.HomeworldState hw) {
+    final standing = hw.defences.where((d) => d.count > 0).map((d) => '${d.count}x ${d.kind.label}').join(', ');
+    return RichText(
+      key: const ValueKey('hw-defence'),
+      text: TextSpan(children: [
+        TextSpan(text: 'DEFENCE ', style: Amber.mono(size: 10, color: Amber.dim)),
+        TextSpan(text: hw.homeDefencePower.toStringAsFixed(0), style: Amber.mono(size: 12, color: Amber.full)),
+        TextSpan(
+          text: '  next raid ~${hw.nextRaidEstimatePower.toStringAsFixed(0)}'
+              '${standing.isEmpty ? '' : '  ($standing)'}',
+          style: Amber.mono(size: 10, color: Amber.dim),
+        ),
+      ]),
     );
   }
 
@@ -260,8 +279,9 @@ class HomeworldView extends StatelessWidget {
         ];
       case HomeworldTab.shipyard:
         final n = controller.shipBatch;
+        final ships = catalog.ships.length;
         return [
-          for (var i = 0; i < catalog.ships.length; i++)
+          for (var i = 0; i < ships; i++)
             card(
               i,
               title: catalog.ships[i].shipClass.label,
@@ -270,6 +290,16 @@ class HomeworldView extends StatelessWidget {
               cost: _scale(catalog.ships[i].unitCost, n),
               time: '${catalog.ships[i].ticksPerShip * n} ticks (${catalog.ships[i].ticksPerShip} each)',
               requires: catalog.ships[i].requires,
+            ),
+          for (var j = 0; j < catalog.defences.length; j++)
+            card(
+              ships + j,
+              title: catalog.defences[j].kind.label,
+              badge: '${catalog.defences[j].count} up',
+              subtitle: 'defence, power ${catalog.defences[j].power.toStringAsFixed(0)} each',
+              cost: _scale(catalog.defences[j].unitCost, n),
+              time: '${catalog.defences[j].ticksPerUnit * n} ticks (${catalog.defences[j].ticksPerUnit} each)',
+              requires: catalog.defences[j].requires,
             ),
         ];
     }
