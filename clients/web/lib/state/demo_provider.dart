@@ -147,6 +147,7 @@ class DemoProvider {
       terrain: s.terrain,
       resources: s.resources,
       connections: s.connections,
+      oreReserve: s.oreReserve,
       threat: const ThreatInfo(rating: 4, estPower: 66, basis: ThreatBasis.observed),
       lastSeen: s.lastSeen,
       live: s.live,
@@ -165,6 +166,20 @@ class DemoProvider {
   static ThreatInfo _ringThreat(Hex h, {ThreatBasis basis = ThreatBasis.estimate}) {
     final power = 4.0 * pow(1.22, max(1, h.distFromOrigin) - 1);
     return ThreatInfo(rating: _rating(power), estPower: power, basis: basis);
+  }
+
+  /// Reserve units a tile holds at `d` rings out: the spec's 3 / 10 / 22 / 42
+  /// by density, times the ring factor.
+  static double _tileUnits(Density den, Hex h) {
+    const totals = [0.0, 3.0, 10.0, 22.0, 42.0];
+    final d = h.distFromOrigin;
+    final ring = d < 3 ? 1.0 : pow(1.1, min(d, 20) - 3).toDouble();
+    return totals[den.index] * ring;
+  }
+
+  static TileReserve _tile(Density den, Hex h) {
+    final max = _tileUnits(den, h);
+    return TileReserve(units: max, maxUnits: max);
   }
 
   static int _rating(double power) => power <= 4 ? 1 : (1 + (log(power / 4) / ln2).floor()).clamp(1, 9);
@@ -196,6 +211,9 @@ class DemoProvider {
       terrain: terrain,
       resources: SectorResources(metal: d(3), crystal: d(6), deuterium: d(9)),
       connections: [for (final n in h.neighbors()) if (_edge(h, n)) n],
+      oreReserve: terrain == TerrainType.empty
+          ? null
+          : OreReserve(metal: _tile(d(3), h), crystal: _tile(d(6), h), deuterium: _tile(d(9), h)),
       threat: _ringThreat(h),
       lastSeen: live ? _tick : _tick - 90 - x % 600,
       live: live,

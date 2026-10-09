@@ -542,6 +542,10 @@ pub struct SectorState {
     /// A boardable derelict hulk drifting in this sector.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub site: Option<SiteBrief>,
+    /// What the ore tiles hold, in raw units; absent when the sector has none.
+    /// When not `live` it is as of `last_seen`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ore_reserve: Option<OreReserve>,
     /// How dangerous the sector is. When not `live` it is the rating last
     /// seen, as old as `last_seen`.
     pub threat: ThreatInfo,
@@ -575,6 +579,26 @@ impl SiteRisk {
             SiteRisk::Hot => "hot",
         }
     }
+}
+
+/// The ore of a sector tile by tile. A tile is a small nugget: harvesting
+/// takes `units` down toward 0, and it refills on a timer while no fleet sits on it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OreReserve {
+    pub metal: TileReserve,
+    pub crystal: TileReserve,
+    pub deuterium: TileReserve,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TileReserve {
+    /// Raw units left to harvest.
+    pub units: f32,
+    /// Units the tile holds when full (0 for a sector without this ore).
+    pub max_units: f32,
+    /// Seconds until the tile is full again, if it is not.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refills_in_s: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

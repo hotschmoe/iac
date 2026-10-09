@@ -190,6 +190,20 @@ def check_npc_gradient(sim, rust):
         check(f"npc respawn d={d}", row["respawn_h"], sim.npc_respawn_h(d), 1e-5)
 
 
+def check_ore(sim, rust):
+    ore = rust["ore"]
+    for key, got in zip("SMRP", ore["tile_totals"]):
+        check(f"tile reserve {key}", got, sim.DENS_RESERVE[key], 1e-6)
+    check("harvest yield per level", ore["harvest_yield_per_level"], 0.2, 1e-6)
+    for row in ore["rings"]:
+        d = row["dist"]
+        check(f"ring multiplier d={d}", row["ring_mult"], sim.ORE_RING_MULT(d), 1e-4)
+        check(f"ore regeneration hours d={d}", row["regen_h"], sim.ore_regen_h(d), 1e-5)
+        mix = sim.density_mix(d)
+        for key, got in zip("SMRP", row["odds"]):
+            check(f"density odds {key} d={d}", got, mix[key], 1e-5)
+
+
 def main():
     sim = load_sim()
     rust = rust_numbers()
@@ -198,13 +212,14 @@ def main():
     check_ships_and_defences(sim, rust)
     check_storage_raids_misc(sim, rust)
     check_npc_gradient(sim, rust)
+    check_ore(sim, rust)
     if problems:
         print(f"{len(problems)} mismatch(es) between shared/ and docs/design/economy/sim.py:")
         for p in problems[:60]:
             print("  " + p)
         sys.exit(1)
     print("economy constants agree with sim.py "
-          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient)")
+          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient, ore)")
 
 
 if __name__ == "__main__":

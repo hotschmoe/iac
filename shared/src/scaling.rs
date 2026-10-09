@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{ResourceKind, Resources, ShipClass, ShipStats};
+use crate::constants::{Density, ResourceKind, Resources, ShipClass, ShipStats};
 use crate::pace::Pace;
 
 pub const MAX_BUILDING_LEVEL: u8 = 20;
@@ -652,7 +652,9 @@ pub fn navigation_cooldown_reduction(nav_level: u8) -> u16 {
     nav_level as u16
 }
 
-pub fn harvest_rate_modifier(harvest_eff_level: u8) -> f32 {
+/// Cargo gained per raw unit extracted. Research raises the yield, not the
+/// extraction speed, so it does not strip small tiles faster.
+pub fn harvest_yield(harvest_eff_level: u8) -> f32 {
     1.0 + 0.20 * harvest_eff_level as f32
 }
 
@@ -840,6 +842,84 @@ pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32
 /// raid is rolled between 0.80 and 1.15 times this.
 pub fn raid_power_base(econ: f32) -> f32 {
     5.0 + 11.0 * econ.powf(0.75)
+}
+
+// ── Ore ──────────────────────────────────────────────────────────
+
+pub const ORE_RING_GROWTH: f32 = 1.10;
+pub const ORE_RING_FIRST: u16 = 3;
+pub const ORE_RING_LAST: u16 = 20;
+/// A stripped tile refills completely in this many game hours plus
+/// `ORE_REGEN_HOURS_PER_RING` per ring.
+pub const ORE_REGEN_BASE_HOURS: f32 = 120.0;
+pub const ORE_REGEN_HOURS_PER_RING: f32 = 24.0;
+/// Density rolls drift this much per ring (up to `ORE_DRIFT_MAX`) toward
+/// Rich and Pristine.
+pub const ORE_DRIFT_PER_RING: f32 = 0.012;
+pub const ORE_DRIFT_MAX: f32 = 0.30;
+
+/// Reserve multiplier of a ring: 1.0 inside ring 3, then 1.10 per ring up to
+/// ring 20 (5.05 beyond).
+pub fn ring_mult(dist: u16) -> f32 {
+    if dist < ORE_RING_FIRST {
+        1.0
+    } else {
+        ORE_RING_GROWTH.powi(i32::from(dist.min(ORE_RING_LAST)) - i32::from(ORE_RING_FIRST))
+    }
+}
+
+/// Raw units to harvest at `density` before it drops a level.
+pub fn ore_step_units(density: Density, dist: u16) -> f32 {
+    density.step_units() * ring_mult(dist)
+}
+
+/// Raw units a full tile of `density` holds.
+pub fn ore_reserve_units(density: Density, dist: u16) -> f32 {
+    density.reserve_units() * ring_mult(dist)
+}
+
+pub fn ore_regen_hours(dist: u16) -> f32 {
+    ORE_REGEN_BASE_HOURS + ORE_REGEN_HOURS_PER_RING * dist as f32
+}
+
+/// Raw units a stripped tile with template `density` regains per tick: its
+/// whole reserve over `ore_regen_hours`, faster at higher pace.
+pub fn ore_regen_per_tick(density: Density, dist: u16, pace: &Pace) -> f32 {
+    pace.rate(ore_reserve_units(density, dist) / (ore_regen_hours(dist) * 3600.0))
+}
+
+/// Raw units already taken from a tile generated at `template` that now
+/// stands at `current` with `harvested` units gone from the current level.
+pub fn ore_extracted(template: Density, current: Density, harvested: f32, dist: u16) -> f32 {
+    let mut level = template;
+    let mut gone = harvested;
+    while level != current && level != Density::None {
+        gone += ore_step_units(level, dist);
+        level = level.downgrade();
+    }
+    gone
+}
+
+/// A tile stands at `current` with `harvested` units gone from that level;
+/// give back `amount` units. Refilling a level upgrades the tile and carries
+/// the rest into the next one; a tile never rises above `template`.
+pub fn ore_regen_step(template: Density, current: Density, harvested: f32, amount: f32, dist: u16) -> (Density, f32) {
+    let mut level = current;
+    let mut gone = harvested - amount;
+    while gone < 0.0 && level != template {
+        level = level.upgrade();
+        gone += ore_step_units(level, dist);
+    }
+    (level, gone.max(0.0))
+}
+
+/// Slack for float drift when harvesting empties a level exactly.
+pub const ORE_EPSILON: f32 = 1e-3;
+
+/// Chances of (Sparse, Moderate, Rich, Pristine) for an ore tile at `dist`.
+pub fn ore_density_odds(dist: u16) -> [f32; 4] {
+    let drift = (ORE_DRIFT_PER_RING * dist as f32).min(ORE_DRIFT_MAX);
+    [0.40 - drift, 0.30 - 0.2 * drift, 0.20 + 0.6 * drift, 0.10 + 0.6 * drift]
 }
 
 // ── Threat and the NPC gradient ──────────────────────────────────
@@ -1301,6 +1381,71 @@ mod golden_tests {
         let labels: Vec<_> = [3.0, 2.99, 2.0, 1.99, 1.2, 1.19, 0.0].iter().map(|&r| ratio_label(r)).collect();
         use RatioLabel::*;
         assert_eq!(labels, vec![Safe, Favourable, Favourable, Risky, Risky, Deadly, Deadly]);
+    }
+
+    #[test]
+    fn ring_multiplier_and_tile_reserves_match_the_spec() {
+        for (dist, want) in [(1, 1.0), (3, 1.0), (8, 1.61), (12, 2.36), (15, 3.138), (20, 5.05), (40, 5.05)] {
+            assert!((ring_mult(dist) - want).abs() < 0.01, "d={dist}: {}", ring_mult(dist));
+        }
+        let totals: Vec<f32> = [Density::Sparse, Density::Moderate, Density::Rich, Density::Pristine]
+            .iter().map(|d| d.reserve_units()).collect();
+        assert_eq!(totals, vec![3.0, 10.0, 22.0, 42.0]);
+        assert!((ore_step_units(Density::Pristine, 20) - 20.0 * 5.05).abs() < 0.1);
+        assert_eq!(ore_reserve_units(Density::None, 12), 0.0);
+    }
+
+    #[test]
+    fn the_mean_tile_matches_the_reserve_column() {
+        let mean = |dist: u16| {
+            let [s, m, r, p] = ore_density_odds(dist);
+            (s * 3.0 + m * 10.0 + r * 22.0 + p * 42.0) * ring_mult(dist)
+        };
+        for (dist, want) in [(1, 13.0), (4, 16.0), (8, 26.0), (12, 42.0), (15, 59.0), (20, 105.0), (21, 107.0), (30, 115.0), (35, 115.0)] {
+            assert!((mean(dist) - want).abs() < 1.0, "d={dist}: {}", mean(dist));
+        }
+        for dist in 1..60 {
+            let odds = ore_density_odds(dist);
+            assert!((odds.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+            assert!(mean(dist + 1) >= mean(dist) - 1e-3, "ore never thins out going outward");
+        }
+    }
+
+    #[test]
+    fn regeneration_takes_the_spec_hours_at_every_pace() {
+        assert_eq!(ore_regen_hours(1), 144.0);
+        assert_eq!(ore_regen_hours(8), 312.0);
+        assert_eq!(ore_regen_hours(20), 600.0);
+        let per_tick = |pace: f64| ore_regen_per_tick(Density::Pristine, 8, &Pace::new(pace).unwrap());
+        let full_ticks = ore_reserve_units(Density::Pristine, 8) / per_tick(1.0);
+        assert!((full_ticks - 312.0 * 3600.0).abs() < 1.0);
+        assert!((per_tick(600.0) / per_tick(1.0) - 600.0).abs() < 0.01, "an economy timer: divided by P");
+    }
+
+    #[test]
+    fn regeneration_walks_back_up_the_levels_and_stops_at_the_template() {
+        for dist in [1u16, 9, 25] {
+            for template in [Density::Sparse, Density::Moderate, Density::Rich, Density::Pristine] {
+                let total = ore_reserve_units(template, dist);
+                let (mut level, mut in_level) = (Density::None, 0.0);
+                let mut given = 0.0;
+                let chunk = total / 997.0;
+                while level != template || in_level > 0.0 {
+                    (level, in_level) = ore_regen_step(template, level, in_level, chunk, dist);
+                    given += chunk;
+                    assert!(given < total * 1.01 + chunk, "{template:?} d={dist}: still not full after {given}");
+                    let gone = ore_extracted(template, level, in_level, dist);
+                    assert!((gone - (total - given).max(0.0)).abs() < 5e-3 * total, "{template:?} d={dist}");
+                }
+                assert_eq!(ore_regen_step(template, template, 0.0, 5.0, dist), (template, 0.0), "never above the template");
+            }
+        }
+    }
+
+    #[test]
+    fn research_raises_yield_not_speed() {
+        assert_eq!(harvest_yield(0), 1.0);
+        assert!((harvest_yield(5) - 2.0).abs() < 1e-6);
     }
 
     #[test]

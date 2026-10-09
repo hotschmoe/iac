@@ -6,7 +6,7 @@ use std::hash::Hasher;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::constants::{Density, ShipClass, TerrainType, Zone};
-use crate::scaling::{npc_composition, npc_passive_share, npc_presence_pct, ship_power};
+use crate::scaling::{npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ship_power};
 use crate::hex::Hex;
 
 /// Seed-based sector generation. Pure function — same inputs always produce same output.
@@ -28,7 +28,7 @@ impl WorldGen {
         let zone = Zone::from_distance(dist);
 
         let terrain = self.roll_terrain(&mut rng, zone);
-        let resources = self.roll_resources(&mut rng, zone, terrain);
+        let resources = self.roll_resources(&mut rng, zone, terrain, dist);
         let npc_template = self.roll_npc_presence(&mut rng, dist);
         let has_derelict = self.roll_derelict(&mut rng, terrain, dist);
 
@@ -154,6 +154,7 @@ impl WorldGen {
         rng: &mut DeterministicRng,
         zone: Zone,
         terrain: TerrainType,
+        dist: u16,
     ) -> ResourceRoll {
         if terrain == TerrainType::Empty {
             return ResourceRoll {
@@ -173,6 +174,7 @@ impl WorldGen {
         ResourceRoll {
             metal: roll_density(
                 rng,
+                dist,
                 if terrain == TerrainType::AsteroidField {
                     60 + zone_boost
                 } else {
@@ -181,6 +183,7 @@ impl WorldGen {
             ),
             crystal: roll_density(
                 rng,
+                dist,
                 if terrain == TerrainType::AsteroidField || terrain == TerrainType::Nebula {
                     40 + zone_boost
                 } else {
@@ -189,6 +192,7 @@ impl WorldGen {
             ),
             deut: roll_density(
                 rng,
+                dist,
                 if terrain == TerrainType::Nebula {
                     50 + zone_boost
                 } else {
@@ -245,16 +249,17 @@ struct ResourceRoll {
     deut: Density,
 }
 
-fn roll_density(rng: &mut DeterministicRng, chance: u8) -> Density {
+fn roll_density(rng: &mut DeterministicRng, dist: u16, chance: u8) -> Density {
     if rng.range(0..=100) >= chance {
         return Density::None;
     }
-    let quality = rng.range(0..=100);
-    if quality < 40 {
+    let [sparse, moderate, rich, _] = ore_density_odds(dist);
+    let quality = f32::from(rng.range(0..=99)) / 100.0;
+    if quality < sparse {
         Density::Sparse
-    } else if quality < 70 {
+    } else if quality < sparse + moderate {
         Density::Moderate
-    } else if quality < 90 {
+    } else if quality < sparse + moderate + rich {
         Density::Rich
     } else {
         Density::Pristine
@@ -403,6 +408,40 @@ mod tests {
         let (near, mid, far) = (share(1, 4), share(10, 14), share(30, 40));
         assert!(near < mid && mid < far, "{near} {mid} {far}");
         assert!((near - 0.31).abs() < 0.08 && (far - 0.85).abs() < 0.05);
+    }
+
+    #[test]
+    fn ore_is_richer_and_tiles_bigger_further_out() {
+        use crate::scaling::ore_reserve_units;
+        let world_gen = WorldGen::init(4242);
+        let mean = |lo: u16, hi: u16| {
+            let (mut sum, mut tiles) = (0.0f32, 0u32);
+            let (mut level, mut count) = (0.0f32, 0u32);
+            for q in -45i16..45 {
+                for r in -45i16..45 {
+                    let c = Hex { q, r };
+                    let d = c.dist_from_origin();
+                    if !(lo..=hi).contains(&d) {
+                        continue;
+                    }
+                    let t = world_gen.generate_sector(c);
+                    for den in [t.metal_density, t.crystal_density, t.deut_density] {
+                        if den != Density::None {
+                            sum += ore_reserve_units(den, d);
+                            level += den as u8 as f32;
+                            count += 1;
+                            tiles += 1;
+                        }
+                    }
+                }
+            }
+            (sum / tiles as f32, level / count as f32)
+        };
+        let (near_units, near_level) = mean(3, 8);
+        let (mid_units, mid_level) = mean(12, 18);
+        let (far_units, far_level) = mean(26, 40);
+        assert!(near_units < mid_units && mid_units < far_units, "{near_units} {mid_units} {far_units}");
+        assert!(near_level < mid_level && mid_level < far_level, "{near_level} {mid_level} {far_level}");
     }
 
     #[test]

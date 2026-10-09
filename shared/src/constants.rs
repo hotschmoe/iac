@@ -72,14 +72,27 @@ impl Density {
         }
     }
 
-    pub fn depletion_threshold(self) -> f32 {
+    /// Raw units harvested at this density before it drops one level, at
+    /// ring 1 (`scaling::ore_step_units` applies the ring factor).
+    pub fn step_units(self) -> f32 {
         match self {
             Density::None => 0.0,
-            Density::Sparse => 10.0,
-            Density::Moderate => 20.0,
-            Density::Rich => 30.0,
-            Density::Pristine => 40.0,
+            Density::Sparse => 3.0,
+            Density::Moderate => 7.0,
+            Density::Rich => 12.0,
+            Density::Pristine => 20.0,
         }
+    }
+
+    /// Everything a tile of this density holds, at ring 1: 0 / 3 / 10 / 22 / 42.
+    pub fn reserve_units(self) -> f32 {
+        let mut level = self;
+        let mut total = 0.0;
+        while level != Density::None {
+            total += level.step_units();
+            level = level.downgrade();
+        }
+        total
     }
 
     pub fn downgrade(self) -> Density {
@@ -433,9 +446,6 @@ pub const FUEL_RATE_PER_MASS: f32 = 0.1;
 /// Deuterium paid per fuel unit topped up at the homeworld. Not scaled by
 /// pace: fuel is the price of range, not an economy timer.
 pub const FUEL_DEUT_PER_UNIT: f32 = 0.08;
-
-/// Resource regeneration: sectors regen this fraction per tick.
-pub const SECTOR_REGEN_RATE: f32 = 0.0001;
 
 pub const NPC_PATROL_INTERVAL: u16 = 15;
 

@@ -70,7 +70,10 @@ impl KnownSectors {
                 match memory.get_mut(&key) {
                     Some(r) => {
                         observed.last_seen = r.state.last_seen;
+                        // Refilling ore moves every tick; it is written with the periodic touch.
+                        let fresh_ore = std::mem::replace(&mut observed.ore_reserve, r.state.ore_reserve);
                         let changed = r.state != observed;
+                        observed.ore_reserve = fresh_ore;
                         observed.last_seen = tick;
                         *r = Remembered { last_seen: tick, state: observed };
                         if changed || touch {
@@ -298,6 +301,7 @@ pub fn build_sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>) 
         site: engine
             .derelict_site_at(coord)
             .map(|(tier, bumps)| SiteBrief { tier, risk: site_risk_label(tier, bumps) }),
+        ore_reserve: engine.ore_reserve_at(coord),
         threat: engine.sector_threat(coord),
         last_seen: engine.current_tick,
         live: true,

@@ -1155,6 +1155,21 @@
         "q": 3,
         "r": -2
       },
+      "ore_reserve": {
+        "crystal": {
+          "max_units": 10.0,
+          "units": 10.0
+        },
+        "deuterium": {
+          "max_units": 0.0,
+          "units": 0.0
+        },
+        "metal": {
+          "max_units": 22.0,
+          "refills_in_s": 5400,
+          "units": 9.5
+        }
+      },
       "player_fleets": [
         {
           "id": 7,

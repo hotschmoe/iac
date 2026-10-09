@@ -1193,6 +1193,9 @@ class SectorState {
   final int? salvageDespawnTick;
   final SiteBrief? site;
 
+  /// Raw units left on the ore tiles, as of [lastSeen]; null without ore.
+  final OreReserve? oreReserve;
+
   /// Danger of the sector; when not [live] it is the rating last seen.
   final ThreatInfo threat;
 
@@ -1213,6 +1216,7 @@ class SectorState {
     this.salvage,
     this.salvageDespawnTick,
     this.site,
+    this.oreReserve,
     required this.threat,
     required this.lastSeen,
     required this.live,
@@ -1230,6 +1234,7 @@ class SectorState {
       salvage: _opt(m['salvage'], Resources.fromJson),
       salvageDespawnTick: _opt(m['salvage_despawn_tick'], _i),
       site: _opt(m['site'], SiteBrief.fromJson),
+      oreReserve: _opt(m['ore_reserve'], OreReserve.fromJson),
       threat: ThreatInfo.fromJson(m['threat']),
       lastSeen: _i(m['last_seen']),
       live: m['live'] as bool,
@@ -1251,6 +1256,54 @@ class SectorState {
     _put(m, 'salvage', salvage?.toJson());
     _put(m, 'salvage_despawn_tick', salvageDespawnTick);
     _put(m, 'site', site?.toJson());
+    _put(m, 'ore_reserve', oreReserve?.toJson());
+    return m;
+  }
+}
+
+/// The ore of a sector tile by tile: harvesting takes [TileReserve.units]
+/// toward 0 and a tile refills on a timer while no fleet sits on it.
+class OreReserve {
+  final TileReserve metal;
+  final TileReserve crystal;
+  final TileReserve deuterium;
+  const OreReserve({required this.metal, required this.crystal, required this.deuterium});
+
+  factory OreReserve.fromJson(Object? json) {
+    final m = _obj(json);
+    return OreReserve(
+      metal: TileReserve.fromJson(m['metal']),
+      crystal: TileReserve.fromJson(m['crystal']),
+      deuterium: TileReserve.fromJson(m['deuterium']),
+    );
+  }
+
+  Json toJson() => {'metal': metal.toJson(), 'crystal': crystal.toJson(), 'deuterium': deuterium.toJson()};
+}
+
+class TileReserve {
+  /// Raw units left to harvest.
+  final double units;
+
+  /// Units the tile holds when full (0 for a sector without this ore).
+  final double maxUnits;
+
+  /// Seconds until the tile is full again, if it is not.
+  final int? refillsInS;
+  const TileReserve({required this.units, required this.maxUnits, this.refillsInS});
+
+  factory TileReserve.fromJson(Object? json) {
+    final m = _obj(json);
+    return TileReserve(
+      units: _f(m['units']),
+      maxUnits: _f(m['max_units']),
+      refillsInS: _opt(m['refills_in_s'], _i),
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{'units': units, 'max_units': maxUnits};
+    _put(m, 'refills_in_s', refillsInS);
     return m;
   }
 }

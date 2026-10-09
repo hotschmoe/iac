@@ -5,7 +5,7 @@
 
 use serde_json::{json, Map, Value};
 
-use iac_shared::constants::{defense_grid_scout_units, ShipClass, FUEL_DEUT_PER_UNIT, FUEL_RATE_PER_MASS};
+use iac_shared::constants::{defense_grid_scout_units, Density, ShipClass, FUEL_DEUT_PER_UNIT, FUEL_RATE_PER_MASS};
 use iac_shared::pace::{Pace, PRESETS};
 use iac_shared::scaling::*;
 
@@ -92,6 +92,14 @@ fn main() {
             "respawn_h": npc_respawn_hours(d), "threat": threat_rating(npc_power(d)),
         })
     }).collect::<Vec<_>>()));
+    let tile_totals: Vec<f32> = [Density::Sparse, Density::Moderate, Density::Rich, Density::Pristine].iter().map(|d| d.reserve_units()).collect();
+    out.insert("ore".into(), json!({
+        "tile_totals": tile_totals,
+        "rings": (1..=60u16).map(|d| json!({
+            "dist": d, "ring_mult": ring_mult(d), "regen_h": ore_regen_hours(d), "odds": ore_density_odds(d),
+        })).collect::<Vec<_>>(),
+        "harvest_yield_per_level": harvest_yield(1) - 1.0,
+    }));
     out.insert("presets".into(), json!(PRESETS.iter().map(|p| (p.name.to_string(), json!(p.pace))).collect::<Map<_, _>>()));
     out.insert("raid_power_base".into(), json!(
         [1.0f32, 10.0, 100.0, 500.0, 1000.0, 2000.0].iter().map(|s| (s.to_string(), json!(raid_power_base(*s)))).collect::<Map<_, _>>()

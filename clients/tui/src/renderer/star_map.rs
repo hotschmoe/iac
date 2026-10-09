@@ -373,6 +373,13 @@ fn inspect_line(state: &ClientState) -> (String, Style) {
             super::density_short(sector.resources.crystal),
             super::density_short(sector.resources.deuterium),
         );
+        if let Some(ore) = &sector.ore_reserve {
+            let tiles = [ore.metal, ore.crystal, ore.deuterium];
+            line.push_str(&format!("  ORE {:.0}/{:.0}/{:.0}u", tiles[0].units, tiles[1].units, tiles[2].units));
+            if let Some(s) = tiles.iter().filter_map(|t| t.refills_in_s).max() {
+                line.push_str(&format!(" (full in {})", span_label(s)));
+            }
+        }
         if let Some(h) = &sector.hostiles {
             let ships: u16 = h.iter().flat_map(|f| f.ships.iter().map(|s| s.count)).sum();
             line.push_str(&format!("  HOSTILES:{}", ships));
@@ -401,6 +408,16 @@ fn inspect_line(state: &ClientState) -> (String, Style) {
         format!(" ▣ [{},{}] d{}  UNCHARTED", coord.q, coord.r, dist),
         AMBER_DIM,
     )
+}
+
+/// "40s" / "12m" / "3.5h" / "6.2d": a span of seconds.
+fn span_label(secs: u64) -> String {
+    match secs {
+        0..=119 => format!("{secs}s"),
+        120..=7199 => format!("{}m", secs / 60),
+        7200..=172_799 => format!("{:.1}h", secs as f64 / 3600.0),
+        _ => format!("{:.1}d", secs as f64 / 86_400.0),
+    }
 }
 
 /// "42s ago" / "7m ago": how old a remembered sector's intel is (1 tick = 1 s).

@@ -1140,6 +1140,21 @@
         "q": 3,
         "r": -2
       },
+      "ore_reserve": {
+        "crystal": {
+          "max_units": 10.0,
+          "units": 10.0
+        },
+        "deuterium": {
+          "max_units": 0.0,
+          "units": 0.0
+        },
+        "metal": {
+          "max_units": 22.0,
+          "refills_in_s": 5400,
+          "units": 9.5
+        }
+      },
       "player_fleets": [
         {
           "id": 7,
@@ -1213,6 +1228,21 @@
       "location": {
         "q": -5,
         "r": 7
+      },
+      "ore_reserve": {
+        "crystal": {
+          "max_units": 42.0,
+          "refills_in_s": 12000,
+          "units": 41.0
+        },
+        "deuterium": {
+          "max_units": 22.0,
+          "units": 22.0
+        },
+        "metal": {
+          "max_units": 3.0,
+          "units": 3.0
+        }
       },
       "player_fleets": [],
       "resources": {

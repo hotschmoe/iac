@@ -15,7 +15,7 @@ use iac_shared::constants::{
     HARVEST_COOLDOWN, SHIELD_REGEN_IDLE_TICKS,
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
-    FUEL_RATE_PER_MASS, FUEL_DEUT_PER_UNIT, SECTOR_REGEN_RATE,
+    FUEL_RATE_PER_MASS, FUEL_DEUT_PER_UNIT,
     NPC_PATROL_INTERVAL, SALVAGE_FRACTION, SALVAGE_DESPAWN_TICKS, HARVEST_REPORT_TICKS,
     TEMPLATE_NPC_ID_BASE,
     HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST, MOVE_BASE_COOLDOWN,
@@ -38,7 +38,7 @@ use iac_shared::scaling::{
 };
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
-    MovePreview, ResourceEta, ThreatBasis, ThreatInfo, StorageFullEvent, StorageNearCapEvent, StorageState,
+    MovePreview, OreReserve, ResourceEta, ThreatBasis, ThreatInfo, TileReserve, StorageFullEvent, StorageNearCapEvent, StorageState,
 };
 
 use crate::auth::{self, TokenHash};
@@ -52,6 +52,8 @@ use crate::intel::KnownSectors;
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
 pub const MAX_NPC_SHIPS: usize = scaling::NPC_MAX_SHIPS;
 pub const MAX_COMBAT_FLEETS: usize = 8;
+/// Part-refilled tiles are written to disk this often (ticks).
+const REGEN_PERSIST_TICKS: u64 = 60;
 
 // ── Core Data Types ───────────────────────────────────────────────
 
@@ -296,6 +298,12 @@ pub struct SectorOverride {
 }
 
 impl SectorOverride {
+    /// Some tile here is below its generated level or part-emptied.
+    pub fn has_ore_damage(&self) -> bool {
+        self.metal_density.is_some() || self.crystal_density.is_some() || self.deut_density.is_some()
+            || self.metal_harvested > 0.0 || self.crystal_harvested > 0.0 || self.deut_harvested > 0.0
+    }
+
     pub fn effective_densities(
         override_opt: Option<&SectorOverride>,
         template: &iac_shared::world::SectorTemplate,
@@ -935,8 +943,10 @@ impl GameEngine {
             let (metal_d, crystal_d, deut_d) = SectorOverride::effective_densities(ov, &template);
 
             let target = fleet.harvest_target;
-            let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
-            let harvest_power = fleet_harvest_power(fleet, research);
+            let yield_mult = self.players.get(&fleet.owner_id)
+                .map_or(1.0, |p| scaling::harvest_yield(p.research.harvesting_efficiency));
+            let harvest_power = fleet_harvest_power(fleet);
+            let dist = location.dist_from_origin();
             let max_cargo = fleet_cargo_capacity(fleet);
             let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
             let mut remaining = max_cargo - used;
@@ -949,35 +959,36 @@ impl GameEngine {
             }
 
             let targets = [
-                (metal_d, HarvestResource::Metal, "metal"),
-                (crystal_d, HarvestResource::Crystal, "crystal"),
-                (deut_d, HarvestResource::Deuterium, "deut"),
+                (metal_d, HarvestResource::Metal, "metal", ov.map_or(0.0, |o| o.metal_harvested)),
+                (crystal_d, HarvestResource::Crystal, "crystal", ov.map_or(0.0, |o| o.crystal_harvested)),
+                (deut_d, HarvestResource::Deuterium, "deut", ov.map_or(0.0, |o| o.deut_harvested)),
             ];
 
             // Phase 2: apply, sequentially capped by remaining cargo
             let mut harvested_any = false;
             let mut took = Resources::default();
-            for (density, res_type, accum_key) in targets {
+            for (density, res_type, accum_key, gone_in_level) in targets {
                 if target != HarvestResource::Auto && target != res_type { continue; }
-                let amount = density.harvest_multiplier() * harvest_power;
-                if amount > 0.0 && remaining > 0.0 {
-                    let actual = amount.min(remaining);
-                    remaining -= actual;
+                let in_level = (scaling::ore_step_units(density, dist) - gone_in_level).max(0.0);
+                let raw = (density.harvest_multiplier() * harvest_power).min(in_level).min(remaining / yield_mult);
+                if raw > 0.0 {
+                    let cargo = raw * yield_mult;
+                    remaining -= cargo;
                     harvested_any = true;
 
                     if let Some(f) = self.fleets.get_mut(&fid) {
                         match res_type {
-                            HarvestResource::Metal => f.cargo.metal += actual,
-                            HarvestResource::Crystal => f.cargo.crystal += actual,
-                            _ => f.cargo.deuterium += actual,
+                            HarvestResource::Metal => f.cargo.metal += cargo,
+                            HarvestResource::Crystal => f.cargo.crystal += cargo,
+                            _ => f.cargo.deuterium += cargo,
                         }
                     }
 
-                    self.accumulate_harvest(sector_key, accum_key, actual, density)?;
+                    self.accumulate_harvest(sector_key, accum_key, raw, density)?;
                     match res_type {
-                        HarvestResource::Metal => took.metal += actual,
-                        HarvestResource::Crystal => took.crystal += actual,
-                        _ => took.deuterium += actual,
+                        HarvestResource::Metal => took.metal += cargo,
+                        HarvestResource::Crystal => took.crystal += cargo,
+                        _ => took.deuterium += cargo,
                     }
                 }
             }
@@ -1004,6 +1015,7 @@ impl GameEngine {
     fn accumulate_harvest(&mut self, sector_key: u32, resource: &str, amount: f32, current_density: Density) -> Result<(), Box<dyn std::error::Error>> {
         if current_density == Density::None { return Ok(()); }
 
+        let step = scaling::ore_step_units(current_density, Hex::from_key(sector_key).dist_from_origin());
         let ov = self.ensure_override(sector_key);
         let harvested_ptr = match resource {
             "metal" => &mut ov.metal_harvested,
@@ -1014,8 +1026,7 @@ impl GameEngine {
 
         *harvested_ptr += amount;
 
-        let threshold = current_density.depletion_threshold();
-        if threshold > 0.0 && *harvested_ptr >= threshold {
+        if *harvested_ptr >= step - scaling::ORE_EPSILON {
             *harvested_ptr = 0.0;
             let new_density = current_density.downgrade();
             match resource {
@@ -1031,34 +1042,25 @@ impl GameEngine {
 
     // ── Sector Regen ──────────────────────────────────────────────
 
+    /// Stripped tiles refill over `scaling::ore_regen_hours`, paused while a
+    /// fleet sits on the sector, and never past the generated density.
     fn process_sector_regen(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
         for sector_key in keys {
             let Some(ov) = self.sector_overrides.get(&sector_key) else { continue; };
-            if !is_depleted(ov.metal_density) && !is_depleted(ov.crystal_density) && !is_depleted(ov.deut_density) {
-                continue;
-            }
+            if !ov.has_ore_damage() { continue; }
 
             let coord = Hex::from_key(sector_key);
-            let mut fleet_present = false;
-            for f in self.fleets.values() {
-                if f.location == coord {
-                    fleet_present = true;
-                    break;
-                }
-            }
-            if fleet_present { continue; }
+            if self.fleets.values().any(|f| f.location == coord) { continue; }
 
+            let dist = coord.dist_from_origin();
             let template = self.world_gen.generate_sector(coord);
-            let rate = self.world.pace.rate(SECTOR_REGEN_RATE);
+            let pace = self.world.pace;
             let ov_mut = self.sector_overrides.get_mut(&sector_key).unwrap();
-            let mut changed = false;
-
-            changed = regen_resource(&mut ov_mut.metal_harvested, &mut ov_mut.metal_density, template.metal_density, rate) || changed;
-            changed = regen_resource(&mut ov_mut.crystal_harvested, &mut ov_mut.crystal_density, template.crystal_density, rate) || changed;
-            changed = regen_resource(&mut ov_mut.deut_harvested, &mut ov_mut.deut_density, template.deut_density, rate) || changed;
-
-            if changed {
+            let mut moved = regen_resource(&mut ov_mut.metal_harvested, &mut ov_mut.metal_density, template.metal_density, dist, &pace);
+            moved |= regen_resource(&mut ov_mut.crystal_harvested, &mut ov_mut.crystal_density, template.crystal_density, dist, &pace);
+            moved |= regen_resource(&mut ov_mut.deut_harvested, &mut ov_mut.deut_density, template.deut_density, dist, &pace);
+            if moved || self.current_tick.is_multiple_of(REGEN_PERSIST_TICKS) {
                 self.dirty_sectors.insert(sector_key, ());
             }
         }
@@ -1956,6 +1958,28 @@ impl GameEngine {
             ratio,
             label: scaling::ratio_label(ratio),
         })
+    }
+
+    /// What the ore tiles of `coord` hold now; None when the sector has no ore.
+    pub fn ore_reserve_at(&self, coord: Hex) -> Option<OreReserve> {
+        let template = self.world_gen.generate_sector(coord);
+        let ov = self.sector_overrides.get(&coord.to_key());
+        let dist = coord.dist_from_origin();
+        let tile = |template_d: Density, current: Option<Density>, harvested: f32| {
+            let max_units = scaling::ore_reserve_units(template_d, dist);
+            let gone = scaling::ore_extracted(template_d, current.unwrap_or(template_d), harvested, dist);
+            let rate = scaling::ore_regen_per_tick(template_d, dist, &self.world.pace);
+            TileReserve {
+                units: (max_units - gone).max(0.0),
+                max_units,
+                refills_in_s: (gone > scaling::ORE_EPSILON && rate > 0.0).then(|| (gone / rate).ceil() as u64),
+            }
+        };
+        let metal = tile(template.metal_density, ov.and_then(|o| o.metal_density), ov.map_or(0.0, |o| o.metal_harvested));
+        let crystal = tile(template.crystal_density, ov.and_then(|o| o.crystal_density), ov.map_or(0.0, |o| o.crystal_harvested));
+        let deuterium = tile(template.deut_density, ov.and_then(|o| o.deut_density), ov.map_or(0.0, |o| o.deut_harvested));
+        (metal.max_units + crystal.max_units + deuterium.max_units > 0.0)
+            .then_some(OreReserve { metal, crystal, deuterium })
     }
 
     /// The threat of `coord` as this player knows it: the truth while the
@@ -4122,20 +4146,15 @@ fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>) -> f32 {
     }
 }
 
-fn fleet_harvest_power(fleet: &Fleet, research: Option<&ResearchLevels>) -> f32 {
-    let mut power: f32 = 0.0;
-    for ship in &fleet.ships[0..fleet.ship_count] {
-        power += match ship.ship_class {
+/// Raw units per tick the fleet can extract at density multiplier 1.
+fn fleet_harvest_power(fleet: &Fleet) -> f32 {
+    fleet.ships[0..fleet.ship_count].iter()
+        .map(|s| match s.ship_class {
             ShipClass::Hauler => 5.0,
             ShipClass::Scout => 1.0,
             _ => 0.5,
-        };
-    }
-    if let Some(r) = research {
-        power * scaling::harvest_rate_modifier(r.harvesting_efficiency)
-    } else {
-        power
-    }
+        })
+        .sum()
 }
 
 fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f32 {
@@ -4210,42 +4229,19 @@ pub fn fleet_cargo_capacity(fleet: &Fleet) -> f32 {
         .sum()
 }
 
-fn is_depleted(density: Option<Density>) -> bool {
-    match density {
-        None => false,
-        Some(d) => d != Density::Pristine,
-    }
-}
-
 fn regen_resource(
     harvested: &mut f32,
     override_density: &mut Option<Density>,
     template_density: Density,
-    rate: f32,
+    dist: u16,
+    pace: &Pace,
 ) -> bool {
-    let current = match *override_density {
-        Some(d) => d,
-        None => return false,
-    };
-
-    // Compare by repr value
-    let current_val = current as u8;
-    let template_val = template_density as u8;
-    if current_val >= template_val { return false; }
-
-    let regen_amount = rate * current.depletion_threshold();
-    *harvested -= regen_amount;
-    if *harvested < 0.0 {
-        let new_density = current.upgrade();
-        let new_val = new_density as u8;
-        if new_val >= template_val {
-            *override_density = None;
-        } else {
-            *override_density = Some(new_density);
-        }
-        *harvested = 0.0;
-    }
-    true
+    let current = override_density.unwrap_or(template_density);
+    let rate = scaling::ore_regen_per_tick(template_density, dist, pace);
+    let (density, gone) = scaling::ore_regen_step(template_density, current, *harvested, rate, dist);
+    *override_density = (density != template_density).then_some(density);
+    *harvested = gone;
+    density != current
 }
 
 #[cfg(test)]
@@ -4314,11 +4310,20 @@ mod tests {
         engine: &GameEngine,
         pred: impl Fn(Density, Density, Density) -> bool,
     ) -> Hex {
+        find_sector_beyond(engine, 0, pred)
+    }
+
+    /// Like `find_sector_with`, at least `min_dist` rings from the hub.
+    fn find_sector_beyond(
+        engine: &GameEngine,
+        min_dist: u16,
+        pred: impl Fn(Density, Density, Density) -> bool,
+    ) -> Hex {
         for q in -30i16..30 {
             for r in -30i16..30 {
                 let coord = Hex { q, r };
                 let t = engine.world_gen.generate_sector(coord);
-                if pred(t.metal_density, t.crystal_density, t.deut_density) {
+                if coord.dist_from_origin() >= min_dist && pred(t.metal_density, t.crystal_density, t.deut_density) {
                     return coord;
                 }
             }
@@ -4345,9 +4350,9 @@ mod tests {
     fn harvest_events_are_aggregated_per_fleet() {
         let mut engine = test_engine();
         let (pid, fid) = register(&mut engine, "Sweeper");
-        let site = find_sector_with(&engine, |m, c, _| m != Density::None && c != Density::None);
+        let site = find_sector_beyond(&engine, 20, |m, _, _| m == Density::Moderate);
         engine.fleets.get_mut(&fid).unwrap().location = site;
-        engine.handle_harvest(pid, fid, HarvestResource::Auto).expect("harvest");
+        engine.handle_harvest(pid, fid, HarvestResource::Metal).expect("harvest");
 
         let mut reports = Vec::new();
         for _ in 0..(2 * HARVEST_REPORT_TICKS) {
@@ -4369,8 +4374,7 @@ mod tests {
         let mined = engine.fleets[&fid].cargo;
         assert!(reports.len() <= 3, "one event per fleet per report interval, got {}", reports.len());
         let total = reports.iter().fold(Resources::default(), |acc, h| acc.add(h.resources));
-        assert!((total.metal - mined.metal).abs() < 0.01 && (total.crystal - mined.crystal).abs() < 0.01,
-            "reported {total:?} but cargo holds {mined:?}");
+        assert!((total.metal - mined.metal).abs() < 0.01, "reported {total:?} but cargo holds {mined:?}");
         assert!(reports.iter().all(|h| h.fleet_id == fid && h.ticks > 0));
     }
 
@@ -6250,6 +6254,124 @@ mod tests {
         }
         let err = engine_at(&path, None).err().expect("a world from the old generator must not start");
         assert!(err.to_string().contains("worldgen version 1"), "{err}");
+    }
+
+    fn engine_at_pace(pace: f64) -> GameEngine {
+        let db = Database::init(":memory:").unwrap();
+        GameEngine::init(42, db, Some(Pace::new(pace).unwrap())).unwrap()
+    }
+
+    /// A sector far enough out for the ring factor to bite, with rich metal.
+    fn metal_tile(engine: &GameEngine) -> Hex {
+        find_sector_beyond(engine, 6, |m, _, _| m == Density::Pristine)
+    }
+
+    fn strip_metal(engine: &mut GameEngine, at: Hex) {
+        let ov = engine.ensure_override(at.to_key());
+        ov.metal_density = Some(Density::None);
+        ov.metal_harvested = 0.0;
+    }
+
+    #[test]
+    fn a_stripped_tile_refills_on_the_spec_schedule_scaled_by_pace() {
+        let mut engine = engine_at_pace(8000.0);
+        let at = metal_tile(&engine);
+        let dist = at.dist_from_origin();
+        strip_metal(&mut engine, at);
+        let want = (f64::from(scaling::ore_regen_hours(dist)) * 3600.0 / 8000.0).ceil() as u32;
+        assert!(want > 50, "the test pace leaves enough ticks to measure: {want}");
+
+        let first = engine.ore_reserve_at(at).unwrap().metal;
+        assert_eq!(first.units, 0.0);
+        assert!((first.refills_in_s.unwrap() as i64 - i64::from(want)).abs() <= 1, "{:?} vs {want}", first.refills_in_s);
+
+        for _ in 0..want - 2 {
+            engine.process_sector_regen().unwrap();
+        }
+        let almost = engine.ore_reserve_at(at).unwrap().metal;
+        assert!(almost.units < almost.max_units && almost.refills_in_s.is_some(), "{almost:?}");
+        for _ in 0..3 {
+            engine.process_sector_regen().unwrap();
+        }
+        let full = engine.ore_reserve_at(at).unwrap().metal;
+        assert_eq!(full.units, full.max_units);
+        assert_eq!(full.refills_in_s, None);
+        let ov = &engine.sector_overrides[&at.to_key()];
+        assert_eq!((ov.metal_density, ov.metal_harvested), (None, 0.0), "back at the generated density, never above");
+    }
+
+    #[test]
+    fn regeneration_runs_ten_times_faster_at_ten_times_the_pace() {
+        let refilled = |pace: f64| {
+            let mut engine = engine_at_pace(pace);
+            let at = metal_tile(&engine);
+            strip_metal(&mut engine, at);
+            for _ in 0..2000 {
+                engine.process_sector_regen().unwrap();
+            }
+            engine.ore_reserve_at(at).unwrap().metal.units
+        };
+        let (slow, fast) = (refilled(1.0), refilled(10.0));
+        assert!(slow > 0.0 && (fast / slow - 10.0).abs() < 0.5, "{slow} {fast}");
+    }
+
+    #[test]
+    fn a_tile_does_not_refill_under_a_fleet() {
+        let mut engine = engine_at_pace(8000.0);
+        let (_, fid) = register(&mut engine, "Squatter");
+        let at = metal_tile(&engine);
+        strip_metal(&mut engine, at);
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        for _ in 0..50 {
+            engine.process_sector_regen().unwrap();
+        }
+        assert_eq!(engine.ore_reserve_at(at).unwrap().metal.units, 0.0);
+        engine.fleets.get_mut(&fid).unwrap().location = Hex { q: 0, r: 0 };
+        engine.process_sector_regen().unwrap();
+        assert!(engine.ore_reserve_at(at).unwrap().metal.units > 0.0);
+    }
+
+    #[test]
+    fn harvesting_empties_a_tile_by_its_ring_reserve_and_research_only_raises_the_yield() {
+        let mine = |level: u8| {
+            let mut engine = test_engine();
+            let (pid, fid) = register(&mut engine, "Miner");
+            let at = metal_tile(&engine);
+            engine.players.get_mut(&pid).unwrap().research.harvesting_efficiency = level;
+            let f = engine.fleets.get_mut(&fid).unwrap();
+            f.location = at;
+            for ship in &mut f.ships[..f.ship_count] {
+                ship.ship_class = ShipClass::Hauler;
+            }
+            engine.handle_harvest(pid, fid, HarvestResource::Metal).unwrap();
+            for _ in 0..400 {
+                engine.process_harvesting().unwrap();
+            }
+            (engine.fleets[&fid].cargo.metal, engine.ore_reserve_at(at).unwrap().metal, at)
+        };
+        let (plain, tile, at) = mine(0);
+        let total = scaling::ore_reserve_units(Density::Pristine, at.dist_from_origin());
+        assert_eq!(tile.units, 0.0, "the tile is emptied");
+        assert!((plain - total).abs() < 0.5, "cargo holds the whole reserve: {plain} vs {total}");
+        let (boosted, _, _) = mine(2);
+        assert!((boosted / plain - 1.4).abs() < 0.01, "level 2 is a 40 percent better yield: {boosted} vs {plain}");
+    }
+
+    #[test]
+    fn a_harvest_stops_at_the_end_of_a_density_step() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Miner");
+        let at = metal_tile(&engine);
+        let f = engine.fleets.get_mut(&fid).unwrap();
+        f.location = at;
+        f.ships[0].ship_class = ShipClass::Hauler;
+        engine.handle_harvest(pid, fid, HarvestResource::Metal).unwrap();
+        engine.process_harvesting().unwrap();
+        let step = scaling::ore_step_units(Density::Pristine, at.dist_from_origin());
+        let after = engine.ore_reserve_at(at).unwrap().metal;
+        let got = engine.fleets[&fid].cargo.metal;
+        assert!(got <= step + 1e-3, "one tick never takes more than the level holds: {got} vs {step}");
+        assert!((after.units + got - after.max_units).abs() < 1e-2);
     }
 
     fn give_defences(engine: &mut GameEngine, pid: u64, turrets: u32, lancers: u32) {
