@@ -513,7 +513,7 @@ class PolicyParams {
     this.minFuelPct = 10,
     this.cargoReturnPct = 85,
     this.maxRange = 4,
-    this.engageRatioX10 = 12,
+    this.engageRatioX10 = 15,
   });
 
   factory PolicyParams.fromJson(Object? json) {
@@ -522,7 +522,7 @@ class PolicyParams {
       minFuelPct: (m['min_fuel_pct'] as int?) ?? 10,
       cargoReturnPct: (m['cargo_return_pct'] as int?) ?? 85,
       maxRange: (m['max_range'] as int?) ?? 4,
-      engageRatioX10: (m['engage_ratio_x10'] as int?) ?? 12,
+      engageRatioX10: (m['engage_ratio_x10'] as int?) ?? 15,
     );
   }
 

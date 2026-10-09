@@ -547,7 +547,7 @@ pub const POLICY_DEFAULT_MIN_FUEL_PCT: u8 = 10;
 pub const POLICY_DEFAULT_CARGO_RETURN_PCT: u8 = 85;
 pub const POLICY_DEFAULT_MAX_RANGE: u8 = 4;
 /// Engage only if our power ≥ theirs × (this / 10).
-pub const POLICY_DEFAULT_ENGAGE_RATIO_X10: u8 = 12;
+pub const POLICY_DEFAULT_ENGAGE_RATIO_X10: u8 = 15;
 /// PatrolHome keeps within this many hops of the homeworld.
 pub const POLICY_PATROL_RADIUS: u8 = 2;
 /// PatrolHome heads home to lick wounds below this average hull fraction.

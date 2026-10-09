@@ -108,7 +108,7 @@ Standing orders are a separate message type (not a command):
 
 ```json
 {"type":"policy_update","fleet_id":2,"preset":"salvage_and_sites",
- "params":{"min_fuel_pct":10,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":12}}
+ "params":{"min_fuel_pct":10,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":15}}
 ```
 
 `params` is optional, and so is every field in it: send only what you want to
@@ -119,7 +119,7 @@ change (`"params":{"max_range":2}`) and the rest take their defaults.
 | `min_fuel_pct` | 10 | spare fuel, as a percent of the tank, kept on top of the exact fuel cost of the route home (clamped 0-90) |
 | `cargo_return_pct` | 85 | head home to unload when the hold is this full (10-100) |
 | `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting and salvage runs (1-30); never measured from the last claim |
-| `engage_ratio_x10` | 12 | fight only if your power is at least enemy power x this/10 (1-100); also exactly the least ratio at which any doctrine will enter a sector, hostiles there or not. A value below EVEN (1.1) that you set deliberately is honoured |
+| `engage_ratio_x10` | 15 | fight only if your power is at least enemy power x this/10 (1-100); also exactly the least ratio at which any doctrine will enter a sector, hostiles there or not. A value below EVEN (1.1) that you set deliberately is honoured |
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it

@@ -32,9 +32,9 @@ strictly first in, first out.
   be queued for its next level.
 - **Doctrines honour `engage_ratio_x10`:** the entry rule is exactly the
   player's ratio, hostiles there or not. The old max(engage, 2.5x) override
-  and the EVEN floor are gone, so a deliberately low setting works. Default 12
-  (1.2x) means default doctrines now enter hostile sectors at 1.2x, where they
-  used to need 2.5x; players who want caution raise it. A standing hold is
+  and the EVEN floor are gone, so a deliberately low setting works. The default
+  is 15 (1.5x, the FAVOURABLE band: a fight keeps 85-95% of hull), so default
+  doctrines are careful and players who want to gamble lower it. A standing hold is
   reported at most once a minute while its cause is unchanged.
 - **Pins and salvage:** a remembered pile past its despawn tick leaves the
   chart; other remembered pins out of sight carry `pins_stale`. A fleet docked

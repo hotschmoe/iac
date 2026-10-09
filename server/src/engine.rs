@@ -2,7 +2,6 @@
 // Ported from Zig engine.zig.
 
 use std::collections::{HashMap, HashSet};
-use std::time::SystemTime;
 
 use log::{info, warn};
 use rand::{Rng, SeedableRng};
@@ -2505,7 +2504,7 @@ impl GameEngine {
         let damage_chance = RECALL_DAMAGE_CHANCE_CAP.min(base_damage_chance.max(0.0) - ej_reduction.max(0.0));
 
         let mut rng = StdRng::seed_from_u64(
-            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+            self.world_gen.world_seed ^ self.current_tick.wrapping_mul(0x9E3779B97F4A7C15) ^ fleet_id.rotate_left(32)
         );
 
         let mut i = 0;
