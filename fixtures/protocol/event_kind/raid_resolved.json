@@ -14,6 +14,7 @@
     "deuterium": 25.0,
     "metal": 100.0
   },
+  "salvage_despawn_tick": 4940,
   "salvage_dropped": {
     "crystal": 5.0,
     "deuterium": 0.0,

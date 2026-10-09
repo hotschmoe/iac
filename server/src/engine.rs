@@ -16,7 +16,7 @@ use iac_shared::constants::{
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
     FUEL_RATE_PER_MASS, FUEL_DEUT_PER_UNIT,
-    NPC_PATROL_INTERVAL, SALVAGE_DESPAWN_TICKS, DERELICT_RESPAWN_TICKS, HARVEST_REPORT_TICKS,
+    NPC_PATROL_INTERVAL, SALVAGE_DESPAWN_TICKS, HOME_SALVAGE_WARN_TICKS, DERELICT_RESPAWN_TICKS, HARVEST_REPORT_TICKS,
     TEMPLATE_NPC_ID_BASE,
     HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST, MOVE_BASE_COOLDOWN,
     SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_SCOUT_RANGE, SCAN_REVEAL_TICKS,
@@ -457,6 +457,8 @@ pub struct GameEngine {
     /// Per player and resource: 0 below 80 percent of the cap, 1 once
     /// `StorageNearCap` fired, 2 once `StorageFull` fired.
     storage_marks: HashMap<u64, [u8; 3]>,
+    /// Per player: the despawn tick of the home pile already warned about.
+    home_salvage_warned: HashMap<u64, u64>,
     /// Harvest yield per fleet awaiting its next `ResourceHarvested` event.
     harvest_reports: HashMap<u64, HarvestReport>,
     /// Standing orders per fleet.
@@ -507,6 +509,7 @@ impl GameEngine {
             scan_reveals: HashMap::new(),
             raid_states: HashMap::new(),
             storage_marks: HashMap::new(),
+            home_salvage_warned: HashMap::new(),
             harvest_reports: HashMap::new(),
             policies: world.policies,
             pending_events: Vec::new(),
@@ -562,6 +565,7 @@ impl GameEngine {
         self.process_build_queues()?;
         self.process_raids()?;
         self.process_defence_restore();
+        self.process_home_salvage();
         self.process_salvage_despawn()?;
         self.process_derelict_respawn();
         self.process_cooldowns()?;
@@ -1145,6 +1149,82 @@ impl GameEngine {
     }
 
     // ── Salvage Despawn ───────────────────────────────────────────
+
+    /// Wreckage on a player's own homeworld, mostly from a repelled raid. A
+    /// fleet docked there scoops it into storage (what fits; the rest stays
+    /// for another try). Otherwise, or when storage is full, an alert fires
+    /// once when the pile has `HOME_SALVAGE_WARN_TICKS` left.
+    fn process_home_salvage(&mut self) {
+        let tick = self.current_tick;
+        let mut pids: Vec<u64> = self.players.keys().copied().collect();
+        pids.sort_unstable();
+        for pid in pids {
+            let home = self.players[&pid].homeworld;
+            let key = home.to_key();
+            let Some((pile, despawn)) = self.sector_overrides.get(&key)
+                .and_then(|o| o.salvage.zip(o.salvage_despawn_tick))
+            else {
+                self.home_salvage_warned.remove(&pid);
+                continue;
+            };
+            let docked = self.fleets.values()
+                .filter(|f| {
+                    f.owner_id == pid && f.location == home && f.ship_count > 0
+                        && matches!(f.state, FleetStatus::Idle | FleetStatus::Docked)
+                })
+                .map(|f| f.id)
+                .min();
+
+            let mut left = pile;
+            if let Some(fleet_id) = docked {
+                let player = self.players.get_mut(&pid).unwrap();
+                let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+                let taken = player.resources.shortfall(cap).min(pile);
+                if taken.total() > 0.0 {
+                    player.resources = player.resources.add(taken);
+                    self.dirty_players.insert(pid, ());
+                    let rest = pile.sub(taken);
+                    let remaining = (rest.total() > 1.0).then_some(rest);
+                    let ov = self.sector_overrides.get_mut(&key).unwrap();
+                    ov.salvage = remaining;
+                    if remaining.is_none() { ov.salvage_despawn_tick = None; }
+                    self.dirty_sectors.insert(key, ());
+                    self.pending_events.push(GameEvent {
+                        tick,
+                        kind: EventKind::SalvageCollected(iac_shared::protocol::SalvageCollectedEvent {
+                            fleet_id,
+                            sector: home,
+                            resources: taken,
+                            remaining,
+                        }),
+                    });
+                    left = rest;
+                }
+            }
+
+            let pending_loss = left.total() > 1.0;
+            if pending_loss
+                && despawn.saturating_sub(tick) <= u64::from(HOME_SALVAGE_WARN_TICKS)
+                && self.home_salvage_warned.get(&pid) != Some(&despawn)
+            {
+                self.home_salvage_warned.insert(pid, despawn);
+                let why = if docked.is_some() { "storage is full" } else { "no fleet is docked to scoop it" };
+                self.pending_events.push(GameEvent {
+                    tick,
+                    kind: EventKind::Alert(AlertEvent {
+                        player_id: Some(pid),
+                        level: AlertLevel::Warning,
+                        message: format!(
+                            "salvage at home {home} despawns in {}s ({:.0} metal, {:.0} crystal, {:.0} deuterium): {why}",
+                            despawn.saturating_sub(tick), left.metal, left.crystal, left.deuterium,
+                        ),
+                        sector: Some(home),
+                        fleet_id: None,
+                    }),
+                });
+            }
+        }
+    }
 
     fn process_salvage_despawn(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
@@ -1736,6 +1816,7 @@ impl GameEngine {
         let mut resources_lost = Resources::default();
         let mut ships_lost = 0;
         let mut salvage_dropped: Option<Resources> = None;
+        let mut salvage_despawn_tick: Option<u64> = None;
         let mut protected_kept = Resources::default();
         let (structures_lost, structures_restored);
 
@@ -1747,7 +1828,8 @@ impl GameEngine {
             let tick = self.current_tick;
             let ov = self.ensure_override(key);
             ov.salvage = Some(ov.salvage.unwrap_or_default().add(salvage));
-            ov.salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
+            salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
+            ov.salvage_despawn_tick = salvage_despawn_tick;
             self.dirty_sectors.insert(key, ());
             salvage_dropped = Some(salvage);
             // Defenders take shield damage but the grid keeps hulls intact.
@@ -1798,6 +1880,7 @@ impl GameEngine {
                 defended,
                 resources_lost,
                 salvage_dropped,
+                salvage_despawn_tick,
                 raid_power,
                 defense_power,
                 structures_lost,
@@ -5509,6 +5592,158 @@ mod tests {
         assert!(engine.sector_overrides[&at.to_key()].salvage.is_none());
     }
 
+    fn alerts_for(engine: &mut GameEngine, pid: u64) -> Vec<iac_shared::protocol::AlertEvent> {
+        engine.drain_events().into_iter().filter_map(|e| match e.kind {
+            EventKind::Alert(a) if a.player_id == Some(pid) => Some(a),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn a_raid_reports_when_its_salvage_despawns() {
+        let mut engine = test_engine();
+        let (pid, _) = register(&mut engine, "Winner");
+        engine.drain_events();
+        engine.resolve_raid(pid, 0.1).unwrap();
+        let resolved = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::RaidResolved(r) => Some(r),
+            _ => None,
+        }).unwrap();
+        let home = engine.players[&pid].homeworld.to_key();
+        assert!(resolved.salvage_dropped.is_some());
+        assert_eq!(resolved.salvage_despawn_tick, engine.sector_overrides[&home].salvage_despawn_tick);
+        assert_eq!(resolved.salvage_despawn_tick, Some(engine.current_tick + SALVAGE_DESPAWN_TICKS as u64));
+    }
+
+    #[test]
+    fn home_salvage_nobody_can_scoop_raises_one_alert_near_the_end() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Away");
+        let home = engine.players[&pid].homeworld;
+        engine.fleets.get_mut(&fid).unwrap().location = Hex { q: home.q + 3, r: home.r };
+        let (_, despawn) = engine.drop_salvage(home, Resources { metal: 900.0, crystal: 90.0, deuterium: 9.0 });
+        engine.drain_events();
+
+        let mut alerts = Vec::new();
+        while engine.current_tick + 1 < despawn {
+            engine.tick().unwrap();
+            alerts.extend(alerts_for(&mut engine, pid).into_iter().map(|a| (engine.current_tick, a)));
+        }
+        assert_eq!(alerts.len(), 1, "one alert, not one per tick: {alerts:?}");
+        let (at, alert) = &alerts[0];
+        assert_eq!(*at, despawn - u64::from(HOME_SALVAGE_WARN_TICKS));
+        assert!(alert.message.contains("salvage at home") && alert.message.contains("60s"), "{}", alert.message);
+        assert_eq!(alert.sector, Some(home));
+    }
+
+    #[test]
+    fn a_fleet_docked_at_home_scoops_home_salvage_into_storage() {
+        let mut engine = test_engine();
+        let (pid, _fid) = register(&mut engine, "Home");
+        let home = engine.players[&pid].homeworld;
+        engine.players.get_mut(&pid).unwrap().resources = Resources::default();
+        let pile = Resources { metal: 900.0, crystal: 90.0, deuterium: 9.0 };
+        engine.drop_salvage(home, pile);
+        engine.drain_events();
+        engine.tick().unwrap();
+        let p = &engine.players[&pid];
+        assert!(p.resources.metal >= pile.metal && p.resources.crystal >= pile.crystal, "{:?}", p.resources);
+        assert!(engine.sector_overrides[&home.to_key()].salvage.is_none());
+        let events = engine.drain_events();
+        assert!(events.iter().any(|e| matches!(&e.kind, EventKind::SalvageCollected(c) if c.resources == pile && c.remaining.is_none())));
+    }
+
+    #[test]
+    fn home_salvage_beyond_storage_stays_and_alerts() {
+        let mut engine = test_engine();
+        let (pid, _fid) = register(&mut engine, "Full");
+        let home = engine.players[&pid].homeworld;
+        let cap = scaling::storage_cap(engine.players[&pid].buildings.storage_vault, &engine.world.pace);
+        engine.players.get_mut(&pid).unwrap().resources = cap;
+        let (_, despawn) = engine.drop_salvage(home, Resources { metal: 500.0, crystal: 0.0, deuterium: 0.0 });
+        engine.drain_events();
+        while engine.current_tick + 1 < despawn {
+            engine.tick().unwrap();
+        }
+        let ov = &engine.sector_overrides[&home.to_key()];
+        assert_eq!(ov.salvage.map(|s| s.metal), Some(500.0), "nothing fits, so the pile stays");
+        let events = engine.drain_events();
+        let alerts: Vec<_> = events.iter().filter(|e| matches!(&e.kind, EventKind::Alert(a) if a.message.contains("storage is full"))).collect();
+        assert_eq!(alerts.len(), 1);
+    }
+
+    #[test]
+    fn the_chart_drops_a_remembered_pile_once_it_has_despawned() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Chartist");
+        let home = engine.players[&pid].homeworld;
+        let at = Hex { q: home.q + 4, r: home.r };
+        engine.fleets.get_mut(&fid).unwrap().location = at;
+        let (pile, despawn) = engine.drop_salvage(at, Resources { metal: 60.0, crystal: 15.0, deuterium: 9.0 });
+        engine.tick().unwrap();
+        let live = &chart_of(&engine, pid)[&at.to_key()];
+        assert!(live.live && live.salvage == Some(pile) && live.salvage_despawn_tick == Some(despawn));
+        assert!(!live.pins_stale);
+
+        engine.fleets.get_mut(&fid).unwrap().location = home;
+        engine.tick().unwrap();
+        let stale = &chart_of(&engine, pid)[&at.to_key()];
+        assert!(!stale.live && stale.salvage == Some(pile), "out of sight the pin is kept");
+        assert!(stale.pins_stale, "but marked unconfirmed");
+        assert_eq!(stale.salvage_despawn_tick, Some(despawn), "with its countdown");
+
+        let mut cleared_updates = 0;
+        while engine.current_tick < despawn {
+            engine.tick().unwrap();
+            cleared_updates += engine.known.tick_updates(&engine, pid).iter()
+                .filter(|s| s.location == at && s.salvage.is_none()).count();
+        }
+        let gone = &chart_of(&engine, pid)[&at.to_key()];
+        assert!(gone.salvage.is_none() && gone.salvage_despawn_tick.is_none() && !gone.pins_stale);
+        assert_eq!(cleared_updates, 1, "the client is told once");
+    }
+
+    #[test]
+    fn a_boarded_derelict_leaves_the_chart_when_the_player_watched_it_go() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Boarder");
+        let home = engine.players[&pid].homeworld;
+        let site = find_derelict_sector(&engine);
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+        engine.tick().unwrap();
+        assert!(chart_of(&engine, pid)[&site.to_key()].site.is_some());
+
+        engine.fleets.get_mut(&fid).unwrap().location = home;
+        engine.tick().unwrap();
+        let away = &chart_of(&engine, pid)[&site.to_key()];
+        assert!(away.site.is_some() && away.pins_stale, "unconfirmed from afar");
+
+        engine.fleets.get_mut(&fid).unwrap().location = site;
+        engine.sector_overrides.entry(site.to_key()).or_default().site_looted_tick = Some(engine.current_tick);
+        engine.tick().unwrap();
+        let seen = &chart_of(&engine, pid)[&site.to_key()];
+        assert!(seen.live && seen.site.is_none(), "seen gone, so the pin is dropped");
+        engine.fleets.get_mut(&fid).unwrap().location = home;
+        engine.tick().unwrap();
+        let later = &chart_of(&engine, pid)[&site.to_key()];
+        assert!(later.site.is_none() && !later.pins_stale);
+    }
+
+    #[test]
+    fn scan_signals_never_name_the_scanning_sector() {
+        let mut engine = test_engine();
+        let (pid, fid) = register(&mut engine, "Pinger");
+        let origin = engine.fleets[&fid].location;
+        engine.handle_scan(pid, fid).unwrap();
+        let scan = engine.drain_events().into_iter().find_map(|e| match e.kind {
+            EventKind::ScanCompleted(s) => Some(s),
+            _ => None,
+        }).unwrap();
+        assert_eq!(scan.sector, origin);
+        assert!(scan.signals.iter().all(|c| c.sector != origin));
+        assert!(scan.threats.iter().all(|t| t.sector != origin));
+    }
+
     #[test]
     fn salvage_survives_restart() {
         let path = std::env::temp_dir().join(format!("iac_salvage_restart_test_{}.db", std::process::id()));
@@ -5631,14 +5866,19 @@ mod tests {
         let seen_at = engine.current_tick;
         assert_eq!(chart_of(&engine, pid)[&at.to_key()].salvage, Some(pile));
 
-        // Fly away; the pile despawns while nobody is looking.
+        // Fly away: the pile is remembered as seen, flagged unconfirmed, until its own timer runs out.
         engine.fleets.get_mut(&fid).unwrap().location = engine.players[&pid].homeworld;
-        while engine.current_tick <= despawn + 1 { engine.tick().unwrap(); }
-        assert!(engine.sector_overrides[&at.to_key()].salvage.is_none());
+        while engine.current_tick + 2 < despawn { engine.tick().unwrap(); }
         let s = &chart_of(&engine, pid)[&at.to_key()];
-        assert!(!s.live);
+        assert!(!s.live && s.pins_stale);
         assert_eq!(s.salvage, Some(pile), "remembered as seen");
         assert_eq!(s.salvage_despawn_tick, Some(despawn));
+        assert_eq!(s.last_seen, seen_at);
+
+        // Its despawn tick passed while nobody looked: the player knows it is gone.
+        while engine.current_tick <= despawn + 1 { engine.tick().unwrap(); }
+        let s = &chart_of(&engine, pid)[&at.to_key()];
+        assert!(!s.live && s.salvage.is_none() && !s.pins_stale);
         assert_eq!(s.last_seen, seen_at);
     }
 

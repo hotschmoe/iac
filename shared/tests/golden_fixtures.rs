@@ -157,7 +157,12 @@ fn rich_sector() -> SectorState {
         threat: ThreatInfo { rating: 4, est_power: 46.5, basis: ThreatBasis::Observed },
         last_seen: 4821,
         live: true,
+        pins_stale: false,
     }
+}
+
+fn stale_pins_sector() -> SectorState {
+    SectorState { location: h(5, 1), live: false, last_seen: 4700, pins_stale: true, ..rich_sector() }
 }
 
 fn bare_sector() -> SectorState {
@@ -179,6 +184,7 @@ fn bare_sector() -> SectorState {
         threat: ThreatInfo { rating: 1, est_power: 4.0, basis: ThreatBasis::Estimate },
         last_seen: 4821,
         live: true,
+        pins_stale: false,
     }
 }
 
@@ -205,6 +211,7 @@ fn anomaly_sector() -> SectorState {
         threat: ThreatInfo { rating: 5, est_power: 65.0, basis: ThreatBasis::Template },
         last_seen: 4240,
         live: false,
+        pins_stale: false,
     }
 }
 
@@ -703,7 +710,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     },
                 ],
                 homeworld: sample_homeworld(),
-                known_sectors: vec![rich_sector(), bare_sector(), anomaly_sector()],
+                known_sectors: vec![rich_sector(), bare_sector(), anomaly_sector(), stale_pins_sector()],
                 world: WorldInfo::new(Pace::new(10.0).unwrap(), 2, 1),
             }),
         ),
@@ -944,6 +951,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             defended: false,
             resources_lost: res(100.0, 50.0, 25.0),
             salvage_dropped: Some(res(10.0, 5.0, 0.0)),
+            salvage_despawn_tick: Some(4940),
             raid_power: 120.0,
             defense_power: 80.5,
             structures_lost: 6,
@@ -956,6 +964,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             defended: true,
             resources_lost: res(0.0, 0.0, 0.0),
             salvage_dropped: None,
+            salvage_despawn_tick: None,
             raid_power: 40.0,
             defense_power: 80.5,
             structures_lost: 3,

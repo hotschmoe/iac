@@ -1301,6 +1301,113 @@
         "est_power": 65.0,
         "rating": 5
       }
+    },
+    {
+      "connections": [
+        {
+          "q": 4,
+          "r": -2
+        },
+        {
+          "q": 4,
+          "r": -3
+        },
+        {
+          "q": 2,
+          "r": -2
+        },
+        {
+          "q": 2,
+          "r": -1
+        },
+        {
+          "q": 3,
+          "r": -1
+        }
+      ],
+      "hostiles": [
+        {
+          "behavior": "Aggressive",
+          "id": 9001,
+          "ships": [
+            {
+              "class": "Corvette",
+              "count": 3
+            },
+            {
+              "class": "Frigate",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "behavior": "Passive",
+          "id": 9002,
+          "ships": [
+            {
+              "class": "Scout",
+              "count": 2
+            }
+          ]
+        }
+      ],
+      "last_seen": 4700,
+      "live": false,
+      "location": {
+        "q": 5,
+        "r": 1
+      },
+      "ore_reserve": {
+        "crystal": {
+          "max_units": 10.0,
+          "units": 10.0
+        },
+        "deuterium": {
+          "max_units": 0.0,
+          "units": 0.0
+        },
+        "metal": {
+          "max_units": 22.0,
+          "refills_in_s": 5400,
+          "units": 9.5
+        }
+      },
+      "pins_stale": true,
+      "player_fleets": [
+        {
+          "id": 7,
+          "owner_name": "Rival",
+          "ship_classes": {
+            "corvette": 2,
+            "cruiser": 0,
+            "frigate": 0,
+            "hauler": 1,
+            "scout": 1
+          },
+          "ship_count": 4
+        }
+      ],
+      "resources": {
+        "crystal": "Moderate",
+        "deuterium": "None",
+        "metal": "Rich"
+      },
+      "salvage": {
+        "crystal": 12.0,
+        "deuterium": 2.5,
+        "metal": 40.0
+      },
+      "salvage_despawn_tick": 4880,
+      "site": {
+        "risk": "uneasy",
+        "tier": 2
+      },
+      "terrain": "AsteroidField",
+      "threat": {
+        "basis": "observed",
+        "est_power": 46.5,
+        "rating": 4
+      }
     }
   ],
   "player": {

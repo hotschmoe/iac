@@ -513,6 +513,10 @@ pub fn defense_grid_scout_units(level: u8) -> f32 {
 /// minute, so 60 s lost most of them.
 pub const SALVAGE_DESPAWN_TICKS: u32 = 180;
 
+/// A pile on the owner's own homeworld that nobody can scoop raises an alert
+/// when it has this long left.
+pub const HOME_SALVAGE_WARN_TICKS: u32 = 60;
+
 /// Ticks of harvesting summed into one `ResourceHarvested` event.
 pub const HARVEST_REPORT_TICKS: u64 = 10;
 

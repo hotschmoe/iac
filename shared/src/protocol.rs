@@ -577,12 +577,21 @@ pub struct SectorState {
     /// Collectible wreckage pile (what `collect_salvage` would take).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage: Option<Resources>,
-    /// Tick the pile despawns if nobody collects it.
+    /// Tick the pile despawns if nobody collects it; seconds left are
+    /// `salvage_despawn_tick - tick`. A remembered pile whose tick has passed
+    /// is removed from the chart.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage_despawn_tick: Option<u64>,
     /// A boardable derelict hulk drifting in this sector.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub site: Option<SiteBrief>,
+    /// The `salvage` or `site` pin is chart memory from `last_seen` that
+    /// nothing has confirmed since; it may be gone. Absent (false) on live
+    /// sectors and on sectors with no pin. A pin the player saw removed (a
+    /// boarding, a collected or despawned pile, a scan that found nothing) is
+    /// dropped instead.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub pins_stale: bool,
     /// What the ore tiles hold, in raw units; absent when the sector has none.
     /// When not `live` it is as of `last_seen`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1415,6 +1424,8 @@ pub struct CombatEndedEvent {
 /// its original despawn time). Absent when the pile is gone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SalvageCollectedEvent {
+    /// The collecting fleet. For the automatic scoop of a pile on the
+    /// player's own homeworld, the lowest-id fleet docked there.
     pub fleet_id: u64,
     pub sector: Hex,
     pub resources: Resources,
@@ -1475,6 +1486,8 @@ pub struct DefenceBuiltEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanCompletedEvent {
     pub fleet_id: u64,
+    /// The sector the scanning fleet is in. It is never one of the
+    /// `signals`, which lie one hop beyond the scanned range.
     pub sector: Hex,
     pub sectors_revealed: u16,
     pub hostiles_detected: u16,
@@ -1541,6 +1554,11 @@ pub struct RaidResolvedEvent {
     pub resources_lost: Resources,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage_dropped: Option<Resources>,
+    /// Tick the pile on the homeworld despawns (absent when none dropped).
+    /// A fleet docked at home scoops it into storage on its own; without
+    /// one, an alert warns when it has `HOME_SALVAGE_WARN_TICKS` left.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub salvage_despawn_tick: Option<u64>,
     pub raid_power: f32,
     pub defense_power: f32,
     /// Structures the raid destroyed.

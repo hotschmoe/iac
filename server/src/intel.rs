@@ -40,6 +40,8 @@ pub struct KnownSectors {
     live: HashMap<u64, HashSet<u32>>,
     /// Keys that stopped being live at the last refresh.
     lapsed: HashMap<u64, Vec<u32>>,
+    /// Remembered sectors whose salvage pin expired at the last refresh.
+    expired: HashMap<u64, Vec<u32>>,
     dirty: HashSet<(u64, u32)>,
 }
 
@@ -94,6 +96,19 @@ impl KnownSectors {
                 self.dirty.insert((pid, key));
             }
             self.lapsed.insert(pid, lapsed);
+
+            // A remembered pile past its despawn tick is known to be gone.
+            let mut expired: Vec<u32> = memory.iter_mut()
+                .filter(|(key, r)| !now_live.contains(key) && r.state.salvage_despawn_tick.is_some_and(|t| tick >= t))
+                .map(|(&key, r)| {
+                    r.state.salvage = None;
+                    r.state.salvage_despawn_tick = None;
+                    key
+                })
+                .collect();
+            expired.sort_unstable();
+            self.dirty.extend(expired.iter().map(|&key| (pid, key)));
+            self.expired.insert(pid, expired);
             self.live.insert(pid, now_live);
         }
     }
@@ -158,9 +173,11 @@ impl KnownSectors {
             .collect();
         if let (Some(lapsed), Some(memory)) = (self.lapsed.get(&player_id), self.by_player.get(&player_id)) {
             let live = self.live.get(&player_id);
+            let expired = self.expired.get(&player_id).map_or(&[][..], Vec::as_slice);
             out.extend(
                 lapsed
                     .iter()
+                    .chain(expired.iter().filter(|key| !lapsed.contains(key)))
                     .filter(|key| !live.is_some_and(|l| l.contains(key)))
                     .filter_map(|key| memory.get(key))
                     .map(stale_view),
@@ -174,6 +191,7 @@ fn stale_view(r: &Remembered) -> SectorState {
     let mut s = r.state.clone();
     s.last_seen = r.last_seen;
     s.live = false;
+    s.pins_stale = s.salvage.is_some() || s.site.is_some();
     s
 }
 
@@ -305,5 +323,6 @@ pub fn build_sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>) 
         threat: engine.sector_threat(coord),
         last_seen: engine.current_tick,
         live: true,
+        pins_stale: false,
     }
 }
