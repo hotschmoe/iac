@@ -151,7 +151,7 @@ class State(unittest.TestCase):
         self.assertEqual(len(q["running"]), 1)
         self.assertEqual(q["waiting"][0]["short"], {"metal": 35})
         self.assertEqual(q["waiting"][0]["covered_in_s"], 7)
-        self.assertEqual(q["room"], hw.get("queue_depth", 3) - 2)
+        self.assertEqual(q["room"], hw.get("build_slots", 1) + hw.get("queue_waiting_max", 3) - 2)
         self.assertEqual(q["open"], 0)
         line = play.queue_line("build", q)
         self.assertIn("waiting[0]", line)
