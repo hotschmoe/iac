@@ -48,7 +48,7 @@ class Console {
   /// Seconds since the last server tick, for interpolating between 1 Hz snapshots.
   double get sinceTick => DateTime.now().difference(lastTickAt).inMicroseconds / 1e6;
 
-  EconomyView get economy => EconomyView.of(game.state);
+  EconomyView get economy => EconomyView.of(game.state, me: game.playerName);
 
   int _lastBoard = -1;
 

@@ -129,15 +129,17 @@ class EconomyView {
 
   static String _n(int v) => v.toString().replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ',');
 
-  static EconomyView of(GameState s) {
+  static EconomyView of(GameState s, {String? me}) {
     final raid = s.raid;
     final hw = s.hw;
     final w = s.world;
     final lb = s.leaderboard;
     final world = w == null ? null : WorldView(w.pace, w.preset ?? 'custom');
     RankView? rank;
-    if (lb != null && lb.you != null) {
-      final you = lb.you!;
+    final you = lb == null
+        ? null
+        : lb.you ?? lb.entries.where((e) => me != null && e.name.toLowerCase() == me.toLowerCase()).firstOrNull;
+    if (lb != null && you != null) {
       rank = RankView(you.rank, you.agent ? 'AI' : 'HUM', you.score, [
         for (final e in lb.entries) (e.rank, e.name, e.agent ? 'AI' : 'HUM', e.score.round(), e.rank == you.rank && e.name == you.name),
       ]);

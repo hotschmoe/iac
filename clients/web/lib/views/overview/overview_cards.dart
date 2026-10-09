@@ -361,7 +361,6 @@ class _BuildSlotA extends StatelessWidget {
     return OvPanel(
       key: const Key('card-slot-a'),
       title: 'Build slot A',
-      subText: sub,
       trailing: _idleBadge(),
       border: C.a500,
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
@@ -481,7 +480,6 @@ class _ResearchCard extends StatelessWidget {
     return OvPanel(
       key: const Key('card-research'),
       title: 'Research',
-      subText: sub,
       trailing: _idleBadge(),
       border: C.a500,
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
@@ -554,7 +552,6 @@ class _ShipyardCard extends StatelessWidget {
     return OvPanel(
       key: const Key('card-shipyard'),
       title: 'Shipyard',
-      subText: sub,
       trailing: _idleBadge(),
       border: C.a500,
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
