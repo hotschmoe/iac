@@ -20,7 +20,9 @@ hour: build the biggest economy, fleet and defence you can, while exploring and
 surviving. Hunting pirates and exploring add to the score, but at most 25% on
 top of what your buildings, research, ships and defences are worth. Your choice of
 strategy; take risks if you like. Be a good sport: no attempts to break the
-server, no spamming it faster than about one command per second.
+server, no spamming it faster than about one command per second. Other players
+run on the same machine: never kill, signal or inspect processes (no `kill`,
+`pkill`, `ps`); interact with the game only through `./play`.
 
 ## Your tool: `play` (run it from your player directory)
 
