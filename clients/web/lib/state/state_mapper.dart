@@ -8,6 +8,28 @@ import '../protocol/protocol.dart' as proto;
 
 /// Holds the latest protocol snapshots (full_state + tick_update deltas) and
 /// maps them to the amber UI presentation models.
+/// "short 35 metal, 4 crystal, starts in 00:40": why a queued order has not
+/// started, the exact shortfall and the estimate.
+String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
+  final need = short == null
+      ? ''
+      : [
+          if (short.metal > 0) '${short.metal.ceil()} metal',
+          if (short.crystal > 0) '${short.crystal.ceil()} crystal',
+          if (short.deuterium > 0) '${short.deuterium.ceil()} deuterium',
+        ].join(', ');
+  final why = switch (on) {
+    proto.WaitReason.resources => need.isEmpty ? 'waiting for resources' : 'short $need',
+    proto.WaitReason.slot => 'waiting for a free slot',
+    proto.WaitReason.prerequisite => 'waiting for a prerequisite',
+    proto.WaitReason.order => 'next in line',
+  };
+  if (startIn == null) return why;
+  final m = (startIn ~/ 60).toString().padLeft(2, '0');
+  final s = (startIn % 60).toString().padLeft(2, '0');
+  return '$why, starts in about $m:$s';
+}
+
 class StateMapper {
   int tick = 0;
   DateTime? connectedAt;
@@ -217,6 +239,15 @@ class StateMapper {
       case proto.DefenceBuiltEvent():
         msg = 'Defence online: ${k.defence.label}';
         level = EventLevel.bright;
+      case proto.QueueEvent():
+        msg = switch (k.action) {
+          proto.QueueAction.started => '${k.item} started, paid ${_res(k.paid)}',
+          proto.QueueAction.waiting =>
+            '${k.item} queued, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, k.waitingFor, k.startIn)}',
+          proto.QueueAction.cancelled => k.refunded.metal + k.refunded.crystal + k.refunded.deuterium > 0
+              ? '${k.item} cancelled, refunded ${_res(k.refunded)}'
+              : '${k.item} cancelled (nothing had been paid)',
+        };
       case proto.ScanCompletedEvent():
         msg = '${_fleet(k.fleetId)} scan at ${k.sector}: ${k.sectorsRevealed} sectors revealed, '
             '${k.hostilesDetected} hostiles, worst T${k.threats.fold<int>(0, (m, t) => math.max(m, t.threat.rating))}'
@@ -422,19 +453,14 @@ class StateMapper {
     );
   }
 
-  /// A queue entry that has not started: [need] says what it waits for.
-  QueueItem _waitingItem(String name, proto.Resources? need, int ticks) => QueueItem(
+  /// A queue entry that has not started: why, the exact shortfall and the
+  /// estimated start.
+  QueueItem _waitingItem(String name, proto.Resources? need, proto.WaitReason on, int? startIn) => QueueItem(
         name: name,
-        time: need == null ? 'waiting, ${_fmtTicks(ticks)}' : 'waiting for ${_need(need)}',
+        time: waitSummary(on, need, startIn),
         pct: 0,
         active: false,
       );
-
-  static String _need(proto.Resources r) => [
-        if (r.metal > 0) '${r.metal.ceil()} metal',
-        if (r.crystal > 0) '${r.crystal.ceil()} crystal',
-        if (r.deuterium > 0) '${r.deuterium.ceil()} deuterium',
-      ].join(', ');
 
   List<QueueItem> _mapBuildQueue(proto.HomeworldState? hw) {
     if (hw == null) return const [];
@@ -442,7 +468,7 @@ class StateMapper {
       for (final q in hw.buildQueue)
         _queueItem('${q.buildingType.label} Lv.${q.targetLevel}', q.startTick, q.endTick),
       for (final q in hw.buildPending)
-        _waitingItem('${q.buildingType.label} Lv.${q.targetLevel}', q.waitingFor, q.ticks),
+        _waitingItem('${q.buildingType.label} Lv.${q.targetLevel}', q.waitingFor, q.waitingOn, q.startIn),
     ];
   }
 
@@ -452,7 +478,7 @@ class StateMapper {
     return [
       if (q != null) _queueItem('${q.item.label} x${q.count} (${q.built} built)', q.startTick, q.endTick),
       for (final p in hw.shipyardPending)
-        _waitingItem('${p.item.label} x${p.count}', p.waitingFor, p.ticks * p.count),
+        _waitingItem('${p.item.label} x${p.count}', p.waitingFor, p.waitingOn, p.startIn),
     ];
   }
 
@@ -472,11 +498,12 @@ class StateMapper {
     ];
     final waiting = [
       for (final p in hw?.researchPending ?? const <proto.QueuedResearch>[])
-        _waitingItem('${p.tech.label} Lv.${p.targetLevel}', p.waitingFor, p.ticks),
+        _waitingItem('${p.tech.label} Lv.${p.targetLevel}', p.waitingFor, p.waitingOn, p.startIn),
     ];
     final a = hw?.researchActive;
     if (a == null) {
-      return ResearchState(name: 'Idle', time: '—', pct: 0, completed: completed, waiting: waiting);
+      return ResearchState(
+          name: 'Idle', time: waiting.isEmpty ? '—' : '${waiting.length} waiting', pct: 0, completed: completed, waiting: waiting);
     }
     final item = _queueItem('${a.tech.label} Lv.${a.targetLevel}', a.startTick, a.endTick);
     return ResearchState(name: item.name, time: item.time, pct: item.pct, completed: completed, waiting: waiting);

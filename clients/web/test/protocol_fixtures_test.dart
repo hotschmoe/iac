@@ -78,11 +78,11 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 25 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 26 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 25);
+      expect(kinds.length, 26);
     });
 
     test('command fixtures cover all 18 commands', () {
@@ -141,7 +141,7 @@ void main() {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
       final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;
       expect(hw.buildSlots, 2);
-      expect(hw.queueDepth, 3);
+      expect(hw.queueWaitingMax, 3);
       expect(hw.buildQueue.length, 2);
       expect(hw.buildPending.first.waitingFor!.crystal, 120.5);
       expect(hw.buildPending.last.waitingFor, isNull);
@@ -155,10 +155,10 @@ void main() {
       final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
       final ui = mapper.toUiState();
       expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
-      expect(ui.buildQueue[2].time, 'waiting for 121 crystal');
-      expect(ui.buildQueue[3].time, startsWith('waiting, '));
+      expect(ui.buildQueue[2].time, 'short 121 crystal, starts in about 01:35');
+      expect(ui.buildQueue[3].time, 'next in line, starts in about 01:35');
       expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2', 'Pulse Turret x10']);
-      expect(ui.research.waiting.single.time, 'waiting for 1200 deuterium');
+      expect(ui.research.waiting.single.time, 'short 1200 deuterium, starts in about 30:00');
     });
 
     test('full_state carries the homeworld catalog the server computed', () {

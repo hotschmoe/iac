@@ -118,13 +118,15 @@
           "deuterium": 162.0,
           "metal": 648.0
         },
+        "start_in": 95,
         "target_level": 3,
         "ticks": 1500,
         "waiting_for": {
           "crystal": 120.5,
           "deuterium": 0.0,
           "metal": 0.0
-        }
+        },
+        "waiting_on": "Resources"
       },
       {
         "building_type": "CrystalMine",
@@ -133,8 +135,10 @@
           "deuterium": 0.0,
           "metal": 500.0
         },
+        "start_in": 95,
         "target_level": 6,
-        "ticks": 900
+        "ticks": 900,
+        "waiting_on": "Order"
       }
     ],
     "build_queue": [
@@ -951,7 +955,7 @@
       "deuterium": 0.4000000059604645,
       "metal": 2.75
     },
-    "queue_depth": 3,
+    "queue_waiting_max": 3,
     "research": [
       {
         "level": 0,
@@ -1019,6 +1023,7 @@
           "deuterium": 2500.0,
           "metal": 8000.0
         },
+        "start_in": 1800,
         "target_level": 1,
         "tech": "CruiserTech",
         "ticks": 90000,
@@ -1026,7 +1031,8 @@
           "crystal": 0.0,
           "deuterium": 1200.0,
           "metal": 0.0
-        }
+        },
+        "waiting_on": "Resources"
       }
     ],
     "shipyard_pending": [
@@ -1038,7 +1044,9 @@
         },
         "count": 2,
         "item": "Frigate",
-        "ticks": 600
+        "start_in": 240,
+        "ticks": 600,
+        "waiting_on": "Slot"
       },
       {
         "cost": {
@@ -1053,7 +1061,8 @@
           "crystal": 0.0,
           "deuterium": 0.0,
           "metal": 0.0
-        }
+        },
+        "waiting_on": "Prerequisite"
       }
     ],
     "shipyard_queue": {

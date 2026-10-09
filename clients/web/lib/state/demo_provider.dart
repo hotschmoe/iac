@@ -728,7 +728,7 @@ class DemoProvider {
       buildQueue: h.buildQueue,
       buildPending: h.buildPending,
       buildSlots: h.buildSlots,
-      queueDepth: h.queueDepth,
+      queueWaitingMax: h.queueWaitingMax,
       shipyardQueue: h.shipyardQueue,
       shipyardPending: h.shipyardPending,
       researchActive: h.researchActive,
@@ -1079,29 +1079,22 @@ class DemoProvider {
   }
 
   List<ServerMessage> _queueYard(ShipyardItem item, Resources unitCost, int ticksPerUnit, int count) {
-    if ((_hw.shipyardQueue == null ? 0 : 1) + _hw.shipyardPending.length >= _hw.queueDepth) {
-      return [_err(ErrorCode.queueFull, 'The shipyard queue is full')];
+    if ((_hw.shipyardQueue == null ? 0 : 1) + _hw.shipyardPending.length >= 1 + _hw.queueWaitingMax) {
+      return [_err(ErrorCode.queueFull, 'The shipyard queue is full (1 running + ${_hw.queueWaitingMax} waiting)')];
     }
     final cost = _times(unitCost, count);
-    if (_hw.shipyardQueue == null) {
-      final broke = _pay(cost);
-      if (broke != null) return [broke];
-      _hw = _hwWith(
-        ship: ShipyardQueueItem(
-          item: item,
-          count: count,
-          built: 0,
-          startTick: _tick,
-          endTick: _tick + ticksPerUnit * count,
-        ),
-      );
-    } else {
-      _hw = _hwWith(shipPending: [
-        ..._hw.shipyardPending,
-        QueuedShip(item: item, count: count, cost: cost, ticks: ticksPerUnit, waitingFor: _missing(cost)),
-      ]);
-    }
+    _hw = _hwWith(shipPending: [
+      ..._hw.shipyardPending,
+      QueuedShip(item: item, count: count, cost: cost, ticks: ticksPerUnit, waitingFor: _missing(cost), waitingOn: WaitReason.slot),
+    ]);
+    _startWaiting();
+    final waiting = _hw.shipyardPending.isNotEmpty && _hw.shipyardPending.last.cost == cost;
+    if (waiting) _announceWait(QueueType.ship, '${item.label} x$count', _hw.shipyardPending.last.waitingFor, _hw.shipyardPending.last.waitingOn);
     return [_tickUpdate()];
+  }
+
+  void _announceWait(QueueType type, String item, Resources? short, WaitReason on) {
+    _ev(QueueEvent(playerId: _playerId, queueType: type, item: item, action: QueueAction.waiting, waitingFor: short, waitingOn: on));
   }
 
   int _bl(BuildingType t) => _hw.buildings.firstWhere((b) => b.buildingType == t).level;
@@ -1124,14 +1117,17 @@ class DemoProvider {
     return need == null || level(need.$1) >= need.$2;
   }
 
-  bool _canStartBuilding(BuildingType t, int target) =>
-      _hw.buildQueue.length < _hw.buildSlots &&
-      _hw.buildQueue.every((q) => q.buildingType != t) &&
-      _bl(t) + 1 == target &&
-      _buildingPrereqs(t, _bl);
+  bool _buildingReady(BuildingType t, int target) =>
+      _hw.buildQueue.every((q) => q.buildingType != t) && _bl(t) + 1 == target && _buildingPrereqs(t, _bl);
 
-  bool _canStartResearch(ResearchType t, int target) =>
-      _hw.researchActive == null && _bl(BuildingType.researchLab) > 0 && _rl(t) + 1 == target;
+  bool _researchReady(ResearchType t, int target) => _bl(BuildingType.researchLab) > 0 && _rl(t) + 1 == target;
+
+  WaitReason _waitOn({required bool ready, required Resources cost, required bool slotFree}) {
+    if (!ready) return WaitReason.prerequisite;
+    if (!_affordable(cost)) return WaitReason.resources;
+    if (!slotFree) return WaitReason.slot;
+    return WaitReason.order;
+  }
 
   bool _affordable(Resources c) =>
       _resources.metal >= c.metal && _resources.crystal >= c.crystal && _resources.deuterium >= c.deuterium;
@@ -1165,28 +1161,39 @@ class DemoProvider {
       ..._hw.buildQueue,
       BuildQueueItem(buildingType: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks),
     ]);
+    _ev(QueueEvent(playerId: _playerId, queueType: QueueType.building, item: '${t.label} Lv.$target', action: QueueAction.started, paid: cost));
   }
 
   void _startResearch(ResearchType t, int target) {
     final (cost, ticks) = _researchStep(t, target);
     _pay(cost);
     _hw = _hwWith(researchItem: ResearchItem(tech: t, targetLevel: target, startTick: _tick, endTick: _tick + ticks));
+    _ev(QueueEvent(playerId: _playerId, queueType: QueueType.research, item: '${t.label} Lv.$target', action: QueueAction.started, paid: cost));
   }
 
-  /// Start the first waiting item of each queue that can run now.
+  /// Start waiting orders in line (first in, first out): the first order
+  /// whose prerequisites are in place starts when a slot is free and it is
+  /// affordable, otherwise it holds the line.
   void _startWaiting() {
-    for (final q in _hw.buildPending) {
-      if (_canStartBuilding(q.buildingType, q.targetLevel) && _affordable(q.cost)) {
-        _hw = _hwWith(buildPending: [for (final e in _hw.buildPending) if (e != q) e]);
-        _startBuilding(q.buildingType, q.targetLevel);
-        break;
+    var again = true;
+    while (again) {
+      again = false;
+      final bi = _hw.buildPending.indexWhere((q) => _buildingReady(q.buildingType, q.targetLevel));
+      if (bi >= 0) {
+        final q = _hw.buildPending[bi];
+        if (_hw.buildQueue.length < _hw.buildSlots && _affordable(q.cost)) {
+          _hw = _hwWith(buildPending: [for (var i = 0; i < _hw.buildPending.length; i++) if (i != bi) _hw.buildPending[i]]);
+          _startBuilding(q.buildingType, q.targetLevel);
+          again = true;
+        }
       }
     }
-    for (final q in _hw.researchPending) {
-      if (_canStartResearch(q.tech, q.targetLevel) && _affordable(q.cost)) {
-        _hw = _hwWith(researchPending: [for (final e in _hw.researchPending) if (e != q) e]);
+    final ri = _hw.researchPending.indexWhere((q) => _researchReady(q.tech, q.targetLevel));
+    if (ri >= 0 && _hw.researchActive == null) {
+      final q = _hw.researchPending[ri];
+      if (_affordable(q.cost)) {
+        _hw = _hwWith(researchPending: [for (var i = 0; i < _hw.researchPending.length; i++) if (i != ri) _hw.researchPending[i]]);
         _startResearch(q.tech, q.targetLevel);
-        break;
       }
     }
     final ship = _hw.shipyardPending.firstOrNull;
@@ -1199,10 +1206,52 @@ class DemoProvider {
           count: ship.count,
           built: 0,
           startTick: _tick,
-          endTick: _tick + ship.ticks,
+          endTick: _tick + ship.ticks * ship.count,
         ),
       );
+      _ev(QueueEvent(playerId: _playerId, queueType: QueueType.ship, item: '${ship.item.label} x${ship.count}', action: QueueAction.started, paid: ship.cost));
     }
+    _refreshWaits();
+  }
+
+  /// Bring every waiting order's shortfall and reason up to date.
+  void _refreshWaits() {
+    final slotFree = _hw.buildQueue.length < _hw.buildSlots;
+    _hw = _hwWith(
+      buildPending: [
+        for (final q in _hw.buildPending)
+          QueuedBuild(
+            buildingType: q.buildingType,
+            targetLevel: q.targetLevel,
+            cost: q.cost,
+            ticks: q.ticks,
+            waitingFor: _missing(q.cost),
+            waitingOn: _waitOn(ready: _buildingReady(q.buildingType, q.targetLevel), cost: q.cost, slotFree: slotFree),
+          ),
+      ],
+      researchPending: [
+        for (final q in _hw.researchPending)
+          QueuedResearch(
+            tech: q.tech,
+            targetLevel: q.targetLevel,
+            cost: q.cost,
+            ticks: q.ticks,
+            waitingFor: _missing(q.cost),
+            waitingOn: _waitOn(ready: _researchReady(q.tech, q.targetLevel), cost: q.cost, slotFree: _hw.researchActive == null),
+          ),
+      ],
+      shipPending: [
+        for (final q in _hw.shipyardPending)
+          QueuedShip(
+            item: q.item,
+            count: q.count,
+            cost: q.cost,
+            ticks: q.ticks,
+            waitingFor: _missing(q.cost),
+            waitingOn: _waitOn(ready: true, cost: q.cost, slotFree: _hw.shipyardQueue == null),
+          ),
+      ],
+    );
   }
 
   // Level-1 cost and per-level growth for the demo catalog.
@@ -1595,19 +1644,17 @@ class DemoProvider {
         if (!_buildingPrereqs(buildingType, _projectedBuilding)) {
           return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
         }
-        if (_hw.buildQueue.length + _hw.buildPending.length >= _hw.queueDepth) {
-          return [_err(ErrorCode.queueFull, 'The building queue is full')];
+        if (_hw.buildQueue.length + _hw.buildPending.length >= _hw.buildSlots + _hw.queueWaitingMax) {
+          return [_err(ErrorCode.queueFull, 'The building queue is full (${_hw.buildSlots} running + ${_hw.queueWaitingMax} waiting)')];
         }
         final (cost, ticks) = _buildingStep(buildingType, proj + 1);
-        if (_canStartBuilding(buildingType, proj + 1)) {
-          if (!_affordable(cost)) return [_err(ErrorCode.noResources, 'Not enough resources')];
-          _startBuilding(buildingType, proj + 1);
-        } else {
-          _hw = _hwWith(buildPending: [
-            ..._hw.buildPending,
-            QueuedBuild(buildingType: buildingType, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
-          ]);
-        }
+        _hw = _hwWith(buildPending: [
+          ..._hw.buildPending,
+          QueuedBuild(buildingType: buildingType, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+        ]);
+        _startWaiting();
+        final waiting = _hw.buildPending.where((q) => q.buildingType == buildingType && q.targetLevel == proj + 1).firstOrNull;
+        if (waiting != null) _announceWait(QueueType.building, '${buildingType.label} Lv.${proj + 1}', waiting.waitingFor, waiting.waitingOn);
         return [_tickUpdate()];
       case ResearchCommand(:final tech):
         if (_bl(BuildingType.researchLab) == 0) return [_err(ErrorCode.noResearchLab, 'Build a research lab first')];
@@ -1617,19 +1664,17 @@ class DemoProvider {
         if (_hw.catalog.research.firstWhere((o) => o.tech == tech).requires.any((r) => !r.met)) {
           return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
         }
-        if ((_hw.researchActive == null ? 0 : 1) + _hw.researchPending.length >= _hw.queueDepth) {
-          return [_err(ErrorCode.queueFull, 'The research queue is full')];
+        if ((_hw.researchActive == null ? 0 : 1) + _hw.researchPending.length >= 1 + _hw.queueWaitingMax) {
+          return [_err(ErrorCode.queueFull, 'The research queue is full (1 running + ${_hw.queueWaitingMax} waiting)')];
         }
         final (cost, ticks) = _researchStep(tech, proj + 1);
-        if (_canStartResearch(tech, proj + 1)) {
-          if (!_affordable(cost)) return [_err(ErrorCode.noResources, 'Not enough resources')];
-          _startResearch(tech, proj + 1);
-        } else {
-          _hw = _hwWith(researchPending: [
-            ..._hw.researchPending,
-            QueuedResearch(tech: tech, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
-          ]);
-        }
+        _hw = _hwWith(researchPending: [
+          ..._hw.researchPending,
+          QueuedResearch(tech: tech, targetLevel: proj + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+        ]);
+        _startWaiting();
+        final waiting = _hw.researchPending.where((q) => q.tech == tech && q.targetLevel == proj + 1).firstOrNull;
+        if (waiting != null) _announceWait(QueueType.research, '${tech.label} Lv.${proj + 1}', waiting.waitingFor, waiting.waitingOn);
         return [_tickUpdate()];
       case BuildShipCommand(:final shipClass, :final count):
         final o = _hw.catalog.ships.firstWhere((o) => o.shipClass == shipClass);
@@ -1642,10 +1687,14 @@ class DemoProvider {
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.defenceLocked, '${kind.label} is locked')];
         return _queueYard(ShipyardItem.defence(kind), o.unitCost, o.ticksPerUnit, count);
       case CancelBuildCommand(:final queueType, :final index):
+        late final String label;
+        late final Resources paid;
         switch (queueType) {
           case QueueType.building:
             if (index >= _hw.buildQueue.length) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
             final gone = _hw.buildQueue[index];
+            label = '${gone.buildingType.label} Lv.${gone.targetLevel}';
+            paid = _buildingStep(gone.buildingType, gone.targetLevel).$1;
             _hw = _hwWith(
               buildQueue: [for (var i = 0; i < _hw.buildQueue.length; i++) if (i != index) _hw.buildQueue[i]],
               buildPending: [
@@ -1661,11 +1710,16 @@ class DemoProvider {
               ],
             );
           case QueueType.ship:
-            if (_hw.shipyardQueue == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            final gone = _hw.shipyardQueue;
+            if (gone == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            label = '${gone.item.label} x${gone.count}';
+            paid = _times(gone.item.ship != null ? _shipCost[gone.item.ship]! : _defenceCost[gone.item.defence]!, gone.count - gone.built);
             _hw = _hwWith(clearShip: true);
           case QueueType.research:
             final gone = _hw.researchActive;
             if (gone == null) return [_err(ErrorCode.invalidTarget, 'Nothing under way there')];
+            label = '${gone.tech.label} Lv.${gone.targetLevel}';
+            paid = _researchStep(gone.tech, gone.targetLevel).$1;
             _hw = _hwWith(clearResearch: true, researchPending: [
               for (final q in _hw.researchPending)
                 q.tech == gone.tech && q.targetLevel > gone.targetLevel
@@ -1674,25 +1728,41 @@ class DemoProvider {
                     : q,
             ]);
         }
+        final refund = _times(paid, 0.5);
+        _resources = _clampCaps(Resources(
+          metal: _resources.metal + refund.metal,
+          crystal: _resources.crystal + refund.crystal,
+          deuterium: _resources.deuterium + refund.deuterium,
+        ));
+        _ev(QueueEvent(playerId: _playerId, queueType: queueType, item: label, action: QueueAction.cancelled, refunded: refund));
         _startWaiting();
         return [_tickUpdate()];
       case CancelQueuedCommand(:final queueType, :final index):
+        late final String label;
         switch (queueType) {
           case QueueType.building when index < _hw.buildPending.length:
+            final q = _hw.buildPending[index];
+            label = '${q.buildingType.label} Lv.${q.targetLevel}';
             _hw = _hwWith(buildPending: [
               for (var i = 0; i < _hw.buildPending.length; i++) if (i != index) _hw.buildPending[i],
             ]);
           case QueueType.ship when index < _hw.shipyardPending.length:
+            final q = _hw.shipyardPending[index];
+            label = '${q.item.label} x${q.count}';
             _hw = _hwWith(shipPending: [
               for (var i = 0; i < _hw.shipyardPending.length; i++) if (i != index) _hw.shipyardPending[i],
             ]);
           case QueueType.research when index < _hw.researchPending.length:
+            final q = _hw.researchPending[index];
+            label = '${q.tech.label} Lv.${q.targetLevel}';
             _hw = _hwWith(researchPending: [
               for (var i = 0; i < _hw.researchPending.length; i++) if (i != index) _hw.researchPending[i],
             ]);
           default:
             return [_err(ErrorCode.invalidTarget, 'Nothing is waiting there')];
         }
+        _ev(QueueEvent(playerId: _playerId, queueType: queueType, item: label, action: QueueAction.cancelled));
+        _startWaiting();
         return [_tickUpdate()];
       case SplitCommand(:final fleetId, :final shipIds):
         final f = _find(fleetId);

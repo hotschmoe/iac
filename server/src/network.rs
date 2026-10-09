@@ -411,24 +411,7 @@ fn missing_prerequisites_message(engine: &GameEngine, player_id: u64, cmd: &Comm
     missing_requirements_message(subject, &requires)
 }
 
-/// "135 metal, 34 crystal": the nonzero parts of an amount.
-fn amounts(r: &iac_shared::Resources) -> String {
-    let parts: Vec<String> = iac_shared::constants::ResourceKind::ALL
-        .into_iter()
-        .filter(|&k| r.get(k) > 0.0)
-        .map(|k| format!("{} {}", r.get(k).ceil(), k.label()))
-        .collect();
-    parts.join(", ")
-}
-
-/// Names what a rejected order costs and which resources the stockpile lacks.
-fn shortfall_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
-    let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
-        return "not enough resources".to_string();
-    };
-    format!("not enough resources for {label}: costs {}; short {}", amounts(&cost), amounts(&p.resources.shortfall(cost)))
-}
-
+/// Names what a rejected order costs and which Storage Vault level would hold it.
 fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
     use iac_shared::constants::ResourceKind;
     let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
@@ -514,7 +497,6 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         (ErrorCode::InvalidCommand, Command::Merge { .. }) => "the merged fleet would exceed 64 ships".to_string(),
         (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
-        (ErrorCode::NoResources, _) => shortfall_message(engine, player_id, cmd),
         (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),
         (ErrorCode::DefenceLocked, Command::BuildDefence { kind, .. }) => engine
             .players
@@ -531,13 +513,23 @@ fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, cod
         (ErrorCode::InvalidTarget, Command::ExploreSite { .. }) => "no derelict to board in this sector".to_string(),
         (ErrorCode::InvalidCommand, Command::Stop { .. }) => format!("fleet {fid} has nothing to stop"),
         (ErrorCode::QueueFull, Command::Build { .. }) => {
-            format!("the building queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+            let slots = engine.players.get(&player_id).map_or(1, |p| p.building_slots());
+            format!(
+                "the building queue is full ({slots} running + {} waiting); cancel a waiting order with cancel_queued or wait for one to start",
+                iac_shared::scaling::QUEUE_WAITING
+            )
         }
         (ErrorCode::QueueFull, Command::Research { .. }) => {
-            format!("the research queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+            format!(
+                "the research queue is full (1 running + {} waiting); cancel a waiting order with cancel_queued or wait for one to start",
+                iac_shared::scaling::QUEUE_WAITING
+            )
         }
         (ErrorCode::QueueFull, Command::BuildShip { .. } | Command::BuildDefence { .. }) => {
-            format!("the shipyard queue is full ({} items)", iac_shared::scaling::QUEUE_DEPTH)
+            format!(
+                "the shipyard queue is full (1 running + {} waiting); cancel a waiting order with cancel_queued or wait for one to start",
+                iac_shared::scaling::QUEUE_WAITING
+            )
         }
         (ErrorCode::InvalidTarget, Command::CancelBuild { .. }) => "nothing is under way at that position".to_string(),
         (ErrorCode::InvalidTarget, Command::CancelQueued { .. }) => "nothing is waiting at that position".to_string(),
@@ -757,38 +749,41 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
         end_tick: q.end_tick,
     }).collect();
 
-    let missing = |cost: iac_shared::Resources| {
-        let short = player.resources.shortfall(cost);
-        (short.total() > 0.0).then_some(short)
-    };
-    let build_pending: Vec<QueuedBuild> = player.building_pending.iter().map(|q| {
+    let waits = crate::queue::project(player, engine.current_tick(), &pace);
+    let build_pending: Vec<QueuedBuild> = player.building_pending.iter().zip(&waits.buildings).map(|(q, w)| {
         let cost = iac_shared::scaling::building_cost(q.building_type, q.target_level);
         QueuedBuild {
             building_type: q.building_type,
             target_level: q.target_level,
             cost,
             ticks: iac_shared::scaling::building_time(q.building_type, q.target_level, player.buildings.fabricator, &pace),
-            waiting_for: missing(cost),
+            waiting_for: w.short,
+            waiting_on: w.reason,
+            start_in: w.start_in,
         }
     }).collect();
-    let research_pending: Vec<QueuedResearch> = player.research_pending.iter().map(|q| {
+    let research_pending: Vec<QueuedResearch> = player.research_pending.iter().zip(&waits.research).map(|(q, w)| {
         let cost = iac_shared::scaling::research_cost(q.tech, q.target_level);
         QueuedResearch {
             tech: q.tech,
             target_level: q.target_level,
             cost,
             ticks: iac_shared::scaling::research_time(q.tech, q.target_level, player.buildings.research_lab, &pace),
-            waiting_for: missing(cost),
+            waiting_for: w.short,
+            waiting_on: w.reason,
+            start_in: w.start_in,
         }
     }).collect();
-    let shipyard_pending: Vec<QueuedShip> = player.ship_pending.iter().map(|q| {
+    let shipyard_pending: Vec<QueuedShip> = player.ship_pending.iter().zip(&waits.ships).map(|(q, w)| {
         let cost = q.item.unit_cost().scale(q.count as f32);
         QueuedShip {
             item: q.item,
             count: q.count,
             cost,
             ticks: q.item.unit_ticks(player.buildings.shipyard, &pace),
-            waiting_for: missing(cost),
+            waiting_for: w.short,
+            waiting_on: w.reason,
+            start_in: w.start_in,
         }
     }).collect();
 
@@ -833,7 +828,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &crate::engine::Player) ->
         build_queue,
         build_pending,
         build_slots: player.building_slots() as u8,
-        queue_depth: iac_shared::scaling::QUEUE_DEPTH as u8,
+        queue_waiting_max: iac_shared::scaling::QUEUE_WAITING as u8,
         shipyard_queue,
         shipyard_pending,
         research_active,
@@ -911,6 +906,7 @@ fn event_for(event: &GameEvent, player: &crate::engine::Player, engine: &GameEng
         K::SiteExplorationStarted(e) => own_fleet(e.fleet_id),
         K::SiteExplored(e) => own_fleet(e.fleet_id),
         K::ChartDelivered(e) => own_fleet(e.fleet_id),
+        K::Queue(e) => e.player_id == Some(player.id),
         K::SiteAmbush(e) => own_fleet(e.fleet_id),
         K::PolicyAction(e) => own_fleet(e.fleet_id),
         K::StorageNearCap(e) => e.player_id.is_none_or(|p| p == player.id),
@@ -1268,22 +1264,10 @@ mod tests {
     }
 
     #[test]
-    fn resource_errors_name_the_resource_and_the_amount() {
+    fn storage_errors_name_the_vault_level_needed() {
         let (_net, engine, pid, _fid, _rx) = network_with_player();
         let mut e = engine.lock().unwrap();
         e.players.get_mut(&pid).unwrap().resources = iac_shared::Resources { metal: 100.0, crystal: 40.0, deuterium: 0.0 };
-
-        let cmd = Command::Build { building_type: BuildingType::MetalMine };
-        e.players.get_mut(&pid).unwrap().buildings.metal_mine = 2;
-        assert_eq!(
-            command_error_message(&e, pid, &cmd, ErrorCode::NoResources),
-            "not enough resources for Metal Mine Lv.3: costs 135 metal, 34 crystal; short 35 metal"
-        );
-        let cmd = Command::BuildShip { ship_class: ShipClass::Scout, count: 2 };
-        assert_eq!(
-            command_error_message(&e, pid, &cmd, ErrorCode::NoResources),
-            "not enough resources for Scout x2: costs 400 metal, 100 crystal, 60 deuterium; short 300 metal, 60 crystal, 60 deuterium"
-        );
 
         e.players.get_mut(&pid).unwrap().buildings.research_lab = 4;
         let cmd = Command::Research { tech: ResearchType::CruiserTech };

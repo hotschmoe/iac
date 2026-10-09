@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
+import '../state/state_mapper.dart' show waitSummary;
 
 /// Presentation model for the economy side of the protocol: pace, storage
 /// caps, build slots and queues, defences and raids, score. Views read only
@@ -117,18 +118,6 @@ class EconomyView {
 
   static const empty = EconomyView();
 
-  static String _need(proto.Resources? r) {
-    if (r == null) return '';
-    final p = <String>[
-      if (r.metal > 0) '${_n(r.metal.ceil())} Fe',
-      if (r.crystal > 0) '${_n(r.crystal.ceil())} Cr',
-      if (r.deuterium > 0) '${_n(r.deuterium.ceil())} De',
-    ];
-    return p.isEmpty ? '' : 'waits: ${p.join(' ')}';
-  }
-
-  static String _n(int v) => v.toString().replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ',');
-
   static EconomyView of(GameState s, {String? me}) {
     final raid = s.raid;
     final hw = s.hw;
@@ -173,11 +162,11 @@ class EconomyView {
     final unmet = [for (final r in fab?.requires ?? const <proto.Requirement>[]) if (!r.met) r.label];
     final slots = SlotsView(
       depth: hw.buildQueue.length + hw.buildPending.length,
-      maxDepth: hw.queueDepth,
+      maxDepth: hw.buildSlots + hw.queueWaitingMax,
       slotCount: hw.buildSlots,
-      queued: [for (final q in hw.buildPending) QueuedItemView('${q.buildingType.label} Lv.${q.targetLevel}', _need(q.waitingFor))],
-      shipQueued: [for (final q in hw.shipyardPending) QueuedItemView('${q.item.label} x${q.count}', _need(q.waitingFor))],
-      researchQueued: [for (final q in hw.researchPending) QueuedItemView('${q.tech.label} Lv.${q.targetLevel}', _need(q.waitingFor))],
+      queued: [for (final q in hw.buildPending) QueuedItemView('${q.buildingType.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
+      shipQueued: [for (final q in hw.shipyardPending) QueuedItemView('${q.item.label} x${q.count}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
+      researchQueued: [for (final q in hw.researchPending) QueuedItemView('${q.tech.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
       slotBUnlocked: hw.buildSlots >= 2,
       slotBRequirement: 'Needs Modular Fabrication${unmet.isEmpty ? '' : ' (requires ${unmet.join(', ')})'}',
       slotB: hw.buildQueue.length >= 2 ? slot(hw.buildQueue[1]) : null,

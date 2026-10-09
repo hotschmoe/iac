@@ -164,7 +164,7 @@ def check_storage_raids_misc(sim, rust):
     check("fuel price", misc["fuel_deut_per_unit"], sim.FUEL_PRICE_DEUT, 1e-6)
     check("fuel rate", misc["fuel_rate_per_mass"], sim.FUEL_RATE, 1e-6)
     check("fuel depot per level", misc["fuel_depot_per_level"], 0.25, 1e-6)
-    check("queue depth", misc["queue_depth"], 3)
+    check("queue waiting", misc["queue_waiting"], 3)
     for i, m in enumerate(sim.START_RES):
         check(f"starting resources[{i}]", rust["starting_resources"][i], m)
     check("resource weight of 1000 each", rust["resource_weight_unit"], sum(sim.W_RES), 1e-6)

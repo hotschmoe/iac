@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use iac_shared::constants::Resources;
-use iac_shared::protocol::{HomeworldState, Requirement};
+use iac_shared::protocol::{HomeworldState, Requirement, WaitReason};
 
 use crate::state::{ClientState, HomeworldTab};
 use super::{
@@ -233,14 +233,14 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     // Building queue: running items (up to the slot count), then waiting ones
     text.push_str(&format!(" Bld[{}/{}]:", hw.build_queue.len(), hw.build_slots));
     if hw.build_queue.is_empty() {
-        text.push_str(" idle");
+        text.push_str(if hw.build_pending.is_empty() { " idle" } else { " none running" });
     }
     for q in &hw.build_queue {
         let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
         text.push_str(&format!(" {} Lv{} {}/{}t", q.building_type.label(), q.target_level, elapsed, total));
     }
     if !hw.build_pending.is_empty() {
-        let names: Vec<String> = hw.build_pending.iter().map(|q| waiting_label(q.building_type.short_label(), q.target_level, &q.waiting_for)).collect();
+        let names: Vec<String> = hw.build_pending.iter().map(|q| waiting_label(q.building_type.short_label(), q.target_level, &q.waiting_for, q.waiting_on, q.start_in)).collect();
         text.push_str(&format!(" +[{}]", names.join(", ")));
     }
     text.push_str(" [x/c]");
@@ -257,11 +257,11 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
             total,
         ));
     } else {
-        text.push_str(" | Ship: idle");
+        text.push_str(if hw.shipyard_pending.is_empty() { " | Ship: idle" } else { " | Ship: none running" });
     }
     if !hw.shipyard_pending.is_empty() {
         let names: Vec<String> = hw.shipyard_pending.iter()
-            .map(|q| waiting_label(&format!("{}x{}", q.count, q.item.label()), 0, &q.waiting_for))
+            .map(|q| waiting_label(&format!("{}x{}", q.count, q.item.label()), 0, &q.waiting_for, q.waiting_on, q.start_in))
             .collect();
         text.push_str(&format!(" +[{}]", names.join(", ")));
     }
@@ -272,10 +272,10 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         let (elapsed, total) = queue_progress(state.tick, q.start_tick, q.end_tick);
         text.push_str(&format!(" | Res: {} {}/{}t", q.tech.label(), elapsed, total));
     } else {
-        text.push_str(" | Res: idle");
+        text.push_str(if hw.research_pending.is_empty() { " | Res: idle" } else { " | Res: none running" });
     }
     if !hw.research_pending.is_empty() {
-        let names: Vec<String> = hw.research_pending.iter().map(|q| waiting_label(q.tech.label(), q.target_level, &q.waiting_for)).collect();
+        let names: Vec<String> = hw.research_pending.iter().map(|q| waiting_label(q.tech.label(), q.target_level, &q.waiting_for, q.waiting_on, q.start_in)).collect();
         text.push_str(&format!(" +[{}]", names.join(", ")));
     }
     text.push_str(" [z/Z]");
@@ -312,18 +312,25 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     frame.render_widget(Paragraph::new(text).style(AMBER_BRIGHT).wrap(Wrap { trim: false }), inner);
 }
 
-/// "Metal Lv3 (need 35 Fe)" for a waiting queue entry; level 0 omits the level.
-fn waiting_label(name: &str, level: u8, waiting: &Option<Resources>) -> String {
+/// "Metal Lv3 (need 35 Fe, ~40s)" for a waiting queue entry; level 0 omits the level.
+fn waiting_label(name: &str, level: u8, short: &Option<Resources>, on: WaitReason, start_in: Option<u64>) -> String {
     let lv = if level > 0 { format!(" Lv{level}") } else { String::new() };
-    match waiting {
-        Some(r) => {
+    let why = match (on, short) {
+        (WaitReason::Resources, Some(r)) => {
             let mut need = Vec::new();
             if r.metal > 0.0 { need.push(format!("{:.0} Fe", r.metal.ceil())); }
             if r.crystal > 0.0 { need.push(format!("{:.0} Cr", r.crystal.ceil())); }
             if r.deuterium > 0.0 { need.push(format!("{:.0} De", r.deuterium.ceil())); }
-            format!("{name}{lv} (need {})", need.join(" "))
+            format!("need {}", need.join(" "))
         }
-        None => format!("{name}{lv}"),
+        (WaitReason::Resources, None) => "need resources".to_string(),
+        (WaitReason::Slot, _) => "slot busy".to_string(),
+        (WaitReason::Prerequisite, _) => "needs prerequisite".to_string(),
+        (WaitReason::Order, _) => "next in line".to_string(),
+    };
+    match start_in {
+        Some(t) => format!("{name}{lv} ({why}, ~{t}s)"),
+        None => format!("{name}{lv} ({why})"),
     }
 }
 

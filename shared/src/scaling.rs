@@ -157,8 +157,13 @@ pub const SHIPYARD_SPEED: f64 = 0.10;
 pub const FABRICATOR_SPEED: f64 = 0.15;
 /// Research Lab level divides research time by `1 + this * level`.
 pub const LAB_SPEED: f64 = 0.10;
-/// Items per queue (building, research, shipyard), the active ones included.
-pub const QUEUE_DEPTH: usize = 3;
+/// Orders that may wait behind the running ones in each queue (building,
+/// research, shipyard). The running items come on top, so the building queue
+/// holds `slots + 3`. Three because a waiting order is a claim on future
+/// income: enough to queue a whole session ahead (a mine, a lab level, a
+/// ship batch) but too few to bank a long list of unaffordable upgrades that
+/// holds the line, since the queue is first in, first out.
+pub const QUEUE_WAITING: usize = 3;
 
 /// Stockpile cap with no Vault, before the pace multiplier.
 pub const STORAGE_BASE: Resources = Resources { metal: 5000.0, crystal: 3500.0, deuterium: 2500.0 };

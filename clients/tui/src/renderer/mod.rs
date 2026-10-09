@@ -399,6 +399,33 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
         EventKind::DefenceBuilt(e) => {
             format!(" T{}: {} online\n", event.tick, e.defence.label())
         }
+        EventKind::Queue(e) => {
+            use iac_shared::protocol::{QueueAction, WaitReason};
+            let line = match e.action {
+                QueueAction::Started => format!("{} started, paid {}", e.item, res_short(&e.paid)),
+                QueueAction::Waiting => {
+                    let why = match e.waiting_on {
+                        Some(WaitReason::Resources) => e.waiting_for.map_or("waiting for resources".to_string(), |r| format!("short {}", res_short(&r))),
+                        Some(WaitReason::Slot) => "waiting for a free slot".to_string(),
+                        Some(WaitReason::Prerequisite) => "waiting for a prerequisite".to_string(),
+                        Some(WaitReason::Order) => "waiting behind an earlier order".to_string(),
+                        None => "waiting".to_string(),
+                    };
+                    match e.start_in {
+                        Some(t) => format!("{} queued, {why}, starts in about {t}s", e.item),
+                        None => format!("{} queued, {why}", e.item),
+                    }
+                }
+                QueueAction::Cancelled => {
+                    if e.refunded.total() <= 0.0 {
+                        format!("{} cancelled (nothing had been paid)", e.item)
+                    } else {
+                        format!("{} cancelled, refunded {}", e.item, res_short(&e.refunded))
+                    }
+                }
+            };
+            format!(" T{}: {}\n", event.tick, line)
+        }
         EventKind::RaidIncoming(e) => {
             format!(
                 " T{}: !! {} RAID inbound (power {:.0}), ETA T{} !!\n",
@@ -499,6 +526,7 @@ pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
         },
         EventKind::SalvageDespawned(_) => AMBER,
         EventKind::DefenceBuilt(_) => GREEN_GOOD,
+        EventKind::Queue(_) => AMBER,
         EventKind::StorageNearCap(_) => AMBER_FULL,
         EventKind::StorageFull(_) => RED_ALERT,
         EventKind::RaidResolved(e) => if e.defended { GREEN_GOOD } else { RED_ALERT },

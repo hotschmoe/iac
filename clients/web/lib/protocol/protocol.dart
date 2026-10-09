@@ -154,6 +154,36 @@ enum QueueType {
   static QueueType fromJson(Object? v) => _enumFrom(values, v, _pascal);
 }
 
+enum QueueAction {
+  started,
+  waiting,
+  cancelled;
+
+  String get wire => _pascal(name);
+  String toJson() => wire;
+  static QueueAction fromJson(Object? v) => _enumFrom(values, v, _pascal);
+}
+
+/// Why a queued order has not started yet.
+enum WaitReason {
+  /// Every slot is busy.
+  slot,
+
+  /// The stockpile does not cover the cost.
+  resources,
+
+  /// A level, building or tech it needs is still being built.
+  prerequisite,
+
+  /// It could start, but an earlier order is first in line and short of
+  /// resources (first in, first out).
+  order;
+
+  String get wire => _pascal(name);
+  String toJson() => wire;
+  static WaitReason fromJson(Object? v) => _enumFrom(values, v, _pascal);
+}
+
 enum BuildingType {
   metalMine('Metal Mine'),
   crystalMine('Crystal Mine'),
@@ -1453,8 +1483,9 @@ class HomeworldState {
   final List<QueuedBuild> buildPending;
   final int buildSlots;
 
-  /// Items per queue, the running ones included.
-  final int queueDepth;
+  /// Orders that may wait behind the running ones in each queue; the
+  /// building queue holds [buildSlots] + this, research and shipyard 1 + this.
+  final int queueWaitingMax;
   final ShipyardQueueItem? shipyardQueue;
   final List<QueuedShip> shipyardPending;
   final ResearchItem? researchActive;
@@ -1481,7 +1512,7 @@ class HomeworldState {
     this.buildQueue = const [],
     this.buildPending = const [],
     this.buildSlots = 1,
-    this.queueDepth = 3,
+    this.queueWaitingMax = 3,
     this.shipyardQueue,
     this.shipyardPending = const [],
     this.researchActive,
@@ -1504,7 +1535,7 @@ class HomeworldState {
       buildQueue: _list(m['build_queue'], BuildQueueItem.fromJson),
       buildPending: _list(m['build_pending'], QueuedBuild.fromJson),
       buildSlots: _i(m['build_slots']),
-      queueDepth: _i(m['queue_depth']),
+      queueWaitingMax: _i(m['queue_waiting_max']),
       shipyardQueue: _opt(m['shipyard_queue'], ShipyardQueueItem.fromJson),
       shipyardPending: _list(m['shipyard_pending'], QueuedShip.fromJson),
       researchActive: _opt(m['research_active'], ResearchItem.fromJson),
@@ -1527,7 +1558,7 @@ class HomeworldState {
       'build_queue': buildQueue.map((e) => e.toJson()).toList(),
       'build_pending': buildPending.map((e) => e.toJson()).toList(),
       'build_slots': buildSlots,
-      'queue_depth': queueDepth,
+      'queue_waiting_max': queueWaitingMax,
       'shipyard_pending': shipyardPending.map((e) => e.toJson()).toList(),
       'research_pending': researchPending.map((e) => e.toJson()).toList(),
       'docked_ships': dockedShips.map((e) => e.toJson()).toList(),
@@ -1569,7 +1600,7 @@ class HomeworldState {
         buildQueue: buildQueue ?? this.buildQueue,
         buildPending: buildPending ?? this.buildPending,
         buildSlots: buildSlots ?? this.buildSlots,
-        queueDepth: queueDepth,
+        queueWaitingMax: queueWaitingMax,
         shipyardQueue: clearShipyardQueue ? null : (shipyardQueue ?? this.shipyardQueue),
         shipyardPending: shipyardPending ?? this.shipyardPending,
         researchActive: clearResearchActive ? null : (researchActive ?? this.researchActive),
@@ -1955,12 +1986,16 @@ class QueuedBuild {
   final Resources cost;
   final int ticks;
   final Resources? waitingFor;
+  final WaitReason waitingOn;
+  final int? startIn;
   const QueuedBuild({
     required this.buildingType,
     required this.targetLevel,
     required this.cost,
     required this.ticks,
     this.waitingFor,
+    this.waitingOn = WaitReason.slot,
+    this.startIn,
   });
 
   factory QueuedBuild.fromJson(Object? json) {
@@ -1971,6 +2006,8 @@ class QueuedBuild {
       cost: Resources.fromJson(m['cost']),
       ticks: _i(m['ticks']),
       waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+      waitingOn: WaitReason.fromJson(m['waiting_on']),
+      startIn: _opt(m['start_in'], _i),
     );
   }
 
@@ -1982,6 +2019,8 @@ class QueuedBuild {
       'ticks': ticks,
     };
     _put(m, 'waiting_for', waitingFor?.toJson());
+    m['waiting_on'] = waitingOn.toJson();
+    _put(m, 'start_in', startIn);
     return m;
   }
 }
@@ -1992,12 +2031,16 @@ class QueuedResearch {
   final Resources cost;
   final int ticks;
   final Resources? waitingFor;
+  final WaitReason waitingOn;
+  final int? startIn;
   const QueuedResearch({
     required this.tech,
     required this.targetLevel,
     required this.cost,
     required this.ticks,
     this.waitingFor,
+    this.waitingOn = WaitReason.slot,
+    this.startIn,
   });
 
   factory QueuedResearch.fromJson(Object? json) {
@@ -2008,6 +2051,8 @@ class QueuedResearch {
       cost: Resources.fromJson(m['cost']),
       ticks: _i(m['ticks']),
       waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+      waitingOn: WaitReason.fromJson(m['waiting_on']),
+      startIn: _opt(m['start_in'], _i),
     );
   }
 
@@ -2019,6 +2064,8 @@ class QueuedResearch {
       'ticks': ticks,
     };
     _put(m, 'waiting_for', waitingFor?.toJson());
+    m['waiting_on'] = waitingOn.toJson();
+    _put(m, 'start_in', startIn);
     return m;
   }
 }
@@ -2031,12 +2078,16 @@ class QueuedShip {
   final Resources cost;
   final int ticks;
   final Resources? waitingFor;
+  final WaitReason waitingOn;
+  final int? startIn;
   const QueuedShip({
     required this.item,
     required this.count,
     required this.cost,
     required this.ticks,
     this.waitingFor,
+    this.waitingOn = WaitReason.slot,
+    this.startIn,
   });
 
   factory QueuedShip.fromJson(Object? json) {
@@ -2047,6 +2098,8 @@ class QueuedShip {
       cost: Resources.fromJson(m['cost']),
       ticks: _i(m['ticks']),
       waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+      waitingOn: WaitReason.fromJson(m['waiting_on']),
+      startIn: _opt(m['start_in'], _i),
     );
   }
 
@@ -2058,6 +2111,8 @@ class QueuedShip {
       'ticks': ticks,
     };
     _put(m, 'waiting_for', waitingFor?.toJson());
+    m['waiting_on'] = waitingOn.toJson();
+    _put(m, 'start_in', startIn);
     return m;
   }
 }
@@ -2181,6 +2236,7 @@ sealed class EventKind {
       'StorageNearCap' => StorageNearCapEvent.fromJson(m),
       'StorageFull' => StorageFullEvent.fromJson(m),
       'ChartDelivered' => ChartDeliveredEvent.fromJson(m),
+      'Queue' => QueueEvent.fromJson(m),
       final k => throw FormatException('unknown EventKind "$k"'),
     };
   }
@@ -2911,6 +2967,70 @@ class ChartDeliveredEvent extends EventKind {
 
   @override
   Json toJson() => {'kind': 'ChartDelivered', 'fleet_id': fleetId, 'sectors': sectors, 'points': points};
+}
+
+/// The answer to a build, research, ship or defence order or a cancel, and
+/// the notice that a waiting order started by itself.
+class QueueEvent extends EventKind {
+  final int? playerId;
+  final QueueType queueType;
+
+  /// "Metal Mine Lv.5", "Corvette x3".
+  final String item;
+  final QueueAction action;
+
+  /// [QueueAction.started]: what was paid.
+  final Resources paid;
+
+  /// [QueueAction.cancelled]: what came back.
+  final Resources refunded;
+
+  /// [QueueAction.waiting]: the exact shortfall, null when nothing is short.
+  final Resources? waitingFor;
+  final WaitReason? waitingOn;
+
+  /// [QueueAction.waiting]: estimated ticks until it starts.
+  final int? startIn;
+  const QueueEvent({
+    this.playerId,
+    required this.queueType,
+    required this.item,
+    required this.action,
+    this.paid = const Resources(),
+    this.refunded = const Resources(),
+    this.waitingFor,
+    this.waitingOn,
+    this.startIn,
+  });
+
+  factory QueueEvent.fromJson(Json m) => QueueEvent(
+        playerId: _opt(m['player_id'], _i),
+        queueType: QueueType.fromJson(m['queue_type']),
+        item: m['item'] as String,
+        action: QueueAction.fromJson(m['action']),
+        paid: m['paid'] == null ? const Resources() : Resources.fromJson(m['paid']),
+        refunded: m['refunded'] == null ? const Resources() : Resources.fromJson(m['refunded']),
+        waitingFor: _opt(m['waiting_for'], Resources.fromJson),
+        waitingOn: _opt(m['waiting_on'], WaitReason.fromJson),
+        startIn: _opt(m['start_in'], _i),
+      );
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{
+      'kind': 'Queue',
+      'queue_type': queueType.toJson(),
+      'item': item,
+      'action': action.toJson(),
+      'paid': paid.toJson(),
+      'refunded': refunded.toJson(),
+    };
+    _put(m, 'player_id', playerId);
+    _put(m, 'waiting_for', waitingFor?.toJson());
+    _put(m, 'waiting_on', waitingOn?.toJson());
+    _put(m, 'start_in', startIn);
+    return m;
+  }
 }
 
 class SiteAmbushEvent extends EventKind {

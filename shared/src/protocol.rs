@@ -65,28 +65,37 @@ pub enum Command {
     Recall { fleet_id: u64 },
     #[serde(rename = "collect_salvage")]
     CollectSalvage { fleet_id: u64 },
+    /// Queue a building level. The order is accepted whenever it fits the
+    /// queue, free slot or not, affordable or not: it waits first in, first
+    /// out, and pays when it starts. Refused only when it can never start
+    /// (`PrerequisitesNotMet`, `MaxLevelReached`, `StorageTooSmall`) or the
+    /// waiting line is full (`QueueFull`). A `Queue` event reports whether it
+    /// started or is waiting, with the exact shortfall and an estimated start.
     #[serde(rename = "build")]
     Build { building_type: BuildingType },
+    /// Queue a research level; same rule as `build`.
     #[serde(rename = "research")]
     Research { tech: ResearchType },
+    /// Queue `count` ships as one batch; same rule as `build`. The whole
+    /// batch pays when it starts.
     #[serde(rename = "build_ship")]
     BuildShip {
         ship_class: ShipClass,
         #[serde(default = "default_ship_count")]
         count: u16,
     },
-    /// Cancel an item that has started; its payment is refunded at 50
-    /// percent. `index` picks among the active buildings (always 0 for
-    /// ships and research).
-    /// Build `count` defence structures from the shipyard queue. They stay
-    /// at home and never burn fuel; rejected with `DefenceLocked` until the
-    /// Defense Grid and research it needs are in place.
+    /// Queue `count` defence structures in the shipyard queue; same rule as
+    /// `build`. They stay at home and never burn fuel; rejected with
+    /// `DefenceLocked` until the Defense Grid and research it needs are in place.
     #[serde(rename = "build_defence")]
     BuildDefence {
         kind: DefenceKind,
         #[serde(default = "default_ship_count")]
         count: u16,
     },
+    /// Cancel an item that has started; half of its payment comes back and a
+    /// `Queue` event with `action: Cancelled` says what was refunded. `index`
+    /// picks among the active buildings (always 0 for ships and research).
     #[serde(rename = "cancel_build")]
     CancelBuild {
         queue_type: QueueType,
@@ -94,7 +103,8 @@ pub enum Command {
         index: usize,
     },
     /// Remove an item that is still waiting in the queue; nothing was paid,
-    /// so nothing is refunded. `index` counts the waiting items from 0.
+    /// so nothing is refunded (a `Queue` event with `action: Cancelled`
+    /// confirms it). `index` counts the waiting items from 0.
     #[serde(rename = "cancel_queued")]
     CancelQueued { queue_type: QueueType, index: usize },
     /// Ask for the score table. The reply is a `leaderboard` message.
@@ -234,7 +244,7 @@ impl Default for PolicyParams {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QueueType {
     Building,
     Ship,
@@ -663,8 +673,10 @@ pub struct HomeworldState {
     pub build_pending: Vec<QueuedBuild>,
     /// How many buildings may be under construction at once.
     pub build_slots: u8,
-    /// Items per queue, the active ones included.
-    pub queue_depth: u8,
+    /// Orders that may wait behind the running ones in each queue. An order
+    /// that fits is always accepted, started or not; only a full waiting
+    /// line (or an order that can never start) is refused with `QueueFull`.
+    pub queue_waiting_max: u8,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub shipyard_queue: Option<ShipyardQueueItem>,
     pub shipyard_pending: Vec<QueuedShip>,
@@ -979,10 +991,27 @@ pub struct BuildQueueItem {
     pub end_tick: u64,
 }
 
-/// A building waiting for a free slot, resources or a prerequisite.
-/// `cost` and `ticks` are what it would cost and take if it started now;
-/// `waiting_for` is the resources still missing, absent when it is
-/// waiting for something else.
+/// Why a queued order has not started yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaitReason {
+    /// Every slot is busy.
+    Slot,
+    /// The stockpile does not cover the cost (see `waiting_for`).
+    Resources,
+    /// A level, building or tech it needs is still being built.
+    Prerequisite,
+    /// It could start, but an earlier order is first in line and short of
+    /// resources: the queue is first in, first out.
+    Order,
+}
+
+/// A building waiting to start: the queue is first in, first out and an
+/// order pays when it starts. `cost` and `ticks` are what it would cost and
+/// take if it started now; `waiting_for` is the exact resources still
+/// missing (absent when nothing is short); `waiting_on` names the binding
+/// reason; `start_in` is the estimated ticks until it starts at the current
+/// production, ignoring what the other queues will spend (absent when it
+/// depends on something that cannot be estimated).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedBuild {
     pub building_type: BuildingType,
@@ -991,8 +1020,12 @@ pub struct QueuedBuild {
     pub ticks: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub waiting_for: Option<Resources>,
+    pub waiting_on: WaitReason,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub start_in: Option<u64>,
 }
 
+/// A research level waiting to start; see `QueuedBuild`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedResearch {
     pub tech: ResearchType,
@@ -1001,10 +1034,13 @@ pub struct QueuedResearch {
     pub ticks: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub waiting_for: Option<Resources>,
+    pub waiting_on: WaitReason,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub start_in: Option<u64>,
 }
 
-/// A shipyard order waiting its turn. `cost` is for the whole batch,
-/// `ticks` for one ship.
+/// A shipyard order waiting its turn; see `QueuedBuild`. `cost` is for the
+/// whole batch, `ticks` for one ship.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedShip {
     /// A ship class or a defence structure: the wire carries just its name.
@@ -1014,6 +1050,9 @@ pub struct QueuedShip {
     pub ticks: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub waiting_for: Option<Resources>,
+    pub waiting_on: WaitReason,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub start_in: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1082,6 +1121,46 @@ pub enum EventKind {
     StorageNearCap(StorageNearCapEvent),
     StorageFull(StorageFullEvent),
     ChartDelivered(ChartDeliveredEvent),
+    Queue(QueueEvent),
+}
+
+/// What happened to a queue order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QueueAction {
+    /// The order began and was paid for.
+    Started,
+    /// The order was accepted but cannot start yet.
+    Waiting,
+    /// The order was cancelled.
+    Cancelled,
+}
+
+/// The answer to a build, research, ship or defence order, and to a cancel,
+/// and the notice that a waiting order started on its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueEvent {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub player_id: Option<u64>,
+    pub queue_type: QueueType,
+    /// "Metal Mine Lv.5", "Corvette x3".
+    pub item: String,
+    pub action: QueueAction,
+    /// `Started`: what was paid.
+    #[serde(default)]
+    pub paid: Resources,
+    /// `Cancelled`: what came back (half of the payment for a started item,
+    /// nothing for a waiting one).
+    #[serde(default)]
+    pub refunded: Resources,
+    /// `Waiting`: the exact shortfall, absent when nothing is short.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub waiting_for: Option<Resources>,
+    /// `Waiting`: why it has not started.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub waiting_on: Option<WaitReason>,
+    /// `Waiting`: estimated ticks until it starts, when it can be estimated.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub start_in: Option<u64>,
 }
 
 /// A stockpile passed 85 percent of its cap.

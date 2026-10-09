@@ -19,6 +19,7 @@ mod database;
 mod engine;
 mod intel;
 mod network;
+mod queue;
 mod score;
 
 const TICK_PERIOD: Duration = Duration::from_secs(1);

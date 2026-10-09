@@ -1394,96 +1394,160 @@ impl GameEngine {
         Ok(())
     }
 
-    /// Start waiting items that now can: a free slot, prerequisites met on
-    /// real levels and the stockpile covering the cost. A blocked item does
-    /// not hold back the ones behind it.
+    /// Start waiting orders in line. The queues are first in, first out: the
+    /// first order that is startable (what it needs is built) either starts,
+    /// when a slot is free and the stockpile covers it, or holds the line.
+    /// Orders still waiting on a prerequisite are skipped; nothing else
+    /// could start them sooner.
     fn advance_queues(&mut self, pid: u64) {
-        while let Some(idx) = self.players.get(&pid).and_then(|p| {
-            p.building_pending.iter().position(|q| {
-                self.building_can_start(p, q.building_type, q.target_level)
-                    && p.resources.can_afford(scaling::building_cost(q.building_type, q.target_level))
-            })
+        while let Some(q) = self.players.get(&pid).and_then(|p| {
+            let slot_free = p.building_queue.len() < p.building_slots();
+            p.building_pending
+                .iter()
+                .position(|q| self.building_ready(p, q.building_type, q.target_level))
+                .filter(|&i| {
+                    let q = &p.building_pending[i];
+                    slot_free && p.resources.can_afford(scaling::building_cost(q.building_type, q.target_level))
+                })
         }) {
-            let q = self.players.get_mut(&pid).unwrap().building_pending.remove(idx);
+            let q = self.players.get_mut(&pid).unwrap().building_pending.remove(q);
             self.start_building(pid, q.building_type, q.target_level);
         }
-        if let Some(idx) = self.players.get(&pid).and_then(|p| {
+        if let Some(i) = self.players.get(&pid).and_then(|p| {
             p.research_queue.is_none().then(|| {
-                p.research_pending.iter().position(|q| {
-                    self.research_can_start(p, q.tech, q.target_level)
-                        && p.resources.can_afford(scaling::research_cost(q.tech, q.target_level))
-                })
+                p.research_pending
+                    .iter()
+                    .position(|q| self.research_ready(p, q.tech, q.target_level))
+                    .filter(|&i| {
+                        let q = &p.research_pending[i];
+                        p.resources.can_afford(scaling::research_cost(q.tech, q.target_level))
+                    })
             }).flatten()
         }) {
-            let q = self.players.get_mut(&pid).unwrap().research_pending.remove(idx);
+            let q = self.players.get_mut(&pid).unwrap().research_pending.remove(i);
             self.start_research(pid, q.tech, q.target_level);
         }
-        if let Some(idx) = self.players.get(&pid).and_then(|p| {
+        if let Some(i) = self.players.get(&pid).and_then(|p| {
             p.ship_queue.is_none().then(|| {
-                p.ship_pending.iter().position(|q| {
-                    self.ship_can_start(p, q.item)
-                        && p.resources.can_afford(q.item.unit_cost().scale(q.count as f32))
-                })
+                p.ship_pending
+                    .iter()
+                    .position(|q| self.ship_ready(p, q.item))
+                    .filter(|&i| {
+                        let q = &p.ship_pending[i];
+                        p.resources.can_afford(q.item.unit_cost().scale(q.count as f32))
+                    })
             }).flatten()
         }) {
-            let q = self.players.get_mut(&pid).unwrap().ship_pending.remove(idx);
+            let q = self.players.get_mut(&pid).unwrap().ship_pending.remove(i);
             self.start_ships(pid, q.item, q.count);
         }
     }
 
-    pub fn building_can_start(&self, p: &Player, b: BuildingType, target: u8) -> bool {
-        p.building_queue.len() < p.building_slots()
-            && p.building_queue.iter().all(|q| q.building_type != b)
+    /// Whether what a building order needs is in place; slots and money aside.
+    fn building_ready(&self, p: &Player, b: BuildingType, target: u8) -> bool {
+        p.building_queue.iter().all(|q| q.building_type != b)
             && p.buildings.get(b) + 1 == target
             && scaling::building_prerequisites_met(b, &p.buildings)
     }
 
-    pub fn research_can_start(&self, p: &Player, tech: ResearchType, target: u8) -> bool {
-        p.research_queue.is_none()
-            && p.buildings.research_lab > 0
+    fn research_ready(&self, p: &Player, tech: ResearchType, target: u8) -> bool {
+        p.buildings.research_lab > 0
             && p.research.get(tech) + 1 == target
             && scaling::research_prerequisites_met(tech, &p.buildings, &p.research)
     }
 
-    pub fn ship_can_start(&self, p: &Player, item: ShipyardItem) -> bool {
-        p.ship_queue.is_none()
-            && p.buildings.shipyard > 0
+    fn ship_ready(&self, p: &Player, item: ShipyardItem) -> bool {
+        p.buildings.shipyard > 0
             && match item {
                 ShipyardItem::Ship(class) => scaling::ship_class_unlocked(class, &p.research),
                 ShipyardItem::Defence(kind) => scaling::defence_prerequisites_met(kind, &p.buildings, &p.research),
             }
     }
 
-    /// Pay for and begin a building. Callers have checked `building_can_start`
-    /// and affordability.
+    /// Tell the owner what happened to an order.
+    fn queue_event(&mut self, pid: u64, queue_type: iac_shared::protocol::QueueType, item: String, action: iac_shared::protocol::QueueAction) -> iac_shared::protocol::QueueEvent {
+        iac_shared::protocol::QueueEvent {
+            player_id: Some(pid),
+            queue_type,
+            item,
+            action,
+            paid: Resources::default(),
+            refunded: Resources::default(),
+            waiting_for: None,
+            waiting_on: None,
+            start_in: None,
+        }
+    }
+
+    fn push_queue_event(&mut self, event: iac_shared::protocol::QueueEvent) {
+        self.pending_events.push(GameEvent { tick: self.current_tick, kind: EventKind::Queue(event) });
+    }
+
+    /// Report a freshly accepted order that did not start: why, the exact
+    /// shortfall and the estimated start.
+    fn announce_waiting(&mut self, pid: u64, queue_type: iac_shared::protocol::QueueType, item: String, index: Option<usize>) {
+        use iac_shared::protocol::{QueueAction, QueueType};
+        let Some(index) = index else { return; };
+        let Some(p) = self.players.get(&pid) else { return; };
+        let waits = crate::queue::project(p, self.current_tick, &self.world.pace);
+        let wait = match queue_type {
+            QueueType::Building => waits.buildings.get(index),
+            QueueType::Research => waits.research.get(index),
+            QueueType::Ship => waits.ships.get(index),
+        };
+        let Some(wait) = wait.cloned() else { return; };
+        let mut event = self.queue_event(pid, queue_type, item, QueueAction::Waiting);
+        event.waiting_for = wait.short;
+        event.waiting_on = Some(wait.reason);
+        event.start_in = wait.start_in;
+        self.push_queue_event(event);
+    }
+
+    /// Pay for and begin a building. Callers have checked `building_ready`,
+    /// the slot and affordability.
     fn start_building(&mut self, pid: u64, b: BuildingType, target: u8) {
+        use iac_shared::protocol::{QueueAction, QueueType};
         let tick = self.current_tick;
         let pace = self.world.pace;
         let Some(p) = self.players.get_mut(&pid) else { return; };
-        p.resources = p.resources.sub(scaling::building_cost(b, target));
+        let cost = scaling::building_cost(b, target);
+        p.resources = p.resources.sub(cost);
         let ticks = scaling::building_time(b, target, p.buildings.fabricator, &pace);
         p.building_queue.push(BuildQueueEntry { building_type: b, target_level: target, start_tick: tick, end_tick: tick + ticks });
         self.dirty_players.insert(pid, ());
+        let mut event = self.queue_event(pid, QueueType::Building, format!("{} Lv.{target}", b.label()), QueueAction::Started);
+        event.paid = cost;
+        self.push_queue_event(event);
     }
 
     fn start_research(&mut self, pid: u64, tech: ResearchType, target: u8) {
+        use iac_shared::protocol::{QueueAction, QueueType};
         let tick = self.current_tick;
         let pace = self.world.pace;
         let Some(p) = self.players.get_mut(&pid) else { return; };
-        p.resources = p.resources.sub(scaling::research_cost(tech, target));
+        let cost = scaling::research_cost(tech, target);
+        p.resources = p.resources.sub(cost);
         let ticks = scaling::research_time(tech, target, p.buildings.research_lab, &pace);
         p.research_queue = Some(ResearchQueueEntry { tech, target_level: target, start_tick: tick, end_tick: tick + ticks });
         self.dirty_players.insert(pid, ());
+        let mut event = self.queue_event(pid, QueueType::Research, format!("{} Lv.{target}", tech.label()), QueueAction::Started);
+        event.paid = cost;
+        self.push_queue_event(event);
     }
 
     fn start_ships(&mut self, pid: u64, item: ShipyardItem, count: u16) {
+        use iac_shared::protocol::{QueueAction, QueueType};
         let tick = self.current_tick;
         let pace = self.world.pace;
         let Some(p) = self.players.get_mut(&pid) else { return; };
-        p.resources = p.resources.sub(item.unit_cost().scale(count as f32));
+        let cost = item.unit_cost().scale(count as f32);
+        p.resources = p.resources.sub(cost);
         let per_unit = item.unit_ticks(p.buildings.shipyard, &pace);
         p.ship_queue = Some(ShipQueueEntry { item, count, built: 0, start_tick: tick, end_tick: tick + per_unit });
         self.dirty_players.insert(pid, ());
+        let mut event = self.queue_event(pid, QueueType::Ship, format!("{} x{count}", item.label()), QueueAction::Started);
+        event.paid = cost;
+        self.push_queue_event(event);
     }
 
     // ── Homeworld Raids ───────────────────────────────────────────
@@ -1750,7 +1814,7 @@ impl GameEngine {
                 fleet.action_cooldown -= 1;
             }
             if fleet.state == FleetStatus::Idle {
-                fleet.idle_ticks += 1;
+                fleet.idle_ticks = fleet.idle_ticks.saturating_add(1);
                 if fleet.idle_ticks >= SHIELD_REGEN_IDLE_TICKS {
                     for ship in &mut fleet.ships[0..fleet.ship_count] {
                         if ship.shield < ship.shield_max {
@@ -2409,7 +2473,10 @@ impl GameEngine {
         }
     }
 
+    /// Queue a building level. It is accepted whenever it can ever start and
+    /// the line has room, started now or not (see `advance_queues`).
     pub fn handle_build(&mut self, player_id: u64, building_type: BuildingType) -> Result<(), ErrorCode> {
+        use iac_shared::protocol::QueueType;
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
         let projected = player.projected_buildings();
         let current_level = projected.get(building_type);
@@ -2417,26 +2484,25 @@ impl GameEngine {
         if !scaling::building_prerequisites_met(building_type, &projected) {
             return Err(ErrorCode::PrerequisitesNotMet);
         }
-        if player.building_queue.len() + player.building_pending.len() >= scaling::QUEUE_DEPTH {
+        if player.building_queue.len() + player.building_pending.len() >= player.building_slots() + scaling::QUEUE_WAITING {
             return Err(ErrorCode::QueueFull);
         }
 
         let target_level = current_level + 1;
-        let cost = scaling::building_cost(building_type, target_level);
-        self.ensure_fits_storage(player, cost)?;
+        self.ensure_fits_storage(player, scaling::building_cost(building_type, target_level))?;
 
-        if self.building_can_start(player, building_type, target_level) {
-            if !player.resources.can_afford(cost) { return Err(ErrorCode::NoResources); }
-            self.start_building(player_id, building_type, target_level);
-        } else {
-            let player_mut = self.players.get_mut(&player_id).unwrap();
-            player_mut.building_pending.push(PendingBuilding { building_type, target_level });
-            self.dirty_players.insert(player_id, ());
-        }
+        let player_mut = self.players.get_mut(&player_id).unwrap();
+        player_mut.building_pending.push(PendingBuilding { building_type, target_level });
+        self.dirty_players.insert(player_id, ());
+        self.advance_queues(player_id);
+        let index = self.players[&player_id].building_pending.iter()
+            .position(|q| q.building_type == building_type && q.target_level == target_level);
+        self.announce_waiting(player_id, QueueType::Building, format!("{} Lv.{target_level}", building_type.label()), index);
         Ok(())
     }
 
     pub fn handle_research(&mut self, player_id: u64, tech: ResearchType) -> Result<(), ErrorCode> {
+        use iac_shared::protocol::QueueType;
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
         if player.buildings.research_lab == 0 { return Err(ErrorCode::NoResearchLab); }
 
@@ -2446,22 +2512,20 @@ impl GameEngine {
         if !scaling::research_prerequisites_met(tech, &player.projected_buildings(), &projected) {
             return Err(ErrorCode::PrerequisitesNotMet);
         }
-        if player.research_queue.iter().count() + player.research_pending.len() >= scaling::QUEUE_DEPTH {
+        if player.research_queue.iter().count() + player.research_pending.len() >= 1 + scaling::QUEUE_WAITING {
             return Err(ErrorCode::QueueFull);
         }
 
         let target_level = current_level + 1;
-        let cost = scaling::research_cost(tech, target_level);
-        self.ensure_fits_storage(player, cost)?;
+        self.ensure_fits_storage(player, scaling::research_cost(tech, target_level))?;
 
-        if self.research_can_start(player, tech, target_level) {
-            if !player.resources.can_afford(cost) { return Err(ErrorCode::NoResources); }
-            self.start_research(player_id, tech, target_level);
-        } else {
-            let player_mut = self.players.get_mut(&player_id).unwrap();
-            player_mut.research_pending.push(PendingResearch { tech, target_level });
-            self.dirty_players.insert(player_id, ());
-        }
+        let player_mut = self.players.get_mut(&player_id).unwrap();
+        player_mut.research_pending.push(PendingResearch { tech, target_level });
+        self.dirty_players.insert(player_id, ());
+        self.advance_queues(player_id);
+        let index = self.players[&player_id].research_pending.iter()
+            .position(|q| q.tech == tech && q.target_level == target_level);
+        self.announce_waiting(player_id, QueueType::Research, format!("{} Lv.{target_level}", tech.label()), index);
         Ok(())
     }
 
@@ -2481,72 +2545,79 @@ impl GameEngine {
         self.queue_shipyard(player_id, ShipyardItem::Defence(kind), count)
     }
 
-    /// Start a shipyard order now, or queue it behind the running one.
+    /// Queue a shipyard order behind the ones already there; it starts when
+    /// it reaches the front and the batch is affordable.
     fn queue_shipyard(&mut self, player_id: u64, item: ShipyardItem, count: u16) -> Result<(), ErrorCode> {
+        use iac_shared::protocol::QueueType;
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
         if count == 0 { return Err(ErrorCode::InvalidCommand); }
-        if player.ship_queue.iter().count() + player.ship_pending.len() >= scaling::QUEUE_DEPTH {
+        if player.ship_queue.iter().count() + player.ship_pending.len() >= 1 + scaling::QUEUE_WAITING {
             return Err(ErrorCode::QueueFull);
         }
+        self.ensure_fits_storage(player, item.unit_cost().scale(count as f32))?;
 
-        let total_cost = item.unit_cost().scale(count as f32);
-        self.ensure_fits_storage(player, total_cost)?;
-
-        if self.ship_can_start(player, item) {
-            if !player.resources.can_afford(total_cost) { return Err(ErrorCode::NoResources); }
-            self.start_ships(player_id, item, count);
-        } else {
-            let player_mut = self.players.get_mut(&player_id).unwrap();
-            player_mut.ship_pending.push(PendingShip { item, count });
-            self.dirty_players.insert(player_id, ());
-        }
+        let player_mut = self.players.get_mut(&player_id).unwrap();
+        player_mut.ship_pending.push(PendingShip { item, count });
+        self.dirty_players.insert(player_id, ());
+        self.advance_queues(player_id);
+        let index = self.players[&player_id].ship_pending.iter()
+            .rposition(|q| q.item == item && q.count == count);
+        self.announce_waiting(player_id, QueueType::Ship, format!("{} x{count}", item.label()), index);
         Ok(())
     }
 
     /// Cancel an item that has started. It keeps half its payment, and
     /// waiting items of the same kind move up a level.
     pub fn handle_cancel_build(&mut self, player_id: u64, queue_type: iac_shared::protocol::QueueType, index: usize) -> Result<(), ErrorCode> {
-        use iac_shared::protocol::QueueType;
+        use iac_shared::protocol::{QueueAction, QueueType};
         let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
-        match queue_type {
+        let (item, refund) = match queue_type {
             QueueType::Building => {
                 if index >= player.building_queue.len() { return Err(ErrorCode::InvalidTarget); }
                 let q = player.building_queue.remove(index);
                 let cost = scaling::building_cost(q.building_type, q.target_level);
-                player.resources = player.resources.add(cost.scale(CANCEL_REFUND_FRACTION));
                 for later in player.building_pending.iter_mut()
                     .filter(|p| p.building_type == q.building_type && p.target_level > q.target_level)
                 {
                     later.target_level -= 1;
                 }
+                (format!("{} Lv.{}", q.building_type.label(), q.target_level), cost.scale(CANCEL_REFUND_FRACTION))
             }
             QueueType::Ship => {
                 let q = player.ship_queue.take().filter(|_| index == 0).ok_or(ErrorCode::InvalidTarget)?;
                 let remaining = (q.count - q.built) as f32;
-                let refund = q.item.unit_cost().scale(remaining).scale(CANCEL_REFUND_FRACTION);
-                player.resources = player.resources.add(refund);
+                let label = if q.built > 0 {
+                    format!("{} x{} ({} already built and kept)", q.item.label(), q.count, q.built)
+                } else {
+                    format!("{} x{}", q.item.label(), q.count)
+                };
+                (label, q.item.unit_cost().scale(remaining).scale(CANCEL_REFUND_FRACTION))
             }
             QueueType::Research => {
                 let q = player.research_queue.take().filter(|_| index == 0).ok_or(ErrorCode::InvalidTarget)?;
                 let cost = scaling::research_cost(q.tech, q.target_level);
-                player.resources = player.resources.add(cost.scale(CANCEL_REFUND_FRACTION));
                 for later in player.research_pending.iter_mut()
                     .filter(|p| p.tech == q.tech && p.target_level > q.target_level)
                 {
                     later.target_level -= 1;
                 }
+                (format!("{} Lv.{}", q.tech.label(), q.target_level), cost.scale(CANCEL_REFUND_FRACTION))
             }
-        }
+        };
+        player.resources = player.resources.add(refund);
         self.dirty_players.insert(player_id, ());
+        let mut event = self.queue_event(player_id, queue_type, item, QueueAction::Cancelled);
+        event.refunded = refund;
+        self.push_queue_event(event);
         self.advance_queues(player_id);
         Ok(())
     }
 
     /// Remove a waiting item. Nothing was paid, so nothing comes back.
     pub fn handle_cancel_queued(&mut self, player_id: u64, queue_type: iac_shared::protocol::QueueType, index: usize) -> Result<(), ErrorCode> {
-        use iac_shared::protocol::QueueType;
+        use iac_shared::protocol::{QueueAction, QueueType};
         let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
-        match queue_type {
+        let item = match queue_type {
             QueueType::Building => {
                 if index >= player.building_pending.len() { return Err(ErrorCode::InvalidTarget); }
                 let q = player.building_pending.remove(index);
@@ -2555,10 +2626,12 @@ impl GameEngine {
                 {
                     later.target_level -= 1;
                 }
+                format!("{} Lv.{}", q.building_type.label(), q.target_level)
             }
             QueueType::Ship => {
                 if index >= player.ship_pending.len() { return Err(ErrorCode::InvalidTarget); }
-                player.ship_pending.remove(index);
+                let q = player.ship_pending.remove(index);
+                format!("{} x{}", q.item.label(), q.count)
             }
             QueueType::Research => {
                 if index >= player.research_pending.len() { return Err(ErrorCode::InvalidTarget); }
@@ -2568,9 +2641,13 @@ impl GameEngine {
                 {
                     later.target_level -= 1;
                 }
+                format!("{} Lv.{}", q.tech.label(), q.target_level)
             }
-        }
+        };
         self.dirty_players.insert(player_id, ());
+        let event = self.queue_event(player_id, queue_type, item, QueueAction::Cancelled);
+        self.push_queue_event(event);
+        self.advance_queues(player_id);
         Ok(())
     }
 
@@ -5887,7 +5964,8 @@ mod tests {
         assert_eq!(engine.handle_research(pid, ResearchType::CruiserTech), Err(ErrorCode::StorageTooSmall));
         engine.players.get_mut(&pid).unwrap().buildings.storage_vault = 2;
         engine.players.get_mut(&pid).unwrap().resources = Resources { metal: 8000.0, crystal: 4999.0, deuterium: 2500.0 };
-        assert_eq!(engine.handle_research(pid, ResearchType::CruiserTech), Err(ErrorCode::NoResources), "fits now, crystal is short");
+        assert_eq!(engine.handle_research(pid, ResearchType::CruiserTech), Ok(()), "fits now; crystal is short, so it waits");
+        assert_eq!(engine.players[&pid].research_pending.len(), 1);
     }
 
     #[test]
@@ -5970,7 +6048,9 @@ mod tests {
         assert_eq!(p.resources, after_first, "waiting items cost nothing yet");
 
         engine.handle_build(pid, BuildingType::DeuteriumSynthesizer).unwrap();
-        assert_eq!(engine.handle_build(pid, BuildingType::MetalMine), Err(ErrorCode::QueueFull), "depth is 3");
+        engine.handle_build(pid, BuildingType::MetalMine).unwrap();
+        assert_eq!(engine.players[&pid].building_pending.len(), 3, "one running plus three waiting");
+        assert_eq!(engine.handle_build(pid, BuildingType::MetalMine), Err(ErrorCode::QueueFull), "slots + 3");
     }
 
     #[test]
@@ -5989,25 +6069,159 @@ mod tests {
         assert!(p.building_queue.is_empty() && p.building_pending.is_empty());
     }
 
+    fn queue_events(engine: &mut GameEngine) -> Vec<iac_shared::protocol::QueueEvent> {
+        engine.drain_events().into_iter().filter_map(|e| match e.kind {
+            EventKind::Queue(q) => Some(q),
+            _ => None,
+        }).collect()
+    }
+
+    fn broke(engine: &mut GameEngine, pid: u64) {
+        engine.players.get_mut(&pid).unwrap().resources = Resources::default();
+    }
+
     #[test]
-    fn a_blocked_item_does_not_block_the_ones_behind_it() {
+    fn an_unaffordable_order_waits_even_with_a_free_slot() {
+        use iac_shared::protocol::{QueueAction, WaitReason};
         let mut engine = fast_engine();
-        let (pid, _) = register(&mut engine, "Skipper");
-        rich(&mut engine, pid);
-        engine.handle_build(pid, BuildingType::MetalMine).unwrap();
+        let (pid, _) = register(&mut engine, "Waiter");
+        broke(&mut engine, pid);
+        engine.drain_events();
+        assert_eq!(engine.handle_build(pid, BuildingType::MetalMine), Ok(()));
+        let p = &engine.players[&pid];
+        assert!(p.building_queue.is_empty(), "nothing started");
+        assert_eq!(p.building_pending.len(), 1, "but the order is in line");
+
+        let ev = queue_events(&mut engine);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].action, QueueAction::Waiting);
+        assert_eq!(ev[0].waiting_on, Some(WaitReason::Resources));
+        assert_eq!(ev[0].waiting_for, Some(scaling::building_cost(BuildingType::MetalMine, 2)), "the exact shortfall");
+        assert!(ev[0].start_in.is_some_and(|t| t > 0));
+
+        let cost = scaling::building_cost(BuildingType::MetalMine, 2);
+        engine.players.get_mut(&pid).unwrap().resources = cost;
+        engine.tick().unwrap();
+        let p = &engine.players[&pid];
+        assert_eq!(p.building_queue.len(), 1, "it started once it was affordable");
+        assert!(p.resources.metal < 5.0, "and paid then, not before");
+        let ev = queue_events(&mut engine);
+        assert!(ev.iter().any(|e| e.action == QueueAction::Started && e.paid == cost));
+    }
+
+    #[test]
+    fn research_and_shipyard_orders_wait_for_money_too() {
+        use iac_shared::protocol::WaitReason;
+        let mut engine = fast_engine();
+        let (pid, _) = register(&mut engine, "Everything");
         {
             let p = engine.players.get_mut(&pid).unwrap();
-            p.buildings.crystal_mine = 12;
             p.buildings.research_lab = 1;
+            p.buildings.shipyard = 1;
         }
-        // Crystal Mine 13 costs far more than we hold; Metal 3 is cheap.
-        engine.handle_build(pid, BuildingType::CrystalMine).unwrap();
-        engine.handle_build(pid, BuildingType::MetalMine).unwrap();
-        tick_n(&mut engine, 30);
+        broke(&mut engine, pid);
+        assert_eq!(engine.handle_research(pid, ResearchType::CorvetteTech), Ok(()));
+        assert_eq!(engine.handle_build_ship(pid, ShipClass::Scout, 2), Ok(()));
+        assert_eq!(engine.handle_build_defence(pid, DefenceKind::PulseTurret, 1), Err(ErrorCode::DefenceLocked), "locked orders still refuse");
         let p = &engine.players[&pid];
-        assert_eq!(p.buildings.metal_mine, 3, "the cheap item ran past the blocked one");
-        assert_eq!(p.building_pending.len(), 1);
-        assert_eq!(p.building_pending[0].building_type, BuildingType::CrystalMine);
+        assert!(p.research_queue.is_none() && p.ship_queue.is_none());
+        assert_eq!((p.research_pending.len(), p.ship_pending.len()), (1, 1));
+        let waits = crate::queue::project(p, engine.current_tick, &engine.world.pace);
+        assert_eq!(waits.research[0].reason, WaitReason::Resources);
+        assert_eq!(waits.ships[0].reason, WaitReason::Resources);
+    }
+
+    #[test]
+    fn orders_start_and_pay_first_in_first_out() {
+        use iac_shared::protocol::WaitReason;
+        let mut engine = fast_engine();
+        let (pid, _) = register(&mut engine, "Line");
+        engine.players.get_mut(&pid).unwrap().research.modular_fabrication = 2;
+        broke(&mut engine, pid);
+        // Deuterium Synthesizer 1 costs 150 metal 50 crystal; Metal Mine 2 costs 90 / 22.
+        engine.handle_build(pid, BuildingType::DeuteriumSynthesizer).unwrap();
+        engine.handle_build(pid, BuildingType::MetalMine).unwrap();
+
+        engine.players.get_mut(&pid).unwrap().resources = Resources { metal: 100.0, crystal: 100.0, deuterium: 0.0 };
+        engine.advance_queues(pid);
+        let p = &engine.players[&pid];
+        assert!(p.building_queue.is_empty(), "the cheap order may not jump the line");
+        assert_eq!(p.building_pending.len(), 2);
+        let waits = crate::queue::project(p, engine.current_tick, &engine.world.pace);
+        assert_eq!(waits.buildings[0].reason, WaitReason::Resources);
+        assert_eq!(waits.buildings[1].reason, WaitReason::Order, "affordable, but held behind the first");
+        assert!(waits.buildings[1].start_in >= waits.buildings[0].start_in);
+
+        engine.players.get_mut(&pid).unwrap().resources = Resources { metal: 150.0, crystal: 100.0, deuterium: 0.0 };
+        engine.advance_queues(pid);
+        let p = &engine.players[&pid];
+        assert_eq!(p.building_queue.len(), 1);
+        assert_eq!(p.building_queue[0].building_type, BuildingType::DeuteriumSynthesizer);
+        assert_eq!(p.resources.metal, 0.0, "the first order paid in full when it started");
+        assert_eq!(p.building_pending.len(), 1, "the second waits for its own money");
+
+        engine.players.get_mut(&pid).unwrap().resources = Resources { metal: 90.0, crystal: 22.0, deuterium: 0.0 };
+        engine.advance_queues(pid);
+        assert_eq!(engine.players[&pid].building_queue.len(), 2);
+        assert!(engine.players[&pid].building_pending.is_empty());
+    }
+
+    #[test]
+    fn a_prerequisite_wait_does_not_hold_the_line() {
+        use iac_shared::protocol::WaitReason;
+        let mut engine = fast_engine();
+        let (pid, _) = register(&mut engine, "Skipper");
+        engine.players.get_mut(&pid).unwrap().research.modular_fabrication = 1;
+        rich(&mut engine, pid);
+        engine.handle_build(pid, BuildingType::MetalMine).unwrap();
+        // Shipyard needs Metal Mine 2, which is still building.
+        engine.handle_build(pid, BuildingType::Shipyard).unwrap();
+        engine.handle_build(pid, BuildingType::CrystalMine).unwrap();
+        let p = &engine.players[&pid];
+        assert_eq!(p.building_queue.len(), 2, "the crystal mine ran past the shipyard that waits on a prerequisite");
+        let waits = crate::queue::project(p, engine.current_tick, &engine.world.pace);
+        assert_eq!(waits.buildings[0].reason, WaitReason::Prerequisite);
+        let metal_done = p.building_queue.iter().find(|q| q.building_type == BuildingType::MetalMine).unwrap().end_tick;
+        assert!(waits.buildings[0].start_in.is_some_and(|t| t >= metal_done - engine.current_tick), "it starts once the mine lands");
+    }
+
+    #[test]
+    fn cancelling_says_what_was_cancelled_and_refunded() {
+        use iac_shared::protocol::{QueueAction, QueueType};
+        let mut engine = fast_engine();
+        let (pid, _) = register(&mut engine, "Canceller");
+        rich(&mut engine, pid);
+        engine.handle_build(pid, BuildingType::MetalMine).unwrap();
+        engine.handle_build(pid, BuildingType::CrystalMine).unwrap();
+        engine.drain_events();
+
+        engine.handle_cancel_queued(pid, QueueType::Building, 0).unwrap();
+        let ev = queue_events(&mut engine);
+        assert_eq!(ev.len(), 1);
+        assert_eq!((ev[0].action, ev[0].item.as_str()), (QueueAction::Cancelled, "Crystal Mine Lv.2"));
+        assert_eq!(ev[0].refunded, Resources::default(), "a waiting order paid nothing");
+
+        let before = engine.players[&pid].resources;
+        engine.handle_cancel_build(pid, QueueType::Building, 0).unwrap();
+        let ev = queue_events(&mut engine);
+        let cost = scaling::building_cost(BuildingType::MetalMine, 2);
+        assert_eq!((ev[0].action, ev[0].item.as_str()), (QueueAction::Cancelled, "Metal Mine Lv.2"));
+        assert_eq!(ev[0].refunded, cost.scale(CANCEL_REFUND_FRACTION));
+        assert_eq!(engine.players[&pid].resources, before.add(ev[0].refunded));
+    }
+
+    #[test]
+    fn a_full_line_refuses_and_says_how_full() {
+        let mut engine = fast_engine();
+        let (pid, _) = register(&mut engine, "Crowd");
+        broke(&mut engine, pid);
+        engine.players.get_mut(&pid).unwrap().research.modular_fabrication = 2;
+        // Three slots plus three waiting: six orders fit even when none can start.
+        for _ in 0..6 {
+            engine.handle_build(pid, BuildingType::MetalMine).unwrap();
+        }
+        assert_eq!(engine.handle_build(pid, BuildingType::MetalMine), Err(ErrorCode::QueueFull));
+        assert_eq!(engine.players[&pid].building_pending.len(), 6);
     }
 
     #[test]
@@ -6980,6 +7194,45 @@ mod tests {
         let slow = RaidTimers::new(&Pace::PERSISTENT);
         assert_eq!((slow.roll_interval, slow.warning, slow.min_interval), (21_600, 600, 64_800));
         assert_eq!((slow.min_player_age, slow.suppress_after_loss), (86_400, 172_800));
+    }
+
+    /// Raid forecasts per player over `ticks`, for `players` fresh empires
+    /// that all have Shipyard 2.
+    fn raid_counts(pace: &str, ticks: u64, players: usize) -> Vec<usize> {
+        let db = Database::init(":memory:").unwrap();
+        let mut engine = GameEngine::init(42, db, Some(Pace::parse(pace).unwrap())).unwrap();
+        let pids: Vec<u64> = (0..players).map(|i| register(&mut engine, &format!("Raided{i}")).0).collect();
+        for pid in &pids {
+            engine.players.get_mut(pid).unwrap().buildings.shipyard = 2;
+        }
+        let mut counts = vec![0; players];
+        for _ in 0..ticks {
+            engine.tick().unwrap();
+            for e in engine.drain_events() {
+                if let EventKind::RaidIncoming(r) = e.kind
+                    && let Some(i) = pids.iter().position(|p| *p == r.player_id)
+                {
+                    counts[i] += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn blitz_players_see_raids_within_the_hour() {
+        let counts = raid_counts("blitz", 3600, 12);
+        let quiet = counts.iter().filter(|c| **c == 0).count();
+        let mean = counts.iter().sum::<usize>() as f32 / counts.len() as f32;
+        assert!(quiet <= 1, "{quiet} of 12 blitz hours had no raid: {counts:?}");
+        assert!((1.2..=3.0).contains(&mean), "mean {mean} raids per blitz hour: {counts:?}");
+    }
+
+    #[test]
+    fn season_players_see_about_three_raids_a_day() {
+        let counts = raid_counts("season", 24 * 3600, 6);
+        let mean = counts.iter().sum::<usize>() as f32 / counts.len() as f32;
+        assert!((1.8..=4.5).contains(&mean), "mean {mean} raids per 24 h of season: {counts:?}");
     }
 
     #[test]

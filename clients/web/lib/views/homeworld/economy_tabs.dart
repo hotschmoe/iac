@@ -175,10 +175,7 @@ class StorageTab extends StatelessWidget {
           requires: o.requires,
           maxed: o.next == null,
           queued: hw == null ? 0 : hw.buildQueue.length + hw.buildPending.length,
-          depth: hw?.queueDepth ?? 0,
-          idle: !state.buildQueue.any((q) => q.active),
-          cost: o.next?.cost,
-          stock: state.stock);
+          capacity: hw == null ? 0 : hw.buildSlots + hw.queueWaitingMax);
     }
     return ConsolePanel(
       title: 'Upgrade',

@@ -45,25 +45,18 @@ String shortfall(proto.Resources cost, proto.Resources stock) {
   return parts.join(', ');
 }
 
-/// Locked, maxed and queue-full block queueing. Cost only blocks when
-/// nothing is running (queued items pay when they start and wait otherwise).
+/// Locked, maxed and queue-full block queueing; cost never does: an order
+/// that cannot be paid yet waits in line and pays when it starts.
 String? whyNot({
   required List<proto.Requirement> requires,
   required bool maxed,
   required int queued,
-  required int depth,
-  required bool idle,
-  required proto.Resources? cost,
-  required proto.Resources stock,
+  required int capacity,
 }) {
   final unmet = [for (final r in requires) if (!r.met) r.label];
   if (unmet.isNotEmpty) return 'Locked: needs ${unmet.join(', ')}';
   if (maxed) return 'Already at maximum level';
-  if (depth > 0 && queued >= depth) return 'Queue full ($queued/$depth)';
-  if (idle && cost != null) {
-    final s = shortfall(cost, stock);
-    if (s.isNotEmpty) return 'Cannot afford: needs $s';
-  }
+  if (capacity > 0 && queued >= capacity) return 'Queue full ($queued/$capacity)';
   return null;
 }
 
@@ -84,13 +77,11 @@ ItemSpec? specFor(GameController c, {int? index}) {
   final cat = c.state.catalog;
   final i = index ?? c.hwCursor;
   if (cat == null) return null;
-  final stock = c.state.stock;
   final hw = c.state.hw;
   switch (c.hwTab) {
     case HomeworldTab.buildings:
       if (i < 0 || i >= cat.buildings.length) return null;
       final o = cat.buildings[i];
-      final busy = c.state.buildQueue.any((q) => q.active);
       return ItemSpec(
         kind: 'Building',
         title: o.buildingType.label,
@@ -102,17 +93,13 @@ ItemSpec? specFor(GameController c, {int? index}) {
             requires: o.requires,
             maxed: o.next == null,
             queued: hw == null ? 0 : hw.buildQueue.length + hw.buildPending.length,
-            depth: hw?.queueDepth ?? 0,
-            idle: !busy,
-            cost: o.next?.cost,
-            stock: stock),
+            capacity: hw == null ? 0 : hw.buildSlots + hw.queueWaitingMax),
         actionLabel: o.next == null ? 'Maxed' : 'Queue to L${o.next!.level}',
         note: buildingNotes[o.buildingType] ?? '',
       );
     case HomeworldTab.research:
       if (i < 0 || i >= cat.research.length) return null;
       final o = cat.research[i];
-      final busy = c.state.research.name != 'Idle';
       return ItemSpec(
         kind: 'Research',
         title: o.tech.label,
@@ -124,10 +111,7 @@ ItemSpec? specFor(GameController c, {int? index}) {
             requires: o.requires,
             maxed: o.next == null,
             queued: hw == null ? 0 : (hw.researchActive == null ? 0 : 1) + hw.researchPending.length,
-            depth: hw?.queueDepth ?? 0,
-            idle: !busy,
-            cost: o.next?.cost,
-            stock: stock),
+            capacity: hw == null ? 0 : 1 + hw.queueWaitingMax),
         actionLabel: o.next == null ? 'Maxed' : 'Research L${o.next!.level}',
       );
     case HomeworldTab.shipyard:
@@ -136,7 +120,6 @@ ItemSpec? specFor(GameController c, {int? index}) {
       final n = c.shipBatch;
       final total = proto.Resources(
           metal: o.unitCost.metal * n, crystal: o.unitCost.crystal * n, deuterium: o.unitCost.deuterium * n);
-      final busy = c.state.shipyard.any((q) => q.active);
       return ItemSpec(
         kind: 'Ship',
         title: o.shipClass.label,
@@ -148,10 +131,7 @@ ItemSpec? specFor(GameController c, {int? index}) {
             requires: o.requires,
             maxed: false,
             queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
-            depth: hw?.queueDepth ?? 0,
-            idle: !busy,
-            cost: total,
-            stock: stock),
+            capacity: hw == null ? 0 : 1 + hw.queueWaitingMax),
         actionLabel: 'Build x$n',
         note: 'Ships join the dock fleet when built.',
         ship: o.shipClass,
@@ -161,7 +141,6 @@ ItemSpec? specFor(GameController c, {int? index}) {
       final o = cat.defences[i];
       final n = c.shipBatch;
       final total = proto.Resources(metal: o.unitCost.metal * n, crystal: o.unitCost.crystal * n, deuterium: o.unitCost.deuterium * n);
-      final busy = c.state.shipyard.any((q) => q.active);
       return ItemSpec(
         kind: 'Defence',
         title: o.kind.label,
@@ -173,10 +152,7 @@ ItemSpec? specFor(GameController c, {int? index}) {
             requires: o.requires,
             maxed: false,
             queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
-            depth: hw?.queueDepth ?? 0,
-            idle: !busy,
-            cost: total,
-            stock: stock),
+            capacity: hw == null ? 0 : 1 + hw.queueWaitingMax),
         actionLabel: 'Build x$n',
         note: 'Built in the shipyard queue. Power ${o.power.toStringAsFixed(0)} each.',
       );

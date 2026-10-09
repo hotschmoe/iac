@@ -243,6 +243,21 @@ void main() {
     expect(r.player.resources.metal, stock);
   });
 
+  test('an order that cannot be paid yet is accepted, says what it waits for, and cancels with a confirmation', () {
+    final r = Rig();
+    expect(r.errorOf(r.send(const p.BuildShipCommand(shipClass: p.ShipClass.scout, count: 200))), isNull,
+        reason: 'unaffordable is not a refusal');
+    final q = r.ticks.last.homeworldUpdate!.shipyardPending.last;
+    expect(q.waitingFor, isNotNull);
+    expect(q.waitingOn, p.WaitReason.resources);
+    final wait = r.of<p.QueueEvent>().last;
+    expect((wait.action, wait.item), (p.QueueAction.waiting, 'Scout x200'));
+    final index = r.ticks.last.homeworldUpdate!.shipyardPending.length - 1;
+    r.send(p.CancelQueuedCommand(queueType: p.QueueType.ship, index: index));
+    final gone = r.of<p.QueueEvent>().last;
+    expect((gone.action, gone.item), (p.QueueAction.cancelled, 'Scout x200'));
+  });
+
   test('leaderboard reply mixes humans and agents', () {
     final r = Rig();
     final reply = r.send(const p.LeaderboardCommand()).whereType<p.LeaderboardReply>().single;

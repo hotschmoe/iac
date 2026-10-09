@@ -1,0 +1,24 @@
+{
+  "action": "Waiting",
+  "item": "Corvette x3",
+  "kind": "Queue",
+  "paid": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "queue_type": "Ship",
+  "refunded": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "start_in": 42,
+  "tick": 1234,
+  "waiting_for": {
+    "crystal": 0.0,
+    "deuterium": 80.0,
+    "metal": 300.0
+  },
+  "waiting_on": "Resources"
+}

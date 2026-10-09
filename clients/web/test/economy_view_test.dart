@@ -21,7 +21,7 @@ void main() {
     expect(sl.slotBUnlocked, isFalse);
     expect(sl.slotBRequirement, startsWith('Needs Modular Fabrication'));
     expect(sl.queued, isNotEmpty);
-    expect(sl.queued.first.waits, anyOf(isEmpty, startsWith('waits: ')));
+    expect(sl.queued.first.waits, isNotEmpty, reason: 'a waiting order says why');
     final d = e.defence!;
     expect(d.rows, isNotEmpty);
     expect(d.raidEstimate, greaterThan(0));

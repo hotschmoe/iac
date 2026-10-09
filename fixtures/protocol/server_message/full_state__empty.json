@@ -775,7 +775,7 @@
       "deuterium": 0.0,
       "metal": 0.0
     },
-    "queue_depth": 3,
+    "queue_waiting_max": 3,
     "research": [],
     "research_pending": [],
     "shipyard_pending": [],

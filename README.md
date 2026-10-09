@@ -127,8 +127,8 @@ Example session:
 | `research` | `tech` | research one level, same rules (one lab) |
 | `build_ship` | `ship_class`, `count` | queue ship production (one shipyard; the batch is paid when it starts) |
 | `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count` | queue home defence structures in the shipyard queue; `DefenceLocked` until the Defense Grid and research it needs are in place |
-| `cancel_build` | `queue_type`, `index` (default 0) | cancel an item that has started (the `index`th running one) with a 50% refund; waiting items behind it move up a level |
-| `cancel_queued` | `queue_type`, `index` | remove an item still waiting (the `index`th, from 0); nothing was paid, so nothing comes back |
+| `cancel_build` | `queue_type`, `index` (default 0) | cancel an item that has started (the `index`th running one) with a 50% refund; waiting items behind it move up a level; a `Queue` event confirms what was refunded |
+| `cancel_queued` | `queue_type`, `index` | remove an item still waiting (the `index`th, from 0); nothing was paid, so nothing comes back; a `Queue` event confirms it |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home`, `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, `ratio` and `label` (`safe`, `favourable`, `risky`, `deadly`) |
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
@@ -245,15 +245,29 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   cargo unloads only what fits and the rest waits aboard
   (`cargo_blocked: true`). `StorageNearCap` (85%) and `StorageFull` events
   warn you. A Vault also protects 8% of the cap per level (to 60%) from raids.
-- **Queues and slots** — building, research and shipyard queues each hold 3
-  items (running ones included). Buildings run in `build_slots` parallel
-  slots (1, plus one per Modular Fabrication level, max 3); research and the
-  shipyard have one. A waiting item costs nothing, may depend on items ahead
-  of it (a Shipyard queued behind the Metal Mine it needs), and starts when a
-  slot is free, its prerequisites are met and you can pay; a blocked item
-  does not hold back the ones behind it. `build_pending` / `research_pending`
-  / `shipyard_pending` list the waiting items with `waiting_for` (what is
-  still missing). `NoResources` errors name the missing resource and amount.
+- **Queues and slots** — one rule for buildings, research, ships and
+  defences. An order that can ever start is always accepted, whether or not a
+  slot is free or you can pay yet. It waits, strictly first in, first out, and
+  starts and pays in full the moment a slot is free, what it needs is built and
+  the stockpile covers the cost; an order short of resources holds back the
+  ones behind it, so the line never reorders (an order that waits only on a
+  prerequisite, such as a Shipyard behind the Metal Mine it needs, does not
+  hold the line). Buildings run in `build_slots` parallel slots (1, plus one
+  per Modular Fabrication level, max 3); research and the shipyard have one.
+  Each queue holds its running items plus `queue_waiting_max` (3) waiting ones,
+  so the building queue holds `build_slots + 3` and the others 4; a full queue
+  refuses with `QueueFull`. Orders that can never start are refused with a
+  specific error: `PrerequisitesNotMet` (naming what is missing),
+  `MaxLevelReached`, `StorageTooSmall` (naming the Vault level it needs),
+  `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`.
+  `build_pending` / `research_pending` / `shipyard_pending` list each waiting
+  order with `waiting_for` (the exact shortfall), `waiting_on` (`Slot`,
+  `Resources`, `Prerequisite` or `Order`: held behind an earlier order) and
+  `start_in` (estimated ticks to start at current production, ignoring what the
+  other queues spend). Every order, start and cancel is answered by a `Queue`
+  event: `Started` (what was paid), `Waiting` (shortfall and estimate) or
+  `Cancelled` (what was refunded: half for a running item, nothing for a
+  waiting one). A queue with nothing running but orders waiting is not idle.
 - **Research** — 13 techs: hulls, shields, weapons, fuel, navigation, ship
   class unlocks (Corvette Tech needs only Shipyard 1, Frigate and Cruiser
   Tech need more), emergency jump, Modular Fabrication (building slots). The Research

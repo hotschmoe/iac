@@ -83,6 +83,11 @@
     "salvage_and_sites",
     "patrol_home"
   ],
+  "QueueAction": [
+    "Started",
+    "Waiting",
+    "Cancelled"
+  ],
   "QueueType": [
     "Building",
     "Ship",
@@ -132,5 +137,11 @@
     "Nebula",
     "DebrisField",
     "Anomaly"
+  ],
+  "WaitReason": [
+    "Slot",
+    "Resources",
+    "Prerequisite",
+    "Order"
   ]
 }

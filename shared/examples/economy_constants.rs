@@ -131,7 +131,7 @@ fn main() {
         "lab_speed": LAB_SPEED,
         "shipyard_speed": SHIPYARD_SPEED,
         "production_growth": PRODUCTION_GROWTH,
-        "queue_depth": QUEUE_DEPTH,
+        "queue_waiting": QUEUE_WAITING,
         "finds_exponent": Pace::new(10000.0).unwrap().finds_mult().ln() / 10000.0f32.ln(),
     }));
     println!("{}", serde_json::to_string(&Value::Object(out)).unwrap());

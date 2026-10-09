@@ -3,14 +3,37 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
-## 2026-10-09 (queue payment)
+## 2026-10-10 (one queue rule)
 
-**Queued items pay when they start, not when they are queued.**
-- **Starting now:** an order that would start immediately must be affordable.
-- **Queued behind a running item:** it waits unpaid and shows what it is waiting
-  for, then starts and pays as soon as the slot is free and it is affordable.
+**Every order that can ever start is accepted; it pays when it starts.**
+Supersedes the 2026-10-09 queue-payment rule below, which refused an order that
+had a free slot but no money while letting the same order wait behind a running
+item.
+- **Accept:** buildings, research, ships and defences are accepted whenever
+  they fit the queue, slot free or not, affordable or not.
+- **Wait:** a waiting order costs nothing. It starts, and pays in full, the
+  moment a slot is free, what it needs is built and the stockpile covers it.
+- **Order:** strictly first in, first out per queue. An order short of resources
+  holds back the ones behind it, so the line never reorders and the start
+  estimate is honest. An order that waits only on a prerequisite does not hold
+  the line.
+- **Depth:** running items plus 3 waiting (`slots + 3` for buildings, 4 for
+  research and shipyard), so extra build slots never remove the ability to
+  queue.
+- **Refuse only the impossible:** locked prerequisites, max level, a payment
+  larger than any storage cap, or a full queue, each with a specific error.
+- **Show:** each waiting order carries its exact shortfall, why it waits and an
+  estimated start. Starting, waiting and cancelling are all confirmed by a
+  `Queue` event; cancelling a running item refunds half, a waiting one nothing.
 - **Why:** this suits slow persistent worlds, where players queue and leave
-  (OGame-style).
+  (OGame-style), and it is one rule instead of a rule that depends on whether a
+  slot happened to be free.
+
+## 2026-10-09 (queue payment, superseded)
+
+**Queued items pay when they start, not when they are queued.** The rest of the
+old rule (refuse an unaffordable order that would start now) is replaced by the
+2026-10-10 entry above.
 
 ## 2026-10-09 (single player and built-in bots)
 

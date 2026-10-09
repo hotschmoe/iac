@@ -1,0 +1,18 @@
+{
+  "action": "Cancelled",
+  "item": "Cruiser Tech Lv.1",
+  "kind": "Queue",
+  "paid": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "player_id": 7,
+  "queue_type": "Research",
+  "refunded": {
+    "crystal": 2500.0,
+    "deuterium": 1250.0,
+    "metal": 4000.0
+  },
+  "tick": 1234
+}

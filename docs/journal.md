@@ -652,3 +652,34 @@ console: the map and the route preview still derive the ratio from fleet and
 sector power instead of calling `preview_move`, and show the rating only for
 sectors with hostiles (`ringRating` is there for the rest); the ore reserve is
 not drawn.
+
+## Session — 2026-10-10: rules pass after the second six-AI playtest
+
+Playtest findings in `docs/playtests/2026-10-10/`. This entry grows with each
+commit of the `rules-pass` branch.
+
+### One queue rule
+
+- An order that can ever start is accepted whether or not a slot is free or it
+  is affordable; `NoResources` is gone from build, research, ship and defence
+  commands. A queue holds its running items plus 3 waiting (`QUEUE_WAITING`;
+  `slots + 3` for buildings). The old `QUEUE_DEPTH` (3, running included) left a
+  3-slot player no waiting room at all, which is what the playtest hit.
+- Strict FIFO per queue: the first order whose prerequisites are in place either
+  starts (slot free and affordable) or holds the line. Orders waiting only on a
+  prerequisite are skipped. The old "skip any blocked item" let a cheap order
+  starve an expensive one and made start estimates meaningless.
+- `server/src/queue.rs` projects every waiting order: `waiting_on` (`Slot`,
+  `Resources`, `Prerequisite`, `Order`), exact `waiting_for` shortfall and
+  `start_in` ticks at current production (ignores the other queues' spending
+  and mines that finish meanwhile). Dependencies inside the line (Metal Mine
+  L5 behind L4, a Shipyard behind its Metal Mine) are walked through the known
+  finish times.
+- New `EventKind::Queue(QueueEvent)` with `Started` / `Waiting` / `Cancelled`:
+  the reply to every order and cancel, and the notice when a waiting order
+  starts by itself. This fixes "(no new events)" after a cancel. A queue with
+  nothing running but orders waiting is shown as "none running", not "idle".
+- Protocol: `queue_depth` is replaced by `queue_waiting_max`; `QueuedBuild`,
+  `QueuedResearch` and `QueuedShip` gained `waiting_on` and `start_in`.
+- Bug found by the raid-cadence test: `fleet.idle_ticks` overflowed (debug
+  panic) after 65535 idle ticks; it saturates now.

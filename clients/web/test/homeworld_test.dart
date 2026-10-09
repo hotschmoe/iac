@@ -81,8 +81,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('hw-card-0')));
     await tester.pump();
     expect(c.hwCursor, 0);
-    // the demo queue is full (3 of 3): queueing is blocked with a reason
-    expect(find.textContaining('Queue full'), findsWidgets);
+    // the demo has orders waiting; an order that fits is never blocked by cost
+    expect(find.textContaining('Cannot afford'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('hw-cancel-building')));
     await tester.pump();
     c.cancelHomeworldQueue(proto.QueueType.building, waiting: true);

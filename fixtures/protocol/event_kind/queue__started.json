@@ -1,0 +1,18 @@
+{
+  "action": "Started",
+  "item": "Metal Mine Lv.5",
+  "kind": "Queue",
+  "paid": {
+    "crystal": 190.0,
+    "deuterium": 0.0,
+    "metal": 759.0
+  },
+  "player_id": 7,
+  "queue_type": "Building",
+  "refunded": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "tick": 1234
+}
