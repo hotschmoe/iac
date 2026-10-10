@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use common::*;
 use futures_util::SinkExt;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]

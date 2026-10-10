@@ -5,7 +5,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
-pub struct ServerGuard(Child);
+pub struct ServerGuard(pub Child);
 
 impl Drop for ServerGuard {
     fn drop(&mut self) {
