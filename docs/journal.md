@@ -1410,3 +1410,102 @@ card footer with a salvage clock and a derelict. Both wrap now.
   finished build.
 - Not seen: the notification as the operating system draws it (headless
   Chromium does not), a phone, a human playing through it.
+
+## 2026-10-10: bots seated in the server, tagged BOT, kept through a restart
+
+Roadmap step 2, the server half. No balance constant was changed.
+
+**Hosting.** `iac-server --bot <personality>:<attention>[:<count>]` (the `sim-run`
+seat syntax, repeatable). `bot::Roster` holds the seats beside the engine;
+`run_tick` calls `take_turns` before `tick` and `observe` after it. A bot's orders go
+through `GameEngine::execute` and `handle_policy_update` as a client's do. `--bot`
+states what the world should have: missing bots are added at start, existing ones
+play on whether listed or not. `--player-seats <N>` (default 4) keeps home seats for
+people: a bot is added only while more than N of the 24 are free; a roster that asks
+for more is seated in the order given as far as that goes and the log says what was
+left out. `--bot-sessions` sets the look-ins of new check-in and hybrid bots.
+`sim-run` refuses more than 24 seats before it starts.
+
+**Identity: the name is the tag.** Bot accounts are named `BOT-<personality>-<n>`,
+and `BOT-` (any case) is refused for everyone else with `InvalidName`. Every place
+that names a player to another player already carries the name, so nothing else on
+the wire had to change for the tag: fleets in a sector, events, the board. The
+leaderboard reply gained `bots` (omitted when empty): bots are never in `entries`,
+they are ranked among themselves, and `you` is a bot's own row when a bot asks. LLM
+agents stay in `entries` with their `agent` flag. Fixtures: `leaderboard__with_bots`
+added, `enums.json` and `full_state.json` changed.
+- TUI: a "BUILT-IN BOTS" block under the ranking; `chart:` in the sector readout.
+- Web: bots under the ranking with a BOT tag and `---` for a rank; a log line counts
+  them; the sector panel shows the chart mark.
+- `play.py`: `score` lists bots under the table, `map` and `sector` show the mark.
+
+**Chart marks replace the bot's logbook.** `SectorState.chart` is `aboard` (the chart
+rides with one of the viewer's fleets) or `delivered` (banked), absent otherwise. It
+is laid over the chart per viewer when a view is built, and a remembered sector is
+sent once more when its mark moves (charts delivered, a carrier lost). A human sees
+which sectors still pay and which fleet must come home; a bot no longer keeps a list
+of its own, so what it must remember shrank to a few numbers.
+
+**Restart.** A bot is an account plus a `BotRecord` in the engine: style (personality,
+attention, look-ins, cap rule) and memory (end of the first look-in, next wake and
+plan ticks, its own board row as last asked, the lanes its fleets are walking). The
+record is in `Snapshot` and goes to SQLite as a `runtime_state` row of kind `bot`,
+written when a turn changes it. The view a seat holds is not stored: a restarted bot
+starts from the full state as a reconnecting client does, and that state is the one
+it would have folded. Checked three ways: a world of bots resumed from a JSON
+snapshot ends on the same hash as one never stopped (`sim/tests/bots.rs`); the same
+through SQLite, six restarts in a row (`server/src/database.rs`); the real binary
+killed and restarted (`server/tests/scenarios.rs`).
+
+**A view bug the restart work found.** A fleet that loses its last ship lingers one
+tick before it is reaped. The full state dropped its charts' marks at once, tick
+updates a tick later, so a client that folds updates and one that asks for the full
+state disagreed for that tick, and a bot acting on it would have left the path of an
+unrestarted one. Both now change at the reap. Found by folding updates for 20 bots
+over 9000 blitz ticks and comparing with the full state every tick (180 000 views,
+0 differ after the fix; one did before, at tick 5382). The scenario in `bots.rs`
+compares every view a seat holds, on a smaller world.
+
+**Cost: the incremental view is not the cheaper one.** The step-2 seat built a full
+state for every turn. Folding `tick_update` instead was the plan, and measured it
+loses: an update must be taken every tick, a full state only on a turn, and an
+update for an active account already costs about 40% of the full state (fleets with
+their way home, the homeworld block and live sectors are in both; the chart copy is
+the rest: at hour 6 of a blitz world 116 us against 275 us with 380 sectors charted).
+So a seat now follows by updates only while its player acts again within two ticks
+(`ScriptedPlayer::watching`) and starts from a full state otherwise. Whole-world mean
+per tick, 20 bots and 3 idle accounts, release build, world before the merge:
+
+| roster, pace, length | full state per turn | update every tick while present | update only when the next turn is near (kept) |
+|---|---|---|---|
+| 5 styles x (hands-on, hybrid, 2 check-in), blitz, 6 h | 3.49 ms | 3.47 ms | 3.35 ms |
+| 20 hands-on, blitz, 6 h | 9.84 ms | 11.89 ms | 10.63 ms |
+| the mixed 20, season, 2 days | 0.59 ms | 0.72 ms | 0.52 ms |
+| 20 hands-on, season, 2 days | 0.82 ms | 1.41 ms | 0.87 ms |
+
+The runs are not the same games (bot turns differ by up to 5%); per turn the kept
+rule is within 4% of the full-state seat for all-hands-on worlds and 4 to 11% under
+it for mixed ones. Split of the blitz mixed world: engine tick 1.3 ms, bot turns
+0.9 ms, following 1.2 ms; worst single tick 18 to 43 ms. The live servers (below)
+ran 1.9 to 5.3 ms a tick on average with 20 bots and three clients, 15 ms at worst:
+under 2% of the second. The lever left is the view itself, for bots and people
+alike: 100 to 300 us per active account per tick late in a world.
+
+**World full.** `AuthError::Server` went with master's home seats; a bot without a
+seat is refused `WorldFull` like anyone. See `--player-seats` above.
+
+**Live check** (release, own databases, ports 7833 and 7834, three headless clients
+each, one of them flying toward the nearest bot home and scanning). Blitz and season
+worlds asked for 23 and 20 bots: 20 seated in each, 4 seats kept, the blitz log
+naming the 3 left out. The clients saw `BOT-` fleets in scanned sectors (7 and 6
+different bots), `bots` on the board with 20 rows, themselves ranked 1 to 3, and
+`chart: aboard` on the sector they had entered. Blitz was killed (SIGKILL) at tick
+626 and started with no `--bot`; season stopped (SIGTERM) and started asking for
+more bots than fit: both resumed 20 bots, added none, and scores went on (blitz: 12
+bots higher after 330 ticks, 2 lower by 0.1, the other check-in ones waiting for
+their next look-in; season, where a building takes minutes: 1 higher, none lower).
+
+**Attention is in ticks.** A check-in bot looks in four times a day of ticks at any
+pace, so in a blitz hour it plays its first five minutes and no more. Short worlds
+want hands-on bots.
+
