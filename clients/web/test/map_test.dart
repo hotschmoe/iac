@@ -231,7 +231,7 @@ void main() {
     _answer(g, _preview(const proto.Hex(2, -1), ratio: 0.95, label: proto.RatioLabel.risky));
     await tester.pump(const Duration(milliseconds: 50));
     expect(_text(tester, 'inspector-ratio'), contains('0.95 RISKY'));
-    expect(_text(tester, 'inspector-ratio'), contains('(F7)'));
+    expect(_text(tester, 'inspector-ratio'), contains('F7 v power 20'));
     expect(_text(tester, 'inspector-basis'), 'ESTIMATE');
 
     await m.moveTo(at(tile, _win));
@@ -240,6 +240,30 @@ void main() {
     expect(_text(tester, 'ore-reserve-Crystal'), '3/3');
     expect(find.byKey(const Key('ore-reserve-Deut')), findsNothing);
     await m.removePointer();
+    await endShell(tester, g);
+  });
+
+  testWidgets('a route into hostiles shows no ratio until the server sends its odds, then the server\'s', (tester) async {
+    final g = await openMap(tester);
+    const lair = proto.Hex(3, 0);
+    await clickHex(tester, lair);
+    await tester.pump(const Duration(milliseconds: 300));
+    final asked = g.sent.whereType<proto.OddsCommand>().expand((c) => c.sectors).toSet();
+    expect(asked, contains(lair));
+    expect(g.sent.whereType<proto.OddsCommand>().every((c) => c.fleetId == 7), isTrue);
+    expect(find.byKey(const Key('route-odds-pending')), findsOneWidget);
+    expect(_text(tester, 'route-preview-text'), contains('RATIO PENDING'));
+    expect(find.textContaining('Worst ratio'), findsNothing);
+
+    final threat = g.fake.sectors[lair]!.threat;
+    g.fake = g.fake.copyWith(odds: {
+      (7, lair): OddsEntry(proto.SectorOdds(sector: lair, threat: threat, ratio: 0.4, label: proto.RatioLabel.deadly), g.fake.tick),
+    });
+    g.notifyListeners();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('route-odds-pending')), findsNothing);
+    expect(_text(tester, 'route-preview-text'), contains('RATIO 0.4 DEADLY'));
+    expect(find.textContaining('0.40 DEADLY', findRichText: true), findsWidgets);
     await endShell(tester, g);
   });
 

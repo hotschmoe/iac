@@ -136,6 +136,10 @@ GameState hostileHere({ui.FleetStatus status = ui.FleetStatus.idle, int scouts =
       const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
     });
 
+GameState rated(GameState s, proto.Hex at, double ratio, proto.RatioLabel label) => s.copyWith(odds: {
+      (1, at): OddsEntry(proto.SectorOdds(sector: at, threat: s.sectors[at]!.threat, ratio: ratio, label: label), s.tick),
+    });
+
 Future<FakeController> pumpFake(WidgetTester tester, GameState s, {Size size = const Size(1440, 900)}) async {
   final c = FakeController(s);
   await pumpShell(tester, screen: Screen.windshield, size: size, controller: c);
@@ -287,8 +291,33 @@ void main() {
     await finish(tester, c);
   });
 
-  testWidgets('firing on deadly odds needs a second F', (tester) async {
+  testWidgets('a fight the server has not rated yet asks for its odds, shows none of its own, and needs a second F', (tester) async {
     final c = await pumpFake(tester, hostileHere());
+    expect(find.byKey(const Key('contact-odds-pending')), findsOneWidget);
+    expect(find.byKey(const Key('contact-odds')), findsNothing);
+    await tester.pump(const Duration(milliseconds: 250));
+    final asked = c.commands.whereType<proto.OddsCommand>().toList();
+    expect(asked, hasLength(1));
+    expect(asked.single.fleetId, 1);
+    expect(asked.single.sectors, [here]);
+
+    await key(tester, LogicalKeyboardKey.keyF, 'f');
+    expect(c.commands.whereType<proto.AttackCommand>(), isEmpty);
+    expect(find.textContaining('NO ODDS YET'), findsOneWidget);
+    await key(tester, LogicalKeyboardKey.keyF, 'f');
+    expect(c.commands.whereType<proto.AttackCommand>(), hasLength(1));
+
+    c.push(rated(c.fake, here, 0.31, proto.RatioLabel.deadly));
+    await tester.pump(const Duration(milliseconds: 50));
+    final shown = tester.widget<Text>(find.byKey(const Key('contact-odds'))).textSpan!.toPlainText();
+    expect(shown, contains('DEADLY  ratio 0.31'));
+    expect(find.byKey(const Key('contact-odds-pending')), findsNothing);
+    await tester.pump(const Duration(seconds: 5));
+    await finish(tester, c);
+  });
+
+  testWidgets('firing on deadly odds needs a second F', (tester) async {
+    final c = await pumpFake(tester, rated(hostileHere(), here, 0.31, proto.RatioLabel.deadly));
     await key(tester, LogicalKeyboardKey.keyF, 'f');
     expect(c.commands.whereType<proto.AttackCommand>(), isEmpty);
     expect(find.textContaining('POOR ODDS'), findsOneWidget);
@@ -306,7 +335,7 @@ void main() {
         proto.NpcFleetInfo(id: 5, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.scout, count: 1)], behavior: proto.NpcBehavior.patrol)
       ]),
     });
-    final c = await pumpFake(tester, s);
+    final c = await pumpFake(tester, rated(s, here, 2.1, proto.RatioLabel.favourable));
     await key(tester, LogicalKeyboardKey.keyF, 'f');
     expect(c.commands.whereType<proto.AttackCommand>(), hasLength(1));
     await finish(tester, c);

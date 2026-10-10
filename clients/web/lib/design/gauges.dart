@@ -184,34 +184,39 @@ class Lamp extends StatelessWidget {
   }
 }
 
-/// A ratio verdict in the console's colours. The bands mirror the server's
-/// `scaling::ratio_label` (fixtures/protocol/ratio_labels.json guards the
-/// match); [RatioInfo.ofLabel] takes the server's own verdict.
+/// The server's verdict on a fleet's odds, in the console's colours. The
+/// ratio and its label always come from the server ([proto.SectorOdds]): it
+/// weighs the ship classes on each side, which power against power does not.
 class RatioInfo {
   final double r;
   final proto.RatioLabel verdict;
   final Color color;
-  final int winPct;
-  const RatioInfo(this.r, this.verdict, this.color, this.winPct);
+  const RatioInfo(this.r, this.verdict, this.color);
 
   String get label => verdict.label;
   bool get deadly => verdict == proto.RatioLabel.deadly;
 
-  /// Sim win rate (like-for-like fleets) behind each verdict.
-  static RatioInfo ofLabel(double r, proto.RatioLabel v) => switch (v) {
-        proto.RatioLabel.safe => RatioInfo(r, v, C.ratioSafe, 99),
-        proto.RatioLabel.favourable => RatioInfo(r, v, C.ratioFav, 97),
-        proto.RatioLabel.even => RatioInfo(r, v, C.ratioEven, 90),
-        proto.RatioLabel.risky => RatioInfo(r, v, C.ratioRisky, 50),
-        proto.RatioLabel.deadly => RatioInfo(r, v, C.ratioDeadly, 5),
+  /// What the verdict means for the fleet, in the server's words.
+  String get outcome => switch (verdict) {
+        proto.RatioLabel.safe => 'keeps 98% of the hull or more',
+        proto.RatioLabel.favourable => 'a sure win, 1 to 15% of the hull lost',
+        proto.RatioLabel.even => 'a win in practice, 15 to 50% of the hull lost',
+        proto.RatioLabel.risky => 'from a lost fleet to a win with half the hull',
+        proto.RatioLabel.deadly => 'the fleet is lost',
       };
 
-  /// Power against power, for sectors the server cannot preview (the one
-  /// the fleet is in, or a far hop of a route).
-  static RatioInfo of(double mine, double theirs) {
-    final r = mine / math.max(1, theirs);
-    return ofLabel(r, proto.RatioLabel.forRatio(r));
-  }
+  static RatioInfo ofLabel(double r, proto.RatioLabel v) => RatioInfo(
+      r,
+      v,
+      switch (v) {
+        proto.RatioLabel.safe => C.ratioSafe,
+        proto.RatioLabel.favourable => C.ratioFav,
+        proto.RatioLabel.even => C.ratioEven,
+        proto.RatioLabel.risky => C.ratioRisky,
+        proto.RatioLabel.deadly => C.ratioDeadly,
+      });
+
+  static RatioInfo fromOdds(proto.SectorOdds o) => ofLabel(o.ratio, o.label);
 
   /// The server's `preview_move` verdict.
   static RatioInfo fromPreview(proto.MovePreview p) => ofLabel(p.ratio, p.label);

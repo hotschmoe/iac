@@ -303,10 +303,9 @@ class Inspector extends StatelessWidget {
     final it = Intel.of(sec, st.tick);
     final th = SectorThreat.of(sec);
     final fleet = con.game.currentFleet;
-    final pw = fleet.power;
     final pv = fleet.id == 0 ? null : st.previewFor(fleet.id, h);
-    final odds = pv != null ? RatioInfo.fromPreview(pv) : th.hostile ? RatioInfo.of(pw, th.power) : null;
-    final oddsPower = pv?.threat.estPower ?? th.power;
+    final rated = fleet.id == 0 ? null : st.oddsFor(fleet.id, h);
+    final odds = rated == null ? null : RatioInfo.fromOdds(rated);
     final d = h.distFromOrigin;
     final rich = sec == null ? 0 : sec.resources.metal.index + sec.resources.crystal.index + sec.resources.deuterium.index;
     final expect = 1.2 + d * .11;
@@ -340,9 +339,10 @@ class Inspector extends StatelessWidget {
             Kv('Ratio',
                 vw: Text.rich(key: const Key('inspector-ratio'), TextSpan(children: [
                   TextSpan(text: '${odds.r.toStringAsFixed(2)} ${odds.label}', style: T.mono(size: 11, color: odds.color, weight: FontWeight.w500)),
-                  TextSpan(text: '  ${oddsPower.round()} vs ${pw.round()} (${fleet.name})', style: T.mono(size: 11, color: C.text3)),
+                  TextSpan(text: '  ${fleet.name} v power ${rated!.threat.estPower.round()}', style: T.mono(size: 11, color: C.text3)),
                 ]))),
             RatioGauge(odds.r),
+            Text(odds.outcome.toUpperCase(), style: T.mono(size: 10, color: C.text3)),
           ],
           if (pv != null)
             Kv('Way home',
@@ -438,19 +438,18 @@ class RoutePanel extends StatelessWidget {
     final st = con.state;
     final fleet = con.game.currentFleet;
     final secs = [for (final h in plan.path) (h, st.sectors[h])];
-    final worst = plan.worstHop >= 0 ? plan.path[plan.worstHop] : null;
-    final worstTh = worst == null ? SectorThreat.clear : SectorThreat.of(st.sectors[worst]);
-    // The server rates the jump out of the fleet's sector; hops beyond it
-    // are rated from the server's threat power.
+    // Every ratio here is the server's: the preview of the first jump and
+    // its `odds` for the hostile hops beyond it.
     final first = fleet.id == 0 || plan.path.isEmpty ? null : st.previewFor(fleet.id, plan.path.first);
-    final wi = plan.worstHop == 0 && first != null
-        ? RatioInfo.fromPreview(first)
-        : worstTh.hostile ? RatioInfo.of(plan.fleetPower, worstTh.power) : null;
+    final hostile = plan.hostileHops;
+    final rated = [for (final h in hostile) if (fleet.id != 0) st.oddsFor(fleet.id, h)].nonNulls.toList();
+    final worst = rated.isEmpty ? null : rated.reduce((a, b) => b.ratio < a.ratio ? b : a);
+    final unrated = hostile.length - rated.length;
+    final wi = worst == null ? null : RatioInfo.fromOdds(worst);
     final destSec = st.sectors[info.dest];
     final dth = SectorThreat.of(destSec);
-    final di = plan.hops == 1 && first != null
-        ? RatioInfo.fromPreview(first)
-        : dth.hostile ? RatioInfo.of(plan.fleetPower, dth.power) : null;
+    final dOdds = fleet.id == 0 ? null : st.oddsFor(fleet.id, info.dest);
+    final di = dth.hostile && dOdds != null ? RatioInfo.fromOdds(dOdds) : null;
     final retOk = plan.hops == 1 && first != null ? first.canReturn : plan.canReturn;
     final fuelPct = fleet.fuelMax > 0 ? math.max(0, plan.fuelLeft) / fleet.fuelMax : 0.0;
     final per = math.max(1, fleet.jumpFuel);
@@ -511,10 +510,13 @@ class RoutePanel extends StatelessWidget {
           Kv('Worst ratio',
               vw: Text.rich(TextSpan(children: [
                 TextSpan(text: '${wi.r.toStringAsFixed(2)} ${wi.label}', style: T.mono(size: 11, color: wi.color, weight: FontWeight.w500)),
-                TextSpan(text: ' vs T${worstTh.rating}', style: T.mono(size: 11, color: C.text3)),
+                TextSpan(text: ' vs T${worst!.threat.rating} at ${worst.sector.q},${worst.sector.r}', style: T.mono(size: 11, color: C.text3)),
               ]))),
           RatioGauge(wi.r),
         ],
+        if (unrated > 0)
+          Text('$unrated HOSTILE HOP${unrated == 1 ? '' : 'S'} NOT RATED YET: ASKING THE SERVER',
+              key: const Key('route-odds-pending'), style: T.mono(size: 10, color: C.text3)),
         Container(
           margin: const EdgeInsets.only(top: 8),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -524,7 +526,7 @@ class RoutePanel extends StatelessWidget {
             TextSpan(children: [
               TextSpan(
                   text: '> SECTOR (${info.dest.q},${info.dest.r}) THREAT ${destSec == null ? 'UNKNOWN' : dth.hostile ? 'T${dth.rating}' : 'CLEAR'}'
-                      '${dth.hostile ? ', EST NPC POWER ${dth.power.round()}, FLEET ${plan.fleetPower.round()}, RATIO ${di!.r.toStringAsFixed(1)} ' : ''}'),
+                      '${dth.hostile ? ', EST NPC POWER ${dth.power.round()}, ${di == null ? 'RATIO PENDING' : 'RATIO ${di.r.toStringAsFixed(1)} '}' : ''}'),
               if (di != null) TextSpan(text: di.label, style: TextStyle(color: di.color)),
               if (first != null && plan.hops > 1) TextSpan(text: '. NEXT HOP (${first.target.q},${first.target.r}) T${first.threat.rating} ${first.threat.basis.wire.toUpperCase()}, RATIO ${first.ratio.toStringAsFixed(1)} ${first.label.label}'),
               TextSpan(text: '. FUEL ${plan.fuel} OF ${fleet.fuel} ($hopsLeft HOPS LEFT TO RETURN)'),
@@ -634,7 +636,9 @@ class HoldPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final fleet = con.game.currentFleet;
     final th = SectorThreat.of(con.state.sectors[ahead]);
-    final o = RatioInfo.of(fleet.power, th.power);
+    con.game.requestOdds(fleet.id, [ahead]);
+    final rated = con.state.oddsFor(fleet.id, ahead);
+    final o = rated == null ? null : RatioInfo.fromOdds(rated);
     return ConsolePanel(
       key: const Key('hold-panel'),
       title: 'Route held',
@@ -651,9 +655,14 @@ class HoldPanel extends StatelessWidget {
         ]),
         const SizedBox(height: 8),
         Kv('Hostiles', v: th.compLabel, vc: C.threat(th.rating)),
-        Kv('Their power', v: '${th.power.round()} vs your ${fleet.power.round()}'),
-        Kv('Ratio', v: '${o.r.toStringAsFixed(2)} ${o.label}', vc: o.color),
-        RatioGauge(o.r),
+        Kv('Their power', v: '${th.power.round()}'),
+        if (o == null)
+          Kv('Ratio', v: 'asking the server')
+        else ...[
+          Kv('Ratio', v: '${o.r.toStringAsFixed(2)} ${o.label}', vc: o.color),
+          RatioGauge(o.r),
+          Text(o.outcome.toUpperCase(), style: T.mono(size: 10, color: C.text3)),
+        ],
         const SizedBox(height: 8),
         Wrap(spacing: 6, runSpacing: 6, children: [
           ConsoleButton('Continue', danger: true, onPressed: onContinue),
