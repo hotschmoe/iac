@@ -14,6 +14,7 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/overview/overview_scenes.dart';
 import '../../state/game_controller.dart';
+import '../onboarding.dart';
 import 'ov_panel.dart';
 import 'overview_cards.dart';
 import 'overview_logic.dart';
@@ -88,6 +89,7 @@ class _OverviewViewState extends State<OverviewView> {
         final hasRank = eco.rank != null;
         final content = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           row([_Hero(narrow: narrow), _NextCard(con: con)], [8, 4]),
+          FirstHourCard(bottomGap: gap),
           Padding(padding: EdgeInsets.only(bottom: gap), child: ResourceTiles(narrow: narrow)),
           Padding(padding: EdgeInsets.only(bottom: gap), child: QueueCards(columns: narrow ? 1 : (wide ? 4 : 2))),
           row([_FleetsPanel(con: con, avail: (wide ? (w - 2 * pad - gap) * 8 / 12 : w - 2 * pad) - 28), _RadarPanel(con: con)], [8, 4]),
@@ -235,7 +237,7 @@ class _NextCard extends StatelessWidget {
     }
 
     final raid = n.urgent && n.action == NextAction.openDefence && d != null;
-    return OvPanel(
+    return GuideTarget(n.action == NextAction.queueBuild ? 'build' : 'next-up', child: OvPanel(
       key: Key(raid ? 'raid-card' : 'next-card'),
       title: n.kicker,
       titleColor: n.urgent ? C.ember : C.a400,
@@ -262,7 +264,7 @@ class _NextCard extends StatelessWidget {
         if (n.cost != null) Padding(padding: const EdgeInsets.only(bottom: 8), child: costRow(n.cost!)),
         if (n.disabledReason != null) WhyText(n.disabledReason!),
       ]),
-    );
+    ));
   }
 
   Widget _kv(String k, String v, Color c) => Padding(

@@ -16,6 +16,7 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/windshield/geometry.dart';
 import '../../state/game_controller.dart';
+import '../onboarding.dart';
 
 const voice = {
   proto.TerrainType.empty: 'Sector quiet. No signal above background.',
@@ -762,7 +763,7 @@ class Dock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tiles = [for (final a in actions) _tile(a)];
+    final tiles = [for (final a in actions) GuideTarget('dock-${a.id}', child: _tile(a))];
     return ConsolePanel(
       child: narrow ? Row(children: [for (final t in tiles) Expanded(child: t)]) : Row(mainAxisSize: MainAxisSize.min, children: tiles),
     );

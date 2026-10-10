@@ -54,6 +54,11 @@ class ConsolePrefs extends ChangeNotifier {
     _set('iac.reduce', v ? '1' : '0');
   }
 
+  /// Onboarding progress of one account (`GameController.account`).
+  String? guide(String account) => _kv.read('iac.guide|$account');
+
+  void setGuide(String account, String record) => _kv.write('iac.guide|$account', record);
+
   void setQuality(Quality? q) {
     pinned = q;
     _set('iac.quality', q?.name ?? 'auto');

@@ -12,6 +12,7 @@ import '../../design/tokens.dart';
 import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
+import '../onboarding.dart';
 import 'ov_panel.dart';
 import 'overview_logic.dart';
 
@@ -210,7 +211,7 @@ class QueueCards extends StatelessWidget {
   Widget build(BuildContext context) {
     final con = Console.of(context);
     final cards = <Widget>[
-      _BuildSlotA(con),
+      GuideTarget('build', child: _BuildSlotA(con)),
       _BuildSlotB(con),
       _ResearchCard(con),
       _ShipyardCard(con),

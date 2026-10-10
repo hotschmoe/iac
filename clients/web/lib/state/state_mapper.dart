@@ -160,10 +160,11 @@ class StateMapper {
     ));
   }
 
-  /// The server just issued this account's token. It is shown once, so it
-  /// goes in the log and alerts; [saved] says whether the browser kept it.
+  /// The server just issued this account's token. It is shown once: the
+  /// guide shows it with a copy button and the alert keeps it for the
+  /// session; [saved] says whether the browser kept it.
   void noticeToken(String token, {required bool saved}) {
-    pushLog('Account token: $token (keep it; it is your password)', EventLevel.bright);
+    pushLog('New account: save the account token (it is your password; see Alerts)', EventLevel.bright);
     _pushAlert(Alert(
       icon: '!',
       message: 'New account token',

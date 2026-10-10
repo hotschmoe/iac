@@ -14,13 +14,15 @@ import '../state/game_controller.dart';
 import 'homeworld/homeworld_view.dart';
 import 'hud.dart';
 import 'map/map_view.dart';
+import 'onboarding.dart';
 import 'overlays.dart';
 import 'overview/overview_view.dart';
 import 'rail.dart';
 import 'windshield/windshield_view.dart';
 
-/// The operator-console frame: HUD on top, rail left (bottom bar when narrow),
-/// the four screens, and the overlays (toasts, help, alerts, `/` palette).
+/// The operator-console frame: HUD on top, the guide strip while a lesson is
+/// open, rail left (bottom bar when narrow), the four screens, and the
+/// overlays (toasts, help, alerts, `/` palette).
 class Shell extends StatefulWidget {
   final GameController controller;
   final ConsolePrefs? prefs;
@@ -205,9 +207,11 @@ class _ShellState extends State<Shell> {
         child: LayoutBuilder(builder: (context, box) {
           final narrow = box.maxWidth < Bp.narrow;
           return ListenableBuilder(
-            listenable: widget.controller,
+            listenable: Listenable.merge([widget.controller, _con.onboarding]),
             builder: (context, _) {
               final badges = {Screen.overview: widget.controller.state.alerts.where((a) => a.level == AlertTone.glow).length};
+              final lesson = _con.onboarding.current?.screen;
+              final mark = lesson == _screen ? null : lesson;
               return Stack(children: [
                 Column(children: [
                   Hud(
@@ -217,13 +221,14 @@ class _ShellState extends State<Shell> {
                     onHelp: () => setState(() => _help = !_help),
                     onAlerts: () => setState(() => _alerts = !_alerts),
                   ),
+                  GuideStrip(screen: _screen, narrow: narrow),
                   Expanded(
                     child: Row(children: [
-                      if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges),
+                      if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark),
                       Expanded(child: _screens()),
                     ]),
                   ),
-                  if (narrow) Rail(active: _screen, bottom: true, onGo: _go, badges: badges),
+                  if (narrow) Rail(active: _screen, bottom: true, onGo: _go, badges: badges, mark: mark),
                 ]),
                 ToastLayer(toasts: _toasts, narrow: narrow),
                 if (_alerts) AlertsPopover(con: _con, narrow: narrow, onClose: () => setState(() => _alerts = false)),

@@ -130,9 +130,10 @@ class HelpOverlay extends StatelessWidget {
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
                   child: ListenableBuilder(
-                    listenable: con.prefs,
+                    listenable: Listenable.merge([con.prefs, con.onboarding]),
                     builder: (context, _) {
                       final p = con.prefs;
+                      final guide = con.onboarding;
                       return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         const Lbl('Settings'),
                         const SizedBox(height: 6),
@@ -141,6 +142,7 @@ class HelpOverlay extends StatelessWidget {
                           ConsoleButton('Jump retrace ${p.retrace ? 'on' : 'off'}', small: true, active: p.retrace, onPressed: () => p.setRetrace(!p.retrace)),
                           ConsoleButton('Scanlines ${p.scanlines ? 'on' : 'off'}', small: true, active: p.scanlines, onPressed: () => p.setScanlines(!p.scanlines)),
                           ConsoleButton('Reduce motion ${p.reduceMotion ? 'on' : 'off'}', small: true, active: p.reduceMotion, onPressed: () => p.setReduceMotion(!p.reduceMotion)),
+                          ConsoleButton('Guide ${guide.active ? 'on' : 'off'}', key: const Key('set-guide'), small: true, active: guide.active, onPressed: () => guide.setActive(!guide.active)),
                         ]),
                         const SizedBox(height: 8),
                         Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
