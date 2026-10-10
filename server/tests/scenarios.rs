@@ -10,7 +10,7 @@ use common::*;
 use futures_util::SinkExt;
 use iac_shared::constants::DEFAULT_WORLD_SEED;
 use iac_shared::hex::Hex;
-use iac_shared::world::WorldGen;
+use iac_shared::world::{WorldGen, home_seats};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -350,7 +350,7 @@ fn rows(board: &Value, list: &str) -> Vec<(String, f64)> {
 
 #[tokio::test]
 async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is_killed() {
-    let port = 17955;
+    let port = 17956;
     let db = fresh_db(port);
     let roster = ["--pace", "test", "--bot", "turtle:hands-on:2", "--bot", "explorer:hands-on", "--bot", "miner:hands-on"];
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -407,5 +407,41 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
     after.sort();
     assert_eq!(after, names, "the same bots, listed by --bot or not, and no new ones");
     assert_eq!(rows(&board, "entries").len(), 1);
+    remove_db(&db);
+}
+
+#[tokio::test]
+async fn a_full_world_turns_a_new_name_away_and_still_admits_its_settlers_after_a_restart() {
+    let port = 17955;
+    let db = fresh_db(port);
+    let seats = home_seats().count();
+
+    let token = {
+        let _guard = start_server(port, &db);
+        let mut homes = Vec::new();
+        let mut first_token = None;
+        for i in 0..seats {
+            let (mut ws, reply) = login(port, &format!("Settler{i}"), None).await;
+            assert_eq!(reply["success"], true, "seat {i}: {reply}");
+            first_token.get_or_insert_with(|| reply["token"].as_str().unwrap().to_string());
+            homes.push(hex_of(&full_state(&mut ws).await["player"]["homeworld"]));
+        }
+        homes.sort_by_key(|h| h.to_key());
+        homes.dedup();
+        assert_eq!(homes.len(), seats, "every settler has a seat of their own");
+
+        let (_ws, refused) = login(port, "Latecomer", None).await;
+        assert_eq!((refused["success"].clone(), refused["code"].clone()), (json!(false), json!("WorldFull")), "{refused}");
+        assert!(refused["message"].as_str().unwrap().contains("world is full"), "{refused}");
+        assert!(refused.get("token").is_none() && refused.get("player_id").is_none(), "{refused}");
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        first_token.unwrap()
+    };
+
+    let _guard = start_server(port, &db);
+    let (_ws, refused) = login(port, "Latecomer", None).await;
+    assert_eq!(refused["code"], "WorldFull", "the world is still full after a restart: {refused}");
+    let (_ws, back) = login(port, "Settler0", Some(&token)).await;
+    assert_eq!(back["success"], true, "{back}");
     remove_db(&db);
 }

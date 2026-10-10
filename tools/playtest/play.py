@@ -167,9 +167,21 @@ def last_tick(name):
     return fs["tick"] if fs else None
 
 
+def login_refusal(name):
+    """Why the server last refused this player's login ("WorldFull this world is full: ..."), or None."""
+    auth = [m for m in log_lines(name)[0] if m.get("type") == "auth_result"]
+    if auth and not auth[-1].get("success"):
+        return " ".join(x for x in (auth[-1].get("code"), auth[-1].get("message")) if x)
+    return None
+
+
 def no_state(name):
     header(name)
-    print("No state received (server or client down?). Try again shortly.")
+    refusal = login_refusal(name)
+    if refusal:
+        print(f"LOGIN REFUSED: {refusal}")
+    else:
+        print("No state received (server or client down?). Try again shortly.")
 
 
 def raw_events(msgs):

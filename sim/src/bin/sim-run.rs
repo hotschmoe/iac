@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use iac_shared::constants::DEFAULT_WORLD_SEED;
 use iac_shared::pace::Pace;
+use iac_shared::world::home_seats;
 use iac_sim::bot::{Attention, Bot, Personality, Style, DAY, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
 use iac_sim::headless::{Headless, PlayerSummary, ScoreBreakdown};
 use iac_sim::script::IdlePlayer;
@@ -24,7 +25,8 @@ const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--sea
   --seat      who plays; repeatable. <personality>:<attention>[:<count>] or idle[:<count>]
                 personality  turtle | miner | raider | explorer | mixed | all
                 attention    check-in | hybrid | hands-on | all
-              default: all:all and idle (every style once, and a player that never acts)
+              default: all:all and idle (every style once, and a player that never acts);
+              a world has 24 home seats, so at most 24 players in all
   --sessions  look-ins per day of check-in and hybrid players (default 4, at most 24)
   --ticks/--hours/--days  simulated duration; a tick is one second (default --days 1)
   --every     ticks between score samples (default: a day; a tenth of a run under two days)
@@ -113,6 +115,10 @@ fn parse_args() -> Result<Args, String> {
     if args.seats.is_empty() {
         args.seats = parse_seat("all:all")?;
         args.seats.push(Kind::Idle);
+    }
+    let homes = home_seats().count();
+    if args.seats.len() > homes {
+        return Err(format!("--seat asks for {} players; a world has {homes} home seats", args.seats.len()));
     }
     Ok(args)
 }

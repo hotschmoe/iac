@@ -291,6 +291,7 @@ enum ErrorCode {
   invalidName(2002),
   tokenRequired(2003),
   invalidToken(2004),
+  worldFull(2005),
   serverError(5000);
 
   final int code;

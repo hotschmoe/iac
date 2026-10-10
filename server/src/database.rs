@@ -1894,7 +1894,7 @@ mod tests {
             .collect();
         let seat = |engine: &mut GameEngine| {
             let mut roster = Roster::resume(engine);
-            assert_eq!(roster.enlist(engine, &wanted, || "b".repeat(64)), (wanted.len(), None));
+            assert_eq!(roster.enlist(engine, &wanted, 0, || "b".repeat(64)), (wanted.len(), None));
             roster
         };
         let play = |engine: &mut GameEngine, roster: &mut Roster| {
@@ -1928,7 +1928,7 @@ mod tests {
             hosted = GameEngine::restore(stored);
             hosted.attach_persist(Box::new(Persister::spawn(db)));
             hosted_bots = Roster::resume(&hosted);
-            assert_eq!(hosted_bots.enlist(&mut hosted, &wanted, || "b".repeat(64)), (0, None));
+            assert_eq!(hosted_bots.enlist(&mut hosted, &wanted, 0, || "b".repeat(64)), (0, None));
         }
 
         let score = |engine: &GameEngine| -> f32 {

@@ -10,6 +10,7 @@ use iac_shared::constants::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_WORLD_SEED};
 use iac_shared::pace::Pace;
 
 use iac_sim::bot::{Roster, Style, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
+use iac_sim::engine::AuthError;
 use iac_sim::GameEngine;
 
 use crate::database::{Database, Persister};
@@ -24,6 +25,7 @@ const TICK_PERIOD: Duration = Duration::from_secs(1);
 const TICK_BUDGET_WARN: Duration = Duration::from_millis(100);
 /// How often the log says what a tick costs.
 const LOAD_REPORT_TICKS: u32 = 300;
+const DEFAULT_PLAYER_SEATS: usize = 4;
 
 #[derive(Parser, Debug)]
 #[command(name = "iac-server", about = "In Amber Clad - Game Server")]
@@ -63,11 +65,16 @@ struct Args {
     /// <personality>:<attention>[:<count>], personality one of turtle,
     /// miner, raider, explorer, mixed, attention one of check-in, hybrid,
     /// hands-on, either may be `all`. Bots the world already has keep
-    /// playing whether listed or not; missing ones are added while the
-    /// world has a free homeworld, so list fewer than it has homes to
-    /// leave room for players.
+    /// playing whether listed or not; missing ones are added in the order
+    /// listed until --player-seats stops them.
     #[arg(long = "bot", value_name = "SPEC", value_parser = parse_bots)]
     bots: Vec<BotSeats>,
+
+    /// Home seats (a world has 24) that new bots leave free for players: a
+    /// bot is added only while more than this many are free. 0 lets bots
+    /// fill the world.
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_PLAYER_SEATS)]
+    player_seats: usize,
 
     /// Look-ins per day of new check-in and hybrid bots
     #[arg(long, default_value_t = DEFAULT_SESSIONS_PER_DAY, value_parser = clap::value_parser!(u64).range(1..=MAX_SESSIONS_PER_DAY))]
@@ -197,7 +204,7 @@ async fn main() {
 }
 
 /// The world's bots: those it already has, and those `--bot` asks for
-/// beyond them. A world with no home left seats as many as it can.
+/// beyond them, as far as the seats kept for players allow.
 fn seat_bots(engine: &mut GameEngine, args: &Args) -> Roster {
     let mut roster = Roster::resume(engine);
     let resumed = roster.seats().len();
@@ -207,14 +214,20 @@ fn seat_bots(engine: &mut GameEngine, args: &Args) -> Roster {
         .flat_map(|seats| seats.0.iter())
         .map(|&style| Style { sessions_per_day: args.bot_sessions, ..style })
         .collect();
-    let (added, refusal) = roster.enlist(engine, &wanted, auth::generate_token);
-    if let Some(refusal) = refusal {
-        warn!(
-            "Seated {added} new bots, not all that --bot asks for: {refusal:?} (no free homeworld, or no free name)"
-        );
+    let (added, refusal) = roster.enlist(engine, &wanted, args.player_seats, auth::generate_token);
+    let free = engine.free_home_seats();
+    match refusal {
+        Some(AuthError::WorldFull) => warn!(
+            "--bot asks for {} bots; the world has {} and {free} free home seats, of which --player-seats keeps {} for players. Seated {added} new ones and left the rest out",
+            wanted.len(),
+            roster.seats().len(),
+            args.player_seats,
+        ),
+        Some(refusal) => warn!("Seated {added} new bots and stopped: {refusal:?}"),
+        None => {}
     }
     if !roster.seats().is_empty() {
-        info!("Bots:       {} ({resumed} resumed, {added} new)", roster.seats().len());
+        info!("Bots:       {} ({resumed} resumed, {added} new), {free} home seats free", roster.seats().len());
     }
     roster
 }

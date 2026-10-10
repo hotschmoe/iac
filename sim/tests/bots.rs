@@ -40,7 +40,7 @@ fn hosted(seed: u64) -> (GameEngine, Roster, u64) {
     let mut engine = GameEngine::new(seed, Pace::parse("blitz").unwrap());
     let human = engine.authenticate("Human", None, false, || "h".repeat(64)).expect("register").player_id;
     let mut roster = Roster::default();
-    let (added, refusal) = roster.enlist(&mut engine, &styles(), || "b".repeat(64));
+    let (added, refusal) = roster.enlist(&mut engine, &styles(), 0, || "b".repeat(64));
     assert_eq!((added, refusal), (styles().len(), None));
     (engine, roster, human)
 }
@@ -174,7 +174,7 @@ fn a_world_of_bots_resumed_from_a_snapshot_plays_on_as_if_never_stopped() {
     let mut resumed = GameEngine::restore(snapshot);
     let mut resumed_roster = Roster::resume(&resumed);
     assert_eq!(resumed_roster.seats().len(), styles().len());
-    let (added, refusal) = resumed_roster.enlist(&mut resumed, &styles(), || "b".repeat(64));
+    let (added, refusal) = resumed_roster.enlist(&mut resumed, &styles(), 0, || "b".repeat(64));
     assert_eq!((added, refusal), (0, None), "the bots the world already has are the ones asked for");
 
     for leg in 0..3 {

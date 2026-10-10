@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{Density, ResourceKind, Resources, ShipClass, ShipStats};
+use crate::constants::{Density, ResourceKind, Resources, ShipClass, ShipStats, Zone};
 use crate::pace::Pace;
 
 pub const MAX_BUILDING_LEVEL: u8 = 20;
@@ -993,10 +993,7 @@ pub const AMBUSH_GUARD_SHARE: f32 = 0.6;
 
 /// (class, count, stat multiplier) of the guard waiting in a derelict `dist` rings out.
 pub fn ambush_guard(dist: u16) -> (ShipClass, u8, f32) {
-    let class = npc_class(dist);
-    let m = npc_stat_multiplier(dist);
-    let count = (AMBUSH_GUARD_SHARE * npc_power(dist) / (ship_power(class) * m)).round();
-    (class, count.clamp(1.0, NPC_MAX_SHIPS as f32) as u8, m)
+    npc_group(dist, AMBUSH_GUARD_SHARE * npc_power(dist))
 }
 
 /// Chance a clean boarding also finds a ship that can be recovered.
@@ -1020,6 +1017,8 @@ pub const NPC_POWER_BASE: f32 = 4.0;
 /// NPC group power grows by this factor per ring.
 pub const NPC_POWER_GROWTH: f32 = 1.22;
 pub const NPC_MAX_SHIPS: usize = 32;
+/// The most an NPC ship's hull, shield and weapon are scaled by.
+pub const NPC_STAT_MULT_MAX: f32 = 1.3;
 pub const MAX_THREAT: u8 = 9;
 /// Observed Aggressive and Swarm groups are rated this much stronger than
 /// their ships add up to: they come to you.
@@ -1036,26 +1035,42 @@ pub fn npc_power(dist: u16) -> f32 {
     NPC_POWER_BASE * NPC_POWER_GROWTH.powi(dist.max(1) as i32 - 1)
 }
 
+/// Scouts through the Inner Ring: the first heavier class waits past it.
 pub fn npc_class(dist: u16) -> ShipClass {
-    match dist {
-        0..=5 => ShipClass::Scout,
-        6..=12 => ShipClass::Corvette,
-        13..=20 => ShipClass::Frigate,
-        _ => ShipClass::Cruiser,
+    if dist <= Zone::INNER_RING_RADIUS {
+        ShipClass::Scout
+    } else if dist <= 12 {
+        ShipClass::Corvette
+    } else if dist <= 20 {
+        ShipClass::Frigate
+    } else {
+        ShipClass::Cruiser
     }
 }
 
-pub fn npc_stat_multiplier(dist: u16) -> f32 {
-    (0.6 + 0.02 * dist as f32).min(1.3)
+/// The stat multiplier a group at `dist` is sized around.
+fn npc_base_multiplier(dist: u16) -> f32 {
+    (0.6 + 0.02 * dist as f32).min(NPC_STAT_MULT_MAX)
 }
 
-/// (class, ship count, stat multiplier) of the group at `dist`. The count
-/// makes the group's real power land on `npc_power(dist)`.
-pub fn npc_composition(dist: u16) -> (ShipClass, u8, f32) {
+/// (class, ship count, stat multiplier) of a group worth `power` at `dist`.
+/// The count comes from the ring's base multiplier, raised if the ships
+/// would otherwise need more than `NPC_STAT_MULT_MAX`; the multiplier is then
+/// fitted so the ships add up to `power`. Only the ship limit leaves a group
+/// short of it.
+fn npc_group(dist: u16, power: f32) -> (ShipClass, u8, f32) {
     let class = npc_class(dist);
-    let m = npc_stat_multiplier(dist);
-    let count = (npc_power(dist) / (ship_power(class) * m)).round();
-    (class, count.clamp(1.0, NPC_MAX_SHIPS as f32) as u8, m)
+    let per_ship = ship_power(class);
+    let sized = (power / (per_ship * npc_base_multiplier(dist))).round();
+    let needed = (power / (per_ship * NPC_STAT_MULT_MAX)).ceil();
+    let count = sized.max(needed).clamp(1.0, NPC_MAX_SHIPS as f32);
+    (class, count as u8, (power / (per_ship * count)).min(NPC_STAT_MULT_MAX))
+}
+
+/// (class, ship count, stat multiplier) of the group at `dist`: its real
+/// power is `npc_power(dist)`.
+pub fn npc_composition(dist: u16) -> (ShipClass, u8, f32) {
+    npc_group(dist, npc_power(dist))
 }
 
 /// Chance in percent that a sector at `dist` holds a group.

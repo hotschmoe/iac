@@ -4,20 +4,25 @@ import 'package:flutter/widgets.dart';
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
+import 'attention.dart';
 import 'economy_view.dart';
+import 'notifier.dart';
+import 'onboarding.dart';
 import 'prefs.dart';
 import 'route_runner.dart';
 import 'sfx.dart';
 import 'toasts.dart';
 
 /// Everything a screen needs besides the [GameController]: preferences,
-/// toasts, sound, the route runner, the economy view model. Provided by the
-/// shell and read with [Console.of].
+/// toasts, sound, the route runner, the economy view model, the guide and
+/// the background notices. Provided by the shell and read with [Console.of].
 class Console {
   final GameController game;
   final ConsolePrefs prefs;
   final ToastController toasts;
   final Sfx sfx;
+  final Onboarding onboarding;
+  final Attention attention;
   late final RouteRunner runner = RouteRunner(game, toasts);
 
   /// Switch screens (set by the shell).
@@ -26,10 +31,18 @@ class Console {
   /// Open the `/` command palette with optional text (set by the shell).
   void Function([String text]) openPalette = ([_ = '']) {};
 
-  Console({required this.game, required this.prefs, required this.toasts, required this.sfx}) {
+  Console({required this.game, required this.prefs, required this.toasts, required this.sfx, required Notifier notifier})
+      : onboarding = Onboarding(game, prefs),
+        attention = Attention(game: game, prefs: prefs, toasts: toasts, notifier: notifier) {
     _lastTick = game.state.tick;
     lastTickAt = clock.now();
     game.addListener(_onGame);
+    onboarding.onLearned = _onLearned;
+  }
+
+  void _onLearned(Lesson l) {
+    play('ok');
+    if (!l.guided) toasts.show('First hour', '${l.title}: done.', tone: ToastTone.teal);
   }
 
   int _lastTick = -1;
@@ -76,6 +89,8 @@ class Console {
 
   void dispose() {
     game.removeListener(_onGame);
+    onboarding.dispose();
+    attention.dispose();
     runner.dispose();
   }
 

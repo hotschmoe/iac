@@ -9,9 +9,31 @@ use std::sync::Arc;
 
 use xxhash_rust::xxh3::Xxh3;
 
-use crate::constants::{Density, ShipClass, TerrainType, Zone};
+use crate::constants::{Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
 use crate::scaling::{npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ship_power};
-use crate::hex::Hex;
+use crate::hex::{hex_ring, Hex};
+
+/// A home seat is a sector of the home band whose `q - r` is a multiple of
+/// three. Every rotation and mirror of the grid maps that lattice onto
+/// itself, so the seat set has no favoured direction, and no two of its
+/// points are adjacent: the nearest seats sit two hexes apart.
+pub fn is_home_seat(coord: Hex) -> bool {
+    (HOMEWORLD_MIN_DIST..=HOMEWORLD_MAX_DIST).contains(&coord.dist_from_origin())
+        && (i32::from(coord.q) - i32::from(coord.r)).rem_euclid(3) == 0
+}
+
+/// Every home seat of a world, inner ring first.
+pub fn home_seats() -> impl Iterator<Item = Hex> {
+    (HOMEWORLD_MIN_DIST..=HOMEWORLD_MAX_DIST)
+        .flat_map(|ring| hex_ring(Hex::ORIGIN, ring))
+        .filter(|coord| is_home_seat(*coord))
+}
+
+/// A home seat or a sector beside one. No hostile group is generated here
+/// and none wanders in.
+pub fn is_home_ground(coord: Hex) -> bool {
+    is_home_seat(coord) || coord.neighbors().into_iter().any(is_home_seat)
+}
 
 /// Seed-based sector generation. Pure function — same inputs always produce same output.
 /// Results are memoised per generator (the map is only ever read at the same
@@ -72,8 +94,8 @@ impl WorldGen {
 
         let terrain = self.roll_terrain(&mut rng, zone);
         let resources = self.roll_resources(&mut rng, zone, terrain, dist);
-        let npc_template = self.roll_npc_presence(&mut rng, dist);
-        let has_derelict = self.roll_derelict(&mut rng, terrain, dist);
+        let npc_template = self.roll_npc_presence(&mut rng, coord);
+        let has_derelict = self.roll_derelict(&mut rng, terrain, coord);
 
         SectorTemplate {
             coord,
@@ -219,11 +241,8 @@ impl WorldGen {
         }
         let key_a = u64::from(a.to_key());
         let key_b = u64::from(b.to_key());
-        let edge_seed = if key_a < key_b {
-            self.hash_two(key_a, key_b)
-        } else {
-            self.hash_two(key_b, key_a)
-        };
+        let pair = self.hash_two(key_a.min(key_b), key_a.max(key_b));
+        let edge_seed = self.hash_two(pair, self.world_seed);
 
         let max_dist = a.dist_from_origin().max(b.dist_from_origin());
         let zone = Zone::from_distance(max_dist);
@@ -329,7 +348,8 @@ impl WorldGen {
         }
     }
 
-    fn roll_npc_presence(&self, rng: &mut DeterministicRng, dist: u16) -> Option<NpcTemplate> {
+    fn roll_npc_presence(&self, rng: &mut DeterministicRng, coord: Hex) -> Option<NpcTemplate> {
+        let dist = coord.dist_from_origin();
         if dist == 0 || f32::from(rng.range(0..=99)) >= npc_presence_pct(dist) {
             return None;
         }
@@ -343,13 +363,17 @@ impl WorldGen {
         } else {
             NpcBehaviorType::Swarm
         };
+        if behavior != NpcBehaviorType::Passive && is_home_ground(coord) {
+            return None;
+        }
         Some(NpcTemplate { ship_class, count, behavior, stat_multiplier })
     }
 
     /// Dead ships drift where other ships died: debris fields and the
-    /// empty dark, and only beyond the shipping lanes near the hub.
-    fn roll_derelict(&self, rng: &mut DeterministicRng, terrain: TerrainType, dist: u16) -> bool {
-        if dist < crate::constants::DERELICT_MIN_DIST {
+    /// empty dark, and only beyond the shipping lanes near the hub. Never on
+    /// a home seat: a boarding can wake a guard.
+    fn roll_derelict(&self, rng: &mut DeterministicRng, terrain: TerrainType, coord: Hex) -> bool {
+        if coord.dist_from_origin() < crate::constants::DERELICT_MIN_DIST || is_home_seat(coord) {
             return false;
         }
         if terrain != TerrainType::DebrisField && terrain != TerrainType::Empty {
@@ -358,7 +382,8 @@ impl WorldGen {
         rng.range(0..=99) < crate::constants::DERELICT_SPAWN_PCT
     }
 
-    fn sector_seed(&self, coord: Hex) -> u64 {
+    /// The seed every roll about `coord` in this world starts from.
+    pub fn sector_seed(&self, coord: Hex) -> u64 {
         self.hash_two(u64::from(coord.to_key()), self.world_seed)
     }
 

@@ -179,12 +179,14 @@ def check_npc_gradient(sim, rust):
         d = row["dist"]
         check(f"npc power d={d}", row["power"], sim.npc_power(d), 1e-4)
         check(f"threat d={d}", row["threat"], sim.threat(d))
-        if row["class"].lower() != sim.npc_class(d):
-            problems.append(f"npc class d={d}: rust {row['class']} vs sim {sim.npc_class(d)}")
-        mult = min(1.3, 0.6 + 0.02 * d)
-        want = min(32, max(1, round(sim.npc_power(d) / (sim.ship_power(sim.npc_class(d)) * mult))))
-        check(f"npc count d={d}", row["count"], want)
+        cls, count, mult = sim.npc_group(d)
+        if row["class"].lower() != cls:
+            problems.append(f"npc class d={d}: rust {row['class']} vs sim {cls}")
+        check(f"npc count d={d}", row["count"], count)
         check(f"npc stat multiplier d={d}", row["mult"], mult, 1e-5)
+        check(f"npc group power d={d}", row["group_power"], count * mult * sim.ship_power(cls), 1e-4)
+        if count < sim.NPC_MAX_SHIPS:
+            check(f"npc group power is the ring estimate d={d}", row["group_power"], row["power"], 1e-4)
         check(f"npc presence d={d}", row["presence"], sim.npc_presence(d), 1e-5)
         check(f"npc passive share d={d}", row["passive"], sim.npc_passive_frac(d), 1e-5)
         check(f"npc respawn d={d}", row["respawn_h"], sim.npc_respawn_h(d), 1e-5)

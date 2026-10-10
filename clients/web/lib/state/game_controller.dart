@@ -39,8 +39,9 @@ const shipBatches = [1, 5, 10];
 
 enum LinkState { idle, connecting, live, reconnecting, demo }
 
-/// The server refused the login in a way the player can fix by typing a
-/// different name or token.
+/// The server refused the login for a reason the login form can show: a
+/// different name or token fixes it, or the world has no free home seat and
+/// only an existing account can still log in.
 class AuthRejection {
   final proto.ErrorCode? code;
   final String message;
@@ -92,7 +93,12 @@ class GameController extends ChangeNotifier {
   /// Set while the server is refusing the login; the UI shows the login form
   /// again with this message.
   AuthRejection? authRejection;
-  ({String token, bool saved})? _issuedToken;
+
+  /// The token of an account created in this session, until the player says
+  /// it is saved. The server shows it once; [saved] is whether the browser
+  /// kept a copy.
+  ({String token, bool saved})? issuedToken;
+  bool _tokenNoticed = true;
 
   LinkState link = LinkState.idle;
   String? connectionError;
@@ -168,6 +174,19 @@ class GameController extends ChangeNotifier {
   }
 
   proto.SectorState? sectorAt(proto.Hex h) => _state.sectors[h];
+
+  /// Identifies the account on this server, for per-account settings.
+  String? get account => switch (link) {
+        LinkState.demo => 'demo',
+        LinkState.live || LinkState.reconnecting => '${_params?.url}|${playerName.toLowerCase()}',
+        LinkState.idle || LinkState.connecting => null,
+      };
+
+  void acknowledgeToken() {
+    if (issuedToken == null) return;
+    issuedToken = null;
+    notifyListeners();
+  }
 
   // ── Connection lifecycle ──────────────────────────────────────
 
@@ -290,7 +309,8 @@ class GameController extends ChangeNotifier {
           connectionError = message ?? 'login refused';
           if (code == proto.ErrorCode.tokenRequired ||
               code == proto.ErrorCode.invalidToken ||
-              code == proto.ErrorCode.invalidName) {
+              code == proto.ErrorCode.invalidName ||
+              code == proto.ErrorCode.worldFull) {
             authRejection = AuthRejection(code, connectionError!);
           }
           _retry?.cancel();
@@ -305,7 +325,10 @@ class GameController extends ChangeNotifier {
         if (effective != null) {
           _token = effective;
           final saved = _tokens.save(_params!.url, playerName, effective);
-          if (token != null) _issuedToken = (token: token, saved: saved);
+          if (token != null) {
+            issuedToken = (token: token, saved: saved);
+            _tokenNoticed = false;
+          }
         }
       case proto.GameState():
         if (!_authed) return;
@@ -318,9 +341,9 @@ class GameController extends ChangeNotifier {
           _cursorInit = false;
         }
         _mapper.apply(msg);
-        final issued = _issuedToken;
-        if (issued != null) {
-          _issuedToken = null;
+        final issued = issuedToken;
+        if (issued != null && !_tokenNoticed) {
+          _tokenNoticed = true;
           _mapper.noticeToken(issued.token, saved: issued.saved);
         }
       default:

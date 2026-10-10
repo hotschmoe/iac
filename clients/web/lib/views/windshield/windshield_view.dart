@@ -21,6 +21,7 @@ import '../../protocol/protocol.dart' as proto;
 import '../../scenes/windshield/geometry.dart';
 import '../../scenes/windshield/painter.dart';
 import '../../scenes/windshield/sim.dart';
+import '../onboarding.dart';
 import 'parts.dart';
 
 class WindshieldView extends StatefulWidget {
@@ -399,7 +400,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           top: cc.dy,
           child: FractionalTranslation(
             translation: const Offset(-.5, -.5),
-            child: GateCard(
+            child: GuideTarget(con.onboarding.pointsAtGate(nh) ? 'gates' : 'gate', child: GateCard(
               dir: d,
               narrow: narrow,
               known: known,
@@ -423,7 +424,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
                   con.game.cancelPreview(f.id, nh);
                 }
               },
-            ),
+            )),
           ),
         ));
       }

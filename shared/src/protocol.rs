@@ -32,6 +32,7 @@ pub enum ClientMessage {
 ///
 /// - unknown name: valid names register a new account and the reply carries
 ///   the new secret in `AuthResult.token` (this is the only time it is sent);
+///   a world with no free home seat replies `WorldFull` instead;
 /// - known name: `token` must match the one issued earlier, otherwise the
 ///   reply is `TokenRequired` / `InvalidToken`;
 /// - an account from before tokens existed has none yet and is claimed by
@@ -403,7 +404,8 @@ pub enum ThreatBasis {
 /// Reply to `AuthRequest`. On success `token` is set only when the server just
 /// issued one (new account or claimed legacy account): the client must store
 /// it. On failure `code` says why (`InvalidName`, `TokenRequired`,
-/// `InvalidToken`, `ServerError`) and `message` is readable text.
+/// `InvalidToken`, or `WorldFull` when a new name finds every home seat
+/// taken) and `message` is readable text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResult {
     pub success: bool,
@@ -1665,5 +1667,6 @@ pub enum ErrorCode {
     InvalidName = 2002,
     TokenRequired = 2003,
     InvalidToken = 2004,
+    WorldFull = 2005,
     ServerError = 5000,
 }

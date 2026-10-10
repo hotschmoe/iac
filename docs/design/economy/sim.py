@@ -113,11 +113,23 @@ def npc_power(d):            # smooth: ~1.22x per ring step
     return 4.0 * 1.22 ** (d - 1)
 def threat(d):
     return max(1, min(9, 1 + int(math.floor(math.log2(npc_power(d) / 4.0)))))
-def npc_class(d):
-    return 'scout' if d <= 5 else 'corvette' if d <= 12 else 'frigate' if d <= 20 else 'cruiser'
+def npc_class(d):            # scouts through the inner ring (d <= 8)
+    return 'scout' if d <= 8 else 'corvette' if d <= 12 else 'frigate' if d <= 20 else 'cruiser'
 def ship_power(c):
     s = SHIPS[c]
     return s[3] + (s[1] + s[2]) / 10.0
+NPC_MAX_SHIPS, NPC_MULT_MAX = 32, 1.3
+def npc_base_mult(d):        # the stat multiplier a group is sized around
+    return min(NPC_MULT_MAX, 0.6 + 0.02 * d)
+def npc_group(d, power=None):
+    # (class, count, stat multiplier): the count from the base multiplier (more if the ships
+    # would need over NPC_MULT_MAX), the multiplier fitted so the ships add up to the power
+    c = npc_class(d)
+    p = npc_power(d) if power is None else power
+    per = ship_power(c)
+    sized = math.floor(p / (per * npc_base_mult(d)) + 0.5)
+    count = max(1, min(NPC_MAX_SHIPS, max(sized, math.ceil(p / (per * NPC_MULT_MAX)))))
+    return c, count, min(NPC_MULT_MAX, p / (per * count))
 def ship_cost_tot(c):
     return sum(SHIPS[c][0])
 def npc_cost(d):             # build-cost value (units) of the NPC group at ring d
@@ -1010,9 +1022,7 @@ def static_tables():
         return 20 * 1.2 * ship_power('cruiser')
     for d in (1, 2, 4, 6, 8, 9, 10, 12, 15, 18, 20, 21, 25, 30, 35):
         z = 'inner' if d <= 8 else 'outer' if d <= 20 else 'wander'
-        c = npc_class(d)
-        m = min(1.3, 0.6 + 0.02 * d)
-        cnt = max(1, round(npc_power(d) / (ship_power(c) * m)))
+        c, cnt, m = npc_group(d)
         tr = tile_reserve(d)
         L.append(f'| {d} | {z} | T{threat(d)} | {c} x{cnt} (x{m:.2f} stats) | {npc_power(d):.0f} | {old_power(d):.0f} | {kill_loot_value(d):.0f} | '
                  f'{derelict_tier(d)} / {derelict_value(d):.0f} | {mean_reserve(d)*ORE_RING_MULT(d):.0f} | {ore_regen_h(d):.0f} | {npc_respawn_h(d):.1f} |')

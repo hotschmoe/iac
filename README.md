@@ -90,7 +90,8 @@ bits, hex). There is no separate register step:
   message). A known name without a token fails with code `TokenRequired`,
   a wrong one with `InvalidToken`; an unusable new name gets `InvalidName`
   (3-24 chars of `A-Za-z0-9_-`, no leading/trailing `-`/`_`, a few reserved
-  words). Failures arrive as `{"type":"auth_result","success":false,"code":"TokenRequired","message":"…"}`.
+  words), and a new name in a world whose 24 home seats are taken gets
+  `WorldFull`. Failures arrive as `{"type":"auth_result","success":false,"code":"TokenRequired","message":"…"}`.
 - **Saved automatically**: the TUI and headless client store the token per
   server and name in `~/.config/iac/tokens.json` (`$XDG_CONFIG_HOME/iac/`;
   mode 0600) and reuse it. `--token` overrides the saved one. A refused
@@ -187,9 +188,22 @@ the Rust wire protocol over `/ws` on the page's own host and port.
   server. The token the server issues is remembered in the browser's
   `localStorage` per server and name; if a name needs a token the browser
   does not have (or storage is blocked), the login form asks for it. A new
-  token is also shown once in the event log and alerts, so you can copy it.
+  token is also shown once, with a copy button, in the operator guide and
+  under Alerts.
 - If the server is unreachable it falls back to an offline DEMO mode and keeps
   retrying in the background.
+- **Operator guide.** A new account gets a one-line guide under the HUD that
+  walks the first steps (save the token, queue a building, scan, jump,
+  harvest, unload, standing orders) and a "First hour" list on the Overview.
+  Each step is ticked by what happens in the game, in any order. `Skip guide`
+  turns it off; `?` (Keys and settings) turns it back on. Progress is kept per
+  account in the browser.
+- **Notifications.** While the tab is in the background, a finished or idle
+  queue, a raid (announced, 60 ticks out, resolved), a lost fleet, a critical
+  alert or full storage is counted in the tab title, `(2) IN AMBER CLAD`, and,
+  if you turned notifications on, raised as a browser notification. The
+  browser is asked for permission only when you press the button for it (the
+  one-time offer after your first order starts, or `?` > Notifications).
 
 ```sh
 cd clients/web && flutter pub get && flutter analyze && flutter test
@@ -217,6 +231,15 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   (a week), `sprint` x70 (a day), `dev` x100, `blitz` x600 (one hour), `test`
   x8000 (twelve minutes). Plan against the numbers in your own `status` and
   `costs`, not against pace-1 intuition.
+- **Homes** — a world has 24 home seats: the sectors of rings 3 to 5 whose
+  `q - r` is a multiple of three (6 in ring 3, 6 in ring 4, 12 in ring 5), so
+  no two homes touch and the nearest seats are two hexes apart. A new empire
+  gets the free seat farthest from every occupied one, ties drawn from the
+  world seed; nobody chooses. When the seats are gone a new name is refused
+  with `WorldFull` and the world is left as it was; its empires log in as
+  before. No hostile group lives on a seat or on the six sectors beside one
+  (convoys, which never shoot first, still do), and no derelict lies on a
+  seat. Lanes are drawn from the world seed: every world has its own maze.
 - **Economy** — metal / crystal / deuterium from homeworld mines and fleet
   harvesting. A mine makes `base x L x 1.1^L` per game hour (metal 10,
   crystal 7, deuterium 5, times P); costs grow x1.5 to x1.9 per level and
@@ -233,8 +256,13 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   `max_units` and `refills_in_s`. Ore is a bonus on top of the mines, not a
   living.
 - **Threat** — NPC group power grows 1.22x per ring (`4 x 1.22^(ring-1)`),
-  with no cliff; ships, count and stats follow (scouts to ring 5, corvettes to
-  12, frigates to 20, cruisers beyond). Every sector carries `threat`:
+  and a group's ships add up to exactly that (to the 32-ship limit at ring
+  37), so the ring estimate is the real strength of an unscouted lair. The
+  Inner Ring is scout country: scouts to ring 8, corvettes to 12, frigates to
+  20, cruisers beyond. The step in danger is at ring 9, where rapid fire
+  starts: the two starting scouts win every lair through ring 8 (keeping
+  about 40% of their hull there) and lose every one from ring 9. Every
+  sector carries `threat`:
   `rating` T1 to T9 (one step per doubling of power over 4), `est_power` and
   `basis` (`observed`: a group is there, its own power, Aggressive and Swarm
   +25%; `template`: a lair that is away or cleared; `estimate`: ring only).
@@ -412,7 +440,7 @@ cargo test --workspace       # end-to-end only: engine scenarios, real-server pr
 cargo clippy --workspace
 
 # Headless: the real engine, built-in bots, as fast as the CPU allows; prints a balance report
-cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7
+cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7   # every style once and an idle control; a world seats 24
 cargo run -p iac-sim --release --bin sim-run -- --pace blitz --hours 1 --seat all:hands-on --seat idle --json
 
 # The engine must build for the browser (no bindings yet)

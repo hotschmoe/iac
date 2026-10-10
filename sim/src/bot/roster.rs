@@ -7,7 +7,7 @@
 // whenever its bot's memory moved.
 //
 //   let mut roster = Roster::resume(&engine);          // bots the world has
-//   roster.enlist(&mut engine, &wanted, new_token);    // bots it should have
+//   roster.enlist(&mut engine, &wanted, keep_free, new_token);   // bots it should have
 //   loop {
 //       roster.take_turns(&mut engine);
 //       engine.tick()?;
@@ -48,13 +48,16 @@ impl Roster {
 
     /// Bring the world's bots up to `wanted`: for each personality and
     /// attention, as many new accounts as the roster has fewer of than
-    /// asked for. Bots already there stay, wanted or not. Returns how many
-    /// were added, and the refusal that stopped it short if one did (a
-    /// world with no free homeworld).
+    /// asked for, in the order asked. Bots already there stay, wanted or
+    /// not. A bot is added only while more than `keep_free` home seats are
+    /// free, so that many stay open for players. Returns how many were
+    /// added, and the refusal that stopped it short if one did (`WorldFull`
+    /// when the seats ran out).
     pub fn enlist(
         &mut self,
         engine: &mut GameEngine,
         wanted: &[Style],
+        keep_free: usize,
         mut new_token: impl FnMut() -> String,
     ) -> (usize, Option<AuthError>) {
         let same = |a: Style, b: Style| a.personality == b.personality && a.attention == b.attention;
@@ -64,6 +67,9 @@ impl Roster {
             if let Some(at) = have.iter().position(|&h| same(h, style)) {
                 have.swap_remove(at);
                 continue;
+            }
+            if engine.free_home_seats() <= keep_free {
+                return (added, Some(AuthError::WorldFull));
             }
             match self.add(engine, style, new_token()) {
                 Ok(()) => added += 1,
@@ -75,19 +81,18 @@ impl Roster {
 
     fn add(&mut self, engine: &mut GameEngine, style: Style, token: String) -> Result<(), AuthError> {
         let first = engine.bots().len() + 1;
-        let mut last = AuthError::Server;
-        for number in first..first + NAME_TRIES {
+        let mut number = first;
+        loop {
             let name = format!("{BOT_NAME_PREFIX}{}-{number}", style.personality.label());
             match engine.enlist_bot(&name, BotRecord::new(style), token.clone()) {
                 Ok(player_id) => {
                     self.seats.push(Seat::resume(engine, player_id, Bot::new(name, style)));
                     return Ok(());
                 }
-                Err(AuthError::InvalidName(reason)) => last = AuthError::InvalidName(reason),
+                Err(AuthError::InvalidName(_)) if number + 1 < first + NAME_TRIES => number += 1,
                 Err(refusal) => return Err(refusal),
             }
         }
-        Err(last)
     }
 
     /// Every bot that wants one takes its turn. Call before `GameEngine::tick`.
