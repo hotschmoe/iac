@@ -11,7 +11,7 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling, hex math, world generation |
-| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, scripted players, headless runner `sim-run`); no I/O, builds for WebAssembly |
+| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, built-in bots, headless runner `sim-run`); no I/O, builds for WebAssembly |
 | `server/` | `iac-server`: a thin host around `iac-sim`: WebSocket network, SQLite persistence, the 1 Hz tick timer |
 | `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
 | `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server` |
@@ -34,6 +34,7 @@ Or manually:
 # Terminal 1: the server (1 Hz tick loop, SQLite persistence)
 cargo run -p iac-server                  # 127.0.0.1:7777, iac_world.db, pace x1 (persistent)
 cargo run -p iac-server -- --pace blitz --db blitz.db   # a one-hour world (x600)
+cargo run -p iac-server -- --pace season --db season.db --bot all:check-in --bot mixed:hands-on:2   # with built-in bots
 # serve the web client too (after `flutter build web --release` in clients/web):
 cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web
 
@@ -50,6 +51,29 @@ world with a new `--db`).
 The server serves `clients/web/build/web` automatically if it exists
 (override with `--web-dir`). WebSockets are accepted on any path (`/ws` for
 the web client, `/` for the TUI); `--host` sets the bind address.
+
+**Built-in bots** (`--bot <personality>:<attention>[:<count>]`, repeatable;
+personality `turtle`, `miner`, `raider`, `explorer`, `mixed`, attention
+`check-in`, `hybrid`, `hands-on`, either may be `all`) are computer players
+the server runs beside the engine. `--bot` says which bots the world should
+have: missing ones are added at start, in the order listed, and the ones a
+world already has keep playing on every later start whether listed or not
+(they are accounts of the world, stored in its database with what they
+remember). A bot takes one of the 24 home seats. `--player-seats <N>`
+(default 4) keeps seats for people: a bot is added only while more than N
+seats are free, a roster that asks for more is seated as far as that allows
+and the log says how many were left out, and `--player-seats 0` lets bots
+fill the world. `--bot-sessions <N>` (default 4) is how often a day new
+check-in and hybrid bots look in; a day is a day of ticks at any pace, so in
+a blitz world only hands-on bots play through the hour. With `RUST_LOG=info` the server logs every
+300 ticks what a tick cost and how much of it the bots took.
+
+To a player a bot is another empire: it registers, builds, flies and fights
+through the same commands under the same rules, with no extra information
+and no privileges. Its name starts with `BOT-` (`BOT-raider-3`), a prefix
+nobody else can register, so it is tagged wherever a player is named: on the
+map, in fleet lists, in events. Bots are not ranked with people: the
+leaderboard lists them apart (see `leaderboard` below).
 
 TUI basics: `w` windshield / `m` star map / `b` homeworld / `` ` `` command
 center, `?` for all keybinds. In the windshield: `1-6` move, `v` scan,
@@ -90,7 +114,8 @@ bits, hex). There is no separate register step:
   message). A known name without a token fails with code `TokenRequired`,
   a wrong one with `InvalidToken`; an unusable new name gets `InvalidName`
   (3-24 chars of `A-Za-z0-9_-`, no leading/trailing `-`/`_`, a few reserved
-  words), and a new name in a world whose 24 home seats are taken gets
+  words, and nothing starting with `BOT-` in any case: that prefix marks
+  the server's built-in bots), and a new name in a world whose 24 home seats are taken gets
   `WorldFull`. Failures arrive as `{"type":"auth_result","success":false,"code":"TokenRequired","message":"…"}`.
 - **Saved automatically**: the TUI and headless client store the token per
   server and name in `~/.config/iac/tokens.json` (`$XDG_CONFIG_HOME/iac/`;
@@ -133,7 +158,7 @@ Example session:
 | `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits; nothing was paid, so nothing comes back; a `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, and the odds `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest. `ratio` is not `fleet_power / est_power`: see Odds |
 | `odds` | `fleet_id`, `sectors:[{q,r},...]` (at most 256) | do not move: reply `odds` with `fleet_id` and, for each sector in the order asked, `{sector, threat, ratio, label}`: how that fleet would fare there. Any sector may be named: adjacent or far, the one the fleet is in, seen or never seen |
-| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit |
+| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit. Built-in bots are never in `entries`: when the world has any, `bots` lists them in the same row shape, ranked among themselves, so a rank in `entries` counts humans and AI agents only |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
 
@@ -383,6 +408,11 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   has passed is dropped from the chart, and so is any pin you watched go (a
   boarding, a collection, a scan that finds nothing there). Tick updates add a
   sector to `sector_updates` once more when it turns stale or loses a pin.
+  A sector you have entered carries `chart`: `"aboard"` while its chart rides
+  with one of your fleets (it scores when that fleet docks at home alive and
+  is lost with the fleet), `"delivered"` once it is banked; a sector without
+  `chart` still has its chart points to give. A remembered sector is sent
+  once more when its mark changes.
   The `signals` of a scan lie one hop beyond the scanned range and never name
   the scanning sector, which is `ScanCompleted.sector`.
 - **Derelicts** — dead ships drift in debris fields and empty space beyond
@@ -447,6 +477,8 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   a build or losing a ship scores nothing; resources received from others
   never count. Accounts that log in with `"agent": true` (the headless client
   does) carry the `agent` flag on the board, which labels and never scores.
+  Built-in bots (names starting `BOT-`) score by the same rule and are listed
+  apart, in `bots`: they take no rank among humans and agents.
 
 ## Development
 
@@ -454,8 +486,9 @@ Change the Rust protocol, regenerate, then fix the Dart side until
 cargo test --workspace       # end-to-end only: engine scenarios, real-server protocol runs, cross-language fixtures
 cargo clippy --workspace
 
-# Headless: the real engine, scripted players, as fast as the CPU allows
-cargo run -p iac-sim --release --bin sim-run -- --pace season --builders 24 --days 7   # a world seats 24
+# Headless: the real engine, built-in bots, as fast as the CPU allows; prints a balance report
+cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7   # every style once and an idle control; a world seats 24
+cargo run -p iac-sim --release --bin sim-run -- --pace blitz --hours 1 --seat all:hands-on --seat idle --json
 
 # The engine must build for the browser (no bindings yet)
 cargo build -p iac-sim --target wasm32-unknown-unknown --release
@@ -472,6 +505,46 @@ sees), and persistence. The engine hands `PersistBatch` deltas to a `Persist` tr
 host implements (the server's SQLite writer); `snapshot()` / `GameEngine::restore()`
 save and rebuild the whole world as serde data, and `Snapshot::hash()` is a digest of
 it. Same seed, pace and command script give the same hash.
+
+### Built-in bots and balance runs
+
+`sim/src/bot/` holds scripted players that see only the `GameState` a client gets and
+send only what a client sends. A bot is two independent choices:
+
+- **Personality** (what it builds and what its fleets are for): `turtle` (economy and
+  defences, nothing leaves home), `miner`, `raider`, `explorer`, `mixed`.
+- **Attention** (when it is at the controls): `check-in` (a few five-minute look-ins a
+  day: queue ahead, regroup, leave every fleet to a standing order), `hybrid` (the
+  same, and one look-in a day is an hour of piloting by hand), `hands-on` (always
+  present, flies every fleet itself, no standing orders).
+
+`script::Seat` is an in-process client: it runs one bot's turn before each tick
+(`take_turn`) and keeps the bot's view after it (`observe`), by folding the tick
+update while the bot acts tick after tick and from a full state otherwise. A turn is
+questions, then orders: the bot may first ask what a client may ask (`odds`,
+`preview_move`, `leaderboard`) and gets the replies before it acts, so a pilot fights
+and enters sectors on the server's ratio and keeps no arithmetic of its own. A world's
+bots are accounts with a `BotRecord` (style and the little a bot remembers) kept in
+the engine, in every snapshot and in storage; `bot::Roster` is what a host holds
+beside the engine: `resume` the bots a world has, `enlist` the ones it should have,
+`take_turns` before `tick`, `observe` after. The server does exactly that (`--bot`),
+and a browser host would do the same.
+
+`sim-run` seats a mix and prints, for every player and sample interval, the score
+split (econ, fleet, defence, raw combat, raw explore, the capped extra, total) and
+what the field paid, then one row per style:
+
+```sh
+sim-run --pace season --days 7                      # every style once and an idle player
+sim-run --seat explorer:all:2 --seat turtle:hands-on --sessions 8 --seed 3
+sim-run --pace blitz --hours 1 --seat all:hands-on --ignore-cap --json
+```
+
+`--seat` is `<personality>:<attention>[:<count>]` or `idle[:<count>]`, `all` standing
+for every personality or attention; `--sessions` sets the look-ins per day;
+`--ignore-cap` lets bots chase combat and exploration points past the score cap
+(by default they stop once it is banked). A world has 24 home seats; `sim-run` refuses
+a roster of more.
 
 ## Other versions
 

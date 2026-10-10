@@ -19,7 +19,7 @@ use ratatui::{
 
 use iac_shared::hex::{self, Hex};
 use iac_shared::constants::Zone;
-use iac_shared::protocol::SignalKind;
+use iac_shared::protocol::{ChartMark, SignalKind};
 
 use crate::state::{ClientState, ZoomLevel, SCAN_RIPPLE_TICKS};
 use super::{
@@ -390,6 +390,11 @@ fn inspect_line(state: &ClientState) -> (String, Style) {
         }
         if let Some(site) = &sector.site {
             line.push_str(&format!("  DERELICT T{} ({})", site.tier, site.risk.label()));
+        }
+        match sector.chart {
+            Some(ChartMark::Aboard) => line.push_str("  chart:aboard (dock to bank it)"),
+            Some(ChartMark::Delivered) => line.push_str("  chart:delivered"),
+            None => {}
         }
         line.push_str(&format!("  exits:{}", sector.connections.len()));
         let style = if sector.hostiles.is_some() { RED_ALERT } else { AMBER_BRIGHT };

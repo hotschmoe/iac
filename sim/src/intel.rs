@@ -73,6 +73,8 @@ pub struct KnownSectors {
     lapsed: HashMap<u64, Vec<u32>>,
     /// Remembered sectors whose salvage pin expired at the last refresh.
     expired: HashMap<u64, Vec<u32>>,
+    /// Sectors whose chart mark may have moved since the refresh before.
+    marked: HashMap<u64, Vec<u32>>,
     dirty: HashSet<(u64, u32)>,
     /// Sectors an NPC group stood in or was homed to at the last refresh.
     npc_sectors: Vec<u32>,
@@ -100,6 +102,10 @@ impl KnownSectors {
         let tick = engine.current_tick;
         self.lapsed.clear();
         self.expired.clear();
+        self.marked.clear();
+        for &(pid, key) in &engine.chart_news {
+            self.marked.entry(pid).or_default().push(key);
+        }
 
         let mut fleet_cells: HashMap<u64, Vec<u32>> = HashMap::new();
         for fleet in engine.fleets.values().filter(|f| f.ship_count > 0) {
@@ -350,28 +356,44 @@ impl KnownSectors {
             );
         }
         out.sort_by_key(|s| s.location.to_key());
+        mark_charts(engine, player_id, &mut out);
         out
     }
 
-    /// Per-tick delta: every live sector, plus the sectors that stopped being
-    /// live this tick (once, flagged stale).
+    /// Per-tick delta: every live sector, plus, once, each remembered sector
+    /// that changed at the last refresh: it stopped being live (flagged
+    /// stale), its salvage pin expired, or its chart mark moved.
     pub fn tick_updates(&self, engine: &GameEngine, player_id: u64) -> Vec<SectorState> {
         let live = live_coords(engine, player_id);
         let mut out = live_states(engine, &live, player_id);
         if let Some(memory) = self.by_player.get(&player_id) {
             let cover = self.coverage.get(&player_id);
-            let mut lapsed = self.lapsed.get(&player_id).cloned().unwrap_or_default();
-            lapsed.sort_unstable();
-            let expired = self.expired.get(&player_id).map_or(&[][..], Vec::as_slice);
+            let mut changed: Vec<u32> = [&self.lapsed, &self.expired, &self.marked]
+                .into_iter()
+                .filter_map(|keys| keys.get(&player_id))
+                .flatten()
+                .copied()
+                .collect();
+            changed.sort_unstable();
+            changed.dedup();
             out.extend(
-                lapsed
+                changed
                     .iter()
-                    .chain(expired.iter().filter(|key| lapsed.binary_search(key).is_err()))
                     .filter(|&&key| !cover.is_some_and(|c| c.contains(key)))
                     .filter_map(|&key| memory.get(&key).map(|r| self.stale_view(player_id, key, r))),
             );
         }
+        mark_charts(engine, player_id, &mut out);
         out
+    }
+}
+
+/// Chart marks belong to the viewer, not to the sector, so they are laid
+/// over a view when it is built and never remembered.
+fn mark_charts(engine: &GameEngine, player_id: u64, sectors: &mut [SectorState]) {
+    let aboard = engine.charts_aboard(player_id);
+    for sector in sectors {
+        sector.chart = engine.chart_mark(player_id, sector.location.to_key(), &aboard);
     }
 }
 
@@ -555,6 +577,7 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
             .derelict_site_at(coord)
             .map(|(tier, bumps)| SiteBrief { tier, risk: site_risk_label(coord, bumps) }),
         ore_reserve: engine.ore_reserve_at(coord),
+        chart: None,
         threat: engine.threat_among(coord, npcs.iter().copied()),
         last_seen: engine.current_tick,
         live: true,

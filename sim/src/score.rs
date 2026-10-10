@@ -9,7 +9,7 @@
 // for more than metal.
 
 use iac_shared::constants::Resources;
-use iac_shared::protocol::LeaderboardEntry;
+use iac_shared::protocol::{LeaderboardEntry, LeaderboardReply};
 use iac_shared::scaling::{self, DefenceKind};
 
 use crate::engine::{Fleet, GameEngine, Player};
@@ -102,9 +102,11 @@ pub fn chart_points(rating: u8) -> f32 {
     CHART_BASE_POINTS + CHART_THREAT_POINTS * f32::from(rating).powf(1.5)
 }
 
-/// The table, best first. `viewer`'s own row is returned separately when it
-/// does not make the first `limit`.
-pub fn leaderboard(engine: &GameEngine, limit: usize, viewer: u64) -> (Vec<LeaderboardEntry>, Option<LeaderboardEntry>) {
+/// The table, best first, for `viewer`. Built-in bots are ranked apart from
+/// everyone else (`LeaderboardReply::bots`); each list holds its first
+/// `limit` rows, and the viewer's own row is returned in `you` when it made
+/// neither.
+pub fn leaderboard(engine: &GameEngine, limit: usize, viewer: u64) -> LeaderboardReply {
     let mut rows: Vec<(&Player, Score)> = engine
         .players
         .values()
@@ -122,12 +124,16 @@ pub fn leaderboard(engine: &GameEngine, limit: usize, viewer: u64) -> (Vec<Leade
         combat: s.combat,
         explore: s.explore,
     };
-    let entries: Vec<LeaderboardEntry> = rows.iter().enumerate().take(limit).map(|(i, (p, s))| entry(i, p, s)).collect();
-    let you = rows
+    let (bots, ranked): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(p, _)| engine.is_bot(p.id));
+    let list = if engine.is_bot(viewer) { &bots } else { &ranked };
+    let you = list
         .iter()
         .enumerate()
         .skip(limit)
         .find(|(_, (p, _))| p.id == viewer)
         .map(|(i, (p, s))| entry(i, p, s));
-    (entries, you)
+    let first = |list: &[(&Player, Score)]| -> Vec<LeaderboardEntry> {
+        list.iter().enumerate().take(limit).map(|(i, (p, s))| entry(i, p, s)).collect()
+    };
+    LeaderboardReply { tick: engine.current_tick(), entries: first(&ranked), you, bots: first(&bots) }
 }

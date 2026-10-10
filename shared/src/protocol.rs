@@ -307,6 +307,13 @@ pub enum ServerMessage {
 /// completed building and research levels, living ships and half of the
 /// defence structures, each at its cost weighted 1 : 1.5 : 2 for
 /// metal : crystal : deuterium, per thousand.
+///
+/// Built-in bots are part of the world but not of the ranking: they are
+/// never in `entries` and take no rank there. They are listed in `bots`,
+/// ranked among themselves. A bot's account name always starts with
+/// `BOT_NAME_PREFIX`, which no other account can register, so every place
+/// that names a player (fleets in a sector, combat events) tags a bot by
+/// its name alone.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LeaderboardReply {
     pub tick: u64,
@@ -314,6 +321,18 @@ pub struct LeaderboardReply {
     /// The asking player's own row, when it falls outside `entries`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub you: Option<LeaderboardEntry>,
+    /// The world's built-in bots, best first; absent when it has none.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub bots: Vec<LeaderboardEntry>,
+}
+
+/// Start of every built-in bot's account name, reserved for them
+/// (compared without regard to case).
+pub const BOT_NAME_PREFIX: &str = "BOT-";
+
+/// Whether `name` is a built-in bot's.
+pub fn is_bot_name(name: &str) -> bool {
+    name.get(..BOT_NAME_PREFIX.len()).is_some_and(|start| start.eq_ignore_ascii_case(BOT_NAME_PREFIX))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -634,6 +653,12 @@ pub struct SectorState {
     /// When not `live` it is as of `last_seen`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ore_reserve: Option<OreReserve>,
+    /// Where the player's own chart of this sector stands; absent when no
+    /// fleet of theirs holds or has delivered one. Always current, also on
+    /// a sector that is not `live`: a sector whose mark changes is sent
+    /// once more in `sector_updates`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub chart: Option<ChartMark>,
     /// How dangerous the sector is. When not `live` it is the rating last
     /// seen, as old as `last_seen`.
     pub threat: ThreatInfo,
@@ -641,6 +666,17 @@ pub struct SectorState {
     pub last_seen: u64,
     /// See the struct docs.
     pub live: bool,
+}
+
+/// A sector's chart is made by entering it and pays explore points once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChartMark {
+    /// A fleet that entered the sector still carries the chart: it is paid
+    /// when that fleet docks at the homeworld and lost if the fleet is.
+    Aboard,
+    /// Delivered and paid; entering again earns nothing.
+    Delivered,
 }
 
 /// What a fleet on-site can tell about a derelict before boarding.

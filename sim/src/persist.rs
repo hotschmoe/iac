@@ -9,6 +9,7 @@ use iac_shared::pace::Pace;
 use iac_shared::protocol::SectorState;
 use serde::{Deserialize, Serialize};
 
+use crate::bot::BotRecord;
 use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Player, RaidState, SectorOverride};
 
 /// Settings fixed when a world is created.
@@ -55,8 +56,8 @@ pub struct FleetClocks {
 }
 
 /// The `Snapshot` maps a host stores entry by entry, without a schema of
-/// their own. The id is the map's key: an NPC group, a combat, a player or
-/// a fleet.
+/// their own. The id is the map's key: an NPC group, a combat, a player
+/// (also for `Bot`: the bot's account) or a fleet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RuntimeKind {
     NpcFleet,
@@ -66,6 +67,7 @@ pub enum RuntimeKind {
     StorageMarks,
     HomeSalvageWarned,
     HarvestReport,
+    Bot,
 }
 
 impl RuntimeKind {
@@ -78,6 +80,7 @@ impl RuntimeKind {
             RuntimeKind::StorageMarks => "storage_marks",
             RuntimeKind::HomeSalvageWarned => "home_salvage_warned",
             RuntimeKind::HarvestReport => "harvest_report",
+            RuntimeKind::Bot => "bot",
         }
     }
 }
@@ -91,6 +94,7 @@ pub enum RuntimeEntry {
     StorageMarks([u8; 3]),
     HomeSalvageWarned(u64),
     HarvestReport(HarvestReport),
+    Bot(Box<BotRecord>),
 }
 
 /// One entry as it is now; `None` once it is gone.

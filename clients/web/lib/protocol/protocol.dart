@@ -342,6 +342,18 @@ enum SiteRisk {
   static SiteRisk fromJson(Object? v) => _enumFrom(values, v, _snake);
 }
 
+/// Where the player's own chart of a sector stands: aboard a fleet that
+/// entered it (paid when that fleet docks at home, lost with the fleet) or
+/// delivered and paid.
+enum ChartMark {
+  aboard,
+  delivered;
+
+  String get wire => _snake(name);
+  String toJson() => wire;
+  static ChartMark fromJson(Object? v) => _enumFrom(values, v, _snake);
+}
+
 enum ThreatBasis {
   observed,
   template,
@@ -936,19 +948,25 @@ class WorldEstimate {
   Json toJson() => {'first_cruiser_s': firstCruiserS, 'endgame_s': endgameS};
 }
 
-/// The score table: one ranking for every player, human or agent.
+/// The score table: one ranking for every player, human or agent. Built-in
+/// bots take no rank in [entries]; they are listed in [bots], ranked among
+/// themselves.
 class LeaderboardReply extends ServerMessage {
   final int tick;
   final List<LeaderboardEntry> entries;
 
   /// The asking player's own row when it falls outside [entries].
   final LeaderboardEntry? you;
-  const LeaderboardReply({required this.tick, required this.entries, this.you});
+
+  /// The world's built-in bots, best first; empty when it has none.
+  final List<LeaderboardEntry> bots;
+  const LeaderboardReply({required this.tick, required this.entries, this.you, this.bots = const []});
 
   factory LeaderboardReply.fromJson(Json m) => LeaderboardReply(
         tick: _i(m['tick']),
         entries: _list(m['entries'], LeaderboardEntry.fromJson),
         you: _opt(m['you'], LeaderboardEntry.fromJson),
+        bots: m['bots'] == null ? const [] : _list(m['bots'], LeaderboardEntry.fromJson),
       );
 
   @override
@@ -959,9 +977,16 @@ class LeaderboardReply extends ServerMessage {
       'entries': entries.map((e) => e.toJson()).toList(),
     };
     _put(m, 'you', you?.toJson());
+    if (bots.isNotEmpty) m['bots'] = bots.map((e) => e.toJson()).toList();
     return m;
   }
 }
+
+/// Start of every built-in bot's account name; no other account can have it.
+const botNamePrefix = 'BOT-';
+
+/// Whether [name] is a built-in bot's.
+bool isBotName(String name) => name.toUpperCase().startsWith(botNamePrefix);
 
 class LeaderboardEntry {
   final int rank;
@@ -1312,6 +1337,10 @@ class SectorState {
   /// Raw units left on the ore tiles, as of [lastSeen]; null without ore.
   final OreReserve? oreReserve;
 
+  /// The player's own chart of this sector; null when no fleet of theirs
+  /// holds or has delivered one. Current even when the sector is not [live].
+  final ChartMark? chart;
+
   /// Danger of the sector; when not [live] it is the rating last seen.
   final ThreatInfo threat;
 
@@ -1336,6 +1365,7 @@ class SectorState {
     this.salvageDespawnTick,
     this.site,
     this.oreReserve,
+    this.chart,
     required this.threat,
     required this.lastSeen,
     required this.live,
@@ -1355,6 +1385,7 @@ class SectorState {
       salvageDespawnTick: _opt(m['salvage_despawn_tick'], _i),
       site: _opt(m['site'], SiteBrief.fromJson),
       oreReserve: _opt(m['ore_reserve'], OreReserve.fromJson),
+      chart: _opt(m['chart'], ChartMark.fromJson),
       threat: ThreatInfo.fromJson(m['threat']),
       lastSeen: _i(m['last_seen']),
       live: m['live'] as bool,
@@ -1378,6 +1409,7 @@ class SectorState {
     _put(m, 'salvage_despawn_tick', salvageDespawnTick);
     _put(m, 'site', site?.toJson());
     _put(m, 'ore_reserve', oreReserve?.toJson());
+    _put(m, 'chart', chart?.toJson());
     if (pinsStale) m['pins_stale'] = true;
     return m;
   }

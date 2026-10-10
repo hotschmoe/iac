@@ -12,6 +12,10 @@
 // protocol is meant to change, never to make a change to the chart pass:
 //
 //   UPDATE_CHART_GOLDEN=1 cargo test -p iac-sim --test chart_equivalence
+//
+// It was recorded once more when sectors gained their chart mark
+// (`SectorState::chart`), after the engine with marks had reproduced the
+// previous recording with the marks left out of the comparison.
 
 use iac_shared::constants::{ShipClass, DEFAULT_WORLD_SEED};
 use iac_shared::pace::Pace;

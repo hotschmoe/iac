@@ -116,6 +116,10 @@ class StateMapper {
             EventLevel.bright,
           );
         }
+        if (msg.bots.isNotEmpty) {
+          final best = msg.bots.first;
+          pushLog('${msg.bots.length} built-in bots, unranked; best ${best.name} ${best.score.toStringAsFixed(1)}', EventLevel.dim);
+        }
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }

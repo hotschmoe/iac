@@ -1,0 +1,35 @@
+{
+  "bots": [
+    {
+      "agent": false,
+      "combat": 3.5,
+      "core": 404.0,
+      "explore": 310.0,
+      "name": "BOT-explorer-2",
+      "rank": 1,
+      "score": 505.0
+    },
+    {
+      "agent": false,
+      "combat": 0.0,
+      "core": 96.25,
+      "explore": 0.0,
+      "name": "BOT-turtle-1",
+      "rank": 2,
+      "score": 96.25
+    }
+  ],
+  "entries": [
+    {
+      "agent": false,
+      "combat": 40.25,
+      "core": 380.0,
+      "explore": 0.0,
+      "name": "Admiral",
+      "rank": 1,
+      "score": 412.5
+    }
+  ],
+  "tick": 4820,
+  "type": "leaderboard"
+}

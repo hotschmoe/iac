@@ -37,12 +37,13 @@ use iac_shared::scaling::{
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION, DefenceKind, ShipyardItem,
 };
 use iac_shared::protocol::{
-    AlertEvent, AlertLevel, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
+    AlertEvent, AlertLevel, ChartMark, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
     MovePreview, OreReserve, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
     StorageFullEvent, StorageNearCapEvent, StorageState,
 };
 
 use crate::auth::{self, TokenHash};
+use crate::bot::BotRecord;
 use crate::combat;
 use crate::score;
 use crate::intel::KnownSectors;
@@ -490,6 +491,9 @@ pub struct GameEngine {
     home_salvage_warned: BTreeMap<u64, u64>,
     /// Harvest yield per fleet awaiting its next `ResourceHarvested` event.
     harvest_reports: BTreeMap<u64, HarvestReport>,
+    /// The accounts that are built-in bots: what each is and remembers.
+    /// The engine only keeps and ranks them; a host's `bot::Roster` plays them.
+    bots: BTreeMap<u64, BotRecord>,
     /// Standing orders per fleet.
     pub policies: BTreeMap<u64, FleetPolicy>,
 
@@ -518,6 +522,9 @@ pub struct GameEngine {
     /// Explore credits already paid: once per player and sector.
     credited: HashSet<(u64, u32, ExploreCredit)>,
     new_credits: Vec<(u64, Hex, ExploreCredit)>,
+    /// (player, sector key) whose chart mark may have changed since the
+    /// last chart refresh: delivered, or lost with the fleet that held it.
+    pub(crate) chart_news: Vec<(u64, u32)>,
     /// What each player has seen of the galaxy, live or remembered.
     pub known: KnownSectors,
     /// Ratios already worked out, by the two sides; speed only.
@@ -540,8 +547,9 @@ impl GameEngine {
         let Snapshot {
             world_seed, meta, tick, mut next_id, mut players, fleets, npc_fleets, combats,
             sector_overrides, mut policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
-            harvest_reports, pending_events, explored, credited, known,
+            harvest_reports, mut bots, pending_events, explored, credited, known,
         } = snapshot;
+        bots.retain(|player_id, _| players.contains_key(player_id));
 
         for player in players.values_mut() {
             assign_missing_queue_ids(player, &mut next_id);
@@ -563,6 +571,7 @@ impl GameEngine {
             storage_marks,
             home_salvage_warned,
             harvest_reports,
+            bots,
             policies,
             pending_events,
             pending_arrivals: Vec::new(),
@@ -579,6 +588,7 @@ impl GameEngine {
             new_edges: Vec::new(),
             credited: credited.into_iter().collect(),
             new_credits: Vec::new(),
+            chart_news: Vec::new(),
             known: KnownSectors::load(known),
             odds_memo: RefCell::default(),
         }
@@ -603,6 +613,7 @@ impl GameEngine {
             storage_marks: self.storage_marks.clone(),
             home_salvage_warned: self.home_salvage_warned.clone(),
             harvest_reports: self.harvest_reports.clone(),
+            bots: self.bots.clone(),
             pending_events: self.pending_events.clone(),
             explored: self.explored.iter().copied().collect(),
             credited: self.credited.iter().copied().collect(),
@@ -661,6 +672,7 @@ impl GameEngine {
         let mut known = std::mem::take(&mut self.known);
         known.refresh(self);
         self.known = known;
+        self.chart_news.clear();
 
         Ok(())
     }
@@ -710,7 +722,9 @@ impl GameEngine {
 
     /// Drop a fleet and its standing orders, and queue both for deletion.
     fn remove_fleet(&mut self, fleet_id: u64) {
-        self.fleets.remove(&fleet_id);
+        if let Some(fleet) = self.fleets.remove(&fleet_id) {
+            self.chart_news.extend(fleet.charts.iter().map(|&key| (fleet.owner_id, key)));
+        }
         self.dirty_fleets.remove(&fleet_id);
         self.deleted_fleet_ids.insert(fleet_id, ());
         if self.policies.remove(&fleet_id).is_some() {
@@ -2211,6 +2225,68 @@ impl GameEngine {
         token
     }
 
+    // ── Built-in Bots ─────────────────────────────────────────────
+
+    /// Create the account of a built-in bot: an ordinary account, registered
+    /// and placed like any other, whose name carries the reserved prefix
+    /// and whose `record` marks it as a bot. `token` locks the account; the
+    /// host has no use for it afterwards.
+    pub fn enlist_bot(&mut self, name: &str, record: BotRecord, token: String) -> Result<u64, AuthError> {
+        auth::validate_bot_name(name).map_err(AuthError::InvalidName)?;
+        if self.find_player_by_name(name).is_some() {
+            return Err(AuthError::InvalidName("that name is taken".to_string()));
+        }
+        let player_id = self.register_player(name.to_string()).map_err(|_| AuthError::WorldFull)?;
+        self.issue_token(player_id, token);
+        self.set_bot(player_id, record);
+        Ok(player_id)
+    }
+
+    /// Home seats nobody has taken: how many more accounts the world admits.
+    pub fn free_home_seats(&self) -> usize {
+        world::home_seats().filter(|seat| !self.players.values().any(|p| p.homeworld == *seat)).count()
+    }
+
+    pub fn bots(&self) -> &BTreeMap<u64, BotRecord> {
+        &self.bots
+    }
+
+    pub fn is_bot(&self, player_id: u64) -> bool {
+        self.bots.contains_key(&player_id)
+    }
+
+    /// Store what a bot is and remembers, to be saved with the world.
+    pub fn set_bot(&mut self, player_id: u64, record: BotRecord) {
+        if self.bots.get(&player_id) != Some(&record) {
+            self.bots.insert(player_id, record);
+            self.dirty_runtime.insert((RuntimeKind::Bot, player_id));
+        }
+    }
+
+    // ── Chart Marks ───────────────────────────────────────────────
+
+    /// The sectors whose chart some fleet of `player_id` still carries. A
+    /// fleet that lost its last ship counts until it is reaped, which is
+    /// when `chart_news` tells its owner's clients.
+    pub fn charts_aboard(&self, player_id: u64) -> HashSet<u32> {
+        self.fleets
+            .values()
+            .filter(|f| f.owner_id == player_id)
+            .flat_map(|f| f.charts.iter().copied())
+            .collect()
+    }
+
+    /// Where `player_id`'s chart of a sector stands, given `charts_aboard`.
+    pub fn chart_mark(&self, player_id: u64, sector_key: u32, aboard: &HashSet<u32>) -> Option<ChartMark> {
+        if self.credited.contains(&(player_id, sector_key, ExploreCredit::Charted)) {
+            Some(ChartMark::Delivered)
+        } else if aboard.contains(&sector_key) {
+            Some(ChartMark::Aboard)
+        } else {
+            None
+        }
+    }
+
     /// Case-insensitive name lookup; an exact-case match wins (see `AuthRequest`).
     fn find_player_by_name(&self, name: &str) -> Option<u64> {
         let mut folded = None;
@@ -2561,9 +2637,16 @@ impl GameEngine {
         self.bfs_path(from, max_hops, &|n| n == to || passable(n), &|n| n == to)
     }
 
+    /// `home_route(owner, from).direct`, from the lane distances the world
+    /// generator remembers: views and autopilots ask this every tick.
+    fn direct_hops_home(&self, owner: u64, from: Hex) -> u32 {
+        let Some(home) = self.players.get(&owner).map(|p| p.homeworld) else { return 0; };
+        self.world_gen.lane_hops(from, home, 64).unwrap_or(Hex::distance(&from, &home) as u32)
+    }
+
     /// Fuel the fleet would burn getting home from `from`, one jump per hop.
     pub fn route_home_cost(&self, fleet: &Fleet, from: Hex) -> f32 {
-        self.home_route(fleet.owner_id, from).direct as f32 * self.hop_fuel_cost(fleet)
+        self.direct_hops_home(fleet.owner_id, from) as f32 * self.hop_fuel_cost(fleet)
     }
 
     fn push_alert(&mut self, level: AlertLevel, fleet_id: u64, sector: Hex, message: String) {
@@ -3255,6 +3338,7 @@ impl GameEngine {
 
         let (mut sectors, mut points) = (0u32, 0.0f32);
         for key in charts {
+            self.chart_news.push((owner, key));
             if self.credited.insert((owner, key, ExploreCredit::Charted)) {
                 let sector = Hex::from_key(key);
                 self.new_credits.push((owner, sector, ExploreCredit::Charted));
@@ -3813,7 +3897,7 @@ impl GameEngine {
         if !homeward {
             let min_pct = self.policies.get(&fleet_id).map(|p| p.params.min_fuel_pct).unwrap_or_default();
             let reserve = fleet.fuel_max * min_pct as f32 / 100.0;
-            let need = self.home_route(owner, step).direct as f32 * hop + reserve;
+            let need = self.direct_hops_home(owner, step) as f32 * hop + reserve;
             if fuel - hop < need {
                 let why = format!(
                     "a jump to {step} would leave {:.0} fuel against {:.0} needed to return home",
@@ -4760,6 +4844,7 @@ impl GameEngine {
                 self.home_salvage_warned.get(&id).copied().map(RuntimeEntry::HomeSalvageWarned)
             }
             RuntimeKind::HarvestReport => self.harvest_reports.get(&id).cloned().map(RuntimeEntry::HarvestReport),
+            RuntimeKind::Bot => self.bots.get(&id).cloned().map(Box::new).map(RuntimeEntry::Bot),
         }
     }
 

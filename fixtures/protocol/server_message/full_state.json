@@ -1247,6 +1247,7 @@
       }
     },
     {
+      "chart": "delivered",
       "connections": [
         {
           "q": -4,
@@ -1303,6 +1304,7 @@
       }
     },
     {
+      "chart": "aboard",
       "connections": [
         {
           "q": 4,

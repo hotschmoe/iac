@@ -3,7 +3,7 @@
 // Only modified sectors need database storage.
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hasher;
 use std::sync::Arc;
 
@@ -43,10 +43,13 @@ pub struct WorldGen {
     sectors: RefCell<HashMap<u32, SectorTemplate>>,
     links: RefCell<HashMap<u32, ConnectedList>>,
     reach: RefCell<HashMap<ReachKey, Arc<[Hex]>>>,
+    hops: RefCell<HashMap<HopsKey, Option<u32>>>,
 }
 
 /// Origin sector key and hop count of a cached `reachable_within`.
 type ReachKey = (u32, u8);
+/// The two sector keys and the hop limit of a cached `lane_hops`.
+type HopsKey = (u32, u32, u8);
 
 /// Entries kept per cache before it is emptied; far above any real play area.
 const CACHE_LIMIT: usize = 1 << 21;
@@ -64,6 +67,7 @@ impl WorldGen {
             sectors: RefCell::default(),
             links: RefCell::default(),
             reach: RefCell::default(),
+            hops: RefCell::default(),
         }
     }
 
@@ -187,6 +191,43 @@ impl WorldGen {
             cache.clear();
         }
         cache.insert(key, Arc::clone(&found));
+        found
+    }
+
+    /// Fewest jumps from `from` to `to` along open lanes, None beyond `max_hops`.
+    pub fn lane_hops(&self, from: Hex, to: Hex, max_hops: u8) -> Option<u32> {
+        if from == to {
+            return Some(0);
+        }
+        let key = (from.to_key(), to.to_key(), max_hops);
+        if let Some(found) = self.hops.borrow().get(&key) {
+            return *found;
+        }
+        let goal = to.to_key();
+        let mut visited: HashSet<u32> = HashSet::from([from.to_key()]);
+        let mut frontier = vec![from];
+        let mut found = None;
+        'search: for hops in 1..=u32::from(max_hops) {
+            let mut next = Vec::new();
+            for coord in &frontier {
+                for n in self.connected_neighbors(*coord).slice() {
+                    if !visited.insert(n.to_key()) {
+                        continue;
+                    }
+                    if n.to_key() == goal {
+                        found = Some(hops);
+                        break 'search;
+                    }
+                    next.push(*n);
+                }
+            }
+            frontier = next;
+        }
+        let mut cache = self.hops.borrow_mut();
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, found);
         found
     }
 

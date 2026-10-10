@@ -28,6 +28,8 @@ SCORE_RULE = ("score = core + min(combat + explore, 25% of core); core = built l
               "docks with them; derelicts pay on first boarding.")
 QUEUE_NAMES = {"build": "Building", "research": "Research", "ship": "Ship"}
 ALERT_LEVELS = ("Warning", "Critical")
+CHART_MARKS = {"aboard": "aboard one of your fleets; it scores when that fleet docks at home alive",
+               "delivered": "delivered (already scored; no need to visit again)"}
 NOTABLE = {"BuildingCompleted", "ResearchCompleted", "ShipBuilt", "DefenceBuilt", "FleetArrived", "CombatStarted",
            "ShipDestroyed", "FleetDestroyed", "RaidIncoming", "RaidResolved", "SiteExplored", "SiteAmbush",
            "SalvageCollected", "ChartDelivered", "ScanCompleted"}
@@ -484,6 +486,8 @@ def describe(sec, loc, sectors, now, indent="", odds=None):
     if sec.get("site"):
         stale = " (remembered, may be gone)" if sec.get("pins_stale") else ""
         print(f"{indent}derelict site tier {sec['site']['tier']} risk {sec['site']['risk']}{stale}")
+    if sec.get("chart"):
+        print(f"{indent}chart: " + CHART_MARKS.get(sec["chart"], sec["chart"]))
 
 
 
@@ -1044,6 +1048,10 @@ def cmd_score(name, limit=10):
     for e in board["entries"] + ([board["you"]] if board.get("you") else []):
         tag = "AI " if e["agent"] else "   "
         print(f"{e['rank']:>4}  {e['name']:<20} {tag}{e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
+    if board.get("bots"):
+        print("built-in bots (names start BOT-; they play by your rules and are not ranked with you):")
+        for e in board["bots"]:
+            print(f" BOT  {e['name']:<20}    {e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
     print(board.get("rule") or SCORE_RULE)
 
 
@@ -1098,6 +1106,7 @@ def cmd_map(name, radius=4):
         if s.get("player_fleets"): bits.append("players: " + ",".join(p["owner_name"] for p in s["player_fleets"]))
         if s.get("salvage"): bits.append("salvage")
         if s.get("site"): bits.append(f"derelict t{s['site']['tier']} {s['site']['risk']}")
+        if s.get("chart"): bits.append(f"chart {s['chart']}")
         print(f"  {k[0]},{k[1]}: " + "  ".join(bits))
 
 
@@ -1370,7 +1379,9 @@ def cmd_do(name, args):
 
 
 def leaderboard_line(m):
-    return "leaderboard: " + "; ".join(f"{e['rank']}. {e['name']} {e['score']:.1f}" for e in m["entries"][:10])
+    bots = m.get("bots") or []
+    return ("leaderboard: " + "; ".join(f"{e['rank']}. {e['name']} {e['score']:.1f}" for e in m["entries"][:10])
+            + (f"; {len(bots)} bots unranked, best {bots[0]['name']} {bots[0]['score']:.1f}" if bots else ""))
 
 
 def cmd_events(name, mine_only=False, advance=True):

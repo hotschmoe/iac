@@ -370,6 +370,11 @@ class Inspector extends StatelessWidget {
             Kv('Derelict', v: 'tier ${sec.site!.tier} - risk ${sec.site!.risk.label}', vc: sec.site!.risk == proto.SiteRisk.hot ? C.ember : sec.site!.risk == proto.SiteRisk.uneasy ? C.threat(5) : C.ok),
           if (sec.pinsStale && (salvagePinVisible(sec, st.tick) || sec.site != null))
             Kv('Pins', v: 'STALE - unconfirmed since ${ago(it.ticksOld)} ago', vc: C.fossil),
+          if (sec.chart != null)
+            Kv('Chart',
+                key: const Key('sector-chart'),
+                v: sec.chart == proto.ChartMark.aboard ? 'ABOARD - dock at home to bank it' : 'DELIVERED',
+                vc: sec.chart == proto.ChartMark.aboard ? C.threat(5) : C.ok),
         ],
         Kv('Distance', v: '${proto.Hex.distance(fleet.sector, h)} from ${fleet.name}\n${proto.Hex.distance(h, st.homeworld)} from home - $d from hub'),
         if (plan.why != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text(plan.why!, key: const Key('route-why'), style: T.mono(size: 10.5, color: C.ember, height: 1.3))),

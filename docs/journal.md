@@ -945,6 +945,141 @@ tests and from about 30 s to about 15 s. Retired tests are in the gitignored
   `sim/tests/`, and `server/tests/scenarios.rs` (case-insensitive accounts, event
   scoping between two players, a cancel aimed at an order that has started).
 
+## 2026-10-10: built-in bots and the first balance report from the real engine
+
+Roadmap step 2 of single player and bots, the `iac-sim` part. Not done: seating bots
+in the server, the BOT tag, the wasm bundle. No balance constant was changed.
+
+**Seam.** `ScriptedPlayer::act` emits `Order`s (a `Command` or a `PolicyUpdate`),
+`hear` gets replies (a bot asks for its own leaderboard row), `seated` hands over the
+world seed and player id. `script::Seat` binds a player to an account (`join` or
+`resume`) and runs its turn before a tick (`take_turn`); `Headless` keeps seats, a
+server or wasm host would do the same. `CheckInBuilder` is gone.
+
+**Bots** (`sim/src/bot/`): personality x attention.
+- *Home* (`home.rs`, shared by all): support buildings and techs are ordered once they
+  cost no more than an appetite times the next Metal Mine level; mines by payback,
+  tilted toward the resource that sits lowest against its cap; fleet value held at a
+  share of econ points (raider 20%, mixed 15, explorer 10, miner 5, turtle 0); Pulse
+  Turrets to 1.15x the next raid (turtle 1.5x). Orders carry `reserve`. A present
+  player queues one order at a time; one about to leave fills the queues, rates each
+  building place by the income it must absorb, and puts unclaimed stock into one batch.
+- *Fleets* (`field.rs`): ships are kept in wings (mining, survey, recovery, strike).
+  Away: `mine_and_return`, `prospect`, `salvage_and_sites`, `patrol_home`. Present: a
+  pilot that scans before entering, walks to the nearest uncharted sector, ore, wreck
+  or beatable group, boards quiet derelicts, fights at 3x (8x against a class with
+  rapid fire on it) and only with shields up, comes home on fuel or a full hold.
+- *Attention*: check-in = 4 look-ins of 5 minutes a day (`--sessions`), hybrid = the
+  same with one of them an hour of piloting, hands-on = always present, no doctrines.
+- *Two rules the engine forced.* Refuelling takes deuterium ahead of every queue, so a
+  pilot leaves only with a tank to spare beyond the next orders, and a fleet goes under
+  a doctrine only while half the deuterium production covers its burn. Wings that fly
+  for points stay home once combat plus explore exceed 1.2x the cap (`--ignore-cap`
+  turns that off).
+
+**`sim-run`**: `--seat <personality>:<attention>[:<n>]` / `idle[:<n>]` (default: every
+style once and an idle player), `--sessions`, `--every`, `--ignore-cap`, `--json`.
+Prints the score split per player and sample and a table by style. `--builders` and
+`--idle` are gone.
+
+**Engine**: `WorldGen::lane_hops` memoises lane distance; `route_home_cost` and the
+autopilot's fuel check use it (was a breadth-first search per fleet per view per
+tick, the largest item in the profile with fleets far out). Outputs unchanged.
+
+**Measured.** Season, 7 days, seeds 1 to 3, 16 players each
+(`sim-run --pace season --days 7 --seed N --json`). Mean (min-max over seeds).
+
+| style | total | core | combat | explore | cap filled | haul | raid salvage |
+|---|---|---|---|---|---|---|---|
+| turtle / check-in | 1756 (1556-1875) | 1756 | 0 | 0 | 0% | 0 | 233 |
+| miner / check-in | 1694 (1676-1721) | 1693 | 0 | 1 | 0% | 0 | 249 |
+| raider / check-in | 1634 (1399-1797) | 1595 | 1 | 39 | 10% | 5 | 231 |
+| explorer / check-in | 1953 (1746-2258) | 1754 | 5 | 199 | 45% | 25 | 247 |
+| mixed / check-in | 1675 (1541-1930) | 1595 | 2 | 78 | 20% | 6 | 241 |
+| turtle / hybrid | 1876 (1817-1980) | 1876 | 0 | 0 | 0% | 0 | 299 |
+| miner / hybrid | 2751 (2537-2884) | 2201 | 58 | 1140 | 100% | 319 | 296 |
+| raider / hybrid | 1977 (1531-2240) | 1581 | 25 | 729 | 100% | 51 | 250 |
+| explorer / hybrid | 2221 (2133-2331) | 1777 | 26 | 1060 | 100% | 84 | 295 |
+| mixed / hybrid | 2221 (2127-2273) | 1777 | 19 | 798 | 100% | 48 | 295 |
+| turtle / hands-on | 2400 (2400-2400) | 2400 | 0 | 0 | 0% | 0 | 374 |
+| miner / hands-on | 3919 (3917-3922) | 3135 | 191 | 1683 | 100% | 994 | 500 |
+| raider / hands-on | 3001 (2793-3179) | 2401 | 219 | 2059 | 100% | 528 | 295 |
+| explorer / hands-on | 3132 (3036-3248) | 2506 | 65 | 1727 | 100% | 438 | 402 |
+| mixed / hands-on | 3140 (3046-3326) | 2512 | 293 | 2479 | 100% | 686 | 371 |
+
+Haul and raid salvage are resources in the points they buy (1 = 1000 metal).
+
+Share of the same personality flown hands-on, by day (mean of seeds):
+
+| | d1 | d2 | d3 | d4 | d5 | d6 | d7 (min-max) |
+|---|---|---|---|---|---|---|---|
+| turtle check-in | 40% | 50% | 48% | 57% | 68% | 81% | 73% (65-78) |
+| turtle hybrid | 44% | 50% | 64% | 70% | 76% | 90% | 78% (76-83) |
+| explorer check-in | 31% | 35% | 41% | 45% | 47% | 55% | 62% (54-73) |
+| explorer hybrid | 48% | 44% | 45% | 54% | 57% | 65% | 71% (68-75) |
+| raider check-in | 39% | 35% | 38% | 48% | 52% | 58% | 55% (44-61) |
+| mixed check-in | 39% | 46% | 55% | 53% | 55% | 62% | 54% (47-63) |
+| miner check-in | 22% | 15% | 22% | 31% | 34% | 36% | 43% (43-44) |
+
+Look-ins per day, turtle only, day 7, share of hands-on (check-in / hybrid): 1: 15% /
+55%; 2: 50% / 72%; 4: 74% / 82%; 8: 87% / 92%; 16: 88% / 85%. At persistent pace 4
+look-ins reach 92% (89-96). Blitz, one hour, hands-on, 3 seeds: turtle 364, miner 481,
+raider 434 (374-500), explorer 520 (385-671), mixed 504.
+
+**What it says about the targets.**
+- *Check-in must not fall hopelessly behind over a week.* Holds at 4 look-ins for the
+  builder (73% on day 7) and fails early: 40% after day 1. The queue is the limit:
+  3 waiting orders, and early orders take minutes at season pace. Two look-ins a day
+  give 50%, one gives 15%.
+- *Standing orders earn 50 to 70% of piloting.* No. Charts delivered: 0 to 18% of the
+  hands-on count; haul: 0 to 6%; score that counted: explorer 32%, mixed 13%, raider
+  6%, miner 0%. `mine_and_return` brought home 0.2 points of ore in a week against 367
+  by hand: it goes back to the nearest seam, which it has stripped. `patrol_home`
+  stays within 2 hops and leaves the wrecks. `prospect` rates an empty sector by its
+  ring, so scouts stop where a pilot walks through. No doctrine can be given a fuel
+  budget.
+- *Explorers and raiders within 15% of a builder, mixed above both.* Hands-on: raider
+  125%, explorer 131%, mixed 131% of the turtle, all from the bonus; their cores are
+  100 to 105% of the turtle's. Check-in: 94 to 112%. The hands-on miner is at 163%:
+  its haul is worth 30% of its core (seed 1: ore 367, wrecks 263, derelicts 205).
+- *The 25% cap at season pace.* It binds for every pilot from the first hours: raw
+  combat plus explore is 5 to 21 times the cap after day 1 and 2.4 to 4.4 times
+  after day 7, bots heeding the cap; with `--ignore-cap` (seed 1) 8 to 22 times, then
+  2.7 to 3.7. One hour of piloting a day keeps it bound all week (1.9 to 2.5 times on
+  day 7); under standing orders alone only the explorer reaches it (days 2 to 4 on
+  average, all week on one seed). Exploration is the supply: combat is 65 to 293 points against a cap of
+  600 to 780.
+
+**Engine behaviour found on the way (not changed).**
+- A homeworld can sit on a lair (seed 1: 12 of 25, 7 not passive). Arriving home starts
+  the fight; a ring-6 corvette lair kills the two starting scouts on their first return.
+- A fight another player starts in a home sector enrols the fleets docked there; the
+  idle player collected kills and salvage.
+- `recall` during combat moves the fleet home and leaves it in the fight: shots keep
+  landing on it while docked.
+- Raid rolls are seeded from tick and player id, not the world seed.
+- Shipyard units pay as soon as they can, ahead of a costlier `reserve` building in
+  another queue: a look-in player cannot say "spend what is left".
+- Pulse Turrets are the cheapest power (8.2 resources a point against 10.6 and 13.3).
+
+**Speed.** 52 idle players 32k ticks/s; 50 check-in turtles 9.6k; 50 hands-on turtles
+4.4k (a turn each 20 ticks); 16 seats 5.8k on day 1, and 19 minutes for the week (530
+ticks/s, four runs side by side), slowing as charts grow: a turn clones the whole
+chart in `full_state`.
+
+**Limits.** Bots are heuristics; hands-on is an always-on machine, closer to an LLM
+agent than to a person. Doctrine thresholds are fixed (ratio 1.5, strike 3.0). One
+bot per style per world: the hands-on turtle has no seed variance at all.
+
+**Tests.** `sim/tests/bots.rs`: a world of bots replays from its seed; bots build, fly
+and delegate with orders the engine accepts.
+
+**Next (server seating).** Keep `Seat`s beside the engine and call `take_turn` before
+`tick`; persist which accounts are bots and their style; a restarted bot forgets
+which sectors it charted (a `charted` flag on `SectorState` would serve clients too);
+feed bots from `tick_update` instead of `full_state`; give them their own score row
+without ranking the whole board.
+
 ## 2026-10-10: a restart loses nothing
 
 `Database::load_snapshot` now returns the whole world. After SIGINT/SIGTERM it
@@ -1353,3 +1488,212 @@ every sector it tests (`known_opposition`); left alone here.
 
 **Not done.** `CLAUDE.md`'s layout table does not list `sim/src/odds.rs`.
 Measurement code is in the session scratchpad (`labels/`), not in the repo.
+
+## 2026-10-10: bots seated in the server, tagged BOT, kept through a restart
+
+Roadmap step 2, the server half. No balance constant was changed.
+
+**Hosting.** `iac-server --bot <personality>:<attention>[:<count>]` (the `sim-run`
+seat syntax, repeatable). `bot::Roster` holds the seats beside the engine;
+`run_tick` calls `take_turns` before `tick` and `observe` after it. A bot's orders go
+through `GameEngine::execute` and `handle_policy_update` as a client's do. `--bot`
+states what the world should have: missing bots are added at start, existing ones
+play on whether listed or not. `--player-seats <N>` (default 4) keeps home seats for
+people: a bot is added only while more than N of the 24 are free; a roster that asks
+for more is seated in the order given as far as that goes and the log says what was
+left out. `--bot-sessions` sets the look-ins of new check-in and hybrid bots.
+`sim-run` refuses more than 24 seats before it starts.
+
+**Identity: the name is the tag.** Bot accounts are named `BOT-<personality>-<n>`,
+and `BOT-` (any case) is refused for everyone else with `InvalidName`. Every place
+that names a player to another player already carries the name, so nothing else on
+the wire had to change for the tag: fleets in a sector, events, the board. The
+leaderboard reply gained `bots` (omitted when empty): bots are never in `entries`,
+they are ranked among themselves, and `you` is a bot's own row when a bot asks. LLM
+agents stay in `entries` with their `agent` flag. Fixtures: `leaderboard__with_bots`
+added, `enums.json` and `full_state.json` changed.
+- TUI: a "BUILT-IN BOTS" block under the ranking; `chart:` in the sector readout.
+- Web: bots under the ranking with a BOT tag and `---` for a rank; a log line counts
+  them; the sector panel shows the chart mark.
+- `play.py`: `score` lists bots under the table, `map` and `sector` show the mark.
+
+**Chart marks replace the bot's logbook.** `SectorState.chart` is `aboard` (the chart
+rides with one of the viewer's fleets) or `delivered` (banked), absent otherwise. It
+is laid over the chart per viewer when a view is built, and a remembered sector is
+sent once more when its mark moves (charts delivered, a carrier lost). A human sees
+which sectors still pay and which fleet must come home; a bot no longer keeps a list
+of its own, so what it must remember shrank to a few numbers.
+
+**Restart.** A bot is an account plus a `BotRecord` in the engine: style (personality,
+attention, look-ins, cap rule) and memory (end of the first look-in, next wake and
+plan ticks, its own board row as last asked, the lanes its fleets are walking). The
+record is in `Snapshot` and goes to SQLite as a `runtime_state` row of kind `bot`,
+written when a turn changes it. The view a seat holds is not stored: a restarted bot
+starts from the full state as a reconnecting client does, and that state is the one
+it would have folded. Checked three ways: a world of bots resumed from a JSON
+snapshot ends on the same hash as one never stopped (`sim/tests/bots.rs`); the same
+through SQLite, six restarts in a row (`server/src/database.rs`); the real binary
+killed and restarted (`server/tests/scenarios.rs`).
+
+**A view bug the restart work found.** A fleet that loses its last ship lingers one
+tick before it is reaped. The full state dropped its charts' marks at once, tick
+updates a tick later, so a client that folds updates and one that asks for the full
+state disagreed for that tick, and a bot acting on it would have left the path of an
+unrestarted one. Both now change at the reap. Found by folding updates for 20 bots
+over 9000 blitz ticks and comparing with the full state every tick (180 000 views,
+0 differ after the fix; one did before, at tick 5382). The scenario in `bots.rs`
+compares every view a seat holds, on a smaller world.
+
+**Cost: the incremental view is not the cheaper one.** The step-2 seat built a full
+state for every turn. Folding `tick_update` instead was the plan, and measured it
+loses: an update must be taken every tick, a full state only on a turn, and an
+update for an active account already costs about 40% of the full state (fleets with
+their way home, the homeworld block and live sectors are in both; the chart copy is
+the rest: at hour 6 of a blitz world 116 us against 275 us with 380 sectors charted).
+So a seat now follows by updates only while its player acts again within two ticks
+(`ScriptedPlayer::watching`) and starts from a full state otherwise. Whole-world mean
+per tick, 20 bots and 3 idle accounts, release build, world before the merge:
+
+| roster, pace, length | full state per turn | update every tick while present | update only when the next turn is near (kept) |
+|---|---|---|---|
+| 5 styles x (hands-on, hybrid, 2 check-in), blitz, 6 h | 3.49 ms | 3.47 ms | 3.35 ms |
+| 20 hands-on, blitz, 6 h | 9.84 ms | 11.89 ms | 10.63 ms |
+| the mixed 20, season, 2 days | 0.59 ms | 0.72 ms | 0.52 ms |
+| 20 hands-on, season, 2 days | 0.82 ms | 1.41 ms | 0.87 ms |
+
+The runs are not the same games (bot turns differ by up to 5%); per turn the kept
+rule is within 4% of the full-state seat for all-hands-on worlds and 4 to 11% under
+it for mixed ones. Split of the blitz mixed world: engine tick 1.3 ms, bot turns
+0.9 ms, following 1.2 ms; worst single tick 18 to 43 ms. The live servers (below)
+ran 1.9 to 5.3 ms a tick on average with 20 bots and three clients, 15 ms at worst:
+under 2% of the second. The lever left is the view itself, for bots and people
+alike: 100 to 300 us per active account per tick late in a world.
+
+**World full.** `AuthError::Server` went with master's home seats; a bot without a
+seat is refused `WorldFull` like anyone. See `--player-seats` above.
+
+**Live check** (release, own databases, ports 7833 and 7834, three headless clients
+each, one of them flying toward the nearest bot home and scanning). Blitz and season
+worlds asked for 23 and 20 bots: 20 seated in each, 4 seats kept, the blitz log
+naming the 3 left out. The clients saw `BOT-` fleets in scanned sectors (7 and 6
+different bots), `bots` on the board with 20 rows, themselves ranked 1 to 3, and
+`chart: aboard` on the sector they had entered. Blitz was killed (SIGKILL) at tick
+626 and started with no `--bot`; season stopped (SIGTERM) and started asking for
+more bots than fit: both resumed 20 bots, added none, and scores went on (blitz: 12
+bots higher after 330 ticks, 2 lower by 0.1, the other check-in ones waiting for
+their next look-in; season, where a building takes minutes: 1 higher, none lower).
+
+**Attention is in ticks.** A check-in bot looks in four times a day of ticks at any
+pace, so in a blitz hour it plays its first five minutes and no more. Short worlds
+want hands-on bots.
+
+**Odds from the server.** After the odds merge a bot keeps no power arithmetic. A
+turn is now questions, then orders (`ScriptedPlayer::ask`): the seat sends the
+questions (`odds`, `preview_move`, `leaderboard` only) and the answers reach `hear`
+before `act`, as a client gets its replies within the tick. The pilot asks `odds`
+for each fleet it will fly against the sectors within 12 hops where the answer
+settles something (a fight on entering, prey, a derelict that may be guarded) and
+for home; a guarded sector with no answer is closed to it. Thresholds unchanged: 3.0
+to fight or enter, 1.5 and 3.0 on the doctrines. Gone: `fleet.power >= k x
+est_power` and the 8x rule against classes with rapid fire on the fleet, which the
+server's ratio already counts. A risky derelict is boarded when its sector reads
+favourable (1.5); the old test was power against the guard's power, a number no
+client is given. Answers live for one turn, so the stored record did not grow.
+Asking everything every turn cost 8.5 ms a tick in the 20-bot blitz world; asking
+only for fleets about to fly, within the horizon, 1.3 ms (0.9 before odds). The
+final build ran live at 2.2 to 3.0 ms a tick on average, 9 ms at worst (20 bots,
+three clients, blitz), was killed at tick 654 and came back with its 20 bots, all 20
+higher by tick 851. Folded views against full states on that build: 180 000
+compared, 0 differ.
+
+### The season week again (7 days, seeds 1 to 3, the same 16 seats)
+
+Four runs, to keep causes apart. A: the first report (world before home seats, bots
+of step 2). B: the same world, bots as they were before the odds merge (chart marks,
+prompt re-planning). C: world generation 3, the same bots. D: master with odds, bots
+on the server's ratio. One bot per style and three seeds: the ranges are wide, and a
+difference inside them is not a finding.
+
+Day 7, mean (min-max over seeds), D:
+
+| style | total | core | combat | explore | cap filled | haul | raid salvage | ships lost |
+|---|---|---|---|---|---|---|---|---|
+| turtle / check-in | 1755 (1556-1874) | 1755 | 0 | 0 | 0% | 0 | 232 | 0 |
+| miner / check-in | 1659 (1509-1784) | 1658 | 0 | 1 | 0% | 0 | 251 | 1 |
+| raider / check-in | 1743 (1509-1917) | 1630 | 3 | 110 | 28% | 8 | 227 | 3 |
+| explorer / check-in | 2020 (1887-2198) | 1751 | 5 | 264 | 61% | 11 | 245 | 9 |
+| mixed / check-in | 1905 (1722-2102) | 1649 | 7 | 249 | 62% | 13 | 256 | 48 |
+| turtle / hybrid | 1876 (1817-1980) | 1876 | 0 | 0 | 0% | 0 | 299 | 0 |
+| miner / hybrid | 2649 (2409-2795) | 2120 | 39 | 968 | 100% | 235 | 297 | 5 |
+| raider / hybrid | 1916 (1507-2163) | 1533 | 21 | 733 | 100% | 56 | 241 | 8 |
+| explorer / hybrid | 2134 (2083-2188) | 1707 | 27 | 833 | 100% | 73 | 281 | 1 |
+| mixed / hybrid | 2099 (1991-2164) | 1679 | 18 | 759 | 100% | 56 | 290 | 3 |
+| turtle / hands-on | 2400 (2400-2400) | 2400 | 0 | 0 | 0% | 0 | 373 | 0 |
+| miner / hands-on | 4232 (4215-4242) | 3386 | 155 | 1538 | 100% | 901 | 537 | 19 |
+| raider / hands-on | 2982 (2918-3017) | 2386 | 105 | 1681 | 100% | 383 | 286 | 9 |
+| explorer / hands-on | 3664 (3114-4048) | 2931 | 162 | 2464 | 100% | 658 | 434 | 3 |
+| mixed / hands-on | 3165 (3116-3260) | 2532 | 149 | 2249 | 100% | 647 | 388 | 13 |
+
+Totals across the four runs (A is the table in the first report):
+
+| style | A | B | C | D |
+|---|---|---|---|---|
+| turtle, all three attentions | 1756 / 1876 / 2400 | the same | the same | the same |
+| miner / check-in | 1694 | 1711 | 1659 | 1659 |
+| raider / check-in | 1634 | 1743 | 1797 | 1743 |
+| explorer / check-in | 1953 | 1912 | 2087 | 2020 |
+| mixed / check-in | 1675 | 1670 | 1773 | 1905 |
+| miner / hybrid | 2751 | 2713 | 2552 | 2649 |
+| raider / hybrid | 1977 | 2051 | 2038 | 1916 |
+| explorer / hybrid | 2221 | 2203 | 2180 | 2134 |
+| mixed / hybrid | 2221 | 2247 | 2150 | 2099 |
+| miner / hands-on | 3919 | 4418 | 4027 | 4232 |
+| raider / hands-on | 3001 | 3093 | 2966 | 2982 |
+| explorer / hands-on | 3132 | 2840 | 3208 | 3664 |
+| mixed / hands-on | 3140 | 3277 | 3233 | 3165 |
+
+What moved, and what did not:
+
+- *Builders: nothing.* The turtle rows are the same within a point in all four runs.
+  Neither the world nor the odds touch an empire that keeps its ships home.
+- *Ships lost by pilots.* The largest change, and it is the odds. Hands-on miner
+  166 (B), 100 (C), 19 (D); raider 74, 87, 9; mixed 58, 65, 13. A ratio of 3.0 on
+  the server's scale is a fight without lasting damage; 3.0 in power was not. The
+  pilots' combat points fell with it (raider 215, 216, 105; mixed 183, 269, 149)
+  and the cores did not suffer.
+- *Delegated fleets against piloted ones* (check-in as a share of hands-on, same
+  personality, day 7; A, C, D). Charts delivered: raider 4%, 11%, 12%; explorer
+  18%, 26%, 24%; mixed 10%, 16%, 27%; miner 0. Haul: 0 to 6%, 0 to 7%, 0 to 2%.
+  Score that counted: explorer 32%, 50%, 37%; raider 7%, 22%, 19%; mixed 13%, 20%,
+  40%; miner 0. Better than the first report: for raider and explorer the gain came
+  with world 3 (B: 10% and 35%), for mixed with the odds (B 19%, C 20%, D 40%). Still
+  short of the 50 to 70% target everywhere. `mine_and_return` still brings home next
+  to nothing (haul 0 in every run).
+- *Explorers under orders hold at the ring-9 line.* Explorer / check-in from C to
+  D: ships lost 32 to 9, explore 331 to 264, haul 36 to 11. Fewer scouts die and
+  fewer far charts come home.
+- *Check-in against hands-on by day* (total, D; d1 to d7): turtle 40, 50, 48, 57,
+  68, 81, 73%; miner 17, 15, 20, 29, 32, 33, 39%; raider 39, 34, 39, 47, 56, 62,
+  58%; explorer 31, 34, 39, 40, 43, 51, 56%; mixed 40, 48, 57, 59, 60, 59, 60%.
+  Day 7 in A: 73, 43, 55, 62, 54. The explorer's share fell because the hands-on
+  explorer gained (3132 to 3664), not because the check-in one lost. Hybrid on day 7,
+  D: 78, 63, 64, 59, 66% (A: 78, 70, 66, 71, 71).
+- *Cap fill by style* (raw combat plus explore over the cap, day 7; A, D). Check-in:
+  miner 0.00x, 0.00x; raider 0.10x, 0.27x; explorer 0.46x, 0.61x (above 1x on days
+  2 to 4 in D); mixed 0.20x, 0.63x. Hybrid 1.85 to 2.45x, 1.85 to 2.03x. Hands-on
+  2.4 to 4.4x, 2.0 to 3.8x. The cap still binds every pilot all week and no fleet
+  under orders at the end of it.
+- *`patrol_home`* (the strike wing of check-in raiders and mixed; A, C, D). Raider:
+  combat points 0.7, 2.2, 2.7 (D: 0.1 to 5.8); kills 84, 58, 62 (D: 7 to 135);
+  salvage 1.2, 9.2, 3.9. Mixed: combat 2.0, 4.6, 7.0; kills 74, 115, 148; salvage
+  4.2, 4.0, 8.9. Hunting the convoys beside home is worth 3 to 7 combat points and 4
+  to 9 points of salvage a week to an empire with 200 to 250 points of ships, against
+  a cap near 410: about 0.05 points a kill. The mixed check-in empire loses 48 ships a week (21 to 86) over all its wings, as it
+  did before (A 26, B 46, C 42).
+- *Personality against the turtle, day 7, D.* Check-in: miner 95%, raider 100%,
+  explorer 116%, mixed 109%. Hands-on: miner 176%, raider 124%, explorer 153%, mixed
+  132%. The hands-on miner and explorer are far outside the 15% band; both are
+  haul and capped bonus on a core 22 to 41% above the turtle's.
+
+Not rerun: the blitz hour table, the look-ins-per-day sweep and the persistent-pace
+check of the first report.
