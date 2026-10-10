@@ -217,3 +217,118 @@ async fn a_cancel_aimed_at_an_order_that_started_meanwhile_is_refused_and_leaves
     assert!(!seen.iter().any(|e| e["kind"] == "Queue" && e["action"] == "Cancelled"), "{seen:?}");
     remove_db(&db);
 }
+
+#[tokio::test]
+async fn a_killed_server_comes_back_with_the_scan_live_and_the_boarding_under_way() {
+    let port = 17954;
+    let db = fresh_db(port);
+    let world = WorldGen::init(DEFAULT_WORLD_SEED);
+    let quiet = |at: Hex| world.generate_sector(at).npc_template.is_none();
+
+    let (token, fleet, site, scanned, end_tick) = {
+        let _guard = start_server(port, &db);
+        let (mut ws, reply) = login(port, "Boarder", None).await;
+        let token = reply["token"].as_str().unwrap().to_string();
+        let state = full_state(&mut ws).await;
+        let fleet = state["fleets"][0]["id"].as_u64().unwrap();
+        let home = hex_of(&state["player"]["homeworld"]);
+
+        let mut parent = std::collections::HashMap::from([(home, home)]);
+        let mut frontier = std::collections::VecDeque::from([(home, 0u8)]);
+        let mut site = None;
+        while let Some((at, hops)) = frontier.pop_front() {
+            if at != home && world.generate_sector(at).has_derelict {
+                site = Some(at);
+                break;
+            }
+            if hops == 8 {
+                continue;
+            }
+            for &next in world.connected_neighbors(at).slice() {
+                if quiet(next) && !parent.contains_key(&next) {
+                    parent.insert(next, at);
+                    frontier.push_back((next, hops + 1));
+                }
+            }
+        }
+        let site = site.expect("a derelict within eight quiet hops");
+        let mut route = vec![site];
+        while *route.last().unwrap() != home {
+            route.push(parent[route.last().unwrap()]);
+        }
+        route.reverse();
+
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let order = |action: &str, target: Option<Hex>| {
+            let mut body = json!({"action": action, "fleet_id": fleet});
+            if let Some(hex) = target {
+                body["target"] = json!({"q": hex.q, "r": hex.r});
+            }
+            body
+        };
+        for hop in route[1..].iter().copied() {
+            'hop: loop {
+                command(&mut ws, order("move", Some(hop))).await;
+                loop {
+                    let msg = next_json(&mut ws).await;
+                    if msg["type"] == "error" {
+                        assert!(Instant::now() < deadline, "never allowed to move: {msg}");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue 'hop;
+                    }
+                    if msg["type"] == "tick_update" && hex_of(&msg["fleets"][0]["location"]) == hop && msg["fleets"][0]["state"] != "Moving" {
+                        break 'hop;
+                    }
+                }
+            }
+        }
+
+        let mut scanned = Vec::<Hex>::new();
+        let mut end_tick = None;
+        let mut send = true;
+        let mut ticks_saved = 0;
+        while ticks_saved < 3 {
+            assert!(Instant::now() < deadline, "the boarding never started");
+            if send && end_tick.is_none() {
+                command(&mut ws, order(if scanned.is_empty() { "scan" } else { "explore_site" }, None)).await;
+                send = false;
+            }
+            let msg = next_json(&mut ws).await;
+            if msg["type"] == "error" {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                send = true;
+            }
+            if msg["type"] == "tick_update" && end_tick.is_some() {
+                ticks_saved += 1;
+            }
+            for e in events_of(&msg) {
+                if e["kind"] == "ScanCompleted" {
+                    scanned = e["threats"].as_array().unwrap().iter().map(|t| hex_of(&t["sector"])).collect();
+                    send = true;
+                }
+                if e["kind"] == "SiteExplorationStarted" {
+                    end_tick = e["end_tick"].as_u64();
+                }
+            }
+        }
+        (token, fleet, site, scanned, end_tick.unwrap())
+    };
+
+    let _guard = start_server(port, &db);
+    let (mut ws, reply) = login(port, "Boarder", Some(&token)).await;
+    assert_eq!(reply["success"], true, "{reply}");
+    let state = full_state(&mut ws).await;
+    let now = state["tick"].as_u64().unwrap();
+    let boarder = state["fleets"].as_array().unwrap().iter().find(|f| f["id"] == fleet).expect("the fleet survived the restart");
+    assert_eq!(hex_of(&boarder["location"]), site);
+    assert_eq!(boarder["state"], "Exploring", "the boarding was dropped: {boarder}");
+    assert_eq!(boarder["cooldown_remaining"].as_u64().unwrap(), end_tick - now, "the boarding lost its place: {boarder}");
+
+    assert!(scanned.len() > 1, "the scan reached beyond the fleet's own sector");
+    let chart = state["known_sectors"].as_array().unwrap();
+    for sector in scanned {
+        let known = chart.iter().find(|s| hex_of(&s["location"]) == sector).expect("a scanned sector is charted");
+        assert_eq!(known["live"], true, "{sector} went stale with the restart");
+    }
+    remove_db(&db);
+}
