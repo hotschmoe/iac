@@ -2453,9 +2453,16 @@ impl GameEngine {
         self.bfs_path(from, max_hops, &|n| n == to || passable(n), &|n| n == to)
     }
 
+    /// `home_route(owner, from).direct`, from the lane distances the world
+    /// generator remembers: views and autopilots ask this every tick.
+    fn direct_hops_home(&self, owner: u64, from: Hex) -> u32 {
+        let Some(home) = self.players.get(&owner).map(|p| p.homeworld) else { return 0; };
+        self.world_gen.lane_hops(from, home, 64).unwrap_or(Hex::distance(&from, &home) as u32)
+    }
+
     /// Fuel the fleet would burn getting home from `from`, one jump per hop.
     pub fn route_home_cost(&self, fleet: &Fleet, from: Hex) -> f32 {
-        self.home_route(fleet.owner_id, from).direct as f32 * self.hop_fuel_cost(fleet)
+        self.direct_hops_home(fleet.owner_id, from) as f32 * self.hop_fuel_cost(fleet)
     }
 
     fn push_alert(&mut self, level: AlertLevel, fleet_id: u64, sector: Hex, message: String) {
@@ -3696,7 +3703,7 @@ impl GameEngine {
         if !homeward {
             let min_pct = self.policies.get(&fleet_id).map(|p| p.params.min_fuel_pct).unwrap_or_default();
             let reserve = fleet.fuel_max * min_pct as f32 / 100.0;
-            let need = self.home_route(owner, step).direct as f32 * hop + reserve;
+            let need = self.direct_hops_home(owner, step) as f32 * hop + reserve;
             if fuel - hop < need {
                 let why = format!(
                     "a jump to {step} would leave {:.0} fuel against {:.0} needed to return home",
