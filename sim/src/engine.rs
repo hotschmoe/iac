@@ -4026,7 +4026,7 @@ impl GameEngine {
                 let target_id = self.npc_fleets.values()
                     .find(|n| n.location == location && n.ship_count > 0)
                     .map(|n| n.id)
-                    .unwrap_or(0);
+                    .unwrap_or_else(|| template_npc_id(location));
                 if self.handle_attack(owner, fleet_id, target_id).is_ok() {
                     self.push_policy_event(fleet_id, PolicyPreset::PatrolHome, "attack", "engaging hostiles");
                     return Ok(true);
