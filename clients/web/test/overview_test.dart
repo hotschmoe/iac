@@ -2,8 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
+import 'package:iac_client/console/kv_store.dart';
+import 'package:iac_client/console/prefs.dart';
+import 'package:iac_client/state/connection_provider.dart';
 import 'package:iac_client/state/game_controller.dart';
+import 'package:iac_client/state/token_store.dart';
 
+import 'support/fake_server.dart';
 import 'support/harness.dart';
 
 /// Demo-backed controller with controllable stock and economy availability.
@@ -163,6 +168,43 @@ void main() {
     expect(find.text('RANKING'), findsNothing);
     expect(find.text('COMMS'), findsNothing);
     await endShell(tester, c);
+  });
+
+  testWidgets('built-in bots stand under the ranking, tagged BOT and without a rank', (tester) async {
+    final server = FakeServer();
+    await tester.runAsync(server.start);
+    addTearDown(() => tester.runAsync(server.stop));
+    server.accounts['Admiral'] = issuedToken;
+    final c = GameController(tokens: MemoryTokenStore());
+    await tester.runAsync(() => c.start(params: ConnectParams(url: server.url, token: issuedToken), name: 'Admiral'));
+    Future<void> settle(bool Function() cond) async {
+      await tester.runAsync(() async {
+        for (var i = 0; i < 600 && !cond(); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+      });
+      expect(cond(), isTrue, reason: 'the server and client did not get there');
+    }
+
+    await settle(() => c.isLive);
+    server.send(golden('server_message', 'leaderboard__with_bots'));
+    await settle(() => c.state.leaderboard != null);
+    await pumpShell(tester, controller: c, prefs: ConsolePrefs(MemoryKv()));
+
+    final panel = find.byKey(const Key('rank-panel'));
+    await _scrollTo(tester, panel);
+    Finder inPanel(Finder f) => find.descendant(of: panel, matching: f);
+    expect(inPanel(find.text('001')), findsOneWidget, reason: 'the one ranked player');
+    expect(inPanel(find.text('HUM')), findsOneWidget);
+    for (final bot in ['BOT-explorer-2', 'BOT-turtle-1']) {
+      final row = find.byKey(Key('rank-bot-$bot'));
+      expect(find.descendant(of: row, matching: find.text(bot)), findsOneWidget);
+      expect(find.descendant(of: row, matching: find.text('BOT')), findsOneWidget);
+      expect(find.descendant(of: row, matching: find.text('---')), findsOneWidget, reason: 'a bot takes no rank');
+    }
+    expect(tester.getTopLeft(find.byKey(const Key('rank-bot-BOT-explorer-2'))).dy, greaterThan(tester.getTopLeft(inPanel(find.text('Admiral'))).dy));
+    await endShell(tester, c);
+    c.dispose();
   });
 
   testWidgets('narrow 390x844: no overflow, no horizontal scroll', (tester) async {
