@@ -944,3 +944,77 @@ tests and from about 30 s to about 15 s. Retired tests are in the gitignored
 - **New scenarios:** `empire_arc.rs`, `fleet_logistics.rs`, `pace_scaling.rs` in
   `sim/tests/`, and `server/tests/scenarios.rs` (case-insensitive accounts, event
   scoping between two players, a cancel aimed at an order that has started).
+
+## 2026-10-10: home seats, quiet home ground, scout Inner Ring, per-world lanes
+
+Owner decisions of 2026-10-10 (`docs/design/decisions.md`), from the study in
+`docs/design/starting-positions-2026-10-10.md`. `WORLDGEN_VERSION` is 3; older
+databases are refused on load and nothing is migrated.
+
+- **Seats.** A world has 24 home seats: the sectors of rings 3 to 5 whose `q - r`
+  is a multiple of three (`world::is_home_seat`; 6 in ring 3, 6 in ring 4, 12 in
+  ring 5). That lattice is the only one of its three cosets that every rotation
+  and mirror of the grid maps onto itself, its points are never adjacent (nearest
+  seats two hexes apart, as the old "not within one hex" rule gave in a full
+  band), and it lands on the owner's 24 exactly. A new empire gets the free seat
+  whose nearest occupied seat is farthest, ties split by the sector seed
+  (`next_home_seat`). `HOMEWORLD_SPILL_RINGS` and the random tries are gone.
+- **Full world.** `register_player` returns `ErrorCode::WorldFull` (2005) and
+  changes nothing, not even the id counter; `AuthError::Server` became
+  `AuthError::WorldFull`. Clients show "this world is full: all 24 home seats are
+  taken": the web login form (with the fixture as the fake server's reply), the
+  TUI and headless client (with a hint), `play` in place of "No state received".
+- **Home ground** (`world::is_home_ground`: a seat or a sector beside one, 102
+  sectors: all of rings 3 to 5, half of ring 2, two thirds of ring 6). Worldgen
+  generates no hostile group there; Passive convoys stay. No derelict on a seat.
+  Derelicts beside a seat stay: a guard exists only for the fight a boarding
+  starts, and removing them too would take 16 of the 28 derelicts left in rings
+  4 to 8 (8 seeds; 2 sat on seats). Patrol movement skips home ground, though
+  no group outlives its fight today, so nothing roams.
+- **Gradient.** Scouts through ring 8, corvettes 9 to 12. The count is still
+  sized on `0.6 + 0.02 d`, but the stat multiplier is now fitted so the ships add
+  up to `npc_power(d)`; an extra ship is added when that would need more than
+  x1.3. Real power equals the ring estimate for rings 1 to 36 (it was 0.67 to
+  1.47 times it); from 37 the 32-ship limit holds it at 4576. Derelict guards are
+  built the same way from 60 percent. `sim.py`, the spec (section 7.1 and the
+  first table) and `check_sim_constants.py` follow, and the check now also
+  compares group power with the estimate.
+- **Lanes.** `edge_exists` mixes the world seed into the pair hash: 2561 of 2791
+  sectors (rings 0 to 30) have a different lane mask between two seeds, 0 before.
+- **`patrol_home`** named fleet 0 when the group in its sector had not
+  materialised, so it stopped for good at the first Passive convoy. It attacks
+  the sector's template now. Found because home ground leaves it little else.
+
+Measured with the real engine, season pace, the study's 8 seeds (48 for the fill):
+
+| | Before | After |
+|---|---|---|
+| Join refused (min / median / max) | 57 / 68 / 77, "could not create the account" | 25 / 25 / 25, `WorldFull` |
+| First home past ring 6 / past ring 8 | join 27 / 46 (median) | never |
+| Nearest earlier home at joins 2, 3, 4, 5-6, 7-8, 9+ (minimum) | 2 throughout | 8, 6, 5, 3, 2, 2 |
+| First 24 homes with a hostile lair on the tile / on or beside it | 16% / 74% | 0 / 0 |
+| Starter fleet survives a lair at rings 1-2 / 3-5 / 6 / 7 / 8 / 9 / 10 | 100 / 100 / 4 / 0 / 4 / 3 / 1 % | 100 / no lairs / 100 / 100 / 100 / 0 / 0 % |
+| Hull the survivors keep at rings 6 / 7 / 8 | 22 / - / 19 % | 90 / 75 / 41 % |
+| Estimate against real power, rings 1-36 | 0.67 to 1.47 | 1.00 |
+| Starter fleets lost in day 1 (mine, prospect, salvage; one empire per home) | 38 of 324, 14 on their home tile | 0 of 72 |
+| Hostile lairs within 2 / 4 hops of a seat | 3.0 / 10.6 | 0.7 / 5.1 |
+| `sim-run --builders 24 --days 7`, distinct scores | 1 (1422.11, 28 builders) | 1 (1422.11) |
+
+Labels compare power only. Scouts against corvettes still do worse than the label
+says, as before: at ring 9 three scouts are EVEN (1.38) and survive 25 percent of
+fights, four are FAVOURABLE (1.83) and survive 75 percent.
+
+`sim/tests/data/chart_golden.txt` was recorded again: the script plays a new
+world, and the algorithm the old hashes came from is archived. The test passed on
+the old world before the change, so the recording comes from an implementation
+that had matched the original; it now pins the chart against change
+(`UPDATE_CHART_GOLDEN=1`) and no longer compares two algorithms. The scripted
+world still fights (79 combats, 6 fleets lost; 169 and 14 before). New scenarios:
+`scenarios_world.rs` (seating order, refusal, quiet home ground, estimate against
+template for 36 rings, the starter fleet either side of ring 9) and
+`server/tests/scenarios.rs` (a full world over the wire and after a restart).
+
+Left alone: `sector_connections` still gives a sector with no lane a one-way lane
+out (6 to 15 in rings 0 to 30, by seed); ratings of observed Aggressive and Swarm
+groups (ring 16 out) run 25 percent above the ring estimate by design; `sim-run`
+with more than 24 players stops at "cannot add player ... WorldFull".
