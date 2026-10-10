@@ -53,6 +53,7 @@
     "InvalidName",
     "TokenRequired",
     "InvalidToken",
+    "WorldFull",
     "ServerError"
   ],
   "FleetStatus": [

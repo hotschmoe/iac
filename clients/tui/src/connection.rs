@@ -208,6 +208,9 @@ fn login_error(result: &AuthResult, sent_token: bool, from_cli: bool) -> String 
             token_file_hint()
         ),
         Some(ErrorCode::InvalidName) => "\n  pick another --name".to_string(),
+        Some(ErrorCode::WorldFull) => {
+            "\n  no new empire can settle here: log in to one that already exists, or connect to another server".to_string()
+        }
         _ => String::new(),
     };
     format!("login failed: {reason}{hint}")

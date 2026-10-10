@@ -19,6 +19,7 @@ final _issued = 'a' * 64;
 class _FakeServer {
   late final HttpServer _http;
   final Map<String, String> accounts = {}; // name -> token
+  int? seats;
   final List<Map<String, dynamic>> authRequests = [];
   final List<StreamSubscription<dynamic>> _subs = [];
 
@@ -33,7 +34,9 @@ class _FakeServer {
         final name = m['player_name'] as String;
         final token = m['token'] as String?;
         final known = accounts[name];
-        if (known == null) {
+        if (known == null && seats != null && accounts.length >= seats!) {
+          ws.add(jsonEncode(_golden('auth_result__world_full')));
+        } else if (known == null) {
           accounts[name] = _issued;
           ws.add(jsonEncode({'type': 'auth_result', 'success': true, 'player_id': 7, 'token': _issued}));
           ws.add(jsonEncode(_fullState(name)));
@@ -70,10 +73,14 @@ class _FakeServer {
 
   /// The golden full_state, so this fake never drifts from the Rust shapes.
   Map<String, dynamic> _fullState(String name) {
-    final file = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
-    final state = readJson(file) as Map<String, dynamic>;
+    final state = _golden('full_state');
     (state['player'] as Map<String, dynamic>)['name'] = name;
     return state;
+  }
+
+  Map<String, dynamic> _golden(String message) {
+    final file = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == message);
+    return readJson(file) as Map<String, dynamic>;
   }
 }
 
@@ -163,4 +170,21 @@ void main() {
     expect(tokens.load(server.url, 'Agent'), _issued);
   });
 
+  test('a full world sends a new name back to the login form with the reason, and still admits its settlers', () async {
+    server.accounts['Settler'] = _issued;
+    server.seats = 1;
+    final c = controller(MemoryTokenStore());
+    await c.start(params: ConnectParams(url: server.url), name: 'Latecomer');
+    await _until(c, () => c.authRejection != null);
+    expect(c.authRejection!.code, proto.ErrorCode.worldFull);
+    expect(c.authRejection!.needsToken, isFalse);
+    expect(c.authRejection!.message, contains('world is full'));
+    expect(c.isLive, isFalse);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(server.authRequests, hasLength(1));
+
+    await c.start(params: ConnectParams(url: server.url), name: 'Settler', token: _issued);
+    await _until(c, () => c.isLive);
+    expect(c.authRejection, isNull);
+  });
 }
