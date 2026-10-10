@@ -20,6 +20,7 @@ use iac_shared::world::NpcBehaviorType::Passive;
 use iac_shared::world::{home_seats, is_home_seat};
 use iac_sim::commands::auth_failure;
 use iac_sim::engine::{template_npc_id, AuthError, FleetStatus, SectorOverride};
+use iac_sim::persist::ExploreCredit;
 
 fn salvage_events(events: &[iac_shared::protocol::GameEvent]) -> Vec<iac_shared::protocol::SalvageDespawnedEvent> {
     events
@@ -205,6 +206,7 @@ fn prospector(name: &str, weapon_power: f32, max_range: u8) -> (iac_sim::GameEng
         }
         for h in ring_around(home, 2) {
             s.explored.insert((pid, h.to_key()));
+            s.credited.insert((pid, h.to_key(), ExploreCredit::Charted));
         }
     });
     let params = PolicyParams { max_range, ..PolicyParams::default() };
@@ -350,6 +352,22 @@ fn a_prospector_with_nothing_left_in_range_holds_and_says_why_without_flooding()
     assert!(holds[0].1.contains("within 2 hops of home"), "{}", holds[0].1);
     assert!(holds.len() <= 4, "the same hold must not flood events: {}", holds.len());
     assert_eq!(engine.fleets[&fid].location, home);
+}
+
+#[test]
+fn a_prospector_goes_back_for_the_chart_a_lost_fleet_never_brought_home() {
+    let (mut engine, pid, fid, home) = prospector("Second", 5000.0, 2);
+    let entered = engine.world_gen.connected_neighbors(home).slice()[0];
+    let chart = (pid, entered.to_key(), ExploreCredit::Charted);
+    edit(&mut engine, |s| {
+        s.players.get_mut(&pid).unwrap().resources.deuterium = 5_000.0;
+        assert!(s.explored.contains(&(pid, entered.to_key())));
+        s.credited.remove(&chart);
+    });
+
+    let events = run_until(&mut engine, 300, |e| e.snapshot().credited.contains(&chart));
+    assert!(policy_actions(&events).iter().any(|(a, why)| a == "move" && why == "pushing frontier"));
+    assert_eq!(engine.fleets[&fid].location, home, "the chart is banked at the dock");
 }
 
 #[test]

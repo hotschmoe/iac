@@ -4195,8 +4195,10 @@ impl GameEngine {
     }
 
     /// Prospect: scan when the pings have gone stale, then walk to the
-    /// nearest sector the player has never entered inside the safe range of
-    /// home. With nothing left to chart it goes home and holds.
+    /// nearest sector inside the safe range of home whose chart the player
+    /// has neither banked nor aboard a fleet (never entered, or entered by
+    /// a fleet that did not come back). With nothing left to chart it goes
+    /// home and holds.
     fn policy_prospect(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
         let preset = PolicyPreset::Prospect;
         let Some(fleet) = self.fleets.get(&fleet_id).cloned() else { return Ok(false); };
@@ -4219,7 +4221,8 @@ impl GameEngine {
 
         let plan = {
             let reach = self.policy_reach(&fleet, &params, home);
-            let uncharted = |n: Hex| n != home && !self.explored.contains(&(owner, n.to_key()));
+            let aboard = self.charts_aboard(owner);
+            let uncharted = |n: Hex| n != home && self.chart_mark(owner, n.to_key(), &aboard).is_none();
             match reach.path_to(location, &uncharted) {
                 Some(path) => Ok(path[0]),
                 None => Err(format!(

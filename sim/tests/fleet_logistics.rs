@@ -15,6 +15,7 @@ use iac_shared::scaling::{ratio_label, RatioLabel};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus};
 use iac_sim::odds::{self, Force};
+use iac_sim::persist::ExploreCredit;
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
     e.since(mark, |k| match k {
@@ -222,6 +223,7 @@ fn tuned_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
                 let h = Hex { q: home.q + dq, r: home.r + dr };
                 if Hex::distance(&h, &home) <= 2 {
                     s.explored.insert((pid, h.to_key()));
+                    s.credited.insert((pid, h.to_key(), ExploreCredit::Charted));
                 }
             }
         }
