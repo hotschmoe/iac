@@ -202,6 +202,8 @@ dirty_sectors:   AutoHashMap(u32, void)
 | NPC groups that have materialised (damage, position, patrol timer) | In-memory, checkpointed | Yes, in `runtime_state` |
 | Active combats (sides, round, peak power) | In-memory, checkpointed | Yes, in `runtime_state` |
 | Raid clocks and announced raids, scan reveals, storage and salvage alert marks, harvest tallies | In-memory, checkpointed | Yes, in `runtime_state` |
+| Built-in bots: which accounts they are, personality and attention, and what each remembers between turns (the end of its first look-in, next wake and plan ticks, its own leaderboard row as last asked, the routes its fleets are walking) | In-memory, written when a bot's turn changes it | Yes, in `runtime_state` (kind `bot`, id = player id); the account itself is an ordinary `players` row |
+| A bot's view of the world (`script::Seat`) | In-memory only | No — rebuilt from the full state at its next turn, as for a client that reconnects |
 | Build/research queues | In-memory, checkpointed | Yes, in `buildings` + `research` + `build_queue` |
 | Events not yet broadcast | In-memory only | No — drained to clients before every persist |
 
@@ -253,7 +255,7 @@ COMMIT
 
 On error the transaction is rolled back and the batches are kept and retried in order (every upsert is a whole-row replace, so replay is idempotent).
 
-`runtime_state (kind, id, data)` holds the engine's bookkeeping maps one entry per row, as the JSON `Snapshot` uses for them (`iac_sim::persist::RuntimeEntry`): live NPC groups, combats, raid clocks, scan reveals, alert marks, harvest tallies. An entry is written when the engine touches it and its row is deleted when the entry is; a new map needs a `RuntimeKind` and the touch calls, not a table. A row that no longer parses is skipped on load, which starts that one entry over.
+`runtime_state (kind, id, data)` holds the engine's bookkeeping maps one entry per row, as the JSON `Snapshot` uses for them (`iac_sim::persist::RuntimeEntry`): live NPC groups, combats, raid clocks, scan reveals, alert marks, harvest tallies, built-in bots. An entry is written when the engine touches it and its row is deleted when the entry is; a new map needs a `RuntimeKind` and the touch calls, not a table. A row that no longer parses is skipped on load, which starts that one entry over.
 
 Counters that run every tick (`move_cooldown`, `action_cooldown`, `idle_ticks`) are short-lived: jumps, cooldowns and boardings last at most 20 ticks and `idle_ticks` stops at the 10 the shield rule needs, so a fleet at rest costs no writes.
 
