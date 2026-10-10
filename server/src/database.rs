@@ -1882,6 +1882,63 @@ mod tests {
     }
 
     #[test]
+    fn a_world_with_bots_restarts_through_sqlite_as_if_it_had_never_stopped() {
+        use iac_sim::bot::{Roster, Style};
+
+        let path = temp_db("bots");
+        let pace = Pace::parse("test").unwrap();
+        let wanted: Vec<Style> = ["all:hands-on", "explorer:check-in", "turtle:hybrid"]
+            .into_iter()
+            .flat_map(|spec| Style::parse_seats(spec).unwrap())
+            .map(|style| Style { sessions_per_day: 24, ..style })
+            .collect();
+        let seat = |engine: &mut GameEngine| {
+            let mut roster = Roster::resume(engine);
+            assert_eq!(roster.enlist(engine, &wanted, || "b".repeat(64)), (wanted.len(), None));
+            roster
+        };
+        let play = |engine: &mut GameEngine, roster: &mut Roster| {
+            roster.take_turns(engine);
+            engine.tick().unwrap();
+            roster.observe(engine);
+            engine.drain_events();
+            engine.persist_dirty_state();
+        };
+
+        let mut straight = GameEngine::new(DEFAULT_WORLD_SEED, pace);
+        let mut hosted = host(&path, Some(pace));
+        let (mut straight_bots, mut hosted_bots) = (seat(&mut straight), seat(&mut hosted));
+
+        for restart in 1..=6 {
+            for _ in 0..150 {
+                play(&mut straight, &mut straight_bots);
+                play(&mut hosted, &mut hosted_bots);
+            }
+            hosted.checkpoint();
+            hosted.persist_dirty_state();
+            hosted.flush_persistence().unwrap();
+            let stopped = hosted.snapshot();
+            drop(hosted);
+
+            let db = Database::init(&path).unwrap();
+            let stored = db.load_snapshot(DEFAULT_WORLD_SEED, None).unwrap();
+            assert_same(&stopped, &stored, &format!("restart {restart}"));
+            assert_eq!(stored.bots.len(), wanted.len());
+            assert_eq!(stored.hash(), straight.snapshot().hash(), "the hosted bots left the unhosted ones by restart {restart}");
+            hosted = GameEngine::restore(stored);
+            hosted.attach_persist(Box::new(Persister::spawn(db)));
+            hosted_bots = Roster::resume(&hosted);
+            assert_eq!(hosted_bots.enlist(&mut hosted, &wanted, || "b".repeat(64)), (0, None));
+        }
+
+        let score = |engine: &GameEngine| -> f32 {
+            engine.bots().keys().map(|id| iac_sim::score::score_of(&engine.players[id], engine.fleets.values()).total()).sum()
+        };
+        assert!(score(&hosted) > 50.0 * wanted.len() as f32, "the bots played: {} points between them", score(&hosted));
+        assert!(hosted.players.values().any(|p| p.explore_points > 0.0), "a bot's fleet flew out and came home");
+    }
+
+    #[test]
     fn a_world_saved_before_jumps_and_combats_were_stored_still_loads() {
         let path = temp_db("before_runtime");
         let mut engine = host(&path, Some(Pace::parse("test").unwrap()));

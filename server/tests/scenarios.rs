@@ -332,3 +332,80 @@ async fn a_killed_server_comes_back_with_the_scan_live_and_the_boarding_under_wa
     }
     remove_db(&db);
 }
+
+async fn leaderboard(ws: &mut Ws) -> Value {
+    command(ws, json!({"action": "leaderboard", "limit": 20})).await;
+    loop {
+        let msg = next_json(ws).await;
+        if msg["type"] == "leaderboard" {
+            return msg;
+        }
+    }
+}
+
+fn rows(board: &Value, list: &str) -> Vec<(String, f64)> {
+    let rows = board[list].as_array().cloned().unwrap_or_default();
+    rows.iter().map(|row| (row["name"].as_str().unwrap().to_string(), row["score"].as_f64().unwrap())).collect()
+}
+
+#[tokio::test]
+async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is_killed() {
+    let port = 17955;
+    let db = fresh_db(port);
+    let roster = ["--pace", "test", "--bot", "turtle:hands-on:2", "--bot", "explorer:hands-on", "--bot", "miner:hands-on"];
+    let deadline = Instant::now() + Duration::from_secs(90);
+
+    let (token, names, scores, tick) = {
+        let _guard = start_server_with(port, &db, &roster);
+        let (mut ws, reply) = login(port, "Watcher", None).await;
+        let token = reply["token"].as_str().unwrap().to_string();
+
+        let board = loop {
+            let board = leaderboard(&mut ws).await;
+            let building = rows(&board, "bots").iter().filter(|(_, score)| *score > 2.0).count();
+            if building == 4 && board["tick"].as_u64().unwrap() >= 8 {
+                break board;
+            }
+            assert!(Instant::now() < deadline, "the bots never got going: {board}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert_eq!(rows(&board, "entries").iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["Watcher"]);
+        assert_eq!(board["entries"][0]["rank"], 1, "bots take no rank: {board}");
+        let bots = rows(&board, "bots");
+        assert!(bots.iter().all(|(name, _)| name.starts_with("BOT-")), "every bot is tagged in its name: {bots:?}");
+        assert!(bots.iter().all(|(_, score)| *score > rows(&board, "entries")[0].1), "{board}");
+        let ranks: Vec<u64> = board["bots"].as_array().unwrap().iter().map(|row| row["rank"].as_u64().unwrap()).collect();
+        assert_eq!(ranks, [1, 2, 3, 4], "bots are ranked among themselves");
+
+        let (_ws, taken) = login(port, &bots[0].0, None).await;
+        assert_eq!((taken["success"].clone(), taken["code"].clone()), (json!(false), json!("TokenRequired")), "{taken}");
+        let (_ws, reserved) = login(port, "bot-impostor", None).await;
+        assert_eq!((reserved["success"].clone(), reserved["code"].clone()), (json!(false), json!("InvalidName")), "{reserved}");
+        assert!(reserved["message"].as_str().unwrap().contains("reserved for built-in bots"), "{reserved}");
+
+        let mut names: Vec<String> = bots.iter().map(|(name, _)| name.clone()).collect();
+        names.sort();
+        (token, names, bots, board["tick"].as_u64().unwrap())
+    };
+
+    let _guard = start_server_with(port, &db, &["--bot", "turtle:hands-on:2"]);
+    let (mut ws, reply) = login(port, "Watcher", Some(&token)).await;
+    assert_eq!(reply["success"], true, "{reply}");
+    let board = loop {
+        let board = leaderboard(&mut ws).await;
+        let grown = rows(&board, "bots")
+            .iter()
+            .filter(|(name, score)| scores.iter().any(|(was, before)| was == name && score > before))
+            .count();
+        if grown == 4 && board["tick"].as_u64().unwrap() > tick + 5 {
+            break board;
+        }
+        assert!(Instant::now() < deadline, "the bots did not carry on after the restart: {board} (before: {scores:?})");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let mut after: Vec<String> = rows(&board, "bots").into_iter().map(|(name, _)| name).collect();
+    after.sort();
+    assert_eq!(after, names, "the same bots, listed by --bot or not, and no new ones");
+    assert_eq!(rows(&board, "entries").len(), 1);
+    remove_db(&db);
+}

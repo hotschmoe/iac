@@ -60,8 +60,13 @@ pub fn remove_db(db: &std::path::Path) {
 }
 
 pub fn start_server(port: u16, db: &std::path::Path) -> ServerGuard {
+    start_server_with(port, db, &[])
+}
+
+pub fn start_server_with(port: u16, db: &std::path::Path, more: &[&str]) -> ServerGuard {
     let child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
         .args(["--port", &port.to_string(), "--db", db.to_str().unwrap()])
+        .args(more)
         .spawn()
         .expect("failed to spawn server");
     ServerGuard(child)
