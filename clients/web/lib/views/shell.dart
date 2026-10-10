@@ -2,6 +2,7 @@ import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../console/notifier.dart';
 import '../console/prefs.dart';
 import '../console/services.dart';
 import '../console/sfx.dart';
@@ -22,12 +23,17 @@ import 'windshield/windshield_view.dart';
 
 /// The operator-console frame: HUD on top, the guide strip while a lesson is
 /// open, rail left (bottom bar when narrow), the four screens, and the
-/// overlays (toasts, help, alerts, `/` palette).
+/// overlays (toasts, help, alerts, `/` palette). It also tells the console's
+/// `Attention` whether the page is in the foreground and puts its count of
+/// missed notices in the tab title.
 class Shell extends StatefulWidget {
   final GameController controller;
   final ConsolePrefs? prefs;
+  final Notifier? notifier;
   final Screen initial;
-  const Shell({super.key, required this.controller, this.prefs, this.initial = Screen.overview});
+  const Shell({super.key, required this.controller, this.prefs, this.notifier, this.initial = Screen.overview});
+
+  static const title = 'IN AMBER CLAD';
 
   @override
   State<Shell> createState() => _ShellState();
@@ -36,14 +42,17 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   late final ConsolePrefs _prefs = widget.prefs ?? ConsolePrefs();
   late final ToastController _toasts = ToastController();
-  late final Console _con = Console(game: widget.controller, prefs: _prefs, toasts: _toasts, sfx: Sfx());
+  late final Console _con =
+      Console(game: widget.controller, prefs: _prefs, toasts: _toasts, sfx: Sfx(), notifier: widget.notifier ?? Notifier());
   late final FrameGovernor _gov = FrameGovernor(_prefs);
+  late final AppLifecycleListener _lifecycle;
 
   late Screen _screen = widget.initial;
   bool _help = false, _alerts = false, _palette = false;
   String _paletteText = '';
   DateTime? _gAt;
   String _lastLogKey = '';
+  int _titled = 0;
 
   @override
   void initState() {
@@ -59,10 +68,27 @@ class _ShellState extends State<Shell> {
     HardwareKeyboard.instance.addHandler(_onKey);
     widget.controller.addListener(_onGame);
     _lastLogKey = _logKey();
+    _con.attention.addListener(_onAttention);
+    _lifecycle = AppLifecycleListener(onStateChange: _onLifecycle);
+    final now = WidgetsBinding.instance.lifecycleState;
+    if (now != null) _onLifecycle(now);
+  }
+
+  void _onLifecycle(AppLifecycleState s) => _con.attention.away = s != AppLifecycleState.resumed;
+
+  /// Set directly, not through a `Title` widget: a hidden page builds no frames.
+  void _onAttention() {
+    final unseen = _con.attention.unseen;
+    if (unseen == _titled) return;
+    _titled = unseen;
+    SystemChrome.setApplicationSwitcherDescription(
+        ApplicationSwitcherDescription(label: unseen > 0 ? '($unseen) ${Shell.title}' : Shell.title, primaryColor: C.a500.toARGB32()));
   }
 
   @override
   void dispose() {
+    _lifecycle.dispose();
+    _con.attention.removeListener(_onAttention);
     _prefs.removeListener(_onPrefs);
     HardwareKeyboard.instance.removeHandler(_onKey);
     widget.controller.removeListener(_onGame);

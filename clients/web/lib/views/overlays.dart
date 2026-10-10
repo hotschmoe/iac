@@ -88,6 +88,17 @@ class _ToastTileState extends State<_ToastTile> with SingleTickerProviderStateMi
             Text(widget.t.title.toUpperCase(), style: T.cond(size: 10, color: C.a300, spacing: 1.6)),
             const SizedBox(height: 2),
             Text(widget.t.message, style: T.mono(size: 11, color: C.text, height: 1.35)),
+            if (widget.t.actions.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 7, bottom: 2),
+                child: Wrap(spacing: 6, runSpacing: 4, children: [
+                  for (final a in widget.t.actions)
+                    ConsoleButton(a.label, small: true, primary: a.primary, onPressed: () {
+                      widget.toasts.dismiss(widget.t.id);
+                      a.onPressed();
+                    }),
+                ]),
+              ),
           ]),
         ),
       ),
@@ -134,6 +145,7 @@ class HelpOverlay extends StatelessWidget {
                     builder: (context, _) {
                       final p = con.prefs;
                       final guide = con.onboarding;
+                      final notes = con.attention;
                       return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         const Lbl('Settings'),
                         const SizedBox(height: 6),
@@ -143,7 +155,15 @@ class HelpOverlay extends StatelessWidget {
                           ConsoleButton('Scanlines ${p.scanlines ? 'on' : 'off'}', small: true, active: p.scanlines, onPressed: () => p.setScanlines(!p.scanlines)),
                           ConsoleButton('Reduce motion ${p.reduceMotion ? 'on' : 'off'}', small: true, active: p.reduceMotion, onPressed: () => p.setReduceMotion(!p.reduceMotion)),
                           ConsoleButton('Guide ${guide.active ? 'on' : 'off'}', key: const Key('set-guide'), small: true, active: guide.active, onPressed: () => guide.setActive(!guide.active)),
+                          ConsoleButton('Notifications ${notes.enabled ? 'on' : 'off'}',
+                              key: const Key('set-notify'),
+                              small: true,
+                              active: notes.enabled,
+                              reason: notes.blocked,
+                              onPressed: notes.blocked == null ? () => notes.setEnabled(!notes.enabled) : null),
                         ]),
+                        WhyText(notes.blocked ??
+                            'Notifications: a browser notice when a queue finishes, a raid is inbound or a fleet is lost while this tab is in the background.'),
                         const SizedBox(height: 8),
                         Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
                           const Lbl('Quality'),

@@ -18,7 +18,7 @@ class IacApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'IN AMBER CLAD',
+      title: Shell.title,
       theme: consoleTheme(),
       debugShowCheckedModeBanner: false,
       home: const GameScreen(),

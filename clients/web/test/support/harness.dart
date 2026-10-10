@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/notifier.dart';
 import 'package:iac_client/console/prefs.dart';
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/design/theme.dart';
@@ -39,6 +40,7 @@ Future<GameController> pumpShell(
   Screen screen = Screen.overview,
   GameController? controller,
   ConsolePrefs? prefs,
+  Notifier? notifier,
   Duration settle = const Duration(milliseconds: 600),
 }) async {
   await tester.runAsync(loadFonts);
@@ -56,7 +58,7 @@ Future<GameController> pumpShell(
   await tester.pumpWidget(MaterialApp(
     debugShowCheckedModeBanner: false,
     theme: consoleTheme(),
-    home: Shell(controller: c, prefs: prefs ?? ConsolePrefs(), initial: screen),
+    home: Shell(controller: c, prefs: prefs ?? ConsolePrefs(), notifier: notifier, initial: screen),
   ));
   await tester.pump(settle);
   return c;

@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/console/economy_view.dart';
+import 'package:iac_client/console/notifier.dart';
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/console/prefs.dart';
 import 'package:iac_client/console/sfx.dart';
@@ -46,7 +47,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final c = GameController()..startDemo();
-    final con = Console(game: c, prefs: ConsolePrefs(), toasts: ToastController(), sfx: NoSfx())..screen = Screen.homeworld;
+    final con = Console(game: c, prefs: ConsolePrefs(), toasts: ToastController(), sfx: NoSfx(), notifier: NoNotifier())..screen = Screen.homeworld;
     bool onKey(KeyEvent e) => e is KeyDownEvent && con.dispatchKey(e);
     HardwareKeyboard.instance.addHandler(onKey);
     addTearDown(() => HardwareKeyboard.instance.removeHandler(onKey));
