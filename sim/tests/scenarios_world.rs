@@ -1,6 +1,7 @@
 // Scenarios that run the engine over time against the world around a
 // homeworld: wreckage and what the chart remembers of it, doctrines that
-// roam charted space, and ore tiles that empty and refill.
+// roam charted space, ore tiles that empty and refill, and fights that end
+// some other way than one side dying.
 
 #[allow(dead_code)]
 mod common;
@@ -434,4 +435,85 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (home, FleetStatus::Idle));
     let flown = orders_flown(&mut engine, pid, fid);
     assert!(!flown.is_empty(), "standing orders never ran after the recall");
+}
+
+/// A fleet and a hostile that cannot hurt each other enough to end it:
+/// the fight lasts until something else stops it.
+fn endless_fight(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64, at: Hex) {
+    deploy(engine, fid, at, Some(0.0));
+    edit(engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.fuel = 1e12;
+        fleet.fuel_max = 1e12;
+        fleet.cargo = Resources { metal: 40.0, ..Resources::default() };
+    });
+    let attack = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) });
+    assert!(attack.error.is_none(), "{:?}", attack.error);
+    run(engine, 3);
+    assert_eq!(engine.fleets[&fid].state, FleetStatus::InCombat);
+    assert_eq!(engine.active_combats.len(), 1);
+}
+
+fn ended_without_victory(events: &[iac_shared::protocol::GameEvent], at: Hex) -> usize {
+    events
+        .iter()
+        .filter(|e| matches!(&e.kind, EventKind::CombatEnded(c) if c.sector == at && !c.player_victory && c.salvage.is_none()))
+        .count()
+}
+
+#[test]
+fn a_recalled_fleet_is_out_of_its_fight_and_the_hostiles_it_left_can_be_fought_again() {
+    let mut engine = world("persistent");
+    let (pid, fid) = join(&mut engine, "Runner");
+    let home = engine.players[&pid].homeworld;
+    let at = lone_scout_sector(&engine, Passive);
+    endless_fight(&mut engine, pid, fid, at);
+    let stock = engine.players[&pid].resources.metal;
+
+    assert!(engine.execute(pid, Command::Recall { fleet_id: fid }).error.is_none());
+    let hulls = |e: &iac_sim::GameEngine| e.fleets[&fid].ships[..e.fleets[&fid].ship_count].iter().map(|s| s.hull).collect::<Vec<_>>();
+    let on_arrival = hulls(&engine);
+    let after = run(&mut engine, 5);
+
+    assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (home, FleetStatus::Idle));
+    assert!(engine.players[&pid].resources.metal >= stock + 40.0, "the cargo is banked");
+    assert!(engine.active_combats.is_empty(), "the fight went on without the fleet in the sector");
+    let shots = after
+        .iter()
+        .filter(|e| matches!(&e.kind, EventKind::CombatRound(r) if r.target_fleet_id == fid || r.attacker_fleet_id == fid))
+        .count();
+    assert_eq!(shots, 0, "a fleet at home was still trading fire");
+    assert_eq!(hulls(&engine), on_arrival, "a fleet at home was still taking damage");
+    assert_eq!(ended_without_victory(&after, at), 1, "the owner is told the fight is over");
+
+    let owner = engine.players[&pid].clone();
+    let told = after.iter().filter_map(|e| iac_sim::views::event_for(e, &owner, &engine)).collect::<Vec<_>>();
+    assert_eq!(ended_without_victory(&told, at), 1, "and the event reaches them at home");
+
+    pile_of(&fight(&mut engine, pid, fid, at));
+}
+
+#[test]
+fn a_fight_nobody_is_left_in_frees_its_hostiles_for_the_next_fleet() {
+    let mut engine = world("persistent");
+    let (pid, fid) = join(&mut engine, "Vanished");
+    let (next, next_fleet) = join(&mut engine, "Next");
+    let at = lone_scout_sector(&engine, Passive);
+    endless_fight(&mut engine, pid, fid, at);
+
+    edit(&mut engine, |s| {
+        s.fleets.remove(&fid);
+    });
+    run(&mut engine, 2);
+    assert!(engine.active_combats.is_empty());
+    let listed = &chart_after_visit(&mut engine, next, next_fleet, at).hostiles;
+    assert_eq!(listed.as_ref().map(|h| h[0].id), Some(template_npc_id(at)), "the sector lists its hostile");
+
+    pile_of(&fight(&mut engine, next, next_fleet, at));
+}
+
+fn chart_after_visit(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64, at: Hex) -> iac_shared::protocol::SectorState {
+    deploy(engine, fid, at, None);
+    run(engine, 1);
+    chart(engine, pid).remove(&at.to_key()).expect("the sector is charted")
 }

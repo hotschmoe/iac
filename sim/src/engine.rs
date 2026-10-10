@@ -850,7 +850,7 @@ impl GameEngine {
             }
 
             if player_sides.is_empty() || npc_sides.is_empty() {
-                to_remove.push(combat_id);
+                self.break_off_combat(combat_id, None);
                 continue;
             }
 
@@ -2666,6 +2666,7 @@ impl GameEngine {
         fleet_mut.move_target = None;
         fleet_mut.move_cooldown = 0;
 
+        self.leave_combat(fleet_id);
         self.dock_fleet(fleet_id).map_err(|_| ErrorCode::ServerError)?;
 
         Ok(())
@@ -4413,6 +4414,53 @@ impl GameEngine {
             self.dirty_runtime.insert((RuntimeKind::Combat, *combat_id));
         }
         Ok(())
+    }
+
+    /// Take a fleet that has left the sector out of the fight it was in. The
+    /// fight goes on for the fleets that stay; with none left it is broken off.
+    fn leave_combat(&mut self, fleet_id: u64) {
+        let Some(combat) = self.active_combats.values_mut().find(|c| c.has_player_fleet(fleet_id)) else { return; };
+        let combat_id = combat.id;
+        combat.player_fleet_ids.retain(|id| *id != fleet_id);
+        self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
+        let fleets = &self.fleets;
+        if !combat.player_fleet_ids.iter().any(|id| fleets.get(id).is_some_and(|f| f.ship_count > 0)) {
+            let withdrew = fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
+            self.break_off_combat(combat_id, withdrew);
+        }
+    }
+
+    /// End a fight that nobody won. As after a lost fight, its NPC groups are
+    /// gone and their sectors' templates stand again; fleets still listed are
+    /// free. `withdrew` names the owner of a fleet whose leaving ended it.
+    fn break_off_combat(&mut self, combat_id: u64, withdrew: Option<String>) {
+        let Some(combat) = self.active_combats.remove(&combat_id) else { return; };
+        self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
+        for nid in &combat.npc_fleet_ids {
+            self.npc_fleets.remove(nid);
+            self.dirty_runtime.insert((RuntimeKind::NpcFleet, *nid));
+        }
+        let mut owners: std::collections::BTreeSet<String> = withdrew.into_iter().collect();
+        for fid in &combat.player_fleet_ids {
+            let Some(fleet) = self.fleets.get_mut(fid) else { continue; };
+            if fleet.state == FleetStatus::InCombat {
+                fleet.state = FleetStatus::Idle;
+                fleet.idle_ticks = 0;
+                self.dirty_fleets.insert(*fid, ());
+            }
+            owners.extend(self.players.get(&fleet.owner_id).map(|p| p.name.clone()));
+        }
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::CombatEnded(iac_shared::protocol::CombatEndedEvent {
+                sector: combat.sector,
+                player_victory: false,
+                owners: owners.into_iter().collect(),
+                mine: false,
+                salvage: None,
+                salvage_despawn_tick: None,
+            }),
+        });
     }
 
     /// Put a fleet into a fight. A jump it was still charging is abandoned,
