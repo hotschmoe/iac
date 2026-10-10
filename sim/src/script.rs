@@ -18,8 +18,11 @@
 //   after it                    `observe`    fold the tick in
 // Per turn:
 //   1. `wants_turn(tick)`  -- cheap; false leaves the player alone
-//   2. `act(&state, &mut orders)` -- observe, push orders
-//   3. the seat executes the orders in order; `hear` gets any reply
+//   2. `ask(&state, &mut questions)` -- what it wants the server to work
+//      out first (`odds`, `preview_move`, `leaderboard`); `hear` gets each
+//      answer, as a client gets its replies before the tick moves on
+//   3. `act(&state, &mut orders)` -- observe, push orders
+//   4. the seat executes the orders in order; `hear` gets any reply
 // Refused orders are counted, not fatal: a bot learns by looking at the next
 // state. What a player carries between turns must be deterministic (no
 // clocks, no OS randomness; randomness is seeded from what `seated` hands
@@ -61,11 +64,18 @@ pub trait ScriptedPlayer {
         true
     }
 
+    /// Queries to put to the server before acting. Only commands that are
+    /// answered and change nothing are sent (`odds`, `preview_move`,
+    /// `leaderboard`); the answers reach `hear` before `act` runs.
+    fn ask(&mut self, state: &GameState, questions: &mut Vec<Command>) {
+        let _ = (state, questions);
+    }
+
     /// Observe the state as of the end of the previous tick and queue orders.
     fn act(&mut self, state: &GameState, orders: &mut Vec<Order>);
 
-    /// The server's answer to one of this turn's orders that has one
-    /// (`leaderboard`, `preview_move`).
+    /// The server's answer to a question, or to one of this turn's orders
+    /// that has one.
     fn hear(&mut self, reply: &ServerMessage) {
         let _ = reply;
     }
@@ -88,6 +98,10 @@ impl<P: ScriptedPlayer + ?Sized> ScriptedPlayer for Box<P> {
         (**self).wants_turn(tick)
     }
 
+    fn ask(&mut self, state: &GameState, questions: &mut Vec<Command>) {
+        (**self).ask(state, questions);
+    }
+
     fn act(&mut self, state: &GameState, orders: &mut Vec<Order>) {
         (**self).act(state, orders);
     }
@@ -103,6 +117,7 @@ pub struct Seat<P> {
     player: P,
     /// The player's state as of the last tick, while it is being followed.
     view: Option<GameState>,
+    questions: Vec<Command>,
     orders: Vec<Order>,
     turns: u64,
     accepted: u64,
@@ -124,7 +139,7 @@ impl<P: ScriptedPlayer> Seat<P> {
     /// Seat a player on an account the host already knows is its own.
     pub fn resume(engine: &GameEngine, player_id: u64, mut player: P) -> Seat<P> {
         player.seated(engine.world_gen.world_seed, player_id);
-        Seat { player_id, player, view: None, orders: Vec::new(), turns: 0, accepted: 0, refused: 0 }
+        Seat { player_id, player, view: None, questions: Vec::new(), orders: Vec::new(), turns: 0, accepted: 0, refused: 0 }
     }
 
     pub fn player_id(&self) -> u64 {
@@ -164,6 +179,16 @@ impl<P: ScriptedPlayer> Seat<P> {
         }
         let Some(state) = &self.view else { return false };
         self.turns += 1;
+        self.questions.clear();
+        self.player.ask(state, &mut self.questions);
+        for question in self.questions.drain(..) {
+            if !matches!(question, Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. }) {
+                continue;
+            }
+            if let Some(reply) = &engine.execute(self.player_id, question).reply {
+                self.player.hear(reply);
+            }
+        }
         self.orders.clear();
         self.player.act(state, &mut self.orders);
         for order in self.orders.drain(..) {

@@ -207,6 +207,8 @@ pub struct Bot {
     world_seed: u64,
     player_id: u64,
     memory: Memory,
+    /// Asked and answered within a turn, so never part of the record.
+    odds: field::Odds,
 }
 
 impl Bot {
@@ -217,7 +219,7 @@ impl Bot {
     /// A bot that carries on from what the world stored of it.
     pub fn from_record(name: impl Into<String>, record: BotRecord) -> Bot {
         let style = Style { sessions_per_day: record.style.sessions_per_day.clamp(1, MAX_SESSIONS_PER_DAY), ..record.style };
-        Bot { name: name.into(), style, world_seed: 0, player_id: 0, memory: record.memory }
+        Bot { name: name.into(), style, world_seed: 0, player_id: 0, memory: record.memory, odds: field::Odds::new() }
     }
 
     pub fn record(&self) -> BotRecord {
@@ -231,6 +233,12 @@ impl Bot {
     /// Whether more combat or exploration points would still raise the score.
     fn points_wanted(&self) -> bool {
         self.style.ignore_cap || self.memory.standing.is_none_or(|s| s.extra < CAP_HEADROOM * EXTRA_CAP * s.core)
+    }
+
+    /// What the admiral is told for the turn at `turn`.
+    fn brief(&self, turn: u64) -> field::Brief {
+        let away_for = (self.style.attention != Attention::HandsOn).then(|| self.absence(turn));
+        field::Brief { personality: self.style.personality, away_for, points_wanted: self.points_wanted() }
     }
 
     fn hash(&self, a: u64, b: u64) -> u64 {
@@ -312,6 +320,14 @@ impl ScriptedPlayer for Bot {
         }
     }
 
+    fn ask(&mut self, state: &GameState, questions: &mut Vec<Command>) {
+        let turn = state.tick + 1;
+        self.odds.clear();
+        if self.presence(turn) != Presence::Away {
+            field::questions(state, self.brief(turn), questions);
+        }
+    }
+
     fn act(&mut self, state: &GameState, orders: &mut Vec<Order>) {
         let turn = state.tick + 1;
         if self.memory.intro_until.is_none() {
@@ -323,7 +339,8 @@ impl ScriptedPlayer for Bot {
             return;
         }
 
-        let away_for = (self.style.attention != Attention::HandsOn).then(|| self.absence(turn));
+        let brief = self.brief(turn);
+        let away_for = brief.away_for;
         if closing || turn >= self.memory.next_plan {
             let before = orders.len();
             home::plan(state, self.style.personality, away_for, orders);
@@ -336,8 +353,7 @@ impl ScriptedPlayer for Bot {
         }
 
         self.memory.routes.retain(|id, _| state.fleets.iter().any(|f| f.id == *id));
-        let brief = field::Brief { personality: self.style.personality, away_for, points_wanted: self.points_wanted() };
-        let mut admiral = field::Admiral::new(state, brief, &mut self.memory.routes, orders);
+        let mut admiral = field::Admiral::new(state, brief, &mut self.memory.routes, &self.odds, orders);
         let idle_for = match presence {
             Presence::Managing { closing } => {
                 admiral.manage(closing);
@@ -350,10 +366,18 @@ impl ScriptedPlayer for Bot {
     }
 
     fn hear(&mut self, reply: &ServerMessage) {
-        if let ServerMessage::Leaderboard(board) = reply
-            && let Some(row) = board.entries.iter().chain(&board.bots).chain(&board.you).find(|row| row.name == self.name)
-        {
-            self.memory.standing = Some(Standing { core: row.core, extra: row.combat + row.explore });
+        match reply {
+            ServerMessage::Leaderboard(board) => {
+                let rows = board.entries.iter().chain(&board.bots).chain(&board.you);
+                if let Some(row) = rows.into_iter().find(|row| row.name == self.name) {
+                    self.memory.standing = Some(Standing { core: row.core, extra: row.combat + row.explore });
+                }
+            }
+            ServerMessage::Odds(answer) => {
+                let rated = answer.sectors.iter().map(|s| ((answer.fleet_id, s.sector.to_key()), s.ratio));
+                self.odds.extend(rated);
+            }
+            _ => {}
         }
     }
 }
