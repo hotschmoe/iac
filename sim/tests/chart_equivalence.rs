@@ -13,16 +13,13 @@
 //
 //   UPDATE_CHART_GOLDEN=1 cargo test -p iac-sim --test chart_equivalence
 //
-// The recording predates chart marks (`SectorState::chart`). They are left
-// out of the comparison: the mark is blanked, and a remembered sector sent
-// again only because its mark moved (identical, the mark aside, to what that
-// player was last sent for it) is skipped.
-
-use std::collections::HashMap;
+// It was recorded once more when sectors gained their chart mark
+// (`SectorState::chart`), after the engine with marks had reproduced the
+// previous recording with the marks left out of the comparison.
 
 use iac_shared::constants::{ShipClass, DEFAULT_WORLD_SEED};
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{Command, HarvestResource, QueueType, SectorState};
+use iac_shared::protocol::{Command, HarvestResource, QueueType};
 use iac_shared::scaling::{BuildingType, ResearchType};
 use iac_sim::engine::template_npc_id;
 use iac_sim::{views, GameEngine};
@@ -89,7 +86,6 @@ fn run(mut each_tick: impl FnMut(u64, &[String])) {
     let pids: Vec<u64> = (0..PLAYERS)
         .map(|i| engine.authenticate(&format!("Pilot{i}"), None, i % 2 == 0, || "x".repeat(64)).unwrap().player_id)
         .collect();
-    let mut sent: HashMap<(u64, u32), SectorState> = HashMap::new();
     for _ in 0..TICKS {
         script(&mut engine, &pids);
         engine.tick().unwrap();
@@ -99,16 +95,9 @@ fn run(mut each_tick: impl FnMut(u64, &[String])) {
         for &pid in &pids {
             let mut updates = views::tick_update(&engine, pid, &events).sector_updates.unwrap_or_default();
             updates.sort_by_key(|s| s.location.to_key());
-            updates.iter_mut().for_each(|s| s.chart = None);
-            updates.retain(|s| s.live || sent.get(&(pid, s.location.to_key())) != Some(s));
-            for s in &updates {
-                sent.insert((pid, s.location.to_key()), s.clone());
-            }
             out.push(serde_json::to_string(&updates).unwrap());
             if tick.is_multiple_of(FULL_STATE_EVERY) {
-                let mut chart = views::full_state(&engine, pid).unwrap().known_sectors;
-                chart.iter_mut().for_each(|s| s.chart = None);
-                out.push(serde_json::to_string(&chart).unwrap());
+                out.push(serde_json::to_string(&views::full_state(&engine, pid).unwrap().known_sectors).unwrap());
             }
         }
         each_tick(tick, &out);
