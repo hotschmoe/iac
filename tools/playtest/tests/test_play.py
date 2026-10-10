@@ -204,7 +204,7 @@ class State(unittest.TestCase):
         doc = play.build_state(fs, None, 30)
         full, brief = io.StringIO(), io.StringIO()
         with redirect_stdout(full):
-            play.summarize(fs, doc)
+            play.summarize(fs, doc, {})
         with redirect_stdout(brief):
             for n, q in doc["queues"].items():
                 print(play.queue_line(n, q))
