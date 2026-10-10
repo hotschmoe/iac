@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Player, RaidState, SectorOverride};
-use crate::persist::{ExploreCredit, KnownRow, WorldMeta};
+use crate::persist::{ExploreCredit, KnownRow, RuntimeEntry, WorldMeta};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -59,6 +59,33 @@ impl Snapshot {
             explored: BTreeSet::new(),
             credited: BTreeSet::new(),
             known: Vec::new(),
+        }
+    }
+
+    /// File one stored entry under the map it belongs to.
+    pub fn insert_runtime(&mut self, id: u64, entry: RuntimeEntry) {
+        match entry {
+            RuntimeEntry::NpcFleet(npc) => {
+                self.npc_fleets.insert(id, *npc);
+            }
+            RuntimeEntry::Combat(combat) => {
+                self.combats.insert(id, combat);
+            }
+            RuntimeEntry::Raid(state) => {
+                self.raid_states.insert(id, state);
+            }
+            RuntimeEntry::Scans(reveals) => {
+                self.scan_reveals.insert(id, reveals);
+            }
+            RuntimeEntry::StorageMarks(marks) => {
+                self.storage_marks.insert(id, marks);
+            }
+            RuntimeEntry::HomeSalvageWarned(despawn) => {
+                self.home_salvage_warned.insert(id, despawn);
+            }
+            RuntimeEntry::HarvestReport(report) => {
+                self.harvest_reports.insert(id, report);
+            }
         }
     }
 

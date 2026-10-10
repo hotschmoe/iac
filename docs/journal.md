@@ -1079,3 +1079,167 @@ and delegate with orders the engine accepts.
 which sectors it charted (a `charted` flag on `SectorState` would serve clients too);
 feed bots from `tick_update` instead of `full_state`; give them their own score row
 without ranking the whole board.
+
+## 2026-10-10: a restart loses nothing
+
+`Database::load_snapshot` now returns the whole world. After SIGINT/SIGTERM it
+equals `GameEngine::snapshot()` (same `Snapshot::hash`); after a kill it is the
+last committed tick. Wire protocol unchanged.
+
+**What a restart did before** (read from the code; the two marked "live" were
+also watched on a master server at blitz):
+
+- A fleet mid-jump came back `moving` with no target: it never arrived, and its
+  standing orders never ran again, until the player sent `move` or `stop`. A
+  fleet mid-fight came back `in_combat` with no combat, refusing everything but
+  `recall`. The NPC group it was fighting was back at full strength, an ambush
+  guardian gone.
+- Every cooldown was 0: scan and harvest cooldowns were skipped and a boarding
+  resolved on the first tick (live: one with 18 ticks left).
+- Scan reveals were dropped (live: 16 of 17 live sectors went stale).
+- The raid clock started over: an announced raid never arrived, the new-player
+  grace period and the pity counter restarted, the minimum interval and the
+  suppression after a lost raid were forgotten.
+- Standing orders re-evaluated at once and repeated their last hold report;
+  storage and home-salvage alerts fired again; up to 10 ticks of harvest were
+  missing from the next `ResourceHarvested`.
+- Ships came back in id order, not fleet order, so the next fight rolled
+  differently. Stored floats were cut to thousandths.
+- Part-mined ore of a tile under a fleet was written only when the tile dropped
+  a density step, so a restart gave that ore back.
+
+Nothing regenerated identically from the seed except NPC groups nobody had met.
+
+**Now stored.** Typed columns where a typed table existed: `fleets.move_q/r`,
+`move_cooldown`, `action_cooldown`, `idle_ticks`; `ships.slot`;
+`fleet_policies.next_eval_tick`, `hold_reason`, `hold_tick`. The engine's
+bookkeeping maps (NPC groups, combats, raid states, scan reveals, storage marks,
+home-salvage warnings, harvest tallies) go entry by entry into one table,
+`runtime_state (kind, id, data)`, as the JSON `Snapshot` uses for them
+(`persist::RuntimeEntry`). The engine marks `(kind, id)` dirty at each mutation;
+the batch carries the entry as it is at persist time, or `None`, which deletes
+the row. Floats are stored as before (times 1000, REAL) but no longer truncated:
+f32 times 1000 is exact in f64, so old rows read the same and new rows reload bit
+for bit.
+
+**Engine.** Dirty marks added wherever a stored field changed without one
+(combat entry, harvest stopping, a raid re-sizing tanks, scan cooldown, policy
+evaluation, every harvested unit of ore, the tick a tile finishes refilling).
+Counters that run each tick go out as a three-column `UPDATE`
+(`PersistBatch::fleet_clocks`) unless the fleet is written anyway. `idle_ticks`
+stops at `SHIELD_REGEN_IDLE_TICKS`, the only value it is compared with, so a
+resting fleet stops changing. `checkpoint()` (was `checkpoint_known_sectors`)
+also queues refilling tiles, which like live chart stamps are otherwise written
+every 60 ticks. Unused ship slots are cleared after a recall loses a ship.
+
+`restore` no longer clamps `fuel_max` to the tank of the ships present. It was
+there for 50000-fuel fleets from before the starting-fuel fix, which predates
+`world_meta`, so no loadable database has one; what it did do was shrink the
+tank of any fleet that had lost ships in a fight, on every restore, including a
+`Snapshot` round trip.
+
+**Old databases** load: columns by `ensure_column`, the table by `CREATE IF NOT
+EXISTS`; missing state is at rest (no cooldown, no raid clock). When the jump
+columns are added, fleets saved as `moving` or `in_combat` are idled once. A
+`runtime_state` row that no longer parses is skipped with a warning. A master
+build's blitz database was opened by this one and played on. Not reversible: an
+older binary rewrites rows without the new columns.
+
+**Tests.** `database.rs`: `a_restart_through_sqlite_continues_the_same_world`
+plays 2000 ticks at test pace against SQLite beside the same world in memory,
+compares database and engine every 25 ticks (all but the two 60-tick items) and
+reloads 14 times through the clean path, three of them with a fight, a jump, a
+scan and an announced raid at once and three mid-boarding; hashes equal at every
+restart and at the end. Run once with the comparison on every tick for 4000 ticks
+(test pace) and 6000 (blitz). `a_world_saved_before_jumps_and_combats_were_stored_still_loads`
+drops the new columns and table from a played world. `scenarios.rs` kills the
+real server during a boarding with a scan live and checks both over the wire.
+The old approximate reload test is in `.archive/tests/server/src/`.
+`libsqlite3-sys` and `rusqlite` build at opt-level 2 in dev, like `iac-sim`.
+`cargo test --workspace` about 53 s.
+
+**Live** (release server on 7840 at blitz, three headless clients, two flying
+standing orders). Kill -9 at tick 16: a boarding with 18 ticks left came back
+`Exploring` with 16 left at tick 18 (master: resolved at once), 17 scanned
+sectors stayed live. SIGTERM at tick 147: same. A raid announced at tick 897
+for tick 927; SIGTERM and restart at 901; it resolved at tick 927 with the
+announced power 89.9. Raid clocks kept `first_seen_tick` 2 through all three
+restarts. Database 168 KB after 930 ticks. No fight happened to be on at a live
+restart; that case is covered by the in-process test only.
+
+**Cost** (release, 67 players, 900 ticks at blitz, best of three; 67 is what one
+world holds before `find_homeworld_location` gives up):
+
+| | master | now |
+|---|---|---|
+| every player commanding every 4 ticks: writer per tick | 7.86 ms | 8.03 ms |
+| same: tick thread, clone into the batch | 0.037 ms | 0.043 ms |
+| same: extra rows per tick | | 10.6 clock updates, 6.4 runtime, 1.6 policy, 1.6 sector |
+| nobody commanding: writer per tick | 6.56 ms | 6.58 ms |
+| database after 900 ticks, busy / idle | 2.18 / 0.23 MB | 2.21 / 0.25 MB |
+
+`runtime_state` rows: raid 124 B, storage marks 24 B, scans about 400 B (up to
+1 KB), combat 129 B, harvest tally 107 B, NPC group 400 B (about 4 KB at 32 ships).
+Two rows per player plus what is in flight; nothing grows with time. The writer
+is dominated, as before, by rewriting every player every tick (about 0.1 ms each).
+
+**Not stored.** Events awaiting broadcast: the server drains them before every
+persist, and nobody is connected to a server that is down. On a kill only: up to
+60 ticks of a live sector's `last_seen` and ore reading (re-observed on the first
+tick) and of a tile's refill.
+
+**Found on the way, fixed after** (rules, not persistence; a restart used to
+clear the first two by accident and no longer did). One commit each, each with
+a scenario that failed before it:
+
+- *Jump cut short.* A fleet still charging a jump is in its sector's fights
+  (`enroll_all_player_fleets_in_sector_combat`); it came out idle with the
+  jump's `move_target` and `move_cooldown`, which only a moving fleet counts
+  down, so `process_policies` skipped it until a manual move. Recall mid-jump
+  did the same. Entering a fight (`engage_fleet`) and recalling now drop the
+  jump as `stop` does; the fuel stays spent. `scenarios_world.rs`:
+  `a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_orders`.
+- *Recall and abandoned fights.* `handle_recall` left the fleet on the combat's
+  list and rounds are resolved from the list wherever the fleets are: a
+  recalled fleet banked its cargo and kept trading fire from home (measured:
+  hull still falling five ticks after arrival), which is how a study trial saw
+  one destroyed at its homeworld. Recall now takes it out (`leave_combat`).
+  A fight left with no player fleet was dropped as it stood, its NPC groups
+  `in_combat` for good; it is now broken off the way a lost fight ends
+  (`break_off_combat`): groups removed so the templates stand again at full
+  strength, listed fleets idle, `CombatEnded` with `player_victory: false` to
+  those who fought (the web client already reads that as "withdrew or was
+  lost"). Recall in combat stays allowed. Keeping the damaged group alive
+  instead would switch on NPC roaming, which never runs today because groups
+  exist only inside fights. `a_recalled_fleet_is_out_of_its_fight_and_the_hostiles_it_left_can_be_fought_again`,
+  `a_fight_nobody_is_left_in_frees_its_hostiles_for_the_next_fleet`.
+- *Ninth fleet.* `MAX_COMBAT_FLEETS` was the length of a fixed array in the Zig
+  engine; in Rust the lists are `Vec`s and nothing else needs it. Past eight, a
+  fleet was marked `InCombat` without being listed: it never fired, was never
+  credited and was never freed. The cap is removed, so the ninth joins: the
+  enrolment says every fleet in the sector fights, and staying out would leave a
+  fleet next to hostiles it can neither be shot by nor attack.
+  `every_fleet_in_a_crowded_sector_fights_scores_and_comes_out_free`.
+- *Tank after losses.* Combat was the one place ships left a fleet without
+  `fuel_max` being recomputed. It now is, fuel above it lost with the ship as
+  when a raid sinks docked ships. For clients: `fuel <= fuel_max`, `jump_fuel`
+  and `home_fuel` already followed the surviving ships, and `range_hops` no
+  longer exceeds what the survivors' own tank reaches (it used to drop on
+  docking). `fleet_logistics.rs`:
+  `a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it_has_left`.
+  With it: the tank of a fleet with no ships was `-0.0` (an empty float `sum()`),
+  which SQLite stores as 0; `fleet_fuel_max` folds from `0.0`. Found by running
+  the restart test with the comparison on every tick (2000 ticks at test pace,
+  5000 at blitz, both pass; in each run two fights ended by a recall, 8 and 26
+  fleets lost some of their ships and 16 and 37 all of them).
+
+`chart_equivalence` still matches its recorded hashes after all four.
+
+**Still open:**
+
+- A fleet that loses haulers in a fight keeps cargo above its hold (as after a
+  raid); harvesting stops and it unloads normally.
+- Recalling out of a boarding drops it without the alert bump `stop` gives the
+  site.
+- A fleet that recalls out of a fight others stay in gets no event saying it
+  left; its state in the next `tick_update` is the only sign.

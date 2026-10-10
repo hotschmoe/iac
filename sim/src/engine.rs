@@ -44,14 +44,15 @@ use crate::auth::{self, TokenHash};
 use crate::combat;
 use crate::score;
 use crate::intel::KnownSectors;
-use crate::persist::{ExploreCredit, ExploredEdge, Persist, PersistBatch, WorldMeta};
+use crate::persist::{
+    ExploreCredit, ExploredEdge, FleetClocks, Persist, PersistBatch, RuntimeEntry, RuntimeKind, RuntimeRow, WorldMeta,
+};
 use crate::snapshot::Snapshot;
 
 // ── Constants ─────────────────────────────────────────────────────
 
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
 pub const MAX_NPC_SHIPS: usize = scaling::NPC_MAX_SHIPS;
-pub const MAX_COMBAT_FLEETS: usize = 8;
 /// Rings beyond `HOMEWORLD_MAX_DIST` a new homeworld may spill into once the home band is full.
 const HOMEWORLD_SPILL_RINGS: u16 = 4;
 /// Part-refilled tiles are written to disk this often (ticks).
@@ -306,13 +307,13 @@ pub struct Combat {
 
 impl Combat {
     pub fn add_player_fleet(&mut self, fleet_id: u64) {
-        if !self.player_fleet_ids.contains(&fleet_id) && self.player_fleet_ids.len() < MAX_COMBAT_FLEETS {
+        if !self.player_fleet_ids.contains(&fleet_id) {
             self.player_fleet_ids.push(fleet_id);
         }
     }
 
     pub fn add_npc_fleet(&mut self, fleet_id: u64) {
-        if !self.npc_fleet_ids.contains(&fleet_id) && self.npc_fleet_ids.len() < MAX_COMBAT_FLEETS {
+        if !self.npc_fleet_ids.contains(&fleet_id) {
             self.npc_fleet_ids.push(fleet_id);
         }
     }
@@ -367,8 +368,7 @@ impl SectorOverride {
     }
 }
 
-/// Per-player raid pacing state. Deliberately not persisted: a server
-/// restart just resets the raid clock, which is always in the player's favor.
+/// Per-player raid pacing state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaidState {
     pub first_seen_tick: u64,
@@ -503,6 +503,11 @@ pub struct GameEngine {
     deleted_fleet_ids: HashMap<u64, ()>,
     dirty_policies: HashMap<u64, ()>,
     deleted_policy_ids: HashMap<u64, ()>,
+    /// Fleets whose counters ran this tick; a fleet also in `dirty_fleets`
+    /// is written whole.
+    dirty_clocks: HashSet<u64>,
+    /// Entries of the `RuntimeKind` maps that were written or removed.
+    dirty_runtime: HashSet<(RuntimeKind, u64)>,
 
     /// (player, sector key) pairs the player has entered; answers
     /// "first visit?" without touching the database.
@@ -523,29 +528,17 @@ impl GameEngine {
     }
 
     /// Rebuild an engine from saved state: a `snapshot()` of a running one,
-    /// or a partial one a host assembled from its own storage (everything
-    /// the engine can regenerate or that a restart resets may be left empty).
-    /// No persistence is attached; see `attach_persist`.
+    /// or the same thing a host assembled from its own storage. No
+    /// persistence is attached; see `attach_persist`.
     pub fn restore(snapshot: Snapshot) -> GameEngine {
         let Snapshot {
-            world_seed, meta, tick, mut next_id, mut players, mut fleets, npc_fleets, combats,
+            world_seed, meta, tick, mut next_id, mut players, fleets, npc_fleets, combats,
             sector_overrides, mut policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
             harvest_reports, pending_events, explored, credited, known,
         } = snapshot;
 
         for player in players.values_mut() {
             assign_missing_queue_ids(player, &mut next_id);
-        }
-        // Fleets registered before the starting-fuel fix were stored with a
-        // 50000 tank; hold them to the real one.
-        for fleet in fleets.values_mut() {
-            if let Some(player) = players.get(&fleet.owner_id) {
-                let tank = fleet_fuel_max(fleet, player);
-                if fleet.fuel_max > tank {
-                    fleet.fuel_max = tank;
-                    fleet.fuel = fleet.fuel.min(tank);
-                }
-            }
         }
         policies.retain(|fleet_id, _| fleets.contains_key(fleet_id));
 
@@ -574,6 +567,8 @@ impl GameEngine {
             deleted_fleet_ids: HashMap::new(),
             dirty_policies: HashMap::new(),
             deleted_policy_ids: HashMap::new(),
+            dirty_clocks: HashSet::new(),
+            dirty_runtime: HashSet::new(),
             explored: explored.into_iter().collect(),
             new_edges: Vec::new(),
             credited: credited.into_iter().collect(),
@@ -741,6 +736,7 @@ impl GameEngine {
 
             if fleet.move_cooldown > 0 {
                 fleet.move_cooldown -= 1;
+                self.dirty_clocks.insert(fleet.id);
                 continue;
             }
 
@@ -853,7 +849,7 @@ impl GameEngine {
             }
 
             if player_sides.is_empty() || npc_sides.is_empty() {
-                to_remove.push(combat_id);
+                self.break_off_combat(combat_id, None);
                 continue;
             }
 
@@ -878,6 +874,7 @@ impl GameEngine {
             if let Some(combat_mut) = self.active_combats.get_mut(&combat_id) {
                 combat_mut.round = combat_round + 1;
             }
+            self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
 
             for e in &result.events {
                 if let EventKind::FleetDestroyed(d) = &e.kind
@@ -905,7 +902,12 @@ impl GameEngine {
                     for j in new_ships.len()..f.ships.len() {
                         f.ships[j] = Ship::default();
                     }
+                    let lost_ships = new_ships.len() < f.ship_count;
                     f.ship_count = new_ships.len();
+                    if lost_ships && let Some(player) = self.players.get(&f.owner_id) {
+                        f.fuel_max = fleet_fuel_max(f, player);
+                        f.fuel = f.fuel.min(f.fuel_max);
+                    }
                     self.dirty_fleets.insert(f.id, ());
                 }
             }
@@ -931,6 +933,7 @@ impl GameEngine {
                         n.ships[j] = Ship::default();
                     }
                     n.ship_count = count as u8;
+                    self.dirty_runtime.insert((RuntimeKind::NpcFleet, n.id));
                 }
             }
 
@@ -977,12 +980,14 @@ impl GameEngine {
                 // Remove destroyed NPCs
                 for &nid in &npc_ids {
                     self.npc_fleets.remove(&nid);
+                    self.dirty_runtime.insert((RuntimeKind::NpcFleet, nid));
                 }
             }
         }
 
         for id in to_remove {
             self.active_combats.remove(&id);
+            self.dirty_runtime.insert((RuntimeKind::Combat, id));
         }
 
         Ok(())
@@ -1055,6 +1060,7 @@ impl GameEngine {
             .collect();
         for fid in due {
             let Some(r) = self.harvest_reports.remove(&fid) else { continue; };
+            self.dirty_runtime.insert((RuntimeKind::HarvestReport, fid));
             if self.fleets.contains_key(&fid) {
                 self.pending_events.push(GameEvent {
                     tick,
@@ -1066,7 +1072,14 @@ impl GameEngine {
                 });
             }
         }
-        self.harvest_reports.retain(|fid, _| self.fleets.contains_key(fid));
+        let (fleets, dirty) = (&self.fleets, &mut self.dirty_runtime);
+        self.harvest_reports.retain(|fid, _| {
+            let kept = fleets.contains_key(fid);
+            if !kept {
+                dirty.insert((RuntimeKind::HarvestReport, *fid));
+            }
+            kept
+        });
     }
 
     /// Tell a fleet's owner, loudly, that the fleet is gone.
@@ -1122,6 +1135,7 @@ impl GameEngine {
                 if let Some(f) = self.fleets.get_mut(&fid) {
                     f.state = FleetStatus::Idle;
                 }
+                self.dirty_fleets.insert(fid, ());
                 continue;
             }
 
@@ -1165,14 +1179,12 @@ impl GameEngine {
                     .or_insert_with(|| HarvestReport { since: tick, ..Default::default() });
                 report.resources = report.resources.add(took);
                 report.ticks += 1;
-            }
-
-            if harvested_any {
-                self.dirty_fleets.insert(fid, ());
+                self.dirty_runtime.insert((RuntimeKind::HarvestReport, fid));
             } else if let Some(f) = self.fleets.get_mut(&fid) {
                 // Nothing harvestable here — stop instead of spinning forever.
                 f.state = FleetStatus::Idle;
             }
+            self.dirty_fleets.insert(fid, ());
         }
 
         self.flush_harvest_reports();
@@ -1202,8 +1214,8 @@ impl GameEngine {
                 "deut" => ov.deut_density = Some(new_density),
                 _ => {}
             }
-            self.dirty_sectors.insert(sector_key, ());
         }
+        self.dirty_sectors.insert(sector_key, ());
         Ok(())
     }
 
@@ -1227,7 +1239,7 @@ impl GameEngine {
             let mut moved = regen_resource(&mut ov_mut.metal_harvested, &mut ov_mut.metal_density, template.metal_density, dist, &pace);
             moved |= regen_resource(&mut ov_mut.crystal_harvested, &mut ov_mut.crystal_density, template.crystal_density, dist, &pace);
             moved |= regen_resource(&mut ov_mut.deut_harvested, &mut ov_mut.deut_density, template.deut_density, dist, &pace);
-            if moved || self.current_tick.is_multiple_of(REGEN_PERSIST_TICKS) {
+            if moved || !ov_mut.has_ore_damage() || self.current_tick.is_multiple_of(REGEN_PERSIST_TICKS) {
                 self.dirty_sectors.insert(sector_key, ());
             }
         }
@@ -1250,7 +1262,9 @@ impl GameEngine {
             let Some((pile, despawn)) = self.sector_overrides.get(&key)
                 .and_then(|o| o.salvage.zip(o.salvage_despawn_tick))
             else {
-                self.home_salvage_warned.remove(&pid);
+                if self.home_salvage_warned.remove(&pid).is_some() {
+                    self.dirty_runtime.insert((RuntimeKind::HomeSalvageWarned, pid));
+                }
                 continue;
             };
             let docked = self.fleets.values()
@@ -1294,6 +1308,7 @@ impl GameEngine {
                 && self.home_salvage_warned.get(&pid) != Some(&despawn)
             {
                 self.home_salvage_warned.insert(pid, despawn);
+                self.dirty_runtime.insert((RuntimeKind::HomeSalvageWarned, pid));
                 let why = if docked.is_some() { "storage is full" } else { "no fleet is docked to scoop it" };
                 self.pending_events.push(GameEvent {
                     tick,
@@ -1376,6 +1391,7 @@ impl GameEngine {
                 if let Some(npc_m) = self.npc_fleets.get_mut(&npc_id) {
                     npc_m.patrol_timer -= 1;
                 }
+                self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
                 continue;
             }
 
@@ -1390,6 +1406,7 @@ impl GameEngine {
                 npc_m.location = new_location;
                 npc_m.patrol_timer = NPC_PATROL_INTERVAL;
             }
+            self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
 
             // Check if player fleet at new location -> trigger combat
             for fleet in self.fleets.values() {
@@ -1493,6 +1510,7 @@ impl GameEngine {
         for pid in ids {
             let player = &self.players[&pid];
             let state = self.storage_state(player);
+            let before = self.storage_marks.get(&pid).copied();
             let marks = self.storage_marks.entry(pid).or_insert([0; 3]);
             for (i, kind) in ResourceKind::ALL.into_iter().enumerate() {
                 let ratio = player.resources.get(kind) / state.cap.get(kind);
@@ -1518,6 +1536,9 @@ impl GameEngine {
                     }));
                 }
                 marks[i] = mark;
+            }
+            if before != Some(*marks) {
+                self.dirty_runtime.insert((RuntimeKind::StorageMarks, pid));
             }
         }
         for kind in events {
@@ -1801,13 +1822,16 @@ impl GameEngine {
         let player_ids: Vec<u64> = self.players.keys().copied().collect();
 
         for pid in player_ids {
-            let state = self.raid_states.entry(pid).or_insert_with(|| RaidState {
-                first_seen_tick: tick,
-                next_roll_tick: tick + timers.roll_interval,
-                last_raid_tick: 0,
-                suppress_until: 0,
-                missed_rolls: 0,
-                incoming: None,
+            let state = self.raid_states.entry(pid).or_insert_with(|| {
+                self.dirty_runtime.insert((RuntimeKind::Raid, pid));
+                RaidState {
+                    first_seen_tick: tick,
+                    next_roll_tick: tick + timers.roll_interval,
+                    last_raid_tick: 0,
+                    suppress_until: 0,
+                    missed_rolls: 0,
+                    incoming: None,
+                }
             });
 
             if let Some(incoming) = state.incoming {
@@ -1820,6 +1844,7 @@ impl GameEngine {
 
             if tick < state.next_roll_tick { continue; }
             state.next_roll_tick = tick + timers.roll_interval;
+            self.dirty_runtime.insert((RuntimeKind::Raid, pid));
 
             let age = tick.saturating_sub(state.first_seen_tick);
             if age < timers.min_player_age { continue; }
@@ -1958,6 +1983,7 @@ impl GameEngine {
         if !defended {
             state.suppress_until = tick + timers.suppress_after_loss;
         }
+        self.dirty_runtime.insert((RuntimeKind::Raid, player_id));
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -2049,6 +2075,7 @@ impl GameEngine {
                     let f = self.fleets.get_mut(&fid).unwrap();
                     f.fuel_max = fuel_max;
                     f.fuel = f.fuel.min(fuel_max);
+                    self.dirty_fleets.insert(fid, ());
                 }
             }
         }
@@ -2111,9 +2138,13 @@ impl GameEngine {
         for (_, fleet) in self.fleets.iter_mut() {
             if fleet.action_cooldown > 0 {
                 fleet.action_cooldown -= 1;
+                self.dirty_clocks.insert(fleet.id);
             }
             if fleet.state == FleetStatus::Idle {
-                fleet.idle_ticks = fleet.idle_ticks.saturating_add(1);
+                if fleet.idle_ticks < SHIELD_REGEN_IDLE_TICKS {
+                    fleet.idle_ticks += 1;
+                    self.dirty_clocks.insert(fleet.id);
+                }
                 if fleet.idle_ticks >= SHIELD_REGEN_IDLE_TICKS {
                     for ship in &mut fleet.ships[0..fleet.ship_count] {
                         if ship.shield < ship.shield_max {
@@ -2634,6 +2665,7 @@ impl GameEngine {
                     // Swap-remove
                     fleet_mut.ship_count -= 1;
                     fleet_mut.ships[i] = fleet_mut.ships[fleet_mut.ship_count];
+                    fleet_mut.ships[fleet_mut.ship_count] = Ship::default();
                     continue;
                 }
             }
@@ -2643,7 +2675,9 @@ impl GameEngine {
         fleet_mut.location = player.homeworld;
         fleet_mut.state = if fleet_mut.ship_count == 0 { FleetStatus::Docked } else { FleetStatus::Idle };
         fleet_mut.move_target = None;
+        fleet_mut.move_cooldown = 0;
 
+        self.leave_combat(fleet_id);
         self.dock_fleet(fleet_id).map_err(|_| ErrorCode::ServerError)?;
 
         Ok(())
@@ -3034,11 +3068,13 @@ impl GameEngine {
         for coord in &revealed {
             player_reveals.insert(coord.to_key(), expiry);
         }
+        self.dirty_runtime.insert((RuntimeKind::Scans, player_id));
 
         let sectors_revealed = revealed.len() as u16;
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.action_cooldown = SCAN_COOLDOWN;
         fleet_mut.idle_ticks = 0;
+        self.dirty_clocks.insert(fleet_id);
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -3496,7 +3532,11 @@ impl GameEngine {
             }
 
             let acted = match preset {
-                PolicyPreset::Manual => { self.policies.remove(&fid); true }
+                PolicyPreset::Manual => {
+                    self.policies.remove(&fid);
+                    self.deleted_policy_ids.insert(fid, ());
+                    true
+                }
                 PolicyPreset::Prospect => self.policy_prospect(fid)?,
                 PolicyPreset::MineAndReturn => self.policy_mine_and_return(fid)?,
                 PolicyPreset::SalvageAndSites => self.policy_salvage_and_sites(fid)?,
@@ -3506,6 +3546,9 @@ impl GameEngine {
             // Nothing to do — check back later instead of spinning.
             if !acted && let Some(p) = self.policies.get_mut(&fid) {
                 p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64 * 5;
+            }
+            if self.policies.contains_key(&fid) {
+                self.dirty_policies.insert(fid, ());
             }
         }
         Ok(())
@@ -4123,8 +4166,12 @@ impl GameEngine {
 
     fn prune_scan_reveals(&mut self) {
         let tick = self.current_tick;
-        for reveals in self.scan_reveals.values_mut() {
+        for (pid, reveals) in self.scan_reveals.iter_mut() {
+            let before = reveals.len();
             reveals.retain(|_, &mut expiry| expiry > tick);
+            if reveals.len() != before {
+                self.dirty_runtime.insert((RuntimeKind::Scans, *pid));
+            }
         }
         self.scan_reveals.retain(|_, m| !m.is_empty());
     }
@@ -4269,6 +4316,7 @@ impl GameEngine {
         };
 
         self.npc_fleets.insert(npc_fleet_id, npc_fleet.clone());
+        self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_fleet_id));
         Ok(npc_fleet)
     }
 
@@ -4289,9 +4337,7 @@ impl GameEngine {
                     if let Some(combat_mut) = self.active_combats.get_mut(&existing_id) {
                         combat_mut.add_player_fleet(fleet_id);
                     }
-                    if let Some(f) = self.fleets.get_mut(&fleet_id) {
-                        f.state = FleetStatus::InCombat;
-                    }
+                    self.engage_fleet(fleet_id);
                 }
                 if add_npc {
                     if let Some(combat_mut) = self.active_combats.get_mut(&existing_id) {
@@ -4301,6 +4347,9 @@ impl GameEngine {
                         n.in_combat = true;
                     }
                 }
+                self.dirty_fleets.insert(fleet_id, ());
+                self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
+                self.dirty_runtime.insert((RuntimeKind::Combat, existing_id));
 
                 self.pending_events.push(GameEvent {
                     tick: self.current_tick,
@@ -4332,12 +4381,12 @@ impl GameEngine {
         new_combat.add_npc_fleet(npc_id);
         self.active_combats.insert(combat_id, new_combat);
 
-        if let Some(f) = self.fleets.get_mut(&fleet_id) {
-            f.state = FleetStatus::InCombat;
-        }
+        self.engage_fleet(fleet_id);
         if let Some(n) = self.npc_fleets.get_mut(&npc_id) {
             n.in_combat = true;
         }
+        self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
+        self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -4372,11 +4421,68 @@ impl GameEngine {
             if let Some(combat_mut) = self.active_combats.get_mut(combat_id) {
                 combat_mut.add_player_fleet(fid);
             }
-            if let Some(fleet_mut) = self.fleets.get_mut(&fid) {
-                fleet_mut.state = FleetStatus::InCombat;
-            }
+            self.engage_fleet(fid);
+            self.dirty_runtime.insert((RuntimeKind::Combat, *combat_id));
         }
         Ok(())
+    }
+
+    /// Take a fleet that has left the sector out of the fight it was in. The
+    /// fight goes on for the fleets that stay; with none left it is broken off.
+    fn leave_combat(&mut self, fleet_id: u64) {
+        let Some(combat) = self.active_combats.values_mut().find(|c| c.has_player_fleet(fleet_id)) else { return; };
+        let combat_id = combat.id;
+        combat.player_fleet_ids.retain(|id| *id != fleet_id);
+        self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
+        let fleets = &self.fleets;
+        if !combat.player_fleet_ids.iter().any(|id| fleets.get(id).is_some_and(|f| f.ship_count > 0)) {
+            let withdrew = fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
+            self.break_off_combat(combat_id, withdrew);
+        }
+    }
+
+    /// End a fight that nobody won. As after a lost fight, its NPC groups are
+    /// gone and their sectors' templates stand again; fleets still listed are
+    /// free. `withdrew` names the owner of a fleet whose leaving ended it.
+    fn break_off_combat(&mut self, combat_id: u64, withdrew: Option<String>) {
+        let Some(combat) = self.active_combats.remove(&combat_id) else { return; };
+        self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
+        for nid in &combat.npc_fleet_ids {
+            self.npc_fleets.remove(nid);
+            self.dirty_runtime.insert((RuntimeKind::NpcFleet, *nid));
+        }
+        let mut owners: std::collections::BTreeSet<String> = withdrew.into_iter().collect();
+        for fid in &combat.player_fleet_ids {
+            let Some(fleet) = self.fleets.get_mut(fid) else { continue; };
+            if fleet.state == FleetStatus::InCombat {
+                fleet.state = FleetStatus::Idle;
+                fleet.idle_ticks = 0;
+                self.dirty_fleets.insert(*fid, ());
+            }
+            owners.extend(self.players.get(&fleet.owner_id).map(|p| p.name.clone()));
+        }
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::CombatEnded(iac_shared::protocol::CombatEndedEvent {
+                sector: combat.sector,
+                player_victory: false,
+                owners: owners.into_iter().collect(),
+                mine: false,
+                salvage: None,
+                salvage_despawn_tick: None,
+            }),
+        });
+    }
+
+    /// Put a fleet into a fight. A jump it was still charging is abandoned,
+    /// as `stop` would: only a moving fleet carries a jump target or cooldown.
+    fn engage_fleet(&mut self, fleet_id: u64) {
+        if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+            fleet.state = FleetStatus::InCombat;
+            fleet.move_target = None;
+            fleet.move_cooldown = 0;
+        }
+        self.dirty_fleets.insert(fleet_id, ());
     }
 
     fn collect_salvage(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
@@ -4574,6 +4680,16 @@ impl GameEngine {
             next_id: self.next_id,
             players: self.dirty_players.keys().filter_map(|id| self.players.get(id).cloned()).collect(),
             fleets: self.dirty_fleets.keys().filter_map(|id| self.fleets.get(id).cloned()).collect(),
+            fleet_clocks: self.dirty_clocks.iter()
+                .filter(|id| !self.dirty_fleets.contains_key(id))
+                .filter_map(|id| self.fleets.get(id))
+                .map(|f| FleetClocks {
+                    fleet_id: f.id,
+                    move_cooldown: f.move_cooldown,
+                    action_cooldown: f.action_cooldown,
+                    idle_ticks: f.idle_ticks,
+                })
+                .collect(),
             deleted_fleets: self.deleted_fleet_ids.keys().copied().collect(),
             policies: self.dirty_policies.keys()
                 .filter_map(|id| self.policies.get(id).map(|p| (*id, p.clone())))
@@ -4581,6 +4697,9 @@ impl GameEngine {
             deleted_policies: self.deleted_policy_ids.keys().copied().collect(),
             sectors: self.dirty_sectors.keys()
                 .filter_map(|key| self.sector_overrides.get(key).map(|ov| (Hex::from_key(*key), ov.clone())))
+                .collect(),
+            runtime: self.dirty_runtime.iter()
+                .map(|&(kind, id)| RuntimeRow { kind, id, entry: self.runtime_entry(kind, id) })
                 .collect(),
             explored_edges: self.new_edges.clone(),
             known_sectors: self.known.dirty_rows(),
@@ -4592,6 +4711,8 @@ impl GameEngine {
         self.deleted_fleet_ids.clear();
         self.dirty_policies.clear();
         self.deleted_policy_ids.clear();
+        self.dirty_clocks.clear();
+        self.dirty_runtime.clear();
         self.new_edges.clear();
         self.new_credits.clear();
         self.known.clear_dirty();
@@ -4600,10 +4721,31 @@ impl GameEngine {
         }
     }
 
-    /// Stamp every live sector for the next persist; call before the final
-    /// persist of a clean shutdown so remembered `last_seen` ticks are current.
-    pub fn checkpoint_known_sectors(&mut self) {
+    fn runtime_entry(&self, kind: RuntimeKind, id: u64) -> Option<RuntimeEntry> {
+        match kind {
+            RuntimeKind::NpcFleet => self.npc_fleets.get(&id).cloned().map(Box::new).map(RuntimeEntry::NpcFleet),
+            RuntimeKind::Combat => self.active_combats.get(&id).cloned().map(RuntimeEntry::Combat),
+            RuntimeKind::Raid => self.raid_states.get(&id).cloned().map(RuntimeEntry::Raid),
+            RuntimeKind::Scans => self.scan_reveals.get(&id).cloned().map(RuntimeEntry::Scans),
+            RuntimeKind::StorageMarks => self.storage_marks.get(&id).copied().map(RuntimeEntry::StorageMarks),
+            RuntimeKind::HomeSalvageWarned => {
+                self.home_salvage_warned.get(&id).copied().map(RuntimeEntry::HomeSalvageWarned)
+            }
+            RuntimeKind::HarvestReport => self.harvest_reports.get(&id).cloned().map(RuntimeEntry::HarvestReport),
+        }
+    }
+
+    /// Queue what is otherwise written only now and then (the stamps of live
+    /// chart sectors, refilling ore) for the next persist. Call before the
+    /// final persist of a clean shutdown: the stored world then equals
+    /// `snapshot()`.
+    pub fn checkpoint(&mut self) {
         self.known.touch_live();
+        for (key, ov) in &self.sector_overrides {
+            if ov.has_ore_damage() {
+                self.dirty_sectors.insert(*key, ());
+            }
+        }
     }
 
     /// Block until every submitted batch is committed (shutdown, tests).
@@ -4733,9 +4875,10 @@ fn fleet_harvest_power(fleet: &Fleet) -> f32 {
 }
 
 fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f32 {
-    let total_fuel: f32 = fleet.ships[0..fleet.ship_count].iter()
-        .map(|s| s.ship_class.base_stats().fuel as f32)
-        .sum();
+    // Folded from 0.0: the `sum()` of no floats is -0.0, and a fleet with no
+    // ships left must not carry a zero whose sign a store may not keep.
+    let total_fuel = fleet.ships[0..fleet.ship_count].iter()
+        .fold(0.0, |tank, s| tank + s.ship_class.base_stats().fuel as f32);
     total_fuel
         * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
         * scaling::fuel_depot_modifier(player.buildings.fuel_depot)

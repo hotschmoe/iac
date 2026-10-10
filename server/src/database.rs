@@ -18,18 +18,20 @@ use iac_sim::engine::{
     PendingBuilding, PendingResearch, PendingShip, Defences,
 };
 use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams, SectorState};
-use iac_sim::persist::{ExploreCredit, KnownRow, Persist, PersistBatch, WorldMeta};
+use iac_sim::persist::{
+    ExploreCredit, FleetClocks, KnownRow, Persist, PersistBatch, RuntimeEntry, RuntimeRow, WorldMeta,
+};
 use iac_sim::snapshot::Snapshot;
 
-/// Float storage: multiply by 1000 and store as integer for precision.
-fn float_to_stored(val: f32) -> i64 {
-    (val * 1000.0) as i64
+/// Float storage: the value times 1000, in a REAL column. An f32 times 1000
+/// is exact in an f64 and divides back to the same f32, so what is stored
+/// reloads bit for bit.
+fn float_to_stored(val: f32) -> f64 {
+    f64::from(val) * 1000.0
 }
 
-// Stored values are written as i64 (millis) but the columns have REAL
-// affinity, so SQLite converts them to floats on insert. Read as f64 —
-// rusqlite converts both INTEGER and REAL values losslessly — or loading
-// saved state fails with InvalidColumnType.
+// Read as f64: SQLite keeps a whole-numbered REAL as an integer, and rusqlite
+// converts both losslessly, where an i64 read fails with InvalidColumnType.
 fn stored_to_float(val: f64) -> f32 {
     (val / 1000.0) as f32
 }
@@ -373,6 +375,13 @@ impl Database {
                 work_r INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS runtime_state (
+                kind TEXT NOT NULL,
+                id INTEGER NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY (kind, id)
+            ) WITHOUT ROWID;
+
             CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id);
             CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r);
             CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id);
@@ -397,13 +406,27 @@ impl Database {
         Self::ensure_column(&conn, "players", "token_hash", "BLOB")?;
         Self::ensure_column(&conn, "build_queue", "item_id", "INTEGER NOT NULL DEFAULT 0")?;
         Self::ensure_column(&conn, "build_queue", "reserve", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "ships", "slot", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "fleets", "move_cooldown", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "fleets", "action_cooldown", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "fleets", "idle_ticks", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "fleets", "move_q", "INTEGER")?;
+        // A world saved before jump targets and combats were stored has
+        // nothing to resume a jump or a fight from.
+        if Self::ensure_column(&conn, "fleets", "move_r", "INTEGER")? {
+            conn.execute("UPDATE fleets SET state = 'idle' WHERE state IN ('moving', 'in_combat')", params![])?;
+        }
+        Self::ensure_column(&conn, "fleet_policies", "next_eval_tick", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "fleet_policies", "hold_reason", "TEXT")?;
+        Self::ensure_column(&conn, "fleet_policies", "hold_tick", "INTEGER")?;
 
         info!("Schema verified");
         Ok(())
     }
 
-    /// ALTER TABLE ... ADD COLUMN, but only if the column is missing.
-    fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) -> Result<(), rusqlite::Error> {
+    /// ALTER TABLE ... ADD COLUMN, but only if the column is missing. True if
+    /// it was added.
+    fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) -> Result<bool, rusqlite::Error> {
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let exists = stmt
             .query_map(params![], |row| row.get::<_, String>(1))?
@@ -413,7 +436,7 @@ impl Database {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl};"))?;
             info!("Migrated: {table}.{column}");
         }
-        Ok(())
+        Ok(!exists)
     }
 
     fn apply_pragmas(&self) -> Result<(), rusqlite::Error> {
@@ -491,9 +514,10 @@ impl Database {
     // ── Loading a world ───────────────────────────────────────────
 
     /// Everything this database holds, as engine state: the world's settings
-    /// (a fresh database takes `requested`), then players, fleets, sector
-    /// damage, standing orders and charts. What the engine regenerates or
-    /// resets on a restart (NPC groups, raid clocks, scans) is left empty.
+    /// (a fresh database takes `requested`) and the whole world as of the
+    /// last committed batch. After a clean shutdown it equals the
+    /// `snapshot()` the engine stopped with. Events awaiting broadcast are
+    /// not stored; the server drains them before every persist.
     pub fn load_snapshot(&self, world_seed: u64, requested: Option<Pace>) -> Result<Snapshot, Box<dyn std::error::Error>> {
         let meta = self.open_world(requested)?;
         let mut snapshot = Snapshot::new(world_seed, meta.pace);
@@ -537,6 +561,10 @@ impl Database {
             .map(|(pid, hex, kind)| (pid, hex.to_key(), kind))
             .collect();
         snapshot.known = self.load_known_sectors()?;
+        snapshot.known.sort_by_key(|row| (row.player_id, row.sector.to_key()));
+        for (id, entry) in self.load_runtime()? {
+            snapshot.insert_runtime(id, entry);
+        }
 
         if snapshot.players.is_empty() {
             info!("State loaded (empty -- fresh world)");
@@ -651,8 +679,9 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO fleets (id, player_id, q, r, state, fuel, fuel_max,
-             cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource, charts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource, charts,
+             move_cooldown, action_cooldown, idle_ticks, move_q, move_r)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 fleet.id as i64,
                 fleet.owner_id as i64,
@@ -666,14 +695,34 @@ impl Database {
                 float_to_stored(fleet.cargo.deuterium),
                 harvest_resource_to_str(fleet.harvest_target),
                 fleet.charts.iter().map(u32::to_string).collect::<Vec<_>>().join(","),
+                fleet.move_cooldown as i64,
+                fleet.action_cooldown as i64,
+                fleet.idle_ticks as i64,
+                fleet.move_target.map(|h| h.q as i64),
+                fleet.move_target.map(|h| h.r as i64),
             ],
         )?;
         self.save_ships_inner(&conn, fleet)
     }
 
+    pub fn save_fleet_clocks(&self, clocks: &FleetClocks) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare_cached(
+            "UPDATE fleets SET move_cooldown = ?2, action_cooldown = ?3, idle_ticks = ?4 WHERE id = ?1",
+        )?
+        .execute(params![
+            clocks.fleet_id as i64,
+            clocks.move_cooldown as i64,
+            clocks.action_cooldown as i64,
+            clocks.idle_ticks as i64,
+        ])?;
+        Ok(())
+    }
+
     /// Rewrites the fleet's ship rows. REPLACE, because a ship that just
     /// moved here by split or merge may still have a row under its old fleet
-    /// when this fleet happens to be saved first.
+    /// when this fleet happens to be saved first. `slot` keeps the order the
+    /// fleet holds them in, which combat rolls against.
     fn save_ships_inner(&self, conn: &Connection, fleet: &Fleet) -> Result<(), rusqlite::Error> {
         conn.execute(
             "DELETE FROM ships WHERE fleet_id = ?1",
@@ -681,11 +730,11 @@ impl Database {
         )?;
 
         let mut stmt = conn.prepare(
-            "INSERT OR REPLACE INTO ships (id, fleet_id, player_id, class, hull, hull_max, shield, shield_max, weapon_power, speed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR REPLACE INTO ships (id, fleet_id, player_id, class, hull, hull_max, shield, shield_max, weapon_power, speed, slot)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
 
-        for ship in &fleet.ships[0..fleet.ship_count] {
+        for (slot, ship) in fleet.ships[0..fleet.ship_count].iter().enumerate() {
             stmt.execute(params![
                 ship.id as i64,
                 fleet.id as i64,
@@ -697,6 +746,7 @@ impl Database {
                 float_to_stored(ship.shield_max),
                 float_to_stored(ship.weapon_power),
                 ship.speed as i64,
+                slot as i64,
             ])?;
         }
         Ok(())
@@ -706,7 +756,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, player_id, q, r, state, fuel, fuel_max,
-                    cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource, charts
+                    cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource, charts,
+                    move_cooldown, action_cooldown, idle_ticks, move_q, move_r
              FROM fleets",
         )?;
 
@@ -725,11 +776,19 @@ impl Database {
                 row.get::<_, f64>(9)?,
                 row.get::<_, Option<String>>(10)?,
                 row.get::<_, String>(11)?,
+                row.get::<_, i64>(12)?,
+                row.get::<_, i64>(13)?,
+                row.get::<_, i64>(14)?,
+                row.get::<_, Option<i64>>(15)?,
+                row.get::<_, Option<i64>>(16)?,
             ))
         })?;
 
         for row_result in fleet_rows {
-            let (fid, pid, q, r, state_str, fuel, fuel_max, cm, cc, cd, harvest, charts) = row_result?;
+            let (
+                fid, pid, q, r, state_str, fuel, fuel_max, cm, cc, cd, harvest, charts,
+                move_cooldown, action_cooldown, idle_ticks, move_q, move_r,
+            ) = row_result?;
             let mut fleet = Fleet {
                 id: fid as u64,
                 owner_id: pid as u64,
@@ -744,10 +803,10 @@ impl Database {
                 },
                 fuel: stored_to_float(fuel),
                 fuel_max: stored_to_float(fuel_max),
-                move_cooldown: 0,
-                action_cooldown: 0,
-                move_target: None,
-                idle_ticks: 0,
+                move_cooldown: move_cooldown as u16,
+                action_cooldown: action_cooldown as u16,
+                move_target: move_q.zip(move_r).map(|(q, r)| Hex { q: q as i16, r: r as i16 }),
+                idle_ticks: idle_ticks as u16,
                 harvest_target: parse_harvest_resource(harvest.as_deref().unwrap_or("auto")),
                 charts: charts.split(',').filter_map(|k| k.parse().ok()).collect(),
             };
@@ -760,7 +819,7 @@ impl Database {
     fn load_ships_into_inner(&self, conn: &Connection, fleet_id: i64, ships: &mut [Ship]) -> Result<usize, rusqlite::Error> {
         let mut stmt = conn.prepare(
             "SELECT id, class, hull, hull_max, shield, shield_max, weapon_power, speed
-             FROM ships WHERE fleet_id = ?1",
+             FROM ships WHERE fleet_id = ?1 ORDER BY slot, id",
         )?;
 
         let mut count = 0;
@@ -906,8 +965,9 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO fleet_policies
-             (fleet_id, preset, min_fuel_pct, cargo_return_pct, max_range, engage_ratio_x10, work_q, work_r)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (fleet_id, preset, min_fuel_pct, cargo_return_pct, max_range, engage_ratio_x10, work_q, work_r,
+              next_eval_tick, hold_reason, hold_tick)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 fleet_id as i64,
                 policy_preset_to_str(policy.preset),
@@ -917,6 +977,9 @@ impl Database {
                 policy.params.engage_ratio_x10 as i64,
                 policy.work_sector.map(|h| h.q as i64),
                 policy.work_sector.map(|h| h.r as i64),
+                policy.next_eval_tick as i64,
+                policy.last_hold.as_ref().map(|(reason, _)| reason.as_str()),
+                policy.last_hold.as_ref().map(|(_, tick)| *tick as i64),
             ],
         )?;
         Ok(())
@@ -931,7 +994,8 @@ impl Database {
     pub fn load_fleet_policies(&self) -> Result<Vec<(u64, FleetPolicy)>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT fleet_id, preset, min_fuel_pct, cargo_return_pct, max_range, engage_ratio_x10, work_q, work_r
+            "SELECT fleet_id, preset, min_fuel_pct, cargo_return_pct, max_range, engage_ratio_x10, work_q, work_r,
+                    next_eval_tick, hold_reason, hold_tick
              FROM fleet_policies",
         )?;
         let rows = stmt.query_map(params![], |row| {
@@ -944,12 +1008,15 @@ impl Database {
                 row.get::<_, i64>(5)?,
                 row.get::<_, Option<i64>>(6)?,
                 row.get::<_, Option<i64>>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<i64>>(10)?,
             ))
         })?;
 
         let mut policies = Vec::new();
         for row_result in rows {
-            let (fid, preset, fuel, cargo, range, engage, wq, wr) = row_result?;
+            let (fid, preset, fuel, cargo, range, engage, wq, wr, next_eval, hold_reason, hold_tick) = row_result?;
             let work_sector = match (wq, wr) {
                 (Some(q), Some(r)) => Some(Hex { q: q as i16, r: r as i16 }),
                 _ => None,
@@ -963,11 +1030,52 @@ impl Database {
                     engage_ratio_x10: engage.clamp(1, 100) as u8,
                 },
                 work_sector,
-                next_eval_tick: 0,
-                last_hold: None,
+                next_eval_tick: next_eval as u64,
+                last_hold: hold_reason.zip(hold_tick).map(|(reason, tick)| (reason, tick as u64)),
             }));
         }
         Ok(policies)
+    }
+
+    // ── Runtime State ─────────────────────────────────────────────
+
+    /// Upsert the entry as its JSON, or delete the row of one that is gone.
+    pub fn save_runtime(&self, row: &RuntimeRow) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let key = (row.kind.name(), row.id as i64);
+        match &row.entry {
+            Some(entry) => {
+                let data = serde_json::to_string(entry)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                conn.prepare_cached("INSERT OR REPLACE INTO runtime_state (kind, id, data) VALUES (?1, ?2, ?3)")?
+                    .execute(params![key.0, key.1, data])?;
+            }
+            None => {
+                conn.prepare_cached("DELETE FROM runtime_state WHERE kind = ?1 AND id = ?2")?
+                    .execute(params![key.0, key.1])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Rows that no longer parse (written by an older engine) are skipped:
+    /// that group, combat or clock starts over, as all of them once did on
+    /// every restart.
+    pub fn load_runtime(&self) -> Result<Vec<(u64, RuntimeEntry)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT kind, id, data FROM runtime_state")?;
+        let rows = stmt.query_map(params![], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (kind, id, data) = row?;
+            match serde_json::from_str::<RuntimeEntry>(&data) {
+                Ok(entry) => out.push((id as u64, entry)),
+                Err(e) => warn!("Skipping unreadable runtime state {kind} {id}: {e}"),
+            }
+        }
+        Ok(out)
     }
 
     // ── Explored Edges ────────────────────────────────────────────
@@ -1349,6 +1457,9 @@ impl Database {
         for fleet in &batch.fleets {
             self.save_fleet(fleet)?;
         }
+        for clocks in &batch.fleet_clocks {
+            self.save_fleet_clocks(clocks)?;
+        }
         for &fid in &batch.deleted_fleets {
             self.delete_fleet(fid)?;
         }
@@ -1362,6 +1473,9 @@ impl Database {
         }
         for (hex, ov) in &batch.sectors {
             self.save_sector_override(hex.q, hex.r, ov)?;
+        }
+        for row in &batch.runtime {
+            self.save_runtime(row)?;
         }
         for e in &batch.explored_edges {
             self.save_explored_edge(e.player_id, e.from, e.to, e.tick)?;
@@ -1558,106 +1672,267 @@ mod tests {
         assert!(text.contains("worldgen version 1"), "{text}");
     }
 
-    fn js<T: serde::Serialize>(v: &T) -> serde_json::Value {
-        serde_json::to_value(v).unwrap()
+    use iac_shared::constants::{DEFAULT_WORLD_SEED, ShipClass};
+    use iac_shared::protocol::{Command, EventKind, QueueType};
+    use iac_sim::GameEngine;
+    use iac_sim::engine::template_npc_id;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    const TICKS: u64 = 2_000;
+    const PLAYERS: usize = 4;
+    const RESTART_EVERY: u64 = 250;
+    const KILL_CHECK_EVERY: u64 = 25;
+
+    /// Opens the world the way `main` does: load, restore, write back through
+    /// the same connection.
+    fn host(path: &str, pace: Option<Pace>) -> GameEngine {
+        let db = Database::init(path).unwrap();
+        let mut engine = GameEngine::restore(db.load_snapshot(DEFAULT_WORLD_SEED, pace).unwrap());
+        engine.attach_persist(Box::new(Persister::spawn(db)));
+        engine
     }
 
-    /// Equal up to the database's fixed-point rounding of floats.
-    fn same_json(a: &serde_json::Value, b: &serde_json::Value, at: &str) {
-        use serde_json::Value::{Array, Number, Object};
-        match (a, b) {
-            (Number(x), Number(y)) => {
-                let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
-                assert!((x - y).abs() <= 0.002 + x.abs() * 1e-5, "{at}: {x} vs {y}");
+    fn enroll(engine: &mut GameEngine) -> Vec<u64> {
+        (0..PLAYERS)
+            .map(|i| engine.authenticate(&format!("Pilot{i}"), None, i % 2 == 0, || "f".repeat(64)).unwrap().player_id)
+            .collect()
+    }
+
+    /// One tick of a busy world. The orders are a function of the tick and of
+    /// what the engine holds, so two engines in the same state play the same.
+    fn step(engine: &mut GameEngine, pids: &[u64]) -> Vec<EventKind> {
+        let tick = engine.current_tick() + 1;
+        let mut rng = StdRng::seed_from_u64(tick.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        if tick.is_multiple_of(300) {
+            for pid in pids {
+                let p = engine.players.get_mut(pid).unwrap();
+                p.resources.metal = p.resources.metal.max(30_000.0);
+                p.resources.crystal = p.resources.crystal.max(20_000.0);
+                p.resources.deuterium = p.resources.deuterium.max(10_000.0);
             }
-            (Array(x), Array(y)) => {
-                assert_eq!(x.len(), y.len(), "{at}: length");
-                for (i, (x, y)) in x.iter().zip(y).enumerate() {
-                    same_json(x, y, &format!("{at}[{i}]"));
-                }
-            }
-            (Object(x), Object(y)) => {
-                assert_eq!(x.keys().collect::<Vec<_>>(), y.keys().collect::<Vec<_>>(), "{at}: keys");
-                for (k, v) in x {
-                    same_json(v, &y[k], &format!("{at}.{k}"));
-                }
-            }
-            _ => assert_eq!(a, b, "{at}"),
         }
+        if tick.is_multiple_of(4) {
+            for &pid in pids {
+                let fleets: Vec<u64> = engine.fleets.values().filter(|f| f.owner_id == pid).map(|f| f.id).collect();
+                let pick = |rng: &mut StdRng| if fleets.is_empty() { 0 } else { fleets[rng.random_range(0..fleets.len())] };
+                let fleet_id = pick(&mut rng);
+                let here = engine.fleets.get(&fleet_id).map(|f| f.location);
+                if tick.is_multiple_of(200) {
+                    let preset = PolicyPreset::ALL[rng.random_range(0..PolicyPreset::ALL.len())];
+                    let _ = engine.handle_policy_update(pid, fleet_id, preset, None);
+                    continue;
+                }
+                let cmd = match rng.random_range(0..17) {
+                    0..=3 => here.map(|at| {
+                        let around = engine.world_gen.connected_neighbors(at);
+                        let n = around.slice();
+                        Command::Move { fleet_id, target: n[rng.random_range(0..n.len())] }
+                    }),
+                    4 => Some(Command::Harvest { fleet_id, resource: HarvestResource::Auto }),
+                    5 | 6 => Some(Command::Scan { fleet_id }),
+                    7 => Some(Command::Build {
+                        building_type: BuildingType::from_usize(rng.random_range(0..BuildingType::COUNT)).unwrap(),
+                        reserve: rng.random_bool(0.3),
+                    }),
+                    8 => Some(Command::Research {
+                        tech: ResearchType::from_usize(rng.random_range(0..ResearchType::COUNT)).unwrap(),
+                        reserve: false,
+                    }),
+                    9 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2, reserve: false }),
+                    10 => Some(Command::BuildDefence { kind: DefenceKind::PulseTurret, count: 2, reserve: false }),
+                    11 => here.map(|at| Command::Attack { fleet_id, target_fleet_id: template_npc_id(at) }),
+                    12 => Some(Command::Recall { fleet_id }),
+                    13 => Some(Command::ExploreSite { fleet_id }),
+                    14 => engine.fleets.get(&fleet_id).map(|f| Command::Split { fleet_id, ship_ids: vec![f.ships[0].id] }),
+                    15 => Some(Command::Merge { fleet_id, other_fleet_id: pick(&mut rng) }),
+                    _ => Some(Command::CollectSalvage { fleet_id }),
+                };
+                if let Some(cmd) = cmd {
+                    let _ = engine.execute(pid, cmd);
+                }
+                if tick.is_multiple_of(40) {
+                    let _ = engine.execute(pid, Command::CancelBuild { queue_type: QueueType::Building, id: 0 });
+                }
+            }
+        }
+        engine.tick().unwrap();
+        let events = engine.drain_events().into_iter().map(|e| e.kind).collect();
+        engine.persist_dirty_state();
+        events
+    }
+
+    /// Where two JSON trees first differ. Leaves are compared as written, so
+    /// 0.0 and -0.0 differ here as they do in the hash.
+    fn first_difference(a: &serde_json::Value, b: &serde_json::Value, at: &str) -> Option<String> {
+        use serde_json::Value::{Array, Object};
+        match (a, b) {
+            (Array(x), Array(y)) if x.len() == y.len() => {
+                x.iter().zip(y).enumerate().find_map(|(i, (x, y))| first_difference(x, y, &format!("{at}[{i}]")))
+            }
+            (Object(x), Object(y)) if x.keys().eq(y.keys()) => {
+                x.iter().find_map(|(k, v)| first_difference(v, &y[k], &format!("{at}.{k}")))
+            }
+            _ => {
+                let (engine, database) = (a.to_string(), b.to_string());
+                (engine != database).then(|| format!("{at}: {engine} in the engine, {database} in the database"))
+            }
+        }
+    }
+
+    fn assert_same(engine: &Snapshot, stored: &Snapshot, when: &str) {
+        let (a, b) = (serde_json::to_value(engine).unwrap(), serde_json::to_value(stored).unwrap());
+        if let Some(difference) = first_difference(&a, &b, "world") {
+            panic!("{when}: {difference}");
+        }
+        assert_eq!(engine.hash(), stored.hash(), "{when}");
+    }
+
+    /// The world less what a batch leaves for later: the stamps and ore
+    /// levels of charted sectors and the part-refilled ore of sectors.
+    fn committed(mut world: Snapshot) -> Snapshot {
+        world.known.clear();
+        for ov in world.sector_overrides.values_mut() {
+            (ov.metal_harvested, ov.crystal_harvested, ov.deut_harvested) = (0.0, 0.0, 0.0);
+        }
+        world
+    }
+
+    /// What the restarts of a run interrupted.
+    #[derive(Debug, Default)]
+    struct Caught {
+        fights: u32,
+        announced_raids: u32,
+        scans: u32,
+        jumps: u32,
+        boardings: u32,
+        all_at_once: u32,
     }
 
     #[test]
-    fn a_played_world_reloads_from_sqlite_as_it_was_saved() {
-        use iac_shared::constants::Resources;
-        use iac_shared::protocol::{Command, PolicyPreset};
-        use iac_shared::scaling::{BuildingType, ResearchType};
-        use iac_sim::GameEngine;
+    fn a_restart_through_sqlite_continues_the_same_world() {
+        let path = temp_db("restart");
+        let pace = Pace::parse("test").unwrap();
+        let mut straight = GameEngine::new(DEFAULT_WORLD_SEED, pace);
+        let mut hosted = host(&path, Some(pace));
+        let pids = enroll(&mut straight);
+        assert_eq!(enroll(&mut hosted), pids);
 
-        let path = temp_db("reload");
-        let mut engine = GameEngine::restore(Database::init(&path).unwrap().load_snapshot(42, Some(Pace::new(100.0).unwrap())).unwrap());
-        engine.attach_persist(Box::new(Persister::spawn(Database::init(&path).unwrap())));
+        let mut caught = Caught::default();
+        let mut raids_announced = 0u32;
+        let mut last_restart = 0u64;
+        let (mut raids, mut doctrine_moves) = (0u32, 0u32);
+        for _ in 0..TICKS {
+            step(&mut straight, &pids);
+            for event in step(&mut hosted, &pids) {
+                match event {
+                    EventKind::RaidIncoming(_) => raids_announced += 1,
+                    EventKind::RaidResolved(_) => {
+                        raids_announced -= 1;
+                        raids += 1;
+                    }
+                    EventKind::PolicyAction(p) if p.action == "move" => doctrine_moves += 1,
+                    _ => {}
+                }
+            }
+            let tick = hosted.current_tick();
 
-        let token = || "f".repeat(64);
-        let keeper = engine.authenticate("Keeper", None, true, token).unwrap().player_id;
-        let rival = engine.authenticate("Rival", None, false, token).unwrap().player_id;
-        let fleet = engine.fleets.values().find(|f| f.owner_id == keeper).unwrap().id;
-        for pid in [keeper, rival] {
-            engine.players.get_mut(&pid).unwrap().resources = Resources { metal: 5e4, crystal: 5e4, deuterium: 5e4 };
-            engine.players.get_mut(&pid).unwrap().buildings.shipyard = 2;
-            engine.players.get_mut(&pid).unwrap().buildings.research_lab = 2;
+            if tick.is_multiple_of(KILL_CHECK_EVERY) {
+                hosted.flush_persistence().unwrap();
+                let stored = Database::init(&path).unwrap().load_snapshot(DEFAULT_WORLD_SEED, None).unwrap();
+                assert_same(&committed(hosted.snapshot()), &committed(stored), &format!("killed after tick {tick}"));
+            }
+
+            let fight = !hosted.active_combats.is_empty();
+            let raid = raids_announced > 0;
+            let scan = pids.iter().any(|&pid| !hosted.scan_revealed_coords(pid).is_empty());
+            let jump = hosted.fleets.values().any(|f| f.state == FleetStatus::Moving);
+            let boarding = hosted.fleets.values().any(|f| f.state == FleetStatus::Exploring);
+            let rare = (fight && raid && scan && jump && caught.all_at_once < 3) || (boarding && caught.boardings < 3);
+            if tick.is_multiple_of(RESTART_EVERY) || (rare && tick > last_restart + 5) {
+                last_restart = tick;
+                caught.fights += u32::from(fight);
+                caught.announced_raids += u32::from(raid);
+                caught.scans += u32::from(scan);
+                caught.jumps += u32::from(jump);
+                caught.boardings += u32::from(boarding);
+                caught.all_at_once += u32::from(fight && raid && scan && jump);
+
+                hosted.checkpoint();
+                hosted.persist_dirty_state();
+                hosted.flush_persistence().unwrap();
+                let stopped = hosted.snapshot();
+                drop(hosted);
+
+                let db = Database::init(&path).unwrap();
+                let stored = db.load_snapshot(DEFAULT_WORLD_SEED, None).unwrap();
+                assert_same(&stopped, &stored, &format!("stopped after tick {tick}"));
+                assert_eq!(stored.hash(), straight.snapshot().hash(), "the hosted world left the unhosted one by tick {tick}");
+                hosted = GameEngine::restore(stored);
+                hosted.attach_persist(Box::new(Persister::spawn(db)));
+            }
         }
-        let home = engine.fleets[&fleet].location;
-        let next = engine.world_gen.connected_neighbors(home).slice()[0];
-        for cmd in [
-            Command::Build { building_type: BuildingType::MetalMine, reserve: false },
-            Command::Build { building_type: BuildingType::MetalMine, reserve: true },
-            Command::Build { building_type: BuildingType::CrystalMine, reserve: false },
-            Command::Research { tech: ResearchType::Navigation, reserve: false },
-            Command::BuildShip { ship_class: iac_shared::constants::ShipClass::Scout, count: 3, reserve: false },
-            Command::BuildShip { ship_class: iac_shared::constants::ShipClass::Scout, count: 1, reserve: true },
-            Command::Move { fleet_id: fleet, target: next },
-        ] {
-            let outcome = engine.execute(keeper, cmd.clone());
-            assert!(outcome.error.is_none(), "{cmd:?}: {:?}", outcome.error);
-        }
-        engine.handle_policy_update(rival, engine.fleets.values().find(|f| f.owner_id == rival).unwrap().id, PolicyPreset::PatrolHome, None).unwrap();
+
+        assert_eq!(hosted.snapshot().hash(), straight.snapshot().hash(), "restarts changed the course of the world");
+        assert!(
+            caught.all_at_once > 0 && caught.boardings > 0,
+            "no restart interrupted a fight, an announced raid, a scan and a jump together, or none a boarding: {caught:?}",
+        );
+        assert!(raids > 0 && doctrine_moves > 0, "{raids} raids resolved, {doctrine_moves} moves by standing orders");
+    }
+
+    #[test]
+    fn a_world_saved_before_jumps_and_combats_were_stored_still_loads() {
+        let path = temp_db("before_runtime");
+        let mut engine = host(&path, Some(Pace::parse("test").unwrap()));
+        let pids = enroll(&mut engine);
         for _ in 0..400 {
-            engine.tick().unwrap();
-            engine.drain_events();
-            engine.persist_dirty_state();
+            step(&mut engine, &pids);
         }
-        engine.checkpoint_known_sectors();
+        engine.checkpoint();
         engine.persist_dirty_state();
         engine.flush_persistence().unwrap();
+        let saved = engine.snapshot();
+        drop(engine);
 
-        let mut saved = engine.snapshot();
-        let mut loaded = Database::init(&path).unwrap().load_snapshot(42, None).unwrap();
-        for snapshot in [&mut saved, &mut loaded] {
-            for p in snapshot.policies.values_mut() {
-                p.next_eval_tick = 0;
-                p.last_hold = None;
-            }
-            for f in snapshot.fleets.values_mut() {
-                let count = f.ship_count;
-                f.ships[count..].fill(Default::default());
-                f.idle_ticks = 0;
-            }
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE runtime_state;
+                 ALTER TABLE ships DROP COLUMN slot;
+                 ALTER TABLE fleets DROP COLUMN move_cooldown;
+                 ALTER TABLE fleets DROP COLUMN action_cooldown;
+                 ALTER TABLE fleets DROP COLUMN idle_ticks;
+                 ALTER TABLE fleets DROP COLUMN move_q;
+                 ALTER TABLE fleets DROP COLUMN move_r;
+                 ALTER TABLE fleet_policies DROP COLUMN next_eval_tick;
+                 ALTER TABLE fleet_policies DROP COLUMN hold_reason;
+                 ALTER TABLE fleet_policies DROP COLUMN hold_tick;
+                 UPDATE fleets SET state = 'moving' WHERE id = (SELECT MIN(id) FROM fleets);
+                 UPDATE fleets SET state = 'in_combat' WHERE id = (SELECT MAX(id) FROM fleets);",
+            )
+            .unwrap();
+
+        let loaded = Database::init(&path).unwrap().load_snapshot(DEFAULT_WORLD_SEED, None).unwrap();
+        assert_eq!(loaded.tick, saved.tick);
+        assert_eq!(serde_json::to_value(&loaded.players).unwrap(), serde_json::to_value(&saved.players).unwrap());
+        assert_eq!(loaded.fleets.keys().collect::<Vec<_>>(), saved.fleets.keys().collect::<Vec<_>>());
+        assert_eq!(loaded.policies.keys().collect::<Vec<_>>(), saved.policies.keys().collect::<Vec<_>>());
+        assert!(
+            loaded.fleets.values().all(|f| !matches!(f.state, FleetStatus::Moving | FleetStatus::InCombat)),
+            "a jump or a fight with nothing stored to resume it from must not leave the fleet stuck",
+        );
+        assert!(loaded.raid_states.is_empty() && loaded.combats.is_empty() && loaded.scan_reveals.is_empty());
+
+        let mut engine = GameEngine::restore(loaded);
+        engine.attach_persist(Box::new(Persister::spawn(Database::init(&path).unwrap())));
+        for _ in 0..200 {
+            step(&mut engine, &pids);
         }
-        assert_eq!(saved.tick, loaded.tick);
-        assert_eq!(saved.next_id, loaded.next_id);
-        assert_eq!(saved.meta, loaded.meta);
-        assert!(saved.players.len() == 2 && !saved.sector_overrides.is_empty() && !saved.explored.is_empty());
-        same_json(&js(&saved.players), &js(&loaded.players), "players");
-        same_json(&js(&saved.fleets), &js(&loaded.fleets), "fleets");
-        same_json(&js(&saved.sector_overrides), &js(&loaded.sector_overrides), "sector_overrides");
-        same_json(&js(&saved.policies), &js(&loaded.policies), "policies");
-        assert_eq!(saved.explored, loaded.explored);
-        assert_eq!(saved.credited, loaded.credited);
-        let keys = |s: &Snapshot| {
-            let mut keys: Vec<_> = s.known.iter().map(|r| (r.player_id, r.sector.to_key(), r.last_seen)).collect();
-            keys.sort_unstable();
-            keys
-        };
-        assert_eq!(keys(&saved), keys(&loaded));
+        engine.checkpoint();
+        engine.persist_dirty_state();
+        engine.flush_persistence().unwrap();
+        let stored = Database::init(&path).unwrap().load_snapshot(DEFAULT_WORLD_SEED, None).unwrap();
+        assert_same(&engine.snapshot(), &stored, "an old world, once it has run on");
     }
 }
