@@ -149,7 +149,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
     final f = con.game.currentFleet;
     if (f.id == 0 || stops.isEmpty) return null;
     return RoutePlanner.chain(
-        sectors: con.state.sectors, tick: con.state.tick, fleet: f, from: _from, stops: stops, home: con.state.homeworld, power: f.power, mode: m);
+        sectors: con.state.sectors, tick: con.state.tick, fleet: f, from: _from, stops: stops, home: con.state.homeworld, mode: m);
   }
 
   void _recompute() {
@@ -358,7 +358,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
       plan.preview = f.id == 0 || h == f.sector
           ? null
           : RoutePlanner.plan(
-              sectors: con.state.sectors, tick: con.state.tick, fleet: f, from: f.sector, to: h, home: con.state.homeworld, power: f.power, mode: plan.mode);
+              sectors: con.state.sectors, tick: con.state.tick, fleet: f, from: f.sector, to: h, home: con.state.homeworld, mode: plan.mode);
     }
     _askServer(ok ? h : null);
     setState(() {});
@@ -366,12 +366,20 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
 
   proto.Hex? _asked;
 
-  /// Ask the server to rate the first hop of the route on show, and the
-  /// hovered sector when it is next door; the controller debounces.
+  /// Ask the server to preview the first hop of the route on show and the
+  /// hovered sector when it is next door, and for its odds in the hovered or
+  /// selected sector and the hostile hops of the route; the controller
+  /// debounces.
   void _askServer([proto.Hex? hovered]) {
     final f = con.game.currentFleet;
     if (f.id == 0) return;
     final p = plan.planning ? plan.plan : plan.preview;
+    con.game.requestOdds(f.id, {
+      ?hovered,
+      ?plan.selected,
+      if (p != null) ...p.hostileHops,
+      if (p != null) p.to,
+    });
     final want = <proto.Hex>{
       if (p != null && p.path.isNotEmpty) p.path.first,
       if (hovered != null && proto.Hex.distance(hovered, f.sector) == 1 && (con.state.sectors[f.sector]?.connections.contains(hovered) ?? false)) hovered,

@@ -6,7 +6,7 @@ use iac_shared::pace::Pace;
 use iac_shared::protocol::{Command, ErrorCode, EventKind, GameEvent, GameState, QueueEvent, SectorState, ServerMessage};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::template_npc_id;
-use iac_sim::engine::FleetStatus;
+use iac_sim::engine::{FleetStatus, Ship};
 use iac_sim::{views, GameEngine, Snapshot};
 
 pub const SEED: u64 = 42;
@@ -99,6 +99,65 @@ pub fn deploy(engine: &mut GameEngine, fid: u64, at: Hex, weapon_power: Option<f
             }
         }
     });
+}
+
+pub fn muster(engine: &mut GameEngine, fid: u64, classes: &[(ShipClass, usize)], at: Hex) {
+    edit(engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).expect("fleet");
+        fleet.ships.fill(Ship::default());
+        fleet.ship_count = 0;
+        for &(class, count) in classes {
+            let stats = class.base_stats();
+            for _ in 0..count {
+                fleet.ships[fleet.ship_count] = Ship {
+                    id: 1_000_000 + fleet.ship_count as u64,
+                    ship_class: class,
+                    hull: stats.hull,
+                    hull_max: stats.hull,
+                    shield: stats.shield,
+                    shield_max: stats.shield,
+                    weapon_power: stats.weapon,
+                    speed: stats.speed,
+                };
+                fleet.ship_count += 1;
+            }
+        }
+        fleet.fuel_max = 1e6;
+        fleet.fuel = 1e6;
+        fleet.location = at;
+    });
+}
+
+pub fn lair(engine: &GameEngine, ring: u16, wanted: impl Fn(NpcBehaviorType) -> bool) -> Hex {
+    iac_shared::hex::hex_ring(Hex::ORIGIN, ring)
+        .find(|at| {
+            engine.world_gen.generate_sector(*at).npc_template.is_some_and(|t| wanted(t.behavior))
+                && engine.derelict_site_at(*at).is_none()
+        })
+        .expect("such a lair in the ring")
+}
+
+pub struct Fights {
+    pub fought: usize,
+    pub won: usize,
+    pub hull_kept: f32,
+}
+
+pub fn fights(engine: &GameEngine, pid: u64, fid: u64, at: Hex, fought: usize) -> Fights {
+    let before: f32 = engine.fleets[&fid].ships.iter().map(|s| s.hull).sum();
+    let (mut won, mut kept) = (0, 0.0);
+    for round in 0..fought {
+        let mut start = engine.snapshot();
+        start.tick += 1 + 13 * round as u64;
+        let mut world = GameEngine::restore(start);
+        let outcome = world.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) });
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        run_until(&mut world, 5000, |e| e.active_combats.is_empty());
+        let left: f32 = world.fleets.get(&fid).map_or(0.0, |f| f.ships[..f.ship_count].iter().map(|s| s.hull).sum());
+        won += usize::from(left > 0.0);
+        kept += left / before;
+    }
+    Fights { fought, won, hull_kept: kept / fought as f32 }
 }
 
 pub fn fight(engine: &mut GameEngine, pid: u64, fid: u64, at: Hex) -> Vec<GameEvent> {

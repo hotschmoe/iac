@@ -1411,6 +1411,84 @@ card footer with a salvage clock and a derelict. Both wrap now.
 - Not seen: the notification as the operating system draws it (headless
   Chromium does not), a phone, a human playing through it.
 
+## 2026-10-10: odds that count the ship classes
+
+Owner decision (decisions.md, the hub entry): "Threat labels tell the truth
+about the matchup."
+
+**Root cause.** A ratio was fleet power over the sector's `est_power`, and power
+is `weapon + (hull + shield) / 10` per ship. It knows nothing of rapid fire, of
+shot size against shield and hull, or of who fires first. Measured with 2000
+engine fights a cell (80 fleets against the group of every ring, placed in a
+real lair and sent `attack`): of the old FAVOURABLE cells in rings 1 to 25 that
+were not foregone, 35 percent kept less than the band says, down to 19 percent
+of the hull and 47 percent wins; 34 percent of EVEN cells likewise, down to 1
+percent wins. Four scouts read 1.83x at the ring-9 corvette (77 percent wins,
+41 percent of the hull) and 1.50x at ring 10 (47 percent wins), so a default
+doctrine flew them in. It erred the other way too: one corvette against the two
+ring-8 scouts read 1.37x EVEN and kept 98 percent.
+
+**The rule.** `iac_sim::odds::outlook` plays the fight on averages under the
+rules of `resolve_combat_round`: ships summed by class, the fleet firing first,
+rapid fire as burst length, each ship's hits as a count with the right mean and
+spread, shields before hull, a volley in two halves. It returns the share of
+hull each side is expected to keep. `scaling::outcome_ratio` reads the ratio
+from that with a table measured between equal ship classes (1.5 is a fight that
+keeps 86 percent, 2.5 one that keeps 99), so the bands keep their numbers and
+mean one outcome whatever the classes. A closed form on damage times hit points
+(the square law with rapid fire) was tried first: it fixed who wins but still
+called FAVOURABLE fights that kept 70 percent, because big guns on small ships
+skip the shields; the outcome has to be played, not ratioed.
+
+**One number.** `GameEngine::fleet_odds` is the only place a ratio is made: the
+fleet's ships against the ships in sight, the groups remembered at the power
+last seen, or the group the ring spawns. `preview_move`, the new `odds` command
+(a fleet and up to 256 sectors anywhere), the doctrine entry check, the
+patrol's engage test and the derelict guard test call it. The 25 percent an
+observed Aggressive or Swarm group adds stays in `est_power` and the rating and
+is not in the ratio. The ring estimate follows the 32-ship limit past ring 36.
+
+**After**, same grid, rings 1 to 25, unscouted estimate (the labels in sight
+land in the same bands, for every behaviour): SAFE 276 cells, hull kept 98 to 100 percent; FAVOURABLE
+192, all won, 83 to 100; EVEN 113, 95 to 100 percent wins, 52 to 88; RISKY 90,
+0 to 100 percent wins, 0 to 57; DEADLY 131, 0 percent wins at the median and 31
+at most (two cells above one in six). No cell promises more than its band
+within 3 points of hull; rings 26 to 40 the same. Expected hull kept is off by
+0.7 points on average, 2 at the 90th percentile, 20 at worst (close fights,
+where both sides end near nothing). With default orders no scout fleet of 2 to
+6 enters rings 9 to 12; 8 scouts enter rings 9 and 10 and win every fight with
+89 to 93 percent. 24 empires of 6 scouts on default `prospect` and
+`patrol_home` for 20,000 ticks: 11 fleets lost before, none after.
+
+**Clients.** Web: every ratio is the server's (`GameState.oddsFor`, fed by
+`odds` and previews); `RatioInfo.of`, the route planner's powers and the
+per-label win percentages are gone; the defence tab shows plain cover instead
+of fleet bands. `play.py`: `status`, `sector`, `map` ask for odds, `play odds`
+added. TUI prints an `odds` reply. The demo world keeps a power stand-in for
+its own made-up answers.
+
+**Cost.** One outlook is about 2 microseconds (11 at worst), memoised by the
+two sides in the engine. 24 fleets on standing orders, where behaviour did not
+change (2 scouts each): 385 to 416 microseconds a tick, 8 percent. That cost
+was and is the route search, which rebuilds the player's live-sector list for
+every sector it tests (`known_opposition`); left alone here.
+
+**Still not true.**
+- The ratio is the expected result, not its spread. Rapid fire comes in bursts:
+  in the 20,000-tick run one corvette fired 26 times in a round (about 1 in
+  25,000) and took 5 of 12 scouts from a fleet rated 1.61x.
+- A fleet heading home falls back to the shortest lane when no safe one
+  exists, whatever the odds; that fleet died on such a hop.
+- The ratio rates one fleet against everything in the sector. Other fleets
+  that would join the fight are not counted, nor a patrol that walks in later.
+- A remembered group is rebuilt from its classes and the power last seen, so a
+  damaged group is taken as a full one of that power.
+- Above 4x the scale only says "no hull lost"; it tops out at 10.
+- The demo world's odds are power against power.
+
+**Not done.** `CLAUDE.md`'s layout table does not list `sim/src/odds.rs`.
+Measurement code is in the session scratchpad (`labels/`), not in the repo.
+
 ## 2026-10-10: bots seated in the server, tagged BOT, kept through a restart
 
 Roadmap step 2, the server half. No balance constant was changed.
@@ -1508,4 +1586,3 @@ their next look-in; season, where a building takes minutes: 1 higher, none lower
 **Attention is in ticks.** A check-in bot looks in four times a day of ticks at any
 pace, so in a blitz hour it plays its first five minutes and no more. Short worlds
 want hands-on bots.
-

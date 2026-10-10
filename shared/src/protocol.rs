@@ -134,6 +134,11 @@ pub enum Command {
     /// cost, without moving. The reply is a `preview_move` message.
     #[serde(rename = "preview_move")]
     PreviewMove { fleet_id: u64, target: Hex },
+    /// Ask how `fleet_id` would fare in each of `sectors` (at most
+    /// `MAX_ODDS_SECTORS`, anywhere on the map, its own sector included),
+    /// without moving. The reply is an `odds` message.
+    #[serde(rename = "odds")]
+    Odds { fleet_id: u64, sectors: Vec<Hex> },
     #[serde(rename = "stop")]
     Stop {
         #[serde(default)]
@@ -245,13 +250,14 @@ pub struct PolicyParams {
     /// claim, prospect or wander to; never measured from the last claim.
     /// Clamped to 1..=30. Default 4.
     pub max_range: u8,
-    /// Engage hostiles only if our power >= theirs x (this / 10). It is also
-    /// exactly the least power ratio, against the threat the player sees, at
-    /// which any doctrine will enter a sector, hostiles there or not: the
-    /// setting is honoured as given, including a deliberate value below EVEN
-    /// (1.1). A refused sector is reported as a `PolicyAction` hold with the
-    /// reason; a standing hold is repeated at most once a minute and again
-    /// only if its cause changes. Clamped to 1..=100. Default 12 (1.2x).
+    /// Engage hostiles only if the fleet's odds against them (`SectorOdds`
+    /// `ratio`) are at least this / 10. It is also exactly the least ratio,
+    /// against what the player knows of a sector, at which any doctrine will
+    /// enter it, hostiles there or not: the setting is honoured as given,
+    /// including a deliberate value below EVEN (1.1). A refused sector is
+    /// reported as a `PolicyAction` hold with the reason; a standing hold is
+    /// repeated at most once a minute and again only if its cause changes.
+    /// Clamped to 1..=100. Default 15 (1.5x, FAVOURABLE).
     pub engage_ratio_x10: u8,
 }
 
@@ -290,6 +296,8 @@ pub enum ServerMessage {
     Error(ErrorMessage),
     #[serde(rename = "preview_move")]
     PreviewMove(MovePreview),
+    #[serde(rename = "odds")]
+    Odds(FleetOdds),
     #[serde(rename = "leaderboard")]
     Leaderboard(LeaderboardReply),
 }
@@ -343,11 +351,9 @@ pub struct LeaderboardEntry {
 /// Answer to `preview_move`: what a jump costs and what waits at the far end.
 ///
 /// `threat` is what the player knows of the target sector (observed if it is
-/// live, the remembered rating if charted, else the distance estimate);
-/// `ratio` is `fleet_power / threat.est_power` of the fleet named by
-/// `fleet_id` (not the strongest one). `label` is its verdict: at least 2.5
-/// is safe, 1.5 favourable, 1.1 even, 0.9 risky, below that deadly. The
-/// cutoffs come from simulated fights, see `scaling::ratio_label`.
+/// live, the remembered rating if charted, else the distance estimate).
+/// `ratio` and `label` are the odds of the fleet named by `fleet_id` (not the
+/// strongest one) against it, as in `SectorOdds`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MovePreview {
     pub fleet_id: u64,
@@ -374,7 +380,37 @@ pub struct MovePreview {
     pub can_return: bool,
     pub threat: ThreatInfo,
     /// Combat power of the whole fleet, on the scale of `threat.est_power`.
+    /// The two do not divide into `ratio`: that weighs the ship classes.
     pub fleet_power: f32,
+    pub ratio: f32,
+    pub label: RatioLabel,
+}
+
+/// Most sectors one `odds` request may name.
+pub const MAX_ODDS_SECTORS: usize = 256;
+
+/// Answer to `odds`, in the order asked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FleetOdds {
+    pub fleet_id: u64,
+    pub sectors: Vec<SectorOdds>,
+}
+
+/// How a fleet would fare against what the player knows of a sector.
+///
+/// The server plays the fight on averages, with the ships on each side:
+/// rapid fire between classes, each shot against hull and shield, the fleet
+/// firing first. `ratio` puts the expected result on the scale of a power
+/// ratio between equal ship classes (1.0 is an even match, 0.1 to 10), and
+/// `label` is its band: at least 2.5 is safe (99 percent of the hull kept or
+/// more), 1.5 favourable (86 to 99), 1.1 even (a win that keeps 53 to 86),
+/// 0.9 risky (anything from a loss to a win with half the hull), below that
+/// deadly. A sector with nothing in sight is rated against the group its
+/// ring spawns. Standing orders use the same number (`engage_ratio_x10`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SectorOdds {
+    pub sector: Hex,
+    pub threat: ThreatInfo,
     pub ratio: f32,
     pub label: RatioLabel,
 }

@@ -1,6 +1,7 @@
 // Game engine: tick loop, movement, combat, harvesting, NPC behavior, homeworlds, build queues.
 // Ported from Zig engine.zig.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use log::info;
@@ -37,7 +38,8 @@ use iac_shared::scaling::{
 };
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
-    MovePreview, OreReserve, ResourceEta, ThreatBasis, ThreatInfo, TileReserve, StorageFullEvent, StorageNearCapEvent, StorageState,
+    MovePreview, OreReserve, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
+    StorageFullEvent, StorageNearCapEvent, StorageState,
 };
 
 use crate::auth::{self, TokenHash};
@@ -45,6 +47,7 @@ use crate::bot::BotRecord;
 use crate::combat;
 use crate::score;
 use crate::intel::KnownSectors;
+use crate::odds::{self, Force};
 use crate::persist::{
     ExploreCredit, ExploredEdge, FleetClocks, Persist, PersistBatch, RuntimeEntry, RuntimeKind, RuntimeRow, WorldMeta,
 };
@@ -524,7 +527,12 @@ pub struct GameEngine {
     pub(crate) chart_news: Vec<(u64, u32)>,
     /// What each player has seen of the galaxy, live or remembered.
     pub known: KnownSectors,
+    /// Ratios already worked out, by the two sides; speed only.
+    odds_memo: RefCell<HashMap<(Force, Force), f32>>,
 }
+
+/// Entries kept in the odds memo before it is emptied.
+const ODDS_MEMO_LIMIT: usize = 4096;
 
 impl GameEngine {
     /// A fresh world: no players, tick 0.
@@ -582,6 +590,7 @@ impl GameEngine {
             new_credits: Vec::new(),
             chart_news: Vec::new(),
             known: KnownSectors::load(known),
+            odds_memo: RefCell::default(),
         }
     }
 
@@ -2436,9 +2445,7 @@ impl GameEngine {
         let route = self.home_route(player_id, target);
         let hops_home = route.direct;
         let fuel_to_return = hops_home as f32 * fuel_cost;
-        let threat = self.known_threat(player_id, target);
-        let fleet_power = fleet_power(fleet);
-        let ratio = fleet_power / threat.est_power.max(f32::EPSILON);
+        let odds = self.fleet_odds(fleet, target);
         Ok(MovePreview {
             fleet_id,
             target,
@@ -2450,11 +2457,53 @@ impl GameEngine {
             route_unexplored: route.unexplored,
             fuel_to_return,
             can_return: can_jump && fuel_after >= fuel_to_return,
-            threat,
-            fleet_power,
-            ratio,
-            label: scaling::ratio_label(ratio),
+            threat: odds.threat,
+            fleet_power: fleet_power(fleet),
+            ratio: odds.ratio,
+            label: odds.label,
         })
+    }
+
+    /// How `fleet` would fare in `coord`, judged on what its owner knows of
+    /// the sector: the one number previews, `odds` replies and standing
+    /// orders share.
+    pub fn fleet_odds(&self, fleet: &Fleet, coord: Hex) -> SectorOdds {
+        let (threat, theirs) = self.known_opposition(fleet.owner_id, coord);
+        let ratio = self.odds_ratio(&fleet_force(fleet), &theirs);
+        SectorOdds { sector: coord, threat, ratio, label: scaling::ratio_label(ratio) }
+    }
+
+    /// Answer to an `odds` request.
+    pub fn odds_for(&self, player_id: u64, fleet_id: u64, sectors: &[Hex]) -> Result<Vec<SectorOdds>, ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        if sectors.len() > iac_shared::protocol::MAX_ODDS_SECTORS {
+            return Err(ErrorCode::InvalidCommand);
+        }
+        let ours = fleet_force(fleet);
+        let live: HashSet<u32> = crate::intel::live_coords(self, player_id).iter().map(|h| h.to_key()).collect();
+        Ok(sectors
+            .iter()
+            .map(|&coord| {
+                let (threat, theirs) = self.opposition(player_id, coord, live.contains(&coord.to_key()));
+                let ratio = self.odds_ratio(&ours, &theirs);
+                SectorOdds { sector: coord, threat, ratio, label: scaling::ratio_label(ratio) }
+            })
+            .collect())
+    }
+
+    /// The ratio of `ours` against `theirs` (`odds::outlook`), `ours` firing first.
+    pub fn odds_ratio(&self, ours: &Force, theirs: &Force) -> f32 {
+        let key = (*ours, *theirs);
+        if let Some(&ratio) = self.odds_memo.borrow().get(&key) {
+            return ratio;
+        }
+        let ratio = odds::outlook(ours, theirs).ratio();
+        let mut memo = self.odds_memo.borrow_mut();
+        if memo.len() >= ODDS_MEMO_LIMIT {
+            memo.clear();
+        }
+        memo.insert(key, ratio);
+        ratio
     }
 
     /// What the ore tiles of `coord` hold now; None when the sector has no ore.
@@ -2483,18 +2532,46 @@ impl GameEngine {
     /// sector is live for them, the rating last seen if charted, otherwise
     /// the ring's estimate.
     pub fn known_threat(&self, player_id: u64, coord: Hex) -> ThreatInfo {
-        if crate::intel::live_coords(self, player_id).contains(&coord) {
-            return self.sector_threat(coord);
+        self.known_opposition(player_id, coord).0
+    }
+
+    /// `known_threat` with the ships a fight there would meet: those in
+    /// sight, those remembered at the strength last seen, otherwise the
+    /// group the ring spawns.
+    pub fn known_opposition(&self, player_id: u64, coord: Hex) -> (ThreatInfo, Force) {
+        self.opposition(player_id, coord, crate::intel::live_coords(self, player_id).contains(&coord))
+    }
+
+    fn opposition(&self, player_id: u64, coord: Hex, live: bool) -> (ThreatInfo, Force) {
+        if live {
+            return (self.sector_threat(coord), self.sector_force(coord));
         }
-        self.known
-            .threat(player_id, coord)
-            .unwrap_or_else(|| ring_threat(coord, ThreatBasis::Estimate))
+        match self.known.remembered(player_id, coord) {
+            Some(seen) => (seen.threat, remembered_force(seen)),
+            None => (ring_threat(coord, ThreatBasis::Estimate), Force::of_ring(coord.dist_from_origin())),
+        }
     }
 
     /// The threat of `coord` right now. A group on the spot (or its template
     /// before it materialises) is rated by its own power; otherwise the ring's.
     pub fn sector_threat(&self, coord: Hex) -> ThreatInfo {
         self.threat_among(coord, self.npc_fleets.values().filter(|n| n.location == coord))
+    }
+
+    /// The ships a fight in `coord` would meet right now: the groups on the
+    /// spot, the lair's group before it materialises, otherwise the ring's.
+    pub fn sector_force(&self, coord: Hex) -> Force {
+        let mut force = Force::default();
+        for npc in self.npc_fleets.values().filter(|n| n.location == coord) {
+            force.join(&Force::of_ships(&npc.ships[..npc.ship_count as usize]));
+        }
+        if !force.is_empty() {
+            return force;
+        }
+        match self.pending_template_npc(coord) {
+            Some(tmpl) => Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier),
+            None => Force::of_ring(coord.dist_from_origin()),
+        }
     }
 
     /// `sector_threat` for a caller that already knows which groups stand in `coord`.
@@ -3794,21 +3871,18 @@ impl GameEngine {
     }
 
     /// Whether the autopilot may take `fleet` into `coord`, judged by the
-    /// threat the player sees there (live, charted or the ring's estimate)
-    /// against the fleet's own power: exactly the doctrine's engage ratio,
+    /// fleet's odds (`fleet_odds`) against what the player sees there (live,
+    /// charted or the ring's group): exactly the doctrine's engage ratio,
     /// whether or not hostiles sit there. A player who set it below EVEN is
     /// honoured; a default or higher setting is the bar. Err carries the reason.
     fn policy_entry_check(&self, fleet: &Fleet, params: &PolicyParams, coord: Hex) -> Result<(), String> {
-        let hostile = self.sector_has_hostiles(coord);
         let need = params.engage_ratio_x10 as f32 / 10.0;
-        let threat = self.known_threat(fleet.owner_id, coord);
-        let power = fleet_power(fleet);
-        let ratio = power / threat.est_power.max(f32::EPSILON);
-        if ratio >= need { return Ok(()); }
-        let what = if hostile { "holds hostiles" } else { "is unscouted or unsafe" };
+        let odds = self.fleet_odds(fleet, coord);
+        if odds.ratio >= need { return Ok(()); }
+        let what = if self.sector_has_hostiles(coord) { "holds hostiles" } else { "is unscouted or unsafe" };
         Err(format!(
-            "{coord} {what} (T{} power {:.0} against your {:.0}: {ratio:.2}x {}, the doctrine needs {need:.1}x)",
-            threat.rating, threat.est_power, power, scaling::ratio_label(ratio).label(),
+            "{coord} {what} (T{} power {:.0}: your fleet rates {:.2}x {} against it, the doctrine needs {need:.1}x)",
+            odds.threat.rating, odds.threat.est_power, odds.ratio, odds.label.label(),
         ))
     }
 
@@ -3896,27 +3970,6 @@ impl GameEngine {
             }
             PolicyTarget::Hostiles => self.sector_has_hostiles(coord),
         }
-    }
-
-    /// Estimated combat power of whatever is hostile in a sector.
-    fn hostile_power_at(&self, coord: Hex) -> f32 {
-        let mut power: f32 = 0.0;
-        for npc in self.npc_fleets.values() {
-            if npc.location != coord { continue; }
-            for ship in &npc.ships[0..npc.ship_count as usize] {
-                if ship.hull <= 0.0 { continue; }
-                power += ship.weapon_power + (ship.hull + ship.shield) / 10.0;
-            }
-        }
-        if power > 0.0 { return power; }
-        let cleared = self.sector_overrides.get(&coord.to_key())
-            .map(|o| o.npc_cleared_tick.is_some())
-            .unwrap_or(false);
-        if cleared { return 0.0; }
-        if let Some(tmpl) = &self.world_gen.generate_sector(coord).npc_template {
-            return tmpl.power();
-        }
-        0.0
     }
 
     /// Prospect: scan when the pings have gone stale, then walk to the
@@ -4096,9 +4149,10 @@ impl GameEngine {
         if let Some((tier, bumps)) = self.derelict_site_at(location) {
             let fleet = self.fleets.get(&fleet_id).unwrap();
             let chance = self.site_ambush_chance(fleet, location, bumps);
-            let guardian_power = scaling::AMBUSH_GUARD_SHARE * scaling::npc_power(location.dist_from_origin());
+            let (class, count, multiplier) = scaling::ambush_guard(location.dist_from_origin());
+            let guard = Force::of_group(class, f32::from(count), multiplier);
             let safe = chance < 0.25
-                || fleet_power(fleet) * 10.0 >= guardian_power * params.engage_ratio_x10 as f32;
+                || self.odds_ratio(&fleet_force(fleet), &guard) * 10.0 >= params.engage_ratio_x10 as f32;
             if safe && self.handle_explore_site(owner, fleet_id).is_ok() {
                 let why = format!("boarding tier-{} derelict", tier);
                 self.push_policy_event(fleet_id, PolicyPreset::SalvageAndSites, "explore", &why);
@@ -4144,12 +4198,10 @@ impl GameEngine {
             return Ok(self.policy_step_toward(fleet_id, home, PolicyPreset::PatrolHome, &why));
         }
 
-        let ours = fleet_power(fleet);
-
         // Engage what we can beat, where we stand.
         if self.sector_has_hostiles(location) {
-            let threat = self.hostile_power_at(location);
-            if ours * 10.0 >= threat * params.engage_ratio_x10 as f32 {
+            let ratio = self.odds_ratio(&fleet_force(fleet), &self.sector_force(location));
+            if ratio * 10.0 >= params.engage_ratio_x10 as f32 {
                 let target_id = self.npc_fleets.values()
                     .find(|n| n.location == location && n.ship_count > 0)
                     .map(|n| n.id)
@@ -4895,8 +4947,34 @@ fn behavior_threat_bonus(behavior: iac_shared::world::NpcBehaviorType) -> f32 {
 
 /// The threat the ring alone implies, whoever lives in the sector.
 fn ring_threat(coord: Hex, basis: ThreatBasis) -> ThreatInfo {
-    let est_power = scaling::npc_power(coord.dist_from_origin());
+    let est_power = scaling::npc_group_power(coord.dist_from_origin());
     ThreatInfo { rating: scaling::threat_rating(est_power), est_power, basis }
+}
+
+/// The ships of a remembered sector: the groups last seen there, scaled to
+/// the power they were rated at, or the ring's group if none was in sight.
+fn remembered_force(seen: &SectorState) -> Force {
+    use iac_shared::protocol::NpcBehavior::{Aggressive, Swarm};
+    let ring = || Force::of_ring(seen.location.dist_from_origin());
+    let Some(groups) = seen.hostiles.as_ref().filter(|_| seen.threat.basis == ThreatBasis::Observed) else {
+        return ring();
+    };
+    let rated: f32 = groups
+        .iter()
+        .map(|g| {
+            let bonus = if matches!(g.behavior, Aggressive | Swarm) { scaling::THREAT_AGGRESSIVE_BONUS } else { 1.0 };
+            bonus * g.ships.iter().map(|s| f32::from(s.count) * scaling::ship_power(s.ship_class)).sum::<f32>()
+        })
+        .sum();
+    if rated <= 0.0 {
+        return ring();
+    }
+    let multiplier = seen.threat.est_power / rated;
+    let mut force = Force::default();
+    for ship in groups.iter().flat_map(|g| &g.ships) {
+        force.add_group(ship.ship_class, f32::from(ship.count), multiplier);
+    }
+    force
 }
 
 fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
@@ -4943,6 +5021,11 @@ fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f32 {
     total_fuel
         * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
         * scaling::fuel_depot_modifier(player.buildings.fuel_depot)
+}
+
+/// The ships a fleet brings to a fight.
+pub fn fleet_force(fleet: &Fleet) -> Force {
+    Force::of_ships(&fleet.ships[..fleet.ship_count])
 }
 
 /// Live combat power of a whole fleet.

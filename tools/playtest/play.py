@@ -256,7 +256,7 @@ def collapse_events(msgs, mine_only=False, errors=True):
                 continue
             slot(("x", id(m)), "  " + preview_line(m))
             continue
-        if t == "leaderboard":
+        if t in ("leaderboard", "odds"):
             continue
         for e in (m.get("events") or []) if t == "tick_update" else ([m] if t == "event" else []):
             k = e.get("kind")
@@ -354,8 +354,7 @@ def preview_line(m):
             + (" across unexplored space" if m.get("route_unexplored") else "")
             + ("" if m["can_jump"] else "  CANNOT JUMP: not enough fuel")
             + ("" if m["can_return"] else "  CANNOT RETURN afterwards")
-            + f"; T{t['rating']} NPC power {t['est_power']:.0f} ({t['basis']}), your power {m['fleet_power']:.0f}, "
-              f"ratio {m['ratio']:.1f}: {str(m['label']).upper()}")
+            + f"; T{t['rating']} NPC power {t['est_power']:.0f} ({t['basis']}); " + odds_text(m["fleet_id"], m))
 
 
 def age(ticks):
@@ -374,20 +373,51 @@ def res(r):
     return "/".join(f"{(r or {}).get(k, 0):.0f}" for k in ("metal", "crystal", "deuterium"))
 
 
-def verdict(ratio):
-    """The server's ratio labels: fleet power over the sector's threat power."""
-    return ("SAFE" if ratio >= 2.5 else "FAVOURABLE" if ratio >= 1.5 else "EVEN" if ratio >= 1.1
-            else "RISKY" if ratio >= 0.9 else "DEADLY")
+MAX_ODDS = 256
 
 
-def threat_text(t, power=None):
-    """'T4 (power 46, observed)', plus the odds when you pass your fleet's power."""
+def ask_odds(name, wanted):
+    """The server's odds for fleets in sectors; nothing here works a ratio out. WANTED maps a fleet id to
+    the (q, r) sectors to rate. Returns {(fleet id, q, r): {"threat", "ratio", "label"}}; a pair the server
+    did not answer for is simply missing."""
+    asks = []
+    for fid, coords in wanted.items():
+        coords = list(dict.fromkeys(coords))
+        asks += [(fid, coords[i:i + MAX_ODDS]) for i in range(0, len(coords), MAX_ODDS)]
+    if not asks:
+        return {}
+    start = log_size(name)
+    for i, (fid, coords) in enumerate(asks):
+        if i:
+            time.sleep(0.2)
+        send(name, {"action": "odds", "fleet_id": fid, "sectors": [{"q": q, "r": r} for q, r in coords]})
+    lines, _ = collect(name, start, lambda ls: sum(1 for m in ls if m.get("type") in ("odds", "error")) >= len(asks), ACK_CAP + 1.5)
+    out = {}
+    for m in lines:
+        if m.get("type") == "odds":
+            for s in m["sectors"]:
+                out[(m["fleet_id"], s["sector"]["q"], s["sector"]["r"])] = s
+    return out
+
+
+def odds_text(fleet_id, o):
+    """'fleet 7 rates 1.2x: EVEN', the server's verdict as it sent it."""
+    return f"fleet {fleet_id} rates {o['ratio']:.1f}x: {str(o['label']).upper()}"
+
+
+def odds_line(m):
+    return f"odds fleet {m['fleet_id']}: " + "; ".join(
+        f"{s['sector']['q']},{s['sector']['r']} T{s['threat']['rating']} ({s['threat']['basis']}) {s['ratio']:.1f}x {str(s['label']).upper()}"
+        for s in m["sectors"])
+
+
+def threat_text(t, odds=None):
+    """'T4 (power 46, observed)', plus the server's odds as (fleet id, odds) when it gave them."""
     if not t:
         return "T? (no rating)"
     text = f"T{t['rating']} (power {t['est_power']:.0f}, {t['basis']})"
-    if power:
-        ratio = power / max(t["est_power"], 1e-6)
-        text += f"; your {power:.0f} is {ratio:.1f}x: {verdict(ratio)}"
+    if odds and odds[1]:
+        text += "; " + odds_text(*odds)
     return text
 
 
@@ -405,14 +435,10 @@ def ore_text(reserve, now_age=0):
     return "; ".join(parts) or None
 
 
-def best_power(fs):
-    return max([f.get("power", 0) for f in fs.get("fleets") or []] or [0])
-
-
-def waiting(short):
-    """'(needs 35 metal)' for a queued item the stockpile cannot pay yet."""
-    parts = [f"{short[k]:.0f} {k}" for k in ("metal", "crystal", "deuterium") if (short or {}).get(k, 0) > 0]
-    return f" (needs {', '.join(parts)})" if parts else ""
+def strongest_fleet(fs):
+    """Id of the fleet with the most power, or None."""
+    fleets = fs.get("fleets") or []
+    return max(fleets, key=lambda f: f.get("power", 0))["id"] if fleets else None
 
 
 def world_line(world):
@@ -423,84 +449,10 @@ def world_line(world):
     return f"World: pace {label} (build, research and ship times, and mine output, scale with it; fuel, cooldowns and combat do not){tail}"
 
 
-def summarize(fs):
-    hw = fs["homeworld"]
-    p = fs["player"]
-    print(f"Empire {p['name']} (id {p['id']})  homeworld {hw['location']['q']},{hw['location']['r']}")
-    if fs.get("world"):
-        print(world_line(fs["world"]))
-    st = hw["storage"]
-    stock = p["resources"]
-    caps = "  ".join(f"{k} {stock[k]:.0f}/{st['cap'][k]:.0f}" + (" FULL" if k in st["capped"] else "")
-                     for k in ("metal", "crystal", "deuterium"))
-    per_tick = [hw["production"].get(k, 0) for k in ("metal", "crystal", "deuterium")]
-    print(f"Stockpile: {caps}   production per tick: " + "/".join(f"{x:.4g}" for x in per_tick)
-          + "  (per hour: " + "/".join(f"{x * 3600:.4g}" for x in per_tick) + ")")
-    eta = [f"{k} full in {age(v)}" for k, v in st["full_in_s"].items() if v]
-    print(f"Raid-protected stock: {res(st['protected'])}" + (f"   ({', '.join(eta)})" if eta else ""))
-    print("Buildings: " + ", ".join(f"{b['building_type']} {b['level']}" for b in hw["buildings"]))
-    print("Research:  " + (", ".join(f"{r['tech']} {r['level']}" for r in hw["research"]) or "none"))
-    t = fs["tick"]
-    waiting_max = hw.get("queue_waiting_max", 3)
-    running = hw.get("build_queue") or []
-    print(f"Build queue ({len(running)}/{hw.get('build_slots', 1)} slots, {waiting_max} may wait): "
-          + ("; ".join(f"{q['building_type']} -> L{q['target_level']} done in {age(q['end_tick'] - t)}" for q in running)
-             or ("none running" if hw.get("build_pending") else "idle")))
-    for i, q in enumerate(hw.get("build_pending") or []):
-        print(f"  waiting [{i}]: {q['building_type']} -> L{q['target_level']} ({age(q['ticks'])}){waiting(q.get('waiting_for'))}")
-    q = hw.get("research_active")
-    print("Research queue: " + (f"{q['tech']} -> L{q['target_level']} done in {age(q['end_tick'] - t)}" if q
-                                else "none running" if hw.get("research_pending") else "idle"))
-    for i, q in enumerate(hw.get("research_pending") or []):
-        print(f"  waiting [{i}]: {q['tech']} -> L{q['target_level']} ({age(q['ticks'])}){waiting(q.get('waiting_for'))}")
-    q = hw.get("shipyard_queue")
-    print("Shipyard queue: " + (f"{q['item']} {q['built']}/{q['count']}, next unit in {age(q['end_tick'] - t)}" if q
-                                else "none running" if hw.get("shipyard_pending") else "idle"))
-    for i, q in enumerate(hw.get("shipyard_pending") or []):
-        print(f"  waiting [{i}]: {q['count']}x {q['item']} ({age(q['ticks'])} each){waiting(q.get('waiting_for'))}")
-    stand = [f"{d['count']}x {d['kind']}" + (f" (+{d['restoring']} being rebuilt)" if d.get("restoring") else "")
-             for d in hw.get("defences") or [] if d["count"] or d.get("restoring")]
-    print(f"Defence power {hw.get('home_defence_power', 0):.0f} against an expected raid of about "
-          f"{hw.get('next_raid_estimate_power', 0):.0f}; structures: " + (", ".join(stand) or "none"))
-    docked = {}
-    for s in hw.get("docked_ships") or []:
-        docked[s["class"]] = docked.get(s["class"], 0) + 1
-    print("Docked ships: " + (", ".join(f"{n}x {c}" for c, n in docked.items()) or "none"))
-    sectors = {(s["location"]["q"], s["location"]["r"]): s for s in fs.get("known_sectors") or []}
-    live = sum(1 for s in sectors.values() if s.get("live"))
-    print(f"Known sectors: {len(sectors)} ({live} live, {len(sectors) - live} remembered/stale)")
-    for f in fs.get("fleets") or []:
-        loc = (f["location"]["q"], f["location"]["r"])
-        classes = {}
-        hull = hull_max = 0
-        for s in f["ships"]:
-            classes[s["class"]] = classes.get(s["class"], 0) + 1
-            hull += s["hull"]; hull_max += s["hull_max"]
-        cargo = sum((f.get("cargo") or {}).values())
-        print(f"\nFleet {f['id']} at {loc[0]},{loc[1]}  {f['state']}  policy={f.get('policy') or 'manual'}  cooldown={f.get('cooldown_remaining', 0)}"
-              f"  power {f.get('power', 0):.0f}  range {f.get('range_hops', 0)} hops out and back"
-              + ("  CARGO BLOCKED: stockpile full, spend something" if f.get("cargo_blocked") else ""))
-        print(f"  ships: " + ", ".join(f"{n}x {c}" for c, n in classes.items())
-              + f"  hull {hull:.0f}/{hull_max:.0f}  fuel {f['fuel']:.0f}/{f['fuel_max']:.0f}"
-              + f"  cargo {cargo:.0f}/{f['cargo_capacity']:.0f} ({res(f.get('cargo'))})")
-        print("  ship ids: " + ", ".join(f"{s['id']}={s['class']}" for s in f["ships"]))
-        jump, home = f.get("jump_fuel", 0), f.get("home_fuel", 0)
-        if jump:
-            note = ""
-            if home and f["fuel"] < jump:
-                note = "  STRANDED: emergency reserve recharging (about 5 min per jump)"
-            elif home > f["fuel"]:
-                note = "  WARNING: not enough fuel to get home"
-            print(f"  fuel cost: jump {jump:.0f}, way home {home:.0f}{note}")
-        sec = sectors.get(loc)
-        if sec:
-            describe(sec, loc, sectors, fs["tick"], indent="  ", power=f.get("power"))
-
-
-def describe(sec, loc, sectors, now, indent="", power=None):
+def describe(sec, loc, sectors, now, indent="", odds=None):
     r = sec.get("resources") or {}
     print(f"{indent}sector {loc[0]},{loc[1]} [{freshness(sec, now)}]: {sec['terrain']}  ore metal={r.get('metal')} crystal={r.get('crystal')} deut={r.get('deuterium')}")
-    print(f"{indent}threat {threat_text(sec.get('threat'), power)}")
+    print(f"{indent}threat {threat_text(sec.get('threat'), odds)}")
     ore = ore_text(sec.get("ore_reserve"), 0 if sec.get("live") else max(now - sec.get("last_seen", now), 0))
     if ore:
         print(f"{indent}ore reserve (raw units{'' if sec.get('live') else ', as last seen'}): {ore}")
@@ -884,12 +836,12 @@ def cmd_status(name, brief=False):
         for a in doc["alerts"]:
             print("  ALERT " + a)
         return
-    summarize(fs, doc)
+    summarize(fs, doc, ask_odds(name, {f["id"]: [(f["location"]["q"], f["location"]["r"])] for f in fs.get("fleets") or []}))
     for a in doc["alerts"]:
         print("ALERT: " + a)
 
 
-def summarize(fs, doc):
+def summarize(fs, doc, odds):
     hw = fs["homeworld"]
     p = fs["player"]
     print(f"Empire {p['name']} (id {p['id']})  homeworld {hw['location']['q']},{hw['location']['r']}")
@@ -962,7 +914,7 @@ def summarize(fs, doc):
             print(f"  fuel cost: jump {jump:.0f}, way home {home:.0f}{note}")
         sec = sectors.get(loc)
         if sec:
-            describe(sec, loc, sectors, fs["tick"], indent="  ", power=f.get("power"))
+            describe(sec, loc, sectors, fs["tick"], indent="  ", odds=(f["id"], odds.get((f["id"], *loc))))
 
 
 GROWTH = {"MetalMine": 1.5, "CrystalMine": 1.6, "DeuteriumSynthesizer": 1.5, "Shipyard": 1.8, "ResearchLab": 1.8,
@@ -1113,7 +1065,10 @@ def cmd_sector(name, q, r):
     if not sec:
         print(f"sector {q},{r} was never seen by you (scan or visit it)")
         return
-    describe(sec, (int(q), int(r)), sectors, fs["tick"], power=best_power(fs))
+    at = (int(q), int(r))
+    fid = strongest_fleet(fs)
+    odds = ask_odds(name, {fid: [at]}) if fid is not None else {}
+    describe(sec, at, sectors, fs["tick"], odds=(fid, odds.get((fid, *at))))
 
 
 def hex_dist(a, b):
@@ -1131,20 +1086,22 @@ def cmd_map(name, radius=4):
         (fs["homeworld"]["location"]["q"], fs["homeworld"]["location"]["r"])]
     shown = sorted(k for k in sectors if min(hex_dist(k, c) for c in centers) <= int(radius))
     now = fs["tick"]
-    power = best_power(fs)
+    fid = strongest_fleet(fs)
+    odds = ask_odds(name, {fid: shown}) if fid is not None else {}
     live = sum(1 for s in sectors.values() if s.get("live"))
     print(f"{len(shown)} known sectors within {radius} of your fleets "
           f"(of {len(sectors)} ever seen: {live} live, {len(sectors) - live} remembered). "
           "LIVE = current; STALE Nm = as last seen N ago. "
-          f"T = threat rating 1-9; odds use your strongest fleet (power {power:.0f}).")
+          "T = threat rating 1-9; odds are the server's for your strongest fleet"
+          + (f" ({fid})." if odds else " (no answer from the server, so none shown)."))
     for k in shown:
         s = sectors[k]
         r = s.get("resources") or {}
         bits = [freshness(s, now), s["terrain"], f"m={r.get('metal')} c={r.get('crystal')} d={r.get('deuterium')}"]
         t = s.get("threat")
         if t:
-            ratio = power / max(t["est_power"], 1e-6)
-            bits.append(f"T{t['rating']} {ratio:.1f}x {verdict(ratio)}")
+            o = odds.get((fid, *k))
+            bits.append(f"T{t['rating']}" + (f" {o['ratio']:.1f}x {str(o['label']).upper()}" if o else ""))
         if s.get("hostiles"): bits.append(f"HOSTILES x{len(s['hostiles'])}")
         if s.get("player_fleets"): bits.append("players: " + ",".join(p["owner_name"] for p in s["player_fleets"]))
         if s.get("salvage"): bits.append("salvage")
@@ -1196,6 +1153,20 @@ def cmd_preview(name, fleet_id, *coords):
         print("no answer; try again")
     for m in shown:
         print(("refused: " + f"{m.get('code')} {m.get('message')}") if m["type"] == "error" else preview_line(m))
+
+
+def cmd_odds(name, fleet_id, *coords):
+    """How a fleet would fare in the named sectors, as the server rates it."""
+    fid = int(fleet_id)
+    sectors = [(int(coords[i]), int(coords[i + 1])) for i in range(0, len(coords), 2)]
+    odds = ask_odds(name, {fid: sectors})
+    header(name, last_tick(name))
+    if not odds:
+        print(f"no odds from the server for fleet {fid} (is it yours?); try again")
+    for q, r in sectors:
+        o = odds.get((fid, q, r))
+        if o:
+            print(f"{q},{r}: threat {threat_text(o['threat'], (fid, o))}")
 
 
 def parse_commands(args):
@@ -1394,8 +1365,8 @@ def cmd_do(name, args):
     for e in client_errs + left:
         print("  rejected: " + " ".join(x for x in (e.get("code"), e.get("message")) if x))
     for m in lines:
-        if m.get("type") in ("preview_move", "leaderboard"):
-            print("  " + (preview_line(m) if m["type"] == "preview_move" else leaderboard_line(m)))
+        if m.get("type") in ("preview_move", "odds", "leaderboard"):
+            print("  " + {"preview_move": preview_line, "odds": odds_line, "leaderboard": leaderboard_line}[m["type"]](m))
     ev = collapse_events([m for m in lines if m.get("type") == "tick_update"], errors=False)
     if ev:
         print_events(ev, 8)
@@ -1556,10 +1527,13 @@ USAGE = """usage: play <command>
                          their waiting items and shortfalls, fleets and their sector; --brief is the short form
   costs [buildings|research|ships|defences]  next 3 levels with cost, time, what each unlocks, mine payback
   score [rows]           the leaderboard (default 10 rows); your own row is added if you are below it
-  map [radius]           known sectors near your fleets (default radius 4)
+  map [radius]           known sectors near your fleets (default radius 4), with the server's odds for your strongest fleet
   sector Q R             details of one known sector
   preview FLEET [Q R..]  jump cost and threat for adjacent sectors; with no Q R, every exit of the fleet's sector
-                         (SAFE >= 2.5x, FAVOURABLE >= 1.5x, EVEN >= 1.1x, RISKY >= 0.9x, else DEADLY)
+  odds FLEET Q R [Q R..] how that fleet would fare in any sectors, near or far, seen or not
+                         (odds are the server's: it plays the fight with the ships on each side, so classes count.
+                         SAFE >= 2.5x keeps 98% of the hull, FAVOURABLE >= 1.5x keeps 85-99%, EVEN >= 1.1x wins but
+                         loses 15-50%, RISKY >= 0.9x anything from a lost fleet to a costly win, else DEADLY)
   do '<json>' ['<json>' ...]   send commands in order (or one JSON array: do '[{...},{...}]'); one result line each,
                          returns at the server's next tick (about 0.5 s) or at once on an error; --fast skips that wait
                          e.g. play do '{"action":"build","building_type":"MetalMine"}' '{"action":"research","tech":"Navigation"}'
@@ -1592,6 +1566,7 @@ def main():
     elif cmd == "map": cmd_map(name, *pos[:1])
     elif cmd == "sector" and len(pos) == 2: cmd_sector(name, *pos)
     elif cmd == "preview" and len(pos) >= 1: cmd_preview(name, *pos)
+    elif cmd == "odds" and len(pos) >= 3 and len(pos) % 2: cmd_odds(name, *pos)
     elif cmd == "do" and rest: cmd_do(name, rest)
     elif cmd == "events": cmd_events(name, "--mine" in rest)
     elif cmd == "wait": cmd_wait(name, rest)

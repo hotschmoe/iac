@@ -1915,9 +1915,7 @@ class DemoProvider {
         }
         final hops = Hex.distance(target, _home);
         final left = f.fuel - f.jumpFuel;
-        final threat = _sector(target, live: _liveNow.contains(target.toKey())).threat;
-        final power = _fleetPower(f);
-        final ratio = power / threat.estPower;
+        final odds = _demoOdds(f, target);
         return [
           MovePreview(
             fleetId: fleetId,
@@ -1929,12 +1927,24 @@ class DemoProvider {
             chartedHopsHome: hops,
             fuelToReturn: hops * f.jumpFuel,
             canReturn: left >= hops * f.jumpFuel,
-            threat: threat,
-            fleetPower: power,
-            ratio: ratio,
-            label: RatioLabel.forRatio(ratio),
+            threat: odds.threat,
+            fleetPower: _fleetPower(f),
+            ratio: odds.ratio,
+            label: odds.label,
           ),
         ];
+      case OddsCommand(:final fleetId, :final sectors):
+        final f = _find(fleetId);
+        if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
+        return [FleetOdds(fleetId: fleetId, sectors: [for (final s in sectors) _demoOdds(f, s)])];
     }
+  }
+
+  /// The demo world's stand-in for the server's odds: power against power.
+  /// The real server plays the fight out; nothing outside the demo uses this.
+  SectorOdds _demoOdds(FleetState f, Hex sector) {
+    final threat = _sector(sector, live: _liveNow.contains(sector.toKey())).threat;
+    final ratio = _fleetPower(f) / threat.estPower;
+    return SectorOdds(sector: sector, threat: threat, ratio: ratio, label: RatioLabel.forRatio(ratio));
   }
 }

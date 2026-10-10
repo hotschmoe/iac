@@ -15,7 +15,7 @@ use iac_shared::constants::{
 use iac_shared::hex::{hex_ring, hex_spiral, Hex};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset, ThreatBasis};
-use iac_shared::scaling;
+use iac_shared::scaling::{self, RatioLabel};
 use iac_shared::world::NpcBehaviorType::Passive;
 use iac_shared::world::{home_seats, is_home_seat};
 use iac_sim::commands::auth_failure;
@@ -620,7 +620,7 @@ fn home_ground_is_quiet_and_an_unscouted_lair_is_as_strong_as_the_chart_says() {
         }
 
         let mut lairs = 0;
-        for at in hex_spiral(Hex::ORIGIN, 36) {
+        for at in hex_spiral(Hex::ORIGIN, 40) {
             let Some(pack) = engine.world_gen.generate_sector(at).npc_template else { continue };
             let told = engine.known_threat(pid, at);
             if told.basis != ThreatBasis::Estimate {
@@ -649,14 +649,83 @@ fn a_starter_fleet_wins_through_the_inner_ring_and_dies_past_it() {
         let at = hex_ring(Hex::ORIGIN, ring)
             .find(|at| engine.world_gen.generate_sector(*at).npc_template.is_some_and(|t| t.behavior != Passive))
             .expect("a hostile lair in the ring");
+        let unscouted = engine.fleet_odds(&engine.fleets[&fid], at).label;
         deploy(&mut engine, fid, at, None);
-        let ours = iac_sim::engine::fleet_power(&engine.fleets[&fid]);
-        let odds = scaling::ratio_label(ours / engine.sector_threat(at).est_power);
+        let odds = engine.fleet_odds(&engine.fleets[&fid], at).label;
+        assert_eq!(unscouted, odds, "ring {ring}: the estimate and the sighting agree");
         let outcome = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) });
         assert!(outcome.error.is_none(), "{:?}", outcome.error);
         run_until(&mut engine, 2000, |e| e.active_combats.is_empty());
         let alive = engine.fleets.get(&fid).is_some_and(|f| f.ship_count > 0);
         assert_eq!(alive, survives, "ring {ring}, rated {}", odds.label());
-        assert_eq!(odds >= scaling::RatioLabel::Even, survives, "ring {ring} was rated {}", odds.label());
+        assert_eq!(odds > RatioLabel::Deadly, survives, "ring {ring} was rated {}", odds.label());
     }
+}
+
+#[test]
+fn a_label_tells_the_outcome_whatever_the_classes() {
+    use RatioLabel::{Deadly, Even, Favourable, Safe};
+    use ShipClass::{Corvette, Frigate, Scout};
+    let cases = [
+        (Scout, 3, 10, Deadly),
+        (Scout, 6, 9, Even),
+        (Scout, 10, 9, Favourable),
+        (Corvette, 1, 7, Safe),
+        (Corvette, 5, 13, Even),
+        (Corvette, 8, 13, Favourable),
+        (Frigate, 1, 11, Safe),
+        (Frigate, 3, 15, Safe),
+    ];
+    for (class, count, ring, told) in cases {
+        let mut engine = world("persistent");
+        let (pid, fid) = join(&mut engine, "Gauge");
+        let home = engine.players[&pid].homeworld;
+        let at = lair(&engine, ring, |_| true);
+        muster(&mut engine, fid, &[(class, count)], home);
+        let unscouted = engine.fleet_odds(&engine.fleets[&fid], at);
+        assert_eq!(unscouted.threat.basis, ThreatBasis::Estimate);
+        muster(&mut engine, fid, &[(class, count)], at);
+        let seen = engine.fleet_odds(&engine.fleets[&fid], at);
+        assert_eq!(seen.threat.basis, ThreatBasis::Observed);
+        let what = format!("{count} {} at ring {ring}, rated {:.2}x {}", class.label(), seen.ratio, seen.label.label());
+        assert_eq!((unscouted.label, seen.label), (told, told), "{what}");
+
+        let Fights { fought, won, hull_kept } = fights(&engine, pid, fid, at, 60);
+        let (wins, kept) = match told {
+            Safe => (fought..=fought, 0.97..=1.0),
+            Favourable => (fought..=fought, 0.84..=0.995),
+            Even => (fought * 9 / 10..=fought, 0.45..=0.88),
+            _ => (0..=fought / 5, 0.0..=0.1),
+        };
+        assert!(wins.contains(&won) && kept.contains(&hull_kept), "{what}: won {won} of {fought}, kept {hull_kept:.2} of the hull");
+    }
+}
+
+#[test]
+fn a_default_patrol_holds_where_power_alone_said_engage_and_fights_what_it_beats() {
+    let convoy = |scouts: usize| {
+        let mut engine = world("persistent");
+        let (pid, fid) = join(&mut engine, "Warden");
+        let at = lair(&engine, 10, |b| b == Passive);
+        muster(&mut engine, fid, &[(ShipClass::Scout, scouts)], at);
+        (engine, pid, fid, at)
+    };
+
+    let (mut engine, pid, fid, at) = convoy(4);
+    let by_power = iac_sim::engine::fleet_power(&engine.fleets[&fid]) / engine.sector_threat(at).est_power;
+    assert!(by_power * 10.0 >= f32::from(PolicyParams::default().engage_ratio_x10), "power alone rates it {by_power:.2}x");
+    let Fights { fought, won, hull_kept } = fights(&engine, pid, fid, at, 60);
+    assert!(won * 3 <= fought * 2 && hull_kept < 0.4, "won {won} of {fought}, kept {hull_kept:.2} of the hull");
+    engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
+    let orders = policy_actions(&run(&mut engine, 30));
+    assert!(orders.iter().all(|(action, _)| action != "attack"), "{orders:?}");
+    assert!(orders.iter().any(|(action, why)| action == "hold" && why == "hostiles too strong"), "{orders:?}");
+    assert_eq!(engine.fleets[&fid].ship_count, 4);
+
+    let (mut engine, pid, fid, at) = convoy(8);
+    let Fights { fought, won, hull_kept } = fights(&engine, pid, fid, at, 60);
+    assert!(won == fought && hull_kept > 0.84, "won {won} of {fought}, kept {hull_kept:.2} of the hull");
+    engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
+    let orders = policy_actions(&run(&mut engine, 30));
+    assert!(orders.iter().any(|(action, _)| action == "attack"), "{orders:?}");
 }

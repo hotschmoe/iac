@@ -379,6 +379,11 @@ class GameController extends ChangeNotifier {
       t.cancel();
     }
     _previewTimers.clear();
+    for (final t in _oddsTimers.values) {
+      t.cancel();
+    }
+    _oddsTimers.clear();
+    _oddsWanted.clear();
     _retry?.cancel();
     _demo?.stop();
     _msgSub?.cancel();
@@ -684,6 +689,37 @@ class GameController extends ChangeNotifier {
 
   /// Drop a request that has not fired yet (the hover ended).
   void cancelPreview(int fleetId, proto.Hex target) => _previewTimers.remove((fleetId, target))?.cancel();
+
+  final Map<int, Timer> _oddsTimers = {};
+  final Map<int, Set<proto.Hex>> _oddsWanted = {};
+  final Map<(int, proto.Hex), int> _oddsAsked = {};
+
+  /// Ask the server how [fleetId] would fare in [sectors] (`odds`): the
+  /// sector it stands in, the hops of a route, a sector under the cursor.
+  /// Debounced into one request per fleet, and a sector is skipped while a
+  /// recent (under 3 ticks) answer or request for it stands; the answers land
+  /// in [GameState.odds].
+  void requestOdds(int fleetId, Iterable<proto.Hex> sectors) {
+    if (fleetId == 0 || !hasState || !(isLive || isDemo)) return;
+    final wanted = _oddsWanted.putIfAbsent(fleetId, () => {});
+    for (final s in sectors) {
+      if (!state.oddsNeedRefresh(fleetId, s)) continue;
+      final asked = _oddsAsked[(fleetId, s)];
+      if (asked != null && state.tick - asked < previewRefreshTicks) continue;
+      wanted.add(s);
+    }
+    if (wanted.isEmpty || _oddsTimers.containsKey(fleetId)) return;
+    _oddsTimers[fleetId] = Timer(previewDebounce, () {
+      _oddsTimers.remove(fleetId);
+      final ask = (_oddsWanted.remove(fleetId) ?? {}).take(proto.OddsCommand.maxOddsSectors).toList();
+      if (_disposed || ask.isEmpty || !(isLive || isDemo)) return;
+      _oddsAsked.removeWhere((_, tick) => state.tick - tick > 60);
+      for (final s in ask) {
+        _oddsAsked[(fleetId, s)] = state.tick;
+      }
+      sendCommand(proto.OddsCommand(fleetId: fleetId, sectors: ask));
+    });
+  }
 
   /// Windshield: fly the active fleet one hop in [direction] (0-5, same
   /// order as [proto.HexDirection]) if the server lists that lane.
