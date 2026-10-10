@@ -13,7 +13,7 @@ use iac_shared::hex::Hex;
 use iac_shared::protocol::{Command, EventKind, HarvestResource, PolicyParams, PolicyPreset};
 use iac_shared::scaling;
 use iac_shared::world::NpcBehaviorType::Passive;
-use iac_sim::engine::SectorOverride;
+use iac_sim::engine::{template_npc_id, FleetStatus, SectorOverride};
 
 fn salvage_events(events: &[iac_shared::protocol::GameEvent]) -> Vec<iac_shared::protocol::SalvageDespawnedEvent> {
     events
@@ -396,4 +396,42 @@ fn a_mining_run_keeps_its_claims_within_range_of_home_as_each_one_runs_dry() {
         }
     }
     assert!(dried > 0, "the run claimed sectors to exhaust");
+}
+
+fn orders_flown(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64) -> Vec<(String, String)> {
+    engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).unwrap();
+    engine.drain_events();
+    policy_actions(&run(engine, 40))
+}
+
+#[test]
+fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_orders() {
+    let mut engine = world("persistent");
+    let (pid, fid) = join(&mut engine, "Jumper");
+    let at = lone_scout_sector(&engine, Passive);
+    let scout = engine.fleets[&fid].ships[0].id;
+    let escort = engine.handle_split(pid, fid, &[scout]).unwrap();
+    deploy(&mut engine, fid, at, None);
+    deploy(&mut engine, escort, at, Some(5000.0));
+    let onward = engine.world_gen.connected_neighbors(at).slice()[0];
+
+    assert!(engine.execute(pid, Command::Move { fleet_id: fid, target: onward }).error.is_none());
+    assert_eq!(engine.fleets[&fid].state, FleetStatus::Moving);
+    let attack = engine.execute(pid, Command::Attack { fleet_id: escort, target_fleet_id: template_npc_id(at) });
+    assert!(attack.error.is_none(), "{:?}", attack.error);
+    assert_eq!(engine.fleets[&fid].state, FleetStatus::InCombat, "a fleet still charging its jump is in the sector's fight");
+    run_until(&mut engine, 10, |e| e.active_combats.is_empty());
+    assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (at, FleetStatus::Idle), "the jump is lost");
+    let flown = orders_flown(&mut engine, pid, fid);
+    assert!(!flown.is_empty(), "standing orders never ran after the fight");
+
+    let mut engine = world("persistent");
+    let (pid, fid) = join(&mut engine, "Recaller");
+    let home = engine.players[&pid].homeworld;
+    let out = engine.world_gen.connected_neighbors(home).slice()[0];
+    assert!(engine.execute(pid, Command::Move { fleet_id: fid, target: out }).error.is_none());
+    assert!(engine.execute(pid, Command::Recall { fleet_id: fid }).error.is_none());
+    assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (home, FleetStatus::Idle));
+    let flown = orders_flown(&mut engine, pid, fid);
+    assert!(!flown.is_empty(), "standing orders never ran after the recall");
 }

@@ -2664,6 +2664,7 @@ impl GameEngine {
         fleet_mut.location = player.homeworld;
         fleet_mut.state = if fleet_mut.ship_count == 0 { FleetStatus::Docked } else { FleetStatus::Idle };
         fleet_mut.move_target = None;
+        fleet_mut.move_cooldown = 0;
 
         self.dock_fleet(fleet_id).map_err(|_| ErrorCode::ServerError)?;
 
@@ -4324,9 +4325,7 @@ impl GameEngine {
                     if let Some(combat_mut) = self.active_combats.get_mut(&existing_id) {
                         combat_mut.add_player_fleet(fleet_id);
                     }
-                    if let Some(f) = self.fleets.get_mut(&fleet_id) {
-                        f.state = FleetStatus::InCombat;
-                    }
+                    self.engage_fleet(fleet_id);
                 }
                 if add_npc {
                     if let Some(combat_mut) = self.active_combats.get_mut(&existing_id) {
@@ -4370,13 +4369,10 @@ impl GameEngine {
         new_combat.add_npc_fleet(npc_id);
         self.active_combats.insert(combat_id, new_combat);
 
-        if let Some(f) = self.fleets.get_mut(&fleet_id) {
-            f.state = FleetStatus::InCombat;
-        }
+        self.engage_fleet(fleet_id);
         if let Some(n) = self.npc_fleets.get_mut(&npc_id) {
             n.in_combat = true;
         }
-        self.dirty_fleets.insert(fleet_id, ());
         self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
         self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
 
@@ -4413,13 +4409,21 @@ impl GameEngine {
             if let Some(combat_mut) = self.active_combats.get_mut(combat_id) {
                 combat_mut.add_player_fleet(fid);
             }
-            if let Some(fleet_mut) = self.fleets.get_mut(&fid) {
-                fleet_mut.state = FleetStatus::InCombat;
-            }
-            self.dirty_fleets.insert(fid, ());
+            self.engage_fleet(fid);
             self.dirty_runtime.insert((RuntimeKind::Combat, *combat_id));
         }
         Ok(())
+    }
+
+    /// Put a fleet into a fight. A jump it was still charging is abandoned,
+    /// as `stop` would: only a moving fleet carries a jump target or cooldown.
+    fn engage_fleet(&mut self, fleet_id: u64) {
+        if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+            fleet.state = FleetStatus::InCombat;
+            fleet.move_target = None;
+            fleet.move_cooldown = 0;
+        }
+        self.dirty_fleets.insert(fleet_id, ());
     }
 
     fn collect_salvage(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
