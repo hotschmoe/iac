@@ -517,3 +517,33 @@ fn chart_after_visit(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64, at: H
     run(engine, 1);
     chart(engine, pid).remove(&at.to_key()).expect("the sector is charted")
 }
+
+#[test]
+fn every_fleet_in_a_crowded_sector_fights_scores_and_comes_out_free() {
+    let mut engine = world("persistent");
+    let crews: Vec<(u64, u64)> = (0..9).map(|i| join(&mut engine, &format!("Crew{i}"))).collect();
+    let at = lone_scout_sector(&engine, Passive);
+    for &(_, fid) in &crews {
+        deploy(&mut engine, fid, at, Some(5000.0));
+    }
+    let (lead, lead_fleet) = crews[0];
+    let attack = engine.execute(lead, Command::Attack { fleet_id: lead_fleet, target_fleet_id: template_npc_id(at) });
+    assert!(attack.error.is_none(), "{:?}", attack.error);
+    let events = run_until(&mut engine, 10, |e| e.active_combats.is_empty());
+
+    let fought = events
+        .iter()
+        .find_map(|e| match &e.kind {
+            EventKind::CombatEnded(c) if c.player_victory => Some(c.owners.len()),
+            _ => None,
+        })
+        .expect("the fight was won");
+    assert_eq!(fought, crews.len(), "an empire in the sector was left out of the fight");
+    for &(pid, fid) in &crews {
+        let name = engine.players[&pid].name.clone();
+        assert_eq!(engine.fleets[&fid].state, FleetStatus::Idle, "{name} is still marked in combat after the fight");
+        assert!(engine.players[&pid].combat_points > 0.0, "{name} fought and was not credited");
+        let order = engine.execute(pid, Command::Scan { fleet_id: fid });
+        assert!(order.error.is_none(), "{name} takes no orders: {:?}", order.error);
+    }
+}

@@ -53,7 +53,6 @@ use crate::snapshot::Snapshot;
 
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
 pub const MAX_NPC_SHIPS: usize = scaling::NPC_MAX_SHIPS;
-pub const MAX_COMBAT_FLEETS: usize = 8;
 /// Rings beyond `HOMEWORLD_MAX_DIST` a new homeworld may spill into once the home band is full.
 const HOMEWORLD_SPILL_RINGS: u16 = 4;
 /// Part-refilled tiles are written to disk this often (ticks).
@@ -308,13 +307,13 @@ pub struct Combat {
 
 impl Combat {
     pub fn add_player_fleet(&mut self, fleet_id: u64) {
-        if !self.player_fleet_ids.contains(&fleet_id) && self.player_fleet_ids.len() < MAX_COMBAT_FLEETS {
+        if !self.player_fleet_ids.contains(&fleet_id) {
             self.player_fleet_ids.push(fleet_id);
         }
     }
 
     pub fn add_npc_fleet(&mut self, fleet_id: u64) {
-        if !self.npc_fleet_ids.contains(&fleet_id) && self.npc_fleet_ids.len() < MAX_COMBAT_FLEETS {
+        if !self.npc_fleet_ids.contains(&fleet_id) {
             self.npc_fleet_ids.push(fleet_id);
         }
     }
