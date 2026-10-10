@@ -2253,11 +2253,13 @@ impl GameEngine {
 
     // ── Chart Marks ───────────────────────────────────────────────
 
-    /// The sectors whose chart some fleet of `player_id` still carries.
+    /// The sectors whose chart some fleet of `player_id` still carries. A
+    /// fleet that lost its last ship counts until it is reaped, which is
+    /// when `chart_news` tells its owner's clients.
     pub fn charts_aboard(&self, player_id: u64) -> HashSet<u32> {
         self.fleets
             .values()
-            .filter(|f| f.owner_id == player_id && f.ship_count > 0)
+            .filter(|f| f.owner_id == player_id)
             .flat_map(|f| f.charts.iter().copied())
             .collect()
     }
