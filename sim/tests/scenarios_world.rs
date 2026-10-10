@@ -615,6 +615,37 @@ fn a_fleet_that_hauls_goes_round_a_fight_it_would_win() {
 }
 
 #[test]
+fn a_fleet_under_orders_lets_its_shields_come_back_before_it_acts() {
+    let (mut engine, _pid, fid, _home) = prospector("Bruised", 5000.0, 4);
+    edit(&mut engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        for ship in &mut fleet.ships[..fleet.ship_count] {
+            ship.shield = 0.0;
+        }
+    });
+    let shields = |e: &iac_sim::GameEngine| {
+        let fleet = &e.fleets[&fid];
+        let ships = &fleet.ships[..fleet.ship_count];
+        ships.iter().map(|s| s.shield).sum::<f32>() / ships.iter().map(|s| s.shield_max).sum::<f32>()
+    };
+
+    let mut waited = Vec::new();
+    let mut acted_at = None;
+    for _ in 0..80 {
+        let before = shields(&engine);
+        engine.tick().unwrap();
+        for (action, why) in policy_actions(&engine.drain_events()) {
+            match action.as_str() {
+                "hold" => waited.push(why),
+                _ => acted_at = acted_at.or(Some(before)),
+            }
+        }
+    }
+    assert!(waited[0].starts_with("shields recharging"), "{waited:?}");
+    assert!(acted_at.is_some_and(|up| up >= 0.95), "it scanned or jumped with shields at {acted_at:?}");
+}
+
+#[test]
 fn a_patrol_hunts_out_to_its_range_scoops_what_its_kills_leave_and_waits_at_the_dock() {
     let (mut engine, pid, fid, home) = delegate("Hunter", PolicyPreset::PatrolHome, 4);
     let contacts = ring_around(home, 4)

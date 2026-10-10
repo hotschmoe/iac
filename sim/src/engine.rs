@@ -28,7 +28,7 @@ use iac_shared::constants::{
     RAID_DEFENSE_SALVAGE_FRACTION, RAID_SUPPRESS_AFTER_LOSS,
     EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_FUEL_PAYBACK, POLICY_FUEL_UNBOUNDED_PCT,
-    POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS,
+    POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_SHIELDS_READY,
     defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
@@ -3857,7 +3857,9 @@ impl GameEngine {
                 p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64;
             }
 
-            let wait = self.policy_unload_wait(fid).or_else(|| self.policy_fuel_wait(fid));
+            let wait = self.policy_shield_wait(fid)
+                .or_else(|| self.policy_unload_wait(fid))
+                .or_else(|| self.policy_fuel_wait(fid));
             let acted = if let Some(why) = wait {
                 self.hold_policy(fid, preset, &why)
             } else {
@@ -3898,6 +3900,16 @@ impl GameEngine {
     fn fuel_income(&self, owner: u64, params: &PolicyParams) -> f32 {
         let Some(player) = self.players.get(&owner) else { return 0.0; };
         player.production_per_tick(&self.world.pace).deuterium * f32::from(params.fuel_budget_pct) / 100.0
+    }
+
+    /// Shields come back while a fleet idles and hull never does, so a fleet
+    /// under orders stands still after a fight until its shields are up:
+    /// the reason it is waiting, if it is.
+    fn policy_shield_wait(&self, fleet_id: u64) -> Option<String> {
+        let fleet = self.fleets.get(&fleet_id)?;
+        let (now, full) = fleet.ships[..fleet.ship_count].iter()
+            .fold((0.0f32, 0.0f32), |(now, full), s| (now + s.shield, full + s.shield_max));
+        (now < POLICY_SHIELDS_READY * full).then(|| format!("shields recharging ({:.0}%)", 100.0 * now / full))
     }
 
     /// A full store leaves cargo aboard a docked fleet, and a fleet that

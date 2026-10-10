@@ -559,6 +559,9 @@ pub const POLICY_MIN_SEAM_UNITS: f32 = 3.0;
 /// worth this many times the deuterium the jumps there and back burn, both
 /// at their score weights.
 pub const POLICY_FUEL_PAYBACK: f32 = 1.5;
+/// A fleet under orders waits until its shields are back to this share of
+/// full before it acts again: hull is not repaired, shields are.
+pub const POLICY_SHIELDS_READY: f32 = 0.95;
 /// How far along the lanes a doctrine looks for its next sector.
 pub const POLICY_SEARCH_HOPS: u8 = 32;
 
