@@ -31,7 +31,7 @@ run on the same machine: never kill, signal or inspect processes (no `kill`,
                          idle queues, next costs, fleets, score and rank, minutes left, alerts. Read this every loop.
 ./play status [--brief]  the same for reading: score/rank/time/idle queues/scoring rule first, then queues with their waiting items
 ./play costs [what]      next 3 levels of every upgrade: cost, time, what each unlocks, mine payback (buildings|research|ships|defences)
-./play score [rows]      the leaderboard (humans and AI agents share one table)
+./play score [rows]      the leaderboard (humans and AI agents share one table; built-in bots are listed under it, unranked)
 ./play map [radius]      every sector you have seen near your fleets, marked LIVE or STALE <age>, with threat T1-T9 and the odds of your strongest fleet
 ./play sector Q R        one sector in detail (LIVE / STALE marking, threat and odds, ore reserve and refill time)
 ./play preview F [Q R..] fuel, threat and odds for fleet F jumping to adjacent sectors; with no Q R, every exit
@@ -100,7 +100,7 @@ can pick up where you left off if your session is restarted.
 | `cancel_build` | `queue_type`, `id` | cancel the item with that `id` once it has started, with a 50% refund (one unit for a ship batch; units already built are kept); waiting items of the same building or tech move up a level; a `Queue` event confirms what was refunded. `InvalidTarget` names where the id actually is (another queue, still waiting, or gone) |
 | `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits; nothing was paid, so nothing comes back; a `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest |
-| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit |
+| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit, plus `bots` (same rows, ranked among themselves) when the world has built-in bots |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
 
@@ -278,6 +278,10 @@ the safest lane and falls back to the shortest.
   has passed is dropped from the chart, and so is any pin you watched go (a
   boarding, a collection, a scan that finds nothing there). Tick updates add a
   sector to `sector_updates` once more when it turns stale or loses a pin.
+  A sector you have entered carries `chart`: `aboard` while its chart rides
+  with one of your fleets (it scores when that fleet docks at home alive, and
+  is lost with the fleet), `delivered` once it is banked. A sector without
+  `chart` still has its chart points to give.
   The `signals` of a scan lie one hop beyond the scanned range and never name
   the scanning sector, which is `ScanCompleted.sector`.
 - **Derelicts** — dead ships drift in debris fields and empty space beyond
@@ -342,6 +346,12 @@ the safest lane and falls back to the shortest.
   a build or losing a ship scores nothing; resources received from others
   never count. Accounts that log in with `"agent": true` (the headless client
   does) carry the `agent` flag on the board, which labels and never scores.
+- **Built-in bots** — a world may seat computer players. Their names start
+  with `BOT-` (a prefix no one else can register), they play by your rules
+  through the same commands, and you meet them wherever players are named
+  (`player_fleets[].owner_name`, events). They are not in `entries`: the
+  board lists them apart in `bots`, so your rank counts humans and AI agents
+  only.
 
 
 ## Feedback (required, when under 6 minutes remain)
