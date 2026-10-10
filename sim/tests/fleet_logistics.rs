@@ -320,15 +320,27 @@ fn docked_with_half_a_tank(budget: u8, deuterium: impl Fn(f32) -> f32) -> (Empir
 }
 
 #[test]
-fn first_orders_come_with_one_tank_of_fuel_allowance_and_a_fill_draws_on_it() {
-    let (mut e, cost, _) = docked_with_half_a_tank(20, |cap| cap / 2.0);
-    let fid = e.fid;
-    let allowance = e.engine.policies[&fid].fuel_credit;
-    assert!((allowance - 2.0 * cost).abs() < 1e-3, "{allowance} for a tank that costs {}", 2.0 * cost);
+fn a_young_empire_with_no_deuterium_income_keeps_its_stock_from_a_fleet_under_orders() {
+    let mut e = Empire::join(world("season"), "Newcomer");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let stock = e.engine.players[&pid].resources.deuterium;
+    assert_eq!(e.engine.players[&pid].production_per_tick(&e.engine.world.pace).deuterium, 0.0);
+    let tank = e.engine.fleets[&fid].fuel_max;
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().fuel = tank / 2.0);
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).unwrap();
+    let mark = e.mark();
+    e.run(600);
+
+    assert_eq!(e.engine.players[&pid].resources.deuterium, stock, "the starting deuterium is for the queues");
+    assert_eq!((fuel_of(&e, fid), e.engine.fleets[&fid].location), (tank / 2.0, home));
+    let waiting = policy_reasons(&e, mark, "hold");
+    assert!(waiting[0].contains("earns nothing"), "{waiting:?}");
+
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Manual, None).unwrap();
     e.run(2);
-    assert_eq!(fuel_of(&e, fid), e.engine.fleets[&fid].fuel_max);
-    let left = e.engine.policies[&fid].fuel_credit;
-    assert!((left - cost).abs() < 0.05 * cost, "{left} left of {allowance} after a fill of {cost}");
+    assert_eq!(fuel_of(&e, fid), tank, "flown by hand it fills as before");
+    assert!(e.engine.players[&pid].resources.deuterium < stock);
 }
 
 #[test]
@@ -336,7 +348,6 @@ fn a_fleet_on_a_fuel_budget_waits_for_its_share_of_the_deuterium_income_and_then
     let (mut e, cost, income) = docked_with_half_a_tank(20, |cap| cap / 2.0);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    edit(&mut e.engine, |s| s.policies.get_mut(&fid).unwrap().fuel_credit = 0.0);
     let deuterium = |e: &Empire| e.engine.players[&e.pid].resources.deuterium;
     let (start, half) = (deuterium(&e), fuel_of(&e, fid));
     let wait = (cost / (0.20 * income)).ceil() as u64;
@@ -366,7 +377,6 @@ fn a_full_deuterium_store_or_an_unbounded_budget_fills_the_tank_at_once() {
     let (mut unbounded, ..) = docked_with_half_a_tank(100, |cap| cap / 2.0);
     for e in [&mut overflowing, &mut unbounded] {
         let fid = e.fid;
-        edit(&mut e.engine, |s| s.policies.get_mut(&fid).unwrap().fuel_credit = 0.0);
         e.run(2);
         assert_eq!(fuel_of(e, fid), e.engine.fleets[&fid].fuel_max);
         assert_eq!(e.engine.policies[&fid].fuel_credit, 0.0, "nothing was drawn on the allowance");

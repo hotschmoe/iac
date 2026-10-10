@@ -3766,7 +3766,7 @@ impl GameEngine {
         params: Option<PolicyParams>,
     ) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
-        let (location, tank_price) = (fleet.location, fleet.fuel_max * FUEL_DEUT_PER_UNIT);
+        let location = fleet.location;
 
         if preset == PolicyPreset::Manual {
             self.policies.remove(&fleet_id);
@@ -3785,12 +3785,12 @@ impl GameEngine {
         params.engage_ratio_x10 = params.engage_ratio_x10.clamp(1, 100);
         params.fuel_budget_pct = params.fuel_budget_pct.min(100);
 
-        // A fleet's first orders come with one tank of allowance, so a young
-        // empire with no deuterium income yet is not grounded after one
-        // sortie. New orders for a fleet already under orders keep what its
-        // budget has earned: re-issuing them neither resets nor refills it.
+        // The allowance starts empty: a fleet flies its first sortie on the
+        // tank it has. New orders for a fleet already under orders keep what
+        // its budget has earned, so re-issuing them neither resets nor
+        // refills it.
         let (fuel_credit, fuel_since) = self.policies.get(&fleet_id)
-            .map_or((tank_price, self.current_tick), |p| (p.fuel_credit, p.fuel_since));
+            .map_or((0.0, self.current_tick), |p| (p.fuel_credit, p.fuel_since));
         let policy = FleetPolicy {
             preset,
             params,

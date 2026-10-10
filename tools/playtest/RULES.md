@@ -134,7 +134,8 @@ in the hold reason. Whenever a doctrine stands still it says why in a
 Fuel budget: refuelling is paid in deuterium ahead of every queue, so every
 standing order carries a bound on it. The fleet earns an allowance at
 `fuel_budget_pct` of your current deuterium production and can save up the
-price of one full tank; its first orders come with one tank of allowance. At
+price of one full tank; it starts empty, so with no deuterium income yet a
+fleet flies the tank it has and then waits (build a Deuterium Synthesizer). At
 the dock the tank is filled in one go once the allowance and the stockpile
 cover what is missing. Until then the fleet waits there and says so (`hold`:
 "refuelling on a fuel budget of 20% of deuterium income (tank 283 of 406,

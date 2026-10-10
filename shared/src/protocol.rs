@@ -262,9 +262,9 @@ pub struct PolicyParams {
     /// The share of the homeworld's deuterium income, in percent, that this
     /// fleet may spend on fuel while it flies under these orders. The fleet
     /// earns an allowance at that share of the current deuterium production
-    /// and can save up the price of one full tank; a fleet's first orders
-    /// come with one tank of allowance. At the dock its tank is filled in
-    /// one go once the allowance and the stockpile cover what is missing, and
+    /// and can save up the price of one full tank; it starts empty, so an
+    /// empire with no deuterium income yet keeps its stock for its queues.
+    /// At the dock its tank is filled in one go once the allowance and the stockpile cover what is missing, and
     /// until then the fleet waits there and says so (a `PolicyAction` hold
     /// with the time left); it never leaves on standing orders with a
     /// part-filled tank. While the deuterium store is full the fill is free
