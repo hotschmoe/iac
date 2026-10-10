@@ -2387,8 +2387,13 @@ impl GameEngine {
     /// The threat of `coord` right now. A group on the spot (or its template
     /// before it materialises) is rated by its own power; otherwise the ring's.
     pub fn sector_threat(&self, coord: Hex) -> ThreatInfo {
+        self.threat_among(coord, self.npc_fleets.values().filter(|n| n.location == coord))
+    }
+
+    /// `sector_threat` for a caller that already knows which groups stand in `coord`.
+    pub fn threat_among<'a>(&self, coord: Hex, npcs: impl Iterator<Item = &'a NpcFleet>) -> ThreatInfo {
         let mut observed: Option<f32> = None;
-        for npc in self.npc_fleets.values().filter(|n| n.location == coord && n.ship_count > 0) {
+        for npc in npcs.filter(|n| n.ship_count > 0) {
             let power: f32 = npc.ships[..npc.ship_count as usize].iter()
                 .filter(|s| s.hull > 0.0)
                 .map(|s| s.weapon_power + (s.hull + s.shield) / 10.0)
