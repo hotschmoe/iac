@@ -408,7 +408,7 @@ Change the Rust protocol, regenerate, then fix the Dart side until
 ## Development
 
 ```sh
-cargo test --workspace       # engine unit tests + end-to-end smoke tests
+cargo test --workspace       # end-to-end only: engine scenarios, real-server protocol runs, cross-language fixtures
 cargo clippy --workspace
 
 # Headless: the real engine, scripted players, as fast as the CPU allows

@@ -922,3 +922,25 @@ the old path (`sim/tests/data/chart_golden.txt`). The old module is in `.archive
 
 Remaining profile: libm calls (about 13 percent) and the per-tick walks over
 `sector_overrides` and `npc_fleets` in the regen and NPC passes.
+
+## 2026-10-10: tests are end-to-end only
+
+The owner approved retiring the unit suite. Rust went from 273 tests to 69 and
+`cargo test --workspace` from about 75 s to about 40 s; Flutter from 351 to 299
+tests and from about 30 s to about 15 s. Retired tests are in the gitignored
+`.archive/`, mirroring their source paths, and in git history.
+
+- **Archived:** the inline tests of `shared` (75), `sim` (`engine.rs` 145, `auth`,
+  `combat`, `score`) and `server` (`auth`, four of the `database` tests);
+  Flutter's `widget_test`, `demo_world_test`, `economy_view_test`, `queue_ids_test`
+  and single-purpose cases in the screen tests.
+- **Kept:** the golden fixtures (Rust and Dart), `determinism`, `smoke`, `web`,
+  the database reload and refusal tests, the `Network` tests in `network.rs`
+  (the server is a binary crate, so they cannot move to `tests/`), the screen and
+  shell tests in Flutter.
+- **Rewritten against the public API** (`sim/tests/scenarios_*.rs`): the tests that
+  run the engine over time. State that a client cannot set is edited through
+  `Snapshot` and `GameEngine::restore`.
+- **New scenarios:** `empire_arc.rs`, `fleet_logistics.rs`, `pace_scaling.rs` in
+  `sim/tests/`, and `server/tests/scenarios.rs` (case-insensitive accounts, event
+  scoping between two players, a cancel aimed at an order that has started).

@@ -144,8 +144,8 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling (all cost/time/production formulas), pace, hex math, worldgen |
-| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait + idle and check-in builder), `headless.rs`, `bin/sim-run.rs`. Tests in `sim/tests/`: `determinism.rs` |
-| `server/` | `iac-server`: thin host. `network.rs` (axum WebSockets + static hosting), `database.rs` (SQLite, writer thread, `load_snapshot`), `auth.rs` (token issuing), `main.rs` (clap, tokio tick loop). Tests in `server/tests/`: `smoke.rs` game flow, `web.rs` static hosting + WS paths |
+| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait + idle and check-in builder), `headless.rs`, `bin/sim-run.rs`. Tests in `sim/tests/` (shared helpers in `common/`): `determinism.rs`, `chart_equivalence.rs`, `empire_arc.rs` (one empire from registration to a survived raid), `fleet_logistics.rs`, `pace_scaling.rs`, `scenarios_world.rs`, `scenarios_raids.rs` |
+| `server/` | `iac-server`: thin host. `network.rs` (axum WebSockets + static hosting), `database.rs` (SQLite, writer thread, `load_snapshot`), `auth.rs` (token issuing), `main.rs` (clap, tokio tick loop). Tests in `server/tests/`: `smoke.rs` game flow, `scenarios.rs` multi-client protocol scenarios, `web.rs` static hosting + WS paths; `network.rs` and `database.rs` keep a few in-process tests of the real `Network` and SQLite |
 | `clients/tui/` | `iac-client`: ratatui TUI, `--headless` NDJSON mode |
 | `clients/web/` | Flutter web client on the Rust wire protocol (`lib/protocol/` mirrors `shared/src/protocol.rs`) |
 | `fixtures/` | Golden JSON generated from `shared/`; checked by Rust and Flutter tests |
@@ -157,7 +157,7 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 
 ```sh
 cargo build --workspace
-cargo test --workspace            # unit + end-to-end smoke tests
+cargo test --workspace            # end-to-end tests only; retired unit tests live in the gitignored .archive/
 cargo clippy --workspace --all-targets
 cargo run -p iac-sim --release --bin sim-run -- --pace season --builders 50 --days 7   # headless scripted-player run, JSON summary
 cargo build -p iac-sim --target wasm32-unknown-unknown --release   # iac-sim must stay buildable for the browser
