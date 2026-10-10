@@ -232,6 +232,11 @@ fn render_leaderboard(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         lines.push(Line::styled(" ...", AMBER_DIM));
         lines.push(row(you));
     }
+    if !board.bots.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(" BUILT-IN BOTS  part of the world, not of the ranking above", AMBER_DIM));
+        lines.extend(board.bots.iter().map(row));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
