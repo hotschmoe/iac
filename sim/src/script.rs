@@ -8,9 +8,9 @@
 //
 // A seat is an in-process client. It keeps the player's `GameState` the way
 // a connected client does: the full state once, then every tick's
-// `tick_update` folded in, so a turn costs what a client's update costs and
-// never a copy of the whole chart. A player that is away keeps no view; it
-// gets a fresh full state when it comes back.
+// `tick_update` folded in, so a player that acts tick after tick costs what
+// a client's update costs and never a copy of the whole chart. A player that
+// is not `watching` keeps no view; its next turn starts from a full state.
 //
 // A host (the headless runner, the server, a WebAssembly page) keeps one
 // seat per bot and calls, in a fixed seat order:
@@ -46,9 +46,11 @@ pub trait ScriptedPlayer {
         let _ = (world_seed, player_id);
     }
 
-    /// Whether the player is at the controls at `tick`. While it is, its
-    /// seat follows the world tick by tick.
-    fn present(&self, tick: u64) -> bool {
+    /// Whether the player will look at the world at `tick` or right after
+    /// it. Its seat then follows the world by tick updates; otherwise the
+    /// view is dropped and the next turn starts from a full state, which
+    /// costs less than folding more than two or three updates nobody reads.
+    fn watching(&self, tick: u64) -> bool {
         let _ = tick;
         true
     }
@@ -78,8 +80,8 @@ impl<P: ScriptedPlayer + ?Sized> ScriptedPlayer for Box<P> {
         (**self).seated(world_seed, player_id);
     }
 
-    fn present(&self, tick: u64) -> bool {
-        (**self).present(tick)
+    fn watching(&self, tick: u64) -> bool {
+        (**self).watching(tick)
     }
 
     fn wants_turn(&self, tick: u64) -> bool {
@@ -190,7 +192,7 @@ impl<P: ScriptedPlayer> Seat<P> {
     /// `GameEngine::tick`: a view that misses one is dropped and rebuilt.
     pub fn observe(&mut self, engine: &GameEngine) {
         let now = engine.current_tick();
-        let following = self.player.present(now + 1) && self.view.as_ref().is_some_and(|view| view.tick + 1 == now);
+        let following = self.player.watching(now + 1) && self.view.as_ref().is_some_and(|view| view.tick + 1 == now);
         match &mut self.view {
             Some(view) if following => apply(view, views::tick_update(engine, self.player_id, &[])),
             _ => self.view = None,
@@ -227,7 +229,7 @@ impl ScriptedPlayer for IdlePlayer {
         self.label.clone()
     }
 
-    fn present(&self, _tick: u64) -> bool {
+    fn watching(&self, _tick: u64) -> bool {
         false
     }
 

@@ -300,8 +300,8 @@ impl ScriptedPlayer for Bot {
         self.player_id = player_id;
     }
 
-    fn present(&self, tick: u64) -> bool {
-        self.presence(tick) != Presence::Away
+    fn watching(&self, tick: u64) -> bool {
+        self.wants_turn(tick) || self.wants_turn(tick + 1)
     }
 
     fn wants_turn(&self, tick: u64) -> bool {

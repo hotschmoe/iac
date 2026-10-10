@@ -155,7 +155,7 @@ fn the_view_a_bot_folds_from_tick_updates_is_the_full_state() {
             compared += 1;
         }
     }
-    assert!(compared > 5_000, "bots were followed tick by tick: {compared} views compared");
+    assert!(compared > 2_500, "bots acting tick after tick were followed: {compared} views compared");
     let charted = roster.seats().iter().filter_map(|seat| seat.view()).flat_map(|view| &view.known_sectors);
     assert!(charted.filter(|s| s.chart.is_some()).count() > 50, "charts were made and marked");
 }
