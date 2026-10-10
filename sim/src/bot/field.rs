@@ -12,7 +12,8 @@
 //   strike     patrol_home         nearest group it beats safely, then as survey
 //
 // The pilot knows only the chart: it never enters a sector it has not seen
-// (it scans first), and it treats a cleared lair it cannot watch as occupied.
+// (it scans first), it treats a cleared lair it cannot watch as occupied,
+// and it reads off each sector's chart mark whether a visit still pays.
 // Hull damage is never repaired, so it fights only with shields up and at
 // odds that end the fight before the shields are through.
 //
@@ -33,9 +34,10 @@ use iac_shared::protocol::{
     PolicyUpdate, SectorState, SiteBrief, SiteRisk, ThreatBasis,
 };
 use iac_shared::scaling;
+use serde::{Deserialize, Serialize};
 
 use super::home::Hull;
-use super::{Attention, Personality};
+use super::Personality;
 use crate::engine::MAX_SHIPS_PER_FLEET;
 use crate::script::Order;
 
@@ -45,8 +47,7 @@ const SAFE_ODDS: f32 = 3.0;
 /// enough to finish the group in a volley.
 const OUTCLASSED_ODDS: f32 = 8.0;
 /// The ratio the prospect, mining and salvage doctrines are sent out with
-/// (the game's default); also what a hybrid pilot assumes its prospectors
-/// cover without help.
+/// (the game's default).
 const DOCTRINE_RATIO_X10: u8 = 15;
 const SHIELDS_UP: f32 = 0.95;
 const RETURN_LOAD: f32 = 0.85;
@@ -103,43 +104,12 @@ impl Wing {
     }
 }
 
-struct Route {
+/// The lanes a fleet set out on and how far along it is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(super) struct Route {
     path: Vec<Hex>,
     next: usize,
     homeward: bool,
-}
-
-/// What a bot remembers between turns about its fleets.
-#[derive(Default)]
-pub(super) struct Logbook {
-    /// Sectors whose chart a fleet has brought home.
-    delivered: BTreeSet<u32>,
-    /// Sectors each fleet has been seen in since it last docked.
-    carried: BTreeMap<u64, BTreeSet<u32>>,
-    routes: BTreeMap<u64, Route>,
-}
-
-impl Logbook {
-    pub(super) fn observe(&mut self, state: &GameState) {
-        let home = state.player.homeworld;
-        self.carried.retain(|id, _| state.fleets.iter().any(|f| f.id == *id));
-        self.routes.retain(|id, _| state.fleets.iter().any(|f| f.id == *id));
-        for fleet in &state.fleets {
-            let key = fleet.location.to_key();
-            if fleet.location == home {
-                if let Some(charts) = self.carried.remove(&fleet.id) {
-                    self.delivered.extend(charts);
-                }
-            } else if !self.delivered.contains(&key) {
-                self.carried.entry(fleet.id).or_default().insert(key);
-            }
-        }
-    }
-
-    fn charted(&self, sector: Hex) -> bool {
-        let key = sector.to_key();
-        self.delivered.contains(&key) || self.carried.values().any(|c| c.contains(&key))
-    }
 }
 
 struct Chart<'a> {
@@ -233,7 +203,6 @@ impl Unit<'_> {
 #[derive(Clone, Copy)]
 pub(super) struct Brief {
     pub personality: Personality,
-    pub attention: Attention,
     /// Ticks until the next look-in once this one ends; None for a player who stays.
     pub away_for: Option<u64>,
     /// More combat or exploration points would still raise the score.
@@ -244,7 +213,7 @@ pub(super) struct Brief {
 pub(super) struct Admiral<'a> {
     state: &'a GameState,
     brief: Brief,
-    log: &'a mut Logbook,
+    routes: &'a mut BTreeMap<u64, Route>,
     orders: &'a mut Vec<Order>,
     chart: Chart<'a>,
     home: Hex,
@@ -258,7 +227,7 @@ impl<'a> Admiral<'a> {
     pub(super) fn new(
         state: &'a GameState,
         brief: Brief,
-        log: &'a mut Logbook,
+        routes: &'a mut BTreeMap<u64, Route>,
         orders: &'a mut Vec<Order>,
     ) -> Admiral<'a> {
         let units = state
@@ -276,7 +245,7 @@ impl<'a> Admiral<'a> {
         let mut admiral = Admiral {
             state,
             brief,
-            log,
+            routes,
             orders,
             chart: Chart::new(&state.known_sectors),
             home: state.player.homeworld,
@@ -501,24 +470,24 @@ impl<'a> Admiral<'a> {
     fn follow(&mut self, unit: Unit, homeward: bool) -> Option<u64> {
         let fleet = unit.fleet;
         let here = self.chart.get(fleet.location)?;
-        let route = self.log.routes.get(&fleet.id)?;
+        let route = self.routes.get(&fleet.id)?;
         let target = route.path.get(route.next).copied();
         let holds = target.is_some_and(|target| {
             let open = self.chart.get(target).is_some_and(|s| target == self.home || enterable(s, fleet));
             route.homeward == homeward && here.connections.contains(&target) && open
         });
         if !holds {
-            self.log.routes.remove(&fleet.id);
+            self.routes.remove(&fleet.id);
             return None;
         }
         let Some(wait) = self.jump(unit, target?) else { return Some(REST) };
-        self.log.routes.get_mut(&fleet.id)?.next += 1;
+        self.routes.get_mut(&fleet.id)?.next += 1;
         Some(wait)
     }
 
     fn set_out(&mut self, unit: Unit, path: Vec<Hex>, homeward: bool) -> u64 {
         let Some(wait) = self.jump(unit, path[0]) else { return REST };
-        self.log.routes.insert(unit.fleet.id, Route { path, next: 1, homeward });
+        self.routes.insert(unit.fleet.id, Route { path, next: 1, homeward });
         wait
     }
 
@@ -557,10 +526,7 @@ impl<'a> Admiral<'a> {
         if sector.salvage.is_some() && lasts && fleet.cargo.total() < fleet.cargo_capacity {
             return true;
         }
-        let prospected = self.brief.attention != Attention::HandsOn
-            && unit.wing == Wing::Survey
-            && fleet.power * 10.0 >= f32::from(DOCTRINE_RATIO_X10) * sector.threat.est_power;
-        !prospected && !self.log.charted(sector.location)
+        sector.chart.is_none()
     }
 
     /// A sector within scan range that the chart does not hold.
@@ -572,7 +538,7 @@ impl<'a> Admiral<'a> {
     }
 
     fn scan(&mut self, fleet: &FleetState) -> u64 {
-        self.log.routes.remove(&fleet.id);
+        self.routes.remove(&fleet.id);
         self.command(Command::Scan { fleet_id: fleet.id });
         u64::from(SCAN_COOLDOWN)
     }

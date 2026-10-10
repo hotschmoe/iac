@@ -10,6 +10,7 @@ use iac_shared::protocol::GameEvent;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
 
+use crate::bot::BotRecord;
 use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Player, RaidState, SectorOverride};
 use crate::persist::{ExploreCredit, KnownRow, RuntimeEntry, WorldMeta};
 
@@ -30,6 +31,9 @@ pub struct Snapshot {
     pub storage_marks: BTreeMap<u64, [u8; 3]>,
     pub home_salvage_warned: BTreeMap<u64, u64>,
     pub harvest_reports: BTreeMap<u64, HarvestReport>,
+    /// Built-in bots by account: what each is and remembers.
+    #[serde(default)]
+    pub bots: BTreeMap<u64, BotRecord>,
     pub pending_events: Vec<GameEvent>,
     pub explored: BTreeSet<(u64, u32)>,
     pub credited: BTreeSet<(u64, u32, ExploreCredit)>,
@@ -55,6 +59,7 @@ impl Snapshot {
             storage_marks: BTreeMap::new(),
             home_salvage_warned: BTreeMap::new(),
             harvest_reports: BTreeMap::new(),
+            bots: BTreeMap::new(),
             pending_events: Vec::new(),
             explored: BTreeSet::new(),
             credited: BTreeSet::new(),
@@ -85,6 +90,9 @@ impl Snapshot {
             }
             RuntimeEntry::HarvestReport(report) => {
                 self.harvest_reports.insert(id, report);
+            }
+            RuntimeEntry::Bot(record) => {
+                self.bots.insert(id, *record);
             }
         }
     }

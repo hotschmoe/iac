@@ -154,6 +154,7 @@ fn rich_sector() -> SectorState {
             crystal: TileReserve { units: 10.0, max_units: 10.0, refills_in_s: None },
             deuterium: TileReserve { units: 0.0, max_units: 0.0, refills_in_s: None },
         }),
+        chart: None,
         threat: ThreatInfo { rating: 4, est_power: 46.5, basis: ThreatBasis::Observed },
         last_seen: 4821,
         live: true,
@@ -162,7 +163,14 @@ fn rich_sector() -> SectorState {
 }
 
 fn stale_pins_sector() -> SectorState {
-    SectorState { location: h(5, 1), live: false, last_seen: 4700, pins_stale: true, ..rich_sector() }
+    SectorState {
+        location: h(5, 1),
+        live: false,
+        last_seen: 4700,
+        pins_stale: true,
+        chart: Some(ChartMark::Aboard),
+        ..rich_sector()
+    }
 }
 
 fn bare_sector() -> SectorState {
@@ -181,6 +189,7 @@ fn bare_sector() -> SectorState {
         salvage_despawn_tick: None,
         site: None,
         ore_reserve: None,
+        chart: None,
         threat: ThreatInfo { rating: 1, est_power: 4.0, basis: ThreatBasis::Estimate },
         last_seen: 4821,
         live: true,
@@ -208,6 +217,7 @@ fn anomaly_sector() -> SectorState {
             crystal: TileReserve { units: 41.0, max_units: 42.0, refills_in_s: Some(12000) },
             deuterium: TileReserve { units: 22.0, max_units: 22.0, refills_in_s: None },
         }),
+        chart: Some(ChartMark::Delivered),
         threat: ThreatInfo { rating: 5, est_power: 65.0, basis: ThreatBasis::Template },
         last_seen: 4240,
         live: false,
@@ -787,11 +797,26 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 LeaderboardEntry { rank: 2, name: "Claude-7".into(), agent: true, score: 389.0, core: 389.0, combat: 0.0, explore: 0.0 },
             ],
             you: Some(LeaderboardEntry { rank: 14, name: "Newbie".into(), agent: false, score: 3.5, core: 3.5, combat: 0.0, explore: 0.0 }),
+            bots: vec![],
         }),
     ));
     v.push((
         "no_you".into(),
-        ServerMessage::Leaderboard(LeaderboardReply { tick: 1, entries: vec![], you: None }),
+        ServerMessage::Leaderboard(LeaderboardReply { tick: 1, entries: vec![], you: None, bots: vec![] }),
+    ));
+    v.push((
+        "with_bots".into(),
+        ServerMessage::Leaderboard(LeaderboardReply {
+            tick: 4820,
+            entries: vec![
+                LeaderboardEntry { rank: 1, name: "Admiral".into(), agent: false, score: 412.5, core: 380.0, combat: 40.25, explore: 0.0 },
+            ],
+            you: None,
+            bots: vec![
+                LeaderboardEntry { rank: 1, name: "BOT-explorer-2".into(), agent: false, score: 505.0, core: 404.0, combat: 3.5, explore: 310.0 },
+                LeaderboardEntry { rank: 2, name: "BOT-turtle-1".into(), agent: false, score: 96.25, core: 96.25, combat: 0.0, explore: 0.0 },
+            ],
+        }),
     ));
     for code in ALL_ERROR_CODES {
         v.push((
@@ -1254,6 +1279,7 @@ fn generate() -> Files {
         "FleetStatus": [FleetStatus::Idle, FleetStatus::Moving, FleetStatus::Harvesting, FleetStatus::InCombat, FleetStatus::Returning, FleetStatus::Docked, FleetStatus::Exploring],
         "NpcBehavior": [NpcBehavior::Passive, NpcBehavior::Patrol, NpcBehavior::Aggressive, NpcBehavior::Swarm],
         "SiteRisk": [SiteRisk::Quiet, SiteRisk::Uneasy, SiteRisk::Hot],
+        "ChartMark": [ChartMark::Aboard, ChartMark::Delivered],
         "SignalKind": [SignalKind::RichOre, SignalKind::HostileMass, SignalKind::Derelict, SignalKind::Anomaly],
         "AlertLevel": [AlertLevel::Info, AlertLevel::Warning, AlertLevel::Critical],
         "HarvestResource": [HarvestResource::Metal, HarvestResource::Crystal, HarvestResource::Deuterium, HarvestResource::Auto],

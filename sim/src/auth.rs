@@ -2,6 +2,7 @@
 // issuing needs OS entropy, so the host supplies it (see `GameEngine::authenticate`).
 // Design and rationale: docs/auth_spec.md ("Implemented subset").
 
+use iac_shared::protocol::{is_bot_name, BOT_NAME_PREFIX};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -27,6 +28,27 @@ pub fn token_matches(stored: &TokenHash, presented: &str) -> bool {
 /// Rules for newly registered names; existing accounts keep whatever name
 /// they already have. Returns a human-readable reason on rejection.
 pub fn validate_name(name: &str) -> Result<(), String> {
+    well_formed(name)?;
+    if RESERVED_NAMES.iter().any(|r| r.eq_ignore_ascii_case(name)) {
+        return Err("that name is reserved".to_string());
+    }
+    if is_bot_name(name) {
+        return Err(format!("names starting with '{BOT_NAME_PREFIX}' are reserved for built-in bots"));
+    }
+    Ok(())
+}
+
+/// The rules a built-in bot's name must meet: the shape of any name, and the
+/// prefix no other account may carry.
+pub fn validate_bot_name(name: &str) -> Result<(), String> {
+    well_formed(name)?;
+    if !is_bot_name(name) {
+        return Err(format!("a bot's name must start with '{BOT_NAME_PREFIX}'"));
+    }
+    Ok(())
+}
+
+fn well_formed(name: &str) -> Result<(), String> {
     let len = name.chars().count();
     if !(NAME_MIN_LEN..=NAME_MAX_LEN).contains(&len) {
         return Err(format!("must be {NAME_MIN_LEN}-{NAME_MAX_LEN} characters long (got {len})"));
@@ -36,9 +58,6 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     }
     if name.starts_with(['-', '_']) || name.ends_with(['-', '_']) {
         return Err("must not start or end with '-' or '_'".to_string());
-    }
-    if RESERVED_NAMES.iter().any(|r| r.eq_ignore_ascii_case(name)) {
-        return Err("that name is reserved".to_string());
     }
     Ok(())
 }

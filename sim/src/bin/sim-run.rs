@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use iac_shared::constants::DEFAULT_WORLD_SEED;
 use iac_shared::pace::Pace;
-use iac_sim::bot::{Attention, Bot, Personality, DAY, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
+use iac_sim::bot::{Attention, Bot, Personality, Style, DAY, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
 use iac_sim::headless::{Headless, PlayerSummary, ScoreBreakdown};
 use iac_sim::script::IdlePlayer;
 use serde_json::json;
@@ -35,14 +35,14 @@ const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--sea
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Idle,
-    Bot(Personality, Attention),
+    Bot(Style),
 }
 
 impl Kind {
     fn style(self) -> String {
         match self {
             Kind::Idle => "idle".to_string(),
-            Kind::Bot(personality, attention) => format!("{}/{}", personality.label(), attention.label()),
+            Kind::Bot(style) => style.label(),
         }
     }
 }
@@ -59,33 +59,13 @@ struct Args {
 }
 
 fn parse_seat(spec: &str) -> Result<Vec<Kind>, String> {
-    let parts: Vec<&str> = spec.split(':').collect();
-    let count = |text: Option<&&str>| match text {
-        None => Ok(1),
-        Some(text) => text.parse::<usize>().map_err(|_| format!("--seat {spec}: '{text}' is not a count")),
-    };
-    if parts[0] == "idle" && parts.len() <= 2 {
-        return Ok(vec![Kind::Idle; count(parts.get(1))?]);
+    let (kind, count) = spec.split_once(':').unwrap_or((spec, "1"));
+    if kind == "idle" {
+        let count = count.parse::<usize>().map_err(|_| format!("--seat {spec}: '{count}' is not a count"))?;
+        return Ok(vec![Kind::Idle; count]);
     }
-    if !(2..=3).contains(&parts.len()) {
-        return Err(format!("--seat {spec}: expected <personality>:<attention>[:<count>] or idle[:<count>]"));
-    }
-    let personalities = match parts[0] {
-        "all" => Personality::ALL.to_vec(),
-        name => vec![Personality::parse(name).ok_or_else(|| format!("--seat {spec}: unknown personality '{name}'"))?],
-    };
-    let attentions = match parts[1] {
-        "all" => Attention::ALL.to_vec(),
-        name => vec![Attention::parse(name).ok_or_else(|| format!("--seat {spec}: unknown attention '{name}'"))?],
-    };
-    let count = count(parts.get(2))?;
-    let mut seats = Vec::new();
-    for &attention in &attentions {
-        for &personality in &personalities {
-            seats.extend(std::iter::repeat_n(Kind::Bot(personality, attention), count));
-        }
-    }
-    Ok(seats)
+    let seats = Style::parse_seats(spec).map_err(|e| format!("--seat {e} (or idle[:<count>])"))?;
+    Ok(seats.into_iter().map(Kind::Bot).collect())
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -154,9 +134,9 @@ fn seat_all(world: &mut Headless, args: &Args) -> Result<(), String> {
         let name = format!("{}-{number}", style.replace('/', "-"));
         match kind {
             Kind::Idle => world.add_player(Box::new(IdlePlayer { label: name }), style)?,
-            Kind::Bot(personality, attention) => {
-                let bot = Bot::new(name, personality, attention).sessions_per_day(args.sessions).ignore_cap(args.ignore_cap);
-                world.add_player(Box::new(bot), style)?
+            Kind::Bot(bot_style) => {
+                let bot_style = Style { sessions_per_day: args.sessions, ignore_cap: args.ignore_cap, ..bot_style };
+                world.add_player(Box::new(Bot::new(name, bot_style)), style)?
             }
         };
     }

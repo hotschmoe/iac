@@ -98,7 +98,7 @@ pub struct PlayerSummary {
 }
 
 struct Entry {
-    seat: Seat,
+    seat: Seat<Box<dyn ScriptedPlayer>>,
     style: String,
     tally: FieldTally,
     samples: Vec<Sample>,
@@ -136,12 +136,16 @@ impl Headless {
         self.entries.len()
     }
 
-    /// One tick: every seat takes its turn, then the world advances.
+    /// One tick: every seat takes its turn, the world advances, every seat
+    /// sees what happened.
     pub fn step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         for entry in &mut self.entries {
             entry.seat.take_turn(&mut self.engine);
         }
         self.engine.tick()?;
+        for entry in &mut self.entries {
+            entry.seat.observe(&self.engine);
+        }
         let events = self.engine.drain_events();
         self.count(&events);
         self.engine.persist_dirty_state();

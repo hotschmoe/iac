@@ -2,7 +2,7 @@
 // the refusal. Pure state in, state out; hosts add transport and sessions.
 
 use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
-use iac_shared::protocol::{Command, ErrorCode, HarvestResource, LeaderboardReply, ServerMessage};
+use iac_shared::protocol::{Command, ErrorCode, HarvestResource, ServerMessage};
 
 use crate::engine::{AuthError, FleetStatus, GameEngine};
 
@@ -36,12 +36,7 @@ impl GameEngine {
             Command::Split { fleet_id, ref ship_ids } => self.handle_split(pid, fleet_id, ship_ids).map(|_| ()),
             Command::Merge { fleet_id, other_fleet_id } => self.handle_merge(pid, fleet_id, other_fleet_id),
             Command::Leaderboard { limit } => {
-                let (entries, you) = crate::score::leaderboard(self, limit as usize, pid);
-                reply = Some(ServerMessage::Leaderboard(LeaderboardReply {
-                    tick: self.current_tick(),
-                    entries,
-                    you,
-                }));
+                reply = Some(ServerMessage::Leaderboard(crate::score::leaderboard(self, limit as usize, pid)));
                 Ok(())
             }
             Command::PreviewMove { fleet_id, target } => self.preview_move(pid, fleet_id, target).map(|p| {

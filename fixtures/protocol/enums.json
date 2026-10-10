@@ -16,6 +16,10 @@
     "StorageVault",
     "Fabricator"
   ],
+  "ChartMark": [
+    "aboard",
+    "delivered"
+  ],
   "DefenceKind": [
     "PulseTurret",
     "LancerBattery",
