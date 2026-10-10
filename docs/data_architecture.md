@@ -72,7 +72,7 @@ Clients never read from or write to the database. They interact exclusively thro
    ... ticks continue ...
        │
 8. End of every tick: persist_dirty_state()
-   - Clone the dirty players, fleets, sectors, explored edges into a batch
+   - Clone everything that changed this tick into a batch (section 5.2)
    - Clear dirty sets, send the batch to the persist thread (no disk I/O here)
    - The persist thread: BEGIN IMMEDIATE, write the batch(es), COMMIT
 ```
@@ -96,10 +96,17 @@ Clients never read from or write to the database. They interact exclusively thro
        │
 8. Load explored_edges → populate per-player explored sets
        │
-9. Server ready, tick loop begins
+9. Load fleet_policies, known_sectors, explore_credits, runtime_state
+       │
+10. GameEngine::restore(snapshot); server ready, tick loop begins
        │
    (No further reads from SQLite during normal operation)
 ```
+
+`Database::load_snapshot` builds an `iac_sim::Snapshot`, the same structure
+`GameEngine::snapshot()` returns. After a clean shutdown the two are equal
+(same `Snapshot::hash`), so a restart continues the world as if it had never
+stopped (section 5.7).
 
 ### 2.3 Client Read Path (Memory → WebSocket → Client)
 
@@ -189,10 +196,14 @@ dirty_sectors:   AutoHashMap(u32, void)
 | Edge connectivity (which hexes connect) | Procedural from symmetric edge hash | No — recalculated on demand |
 | Player explored edges | In-memory set per player | Yes, in `explored_edges` |
 | Player resources, homeworld | In-memory, checkpointed | Yes, in `players` |
-| Fleet state, position, cargo | In-memory, checkpointed | Yes, in `fleets` + `ships` |
-| NPC fleets | Spawned from sector templates, ephemeral | No — respawned from seed |
-| Active combats | In-memory only, transient | No — if server dies mid-combat, combat resets |
-| Build/research queues | In-memory, checkpointed | Yes, in `buildings` + `research` |
+| Fleet state, position, cargo, jump target, cooldowns, ship order | In-memory, checkpointed | Yes, in `fleets` + `ships` |
+| Standing orders, their next evaluation and last reported hold | In-memory, checkpointed | Yes, in `fleet_policies` |
+| NPC groups not yet met | Sector templates | No — generated from the seed |
+| NPC groups that have materialised (damage, position, patrol timer) | In-memory, checkpointed | Yes, in `runtime_state` |
+| Active combats (sides, round, peak power) | In-memory, checkpointed | Yes, in `runtime_state` |
+| Raid clocks and announced raids, scan reveals, storage and salvage alert marks, harvest tallies | In-memory, checkpointed | Yes, in `runtime_state` |
+| Build/research queues | In-memory, checkpointed | Yes, in `buildings` + `research` + `build_queue` |
+| Events not yet broadcast | In-memory only | No — drained to clients before every persist |
 
 ### 4.3 Memory Budget Estimate
 
@@ -221,6 +232,7 @@ What a crash can lose:
 - **Process crash / panic / SIGKILL**: the last tick, plus anything still queued in the persist thread. WAL commits are in the OS page cache and survive the process, so normally that is at most one tick. If the disk is stalled at that moment the queue (in memory) is lost with it.
 - **OS crash / power loss**: with `synchronous=NORMAL` commits are not fsynced individually; the writer forces a WAL checkpoint (fsync) every 30 s, so the window is up to ~30 s. The database file is never corrupted.
 - New registrations (and their auth tokens) are part of the next batch: a crash in that window forgets the account, and the name is simply free to register again.
+- Two things are written only every 60 ticks while nothing else about them changes, so a kill can roll them back by up to a minute: the `last_seen` stamp and ore level of sectors a player is watching (re-observed on the first tick after the restart) and the part-refilled ore of a regenerating tile. A clean shutdown writes both (section 5.5).
 
 ### 5.2 Batch Write Pattern
 
@@ -229,14 +241,21 @@ See `GameEngine::persist_dirty_state` and `Database::apply_batch`. The pattern:
 ```
 BEGIN IMMEDIATE
   save server_state (current_tick, next_id)
-  for each dirty player: INSERT OR REPLACE into players
+  for each dirty player: INSERT OR REPLACE into players (+ buildings, research, queues, defences)
   for each dirty fleet:  INSERT OR REPLACE into fleets + DELETE/INSERT ships
-  for each dirty sector: INSERT OR REPLACE into sectors_modified
+  for each fleet whose counters ran and nothing else: UPDATE fleets SET the three counters
+  for each dirty policy / sector: INSERT OR REPLACE
+  for each touched runtime entry: INSERT OR REPLACE its JSON, or DELETE once it is gone
+  new explored edges, chart rows, explore credits
 COMMIT
   clear dirty sets
 ```
 
 On error the transaction is rolled back and the batches are kept and retried in order (every upsert is a whole-row replace, so replay is idempotent).
+
+`runtime_state (kind, id, data)` holds the engine's bookkeeping maps one entry per row, as the JSON `Snapshot` uses for them (`iac_sim::persist::RuntimeEntry`): live NPC groups, combats, raid clocks, scan reveals, alert marks, harvest tallies. An entry is written when the engine touches it and its row is deleted when the entry is; a new map needs a `RuntimeKind` and the touch calls, not a table. A row that no longer parses is skipped on load, which starts that one entry over.
+
+Counters that run every tick (`move_cooldown`, `action_cooldown`, `idle_ticks`) are short-lived: jumps, cooldowns and boardings last at most 20 ticks and `idle_ticks` stops at the 10 the shield rule needs, so a fleet at rest costs no writes.
 
 World seed is persisted once at init, not on every batch. "Has this player entered this sector" is answered from an in-memory set (loaded from `explored_edges` at startup); new explored edges ride along in the batch.
 
@@ -257,10 +276,10 @@ On server shutdown signal (SIGTERM, SIGINT):
 
 1. Signal handler sets an atomic `shutdown_requested` bool.
 2. Tick loop checks the bool each iteration and exits.
-3. Run one final `persist_dirty_state()` and wait for the persist thread to commit it (`flush_persistence`).
+3. `checkpoint()` queues what is otherwise written only every 60 ticks (live chart stamps, refilling ore), then one final `persist_dirty_state()`; wait for the persist thread to commit it (`flush_persistence`).
 4. Dropping the engine joins the persist thread.
 
-This ensures zero data loss on clean shutdown.
+This ensures zero data loss on clean shutdown: the database then holds exactly `GameEngine::snapshot()`.
 
 Future: broadcast "server shutting down" to connected clients before exit (requires protocol support).
 
@@ -283,6 +302,32 @@ allocations via `replace*` helpers. Old copies are freed on replacement and in `
 **Engine (engine.zig):** Player names are duped via `allocator.dupe(u8, name)` in both
 `registerPlayer` and `loadPlayers`. `deinit` iterates the players map and frees each
 name before deiniting the map itself.
+
+### 5.7 What a Restart Restores
+
+Everything. The rule (CLAUDE.md): state that must survive a restart goes in
+`PersistBatch` and the schema as well as in `Snapshot`, and every mutation of
+it marks its row dirty in the same place.
+
+| Stop | The database holds |
+|---|---|
+| SIGINT / SIGTERM | `GameEngine::snapshot()` exactly: same `Snapshot::hash`, so the world continues tick for tick as it would have |
+| SIGKILL, panic | the world as of the last committed tick, less the two 60-tick items of section 5.1 |
+
+Stored floats are the value times 1000 in a REAL column; an f32 times 1000 is
+exact in an f64, so they reload bit for bit. `ships.slot` keeps the order a
+fleet holds its ships in, which combat rolls against.
+
+`server/src/database.rs` checks this in process: a scripted world runs against
+SQLite beside the same world run in memory, is compared with the database every
+25 ticks, and is stopped and reloaded more than ten times (mid-fight, mid-jump,
+mid-boarding, with a scan live and a raid announced); the hashes must match at
+every restart and at the end. `server/tests/scenarios.rs` kills the real server
+during a boarding and reads the result over the wire.
+
+A database written before a column or table existed loads with that state at
+rest: cooldowns zero, no raid clock, no combat. `ensure_schema` idles fleets
+such a database left `moving` or `in_combat`, once, when it adds the columns.
 
 ---
 
@@ -322,7 +367,12 @@ CREATE TABLE IF NOT EXISTS fleets (
     cargo_metal     REAL DEFAULT 0,
     cargo_crystal   REAL DEFAULT 0,
     cargo_deuterium REAL DEFAULT 0,
-    harvest_resource TEXT DEFAULT 'auto'   -- what the current harvest order mines (added by migration)
+    harvest_resource TEXT DEFAULT 'auto',  -- what the current harvest order mines (added by migration)
+    move_cooldown   INTEGER NOT NULL DEFAULT 0,   -- ticks left of the jump under way (added by migration, as the next four)
+    action_cooldown INTEGER NOT NULL DEFAULT 0,   -- ticks until the next order; the timer of a boarding
+    idle_ticks      INTEGER NOT NULL DEFAULT 0,   -- ticks at rest, up to the 10 that start shield repair
+    move_q          INTEGER,                      -- jump target, NULL when not jumping
+    move_r          INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_fleets_player ON fleets(player_id);
 CREATE INDEX IF NOT EXISTS idx_fleets_location ON fleets(q, r);
@@ -337,7 +387,8 @@ CREATE TABLE IF NOT EXISTS ships (
     shield       REAL NOT NULL,
     shield_max   REAL NOT NULL,
     weapon_power REAL NOT NULL,
-    speed        INTEGER NOT NULL
+    speed        INTEGER NOT NULL,
+    slot         INTEGER NOT NULL DEFAULT 0   -- position in the fleet (added by migration)
 );
 CREATE INDEX IF NOT EXISTS idx_ships_fleet ON ships(fleet_id);
 
@@ -360,7 +411,18 @@ CREATE TABLE IF NOT EXISTS explored_edges (
     PRIMARY KEY (player_id, q1, r1, q2, r2)
 );
 CREATE INDEX IF NOT EXISTS idx_explored_player ON explored_edges(player_id);
+
+CREATE TABLE IF NOT EXISTS runtime_state (
+    kind TEXT NOT NULL,      -- npc_fleet, combat, raid, scans, storage_marks, home_salvage_warned, harvest_report
+    id   INTEGER NOT NULL,   -- the NPC group, combat, player or fleet the entry belongs to
+    data TEXT NOT NULL,      -- the entry as JSON (iac_sim::persist::RuntimeEntry)
+    PRIMARY KEY (kind, id)
+) WITHOUT ROWID;
 ```
+
+The tables added since M1 (`world_meta`, `buildings`, `research`, `build_queue`,
+`player_defences`, `fleet_policies`, `known_sectors`, `explore_credits`) and the
+later columns are in `Database::ensure_schema`, which is what runs.
 
 ### 6.2 Future Schema (not yet implemented)
 
@@ -392,7 +454,7 @@ External tools should open the database in **read-only mode** (`SQLITE_OPEN_READ
 
 | Failure | Impact | Recovery |
 |---|---|---|
-| Server crash | Lose up to 30s of state (last dirty window) | Restart, load from SQLite, resume |
+| Server crash | Lose the last tick or so (section 5.1) | Restart, load from SQLite, resume where it stopped (section 5.7) |
 | Disk full | COMMIT fails, dirty state stays in memory | Alert, free space, next persist succeeds |
 | Corrupt database | Server can't start | Restore from backup |
 | Power failure during write | WAL may be incomplete | SQLite auto-recovers on next open (WAL replay) |
