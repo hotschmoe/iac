@@ -77,6 +77,11 @@ impl GameEngine {
     }
 }
 
+/// Whether `cmd` only asks: it is answered and leaves the world as it was.
+pub fn is_query(cmd: &Command) -> bool {
+    matches!(cmd, Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. })
+}
+
 /// What a session that has not logged in is sent for anything but `auth`.
 pub fn not_logged_in(msg: &ClientMessage) -> Option<ServerMessage> {
     match msg {
