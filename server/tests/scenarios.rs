@@ -352,7 +352,10 @@ fn rows(board: &Value, list: &str) -> Vec<(String, f64)> {
 async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is_killed() {
     let port = 17956;
     let db = fresh_db(port);
-    let roster = ["--pace", "test", "--bot", "turtle:hands-on:2", "--bot", "explorer:hands-on", "--bot", "miner:hands-on"];
+    let roster = [
+        "--pace", "test", "--player-seats", "20",
+        "--bot", "turtle:hands-on:2", "--bot", "explorer:hands-on", "--bot", "miner:hands-on", "--bot", "raider:hands-on:5",
+    ];
     let deadline = Instant::now() + Duration::from_secs(90);
 
     let (token, names, scores, tick) = {
@@ -372,6 +375,7 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
         assert_eq!(rows(&board, "entries").iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["Watcher"]);
         assert_eq!(board["entries"][0]["rank"], 1, "bots take no rank: {board}");
         let bots = rows(&board, "bots");
+        assert_eq!(bots.len(), 4, "20 of the 24 home seats are kept for players, so the raiders stay out: {bots:?}");
         assert!(bots.iter().all(|(name, _)| name.starts_with("BOT-")), "every bot is tagged in its name: {bots:?}");
         assert!(bots.iter().all(|(_, score)| *score > rows(&board, "entries")[0].1), "{board}");
         let ranks: Vec<u64> = board["bots"].as_array().unwrap().iter().map(|row| row["rank"].as_u64().unwrap()).collect();
@@ -388,7 +392,7 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
         (token, names, bots, board["tick"].as_u64().unwrap())
     };
 
-    let _guard = start_server_with(port, &db, &["--bot", "turtle:hands-on:2"]);
+    let _guard = start_server_with(port, &db, &["--player-seats", "20", "--bot", "raider:hands-on:5"]);
     let (mut ws, reply) = login(port, "Watcher", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let board = loop {
@@ -405,7 +409,7 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
     };
     let mut after: Vec<String> = rows(&board, "bots").into_iter().map(|(name, _)| name).collect();
     after.sort();
-    assert_eq!(after, names, "the same bots, listed by --bot or not, and no new ones");
+    assert_eq!(after, names, "the same bots though --bot no longer lists them, and no raider: the seats left are the players'");
     assert_eq!(rows(&board, "entries").len(), 1);
     remove_db(&db);
 }
