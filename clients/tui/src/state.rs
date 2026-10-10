@@ -423,11 +423,20 @@ impl ClientState {
                     None => format!("{} hops home direct{across}, none charted", p.hops_home),
                 };
                 self.status_message = format!(
-                    "F{} to [{},{}]: fuel -{:.0}, {:.0} left, {home} need {:.0}{}; T{} power {:.0} vs your {:.0}: ratio {:.1} {}",
+                    "F{} to [{},{}]: fuel -{:.0}, {:.0} left, {home} need {:.0}{}; T{} power {:.0}, odds {:.1}x {}",
                     p.fleet_id, p.target.q, p.target.r, p.fuel_cost, p.fuel_after, p.fuel_to_return,
                     if p.can_return { "" } else { "  CANNOT RETURN" },
-                    p.threat.rating, p.threat.est_power, p.fleet_power, p.ratio, p.label.label(),
+                    p.threat.rating, p.threat.est_power, p.ratio, p.label.label(),
                 );
+                self.status_set_tick = self.tick;
+            }
+            ServerMessage::Odds(o) => {
+                let sectors: Vec<String> = o
+                    .sectors
+                    .iter()
+                    .map(|s| format!("[{},{}] T{} {:.1}x {}", s.sector.q, s.sector.r, s.threat.rating, s.ratio, s.label.label()))
+                    .collect();
+                self.status_message = format!("F{} odds: {}", o.fleet_id, sectors.join("  "));
                 self.status_set_tick = self.tick;
             }
             // Login is settled before the TUI starts (connection::login).

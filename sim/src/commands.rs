@@ -2,7 +2,9 @@
 // the refusal. Pure state in, state out; hosts add transport and sessions.
 
 use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
-use iac_shared::protocol::{Command, ErrorCode, HarvestResource, LeaderboardReply, ServerMessage};
+use iac_shared::protocol::{
+    Command, ErrorCode, FleetOdds, HarvestResource, LeaderboardReply, ServerMessage, MAX_ODDS_SECTORS,
+};
 
 use crate::engine::{AuthError, FleetStatus, GameEngine};
 
@@ -47,6 +49,9 @@ impl GameEngine {
             Command::PreviewMove { fleet_id, target } => self.preview_move(pid, fleet_id, target).map(|p| {
                 reply = Some(ServerMessage::PreviewMove(p));
             }),
+            Command::Odds { fleet_id, ref sectors } => self.odds_for(pid, fleet_id, sectors).map(|sectors| {
+                reply = Some(ServerMessage::Odds(FleetOdds { fleet_id, sectors }));
+            }),
         };
         let error = result.err().map(|code| (code, command_error_message(self, pid, &cmd, code)));
         CommandOutcome { reply, error }
@@ -81,6 +86,7 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::ExploreSite { fleet_id }
         | Command::Split { fleet_id, .. }
         | Command::PreviewMove { fleet_id, .. }
+        | Command::Odds { fleet_id, .. }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
@@ -266,6 +272,9 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         }
         (ErrorCode::InvalidTarget, Command::ExploreSite { .. }) => "no derelict to board in this sector".to_string(),
         (ErrorCode::InvalidCommand, Command::Stop { .. }) => format!("fleet {fid} has nothing to stop"),
+        (ErrorCode::InvalidCommand, Command::Odds { sectors, .. }) => {
+            format!("odds takes at most {MAX_ODDS_SECTORS} sectors a request; {} were named", sectors.len())
+        }
         (ErrorCode::QueueFull, Command::Build { .. }) => {
             let slots = engine.players.get(&player_id).map_or(1, |p| p.building_slots());
             format!(
