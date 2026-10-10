@@ -15,6 +15,7 @@ import 'package:iac_client/models/resources.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/game_controller.dart';
 
+import 'support/demo_controller.dart';
 import 'support/harness.dart';
 
 /// Controller whose state is set by the test and whose commands are recorded.
@@ -39,7 +40,7 @@ class FakeController extends GameController {
   @override
   bool get hasState => true;
   @override
-  bool get isDemo => true;
+  bool get isLive => true;
 
   void push(GameState s) {
     fake = s;
@@ -396,7 +397,7 @@ void main() {
   });
 
   testWidgets('number keys select fleets', (tester) async {
-    final c = GameController()..startDemo();
+    final c = DemoController()..startDemo();
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     await key(tester, LogicalKeyboardKey.digit2, '2');
     expect(c.activeFleet, 1);
@@ -404,7 +405,7 @@ void main() {
   });
 
   testWidgets('split a ship off and merge it back through the panel (demo)', (tester) async {
-    final c = GameController()..startDemo();
+    final c = DemoController()..startDemo();
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     await tester.tap(find.byKey(const ValueKey('manage-toggle')));
     await tester.pump(const Duration(milliseconds: 100));

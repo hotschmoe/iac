@@ -12,6 +12,8 @@ import 'package:iac_client/design/theme.dart';
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/views/shell.dart';
 
+import 'demo_controller.dart';
+
 bool _fontsLoaded = false;
 
 /// Registers the bundled Plex files so tests and screenshots measure real text.
@@ -47,13 +49,15 @@ Future<GameController> pumpShell(
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
-  final c = controller ?? GameController();
+  final GameController c;
   if (controller == null) {
-    c.startDemo();
+    c = DemoController()..startDemo();
     addTearDown(() {
       c.stop();
       c.dispose();
     });
+  } else {
+    c = controller;
   }
   await tester.pumpWidget(MaterialApp(
     debugShowCheckedModeBanner: false,

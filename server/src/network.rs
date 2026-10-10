@@ -22,7 +22,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use log::{info, warn};
 
-use iac_shared::protocol::{AuthResult, ClientMessage, Command, ErrorCode, ServerMessage};
+use iac_shared::protocol::{AuthRequest, AuthResult, ClientMessage, ServerMessage};
 use iac_sim::{commands, views, GameEngine};
 
 pub struct Network {
@@ -117,103 +117,65 @@ impl Network {
 
         let sess = session.ok_or("Session not found")?;
 
-        match msg {
-            ClientMessage::Auth(auth) => {
-                if sess.authenticated {
-                    self.send_error_to_session(&sess, ErrorCode::AlreadyAuthenticated, "Already authenticated")?;
-                    return Ok(());
-                }
-
-                let outcome = {
-                    let mut engine = self.engine.lock().unwrap();
-                    engine.authenticate(&auth.player_name, auth.token.as_deref(), auth.agent, crate::auth::generate_token)
-                };
-                let granted = match outcome {
-                    Ok(granted) => granted,
-                    Err(err) => {
-                        let (code, message) = commands::auth_failure(&auth.player_name, err);
-                        self.send_to_session(&sess, ServerMessage::AuthResult(AuthResult {
-                            success: false,
-                            player_id: None,
-                            token: None,
-                            code: Some(code),
-                            message: Some(message),
-                        }))?;
-                        return Ok(());
-                    }
-                };
-
-                {
-                    let mut sessions = self.sessions.lock().unwrap();
-                    if let Some(s) = sessions.get_mut(&session_id) {
-                        s.player_id = Some(granted.player_id);
-                        s.authenticated = true;
-                    }
-                }
-
-                let message = match (&granted.new_token, granted.registered) {
-                    (Some(_), true) => Some("account created; keep this token, it is your password".to_string()),
-                    (Some(_), false) => Some("account claimed; keep this token, it is your password".to_string()),
-                    (None, _) => None,
-                };
-                self.send_to_session(&sess, ServerMessage::AuthResult(AuthResult {
-                    success: true,
-                    player_id: Some(granted.player_id),
-                    token: granted.new_token,
-                    code: None,
-                    message,
-                }))?;
-
-                self.send_full_state(&sess, granted.player_id)?;
-            }
-            ClientMessage::Command(cmd) => {
-                if !sess.authenticated {
-                    self.send_error_to_session(&sess, ErrorCode::AuthFailed, "Not authenticated")?;
-                    return Ok(());
-                }
-                self.route_command(&sess, cmd)?;
-            }
-            ClientMessage::PolicyUpdate(update) => {
-                if !sess.authenticated {
-                    self.send_error_to_session(&sess, ErrorCode::AuthFailed, "Not authenticated")?;
-                    return Ok(());
-                }
-                let Some(pid) = sess.player_id else { return Ok(()); };
-                let result = {
-                    let mut engine = self.engine.lock().unwrap();
-                    engine.handle_policy_update(pid, update.fleet_id, update.preset, update.params)
-                };
-                if let Err(e) = result {
-                    self.send_error_to_session(&sess, e, "PolicyUpdate failed")?;
-                }
-            }
-            ClientMessage::RequestFullState => {
-                if sess.authenticated
-                    && let Some(pid) = sess.player_id
-                {
-                    self.send_full_state(&sess, pid)?;
-                }
-            }
+        match (sess.player_id.filter(|_| sess.authenticated), msg) {
+            (Some(pid), msg) => self.answer(&sess, pid, msg),
+            (None, ClientMessage::Auth(auth)) => self.log_in(&sess, auth),
+            (None, msg) => match commands::not_logged_in(&msg) {
+                Some(refusal) => self.send_to_session(&sess, refusal),
+                None => Ok(()),
+            },
         }
-
-        Ok(())
     }
 
-    fn route_command(&self, session: &ClientSession, cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
-        let Some(pid) = session.player_id else {
-            self.send_error_to_session(session, ErrorCode::AuthFailed, "Not authenticated")?;
-            return Ok(());
+    fn log_in(&self, sess: &ClientSession, auth: AuthRequest) -> Result<(), Box<dyn std::error::Error>> {
+        let outcome = {
+            let mut engine = self.engine.lock().unwrap();
+            engine.authenticate(&auth.player_name, auth.token.as_deref(), auth.agent, crate::auth::generate_token)
+        };
+        let granted = match outcome {
+            Ok(granted) => granted,
+            Err(err) => {
+                let (code, message) = commands::auth_failure(&auth.player_name, err);
+                return self.send_to_session(sess, ServerMessage::AuthResult(AuthResult {
+                    success: false,
+                    player_id: None,
+                    token: None,
+                    code: Some(code),
+                    message: Some(message),
+                }));
+            }
         };
 
-        let outcome = self.engine.lock().unwrap().execute(pid, cmd);
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            if let Some(s) = sessions.get_mut(&sess.id) {
+                s.player_id = Some(granted.player_id);
+                s.authenticated = true;
+            }
+        }
 
-        if let Some(reply) = outcome.reply {
+        let message = match (&granted.new_token, granted.registered) {
+            (Some(_), true) => Some("account created; keep this token, it is your password".to_string()),
+            (Some(_), false) => Some("account claimed; keep this token, it is your password".to_string()),
+            (None, _) => None,
+        };
+        self.send_to_session(sess, ServerMessage::AuthResult(AuthResult {
+            success: true,
+            player_id: Some(granted.player_id),
+            token: granted.new_token,
+            code: None,
+            message,
+        }))?;
+
+        self.answer(sess, granted.player_id, ClientMessage::RequestFullState)
+    }
+
+    /// One message of a logged-in session: the engine words every reply.
+    fn answer(&self, session: &ClientSession, pid: u64, msg: ClientMessage) -> Result<(), Box<dyn std::error::Error>> {
+        let replies = self.engine.lock().unwrap().answer(pid, msg);
+        for reply in replies {
             self.send_to_session(session, reply)?;
         }
-        if let Some((code, message)) = outcome.error {
-            self.send_error_to_session(session, code, &message)?;
-        }
-
         Ok(())
     }
 
@@ -248,20 +210,6 @@ impl Network {
         Ok(())
     }
 
-    fn send_error_to_session(&self, session: &ClientSession, code: ErrorCode, message: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.send_to_session(session, ServerMessage::Error(iac_shared::protocol::ErrorMessage {
-            code,
-            message: message.to_string(),
-        }))
-    }
-
-    fn send_full_state(&self, session: &ClientSession, player_id: u64) -> Result<(), Box<dyn std::error::Error>> {
-        let state = {
-            let engine = self.engine.lock().unwrap();
-            ServerMessage::FullState(views::full_state(&engine, player_id).ok_or("Player not found")?)
-        };
-        self.send_to_session(session, state)
-    }
 }
 
 // ── WebSocket I/O Tasks ───────────────────────────────────────────
@@ -389,7 +337,7 @@ mod tests {
     use iac_shared::constants::ShipClass;
     use iac_shared::hex::Hex;
     use iac_shared::pace::Pace;
-    use iac_shared::protocol::{GameEvent, HarvestResource};
+    use iac_shared::protocol::{Command, ErrorCode, GameEvent, HarvestResource};
     use iac_shared::scaling::{BuildingType, ResearchType};
     use iac_sim::commands::command_error_message;
     use iac_sim::views::event_for;
@@ -482,8 +430,8 @@ mod tests {
             site
         };
 
-        let session = net.sessions.lock().unwrap().get(&1).cloned().unwrap();
-        net.route_command(&session, Command::Harvest { fleet_id: fid, resource: HarvestResource::Deuterium }).unwrap();
+        let harvest = Command::Harvest { fleet_id: fid, resource: HarvestResource::Deuterium };
+        net.handle_message(1, ClientMessage::Command(harvest)).unwrap();
 
         let reply = next_message(&mut rx);
         assert_eq!(reply["type"], "error");
@@ -742,7 +690,7 @@ mod tests {
         for _ in 0..(iac_shared::constants::SCAN_REVEAL_TICKS + 2) {
             engine.lock().unwrap().tick().unwrap();
         }
-        net.send_full_state(&net.sessions.lock().unwrap().get(&1).cloned().unwrap(), pid).unwrap();
+        net.handle_message(1, ClientMessage::RequestFullState).unwrap();
         let full = next_message(&mut rx);
         let known = full["known_sectors"].as_array().unwrap();
         assert_eq!(known.len(), learned.max(known.len()));
@@ -779,8 +727,7 @@ mod tests {
             let home = e.players[&pid].homeworld;
             (home, e.world_gen.connected_neighbors(home).slice()[0])
         };
-        let session = net.sessions.lock().unwrap().get(&1).cloned().unwrap();
-        net.route_command(&session, Command::PreviewMove { fleet_id: fid, target: neighbour }).unwrap();
+        net.handle_message(1, ClientMessage::Command(Command::PreviewMove { fleet_id: fid, target: neighbour })).unwrap();
         let msg = next_message(&mut rx);
         assert_eq!(msg["type"], "preview_move", "{msg}");
         assert_eq!(msg["fleet_id"], fid);

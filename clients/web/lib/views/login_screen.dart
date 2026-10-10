@@ -17,7 +17,9 @@ class LoginScreen extends StatefulWidget {
   /// Always offer the token field, even before a refusal.
   final bool askToken;
   final void Function(String name, String token) onConnect;
-  final VoidCallback onDemo;
+
+  /// Go to the single-player world instead; offered by the bundle that has one.
+  final VoidCallback? onSolo;
 
   const LoginScreen({
     super.key,
@@ -26,7 +28,7 @@ class LoginScreen extends StatefulWidget {
     this.error,
     this.askToken = false,
     required this.onConnect,
-    required this.onDemo,
+    this.onSolo,
   });
 
   @override
@@ -124,8 +126,10 @@ class _LoginScreenState extends State<LoginScreen> {
               Row(
                 children: [
                   _button('Connect', _submit, primary: true),
-                  const SizedBox(width: 8),
-                  _button('Offline demo', widget.onDemo),
+                  if (widget.onSolo != null) ...[
+                    const SizedBox(width: 8),
+                    _button('Single player', widget.onSolo!),
+                  ],
                 ],
               ),
               const SizedBox(height: 12),

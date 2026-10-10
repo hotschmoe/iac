@@ -8,11 +8,12 @@ import 'package:iac_client/state/connection_provider.dart';
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/state/token_store.dart';
 
+import 'support/demo_controller.dart';
 import 'support/fake_server.dart';
 import 'support/harness.dart';
 
 /// Demo-backed controller with controllable stock and economy availability.
-class _Fake extends GameController {
+class _Fake extends DemoController {
   _Fake({this.noEco = false, this.stockOverride});
   final bool noEco;
   final proto.Resources? stockOverride;

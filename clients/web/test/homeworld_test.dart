@@ -21,6 +21,7 @@ import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/views/homeworld/economy_tabs.dart';
 
+import 'support/demo_controller.dart';
 import 'support/harness.dart';
 
 final _rootKey = GlobalKey();
@@ -46,7 +47,7 @@ void main() {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
-    final c = GameController()..startDemo();
+    final c = DemoController()..startDemo();
     final con = Console(game: c, prefs: ConsolePrefs(), toasts: ToastController(), sfx: NoSfx(), notifier: NoNotifier())..screen = Screen.homeworld;
     bool onKey(KeyEvent e) => e is KeyDownEvent && con.dispatchKey(e);
     HardwareKeyboard.instance.addHandler(onKey);

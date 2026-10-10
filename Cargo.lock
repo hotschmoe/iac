@@ -738,6 +738,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "iac-solo"
+version = "0.1.0"
+dependencies = [
+ "iac-shared",
+ "iac-sim",
+ "serde",
+ "serde_json",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

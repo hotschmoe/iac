@@ -31,7 +31,7 @@
 use iac_shared::protocol::{Command, GameState, PolicyUpdate, ServerMessage, TickUpdate};
 
 use crate::engine::{AuthError, GameEngine};
-use crate::views;
+use crate::{commands, views};
 
 /// One thing a client can send for a logged-in player.
 #[derive(Debug, Clone)]
@@ -182,7 +182,7 @@ impl<P: ScriptedPlayer> Seat<P> {
         self.questions.clear();
         self.player.ask(state, &mut self.questions);
         for question in self.questions.drain(..) {
-            if !matches!(question, Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. }) {
+            if !commands::is_query(&question) {
                 continue;
             }
             if let Some(reply) = &engine.execute(self.player_id, question).reply {

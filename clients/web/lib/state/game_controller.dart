@@ -9,7 +9,6 @@ import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
 import 'command_parser.dart';
 import 'connection_provider.dart';
-import 'demo_provider.dart';
 import 'state_mapper.dart';
 import 'token_store.dart';
 
@@ -37,11 +36,11 @@ enum HomeworldTab {
 /// Ship batch sizes the homeworld view offers.
 const shipBatches = [1, 5, 10];
 
-enum LinkState { idle, connecting, live, reconnecting, demo }
+enum LinkState { idle, connecting, live, reconnecting }
 
-/// The server refused the login for a reason the login form can show: a
-/// different name or token fixes it, or the world has no free home seat and
-/// only an existing account can still log in.
+/// The server refused the login. The login form shows why: a different name
+/// or token fixes it, or the world has no free home seat and only an
+/// existing account can still log in.
 class AuthRejection {
   final proto.ErrorCode? code;
   final String message;
@@ -50,8 +49,24 @@ class AuthRejection {
   bool get needsToken => code == proto.ErrorCode.tokenRequired || code == proto.ErrorCode.invalidToken;
 }
 
-/// Drives the UI from either the live Rust server or the offline demo.
-/// Both feed the same protocol messages into one [StateMapper].
+/// A world to log in to: a Rust server, or the engine running in this tab.
+class Uplink {
+  /// Keys what the browser remembers per world (tokens, per-account settings).
+  final String id;
+
+  /// What the console calls the link while it is up.
+  final String label;
+
+  /// What the quiet alert says feeds the console.
+  final String feed;
+  final Dial dial;
+  const Uplink({required this.id, required this.label, required this.feed, required this.dial});
+
+  Uplink.server(String url) : this(id: url, label: 'LIVE SERVER', feed: 'Live server feed', dial: webSocketDial(url));
+}
+
+/// Drives the UI from a world behind an [Uplink]: its protocol messages go
+/// into one [StateMapper], whatever carries them.
 class GameController extends ChangeNotifier {
   GameController({TokenStore? tokens}) : _tokens = tokens ?? TokenStore.platform();
 
@@ -76,14 +91,14 @@ class GameController extends ChangeNotifier {
         break;
     }
   }
-  DemoProvider? _demo;
+
   StreamSubscription<proto.ServerMessage>? _msgSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
   Timer? _retry;
   int _retryDelaySec = 2;
   bool _disposed = false;
 
-  ConnectParams? _params;
+  Uplink? _uplink;
   String playerName = '';
 
   /// The token this session logs in with: typed by the player, from `?token=`,
@@ -99,6 +114,10 @@ class GameController extends ChangeNotifier {
   /// kept a copy.
   ({String token, bool saved})? issuedToken;
   bool _tokenNoticed = true;
+  bool _created = false;
+
+  /// The account was made in this session: the guide starts by itself.
+  bool get newAccount => _created || issuedToken != null;
 
   LinkState link = LinkState.idle;
   String? connectionError;
@@ -143,15 +162,13 @@ class GameController extends ChangeNotifier {
 
   GameState get state => _state;
   bool get isLive => link == LinkState.live;
-  bool get isDemo => link == LinkState.demo;
   bool get hasState => _mapper.hasState;
 
   String get linkLabel => switch (link) {
         LinkState.idle => 'OFFLINE',
         LinkState.connecting => 'CONNECTING',
-        LinkState.live => 'LIVE SERVER',
+        LinkState.live => _uplink?.label ?? 'LIVE',
         LinkState.reconnecting => 'RECONNECTING',
-        LinkState.demo => 'DEMO',
       };
 
   /// The selected fleet, or a placeholder docked at home when there is none
@@ -175,10 +192,9 @@ class GameController extends ChangeNotifier {
 
   proto.SectorState? sectorAt(proto.Hex h) => _state.sectors[h];
 
-  /// Identifies the account on this server, for per-account settings.
+  /// Identifies the account in this world, for per-account settings.
   String? get account => switch (link) {
-        LinkState.demo => 'demo',
-        LinkState.live || LinkState.reconnecting => '${_params?.url}|${playerName.toLowerCase()}',
+        LinkState.live || LinkState.reconnecting => '${_uplink?.id}|${playerName.toLowerCase()}',
         LinkState.idle || LinkState.connecting => null,
       };
 
@@ -190,13 +206,23 @@ class GameController extends ChangeNotifier {
 
   // ── Connection lifecycle ──────────────────────────────────────
 
-  /// Connect to the server; on failure fall back to demo mode and keep
-  /// retrying in the background.
-  Future<void> start({required ConnectParams params, required String name, String? token}) async {
-    _params = params;
+  /// Log in to the server at [params] as [name]. While it cannot be
+  /// reached the attempt is repeated in the background and
+  /// [connectionError] says why.
+  Future<void> start({required ConnectParams params, required String name, String? token}) =>
+      open(Uplink.server(params.url), name: name, token: (token ?? '').trim().isEmpty ? params.token : token);
+
+  /// Log in to the world behind [uplink] as [name], with [token] or the one
+  /// the browser remembers for that world and name. [created] says the
+  /// account was just made by other means than this login, as the
+  /// commander of a new single-player world is.
+  Future<void> open(Uplink uplink, {required String name, String? token, bool created = false}) async {
+    _uplink = uplink;
+    _mapper.feed = uplink.feed;
+    _created = created;
     playerName = name;
-    final typed = token?.trim();
-    _token = (typed != null && typed.isNotEmpty) ? typed : (params.token ?? _tokens.load(params.url, name));
+    final given = token?.trim();
+    _token = (given != null && given.isNotEmpty) ? given : _tokens.load(uplink.id, name);
     authRejection = null;
     _retry?.cancel();
     link = LinkState.connecting;
@@ -205,33 +231,25 @@ class GameController extends ChangeNotifier {
     await _connect();
   }
 
-  /// Skip the server entirely.
-  void startDemo() {
-    _retry?.cancel();
-    connection.disconnect();
-    connectionError = null;
-    _enterDemo();
-  }
-
   Future<void> _connect() async {
-    final p = _params!;
+    final uplink = _uplink!;
     _authed = false;
     try {
       connection.onProtocolError = (e) {
         _mapper.pushLog('Protocol error: $e', EventLevel.bright);
         _refresh();
       };
-      await connection.connect(p.url);
+      await connection.connect(uplink.dial);
       await _msgSub?.cancel();
-      _msgSub = connection.messages.listen(_onServerMessage);
+      _msgSub = connection.messages.listen(receive);
       await _statusSub?.cancel();
       _statusSub = connection.status.listen(_onStatus);
       connection.auth(playerName, token: _token);
       // No fixed wait: the first full_state flips us to LIVE; an
-      // auth_result with success=false (or a socket close) reports failure.
+      // auth_result with success=false (or a closed line) reports failure.
     } catch (e) {
-      connectionError = 'Server unavailable at ${p.url}';
-      _fallbackToDemo();
+      connectionError = 'No answer from ${uplink.id}';
+      notifyListeners();
       _scheduleRetry();
     }
   }
@@ -241,34 +259,22 @@ class GameController extends ChangeNotifier {
     switch (link) {
       case LinkState.live:
         // Keep the last state on screen, retry in the background.
-        connectionError = 'Disconnected from server';
+        connectionError = 'Disconnected from ${_uplink?.id}';
         link = LinkState.reconnecting;
         _scheduleRetry();
         notifyListeners();
       case LinkState.connecting:
         connectionError = 'Connection closed before login completed';
-        _fallbackToDemo();
+        notifyListeners();
         _scheduleRetry();
-      case LinkState.demo:
-        _scheduleRetry(); // a background retry attempt was cut short
       case LinkState.reconnecting || LinkState.idle:
         break;
     }
   }
 
-  /// Offline fallback; never clobbers a live (reconnecting) view or an
-  /// already-running demo.
-  void _fallbackToDemo() {
-    if (link == LinkState.reconnecting || link == LinkState.demo) {
-      notifyListeners();
-      return;
-    }
-    _enterDemo();
-  }
-
   void _scheduleRetry() {
     _retry?.cancel();
-    if (_disposed || _params == null) return;
+    if (_disposed || _uplink == null) return;
     _retry = Timer(Duration(seconds: _retryDelaySec), () async {
       if (_disposed) return;
       _retryDelaySec = (_retryDelaySec * 2).clamp(2, 15);
@@ -277,46 +283,21 @@ class GameController extends ChangeNotifier {
     });
   }
 
-  void _enterDemo() {
-    _demo?.stop();
-    _mapper.reset();
-    link = LinkState.demo;
-    _demo = DemoProvider(_onDemoMessages);
-    _mapper.apply(_demo!.initial());
-    _demo!.start();
-    _cursorInit = false;
-    _refresh();
-  }
-
-  void _leaveDemo() {
-    _demo?.stop();
-    _demo = null;
-  }
-
-  void _onDemoMessages(List<proto.ServerMessage> msgs) {
-    for (final m in msgs) {
-      _mapper.apply(m);
-      _tap(m);
-    }
-    _refresh();
-  }
-
-  void _onServerMessage(proto.ServerMessage msg) {
+  /// One message from the world. The connection calls this; a test may feed
+  /// it a scripted world's messages directly.
+  @protected
+  @visibleForTesting
+  void receive(proto.ServerMessage msg) {
     switch (msg) {
       case proto.AuthResult(:final success, :final message, :final code, :final token):
         if (!success) {
           // Not retried: a rejected login will not fix itself.
           connectionError = message ?? 'login refused';
-          if (code == proto.ErrorCode.tokenRequired ||
-              code == proto.ErrorCode.invalidToken ||
-              code == proto.ErrorCode.invalidName ||
-              code == proto.ErrorCode.worldFull) {
-            authRejection = AuthRejection(code, connectionError!);
-          }
+          authRejection = AuthRejection(code, connectionError!);
           _retry?.cancel();
           connection.disconnect();
-          if (link == LinkState.reconnecting) link = LinkState.connecting;
-          _fallbackToDemo();
+          link = LinkState.idle;
+          notifyListeners();
           return;
         }
         _authed = true;
@@ -324,7 +305,7 @@ class GameController extends ChangeNotifier {
         final effective = token ?? _token;
         if (effective != null) {
           _token = effective;
-          final saved = _tokens.save(_params!.url, playerName, effective);
+          final saved = _tokens.save(_uplink!.id, playerName, effective);
           if (token != null) {
             issuedToken = (token: token, saved: saved);
             _tokenNoticed = false;
@@ -333,7 +314,6 @@ class GameController extends ChangeNotifier {
       case proto.GameState():
         if (!_authed) return;
         if (link != LinkState.live) {
-          _leaveDemo();
           _mapper.reset();
           link = LinkState.live;
           connectionError = null;
@@ -385,7 +365,6 @@ class GameController extends ChangeNotifier {
     _oddsTimers.clear();
     _oddsWanted.clear();
     _retry?.cancel();
-    _demo?.stop();
     _msgSub?.cancel();
     _statusSub?.cancel();
     connection.disconnect();
@@ -651,12 +630,10 @@ class GameController extends ChangeNotifier {
     _refresh();
   }
 
-  /// Send a client message to the server (or the demo).
+  /// Send a client message to the world.
   void send(proto.ClientMessage msg) {
     if (isLive) {
       connection.send(msg);
-    } else if (isDemo && _demo != null) {
-      _onDemoMessages(_demo!.handle(msg));
     } else {
       note('Not connected -- command dropped', level: EventLevel.bright);
     }
@@ -673,7 +650,7 @@ class GameController extends ChangeNotifier {
   /// (`preview_move`). Debounced, and skipped while a recent (under 3 ticks) answer or request
   /// for the same jump stands; the answer lands in [GameState.previews].
   void requestPreview(int fleetId, proto.Hex target) {
-    if (fleetId == 0 || !hasState || !(isLive || isDemo)) return;
+    if (fleetId == 0 || !hasState || !isLive) return;
     final key = (fleetId, target);
     if (!state.previewNeedsRefresh(fleetId, target)) return;
     final asked = _previewAsked[key];
@@ -681,7 +658,7 @@ class GameController extends ChangeNotifier {
     _previewTimers[key]?.cancel();
     _previewTimers[key] = Timer(previewDebounce, () {
       _previewTimers.remove(key);
-      if (_disposed || !(isLive || isDemo)) return;
+      if (_disposed || !isLive) return;
       _previewAsked[key] = state.tick;
       sendCommand(proto.PreviewMoveCommand(fleetId: fleetId, target: target));
     });
@@ -700,7 +677,7 @@ class GameController extends ChangeNotifier {
   /// recent (under 3 ticks) answer or request for it stands; the answers land
   /// in [GameState.odds].
   void requestOdds(int fleetId, Iterable<proto.Hex> sectors) {
-    if (fleetId == 0 || !hasState || !(isLive || isDemo)) return;
+    if (fleetId == 0 || !hasState || !isLive) return;
     final wanted = _oddsWanted.putIfAbsent(fleetId, () => {});
     for (final s in sectors) {
       if (!state.oddsNeedRefresh(fleetId, s)) continue;
@@ -712,7 +689,7 @@ class GameController extends ChangeNotifier {
     _oddsTimers[fleetId] = Timer(previewDebounce, () {
       _oddsTimers.remove(fleetId);
       final ask = (_oddsWanted.remove(fleetId) ?? {}).take(proto.OddsCommand.maxOddsSectors).toList();
-      if (_disposed || ask.isEmpty || !(isLive || isDemo)) return;
+      if (_disposed || ask.isEmpty || !isLive) return;
       _oddsAsked.removeWhere((_, tick) => state.tick - tick > 60);
       for (final s in ask) {
         _oddsAsked[(fleetId, s)] = state.tick;

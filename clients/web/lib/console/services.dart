@@ -52,7 +52,7 @@ class Console {
     if (game.state.tick != _lastTick) {
       _lastTick = game.state.tick;
       lastTickAt = clock.now();
-      if (game.hasState && (game.isLive || game.isDemo) && (_lastBoard < 0 || game.state.tick - _lastBoard >= 30)) {
+      if (game.hasState && game.isLive && (_lastBoard < 0 || game.state.tick - _lastBoard >= 30)) {
         _lastBoard = game.state.tick;
         game.sendCommand(proto.LeaderboardCommand(limit: 10));
       }

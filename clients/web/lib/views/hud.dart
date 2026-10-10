@@ -58,7 +58,7 @@ class Hud extends StatelessWidget {
               ]),
             ),
             if (!narrow) ...[
-              _Field('World', con.game.isLive || con.game.isDemo ? (eco.world?.label ?? (con.game.isDemo ? 'DEMO' : 'LIVE')) : con.game.linkLabel, alert: !con.game.isLive && !con.game.isDemo),
+              _Field('World', con.game.isLive ? (eco.world?.label ?? con.game.linkLabel) : con.game.linkLabel, alert: !con.game.isLive),
               _TickField(),
               ...buttons.map((b) => Padding(padding: const EdgeInsets.symmetric(horizontal: 3), child: b)),
               _Who(eco),
@@ -146,7 +146,7 @@ class _Who extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 14),
       decoration: const BoxDecoration(border: Border(left: BorderSide(color: C.lineLo))),
       child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-        Text(con.game.playerName.isEmpty ? 'DEMO' : con.game.playerName.toUpperCase(),
+        Text(con.game.playerName.isEmpty ? 'OPERATOR' : con.game.playerName.toUpperCase(),
             style: T.cond(size: 11, color: C.a300, spacing: 1.3)),
         Text(rank == null ? zone.toUpperCase() : '${zone.toUpperCase()} - RANK ${rank.rank.toString().padLeft(3, '0')}',
             style: T.cond(size: 11, color: C.text2, weight: FontWeight.w400, spacing: 1.3)),

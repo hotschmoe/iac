@@ -178,7 +178,7 @@ class Onboarding extends ChangeNotifier {
     _hauler = null;
     final record = prefs.guide(account)?.split('|');
     if (record == null) {
-      _active = game.issuedToken != null;
+      _active = game.newAccount;
       if (_active) _save();
     } else {
       _active = record.first == 'on';

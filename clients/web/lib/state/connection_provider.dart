@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../protocol/protocol.dart';
@@ -15,7 +16,10 @@ class ConnectParams {
   final String url;
   final String? name;
   final String? token;
-  const ConnectParams({required this.url, this.name, this.token});
+
+  /// The page URL names a server or a player: it asks for multiplayer.
+  final bool explicit;
+  const ConnectParams({required this.url, this.name, this.token, this.explicit = false});
 
   /// Port of the Rust server when the page is not served by it.
   static const defaultPort = 7777;
@@ -39,20 +43,40 @@ class ConnectParams {
     }
     final name = q['name']?.trim();
     final token = q['token'];
+    final named = name != null && name.isNotEmpty;
     return ConnectParams(
       url: url,
-      name: (name == null || name.isEmpty) ? null : name,
+      name: named ? name : null,
       token: (token == null || token.isEmpty) ? null : token,
+      explicit: named || (override != null && override.isNotEmpty),
     );
   }
 }
 
 enum ConnectionStatus { disconnected, connecting, connected, error }
 
-/// Live WebSocket connection to the Rust IAC server. Speaks the protocol in
-/// lib/protocol/protocol.dart: JSON text frames, one message per frame.
+/// Opens the line a session's frames travel on: a WebSocket to a server, or
+/// the engine running in this tab. Text frames each way, one message each.
+typedef Dial = Future<StreamChannel<dynamic>> Function();
+
+/// A WebSocket to the Rust server at [url].
+Dial webSocketDial(String url, {Duration timeout = const Duration(seconds: 5)}) => () async {
+      final channel = WebSocketChannel.connect(Uri.parse(url));
+      try {
+        await channel.ready.timeout(timeout);
+      } catch (_) {
+        // On a socket that never opened the close future may never
+        // complete, so it is not awaited.
+        unawaited(channel.sink.close().then<void>((_) {}, onError: (Object _) {}));
+        rethrow;
+      }
+      return channel;
+    };
+
+/// A session with a world. Speaks the protocol in lib/protocol/protocol.dart:
+/// JSON text frames, one message per frame, whatever carries them.
 class GameConnection {
-  WebSocketChannel? _channel;
+  StreamChannel<dynamic>? _channel;
   StreamSubscription<dynamic>? _sub;
   final _messages = StreamController<ServerMessage>.broadcast();
   final _status = StreamController<ConnectionStatus>.broadcast();
@@ -66,13 +90,12 @@ class GameConnection {
   Stream<ServerMessage> get messages => _messages.stream;
   Stream<ConnectionStatus> get status => _status.stream;
 
-  Future<void> connect(String url, {Duration timeout = const Duration(seconds: 5)}) async {
+  Future<void> connect(Dial dial) async {
     await disconnect();
     _status.add(ConnectionStatus.connecting);
     try {
-      final channel = WebSocketChannel.connect(Uri.parse(url));
+      final channel = await dial();
       _channel = channel;
-      await channel.ready.timeout(timeout);
       _connected = true;
       _status.add(ConnectionStatus.connected);
       _sub = channel.stream.listen(
@@ -81,12 +104,12 @@ class GameConnection {
             final raw = data is String ? data : String.fromCharCodes(data as List<int>);
             _messages.add(ServerMessage.decode(raw));
           } catch (e) {
-            debugPrint('WS decode error: $e');
+            debugPrint('Frame decode error: $e');
             onProtocolError?.call('$e');
           }
         },
         onError: (Object e) {
-          debugPrint('WS error: $e');
+          debugPrint('Connection error: $e');
           _connected = false;
           _status.add(ConnectionStatus.error);
         },
@@ -99,8 +122,6 @@ class GameConnection {
     } catch (e) {
       _connected = false;
       _status.add(ConnectionStatus.error);
-      _closeQuietly(_channel);
-      _channel = null;
       rethrow;
     }
   }
@@ -120,16 +141,12 @@ class GameConnection {
   Future<void> disconnect() async {
     await _sub?.cancel();
     _sub = null;
-    _closeQuietly(_channel);
+    final channel = _channel;
     _channel = null;
     _connected = false;
-  }
-
-  /// Fire-and-forget close: on a socket that never opened the close future
-  /// may never complete, so never await it.
-  void _closeQuietly(WebSocketChannel? ch) {
-    if (ch == null) return;
-    unawaited(ch.sink.close().then<void>((_) {}, onError: (Object _) {}));
+    if (channel != null) {
+      unawaited(channel.sink.close().then<void>((_) {}, onError: (Object _) {}));
+    }
   }
 
   void dispose() {

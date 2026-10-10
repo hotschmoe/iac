@@ -2,9 +2,12 @@
 // the refusal. Pure state in, state out; hosts add transport and sessions.
 
 use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
-use iac_shared::protocol::{Command, ErrorCode, FleetOdds, HarvestResource, ServerMessage, MAX_ODDS_SECTORS};
+use iac_shared::protocol::{
+    ClientMessage, Command, ErrorCode, ErrorMessage, FleetOdds, HarvestResource, ServerMessage, MAX_ODDS_SECTORS,
+};
 
 use crate::engine::{AuthError, FleetStatus, GameEngine};
+use crate::views;
 
 /// What a command produced for its sender: an optional answer, an optional
 /// refusal (code plus a sentence saying which fleet, sector or queue is at fault).
@@ -49,6 +52,48 @@ impl GameEngine {
         let error = result.err().map(|code| (code, command_error_message(self, pid, &cmd, code)));
         CommandOutcome { reply, error }
     }
+
+    /// Everything a session logged in as `pid` is sent for one message, in
+    /// order. Logging in is the host's own step: it knows what an account
+    /// must present.
+    pub fn answer(&mut self, pid: u64, msg: ClientMessage) -> Vec<ServerMessage> {
+        match msg {
+            ClientMessage::Auth(_) => vec![refusal(ErrorCode::AlreadyAuthenticated, "Already authenticated")],
+            ClientMessage::Command(cmd) => {
+                let outcome = self.execute(pid, cmd);
+                let error = outcome.error.map(|(code, message)| refusal(code, &message));
+                outcome.reply.into_iter().chain(error).collect()
+            }
+            ClientMessage::PolicyUpdate(update) => self
+                .handle_policy_update(pid, update.fleet_id, update.preset, update.params)
+                .err()
+                .map(|code| refusal(code, "PolicyUpdate failed"))
+                .into_iter()
+                .collect(),
+            ClientMessage::RequestFullState => {
+                views::full_state(self, pid).map(ServerMessage::FullState).into_iter().collect()
+            }
+        }
+    }
+}
+
+/// Whether `cmd` only asks: it is answered and leaves the world as it was.
+pub fn is_query(cmd: &Command) -> bool {
+    matches!(cmd, Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. })
+}
+
+/// What a session that has not logged in is sent for anything but `auth`.
+pub fn not_logged_in(msg: &ClientMessage) -> Option<ServerMessage> {
+    match msg {
+        ClientMessage::Command(_) | ClientMessage::PolicyUpdate(_) => {
+            Some(refusal(ErrorCode::AuthFailed, "Not authenticated"))
+        }
+        ClientMessage::Auth(_) | ClientMessage::RequestFullState => None,
+    }
+}
+
+fn refusal(code: ErrorCode, message: &str) -> ServerMessage {
+    ServerMessage::Error(ErrorMessage { code, message: message.to_string() })
 }
 
 /// The error code and sentence for a refused login.

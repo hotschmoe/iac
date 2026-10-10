@@ -13,8 +13,9 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | `shared/` | `iac-shared`: protocol, constants, scaling, hex math, world generation |
 | `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, built-in bots, headless runner `sim-run`); no I/O, builds for WebAssembly |
 | `server/` | `iac-server`: a thin host around `iac-sim`: WebSocket network, SQLite persistence, the 1 Hz tick timer |
+| `solo/` | `iac-solo`: the single-player host around `iac-sim`: one world, its bots and one commander, compiled to WebAssembly and run in a browser worker (`solo/web/worker.js`) with the save in IndexedDB |
 | `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
-| `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server` |
+| `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server`, or bundled with `iac-solo` as a static single-player build |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
 | `tools/` | `playtest/` (live multi-agent sessions) and `check_sim_constants.py` (Rust economy numbers vs `docs/design/economy/sim.py`) |
 | `SPEC.md` | Original technical specification (world model, combat, economy, networking) |
@@ -26,6 +27,13 @@ the WebSocket from the server on one port, printing the LAN URL):
 
 ```sh
 scripts/play.sh              # wasm build, falls back to JS; --js / --no-build; PORT=7777 default
+```
+
+Single player, no server at all (the client and the engine in one browser tab,
+against the built-in bots; see "Single player" below):
+
+```sh
+scripts/play.sh --single-player   # builds clients/web/build/single-player and serves it on 127.0.0.1:7777
 ```
 
 Or manually:
@@ -216,8 +224,9 @@ the Rust wire protocol over `/ws` on the page's own host and port.
   does not have (or storage is blocked), the login form asks for it. A new
   token is also shown once, with a copy button, in the operator guide and
   under Alerts.
-- If the server is unreachable it falls back to an offline DEMO mode and keeps
-  retrying in the background.
+- If the server is unreachable the page says so and keeps trying. There is no
+  offline demo any more: offline play is the single-player build, on the real
+  engine.
 - **Operator guide.** A new account gets a one-line guide under the HUD that
   walks the first steps (save the token, queue a building, scan, jump,
   harvest, unload, standing orders) and a "First hour" list on the Overview.
@@ -234,6 +243,73 @@ the Rust wire protocol over `/ws` on the page's own host and port.
 ```sh
 cd clients/web && flutter pub get && flutter analyze && flutter test
 flutter run -d chrome   # dev UI; append ?ws=ws://localhost:7777/ws to reach a running server
+```
+
+### Single player
+
+`scripts/play.sh --single-player` builds a static bundle in
+`clients/web/build/single-player`: the same web client, plus `solo/iac_solo.wasm`
+(the real engine and its bots) and `solo/worker.js`. Nothing in it needs a
+server; put the directory on any static file host (`BASE_HREF=/path/` when it
+will not sit at the root) or let the script serve it (`HOST`, `PORT`;
+`--no-serve` only builds). It needs `rustup target add wasm32-unknown-unknown`
+and Flutter; no other tool.
+
+- **New game.** Commander name, pace (the server's presets, fixed for the life
+  of the world), how many built-in bots (0 to 23; a world has 24 home seats)
+  and how they play: check-in, hybrid, hands-on, or every pattern in turn.
+  Short worlds (sprint and faster) default to hands-on bots, because a check-in
+  bot looks in four times a day of ticks at any pace.
+- **Same game, same protocol.** The engine runs in a Web Worker and the page
+  talks to it in the server's JSON, frame for frame, so everything above the
+  transport is the multiplayer client. There is no password: the world has one
+  commander and the browser holds it.
+- **What is saved.** The whole world (your empire, every bot and what it
+  remembers, the map as each has charted it), in this browser's IndexedDB, one
+  world per browser. An order is saved within two seconds; otherwise every four
+  minutes, when the tab is hidden, and every twenty seconds while catching up.
+  A tab killed mid-save keeps the save before it. Losing the latest save loses
+  no play except orders younger than it: the ticks since are played again on
+  reload and come out the same.
+- **What is not saved.** Nothing leaves the browser: clearing site data, a
+  private window or another browser means another (or no) world. There is no
+  export or import yet. The console's log and alert list are rebuilt per
+  session, as in multiplayer.
+- **A closed tab.** The world does not run while the page is closed, and the
+  time away is owed: on reopening, **Continue** plays the missed ticks before
+  you take command, one second of the world per tick as always, with the bots
+  and your standing orders acting on every one of them, raids included. It is
+  the same simulation, only not drawn, so what you find is what you would have
+  found had the tab stayed open. Progress, speed and time left are shown, and
+  **Take command now** stops there: the ticks still owed are dropped and never
+  happen. At most seven days are caught up; the rest of a longer absence is
+  dropped the same way. Either way a report says how long you were away, how
+  much of it the world played, what finished and what was lost, first on the
+  way in and again under Alerts. A machine that slept with the tab open is
+  handled the same way.
+- **How long catching up takes** depends on how busy the world is. Measured in
+  V8 on the development machine: a week of a persistent world with 8 check-in
+  bots in 11 s (57,000 ticks a second); a week of a season world with 8
+  check-in bots in 5.5 minutes (1,900 ticks/s), with 20 in 17 minutes (600); a
+  blitz world with 8 hands-on bots at 350 ticks/s over its first two hours and
+  180 in its third. Fewer and less attentive bots catch up faster.
+- **One tab.** A second tab on the same browser is told the world is open
+  elsewhere and does not run it.
+- **A save from another version** (save format, economy or world generation)
+  is refused with the reason, as the server refuses such a database; it stays
+  stored until a new game replaces it.
+- **Abandon this world** on the front door deletes the save after asking.
+- **Multiplayer from the same bundle.** `?ws=` or `?name=` in the URL, or
+  "Connect to a server instead", goes to a server's login as usual.
+- The bundle loads nothing from other hosts except that the Flutter engine
+  asks `fonts.gstatic.com` for its default Roboto, as the multiplayer client
+  always has; unreachable, nothing changes (the console draws in the bundled
+  Plex).
+
+```sh
+scripts/play.sh --single-player --no-serve          # just the bundle
+cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium (about two minutes)
+cargo test -p iac-solo                               # the host natively, through the same door of bytes
 ```
 
 ### Protocol fixtures
@@ -490,14 +566,16 @@ cargo clippy --workspace
 cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7   # every style once and an idle control; a world seats 24
 cargo run -p iac-sim --release --bin sim-run -- --pace blitz --hours 1 --seat all:hands-on --seat idle --json
 
-# The engine must build for the browser (no bindings yet)
-cargo build -p iac-sim --target wasm32-unknown-unknown --release
+# The engine must build for the browser: iac-solo is that build
+cargo build -p iac-solo --target wasm32-unknown-unknown --release
 ```
 
 Crates: `iac-shared` (`shared/`) (protocol, constants, scaling, hex math, worldgen) ·
 `iac-sim` (`sim/`) (every game rule and all world state: no I/O, no async, no clock; time is ticks, every random draw is seeded) ·
-`iac-server` (network, SQLite, tick timer around `iac-sim`) · `iac-client` (ratatui TUI +
-headless mode).
+`iac-server` (network, SQLite, tick timer around `iac-sim`) · `iac-solo` (`solo/`) (the
+single-player host: a session, a clock fed by its caller, the catch-up after an absence
+and the save document, behind one function of bytes; three exports as WebAssembly, no
+bindings generator) · `iac-client` (ratatui TUI + headless mode).
 
 `iac-sim` talks to its host through three seams: `GameEngine::execute` (a protocol
 `Command` in, reply or refusal out), `views::{full_state, tick_update}` (what a player

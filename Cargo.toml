@@ -1,5 +1,5 @@
 [workspace]
-members = ["shared", "sim", "server", "clients/tui"]
+members = ["shared", "sim", "solo", "server", "clients/tui"]
 resolver = "2"
 
 # The determinism tests run tens of thousands of ticks; unoptimised they take minutes.

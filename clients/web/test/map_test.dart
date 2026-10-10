@@ -34,9 +34,7 @@ class FakeGame extends GameController {
   @override
   GameState get state => fake;
   @override
-  bool get isDemo => true;
-  @override
-  bool get isLive => false;
+  bool get isLive => true;
   @override
   bool get hasState => true;
   @override
