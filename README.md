@@ -187,9 +187,22 @@ the Rust wire protocol over `/ws` on the page's own host and port.
   server. The token the server issues is remembered in the browser's
   `localStorage` per server and name; if a name needs a token the browser
   does not have (or storage is blocked), the login form asks for it. A new
-  token is also shown once in the event log and alerts, so you can copy it.
+  token is also shown once, with a copy button, in the operator guide and
+  under Alerts.
 - If the server is unreachable it falls back to an offline DEMO mode and keeps
   retrying in the background.
+- **Operator guide.** A new account gets a one-line guide under the HUD that
+  walks the first steps (save the token, queue a building, scan, jump,
+  harvest, unload, standing orders) and a "First hour" list on the Overview.
+  Each step is ticked by what happens in the game, in any order. `Skip guide`
+  turns it off; `?` (Keys and settings) turns it back on. Progress is kept per
+  account in the browser.
+- **Notifications.** While the tab is in the background, a finished or idle
+  queue, a raid (announced, 60 ticks out, resolved), a lost fleet, a critical
+  alert or full storage is counted in the tab title, `(2) IN AMBER CLAD`, and,
+  if you turned notifications on, raised as a browser notification. The
+  browser is asked for permission only when you press the button for it (the
+  one-time offer after your first order starts, or `?` > Notifications).
 
 ```sh
 cd clients/web && flutter pub get && flutter analyze && flutter test

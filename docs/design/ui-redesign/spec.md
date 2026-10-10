@@ -395,6 +395,8 @@ Prototype references are given as `P:` where a working screen exists.
 - **Session hooks:** tab title badge `(2) IAC`, favicon dot, optional browser notifications (permission requested in context after the first queue completes: "Tell me when this finishes?"), an optional email/webhook later. **While you were away:** on login, a summary card from persisted events since last logout (queues finished, fleets' log highlights, raids).
 - **Keys:** `N` opens the bell drawer, `Esc` closes, `Shift+N` marks all read.
 
+Status 2026-10-10: the session hooks are built as the v1 of question 5 in section 11 (tab title count and opt-in browser notifications, no email, webhook or push). The offer is made when the first order starts, which is when "tell me when this finishes" can still be answered. Not built: favicon dot, "while you were away" at login (needs 8.5 `events_since`), the bell drawer, combat report and persistent critical toasts. See `docs/journal.md`, "web client operator guide and background notices".
+
 ---
 
 ## 6. Onboarding: the first five minutes
@@ -416,6 +418,15 @@ Goals: a new human performs the three loops of the game (economy, piloting, auto
 | 5:00 | **Checklist card** pinned on the Overview ("First hour"): Upgrade Metal Mine to 3, Scan, Harvest, Set autopilot, Build a Corvette, Say hi in chat, Reach distance 6. Items tick with a chime. | Comms and Rank appear in the rail with a dot once the first four are done (progressive disclosure; they are always reachable from the palette). |
 
 Principles: never block input; every coach-mark has *Skip all*; no popup stacks (one at a time); the tutorial must tolerate the player doing things in a different order; disabled things still explain themselves (P7); idle-queue and low-fuel prompts do the teaching afterwards. Playtest evidence: players guessed at the tech tree, never boarded a derelict, lost fleets at the outer-ring edge. Beats 4:00-4:30 and the odds labels exist for exactly those.
+
+Status 2026-10-10: built as the "operator guide" in `clients/web`, in the Amber Console voice (a `NOTE` line in Plex Mono, not Newsreader). Differences from the table above:
+
+- The sentence sits in a strip under the HUD and the control it means carries corner brackets, instead of a callout floating beside the control. A strip in its own row cannot cover a control on the windshield, where every edge is in use.
+- The token card has *Copy* but no *Download .txt*.
+- Autopilot is set through the command palette (the strip's button opens it with `policy mine` typed), because there is no Fleets > Orders screen yet.
+- Beats 4:00 (safe first fight) and 4:30 (first derelict) are first-hour goals, not guided steps: the server does not seed them near a new homeworld (8.5). The jump lesson marks the quiet gates and names RISKY and DEADLY, which is the danger teaching available without that.
+- The checklist drops "Say hi in chat" (no chat) and adds the guided steps, "Board a derelict" and "Win a fight". "Reach distance 6" is counted in hops from home. Comms and Rank do not exist to be disclosed.
+- The login beat (shortened boot, save-your-key card before the Overview) is unchanged apart from the token card, which is the first step of the strip.
 
 ---
 
