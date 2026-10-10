@@ -62,7 +62,10 @@ pub fn auth_failure(name: &str, err: AuthError) -> (ErrorCode, String) {
             format!("player '{name}' is already registered; present its token to log in"),
         ),
         AuthError::InvalidToken => (ErrorCode::InvalidToken, format!("token rejected for player '{name}'")),
-        AuthError::Server => (ErrorCode::ServerError, "could not create the account".to_string()),
+        AuthError::WorldFull => (
+            ErrorCode::WorldFull,
+            format!("this world is full: all {} home seats are taken", iac_shared::world::home_seats().count()),
+        ),
     }
 }
 

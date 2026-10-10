@@ -88,6 +88,7 @@ fn main() {
         let (class, count, mult) = npc_composition(d);
         json!({
             "dist": d, "power": npc_power(d), "class": format!("{class:?}"), "count": count, "mult": mult,
+            "group_power": ship_power(class) * mult * f32::from(count),
             "presence": npc_presence_pct(d) / 100.0, "passive": npc_passive_share(d),
             "respawn_h": npc_respawn_hours(d), "threat": threat_rating(npc_power(d)),
         })

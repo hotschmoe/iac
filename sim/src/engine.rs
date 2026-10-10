@@ -18,7 +18,7 @@ use iac_shared::constants::{
     FUEL_RATE_PER_MASS, FUEL_DEUT_PER_UNIT,
     NPC_PATROL_INTERVAL, SALVAGE_DESPAWN_TICKS, HOME_SALVAGE_WARN_TICKS, DERELICT_RESPAWN_TICKS, HARVEST_REPORT_TICKS,
     TEMPLATE_NPC_ID_BASE,
-    HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST, MOVE_BASE_COOLDOWN,
+    MOVE_BASE_COOLDOWN,
     SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_SCOUT_RANGE, SCAN_REVEAL_TICKS,
     RAID_ROLL_INTERVAL, RAID_ROLL_CHANCE, RAID_PITY_STEP, RAID_LOST_SHIP_FRACTION, RAID_MIN_INTERVAL,
     RAID_MIN_PLAYER_AGE, RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX,
@@ -30,7 +30,7 @@ use iac_shared::constants::{
     defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
-use iac_shared::world::WorldGen;
+use iac_shared::world::{self, WorldGen};
 use iac_shared::scaling::{
     self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION, DefenceKind, ShipyardItem,
@@ -52,8 +52,6 @@ use crate::snapshot::Snapshot;
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
 pub const MAX_NPC_SHIPS: usize = scaling::NPC_MAX_SHIPS;
 pub const MAX_COMBAT_FLEETS: usize = 8;
-/// Rings beyond `HOMEWORLD_MAX_DIST` a new homeworld may spill into once the home band is full.
-const HOMEWORLD_SPILL_RINGS: u16 = 4;
 /// Part-refilled tiles are written to disk this often (ticks).
 const REGEN_PERSIST_TICKS: u64 = 60;
 
@@ -455,7 +453,7 @@ pub enum AuthError {
     InvalidName(String),
     TokenRequired,
     InvalidToken,
-    Server,
+    WorldFull,
 }
 
 /// See `GameEngine::home_route`.
@@ -1380,7 +1378,7 @@ impl GameEngine {
             }
 
             let connections = self.world_gen.connected_neighbors(npc.location);
-            let conns = connections.slice();
+            let conns: Vec<Hex> = connections.slice().iter().copied().filter(|c| !world::is_home_ground(*c)).collect();
             if conns.is_empty() { continue; }
 
             let idx = rng.random_range(0..conns.len());
@@ -2140,7 +2138,7 @@ impl GameEngine {
     ) -> Result<Authenticated, AuthError> {
         let Some(player_id) = self.find_player_by_name(name) else {
             auth::validate_name(name).map_err(AuthError::InvalidName)?;
-            let player_id = self.register_player(name.to_string()).map_err(|_| AuthError::Server)?;
+            let player_id = self.register_player(name.to_string()).map_err(|_| AuthError::WorldFull)?;
             if let Some(p) = self.players.get_mut(&player_id) {
                 p.agent = agent;
             }
@@ -2188,14 +2186,16 @@ impl GameEngine {
     }
 
     /// Creates the account. The name must be unused; `authenticate` is the
-    /// entry point that decides between registering and logging in.
+    /// entry point that decides between registering and logging in. A world
+    /// whose home seats are all taken refuses with `WorldFull` and is left
+    /// untouched.
     pub fn register_player(&mut self, name: String) -> Result<u64, ErrorCode> {
         if self.find_player_by_name(&name).is_some() {
             return Err(ErrorCode::InvalidCommand);
         }
 
+        let homeworld = self.next_home_seat().ok_or(ErrorCode::WorldFull)?;
         let player_id = self.next_id();
-        let homeworld = self.find_homeworld_location(player_id).ok_or(ErrorCode::ServerError)?;
 
         let player = Player {
             id: player_id,
@@ -4134,35 +4134,18 @@ impl GameEngine {
         }).count()
     }
 
-    /// Seeded from the world and the new player's id, so a world replays the
-    /// same placements (tests, catch-up) while each world and player differ.
-    fn find_homeworld_location(&self, player_id: u64) -> Option<Hex> {
-        let mut rng = StdRng::seed_from_u64(
-            self.world_gen.world_seed ^ player_id.wrapping_mul(0x9E3779B97F4A7C15)
-        );
-
-        let min = HOMEWORLD_MIN_DIST as i32;
-        // A crowded home band spills outward one ring at a time; a world below
-        // the band's capacity never reaches the extra rings, so its placements
-        // are exactly what they were.
-        for spill in 0..=HOMEWORLD_SPILL_RINGS {
-            let max = (HOMEWORLD_MAX_DIST + spill) as i32;
-            for _ in 0..100 {
-                let dist = rng.random_range(min..=max) as u16;
-                let q = rng.random_range((-(dist as i32))..=(dist as i32)) as i16;
-                let r_min = (-(dist as i32)).max(-q as i32 - dist as i32) as i16;
-                let r_max = (dist as i32).min(-q as i32 + dist as i32) as i16;
-                let r = rng.random_range(r_min..=r_max);
-
-                let candidate = Hex { q, r };
-                let d = candidate.dist_from_origin();
-                if !(HOMEWORLD_MIN_DIST..=HOMEWORLD_MAX_DIST + spill).contains(&d) { continue; }
-
-                let too_close = self.players.values().any(|p| Hex::distance(&p.homeworld, &candidate) <= 1);
-                if !too_close { return Some(candidate); }
-            }
-        }
-        None
+    /// The free home seat farthest from every occupied one, so arrivals
+    /// spread out and nobody picks. Equally far seats are split by a draw
+    /// from the world seed: each world fills in its own order, and a world
+    /// replays the same one. None when every seat is taken.
+    fn next_home_seat(&self) -> Option<Hex> {
+        let homes: Vec<Hex> = self.players.values().map(|p| p.homeworld).collect();
+        world::home_seats()
+            .filter(|seat| !homes.contains(seat))
+            .max_by_key(|seat| {
+                let nearest = homes.iter().map(|home| Hex::distance(home, seat)).min();
+                (nearest.unwrap_or(u16::MAX), self.world_gen.sector_seed(*seat))
+            })
     }
 
     fn check_homeworld_docking(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {

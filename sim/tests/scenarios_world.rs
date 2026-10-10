@@ -1,19 +1,24 @@
 // Scenarios that run the engine over time against the world around a
 // homeworld: wreckage and what the chart remembers of it, doctrines that
-// roam charted space, and ore tiles that empty and refill.
+// roam charted space, ore tiles that empty and refill, and where a world
+// seats its empires and what it keeps away from them.
 
 #[allow(dead_code)]
 mod common;
 
 use common::*;
 use iac_shared::constants::{
-    Density, Resources, ShipClass, HOME_SALVAGE_WARN_TICKS, SALVAGE_DESPAWN_TICKS, SCAN_REVEAL_TICKS,
+    Density, Resources, ShipClass, Zone, DEFAULT_WORLD_SEED, HOME_SALVAGE_WARN_TICKS, SALVAGE_DESPAWN_TICKS,
+    SCAN_REVEAL_TICKS,
 };
-use iac_shared::hex::Hex;
-use iac_shared::protocol::{Command, EventKind, HarvestResource, PolicyParams, PolicyPreset};
+use iac_shared::hex::{hex_ring, hex_spiral, Hex};
+use iac_shared::pace::Pace;
+use iac_shared::protocol::{Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset, ThreatBasis};
 use iac_shared::scaling;
 use iac_shared::world::NpcBehaviorType::Passive;
-use iac_sim::engine::SectorOverride;
+use iac_shared::world::{home_seats, is_home_seat};
+use iac_sim::commands::auth_failure;
+use iac_sim::engine::{template_npc_id, AuthError, SectorOverride};
 
 fn salvage_events(events: &[iac_shared::protocol::GameEvent]) -> Vec<iac_shared::protocol::SalvageDespawnedEvent> {
     events
@@ -396,4 +401,112 @@ fn a_mining_run_keeps_its_claims_within_range_of_home_as_each_one_runs_dry() {
         }
     }
     assert!(dried > 0, "the run claimed sectors to exhaust");
+}
+
+fn settle(engine: &mut iac_sim::GameEngine, name: &str) -> Hex {
+    let (pid, _) = join(engine, name);
+    engine.players[&pid].homeworld
+}
+
+fn new_world(seed: u64) -> iac_sim::GameEngine {
+    iac_sim::GameEngine::new(seed, Pace::parse("persistent").expect("known pace"))
+}
+
+#[test]
+fn a_world_spreads_its_empires_over_the_seats_then_refuses_the_next_one_untouched() {
+    let mut engine = world("persistent");
+    let seats: Vec<Hex> = home_seats().collect();
+    let founder = engine.authenticate("Founder", None, false, || "t".repeat(64)).expect("the first seat");
+    let mut homes = vec![engine.players[&founder.player_id].homeworld];
+    assert!(is_home_seat(homes[0]));
+    while homes.len() < seats.len() {
+        let widest = seats
+            .iter()
+            .filter(|seat| !homes.contains(seat))
+            .map(|seat| homes.iter().map(|home| Hex::distance(home, seat)).min())
+            .max()
+            .unwrap();
+        let home = settle(&mut engine, &format!("Settler{}", homes.len()));
+        assert!(is_home_seat(home) && !homes.contains(&home), "{home} is not a free seat");
+        assert_eq!(homes.iter().map(|h| Hex::distance(h, &home)).min(), widest, "a wider seat than {home} was free");
+        homes.push(home);
+    }
+
+    let full = engine.snapshot().hash();
+    let refused = engine.authenticate("Latecomer", None, false, || unreachable!());
+    assert_eq!(refused.err(), Some(AuthError::WorldFull));
+    let (code, text) = auth_failure("Latecomer", AuthError::WorldFull);
+    assert_eq!(code, ErrorCode::WorldFull);
+    assert!(text.contains("world is full") && text.contains(&seats.len().to_string()), "{text}");
+    assert_eq!(engine.snapshot().hash(), full, "a refused join leaves the world as it was");
+    let back = engine.authenticate("Founder", founder.new_token.as_deref(), false, || unreachable!());
+    assert!(back.is_ok_and(|a| a.player_id == founder.player_id), "a full world still admits its own");
+
+    let seating = |seed: u64| {
+        let mut other = new_world(seed);
+        let homes: Vec<Hex> = (0..seats.len()).map(|i| settle(&mut other, &format!("Settler{i}"))).collect();
+        (homes, other)
+    };
+    assert_eq!(seating(SEED).0, homes, "a world replays its own seating");
+    let (elsewhere, other) = seating(SEED + 1);
+    assert_ne!(elsewhere, homes, "another world seats its empires in another order");
+    let rerouted = hex_spiral(Hex::ORIGIN, 12)
+        .filter(|at| engine.world_gen.sector_connections(*at) != other.world_gen.sector_connections(*at))
+        .count();
+    assert!(rerouted > 100, "another world has its own lanes: {rerouted} sectors differ");
+}
+
+#[test]
+fn home_ground_is_quiet_and_an_unscouted_lair_is_as_strong_as_the_chart_says() {
+    for seed in [SEED, SEED + 1, DEFAULT_WORLD_SEED] {
+        let mut engine = new_world(seed);
+        let (pid, _) = join(&mut engine, "Surveyor");
+        for seat in home_seats() {
+            assert!(!engine.world_gen.generate_sector(seat).has_derelict, "a derelict on seat {seat}");
+            for at in std::iter::once(seat).chain(seat.neighbors()) {
+                let pack = engine.world_gen.generate_sector(at).npc_template;
+                assert!(pack.is_none_or(|t| t.behavior == Passive), "a hostile pack at {at}, on or beside seat {seat}");
+            }
+        }
+
+        let mut lairs = 0;
+        for at in hex_spiral(Hex::ORIGIN, 36) {
+            let Some(pack) = engine.world_gen.generate_sector(at).npc_template else { continue };
+            let told = engine.known_threat(pid, at);
+            if told.basis != ThreatBasis::Estimate {
+                continue;
+            }
+            lairs += 1;
+            assert!(
+                (told.est_power - pack.power()).abs() <= 1e-3 * pack.power(),
+                "{at}: the chart says {} and a {} of {} waits",
+                told.est_power,
+                pack.label(),
+                pack.power()
+            );
+            let inner = Zone::from_distance(at.dist_from_origin()) == Zone::InnerRing;
+            assert!(!inner || pack.ship_class == ShipClass::Scout, "a {} in the Inner Ring at {at}", pack.label());
+        }
+        assert!(lairs > 1000, "the gradient was walked: {lairs} lairs");
+    }
+}
+
+#[test]
+fn a_starter_fleet_wins_through_the_inner_ring_and_dies_past_it() {
+    for (ring, survives) in [(7, true), (8, true), (9, false), (10, false)] {
+        let mut engine = world("persistent");
+        let (pid, fid) = join(&mut engine, "Rookie");
+        let at = hex_ring(Hex::ORIGIN, ring)
+            .find(|at| engine.world_gen.generate_sector(*at).npc_template.is_some_and(|t| t.behavior != Passive))
+            .expect("a hostile lair in the ring");
+        deploy(&mut engine, fid, at, None);
+        let ours = iac_sim::engine::fleet_power(&engine.fleets[&fid]);
+        let odds = scaling::ratio_label(ours / engine.sector_threat(at).est_power);
+        let outcome = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) });
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        run_until(&mut engine, 2000, |e| e.active_combats.is_empty());
+        let alive = engine.fleets.get(&fid).is_some_and(|f| f.ship_count > 0);
+        assert_eq!(alive, survives, "ring {ring}, rated {}", odds.label());
+        assert_eq!(odds >= scaling::RatioLabel::Even, survives, "ring {ring} was rated {}", odds.label());
+    }
 }
