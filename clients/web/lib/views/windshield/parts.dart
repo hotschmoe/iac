@@ -674,16 +674,19 @@ class GateCard extends StatelessWidget {
         }
         body.add(Padding(
           padding: const EdgeInsets.fromLTRB(6, 3, 6, 4),
-          child: Row(children: [
-            if (intel.live) const Lamp('LIVE', color: C.own, blink: true) else Text('SEEN ${ago(intel.ticksOld).toUpperCase()} AGO', style: T.mono(size: 9.5, color: intel.aged ? C.fossil : C.text3)),
-            if (salvagePinVisible(sector, tick))
-              Text(
-                  despawnLabel(sector, tick) == null
-                      ? ' +SALV'
-                      : ' +SALV ${clockFmt(salvageSecondsLeft(sector, tick)!)}',
-                  style: T.mono(size: 9.5, color: C.a400)),
-            if (sector?.site != null) Text(' +DRLCT', style: T.mono(size: 9.5, color: C.rare)),
-            const Spacer(),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Expanded(
+              child: Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
+                if (intel.live) const Lamp('LIVE', color: C.own, blink: true) else Text('SEEN ${ago(intel.ticksOld).toUpperCase()} AGO', style: T.mono(size: 9.5, color: intel.aged ? C.fossil : C.text3)),
+                if (salvagePinVisible(sector, tick))
+                  Text(
+                      despawnLabel(sector, tick) == null
+                          ? ' +SALV'
+                          : ' +SALV ${clockFmt(salvageSecondsLeft(sector, tick)!)}',
+                      style: T.mono(size: 9.5, color: C.a400)),
+                if (sector?.site != null) Text(' +DRLCT', style: T.mono(size: 9.5, color: C.rare)),
+              ]),
+            ),
             Text('-${fuel}F', style: T.mono(size: 9.5, color: C.text3)),
           ]),
         ));

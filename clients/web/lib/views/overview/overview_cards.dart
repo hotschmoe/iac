@@ -393,10 +393,14 @@ Widget _queuedRows(List<QueuedItemView> items, {int first = 2}) {
         Container(
           padding: const EdgeInsets.symmetric(vertical: 3),
           decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.lineLo))),
-          child: Row(children: [
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SizedBox(width: 22, child: Text('Q${i + first}', style: T.mono(size: 10, color: C.a600))),
-            Expanded(child: Text(items[i].name.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: C.text2))),
-            Text(items[i].waits, style: T.mono(size: 10, color: C.text3)),
+            Expanded(
+              child: Wrap(alignment: WrapAlignment.spaceBetween, spacing: 8, children: [
+                Text(items[i].name.toUpperCase(), style: T.mono(size: 10, color: C.text2)),
+                Text(items[i].waits, style: T.mono(size: 10, color: C.text3)),
+              ]),
+            ),
           ]),
         ),
     ]),
