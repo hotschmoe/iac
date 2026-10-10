@@ -1697,3 +1697,213 @@ What moved, and what did not:
 
 Not rerun: the blitz hour table, the look-ins-per-day sweep and the persistent-pace
 check of the first report.
+
+## 2026-10-10: standing orders that do their jobs, and a fuel budget
+
+Owner target (decisions.md, play styles): delegated exploring, salvage and mining
+earn roughly 50 to 70% of hands-on piloting. Before this a check-in empire delivered
+12 to 27% of a pilot's charts, hauled 0 to 2% and counted 0 to 40% of the field
+score. No cost, time, production, loot, point value, cap, ship stat, combat rule, NPC
+group or odds was changed. Branch `worktree-agent-a1f425bf64f31a5f0`, not merged.
+
+**How it was found.** A scratch runner seats bots on the real engine and counts every
+`PolicyAction` by doctrine, action and reason, and fleet-time by doctrine, place and
+state. Three days of four check-in empires before the work: 64 to 85% of fleet-time
+docked with no orders at all, most of the rest holding.
+
+**Doctrine defects (engine), each with a scenario in `sim/tests/`.**
+- *`mine_and_return` shuttled between stripped seams.* A tile that had refilled by a
+  fraction of a unit counted as ore: 9012 harvests and 8824 jumps in three days for
+  0.5 points. A sector under 3 units is stripped (`POLICY_MIN_SEAM_UNITS`); a seam or
+  a wreck is flown to only if what the hold can take is worth 1.5 times the deuterium
+  of the jumps there and back at score weight (`POLICY_FUEL_PAYBACK`); the next seam
+  is staked from where the fleet stands.
+- *A target behind a refused sector pinned the fleet.* Targets were the nearest by
+  lane from home whatever the odds on the way; the fleet then refused the way once a
+  minute for good (one salvage fleet: 2408 refusals in three days); a miner whose
+  nearest ore lay behind one never left the dock. One view per evaluation (`Reach`: the fleet's
+  odds per sector, the groups on the map, free hold, price of a jump) searches through
+  the sectors the doctrine may enter; when nothing is left the hold names the nearest
+  target it could not have and what stops it.
+- *Fights it need not take.* Hull is never repaired. A lane with no fight on it is
+  taken before a shorter one with a fight the fleet would win, and `mine_and_return`
+  and `salvage_and_sites` pick no target among hostiles that attack on sight. A fight
+  on the only lane is still taken at the engage ratio: the entry rule is unchanged.
+- *Shields.* They return after ten idle ticks; a doctrine acted every three, so after
+  its first fight a fleet flew the rest of the sortie with shields down. It waits for
+  95% (`POLICY_SHIELDS_READY`).
+- *`patrol_home`* walked a random beat within two hops for ever (it finds contacts
+  without looking), ignored `max_range`, left its wrecks and went home to lick wounds
+  docking does not heal. It hunts the nearest group inside `max_range` that it rates
+  at its ratio, scoops the wreck, waits at the dock. `POLICY_PATROL_RADIUS` and
+  `POLICY_PATROL_MIN_HULL` are gone.
+- *The way home* fell back to the shortest lane whatever the odds. Now: a lane at the
+  engage ratio, else the mildest down to RISKY and the reason says so, never DEADLY:
+  the fleet holds ("cut off from home") and its owner gets a Warning alert.
+- *A full store.* Cargo the stockpile could not take stayed aboard, and the fleet
+  flew out and straight back with it for as long as the store was full. It stays
+  docked until it has unloaded.
+- *`prospect`* looked for sectors never entered; a chart lost with its carrier was
+  never fetched again. It looks for charts neither banked nor aboard a fleet.
+
+Five of the new scenarios were checked the other way round: with the shield wait, the
+unload wait, the quiet-lane preference and the fuel payback switched off they fail.
+
+**Fuel budget (protocol).** `PolicyParams.fuel_budget_pct`, 0 to 100, default 20, 100
+lifts the bound. The fleet earns an allowance at that share of the current deuterium
+production and saves up to one tank's price. The tank is filled in one go when
+allowance and stockpile cover it; until then the fleet holds at the dock and says how
+long; it does not leave on orders with a part tank. A full deuterium store fills it
+free of the allowance. A fleet without orders refuels as before. Two numbers on the
+policy (credit, tick settled), nothing per tick; in `Snapshot` and `fleet_policies`
+(`fuel_budget_pct`, `fuel_credit`, `fuel_since`; rows from before load as 100). The
+restart test through SQLite runs with budgets and ends on the unhosted world's hash.
+Fixtures regenerated; Dart mirror; web `policy mine range=8 fuel=40 ...`; TUI `P`;
+`play.py` help and hold grouping; RULES and README.
+- *The allowance starts empty.* A first version gave one tank with the first orders.
+  It is paid from the 100 deuterium an empire starts with: in one of twelve check-in
+  field seats (raider, seed 3) the 8 deuterium it took left the stock short of the
+  next order with no income to make it up, and the empire sat at 2.5 points all week
+  with full stores. That is the bot planner's deadlock (an order waiting on deuterium
+  and no synthesizer queued), but the budget exists to keep fuel away from it.
+
+**Bots (what was the bot's fault).**
+- Their own fuel rule (delegate only while half the deuterium production covers a
+  jump every four ticks) is removed: it stood in for the missing bound and was why
+  most wings sat docked without orders. Budgets: 50% for doctrines that haul, 20 for
+  those that fly for points.
+- `max_range` 8 for mining; now 30 for every wing (odds and fuel are the leash).
+- A doctrine out of work held until the map changed. A fleet docked with a full tank
+  as a look-in ends gets its wing's other doctrine (mine and salvage swap; survey and
+  strike fall back to salvage) and swaps back when that runs dry.
+- Every doctrine but the patrol flew at 1.5 whatever the fleet. The ratio is the odds
+  at which a doctrine fights where it has to. `prospect` has to (a lair's chart is in
+  the lair) and a wing with warships rates 1.5 where every lane has a fight: at 1.5
+  the explorer's recovery wing lost 27 to 66 ships a week, and with the cap ignored
+  the survey wings lost 463 and 340. Those two now fly at 2.5 (SAFE) once they have
+  four ships; hauling wings of scouts and haulers pick no fight for a payday and keep
+  1.5: at 2.5 they lost a fifth to three quarters of their haul to save one to five
+  ships a week.
+- Not changed: wings that fly for points stay home once the cap is banked, as a
+  pilot's do, so a check-in empire's charts and kills stop where its cap is.
+
+**Measured.** Season, 7 days, seeds 1 to 3, the same 16 seats, before (master with the
+refuelling count added to `sim-run`) and after. Mean (min-max over seeds).
+
+| style | total | core | combat | explore | haul | charts | ships lost | refuel, k deuterium |
+|---|---|---|---|---|---|---|---|---|
+| miner / check-in, before | 1659 (1509-1784) | 1658 | 0 | 1 | 0 | 3 | 1 | 29 (7-56) |
+| miner / check-in, after | 2228 (2022-2332) | 1803 | 5 | 432 | 107 (89-120) | 404 (362-458) | 5 | 14 (11-16) |
+| raider / check-in, before | 1743 (1509-1917) | 1630 | 3 | 110 | 8 | 164 (37-243) | 3 | 9 (4-16) |
+| raider / check-in, after | 1929 (1702-2234) | 1543 | 6 | 520 | 91 (81-105) | 545 (498-636) | 3 | 18 (13-21) |
+| explorer / check-in, before | 2020 (1887-2198) | 1751 | 5 | 264 | 11 | 366 (330-407) | 9 | 9 (8-10) |
+| explorer / check-in, after | 2187 (1933-2354) | 1749 | 15 | 759 | 121 (83-149) | 692 (513-1034) | 1 | 24 (20-32) |
+| mixed / check-in, before | 1905 (1722-2102) | 1649 | 7 | 249 | 13 | 401 (385-424) | 48 (21-86) | 13 (8-16) |
+| mixed / check-in, after | 2181 (2012-2349) | 1745 | 7 | 540 | 83 (39-154) | 669 (619-739) | 3 | 24 (20-29) |
+| miner / hands-on, before | 4232 (4215-4242) | 3386 | 155 | 1538 | 901 | 1236 | 19 | 333 |
+| miner / hands-on, after | 4026 (3912-4250) | 3221 | 161 | 1485 | 823 | 1204 | 15 | 307 |
+| raider / hands-on, before | 2982 (2918-3017) | 2386 | 105 | 1681 | 383 | 1365 | 9 | 58 |
+| raider / hands-on, after | 2926 (2861-3002) | 2341 | 100 | 1518 | 314 | 1286 | 13 | 58 |
+| explorer / hands-on, before | 3664 (3114-4048) | 2931 | 162 | 2464 | 658 | 1514 | 3 | 98 |
+| explorer / hands-on, after | 3406 (3029-3701) | 2724 | 106 | 1895 | 334 | 1277 | 7 | 45 |
+| mixed / hands-on, before | 3165 (3116-3260) | 2532 | 149 | 2249 | 647 | 1479 | 13 | 92 |
+| mixed / hands-on, after | 3086 (2889-3255) | 2469 | 165 | 2206 | 555 | 1488 | 9 | 90 |
+
+Turtles are the same to the point in both (1755, 1876, 2400). Hybrids, total: miner
+2649 to 2893, raider 1916 to 2225, explorer 2134 to 2389, mixed 2099 to 2160.
+
+Delegated as a share of piloted, same personality, day 7, before to after:
+
+| | charts | haul | combat | counted score | total |
+|---|---|---|---|---|---|
+| miner | 0 to 34% (30-40) | 0 to 13% (11-15) | 0 to 3% | 0 to 53% (47-56) | 39 to 55% (52-60) |
+| raider | 12 to 42% (38-51) | 2 to 29% (26-33) | 3 to 6% | 19 to 66% (57-77) | 58 to 66% (57-77) |
+| explorer | 25 to 54% (38-77) | 2 to 37% (22-48) | 3 to 15% | 37 to 65% (55-75) | 56 to 65% (55-75) |
+| mixed | 27 to 45% (41-47) | 2 to 14% (7-23) | 5 to 4% | 40 to 71% (65-76) | 60 to 71% (65-76) |
+
+Check-in against hands-on by day (total, d1 to d7), before then after: miner 17, 15,
+20, 29, 32, 33, 39 then 25, 22, 31, 43, 50, 51, 55%; raider 39, 34, 39, 47, 56, 62, 58
+then 56, 44, 49, 60, 67, 72, 66%; explorer 31, 34, 39, 40, 43, 51, 56 then 37, 36, 41,
+40, 51, 60, 65%; mixed 40, 48, 57, 59, 60, 59, 60 then 39, 45, 60, 64, 66, 70, 71%;
+turtle 40, 50, 48, 57, 68, 81, 73 both times. Hybrid on day 7: 63, 64, 59, 66 then 72,
+76, 70, 71%. Against the turtle, check-in, day 7: miner 95 to 127%, raider 100 to
+112%, explorer 116 to 125%, mixed 109 to 125%.
+
+What is noise: one bot per style and three seeds. A hands-on explorer ranges 3029 to
+3701 on its own and a check-in raider 1702 to 2234. The charts, haul and counted
+columns moved clear of their ranges for every style. The combat column and the
+raider's and explorer's totals moved inside them and are not findings.
+
+**What it says about the target.**
+- *Counted score* (what combat and exploration add after the cap): 53 to 71%, from
+  0 to 40. Every check-in empire now fills its cap (miner 94%, the rest 100%), so
+  this share is the ratio of the cores and cannot rise further by doctrine.
+- *Charts*: 34 to 54%, from 0 to 27. The cap sets it: survey and strike wings stay
+  home once it is banked. With the cap ignored (`--ignore-cap`, seed 1, eight seats)
+  delegated charts are 42, 74, 63 and 96% of piloted (before: 0, 18, 43, 35).
+- *Haul*: 13 to 37%, from 0 to 2. Short of the band. A pilot's haul is the wreckage
+  of what it kills and what it boards (per week: 1100 to 4000 kills, 13 to 28
+  boardings; wrecks 215 to 355 points, derelicts 95 to 213); a check-in empire kills
+  60 to 300, because its hauling doctrines pick no fight and its patrol is benched
+  with the cap. With the cap ignored the patrols hunt all week and delegated haul is
+  152% (raider) and 161% (mixed) of piloted, totals 91 and 98%; miner 18%, explorer
+  13%. Ore is the smallest part: 12 to 35 points a week against a hands-on miner's
+  321, who strips rings a hauler wing under orders does not rate.
+- *Combat points*: 3 to 15%. The cap is full without them.
+- *Ships lost* under orders: 1 to 5 a week (pilots 7 to 15); mixed 48 before.
+- *Fuel*: check-in empires pay 14 to 24 thousand deuterium a week for it (pilots 45
+  to 307); the miner's bill halved while its haul went from nothing to 107 points.
+
+**Tried and not kept** (seed 1, eight seats unless said).
+- Hauling doctrines taking paydays among hostiles at the engage ratio: explorer
+  check-in 98% of the pilot's total, raider 90%, and 100 (miner) and 127 (explorer)
+  ships lost. Parity bought with hulls; they pick no fight for a payday.
+- Every wing of four at 2.5 (three seeds, sixteen seats, one of them the stuck
+  raider): haul 11, 22, 48, 11%.
+- Every doctrine at 1.5: haul 19, 46, 101, 32% on seed 1 of sixteen seats, and the
+  explorer's recovery wing lost 66 ships.
+
+**What remains short, and what it would take.**
+- One number is both "enter quiet space" and "start a fight". A pilot walks through
+  any sector it has seen empty and fights at 3.0; a doctrine enters every sector at
+  its ratio against the ring's group and fights at the same ratio. So the bot (or a
+  player) chooses between reach at 1.5 with hull lost and hull kept at 2.5 with less
+  reach. A second ratio on the standing order (fight at this, enter at that) would
+  give doctrines the pilot's two rules. It touches the owner's "the entry rule is
+  exactly the player's ratio" and is not done.
+- The cap benches patrols, and patrols are where delegated haul would come from.
+  Letting strike wings fly past the cap for their wreckage is a bot rule and reaches
+  or passes parity for raider and mixed (above). Not done: hands-on is to stay
+  better.
+- No constant on the forbidden list closes the haul gap by itself. Ore is 11 to 38%
+  of what a check-in empire hauls (12 to 35 points); doubling what the tiles hold
+  would add as much again and no more.
+- Check-in cores are 56 to 71% of hands-on cores (turtle 73%): much of every gap is
+  the home economy, not the fleets.
+
+**Engine behaviour found on the way (not changed).**
+- Doctrines know what the map holds where their owner has never looked: ore, wrecks,
+  derelicts and groups are read from the world, only the odds from the owner's chart.
+- A sector in sight with nobody in it is rated at its ring's group, so a doctrine
+  cannot walk through space it can see is empty where a pilot does.
+- A fleet whose orders are cleared refuels without bound at once; the budget binds
+  under orders only. The bots clear orders to regroup at a look-in.
+- The bot home planner can wait for ever on an order that needs deuterium with no
+  synthesizer and none queued (the stuck raider above).
+- Holds repeat once a minute for as long as they last; a fleet waiting half an hour
+  for fuel says so thirty times. `play.py` groups them.
+
+**Speed.** The 16-seat week: 556 ticks/s before, 502 to 519 after (20 minutes a seed).
+
+**Tests.** `sim/tests/scenarios_world.rs`: mining to the last seam and waiting for the
+refill; wreckage passed over for wreckage in reach; wreckage only when it repays the
+fuel; going round a fight; shields; the full store; the lost chart; the patrol.
+`fleet_logistics.rs`: the budget wait and fill, a full store or no bound, a young
+empire's stock, the mildest lane home, cut off by DEADLY odds. `bots.rs`: a check-in
+miner brings home more ore than the fuel is worth in a season day. The chart
+recording is unchanged.
+
+**Not verified.** No live server session: the web `policy` settings and the TUI `P`
+key are compiled and analysed, not driven; `play.py` is syntax-checked (the harness
+is on hold). Persistent pace and blitz were not measured. The uncapped comparison is
+one seed.
