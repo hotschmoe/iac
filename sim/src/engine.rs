@@ -27,7 +27,8 @@ use iac_shared::constants::{
     RAID_LOSS_CAP_METAL, RAID_LOSS_CAP_CRYSTAL, RAID_LOSS_CAP_DEUT,
     RAID_DEFENSE_SALVAGE_FRACTION, RAID_SUPPRESS_AFTER_LOSS,
     EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
-    EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_PATROL_RADIUS, POLICY_PATROL_MIN_HULL,
+    EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_FUEL_UNBOUNDED_PCT, POLICY_PATROL_RADIUS,
+    POLICY_PATROL_MIN_HULL,
     defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
@@ -425,6 +426,10 @@ pub struct FleetPolicy {
     /// The last hold reason announced and when, so a fleet that keeps
     /// holding for the same reason does not flood the event stream.
     pub last_hold: Option<(String, u64)>,
+    /// Fuel budget: deuterium the fleet could still put into its tank as of
+    /// `fuel_since`, the tick of its last budgeted fill (or of its orders).
+    pub fuel_credit: f32,
+    pub fuel_since: u64,
 }
 
 /// What a policy BFS is hunting for.
@@ -1484,17 +1489,41 @@ impl GameEngine {
     }
 
     /// Fill the tank at the homeworld, paying `FUEL_DEUT_PER_UNIT` deuterium
-    /// per unit. A dry stockpile fills it only as far as it can.
+    /// per unit. A dry stockpile fills it only as far as it can. A fleet
+    /// whose standing orders set a fuel budget is filled in one go, and only
+    /// once its allowance and the stockpile cover the whole fill; while the
+    /// deuterium store is full the fill is free of the allowance.
     fn refuel_fleet(&mut self, fleet_id: u64) {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
-        let Some(player) = self.players.get_mut(&fleet.owner_id) else { return; };
+        let Some(player) = self.players.get(&fleet.owner_id) else { return; };
         let missing = fleet.fuel_max - fleet.fuel;
-        let units = missing.min(player.resources.deuterium / FUEL_DEUT_PER_UNIT);
+        let stock = player.resources.deuterium;
+        let units = missing.min(stock / FUEL_DEUT_PER_UNIT);
         if units <= 0.0 { return; }
-        player.resources.deuterium = (player.resources.deuterium - units * FUEL_DEUT_PER_UNIT).max(0.0);
+
+        let budget = self.policies.get(&fleet_id).filter(|p| p.params.fuel_budget_pct < POLICY_FUEL_UNBOUNDED_PCT);
+        let store_full = stock >= scaling::storage_cap(player.buildings.storage_vault, &self.world.pace).deuterium;
+        let mut credit_left = None;
+        if let Some(policy) = budget && !store_full {
+            let cost = missing * FUEL_DEUT_PER_UNIT;
+            let allowance = self.fuel_allowance(fleet, policy);
+            if allowance < cost || stock < cost { return; }
+            credit_left = Some(allowance - cost);
+        }
+
         let owner = player.id;
+        if let Some(player) = self.players.get_mut(&owner) {
+            player.resources.deuterium = (stock - units * FUEL_DEUT_PER_UNIT).max(0.0);
+        }
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.fuel = if units >= missing { fleet.fuel_max } else { fleet.fuel + units };
+        if let Some(credit) = credit_left
+            && let Some(policy) = self.policies.get_mut(&fleet_id)
+        {
+            policy.fuel_credit = credit;
+            policy.fuel_since = self.current_tick;
+            self.dirty_policies.insert(fleet_id, ());
+        }
         self.dirty_fleets.insert(fleet_id, ());
         self.dirty_players.insert(owner, ());
     }
@@ -3611,7 +3640,7 @@ impl GameEngine {
         params: Option<PolicyParams>,
     ) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
-        let location = fleet.location;
+        let (location, tank_price) = (fleet.location, fleet.fuel_max * FUEL_DEUT_PER_UNIT);
 
         if preset == PolicyPreset::Manual {
             self.policies.remove(&fleet_id);
@@ -3628,13 +3657,22 @@ impl GameEngine {
         params.cargo_return_pct = params.cargo_return_pct.clamp(10, 100);
         params.max_range = params.max_range.clamp(1, 30);
         params.engage_ratio_x10 = params.engage_ratio_x10.clamp(1, 100);
+        params.fuel_budget_pct = params.fuel_budget_pct.min(100);
 
+        // A fleet's first orders come with one tank of allowance, so a young
+        // empire with no deuterium income yet is not grounded after one
+        // sortie. New orders for a fleet already under orders keep what its
+        // budget has earned: re-issuing them neither resets nor refills it.
+        let (fuel_credit, fuel_since) = self.policies.get(&fleet_id)
+            .map_or((tank_price, self.current_tick), |p| (p.fuel_credit, p.fuel_since));
         let policy = FleetPolicy {
             preset,
             params,
             work_sector: Some(location),
             next_eval_tick: self.current_tick + 1,
             last_hold: None,
+            fuel_credit,
+            fuel_since,
         };
         self.policies.insert(fleet_id, policy);
         self.deleted_policy_ids.remove(&fleet_id);
@@ -3642,7 +3680,15 @@ impl GameEngine {
         // Policies persist alongside their fleet, so make sure the fleet
         // row lands in the same transaction (FK).
         self.dirty_fleets.insert(fleet_id, ());
-        let reason = format!("doctrine set: {}", preset.label());
+        let fuel = if params.fuel_budget_pct >= POLICY_FUEL_UNBOUNDED_PCT {
+            "fuel unbounded".to_string()
+        } else {
+            format!("fuel budget {}% of deuterium income", params.fuel_budget_pct)
+        };
+        let reason = format!(
+            "doctrine set: {} (range {}, engage {:.1}x, {fuel})",
+            preset.label(), params.max_range, f32::from(params.engage_ratio_x10) / 10.0,
+        );
         self.push_policy_event(fleet_id, preset, "engage", &reason);
         Ok(())
     }
@@ -3685,16 +3731,20 @@ impl GameEngine {
                 p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64;
             }
 
-            let acted = match preset {
-                PolicyPreset::Manual => {
-                    self.policies.remove(&fid);
-                    self.deleted_policy_ids.insert(fid, ());
-                    true
+            let acted = if let Some(why) = self.policy_fuel_wait(fid) {
+                self.hold_policy(fid, preset, &why)
+            } else {
+                match preset {
+                    PolicyPreset::Manual => {
+                        self.policies.remove(&fid);
+                        self.deleted_policy_ids.insert(fid, ());
+                        true
+                    }
+                    PolicyPreset::Prospect => self.policy_prospect(fid)?,
+                    PolicyPreset::MineAndReturn => self.policy_mine_and_return(fid)?,
+                    PolicyPreset::SalvageAndSites => self.policy_salvage_and_sites(fid)?,
+                    PolicyPreset::PatrolHome => self.policy_patrol_home(fid)?,
                 }
-                PolicyPreset::Prospect => self.policy_prospect(fid)?,
-                PolicyPreset::MineAndReturn => self.policy_mine_and_return(fid)?,
-                PolicyPreset::SalvageAndSites => self.policy_salvage_and_sites(fid)?,
-                PolicyPreset::PatrolHome => self.policy_patrol_home(fid)?,
             };
 
             // Nothing to do — check back later instead of spinning.
@@ -3706,6 +3756,49 @@ impl GameEngine {
             }
         }
         Ok(())
+    }
+
+    /// Deuterium a fleet under a bounded doctrine may put into its tank now:
+    /// what was left after the last fill plus its share of the current
+    /// deuterium production since, at most the price of a full tank.
+    fn fuel_allowance(&self, fleet: &Fleet, policy: &FleetPolicy) -> f32 {
+        let earned = self.fuel_income(fleet.owner_id, &policy.params)
+            * self.current_tick.saturating_sub(policy.fuel_since) as f32;
+        (policy.fuel_credit + earned).min(fleet.fuel_max * FUEL_DEUT_PER_UNIT)
+    }
+
+    /// Deuterium per tick a doctrine's fuel budget grows by.
+    fn fuel_income(&self, owner: u64, params: &PolicyParams) -> f32 {
+        let Some(player) = self.players.get(&owner) else { return 0.0; };
+        player.production_per_tick(&self.world.pace).deuterium * f32::from(params.fuel_budget_pct) / 100.0
+    }
+
+    /// A fleet on a fuel budget leaves the dock with a full tank or not at
+    /// all: the reason it is still waiting, if it is.
+    fn policy_fuel_wait(&self, fleet_id: u64) -> Option<String> {
+        let fleet = self.fleets.get(&fleet_id)?;
+        let policy = self.policies.get(&fleet_id)?;
+        let player = self.players.get(&fleet.owner_id)?;
+        let pct = policy.params.fuel_budget_pct;
+        if pct >= POLICY_FUEL_UNBOUNDED_PCT || fleet.location != player.homeworld || fleet.fuel >= fleet.fuel_max {
+            return None;
+        }
+        let tank = format!("tank {:.0} of {:.0}", fleet.fuel, fleet.fuel_max);
+        let cost = (fleet.fuel_max - fleet.fuel) * FUEL_DEUT_PER_UNIT;
+        let short = cost - self.fuel_allowance(fleet, policy);
+        if short <= 0.0 {
+            return Some(format!("refuelling: the stockpile lacks the deuterium to fill the tank ({tank}, {cost:.0} deuterium)"));
+        }
+        let income = self.fuel_income(fleet.owner_id, &policy.params);
+        if income <= 0.0 {
+            return Some(format!(
+                "refuelling: a fuel budget of {pct}% of deuterium income earns nothing ({tank}); raise fuel_budget_pct or wait for the store to fill",
+            ));
+        }
+        Some(format!(
+            "refuelling on a fuel budget of {pct}% of deuterium income ({tank}, full in about {} s)",
+            (short / income).ceil() as u64,
+        ))
     }
 
     /// Most hops from home the fleet can fly and still afford the way back

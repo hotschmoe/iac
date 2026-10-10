@@ -591,6 +591,7 @@ fn client_messages() -> Vec<(&'static str, ClientMessage)> {
                     cargo_return_pct: 90,
                     max_range: 6,
                     engage_ratio_x10: 15,
+                    fuel_budget_pct: 35,
                 }),
             }),
         ),

@@ -247,8 +247,8 @@ pub struct PolicyParams {
     /// Default 85.
     pub cargo_return_pct: u8,
     /// Maximum distance in hexes from the HOMEWORLD that the autopilot will
-    /// claim, prospect or wander to; never measured from the last claim.
-    /// Clamped to 1..=30. Default 4.
+    /// claim, prospect, salvage or hunt at; never measured from the last
+    /// claim. Clamped to 1..=30. Default 4.
     pub max_range: u8,
     /// Engage hostiles only if the fleet's odds against them (`SectorOdds`
     /// `ratio`) are at least this / 10. It is also exactly the least ratio,
@@ -259,6 +259,19 @@ pub struct PolicyParams {
     /// repeated at most once a minute and again only if its cause changes.
     /// Clamped to 1..=100. Default 15 (1.5x, FAVOURABLE).
     pub engage_ratio_x10: u8,
+    /// The share of the homeworld's deuterium income, in percent, that this
+    /// fleet may spend on fuel while it flies under these orders. The fleet
+    /// earns an allowance at that share of the current deuterium production
+    /// and can save up the price of one full tank; a fleet's first orders
+    /// come with one tank of allowance. At the dock its tank is filled in
+    /// one go once the allowance and the stockpile cover what is missing, and
+    /// until then the fleet waits there and says so (a `PolicyAction` hold
+    /// with the time left); it never leaves on standing orders with a
+    /// part-filled tank. While the deuterium store is full the fill is free
+    /// of the allowance: that income would overflow anyway. 100 lifts the
+    /// bound (the tank takes whatever the stockpile holds, ahead of every
+    /// queue, as a fleet flown by hand does). Clamped to 0..=100. Default 20.
+    pub fuel_budget_pct: u8,
 }
 
 impl Default for PolicyParams {
@@ -268,6 +281,7 @@ impl Default for PolicyParams {
             cargo_return_pct: crate::constants::POLICY_DEFAULT_CARGO_RETURN_PCT,
             max_range: crate::constants::POLICY_DEFAULT_MAX_RANGE,
             engage_ratio_x10: crate::constants::POLICY_DEFAULT_ENGAGE_RATIO_X10,
+            fuel_budget_pct: crate::constants::POLICY_DEFAULT_FUEL_BUDGET_PCT,
         }
     }
 }

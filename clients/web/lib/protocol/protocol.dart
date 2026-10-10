@@ -523,11 +523,16 @@ class PolicyParams {
   /// Hexes from the homeworld, never from the last claim.
   final int maxRange;
   final int engageRatioX10;
+
+  /// Percent of the homeworld's deuterium income the fleet may spend on
+  /// fuel; 100 lifts the bound.
+  final int fuelBudgetPct;
   const PolicyParams({
     this.minFuelPct = 10,
     this.cargoReturnPct = 85,
     this.maxRange = 4,
     this.engageRatioX10 = 15,
+    this.fuelBudgetPct = 20,
   });
 
   factory PolicyParams.fromJson(Object? json) {
@@ -537,6 +542,7 @@ class PolicyParams {
       cargoReturnPct: (m['cargo_return_pct'] as int?) ?? 85,
       maxRange: (m['max_range'] as int?) ?? 4,
       engageRatioX10: (m['engage_ratio_x10'] as int?) ?? 15,
+      fuelBudgetPct: (m['fuel_budget_pct'] as int?) ?? 20,
     );
   }
 
@@ -545,6 +551,7 @@ class PolicyParams {
         'cargo_return_pct': cargoReturnPct,
         'max_range': maxRange,
         'engage_ratio_x10': engageRatioX10,
+        'fuel_budget_pct': fuelBudgetPct,
       };
 }
 

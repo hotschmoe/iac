@@ -548,6 +548,10 @@ pub const POLICY_DEFAULT_CARGO_RETURN_PCT: u8 = 85;
 pub const POLICY_DEFAULT_MAX_RANGE: u8 = 4;
 /// Engage only if our power ≥ theirs × (this / 10).
 pub const POLICY_DEFAULT_ENGAGE_RATIO_X10: u8 = 15;
+/// Share of deuterium income, in percent, a fleet under orders may burn.
+pub const POLICY_DEFAULT_FUEL_BUDGET_PCT: u8 = 20;
+/// At or above this `fuel_budget_pct` the fleet refuels without a bound.
+pub const POLICY_FUEL_UNBOUNDED_PCT: u8 = 100;
 /// PatrolHome keeps within this many hops of the homeworld.
 pub const POLICY_PATROL_RADIUS: u8 = 2;
 /// PatrolHome heads home to lick wounds below this average hull fraction.

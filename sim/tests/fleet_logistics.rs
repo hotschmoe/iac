@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use iac_shared::hex::Hex;
-use iac_shared::constants::{Resources, STRANDED_RECOVERY_TICKS};
+use iac_shared::constants::{Resources, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, ServerMessage, ThreatBasis,
     MAX_ODDS_SECTORS,
@@ -285,6 +285,90 @@ fn an_autopilot_will_not_take_a_hop_that_strands_it_and_turns_for_home() {
     assert!(reasons[0].starts_with("returning"), "turning for home counts as acting: {reasons:?}");
     let critical = alerts_since(&e, mark).into_iter().filter(|a| matches!(a.level, AlertLevel::Critical)).count();
     assert_eq!(critical, 0, "the autopilot never stranded itself");
+}
+
+fn policy_reasons(e: &Empire, mark: usize, action: &str) -> Vec<String> {
+    e.since(mark, |k| match k {
+        EventKind::PolicyAction(p) if p.action == action => Some(p.reason.clone()),
+        _ => None,
+    })
+}
+
+/// A prospecting fleet docked at home with half a tank, under a fuel budget
+/// of `budget` percent, the stockpile holding `deuterium` (given the cap).
+/// Returns the empire, the deuterium the fill costs and the deuterium income
+/// per tick.
+fn docked_with_half_a_tank(budget: u8, deuterium: impl Fn(f32) -> f32) -> (Empire, f32, f32) {
+    let mut e = Empire::join(world("season"), "Thrifty");
+    let (pid, fid) = (e.pid, e.fid);
+    let pace = e.engine.world.pace;
+    let tank = e.engine.fleets[&fid].fuel_max;
+    edit(&mut e.engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        player.buildings.deuterium_synthesizer = 2;
+        let cap = iac_shared::scaling::storage_cap(player.buildings.storage_vault, &pace).deuterium;
+        player.resources.deuterium = deuterium(cap);
+        s.fleets.get_mut(&fid).unwrap().fuel = tank / 2.0;
+    });
+    let income = e.engine.players[&pid].production_per_tick(&pace).deuterium;
+    assert!(income > 0.0);
+    let params = PolicyParams { fuel_budget_pct: budget, ..PolicyParams::default() };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+    (e, tank / 2.0 * FUEL_DEUT_PER_UNIT, income)
+}
+
+#[test]
+fn first_orders_come_with_one_tank_of_fuel_allowance_and_a_fill_draws_on_it() {
+    let (mut e, cost, _) = docked_with_half_a_tank(20, |cap| cap / 2.0);
+    let fid = e.fid;
+    let allowance = e.engine.policies[&fid].fuel_credit;
+    assert!((allowance - 2.0 * cost).abs() < 1e-3, "{allowance} for a tank that costs {}", 2.0 * cost);
+    e.run(2);
+    assert_eq!(fuel_of(&e, fid), e.engine.fleets[&fid].fuel_max);
+    let left = e.engine.policies[&fid].fuel_credit;
+    assert!((left - cost).abs() < 0.05 * cost, "{left} left of {allowance} after a fill of {cost}");
+}
+
+#[test]
+fn a_fleet_on_a_fuel_budget_waits_for_its_share_of_the_deuterium_income_and_then_fills_in_one_go() {
+    let (mut e, cost, income) = docked_with_half_a_tank(20, |cap| cap / 2.0);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    edit(&mut e.engine, |s| s.policies.get_mut(&fid).unwrap().fuel_credit = 0.0);
+    let deuterium = |e: &Empire| e.engine.players[&e.pid].resources.deuterium;
+    let (start, half) = (deuterium(&e), fuel_of(&e, fid));
+    let wait = (cost / (0.20 * income)).ceil() as u64;
+    assert!(wait > 120, "the budget takes minutes to earn the fill: {wait} ticks");
+
+    let mark = e.mark();
+    e.run(wait - 10);
+    assert_eq!(fuel_of(&e, fid), half, "no part fills");
+    assert_eq!(e.engine.fleets[&fid].location, home, "and it does not leave on half a tank");
+    assert!(deuterium(&e) >= start + (wait - 11) as f32 * income, "the stockpile kept all it produced");
+    let waiting = policy_reasons(&e, mark, "hold");
+    assert!(waiting[0].starts_with("refuelling on a fuel budget of 20% of deuterium income"), "{waiting:?}");
+    assert!(policy_reasons(&e, mark, "move").is_empty());
+
+    let (before, tick) = (deuterium(&e), e.engine.current_tick());
+    e.run_until(20, |e| fuel_of(e, fid) > half);
+    assert_eq!(fuel_of(&e, fid), e.engine.fleets[&fid].fuel_max, "the whole fill at once");
+    let earned = (e.engine.current_tick() - tick) as f32 * income;
+    let paid = before + earned - deuterium(&e);
+    assert!((paid - cost).abs() < 0.02 * cost, "paid {paid:.2} for a fill of {cost:.2}");
+    e.run_until(60, |e| e.engine.fleets[&fid].location != home);
+}
+
+#[test]
+fn a_full_deuterium_store_or_an_unbounded_budget_fills_the_tank_at_once() {
+    let (mut overflowing, ..) = docked_with_half_a_tank(20, |cap| cap);
+    let (mut unbounded, ..) = docked_with_half_a_tank(100, |cap| cap / 2.0);
+    for e in [&mut overflowing, &mut unbounded] {
+        let fid = e.fid;
+        edit(&mut e.engine, |s| s.policies.get_mut(&fid).unwrap().fuel_credit = 0.0);
+        e.run(2);
+        assert_eq!(fuel_of(e, fid), e.engine.fleets[&fid].fuel_max);
+        assert_eq!(e.engine.policies[&fid].fuel_credit, 0.0, "nothing was drawn on the allowance");
+    }
 }
 
 #[test]
