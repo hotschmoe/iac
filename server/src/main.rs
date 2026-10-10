@@ -147,7 +147,7 @@ async fn main() {
             _ = &mut shutdown => {
                 info!("Shutdown signal received, persisting final state...");
                 let mut engine = engine.lock().unwrap();
-                engine.checkpoint_known_sectors();
+                engine.checkpoint();
                 engine.persist_dirty_state();
                 let saved = engine.flush_persistence();
                 match saved {

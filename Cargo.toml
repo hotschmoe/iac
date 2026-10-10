@@ -8,3 +8,10 @@ opt-level = 2
 
 [profile.dev.package.iac-shared]
 opt-level = 2
+
+# The restart test writes thousands of ticks through SQLite.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 2
+
+[profile.dev.package.rusqlite]
+opt-level = 2
