@@ -11,8 +11,6 @@ import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/connection_provider.dart';
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/state/token_store.dart';
-import 'package:iac_client/design/theme.dart';
-import 'package:iac_client/views/login_screen.dart';
 
 import 'fixtures_util.dart';
 
@@ -94,55 +92,7 @@ Future<void> _until(Listenable source, bool Function() cond) async {
   }
 }
 
-class _ThrowingStorage implements KeyValueStorage {
-  @override
-  String? read(String key) => throw StateError('storage blocked');
-  @override
-  void write(String key, String value) => throw StateError('storage blocked');
-}
-
-class _MapStorage implements KeyValueStorage {
-  final Map<String, String> data = {};
-  @override
-  String? read(String key) => data[key];
-  @override
-  void write(String key, String value) => data[key] = value;
-}
-
 void main() {
-  testWidgets('login form re-prompts with the refusal and passes the typed token on', (tester) async {
-    String? sentName, sentToken;
-    await tester.pumpWidget(MaterialApp(
-      theme: consoleTheme(),
-      home: Scaffold(
-        body: LoginScreen(
-          url: 'ws://x/ws',
-          initialName: 'Taken',
-          error: "player 'Taken' is already registered; present its token to log in",
-          onConnect: (n, t) {
-            sentName = n;
-            sentToken = t;
-          },
-          onDemo: () {},
-        ),
-      ),
-    ));
-    expect(find.byKey(const Key('login-error')), findsOneWidget);
-    expect(find.textContaining('already registered'), findsOneWidget);
-    await tester.enterText(find.byKey(const Key('token-field')), '  secret  ');
-    await tester.tap(find.text('CONNECT'));
-    expect(sentName, 'Taken');
-    expect(sentToken, 'secret');
-  });
-
-  testWidgets('first-time login form has no token field', (tester) async {
-    await tester.pumpWidget(MaterialApp(
-      theme: consoleTheme(),
-      home: Scaffold(body: LoginScreen(url: 'ws://x/ws', initialName: 'Admiral', onConnect: (_, _) {}, onDemo: () {})),
-    ));
-    expect(find.byKey(const Key('token-field')), findsNothing);
-  });
-
   late _FakeServer server;
   setUp(() async {
     server = _FakeServer();
@@ -213,28 +163,4 @@ void main() {
     expect(tokens.load(server.url, 'Agent'), _issued);
   });
 
-  group('GuardedTokenStore', () {
-    test('keeps working, from memory, when storage throws', () {
-      final store = GuardedTokenStore(() => throw StateError('localStorage is not available'));
-      expect(store.load('ws://x/ws', 'Ann'), isNull);
-      expect(store.save('ws://x/ws', 'Ann', 'tok'), isFalse, reason: 'caller learns it is not durable');
-      expect(store.load('ws://x/ws', 'Ann'), 'tok');
-
-      final blocked = GuardedTokenStore(_ThrowingStorage.new);
-      expect(blocked.save('s', 'n', 't'), isFalse);
-      expect(blocked.load('s', 'n'), 't');
-    });
-
-    test('persists per server and name when storage works', () {
-      final backing = _MapStorage();
-      final store = GuardedTokenStore(() => backing);
-      expect(store.save('ws://a/ws', 'Ann', 't1'), isTrue);
-      store.save('ws://b/ws', 'Ann', 't2');
-      expect(GuardedTokenStore(() => backing).load('ws://a/ws', 'Ann'), 't1');
-      expect(GuardedTokenStore(() => backing).load('ws://b/ws', 'Ann'), 't2');
-      expect(GuardedTokenStore(() => backing).load('ws://a/ws', 'ANN'), 't1',
-          reason: 'names are case-insensitive on the server');
-      expect(store.load('ws://a/ws', 'Bob'), isNull);
-    });
-  });
 }

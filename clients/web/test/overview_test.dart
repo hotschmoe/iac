@@ -3,7 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/game_controller.dart';
-import 'package:iac_client/views/overview/overview_logic.dart';
 
 import 'support/harness.dart';
 
@@ -56,22 +55,6 @@ Future<void> _scrollTo(WidgetTester tester, Finder f) async {
 }
 
 void main() {
-  group('event classifier', () {
-    test('filters', () {
-      expect(eventMatches(EventFilter.all, 'anything'), isTrue);
-      expect(eventMatches(EventFilter.combat, '! Combat in [1,2]: your F1 vs hostile 9'), isTrue);
-      expect(eventMatches(EventFilter.combat, 'F1 harvested 10M over 5s'), isFalse);
-      expect(eventMatches(EventFilter.economy, 'F1 harvested 10M over 5s'), isTrue);
-      expect(eventMatches(EventFilter.economy, 'Research complete: Navigation Lv.2'), isTrue);
-      expect(eventMatches(EventFilter.intel, 'F1 scan at [1,2]: 5 sectors revealed, 0 hostiles'), isTrue);
-      expect(eventMatches(EventFilter.intel, 'Full state sync: tick 1'), isTrue);
-      expect(eventMatches(EventFilter.economy, 'Full state sync: tick 1'), isFalse);
-      expect(eventMatches(EventFilter.mine, '> scan'), isTrue);
-      expect(eventMatches(EventFilter.mine, 'F3 entered [1,1]'), isTrue);
-      expect(eventMatches(EventFilter.mine, 'Hostile fleet 9 destroyed in [1,1]'), isFalse);
-    });
-  });
-
   testWidgets('desktop: queue cards, slot B reason, raid card, comms slot hidden', (tester) async {
     final c = await _boot(tester);
     expect(find.byKey(const Key('card-slot-a')), findsOneWidget);

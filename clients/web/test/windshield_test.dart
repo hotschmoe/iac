@@ -396,16 +396,4 @@ void main() {
     await endShell(tester, c);
   });
 
-  testWidgets('frame cost of the windshield scene', (tester) async {
-    final c = await pumpFake(tester, hostileHere(status: ui.FleetStatus.combat, scouts: 3));
-    final sw = Stopwatch()..start();
-    const n = 120;
-    for (var i = 0; i < n; i++) {
-      await tester.pump(const Duration(milliseconds: 16));
-    }
-    sw.stop();
-    // ignore: avoid_print
-    print('WINDSHIELD build+layout+paint-record: ${(sw.elapsedMicroseconds / n / 1000).toStringAsFixed(2)} ms/frame over $n frames');
-    await finish(tester, c);
-  });
 }

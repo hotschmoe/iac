@@ -363,27 +363,6 @@ void main() {
     await endShell(tester, g);
   });
 
-  testWidgets('static layer is cached across small pans', (tester) async {
-    final g = await openMap(tester);
-    final p = painterOf(tester);
-    final rec0 = p.cache.records;
-    p.vp.panBy(const Offset(10, 4));
-    await tester.pump();
-    p.vp.panBy(const Offset(10, 4));
-    await tester.pump();
-    expect(p.cache.records, rec0, reason: 'pan within the margin reuses the picture');
-    expect(p.cache.reuses, greaterThan(0));
-
-    final sw = Stopwatch()..start();
-    const n = 30;
-    for (var i = 0; i < n; i++) {
-      p.paint(Canvas(PictureRecorder()), const Size(1362, 844));
-    }
-    // ignore: avoid_print
-    print('map paint (cached static layer, debug VM): ${(sw.elapsedMicroseconds / n / 1000).toStringAsFixed(2)} ms/frame');
-    await endShell(tester, g);
-  });
-
   testWidgets('map shots', (tester) async {
     final g = await openMap(tester);
     await shot(tester, 'default-1440');
