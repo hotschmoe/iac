@@ -4,12 +4,17 @@
 // Every fleet is kept to one wing. Ships built while a wing is out collect
 // at home; at a look-in the wing is called home, merged and sent out again.
 //
-//   wing       doctrine            by hand
-//   garrison   none                stays docked
-//   mining     mine_and_return     nearest known ore, strip it, haul home
-//   survey     prospect            nearest sector not yet charted; boards
-//   recovery   salvage_and_sites   derelicts and scoops wreckage on the way
-//   strike     patrol_home         nearest group it beats safely, then as survey
+//   wing       doctrine            with no work under it   by hand
+//   garrison   none                                        stays docked
+//   mining     mine_and_return     salvage_and_sites       nearest known ore, strip it, haul home
+//   survey     prospect            salvage_and_sites       nearest sector not yet charted; boards
+//   recovery   salvage_and_sites   mine_and_return         derelicts and scoops wreckage on the way
+//   strike     patrol_home         salvage_and_sites       nearest group it beats safely, then as survey
+//
+// A doctrine that finds nothing to do brings its fleet home and holds. A
+// fleet found at the dock with a full tank as a look-in ends is therefore
+// switched to its wing's other doctrine, and back at a later look-in if
+// that one runs out of work too.
 //
 // The pilot knows only the chart: it never enters a sector it has not seen
 // (it scans first), it treats a cleared lair it cannot watch as occupied,
@@ -22,14 +27,14 @@
 //
 // Fuel is paid in deuterium the moment a fleet docks, ahead of anything
 // waiting in a queue. A pilot therefore leaves only when the stockpile has a
-// tank to spare beyond the next orders; a doctrine cannot be told that, so a
-// fleet is handed to one only while the mines out-produce what it burns.
+// tank to spare beyond the next orders. A fleet under a doctrine is held to
+// the doctrine's fuel budget by the server.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use iac_shared::constants::{
-    EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, SCAN_BASE_RANGE,
-    SCAN_COOLDOWN, SCAN_SCOUT_RANGE, ShipClass,
+    EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL,
+    POLICY_DEFAULT_FUEL_BUDGET_PCT, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_SCOUT_RANGE, ShipClass,
 };
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
@@ -52,6 +57,10 @@ const ODDS_HORIZON: u16 = 12;
 /// The ratio the prospect, mining and salvage doctrines are sent out with
 /// (the game's default).
 const DOCTRINE_RATIO_X10: u8 = 15;
+/// Doctrines are leashed by odds and fuel, not by distance.
+const DOCTRINE_RANGE: u8 = 30;
+/// Fuel budget of the wings that haul, as a percent of deuterium income.
+const HAUL_FUEL_BUDGET_PCT: u8 = 50;
 const SHIELDS_UP: f32 = 0.95;
 const RETURN_LOAD: f32 = 0.85;
 /// Share of the tank kept spare on top of the way home.
@@ -61,10 +70,6 @@ const REACH: u32 = 48;
 const MIN_ORE: f32 = 3.0;
 const WAIT: u64 = 30;
 const REST: u64 = 3;
-/// Share of deuterium production that fleets under doctrines may burn.
-const DOCTRINE_FUEL_SHARE: f32 = 0.5;
-/// A doctrine jumps about this often.
-const DOCTRINE_HOP_TICKS: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Wing {
@@ -91,19 +96,38 @@ impl Wing {
         }
     }
 
-    fn doctrine(self) -> Option<PolicyUpdate> {
-        let (preset, max_range, engage_ratio_x10) = match self {
-            Wing::Garrison => return None,
-            Wing::Mining => (PolicyPreset::MineAndReturn, 8, DOCTRINE_RATIO_X10),
-            Wing::Survey => (PolicyPreset::Prospect, 30, DOCTRINE_RATIO_X10),
-            Wing::Recovery => (PolicyPreset::SalvageAndSites, 30, DOCTRINE_RATIO_X10),
-            Wing::Strike => (PolicyPreset::PatrolHome, 30, (SAFE_ODDS * 10.0) as u8),
+    /// The doctrine a wing flies under, and the one it is tried on when the
+    /// first finds nothing to do.
+    fn doctrines(self) -> Option<[PolicyPreset; 2]> {
+        match self {
+            Wing::Garrison => None,
+            Wing::Mining => Some([PolicyPreset::MineAndReturn, PolicyPreset::SalvageAndSites]),
+            Wing::Survey => Some([PolicyPreset::Prospect, PolicyPreset::SalvageAndSites]),
+            Wing::Recovery => Some([PolicyPreset::SalvageAndSites, PolicyPreset::MineAndReturn]),
+            Wing::Strike => Some([PolicyPreset::PatrolHome, PolicyPreset::SalvageAndSites]),
+        }
+    }
+
+    /// Orders for `preset`. A fleet that hunts fights only what it beats
+    /// without lasting damage. Doctrines that bring resources home earn
+    /// their fuel back and get the larger budget; the ones that fly for
+    /// points get the game's default.
+    fn orders(preset: PolicyPreset) -> PolicyUpdate {
+        let (engage_ratio_x10, fuel_budget_pct) = match preset {
+            PolicyPreset::PatrolHome => ((SAFE_ODDS * 10.0) as u8, POLICY_DEFAULT_FUEL_BUDGET_PCT),
+            PolicyPreset::MineAndReturn | PolicyPreset::SalvageAndSites => (DOCTRINE_RATIO_X10, HAUL_FUEL_BUDGET_PCT),
+            PolicyPreset::Prospect | PolicyPreset::Manual => (DOCTRINE_RATIO_X10, POLICY_DEFAULT_FUEL_BUDGET_PCT),
         };
-        Some(PolicyUpdate {
+        PolicyUpdate {
             fleet_id: 0,
             preset,
-            params: Some(PolicyParams { max_range, engage_ratio_x10, ..PolicyParams::default() }),
-        })
+            params: Some(PolicyParams {
+                max_range: DOCTRINE_RANGE,
+                engage_ratio_x10,
+                fuel_budget_pct,
+                ..PolicyParams::default()
+            }),
+        }
     }
 }
 
@@ -299,8 +323,6 @@ pub(super) struct Admiral<'a> {
     home: Hex,
     units: Vec<Unit<'a>>,
     busy: BTreeSet<u64>,
-    /// Deuterium per tick that fleets under standing orders may still burn.
-    fuel_allowance: f32,
 }
 
 impl<'a> Admiral<'a> {
@@ -312,7 +334,7 @@ impl<'a> Admiral<'a> {
         orders: &'a mut Vec<Order>,
     ) -> Admiral<'a> {
         let units = units(state, brief.personality);
-        let mut admiral = Admiral {
+        Admiral {
             state,
             brief,
             routes,
@@ -322,27 +344,11 @@ impl<'a> Admiral<'a> {
             home: state.player.homeworld,
             units,
             busy: BTreeSet::new(),
-            fuel_allowance: 0.0,
-        };
-        let from_stock = brief.away_for.map_or(0.0, |ticks| fuel_money(state).max(0.0) / ticks.max(1) as f32);
-        admiral.fuel_allowance = DOCTRINE_FUEL_SHARE * state.homeworld.production.deuterium + from_stock;
-        admiral
+        }
     }
 
     fn command(&mut self, command: Command) {
         self.orders.push(Order::Command(command));
-    }
-
-    /// Whether the mines (and the spare stock, spread over the absence) can
-    /// keep `fleet` flying under a doctrine, which never stops on its own
-    /// to let the stockpile recover.
-    fn fund(&mut self, fleet: &FleetState) -> bool {
-        let burn = fleet.jump_fuel * FUEL_DEUT_PER_UNIT / DOCTRINE_HOP_TICKS;
-        let funded = burn <= self.fuel_allowance;
-        if funded {
-            self.fuel_allowance -= burn;
-        }
-        funded
     }
 
     /// A fleet that would lose to the lair in its own home sector cannot
@@ -351,19 +357,25 @@ impl<'a> Admiral<'a> {
         self.chart.get(self.home).is_none_or(|home| enterable(self.odds, home, unit.fleet))
     }
 
-    /// Put the fleet under its wing's doctrine if it has work, the empire
-    /// can fuel it and it can come home; otherwise bring it home and keep
-    /// it docked.
-    fn delegate(&mut self, unit: Unit) {
+    /// Put the fleet under one of its wing's doctrines if it has work and
+    /// can come home; otherwise bring it home and keep it docked. A fleet
+    /// that sits at the dock with a full tank as its owner leaves found
+    /// nothing to do under its orders and is given the wing's other doctrine.
+    fn delegate(&mut self, unit: Unit, leaving: bool) {
         let fleet = unit.fleet;
-        let Some(mut update) = unit.wing.doctrine() else { return };
-        if has_work(self.brief, unit.wing) && self.can_return(unit) && self.fund(fleet) {
-            if fleet.policy != Some(update.preset) {
-                update.fleet_id = fleet.id;
-                self.orders.push(Order::Policy(update));
-            }
-        } else {
+        let Some(doctrines) = unit.wing.doctrines() else { return };
+        if !(has_work(self.brief, unit.wing) && self.can_return(unit)) {
             self.dock(unit);
+            return;
+        }
+        let resting = leaving && fleet.location == self.home && unit.free() && fleet.fuel >= fleet.fuel_max;
+        let preset = match fleet.policy.and_then(|flown| doctrines.iter().position(|d| *d == flown)) {
+            Some(flown) if resting => doctrines[1 - flown],
+            Some(flown) => doctrines[flown],
+            None => doctrines[0],
+        };
+        if fleet.policy != Some(preset) {
+            self.orders.push(Order::Policy(PolicyUpdate { fleet_id: fleet.id, ..Wing::orders(preset) }));
         }
     }
 
@@ -425,7 +437,7 @@ impl<'a> Admiral<'a> {
                 if regroup {
                     self.dock(unit);
                 } else {
-                    self.delegate(unit);
+                    self.delegate(unit, closing);
                 }
             }
         }
@@ -440,7 +452,7 @@ impl<'a> Admiral<'a> {
             if self.busy.contains(&unit.fleet.id) {
                 idle_for = 1;
             } else if closing {
-                self.delegate(unit);
+                self.delegate(unit, true);
             } else if unit.fleet.policy.is_some() {
                 self.dock(unit);
                 idle_for = 1;
