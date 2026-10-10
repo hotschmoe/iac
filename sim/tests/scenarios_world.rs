@@ -620,7 +620,7 @@ fn home_ground_is_quiet_and_an_unscouted_lair_is_as_strong_as_the_chart_says() {
         }
 
         let mut lairs = 0;
-        for at in hex_spiral(Hex::ORIGIN, 36) {
+        for at in hex_spiral(Hex::ORIGIN, 40) {
             let Some(pack) = engine.world_gen.generate_sector(at).npc_template else { continue };
             let told = engine.known_threat(pid, at);
             if told.basis != ThreatBasis::Estimate {
