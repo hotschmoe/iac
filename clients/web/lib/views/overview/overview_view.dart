@@ -516,20 +516,21 @@ class _RankPanel extends StatelessWidget {
     return OvPanel(
       key: const Key('rank-panel'),
       title: 'Ranking',
-      subText: 'one world, humans + agents',
+      subText: 'one world, humans + agents; bots unranked',
       padding: const EdgeInsets.only(bottom: 6),
       child: Column(children: [
         for (final r in rank.board)
           Container(
+            key: r.$3 == 'BOT' ? Key('rank-bot-${r.$2}') : null,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
-            decoration: BoxDecoration(color: r.$1 == rank.rank ? C.a(C.own, .08) : null, border: const Border(top: BorderSide(color: C.lineLo))),
+            decoration: BoxDecoration(color: r.$5 ? C.a(C.own, .08) : null, border: const Border(top: BorderSide(color: C.lineLo))),
             child: Row(children: [
-              SizedBox(width: 30, child: Text(r.$1.toString().padLeft(3, '0'), style: T.mono(size: 11, color: C.text3))),
-              Text(r.$2, style: T.mono(size: 11.5, color: r.$1 == rank.rank ? C.own : C.text)),
+              SizedBox(width: 30, child: Text(r.$1 == 0 ? '---' : r.$1.toString().padLeft(3, '0'), style: T.mono(size: 11, color: C.text3))),
+              Text(r.$2, style: T.mono(size: 11.5, color: r.$5 ? C.own : (r.$3 == 'BOT' ? C.text3 : C.text))),
               const SizedBox(width: 8),
               Tag(r.$3, color: r.$3 == 'AI' ? C.rare : C.text3),
               const Spacer(),
-              Text(fmtInt(r.$4), style: T.mono(size: 11.5, color: r.$1 == rank.rank ? C.own : C.a300)),
+              Text(fmtInt(r.$4), style: T.mono(size: 11.5, color: r.$5 ? C.own : C.a300)),
             ]),
           ),
       ]),

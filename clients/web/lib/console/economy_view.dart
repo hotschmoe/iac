@@ -102,7 +102,8 @@ class RankView {
   final String tag;
   final double score;
 
-  /// (rank, name, HUM/AI tag, score, is-you)
+  /// (rank, name, HUM/AI/BOT tag, score, is-you). Built-in bots follow the
+  /// ranked rows with rank 0: they are on the board and not in the ranking.
   final List<(int, String, String, int, bool)> board;
   const RankView(this.rank, this.tag, this.score, this.board);
 }
@@ -131,6 +132,7 @@ class EconomyView {
     if (lb != null && you != null) {
       rank = RankView(you.rank, you.agent ? 'AI' : 'HUM', you.score, [
         for (final e in lb.entries) (e.rank, e.name, e.agent ? 'AI' : 'HUM', e.score.round(), e.rank == you.rank && e.name == you.name),
+        for (final e in lb.bots) (0, e.name, 'BOT', e.score.round(), false),
       ]);
     }
     if (hw == null) return EconomyView(world: world, rank: rank);

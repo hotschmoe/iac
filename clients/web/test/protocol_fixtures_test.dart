@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/economy_view.dart' show EconomyView;
 import 'package:iac_client/protocol/protocol.dart';
 import 'package:iac_client/state/state_mapper.dart';
 
@@ -146,6 +147,25 @@ void main() {
       expect(mapper.toUiState().leaderboard, same(mapper.leaderboard));
     });
 
+    test('built-in bots are listed apart from the ranking, tagged by their name', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'leaderboard__with_bots');
+      final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
+      final board = mapper.leaderboard!;
+      expect(board.entries.map((e) => e.name), ['Admiral']);
+      expect(board.bots.map((e) => e.name), ['BOT-explorer-2', 'BOT-turtle-1']);
+      expect(board.bots.every((e) => isBotName(e.name)), isTrue);
+      expect(board.entries.any((e) => isBotName(e.name)), isFalse);
+      expect(mapper.log.map((l) => l.message), contains('2 built-in bots, unranked; best BOT-explorer-2 505.0'));
+      final rank = EconomyView.of(mapper.toUiState(), me: 'Admiral').rank!;
+      expect(rank.board.map((r) => (r.$1, r.$2, r.$3)), [(1, 'Admiral', 'HUM'), (0, 'BOT-explorer-2', 'BOT'), (0, 'BOT-turtle-1', 'BOT')]);
+    });
+
+    test('a sector says whether its chart is aboard or delivered', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final marks = (ServerMessage.fromJson(readJson(f)) as GameState).knownSectors.map((s) => s.chart).toSet();
+      expect(marks, {null, ChartMark.aboard, ChartMark.delivered});
+    });
+
     test('fleets carry power and range', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
       final fleet = (ServerMessage.fromJson(readJson(f)) as GameState).fleets.first;
@@ -235,6 +255,7 @@ void main() {
     check('ResourceKind', ResourceKind.fromJson, (ResourceKind e) => e.toJson());
     check('DefenceKind', DefenceKind.fromJson, (DefenceKind e) => e.toJson());
     check('ErrorCode', ErrorCode.fromJson, (ErrorCode e) => e.toJson());
+    check('ChartMark', ChartMark.fromJson, (ChartMark e) => e.toJson());
 
     test('Dart enums have no values Rust lacks', () {
       void same(String name, int dartCount) => expect(dartCount, (enums[name] as List).length, reason: name);
@@ -254,6 +275,7 @@ void main() {
       same('ResourceKind', ResourceKind.values.length);
       same('DefenceKind', DefenceKind.values.length);
       same('ErrorCode', ErrorCode.values.length);
+      same('ChartMark', ChartMark.values.length);
     });
 
     test('error code numbers are not on the wire but match Rust repr', () {
