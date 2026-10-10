@@ -520,7 +520,10 @@ send only what a client sends. A bot is two independent choices:
 
 `script::Seat` is an in-process client: it runs one bot's turn before each tick
 (`take_turn`) and keeps the bot's view after it (`observe`), by folding the tick
-update while the bot acts tick after tick and from a full state otherwise. A world's
+update while the bot acts tick after tick and from a full state otherwise. A turn is
+questions, then orders: the bot may first ask what a client may ask (`odds`,
+`preview_move`, `leaderboard`) and gets the replies before it acts, so a pilot fights
+and enters sectors on the server's ratio and keeps no arithmetic of its own. A world's
 bots are accounts with a `BotRecord` (style and the little a bot remembers) kept in
 the engine, in every snapshot and in storage; `bot::Roster` is what a host holds
 beside the engine: `resume` the bots a world has, `enlist` the ones it should have,

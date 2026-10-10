@@ -1586,3 +1586,114 @@ their next look-in; season, where a building takes minutes: 1 higher, none lower
 **Attention is in ticks.** A check-in bot looks in four times a day of ticks at any
 pace, so in a blitz hour it plays its first five minutes and no more. Short worlds
 want hands-on bots.
+
+**Odds from the server.** After the odds merge a bot keeps no power arithmetic. A
+turn is now questions, then orders (`ScriptedPlayer::ask`): the seat sends the
+questions (`odds`, `preview_move`, `leaderboard` only) and the answers reach `hear`
+before `act`, as a client gets its replies within the tick. The pilot asks `odds`
+for each fleet it will fly against the sectors within 12 hops where the answer
+settles something (a fight on entering, prey, a derelict that may be guarded) and
+for home; a guarded sector with no answer is closed to it. Thresholds unchanged: 3.0
+to fight or enter, 1.5 and 3.0 on the doctrines. Gone: `fleet.power >= k x
+est_power` and the 8x rule against classes with rapid fire on the fleet, which the
+server's ratio already counts. A risky derelict is boarded when its sector reads
+favourable (1.5); the old test was power against the guard's power, a number no
+client is given. Answers live for one turn, so the stored record did not grow.
+Asking everything every turn cost 8.5 ms a tick in the 20-bot blitz world; asking
+only for fleets about to fly, within the horizon, 1.3 ms (0.9 before odds). The
+final build ran live at 2.2 to 3.0 ms a tick on average, 9 ms at worst (20 bots,
+three clients, blitz), was killed at tick 654 and came back with its 20 bots, all 20
+higher by tick 851. Folded views against full states on that build: 180 000
+compared, 0 differ.
+
+### The season week again (7 days, seeds 1 to 3, the same 16 seats)
+
+Four runs, to keep causes apart. A: the first report (world before home seats, bots
+of step 2). B: the same world, bots as they were before the odds merge (chart marks,
+prompt re-planning). C: world generation 3, the same bots. D: master with odds, bots
+on the server's ratio. One bot per style and three seeds: the ranges are wide, and a
+difference inside them is not a finding.
+
+Day 7, mean (min-max over seeds), D:
+
+| style | total | core | combat | explore | cap filled | haul | raid salvage | ships lost |
+|---|---|---|---|---|---|---|---|---|
+| turtle / check-in | 1755 (1556-1874) | 1755 | 0 | 0 | 0% | 0 | 232 | 0 |
+| miner / check-in | 1659 (1509-1784) | 1658 | 0 | 1 | 0% | 0 | 251 | 1 |
+| raider / check-in | 1743 (1509-1917) | 1630 | 3 | 110 | 28% | 8 | 227 | 3 |
+| explorer / check-in | 2020 (1887-2198) | 1751 | 5 | 264 | 61% | 11 | 245 | 9 |
+| mixed / check-in | 1905 (1722-2102) | 1649 | 7 | 249 | 62% | 13 | 256 | 48 |
+| turtle / hybrid | 1876 (1817-1980) | 1876 | 0 | 0 | 0% | 0 | 299 | 0 |
+| miner / hybrid | 2649 (2409-2795) | 2120 | 39 | 968 | 100% | 235 | 297 | 5 |
+| raider / hybrid | 1916 (1507-2163) | 1533 | 21 | 733 | 100% | 56 | 241 | 8 |
+| explorer / hybrid | 2134 (2083-2188) | 1707 | 27 | 833 | 100% | 73 | 281 | 1 |
+| mixed / hybrid | 2099 (1991-2164) | 1679 | 18 | 759 | 100% | 56 | 290 | 3 |
+| turtle / hands-on | 2400 (2400-2400) | 2400 | 0 | 0 | 0% | 0 | 373 | 0 |
+| miner / hands-on | 4232 (4215-4242) | 3386 | 155 | 1538 | 100% | 901 | 537 | 19 |
+| raider / hands-on | 2982 (2918-3017) | 2386 | 105 | 1681 | 100% | 383 | 286 | 9 |
+| explorer / hands-on | 3664 (3114-4048) | 2931 | 162 | 2464 | 100% | 658 | 434 | 3 |
+| mixed / hands-on | 3165 (3116-3260) | 2532 | 149 | 2249 | 100% | 647 | 388 | 13 |
+
+Totals across the four runs (A is the table in the first report):
+
+| style | A | B | C | D |
+|---|---|---|---|---|
+| turtle, all three attentions | 1756 / 1876 / 2400 | the same | the same | the same |
+| miner / check-in | 1694 | 1711 | 1659 | 1659 |
+| raider / check-in | 1634 | 1743 | 1797 | 1743 |
+| explorer / check-in | 1953 | 1912 | 2087 | 2020 |
+| mixed / check-in | 1675 | 1670 | 1773 | 1905 |
+| miner / hybrid | 2751 | 2713 | 2552 | 2649 |
+| raider / hybrid | 1977 | 2051 | 2038 | 1916 |
+| explorer / hybrid | 2221 | 2203 | 2180 | 2134 |
+| mixed / hybrid | 2221 | 2247 | 2150 | 2099 |
+| miner / hands-on | 3919 | 4418 | 4027 | 4232 |
+| raider / hands-on | 3001 | 3093 | 2966 | 2982 |
+| explorer / hands-on | 3132 | 2840 | 3208 | 3664 |
+| mixed / hands-on | 3140 | 3277 | 3233 | 3165 |
+
+What moved, and what did not:
+
+- *Builders: nothing.* The turtle rows are the same within a point in all four runs.
+  Neither the world nor the odds touch an empire that keeps its ships home.
+- *Ships lost by pilots.* The largest change, and it is the odds. Hands-on miner
+  166 (B), 100 (C), 19 (D); raider 74, 87, 9; mixed 58, 65, 13. A ratio of 3.0 on
+  the server's scale is a fight without lasting damage; 3.0 in power was not. The
+  pilots' combat points fell with it (raider 215, 216, 105; mixed 183, 269, 149)
+  and the cores did not suffer.
+- *Delegated fleets against piloted ones* (check-in as a share of hands-on, same
+  personality, day 7; A, C, D). Charts delivered: raider 4%, 11%, 12%; explorer
+  18%, 26%, 24%; mixed 10%, 16%, 27%; miner 0. Haul: 0 to 6%, 0 to 7%, 0 to 2%.
+  Score that counted: explorer 32%, 50%, 37%; raider 7%, 22%, 19%; mixed 13%, 20%,
+  40%; miner 0. Better than the first report: for raider and explorer the gain came
+  with world 3 (B: 10% and 35%), for mixed with the odds (B 19%, C 20%, D 40%). Still
+  short of the 50 to 70% target everywhere. `mine_and_return` still brings home next
+  to nothing (haul 0 in every run).
+- *Explorers under orders hold at the ring-9 line.* Explorer / check-in from C to
+  D: ships lost 32 to 9, explore 331 to 264, haul 36 to 11. Fewer scouts die and
+  fewer far charts come home.
+- *Check-in against hands-on by day* (total, D; d1 to d7): turtle 40, 50, 48, 57,
+  68, 81, 73%; miner 17, 15, 20, 29, 32, 33, 39%; raider 39, 34, 39, 47, 56, 62,
+  58%; explorer 31, 34, 39, 40, 43, 51, 56%; mixed 40, 48, 57, 59, 60, 59, 60%.
+  Day 7 in A: 73, 43, 55, 62, 54. The explorer's share fell because the hands-on
+  explorer gained (3132 to 3664), not because the check-in one lost. Hybrid on day 7,
+  D: 78, 63, 64, 59, 66% (A: 78, 70, 66, 71, 71).
+- *Cap fill by style* (raw combat plus explore over the cap, day 7; A, D). Check-in:
+  miner 0.00x, 0.00x; raider 0.10x, 0.27x; explorer 0.46x, 0.61x (above 1x on days
+  2 to 4 in D); mixed 0.20x, 0.63x. Hybrid 1.85 to 2.45x, 1.85 to 2.03x. Hands-on
+  2.4 to 4.4x, 2.0 to 3.8x. The cap still binds every pilot all week and no fleet
+  under orders at the end of it.
+- *`patrol_home`* (the strike wing of check-in raiders and mixed; A, C, D). Raider:
+  combat points 0.7, 2.2, 2.7 (D: 0.1 to 5.8); kills 84, 58, 62 (D: 7 to 135);
+  salvage 1.2, 9.2, 3.9. Mixed: combat 2.0, 4.6, 7.0; kills 74, 115, 148; salvage
+  4.2, 4.0, 8.9. Hunting the convoys beside home is worth 3 to 7 combat points and 4
+  to 9 points of salvage a week to an empire with 200 to 250 points of ships, against
+  a cap near 410: about 0.05 points a kill. The mixed check-in empire loses 48 ships a week (21 to 86) over all its wings, as it
+  did before (A 26, B 46, C 42).
+- *Personality against the turtle, day 7, D.* Check-in: miner 95%, raider 100%,
+  explorer 116%, mixed 109%. Hands-on: miner 176%, raider 124%, explorer 153%, mixed
+  132%. The hands-on miner and explorer are far outside the 15% band; both are
+  haul and capped bonus on a core 22 to 41% above the turtle's.
+
+Not rerun: the blitz hour table, the look-ins-per-day sweep and the persistent-pace
+check of the first report.
