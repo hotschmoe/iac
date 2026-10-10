@@ -222,6 +222,9 @@ fn an_absence_is_played_reported_and_limited() {
     assert!(report.contains("you took command early and the last 6d 23h were skipped"), "{report}");
     let live = play(&mut machine, long_after, 3);
     assert_eq!(live.iter().filter(|f| f["type"] == "tick_update").count(), 3, "the clock runs from where command was taken");
+
+    let set_back = play(&mut machine, T0, 3);
+    assert_eq!(set_back.iter().filter(|f| f["type"] == "tick_update").count(), 2, "a wall clock set back does not stop the world");
 }
 
 #[test]

@@ -53,8 +53,14 @@ pub struct Clock {
 }
 
 impl Clock {
+    /// The last tick that is due at `now_ms`.
     fn due(&self, now_ms: u64) -> u64 {
         self.anchor_tick + now_ms.saturating_sub(self.anchor_ms) / TICK_MS
+    }
+
+    /// When `tick` was due.
+    fn at(&self, tick: u64) -> u64 {
+        self.anchor_ms + tick.saturating_sub(self.anchor_tick) * TICK_MS
     }
 }
 
@@ -258,6 +264,11 @@ impl World {
     /// Frames for a logged-in session go to `out`.
     pub fn advance(&mut self, now_ms: u64, max_ticks: u64, out: &mut Vec<ServerMessage>) -> Result<(), String> {
         let tick = self.engine.current_tick();
+        if now_ms + LIVE_BURST * TICK_MS < self.clock.at(tick) {
+            // The wall clock was set back: the world carries on from here
+            // instead of standing still until the clock has caught up.
+            self.clock = Clock { anchor_ms: now_ms, anchor_tick: tick };
+        }
         let mut owed = self.clock.due(now_ms).saturating_sub(tick);
         let over_limit = owed.saturating_sub(CATCH_UP_LIMIT);
         if over_limit > 0 {
