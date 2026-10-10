@@ -21,15 +21,15 @@ use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams, SectorSt
 use iac_sim::persist::{ExploreCredit, KnownRow, Persist, PersistBatch, WorldMeta};
 use iac_sim::snapshot::Snapshot;
 
-/// Float storage: multiply by 1000 and store as integer for precision.
-fn float_to_stored(val: f32) -> i64 {
-    (val * 1000.0) as i64
+/// Float storage: the value times 1000, in a REAL column. An f32 times 1000
+/// is exact in an f64 and divides back to the same f32, so what is stored
+/// reloads bit for bit.
+fn float_to_stored(val: f32) -> f64 {
+    f64::from(val) * 1000.0
 }
 
-// Stored values are written as i64 (millis) but the columns have REAL
-// affinity, so SQLite converts them to floats on insert. Read as f64 —
-// rusqlite converts both INTEGER and REAL values losslessly — or loading
-// saved state fails with InvalidColumnType.
+// Read as f64: SQLite keeps a whole-numbered REAL as an integer, and rusqlite
+// converts both losslessly, where an i64 read fails with InvalidColumnType.
 fn stored_to_float(val: f64) -> f32 {
     (val / 1000.0) as f32
 }
