@@ -55,6 +55,9 @@ class _Worker implements SoloPort {
   void post(String type, [String text = '']) => posted.add((type, text));
 
   @override
+  void protectStorage() {}
+
+  @override
   void close() {}
 
   void status(String phase, {Map<String, dynamic>? world, String? refused, String? error, double rate = 0}) =>
@@ -65,12 +68,14 @@ class _Worker implements SoloPort {
   List<String> get types => [for (final p in posted) p.$1];
 }
 
-Future<void> _pumpSolo(WidgetTester tester, SoloEngine engine, VoidCallback onEnter) async {
+/// Pumps the front door on [engine]; [entered] gets `newWorld` of every entry.
+Future<void> _pumpSolo(WidgetTester tester, SoloEngine engine, List<bool> entered) async {
   await tester.runAsync(loadFonts);
   tester.view.physicalSize = const Size(1280, 900);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
-  await tester.pumpWidget(MaterialApp(home: Scaffold(body: SoloScreen(engine: engine, onEnter: onEnter))));
+  await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: SoloScreen(engine: engine, onEnter: ({required bool newWorld}) => entered.add(newWorld)))));
   await tester.pump();
 }
 
@@ -83,8 +88,8 @@ void main() {
   testWidgets('a new game is asked of the engine with the chosen pace and seats, and entered when it runs', (tester) async {
     final worker = _Worker();
     final engine = SoloEngine(worker);
-    var entered = 0;
-    await _pumpSolo(tester, engine, () => entered++);
+    final entered = <bool>[];
+    await _pumpSolo(tester, engine, entered);
     expect(find.text('LOADING THE ENGINE ...'), findsOneWidget);
 
     worker.status('idle');
@@ -104,19 +109,19 @@ void main() {
     worker.status('idle', error: 'invalid player name: that name is reserved');
     await tester.pump();
     expect(find.byKey(const Key('solo-error')), findsOneWidget);
-    expect(entered, 0);
+    expect(entered, isEmpty);
 
     await _tap(tester, 'start');
     worker.status('running', world: _world());
     await tester.pump();
-    expect(entered, 1);
+    expect(entered, [true], reason: 'entered once, as a world just started');
   });
 
   testWidgets('a saved world is continued through its absence and the report, or abandoned after asking', (tester) async {
     final worker = _Worker();
     final engine = SoloEngine(worker);
-    var entered = 0;
-    await _pumpSolo(tester, engine, () => entered++);
+    final entered = <bool>[];
+    await _pumpSolo(tester, engine, entered);
     worker.status('held', world: _world(tick: 5000, behind: 7200));
     await tester.pump();
     expect(find.text('SAVED WORLD'), findsOneWidget);
@@ -134,7 +139,7 @@ void main() {
     expect(find.text('CATCHING UP'), findsOneWidget);
     expect(find.textContaining('500 ticks a second'), findsOneWidget);
     expect(find.textContaining('about 0m 13s left'), findsOneWidget);
-    expect(entered, 0);
+    expect(entered, isEmpty);
 
     await _tap(tester, 'take command now');
     expect(worker.types, ['continue', 'take_command']);
@@ -147,13 +152,13 @@ void main() {
     expect(find.text('WHILE YOU WERE AWAY'), findsOneWidget);
     expect(find.text(notices[0]), findsOneWidget);
     expect(find.text(notices[1]), findsOneWidget);
-    expect(entered, 0, reason: 'the report waits to be read');
+    expect(entered, isEmpty, reason: 'the report waits to be read');
     await _tap(tester, 'take command');
-    expect(entered, 1);
+    expect(entered, [false], reason: 'entered once, as a world that was already there');
 
     final second = _Worker();
     await tester.pumpWidget(const SizedBox());
-    await _pumpSolo(tester, SoloEngine(second), () {});
+    await _pumpSolo(tester, SoloEngine(second), []);
     second.status('held', world: _world(tick: 5000));
     await tester.pump();
     await _tap(tester, 'abandon this world');

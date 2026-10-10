@@ -34,10 +34,11 @@ String soloSpan(int seconds) {
 /// The front door of the single-player build, and everything a server has
 /// no word for: starting a world, continuing or abandoning the saved one,
 /// the wait while an absence is caught up, and the account of it. Calls
-/// [onEnter] once the world is running and the player should be in it.
+/// [onEnter] once the world is running and the player should be in it,
+/// saying whether the world was just started.
 class SoloScreen extends StatefulWidget {
   final SoloEngine engine;
-  final VoidCallback onEnter;
+  final void Function({required bool newWorld}) onEnter;
 
   /// Leave single player for a server's login form.
   final VoidCallback? onMultiplayer;
@@ -54,6 +55,7 @@ class _SoloScreenState extends State<SoloScreen> {
   String _attention = 'check-in';
   bool _confirmAbandon = false;
   bool _asked = false;
+  bool _newWorld = false;
   bool _entered = false;
 
   @override
@@ -85,7 +87,7 @@ class _SoloScreenState extends State<SoloScreen> {
   void _enter() {
     if (_entered) return;
     _entered = true;
-    widget.onEnter();
+    widget.onEnter(newWorld: _newWorld);
   }
 
   void _start() {
@@ -93,11 +95,13 @@ class _SoloScreenState extends State<SoloScreen> {
     final name = _name.text.trim();
     if (options == null || name.isEmpty) return;
     _asked = true;
+    _newWorld = true;
     widget.engine.newGame(name: name, pace: _pace, bots: soloSeats(options, _bots, _attention));
   }
 
   void _continue() {
     _asked = true;
+    _newWorld = false;
     widget.engine.resume();
   }
 
@@ -228,7 +232,7 @@ class _SoloScreenState extends State<SoloScreen> {
             switch (_attention) {
               'check-in' => 'A few short look-ins a day: they queue, hand their fleets to standing orders and leave.',
               'hybrid' => 'Check-ins, and one session a day flown by hand.',
-              'hands-on' => 'Always at the controls. The most to watch, and the slowest to catch up after an absence.',
+              'hands-on' => 'Always at the controls, through every hour you are away too. The most to watch, and the slowest to catch up after an absence.',
               _ => 'Every pattern in turn: check-in, hybrid and hands-on bots side by side.',
             },
             color: C.text3),

@@ -53,6 +53,15 @@ class _WorkerPort implements SoloPort {
   void post(String type, [String text = '']) => _worker?.postMessage(_Envelope(type: type, text: text));
 
   @override
+  void protectStorage() {
+    try {
+      web.window.navigator.storage.persist();
+    } catch (_) {
+      // Not every browser has it; the save works without.
+    }
+  }
+
+  @override
   void close() {
     _worker?.terminate();
     _worker = null;

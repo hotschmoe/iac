@@ -163,6 +163,10 @@ abstract interface class SoloPort {
   /// Called for every message from the worker.
   set onMessage(void Function(String type, String text) handler);
   void post(String type, [String text = '']);
+
+  /// Ask the browser to keep what the worker stores when it runs short of
+  /// space. The browser decides, and may ask the player.
+  void protectStorage();
   void close();
 }
 
@@ -209,12 +213,17 @@ class SoloEngine {
   /// Start a new world. [bots] are seats as the server's `--bot` takes them:
   /// `<personality>:<attention>[:<count>]`. A refusal comes back in
   /// [SoloStatus.error].
-  void newGame({required String name, required String pace, required List<String> bots}) =>
-      _port.post('new_game', jsonEncode({'name': name, 'pace': pace, 'bots': bots}));
+  void newGame({required String name, required String pace, required List<String> bots}) {
+    _port.protectStorage();
+    _port.post('new_game', jsonEncode({'name': name, 'pace': pace, 'bots': bots}));
+  }
 
   /// Start the clock of the loaded save: the ticks missed since it was
   /// written are played first.
-  void resume() => _port.post('continue');
+  void resume() {
+    _port.protectStorage();
+    _port.post('continue');
+  }
 
   /// Stop catching up and play from where the world stands.
   void takeCommand() => _port.post('take_command');

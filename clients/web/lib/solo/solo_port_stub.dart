@@ -17,5 +17,8 @@ class _NoPort implements SoloPort {
   void post(String type, [String text = '']) {}
 
   @override
+  void protectStorage() {}
+
+  @override
   void close() {}
 }

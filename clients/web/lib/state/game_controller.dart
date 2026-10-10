@@ -114,6 +114,10 @@ class GameController extends ChangeNotifier {
   /// kept a copy.
   ({String token, bool saved})? issuedToken;
   bool _tokenNoticed = true;
+  bool _created = false;
+
+  /// The account was made in this session: the guide starts by itself.
+  bool get newAccount => _created || issuedToken != null;
 
   LinkState link = LinkState.idle;
   String? connectionError;
@@ -209,10 +213,13 @@ class GameController extends ChangeNotifier {
       open(Uplink.server(params.url), name: name, token: (token ?? '').trim().isEmpty ? params.token : token);
 
   /// Log in to the world behind [uplink] as [name], with [token] or the one
-  /// the browser remembers for that world and name.
-  Future<void> open(Uplink uplink, {required String name, String? token}) async {
+  /// the browser remembers for that world and name. [created] says the
+  /// account was just made by other means than this login, as the
+  /// commander of a new single-player world is.
+  Future<void> open(Uplink uplink, {required String name, String? token, bool created = false}) async {
     _uplink = uplink;
     _mapper.feed = uplink.feed;
+    _created = created;
     playerName = name;
     final given = token?.trim();
     _token = (given != null && given.isNotEmpty) ? given : _tokens.load(uplink.id, name);

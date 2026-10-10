@@ -81,7 +81,7 @@ class _GameScreenState extends State<GameScreen> {
     _controller.start(params: _params, name: name, token: token);
   }
 
-  void _enterSolo() {
+  void _enterSolo({required bool newWorld}) {
     final solo = _solo!;
     final world = solo.status.value.world;
     if (world == null) return;
@@ -89,6 +89,7 @@ class _GameScreenState extends State<GameScreen> {
     _controller.open(
       Uplink(id: _soloWorld, label: 'SINGLE PLAYER', feed: 'The engine in this tab', dial: solo.connect),
       name: world.commander,
+      created: newWorld,
     );
   }
 
