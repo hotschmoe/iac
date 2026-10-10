@@ -2,11 +2,10 @@ import '../protocol/protocol.dart' as proto;
 
 /// Threat model (economy spec 5.1 and 7.2). A sector's rating and power are
 /// the server's `threat` (observed groups count 25 percent more when they
-/// are Aggressive or Swarm); only the ship table and the ratio label are
-/// still computed here. [SectorThreat.of] is the one place that reads it.
-/// Odds for a jump come from the server's `preview_move`, kept in
-/// [GameState.previews]; [RatioInfo.of] rates only the sector a fleet is in
-/// and the far hops of a route, from the server's own power figures.
+/// are Aggressive or Swarm); only the ship table is kept here.
+/// [SectorThreat.of] is the one place that reads it. How a fleet fares
+/// against a sector is never worked out on the client: it is the server's
+/// `preview_move` and `odds` answers, read with [GameState.oddsFor].
 class ShipStats {
   final double hull, shield, weapon, cargo;
   const ShipStats(this.hull, this.shield, this.weapon, this.cargo);

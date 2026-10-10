@@ -66,7 +66,7 @@ cargo run -p iac-client -- --headless --name MyAgent [--token <token>]
 
 - **stdout** — every server message, one JSON object per line: `auth_result`,
   `full_state`, `tick_update` (with `events`), `error`, plus the replies to
-  `preview_move` and `leaderboard`. Every `tick_update`
+  `preview_move`, `odds` and `leaderboard`. Every `tick_update`
   carries the complete `fleets` list: a fleet missing from it is gone, and
   `"fleets":[]` means every fleet was lost. A final
   `{"type":"connection_closed"}` is emitted if the server hangs up.
@@ -131,7 +131,8 @@ Example session:
 | `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count`, `reserve` | queue home defence structures in the shipyard queue, paid per unit like ships; `DefenceLocked` until the Defense Grid and research it needs are in place |
 | `cancel_build` | `queue_type`, `id` | cancel the item with that `id` once it has started, with a 50% refund (one unit for a ship batch; units already built are kept); waiting items of the same building or tech move up a level; a `Queue` event confirms what was refunded. `InvalidTarget` names where the id actually is (another queue, still waiting, or gone) |
 | `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits; nothing was paid, so nothing comes back; a `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
-| `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest |
+| `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, and the odds `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest. `ratio` is not `fleet_power / est_power`: see Odds |
+| `odds` | `fleet_id`, `sectors:[{q,r},...]` (at most 256) | do not move: reply `odds` with `fleet_id` and, for each sector in the order asked, `{sector, threat, ratio, label}`: how that fleet would fare there. Any sector may be named: adjacent or far, the one the fleet is in, seen or never seen |
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
@@ -151,7 +152,7 @@ change (`"params":{"max_range":2}`) and the rest take their defaults.
 | `min_fuel_pct` | 10 | spare fuel, as a percent of the tank, kept on top of the exact fuel cost of the route home (clamped 0-90) |
 | `cargo_return_pct` | 85 | head home to unload when the hold is this full (10-100) |
 | `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting and salvage runs (1-30); never measured from the last claim |
-| `engage_ratio_x10` | 15 | fight only if your power is at least enemy power x this/10 (1-100); also exactly the least ratio at which any doctrine will enter a sector, hostiles there or not. A value below EVEN (1.1) that you set deliberately is honoured |
+| `engage_ratio_x10` | 15 | fight only if the fleet's odds `ratio` against the hostiles is at least this/10 (1-100); also exactly the least ratio at which any doctrine will enter a sector, hostiles there or not. It is the same number `preview_move` and `odds` show. The default is FAVOURABLE. A value below EVEN (1.1) that you set deliberately is honoured |
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
@@ -167,8 +168,8 @@ Every autopilot act emits a `PolicyAction` event with a human-readable
 `reason` — an audit trail for agents (and captains). `prospect` walks to the
 nearest sector you have never entered inside `max_range` of home; when none is
 left it returns home and holds rather than wandering between known sectors.
-No doctrine moves a fleet into a sector whose threat (as `preview_move` shows
-it) the fleet would not beat at `engage_ratio_x10`; the setting is the bar
+No doctrine moves a fleet into a sector where its odds (as `preview_move` and
+`odds` show them) are below `engage_ratio_x10`; the setting is the bar
 whether or not hostiles sit there, so lower it to push a scout through, raise
 it to be careful. A refusal is a `hold` `PolicyAction` saying which sector,
 its threat and the ratio, repeated at most once a minute while the cause
@@ -268,12 +269,26 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   +25%; `template`: a lair that is away or cleared; `estimate`: ring only).
   A stale chart entry keeps the rating last seen. Scans list the threat of
   every revealed sector (`threats`) and each faint contact has a
-  `threat_band` (1: T1-3, 2: T4-6, 3: T7-9). `preview_move` returns the
-  target's `threat`, the named fleet's `fleet_power`, `ratio` and a `label`: SAFE from
-  2.5, FAVOURABLE from 1.5, EVEN from 1.1, RISKY from 0.9, else DEADLY (simulated
-  fights: a win at EVEN costs half the hull, below 0.9 like-for-like fleets
-  lose; a lighter class against a heavier one needs about 1.5x more). Pirates return
+  `threat_band` (1: T1-3, 2: T4-6, 3: T7-9). Pirates return
   `2 + 0.25 x ring` game hours (divided by P) after a kill.
+- **Odds** — `threat` says how big a group is; your odds against it are a
+  separate number that only the server gives (`preview_move` for a jump,
+  `odds` for any sectors). The server plays the fight out on averages with
+  the ships on each side (rapid fire between classes, each shot against hull
+  and shield, your fleet firing first) and puts the result on the scale of a
+  power ratio between equal ships: `ratio` 1.0 is an even match, the scale
+  runs 0.1 to 10. Each `label` is the same outcome whatever the classes:
+  SAFE from 2.5 (you keep 98% of your hull or more), FAVOURABLE from 1.5 (a
+  sure win, 1-15% of the hull lost), EVEN from 1.1 (a win in practice,
+  15-50% lost), RISKY from 0.9 (anything from a lost fleet to a win that
+  keeps half), DEADLY below (lost, or one win in six at best). Power against
+  power is not it: four scouts are 1.8x the power of the ring-9 corvette and
+  rate 1.06x RISKY against it (three fights in four won, 41% of the hull
+  kept on average); one corvette is 1.4x the power of the two ring-8 scouts
+  and rates 3.5x SAFE. A sector with nothing in sight is rated against the
+  group its ring spawns, a remembered one against what was last seen there.
+  The ratio is the expected result; rapid fire comes in streaks, so a
+  FAVOURABLE fight can still go badly once in a long while.
 - **Buildings** — 10 types incl. Shipyard, Research Lab, Sensor Array (passive
   reveal around home), Defense Grid (see raids), Storage Vault (stockpile
   caps) and Fabricator (building time / (1 + 0.15 x level)).

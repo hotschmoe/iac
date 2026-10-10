@@ -109,8 +109,16 @@ class PreviewEntry {
   const PreviewEntry(this.preview, this.tick);
 }
 
-/// Ticks a preview stays on screen, and how soon it is asked for again (the
-/// refresh lands well before it lapses, so the readout never blinks out).
+/// The server's odds for one fleet in one sector and the tick they arrived.
+class OddsEntry {
+  final proto.SectorOdds odds;
+  final int tick;
+  const OddsEntry(this.odds, this.tick);
+}
+
+/// Ticks a preview or odds stay on screen, and how soon they are asked for
+/// again (the refresh lands well before they lapse, so the readout never
+/// blinks out).
 const previewFreshTicks = 8;
 const previewRefreshTicks = 3;
 
@@ -141,6 +149,10 @@ class GameState {
 
   /// The server's latest `preview_move` per (fleet id, target sector).
   final Map<(int, proto.Hex), PreviewEntry> previews;
+
+  /// The server's latest `odds` answer per (fleet id, sector). The client
+  /// never works a ratio out itself; read them with [oddsFor].
+  final Map<(int, proto.Hex), OddsEntry> odds;
 
   /// Exact stockpile (the resource stocks above are rounded for display).
   final proto.Resources stock;
@@ -180,6 +192,7 @@ class GameState {
     this.signals = const {},
     this.signalBands = const {},
     this.previews = const {},
+    this.odds = const {},
     this.stock = const proto.Resources(),
     this.catalog,
     this.hw,
@@ -204,6 +217,25 @@ class GameState {
   bool previewNeedsRefresh(int fleetId, proto.Hex target) {
     final e = previews[(fleetId, target)];
     return e == null || tick - e.tick >= previewRefreshTicks;
+  }
+
+  /// The server's odds for (fleet, sector) if recent enough to show: the
+  /// newer of an `odds` answer and a preview of that jump.
+  proto.SectorOdds? oddsFor(int fleetId, proto.Hex sector) {
+    final e = _latestOdds(fleetId, sector);
+    return e != null && tick - e.tick <= previewFreshTicks ? e.odds : null;
+  }
+
+  bool oddsNeedRefresh(int fleetId, proto.Hex sector) {
+    final e = _latestOdds(fleetId, sector);
+    return e == null || tick - e.tick >= previewRefreshTicks;
+  }
+
+  OddsEntry? _latestOdds(int fleetId, proto.Hex sector) {
+    final asked = odds[(fleetId, sector)];
+    final jump = previews[(fleetId, sector)];
+    if (jump == null || (asked != null && asked.tick >= jump.tick)) return asked;
+    return OddsEntry(jump.preview.odds, jump.tick);
   }
 
   String get clockDisplay {
@@ -233,6 +265,7 @@ class GameState {
     Map<proto.Hex, proto.SignalKind>? signals,
     Map<proto.Hex, int>? signalBands,
     Map<(int, proto.Hex), PreviewEntry>? previews,
+    Map<(int, proto.Hex), OddsEntry>? odds,
     proto.Resources? stock,
     proto.HomeworldCatalog? catalog,
     proto.HomeworldState? hw,
@@ -258,6 +291,7 @@ class GameState {
         signals: signals ?? this.signals,
         signalBands: signalBands ?? this.signalBands,
         previews: previews ?? this.previews,
+        odds: odds ?? this.odds,
         stock: stock ?? this.stock,
         catalog: catalog ?? this.catalog,
         hw: hw ?? this.hw,

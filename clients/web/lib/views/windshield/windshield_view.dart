@@ -313,11 +313,17 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final s = _sec(f.sector);
     final id = s?.hostiles?.firstOrNull?.id;
     if (id == null || f.status == ui.FleetStatus.combat) return;
-    final o = RatioInfo.of(f.power, th.power);
+    final odds = con.state.oddsFor(f.id, f.sector);
+    final o = odds == null ? null : RatioInfo.fromOdds(odds);
     final armed = _armedUntil != null && clock.now().isBefore(_armedUntil!);
-    if (o.winPct < 40 && !armed) {
+    if ((o == null || o.deadly) && !armed) {
       _armedUntil = clock.now().add(const Duration(seconds: 3));
-      _toast('Poor odds: ${o.label}', 'Power ${f.power.round()} vs ${th.power.round()}, ratio ${o.r.toStringAsFixed(2)}, est win ${o.winPct}%. Press F again to commit, or jump away.', tone: ToastTone.red);
+      if (o == null) {
+        con.game.requestOdds(f.id, [f.sector]);
+        _toast('No odds yet', 'The server has not rated this fight (T${th.rating}, power ${th.power.round()}). Press F again to commit, or wait a moment.', tone: ToastTone.red);
+      } else {
+        _toast('Poor odds: ${o.label}', 'Ratio ${o.r.toStringAsFixed(2)} against T${th.rating}, power ${th.power.round()}: ${o.outcome}. Press F again to commit, or jump away.', tone: ToastTone.red);
+      }
       con.play('alert');
       return;
     }
@@ -373,12 +379,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final st = con.state;
       final s = _sec(f.sector);
       final th = SectorThreat.of(s);
-      final myPower = f.power;
+      if (th.hostile) con.game.requestOdds(f.id, [f.sector]);
       sim.layout(g);
       final lanes = [for (final d in dirs) s?.connections.contains(f.sector + d.v) ?? false];
       final homePath = f.sector == st.homeworld
           ? null
-          : RoutePlanner.plan(sectors: st.sectors, tick: st.tick, fleet: f, from: f.sector, to: st.homeworld, home: st.homeworld, power: myPower, mode: RouteMode.fast);
+          : RoutePlanner.plan(sectors: st.sectors, tick: st.tick, fleet: f, from: f.sector, to: st.homeworld, home: st.homeworld, mode: RouteMode.fast);
       final homeNext = homePath?.path.firstOrNull;
       final gateInfos = <GateInfo?>[];
       final cards = <Widget>[];
@@ -458,7 +464,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         const SizedBox(height: 8),
         ContactsPanel(
           threat: th,
-          myPower: myPower,
+          odds: st.oddsFor(f.id, f.sector),
           combat: combat,
           atHome: f.sector == st.homeworld,
           sector: s,

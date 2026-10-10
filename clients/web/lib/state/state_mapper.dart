@@ -59,6 +59,9 @@ class StateMapper {
   /// `preview_move` answers by (fleet id, target key).
   final Map<(int, int), PreviewEntry> previews = {};
 
+  /// `odds` answers by (fleet id, sector key).
+  final Map<(int, int), OddsEntry> odds = {};
+
   final List<LogEntry> log = [];
 
   /// Last hold reason shown per fleet; a repeat is not logged again.
@@ -81,6 +84,7 @@ class StateMapper {
     signalBands.clear();
     _lastHold.clear();
     previews.clear();
+    odds.clear();
     log.clear();
     alerts.clear();
   }
@@ -98,6 +102,11 @@ class StateMapper {
         _applyError(msg);
       case proto.MovePreview():
         _applyPreview(msg);
+      case proto.FleetOdds():
+        for (final o in msg.sectors) {
+          odds[(msg.fleetId, o.sector.toKey())] = OddsEntry(o, tick);
+        }
+        odds.removeWhere((_, e) => tick - e.tick > 60);
       case proto.LeaderboardReply():
         leaderboard = msg;
         for (final e in [...msg.entries.take(5), if (msg.you != null) msg.you!]) {
@@ -126,6 +135,7 @@ class StateMapper {
     signals.removeWhere((k, _) => sectors.containsKey(k));
     signalBands.removeWhere((k, _) => sectors.containsKey(k));
     previews.clear();
+    odds.clear();
     pushLog('Full state sync: tick $tick, homeworld ${s.player.homeworld}', EventLevel.bright);
   }
 
@@ -401,6 +411,7 @@ class StateMapper {
       signals: {for (final e in signals.entries) proto.Hex.fromKey(e.key): e.value},
       signalBands: {for (final e in signalBands.entries) proto.Hex.fromKey(e.key): e.value},
       previews: {for (final e in previews.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
+      odds: {for (final e in odds.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       stock: res,
       catalog: hw?.catalog,
       hw: hw,

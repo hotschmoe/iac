@@ -8,10 +8,13 @@ use common::*;
 use iac_shared::hex::Hex;
 use iac_shared::constants::{Resources, STRANDED_RECOVERY_TICKS};
 use iac_shared::protocol::{
-    AlertEvent, AlertLevel, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, ServerMessage,
+    AlertEvent, AlertLevel, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, ServerMessage, ThreatBasis,
+    MAX_ODDS_SECTORS,
 };
+use iac_shared::scaling::{ratio_label, RatioLabel};
 use iac_shared::world::NpcBehaviorType;
-use iac_sim::engine::{fleet_power, template_npc_id, FleetStatus};
+use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus};
+use iac_sim::odds::{self, Force};
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
     e.since(mark, |k| match k {
@@ -172,6 +175,34 @@ fn previews_and_warnings_tell_charted_routes_from_direct_ones() {
     assert!(warning.message.contains("across unexplored space"), "{}", warning.message);
 }
 
+#[test]
+fn odds_cover_any_sector_and_say_what_the_preview_of_a_jump_says() {
+    let (mut e, rival, rival_fleet) = with_rival("Oddsmaker");
+    let (pid, fid) = (e.pid, e.fid);
+    let here = e.engine.fleets[&fid].location;
+    let next = e.engine.world_gen.connected_neighbors(here).slice()[0];
+    let far = Hex { q: 14, r: -3 };
+    let ask = |e: &mut Empire, who: u64, fleet_id: u64, sectors: Vec<Hex>| e.engine.execute(who, Command::Odds { fleet_id, sectors });
+
+    let Some(ServerMessage::Odds(reply)) = ask(&mut e, pid, fid, vec![next, here, far]).reply else { panic!("no odds") };
+    assert_eq!(reply.fleet_id, fid);
+    assert_eq!(reply.sectors.iter().map(|s| s.sector).collect::<Vec<_>>(), [next, here, far]);
+    let Some(ServerMessage::PreviewMove(preview)) = e.engine.execute(pid, Command::PreviewMove { fleet_id: fid, target: next }).reply else {
+        panic!("no preview");
+    };
+    assert_eq!((reply.sectors[0].threat, reply.sectors[0].ratio, reply.sectors[0].label), (preview.threat, preview.ratio, preview.label));
+    assert_eq!((reply.sectors[2].threat.basis, reply.sectors[2].label), (ThreatBasis::Estimate, RatioLabel::Deadly));
+    for odds in &reply.sectors {
+        assert_eq!(odds.label, ratio_label(odds.ratio));
+        assert_eq!(odds.ratio, e.engine.fleet_odds(&e.engine.fleets[&fid], odds.sector).ratio);
+    }
+
+    let crowd = vec![far; MAX_ODDS_SECTORS + 1];
+    assert_eq!(ask(&mut e, pid, fid, crowd).error.map(|(code, _)| code), Some(ErrorCode::InvalidCommand));
+    assert!(ask(&mut e, rival, fid, vec![far]).error.is_some(), "another empire's fleet");
+    assert!(ask(&mut e, pid, rival_fleet, vec![far]).error.is_some());
+}
+
 fn tuned_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
     let mut e = Empire::join(world("test"), "Dialled");
     let (pid, fid) = (e.pid, e.fid);
@@ -180,7 +211,11 @@ fn tuned_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
         .flat_map(|q| (-4i16..=4).map(move |r| Hex { q: home.q + q, r: home.r + r }))
         .filter(|h| (3..=4).contains(&Hex::distance(h, &home)))
         .collect();
-    let weakest = frontier.iter().map(|&h| e.engine.known_threat(pid, h).est_power).fold(f32::MAX, f32::min);
+    let waiting: Vec<Force> = frontier.iter().map(|&h| e.engine.known_opposition(pid, h).1).collect();
+    let best_odds = |fleet: &Fleet| {
+        let ours = fleet_force(fleet);
+        waiting.iter().map(|theirs| odds::outlook(&ours, theirs).ratio()).fold(0.0f32, f32::max)
+    };
     edit(&mut e.engine, |s| {
         for dr in -2i16..=2 {
             for dq in -2i16..=2 {
@@ -197,7 +232,7 @@ fn tuned_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
             for ship in &mut fleet.ships[..fleet.ship_count] {
                 ship.weapon_power = mid;
             }
-            if fleet_power(fleet) < 1.6 * weakest { lo = mid } else { hi = mid }
+            if best_odds(fleet) < 1.6 { lo = mid } else { hi = mid }
         }
     });
     let params = PolicyParams { max_range: 4, engage_ratio_x10, ..PolicyParams::default() };

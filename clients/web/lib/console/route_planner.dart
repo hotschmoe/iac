@@ -24,9 +24,6 @@ class RoutePlan {
   final int backFuel;
   final int etaTicks;
   final List<int> holds;
-  final double fleetPower;
-  final double worstPower;
-  final int worstHop;
 
   const RoutePlan({
     required this.from,
@@ -40,9 +37,6 @@ class RoutePlan {
     required this.backFuel,
     required this.etaTicks,
     required this.holds,
-    required this.fleetPower,
-    required this.worstPower,
-    required this.worstHop,
   });
 
   int get hops => path.length;
@@ -54,8 +48,10 @@ class RoutePlan {
   bool get canReturn => fuelLeft >= backFuel;
   int get returnMargin => fuelLeft - backFuel;
   int get hopsLeftToReturn => fuel == 0 || hops == 0 ? 0 : (fuelLeft ~/ math.max(1, fuel ~/ hops));
-  double get worstRatio => worstPower <= 0 ? 99 : fleetPower / worstPower;
   bool get hasHold => holds.isNotEmpty;
+
+  /// The hops that hold hostiles: the ones worth asking the server's odds for.
+  List<proto.Hex> get hostileHops => [for (var i = 0; i < path.length; i++) if (threats[i] > 0) path[i]];
 }
 
 class RoutePlanner {
@@ -72,7 +68,6 @@ class RoutePlanner {
     required proto.Hex from,
     required proto.Hex to,
     required proto.Hex home,
-    required double power,
     RouteMode mode = RouteMode.fast,
   }) {
     if (from == to || !sectors.containsKey(to)) return null;
@@ -108,38 +103,7 @@ class RoutePlanner {
     for (var h = to; h != from; h = prev[h]!) {
       path.insert(0, h);
     }
-    final threats = <int>[], intel = <Intel>[], holds = <int>[];
-    var worstPower = 0.0, worstHop = -1;
-    for (var i = 0; i < path.length; i++) {
-      final s = sectors[path[i]];
-      final t = thr(path[i]);
-      threats.add(t.rating);
-      intel.add(Intel.of(s, tick));
-      if (t.rating >= holdThreat) holds.add(i);
-      if (t.power > worstPower) {
-        worstPower = t.power;
-        worstHop = i;
-      }
-    }
-    final per = math.max(1, fleet.jumpFuel);
-    final fuel = per * path.length;
-    final back = proto.Hex.distance(to, home) * per;
-    return RoutePlan(
-      from: from,
-      to: to,
-      mode: mode,
-      path: path,
-      threats: threats,
-      intel: intel,
-      fuel: fuel,
-      fuelHave: fleet.fuel,
-      backFuel: back,
-      etaTicks: path.length * 2,
-      holds: holds,
-      fleetPower: power,
-      worstPower: worstPower,
-      worstHop: worstHop,
-    );
+    return _rebuild(sectors, tick, fleet, from, path, home, mode);
   }
 
   /// The three modes at once, for the route panel tabs.
@@ -150,11 +114,10 @@ class RoutePlanner {
     required proto.Hex from,
     required proto.Hex to,
     required proto.Hex home,
-    required double power,
   }) =>
       {
         for (final m in RouteMode.values)
-          m: plan(sectors: sectors, tick: tick, fleet: fleet, from: from, to: to, home: home, power: power, mode: m)
+          m: plan(sectors: sectors, tick: tick, fleet: fleet, from: from, to: to, home: home, mode: m)
       };
 
   /// Waypoint chain: plan leg by leg and join.
@@ -165,34 +128,28 @@ class RoutePlanner {
     required proto.Hex from,
     required List<proto.Hex> stops,
     required proto.Hex home,
-    required double power,
     RouteMode mode = RouteMode.fast,
   }) {
     final path = <proto.Hex>[];
     var at = from;
     for (final s in stops) {
-      final leg = plan(sectors: sectors, tick: tick, fleet: fleet, from: at, to: s, home: home, power: power, mode: mode);
+      final leg = plan(sectors: sectors, tick: tick, fleet: fleet, from: at, to: s, home: home, mode: mode);
       if (leg == null) return null;
       path.addAll(leg.path);
       at = s;
     }
     if (path.isEmpty) return null;
-    return _rebuild(sectors, tick, fleet, from, path, home, power, mode);
+    return _rebuild(sectors, tick, fleet, from, path, home, mode);
   }
 
-  static RoutePlan _rebuild(SectorMap sectors, int tick, FleetState fleet, proto.Hex from, List<proto.Hex> path, proto.Hex home,
-      double power, RouteMode mode) {
+  static RoutePlan _rebuild(
+      SectorMap sectors, int tick, FleetState fleet, proto.Hex from, List<proto.Hex> path, proto.Hex home, RouteMode mode) {
     final threats = <int>[], intel = <Intel>[], holds = <int>[];
-    var worstPower = 0.0, worstHop = -1;
     for (var i = 0; i < path.length; i++) {
       final t = SectorThreat.of(sectors[path[i]]);
       threats.add(t.rating);
       intel.add(Intel.of(sectors[path[i]], tick));
       if (t.rating >= holdThreat) holds.add(i);
-      if (t.power > worstPower) {
-        worstPower = t.power;
-        worstHop = i;
-      }
     }
     final per = math.max(1, fleet.jumpFuel);
     return RoutePlan(
@@ -207,9 +164,6 @@ class RoutePlanner {
       backFuel: proto.Hex.distance(path.last, home) * per,
       etaTicks: path.length * 2,
       holds: holds,
-      fleetPower: power,
-      worstPower: worstPower,
-      worstHop: worstHop,
     );
   }
 }

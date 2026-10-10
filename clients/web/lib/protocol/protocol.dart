@@ -352,9 +352,9 @@ enum ThreatBasis {
   static ThreatBasis fromJson(Object? v) => _enumFrom(values, v, _snake);
 }
 
-/// Verdict on a fleet-power to threat-power ratio: safe from 2.5, favourable
-/// from 1.5, even from 1.1, risky from 0.9, deadly below. Ordered from worst
-/// to best, so `label.index` compares verdicts.
+/// Verdict on the ratio of a fleet's odds ([SectorOdds]): safe from 2.5,
+/// favourable from 1.5, even from 1.1, risky from 0.9, deadly below. Ordered
+/// from worst to best, so `label.index` compares verdicts.
 enum RatioLabel {
   deadly('DEADLY'),
   risky('RISKY'),
@@ -369,9 +369,10 @@ enum RatioLabel {
   String toJson() => wire;
   static RatioLabel fromJson(Object? v) => _enumFrom(values, v, _snake);
 
-  /// The verdict for a ratio, where the server's `scaling::ratio_label` has
-  /// none to give (the sector the fleet is in, a far hop of a route).
-  /// fixtures/protocol/ratio_labels.json keeps the two in step.
+  /// The band of a ratio, as the server's `scaling::ratio_label` cuts it
+  /// (fixtures/protocol/ratio_labels.json keeps the two in step). The ratio
+  /// itself only the server can work out; the demo world uses this to label
+  /// the ones it makes up.
   static RatioLabel forRatio(double r) {
     if (r >= 2.5) return safe;
     if (r >= 1.5) return favourable;
@@ -568,6 +569,7 @@ sealed class Command {
       'cancel_queued' => CancelQueuedCommand(queueType: QueueType.fromJson(m['queue_type']), id: _i(m['id'])),
       'leaderboard' => LeaderboardCommand(limit: (m['limit'] as int?) ?? 20),
       'preview_move' => PreviewMoveCommand(fleetId: _i(m['fleet_id']), target: Hex.fromJson(m['target'])),
+      'odds' => OddsCommand(fleetId: _i(m['fleet_id']), sectors: _list(m['sectors'], Hex.fromJson)),
       'stop' => StopCommand(fleetId: fleet()),
       'scan' => ScanCommand(fleetId: fleet()),
       'explore_site' => ExploreSiteCommand(fleetId: fleet()),
@@ -689,6 +691,17 @@ class PreviewMoveCommand extends Command {
   Json toJson() => {'action': 'preview_move', 'fleet_id': fleetId, 'target': target.toJson()};
 }
 
+/// Ask how a fleet would fare in each of [sectors] (at most
+/// [maxOddsSectors], anywhere on the map); the reply is a [FleetOdds].
+class OddsCommand extends Command {
+  static const maxOddsSectors = 256;
+  final int fleetId;
+  final List<Hex> sectors;
+  const OddsCommand({required this.fleetId, required this.sectors});
+  @override
+  Json toJson() => {'action': 'odds', 'fleet_id': fleetId, 'sectors': [for (final s in sectors) s.toJson()]};
+}
+
 class StopCommand extends Command {
   final int fleetId;
   const StopCommand({this.fleetId = 0});
@@ -749,6 +762,7 @@ sealed class ServerMessage {
       'full_state' => GameState.fromJson(m),
       'event' => GameEvent.fromJson(m),
       'preview_move' => MovePreview.fromJson(m),
+      'odds' => FleetOdds.fromJson(m),
       'leaderboard' => LeaderboardReply.fromJson(m),
       'error' => ErrorMessage.fromJson(m),
       final t => throw FormatException('unknown ServerMessage type "$t"'),
@@ -1068,6 +1082,45 @@ class MovePreview extends ServerMessage {
         'ratio': ratio,
         'label': label.toJson(),
       };
+
+  /// The odds part of the preview.
+  SectorOdds get odds => SectorOdds(sector: target, threat: threat, ratio: ratio, label: label);
+}
+
+/// How a fleet would fare against what the player knows of a sector. The
+/// server plays the fight on averages with the ships on each side; [ratio]
+/// puts the result on the scale of a power ratio between equal ship classes
+/// and [label] is its band. Fleet power over [threat] power is not it.
+class SectorOdds {
+  final Hex sector;
+  final ThreatInfo threat;
+  final double ratio;
+  final RatioLabel label;
+  const SectorOdds({required this.sector, required this.threat, required this.ratio, required this.label});
+
+  factory SectorOdds.fromJson(Object? json) {
+    final m = _obj(json);
+    return SectorOdds(
+      sector: Hex.fromJson(m['sector']),
+      threat: ThreatInfo.fromJson(m['threat']),
+      ratio: _f(m['ratio']),
+      label: RatioLabel.fromJson(m['label']),
+    );
+  }
+
+  Json toJson() => {'sector': sector.toJson(), 'threat': threat.toJson(), 'ratio': ratio, 'label': label.toJson()};
+}
+
+/// Answer to [OddsCommand], in the order asked.
+class FleetOdds extends ServerMessage {
+  final int fleetId;
+  final List<SectorOdds> sectors;
+  const FleetOdds({required this.fleetId, required this.sectors});
+
+  factory FleetOdds.fromJson(Json m) => FleetOdds(fleetId: _i(m['fleet_id']), sectors: _list(m['sectors'], SectorOdds.fromJson));
+
+  @override
+  Json toJson() => {'type': 'odds', 'fleet_id': fleetId, 'sectors': [for (final s in sectors) s.toJson()]};
 }
 
 class ErrorMessage extends ServerMessage {

@@ -406,6 +406,7 @@ fn command_name(c: &Command) -> &'static str {
         Command::CancelBuild { .. } => "cancel_build",
         Command::CancelQueued { .. } => "cancel_queued",
         Command::PreviewMove { .. } => "preview_move",
+        Command::Odds { .. } => "odds",
         Command::Leaderboard { .. } => "leaderboard",
         Command::Stop { .. } => "stop",
         Command::Scan { .. } => "scan",
@@ -423,6 +424,7 @@ fn server_message_name(m: &ServerMessage) -> &'static str {
         ServerMessage::Event(_) => "event",
         ServerMessage::Error(_) => "error",
         ServerMessage::PreviewMove(_) => "preview_move",
+        ServerMessage::Odds(_) => "odds",
         ServerMessage::Leaderboard(_) => "leaderboard",
     }
 }
@@ -542,6 +544,7 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::CancelQueued { queue_type: QueueType::Building, id: 331 }),
         ("research", Command::CancelQueued { queue_type: QueueType::Research, id: 340 }),
         ("", Command::PreviewMove { fleet_id: 3, target: h(2, -5) }),
+        ("", Command::Odds { fleet_id: 3, sectors: vec![h(2, -4), h(2, -5), h(3, -6)] }),
         ("", Command::Leaderboard { limit: 10 }),
         ("", Command::Stop { fleet_id: 6 }),
         ("", Command::Scan { fleet_id: 7 }),
@@ -788,6 +791,32 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             fleet_power: 60.0,
             ratio: 1.29,
             label: RatioLabel::Even,
+        }),
+    ));
+    v.push((
+        "".into(),
+        ServerMessage::Odds(FleetOdds {
+            fleet_id: 3,
+            sectors: vec![
+                SectorOdds {
+                    sector: h(2, -4),
+                    threat: ThreatInfo { rating: 2, est_power: 8.9, basis: ThreatBasis::Template },
+                    ratio: 10.0,
+                    label: RatioLabel::Safe,
+                },
+                SectorOdds {
+                    sector: h(2, -5),
+                    threat: ThreatInfo { rating: 3, est_power: 20.0, basis: ThreatBasis::Estimate },
+                    ratio: 1.62,
+                    label: RatioLabel::Favourable,
+                },
+                SectorOdds {
+                    sector: h(3, -6),
+                    threat: ThreatInfo { rating: 4, est_power: 46.5, basis: ThreatBasis::Observed },
+                    ratio: 0.84,
+                    label: RatioLabel::Deadly,
+                },
+            ],
         }),
     ));
     v.push((

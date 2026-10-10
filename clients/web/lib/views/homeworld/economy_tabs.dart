@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../console/economy_view.dart';
@@ -34,7 +36,7 @@ class DefenceTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final d = eco.defence;
     if (d == null) return _notReported('Defence');
-    final info = RatioInfo.of(d.total, d.raidEstimate);
+    final cover = d.total / math.max(1, d.raidEstimate);
     final raidIn = d.raidInTicks;
     return Padding(
       padding: const EdgeInsets.all(12),
@@ -50,7 +52,8 @@ class DefenceTab extends StatelessWidget {
                     overflow: TextOverflow.ellipsis, style: T.cond(size: 26, color: raidIn == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 2)),
               ),
               const SizedBox(width: 8),
-              Text('${info.label}  ${info.r.toStringAsFixed(2)}', style: T.cond(size: 13, color: info.color, spacing: 1.4)),
+              Text('DEFENCE ${cover.toStringAsFixed(2)}X THE RAID',
+                  key: const Key('defence-cover'), style: T.cond(size: 13, color: cover >= 1 ? C.ok : C.ember, spacing: 1.4)),
             ]),
             const SizedBox(height: 10),
             _breakdown(d),
@@ -60,8 +63,6 @@ class DefenceTab extends StatelessWidget {
               _legend('Structures', d.structures, C.crystal),
               _legend('Next raid est.', d.raidEstimate, C.ember),
             ]),
-            const SizedBox(height: 4),
-            RatioGauge(info.r),
           ]),
         ),
         const SizedBox(height: 10),

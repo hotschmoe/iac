@@ -85,9 +85,9 @@ void main() {
       expect(kinds.length, 26);
     });
 
-    test('command fixtures cover all 18 commands', () {
+    test('command fixtures cover all 19 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 18);
+      expect(kinds.length, 19);
     });
 
     test('full_state exposes sector connections', () {
@@ -122,6 +122,18 @@ void main() {
       expect(kept.routeUnexplored, isTrue);
       expect(kept.label, RatioLabel.even);
       expect(mapper.log, isEmpty, reason: 'previews are asked for by hovering; they do not write to the log');
+    });
+
+    test('an odds answer is kept per fleet and sector, with the server ratio and verdict untouched', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'odds');
+      final msg = ServerMessage.fromJson(readJson(f)) as FleetOdds;
+      final mapper = StateMapper()..apply(msg);
+      expect(mapper.odds.keys.map((k) => k.$1).toSet(), {3});
+      final far = mapper.odds[(3, const Hex(3, -6).toKey())]!.odds;
+      expect(far.ratio, closeTo(0.84, 1e-6));
+      expect((far.label, far.threat.estPower), (RatioLabel.deadly, 46.5));
+      expect(mapper.odds[(3, const Hex(2, -4).toKey())]!.odds.label, RatioLabel.safe);
+      expect(mapper.log, isEmpty);
     });
 
     test('the homeworld lists defences, defence power and the next raid estimate', () {

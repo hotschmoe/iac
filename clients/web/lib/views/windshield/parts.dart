@@ -246,7 +246,9 @@ class StatusPanel extends StatelessWidget {
 
 class ContactsPanel extends StatelessWidget {
   final SectorThreat threat;
-  final double myPower;
+
+  /// The server's odds for this fleet in this sector; null until it answers.
+  final proto.SectorOdds? odds;
   final bool combat;
   final bool atHome;
   final proto.SectorState? sector;
@@ -268,7 +270,7 @@ class ContactsPanel extends StatelessWidget {
   const ContactsPanel({
     super.key,
     required this.threat,
-    required this.myPower,
+    required this.odds,
     required this.combat,
     required this.atHome,
     required this.sector,
@@ -322,19 +324,23 @@ class ContactsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final rows = <Widget>[];
     if (threat.hostile) {
-      final o = RatioInfo.of(myPower, threat.power);
+      final o = odds == null ? null : RatioInfo.fromOdds(odds!);
       final th = threat.rating;
       rows.add(_row(
         'h',
         _Diamond(th),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           _t(threat.composition.map((e) => '${e.$2}x ${shipAbbr(e.$1)}').join(' + '), trail: ThreatBadge(th, sm: true)),
-          _d(Text('${threat.behavior?.wire.toUpperCase() ?? ''} - POWER ${threat.power.round()} VS YOUR ${myPower.round()}${combat ? ' - ENGAGED' : ''}', style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
-          Padding(padding: const EdgeInsets.only(top: 6), child: Text.rich(TextSpan(children: [
-            TextSpan(text: o.label, style: TextStyle(color: o.color, fontWeight: FontWeight.w600)),
-            TextSpan(text: '  ratio ${o.r.toStringAsFixed(2)} - est win ${o.winPct}%', style: const TextStyle(color: C.text3)),
-          ]), style: T.mono(size: 10.5))),
-          RatioGauge(o.r),
+          _d(Text('${threat.behavior?.wire.toUpperCase() ?? ''} - POWER ${threat.power.round()}${combat ? ' - ENGAGED' : ''}', style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
+          if (o == null)
+            _d(Text('ODDS: ASKING THE SERVER', key: const Key('contact-odds-pending'), style: _ds))
+          else ...[
+            Padding(padding: const EdgeInsets.only(top: 6), child: Text.rich(key: const Key('contact-odds'), TextSpan(children: [
+              TextSpan(text: o.label, style: TextStyle(color: o.color, fontWeight: FontWeight.w600)),
+              TextSpan(text: '  ratio ${o.r.toStringAsFixed(2)} - ${o.outcome}', style: const TextStyle(color: C.text3)),
+            ]), style: T.mono(size: 10.5))),
+            RatioGauge(o.r),
+          ],
         ]),
         actions: ConsoleButton('Fire', small: true, danger: true, keyHint: 'F', onPressed: () => onAct('fire')),
       ));
