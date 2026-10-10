@@ -57,6 +57,10 @@ const ODDS_HORIZON: u16 = 12;
 /// The ratio the prospect, mining and salvage doctrines are sent out with
 /// (the game's default).
 const DOCTRINE_RATIO_X10: u8 = 15;
+/// The ratio a wing of at least `CAREFUL_WING_SHIPS` flies its doctrine at:
+/// SAFE, a fight that keeps 98 percent of the hull or more.
+const CAREFUL_RATIO_X10: u8 = 25;
+const CAREFUL_WING_SHIPS: usize = 4;
 /// Doctrines are leashed by odds and fuel, not by distance.
 const DOCTRINE_RANGE: u8 = 30;
 /// Fuel budget of the wings that haul, as a percent of deuterium income.
@@ -108,15 +112,18 @@ impl Wing {
         }
     }
 
-    /// Orders for `preset`. A fleet that hunts fights only what it beats
-    /// without lasting damage. Doctrines that bring resources home earn
-    /// their fuel back and get the larger budget; the ones that fly for
-    /// points get the game's default.
-    fn orders(preset: PolicyPreset) -> PolicyUpdate {
+    /// Orders for `preset` for a fleet of `ships`. A fleet that hunts fights
+    /// only what it beats without lasting damage. Any other flies at SAFE
+    /// odds once it is large enough to leave home at them; a smaller one
+    /// could not, and flies at the game's default. Doctrines that bring
+    /// resources home earn their fuel back and get the larger budget; the
+    /// ones that fly for points get the game's default.
+    fn orders(preset: PolicyPreset, ships: usize) -> PolicyUpdate {
+        let careful = if ships >= CAREFUL_WING_SHIPS { CAREFUL_RATIO_X10 } else { DOCTRINE_RATIO_X10 };
         let (engage_ratio_x10, fuel_budget_pct) = match preset {
             PolicyPreset::PatrolHome => ((SAFE_ODDS * 10.0) as u8, POLICY_DEFAULT_FUEL_BUDGET_PCT),
-            PolicyPreset::MineAndReturn | PolicyPreset::SalvageAndSites => (DOCTRINE_RATIO_X10, HAUL_FUEL_BUDGET_PCT),
-            PolicyPreset::Prospect | PolicyPreset::Manual => (DOCTRINE_RATIO_X10, POLICY_DEFAULT_FUEL_BUDGET_PCT),
+            PolicyPreset::MineAndReturn | PolicyPreset::SalvageAndSites => (careful, HAUL_FUEL_BUDGET_PCT),
+            PolicyPreset::Prospect | PolicyPreset::Manual => (careful, POLICY_DEFAULT_FUEL_BUDGET_PCT),
         };
         PolicyUpdate {
             fleet_id: 0,
@@ -374,8 +381,9 @@ impl<'a> Admiral<'a> {
             Some(flown) => doctrines[flown],
             None => doctrines[0],
         };
-        if fleet.policy != Some(preset) {
-            self.orders.push(Order::Policy(PolicyUpdate { fleet_id: fleet.id, ..Wing::orders(preset) }));
+        if fleet.policy != Some(preset) || leaving {
+            let orders = Wing::orders(preset, fleet.ships.len());
+            self.orders.push(Order::Policy(PolicyUpdate { fleet_id: fleet.id, ..orders }));
         }
     }
 

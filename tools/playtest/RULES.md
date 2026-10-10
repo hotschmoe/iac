@@ -142,9 +142,10 @@ full in about 236 s)"); it never leaves on standing orders with a part-filled
 tank. While your deuterium store is full the fill is free of the allowance,
 since that income would overflow anyway. `100` lifts the bound: the tank takes
 what the stockpile holds at once, as it does for a fleet you fly by hand
-(which is never bound). The budget is per fleet: three fleets at the default
-can take at most 60% of your deuterium income. The `engage` `PolicyAction`
-that confirms new orders states the range, ratio and budget they fly with.
+(which is never bound). The budget is per fleet, so fleets under orders
+together take at most the sum of their budgets: three at the default, 60% of
+your deuterium income. The `engage` `PolicyAction` that confirms new orders
+states the range, ratio and budget they fly with.
 
 Presets:
 - `manual` clears the orders.
