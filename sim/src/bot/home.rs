@@ -4,11 +4,14 @@
 // support building or a tech is ordered once it costs no more than its
 // appetite times that yardstick, so the ladder rises with the economy
 // instead of following a fixed script. Mines are picked by payback, with a
-// resource that waiting orders are short of counting for more. Fleet value
-// is held at a share of the empire's building and research points, and home
+// resource that sits low against its cap counting for more. Fleet value is
+// held at a share of the empire's building and research points, and home
 // defence at a margin over the next raid.
 //
-// Orders are sent with `reserve`, so a queue runs in the order planned.
+// Orders are sent with `reserve`, so a queue runs in the order planned. A
+// player who stays queues one order at a time; one about to leave fills
+// every queue, gives each building place to an order worth its share of
+// the income to come, and spends what no order has claimed.
 
 use iac_shared::constants::{ResourceKind, Resources, ShipClass};
 use iac_shared::pace::Pace;
