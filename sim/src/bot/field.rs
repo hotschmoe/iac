@@ -57,8 +57,9 @@ const ODDS_HORIZON: u16 = 12;
 /// The ratio the prospect, mining and salvage doctrines are sent out with
 /// (the game's default).
 const DOCTRINE_RATIO_X10: u8 = 15;
-/// The ratio a wing of at least `CAREFUL_WING_SHIPS` flies its doctrine at:
-/// SAFE, a fight that keeps 98 percent of the hull or more.
+/// The ratio a wing with warships and at least `CAREFUL_WING_SHIPS` ships
+/// flies its doctrine at: SAFE, a fight that keeps 98 percent of the hull or
+/// more.
 const CAREFUL_RATIO_X10: u8 = 25;
 const CAREFUL_WING_SHIPS: usize = 4;
 /// Doctrines are leashed by odds and fuel, not by distance.
@@ -112,14 +113,16 @@ impl Wing {
         }
     }
 
-    /// Orders for `preset` for a fleet of `ships`. A fleet that hunts fights
-    /// only what it beats without lasting damage. Any other flies at SAFE
-    /// odds once it is large enough to leave home at them; a smaller one
-    /// could not, and flies at the game's default. Doctrines that bring
-    /// resources home earn their fuel back and get the larger budget; the
-    /// ones that fly for points get the game's default.
-    fn orders(preset: PolicyPreset, ships: usize) -> PolicyUpdate {
-        let careful = if ships >= CAREFUL_WING_SHIPS { CAREFUL_RATIO_X10 } else { DOCTRINE_RATIO_X10 };
+    /// Orders for `preset` for `fleet`. A fleet that hunts fights only what
+    /// it beats without lasting damage. A wing with warships is the one
+    /// strong enough to go where every lane has a fight, and to keep working
+    /// at SAFE odds, so it flies at those once it has the ships to leave home
+    /// at them; scouts and haulers fly at the game's default. Doctrines that
+    /// bring resources home earn their fuel back and get the larger budget;
+    /// the ones that fly for points get the game's default.
+    fn orders(preset: PolicyPreset, fleet: &FleetState) -> PolicyUpdate {
+        let armed = fleet.ships.iter().any(|s| Hull::of(s.ship_class) == Hull::Warship);
+        let careful = if armed && fleet.ships.len() >= CAREFUL_WING_SHIPS { CAREFUL_RATIO_X10 } else { DOCTRINE_RATIO_X10 };
         let (engage_ratio_x10, fuel_budget_pct) = match preset {
             PolicyPreset::PatrolHome => ((SAFE_ODDS * 10.0) as u8, POLICY_DEFAULT_FUEL_BUDGET_PCT),
             PolicyPreset::MineAndReturn | PolicyPreset::SalvageAndSites => (careful, HAUL_FUEL_BUDGET_PCT),
@@ -382,7 +385,7 @@ impl<'a> Admiral<'a> {
             None => doctrines[0],
         };
         if fleet.policy != Some(preset) || leaving {
-            let orders = Wing::orders(preset, fleet.ships.len());
+            let orders = Wing::orders(preset, fleet);
             self.orders.push(Order::Policy(PolicyUpdate { fleet_id: fleet.id, ..orders }));
         }
     }
