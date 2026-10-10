@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
-import '../protocol/protocol.dart';
+import 'package:iac_client/protocol/protocol.dart';
 
 /// A hostile ship while a fight is running.
 class _NpcShip {
@@ -29,14 +29,16 @@ class _Explore {
   _Explore(this.fleetId, this.sector, this.endTick);
 }
 
-/// Offline stand-in for the server: produces the same protocol messages
-/// (full_state, tick_update, error, game events) so the UI has a single
-/// render path. It simulates move, scan, harvest, recall, stop, queues,
-/// policies (as labels), NPC fights, salvage, derelict boarding and a raid
-/// cycle, and the economy rework (storage caps, build slots, pending queues,
-/// defences, raids). Its numbers follow the economy formulas at pace 1, with
-/// a demo time-lapse on production and build times so things move; a live
-/// server sends the real ones.
+/// The scripted world the widget tests run on (`DemoController`): the Dart
+/// VM cannot run the real engine, and the tests want the same events at the
+/// same ticks every time. It is not shipped; offline play is the
+/// single-player build, on the real engine. It produces the protocol's own
+/// messages (full_state, tick_update, error, game events) and simulates
+/// move, scan, harvest, recall, stop, queues, policies (as labels), NPC
+/// fights, salvage, derelict boarding and a raid cycle, and the economy
+/// rework (storage caps, build slots, pending queues, defences, raids). Its
+/// numbers follow the economy formulas at pace 1, with a time-lapse on
+/// production and build times so things move.
 ///
 /// Layout (home H=(4,-2); fleet 101 starts at S0=(6,-4)):
 ///   N (6,-5) T3 corvette patrol    NE (7,-5) nebula, derelict tier 1
@@ -44,7 +46,7 @@ class _Explore {
 ///   NW (5,-4) T5 aggressive (uncharted until scanned)
 ///   (7,-3) passive scout           (8,-6) T4 patrol, hot derelict
 ///   (9,-7) T7 swarm (stale chart)
-class DemoProvider {
+class DemoWorld {
   static const _playerId = 1;
   static const _home = Hex(4, -2);
   static const _s0 = Hex(6, -4);
@@ -108,7 +110,7 @@ class DemoProvider {
     ShipClass.hauler: 15.0,
   };
 
-  DemoProvider(this._emit) {
+  DemoWorld(this._emit) {
     final v = [
       _ship(1011, ShipClass.corvette),
       _ship(1012, ShipClass.corvette),

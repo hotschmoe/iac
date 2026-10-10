@@ -38,6 +38,9 @@ class StateMapper {
   int tick = 0;
   DateTime? connectedAt;
 
+  /// What feeds this state, as the quiet alert names it.
+  String feed = 'Live server feed';
+
   proto.PlayerState? player;
   List<proto.FleetState> fleets = [];
   proto.HomeworldState? homeworld;
@@ -401,9 +404,7 @@ class StateMapper {
       research: _mapResearch(hw),
       events: List.of(log),
       alerts: alerts.isEmpty
-          ? const [
-              Alert(icon: '.', message: 'Uplink established', detail: 'Live server feed', level: AlertTone.dim),
-            ]
+          ? [Alert(icon: '.', message: 'Uplink established', detail: feed, level: AlertTone.dim)]
           : List.of(alerts),
       sector: _mapSector(focus),
       homeworld: home,
