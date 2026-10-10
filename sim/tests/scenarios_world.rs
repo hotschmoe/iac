@@ -200,6 +200,7 @@ fn prospector(name: &str, weapon_power: f32, max_range: u8) -> (iac_sim::GameEng
             if weapon_power < 1.0 {
                 ship.hull = 1.0;
                 ship.shield = 0.0;
+                ship.shield_max = 0.0;
             }
         }
         for h in ring_around(home, 2) {
@@ -402,6 +403,212 @@ fn a_mining_run_keeps_its_claims_within_range_of_home_as_each_one_runs_dry() {
         }
     }
     assert!(dried > 0, "the run claimed sectors to exhaust");
+}
+
+/// A fleet that outguns everything near home, so only the doctrine decides
+/// where it goes, with its fuel left unbounded.
+fn delegate(name: &str, preset: PolicyPreset, max_range: u8) -> (iac_sim::GameEngine, u64, u64, Hex) {
+    let mut engine = world("persistent");
+    let (pid, fid) = join(&mut engine, name);
+    let home = engine.players[&pid].homeworld;
+    edit(&mut engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        player.buildings.storage_vault = 8;
+        player.resources.deuterium = 5_000.0;
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        for ship in &mut fleet.ships[..fleet.ship_count] {
+            ship.weapon_power = 5000.0;
+        }
+    });
+    let params = PolicyParams { max_range, fuel_budget_pct: 100, ..PolicyParams::default() };
+    engine.handle_policy_update(pid, fid, preset, Some(params)).unwrap();
+    engine.drain_events();
+    (engine, pid, fid, home)
+}
+
+fn moves(actions: &[(String, String)]) -> Vec<&str> {
+    actions.iter().filter(|(a, _)| a == "move").map(|(_, why)| why.as_str()).collect()
+}
+
+fn holds(actions: &[(String, String)]) -> Vec<&str> {
+    actions.iter().filter(|(a, _)| a == "hold").map(|(_, why)| why.as_str()).collect()
+}
+
+#[test]
+fn a_mining_fleet_brings_the_ore_in_reach_home_and_then_waits_for_the_seams_to_refill() {
+    let (mut engine, pid, fid, home) = delegate("Stripper", PolicyPreset::MineAndReturn, 3);
+    let in_reach: f32 = ring_around(home, 3)
+        .into_iter()
+        .filter_map(|h| engine.ore_reserve_at(h))
+        .map(|o| o.metal.units + o.crystal.units + o.deuterium.units)
+        .sum();
+    assert!(in_reach > 100.0, "the seed puts ore within three hexes of home: {in_reach}");
+    let events = run(&mut engine, 6000);
+    let mined: f32 = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::ResourceHarvested(h) if h.fleet_id == fid => Some(h.resources.total()),
+            _ => None,
+        })
+        .sum();
+    assert!(mined > 0.5 * in_reach, "of {in_reach:.0} units of ore in reach, {mined:.0} were mined");
+
+    let idle = policy_actions(&run(&mut engine, 1200));
+    assert!(moves(&idle).is_empty(), "stripped seams are left to refill: {:?}", moves(&idle));
+    assert_eq!(engine.fleets[&fid].location, home);
+    assert_eq!(engine.fleets[&fid].cargo.total(), 0.0, "what was mined is in the stockpile");
+    assert!(holds(&idle).iter().any(|why| why.contains("repays the fuel")), "{:?}", holds(&idle));
+    assert!(engine.players[&pid].resources.total() > 0.5 * in_reach);
+}
+
+fn drop_pile(engine: &mut iac_sim::GameEngine, at: Hex, pile: Resources) {
+    edit(engine, |s| {
+        let ov = s.sector_overrides.entry(at.to_key()).or_insert_with(SectorOverride::default);
+        ov.salvage = Some(pile);
+        ov.salvage_despawn_tick = Some(s.tick + 1_000_000);
+    });
+}
+
+/// Lane hops from `from` to every sector `passable` lets a fleet through, out to `limit`.
+fn hops_from(engine: &iac_sim::GameEngine, from: Hex, limit: u32, passable: impl Fn(Hex) -> bool) -> Vec<(Hex, u32)> {
+    let mut seen = std::collections::HashMap::from([(from.to_key(), 0u32)]);
+    let mut queue = std::collections::VecDeque::from([from]);
+    let mut out = Vec::new();
+    while let Some(at) = queue.pop_front() {
+        let hops = seen[&at.to_key()];
+        if hops == limit {
+            continue;
+        }
+        for &next in engine.world_gen.connected_neighbors(at).slice() {
+            if seen.contains_key(&next.to_key()) || !passable(next) {
+                continue;
+            }
+            seen.insert(next.to_key(), hops + 1);
+            out.push((next, hops + 1));
+            queue.push_back(next);
+        }
+    }
+    out
+}
+
+#[test]
+fn a_salvage_fleet_passes_over_wreckage_it_may_not_reach_for_wreckage_it_may() {
+    let mut engine = world("persistent");
+    let (pid, fid) = join(&mut engine, "Picker");
+    let home = engine.players[&pid].homeworld;
+    let quiet = |e: &iac_sim::GameEngine, h: Hex| {
+        e.world_gen.generate_sector(h).npc_template.is_none() && e.derelict_site_at(h).is_none() && h != home
+    };
+    let rated = |e: &iac_sim::GameEngine, h: Hex| e.odds_for(pid, fid, &[h]).unwrap()[0].ratio;
+    let open = |h: Hex| rated(&engine, h) >= 1.5;
+
+    let everywhere = hops_from(&engine, home, 8, |_| true);
+    let reachable = hops_from(&engine, home, 8, open);
+    let (shut, shut_hops) = *everywhere
+        .iter()
+        .find(|(h, _)| !open(*h) && quiet(&engine, *h))
+        .expect("a quiet sector the starting scouts may not enter");
+    let (within, _) = *reachable
+        .iter()
+        .find(|(h, hops)| *hops > shut_hops && quiet(&engine, *h))
+        .expect("a quiet sector farther out that they may");
+    let pile = Resources { metal: 30.0, crystal: 0.0, deuterium: 0.0 };
+    drop_pile(&mut engine, shut, pile);
+    drop_pile(&mut engine, within, pile);
+    edit(&mut engine, |s| s.players.get_mut(&pid).unwrap().resources.deuterium = 5_000.0);
+
+    let params = PolicyParams { max_range: 30, fuel_budget_pct: 100, ..PolicyParams::default() };
+    engine.handle_policy_update(pid, fid, PolicyPreset::SalvageAndSites, Some(params)).unwrap();
+    let events = run_until(&mut engine, 3000, |e| e.sector_overrides[&within.to_key()].salvage.is_none());
+    let scooped: Vec<Hex> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::SalvageCollected(c) if c.fleet_id == fid => Some(c.sector),
+            _ => None,
+        })
+        .collect();
+    assert!(scooped.contains(&within), "{scooped:?}");
+    assert!(engine.sector_overrides[&shut.to_key()].salvage.is_some(), "the pile behind the odds is still there");
+    assert_eq!(engine.fleets[&fid].ship_count, 2);
+}
+
+#[test]
+fn a_salvage_fleet_flies_out_only_for_wreckage_worth_more_than_the_fuel_to_fetch_it() {
+    let (mut engine, _pid, fid, home) = delegate("Wary", PolicyPreset::SalvageAndSites, 3);
+    let quiet = |h: Hex| {
+        engine.world_gen.generate_sector(h).npc_template.is_none() && engine.derelict_site_at(h).is_none()
+    };
+    let (at, _) = hops_from(&engine, home, 3, |h| Hex::distance(&h, &home) <= 3)
+        .into_iter()
+        .find(|(h, hops)| *hops == 3 && quiet(*h))
+        .expect("a quiet sector three jumps out");
+    let burned = 6.0 * engine.hop_fuel_cost(&engine.fleets[&fid]) * iac_shared::constants::FUEL_DEUT_PER_UNIT;
+
+    drop_pile(&mut engine, at, Resources { metal: burned, crystal: 0.0, deuterium: 0.0 });
+    let scraps = policy_actions(&run(&mut engine, 200));
+    assert!(moves(&scraps).is_empty(), "{burned:.1} metal for {burned:.1} deuterium of fuel: {:?}", moves(&scraps));
+    assert!(holds(&scraps).iter().any(|why| why.contains("repays the fuel")), "{:?}", holds(&scraps));
+
+    drop_pile(&mut engine, at, Resources { metal: 20.0 * burned, crystal: 0.0, deuterium: 0.0 });
+    run_until(&mut engine, 200, |e| e.sector_overrides[&at.to_key()].salvage.is_none());
+    assert!(engine.fleets[&fid].cargo.metal > 0.0);
+}
+
+#[test]
+fn a_fleet_that_hauls_goes_round_a_fight_it_would_win() {
+    let (mut engine, _pid, fid, home) = delegate("Roundabout", PolicyPreset::SalvageAndSites, 6);
+    let lair = |h: Hex| engine.world_gen.generate_sector(h).npc_template.is_some_and(|t| t.behavior != Passive);
+    let quiet = |h: Hex| engine.world_gen.generate_sector(h).npc_template.is_none() && engine.derelict_site_at(h).is_none();
+    let in_range = |h: Hex| Hex::distance(&h, &home) <= 6;
+    let direct: std::collections::HashMap<u32, u32> =
+        hops_from(&engine, home, 6, in_range).into_iter().map(|(h, hops)| (h.to_key(), hops)).collect();
+    let (at, _) = hops_from(&engine, home, 10, |h| in_range(h) && !lair(h))
+        .into_iter()
+        .find(|(h, round)| quiet(*h) && direct.get(&h.to_key()).is_some_and(|hops| hops < round))
+        .expect("a quiet sector whose shortest lane from home crosses a lair");
+    drop_pile(&mut engine, at, Resources { metal: 500.0, crystal: 0.0, deuterium: 0.0 });
+
+    let events = run_until(&mut engine, 600, |e| e.sector_overrides[&at.to_key()].salvage.is_none());
+    let fights = events.iter().filter(|e| matches!(e.kind, EventKind::CombatStarted(_))).count();
+    assert_eq!(fights, 0, "the lane round the lair is longer and costs no hull");
+    assert!(engine.fleets[&fid].cargo.metal > 0.0);
+}
+
+#[test]
+fn a_patrol_hunts_out_to_its_range_scoops_what_its_kills_leave_and_waits_at_the_dock() {
+    let (mut engine, pid, fid, home) = delegate("Hunter", PolicyPreset::PatrolHome, 4);
+    let contacts = ring_around(home, 4)
+        .into_iter()
+        .filter(|h| engine.world_gen.generate_sector(*h).npc_template.is_some())
+        .count();
+    assert!(contacts > 0, "the seed puts lairs within four hexes of home");
+
+    let mut fought_at = Vec::new();
+    let mut actions = Vec::new();
+    for _ in 0..4000 {
+        engine.tick().unwrap();
+        for (action, why) in policy_actions(&engine.drain_events()) {
+            if action == "attack" {
+                fought_at.push(engine.fleets[&fid].location);
+            }
+            actions.push((action, why));
+        }
+    }
+    assert!(!fought_at.is_empty(), "{actions:?}");
+    assert!(fought_at.iter().all(|at| Hex::distance(at, &home) <= 4), "{fought_at:?}");
+    assert!(fought_at.iter().any(|at| Hex::distance(at, &home) > 2), "the hunt reaches past two hexes: {fought_at:?}");
+    assert!(actions.iter().any(|(a, _)| a == "salvage"), "kills leave wreckage and the patrol takes it");
+    let wandering: Vec<&str> = moves(&actions)
+        .into_iter()
+        .filter(|why| !why.starts_with("intercepting") && !why.starts_with("returning"))
+        .collect();
+    assert!(wandering.is_empty(), "every jump has a purpose: {wandering:?}");
+    assert!(engine.players[&pid].combat_points > 0.0);
+    assert!(
+        holds(&actions).iter().any(|why| why.starts_with("no contact within 4 hops of home")),
+        "with the beat cleared it waits at the dock: {:?}",
+        holds(&actions),
+    );
 }
 
 fn orders_flown(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64) -> Vec<(String, String)> {
@@ -717,9 +924,9 @@ fn a_default_patrol_holds_where_power_alone_said_engage_and_fights_what_it_beats
     let Fights { fought, won, hull_kept } = fights(&engine, pid, fid, at, 60);
     assert!(won * 3 <= fought * 2 && hull_kept < 0.4, "won {won} of {fought}, kept {hull_kept:.2} of the hull");
     engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
-    let orders = policy_actions(&run(&mut engine, 30));
+    let orders = policy_actions(&run(&mut engine, 3));
     assert!(orders.iter().all(|(action, _)| action != "attack"), "{orders:?}");
-    assert!(orders.iter().any(|(action, why)| action == "hold" && why == "hostiles too strong"), "{orders:?}");
+    assert!(orders.iter().any(|(action, why)| action == "move" && why.contains("too strong")), "it withdraws: {orders:?}");
     assert_eq!(engine.fleets[&fid].ship_count, 4);
 
     let (mut engine, pid, fid, at) = convoy(8);

@@ -371,6 +371,62 @@ fn a_full_deuterium_store_or_an_unbounded_budget_fills_the_tank_at_once() {
     }
 }
 
+/// A quiet sector in `ring` (from the hub) with a lane home, and the odds of
+/// the empire's fleet in every sector of that lane but home.
+fn outpost_in_ring(e: &Empire, ring: u16) -> (Hex, Vec<f32>) {
+    let home = e.engine.players[&e.pid].homeworld;
+    iac_shared::hex::hex_ring(Hex::ORIGIN, ring)
+        .filter(|at| e.engine.world_gen.generate_sector(*at).npc_template.is_none())
+        .filter_map(|at| {
+            let mut lane = lane_path(&e.engine, at, home, 12)?;
+            lane.pop();
+            let odds = e.engine.odds_for(e.pid, e.fid, &lane).unwrap();
+            Some((at, odds.iter().map(|o| o.ratio).collect::<Vec<f32>>()))
+        })
+        .min_by_key(|(at, _)| Hex::distance(at, &home))
+        .expect("a quiet sector in that ring")
+}
+
+#[test]
+fn a_fleet_heading_home_takes_the_mildest_lane_and_says_so() {
+    let mut e = Empire::join(world("persistent"), "Homesick");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let (at, lane) = outpost_in_ring(&e, 8);
+    assert!(lane.iter().any(|r| *r < 1.5), "no lane home meets the default doctrine: {lane:?}");
+    deploy(&mut e.engine, fid, at, None);
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).unwrap();
+    let mark = e.mark();
+    e.run_until(600, |e| e.engine.fleets.get(&fid).is_none_or(|f| f.location == home));
+
+    assert_eq!(e.engine.fleets[&fid].ship_count, 2, "it came home whole");
+    let jumps = policy_reasons(&e, mark, "move");
+    assert!(jumps[0].contains("no lane home meets the doctrine's 1.5x, taking the mildest"), "{jumps:?}");
+    assert!(jumps.iter().all(|why| !why.contains("DEADLY")), "{jumps:?}");
+}
+
+#[test]
+fn a_fleet_cut_off_by_deadly_odds_holds_and_alerts_its_owner_instead_of_jumping_into_them() {
+    let mut e = Empire::join(world("persistent"), "Marooned");
+    let (pid, fid) = (e.pid, e.fid);
+    let (at, lane) = outpost_in_ring(&e, 11);
+    assert!(lane[0] < 0.9, "the first sector of the lane home is deadly to two scouts: {lane:?}");
+    deploy(&mut e.engine, fid, at, None);
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).unwrap();
+    let mark = e.mark();
+    e.run(45);
+
+    assert_eq!(e.engine.fleets[&fid].location, at);
+    assert!(policy_reasons(&e, mark, "move").is_empty());
+    let held = policy_reasons(&e, mark, "hold");
+    assert!(held.iter().any(|why| why.starts_with("cut off from home")), "{held:?}");
+    let warned = alerts_since(&e, mark);
+    assert!(
+        warned.iter().any(|a| matches!(a.level, AlertLevel::Warning) && a.message.contains("cut off from home")),
+        "{warned:?}",
+    );
+}
+
 #[test]
 fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it_has_left() {
     let mut e = Empire::join(world("test"), "Mauled");
