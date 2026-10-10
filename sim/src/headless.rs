@@ -1,92 +1,149 @@
 // A world with scripted players and no network: build it, step it as fast as
-// the CPU allows, read the results. Used by `sim-run`, the determinism tests
-// and (next milestone) the bot balance reports.
+// the CPU allows, read the results. Used by `sim-run` and the bot tests.
+//
+// Besides the end state it keeps what a balance report needs: each player's
+// score split at every sample point, and a running tally of what the field
+// paid them, counted from the engine's own events.
 
 use std::collections::BTreeMap;
 
 use iac_shared::pace::Pace;
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::protocol::{EventKind, GameEvent};
+use iac_shared::scaling::{self, BuildingType, ResearchType};
 use serde::Serialize;
 
 use crate::engine::GameEngine;
-use crate::score;
-use crate::script::ScriptedPlayer;
-use crate::views;
+use crate::score::{self, Score};
+use crate::script::{ScriptedPlayer, Seat};
 
-struct Seat {
-    player_id: u64,
-    player: Box<dyn ScriptedPlayer>,
-    accepted: u64,
-    rejected: u64,
-}
-
-pub struct Headless {
-    pub engine: GameEngine,
-    seats: Vec<Seat>,
-}
-
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub struct ScoreBreakdown {
     pub econ: f32,
     pub fleet: f32,
     pub defence: f32,
-    pub combat: f32,
-    pub explore: f32,
     pub core: f32,
+    /// Raw combat points, before the cap.
+    pub combat: f32,
+    /// Raw exploration points, before the cap.
+    pub explore: f32,
+    /// What combat and exploration add to the score once capped.
+    pub extra: f32,
     pub total: f32,
 }
 
-/// One player's end state, for the JSON report.
+impl From<Score> for ScoreBreakdown {
+    fn from(s: Score) -> ScoreBreakdown {
+        ScoreBreakdown {
+            econ: s.econ,
+            fleet: s.fleet,
+            defence: s.defence,
+            core: s.core(),
+            combat: s.combat,
+            explore: s.explore,
+            extra: s.total() - s.core(),
+            total: s.total(),
+        }
+    }
+}
+
+/// What the map and the raids paid a player so far. Resources are given as
+/// their score weight: the core points they are worth once spent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct FieldTally {
+    pub ore: f32,
+    pub salvage: f32,
+    pub derelict_loot: f32,
+    /// Wreckage of repelled raids scooped at the homeworld.
+    pub raid_salvage: f32,
+    pub kills: u32,
+    pub sites_boarded: u32,
+    pub sectors_charted: u32,
+    pub ships_lost: u32,
+    pub raids_repelled: u32,
+    pub raids_lost: u32,
+}
+
+impl FieldTally {
+    /// Resources brought in by fleets away from home.
+    pub fn haul(&self) -> f32 {
+        self.ore + self.salvage + self.derelict_loot
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Sample {
+    pub tick: u64,
+    pub score: ScoreBreakdown,
+    pub field: FieldTally,
+    /// Score weight of the unspent stockpile.
+    pub stock: f32,
+    pub ships: usize,
+}
+
+/// One player's run, for the report.
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayerSummary {
     pub name: String,
+    pub style: String,
     pub player_id: u64,
     pub score: ScoreBreakdown,
+    pub field: FieldTally,
+    pub samples: Vec<Sample>,
     pub buildings: BTreeMap<String, u8>,
     pub research: BTreeMap<String, u8>,
     pub ships: usize,
-    pub commands_accepted: u64,
-    pub commands_rejected: u64,
+    pub turns: u64,
+    pub orders_accepted: u64,
+    pub orders_refused: u64,
+}
+
+struct Entry {
+    seat: Seat,
+    style: String,
+    tally: FieldTally,
+    samples: Vec<Sample>,
+}
+
+fn tally_of(entries: &mut [Entry], player_id: Option<u64>) -> Option<&mut FieldTally> {
+    let player_id = player_id?;
+    entries.iter_mut().find(|e| e.seat.player_id() == player_id).map(|e| &mut e.tally)
+}
+
+pub struct Headless {
+    pub engine: GameEngine,
+    entries: Vec<Entry>,
 }
 
 impl Headless {
     pub fn new(world_seed: u64, pace: Pace) -> Headless {
-        Headless { engine: GameEngine::new(world_seed, pace), seats: Vec::new() }
+        Headless { engine: GameEngine::new(world_seed, pace), entries: Vec::new() }
     }
 
     /// Register the player's account and seat them; returns the player id.
-    /// Tokens are derived from the id: a headless world has nothing to protect.
-    pub fn add_player(&mut self, player: Box<dyn ScriptedPlayer>) -> Result<u64, String> {
+    /// `style` groups players in the report. Tokens are derived from the
+    /// seat number: a headless world has nothing to protect.
+    pub fn add_player(&mut self, player: Box<dyn ScriptedPlayer>, style: impl Into<String>) -> Result<u64, String> {
         let name = player.name();
-        let granted = self
-            .engine
-            .authenticate(&name, None, true, || format!("{:064x}", self.seats.len()))
+        let number = self.entries.len();
+        let seat = Seat::join(&mut self.engine, player, None, || format!("{number:064x}"))
             .map_err(|e| format!("cannot add player '{name}': {e:?}"))?;
-        self.seats.push(Seat { player_id: granted.player_id, player, accepted: 0, rejected: 0 });
-        Ok(granted.player_id)
+        let player_id = seat.player_id();
+        self.entries.push(Entry { seat, style: style.into(), tally: FieldTally::default(), samples: Vec::new() });
+        Ok(player_id)
     }
 
-    /// One tick: every seat that wants a turn acts, then the world advances.
+    pub fn players(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// One tick: every seat takes its turn, then the world advances.
     pub fn step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let tick = self.engine.current_tick() + 1;
-        let mut commands = Vec::new();
-        for seat in &mut self.seats {
-            if !seat.player.wants_turn(tick) {
-                continue;
-            }
-            let Some(state) = views::full_state(&self.engine, seat.player_id) else { continue };
-            commands.clear();
-            seat.player.act(&state, &mut commands);
-            for cmd in commands.drain(..) {
-                if self.engine.execute(seat.player_id, cmd).error.is_none() {
-                    seat.accepted += 1;
-                } else {
-                    seat.rejected += 1;
-                }
-            }
+        for entry in &mut self.entries {
+            entry.seat.take_turn(&mut self.engine);
         }
         self.engine.tick()?;
-        self.engine.drain_events();
+        let events = self.engine.drain_events();
+        self.count(&events);
         self.engine.persist_dirty_state();
         Ok(())
     }
@@ -98,12 +155,106 @@ impl Headless {
         Ok(())
     }
 
+    /// Run `ticks`, taking a sample every `every` ticks and at the end.
+    pub fn run_sampled(&mut self, ticks: u64, every: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let end = self.engine.current_tick() + ticks;
+        while self.engine.current_tick() < end {
+            let leg = every.max(1).min(end - self.engine.current_tick());
+            self.run(leg)?;
+            self.sample();
+        }
+        Ok(())
+    }
+
+    /// Record every player's score and tally as of now.
+    pub fn sample(&mut self) {
+        let tick = self.engine.current_tick();
+        for i in 0..self.entries.len() {
+            let Some(sample) = self.sample_of(i, tick) else { continue };
+            self.entries[i].samples.push(sample);
+        }
+    }
+
+    fn sample_of(&self, index: usize, tick: u64) -> Option<Sample> {
+        let entry = &self.entries[index];
+        let player = self.engine.players.get(&entry.seat.player_id())?;
+        Some(Sample {
+            tick,
+            score: score::score_of(player, self.engine.fleets.values()).into(),
+            field: entry.tally,
+            stock: scaling::resource_weight(&player.resources),
+            ships: self.ships_of(player.id),
+        })
+    }
+
+    fn ships_of(&self, player_id: u64) -> usize {
+        self.engine.fleets.values().filter(|f| f.owner_id == player_id).map(|f| f.ship_count).sum()
+    }
+
+    fn count(&mut self, events: &[GameEvent]) {
+        if events.is_empty() {
+            return;
+        }
+        let engine = &self.engine;
+        let entries = &mut self.entries;
+        let flying = |fleet_id: u64| engine.fleets.get(&fleet_id).map(|f| f.owner_id);
+        let named = |name: &str| engine.players.values().find(|p| p.name == name).map(|p| p.id);
+        let home_of = |player_id: u64| engine.players.get(&player_id).map(|p| p.homeworld);
+
+        for event in events {
+            match &event.kind {
+                EventKind::ResourceHarvested(e) => {
+                    if let Some(t) = tally_of(entries, flying(e.fleet_id)) {
+                        t.ore += scaling::resource_weight(&e.resources);
+                    }
+                }
+                EventKind::SalvageCollected(e) => {
+                    let owner = flying(e.fleet_id);
+                    let at_home = owner.and_then(home_of) == Some(e.sector);
+                    if let Some(t) = tally_of(entries, owner) {
+                        let gain = scaling::resource_weight(&e.resources);
+                        if at_home { t.raid_salvage += gain } else { t.salvage += gain }
+                    }
+                }
+                EventKind::SiteExplored(e) => {
+                    if let Some(t) = tally_of(entries, flying(e.fleet_id)) {
+                        t.derelict_loot += scaling::resource_weight(&e.resources);
+                        t.sites_boarded += 1;
+                    }
+                }
+                EventKind::ChartDelivered(e) => {
+                    if let Some(t) = tally_of(entries, flying(e.fleet_id)) {
+                        t.sectors_charted += e.sectors;
+                    }
+                }
+                EventKind::CombatEnded(e) if e.player_victory => {
+                    for owner in &e.owners {
+                        if let Some(t) = tally_of(entries, named(owner)) {
+                            t.kills += 1;
+                        }
+                    }
+                }
+                EventKind::ShipDestroyed(e) if !e.is_npc => {
+                    if let Some(t) = tally_of(entries, e.owner.as_deref().and_then(named)) {
+                        t.ships_lost += 1;
+                    }
+                }
+                EventKind::RaidResolved(e) => {
+                    if let Some(t) = tally_of(entries, Some(e.player_id)) {
+                        if e.defended { t.raids_repelled += 1 } else { t.raids_lost += 1 }
+                        t.ships_lost += e.ships_lost;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn summaries(&self) -> Vec<PlayerSummary> {
-        self.seats
+        self.entries
             .iter()
-            .filter_map(|seat| {
-                let player = self.engine.players.get(&seat.player_id)?;
-                let s = score::score_of(player, self.engine.fleets.values());
+            .filter_map(|entry| {
+                let player = self.engine.players.get(&entry.seat.player_id())?;
                 let buildings = (0..BuildingType::COUNT)
                     .filter_map(BuildingType::from_usize)
                     .map(|b| (b.label().to_string(), player.buildings.get(b)))
@@ -112,30 +263,19 @@ impl Headless {
                     .filter_map(ResearchType::from_usize)
                     .map(|r| (r.label().to_string(), player.research.get(r)))
                     .collect();
-                let ships = self
-                    .engine
-                    .fleets
-                    .values()
-                    .filter(|f| f.owner_id == player.id)
-                    .map(|f| f.ship_count)
-                    .sum();
                 Some(PlayerSummary {
                     name: player.name.clone(),
+                    style: entry.style.clone(),
                     player_id: player.id,
-                    score: ScoreBreakdown {
-                        econ: s.econ,
-                        fleet: s.fleet,
-                        defence: s.defence,
-                        combat: s.combat,
-                        explore: s.explore,
-                        core: s.core(),
-                        total: s.total(),
-                    },
+                    score: score::score_of(player, self.engine.fleets.values()).into(),
+                    field: entry.tally,
+                    samples: entry.samples.clone(),
                     buildings,
                     research,
-                    ships,
-                    commands_accepted: seat.accepted,
-                    commands_rejected: seat.rejected,
+                    ships: self.ships_of(player.id),
+                    turns: entry.seat.turns(),
+                    orders_accepted: entry.seat.accepted(),
+                    orders_refused: entry.seat.refused(),
                 })
             })
             .collect()

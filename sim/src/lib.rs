@@ -4,6 +4,7 @@
 // page) feed commands in, call `tick`, and read state out.
 
 pub mod auth;
+pub mod bot;
 pub mod combat;
 pub mod commands;
 pub mod engine;

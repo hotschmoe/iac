@@ -11,7 +11,7 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling, hex math, world generation |
-| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, scripted players, headless runner `sim-run`); no I/O, builds for WebAssembly |
+| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, built-in bots, headless runner `sim-run`); no I/O, builds for WebAssembly |
 | `server/` | `iac-server`: a thin host around `iac-sim`: WebSocket network, SQLite persistence, the 1 Hz tick timer |
 | `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
 | `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server` |
@@ -411,8 +411,9 @@ Change the Rust protocol, regenerate, then fix the Dart side until
 cargo test --workspace       # end-to-end only: engine scenarios, real-server protocol runs, cross-language fixtures
 cargo clippy --workspace
 
-# Headless: the real engine, scripted players, as fast as the CPU allows
-cargo run -p iac-sim --release --bin sim-run -- --pace season --builders 50 --days 7
+# Headless: the real engine, built-in bots, as fast as the CPU allows; prints a balance report
+cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7
+cargo run -p iac-sim --release --bin sim-run -- --pace blitz --hours 1 --seat all:hands-on --seat idle --json
 
 # The engine must build for the browser (no bindings yet)
 cargo build -p iac-sim --target wasm32-unknown-unknown --release
@@ -429,6 +430,34 @@ sees), and persistence. The engine hands `PersistBatch` deltas to a `Persist` tr
 host implements (the server's SQLite writer); `snapshot()` / `GameEngine::restore()`
 save and rebuild the whole world as serde data, and `Snapshot::hash()` is a digest of
 it. Same seed, pace and command script give the same hash.
+
+### Built-in bots and balance runs
+
+`sim/src/bot/` holds scripted players that see only the `GameState` a client gets and
+send only what a client sends. A bot is two independent choices:
+
+- **Personality** (what it builds and what its fleets are for): `turtle` (economy and
+  defences, nothing leaves home), `miner`, `raider`, `explorer`, `mixed`.
+- **Attention** (when it is at the controls): `check-in` (a few five-minute look-ins a
+  day: queue ahead, regroup, leave every fleet to a standing order), `hybrid` (the
+  same, and one look-in a day is an hour of piloting by hand), `hands-on` (always
+  present, flies every fleet itself, no standing orders).
+
+`script::Seat` runs one bot's turn before each tick; any host can keep seats.
+`sim-run` seats a mix and prints, for every player and sample interval, the score
+split (econ, fleet, defence, raw combat, raw explore, the capped extra, total) and
+what the field paid, then one row per style:
+
+```sh
+sim-run --pace season --days 7                      # every style once and an idle player
+sim-run --seat explorer:all:2 --seat turtle:hands-on --sessions 8 --seed 3
+sim-run --pace blitz --hours 1 --seat all:hands-on --ignore-cap --json
+```
+
+`--seat` is `<personality>:<attention>[:<count>]` or `idle[:<count>]`, `all` standing
+for every personality or attention; `--sessions` sets the look-ins per day;
+`--ignore-cap` lets bots chase combat and exploration points past the score cap
+(by default they stop once it is banked).
 
 ## Other versions
 
