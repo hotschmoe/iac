@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../console/services.dart';
+import '../design/beat.dart';
 import '../design/icons.dart';
 import '../design/tokens.dart';
+import 'onboarding.dart';
 
 const _items = [
   (Screen.overview, 'overview', 'Overview', 'O'),
@@ -16,20 +18,27 @@ class Rail extends StatelessWidget {
   final bool bottom;
   final ValueChanged<Screen> onGo;
   final Map<Screen, int> badges;
-  const Rail({super.key, required this.active, required this.bottom, required this.onGo, this.badges = const {}});
+
+  /// The screen the guide's current lesson is on, when it is not this one.
+  final Screen? mark;
+  const Rail({super.key, required this.active, required this.bottom, required this.onGo, this.badges = const {}, this.mark});
 
   @override
   Widget build(BuildContext context) {
+    final still = reducedMotion(context);
     final tiles = [
       for (final it in _items)
-        _RailTile(
-          icon: it.$2,
-          label: it.$3,
-          hint: it.$4,
-          on: active == it.$1,
-          bottom: bottom,
-          badge: badges[it.$1] ?? 0,
-          onTap: () => onGo(it.$1),
+        CustomPaint(
+          foregroundPainter: mark == it.$1 ? GuideBrackets(still: still, inset: 5) : null,
+          child: _RailTile(
+            icon: it.$2,
+            label: it.$3,
+            hint: it.$4,
+            on: active == it.$1,
+            bottom: bottom,
+            badge: badges[it.$1] ?? 0,
+            onTap: () => onGo(it.$1),
+          ),
         ),
     ];
     return Container(

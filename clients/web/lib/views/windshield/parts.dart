@@ -16,6 +16,7 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/windshield/geometry.dart';
 import '../../state/game_controller.dart';
+import '../onboarding.dart';
 
 const voice = {
   proto.TerrainType.empty: 'Sector quiet. No signal above background.',
@@ -674,16 +675,19 @@ class GateCard extends StatelessWidget {
         }
         body.add(Padding(
           padding: const EdgeInsets.fromLTRB(6, 3, 6, 4),
-          child: Row(children: [
-            if (intel.live) const Lamp('LIVE', color: C.own, blink: true) else Text('SEEN ${ago(intel.ticksOld).toUpperCase()} AGO', style: T.mono(size: 9.5, color: intel.aged ? C.fossil : C.text3)),
-            if (salvagePinVisible(sector, tick))
-              Text(
-                  despawnLabel(sector, tick) == null
-                      ? ' +SALV'
-                      : ' +SALV ${clockFmt(salvageSecondsLeft(sector, tick)!)}',
-                  style: T.mono(size: 9.5, color: C.a400)),
-            if (sector?.site != null) Text(' +DRLCT', style: T.mono(size: 9.5, color: C.rare)),
-            const Spacer(),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Expanded(
+              child: Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
+                if (intel.live) const Lamp('LIVE', color: C.own, blink: true) else Text('SEEN ${ago(intel.ticksOld).toUpperCase()} AGO', style: T.mono(size: 9.5, color: intel.aged ? C.fossil : C.text3)),
+                if (salvagePinVisible(sector, tick))
+                  Text(
+                      despawnLabel(sector, tick) == null
+                          ? ' +SALV'
+                          : ' +SALV ${clockFmt(salvageSecondsLeft(sector, tick)!)}',
+                      style: T.mono(size: 9.5, color: C.a400)),
+                if (sector?.site != null) Text(' +DRLCT', style: T.mono(size: 9.5, color: C.rare)),
+              ]),
+            ),
             Text('-${fuel}F', style: T.mono(size: 9.5, color: C.text3)),
           ]),
         ));
@@ -759,7 +763,7 @@ class Dock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tiles = [for (final a in actions) _tile(a)];
+    final tiles = [for (final a in actions) GuideTarget('dock-${a.id}', child: _tile(a))];
     return ConsolePanel(
       child: narrow ? Row(children: [for (final t in tiles) Expanded(child: t)]) : Row(mainAxisSize: MainAxisSize.min, children: tiles),
     );

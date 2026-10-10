@@ -1182,3 +1182,96 @@ Left alone: `sector_connections` still gives a sector with no lane a one-way lan
 out (6 to 15 in rings 0 to 30, by seed); ratings of observed Aggressive and Swarm
 groups (ring 16 out) run 25 percent above the ring estimate by design; `sim-run`
 with more than 24 players stops at "cannot add player ... WorldFull".
+
+## 2026-10-10: web client operator guide and background notices
+
+The two parts of `design/ui-redesign/spec.md` that had no code: section 6
+(onboarding) and the session hooks of section 5.8. Client only; the wire
+protocol is untouched.
+
+### Operator guide (`console/onboarding.dart`, `views/onboarding.dart`)
+
+- **Shape.** One strip under the HUD, in its own row so it never covers a
+  control, names the lesson the player is on with one `NOTE` sentence, the keys
+  and a button that goes to the right screen. The control it means carries
+  stepped corner brackets (`GuideTarget`). Once the walk is through, a
+  "First hour" list is pinned on the Overview until the player closes it.
+- **Lessons, and what ticks each:**
+
+  | Lesson | Ticked by |
+  |---|---|
+  | Save your account token | the player pressing "I have saved it" (only offered in the session the server issued the token) |
+  | Queue a building | a building order in the homeworld state, or a `Queue`/`BuildingCompleted` event |
+  | Scan the lanes | `ScanCompleted` |
+  | Jump through a gate | a fleet somewhere other than the homeworld |
+  | Harvest ore | a fleet in `Harvesting`, or `ResourceHarvested` |
+  | Recall and unload | the fleet that harvested being back at the homeworld |
+  | Set standing orders | a fleet with a policy other than manual |
+  | Metal Mine to level 3, Build a Corvette, Fly 6 sectors from home, Board a derelict, Win a fight | building level, ship lists, fleet distance, `SiteExplored`, a won `CombatEnded` |
+
+  Order is free: the strip shows the first lesson not yet done. Notes follow the
+  state too (no ore here, hold nearly full, which gates are quiet).
+- **Who gets it.** It starts by itself only when the server issues a token in
+  this session, that is for a new account. Anyone else turns it on under
+  `?` > Guide, which starts it over against the current state. `Skip guide`
+  turns it off. The record (`on|done lessons|harvesting fleet`) is kept per
+  server and name in `ConsolePrefs`, so it survives a reload and a second
+  account on the same browser is separate.
+- **Token.** The new-account token is no longer written into the event log. The
+  guide shows it with a copy button, and the alert entry keeps it for the
+  session.
+
+### Background notices (`console/attention.dart`, `console/notifier*.dart`)
+
+- **What counts:** a queue order finishing, a queue running dry (inferred from
+  the homeworld state, since the server has no `queue_idle` event), `RaidIncoming`,
+  the raid coming within 60 ticks (inferred from the arrival tick; skipped when the
+  announcement itself is that late, as at blitz pace), `RaidResolved`, a lost fleet,
+  a `Critical` server alert, `StorageFull`.
+- **While the page is in the background** each one adds to the tab title,
+  `(2) IN AMBER CLAD`, and, if the player turned notifications on, is raised
+  through the browser's `Notification` API. Back in front the title clears and
+  the last four are shown as toasts. In front nothing new happens: the log and
+  its toasts already report them. The raid-within-60 warning is written to the
+  log, so it gets the alert toast and cue there.
+- **Permission** is requested only inside a button press: the one-time offer
+  toast after the first order starts ("Tell you when this finishes?"), or
+  `?` > Notifications, which is also the off switch. The setting is per browser.
+- **Title without frames.** A hidden page builds no frames, so the title is set
+  with `SystemChrome.setApplicationSwitcherDescription` from the listener, not
+  from a `Title` widget. Foreground and background come from Flutter's
+  lifecycle (`visibilitychange`, focus and blur on web), so the only
+  browser-only code is the `Notification` wrapper behind the stub/web import.
+
+### Found on the way
+
+Rendering the golden `full_state` in the whole shell (the new tests log in to a
+fake server that sends the fixtures) showed two overflows the demo world never
+hit: a waiting order with a long reason on the Overview queue cards, and a gate
+card footer with a salvage clock and a derelict. Both wrap now.
+
+### Not done, and why
+
+- **Seeded safe contact and derelict** (spec 6, beats 4:00 and 4:30) need the
+  server to guarantee them near a new homeworld (spec 8.5). They are first-hour
+  goals instead, ticked when they happen.
+- **Notices while the tab is closed** need a push service; **"while you were
+  away" at login** needs an event backlog from the server (spec 8.5
+  `events_since`). The missed-notice toasts only cover a tab left open.
+- **Phones.** Android Chrome only allows notifications through a service
+  worker, which the client does not have; there the tab title is all there is.
+
+### Checked
+
+- `test/onboarding_test.dart` logs a real `GameController` in to a WebSocket
+  server that sends the golden frames (`test/support/fake_server.dart`, shared
+  with the login tests) and drives the whole shell from token card to standing
+  orders, then logs in again. `test/attention_test.dart` runs the demo world in
+  the background through a raid, a ship and a building.
+- Seen in headless Chromium against `iac-server --pace blitz`: two new accounts
+  walked from the token to standing orders, progress kept over a reload, the
+  phone width, the refused-permission message, and, with permission granted and
+  the page hidden, `(1) IN AMBER CLAD` plus a `Notification` constructed for a
+  finished build.
+- Not seen: the notification as the operating system draws it (headless
+  Chromium does not), a phone, a human playing through it.
