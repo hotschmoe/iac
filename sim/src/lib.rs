@@ -9,6 +9,7 @@ pub mod commands;
 pub mod engine;
 pub mod headless;
 pub mod intel;
+pub mod odds;
 pub mod persist;
 pub mod queue;
 pub mod score;

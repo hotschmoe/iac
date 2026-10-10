@@ -1073,6 +1073,12 @@ pub fn npc_composition(dist: u16) -> (ShipClass, u8, f32) {
     npc_group(dist, npc_power(dist))
 }
 
+/// Power of the group that spawns at `dist`: `npc_power` until the ship
+/// limit holds it down.
+pub fn npc_group_power(dist: u16) -> f32 {
+    npc_power(dist).min(ship_power(npc_class(dist)) * NPC_STAT_MULT_MAX * NPC_MAX_SHIPS as f32)
+}
+
 /// Chance in percent that a sector at `dist` holds a group.
 pub fn npc_presence_pct(dist: u16) -> f32 {
     (25.0 + 2.5 * dist as f32).min(85.0)
@@ -1102,22 +1108,71 @@ pub fn threat_band(rating: u8) -> u8 {
     rating.clamp(1, MAX_THREAT).div_ceil(3)
 }
 
-/// Ratio at and above which a fight is SAFE: the winner keeps 98 percent of its hull.
+/// Ratio at and above which a fight is SAFE: the fleet keeps 98 percent of its hull or more.
 pub const RATIO_SAFE: f32 = 2.5;
-/// FAVOURABLE from here: a sure win that costs about 5 to 15 percent of the hull.
+/// FAVOURABLE from here: a sure win that costs about 1 to 15 percent of the hull.
 pub const RATIO_FAVOURABLE: f32 = 1.5;
-/// EVEN from here: a win in practice, but 15 to 60 percent of the hull is lost.
+/// EVEN from here: a win in practice, but 15 to 50 percent of the hull is lost.
 pub const RATIO_EVEN: f32 = 1.1;
-/// RISKY from here: win odds swing from nil to near-certain across this band.
-/// Below it (DEADLY) like-for-like fleets lose every time.
+/// RISKY from here: anything from a lost fleet to a win that keeps half the hull.
+/// Below it (DEADLY) the fleet is lost, or wins one fight in six at best.
 pub const RATIO_RISKY: f32 = 0.9;
 
-/// How a fleet's power compares with what waits in a sector. Damage
+/// What each ratio means, as (ratio, margin): the margin is the share of its
+/// hull the fleet is expected to keep minus the share the other side is.
+/// Measured in fights between equal ship classes, where the ratio is plain
+/// power against power, so 1.5 is a fight that keeps about 86 percent of the
+/// hull whatever the classes. The ends are "all of theirs kept" and "none of
+/// ours lost".
+pub const RATIO_MARGINS: [(f32, f32); 16] = [
+    (0.1, -MARGIN_MAX),
+    (0.5, -0.91),
+    (0.625, -0.74),
+    (0.75, -0.58),
+    (0.83, -0.39),
+    (0.9, -0.24),
+    (1.0, 0.25),
+    (1.1, 0.53),
+    (1.25, 0.72),
+    (1.5, 0.86),
+    (1.75, 0.933),
+    (2.0, 0.967),
+    (2.5, 0.99),
+    (3.0, 0.996),
+    (4.0, 0.9995),
+    (10.0, MARGIN_MAX),
+];
+const MARGIN_MAX: f32 = 0.99999;
+
+/// The table is read on the log of what is left to the nearer end, where it
+/// runs close to straight.
+fn margin_depth(margin: f32) -> f32 {
+    let m = margin.clamp(-MARGIN_MAX, MARGIN_MAX);
+    if m >= 0.0 { -(1.0 - m).ln() } else { (1.0 + m).ln() }
+}
+
+/// The ratio of a fight in which the fleet is expected to keep `ours_kept`
+/// of its hull and the other side `theirs_kept` of its own (both 0 to 1):
+/// the power ratio at which equal ship classes end the same way.
+pub fn outcome_ratio(ours_kept: f32, theirs_kept: f32) -> f32 {
+    let depth = margin_depth(ours_kept - theirs_kept);
+    let mut low = RATIO_MARGINS[0];
+    for high in RATIO_MARGINS.into_iter().skip(1) {
+        let (from, to) = (margin_depth(low.1), margin_depth(high.1));
+        if depth <= to {
+            return low.0 + (high.0 - low.0) * ((depth - from) / (to - from)).clamp(0.0, 1.0);
+        }
+        low = high;
+    }
+    low.0
+}
+
+/// How a fleet is expected to fare against what waits in a sector. The ratio
+/// is `outcome_ratio` of the fight played on averages (`iac_sim::odds`), so it
+/// counts rapid fire, shot size against hull and shield, and who fires first;
+/// between equal ship classes it is close to power against power. Damage
 /// exchange is quadratic in fleet size, so the bands sit close together
 /// around 1.0 and a fight is decided long before the ratio reaches 2.
-/// The cutoffs come from simulated fights (`combat::tests`) between like
-/// ship classes; a lighter class facing a heavier one (rapid fire, bigger
-/// hulls) needs about 1.5 times the ratio for the same result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RatioLabel {
