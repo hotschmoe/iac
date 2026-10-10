@@ -84,17 +84,16 @@ fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
     assert_eq!((turtle.field.sectors_charted, turtle.field.kills), (0, 0), "a turtle stays home");
     assert!(turtle.score.defence > 0.0, "a turtle builds defences");
 
-    let delegated = world
-        .engine
-        .players
-        .get(&player(&players, "explorer/check-in").player_id)
-        .map(|p| world.engine.fleets.values().filter(|f| f.owner_id == p.id && world.engine.policies.contains_key(&f.id)).count());
-    assert!(delegated.is_some_and(|fleets| fleets > 0), "a check-in explorer leaves its fleets under standing orders");
-    let look_ins = player(&players, "explorer/check-in").turns;
+    let absentee = player(&players, "explorer/check-in");
     assert!(
-        look_ins > 0 && look_ins < TICKS / 2 && look_ins < pilot.turns,
-        "a check-in player is away most of the time: {look_ins} turns against the pilot's {}",
+        absentee.turns > 0 && absentee.turns < TICKS / 2 && absentee.turns < pilot.turns,
+        "a check-in player is away most of the time: {} turns against the pilot's {}",
+        absentee.turns,
         pilot.turns,
+    );
+    assert!(
+        absentee.field.sectors_charted > 0,
+        "standing orders chart for a check-in explorer while it is away",
     );
     assert!(
         world.engine.fleets.values().filter(|f| f.owner_id == pilot.player_id).all(|f| !world.engine.policies.contains_key(&f.id)),

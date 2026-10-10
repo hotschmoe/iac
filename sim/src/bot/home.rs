@@ -71,6 +71,7 @@ const ABSORB: f32 = 0.6;
 const SCARCITY_PULL: f32 = 4.0;
 const MAX_SHIP_BATCH: f32 = 12.0;
 const MAX_DEFENCE_BATCH: f32 = 100.0;
+const MAX_SURPLUS_BATCH: f32 = 500.0;
 
 use ResearchType as T;
 
@@ -343,6 +344,9 @@ pub(super) fn plan(state: &GameState, personality: Personality, away_for: Option
     planner.research(away_for.is_some(), orders);
     planner.shipyard(orders);
     planner.buildings(away_for, orders);
+    if away_for.is_some() {
+        planner.surplus(orders);
+    }
 }
 
 impl Planner<'_> {
@@ -450,6 +454,35 @@ impl Planner<'_> {
         }));
     }
 
+
+    /// What is in stock beyond every order placed would sit there scoring
+    /// nothing until the next look-in. An empire that flies puts it into
+    /// Pulse Turrets, which cost no deuterium; one that does not, into the
+    /// heaviest hull it can build. Only stock already in hand is spent, so
+    /// no queued order is kept waiting by it.
+    fn surplus(&mut self, orders: &mut Vec<Order>) {
+        let turret = DefenceKind::PulseTurret;
+        let item = if self.profile.fleet_share > 0.0 {
+            if !scaling::defence_prerequisites_met(turret, &self.plan.buildings, &self.plan.research) {
+                return;
+            }
+            ShipyardItem::Defence(turret)
+        } else {
+            match Hull::Warship.class(&self.plan.research).or(Hull::Scout.class(&self.plan.research)) {
+                Some(class) => ShipyardItem::Ship(class),
+                None => return,
+            }
+        };
+        let unit = item.unit_cost();
+        let count = ResourceKind::ALL
+            .into_iter()
+            .filter(|&k| unit.get(k) > 0.0)
+            .map(|k| self.spare.get(k) / unit.get(k))
+            .fold(MAX_SURPLUS_BATCH, f32::min);
+        if self.plan.buildings.shipyard >= 1 && count >= 1.0 && fits(unit, self.cap()) {
+            self.batch(item, count as u16, orders);
+        }
+    }
 
     fn ordered(&self) -> impl Iterator<Item = (ShipyardItem, u16)> + '_ {
         let running = self.home.shipyard_queue.iter().map(|q| (q.item, q.count - q.built));
