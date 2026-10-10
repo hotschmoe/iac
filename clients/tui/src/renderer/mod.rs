@@ -175,6 +175,10 @@ p         Cycle standing orders
           (manual > prospect >
            mine+return > salvage
            +sites > patrol home)
+P         Fuel budget of orders:
+          10 > 20 > 35 > 50 % of
+          deuterium income > no
+          bound
 
 HOMEWORLD
 ─────────────────────────────

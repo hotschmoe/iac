@@ -548,10 +548,22 @@ pub const POLICY_DEFAULT_CARGO_RETURN_PCT: u8 = 85;
 pub const POLICY_DEFAULT_MAX_RANGE: u8 = 4;
 /// Engage only if our power ≥ theirs × (this / 10).
 pub const POLICY_DEFAULT_ENGAGE_RATIO_X10: u8 = 15;
-/// PatrolHome keeps within this many hops of the homeworld.
-pub const POLICY_PATROL_RADIUS: u8 = 2;
-/// PatrolHome heads home to lick wounds below this average hull fraction.
-pub const POLICY_PATROL_MIN_HULL: f32 = 0.60;
+/// Share of deuterium income, in percent, a fleet under orders may burn.
+pub const POLICY_DEFAULT_FUEL_BUDGET_PCT: u8 = 20;
+/// At or above this `fuel_budget_pct` the fleet refuels without a bound.
+pub const POLICY_FUEL_UNBOUNDED_PCT: u8 = 100;
+/// MineAndReturn treats a sector holding fewer raw units than this as
+/// stripped: a tile that has only begun to refill is not worth a jump.
+pub const POLICY_MIN_SEAM_UNITS: f32 = 3.0;
+/// A doctrine flies out for ore or wreckage only if what it can load is
+/// worth this many times the deuterium the jumps there and back burn, both
+/// at their score weights.
+pub const POLICY_FUEL_PAYBACK: f32 = 1.5;
+/// A fleet under orders waits until its shields are back to this share of
+/// full before it acts again: hull is not repaired, shields are.
+pub const POLICY_SHIELDS_READY: f32 = 0.95;
+/// How far along the lanes a doctrine looks for its next sector.
+pub const POLICY_SEARCH_HOPS: u8 = 32;
 
 /// WebSocket server defaults.
 pub const DEFAULT_PORT: u16 = 7777;

@@ -29,6 +29,9 @@ pub enum InputAction {
     ToggleTechTree,
     /// Cycle the active fleet's standing orders to the next preset.
     CyclePolicy,
+    /// Step the fuel budget this client gives with standing orders, and
+    /// re-issue the active fleet's orders with it.
+    CycleFuelBudget,
     /// Plot a course from the active fleet to the map crosshair.
     PlotRoute,
     /// Clear the plotted course.
@@ -155,6 +158,7 @@ fn map_char(c: char, state: &ClientState) -> InputAction {
         },
         'c' => InputAction::CenterFleet,
         'p' => InputAction::CyclePolicy,
+        'P' => InputAction::CycleFuelBudget,
         'f' => InputAction::ToggleFleetPanel,
 
         _ => InputAction::None,

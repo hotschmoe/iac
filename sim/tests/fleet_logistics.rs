@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use iac_shared::hex::Hex;
-use iac_shared::constants::{Resources, STRANDED_RECOVERY_TICKS};
+use iac_shared::constants::{Resources, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, ServerMessage, ThreatBasis,
     MAX_ODDS_SECTORS,
@@ -15,6 +15,7 @@ use iac_shared::scaling::{ratio_label, RatioLabel};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus};
 use iac_sim::odds::{self, Force};
+use iac_sim::persist::ExploreCredit;
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
     e.since(mark, |k| match k {
@@ -222,6 +223,7 @@ fn tuned_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
                 let h = Hex { q: home.q + dq, r: home.r + dr };
                 if Hex::distance(&h, &home) <= 2 {
                     s.explored.insert((pid, h.to_key()));
+                    s.credited.insert((pid, h.to_key(), ExploreCredit::Charted));
                 }
             }
         }
@@ -285,6 +287,156 @@ fn an_autopilot_will_not_take_a_hop_that_strands_it_and_turns_for_home() {
     assert!(reasons[0].starts_with("returning"), "turning for home counts as acting: {reasons:?}");
     let critical = alerts_since(&e, mark).into_iter().filter(|a| matches!(a.level, AlertLevel::Critical)).count();
     assert_eq!(critical, 0, "the autopilot never stranded itself");
+}
+
+fn policy_reasons(e: &Empire, mark: usize, action: &str) -> Vec<String> {
+    e.since(mark, |k| match k {
+        EventKind::PolicyAction(p) if p.action == action => Some(p.reason.clone()),
+        _ => None,
+    })
+}
+
+/// A prospecting fleet docked at home with half a tank, under a fuel budget
+/// of `budget` percent, the stockpile holding `deuterium` (given the cap).
+/// Returns the empire, the deuterium the fill costs and the deuterium income
+/// per tick.
+fn docked_with_half_a_tank(budget: u8, deuterium: impl Fn(f32) -> f32) -> (Empire, f32, f32) {
+    let mut e = Empire::join(world("season"), "Thrifty");
+    let (pid, fid) = (e.pid, e.fid);
+    let pace = e.engine.world.pace;
+    let tank = e.engine.fleets[&fid].fuel_max;
+    edit(&mut e.engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        player.buildings.deuterium_synthesizer = 2;
+        let cap = iac_shared::scaling::storage_cap(player.buildings.storage_vault, &pace).deuterium;
+        player.resources.deuterium = deuterium(cap);
+        s.fleets.get_mut(&fid).unwrap().fuel = tank / 2.0;
+    });
+    let income = e.engine.players[&pid].production_per_tick(&pace).deuterium;
+    assert!(income > 0.0);
+    let params = PolicyParams { fuel_budget_pct: budget, ..PolicyParams::default() };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+    (e, tank / 2.0 * FUEL_DEUT_PER_UNIT, income)
+}
+
+#[test]
+fn a_young_empire_with_no_deuterium_income_keeps_its_stock_from_a_fleet_under_orders() {
+    let mut e = Empire::join(world("season"), "Newcomer");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let stock = e.engine.players[&pid].resources.deuterium;
+    assert_eq!(e.engine.players[&pid].production_per_tick(&e.engine.world.pace).deuterium, 0.0);
+    let tank = e.engine.fleets[&fid].fuel_max;
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().fuel = tank / 2.0);
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).unwrap();
+    let mark = e.mark();
+    e.run(600);
+
+    assert_eq!(e.engine.players[&pid].resources.deuterium, stock, "the starting deuterium is for the queues");
+    assert_eq!((fuel_of(&e, fid), e.engine.fleets[&fid].location), (tank / 2.0, home));
+    let waiting = policy_reasons(&e, mark, "hold");
+    assert!(waiting[0].contains("earns nothing"), "{waiting:?}");
+
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Manual, None).unwrap();
+    e.run(2);
+    assert_eq!(fuel_of(&e, fid), tank, "flown by hand it fills as before");
+    assert!(e.engine.players[&pid].resources.deuterium < stock);
+}
+
+#[test]
+fn a_fleet_on_a_fuel_budget_waits_for_its_share_of_the_deuterium_income_and_then_fills_in_one_go() {
+    let (mut e, cost, income) = docked_with_half_a_tank(20, |cap| cap / 2.0);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let deuterium = |e: &Empire| e.engine.players[&e.pid].resources.deuterium;
+    let (start, half) = (deuterium(&e), fuel_of(&e, fid));
+    let wait = (cost / (0.20 * income)).ceil() as u64;
+    assert!(wait > 120, "the budget takes minutes to earn the fill: {wait} ticks");
+
+    let mark = e.mark();
+    e.run(wait - 10);
+    assert_eq!(fuel_of(&e, fid), half, "no part fills");
+    assert_eq!(e.engine.fleets[&fid].location, home, "and it does not leave on half a tank");
+    assert!(deuterium(&e) >= start + (wait - 11) as f32 * income, "the stockpile kept all it produced");
+    let waiting = policy_reasons(&e, mark, "hold");
+    assert!(waiting[0].starts_with("refuelling on a fuel budget of 20% of deuterium income"), "{waiting:?}");
+    assert!(policy_reasons(&e, mark, "move").is_empty());
+
+    let (before, tick) = (deuterium(&e), e.engine.current_tick());
+    e.run_until(20, |e| fuel_of(e, fid) > half);
+    assert_eq!(fuel_of(&e, fid), e.engine.fleets[&fid].fuel_max, "the whole fill at once");
+    let earned = (e.engine.current_tick() - tick) as f32 * income;
+    let paid = before + earned - deuterium(&e);
+    assert!((paid - cost).abs() < 0.02 * cost, "paid {paid:.2} for a fill of {cost:.2}");
+    e.run_until(60, |e| e.engine.fleets[&fid].location != home);
+}
+
+#[test]
+fn a_full_deuterium_store_or_an_unbounded_budget_fills_the_tank_at_once() {
+    let (mut overflowing, ..) = docked_with_half_a_tank(20, |cap| cap);
+    let (mut unbounded, ..) = docked_with_half_a_tank(100, |cap| cap / 2.0);
+    for e in [&mut overflowing, &mut unbounded] {
+        let fid = e.fid;
+        e.run(2);
+        assert_eq!(fuel_of(e, fid), e.engine.fleets[&fid].fuel_max);
+        assert_eq!(e.engine.policies[&fid].fuel_credit, 0.0, "nothing was drawn on the allowance");
+    }
+}
+
+/// A quiet sector in `ring` (from the hub) with a lane home, and the odds of
+/// the empire's fleet in every sector of that lane but home.
+fn outpost_in_ring(e: &Empire, ring: u16) -> (Hex, Vec<f32>) {
+    let home = e.engine.players[&e.pid].homeworld;
+    iac_shared::hex::hex_ring(Hex::ORIGIN, ring)
+        .filter(|at| e.engine.world_gen.generate_sector(*at).npc_template.is_none())
+        .filter_map(|at| {
+            let mut lane = lane_path(&e.engine, at, home, 12)?;
+            lane.pop();
+            let odds = e.engine.odds_for(e.pid, e.fid, &lane).unwrap();
+            Some((at, odds.iter().map(|o| o.ratio).collect::<Vec<f32>>()))
+        })
+        .min_by_key(|(at, _)| Hex::distance(at, &home))
+        .expect("a quiet sector in that ring")
+}
+
+#[test]
+fn a_fleet_heading_home_takes_the_mildest_lane_and_says_so() {
+    let mut e = Empire::join(world("persistent"), "Homesick");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let (at, lane) = outpost_in_ring(&e, 8);
+    assert!(lane.iter().any(|r| *r < 1.5), "no lane home meets the default doctrine: {lane:?}");
+    deploy(&mut e.engine, fid, at, None);
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).unwrap();
+    let mark = e.mark();
+    e.run_until(600, |e| e.engine.fleets.get(&fid).is_none_or(|f| f.location == home));
+
+    assert_eq!(e.engine.fleets[&fid].ship_count, 2, "it came home whole");
+    let jumps = policy_reasons(&e, mark, "move");
+    assert!(jumps[0].contains("no lane home meets the doctrine's 1.5x, taking the mildest"), "{jumps:?}");
+    assert!(jumps.iter().all(|why| !why.contains("DEADLY")), "{jumps:?}");
+}
+
+#[test]
+fn a_fleet_cut_off_by_deadly_odds_holds_and_alerts_its_owner_instead_of_jumping_into_them() {
+    let mut e = Empire::join(world("persistent"), "Marooned");
+    let (pid, fid) = (e.pid, e.fid);
+    let (at, lane) = outpost_in_ring(&e, 11);
+    assert!(lane[0] < 0.9, "the first sector of the lane home is deadly to two scouts: {lane:?}");
+    deploy(&mut e.engine, fid, at, None);
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).unwrap();
+    let mark = e.mark();
+    e.run(45);
+
+    assert_eq!(e.engine.fleets[&fid].location, at);
+    assert!(policy_reasons(&e, mark, "move").is_empty());
+    let held = policy_reasons(&e, mark, "hold");
+    assert!(held.iter().any(|why| why.starts_with("cut off from home")), "{held:?}");
+    let warned = alerts_since(&e, mark);
+    assert!(
+        warned.iter().any(|a| matches!(a.level, AlertLevel::Warning) && a.message.contains("cut off from home")),
+        "{warned:?}",
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@
 
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{is_bot_name, Command, ServerMessage};
-use iac_sim::bot::{Attention, Bot, Personality, Roster, Style};
+use iac_sim::bot::{Attention, Bot, Personality, Roster, Style, DAY};
 use iac_sim::engine::AuthError;
 use iac_sim::headless::{Headless, PlayerSummary};
 use iac_sim::script::IdlePlayer;
@@ -77,6 +77,23 @@ fn a_world_of_bots_replays_from_its_seed() {
     let mut again = world(7);
     again.run(TICKS / 3).unwrap();
     assert_ne!(hash(&other), hash(&again), "a different seed must give a different world");
+}
+
+#[test]
+fn a_check_in_miner_brings_ore_home_under_standing_orders_within_its_fuel_budget() {
+    let mut world = Headless::new(7, Pace::parse("season").unwrap());
+    let style = Style::new(Personality::Miner, Attention::CheckIn);
+    world.add_player(Box::new(Bot::new("miner-check-in", style)), style.label()).expect("seat bot");
+    world.run(DAY).unwrap();
+
+    let miner = &world.summaries()[0];
+    assert!(miner.turns < DAY / 20, "it looked in a few times: {} turns", miner.turns);
+    assert!(miner.field.ore > 1.0, "a day of mine_and_return brought home {:.2} points of ore", miner.field.ore);
+    let fuel = iac_shared::scaling::resource_weight(&iac_shared::constants::Resources {
+        deuterium: miner.field.refuel_deuterium,
+        ..Default::default()
+    });
+    assert!(fuel < miner.field.ore, "{fuel:.2} points of deuterium burned for {:.2} of ore", miner.field.ore);
 }
 
 #[test]

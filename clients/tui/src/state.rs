@@ -160,6 +160,8 @@ pub struct ClientState {
     pub target_idx: usize,
     /// Batch size for shipyard orders, adjusted with +/-.
     pub ship_build_count: u16,
+    /// `fuel_budget_pct` of the standing orders this client gives.
+    pub orders_fuel_budget: u8,
     /// Arrival tick of a forecasted raid; drives the header countdown.
     pub raid_eta: Option<u64>,
 
@@ -184,6 +186,8 @@ pub const SCAN_RIPPLE_TICKS: u64 = 4;
 /// How long (in ticks) an error/status message stays in the footer.
 pub const STATUS_MESSAGE_TICKS: u64 = 8;
 pub const MAX_SHIP_BUILD_COUNT: u16 = 99;
+/// The fuel budgets [P] steps through, in percent of deuterium income.
+pub const ORDERS_FUEL_BUDGETS: [u8; 5] = [10, 20, 35, 50, 100];
 
 impl ClientState {
     pub fn new() -> Self {
@@ -212,6 +216,7 @@ impl ClientState {
             status_set_tick: 0,
             target_idx: 0,
             ship_build_count: 1,
+            orders_fuel_budget: iac_shared::constants::POLICY_DEFAULT_FUEL_BUDGET_PCT,
             raid_eta: None,
             signal_pings: HashMap::new(),
             scan_ripples: Vec::new(),
@@ -356,6 +361,21 @@ impl ClientState {
     pub fn adjust_build_count(&mut self, delta: i32) {
         let next = self.ship_build_count as i32 + delta;
         self.ship_build_count = next.clamp(1, MAX_SHIP_BUILD_COUNT as i32) as u16;
+    }
+
+    /// The doctrine settings this client sends with standing orders.
+    pub fn orders_params(&self) -> iac_shared::protocol::PolicyParams {
+        iac_shared::protocol::PolicyParams { fuel_budget_pct: self.orders_fuel_budget, ..Default::default() }
+    }
+
+    pub fn step_orders_fuel_budget(&mut self) {
+        let at = ORDERS_FUEL_BUDGETS.iter().position(|pct| *pct == self.orders_fuel_budget).unwrap_or(0);
+        self.orders_fuel_budget = ORDERS_FUEL_BUDGETS[(at + 1) % ORDERS_FUEL_BUDGETS.len()];
+        self.status_message = match self.orders_fuel_budget {
+            100 => "standing orders: fuel unbounded".to_string(),
+            pct => format!("standing orders: fuel budget {pct}% of deuterium income"),
+        };
+        self.status_set_tick = self.tick;
     }
 
     // ── Server message handling ──────────────────────────────────────

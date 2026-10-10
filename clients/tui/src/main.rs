@@ -279,7 +279,19 @@ async fn run(
                             let msg = ClientMessage::PolicyUpdate(iac_shared::protocol::PolicyUpdate {
                                 fleet_id: fleet.id,
                                 preset: next,
-                                params: None,
+                                params: Some(st.orders_params()),
+                            });
+                            let _ = cmd_tx.send(msg);
+                        }
+                    }
+                    input::InputAction::CycleFuelBudget => {
+                        let mut st = state.lock().await;
+                        st.step_orders_fuel_budget();
+                        if let Some((fleet_id, preset)) = st.active_fleet().and_then(|f| Some((f.id, f.policy?))) {
+                            let msg = ClientMessage::PolicyUpdate(iac_shared::protocol::PolicyUpdate {
+                                fleet_id,
+                                preset,
+                                params: Some(st.orders_params()),
                             });
                             let _ = cmd_tx.send(msg);
                         }

@@ -69,6 +69,8 @@ const helpLines = [
   '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump|modfab>',
   '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research> [id]  [waiting]',
   'fleets: f[leet] [n]  select/list   p[olicy] [manual|prospect|mine|salvage|patrol]  (no arg cycles)',
+  '        policy settings: range=<hexes from home> engage=<least odds ratio> fuel=<% of deuterium income for its fuel, 100 = no bound>',
+  '                         cargo=<% hold that sends it home> reserve=<% tank kept spare>   e.g. policy mine range=8 fuel=40',
   '        split <class> [count]  detach ships into a new fleet   merge <fleet id>  fold a fleet in this sector into the active one',
   'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
 ];
@@ -319,15 +321,56 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
 
     case 'p' || 'policy':
       if (fid == null) return const ParsedError('No fleet selected (you have none)');
+      final names = [for (final a in args) if (!a.contains('=')) a];
+      final settings = [for (final a in args) if (a.contains('=')) a];
       PolicyPreset? preset;
-      if (args.isEmpty) {
+      if (names.isEmpty) {
         final cur = ctx.fleet?.policy ?? PolicyPreset.manual;
-        preset = PolicyPreset.values[(cur.index + 1) % PolicyPreset.values.length];
+        preset = settings.isEmpty ? PolicyPreset.values[(cur.index + 1) % PolicyPreset.values.length] : cur;
       } else {
-        preset = _policies[args.first];
+        preset = _policies[names.first];
       }
-      if (preset == null) return const ParsedError('policy: manual|prospect|mine|salvage|patrol');
-      return ParsedSend([PolicyUpdate(fleetId: fid, preset: preset)]);
+      if (preset == null) return const ParsedError(_policyUsage);
+      if (settings.isEmpty) return ParsedSend([PolicyUpdate(fleetId: fid, preset: preset)]);
+      final params = _policyParams(settings);
+      if (params == null || preset == PolicyPreset.manual) return const ParsedError(_policyUsage);
+      return ParsedSend([PolicyUpdate(fleetId: fid, preset: preset, params: params)]);
   }
   return ParsedError('Unknown: "${words.join(' ')}" -- type help');
+}
+
+const _policyUsage = 'policy: manual|prospect|mine|salvage|patrol  [range=1-30] [engage=0.1-10] [fuel=0-100] [cargo=10-100] [reserve=0-90]';
+
+/// Doctrine settings typed as `key=value` over the server's defaults; null
+/// when one of them does not parse.
+PolicyParams? _policyParams(List<String> settings) {
+  const preset = PolicyParams();
+  var (reserve, cargo, range) = (preset.minFuelPct, preset.cargoReturnPct, preset.maxRange);
+  var (engage, fuel) = (preset.engageRatioX10, preset.fuelBudgetPct);
+  for (final setting in settings) {
+    final cut = setting.indexOf('=');
+    final value = num.tryParse(setting.substring(cut + 1));
+    if (value == null || value < 0) return null;
+    switch (setting.substring(0, cut)) {
+      case 'reserve':
+        reserve = value.round();
+      case 'cargo':
+        cargo = value.round();
+      case 'range':
+        range = value.round();
+      case 'engage':
+        engage = (value * 10).round();
+      case 'fuel':
+        fuel = value.round();
+      default:
+        return null;
+    }
+  }
+  return PolicyParams(
+    minFuelPct: reserve,
+    cargoReturnPct: cargo,
+    maxRange: range,
+    engageRatioX10: engage,
+    fuelBudgetPct: fuel,
+  );
 }

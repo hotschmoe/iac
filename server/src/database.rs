@@ -419,6 +419,10 @@ impl Database {
         Self::ensure_column(&conn, "fleet_policies", "next_eval_tick", "INTEGER NOT NULL DEFAULT 0")?;
         Self::ensure_column(&conn, "fleet_policies", "hold_reason", "TEXT")?;
         Self::ensure_column(&conn, "fleet_policies", "hold_tick", "INTEGER")?;
+        // Orders given before fuel budgets existed keep refuelling unbounded.
+        Self::ensure_column(&conn, "fleet_policies", "fuel_budget_pct", "INTEGER NOT NULL DEFAULT 100")?;
+        Self::ensure_column(&conn, "fleet_policies", "fuel_credit", "REAL NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "fleet_policies", "fuel_since", "INTEGER NOT NULL DEFAULT 0")?;
 
         info!("Schema verified");
         Ok(())
@@ -966,8 +970,8 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO fleet_policies
              (fleet_id, preset, min_fuel_pct, cargo_return_pct, max_range, engage_ratio_x10, work_q, work_r,
-              next_eval_tick, hold_reason, hold_tick)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+              next_eval_tick, hold_reason, hold_tick, fuel_budget_pct, fuel_credit, fuel_since)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 fleet_id as i64,
                 policy_preset_to_str(policy.preset),
@@ -980,6 +984,9 @@ impl Database {
                 policy.next_eval_tick as i64,
                 policy.last_hold.as_ref().map(|(reason, _)| reason.as_str()),
                 policy.last_hold.as_ref().map(|(_, tick)| *tick as i64),
+                policy.params.fuel_budget_pct as i64,
+                policy.fuel_credit as f64,
+                policy.fuel_since as i64,
             ],
         )?;
         Ok(())
@@ -995,44 +1002,37 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT fleet_id, preset, min_fuel_pct, cargo_return_pct, max_range, engage_ratio_x10, work_q, work_r,
-                    next_eval_tick, hold_reason, hold_tick
+                    next_eval_tick, hold_reason, hold_tick, fuel_budget_pct, fuel_credit, fuel_since
              FROM fleet_policies",
         )?;
         let rows = stmt.query_map(params![], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, Option<i64>>(7)?,
-                row.get::<_, i64>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<i64>>(10)?,
-            ))
+            let work_sector = match (row.get::<_, Option<i64>>(6)?, row.get::<_, Option<i64>>(7)?) {
+                (Some(q), Some(r)) => Some(Hex { q: q as i16, r: r as i16 }),
+                _ => None,
+            };
+            let hold_reason = row.get::<_, Option<String>>(9)?;
+            let hold_tick = row.get::<_, Option<i64>>(10)?;
+            let policy = FleetPolicy {
+                preset: parse_policy_preset(&row.get::<_, String>(1)?),
+                params: PolicyParams {
+                    min_fuel_pct: row.get::<_, i64>(2)?.clamp(0, 100) as u8,
+                    cargo_return_pct: row.get::<_, i64>(3)?.clamp(0, 100) as u8,
+                    max_range: row.get::<_, i64>(4)?.clamp(1, 30) as u8,
+                    engage_ratio_x10: row.get::<_, i64>(5)?.clamp(1, 100) as u8,
+                    fuel_budget_pct: row.get::<_, i64>(11)?.clamp(0, 100) as u8,
+                },
+                work_sector,
+                next_eval_tick: row.get::<_, i64>(8)? as u64,
+                last_hold: hold_reason.zip(hold_tick).map(|(reason, tick)| (reason, tick as u64)),
+                fuel_credit: row.get::<_, f64>(12)? as f32,
+                fuel_since: row.get::<_, i64>(13)? as u64,
+            };
+            Ok((row.get::<_, i64>(0)? as u64, policy))
         })?;
 
         let mut policies = Vec::new();
         for row_result in rows {
-            let (fid, preset, fuel, cargo, range, engage, wq, wr, next_eval, hold_reason, hold_tick) = row_result?;
-            let work_sector = match (wq, wr) {
-                (Some(q), Some(r)) => Some(Hex { q: q as i16, r: r as i16 }),
-                _ => None,
-            };
-            policies.push((fid as u64, FleetPolicy {
-                preset: parse_policy_preset(&preset),
-                params: PolicyParams {
-                    min_fuel_pct: fuel.clamp(0, 100) as u8,
-                    cargo_return_pct: cargo.clamp(0, 100) as u8,
-                    max_range: range.clamp(1, 30) as u8,
-                    engage_ratio_x10: engage.clamp(1, 100) as u8,
-                },
-                work_sector,
-                next_eval_tick: next_eval as u64,
-                last_hold: hold_reason.zip(hold_tick).map(|(reason, tick)| (reason, tick as u64)),
-            }));
+            policies.push(row_result?);
         }
         Ok(policies)
     }
@@ -1965,6 +1965,9 @@ mod tests {
                  ALTER TABLE fleet_policies DROP COLUMN next_eval_tick;
                  ALTER TABLE fleet_policies DROP COLUMN hold_reason;
                  ALTER TABLE fleet_policies DROP COLUMN hold_tick;
+                 ALTER TABLE fleet_policies DROP COLUMN fuel_budget_pct;
+                 ALTER TABLE fleet_policies DROP COLUMN fuel_credit;
+                 ALTER TABLE fleet_policies DROP COLUMN fuel_since;
                  UPDATE fleets SET state = 'moving' WHERE id = (SELECT MIN(id) FROM fleets);
                  UPDATE fleets SET state = 'in_combat' WHERE id = (SELECT MAX(id) FROM fleets);",
             )

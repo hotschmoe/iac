@@ -175,6 +175,7 @@ struct StyleRow {
     haul: f32,
     raid_salvage: f32,
     ships_lost: f32,
+    refuel_deuterium: f32,
 }
 
 fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
@@ -188,6 +189,7 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
                 haul: 0.0,
                 raid_salvage: 0.0,
                 ships_lost: 0.0,
+                refuel_deuterium: 0.0,
             });
             rows.len() - 1
         });
@@ -205,13 +207,14 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
         row.haul += p.field.haul();
         row.raid_salvage += p.field.raid_salvage;
         row.ships_lost += p.field.ships_lost as f32;
+        row.refuel_deuterium += p.field.refuel_deuterium;
     }
     for row in &mut rows {
         let n = row.players as f32;
         let s = &mut row.score;
         for value in [
             &mut s.econ, &mut s.fleet, &mut s.defence, &mut s.core, &mut s.combat, &mut s.explore, &mut s.extra,
-            &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost,
+            &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost, &mut row.refuel_deuterium,
         ] {
             *value /= n;
         }
@@ -235,8 +238,8 @@ fn style_table(players: &[PlayerSummary]) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<20} {:>2} {SCORE_HEADER} {:>7} {:>7} {:>6} {:>9} {:>11}",
-        "style", "n", "haul", "raidsal", "lost", "vs turtle", "vs hands-on"
+        "{:<20} {:>2} {SCORE_HEADER} {:>7} {:>7} {:>6} {:>8} {:>9} {:>11}",
+        "style", "n", "haul", "raidsal", "lost", "refuel", "vs turtle", "vs hands-on"
     );
     for row in &rows {
         let (personality, attention) = row.style.split_once('/').unwrap_or((row.style.as_str(), ""));
@@ -244,13 +247,14 @@ fn style_table(players: &[PlayerSummary]) -> String {
         let hands_on = total_of(format!("{personality}/{}", Attention::HandsOn.label()));
         let _ = writeln!(
             out,
-            "{:<20} {:>2} {} {:>7.1} {:>7.1} {:>6.1} {:>9} {:>11}",
+            "{:<20} {:>2} {} {:>7.1} {:>7.1} {:>6.1} {:>8.0} {:>9} {:>11}",
             row.style,
             row.players,
             score_columns(&row.score),
             row.haul,
             row.raid_salvage,
             row.ships_lost,
+            row.refuel_deuterium,
             percent(row.score.total, turtle),
             percent(row.score.total, hands_on),
         );
@@ -326,7 +330,8 @@ fn main() {
             args.sessions,
         );
         println!("score = core + extra; core = econ + fleet + defence; extra = min(combat + explore, 25% of core)");
-        println!("haul and raidsal: resources from the field and from repelled raids, in the points they buy\n");
+        println!("haul and raidsal: resources from the field and from repelled raids, in the points they buy");
+        println!("refuel: deuterium paid to fill fleet tanks\n");
         println!("{}", sample_table(&players));
         println!("{}", style_table(&players));
     }

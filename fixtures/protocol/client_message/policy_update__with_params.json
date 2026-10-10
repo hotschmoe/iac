@@ -3,6 +3,7 @@
   "params": {
     "cargo_return_pct": 90,
     "engage_ratio_x10": 15,
+    "fuel_budget_pct": 35,
     "max_range": 6,
     "min_fuel_pct": 30
   },
