@@ -1,9 +1,17 @@
 // The chart a player is sent must not depend on how the engine maintains it.
 // A scripted world is played for TICKS ticks; every tick each player's
 // `tick_update` sector updates (and, every FULL_STATE_EVERY ticks, the
-// `full_state` chart) are hashed together and compared with the hashes the
-// original recompute-everything chart produced for the same world. The golden
-// file is `data/chart_golden.txt`, one "tick hash" line per tick.
+// `full_state` chart) are hashed together and compared with the recording in
+// `data/chart_golden.txt`, one "tick hash" line per tick.
+//
+// The first recording came from the original recompute-everything chart, and
+// the upkeep that replaced it matched it tick for tick. World generation 3
+// changed the world under the script, so the file was recorded again from
+// that upkeep: it pins what the chart sends from here on and no longer
+// compares two implementations. Record again only when the world or the
+// protocol is meant to change, never to make a change to the chart pass:
+//
+//   UPDATE_CHART_GOLDEN=1 cargo test -p iac-sim --test chart_equivalence
 
 use iac_shared::constants::{ShipClass, DEFAULT_WORLD_SEED};
 use iac_shared::pace::Pace;
@@ -93,12 +101,21 @@ fn run(mut each_tick: impl FnMut(u64, &[String])) {
     }
 }
 
+fn line(tick: u64, out: &[String]) -> String {
+    format!("{tick} {:08x}", xxh3_64(out.join("\n").as_bytes()) as u32)
+}
+
 #[test]
-fn chart_matches_the_recorded_original() {
+fn chart_matches_the_recording() {
+    if std::env::var("UPDATE_CHART_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0") {
+        let mut recording = String::new();
+        run(|tick, out| recording.push_str(&(line(tick, out) + "\n")));
+        std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/chart_golden.txt"), recording).unwrap();
+        return;
+    }
     let golden: Vec<&str> = include_str!("data/chart_golden.txt").lines().collect();
     assert_eq!(golden.len() as u64, TICKS);
     run(|tick, out| {
-        let got = format!("{tick} {:08x}", xxh3_64(out.join("\n").as_bytes()) as u32);
-        assert_eq!(got, golden[tick as usize - 1], "chart diverged from the original at tick {tick}");
+        assert_eq!(line(tick, out), golden[tick as usize - 1], "chart diverged from the recording at tick {tick}");
     });
 }

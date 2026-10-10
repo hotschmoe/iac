@@ -136,21 +136,21 @@ Generated reference tables (`python3 sim.py --tables`); the first one doubles as
 
 | dist | zone | threat | NPC group (class x count) | NPC power | old NPC power | kill loot | derelict tier / loot | ore reserve per ore tile (any) | ore refill (game h) | NPC respawn (game h) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | inner | T1 | scout x1 (x0.62 stats) | 4 | 5 | 4 | 1 / 162 | 13 | 144 | 2.2 |
-| 2 | inner | T1 | scout x1 (x0.64 stats) | 5 | 5 | 4 | 1 / 185 | 14 | 168 | 2.5 |
-| 4 | inner | T1 | scout x1 (x0.68 stats) | 7 | 5 | 6 | 1 / 240 | 16 | 216 | 3.0 |
-| 6 | inner | T2 | corvette x1 (x0.72 stats) | 11 | 5 | 8 | 1 / 312 | 20 | 264 | 3.5 |
-| 8 | inner | T3 | corvette x1 (x0.76 stats) | 16 | 5 | 11 | 1 / 405 | 26 | 312 | 4.0 |
-| 9 | outer | T3 | corvette x1 (x0.78 stats) | 20 | 97 | 13 | 1 / 462 | 29 | 336 | 4.2 |
-| 10 | outer | T3 | corvette x1 (x0.80 stats) | 24 | 97 | 15 | 1 / 527 | 33 | 360 | 4.5 |
-| 12 | outer | T4 | corvette x2 (x0.84 stats) | 36 | 97 | 21 | 2 / 685 | 42 | 408 | 5.0 |
-| 15 | outer | T5 | frigate x1 (x0.90 stats) | 65 | 97 | 34 | 2 / 1014 | 59 | 480 | 5.8 |
-| 18 | outer | T5 | frigate x3 (x0.96 stats) | 118 | 480 | 54 | 2 / 1503 | 84 | 552 | 6.5 |
-| 20 | outer | T6 | frigate x4 (x1.00 stats) | 175 | 480 | 75 | 2 / 1953 | 105 | 600 | 7.0 |
-| 21 | wander | T6 | cruiser x2 (x1.02 stats) | 213 | 480 | 88 | 2 / 2226 | 107 | 624 | 7.2 |
-| 25 | wander | T7 | cruiser x4 (x1.10 stats) | 473 | 480 | 166 | 3 / 3760 | 115 | 720 | 8.2 |
-| 30 | wander | T9 | cruiser x10 (x1.20 stats) | 1278 | 2640 | 367 | 3 / 7240 | 115 | 840 | 9.5 |
-| 35 | wander | T9 | cruiser x24 (x1.30 stats) | 3454 | 2640 | 812 | 3 / 13940 | 115 | 960 | 10.8 |
+| 1 | inner | T1 | scout x1 (x0.44 stats) | 4 | 5 | 4 | 1 / 162 | 13 | 144 | 2.2 |
+| 2 | inner | T1 | scout x1 (x0.54 stats) | 5 | 5 | 4 | 1 / 185 | 14 | 168 | 2.5 |
+| 4 | inner | T1 | scout x1 (x0.81 stats) | 7 | 5 | 6 | 1 / 240 | 16 | 216 | 3.0 |
+| 6 | inner | T2 | scout x2 (x0.60 stats) | 11 | 5 | 8 | 1 / 312 | 20 | 264 | 3.5 |
+| 8 | inner | T3 | scout x2 (x0.89 stats) | 16 | 5 | 11 | 1 / 405 | 26 | 312 | 4.0 |
+| 9 | outer | T3 | corvette x1 (x0.89 stats) | 20 | 97 | 13 | 1 / 462 | 29 | 336 | 4.2 |
+| 10 | outer | T3 | corvette x1 (x1.09 stats) | 24 | 97 | 15 | 1 / 527 | 33 | 360 | 4.5 |
+| 12 | outer | T4 | corvette x2 (x0.81 stats) | 36 | 97 | 21 | 2 / 685 | 42 | 408 | 5.0 |
+| 15 | outer | T5 | frigate x2 (x0.67 stats) | 65 | 97 | 34 | 2 / 1014 | 59 | 480 | 5.8 |
+| 18 | outer | T5 | frigate x3 (x0.82 stats) | 118 | 480 | 54 | 2 / 1503 | 84 | 552 | 6.5 |
+| 20 | outer | T6 | frigate x4 (x0.91 stats) | 175 | 480 | 75 | 2 / 1953 | 105 | 600 | 7.0 |
+| 21 | wander | T6 | cruiser x2 (x0.97 stats) | 213 | 480 | 88 | 2 / 2226 | 107 | 624 | 7.2 |
+| 25 | wander | T7 | cruiser x4 (x1.07 stats) | 473 | 480 | 166 | 3 / 3760 | 115 | 720 | 8.2 |
+| 30 | wander | T9 | cruiser x10 (x1.16 stats) | 1278 | 2640 | 367 | 3 / 7240 | 115 | 840 | 9.5 |
+| 35 | wander | T9 | cruiser x25 (x1.26 stats) | 3454 | 2640 | 812 | 3 / 13940 | 115 | 960 | 10.8 |
 
 #### Building cost / time / production by level (pace 1, no Fabricator)
 
@@ -348,7 +348,7 @@ Competent play mines only the inner ring (rings 3 to 8 and only where escorted p
 
 `npc_power(d) = 4 * 1.22^(d - 1)` (power units as in 5.1), replacing the four-step table. The old power by band was 5 (<= 8), 97 (9 to 15), 480 (16 to 25), 2640 (26+): an 18x cliff at ring 9. New: 1.22x per ring.
 
-Composition for a sector at distance `d`: class `Scout` for d <= 5, `Corvette` 6 to 12, `Frigate` 13 to 20, `Cruiser` 21+; stat multiplier `m(d) = min(1.3, 0.6 + 0.02 d)`; count `max(1, round(npc_power(d) / (class_power * m)))` (never more than the 32-ship NPC limit; d = 35 gives 24 Cruisers). Presence chance `min(0.85, 0.25 + 0.025 d)` (old 0/30/70/80 by zone). Passive share `max(0, 0.5 - 0.08 (d - 8))` (old 50 percent inside ring 8, 0 outside). Respawn `(2 + 0.25 d)` game hours (old 300/600/1200 s), divided by P.
+Composition for a sector at distance `d`: class `Scout` for d <= 8 (the whole Inner Ring), `Corvette` 9 to 12, `Frigate` 13 to 20, `Cruiser` 21+. The group is sized around a base stat multiplier `m0(d) = min(1.3, 0.6 + 0.02 d)`: count `max(round(npc_power(d) / (class_power * m0)), ceil(npc_power(d) / (class_power * 1.3)))`, at least 1 and never more than the 32-ship NPC limit. The stat multiplier is then fitted to the count, `m = min(1.3, npc_power(d) / (class_power * count))`, so the ships add up to `npc_power(d)` exactly and the ring estimate in 7.2 is the real power of what spawns (d = 6 gives 2 Scouts at x0.60, d = 9 one Corvette at x0.89, d = 35 gives 25 Cruisers at x1.26). Only the ship limit breaks this: from d = 37 a group is 32 Cruisers at x1.3, power 4576, below `npc_power(d)`. Until 2026-10-10 the count was rounded against `m0` and the multiplier left at `m0`, so real power ran from 0.67 to 1.47 times the estimate, and the class changed to Corvette at d = 6: a starter fleet was told FAVOURABLE and lost. A derelict's guard (8.2) is built the same way from 60 percent of `npc_power(d)`. No hostile group is generated on a home seat or on the six sectors beside one (Passive groups still are). Presence chance `min(0.85, 0.25 + 0.025 d)` (old 0/30/70/80 by zone). Passive share `max(0, 0.5 - 0.08 (d - 8))` (old 50 percent inside ring 8, 0 outside). Respawn `(2 + 0.25 d)` game hours (old 300/600/1200 s), divided by P.
 
 ### 7.2 Threat rating
 

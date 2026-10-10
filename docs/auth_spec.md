@@ -11,7 +11,8 @@ matters for a LAN game, with these differences:
 - **No `action` field.** The server decides from the name: an unused name
   registers (name rules below apply) and the `auth_result` returns the token;
   a used name logs in and must present it. `AuthResult.code` (`InvalidName`,
-  `TokenRequired`, `InvalidToken`) says why a login failed, `message` is
+  `TokenRequired`, `InvalidToken`, or `WorldFull` when a new name finds every
+  home seat taken) says why a login failed, `message` is
   human readable. Names are public in this game (they appear in sector
   briefs), so the failure replies do not try to hide whether a name exists.
 - **Names are case-insensitive**: "admiral" logs in to "Admiral", so nobody

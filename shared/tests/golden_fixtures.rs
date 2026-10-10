@@ -484,11 +484,12 @@ fn error_code_name(c: ErrorCode) -> &'static str {
         ErrorCode::InvalidName => "invalid_name",
         ErrorCode::TokenRequired => "token_required",
         ErrorCode::InvalidToken => "invalid_token",
+        ErrorCode::WorldFull => "world_full",
         ErrorCode::ServerError => "server_error",
     }
 }
 
-const ALL_ERROR_CODES: [ErrorCode; 25] = [
+const ALL_ERROR_CODES: [ErrorCode; 26] = [
     ErrorCode::InvalidCommand,
     ErrorCode::InvalidTarget,
     ErrorCode::NoConnection,
@@ -513,6 +514,7 @@ const ALL_ERROR_CODES: [ErrorCode; 25] = [
     ErrorCode::InvalidName,
     ErrorCode::TokenRequired,
     ErrorCode::InvalidToken,
+    ErrorCode::WorldFull,
     ErrorCode::ServerError,
 ];
 
@@ -638,6 +640,16 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 token: None,
                 code: Some(ErrorCode::InvalidName),
                 message: Some("invalid player name: must be 3-24 characters long (got 2)".into()),
+            }),
+        ),
+        (
+            "world_full".into(),
+            ServerMessage::AuthResult(AuthResult {
+                success: false,
+                player_id: None,
+                token: None,
+                code: Some(ErrorCode::WorldFull),
+                message: Some("this world is full: all 24 home seats are taken".into()),
             }),
         ),
         (

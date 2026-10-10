@@ -1,0 +1,6 @@
+{
+  "code": "WorldFull",
+  "message": "this world is full: all 24 home seats are taken",
+  "success": false,
+  "type": "auth_result"
+}

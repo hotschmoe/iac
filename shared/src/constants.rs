@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// another economy version is refused (start a new world).
 pub const ECONOMY_VERSION: u32 = 2;
 /// Bumped when sector generation changes.
-pub const WORLDGEN_VERSION: u32 = 2;
+pub const WORLDGEN_VERSION: u32 = 3;
 
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
@@ -415,9 +415,9 @@ pub const MAX_FLEETS_PER_PLAYER: usize = 3;
 /// All fleets a player may own, docked or deployed; splits stop here.
 pub const MAX_FLEETS_TOTAL: usize = 8;
 
-/// Homeworld spawn range (cube distance from origin).
+/// Rings that hold the home seats (cube distance from origin); see `world::is_home_seat`.
 pub const HOMEWORLD_MIN_DIST: u16 = 3;
-pub const HOMEWORLD_MAX_DIST: u16 = 6;
+pub const HOMEWORLD_MAX_DIST: u16 = 5;
 
 /// Cooldowns (in ticks).
 pub const MOVE_BASE_COOLDOWN: u16 = 1;

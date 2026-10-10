@@ -39,8 +39,9 @@ const shipBatches = [1, 5, 10];
 
 enum LinkState { idle, connecting, live, reconnecting, demo }
 
-/// The server refused the login in a way the player can fix by typing a
-/// different name or token.
+/// The server refused the login for a reason the login form can show: a
+/// different name or token fixes it, or the world has no free home seat and
+/// only an existing account can still log in.
 class AuthRejection {
   final proto.ErrorCode? code;
   final String message;
@@ -290,7 +291,8 @@ class GameController extends ChangeNotifier {
           connectionError = message ?? 'login refused';
           if (code == proto.ErrorCode.tokenRequired ||
               code == proto.ErrorCode.invalidToken ||
-              code == proto.ErrorCode.invalidName) {
+              code == proto.ErrorCode.invalidName ||
+              code == proto.ErrorCode.worldFull) {
             authRejection = AuthRejection(code, connectionError!);
           }
           _retry?.cancel();
