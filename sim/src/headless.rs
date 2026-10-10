@@ -7,12 +7,13 @@
 
 use std::collections::BTreeMap;
 
+use iac_shared::constants::FUEL_DEUT_PER_UNIT;
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{EventKind, GameEvent};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use serde::Serialize;
 
-use crate::engine::GameEngine;
+use crate::engine::{FleetStatus, GameEngine};
 use crate::score::{self, Score};
 use crate::script::{ScriptedPlayer, Seat};
 
@@ -59,6 +60,8 @@ pub struct FieldTally {
     pub sites_boarded: u32,
     pub sectors_charted: u32,
     pub ships_lost: u32,
+    /// Deuterium paid at the homeworld to fill fleet tanks.
+    pub refuel_deuterium: f32,
     pub raids_repelled: u32,
     pub raids_lost: u32,
 }
@@ -142,7 +145,10 @@ impl Headless {
         for entry in &mut self.entries {
             entry.seat.take_turn(&mut self.engine);
         }
+        let tanks: Vec<(u64, f32, bool)> =
+            self.engine.fleets.values().map(|f| (f.id, f.fuel, f.state == FleetStatus::Moving)).collect();
         self.engine.tick()?;
+        self.count_refuelling(&tanks);
         for entry in &mut self.entries {
             entry.seat.observe(&self.engine);
         }
@@ -193,6 +199,27 @@ impl Headless {
 
     fn ships_of(&self, player_id: u64) -> usize {
         self.engine.fleets.values().filter(|f| f.owner_id == player_id).map(|f| f.ship_count).sum()
+    }
+
+    /// Fuel only rises at the homeworld, where it is bought; a fleet that
+    /// jumped out during the tick is filled again before it leaves the sector.
+    fn count_refuelling(&mut self, tanks: &[(u64, f32, bool)]) {
+        let engine = &self.engine;
+        for &(fleet_id, fuel, was_moving) in tanks {
+            let Some(fleet) = engine.fleets.get(&fleet_id) else { continue };
+            let at_home = engine.players.get(&fleet.owner_id).is_some_and(|p| p.homeworld == fleet.location);
+            if !at_home {
+                continue;
+            }
+            let jumped = !was_moving && fleet.state == FleetStatus::Moving;
+            let burned = if jumped { engine.hop_fuel_cost(fleet) } else { 0.0 };
+            let bought = fleet.fuel - fuel + burned;
+            if bought > 0.0
+                && let Some(t) = tally_of(&mut self.entries, Some(fleet.owner_id))
+            {
+                t.refuel_deuterium += bought * FUEL_DEUT_PER_UNIT;
+            }
+        }
     }
 
     fn count(&mut self, events: &[GameEvent]) {
