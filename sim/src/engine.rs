@@ -528,24 +528,13 @@ impl GameEngine {
     /// No persistence is attached; see `attach_persist`.
     pub fn restore(snapshot: Snapshot) -> GameEngine {
         let Snapshot {
-            world_seed, meta, tick, mut next_id, mut players, mut fleets, npc_fleets, combats,
+            world_seed, meta, tick, mut next_id, mut players, fleets, npc_fleets, combats,
             sector_overrides, mut policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
             harvest_reports, pending_events, explored, credited, known,
         } = snapshot;
 
         for player in players.values_mut() {
             assign_missing_queue_ids(player, &mut next_id);
-        }
-        // Fleets registered before the starting-fuel fix were stored with a
-        // 50000 tank; hold them to the real one.
-        for fleet in fleets.values_mut() {
-            if let Some(player) = players.get(&fleet.owner_id) {
-                let tank = fleet_fuel_max(fleet, player);
-                if fleet.fuel_max > tank {
-                    fleet.fuel_max = tank;
-                    fleet.fuel = fleet.fuel.min(tank);
-                }
-            }
         }
         policies.retain(|fleet_id, _| fleets.contains_key(fleet_id));
 
