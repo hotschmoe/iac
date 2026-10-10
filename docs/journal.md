@@ -900,3 +900,25 @@ there too.
   - the windshield sim used an unseeded `Random()`.
 - **Status:** after the fix, 8 of 8 runs pass with and without the flag. If the host
   flakiness returns, use the flag before chasing the code.
+
+## 2026-10-10: chart upkeep follows changes
+
+`KnownSectors::refresh` no longer rebuilds every live sector of every player each
+tick. Coverage (fleet cells, sensor footprint, scans) is kept per player and
+re-derived only when its inputs differ from the last tick; watchers per sector are
+kept alongside. A watched sector is re-read once per tick, shared by its watchers,
+and only if an override, an NPC group or the place an NPC group left could have
+changed it. A live sector's `last_seen` is implicit (the last refresh) and is
+written when it lapses; salvage expiry is an ordered per-player index. Views build
+sectors from one pass over fleets and NPC groups instead of one pass per sector.
+
+`sim-run --pace season --builders 50 --idle 2`: 4.9k ticks/s for day 1 before,
+about 29k after; day 2 1.4k before, 32k after; the week finishes in 20 s (31k
+ticks/s) where it did not in 76 minutes. Wire output and persisted rows are
+unchanged: the per-tick `tick_update` and `full_state` JSON of a 4000-tick scripted
+world was byte-identical to the old algorithm, the `sim-run` snapshot hash matched,
+and `sim/tests/chart_equivalence.rs` keeps comparing against hashes recorded from
+the old path (`sim/tests/data/chart_golden.txt`). The old module is in `.archive/`.
+
+Remaining profile: libm calls (about 13 percent) and the per-tick walks over
+`sector_overrides` and `npc_fleets` in the regen and NPC passes.
