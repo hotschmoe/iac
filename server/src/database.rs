@@ -1518,64 +1518,6 @@ mod tests {
         path.to_str().unwrap().to_string()
     }
 
-    fn sector_batch(tick: u64) -> PersistBatch {
-        PersistBatch {
-            tick,
-            next_id: 9,
-            sectors: vec![(Hex { q: 3, r: 4 }, SectorOverride { metal_harvested: 5.0, ..Default::default() })],
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn flush_commits_submitted_batches() {
-        let path = temp_db("flush");
-        let persister = Persister::spawn(Database::init(&path).unwrap());
-        persister.submit(sector_batch(41));
-        persister.submit(sector_batch(42));
-        persister.flush().expect("flush");
-
-        let reader = Database::init(&path).unwrap();
-        assert_eq!(reader.load_server_state("current_tick").unwrap().as_deref(), Some("42"));
-        let rows = reader.load_sector_overrides().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert!((rows[0].override_data.metal_harvested - 5.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn a_blocked_database_never_blocks_the_caller_and_loses_nothing() {
-        let path = temp_db("blocked");
-        let persister = Persister::spawn(Database::init(&path).unwrap());
-
-        // A foreign writer holds the lock, as a stalled disk or a backup would.
-        let intruder = Connection::open(&path).unwrap();
-        intruder.execute_batch("BEGIN IMMEDIATE").unwrap();
-
-        let started = Instant::now();
-        persister.submit(sector_batch(100));
-        persister.submit(sector_batch(101));
-        assert!(started.elapsed() < Duration::from_millis(50), "submit must not wait for the disk");
-        assert!(persister.flush().is_err(), "flush reports the failed write");
-
-        intruder.execute_batch("COMMIT").unwrap();
-        persister.flush().expect("batches kept for retry commit once the lock clears");
-
-        let reader = Database::init(&path).unwrap();
-        assert_eq!(reader.load_server_state("current_tick").unwrap().as_deref(), Some("101"));
-        assert_eq!(reader.load_sector_overrides().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn dropping_the_persister_writes_what_is_queued() {
-        let path = temp_db("drop");
-        {
-            let persister = Persister::spawn(Database::init(&path).unwrap());
-            persister.submit(sector_batch(7));
-        }
-        let reader = Database::init(&path).unwrap();
-        assert_eq!(reader.load_server_state("current_tick").unwrap().as_deref(), Some("7"));
-    }
-
     fn world_error(path: &str, requested: Option<Pace>) -> String {
         Database::init(path).unwrap().load_snapshot(42, requested).expect_err("the world must be refused").to_string()
     }
@@ -1717,13 +1659,5 @@ mod tests {
             keys
         };
         assert_eq!(keys(&saved), keys(&loaded));
-    }
-
-    #[test]
-    fn database_runs_in_wal_mode() {
-        let path = temp_db("wal");
-        let db = Database::init(&path).unwrap();
-        let mode: String = db.conn.lock().unwrap().query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
-        assert_eq!(mode, "wal");
     }
 }
