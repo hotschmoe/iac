@@ -1313,8 +1313,8 @@ patrol's engage test and the derelict guard test call it. The 25 percent an
 observed Aggressive or Swarm group adds stays in `est_power` and the rating and
 is not in the ratio. The ring estimate follows the 32-ship limit past ring 36.
 
-**After**, same grid, rings 1 to 25, unscouted estimate (in sight is the same
-within a cell or two): SAFE 276 cells, hull kept 98 to 100 percent; FAVOURABLE
+**After**, same grid, rings 1 to 25, unscouted estimate (the labels in sight
+land in the same bands, for every behaviour): SAFE 276 cells, hull kept 98 to 100 percent; FAVOURABLE
 192, all won, 83 to 100; EVEN 113, 95 to 100 percent wins, 52 to 88; RISKY 90,
 0 to 100 percent wins, 0 to 57; DEADLY 131, 0 percent wins at the median and 31
 at most (two cells above one in six). No cell promises more than its band
