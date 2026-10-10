@@ -278,9 +278,10 @@ def collapse_events(msgs, mine_only=False, errors=True):
                 g[f] += e.get("hull_damage", 0.0)
                 slot(("fight", key))
             elif k == "PolicyAction":
-                key = (e["fleet_id"], e.get("preset"), e.get("action"), e.get("reason"))
+                cause = re.sub(r"\([^()]*\)", "", e.get("reason") or "")
+                key = (e["fleet_id"], e.get("preset"), e.get("action"), cause)
                 g = policy.setdefault(key, {"n": 0, "t0": tick, "t1": tick})
-                g["n"] += 1; g["t1"] = tick
+                g["n"] += 1; g["t1"] = tick; g["reason"] = e.get("reason")
                 slot(("policy", key))
             elif k == "ShipBuilt":
                 built[e["ship_class"]] = built.get(e["ship_class"], 0) + e.get("count", 1)
@@ -298,7 +299,7 @@ def collapse_events(msgs, mine_only=False, errors=True):
         elif key[0] == "policy":
             g, f = policy[key[1]], key[1]
             span = f"x{g['n']}, ticks {g['t0']}-{g['t1']}" if g["n"] > 1 else f"tick {g['t0']}"
-            items[i] = f"  fleet {f[0]} {f[1]} {f[2]}: {f[3]} ({span})"
+            items[i] = f"  fleet {f[0]} {f[1]} {f[2]}: {g['reason']} ({span})"
         elif key[0] == "built":
             items[i] = f"  built {built[key[1]]}x {key[1]}"
     out = []
@@ -1538,6 +1539,10 @@ USAGE = """usage: play <command>
                          returns at the server's next tick (about 0.5 s) or at once on an error; --fast skips that wait
                          e.g. play do '{"action":"build","building_type":"MetalMine"}' '{"action":"research","tech":"Navigation"}'
                          standing orders: play do '{"type":"policy_update","fleet_id":2,"preset":"prospect"}'
+                         with settings:   play do '{"type":"policy_update","fleet_id":2,"preset":"mine_and_return",
+                                                    "params":{"max_range":8,"engage_ratio_x10":15,"fuel_budget_pct":40}}'
+                         (fuel_budget_pct: the share of your deuterium income the fleet may spend on fuel, default 20,
+                         100 = no bound; a fleet waiting on its budget says so in a policy hold event)
   events [--mine]        events since you last looked, collapsed (scans, fights); --mine drops fights you only witnessed
   wait [secs] [--until idle|event|done] [--mine]
                          sleeps up to secs (default 45, MAX 60) and returns early when a queue goes idle or becomes

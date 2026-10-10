@@ -110,7 +110,7 @@ Standing orders are a separate message type (not a command):
 
 ```json
 {"type":"policy_update","fleet_id":2,"preset":"salvage_and_sites",
- "params":{"min_fuel_pct":10,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":15}}
+ "params":{"min_fuel_pct":10,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":15,"fuel_budget_pct":20}}
 ```
 
 `params` is optional, and so is every field in it: send only what you want to
@@ -120,8 +120,9 @@ change (`"params":{"max_range":2}`) and the rest take their defaults.
 |-------|---------|---------|
 | `min_fuel_pct` | 10 | spare fuel, as a percent of the tank, kept on top of the exact fuel cost of the route home (clamped 0-90) |
 | `cargo_return_pct` | 85 | head home to unload when the hold is this full (10-100) |
-| `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting and salvage runs (1-30); never measured from the last claim |
+| `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting, salvage runs and patrols (1-30); never measured from the last claim |
 | `engage_ratio_x10` | 15 | fight only if the fleet's odds `ratio` against the hostiles is at least this/10 (1-100); also exactly the least ratio at which any doctrine will enter a sector, hostiles there or not. It is the same number `preview_move` and `odds` show. The default is FAVOURABLE. A value below EVEN (1.1) that you set deliberately is honoured |
+| `fuel_budget_pct` | 20 | the share of your deuterium income, in percent, that this fleet may spend on fuel while it flies under these orders (0-100; 100 lifts the bound). See "Fuel budget" |
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
@@ -130,21 +131,67 @@ shorter than `max_range` (the tank cannot afford the round trip) is reported
 in the hold reason. Whenever a doctrine stands still it says why in a
 `PolicyAction` event (`action: "hold"`).
 
-Presets: `manual` (clears orders), `prospect` (scan + push the frontier),
-`mine_and_return` (shuttle ore between a claim and home), `salvage_and_sites`
-(scoop wreckage, board derelicts), `patrol_home` (hunt hostiles near home).
-Every autopilot act emits a `PolicyAction` event with a human-readable
-`reason` — an audit trail for agents (and captains). `prospect` walks to the
-nearest sector you have never entered inside `max_range` of home; when none is
-left it returns home and holds rather than wandering between known sectors.
-No doctrine moves a fleet into a sector where its odds (as `preview_move` and
-`odds` show them) are below `engage_ratio_x10`; the setting is the bar
-whether or not hostiles sit there, so lower it to push a scout through, raise
-it to be careful. A refusal is a `hold` `PolicyAction` saying which sector,
-its threat and the ratio, repeated at most once a minute while the cause
-stays the same; `prospect` names whether a
-hazard, `max_range` or a fully charted board stops it. Heading home it takes
-the safest lane and falls back to the shortest.
+Fuel budget: refuelling is paid in deuterium ahead of every queue, so every
+standing order carries a bound on it. The fleet earns an allowance at
+`fuel_budget_pct` of your current deuterium production and can save up the
+price of one full tank; its first orders come with one tank of allowance. At
+the dock the tank is filled in one go once the allowance and the stockpile
+cover what is missing. Until then the fleet waits there and says so (`hold`:
+"refuelling on a fuel budget of 20% of deuterium income (tank 283 of 406,
+full in about 236 s)"); it never leaves on standing orders with a part-filled
+tank. While your deuterium store is full the fill is free of the allowance,
+since that income would overflow anyway. `100` lifts the bound: the tank takes
+what the stockpile holds at once, as it does for a fleet you fly by hand
+(which is never bound). The budget is per fleet: three fleets at the default
+can take at most 60% of your deuterium income. The `engage` `PolicyAction`
+that confirms new orders states the range, ratio and budget they fly with.
+
+Presets:
+- `manual` clears the orders.
+- `prospect` scans, then walks to the nearest sector inside `max_range` of
+  home whose chart you have neither banked nor aboard a fleet (never entered,
+  or entered by a fleet that did not come back). With none left it goes home
+  and holds, naming whether a hazard, `max_range` or a fully charted board
+  stops it.
+- `mine_and_return` stakes the nearest seam that repays its fuel, strips it,
+  stakes the next from where it stands, and brings the ore home when the hold
+  reaches `cargo_return_pct`. With none left it waits at the dock for the
+  tiles to refill.
+- `salvage_and_sites` scoops wreckage that repays its fuel and boards
+  derelicts, nearest first.
+- `patrol_home` hunts the nearest hostile group inside `max_range` of home
+  that the fleet rates at `engage_ratio_x10`, scoops what the kill leaves, and
+  waits at the dock when the beat is clear.
+
+What every doctrine does:
+- No doctrine moves a fleet into a sector where its odds (as `preview_move`
+  and `odds` show them) are below `engage_ratio_x10`; the setting is the bar
+  whether or not hostiles sit there, so lower it to push a scout through,
+  raise it to be careful.
+- It picks its work among the sectors it may reach. A seam, wreck, derelict
+  or contact behind a refused sector is passed over for the next one; only
+  when none is left does the fleet go home and hold, and the reason names the
+  nearest one it could not have and what stops it (sector, threat, ratio).
+- Hull is never repaired and shields are. So a fleet under orders stands
+  still after a fight until its shields are back above 95% ("shields
+  recharging"); it takes a lane without a fight before a shorter one with a
+  fight it would win; and `mine_and_return` and `salvage_and_sites` pick no
+  seam, wreck or derelict in a sector whose hostiles attack on sight (a
+  patrol can clear it first). A fight on the only lane is taken at
+  `engage_ratio_x10` or better.
+- A seam or a wreck is flown to only if what the hold can take of it is worth
+  1.5 times the deuterium the jumps there and back burn, both at score weight
+  (metal 1, crystal 1.5, deuterium 2); a sector with under 3 units of ore
+  counts as stripped. Derelicts always count.
+- A fleet whose cargo your full stockpile cannot take stays docked until it
+  has unloaded.
+- Heading home it takes a lane that meets `engage_ratio_x10`; if there is
+  none, the mildest there is, down to RISKY, and says so. It does not jump
+  into DEADLY odds: it holds where it is ("cut off from home") and you get a
+  Warning alert.
+- Every act emits a `PolicyAction` event with a human-readable `reason`: an
+  audit trail for agents (and captains). A hold is repeated at most once a
+  minute while its cause stays the same.
 
 ## The game
 
@@ -275,7 +322,9 @@ the safest lane and falls back to the shortest.
   `home_fuel` (the charted way home) next to `fuel`. Refuelling at the
   homeworld costs 0.08 deuterium per fuel unit (the Fuel Depot adds +25% tank
   per level); with no deuterium the tank fills only as far as the stockpile
-  pays and the rest follows as production arrives. `preview_move` answers
+  pays and the rest follows as production arrives. It is paid ahead of every
+  queue, except for a fleet under standing orders, which is held to its
+  `fuel_budget_pct`. `preview_move` answers
   what a jump costs before you make it. A manual jump that leaves
   too little to get home still happens, but raises an `Alert` event
   (warning, or critical if the fleet will be stranded on arrival). A fleet
@@ -334,7 +383,8 @@ the safest lane and falls back to the shortest.
   points, no other use yet). A stripped derelict is replaced after 120 game hours / P^0.5.
 - **Standing orders** — assign a fleet a doctrine and the server flies it
   (see `policy_update` above). Doctrines respect fuel/cargo thresholds,
-  return home to deposit and refuel, and log every decision.
+  return home to deposit and refuel within their fuel budget, wait for
+  shields, go round fights they need not take, and log every decision.
 - **Defences** — Pulse Turrets, Lancer Batteries and Ion Bastions are built
   from the shipyard queue, stay home, burn no fuel, and cost 8 to 13
   resources per point of power (ships cost 25 to 48). Each Defense Grid level

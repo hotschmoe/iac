@@ -159,7 +159,7 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 cargo build --workspace
 cargo test --workspace            # end-to-end tests only; retired unit tests live in the gitignored .archive/
 cargo clippy --workspace --all-targets
-cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7   # headless bot run, balance report (--seat, --sessions, --ignore-cap, --json)
+cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7   # headless bot run, balance report with ships lost and refuel deuterium (--seat, --sessions, --ignore-cap, --json)
 cargo build -p iac-sim --target wasm32-unknown-unknown --release   # iac-sim must stay buildable for the browser
 cargo run -p iac-server           # port 7777, iac_world.db, pace x1
 cargo run -p iac-server -- --pace blitz --db blitz.db   # pace is fixed per database
@@ -202,7 +202,7 @@ Server (Rust, tokio)       Clients
 - **Resources**: Metal, Crystal, Deuterium (passive homeworld production + active harvesting), capped by the Storage Vault
 - **Pace**: one per-world multiplier (`shared/src/pace.rs`) scales economy timers; every duration constant declares a `PaceClass`
 - **Combat**: Fleet-based, stochastic rounds per tick, OGame-style rapid-fire
-- **Standing orders**: Per-fleet policy presets run by the server (`policy_update`)
+- **Standing orders**: Per-fleet policy presets run by the server (`policy_update`), each with a range, an engage ratio and a fuel budget (`fuel_budget_pct` of deuterium income); every act and hold carries its reason (`PolicyAction`). Rules as players read them: `tools/playtest/RULES.md`
 - **Derelicts, raids, scanning**: see the "The game" section of README.md
 
 ### Key Files
