@@ -1053,14 +1053,58 @@ persist, and nobody is connected to a server that is down. On a kill only: up to
 60 ticks of a live sector's `last_seen` and ore reading (re-observed on the first
 tick) and of a tile's refill.
 
-**Found, not changed** (rules, not persistence; a restart used to clear the
-first two by accident and no longer does):
+**Found on the way, fixed after** (rules, not persistence; a restart used to
+clear the first two by accident and no longer did). One commit each, each with
+a scenario that failed before it:
 
-- A fleet pulled into a fight mid-jump keeps `move_cooldown > 0` afterwards;
-  `process_policies` then skips it until a manual move.
-- A combat whose player fleets are gone (recalled, then merged or lost) is
-  dropped without releasing its NPC groups: they stay `in_combat`, listed and
-  unattackable. `handle_recall` does not take the fleet out of its combat.
-- A ninth fleet in a sector fight is set `InCombat` without joining
-  (`MAX_COMBAT_FLEETS`) and nothing ever sets it back.
-- A fleet that loses ships in a fight keeps its old `fuel_max` until it docks.
+- *Jump cut short.* A fleet still charging a jump is in its sector's fights
+  (`enroll_all_player_fleets_in_sector_combat`); it came out idle with the
+  jump's `move_target` and `move_cooldown`, which only a moving fleet counts
+  down, so `process_policies` skipped it until a manual move. Recall mid-jump
+  did the same. Entering a fight (`engage_fleet`) and recalling now drop the
+  jump as `stop` does; the fuel stays spent. `scenarios_world.rs`:
+  `a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_orders`.
+- *Recall and abandoned fights.* `handle_recall` left the fleet on the combat's
+  list and rounds are resolved from the list wherever the fleets are: a
+  recalled fleet banked its cargo and kept trading fire from home (measured:
+  hull still falling five ticks after arrival), which is how a study trial saw
+  one destroyed at its homeworld. Recall now takes it out (`leave_combat`).
+  A fight left with no player fleet was dropped as it stood, its NPC groups
+  `in_combat` for good; it is now broken off the way a lost fight ends
+  (`break_off_combat`): groups removed so the templates stand again at full
+  strength, listed fleets idle, `CombatEnded` with `player_victory: false` to
+  those who fought (the web client already reads that as "withdrew or was
+  lost"). Recall in combat stays allowed. Keeping the damaged group alive
+  instead would switch on NPC roaming, which never runs today because groups
+  exist only inside fights. `a_recalled_fleet_is_out_of_its_fight_and_the_hostiles_it_left_can_be_fought_again`,
+  `a_fight_nobody_is_left_in_frees_its_hostiles_for_the_next_fleet`.
+- *Ninth fleet.* `MAX_COMBAT_FLEETS` was the length of a fixed array in the Zig
+  engine; in Rust the lists are `Vec`s and nothing else needs it. Past eight, a
+  fleet was marked `InCombat` without being listed: it never fired, was never
+  credited and was never freed. The cap is removed, so the ninth joins: the
+  enrolment says every fleet in the sector fights, and staying out would leave a
+  fleet next to hostiles it can neither be shot by nor attack.
+  `every_fleet_in_a_crowded_sector_fights_scores_and_comes_out_free`.
+- *Tank after losses.* Combat was the one place ships left a fleet without
+  `fuel_max` being recomputed. It now is, fuel above it lost with the ship as
+  when a raid sinks docked ships. For clients: `fuel <= fuel_max`, `jump_fuel`
+  and `home_fuel` already followed the surviving ships, and `range_hops` no
+  longer exceeds what the survivors' own tank reaches (it used to drop on
+  docking). `fleet_logistics.rs`:
+  `a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it_has_left`.
+  With it: the tank of a fleet with no ships was `-0.0` (an empty float `sum()`),
+  which SQLite stores as 0; `fleet_fuel_max` folds from `0.0`. Found by running
+  the restart test with the comparison on every tick (2000 ticks at test pace,
+  5000 at blitz, both pass; in each run two fights ended by a recall, 8 and 26
+  fleets lost some of their ships and 16 and 37 all of them).
+
+`chart_equivalence` still matches its recorded hashes after all four.
+
+**Still open:**
+
+- A fleet that loses haulers in a fight keeps cargo above its hold (as after a
+  raid); harvesting stops and it unloads normally.
+- Recalling out of a boarding drops it without the alert bump `stop` gives the
+  site.
+- A fleet that recalls out of a fight others stay in gets no event saying it
+  left; its state in the next `tick_update` is the only sign.
