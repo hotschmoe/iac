@@ -3857,7 +3857,7 @@ impl GameEngine {
                 p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64;
             }
 
-            let wait = self.policy_fuel_wait(fid);
+            let wait = self.policy_unload_wait(fid).or_else(|| self.policy_fuel_wait(fid));
             let acted = if let Some(why) = wait {
                 self.hold_policy(fid, preset, &why)
             } else {
@@ -3898,6 +3898,20 @@ impl GameEngine {
     fn fuel_income(&self, owner: u64, params: &PolicyParams) -> f32 {
         let Some(player) = self.players.get(&owner) else { return 0.0; };
         player.production_per_tick(&self.world.pace).deuterium * f32::from(params.fuel_budget_pct) / 100.0
+    }
+
+    /// A full store leaves cargo aboard a docked fleet, and a fleet that
+    /// flew out again with it would turn straight back: the reason it stays
+    /// docked until the cargo is off, if it must.
+    fn policy_unload_wait(&self, fleet_id: u64) -> Option<String> {
+        let fleet = self.fleets.get(&fleet_id)?;
+        let policy = self.policies.get(&fleet_id)?;
+        if fleet.location != self.players.get(&fleet.owner_id)?.homeworld { return None; }
+        let hold = fleet_cargo_capacity(fleet, &self.world.pace);
+        let aboard = fleet.cargo.total();
+        (hold > 0.0 && aboard / hold * 100.0 >= f32::from(policy.params.cargo_return_pct)).then(|| {
+            format!("the stockpile has no room for the cargo aboard ({:.0}% of the hold); waiting to unload", aboard / hold * 100.0)
+        })
     }
 
     /// A fleet on a fuel budget leaves the dock with a full tank or not at

@@ -479,6 +479,28 @@ fn a_mining_fleet_brings_the_ore_in_reach_home_and_then_waits_for_the_seams_to_r
     assert!(engine.players[&pid].resources.total() > 0.5 * in_reach);
 }
 
+#[test]
+fn a_fleet_whose_cargo_the_full_store_cannot_take_waits_at_the_dock_until_it_can_unload() {
+    let (mut engine, pid, fid, home) = delegate("Laden", PolicyPreset::MineAndReturn, 3);
+    let hold = iac_sim::engine::fleet_cargo_capacity(&engine.fleets[&fid], &engine.world.pace);
+    edit(&mut engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        player.buildings.storage_vault = 0;
+        player.resources.metal = scaling::storage_cap(0, &s.meta.pace).metal;
+        s.fleets.get_mut(&fid).unwrap().cargo.metal = hold;
+    });
+
+    let blocked = policy_actions(&run(&mut engine, 300));
+    assert!(moves(&blocked).is_empty(), "it would only come straight back: {:?}", moves(&blocked));
+    assert!(holds(&blocked).iter().any(|why| why.contains("no room for the cargo aboard")), "{:?}", holds(&blocked));
+    assert_eq!(engine.fleets[&fid].cargo.metal, hold);
+
+    edit(&mut engine, |s| s.players.get_mut(&pid).unwrap().buildings.storage_vault = 8);
+    let freed = policy_actions(&run_until(&mut engine, 100, |e| e.fleets[&fid].location != home));
+    assert_eq!(engine.fleets[&fid].cargo.total(), 0.0);
+    assert!(moves(&freed).contains(&"heading to claim"), "{freed:?}");
+}
+
 fn drop_pile(engine: &mut iac_sim::GameEngine, at: Hex, pile: Resources) {
     edit(engine, |s| {
         let ov = s.sector_overrides.entry(at.to_key()).or_insert_with(SectorOverride::default);
