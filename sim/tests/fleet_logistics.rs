@@ -10,7 +10,8 @@ use iac_shared::constants::{Resources, STRANDED_RECOVERY_TICKS};
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, ServerMessage,
 };
-use iac_sim::engine::{fleet_power, FleetStatus};
+use iac_shared::world::NpcBehaviorType;
+use iac_sim::engine::{fleet_power, template_npc_id, FleetStatus};
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
     e.since(mark, |k| match k {
@@ -249,4 +250,56 @@ fn an_autopilot_will_not_take_a_hop_that_strands_it_and_turns_for_home() {
     assert!(reasons[0].starts_with("returning"), "turning for home counts as acting: {reasons:?}");
     let critical = alerts_since(&e, mark).into_iter().filter(|a| matches!(a.level, AlertLevel::Critical)).count();
     assert_eq!(critical, 0, "the autopilot never stranded itself");
+}
+
+#[test]
+fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it_has_left() {
+    let mut e = Empire::join(world("test"), "Mauled");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let at = lone_scout_sector(&e.engine, NpcBehaviorType::Passive);
+    deploy(&mut e.engine, fid, at, None);
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        for ship in &mut fleet.ships[..fleet.ship_count] {
+            ship.weapon_power = 0.0;
+            ship.shield = 0.0;
+        }
+        fleet.ships[0].hull = 0.01;
+        fleet.ships[1].hull = 1e6;
+    });
+    let whole = e.fleet();
+    assert_eq!(whole.ships.len(), 2);
+    assert_eq!(whole.fuel, whole.fuel_max, "it set out with a full tank");
+    let hops_home = whole.home_fuel / whole.jump_fuel;
+
+    e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
+    e.run_until(200, |e| e.engine.fleets[&fid].ship_count == 1);
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().ships[0].weapon_power = 5000.0);
+    e.run_until(20, |e| e.engine.active_combats.is_empty());
+
+    let mauled = e.fleet();
+    assert_eq!(mauled.ships.len(), 1);
+    assert!(
+        (mauled.fuel_max - whole.fuel_max / 2.0).abs() < 0.01,
+        "one scout of two is left but the tank reads {} of the {} two carried",
+        mauled.fuel_max,
+        whole.fuel_max,
+    );
+    assert!(mauled.fuel <= mauled.fuel_max, "{} fuel in a {} tank", mauled.fuel, mauled.fuel_max);
+    assert!((mauled.jump_fuel - whole.jump_fuel / 2.0).abs() < 1e-3, "a jump costs what the ships present weigh");
+    assert!((mauled.home_fuel / mauled.jump_fuel - hops_home).abs() < 1e-3, "the way home is as many jumps as before");
+    let reach = ((mauled.fuel - mauled.home_fuel) / (2.0 * mauled.jump_fuel)).floor().max(0.0) as u32;
+    assert_eq!(mauled.range_hops, reach);
+
+    let doorstep = outward_chain(&e.engine, home, 1)[0];
+    deploy(&mut e.engine, fid, doorstep, None);
+    let near = e.fleet();
+    let full_tank_reach = ((near.fuel_max - near.home_fuel) / (2.0 * near.jump_fuel)).floor() as u32;
+    assert_eq!(near.range_hops, full_tank_reach, "the range shown is what the surviving ship's own tank reaches");
+    e.travel(home);
+    e.run(3);
+    let docked = e.fleet();
+    assert_eq!(docked.fuel_max, mauled.fuel_max, "docking finds nothing to correct");
+    assert!(docked.range_hops >= near.range_hops, "and the range shown in the field was not more than a full tank gives");
 }

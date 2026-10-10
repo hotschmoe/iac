@@ -902,7 +902,12 @@ impl GameEngine {
                     for j in new_ships.len()..f.ships.len() {
                         f.ships[j] = Ship::default();
                     }
+                    let lost_ships = new_ships.len() < f.ship_count;
                     f.ship_count = new_ships.len();
+                    if lost_ships && let Some(player) = self.players.get(&f.owner_id) {
+                        f.fuel_max = fleet_fuel_max(f, player);
+                        f.fuel = f.fuel.min(f.fuel_max);
+                    }
                     self.dirty_fleets.insert(f.id, ());
                 }
             }
@@ -4863,9 +4868,10 @@ fn fleet_harvest_power(fleet: &Fleet) -> f32 {
 }
 
 fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f32 {
-    let total_fuel: f32 = fleet.ships[0..fleet.ship_count].iter()
-        .map(|s| s.ship_class.base_stats().fuel as f32)
-        .sum();
+    // Folded from 0.0: the `sum()` of no floats is -0.0, and a fleet with no
+    // ships left must not carry a zero whose sign a store may not keep.
+    let total_fuel = fleet.ships[0..fleet.ship_count].iter()
+        .fold(0.0, |tank, s| tank + s.ship_class.base_stats().fuel as f32);
     total_fuel
         * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
         * scaling::fuel_depot_modifier(player.buildings.fuel_depot)

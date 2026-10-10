@@ -1762,7 +1762,8 @@ mod tests {
         events
     }
 
-    /// Where two JSON trees first differ.
+    /// Where two JSON trees first differ. Leaves are compared as written, so
+    /// 0.0 and -0.0 differ here as they do in the hash.
     fn first_difference(a: &serde_json::Value, b: &serde_json::Value, at: &str) -> Option<String> {
         use serde_json::Value::{Array, Object};
         match (a, b) {
@@ -1772,8 +1773,10 @@ mod tests {
             (Object(x), Object(y)) if x.keys().eq(y.keys()) => {
                 x.iter().find_map(|(k, v)| first_difference(v, &y[k], &format!("{at}.{k}")))
             }
-            _ if a == b => None,
-            _ => Some(format!("{at}: {a} in the engine, {b} in the database")),
+            _ => {
+                let (engine, database) = (a.to_string(), b.to_string());
+                (engine != database).then(|| format!("{at}: {engine} in the engine, {database} in the database"))
+            }
         }
     }
 
