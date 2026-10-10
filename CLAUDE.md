@@ -144,8 +144,8 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling (all cost/time/production formulas), pace, hex math, worldgen |
-| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `odds.rs` (the one ratio and label for a fleet against a group, counting ship classes), `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait, `Seat`, idle player), `bot/` (built-in bots: `mod.rs` personality and attention, `home.rs` homeworld planner, `field.rs` wings, doctrines and pilot), `headless.rs` (scripted world, score samples, field tallies), `bin/sim-run.rs`. Tests in `sim/tests/` (shared helpers in `common/`): `determinism.rs`, `bots.rs`, `chart_equivalence.rs`, `empire_arc.rs` (one empire from registration to a survived raid), `fleet_logistics.rs`, `pace_scaling.rs`, `scenarios_world.rs`, `scenarios_raids.rs` |
-| `server/` | `iac-server`: thin host. `network.rs` (axum WebSockets + static hosting), `database.rs` (SQLite, writer thread, `load_snapshot`), `auth.rs` (token issuing), `main.rs` (clap, tokio tick loop). Tests in `server/tests/`: `smoke.rs` game flow, `scenarios.rs` multi-client protocol scenarios, `web.rs` static hosting + WS paths; `network.rs` and `database.rs` keep a few in-process tests of the real `Network` and SQLite |
+| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `odds.rs` (the one ratio and label for a fleet against a group, counting ship classes), `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait: `ask`, `act`, `hear`; `Seat`, an in-process client; idle player), `bot/` (built-in bots: `mod.rs` personality and attention, `home.rs` homeworld planner, `field.rs` wings, doctrines and pilot, `roster.rs` a world's bots beside the engine), `headless.rs` (scripted world, score samples, field tallies), `bin/sim-run.rs`. Tests in `sim/tests/` (shared helpers in `common/`): `determinism.rs`, `bots.rs`, `chart_equivalence.rs`, `empire_arc.rs` (one empire from registration to a survived raid), `fleet_logistics.rs`, `pace_scaling.rs`, `scenarios_world.rs`, `scenarios_raids.rs` |
+| `server/` | `iac-server`: thin host. `network.rs` (axum WebSockets + static hosting), `database.rs` (SQLite, writer thread, `load_snapshot`), `auth.rs` (token issuing), `main.rs` (clap, tokio tick loop, bot roster). Tests in `server/tests/`: `smoke.rs` game flow, `scenarios.rs` multi-client protocol scenarios, `web.rs` static hosting + WS paths; `network.rs` and `database.rs` keep a few in-process tests of the real `Network` and SQLite |
 | `clients/tui/` | `iac-client`: ratatui TUI, `--headless` NDJSON mode |
 | `clients/web/` | Flutter web client on the Rust wire protocol (`lib/protocol/` mirrors `shared/src/protocol.rs`) |
 | `fixtures/` | Golden JSON generated from `shared/`; checked by Rust and Flutter tests |
@@ -163,6 +163,7 @@ cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7   # headl
 cargo build -p iac-sim --target wasm32-unknown-unknown --release   # iac-sim must stay buildable for the browser
 cargo run -p iac-server           # port 7777, iac_world.db, pace x1
 cargo run -p iac-server -- --pace blitz --db blitz.db   # pace is fixed per database
+cargo run -p iac-server -- --pace season --db season.db --bot all:check-in --player-seats 8   # built-in bots, 8 of the 24 home seats kept for players
 python3 tools/check_sim_constants.py                    # after touching costs, times or production
 cargo run -p iac-client -- --name Admiral
 cargo run -p iac-client -- --headless --name Agent   # NDJSON on stdin/stdout
@@ -191,6 +192,7 @@ Server (Rust, tokio)       Clients
 - All rules live in `iac-sim`, which must stay pure: no tokio, axum, rusqlite, wall clock (`std::time`) or OS entropy (`sim/clippy.toml` bans clock reads). Time is ticks; every RNG is seeded from the world seed, tick or ids; entity maps are `BTreeMap` so passes walk in id order. Persistence is the `Persist` trait; the server loads SQLite into a `Snapshot` and calls `GameEngine::restore`. Anything that must survive a restart goes in `PersistBatch` and the SQLite schema as well as in `Snapshot`.
 - Wire protocol types are defined once in `shared/` and used by server and TUI. The Flutter client mirrors them by hand in `clients/web/lib/protocol/`; `fixtures/` catches drift on both sides, so a protocol change means: edit Rust, regenerate fixtures, fix Dart until `flutter test` passes.
 - Only modified sectors persisted; unvisited sectors generated from the world seed.
+- Built-in bots are ordinary accounts named `BOT-<personality>-<n>` that act only through the command path; their `BotRecord` lives in `Snapshot` and in `runtime_state`. They are listed apart from the ranking (`LeaderboardReply.bots`).
 
 ### Key Concepts
 
