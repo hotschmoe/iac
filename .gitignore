@@ -11,6 +11,8 @@ clients/web/.dart_tool/
 .flutter-plugins-dependencies
 # Deprecated files awaiting review (see CLAUDE.md)
 .archive/
+# Agent worktrees
+.claude/worktrees/
 # Playtest run directories
 tools/playtest/run/
 __pycache__/

@@ -3,6 +3,57 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-10 (the hub, PvP by zone, outposts, more worlds)
+
+Context: `starting-positions-2026-10-10.md`. Numbers proposed there (fees,
+intervals, bandwidth, level caps) are not decided by this entry.
+
+- **PvP by zone.** No PvP in the Inner Ring (rings 1-8). PvP exists only from
+  ring 9 outward. Multiplayer PvE is allowed everywhere. This settles "opt-in or
+  forced" from 2026-10-09 item 4: crossing the line is the opt-in.
+- **Homeworlds never move.** A player reaches better resources with an
+  **outpost**, which can only be placed in PvP space: anywhere from ring 9, with
+  the richest sites further out.
+- **A neutral post at the centre.** The hub starts as one hex doing two jobs, an
+  NPC exchange and the gate between worlds. It may grow into the seven-hex
+  cluster (the centre and ring 1) with a purpose per hex as chat, items and an
+  auction arrive.
+- **The exchange is a surplus sink, never a faucet.** The rate worsens as a
+  player trades and recovers over time, tracked per player. No hard daily cap. A
+  world-wide slide is a possible later step.
+- **More room means more worlds, not a third axis.** Other worlds are reached
+  through the hub, and each is a flat (q,r) grid, so a player always plays on a
+  (q,r) map "via world x". Worlds may open as players join; the rule that opens
+  one is not decided.
+- **Black market.** It sits in dangerous space, not at the hub, and moves at
+  intervals: its place comes from the world seed and a time window, and a
+  remembered pin goes stale. It trades resources for now and is replaced by an
+  item market when an item system exists.
+- **Gateway.** A research line lets fleets jump between home and the outpost.
+  No jump while in combat. It carries loot, limited by a bandwidth that further
+  research raises, so bulk still travels the rings.
+- **Homes sit in rings 3-5, in fixed seats.** A world has a set number of seats
+  (about 24) and no spill rings: a full world refuses with a clear "world full"
+  and a new world is the answer. No hostile pack on or beside a home.
+- **The Inner Ring is scout country.** Scout-class packs out to ring 8, so the
+  jump in danger sits on the PvP line at ring 9 instead of at ring 6, where it
+  killed every starter fleet.
+- **Lanes are seeded per world.** Each world has its own maze. Existing
+  databases are disposable.
+- **Gates are one-way at first.** A fleet may enter a world as old as or older
+  than its own, never a younger one, so veterans cannot descend on a new
+  cohort. A gate may open both ways once the younger world has matured; the
+  rule for that is not decided.
+- **Home ground.** Derelicts beside a home stay; boarding one is a choice.
+  `patrol_home` hunts the convoys beside home; what that pays is re-measured
+  with the bots before it is tuned.
+- **Threat labels tell the truth about the matchup.** A label accounts for ship
+  classes (rapid fire), not power alone, so a doctrine's entry rule cannot walk
+  scouts into corvettes at the ring-9 line.
+- **Not decided:** whether research extends how far out an outpost may sit
+  (ring 21+), the purpose of each hub hex, and how fleets, cargo and score cross
+  between worlds.
+
 ## 2026-10-10 (mechanics pass: free slots start what can pay)
 
 Amends the one-queue rule below on the line it drew: the queue is no longer
