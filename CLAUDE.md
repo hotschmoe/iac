@@ -144,7 +144,7 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling (all cost/time/production formulas), pace, hex math, worldgen |
-| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait + idle and check-in builder), `headless.rs`, `bin/sim-run.rs`. Tests in `sim/tests/` (shared helpers in `common/`): `determinism.rs`, `chart_equivalence.rs`, `empire_arc.rs` (one empire from registration to a survived raid), `fleet_logistics.rs`, `pace_scaling.rs`, `scenarios_world.rs`, `scenarios_raids.rs` |
+| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait, `Seat`, idle player), `bot/` (built-in bots: `mod.rs` personality and attention, `home.rs` homeworld planner, `field.rs` wings, doctrines and pilot), `headless.rs` (scripted world, score samples, field tallies), `bin/sim-run.rs`. Tests in `sim/tests/` (shared helpers in `common/`): `determinism.rs`, `bots.rs`, `chart_equivalence.rs`, `empire_arc.rs` (one empire from registration to a survived raid), `fleet_logistics.rs`, `pace_scaling.rs`, `scenarios_world.rs`, `scenarios_raids.rs` |
 | `server/` | `iac-server`: thin host. `network.rs` (axum WebSockets + static hosting), `database.rs` (SQLite, writer thread, `load_snapshot`), `auth.rs` (token issuing), `main.rs` (clap, tokio tick loop). Tests in `server/tests/`: `smoke.rs` game flow, `scenarios.rs` multi-client protocol scenarios, `web.rs` static hosting + WS paths; `network.rs` and `database.rs` keep a few in-process tests of the real `Network` and SQLite |
 | `clients/tui/` | `iac-client`: ratatui TUI, `--headless` NDJSON mode |
 | `clients/web/` | Flutter web client on the Rust wire protocol (`lib/protocol/` mirrors `shared/src/protocol.rs`) |
@@ -159,7 +159,7 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 cargo build --workspace
 cargo test --workspace            # end-to-end tests only; retired unit tests live in the gitignored .archive/
 cargo clippy --workspace --all-targets
-cargo run -p iac-sim --release --bin sim-run -- --pace season --builders 50 --days 7   # headless scripted-player run, JSON summary
+cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7   # headless bot run, balance report (--seat, --sessions, --ignore-cap, --json)
 cargo build -p iac-sim --target wasm32-unknown-unknown --release   # iac-sim must stay buildable for the browser
 cargo run -p iac-server           # port 7777, iac_world.db, pace x1
 cargo run -p iac-server -- --pace blitz --db blitz.db   # pace is fixed per database
