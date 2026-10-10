@@ -1697,3 +1697,152 @@ What moved, and what did not:
 
 Not rerun: the blitz hour table, the look-ins-per-day sweep and the persistent-pace
 check of the first report.
+
+## 2026-10-10: single player in one browser tab
+
+Roadmap step 3. No rule, balance constant or wire message was changed.
+
+```
+page (Flutter client, unchanged above the transport)
+  GameController -- Uplink --+-- WebSocket ----------------> iac-server
+                             +-- postMessage, same JSON ---> Web Worker
+                                                               solo/web/worker.js   clock pump, IndexedDB, one-tab lock
+                                                               iac_solo.wasm        iac-solo: Machine > World > iac-sim + bot::Roster
+```
+
+**The host is a crate, `solo/` (`iac-solo`).** One world, its roster, one commander.
+Its whole surface is `Machine::call(bytes) -> bytes`: a line of JSON naming the
+operation, a newline, a body; the reply likewise. Frames in the bodies are the wire
+protocol, one per line. As WebAssembly that is three exports (`iac_request(len)`,
+`iac_call()`, `iac_reply()`) and one import for panic text. No wasm-bindgen: with
+strings across the boundary it would have added a CLI to install and keep in step
+for nothing. The tests drive the same function natively.
+
+**Same answers as the server by construction.** `GameEngine::answer(pid, msg)` now
+words everything a logged-in session is sent, and `server/network.rs` calls it too
+(its three in-process tests go through `handle_message`). A tick is the server's:
+bots take turns, `tick`, the session's `tick_update`, bots observe. Two differences,
+both stated in `world.rs`: no token (the world knows its commander; `auth` with that
+name logs in, any other name is `InvalidName`), and the clock.
+
+**The clock is the caller's.** Every request carries `now_ms`. Tick `t` is due at
+`anchor_ms + (t - anchor_tick)` seconds; the anchor is in the save. Up to 5 ticks
+behind are played one frame each. More is an absence, whether the tab was closed or
+the machine slept with it open: the missed ticks are played without frames, bots and
+standing orders acting on every one, so the result is the world an open tab would
+have reached. Limit 7 days per absence; the player may take command early; in both
+cases the rest is dropped and the clock re-anchored. A catch-up of 300 ticks or more
+ends in `Alert` events (kept in the save until a session has had them): how long,
+how much of it was played, buildings, research, ships and defences finished, raids
+repelled and lost with what they took, fleets and ships lost. The page shows the same
+sentences before the player enters. A hands-on bot is hands-on through the absence
+too, which the new-game form says.
+
+**Worker, by measurement.** Under node, back to back, a live tick one hour into a
+blitz world costs 3.8 ms median with 8 hands-on bots and 13 ms (24 at worst) with
+20, and one 500-tick slice of a catch-up took 4.7 s. In the browser worker, where a
+tick comes once a second on a cold core of a shared machine: 2 to 10 ms mean in the
+first minute of the blitz world with 8 hands-on bots (worst single tick 24 to 100
+ms), and two hours in, which is late for blitz, 29 ms mean and 65 ms at worst. None
+of that fits beside a 16 ms frame, so the engine never runs on the page's thread;
+on its own thread 29 ms is 3% of the second. The worker sizes each catch-up call to
+about 30 ms and yields in between, so `take_command` and `save` get in; the page
+drew every 50 to 67 ms at worst while a two-hour absence was played.
+
+**Catch-up speed** (V8 under node, this machine, niced; a tick is a second of the
+world):
+
+| world | absence | time | ticks/s | save |
+|---|---|---|---|---|
+| persistent, 8 check-in bots, new | 7 days | 11 s | 57,000 | 0.07 MB |
+| season, 20 check-in, new | 8 hours | 0.9 s | 31,000 | 0.05 MB |
+| season, 20 check-in, new | 2 days | 58 s | 3,000 | 1.1 MB |
+| season, 8 check-in, new | 7 days | 5.5 min | 1,850 | 1.3 MB |
+| season, 20 check-in, new | 7 days | 17 min | 600, 190 at the end | 4.6 MB |
+| blitz, 8 hands-on, new | 1 hour | 5.7 s | 640 | 1.8 MB |
+| blitz, 8 hands-on, new | 3 hours | 42 s | 254, 180 at the end | 3.4 MB |
+| blitz, 20 hands-on, new | 1 hour | 17 s | 216 | 5.4 MB |
+
+In the browser worker the blitz world with 8 hands-on bots caught up two hours at
+330 to 390 ticks/s, as under node. So the owner's two cases: a week away at persistent pace is seconds; eight
+hours at season pace is a second in a young world and up to two minutes in a
+week-old one with 20 bots. Hence progress, rate and time left on screen, a way out
+(take command now), 8 check-in bots as the default, and the 7-day limit, which is
+where the wait reaches minutes even for the modest roster. Fat LTO with one codegen
+unit made the wasm 11% smaller and 3% slower: left out.
+
+**Saves are whole snapshots, written rarely.** One document: a header line (format,
+economy and worldgen versions, commander, clock, an interrupted catch-up, unread
+report, xxh3 of the rest) and `Snapshot` as JSON; 81% of it is the charts
+(`known`). Gzipped in the worker (1.07 MB to 80 kB), one `put` in one IndexedDB
+transaction, so a tab killed mid-save keeps the one before. The first cut saved
+every 15 s, which for a week-old world is 26 GB a day of writes. But a lost save
+costs only orders: the ticks since are replayed on reload and come out the same
+(`a_reload_plays_the_unsaved_ticks_again...` compares the snapshots byte for byte).
+So: within 2 s of an order or policy change (not of a query; `commands::is_query`),
+every 4 minutes otherwise (under the 300-tick report threshold, so a reload is never
+taken for an absence), every 20 s while catching up, and when the page is hidden.
+Another format, economy or worldgen version, a failed digest or an unreadable
+snapshot is refused with a sentence, the save left in place until a new game
+replaces it. The row-by-row `PersistBatch` path was not used: it needs a second
+copy of the SQLite loader for 80 kB a save.
+
+**Client.** `GameConnection` connects over a `Dial` (any `StreamChannel` of text
+frames) and `GameController` logs in to an `Uplink`. `lib/solo/` is the worker's
+other end; `SoloScreen` is the front door of the bundle built with
+`IAC_SINGLE_PLAYER` (`scripts/play.sh --single-player`, which also builds the wasm,
+copies it and the worker in, and turns Flutter's CDN off). The operator guide starts
+for a new commander as it does for a new account, minus the token step.
+
+**The demo world is out of the app.** It was a second, drifting copy of the rules in
+Dart. Offline play is now the real engine, so `LinkState.demo`, the fall-back to it
+and the Offline demo button are gone; an unreachable server says so and keeps
+trying. The file moved to `test/support/demo_world.dart`: the widget tests run on
+the Dart VM, which cannot run the engine, and they want its fixed script (the raid
+at tick 279). It reaches the controller through `GameController.receive`.
+
+### Checked
+
+- `cargo test -p iac-solo`: four scenarios through `Machine::call`.
+- `clients/web/tool/solo_e2e.dart`, one command, 137 s, 30 checks: the bundle from
+  a plain static host with every other host unreachable, in headless Chromium with
+  real clicks and keys and a tap on the worker's frames. New game at blitz with 8
+  bots; homeworld and guide on screen; `build metal` typed in the palette, Metal
+  Mine level 2 completed; 8 `BOT-` rows on the board and a bot's score rising; a
+  second tab kept out; reload finds the save and replays to the same homeworld; a
+  two-hour absence (the worker's `Date.now` is shifted) caught up, reported on
+  screen and as `Alert` frames; a 30-minute stall with the page open; abandon;
+  then the same bundle served by a real `iac-server` logs in over a WebSocket and
+  leaves the worker alone. Run on Flutter's wasm build and, with `--software`, on
+  its JavaScript fallback.
+- First load on localhost, cold cache, wasm client: 20 files, 9.3 MB (3.5 MB
+  gzipped), of which the engine is 2.1 MB (0.57 MB gzipped); first frame after 0.44
+  to 0.64 s, engine ready after 0.74 to 1.05 s, new-game form after 2.4 to 2.7 s
+  (the boot animation). JavaScript fallback: 19 files, 11.7 MB; 1.0 s, 1.1 s, 3.1 s.
+  The bundle directory is 47 MB because Flutter ships every renderer.
+
+### Found on the way
+
+- The Flutter engine asks `fonts.gstatic.com` for Roboto at start, in every build
+  of the client. Unreachable, nothing changes on screen. A `Roboto` family in
+  `pubspec.yaml` would stop the request; left alone because it touches the
+  multiplayer client's fonts.
+- Headless Chromium here waits 25 s before its first request of a run (not the
+  page: any URL). The check spends that on `version.json` and times the page after.
+- Engine speed is the single-player limit, not the browser: 1 to 5 ms a tick in a
+  busy world, most of it bot turns and the views they are built from.
+
+### Not done, and why
+
+- **Export and import of a save**, and a second save slot: one world per browser
+  was the brief.
+- **An economy-only fast path for long absences** would be a second set of rules.
+- **A panic in the engine** reaches the page as "the engine stopped" with the
+  panic text (the hook and the import are there); no way was found to provoke one
+  for a test.
+
+### Not seen
+
+A human playing it. A browser other than Chromium 154. A phone. Storage refused or
+full. A real closed tab overnight (the clock was shifted instead). The season and
+persistent rows of the table in a browser (node only).

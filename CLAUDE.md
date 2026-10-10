@@ -144,10 +144,11 @@ Multiplayer space strategy game played through an amber terminal (TUI). Humans p
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling (all cost/time/production formulas), pace, hex math, worldgen |
-| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `odds.rs` (the one ratio and label for a fleet against a group, counting ship classes), `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait: `ask`, `act`, `hear`; `Seat`, an in-process client; idle player), `bot/` (built-in bots: `mod.rs` personality and attention, `home.rs` homeworld planner, `field.rs` wings, doctrines and pilot, `roster.rs` a world's bots beside the engine), `headless.rs` (scripted world, score samples, field tallies), `bin/sim-run.rs`. Tests in `sim/tests/` (shared helpers in `common/`): `determinism.rs`, `bots.rs`, `chart_equivalence.rs`, `empire_arc.rs` (one empire from registration to a survived raid), `fleet_logistics.rs`, `pace_scaling.rs`, `scenarios_world.rs`, `scenarios_raids.rs` |
+| `sim/` | `iac-sim`: pure deterministic game library. `engine.rs` (state, tick, command handlers), `commands.rs` (`execute`, `answer` for a logged-in session's message, refusal text), `views.rs` (full state / tick update per player), `combat.rs`, `odds.rs` (the one ratio and label for a fleet against a group, counting ship classes), `intel.rs`, `queue.rs`, `score.rs`, `auth.rs` (name rules, token checks), `persist.rs` (`Persist` trait, `PersistBatch`), `snapshot.rs`, `script.rs` (scripted-player trait: `ask`, `act`, `hear`; `Seat`, an in-process client; idle player), `bot/` (built-in bots: `mod.rs` personality and attention, `home.rs` homeworld planner, `field.rs` wings, doctrines and pilot, `roster.rs` a world's bots beside the engine), `headless.rs` (scripted world, score samples, field tallies), `bin/sim-run.rs`. Tests in `sim/tests/` (shared helpers in `common/`): `determinism.rs`, `bots.rs`, `chart_equivalence.rs`, `empire_arc.rs` (one empire from registration to a survived raid), `fleet_logistics.rs`, `pace_scaling.rs`, `scenarios_world.rs`, `scenarios_raids.rs` |
 | `server/` | `iac-server`: thin host. `network.rs` (axum WebSockets + static hosting), `database.rs` (SQLite, writer thread, `load_snapshot`), `auth.rs` (token issuing), `main.rs` (clap, tokio tick loop, bot roster). Tests in `server/tests/`: `smoke.rs` game flow, `scenarios.rs` multi-client protocol scenarios, `web.rs` static hosting + WS paths; `network.rs` and `database.rs` keep a few in-process tests of the real `Network` and SQLite |
+| `solo/` | `iac-solo`: the single-player host, native in tests and WebAssembly in the browser. `machine.rs` (the one door: `Machine::call`, a line of JSON and a body in, the same out), `world.rs` (engine, roster, the commander's session, the clock fed by the caller, catch-up after an absence), `away.rs` (what the absence report counts and says), `save.rs` (the save document, refusal of other versions), `lib.rs` (the three wasm exports), `web/worker.js` (the browser half: loads the wasm, pumps the clock, IndexedDB save, one-tab lock). Tests in `solo/tests/single_player.rs`, through `Machine::call` |
 | `clients/tui/` | `iac-client`: ratatui TUI, `--headless` NDJSON mode |
-| `clients/web/` | Flutter web client on the Rust wire protocol (`lib/protocol/` mirrors `shared/src/protocol.rs`) |
+| `clients/web/` | Flutter web client on the Rust wire protocol (`lib/protocol/` mirrors `shared/src/protocol.rs`). `lib/state/` logs a `GameController` in to an `Uplink` (a server's WebSocket, or the engine in the tab); `lib/solo/` is the page's side of the engine worker and `lib/views/solo_screen.dart` the single-player front door (build flag `IAC_SINGLE_PLAYER`). `test/support/demo_world.dart` is a scripted world for the widget tests only, not a back end of the app. `tool/solo_e2e.dart` drives the single-player bundle in headless Chromium |
 | `fixtures/` | Golden JSON generated from `shared/`; checked by Rust and Flutter tests |
 | `tools/` | `playtest/` (live multi-agent sessions), `check_sim_constants.py` (Rust economy numbers vs `docs/design/economy/sim.py`) |
 | `docs/` | Design docs; `PORTING.md` and `journal.md` are the Rust dev log |
@@ -160,7 +161,7 @@ cargo build --workspace
 cargo test --workspace            # end-to-end tests only; retired unit tests live in the gitignored .archive/
 cargo clippy --workspace --all-targets
 cargo run -p iac-sim --release --bin sim-run -- --pace season --days 7   # headless bot run, balance report (--seat, --sessions, --ignore-cap, --json)
-cargo build -p iac-sim --target wasm32-unknown-unknown --release   # iac-sim must stay buildable for the browser
+cargo build -p iac-solo --target wasm32-unknown-unknown --release   # the browser engine; iac-sim must stay buildable for wasm
 cargo run -p iac-server           # port 7777, iac_world.db, pace x1
 cargo run -p iac-server -- --pace blitz --db blitz.db   # pace is fixed per database
 cargo run -p iac-server -- --pace season --db season.db --bot all:check-in --player-seats 8   # built-in bots, 8 of the 24 home seats kept for players
@@ -173,6 +174,8 @@ UPDATE_FIXTURES=1 cargo test -p iac-shared   # regenerate fixtures/ after a prot
 cd clients/web && flutter pub get && flutter analyze && flutter test
 scripts/play.sh                   # build web client + serve it and WS on one port (0.0.0.0:${PORT:-7777})
 cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web   # same, without rebuilding
+scripts/play.sh --single-player   # static single-player bundle (client + iac_solo.wasm) in clients/web/build/single-player, served on 127.0.0.1:${PORT:-7777}; --no-serve only builds
+cd clients/web && dart run tool/solo_e2e.dart   # that bundle end to end in headless Chromium (about two minutes; needs the bundle, and target/debug/iac-server for its multiplayer check)
 ```
 
 The server serves static files (SPA fallback, COOP/COEP headers) and WebSockets (any path; `/ws` for web, `/` for TUI) on one port.
@@ -186,6 +189,10 @@ Server (Rust, tokio)       Clients
   Tick loop (1Hz) --> WebSocket JSON --> TUI client (ratatui)
   SQLite (state)  --> WebSocket JSON --> headless/LLM client (NDJSON)
                   --> WebSocket JSON --> Flutter web client (served by the same port)
+
+Single player (one browser tab, no server)
+  Web Worker: worker.js + iac_solo.wasm --> the same JSON, by postMessage --> Flutter web client
+  wall clock -> ticks, IndexedDB (save)
 ```
 
 - Server runs the authoritative simulation at 1 tick/second; clients send commands and receive `full_state` / `tick_update`.
@@ -193,6 +200,7 @@ Server (Rust, tokio)       Clients
 - Wire protocol types are defined once in `shared/` and used by server and TUI. The Flutter client mirrors them by hand in `clients/web/lib/protocol/`; `fixtures/` catches drift on both sides, so a protocol change means: edit Rust, regenerate fixtures, fix Dart until `flutter test` passes.
 - Only modified sectors persisted; unvisited sectors generated from the world seed.
 - Built-in bots are ordinary accounts named `BOT-<personality>-<n>` that act only through the command path; their `BotRecord` lives in `Snapshot` and in `runtime_state`. They are listed apart from the ranking (`LeaderboardReply.bots`).
+- There are two hosts of `iac-sim` and they must answer alike: a logged-in session's message goes through `GameEngine::answer` in both, and each tick is bots' turns, `tick`, the session's `tick_update`, bots observe. `iac-solo` differs only where one player and no network make it differ: no token (the world knows its commander), and a clock it is told (`now_ms` on every request), from which it owes one tick a second. More than 5 ticks behind is an absence: the missed ticks are played without frames, up to 7 days, then the session gets a full state and `Alert` events that report it. The save is a whole `Snapshot` with a versioned header; ticks not yet saved are replayed on reload and must come out identical, so nothing but the commander's orders may enter a single-player world from outside.
 
 ### Key Concepts
 
