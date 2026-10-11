@@ -22,7 +22,13 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # Flutter's web engine fetches Roboto from fonts.gstatic.com as its default
+  # family unless the app ships a family of that name. Nothing here is set in
+  # it, so it is Plex Mono again and the page asks no other host for a font.
   fonts:
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/IBMPlexMono-Regular.ttf
     - family: IBMPlexMono
       fonts:
         - asset: assets/fonts/IBMPlexMono-Regular.ttf
