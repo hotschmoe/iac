@@ -58,6 +58,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   final ValueNotifier<int> _scanSecs = ValueNotifier(0);
   static const _scanDur = 5.0;
 
+  /// The most the status sheet of the phone layout takes of a wide arena.
+  static const _sheetWidth = 380.0;
+
   Console get con => _con!;
 
   @override
@@ -431,7 +434,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             translation: const Offset(-.5, -.5),
             child: GuideTarget(con.onboarding.pointsAtGate(nh) ? 'gates' : 'gate', child: GateCard(
               dir: d,
-              narrow: narrow,
+              narrow: g.compact,
               known: known,
               sector: ns,
               threat: nt,
@@ -558,22 +561,37 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         Positioned(
             left: 16,
             top: 14,
-            width: narrow ? null : 300,
-            right: narrow ? 80 : null,
-            child: SectorHead(
-                loc: f.sector,
-                home: st.homeworld,
-                sector: s,
-                threat: th,
-                narrow: narrow,
-                exchange: atExchange,
-                noteWidth: g.cardCenter(dirs[5]).dx - GateCard.width / 2 - 26)),
+            width: narrow ? math.min(SectorHead.phoneWidth, size.width - 96) : math.min(300, g.cardCenter(dirs[5]).dx - GateCard.width / 2 - 26),
+            child: SectorHead(loc: f.sector, home: st.homeworld, sector: s, threat: th, narrow: narrow, exchange: atExchange)),
         if (!narrow) Positioned(left: 16, top: 230, width: 208, child: FleetRail(ctrl: con.game, narrow: false, combat: combat)),
         if (narrow) Positioned(left: 8, right: 8, bottom: 70, child: FleetRail(ctrl: con.game, narrow: true, combat: combat)),
-        if (narrow) Positioned(top: 8, right: 10, child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () => setState(() => _sheet = !_sheet))),
-        if (!narrow) Positioned(right: 16, top: 14, width: 300, bottom: 100, child: SingleChildScrollView(child: rightCol)),
-        if (narrow && _sheet) Positioned(left: 8, right: 8, top: 40, bottom: 130, child: SingleChildScrollView(child: rightCol)),
-        if (!narrow && feedWidth >= 200) Positioned(left: 16, bottom: 14, width: feedWidth, child: Feed(events: st.events)),
+        if (narrow)
+          Positioned(
+              top: 8,
+              right: 10,
+              child: GuideTarget(_sheet ? 'status-sheet' : 'orders',
+                  child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () => setState(() => _sheet = !_sheet)))),
+        if (!narrow)
+          Positioned(
+              right: 16,
+              top: 14,
+              width: 300,
+              bottom: (size.width + dockActions.length * Dock.tileWidth) / 2 + 8 <= size.width - 316 ? 14 : 100,
+              child: SingleChildScrollView(child: rightCol)),
+        if (narrow && _sheet)
+          Positioned(
+              left: size.width > _sheetWidth + 16 ? null : 8,
+              right: 8,
+              width: size.width > _sheetWidth + 16 ? _sheetWidth : null,
+              top: 40,
+              bottom: 130,
+              child: SingleChildScrollView(child: rightCol)),
+        if (!narrow && feedWidth >= 200)
+          Positioned(
+              left: 16,
+              bottom: 14,
+              width: feedWidth,
+              child: Feed(events: st.events, maxHeight: size.height - 14 - 8 - (g.cardCenter(dirs[4]).dy + GateCard.tallest / 2))),
         Positioned(left: 0, right: 0, top: narrow ? 90 : size.height * .21, child: IgnorePointer(child: Center(child: _BannerBox(c: _banner, h: _bannerH, p: _bannerP, red: _bannerRed)))),
         if (_hsub)
           Positioned(left: 0, right: 0, bottom: narrow ? 66 : 80, child: Center(child: IntrinsicWidth(child: ConsolePanel(flat: true, child: Row(mainAxisSize: MainAxisSize.min, children: [

@@ -117,5 +117,4 @@ class T {
 class Bp {
   Bp._();
   static const narrow = 820.0;
-  static const windshieldNarrow = 900.0;
 }

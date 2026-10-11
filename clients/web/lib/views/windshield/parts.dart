@@ -60,13 +60,10 @@ class SectorHead extends StatelessWidget {
   /// The sector is a hub sector with the exchange.
   final bool exchange;
 
-  /// Room for the note, which sits level with the north-west gate card: it
-  /// wraps before the card, and is left out where that leaves it no room.
-  final double noteWidth;
-
-  static const _leastNoteWidth = 200.0;
-  const SectorHead(
-      {super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow, this.exchange = false, this.noteWidth = double.infinity});
+  /// The most the head takes of the phone layout, where it has no rows:
+  /// the coordinates and the threat line.
+  static const phoneWidth = 250.0;
+  const SectorHead({super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow, this.exchange = false});
 
   @override
   Widget build(BuildContext context) {
@@ -96,10 +93,9 @@ class SectorHead extends StatelessWidget {
           Kv('Range', v: '${loc.distFromOrigin} FROM HUB - ${fromHome == 0 ? 'AT HOME' : '$fromHome FROM HOME'}', size: 11),
         ],
         Padding(padding: EdgeInsets.only(top: narrow ? 3 : 8, bottom: 4), child: thrLine),
-        if (!narrow && noteWidth >= _leastNoteWidth)
-          Container(
+        if (!narrow)
+          Padding(
             padding: const EdgeInsets.only(top: 6),
-            constraints: BoxConstraints(maxWidth: noteWidth),
             child: Text.rich(
               TextSpan(children: [
                 TextSpan(text: 'NOTE ', style: T.mono(size: 11, color: C.a700, weight: FontWeight.w600, spacing: 1)),
@@ -170,7 +166,7 @@ class FleetRail extends StatelessWidget {
               Padding(
                   padding: const EdgeInsets.only(top: 2),
                   child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text('$hops HOPS', style: T.mono(size: 10, color: C.text3)),
+                    Text(hopCount(hops).toUpperCase(), style: T.mono(size: 10, color: C.text3)),
                     Text(pol.toUpperCase(), style: T.mono(size: 10, color: C.text3)),
                   ])),
           ]),
@@ -740,9 +736,54 @@ class _ExchangePanelState extends State<ExchangePanel> {
 
 // ── Teleprinter ────────────────────────────────────────────────
 
+/// The newest lines of the log, printed over the arena's lower left. It
+/// takes at most [mostLines] rows of text and never more than [maxHeight],
+/// which the windshield sets so that it ends below the south-west gate card.
+/// An entry is shown whole or not at all, the newest first to be kept; what
+/// does not fit is in the Overview's log.
 class Feed extends StatelessWidget {
   final List<LogEntry> events;
-  const Feed({super.key, required this.events});
+  final double maxHeight;
+  const Feed({super.key, required this.events, required this.maxHeight});
+
+  static const mostLines = 8;
+  static const _size = 10.5, _leading = 1.35;
+  static const _rowHeight = _size * _leading;
+  static const _entryChrome = 3.0;
+  static const _sidePadding = 12.0;
+
+  static TextStyle get _style => T.mono(size: _size, color: C.text2, height: _leading, spacing: .2);
+
+  static List<InlineSpan> _spans(LogEntry e, Color color) => [
+        const TextSpan(text: '> ', style: TextStyle(color: C.a600)),
+        TextSpan(text: '${(e.tick % 100000).toString().padLeft(5, '0')}  ', style: const TextStyle(color: C.text4)),
+        TextSpan(text: e.message.toUpperCase().replaceFirst(RegExp(r'^!+\s*'), ''), style: TextStyle(color: color)),
+      ];
+
+  /// The entries that fit, oldest first, and how many rows the newest may
+  /// take when it is too long to fit whole.
+  (List<(String, LogEntry)>, int) _fitting(BuildContext context, double width) {
+    final rows = math.min(mostLines, ((maxHeight - _entryChrome) / _rowHeight).floor());
+    final scaler = MediaQuery.textScalerOf(context);
+    final shown = <(String, LogEntry)>[];
+    var usedRows = 0, usedHeight = 0.0;
+    for (final (name, e) in namedLog(events)) {
+      final painter = TextPainter(
+          text: TextSpan(children: [..._spans(e, C.text2), if (shown.isEmpty) const TextSpan(text: '   ')], style: _style),
+          textDirection: TextDirection.ltr,
+          textScaler: scaler)
+        ..layout(maxWidth: math.max(1, width - _sidePadding));
+      final need = painter.computeLineMetrics().length;
+      painter.dispose();
+      final height = need * _rowHeight + _entryChrome;
+      if (shown.isNotEmpty && (usedRows + need > rows || usedHeight + height > maxHeight)) break;
+      shown.add((name, e));
+      usedRows += need;
+      usedHeight += height;
+      if (usedRows >= rows) break;
+    }
+    return (shown.reversed.toList(), rows);
+  }
 
   Color _col(String m) {
     if (m.startsWith('!') || m.contains('LOST') || m.contains('destroyed') && m.contains('Your')) return const Color(0xFFFF9A86);
@@ -753,18 +794,15 @@ class Feed extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final recent = events.take(7).toList().reversed.toList();
-    final seen = <String, int>{};
+    if (maxHeight < _rowHeight + _entryChrome) return const SizedBox.shrink();
     return IgnorePointer(
-      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        for (var i = 0; i < recent.length; i++)
-          () {
-            final e = recent[i];
-            final k = '${e.tick}|${e.message}';
-            final n = seen[k] = (seen[k] ?? 0) + 1;
-            return _TypeLine(key: ValueKey('$k#$n'), entry: e, color: _col(e.message), dim: i < recent.length - 7 + 0 && recent.length > 6 && i == 0 ? true : false, last: i == recent.length - 1);
-          }(),
-      ]),
+      child: LayoutBuilder(builder: (context, box) {
+        final (shown, rows) = _fitting(context, box.maxWidth);
+        return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          for (final (i, (name, e)) in shown.indexed)
+            _TypeLine(key: ValueKey(name), entry: e, color: _col(e.message), rows: rows, last: i == shown.length - 1),
+        ]);
+      }),
     );
   }
 }
@@ -772,8 +810,11 @@ class Feed extends StatelessWidget {
 class _TypeLine extends StatefulWidget {
   final LogEntry entry;
   final Color color;
-  final bool dim, last;
-  const _TypeLine({super.key, required this.entry, required this.color, required this.dim, required this.last});
+
+  /// The most rows of text the line may take.
+  final int rows;
+  final bool last;
+  const _TypeLine({super.key, required this.entry, required this.color, required this.rows, required this.last});
   @override
   State<_TypeLine> createState() => _TypeLineState();
 }
@@ -795,12 +836,12 @@ class _TypeLineState extends State<_TypeLine> with SingleTickerProviderStateMixi
       color: const Color(0x8C07050A),
       child: Text.rich(
         TextSpan(children: [
-          const TextSpan(text: '> ', style: TextStyle(color: C.a600)),
-          TextSpan(text: '${(widget.entry.tick % 100000).toString().padLeft(5, '0')}  ', style: const TextStyle(color: C.text4)),
-          TextSpan(text: widget.entry.message.toUpperCase().replaceFirst(RegExp(r'^!+\s*'), ''), style: TextStyle(color: widget.color)),
+          ...Feed._spans(widget.entry, widget.color),
           if (widget.last) WidgetSpan(alignment: PlaceholderAlignment.middle, child: Blink(period: 11, onSteps: 6, builder: (_, on) => Container(width: 6, height: 10, margin: const EdgeInsets.only(left: 6), color: on ? C.a400 : Colors.transparent))),
         ]),
-        style: T.mono(size: 10.5, color: C.text2, height: 1.35, spacing: .2),
+        maxLines: widget.rows,
+        overflow: TextOverflow.ellipsis,
+        style: Feed._style,
       ),
     );
     if (still) return line;
@@ -835,6 +876,10 @@ class GateCard extends StatelessWidget {
   /// Width of a card on a desktop arena.
   static const width = 150.0;
 
+  /// The most a card on a desktop arena grows to, with its odds line and a
+  /// last line that wraps.
+  static const tallest = 100.0;
+
   @override
   Widget build(BuildContext context) {
     final dashed = !known || intel.aged;
@@ -858,7 +903,7 @@ class GateCard extends StatelessWidget {
       body.add(Container(height: 1, color: C.lineLo));
       if (!known) {
         body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 0), child: Text(hint ? 'FAINT MASS READING${band == null ? '' : ' / BAND $band'}' : 'SCAN TO REVEAL', style: T.mono(size: 9.5, color: hint ? C.threat(6) : C.text3))));
-        body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 4), child: Text('${dir.name} - -${fuel}F', style: T.mono(size: 9.5, color: C.text3))));
+        body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 4), child: Align(alignment: Alignment.centerRight, child: Text('-$fuel FUEL', style: T.mono(size: 9.5, color: C.text3)))));
       } else {
         final dens = [sector?.resources.metal.index ?? 0, sector?.resources.crystal.index ?? 0, sector?.resources.deuterium.index ?? 0];
         body.add(Padding(
@@ -903,7 +948,7 @@ class GateCard extends StatelessWidget {
                 if (sector?.site != null) Text(' +DRLCT', style: T.mono(size: 9.5, color: C.rare)),
               ]),
             ),
-            Text('-${fuel}F', style: T.mono(size: 9.5, color: C.text3)),
+            Text('-$fuel FUEL', style: T.mono(size: 9.5, color: C.text3)),
           ]),
         ));
       }
