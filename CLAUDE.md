@@ -180,7 +180,7 @@ cd clients/web && dart run tool/solo_e2e.dart   # that bundle end to end in head
 
 The server serves static files (SPA fallback, COOP/COEP headers) and WebSockets (any path; `/ws` for web, `/` for TUI) on one port.
 
-Flutter lives at `~/development/flutter/bin` on the dev machine.
+Flutter lives at `~/development/flutter/bin` on the dev machine. That machine mixes Cortex-A720 and A520 cores, and the Dart VM misbehaves when a test run wanders onto the A520s (CPUs 2-5): unpinned, `flutter test` fails about two full runs in three, one different test each time, on assertions inside Flutter's own layout and text code. Pin it to the big cores: `taskset -c 0,1,6-11 flutter test`.
 
 ### Architecture
 
