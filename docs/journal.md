@@ -3156,16 +3156,19 @@ world is the one it was. Branch `worktree-agent-ac2b2baaefef3f0bb`, not merged.
   under another rule for combat and exploration points (`score::ExtraRule`). The
   engine and its leaderboard keep the game's rule.
 - The additions change no world: with no flag, and with `--cap 0.25`, the 20-seat
-  season week of seed 1 ends on master's snapshot (`64594b86cbc57762`).
+  season week of seed 1 ends on the snapshot master gave at `3e050b7`
+  (`64594b86cbc57762`).
 
 All runs below: season, 7 days, seeds 1 to 3, 20 seats (two of each personality as
 check-in and as hands-on), hourly samples. Six seats per style. Ranges are min-max
-over the three per-seed means unless said.
+over the three per-seed means unless said. They were made on master as it stood at
+`3e050b7`, before the hold loaded at home, the cargo shed after losses and the
+refused recall at home were merged; the last section checks the merged tree.
 
 ### Why the slots are empty
 
-**Answer.** Because orders cost hours of income and take minutes to build, not
-because nobody orders. A hands-on empire is short of resources in 97 to 98% of its
+**Answer.** Because an order takes far longer to pay for than to build, not because
+nobody orders. A hands-on empire is short of resources in 97 to 98% of its
 empty building-slot time and the planner leaves nothing affordable unordered. A
 check-in empire is short of looks on day 1 (71 to 86% of its empty slot time the
 queue has run dry and the stockpile covers the next order) and short of income by
@@ -3635,5 +3638,38 @@ with nothing benched. Eight check-in and two hands-on turtles: 12 to 18 s a week
 a day never has a paid batch waiting on a tech or building that has not started.
 With the planner reading the yard from everything queued again it fails at tick
 28889 (a Pulse Turret paid for while its Defense Grid waits). Nothing was
-re-recorded: the determinism, chart and scenario tests pass as they were, and the
-report additions and `--cap 0.25` leave the 20-seat week on master's snapshot.
+re-recorded: the determinism, chart and scenario tests pass as they were. One test
+was changed. `the_view_a_bot_folds_from_tick_updates_is_the_full_state` ended by
+counting the marked charts in whatever views were being followed on its last tick,
+1500; with the planner fix no bot holds a view on that tick and it counted none,
+though every view compared on the way matched. It now keeps the fullest view it
+compared (more than fifty marked charts, as before). The fix was committed before
+the whole suite had been run on it; the suite found this on the merged tree.
+
+### After merging master
+
+Master moved while this ran (`48f15ba`: a hold loaded from the stockpile at home, a
+fleet shedding cargo its ships can no longer hold, recall refused at home, the web
+client's orders panel, the outposts design). Merged; the journal took both sides.
+The baseline week again on the merged tree, same seeds and seats, against the week
+after the fix above:
+
+| style | total before the merge | on the merged tree | seats up / same / down |
+| --- | --- | --- | --- |
+| turtle / check-in | 1743 (1652-1903) | 1743 (1652-1903) | 0 / 6 / 0 |
+| miner / check-in | 2272 (2084-2413) | 2298 (2079-2496) | 1 / 5 / 0 |
+| raider / check-in | 2320 (2208-2477) | 2296 (2191-2487) | 0 / 5 / 1 |
+| explorer / check-in | 2145 (1919-2278) | 2147 (1919-2271) | 0 / 6 / 0 |
+| mixed / check-in | 2257 (2114-2377) | 2238 (2114-2346) | 0 / 4 / 2 |
+| turtle / hands-on | 2387 (2387-2387) | 2387 (2387-2387) | 0 / 6 / 0 |
+| miner / hands-on | 3703 (3570-3815) | 3744 (3691-3817) | 1 / 5 / 0 |
+| raider / hands-on | 2949 (2903-3022) | 2965 (2903-3058) | 1 / 5 / 0 |
+| explorer / hands-on | 3282 (3025-3598) | 3282 (3025-3598) | 0 / 6 / 0 |
+| mixed / hands-on | 3025 (2959-3084) | 3025 (2961-3084) | 1 / 4 / 1 |
+
+The worlds differ (seed 1 ends on `9721087a660125ec`, not `c15846f4f02ae0f4`) and
+the week does not: 52 of 60 seats within 1% of their total, every mean inside its
+range, check-in against hands-on 73, 61, 77, 66 and 74% (73, 61, 79, 66, 75 before),
+the building slots' split the same to a point in every row. The slot tables and the
+25% cap row above stand for the merged tree. The other cap rows, the meters, the
+look-in sweep and the queue-depth runs were not repeated on it.
