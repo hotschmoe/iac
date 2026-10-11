@@ -2225,8 +2225,9 @@ default 4). Neither was tried.
 - The boxes over the homeworld write a shortfall as "short 1234567 metal" (the
   server's summary) and the cards as "Short by 1,234,567 Fe". Both fit; they do not
   match.
-- The offer of browser notices covers the lower ship cards at phone width for its
-  thirty seconds, and its buttons are not in the semantics tree.
+- The offer of browser notices covers the order button at desktop width and the
+  lower ship cards at phone width for its thirty seconds, and its buttons are not in
+  the semantics tree. The browser check waits it out before its pictures.
 
 **Not verified.** The TUI is compiled and its code path read, not driven against a
 live server. `play.py` is syntax-checked and its offline tests pass; the harness is

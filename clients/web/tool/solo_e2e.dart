@@ -524,6 +524,11 @@ Future<void> shipBatches(Browser browser) async {
   await browser.untilText('short by');
   final wanted = (await browser.text()).toLowerCase();
   check(wanted.contains('build x5') && wanted.contains('short by') && wanted.contains(' de'), 'a batch of five shows as unavailable, with what is missing');
+  // The offer of browser notices, made when the Shipyard started, covers the
+  // order button, and the ship cards at phone width. Its buttons are not in
+  // the semantics tree, so the pictures wait out its thirty seconds.
+  await browser.until('the offer of browser notices to leave',
+      () async => !(await browser.text()).toLowerCase().contains('tell you when this finishes'));
   await browser.shot('03b-batch-short-1440');
   await browser.click('build x5');
   await browser.press('Enter', 'Enter', 13, text: '\r');
@@ -568,11 +573,6 @@ Future<void> shipBatches(Browser browser) async {
   await browser.untilText('short ');
   final box = (await browser.text()).split('\n').firstWhere((line) => line.contains('short') && line.contains('deuterium'), orElse: () => '');
   check(box.contains('SHIPYARD LV.2') && box.contains('deuterium'), 'the building box shows the waiting Shipyard and what it is short of: $box');
-  // The offer of browser notices, made when the scout started, covers the
-  // ship cards at phone width. Its buttons are not in the semantics tree, so
-  // the pictures wait out its thirty seconds.
-  await browser.until('the offer of browser notices to leave',
-      () async => !(await browser.text()).toLowerCase().contains('tell you when this finishes'));
   await browser.shot('03c-waiting-short-1440');
   await browser.resize(390, 844);
   await browser.shot('03d-waiting-short-390');
