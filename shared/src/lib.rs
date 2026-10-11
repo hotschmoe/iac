@@ -1,4 +1,5 @@
 pub mod hex;
+pub mod keymap;
 pub mod constants;
 pub mod protocol;
 pub mod world;

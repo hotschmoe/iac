@@ -13,10 +13,11 @@
 // place an NPC group left) and some player is watching it. A live sector's
 // `last_seen` is implicit (the last refresh) and is written down when it lapses.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 
 use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
+use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::protocol::{
     FleetBrief, NpcBehavior, NpcFleetInfo, NpcShipInfo, SectorResources, SectorState, ShipClassCounts,
     SiteBrief,
@@ -44,10 +45,10 @@ struct Remembered {
 #[derive(Debug, Default)]
 struct Coverage {
     sensor: Option<(Hex, u8)>,
-    sensor_set: HashSet<u32>,
+    sensor_set: KeySet<u32>,
     fleets: Vec<u32>,
     scans: Vec<u32>,
-    extras: HashSet<u32>,
+    extras: KeySet<u32>,
 }
 
 impl Coverage {
@@ -63,19 +64,19 @@ impl Coverage {
 /// Every player's explored-sector memory.
 #[derive(Debug, Default)]
 pub struct KnownSectors {
-    by_player: HashMap<u64, HashMap<u32, Remembered>>,
-    coverage: HashMap<u64, Coverage>,
+    by_player: KeyMap<u64, KeyMap<u32, Remembered>>,
+    coverage: KeyMap<u64, Coverage>,
     /// Sector key to the players (ascending) that have it live.
-    watchers: HashMap<u32, Vec<u64>>,
+    watchers: KeyMap<u32, Vec<u64>>,
     /// Remembered, not live sectors with a salvage pile: (despawn tick, key).
-    pins: HashMap<u64, BTreeSet<(u64, u32)>>,
+    pins: KeyMap<u64, BTreeSet<(u64, u32)>>,
     /// Keys that stopped being live at the last refresh.
-    lapsed: HashMap<u64, Vec<u32>>,
+    lapsed: KeyMap<u64, Vec<u32>>,
     /// Remembered sectors whose salvage pin expired at the last refresh.
-    expired: HashMap<u64, Vec<u32>>,
+    expired: KeyMap<u64, Vec<u32>>,
     /// Sectors whose chart mark may have moved since the refresh before.
-    marked: HashMap<u64, Vec<u32>>,
-    dirty: HashSet<(u64, u32)>,
+    marked: KeyMap<u64, Vec<u32>>,
+    dirty: KeySet<(u64, u32)>,
     /// Sectors an NPC group stood in or was homed to at the last refresh.
     npc_sectors: Vec<u32>,
     refreshed: u64,
@@ -107,7 +108,7 @@ impl KnownSectors {
             self.marked.entry(pid).or_default().push(key);
         }
 
-        let mut fleet_cells: HashMap<u64, Vec<u32>> = HashMap::new();
+        let mut fleet_cells: KeyMap<u64, Vec<u32>> = KeyMap::default();
         for fleet in engine.fleets.values().filter(|f| f.ship_count > 0) {
             fleet_cells.entry(fleet.owner_id).or_default().push(fleet.location.to_key());
         }
@@ -119,7 +120,7 @@ impl KnownSectors {
             self.update_coverage(engine, pid, cells, &mut entered);
         }
 
-        let mut wanted: HashSet<u32> = entered.iter().map(|&(_, key)| key).collect();
+        let mut wanted: KeySet<u32> = entered.iter().map(|&(_, key)| key).collect();
         let dynamic = self.dynamic_watched(engine);
         wanted.extend(dynamic.iter().copied());
         let observed = observe(engine, &wanted);
@@ -225,7 +226,7 @@ impl KnownSectors {
         npc_sectors.sort_unstable();
         npc_sectors.dedup();
 
-        let mut seen: HashSet<u32> = HashSet::new();
+        let mut seen: KeySet<u32> = KeySet::default();
         let dynamic = engine
             .sector_overrides
             .keys()
@@ -345,7 +346,7 @@ impl KnownSectors {
     /// last observed.
     pub fn chart(&self, engine: &GameEngine, player_id: u64) -> Vec<SectorState> {
         let live = live_coords(engine, player_id);
-        let live_keys: HashSet<u32> = live.iter().map(|h| h.to_key()).collect();
+        let live_keys: KeySet<u32> = live.iter().map(|h| h.to_key()).collect();
         let mut out = live_states(engine, &live, player_id);
         if let Some(memory) = self.by_player.get(&player_id) {
             out.extend(
@@ -400,7 +401,7 @@ fn mark_charts(engine: &GameEngine, player_id: u64, sectors: &mut [SectorState])
 /// Sectors the server is watching for this player right now: fleet
 /// locations, the homeworld sensor array, and unexpired active scans.
 pub fn live_coords(engine: &GameEngine, player_id: u64) -> Vec<Hex> {
-    let mut seen: HashSet<u32> = HashSet::new();
+    let mut seen: KeySet<u32> = KeySet::default();
     let mut out: Vec<Hex> = Vec::new();
     let mut add = |c: Hex| {
         if seen.insert(c.to_key()) {
@@ -446,20 +447,20 @@ fn template_hostile(coord: Hex, tmpl: &NpcTemplate) -> NpcFleetInfo {
 
 /// Where the NPC groups and (optionally) fleets stand, for the sectors asked about.
 struct Presence<'a> {
-    npcs: HashMap<u32, Vec<&'a NpcFleet>>,
-    fleets: HashMap<u32, Vec<&'a Fleet>>,
+    npcs: KeyMap<u32, Vec<&'a NpcFleet>>,
+    fleets: KeyMap<u32, Vec<&'a Fleet>>,
 }
 
 impl<'a> Presence<'a> {
-    fn of(engine: &'a GameEngine, keys: &HashSet<u32>, with_fleets: bool) -> Presence<'a> {
-        let mut npcs: HashMap<u32, Vec<&NpcFleet>> = HashMap::new();
+    fn of(engine: &'a GameEngine, keys: &KeySet<u32>, with_fleets: bool) -> Presence<'a> {
+        let mut npcs: KeyMap<u32, Vec<&NpcFleet>> = KeyMap::default();
         for npc in engine.npc_fleets.values() {
             let key = npc.location.to_key();
             if keys.contains(&key) {
                 npcs.entry(key).or_default().push(npc);
             }
         }
-        let mut fleets: HashMap<u32, Vec<&Fleet>> = HashMap::new();
+        let mut fleets: KeyMap<u32, Vec<&Fleet>> = KeyMap::default();
         if with_fleets {
             for fleet in engine.fleets.values().filter(|f| f.ship_count > 0) {
                 let key = fleet.location.to_key();
@@ -481,7 +482,7 @@ impl<'a> Presence<'a> {
 
 /// What a memory snapshot of each sector holds this tick: other empires'
 /// fleets left out and the stamp zeroed.
-fn observe(engine: &GameEngine, keys: &HashSet<u32>) -> HashMap<u32, SectorState> {
+fn observe(engine: &GameEngine, keys: &KeySet<u32>) -> KeyMap<u32, SectorState> {
     let presence = Presence::of(engine, keys, false);
     keys.iter()
         .map(|&key| {
@@ -495,7 +496,7 @@ fn observe(engine: &GameEngine, keys: &HashSet<u32>) -> HashMap<u32, SectorState
 
 /// The sectors as they are this tick for `viewer`, in `coords` order.
 fn live_states(engine: &GameEngine, coords: &[Hex], viewer: u64) -> Vec<SectorState> {
-    let keys: HashSet<u32> = coords.iter().map(|c| c.to_key()).collect();
+    let keys: KeySet<u32> = coords.iter().map(|c| c.to_key()).collect();
     let presence = Presence::of(engine, &keys, true);
     coords.iter().map(|&c| presence.state(engine, c, Some(viewer))).collect()
 }
@@ -503,7 +504,7 @@ fn live_states(engine: &GameEngine, coords: &[Hex], viewer: u64) -> Vec<SectorSt
 /// The sector as it is this tick. Other empires' fleets are listed unless
 /// `viewer` is None (a memory snapshot), and `viewer`'s own fleets never are.
 pub fn build_sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>) -> SectorState {
-    let keys = HashSet::from([coord.to_key()]);
+    let keys = KeySet::from_iter([coord.to_key()]);
     Presence::of(engine, &keys, viewer.is_some()).state(engine, coord, viewer)
 }
 

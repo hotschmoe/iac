@@ -10,6 +10,7 @@ use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 
 use iac_shared::hex::Hex;
+use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::constants::{
     Resources, ResourceKind, ShipClass, Density,
     STARTING_RESOURCES, STARTING_SCOUTS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, STRANDED_RECOVERY_TICKS,
@@ -449,9 +450,9 @@ struct Reach<'a> {
     room: f32,
     /// Sectors where a hostile group stands, and whether one of them
     /// attacks whoever enters.
-    groups: HashMap<u32, bool>,
-    live: HashSet<u32>,
-    rated: RefCell<HashMap<u32, (ThreatInfo, f32)>>,
+    groups: KeyMap<u32, bool>,
+    live: KeySet<u32>,
+    rated: RefCell<KeyMap<u32, (ThreatInfo, f32)>>,
 }
 
 impl Reach<'_> {
@@ -647,11 +648,11 @@ pub struct GameEngine {
 
     /// (player, sector key) pairs the player has entered; answers
     /// "first visit?" without touching the database.
-    explored: HashSet<(u64, u32)>,
+    explored: KeySet<(u64, u32)>,
     /// Explored edges not yet handed to the persister.
     new_edges: Vec<ExploredEdge>,
     /// Explore credits already paid: once per player and sector.
-    credited: HashSet<(u64, u32, ExploreCredit)>,
+    credited: KeySet<(u64, u32, ExploreCredit)>,
     new_credits: Vec<(u64, Hex, ExploreCredit)>,
     /// (player, sector key) whose chart mark may have changed since the
     /// last chart refresh: delivered, or lost with the fleet that held it.
@@ -659,7 +660,7 @@ pub struct GameEngine {
     /// What each player has seen of the galaxy, live or remembered.
     pub known: KnownSectors,
     /// Ratios already worked out, by the two sides; speed only.
-    odds_memo: RefCell<HashMap<(Force, Force), f32>>,
+    odds_memo: RefCell<KeyMap<(Force, Force), f32>>,
 }
 
 /// Entries kept in the odds memo before it is emptied.
@@ -2423,7 +2424,7 @@ impl GameEngine {
     /// The sectors whose chart some fleet of `player_id` still carries. A
     /// fleet that lost its last ship counts until it is reaped, which is
     /// when `chart_news` tells its owner's clients.
-    pub fn charts_aboard(&self, player_id: u64) -> HashSet<u32> {
+    pub fn charts_aboard(&self, player_id: u64) -> KeySet<u32> {
         self.fleets
             .values()
             .filter(|f| f.owner_id == player_id)
@@ -2432,7 +2433,7 @@ impl GameEngine {
     }
 
     /// Where `player_id`'s chart of a sector stands, given `charts_aboard`.
-    pub fn chart_mark(&self, player_id: u64, sector_key: u32, aboard: &HashSet<u32>) -> Option<ChartMark> {
+    pub fn chart_mark(&self, player_id: u64, sector_key: u32, aboard: &KeySet<u32>) -> Option<ChartMark> {
         if self.credited.contains(&(player_id, sector_key, ExploreCredit::Charted)) {
             Some(ChartMark::Delivered)
         } else if aboard.contains(&sector_key) {
@@ -2635,7 +2636,7 @@ impl GameEngine {
             return Err(ErrorCode::InvalidCommand);
         }
         let ours = fleet_force(fleet);
-        let live: HashSet<u32> = crate::intel::live_coords(self, player_id).iter().map(|h| h.to_key()).collect();
+        let live: KeySet<u32> = crate::intel::live_coords(self, player_id).iter().map(|h| h.to_key()).collect();
         Ok(sectors
             .iter()
             .map(|&coord| {
@@ -4043,7 +4044,7 @@ impl GameEngine {
         passable: &dyn Fn(Hex) -> bool,
         goal: &dyn Fn(Hex, u32) -> bool,
     ) -> Option<Vec<Hex>> {
-        let mut prev: HashMap<u32, u32> = HashMap::new();
+        let mut prev: KeyMap<u32, u32> = KeyMap::default();
         let mut frontier = vec![from];
         prev.insert(from.to_key(), from.to_key());
         let mut found: Option<Hex> = None;
@@ -4087,13 +4088,13 @@ impl GameEngine {
                 ..Resources::default()
             }),
             room: (fleet_cargo_capacity(fleet, &self.world.pace) - fleet.cargo.total()).max(0.0),
-            groups: self.npc_fleets.values().filter(|n| n.ship_count > 0).fold(HashMap::new(), |mut groups, n| {
+            groups: self.npc_fleets.values().filter(|n| n.ship_count > 0).fold(KeyMap::default(), |mut groups, n| {
                 *groups.entry(n.location.to_key()).or_insert(false) |=
                     n.behavior != iac_shared::world::NpcBehaviorType::Passive;
                 groups
             }),
             live: crate::intel::live_coords(self, fleet.owner_id).iter().map(|h| h.to_key()).collect(),
-            rated: RefCell::new(HashMap::new()),
+            rated: RefCell::default(),
         }
     }
 
