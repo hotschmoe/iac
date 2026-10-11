@@ -150,7 +150,7 @@ fn main() {
                 "ticks": paces.iter().map(|pace| outpost_build_ticks(level, pace)).collect::<Vec<_>>(),
                 "store_cap": paces.iter().map(|pace| triple(outpost_store_cap(level, pace))).collect::<Vec<_>>(),
                 "platform": outpost_platform_power(level),
-                "repair_cost": triple(outpost_repair_cost(level)),
+                "repair_price": outpost_repair_price(level),
                 "repair_ticks": paces.iter().map(|pace| outpost_repair_ticks(level, pace)).collect::<Vec<_>>(),
                 "points": outpost_points(level),
             })

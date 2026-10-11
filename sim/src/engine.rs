@@ -451,16 +451,20 @@ impl Outpost {
         self.level >= 1 && !self.breached
     }
 
-    /// What a raid cannot take from the store: the cost of the repair the
-    /// outpost would next have to pay. That is the repair of the level it
-    /// stands at, or of the level it is building, since a breach suffered
-    /// during a build is repaired once the build is done.
-    pub fn protected(&self) -> Resources {
-        let level = match self.job {
+    /// The level whose repair the outpost would next have to pay: the one it
+    /// stands at, or the one it is building, since a breach suffered during
+    /// a build is repaired once the build is done.
+    pub fn repair_level(&self) -> u8 {
+        match self.job {
             Some(OutpostJob { task: OutpostTask::Build { level }, .. }) => level,
             _ => self.level,
-        };
-        scaling::outpost_repair_cost(level)
+        }
+    }
+
+    /// What a raid cannot take from the store: what its next repair would
+    /// take from it as it stands.
+    pub fn protected(&self) -> Resources {
+        scaling::outpost_repair_payment(self.repair_level(), self.store).0
     }
 }
 
@@ -2491,12 +2495,12 @@ impl GameEngine {
     /// in the sector defend, with the homeworld raid's fog. Repelled, the
     /// ships' shields are halved and nothing else happens. Lost, a share of
     /// the ships there is destroyed, a share of the store and of the holds
-    /// there above the repair cost is taken, and the outpost is breached. It
-    /// is never destroyed.
+    /// there above what the next repair would take of them is taken, and the
+    /// outpost is breached. It is never destroyed.
     fn resolve_outpost_raid(&mut self, owner: u64, raid_power: f32) {
         let tick = self.current_tick;
         let Some(outpost) = self.outposts.get(&owner) else { return; };
-        let (sector, protected, store) = (outpost.sector, outpost.protected(), outpost.store);
+        let (sector, level, store) = (outpost.sector, outpost.repair_level(), outpost.store);
         let defense_power = self.outpost_defense_power(owner);
 
         let mut rng = StdRng::seed_from_u64(
@@ -2521,7 +2525,8 @@ impl GameEngine {
             let store = self.outposts.get(&owner).map_or(store, |o| o.store);
             let rate = Resources { metal: OUTPOST_RAID_LOSS, crystal: OUTPOST_RAID_LOSS, deuterium: OUTPOST_RAID_LOSS };
             let left;
-            (left, resources_lost, protected_kept) = self.skim_dock(owner, sector, store, protected, rate);
+            let floor = |pile: Resources| scaling::outpost_repair_payment(level, pile).0;
+            (left, resources_lost, protected_kept) = self.skim_dock(owner, sector, store, floor, rate);
             if let Some(outpost) = self.outposts.get_mut(&owner) {
                 outpost.store = left;
                 outpost.breached = true;
@@ -2619,7 +2624,7 @@ impl GameEngine {
             let protected = scaling::storage_protected(player.buildings.storage_vault, &self.world.pace);
             let rate = Resources { metal: RAID_LOSS_CAP_METAL, crystal: RAID_LOSS_CAP_CRYSTAL, deuterium: RAID_LOSS_CAP_DEUT };
             let left;
-            (left, resources_lost, protected_kept) = self.skim_dock(player_id, homeworld, player.resources, protected, rate);
+            (left, resources_lost, protected_kept) = self.skim_dock(player_id, homeworld, player.resources, |_| protected, rate);
             self.players.get_mut(&player_id).unwrap().resources = left;
             self.dirty_players.insert(player_id, ());
         }
@@ -2669,15 +2674,16 @@ impl GameEngine {
 
     /// What a lost raid takes at a dock of `owner`'s in `sector`. The dock's
     /// own `stock` and the cargo aboard the owner's fleets there are raided
-    /// as one pile with one `protected` floor: `rate` of what lies above it
-    /// is taken, and each part pays its share. Returns the stock that is
-    /// left, what was taken in all, and what the floor kept.
+    /// as one pile with one floor, which `protected` reads off the pile:
+    /// `rate` of what lies above it is taken, and each part pays its share.
+    /// Returns the stock that is left, what was taken in all, and what the
+    /// floor kept.
     fn skim_dock(
         &mut self,
         owner: u64,
         sector: Hex,
         stock: Resources,
-        protected: Resources,
+        protected: impl Fn(Resources) -> Resources,
         rate: Resources,
     ) -> (Resources, Resources, Resources) {
         let holds: Vec<u64> = self.fleets.values()
@@ -2686,6 +2692,7 @@ impl GameEngine {
             .collect();
         let aboard = holds.iter().fold(Resources::default(), |sum, fid| sum.add(self.fleets[fid].cargo));
         let pile = stock.add(aboard);
+        let protected = protected(pile);
         let kept = protected.min(pile);
         let exposed = pile.sub(protected);
         let lost = Resources {
@@ -3121,8 +3128,8 @@ impl GameEngine {
         }
         if outpost.breached {
             return refuse(ErrorCode::InvalidCommand, format!(
-                "your outpost at {sector} is breached; it repairs itself first, once its store holds {}",
-                crate::commands::amount_words(scaling::outpost_repair_cost(outpost.level)),
+                "your outpost at {sector} is breached; it repairs itself first, once its store covers the repair: {}",
+                repair_price_words(outpost.level),
             ));
         }
         if outpost.level >= OUTPOST_MAX_LEVEL {
@@ -3232,24 +3239,24 @@ impl GameEngine {
     }
 
     /// A breached outpost with no job under way repairs itself as soon as
-    /// its store covers the repair: it pays and is whole when the job ends.
-    /// Until the store covers it the repair waits, and says so once.
+    /// its store covers the repair in whatever it holds: it pays and is
+    /// whole when the job ends. Until the store covers it the repair waits,
+    /// and says so once.
     fn repair_outpost(&mut self, owner: u64) {
         let tick = self.current_tick;
         let pace = self.world.pace;
         let Some(outpost) = self.outposts.get_mut(&owner).filter(|o| o.breached && o.job.is_none()) else { return; };
         let sector = outpost.sector;
-        let cost = scaling::outpost_repair_cost(outpost.level);
-        let short = outpost.store.shortfall(cost);
-        if short.total() > 0.0 {
+        let (cost, short) = scaling::outpost_repair_payment(outpost.level, outpost.store);
+        if short > 0.0 {
             if outpost.repair_warned { return; }
             outpost.repair_warned = true;
+            let price = repair_price_words(outpost.level);
             self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
             self.outpost_alert(owner, AlertLevel::Warning, sector, format!(
-                "your outpost at {sector} is breached and cannot repair itself: its store lacks {} of the {} the repair \
-                 costs. It makes nothing, fills no tank and has no platform until a fleet unloads the rest",
-                crate::commands::amount_words(short),
-                crate::commands::amount_words(cost),
+                "your outpost at {sector} is breached and cannot repair itself: the repair costs {price}, and its store \
+                 is short by {} metal. It makes nothing, fills no tank and has no platform until a fleet unloads the rest",
+                short.ceil(),
             ));
             return;
         }
@@ -6824,6 +6831,16 @@ fn exchange_meter_at(pressure: f64, span: f64, window: u64) -> ExchangeMeter {
         window_ticks: window,
         clear_in,
     }
+}
+
+/// What a repair of `level` is priced at, in a sentence.
+fn repair_price_words(level: u8) -> String {
+    format!(
+        "{} metal, or crystal at {} and deuterium at {} a unit in its place",
+        scaling::outpost_repair_price(level).ceil(),
+        ResourceKind::Crystal.weight(),
+        ResourceKind::Deuterium.weight(),
+    )
 }
 
 /// The bounds of the roll that sizes a raid on an outpost at `ring`.

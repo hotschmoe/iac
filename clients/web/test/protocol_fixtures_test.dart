@@ -112,8 +112,8 @@ void main() {
       expect(mapped.outpost!.location, outpost.location);
       final t = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update__outpost_breached');
       mapped.apply(ServerMessage.fromJson(readJson(t)));
-      expect((mapped.outpost!.breached, mapped.outpost!.repairCost!.metal, mapped.raid), (true, 1562.5, null));
-      expect((mapped.outpost!.repairWaitingFor!.metal, mapped.outpost!.repairWaitingFor!.deuterium), (362.5, 312.5));
+      expect((mapped.outpost!.breached, mapped.outpost!.repairCost!.metal, mapped.raid), (true, 2187.5, null));
+      expect((mapped.outpost!.repairWaitingFor!.metal, mapped.outpost!.repairWaitingFor!.deuterium), (987.5, 0));
       expect((mapped.fleets.single.atOutpost, mapped.fleets.single.outpostFuel), (true, null), reason: 'at a breached outpost, which fills no tank');
       final full = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update__outpost_store_full');
       mapped.apply(ServerMessage.fromJson(readJson(full)));

@@ -4537,3 +4537,30 @@ Persistent pace and blitz were not run: the raid clock is the homeworld's at eve
 pace, but the build and repair times against it are not the same ratio, so the
 waiting shares belong to a season world. The speed before the index was measured
 unpinned only. No person has played an outpost by hand.
+
+## 2026-10-12: trial branch `outpost-repair-by-weight`
+
+One of two branches built so the owner can choose a way out of the waiting
+outpost with numbers; the other is `outpost-repair-slow`. Both start from master
+at `b3bddaf`. Neither is merged, and the comparison is not in this file: it went
+to the owner with the branches. This one is choice 2 of `decisions.md`,
+2026-10-12 (outposts measured).
+
+- *The rule.* A repair is priced in metal: the par value of a quarter of the
+  level's cost, 537.5, 1343.75 and 3359.375. The store pays in metal; where the
+  metal runs out a unit of crystal pays for 1.5 and then a unit of deuterium for
+  2 (`scaling::outpost_repair_payment`). Metal goes first because it is the
+  cheapest at par: what is left is the deuterium that fills tanks there and the
+  cargo worth most a hold on the way home.
+- *The floor* is that payment, read off what is there: `Outpost::protected` for
+  the store, and in a raid the store with the holds docked there as one pile
+  (`skim_dock` takes the floor as a function of the pile). A store that holds
+  less than the price is all floor.
+- *On the wire* no field changed its shape. `protected` is what the next repair
+  would take from the store as it stands, `repair_cost` what the repair takes
+  with the part the store lacks counted as metal, `repair_waiting_for` that
+  part, in metal. The fixtures, the Dart mirror, both panels, `play.py` and
+  RULES say so.
+- *What still waits.* A breached outpost extracts nothing, so one breached
+  before it has saved up the price waits for a delivery as before; a delivery of
+  anything does.

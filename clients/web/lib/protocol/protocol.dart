@@ -1203,8 +1203,10 @@ class OutpostState {
   final Resources store;
   final Resources storeCap;
 
-  /// What a raid cannot take: the repair cost of the level it stands at, or
-  /// of the level it is building.
+  /// What a raid cannot take: what the repair of the level it stands at, or
+  /// of the level it is building, would take from the store as it stands.
+  /// A repair is priced in metal; where the store lacks metal, crystal pays
+  /// for it and then deuterium, each unit at its par value (1.5 and 2).
   final Resources protected;
 
   /// Per tick now; zero while not [inService].
@@ -1238,12 +1240,14 @@ class OutpostState {
   /// server's sentence; null when it would be accepted this tick.
   final String? upgradeRefusal;
 
-  /// What the repair will take from the store once the store covers it;
-  /// present while breached with no repair under way.
+  /// What the repair will take from the store, paid as [protected] says;
+  /// what the whole store does not cover is counted as metal. Present while
+  /// breached with no repair under way.
   final Resources? repairCost;
 
-  /// What the store lacks of [repairCost]: the repair waits for a fleet to
-  /// unload it. Null when no repair is waiting.
+  /// What the store lacks of [repairCost], in metal: the repair waits for a
+  /// fleet to unload it, or crystal or deuterium to the same par value.
+  /// Null when no repair is waiting.
   final Resources? repairWaitingFor;
 
   /// Lane hops to the homeworld; null beyond 64.

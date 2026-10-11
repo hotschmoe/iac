@@ -422,7 +422,8 @@ def outpost_line(o, now):
     work, raid = o.get("work"), o.get("raid_arrival_tick")
     state = "BREACHED" if o["breached"] else "in service" if o["in_service"] else "under construction"
     doing = f", {work['kind']} of level {work['level']} done in {age(work['end_tick'] - now)}" if work else ""
-    owed = f", repair waits for {res(o['repair_waiting_for'])} more" if o.get("repair_waiting_for") else ""
+    owed = (f", repair waits for {o['repair_waiting_for']['metal']:.0f} more metal (or crystal at 1.5, deuterium at 2 a unit)"
+            if o.get("repair_waiting_for") else "")
     lost = f", FULL of {'/'.join(o['yield_lost'])} (that yield is lost)" if o.get("yield_lost") else ""
     return (f"Outpost at {o['location']['q']},{o['location']['r']} level {o['level']}/{o['max_level']} {state}{doing}{owed}: "
             f"store {res(o['store'])} of {res(o['store_cap'])} (raid-protected {res(o['protected'])}){lost}, "

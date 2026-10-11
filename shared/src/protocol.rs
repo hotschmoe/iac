@@ -791,9 +791,12 @@ pub struct OutpostState {
     /// The most the store holds of each resource. The extractor stops
     /// there, and `unload` leaves aboard what does not fit.
     pub store_cap: Resources,
-    /// What a raid cannot take: the repair cost of the level it stands at,
-    /// or of the level it is building, so the materials of its next repair
-    /// are never raided.
+    /// What a raid cannot take: what the repair of the level it stands at,
+    /// or of the level it is building, would take from the store as it
+    /// stands. A repair is priced in metal; where the store lacks metal,
+    /// crystal pays for it and then deuterium, each unit at its par value
+    /// (1.5 and 2). A raid counts the holds of fleets standing there with
+    /// the store and reads the floor off both.
     pub protected: Resources,
     /// What the extractor adds to the store each tick now; zero while not
     /// `in_service`.
@@ -823,12 +826,14 @@ pub struct OutpostState {
     /// the refusal would carry; absent when it would be accepted this tick.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub upgrade_refusal: Option<String>,
-    /// What the repair will take from the store once the store covers it;
-    /// present while breached with no repair under way.
+    /// What the repair will take from the store, paid as `protected` says;
+    /// what the whole store does not cover is counted as metal. Present
+    /// while breached with no repair under way.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub repair_cost: Option<Resources>,
-    /// What the store lacks of `repair_cost`: the repair waits for a fleet
-    /// to unload it. Absent when no repair is waiting.
+    /// What the store lacks of `repair_cost`, in metal: the repair waits
+    /// for a fleet to unload it, or crystal or deuterium to the same par
+    /// value. Absent when no repair is waiting.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub repair_waiting_for: Option<Resources>,
     /// Lane hops to the homeworld; absent beyond 64.

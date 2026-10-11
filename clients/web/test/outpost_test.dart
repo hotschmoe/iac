@@ -159,8 +159,9 @@ void main() {
     await _key(tester, LogicalKeyboardKey.keyO, 'o');
     expect(_said(tester, 'outpost-standing'), 'LEVEL 1 OF 3 - BUILDING LEVEL 2, 3:43:00 LEFT');
     expect(find.descendant(of: find.byKey(const Key('outpost-store-metal')), matching: find.text('412 / 9,486')), findsOneWidget);
-    expect(find.descendant(of: find.byKey(const Key('outpost-store-metal')), matching: find.text('PROTECTED 250')), findsOneWidget);
-    expect(find.descendant(of: find.byKey(const Key('outpost-store-metal')), matching: find.text('RAIDABLE 162')), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('outpost-store-metal')), matching: find.text('PROTECTED 412')), findsOneWidget,
+        reason: 'the store holds less than the repair of the level it is building, so all of it is floor');
+    expect(find.descendant(of: find.byKey(const Key('outpost-store-metal')), matching: find.text('RAIDABLE 0')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('outpost-store-deuterium')), matching: find.text('180 / 2,371')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('38.9 FE, 19.4 DE')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('outpost-defence')), matching: find.text('40 + 132 = 172')), findsOneWidget);
@@ -209,7 +210,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
     expect(_said(tester, 'outpost-standing'), 'LEVEL 3 OF 3 - BREACHED, THE REPAIR WAITS FOR ITS STORE');
     expect(_said(tester, 'outpost-repair'),
-        'THE REPAIR COSTS 1,563 FE, 781 CR, 313 DE FROM THE STORE, WHICH IS SHORT BY 363 FE, 313 DE: IT STAYS BREACHED UNTIL A FLEET UNLOADS THE REST');
+        'THE REPAIR COSTS 2,188 FE, 781 CR FROM THE STORE, WHICH IS SHORT BY 988 FE: IT STAYS BREACHED UNTIL A FLEET UNLOADS THAT, '
+        'OR CRYSTAL OR DEUTERIUM IN ITS PLACE, A UNIT FOR 1.5 AND FOR 2 OF METAL');
+    expect(_why(tester, 'outpost-floor'), startsWith('Protected is what the next repair would take: metal, and where the metal runs out crystal, then deuterium'));
     expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('NOTHING: BREACHED')), findsOneWidget);
     expect(_said(tester, 'outpost-max'), 'LEVEL 3 IS THE HIGHEST.');
     expect(find.byKey(const ValueKey('outpost-upgrade')), findsNothing);
@@ -372,7 +375,7 @@ void main() {
     expect(c.state.fleets.first.shipCount, 4, reason: 'a quarter of the five ships standing there');
     expect(_said(tester, 'outpost-standing'), 'LEVEL 2 OF 3 - BREACHED, THE REPAIR WAITS FOR ITS STORE');
     expect(_said(tester, 'outpost-repair'), contains('WHICH IS SHORT BY'));
-    expect(c.state.events.map((e) => e.message), contains(startsWith('! your outpost at [10,0] is breached and cannot repair itself: its store lacks')));
+    expect(c.state.events.map((e) => e.message), contains(startsWith('! your outpost at [10,0] is breached and cannot repair itself: the repair costs 1344 metal, or crystal at 1.5 and deuterium at 2 a unit in its place, and its store is short by ')));
 
     c.place(101, _site, const proto.Resources(metal: 700, crystal: 400, deuterium: 100));
     c.handleCommand('unload');
