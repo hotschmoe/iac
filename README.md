@@ -167,7 +167,7 @@ Example session:
 
 | action | fields | effect |
 |--------|--------|--------|
-| `move` | `fleet_id`, `target:{q,r}` | jump to a connected sector (fuel, cooldown) |
+| `move` | `fleet_id`, `target:{q,r}` | jump to a connected sector (fuel, cooldown). The fuel is paid when the jump is ordered. A fight that begins in the sector while the jump is still charging takes the fleet into it: the jump is abandoned and its fuel is not returned, which is told in an `Alert` (warning) with the fuel forfeit |
 | `scan` | `fleet_id` | reveal nearby sectors + faint signal contacts; scouts scan farther |
 | `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it). When the harvest ends by itself an `Alert` (warning) says why, once: the hold is full, or nothing (or none of the named resource) is left to mine there. A fleet under standing orders reports through its doctrine instead |
 | `attack` | `fleet_id`, `target_fleet_id` | engage an NPC fleet |

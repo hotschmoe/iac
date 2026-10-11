@@ -6454,8 +6454,21 @@ impl GameEngine {
     }
 
     /// Put a fleet into a fight. A jump it was still charging is abandoned,
-    /// as `stop` would: only a moving fleet carries a jump target or cooldown.
+    /// as `stop` would: only a moving fleet carries a jump target or
+    /// cooldown. Its fuel is gone as it is for a stop, and the owner is told
+    /// in the same terms.
     fn engage_fleet(&mut self, fleet_id: u64) {
+        let charging = self.fleets.get(&fleet_id).and_then(|fleet| match (fleet.state, fleet.move_target) {
+            (FleetStatus::Moving, Some(target)) => Some((fleet.location, target, self.hop_fuel_cost(fleet))),
+            _ => None,
+        });
+        if let Some((at, target, fuel)) = charging {
+            self.push_alert(AlertLevel::Warning, fleet_id, at, format!(
+                "fleet {fleet_id} was caught in a fight at {at} while charging its jump to {target}: \
+                 the jump is abandoned, and the {} fuel it burned for the jump is forfeit",
+                fuel_words(fuel),
+            ));
+        }
         if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
             fleet.state = FleetStatus::InCombat;
             fleet.move_target = None;
