@@ -2056,3 +2056,235 @@ recording is unchanged.
 key are compiled and analysed, not driven; `play.py` is syntax-checked (the harness
 is on hold). Persistent pace and blitz were not measured. The uncapped comparison is
 one seed.
+
+## 2026-10-11: a busy world ticks two to four times as fast, to the same results
+
+Engine speed was the limit of the single-player build: a week away from a season
+world with 20 check-in bots took 17 minutes to catch up (entry "single player in one
+browser tab"). No rule, constant, wire message or bot decision was changed. The same
+seed and the same orders give the same world, tick for tick, and that was the test of
+every step. Branch `worktree-agent-a4fd2784a38fcfc24`, eleven commits on master as of
+7845559, not merged.
+
+**How "the same" was checked.** A scratch harness (not in the repository) drives
+`iac_solo::Machine::call` the way the worker does: `new_game`, `advance` in slices,
+`save`, and reads the digest of the snapshot from the save's header. The same
+sequence runs against `iac_solo.wasm` under node. Before the first change the hashes
+were recorded from master:
+
+| case | world | length | hashes |
+|---|---|---|---|
+| A | season, 20 check-in bots in the client's seat order, the solo host | 7 days | 28, every 6 h |
+| B | blitz, 8 hands-on bots, the solo host | 3 h | 18, every 10 min |
+| C | blitz, 20 hands-on bots, the solo host | 1 h | 6 |
+| D | season, all 15 styles and an idle seat, `Headless` | 2 days | 12 |
+| E | persistent, 8 check-in bots, the solo host | 7 days | 7 |
+| F | blitz, all 15 styles and an idle seat, `Headless` | 2 h | 12 |
+
+A and B were also stopped halfway (day 3.5, minute 90), saved, loaded into a new
+machine and played on: the hashes after the load must be those of the run that never
+stopped. B was also played two hours and then 600 ticks one at a time with a session
+logged in, as a live page does. The week was saved every six hours so that a slice of
+the slow late state (L6: day 6.0 to 6.25) can be replayed in half a minute. After each
+step B, C, D, E, F and L6 had to match before the commit; A, the two restarts and the
+wasm runs were checked on the last commit. Two runs of master a build apart gave the
+same 28 hashes for A, so a mismatch means the change and not the machine.
+
+**Where a tick went.** `perf` at 499 Hz on a build with frame pointers (native
+aarch64; this `perf` cannot read symbols, so samples were resolved with `addr2line`,
+inlined frames included). Shares of all samples.
+
+Season, 20 check-in bots, around day 5.5 (about 4 ms a tick):
+
+| what | share |
+|---|---|
+| standing orders (`process_policies`) | 59% |
+| of that, lane searches (`bfs_path_by_hops` and the questions it asks of each sector) | 57%: `mine_and_return` 41%, `salvage_and_sites` 18% |
+| chart upkeep (`KnownSectors::refresh`) | 31%: writing sectors into watchers' memories 15%, building sector states 8% |
+| ore refill | 5% |
+| bots (their turns and the views they follow) | 2% |
+| the rest of the tick | 3% |
+
+Blitz, 8 hands-on bots, hours 2 to 3 (about 4 ms a tick):
+
+| what | share |
+|---|---|
+| bots following the world (a `tick_update` per watching seat, folded in) | 37%: sector states 25%, folding 7% |
+| bots' turns | 38%: `odds` answers 15%, the route home worked out on every jump 10%, a full state after a pause 5%, their own planning 6% |
+| the tick | 25%: chart upkeep 20% |
+
+Across both, a quarter to a third of all samples were inside the standard hash map,
+hashing a sector key with SipHash and probing.
+
+What the season world is doing by then explains the first table. At day 6 all 58
+fleets are docked and the 19 under standing orders are all holding (no seam that
+repays the fuel, a contact among hostiles, a tank filling). A hold is looked at again
+every 15 ticks, so 1.3 evaluations a tick, each flooding the map up to three times (a
+lane without a fight, then any lane, then the reason nothing was found): 3.2 searches
+a tick, 940 sectors and 4300 lane checks a search. And 530 of the 844 changed sectors
+have ore refilling, a new number every tick, written every tick into the memory of
+every empire whose sensors cover them (sensor level 9 is nine hops).
+
+The suspects named beforehand:
+
+| suspect | found |
+|---|---|
+| bots' odds queries | 15% with hands-on bots, nothing with check-in bots |
+| views built for sessions nobody reads | none: a seat follows the world only on the tick before a turn. The views that are read cost 30% with hands-on bots |
+| lane searches repeated by standing orders | the largest cost of a long absence |
+| `persist_dirty_state` with no persister | under 0.5% |
+| world generation repeated | already remembered; the cost was the hash to find it (9%) and asking for the same sector five times per view |
+| snapshot size | not a tick cost. A save of the week-old world takes the wasm memory from 15 to 39 MiB for the moment, before and after alike |
+
+**What was done.** One commit a step, the largest remaining cost each time. Ticks per
+second, native: L6 is the season world from day 6.0 to 6.25, B the blitz world of 8
+hands-on bots over its first three hours. Where a step was measured more than once
+the range is given.
+
+| step | L6 | B |
+|---|---|---|
+| master | 231 to 246 | 310 to 325 |
+| 1. a cheap hasher for sector keys and ids | 324 | 456 |
+| 2. an evaluation looks at each sector once | 367 | 450 |
+| 3. the lane search indexes a table | 378 | 445 |
+| 4. the chart records refilling ore without copying the sector | 446 | 481 |
+| 5. a sector view looks its template and override up once | 475 | 543 |
+| 6. ore refill asks once where the fleets are; a jump asks for the route home only to warn | 509 to 518 | 608 |
+| 7. what an evaluation knows sits in a table around home | 531 to 549 | 606 |
+| 8. odds against a ring's group once per ring | 627 | 620 |
+| 9. a sector's full ore reserve generated with the sector | 663 | 635 |
+| 10. refilling ore kept once per sector, not once per watcher | 866 | 638 |
+| 11. lair respawn and salvage despawn walk the overrides in place | 870 to 911 | 657 to 693 |
+
+Why none of them can change a result:
+
+1. `shared/src/keymap.rs`: `KeyMap` and `KeySet` are the standard maps with a hasher
+   that multiplies and folds. Used for the world generator's memo, `intel.rs`, and in
+   the engine the search, the odds memo, `explored` and `credited`. A map's answers
+   do not depend on its hasher. Its iteration order does, and that was already
+   different in every process, so nothing could have relied on it.
+2. `Reach` (one standing-order evaluation) already kept the odds it had worked out per
+   sector. It now also keeps whether entering starts a fight, the seam and its worth,
+   and whether the doctrine boards the derelict. The engine is borrowed for the
+   length of the evaluation, so the answers are the same calls with the same inputs,
+   asked once instead of once per flood.
+3. A sector `max_hops` jumps out lies within as many hexes, so the search's "reached
+   from" map is a table over that square (`Window`). Same order of discovery, same
+   path read back.
+4. A memory that differed from the observation only in its ore was copied twice
+   (once to compare with the ore set aside, once to keep). The ore is now swapped in
+   and compared in place.
+5. `ore_reserve_in`, `derelict_site_in`, `pending_template_in` and `threat_among` take
+   the template and the override from a caller that has them; the by-coordinate
+   functions fetch them and delegate. A tile's refill rate is worked out only for a
+   tile with something to refill (it was computed and then not used).
+6. The refill pass asked "is a fleet here" by walking every fleet for every damaged
+   sector; it collects the occupied sectors once. `warn_if_cannot_return` built both
+   routes home (two searches of 64 hops) to compare one hop count with the tank; the
+   count comes from `direct_hops_home`, which is that number by its own comment, and
+   the routes are built when the warning is due.
+7. The per-evaluation answers of step 2 move from hash maps to tables over the
+   doctrine's range of home, with a map for the few sectors asked about beyond it.
+8. Most sectors a fleet is rated in hold nothing its owner has counted, so the answer
+   is the fleet against the ring's group, a function of the distance from the hub.
+   `Opposing` says "the ring's group" or "these ships"; the ratio against a ring is
+   kept per ring for one `odds` request or one evaluation (`RingOdds`). It is the same
+   `odds_ratio` of the same two forces.
+9. `SectorTemplate::ore_units` is `scaling::ore_reserve_units` of the generated
+   densities, computed where the sector is generated instead of on every look.
+10. The one step that changes what a structure means. A live sector's `last_seen` was
+    already implicit in the chart memory (the last refresh) and written down when the
+    sector lapsed. Its ore now is too. What the watchers of a sector with moving parts
+    were last shown is kept once (`KnownSectors::shown`). When only the ore moved, only
+    that copy is updated. Memories are rewritten when anything else changes, as
+    before, and take the ore from the shared copy wherever it can be observed: when
+    the sector lapses for a watcher (before the copy is refreshed, so it is the ore of
+    the last tick the sector was live), and when a row or a stale view is built for a
+    sector still covered (`settled`). The chart recording, the snapshot hashes and
+    the restart tests are what hold this one up.
+11. Two passes copied every override key into a list each tick and looked each up
+    again; they walk the map once, in the same order.
+
+None of the new state is saved: the hasher has none, the tables live for one
+evaluation, `ore_units` is regenerated with the sector, and `shown` is rebuilt by the
+first refresh after a load, which re-observes every covered sector.
+
+**Before and after.** Same machine, same sitting, niced, one run at a time. Ticks per
+second; a range is three or more runs, a single figure one run.
+
+| case | native before | native after | wasm (node) before | wasm (node) after |
+|---|---|---|---|---|
+| A: season, 20 check-in, the week | 1320 s and 1354 s | 365 s (and 365 s with the restart) | 1636 s | 473 s |
+| A: its last six hours | 202 to 216 | 801 | 182 | 641 |
+| L6: the same world, day 6.0 to 6.25 | 231 to 246 | 870 to 911 | 182 to 193 | 687 to 701 |
+| B: blitz, 8 hands-on, 3 h | 310 to 325 | 657 to 693 | 235 to 266 | 558 to 563 |
+| C: blitz, 20 hands-on, 1 h | 318 to 347 | 709 to 732 | 269 to 276 | 566 to 570 |
+| D: season, 16 seats, 2 days | 2522 | 5642 | | |
+| E: persistent, 8 check-in, 7 days | 16500 | 41700 | 12000 | 26900 |
+| F: blitz, 16 seats, 2 h | 576 | 1161 | | |
+
+A live tick two hours into the blitz world with 8 hands-on bots, a session logged in,
+600 ticks: native mean 4.2 ms (95th percentile 5.8, worst 7.8) before, 2.0 ms (2.7,
+3.4) after; wasm under node 5.1 ms (6.9, 9.4) before, 2.4 ms (3.4, 5.3) after.
+
+**Memory.** Wasm linear memory, which only grows: 15.3 MiB after loading the week-old
+world and playing an hour, before and after; 39.1 MiB once that world has been saved
+once, before and after (the save, not the engine, sets the peak). Over a whole week
+with a save every six hours the peak was 29.8 MiB before and 29.6 MiB after; a run
+of saves in the middle of the week reached 33.3 MiB before and 37.3 MiB after, which
+is the allocator laying the same transient buffers out differently. Native peak resident set over the week,
+saves included: 31.8 MB before, 32.5 MB after. What was added: `shown`, one sector
+state per watched sector with moving parts (about 0.2 MB at day 7); 12 bytes per
+generated sector; tables of up to 130 kB that live for one evaluation.
+
+**Tried and not kept.**
+- Reading a live sector's threat and force in one pass, and keeping the odds against
+  a sleeping lair's group per group as for a ring: 1.5% and 1%, inside the spread.
+  Reverted.
+- `ring_mult` as a table: not attempted. A table filled at compile time would be
+  `powi` of constants, which the compiler may fold with a different last bit than
+  the routine it calls at run time.
+- A recorded-hash test in `sim/tests/`: the hashes pin every rule, and two branches
+  were changing rules while this was written. The harness stayed in the scratchpad.
+
+**What is left, and what it would take.** After the work the season world at day 6 is
+59% lane searches, 20% chart upkeep, 4% ore refill; the blitz world is 39% the bots'
+views, 37% their turns (17% `odds`), 17% chart upkeep. The next gains are not cheaper
+ways to compute the same thing.
+- *Remember a hold.* A fleet that found nothing to do asks the whole question again
+  every 15 ticks, and in a quiet world the answer does not change for hours. Keeping
+  it needs to know when it can change: a chart, a group, a wreck, the fleet itself,
+  and the refilling ore, which moves every tick but crosses a seam's threshold at a
+  tick that can be worked out. That is a dependency model for doctrines, not a memo.
+  It would remove most of the 59%: about twice as fast again over a long absence.
+- *Seats that fold changes.* A bot one tick from its turn is sent every live sector,
+  300 to 400 of them at sensor level 10, rebuilt whether or not anything moved. A
+  seat is in-process and could be handed only what changed, which is a second way to
+  build a view beside `tick_update` and has to be kept equal to it. Worth most of
+  the 39% in a hands-on world.
+- *Refilling sectors observed without being rebuilt.* The upkeep still builds the
+  whole state of each of the 530 sectors every tick to learn one number. Knowing
+  that nothing but the ore moved needs the override compared field by field with
+  the last one seen. About 10% of a season tick.
+
+**Found on the way.**
+- Native and wasm do not play the same world. Master's blitz case B has the same
+  hashes on both up to tick 1800 and different ones from 2400; the season week
+  parts between ticks 64800 and 86400. Before and after are alike in this, so wasm
+  was compared with wasm. Not looked into; the float library (`ln`, `exp`, `powf`
+  in the odds) is the likely place. It matters the day a save moves between a server
+  and a browser.
+- Master moved while this was done (the hub's exchange, ship batches that pay when
+  ordered). `git merge-tree` merges this branch with it without a conflict.
+
+**Checked.** `cargo build --workspace --all-targets`, `cargo test --workspace
+--no-fail-fast` (the chart recording untouched), `cargo clippy --workspace
+--all-targets`, `tools/check_sim_constants.py`, and the wasm builds of `iac-sim` and
+`iac-solo`, on the last commit. Native: all 83 hashes of A to F, both restarts and
+the live-tick run match master. Wasm: A, B, C, E, L6 and the live-tick run match
+master's wasm.
+
+**Not verified.** A browser: wasm was run under node only. Other seeds than the one
+each case uses. A server with SQLite beyond its own tests. The trial merge with the
+new master was built and tested in a scratch copy (below) but its speed was not
+measured.
