@@ -30,7 +30,8 @@ const DEFAULT_PLAYER_SEATS: usize = 4;
 #[derive(Parser, Debug)]
 #[command(name = "iac-server", about = "In Amber Clad - Game Server")]
 struct Args {
-    /// Port to listen on
+    /// Port to listen on; 0 takes a free one from the system. The address
+    /// bound is printed on stdout as `listening on <address>:<port>`.
     #[arg(short, long, default_value_t = DEFAULT_PORT)]
     port: u16,
 
@@ -145,12 +146,15 @@ async fn main() {
             }
         }
     };
-    if let Some(d) = &web_dir {
-        info!("Web dir:    {} (http://{}:{}/)", d.display(), args.host, args.port);
-    }
-
     let network = Network::init(args.port, Arc::clone(&engine));
-    network.start_listening(&args.host, web_dir).await.expect("Failed to start WebSocket server");
+    let bound = network
+        .start_listening(&args.host, web_dir.clone())
+        .await
+        .expect("Failed to start WebSocket server");
+    if let Some(d) = &web_dir {
+        info!("Web dir:    {} (http://{bound}/)", d.display());
+    }
+    println!("listening on {bound}");
 
     // Signal handling: SIGINT (ctrl-c) and SIGTERM (docker stop / systemd)
     // both trigger a final persist before exit.

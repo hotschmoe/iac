@@ -44,9 +44,8 @@ fn hex_of(v: &Value) -> Hex {
 
 #[tokio::test]
 async fn names_are_one_account_whatever_the_case() {
-    let port = 17951;
-    let db = fresh_db(port);
-    let _guard = start_server(port, &db);
+    let db = fresh_db("scenario_names");
+    let (_guard, port) = start_server(&db);
 
     let (_ws, first) = login(port, "Casey", None).await;
     let token = first["token"].as_str().unwrap().to_string();
@@ -73,13 +72,8 @@ async fn names_are_one_account_whatever_the_case() {
 
 #[tokio::test]
 async fn a_fight_is_reported_to_the_player_in_it_and_not_to_anyone_else() {
-    let port = 17952;
-    let db = fresh_db(port);
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_iac-server"))
-        .args(["--port", &port.to_string(), "--db", db.to_str().unwrap(), "--pace", "test"])
-        .spawn()
-        .expect("failed to spawn server");
-    let _guard = ServerGuard(child);
+    let db = fresh_db("scenario_fight");
+    let (_guard, port) = start_server_with(&db, &["--pace", "test"]);
 
     let (mut hunter, _) = login(port, "Hunter", None).await;
     let (mut bystander, _) = login(port, "Bystander", None).await;
@@ -169,13 +163,8 @@ async fn a_fight_is_reported_to_the_player_in_it_and_not_to_anyone_else() {
 
 #[tokio::test]
 async fn a_cancel_aimed_at_an_order_that_started_meanwhile_is_refused_and_leaves_it_running() {
-    let port = 17953;
-    let db = fresh_db(port);
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_iac-server"))
-        .args(["--port", &port.to_string(), "--db", db.to_str().unwrap(), "--pace", "test"])
-        .spawn()
-        .expect("failed to spawn server");
-    let _guard = ServerGuard(child);
+    let db = fresh_db("scenario_cancel");
+    let (_guard, port) = start_server_with(&db, &["--pace", "test"]);
     let (mut ws, _) = login(port, "Racer", None).await;
     full_state(&mut ws).await;
 
@@ -220,13 +209,12 @@ async fn a_cancel_aimed_at_an_order_that_started_meanwhile_is_refused_and_leaves
 
 #[tokio::test]
 async fn a_killed_server_comes_back_with_the_scan_live_and_the_boarding_under_way() {
-    let port = 17954;
-    let db = fresh_db(port);
+    let db = fresh_db("scenario_boarding");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
     let quiet = |at: Hex| world.generate_sector(at).npc_template.is_none();
 
     let (token, fleet, site, scanned, end_tick) = {
-        let _guard = start_server(port, &db);
+        let (_guard, port) = start_server(&db);
         let (mut ws, reply) = login(port, "Boarder", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
         let state = full_state(&mut ws).await;
@@ -314,7 +302,7 @@ async fn a_killed_server_comes_back_with_the_scan_live_and_the_boarding_under_wa
         (token, fleet, site, scanned, end_tick.unwrap())
     };
 
-    let _guard = start_server(port, &db);
+    let (_guard, port) = start_server(&db);
     let (mut ws, reply) = login(port, "Boarder", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let state = full_state(&mut ws).await;
@@ -385,13 +373,12 @@ async fn fly(ws: &mut Ws, fleet: u64, route: &[Hex]) {
 #[tokio::test]
 async fn a_fleet_flies_its_ore_to_the_hub_trades_it_and_the_meter_outlives_the_server() {
     use iac_shared::constants::Density;
-    let port = 7910;
-    let db = fresh_db(port);
+    let db = fresh_db("scenario_exchange");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
     let weight = |kind: &str| if kind == "metal" { 1.0 } else if kind == "crystal" { 1.5 } else { 2.0 };
 
     let (token, fleet, hub, give, want, gave, got, pressure) = {
-        let _guard = start_server(port, &db);
+        let (_guard, port) = start_server(&db);
         let (mut ws, reply) = login(port, "Trader", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
         let state = full_state(&mut ws).await;
@@ -497,7 +484,7 @@ async fn a_fleet_flies_its_ore_to_the_hub_trades_it_and_the_meter_outlives_the_s
         (token, fleet, hub, give, want, gave, got, pressure)
     };
 
-    let _guard = start_server(port, &db);
+    let (_guard, port) = start_server(&db);
     let (mut ws, reply) = login(port, "Trader", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let state = full_state(&mut ws).await;
@@ -539,13 +526,12 @@ fn alerts_of(msg: &Value) -> Vec<String> {
 
 #[tokio::test]
 async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_fleet_has_been_away() {
-    let port = 7931;
-    let db = fresh_db(port);
+    let db = fresh_db("scenario_hold");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
     let hold_of = |fleet: &Value| ["metal", "crystal", "deuterium"].map(|k| fleet["cargo"][k].as_f64().unwrap());
 
     let (token, fleet, home, stocked) = {
-        let _guard = start_server(port, &db);
+        let (_guard, port) = start_server(&db);
         let (mut ws, reply) = login(port, "Loader", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
         let state = full_state(&mut ws).await;
@@ -574,6 +560,13 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
         let no_stock = refused(&mut ws).await;
         assert_eq!(no_stock["code"], "NoResources", "{no_stock}");
         assert!(no_stock["message"].as_str().unwrap().ends_with(&format!("metal; fleet {fleet} cannot load 9000.0")), "{no_stock}");
+        command(&mut ws, json!({"action": "recall", "fleet_id": fleet})).await;
+        let at_home = refused(&mut ws).await;
+        assert_eq!(at_home["code"], "InvalidCommand", "{at_home}");
+        assert_eq!(
+            at_home["message"],
+            format!("fleet {fleet} is already at its homeworld; recall only brings a fleet home from another sector"),
+        );
 
         for _ in 0..3 {
             let later = update_where(&mut ws, |_| true).await;
@@ -583,7 +576,7 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
         (token, fleet, home, stocked)
     };
 
-    let _guard = start_server(port, &db);
+    let (_guard, port) = start_server(&db);
     let (mut ws, reply) = login(port, "Loader", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let state = full_state(&mut ws).await;
@@ -638,8 +631,7 @@ fn rows(board: &Value, list: &str) -> Vec<(String, f64)> {
 
 #[tokio::test]
 async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is_killed() {
-    let port = 17956;
-    let db = fresh_db(port);
+    let db = fresh_db("scenario_bots");
     let roster = [
         "--pace", "test", "--player-seats", "20",
         "--bot", "turtle:hands-on:2", "--bot", "explorer:hands-on", "--bot", "miner:hands-on", "--bot", "raider:hands-on:5",
@@ -647,7 +639,7 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
     let deadline = Instant::now() + Duration::from_secs(90);
 
     let (token, names, scores, tick) = {
-        let _guard = start_server_with(port, &db, &roster);
+        let (_guard, port) = start_server_with(&db, &roster);
         let (mut ws, reply) = login(port, "Watcher", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
 
@@ -680,7 +672,7 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
         (token, names, bots, board["tick"].as_u64().unwrap())
     };
 
-    let _guard = start_server_with(port, &db, &["--player-seats", "20", "--bot", "raider:hands-on:5"]);
+    let (_guard, port) = start_server_with(&db, &["--player-seats", "20", "--bot", "raider:hands-on:5"]);
     let (mut ws, reply) = login(port, "Watcher", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let board = loop {
@@ -704,12 +696,11 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
 
 #[tokio::test]
 async fn a_full_world_turns_a_new_name_away_and_still_admits_its_settlers_after_a_restart() {
-    let port = 17955;
-    let db = fresh_db(port);
+    let db = fresh_db("scenario_full_world");
     let seats = home_seats().count();
 
     let token = {
-        let _guard = start_server(port, &db);
+        let (_guard, port) = start_server(&db);
         let mut homes = Vec::new();
         let mut first_token = None;
         for i in 0..seats {
@@ -730,7 +721,7 @@ async fn a_full_world_turns_a_new_name_away_and_still_admits_its_settlers_after_
         first_token.unwrap()
     };
 
-    let _guard = start_server(port, &db);
+    let (_guard, port) = start_server(&db);
     let (_ws, refused) = login(port, "Latecomer", None).await;
     assert_eq!(refused["code"], "WorldFull", "the world is still full after a restart: {refused}");
     let (_ws, back) = login(port, "Settler0", Some(&token)).await;

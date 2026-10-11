@@ -1,27 +1,19 @@
 // Static hosting + WebSocket on one port: boots the real server binary with a
 // temp web dir and checks HTTP responses and WS upgrades at `/` and `/ws`.
 
-use std::process::{Child, Command};
+mod common;
+
 use std::time::Duration;
 
+use common::{ServerGuard, fresh_dir, start_server_with};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 
-struct ServerGuard(Child);
-
-impl Drop for ServerGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn start(port: u16, with_web: bool) -> (ServerGuard, std::path::PathBuf) {
-    let base = std::env::temp_dir().join(format!("iac_web_test_{port}"));
-    let _ = std::fs::remove_dir_all(&base);
+fn start(test: &str, with_web: bool) -> (ServerGuard, u16, std::path::PathBuf) {
+    let base = fresh_dir(test);
     let web = base.join("web");
     std::fs::create_dir_all(web.join("assets")).unwrap();
     std::fs::write(web.join("index.html"), "<html>INDEX</html>").unwrap();
@@ -29,12 +21,9 @@ fn start(port: u16, with_web: bool) -> (ServerGuard, std::path::PathBuf) {
     std::fs::write(web.join("main.dart.mjs"), "export {};").unwrap();
     std::fs::write(web.join("assets/AssetManifest.json"), "{}").unwrap();
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iac-server"));
-    cmd.args(["--port", &port.to_string(), "--db", base.join("w.db").to_str().unwrap()]);
-    if with_web {
-        cmd.args(["--web-dir", web.to_str().unwrap()]);
-    }
-    (ServerGuard(cmd.spawn().expect("spawn server")), base)
+    let web_dir = ["--web-dir", web.to_str().unwrap()];
+    let (guard, port) = start_server_with(&base.join("w.db"), if with_web { &web_dir } else { &[] });
+    (guard, port, base)
 }
 
 /// Minimal HTTP/1.1 GET; returns (status, lowercased headers, body).
@@ -57,8 +46,7 @@ async fn http_get(port: u16, path: &str) -> (u16, String, String) {
 
 #[tokio::test]
 async fn serves_static_files_with_spa_fallback() {
-    let port = 17941;
-    let (_g, _dir) = start(port, true);
+    let (server, port, dir) = start("web_static", true);
 
     let (status, head, body) = http_get(port, "/").await;
     assert_eq!(status, 200);
@@ -80,22 +68,25 @@ async fn serves_static_files_with_spa_fallback() {
     let (status, _, body) = http_get(port, "/some/deep/link").await;
     assert_eq!(status, 200);
     assert!(body.contains("INDEX"), "body: {body}");
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn no_web_dir_returns_404_for_http() {
-    let port = 17942;
-    let (_g, _dir) = start(port, false);
+    let (server, port, dir) = start("web_none", false);
     // Run from a CWD without clients/web/build/web (cargo test CWD is server/).
     let (status, _, _) = http_get(port, "/").await;
     assert_eq!(status, 404);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn websocket_at_ws_and_legacy_root() {
-    let port = 17943;
-    let (_g, _dir) = start(port, true);
-    http_get(port, "/").await; // wait until up
+    let (server, port, dir) = start("web_sockets", true);
 
     for (i, path) in ["/ws", "", "/"].iter().enumerate() {
         let url = format!("ws://127.0.0.1:{port}{path}");
@@ -132,4 +123,7 @@ async fn websocket_at_ws_and_legacy_root() {
         }
         assert!(got_auth && got_state, "path {path:?}: auth={got_auth} state={got_state}");
     }
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
 }

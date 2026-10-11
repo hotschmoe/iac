@@ -713,9 +713,13 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     let (pid, fid) = join(&mut engine, "Recaller");
     let home = engine.players[&pid].homeworld;
     let out = engine.world_gen.connected_neighbors(home).slice()[0];
-    assert!(engine.execute(pid, Command::Move { fleet_id: fid, target: out }).error.is_none());
+    deploy(&mut engine, fid, out, None);
+    let onward = engine.world_gen.connected_neighbors(out).slice().iter().copied().find(|next| *next != home).unwrap();
+    assert!(engine.execute(pid, Command::Move { fleet_id: fid, target: onward }).error.is_none());
+    assert_eq!(engine.fleets[&fid].state, FleetStatus::Moving);
     assert!(engine.execute(pid, Command::Recall { fleet_id: fid }).error.is_none());
     assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (home, FleetStatus::Idle));
+    assert_eq!(engine.fleets[&fid].move_target, None, "the jump it was charging is abandoned");
     let flown = orders_flown(&mut engine, pid, fid);
     assert!(!flown.is_empty(), "standing orders never ran after the recall");
 }
