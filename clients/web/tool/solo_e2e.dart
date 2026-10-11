@@ -739,6 +739,31 @@ Future<void> screens(Browser browser) async {
   await browser.resize(1100, 800);
   await browser.shot('21b-windshield-1100');
   await browser.resize(1440, 900);
+
+  await browser.click('load hold');
+  await browser.untilText('load a hold');
+  check(true, 'the windshield\'s Load hold button opens the hold panel on the Storage tab');
+  await browser.type('gw');
+  await browser.untilText('fleet status');
+  await browser.command('load deut');
+  await browser.until('the hold laden', () async => (await firstFleet(browser))['laden'] == true);
+  await browser.untilText('cargo - laden');
+  await browser.shot('21c-windshield-laden-1440');
+  await browser.resize(390, 844);
+  await browser.click('status');
+  await browser.wheel(500, x: 195);
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await browser.shot('21c-windshield-laden-390');
+  await browser.click('status');
+  await browser.resize(1440, 900);
+  await browser.type('l');
+  await browser.untilText('load a hold');
+  check(true, 'and so does L, with the hold laden');
+  await browser.command('unload');
+  await browser.until('the hold empty again', () async => (await firstFleet(browser))['laden'] == false);
+  await browser.type('gw');
+  await browser.untilText('fleet status');
+
   await browser.type('t');
   await browser.untilText('give from the hold');
   await browser.shotBoth('22-windshield-exchange');
