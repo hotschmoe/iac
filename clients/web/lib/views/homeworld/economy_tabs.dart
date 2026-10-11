@@ -46,12 +46,9 @@ class DefenceTab extends StatelessWidget {
           subText: 'estimate',
           padding: const EdgeInsets.all(14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Flexible(
-                child: Text(raidIn == null ? 'NO RAID ANNOUNCED' : 'RAID IN ${clockFmt(raidIn)}',
-                    overflow: TextOverflow.ellipsis, style: T.cond(size: 26, color: raidIn == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 2)),
-              ),
-              const SizedBox(width: 8),
+            Wrap(crossAxisAlignment: WrapCrossAlignment.end, spacing: 8, runSpacing: 2, children: [
+              Text(raidIn == null ? 'NO RAID ANNOUNCED' : 'RAID IN ${clockFmt(raidIn)}',
+                  style: T.cond(size: 26, color: raidIn == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 2)),
               Text('DEFENCE ${cover.toStringAsFixed(2)}X THE RAID',
                   key: const Key('defence-cover'), style: T.cond(size: 13, color: cover >= 1 ? C.ok : C.ember, spacing: 1.4)),
             ]),
@@ -208,7 +205,7 @@ class StorageTab extends StatelessWidget {
           Text(name.toUpperCase(), style: T.cond(size: 12, color: c, spacing: 1.6)),
           const SizedBox(width: 10),
           Register(stock, size: 20, glow: true),
-          Text(' / ${cap.round()}', style: T.mono(size: 12, color: C.text3)),
+          Text(' / ${groupDigits(cap.round())}', style: T.mono(size: 12, color: C.text3)),
           const Spacer(),
           if (near) Lamp(stock >= cap * .98 ? 'Full' : 'Near cap', color: C.ember, blink: true),
         ]),
@@ -216,7 +213,7 @@ class StorageTab extends StatelessWidget {
         LedBar(stock / cap, color: near ? C.ember : c, height: 10, mark: C.ember, markAt: .85),
         const SizedBox(height: 6),
         Text(
-            'PROTECTED ${prot.round()}   RAIDABLE ${(stock - prot).clamp(0, cap).round()}   '
+            'PROTECTED ${groupDigits(prot.round())}   RAIDABLE ${groupDigits((stock - prot).clamp(0, cap).round())}   '
             '${full == null ? 'NOT FILLING' : full == 0 ? 'FULL' : 'FULL IN ${clockFmt(full)}'}   +${rate.toStringAsFixed(2)}/T',
             style: T.mono(size: 10, color: C.text3)),
       ]),

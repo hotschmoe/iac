@@ -62,6 +62,19 @@ List<proto.BuildingOption> buildingChoices(proto.HomeworldCatalog? c, {int limit
   return l.take(limit).toList();
 }
 
+/// "Scout needs Shipyard level 1": of [options], each a name and what it
+/// requires, the locked one with the fewest levels still to build or
+/// research. Null when none of them is locked.
+String? nearestLocked(Iterable<(String, List<proto.Requirement>)> options) {
+  (String, List<proto.Requirement>, int)? nearest;
+  for (final (name, requires) in options) {
+    final unmet = [for (final r in requires) if (!r.met) r];
+    final levels = unmet.fold(0, (sum, r) => sum + r.need - r.have);
+    if (unmet.isNotEmpty && (nearest == null || levels < nearest.$3)) nearest = (name, unmet, levels);
+  }
+  return nearest == null ? null : '${nearest.$1} needs ${nearest.$2.map((r) => r.label).join(', ')}';
+}
+
 List<proto.ShipOption> shipChoices(proto.HomeworldCatalog? c, {int limit = 3}) {
   if (c == null) return const [];
   final l = [for (final o in c.ships) if (o.requires.every((r) => r.met)) o]
@@ -175,7 +188,7 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
       out.add(OvAlert('${f.name} fuel is low', 'Fuel ${f.fuel} of ${f.fuelMax}; the way home needs ${f.homeFuel}.'));
     }
   }
-  if (s.research.name == 'Idle') out.add(const OvAlert('Research lab idle', 'Queue something. Idle labs waste the longest timers.', tab: 'research'));
+  if (labIdle(s)) out.add(const OvAlert('Research lab idle', 'Queue something. Idle labs waste the longest timers.', tab: 'research'));
   final hasRaid = out.any((a) => a.tab == 'defence');
   final hasStorage = out.any((a) => a.tab == 'storage');
   for (final a in s.alerts) {
@@ -186,15 +199,26 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
   return out;
 }
 
-/// "Two fleets out, one docked. Lab idle." style status line.
+/// The lab stands idle with something it could research: without a Research
+/// Lab, or with every tech locked or maxed, there is nothing to queue.
+bool labIdle(GameState s) => s.research.name == 'Idle' && researchChoices(s.catalog, limit: 1).isNotEmpty;
+
+/// "Two fleets out, one at home. Lab idle." style status line.
 String hqNote(GameState s) {
-  final docked = s.fleets.where((f) => f.status.label == 'DOCKED').length;
-  final out = s.fleets.length - docked;
+  final home = s.fleets.where((f) => f.sector == s.homeworld).length;
+  final out = s.fleets.length - home;
   final parts = <String>[];
   const words = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six'];
   String w(int n) => n < words.length ? words[n] : '$n';
-  if (s.fleets.isNotEmpty) parts.add('${w(out)} fleet${out == 1 ? '' : 's'} out, ${w(docked).toLowerCase()} docked.');
-  if (s.research.name == 'Idle') parts.add('Lab idle.');
+  String fleets(int n) => '${w(n)} fleet${n == 1 ? '' : 's'}';
+  if (s.fleets.isNotEmpty) {
+    parts.add(home == 0
+        ? '${fleets(out)} out.'
+        : out == 0
+            ? '${fleets(home)} at home.'
+            : '${fleets(out)} out, ${w(home).toLowerCase()} at home.');
+  }
+  if (labIdle(s)) parts.add('Lab idle.');
   if (s.buildQueue.isEmpty) parts.add('Build slot idle.');
   return parts.isEmpty ? 'All quiet on the surface.' : parts.join(' ');
 }

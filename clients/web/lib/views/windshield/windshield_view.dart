@@ -335,7 +335,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       _armedUntil = clock.now().add(const Duration(seconds: 3));
       if (o == null) {
         con.game.requestOdds(f.id, [f.sector]);
-        _toast('No odds yet', 'The server has not rated this fight (T${th.rating}, power ${th.power.round()}). Press F again to commit, or wait a moment.', tone: ToastTone.red);
+        _toast('No odds yet', 'This fight has not been rated yet (T${th.rating}, power ${th.power.round()}). Press F again to commit, or wait a moment.', tone: ToastTone.red);
       } else {
         _toast('Poor odds: ${o.label}', 'Ratio ${o.r.toStringAsFixed(2)} against T${th.rating}, power ${th.power.round()}: ${o.outcome}. Press F again to commit, or jump away.', tone: ToastTone.red);
       }
@@ -471,8 +471,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         da('trade', 'Trade', 't', active: _trade),
       ];
       final atExchange = st.exchangeAt(f.sector);
+      final feedWidth = math.min(340.0, (size.width - dockActions.length * Dock.tileWidth) / 2 - 30);
 
-      final rightCol = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      final rightCol =Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         if (_trade) ...[ExchangePanel(controller: con.game), const SizedBox(height: 8)],
         StatusPanel(
           f: f,
@@ -546,13 +547,25 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         Positioned.fill(child: ScanOverlay(prefs: con.prefs)),
         if (combat) Positioned.fill(child: IgnorePointer(child: Blink(period: 13, onSteps: 7, builder: (_, on) => _Alarm(on: on)))),
         ...cards,
-        Positioned(left: 16, top: 14, width: narrow ? null : 300, right: narrow ? 80 : null, child: SectorHead(loc: f.sector, home: st.homeworld, sector: s, threat: th, narrow: narrow, exchange: atExchange)),
+        Positioned(
+            left: 16,
+            top: 14,
+            width: narrow ? null : 300,
+            right: narrow ? 80 : null,
+            child: SectorHead(
+                loc: f.sector,
+                home: st.homeworld,
+                sector: s,
+                threat: th,
+                narrow: narrow,
+                exchange: atExchange,
+                noteWidth: g.cardCenter(dirs[5]).dx - GateCard.width / 2 - 26)),
         if (!narrow) Positioned(left: 16, top: 230, width: 208, child: FleetRail(ctrl: con.game, narrow: false, combat: combat)),
         if (narrow) Positioned(left: 8, right: 8, bottom: 70, child: FleetRail(ctrl: con.game, narrow: true, combat: combat)),
         if (narrow) Positioned(top: 8, right: 10, child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () => setState(() => _sheet = !_sheet))),
         if (!narrow) Positioned(right: 16, top: 14, width: 300, bottom: 100, child: SingleChildScrollView(child: rightCol)),
         if (narrow && _sheet) Positioned(left: 8, right: 8, top: 40, bottom: 130, child: SingleChildScrollView(child: rightCol)),
-        if (!narrow) Positioned(left: 16, bottom: 14, width: 340, child: Feed(events: st.events)),
+        if (!narrow && feedWidth >= 200) Positioned(left: 16, bottom: 14, width: feedWidth, child: Feed(events: st.events)),
         Positioned(left: 0, right: 0, top: narrow ? 90 : size.height * .21, child: IgnorePointer(child: Center(child: _BannerBox(c: _banner, h: _bannerH, p: _bannerP, red: _bannerRed)))),
         if (_hsub)
           Positioned(left: 0, right: 0, bottom: narrow ? 66 : 80, child: Center(child: IntrinsicWidth(child: ConsolePanel(flat: true, child: Row(mainAxisSize: MainAxisSize.min, children: [
