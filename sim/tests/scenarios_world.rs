@@ -14,7 +14,7 @@ use iac_shared::constants::{
 };
 use iac_shared::hex::{hex_ring, hex_spiral, Hex};
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset, ThreatBasis};
+use iac_shared::protocol::{AlertLevel, Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset, ThreatBasis};
 use iac_shared::scaling::{self, RatioLabel};
 use iac_shared::world::NpcBehaviorType::Passive;
 use iac_shared::world::{home_seats, is_home_seat};
@@ -699,13 +699,36 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     deploy(&mut engine, escort, at, Some(5000.0));
     let onward = engine.world_gen.connected_neighbors(at).slice()[0];
 
+    let tank = engine.fleets[&fid].fuel;
     assert!(engine.execute(pid, Command::Move { fleet_id: fid, target: onward }).error.is_none());
     assert_eq!(engine.fleets[&fid].state, FleetStatus::Moving);
+    assert_eq!(tank - engine.fleets[&fid].fuel, 3.0, "one scout burns 3 fuel a jump, paid when it is ordered");
     let attack = engine.execute(pid, Command::Attack { fleet_id: escort, target_fleet_id: template_npc_id(at) });
     assert!(attack.error.is_none(), "{:?}", attack.error);
     assert_eq!(engine.fleets[&fid].state, FleetStatus::InCombat, "a fleet still charging its jump is in the sector's fight");
-    run_until(&mut engine, 10, |e| e.active_combats.is_empty());
+    let fought = run_until(&mut engine, 10, |e| e.active_combats.is_empty());
     assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (at, FleetStatus::Idle), "the jump is lost");
+    assert_eq!(engine.fleets[&fid].fuel, tank - 3.0, "and so is the fuel it burned");
+    let caught: Vec<_> = fought
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::Alert(a) if a.message.contains("was caught in a fight") => Some(a),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(caught.len(), 1, "the fleet that was charging is told once, the fleet that picked the fight is not: {caught:?}");
+    assert_eq!(
+        caught[0].message,
+        format!(
+            "fleet {fid} was caught in a fight at {at} while charging its jump to {onward}: \
+             the jump is abandoned, and the 3 fuel it burned for the jump is forfeit"
+        ),
+    );
+    assert!(
+        matches!(caught[0].level, AlertLevel::Warning) && (caught[0].player_id, caught[0].fleet_id, caught[0].sector) == (Some(pid), Some(fid), Some(at)),
+        "{:?}",
+        caught[0],
+    );
     let flown = orders_flown(&mut engine, pid, fid);
     assert!(!flown.is_empty(), "standing orders never ran after the fight");
 

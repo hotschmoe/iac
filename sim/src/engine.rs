@@ -3278,6 +3278,11 @@ impl GameEngine {
         self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
     }
 
+    /// End the job that is due. Level 1 opens the outpost with an empty
+    /// store, which is no news to the fleets that stand there: they count as
+    /// told that it fills no tank, so the first thing the founder hears is
+    /// not a warning. A fleet that arrives later, or thirsts there again, is
+    /// warned as ever.
     fn finish_outpost_job(&mut self, owner: u64) {
         let tick = self.current_tick;
         let roll_interval = RaidTimers::new(&self.world.pace).roll_interval;
@@ -3292,6 +3297,10 @@ impl GameEngine {
                 if level == 1 {
                     outpost.raid.first_seen_tick = tick;
                     outpost.raid.next_roll_tick = tick + roll_interval;
+                    outpost.dry_tanks = self.fleets.values()
+                        .filter(|f| f.owner_id == owner && f.location == sector && f.ship_count > 0)
+                        .map(|f| f.id)
+                        .collect();
                 }
                 self.pending_events.push(GameEvent {
                     tick,
@@ -4654,15 +4663,16 @@ impl GameEngine {
         Ok(())
     }
 
-    /// A shipyard batch is paid in full when it is ordered. One the
-    /// stockpile does not cover is refused; a batch larger than a stockpile
-    /// cap cannot be saved up for, and the refusal says that instead.
+    /// A shipyard batch is paid in full when it is ordered. One larger than
+    /// a stockpile cap is refused as a building or research level is, even
+    /// when refunds paid past the cap would cover it; one the stockpile does
+    /// not cover is refused for that.
     fn ensure_batch_paid_for(&self, player: &Player, cost: Resources) -> Result<(), ErrorCode> {
-        if player.resources.can_afford(cost) {
-            return Ok(());
-        }
         self.ensure_fits_storage(player, cost)?;
-        Err(ErrorCode::InsufficientResources)
+        if !player.resources.can_afford(cost) {
+            return Err(ErrorCode::InsufficientResources);
+        }
+        Ok(())
     }
 
     /// What `cmd` would cost, with a label for messages; None for commands
@@ -6458,8 +6468,21 @@ impl GameEngine {
     }
 
     /// Put a fleet into a fight. A jump it was still charging is abandoned,
-    /// as `stop` would: only a moving fleet carries a jump target or cooldown.
+    /// as `stop` would: only a moving fleet carries a jump target or
+    /// cooldown. Its fuel is gone as it is for a stop, and the owner is told
+    /// in the same terms.
     fn engage_fleet(&mut self, fleet_id: u64) {
+        let charging = self.fleets.get(&fleet_id).and_then(|fleet| match (fleet.state, fleet.move_target) {
+            (FleetStatus::Moving, Some(target)) => Some((fleet.location, target, self.hop_fuel_cost(fleet))),
+            _ => None,
+        });
+        if let Some((at, target, fuel)) = charging {
+            self.push_alert(AlertLevel::Warning, fleet_id, at, format!(
+                "fleet {fleet_id} was caught in a fight at {at} while charging its jump to {target}: \
+                 the jump is abandoned, and the {} fuel it burned for the jump is forfeit",
+                fuel_words(fuel),
+            ));
+        }
         if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
             fleet.state = FleetStatus::InCombat;
             fleet.move_target = None;
@@ -6765,7 +6788,6 @@ fn fuel_words(fuel: f32) -> String {
     if tenths.fract() == 0.0 { format!("{tenths:.0}") } else { format!("{tenths:.1}") }
 }
 
-/// Stable id of the hostile a sector's template spawns; see `TEMPLATE_NPC_ID_BASE`.
 /// A hold reason without its parenthesised figures (power, ratio), which drift
 /// from tick to tick while the cause stays the same.
 fn hold_key(reason: &str) -> String {
@@ -6805,6 +6827,7 @@ fn first_startable<T>(
     None
 }
 
+/// Stable id of the hostile a sector's template spawns; see `TEMPLATE_NPC_ID_BASE`.
 pub fn template_npc_id(coord: Hex) -> u64 {
     TEMPLATE_NPC_ID_BASE + u64::from(coord.to_key())
 }

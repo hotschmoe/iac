@@ -401,7 +401,8 @@ its cargo, and a fleet under standing orders that passes through loses nothing.
 
 **Fuel.** A fleet without standing orders that stands at its outpost is refuelled
 from the outpost's deuterium at the home price (0.08 a fuel unit), as far as the
-store pays. A dry store fills nothing and says so once.
+store pays. A dry store fills nothing and says so once, except to the fleets
+standing there when level 1 opens: a new store is empty, and that is not news.
 
 **Charts.** Any of the player's fleets arriving at their outpost banks its charts,
 as at home. The economy spec already says charts pay "delivered to a dock".

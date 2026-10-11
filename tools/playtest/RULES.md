@@ -87,7 +87,7 @@ can pick up where you left off if your session is restarted.
 
 | action | fields | effect |
 |--------|--------|--------|
-| `move` | `fleet_id`, `target:{q,r}` | jump to a connected sector (fuel, cooldown) |
+| `move` | `fleet_id`, `target:{q,r}` | jump to a connected sector (fuel, cooldown). The fuel is paid when the jump is ordered. A fight that begins in the sector while the jump is still charging takes the fleet into it: the jump is abandoned and its fuel is not returned, which is told in an `Alert` (warning) with the fuel forfeit |
 | `scan` | `fleet_id` | reveal nearby sectors + faint signal contacts; scouts scan farther |
 | `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it). When the harvest ends by itself an `Alert` (warning) says why, once: the hold is full, or nothing (or none of the named resource) is left to mine there. A fleet under standing orders reports through its doctrine instead |
 | `attack` | `fleet_id`, `target_fleet_id` | engage the NPC fleet listed as HOSTILE in your sector (use its id) |
@@ -326,7 +326,9 @@ What every doctrine does:
   `MaxLevelReached`, `StorageTooSmall` (naming the Vault level it needs),
   `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`. For a batch,
   `StorageTooSmall` means the whole batch costs more than a stockpile cap and
-  says how many units fit.
+  says how many units fit; it is asked before the stockpile is, so a batch
+  larger than a cap is refused even when refunds (below) have left you the
+  resources for it.
   `build_pending` / `research_pending` list each waiting
   order with its `id`, `waiting_for` (the exact shortfall), `waiting_on` (`Slot`,
   `Resources`, `Prerequisite` or `Order`: held behind an earlier `reserve`
@@ -338,6 +340,14 @@ What every doctrine does:
   `Queue` event: `Started`, `Waiting` (shortfall and estimate) or `Cancelled`
   (what was refunded: half for a running building or tech, nothing for a
   waiting one, half of the undelivered units for a batch, waiting or running).
+  A cancel returns half of what the order has paid and no more: a running
+  building or tech level gives back half its cost; a waiting one paid nothing
+  and gives back nothing; a batch, waiting or running, gives back half the
+  price of every unit not yet delivered (the one under way included) and keeps
+  the units already built. The refund is added to the stockpile past the
+  Storage Vault cap: none of it is lost when the stockpile is full, the mines
+  add nothing while a resource stands at or over its cap, and what is over the
+  cap is spent like the rest (a raid counts it too).
   `paid` on the event is what it took from the stockpile: a building or tech
   pays on `Started`; a batch pays on the event that answers the order
   (`Started`, or `Waiting` when the yard is busy) and nothing when it starts
@@ -541,7 +551,9 @@ What every doctrine does:
     does it.
   - **A dock**: a fleet without standing orders that stands at your outpost
     is refuelled from the outpost's deuterium at 0.08 a fuel unit, as far as
-    it has any; a tank it cannot fill is reported once per stay. Any of your
+    it has any; a tank it cannot fill is reported once per stay, but not to
+    the fleets standing there when level 1 opens (a new store is empty; a
+    founder who wants a full tank unloads deuterium). Any of your
     fleets arriving at the finished outpost banks its charts. A fleet
     standing at the finished outpost does not count against your three
     deployed fleets, and needs a free slot to leave. New ships still appear

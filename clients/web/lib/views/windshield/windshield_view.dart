@@ -69,6 +69,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   /// Where the desktop layout's fleet rail starts, under the sector head.
   static const _railTop = 230.0;
 
+  /// The panels stand in the desktop layout's column or in the phone
+  /// layout's sheet. The key carries them from one to the other when the
+  /// window is resized across the two, with what the player had begun in
+  /// them: a doctrine picked and not yet set, an Abandon asked.
+  final GlobalKey _panels = GlobalKey();
+
   Console get con => _con!;
 
   @override
@@ -288,7 +294,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       return;
     }
     final f = _fleet;
-    if (f == null || sim.warp != null) return;
+    if (f == null) return;
+    final jumping = sim.warp;
+    if (jumping != null && !(id == 'stop' && jumping.waiting)) return;
     final s = _sec(f.sector);
     final th = SectorThreat.of(s);
     final why = _reason(id, f, th, s);
@@ -338,6 +346,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         con.game.sendCommand(proto.RecallCommand(fleetId: f.id));
         con.play('ok');
       case 'stop':
+        sim.cancelWarp();
         con.game.sendCommand(proto.StopCommand(fleetId: f.id));
       case 'trade':
         setState(() {
@@ -348,7 +357,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             _outpost = false;
           }
         });
-        if (_trade) con.toasts.dismissPlain();
+        if (_trade) _clearForSheet();
         con.play('click');
       case 'load':
         if (f.sector == con.state.homeworld) {
@@ -362,10 +371,16 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     if (id != 'harvest') setState(() => _hsub = false);
   }
 
+  /// The phone layout opens its panels in a sheet whose top lies under the
+  /// toasts, so the toasts that ask nothing make way for it. The desktop
+  /// layout has its panels in the right-hand column, which no toast reaches.
+  void _clearForSheet() {
+    final size = context.size;
+    if (size != null && Geo(size).narrow) con.toasts.dismissPlain();
+  }
+
   /// Open or shut the standing orders of the selected fleet. It is a panel,
-  /// not an act of the fleet: a jump under way does not keep it shut. A
-  /// panel opens where the toasts stand (the top of a phone's sheet, the
-  /// foot of the desktop column), so the toasts that ask nothing make way.
+  /// not an act of the fleet: a jump under way does not keep it shut.
   void _toggleOrders() {
     if (_fleet == null) return;
     setState(() {
@@ -376,7 +391,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _outpost = false;
       }
     });
-    if (_orders) con.toasts.dismissPlain();
+    if (_orders) _clearForSheet();
     con.play('click');
   }
 
@@ -394,7 +409,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _orders = false;
       }
     });
-    if (_outpost) con.toasts.dismissPlain();
+    if (_outpost) _clearForSheet();
     con.play('click');
   }
 
@@ -562,7 +577,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final feedWidth = math.min(340.0, (size.width - dockActions.length * Dock.tileWidth) / 2 - 30);
       final feedCeiling = g.cardCenter(dirs[4]).dy + GateCard.tallest / 2;
 
-      final rightCol = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      final rightCol = Column(key: _panels, mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
         if (_trade) ...[ExchangePanel(controller: con.game), const SizedBox(height: 8)],
         if (_outpost && mine == null) ...[FoundingPanel(controller: con.game), const SizedBox(height: 8)],
@@ -674,7 +689,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               child: GuideTarget(_sheet ? 'status-sheet' : 'orders',
                   child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () {
                     setState(() => _sheet = !_sheet);
-                    if (_sheet) con.toasts.dismissPlain();
+                    if (_sheet) _clearForSheet();
                   }))),
         if (!narrow)
           Positioned(

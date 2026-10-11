@@ -252,6 +252,11 @@ class StatusPanel extends StatelessWidget {
   final Widget? footer;
   const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.holding, this.footer});
 
+  /// What a fleet under orders keeps free under its Orders row for the
+  /// reason of a hold, four lines of it, so that a hold that starts or ends
+  /// moves neither the buttons below nor the panels under this one.
+  static const holdRoom = 55.0;
+
   @override
   Widget build(BuildContext context) {
     var hull = 0, hm = 0;
@@ -318,7 +323,10 @@ class StatusPanel extends StatelessWidget {
             Kv('Fleet power', v: f.power.round().toString()),
             Kv('Scan range', v: '$scanRange'),
             Kv('Orders', key: const Key('status-orders'), v: holding == null ? pol : '$pol - HOLDING', vc: C.a300),
-            if (holding != null) WhyText(holding!.reason, key: const Key('status-hold')),
+            if (f.policy != null)
+              ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: holdRoom),
+                  child: holding == null ? null : WhyText(holding!.reason, key: const Key('status-hold'))),
             if (footer != null) Padding(padding: const EdgeInsets.only(top: 10), child: Align(alignment: Alignment.centerLeft, child: footer)),
           ]),
         ),
@@ -729,6 +737,15 @@ class OrdersPanel extends StatefulWidget {
 }
 
 class _OrdersPanelState extends State<OrdersPanel> {
+  /// Lines the report keeps room for whatever it says, so that a hold that
+  /// starts or ends moves nothing of the form under it. A sentence longer
+  /// than that at the width of the desktop column grows the box.
+  static const _reportLines = 5;
+  static const _reportSize = 10.5, _reportLeading = 1.35;
+
+  /// The settings line has its row whether or not orders stand.
+  static const _settingsHeight = 17.0;
+
   proto.PolicyPreset? _preset;
   int? _range, _engage, _fuel;
   int? _forFleet;
@@ -778,10 +795,13 @@ class _OrdersPanelState extends State<OrdersPanel> {
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
         Kv('In force', key: const Key('orders-in-force'), v: inForce.label.toUpperCase(), vc: C.a300),
-        if (standing != null)
-          Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(settingsLine(standing.params), key: const Key('orders-settings'), style: T.mono(size: 10, color: C.text2, height: 1.3))),
+        SizedBox(
+            height: _settingsHeight,
+            child: standing == null
+                ? null
+                : Align(
+                    alignment: Alignment.bottomLeft,
+                    child: Text(settingsLine(standing.params), key: const Key('orders-settings'), maxLines: 1, style: T.mono(size: 10, color: C.text2, height: 1.3)))),
         const SizedBox(height: 6),
         _report(st.tick, fleet, acts.firstOrNull),
         const SizedBox(height: 8),
@@ -854,7 +874,9 @@ class _OrdersPanelState extends State<OrdersPanel> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
         Text(head, key: const Key('orders-report-head'), style: T.cond(size: 10.5, color: hold ? C.a200 : C.text2, spacing: 1.4)),
         const SizedBox(height: 3),
-        Text(body, key: const Key('orders-report-reason'), style: T.mono(size: 10.5, color: act == null ? C.text3 : C.text, height: 1.35)),
+        ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: _reportLines * _reportSize * _reportLeading),
+            child: Text(body, key: const Key('orders-report-reason'), style: T.mono(size: _reportSize, color: act == null ? C.text3 : C.text, height: _reportLeading))),
       ]),
     );
   }

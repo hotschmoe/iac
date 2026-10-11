@@ -348,6 +348,37 @@ void main() {
     await finish(tester, c);
   });
 
+  testWidgets('Stop calls off a jump the windshield is still playing, by its tile and by X; nothing else acts until the jump is over', (tester) async {
+    final c = await pumpFake(tester, calm());
+    Iterable<int> stops() => c.commands.whereType<proto.StopCommand>().map((s) => s.fleetId);
+    int moves() => c.commands.whereType<proto.MoveCommand>().length;
+
+    await key(tester, LogicalKeyboardKey.keyE, 'e');
+    await tester.pump(const Duration(milliseconds: 300));
+    await key(tester, LogicalKeyboardKey.keyV, 'v');
+    expect(c.commands.whereType<proto.ScanCommand>(), isEmpty, reason: 'a scan waits for the jump');
+    await tester.tap(find.byKey(const ValueKey('dock-stop')));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(stops(), [1], reason: 'the tile sends the stop while the ships fly out');
+    await shot(tester, 'ws-jump-called-off-1440');
+
+    await key(tester, LogicalKeyboardKey.keyE, 'e');
+    expect(moves(), 2, reason: 'the scene has given the jump up: the gate takes the next order at once');
+    await tester.pump(const Duration(milliseconds: 300));
+    await key(tester, LogicalKeyboardKey.keyX, 'x');
+    expect(stops(), [1, 1], reason: 'and so does X');
+
+    await key(tester, LogicalKeyboardKey.keyE, 'e');
+    expect(moves(), 3);
+    final there = fleet(1, [('Scout', 1), ('Corvette', 2)], at: const proto.Hex(3, -1));
+    c.push(c.fake.copyWith(fleets: [there, ...c.fake.fleets.skip(1)]));
+    await tester.pump(const Duration(milliseconds: 100));
+    await key(tester, LogicalKeyboardKey.keyX, 'x');
+    expect(stops(), [1, 1], reason: 'a fleet that has arrived has no jump to call off');
+    await tester.pump(const Duration(seconds: 3));
+    await finish(tester, c);
+  });
+
   testWidgets('a key with no lane toasts and sends nothing', (tester) async {
     final c = await pumpFake(tester, calm());
     await key(tester, LogicalKeyboardKey.keyS, 's');
@@ -913,6 +944,64 @@ void main() {
     }
   });
 
+  testWidgets('a hold that starts or ends moves neither the form of the orders panel nor, with that panel shut, the buttons of the fleet status and the contacts, at 1440 and 390 wide', (tester) async {
+    const orders = proto.StandingOrders(preset: proto.PolicyPreset.prospect, params: proto.PolicyParams(maxRange: 2, fuelBudgetPct: 35));
+    const moved = PolicyAct(tick: 498, since: 498, preset: proto.PolicyPreset.prospect, action: 'move', reason: 'charting [3,0]');
+    const refuelling = PolicyAct(
+        tick: 500,
+        since: 484,
+        preset: proto.PolicyPreset.prospect,
+        action: 'hold',
+        reason: 'refuelling: a fuel budget of 35% of deuterium income earns nothing (tank 18 of 180); raise fuel_budget_pct or wait for the store to fill');
+    const shields = PolicyAct(tick: 501, since: 501, preset: proto.PolicyPreset.prospect, action: 'hold', reason: 'shields recharging (76%)');
+    final under = calm().copyWith(fleets: [fleet(1, [('Scout', 1), ('Corvette', 2)], orders: orders), fleet(2, [('Hauler', 1)], at: home)]);
+    const form = [
+      ValueKey('orders-doctrine-manual'),
+      ValueKey('orders-doctrine-patrolHome'),
+      ValueKey('orders-range-down'),
+      ValueKey('orders-fuel-up'),
+      ValueKey('orders-set'),
+    ];
+    const footer = [ValueKey('orders-toggle'), ValueKey('manage-toggle')];
+
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final c = await pumpFake(tester, under.copyWith(policyActs: {1: const [moved]}), size: size);
+      if (size.width < 1440) {
+        await tester.tap(find.byKey(const ValueKey('status-sheet')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      List<Rect> places(List<ValueKey<String>> keys) => [for (final k in keys) tester.getRect(find.byKey(k))];
+      Future<void> report(List<PolicyAct> acts) async {
+        c.push(c.fake.copyWith(policyActs: {1: acts}));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      final status = [...places(footer), tester.getRect(find.byType(ContactsPanel))];
+      expect(find.byKey(const Key('status-hold')), findsNothing);
+      await report(const [refuelling, moved]);
+      expect(find.descendant(of: find.byKey(const Key('status-hold')), matching: find.text(refuelling.reason)), findsOneWidget);
+      expect([...places(footer), tester.getRect(find.byType(ContactsPanel))], status,
+          reason: 'the fleet status has the room for a hold of four lines at ${size.width.round()} px: its buttons and the contacts stay');
+      await report(const [moved]);
+      expect([...places(footer), tester.getRect(find.byType(ContactsPanel))], status, reason: 'and when the hold ends');
+
+      await tester.tap(find.byKey(const ValueKey('orders-toggle')));
+      await tester.pump(const Duration(milliseconds: 100));
+      final before = places(form);
+      await report(const [refuelling, moved]);
+      expect(tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data, 'HOLDING FOR 0:16');
+      expect(places(form), before, reason: 'a hold of four lines began at ${size.width.round()} px');
+      await shot(tester, 'ws-orders-hold-in-place-${size.width.round()}');
+      await report(const [shields, refuelling, moved]);
+      expect(places(form), before, reason: 'another of one line took its place');
+      await report(const [moved, shields, refuelling, moved]);
+      expect(find.byKey(const Key('status-hold')), findsNothing);
+      expect(places(form), before, reason: 'and the hold ended');
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
   testWidgets('a fleet under orders this console never gave shows their settings, and the steppers start from them (demo)', (tester) async {
     final c = DemoController()..startDemo();
     await pumpShell(tester, screen: Screen.windshield, controller: c);
@@ -968,15 +1057,14 @@ void main() {
       final toast = find.descendant(
           of: find.byType(ToastLayer), matching: find.text('fleet 999 not found (or it has no ships left); its standing orders were not changed'));
       expect(toast, findsOneWidget, reason: 'the world\'s refusal, where the player is looking');
+      final dock = tester.getRect(find.byKey(const ValueKey('dock-scan')));
+      expect(tester.getRect(toast).bottom < dock.top, isTrue, reason: 'on the windshield a toast sits at the top at every width, clear of the dock');
+      expect(tester.getRect(toast).left >= tester.getRect(find.byKey(const ValueKey('arena'))).left, isTrue, reason: 'inside the screen, not over the rail beside it');
       if (size.width < 1440) {
-        final dock = tester.getRect(find.byKey(const ValueKey('dock-scan')));
         final sheet = tester.getRect(find.byKey(const ValueKey('status-sheet')));
-        expect(tester.getRect(toast).bottom < dock.top, isTrue,
-            reason: 'where the windshield runs its dock along the bottom, at a phone\'s width or a narrow window\'s, a toast sits at the top, clear of it');
         expect(tester.getRect(toast).right < sheet.left, isTrue, reason: 'and to the left of the button that opens the sheet');
-        expect(tester.getRect(toast).left >= tester.getRect(find.byKey(const ValueKey('arena'))).left, isTrue, reason: 'inside the screen, not over the rail beside it');
       } else {
-        expect(tester.getRect(toast).top > size.height / 2 && tester.getRect(toast).right > size.width - 40, isTrue, reason: 'with the side columns up, a toast is at the bottom right');
+        expect(tester.getRect(toast).right < panel.left, isTrue, reason: 'with the side columns up, it is left of the one that holds the panels and their buttons');
       }
       await shot(tester, 'ws-orders-refused-${size.width.round()}');
       if (size.width == 1100) {

@@ -15,6 +15,7 @@ import 'package:iac_client/design/panel.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/views/overlays.dart' show ToastLayer;
 import 'package:iac_client/views/rail.dart';
+import 'package:iac_client/views/windshield/parts.dart' show FleetRail, GateCard;
 
 import 'fixtures_util.dart';
 import 'map_test.dart' show at, painterOf;
@@ -224,6 +225,74 @@ void main() {
     await endShell(tester, c);
   });
 
+  testWidgets('1440 wide: a toast raised with the outpost\'s panel open stands over the sector head, clear of the panel, its buttons, the gate cards and the fleets, and the toast of the step before does not have to make way', (tester) async {
+    final c = await _open(tester, _recorded('full_state__with_outpost'));
+    c.feed({'type': 'error', 'code': 'InvalidTarget', 'message': 'sample refusal of the step before'});
+    await tester.pump(const Duration(milliseconds: 500));
+    final earlier = find.descendant(of: find.byType(ToastLayer), matching: find.text('sample refusal of the step before'));
+    expect(earlier, findsOneWidget);
+
+    await _key(tester, LogicalKeyboardKey.keyO, 'o');
+    expect(earlier, findsOneWidget, reason: 'on a desktop the panel opens in the right-hand column, where no toast stands');
+    await tester.pump(const Duration(seconds: 10));
+    expect(earlier, findsNothing);
+
+    await _press(tester, 'outpost-abandon');
+    c.feed({'type': 'error', 'code': 'InvalidTarget', 'message': _bigRefusal});
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pump(const Duration(milliseconds: 500));
+    final toast = tester.getRect(find.descendant(of: find.byType(ToastLayer), matching: find.text(_bigRefusal))).inflate(14);
+    await shot(tester, 'outpost-panel-toast-1440');
+
+    expect(toast.right < tester.getRect(find.byKey(const ValueKey('outpost-panel'))).left, isTrue, reason: 'the toast stands left of the right-hand column: $toast');
+    expect(toast.left >= tester.getRect(find.byKey(const ValueKey('arena'))).left, isTrue, reason: 'inside the screen, not over the rail');
+    for (final key in const ['outpost-abandon-confirm', 'outpost-abandon-cancel', 'hold-load', 'hold-unload', 'orders-toggle', 'dock-stop']) {
+      expect(toast.overlaps(tester.getRect(find.byKey(ValueKey(key)))), isFalse, reason: 'it does not lie over $key');
+    }
+    for (final card in find.byType(GateCard).evaluate()) {
+      expect(toast.overlaps(tester.getRect(find.byWidget(card.widget))), isFalse, reason: 'nor over a gate card, at eight lines');
+    }
+    expect(toast.bottom < tester.getRect(find.byType(FleetRail)).top, isTrue, reason: 'nor over the fleets');
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 10));
+    await endShell(tester, c);
+  });
+
+  testWidgets('390 wide: the toast of the step before makes way for the sheet the outpost\'s panel opens in, and one raised afterwards shows', (tester) async {
+    final c = await _open(tester, _recorded('full_state__with_outpost'), size: _phone);
+    c.feed({'type': 'error', 'code': 'InvalidTarget', 'message': 'sample refusal of the step before'});
+    await tester.pump(const Duration(milliseconds: 500));
+    final earlier = find.descendant(of: find.byType(ToastLayer), matching: find.text('sample refusal of the step before'));
+    expect(earlier, findsOneWidget);
+    await _press(tester, 'dock-outpost');
+    expect(find.byKey(const ValueKey('outpost-panel')), findsOneWidget);
+    expect(earlier, findsNothing, reason: 'the sheet opens where the toasts stand');
+    c.feed({'type': 'error', 'code': 'InvalidTarget', 'message': 'sample refusal raised with the sheet open'});
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.descendant(of: find.byType(ToastLayer), matching: find.text('sample refusal raised with the sheet open')), findsOneWidget);
+    await tester.pump(const Duration(seconds: 10));
+    await endShell(tester, c);
+  });
+
+  testWidgets('a window dragged from the desktop layout to the sheet layout, to a phone\'s width and back keeps the outpost\'s panel open and an Abandon that was asked', (tester) async {
+    final c = await _open(tester, _recorded('full_state__with_outpost'));
+    await _key(tester, LogicalKeyboardKey.keyO, 'o');
+    await _press(tester, 'outpost-abandon');
+    expect(_said(tester, 'outpost-abandon-warning'), contains('NOTHING IS REFUNDED'));
+    for (final size in const [Size(1100, 800), _phone, Size(1100, 800), _desktop]) {
+      tester.view.physicalSize = size;
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      final wide = size.width.round();
+      expect(find.byKey(const ValueKey('outpost-panel')), findsOneWidget, reason: 'the panel is still open at $wide');
+      expect(find.byKey(const Key('outpost-abandon-warning')), findsOneWidget, reason: 'and still asks at $wide');
+      expect(tester.takeException(), isNull, reason: 'at $wide');
+    }
+    await _press(tester, 'outpost-abandon-confirm');
+    expect(c.commands.whereType<proto.AbandonOutpostCommand>(), hasLength(1));
+    await endShell(tester, c);
+  });
+
   for (final size in [_desktop, _least, _phone]) {
     final wide = size.width.round();
     testWidgets('$wide wide: the outpost panel and its dock hold seven-digit figures, in the windshield and on the outpost\'s own screen', (tester) async {
@@ -407,7 +476,7 @@ void main() {
     await _key(tester, LogicalKeyboardKey.keyO, 'o');
     await tester.pump(const Duration(milliseconds: 250));
     await tester.pump(const Duration(milliseconds: 50));
-    expect(refused, findsNothing, reason: 'a panel opens where the toasts stand, so the toast of the step before makes way');
+    expect(refused, findsOneWidget, reason: 'on a desktop the panel opens in the right-hand column, which no toast reaches: the toast of the step before stays to be read');
     expect(_why(tester, 'found-why'), 'fleet 101 is at ring 4; an outpost stands in rings 9 to 20');
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('found-order'))).onPressed, isNull);
 
