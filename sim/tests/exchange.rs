@@ -2,6 +2,11 @@
 // leaves a player with more than they brought, that an order in pieces
 // returns what the whole order would, how the meter recovers and survives a
 // restart, what is refused and why, and that the hub stays empty space.
+//
+// And the way surplus gets there: a hold loaded from a full stockpile at the
+// home dock, kept aboard until the fleet has been away, put back by hand,
+// refused when it cannot be met, ended by standing orders, counted with the
+// stockpile by a raid, and written with the fleet.
 
 #[allow(dead_code)]
 mod common;
@@ -11,14 +16,16 @@ use std::sync::{Arc, Mutex};
 use common::*;
 use iac_shared::constants::{
     Density, ResourceKind, Resources, ShipClass, TerrainType, EXCHANGE_FEE_MAX, EXCHANGE_FEE_MIN, EXCHANGE_METER_SHARE,
+    RAID_LOSS_CAP_CRYSTAL, RAID_LOSS_CAP_DEUT, RAID_LOSS_CAP_METAL,
 };
 use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::protocol::{
-    Command, ErrorCode, EventKind, ExchangeMeter, ExchangeQuote, ExchangeTerms, ServerMessage,
+    ClientMessage, Command, ErrorCode, EventKind, ExchangeMeter, ExchangeQuote, ExchangeTerms, PolicyPreset,
+    PolicyUpdate, RaidResolvedEvent, ServerMessage,
 };
 use iac_shared::scaling;
 use iac_shared::world::{HubService, NpcBehaviorType, WorldGen};
-use iac_sim::engine::{FleetStatus, NpcFleet, Ship, MAX_NPC_SHIPS};
+use iac_sim::engine::{FleetStatus, IncomingRaid, NpcFleet, RaidState, Ship, MAX_NPC_SHIPS};
 use iac_sim::{GameEngine, Persist, PersistBatch, Snapshot};
 
 use ResourceKind::{Crystal, Deuterium, Metal};
@@ -33,7 +40,7 @@ fn set_mines(e: &mut Empire, metal: u8, crystal: u8, deuterium: u8) {
     });
 }
 
-fn load(e: &mut Empire, cargo: Resources) {
+fn stow(e: &mut Empire, cargo: Resources) {
     let fid = e.fid;
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
@@ -48,7 +55,7 @@ fn trader(pace: &str, mines: (u8, u8, u8), haulers: usize, cargo: Resources) -> 
     set_mines(&mut e, mines.0, mines.1, mines.2);
     let fid = e.fid;
     muster(&mut e.engine, fid, &[(ShipClass::Hauler, haulers)], HUB);
-    load(&mut e, cargo);
+    stow(&mut e, cargo);
     e
 }
 
@@ -105,7 +112,7 @@ fn a_hauler_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
     deploy(&mut e.engine, fid, first, Some(5000.0));
     let hold = e.fleet().cargo_capacity;
     assert!((hold - 632.4555).abs() < 0.01, "one Hauler holds 200 x sqrt(10) at season pace: {hold}");
-    load(&mut e, Resources { metal: hold, ..Resources::default() });
+    stow(&mut e, Resources { metal: hold, ..Resources::default() });
 
     let afar = quote(&mut e, Metal, Deuterium, None);
     assert!(afar.refusal.as_deref().is_some_and(|why| why.contains("from the exchange at the hub")), "{:?}", afar.refusal);
@@ -454,4 +461,373 @@ fn the_hub_is_empty_space_and_no_hostile_group_enters_it() {
     assert!(moved >= 200, "the patrols did move: {moved} jumps");
     assert_eq!(e.engine.fleets[&fid].location, HUB);
     trade(&mut e, Metal, Crystal, None).expect("the exchange is open with patrols all around");
+}
+
+/// An empire with `haulers` Haulers standing at its home dock.
+fn carrier(pace: &str, mines: (u8, u8, u8), haulers: usize) -> Empire {
+    let mut e = Empire::join(world(pace), "Carrier");
+    set_mines(&mut e, mines.0, mines.1, mines.2);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    muster(&mut e.engine, fid, &[(ShipClass::Hauler, haulers)], home);
+    e
+}
+
+fn stock(metal: f32, crystal: f32, deuterium: f32) -> Resources {
+    Resources { metal, crystal, deuterium }
+}
+
+fn put_aboard(fleet_id: u64, resource: ResourceKind, amount: Option<f32>) -> Command {
+    Command::Load { fleet_id, resource, amount }
+}
+
+fn alerts(e: &Empire, mark: usize) -> Vec<String> {
+    e.since(mark, |k| match k {
+        EventKind::Alert(a) => Some(a.message.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_full_stockpile_is_carried_to_the_hub_traded_and_brought_home() {
+    let mut e = carrier("season", (10, 9, 8), 4);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    deploy(&mut e.engine, fid, home, Some(5000.0));
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        (fleet.fuel, fleet.fuel_max) = (1e8, 1e8);
+    });
+    let cap = scaling::storage_cap(0, &e.engine.pace());
+    e.set_stockpile(stock(cap.metal, 1000.0, 500.0));
+    e.run(3);
+    assert_eq!(e.stockpile().metal, cap.metal, "mine output at the cap is lost");
+    assert_eq!(e.state().homeworld.storage.capped, [Metal]);
+
+    let hold = e.fleet().cargo_capacity;
+    assert!((hold - 4.0 * 632.4555).abs() < 0.01, "four Haulers at season pace: {hold}");
+    let (score, before) = (e.score_row(), owned(&e));
+    let mark = e.mark();
+    e.order(put_aboard(fid, Metal, None)).expect("the hold takes all that fits");
+    let fleet = e.fleet();
+    assert_eq!((fleet.cargo, fleet.laden, fleet.cargo_blocked), (stock(hold, 0.0, 0.0), true, false));
+    assert!((e.stockpile().metal - (cap.metal - hold)).abs() < 0.01);
+    assert!((owned(&e) - before).abs() < 0.01, "a load moves resources and makes none");
+    assert_eq!(e.score_row(), score, "a load moves no score");
+    let said = alerts(&e, mark);
+    assert!(
+        said.len() == 1
+            && said[0].starts_with(&format!("fleet {fid} loaded {hold:.0} metal from the stockpile: it carries {hold:.0} of {hold:.0}")),
+        "{said:?}"
+    );
+
+    e.run(40);
+    let docked = e.fleet();
+    assert_eq!((docked.cargo.metal, docked.laden), (hold, true), "the dock leaves a laden hold alone");
+    assert!(e.stockpile().metal > cap.metal - hold, "the mines fill the room the load made");
+    assert!(e.state().homeworld.storage.capped.is_empty());
+
+    e.travel(HUB);
+    e.run_until(200, |e| e.engine.fleets[&fid].state == FleetStatus::Idle);
+    let away = e.fleet();
+    assert_eq!((away.cargo.metal, away.laden), (hold, false), "the mark ends with the first jump");
+    let made = trade(&mut e, Metal, Deuterium, None).expect("the surplus is sold");
+    assert!(made.amount == hold && made.receive >= 600.0, "{made:?}");
+    assert_eq!(e.fleet().cargo, stock(0.0, 0.0, made.receive));
+
+    let left_with = e.stockpile().deuterium;
+    e.travel(home);
+    e.run(2);
+    let back = e.fleet();
+    assert_eq!(
+        (back.cargo, back.laden, back.cargo_blocked),
+        (Resources::default(), false, false),
+        "what it brings home unloads as cargo always has"
+    );
+    assert!(e.stockpile().deuterium >= left_with + made.receive);
+}
+
+#[test]
+fn unload_puts_a_laden_hold_back_as_far_as_the_cap_allows() {
+    let mut e = carrier("season", (4, 4, 4), 2);
+    let fid = e.fid;
+    let cap = scaling::storage_cap(0, &e.engine.pace());
+    e.set_stockpile(stock(3000.0, 2000.0, 1000.0));
+    e.order(put_aboard(fid, Metal, Some(700.0))).expect("an exact amount");
+    e.order(put_aboard(fid, Crystal, Some(300.5))).expect("a second resource in the same hold");
+    assert_eq!((e.fleet().cargo, e.stockpile()), (stock(700.0, 300.5, 0.0), stock(2300.0, 1699.5, 1000.0)));
+
+    let (score, mark) = (e.score_row(), e.mark());
+    e.order(Command::Unload { fleet_id: fid }).expect("a laden hold unloads by hand");
+    let fleet = e.fleet();
+    assert_eq!((fleet.cargo, fleet.laden, e.stockpile()), (Resources::default(), false, stock(3000.0, 2000.0, 1000.0)));
+    assert_eq!(alerts(&e, mark), [format!("fleet {fid} unloaded 700 metal and 301 crystal into the stockpile")]);
+    assert_eq!(e.score_row(), score, "an unload moves no score");
+    let (code, why) = e.refusal(Command::Unload { fleet_id: fid });
+    assert_eq!(code, ErrorCode::InvalidCommand);
+    assert!(why.contains("was not loaded by hand"), "{why}");
+
+    e.order(put_aboard(fid, Metal, None)).expect("fill the hold");
+    let hold = e.fleet().cargo_capacity;
+    assert_eq!(e.fleet().cargo.metal, hold);
+    e.set_stockpile(stock(cap.metal - 100.0, 0.0, 0.0));
+    assert!(e.fleet().laden, "the mark is part of the saved world");
+    let mark = e.mark();
+    e.order(Command::Unload { fleet_id: fid }).expect("unload against a nearly full store");
+    let fleet = e.fleet();
+    assert!((fleet.cargo.metal - (hold - 100.0)).abs() < 0.01 && !fleet.laden && fleet.cargo_blocked, "{:?}", fleet.cargo);
+    assert_eq!(e.stockpile().metal, cap.metal, "the stockpile never passes its cap");
+    let said = alerts(&e, mark);
+    assert!(said[0].contains("unloaded 100 metal") && said[0].contains("stays aboard until the stockpile has room"), "{said:?}");
+
+    e.set_stockpile(Resources::default());
+    e.run(1);
+    assert_eq!(e.fleet().cargo, Resources::default(), "the dock takes the rest as room opens");
+}
+
+#[test]
+fn a_load_that_cannot_be_met_is_refused_with_what_is_short() {
+    let mut e = carrier("season", (4, 4, 4), 1);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let held = stock(400.0, 0.0, 5000.0);
+    e.set_stockpile(held);
+    let untouched = |e: &Empire| e.stockpile() == held && e.fleet().cargo == Resources::default() && !e.fleet().laden;
+
+    let (code, why) = e.refusal(put_aboard(fid, Metal, Some(400.5)));
+    assert_eq!(code, ErrorCode::NoResources);
+    assert_eq!(why, format!("the stockpile holds 400.0 metal; fleet {fid} cannot load 400.5"));
+
+    let (code, why) = e.refusal(put_aboard(fid, Crystal, None));
+    assert_eq!(code, ErrorCode::NoResources);
+    assert_eq!(why, "the stockpile holds no crystal to load");
+
+    let (code, why) = e.refusal(put_aboard(fid, Deuterium, Some(700.0)));
+    assert_eq!(code, ErrorCode::CargoFull);
+    assert_eq!(
+        why,
+        format!("the hold of fleet {fid} has room for 632.5 more (it carries 0 of 632); it cannot load 700.0 deuterium")
+    );
+
+    for bad in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+        let (code, why) = e.refusal(put_aboard(fid, Metal, Some(bad)));
+        assert_eq!(code, ErrorCode::InvalidCommand);
+        assert!(why.contains("must be a positive number"), "{why}");
+    }
+
+    let outcome = e.engine.execute(pid + 1000, put_aboard(fid, Metal, None));
+    assert_eq!(outcome.error.map(|(code, _)| code), Some(ErrorCode::FleetNotFound), "another player's fleet");
+    let (code, why) = e.refusal(Command::Unload { fleet_id: fid + 1000 });
+    assert!(code == ErrorCode::FleetNotFound && why.contains("not found"), "{why}");
+    assert!(untouched(&e));
+
+    e.order(put_aboard(fid, Deuterium, None)).expect("fill the hold");
+    for amount in [None, Some(10.0)] {
+        let (code, why) = e.refusal(put_aboard(fid, Metal, amount));
+        assert_eq!(code, ErrorCode::CargoFull);
+        assert_eq!(why, format!("the hold of fleet {fid} is full: it carries 632 of 632"));
+    }
+    e.order(Command::Unload { fleet_id: fid }).expect("put it back");
+    assert!(untouched(&e));
+
+    let orders = |preset| ClientMessage::PolicyUpdate(PolicyUpdate { fleet_id: fid, preset, params: None });
+    assert!(e.engine.answer(pid, orders(PolicyPreset::MineAndReturn)).is_empty());
+    let (code, why) = e.refusal(put_aboard(fid, Metal, Some(10.0)));
+    assert_eq!(code, ErrorCode::InvalidCommand);
+    assert!(why.contains("is under standing orders (mine+return)") && why.contains("set it to manual"), "{why}");
+    assert!(e.engine.answer(pid, orders(PolicyPreset::Manual)).is_empty());
+    assert!(untouched(&e));
+
+    let out = e.engine.world_gen.connected_neighbors(home).slice()[0];
+    e.order(Command::Move { fleet_id: fid, target: out }).expect("leave the dock");
+    for cmd in [put_aboard(fid, Metal, Some(10.0)), Command::Unload { fleet_id: fid }] {
+        let (code, why) = e.refusal(cmd);
+        assert_eq!(code, ErrorCode::OnCooldown);
+        assert!(why.contains("is in transit"), "{why}");
+    }
+    e.run_until(200, |e| e.engine.fleets[&fid].location == out && e.engine.fleets[&fid].state == FleetStatus::Idle);
+    let (code, why) = e.refusal(put_aboard(fid, Metal, Some(10.0)));
+    assert_eq!(code, ErrorCode::NotInSector);
+    assert!(
+        why.contains(&format!("fleet {fid} is at {out}, 1 hex from home {home}")) && why.contains("at the homeworld only"),
+        "{why}"
+    );
+    assert_eq!(e.refusal(Command::Unload { fleet_id: fid }).0, ErrorCode::NotInSector);
+    assert_eq!(e.fleet().cargo, Resources::default());
+}
+
+#[test]
+fn standing_orders_end_a_hand_loaded_hold() {
+    let mut e = carrier("season", (4, 4, 4), 2);
+    let (pid, fid) = (e.pid, e.fid);
+    e.set_stockpile(stock(5000.0, 1000.0, 3000.0));
+    e.order(put_aboard(fid, Metal, None)).expect("fill the hold");
+    let hold = e.fleet().cargo_capacity;
+    assert_eq!((e.fleet().cargo.metal, e.fleet().laden), (hold, true));
+
+    let mark = e.mark();
+    let orders = ClientMessage::PolicyUpdate(PolicyUpdate { fleet_id: fid, preset: PolicyPreset::Prospect, params: None });
+    assert!(e.engine.answer(pid, orders).is_empty());
+    e.absorb();
+    let fleet = e.fleet();
+    assert_eq!((fleet.cargo, fleet.laden, fleet.policy), (Resources::default(), false, Some(PolicyPreset::Prospect)));
+    assert_eq!(e.stockpile().metal, 5000.0);
+    let set = e.since(mark, |k| match k {
+        EventKind::PolicyAction(p) => Some(p.reason.clone()),
+        _ => None,
+    });
+    assert!(set[0].ends_with("; the hold loaded by hand goes back to the stockpile"), "{set:?}");
+
+    e.run(120);
+    let holds = e.since(mark, |k| match k {
+        EventKind::PolicyAction(p) if p.action == "hold" && p.reason.contains("waiting to unload") => Some(p.reason.clone()),
+        _ => None,
+    });
+    assert!(holds.is_empty(), "a fleet under orders is never left with a hold the dock may not take: {holds:?}");
+    assert!(e.engine.fleets.values().all(|f| !f.laden));
+}
+
+#[test]
+fn a_lost_raid_counts_cargo_at_home_with_the_stockpile() {
+    let raided = |aboard: Resources| -> (Empire, RaidResolvedEvent) {
+        let mut e = carrier("season", (6, 5, 4), 8);
+        let (pid, fid) = (e.pid, e.fid);
+        edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.storage_vault = 2);
+        e.set_stockpile(stock(20_000.0, 9000.0, 6000.0));
+        for kind in ResourceKind::ALL {
+            if aboard.get(kind) > 0.0 {
+                e.order(put_aboard(fid, kind, Some(aboard.get(kind)))).expect("room and stock for it");
+            }
+        }
+        let arrival_tick = e.engine.current_tick() + 1;
+        edit(&mut e.engine, |s| {
+            s.raid_states.insert(pid, RaidState {
+                first_seen_tick: 0,
+                next_roll_tick: u64::MAX,
+                last_raid_tick: 0,
+                suppress_until: 0,
+                missed_rolls: 0,
+                incoming: Some(IncomingRaid { arrival_tick, power: 1e9 }),
+            });
+        });
+        let mark = e.mark();
+        e.run(1);
+        let raid = e.since(mark, |k| match k {
+            EventKind::RaidResolved(r) => Some(r.clone()),
+            _ => None,
+        });
+        (e, raid.into_iter().next().expect("the raid arrives"))
+    };
+    let pile = |e: &Empire| e.engine.fleets.values().fold(e.stockpile(), |sum, f| sum.add(f.cargo));
+    let near = |a: Resources, b: Resources| ResourceKind::ALL.into_iter().all(|k| (a.get(k) - b.get(k)).abs() < 0.05);
+
+    let aboard = stock(3000.0, 1500.0, 500.0);
+    let start = stock(20_000.0, 9000.0, 6000.0);
+    let (plain, plain_raid) = raided(Resources::default());
+    let (laden, laden_raid) = raided(aboard);
+    assert!(!plain_raid.defended && !laden_raid.defended);
+    assert_eq!((plain_raid.ships_lost, laden_raid.ships_lost), (2, 2), "a quarter of the docked ships");
+
+    let pace = laden.engine.pace();
+    let protected = scaling::storage_protected(2, &pace);
+    let whole = start.add(laden.engine.players[&laden.pid].production_per_tick(&pace));
+    let exposed = whole.sub(protected);
+    let expected = stock(
+        exposed.metal * RAID_LOSS_CAP_METAL,
+        exposed.crystal * RAID_LOSS_CAP_CRYSTAL,
+        exposed.deuterium * RAID_LOSS_CAP_DEUT,
+    );
+    assert!(near(laden_raid.resources_lost, expected), "{:?} against {expected:?}", laden_raid.resources_lost);
+    assert!(near(plain_raid.resources_lost, laden_raid.resources_lost), "a hold hides nothing from a raid");
+    assert!(near(plain_raid.protected_kept, laden_raid.protected_kept) && near(laden_raid.protected_kept, protected));
+    assert!(near(pile(&plain), pile(&laden)), "{:?} against {:?}", pile(&plain), pile(&laden));
+
+    let fleet = laden.fleet();
+    assert!(fleet.laden, "what the raid left stays aboard");
+    for kind in ResourceKind::ALL {
+        let lost = aboard.get(kind) - fleet.cargo.get(kind);
+        let share = laden_raid.resources_lost.get(kind) * aboard.get(kind) / whole.get(kind);
+        assert!(lost > 1.0, "the hold paid for its {}: {lost}", kind.label());
+        assert!((lost - share).abs() < 0.05, "{}: the hold lost {lost}, its share is {share}", kind.label());
+    }
+}
+
+#[test]
+fn a_laden_hold_is_written_with_the_fleet_and_survives_a_restart() {
+    let mut e = carrier("season", (4, 4, 4), 2);
+    let (pid, fid) = (e.pid, e.fid);
+    e.set_stockpile(stock(3000.0, 2000.0, 1000.0));
+    let batches = Arc::new(Mutex::new(Vec::new()));
+    e.engine.attach_persist(Box::new(Capture(batches.clone())));
+    e.engine.persist_dirty_state();
+    batches.lock().unwrap().clear();
+    let written = |batches: &Mutex<Vec<PersistBatch>>| -> Vec<(f32, bool)> {
+        let mut batches = batches.lock().unwrap();
+        let rows = batches.iter().flat_map(|b| &b.fleets).filter(|f| f.id == fid).map(|f| (f.cargo.metal, f.laden)).collect();
+        batches.clear();
+        rows
+    };
+
+    e.order(put_aboard(fid, Metal, Some(500.0))).expect("load");
+    e.engine.persist_dirty_state();
+    let stockpiles: Vec<f32> = batches
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(|b| &b.players)
+        .filter(|p| p.id == pid)
+        .map(|p| p.resources.metal)
+        .collect();
+    assert_eq!(stockpiles, [2500.0], "the load writes the stockpile");
+    assert_eq!(written(&batches), [(500.0, true)], "and the hold with its mark, in the fleet's row");
+
+    let saved: Snapshot = serde_json::from_slice(&serde_json::to_vec(&e.engine.snapshot()).unwrap()).unwrap();
+    assert_eq!(saved.hash(), e.engine.snapshot().hash());
+    let mut restored = Empire { engine: GameEngine::restore(saved), pid, fid, log: Vec::new() };
+    e.run(50);
+    restored.run(50);
+    let fleet = restored.fleet();
+    assert_eq!((fleet.cargo.metal, fleet.laden), (500.0, true), "a restart does not unload a laden hold");
+    assert_eq!(restored.engine.snapshot().hash(), e.engine.snapshot().hash());
+
+    e.engine.persist_dirty_state();
+    batches.lock().unwrap().clear();
+    e.order(Command::Unload { fleet_id: fid }).expect("unload");
+    e.engine.persist_dirty_state();
+    assert_eq!(written(&batches), [(0.0, false)]);
+}
+
+#[test]
+fn a_laden_fleet_split_at_the_dock_keeps_both_halves_laden() {
+    let mut e = carrier("season", (4, 4, 4), 4);
+    let (pid, fid) = (e.pid, e.fid);
+    e.set_stockpile(stock(9000.0, 0.0, 0.0));
+    e.order(put_aboard(fid, Metal, None)).expect("fill the hold");
+    let hold = e.fleet().cargo_capacity;
+    let other = |e: &Empire| {
+        e.engine.fleets.values().find(|f| f.owner_id == pid && f.id != fid).map(|f| f.id).expect("the detachment")
+    };
+
+    let one = e.fleet().ships[0].id;
+    e.order(Command::Split { fleet_id: fid, ship_ids: vec![one] }).expect("split at the dock");
+    let wing = other(&e);
+    e.run(5);
+    let (main, part) = (&e.engine.fleets[&fid], &e.engine.fleets[&wing]);
+    assert!(main.laden && part.laden);
+    assert!((main.cargo.metal - 0.75 * hold).abs() < 0.01 && (part.cargo.metal - 0.25 * hold).abs() < 0.01);
+
+    e.order(Command::Merge { fleet_id: fid, other_fleet_id: wing }).expect("merge back");
+    e.run(5);
+    let merged = e.fleet();
+    assert!((merged.cargo.metal - hold).abs() < 0.01 && merged.laden, "the fleet that absorbs keeps its state");
+
+    e.order(Command::Unload { fleet_id: fid }).expect("unload");
+    let one = e.fleet().ships[0].id;
+    e.order(Command::Split { fleet_id: fid, ship_ids: vec![one] }).expect("split again");
+    let wing = other(&e);
+    e.order(put_aboard(wing, Metal, None)).expect("load the detachment only");
+    e.order(Command::Merge { fleet_id: fid, other_fleet_id: wing }).expect("fold it into the unladen fleet");
+    assert!(!e.fleet().laden);
+    e.run(1);
+    assert_eq!(e.fleet().cargo, Resources::default(), "an unladen fleet that absorbs a laden one unloads");
 }
