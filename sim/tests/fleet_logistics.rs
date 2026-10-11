@@ -7,6 +7,7 @@ mod common;
 use common::*;
 use iac_shared::hex::Hex;
 use iac_shared::constants::{Density, Resources, ShipClass, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
+use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ClientMessage, Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset,
     PolicyUpdate, ServerMessage, ThreatBasis, MAX_ODDS_SECTORS,
@@ -16,6 +17,7 @@ use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus};
 use iac_sim::odds::{self, Force};
 use iac_sim::persist::ExploreCredit;
+use iac_sim::GameEngine;
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
     e.since(mark, |k| match k {
@@ -851,4 +853,80 @@ fn a_harvest_that_ends_by_itself_says_why_once_and_a_fleet_under_orders_leaves_i
     let said = policy_reasons(&e, mark, "move");
     assert!(said[0].starts_with("returning: cargo 100%"), "the doctrine says what the full hold means for it: {said:?}");
     assert_eq!(stopped(&e, mark), Vec::<String>::new(), "so the fleet is not reported twice");
+}
+
+fn reports(e: &Empire, mark: usize) -> Vec<(String, String)> {
+    e.since(mark, |k| match k {
+        EventKind::PolicyAction(p) if p.action != "engage" => Some((p.action.clone(), p.reason.clone())),
+        _ => None,
+    })
+}
+
+fn shields(e: &Empire) -> f32 {
+    let ships = e.fleet().ships;
+    ships.iter().map(|s| s.shield).sum::<f32>() / ships.iter().map(|s| s.shield_max).sum::<f32>()
+}
+
+#[test]
+fn a_ship_from_the_yard_or_a_fleet_merged_in_leaves_the_docked_fleet_fit_for_its_orders() {
+    let mut e = Empire::join(world("test"), "Yardmaster");
+    let (pid, fid) = (e.pid, e.fid);
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.shipyard = 1);
+    e.set_stockpile(Resources { metal: 400.0, crystal: 100.0, deuterium: 60.0 });
+    e.order(Command::BuildShip { ship_class: ShipClass::Scout, count: 1 }).expect("a scout ordered");
+    e.run_until(400, |e| e.fleet().ships.len() == 3);
+    assert_eq!(shields(&e), 1.0, "the scout the yard delivers joins the docked fleet with its shields up: {:?}", e.fleet().ships);
+
+    let newest = e.fleet().ships[2].id;
+    e.order(Command::Split { fleet_id: fid, ship_ids: vec![newest] }).expect("split it off");
+    let other = e.state().fleets.iter().find(|f| f.id != fid).expect("the new fleet").id;
+    e.order(Command::Merge { fleet_id: fid, other_fleet_id: other }).expect("and merge it back");
+    assert_eq!((e.fleet().ships.len(), shields(&e)), (3, 1.0), "a merge brings ships in as they are");
+
+    let mark = e.mark();
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).expect("orders");
+    e.run_until(30, |e| !reports(e, mark).is_empty());
+    let first = reports(&e, mark).remove(0);
+    assert!(!first.1.contains("shields"), "its first report under orders is not a wait for shields: {first:?}");
+}
+
+#[test]
+fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_dock_and_not_before() {
+    let mut e = (1u64..400)
+        .find_map(|seed| {
+            let e = Empire::join(GameEngine::new(seed, Pace::parse("blitz").expect("known pace")), "Warden");
+            let home = e.engine.players[&e.pid].homeworld;
+            e.engine.pending_template_npc(home).is_some().then_some(e)
+        })
+        .expect("a world whose first home has a convoy standing over it");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    muster(&mut e.engine, fid, &[(ShipClass::Scout, 3)], home);
+    assert_eq!(shields(&e), 1.0);
+
+    let mark = e.mark();
+    let params = PolicyParams { max_range: 1, engage_ratio_x10: 100, ..PolicyParams::default() };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, Some(params)).expect("patrol orders");
+    e.run_until(10, |e| !reports(e, mark).is_empty());
+    assert_eq!(reports(&e, mark), [("attack".to_string(), "engaging hostiles".to_string())], "its first act under orders is the fight");
+
+    let ended = |e: &Empire| {
+        e.since(mark, |k| match k {
+            EventKind::CombatEnded(c) => Some((c.sector, c.player_victory)),
+            _ => None,
+        })
+    };
+    e.run_until(300, |e| !ended(e).is_empty());
+    assert_eq!(ended(&e), [(home, true)], "three scouts beat the convoy, in the home sector");
+    let worn = shields(&e);
+    assert!(worn < 0.95, "and the convoy shot back: shields at {:.0}%", worn * 100.0);
+
+    e.run_until(20, |e| reports(e, mark).iter().any(|(action, _)| action == "hold"));
+    let held = reports(&e, mark).into_iter().find(|(action, _)| action == "hold").expect("a hold").1;
+    assert!(held.starts_with("shields recharging ("), "the hold is for the shields the fight cost: {held}");
+    e.run_until(200, |e| shields(e) >= 0.95);
+    let mark = e.mark();
+    e.run_until(70, |e| !reports(e, mark).is_empty());
+    let next = reports(&e, mark).remove(0);
+    assert!(!next.1.contains("shields"), "with the shields back the patrol goes on with its beat: {next:?}");
 }
