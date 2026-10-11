@@ -94,10 +94,16 @@ class NextUp {
   final NextAction action;
   final proto.ResearchType? tech;
   final proto.BuildingType? building;
-  final String? disabledReason;
-  const NextUp(this.kicker, this.title, this.why, this.button, this.action,
-      {this.urgent = false, this.cost, this.tech, this.building, this.disabledReason});
+  const NextUp(this.kicker, this.title, this.why, this.button, this.action, {this.urgent = false, this.cost, this.tech, this.building});
 }
+
+/// "Short by 35 Fe, 4 Cr: it queues now and starts when that is covered."
+/// for a building or a tech the stockpile does not cover, which is no
+/// reason not to order it; null when it is covered.
+String? queuesShort(proto.Resources stock, proto.Resources cost) => switch (shortReason(stock, cost)) {
+      null => null,
+      final short => '$short: it queues now and starts when that is covered.',
+    };
 
 /// The single most useful thing to do now, in priority order: raid, stranded
 /// fleet, storage near cap, idle lab, idle build slot, unscanned lanes.
@@ -129,20 +135,21 @@ NextUp nextUp(GameState s, EconomyView eco) {
     }
   }
   final stock = s.stock;
-  final labIdle = s.research.name == 'Idle';
   final rc = researchChoices(s.catalog);
-  if (labIdle && rc.isNotEmpty) {
+  if (labIdle(s)) {
     final o = rc.first;
-    final short = shortReason(stock, o.next!.cost);
-    return NextUp('NEXT UP', 'Research ${o.tech.label} L${o.next!.level}', 'The lab is idle. ${short == null ? 'You can afford it now.' : '$short.'}', 'Queue it', NextAction.queueResearch,
-        cost: o.next!.cost, tech: o.tech, disabledReason: short);
+    return NextUp('NEXT UP', 'Research ${o.tech.label} L${o.next!.level}', 'The lab is idle. ${queuesShort(stock, o.next!.cost) ?? 'You can afford it now.'}', 'Queue it',
+        NextAction.queueResearch,
+        cost: o.next!.cost, tech: o.tech);
   }
   if (s.buildQueue.isEmpty) {
     final bc = buildingChoices(s.catalog, limit: 1);
     if (bc.isNotEmpty) {
       final o = bc.first;
-      return NextUp('NEXT UP', 'Upgrade ${o.buildingType.label} L${o.next!.level}', 'The build slot is idle. Mines compound; idle slots are lost production.', 'Queue it', NextAction.queueBuild,
-          cost: o.next!.cost, building: o.buildingType, disabledReason: shortReason(stock, o.next!.cost));
+      final short = queuesShort(stock, o.next!.cost);
+      return NextUp('NEXT UP', 'Upgrade ${o.buildingType.label} L${o.next!.level}',
+          'The build slot is idle. Mines compound; idle slots are lost production.${short == null ? '' : ' $short'}', 'Queue it', NextAction.queueBuild,
+          cost: o.next!.cost, building: o.buildingType);
     }
   }
   for (final f in s.fleets) {
@@ -199,9 +206,10 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
   return out;
 }
 
-/// The lab stands idle with something it could research: without a Research
-/// Lab, or with every tech locked or maxed, there is nothing to queue.
-bool labIdle(GameState s) => s.research.name == 'Idle' && researchChoices(s.catalog, limit: 1).isNotEmpty;
+/// The lab stands idle with nothing ordered and something it could research:
+/// without a Research Lab, or with every tech locked or maxed, there is
+/// nothing to queue, and an order waiting for its resources is not idleness.
+bool labIdle(GameState s) => s.research.name == 'Idle' && s.research.waiting.isEmpty && researchChoices(s.catalog, limit: 1).isNotEmpty;
 
 /// "Two fleets out, one at home. Lab idle." style status line.
 String hqNote(GameState s) {
