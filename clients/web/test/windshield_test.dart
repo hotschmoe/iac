@@ -856,7 +856,8 @@ void main() {
       c.send(const proto.PolicyUpdate(fleetId: 999, preset: proto.PolicyPreset.prospect));
       await tester.pump(const Duration(milliseconds: 50));
       await tester.pump(const Duration(milliseconds: 500));
-      final toast = find.descendant(of: find.byType(ToastLayer), matching: find.text('PolicyUpdate failed'));
+      final toast = find.descendant(
+          of: find.byType(ToastLayer), matching: find.text('fleet 999 not found (or it has no ships left); its standing orders were not changed'));
       expect(toast, findsOneWidget, reason: 'the world\'s refusal, where the player is looking');
       if (size.width < 820) {
         final dock = tester.getRect(find.byKey(const ValueKey('dock-scan')));

@@ -642,7 +642,9 @@ class DemoWorld {
   /// of a hold loaded by hand.
   List<ServerMessage> _policy(int fleetId, PolicyPreset preset, PolicyParams params) {
     final f = _find(fleetId);
-    if (f == null) return [_err(ErrorCode.fleetNotFound, 'PolicyUpdate failed')];
+    if (f == null) {
+      return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left); its standing orders were not changed')];
+    }
     if (preset == PolicyPreset.manual) {
       _orders.remove(fleetId);
       _setFleet(_copy(f, clearPolicy: true));
