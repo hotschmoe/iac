@@ -56,6 +56,8 @@ pub fn view(frame: &mut Frame<'_>, state: &ClientState) {
         render_fleet_panel(frame, state, chunks[1]);
     } else if state.exchange_panel.is_some() {
         render_exchange_panel(frame, state, chunks[1]);
+    } else if state.outpost_panel.is_some() {
+        render_outpost_panel(frame, state, chunks[1]);
     } else if state.show_tech_tree && state.current_view == crate::state::View::Homeworld {
         homeworld::render_tech_tree(frame, state, chunks[1]);
     } else {
@@ -123,12 +125,18 @@ fn render_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         " FLEETS | [Up/Down] Ship  [Space] Mark  [s] Split  [g] Merge in  [r] Resource  [Left/Right] Amount  [l] Load  [u] Unload  [Tab] Fleet  [f] Close"
     } else if state.exchange_panel.is_some() {
         " EXCHANGE | [g] Give  [w] Want  [Left/Right] Amount  [Enter] Trade  [Tab] Fleet  [e] Close"
+    } else if state.outpost_panel.is_some_and(|panel| panel.abandon_armed) {
+        " OUTPOST | [y] Abandon it   any other key keeps it"
+    } else if state.outpost_panel.is_some() && state.outpost.is_some() {
+        " OUTPOST | [U] Upgrade  [A] Abandon  [f] Fleets: load and unload  [Tab] Fleet  [o] Close"
+    } else if state.outpost_panel.is_some() {
+        " OUTPOST | [F] Survey this sector  [Enter] Found  [Tab] Fleet  [o] Close"
     } else if state.show_tech_tree && state.current_view == crate::state::View::Homeworld {
         " TECH TREE | [t] Close  [?] Keys"
     } else {
         match state.current_view {
             crate::state::View::CommandCenter => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
-            crate::state::View::Windshield => " WINDSHIELD | [1-6] Move  [v] Scan  [h] Harvest  [x] Board  [a] Attack  [e] Exchange  [p] Orders  [f] Fleets  [?] Keys",
+            crate::state::View::Windshield => " WINDSHIELD | [1-6] Move  [v] Scan  [h] Harvest  [x] Board  [a] Attack  [e] Exchange  [o] Outpost  [p] Orders  [f] Fleets  [?] Keys",
             crate::state::View::StarMap => " STAR MAP | [Arrows] Crosshair  [Enter] Plot Course  [z/x] Zoom  [?] Keys",
             crate::state::View::Homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [+/-] Count  [x/X/z] Cancel running  [c/C/Z] Cancel waiting  [t] Tree  [?] Keys",
         }
@@ -175,10 +183,16 @@ FLEET ORDERS
 f         Fleet panel: split ships
           off, merge fleets in
           the same sector; at
-          home, load the hold
-          from the stockpile
+          home or at your
+          outpost, load the hold
+          from the dock's stock
           (r, arrows, l) or
           unload it (u)
+o         Outpost: yours, or the
+          survey of this sector.
+          F surveys, Enter founds,
+          U upgrades, A then y
+          abandons
 p         Cycle standing orders
           (manual > prospect >
            mine+return > salvage
@@ -328,28 +342,41 @@ fn hold_lines(state: &ClientState, fleet: &iac_shared::protocol::FleetState) -> 
         if fleet.laden { GREEN_GOOD } else { AMBER_BRIGHT },
     )];
     let Some(offer) = state.load_offer() else { return lines; };
-    if !state.active_fleet_at_home() {
+    let (Some(dock), Some(stock)) = (state.active_dock(), state.dock_stock()) else {
         lines.push(Line::styled(
-            "A hold is loaded from the stockpile, and unloaded into it, at the homeworld dock only.",
+            if state.outpost.is_some() {
+                "A hold is loaded and unloaded by hand at two docks only: the homeworld and your outpost."
+            } else {
+                "A hold is loaded from the stockpile, and unloaded into it, at the homeworld dock only."
+            },
             AMBER_DIM,
         ));
         return lines;
-    }
+    };
+    let at_home = dock == crate::state::Dock::Home;
     if let Some(orders) = fleet.policy {
         lines.push(Line::styled(
-            format!("Under standing orders ({}), which unload at the dock: set manual with [p] to load by hand.", orders.preset.label()),
+            format!(
+                "Under standing orders ({}), which {}: set manual with [p] to load by hand.",
+                orders.preset.label(),
+                if at_home { "unload at the dock" } else { "do not use the outpost" },
+            ),
             AMBER_DIM,
         ));
         return lines;
     }
-    if let Some(player) = &state.player {
-        let capped = state.homeworld.as_ref().map(|h| h.storage.capped.as_slice()).unwrap_or_default();
-        let part = |kind: iac_shared::constants::ResourceKind| {
-            format!("{:.0} {}{}", player.resources.get(kind), kind.label(), if capped.contains(&kind) { " (FULL)" } else { "" })
-        };
-        let [metal, crystal, deuterium] = iac_shared::constants::ResourceKind::ALL.map(part);
-        lines.push(Line::styled(format!("Stockpile {metal}, {crystal}, {deuterium}"), AMBER));
-    }
+    let full = |kind: iac_shared::constants::ResourceKind| match (&state.outpost, at_home) {
+        (Some(post), false) => post.store.get(kind) >= post.store_cap.get(kind),
+        _ => state.homeworld.as_ref().is_some_and(|h| h.storage.capped.contains(&kind)),
+    };
+    let part = |kind: iac_shared::constants::ResourceKind| {
+        format!("{:.0} {}{}", stock.get(kind), kind.label(), if full(kind) { " (FULL)" } else { "" })
+    };
+    let [metal, crystal, deuterium] = iac_shared::constants::ResourceKind::ALL.map(part);
+    lines.push(Line::styled(
+        format!("{} {metal}, {crystal}, {deuterium}", if at_home { "Stockpile" } else { "Outpost store" }),
+        AMBER,
+    ));
     let share = crate::state::HOLD_SHARES[state.fleet_panel.as_ref().map_or(0, |p| p.share)];
     lines.push(Line::styled(
         format!(
@@ -360,7 +387,256 @@ fn hold_lines(state: &ClientState, fleet: &iac_shared::protocol::FleetState) -> 
         AMBER_FULL,
     ));
     lines.push(Line::styled(
-        "A loaded hold stays aboard while docked, to be flown to the hub's exchange; what the fleet brings home unloads as always.",
+        if at_home {
+            "A loaded hold stays aboard while docked, to be flown to the hub's exchange; what the fleet brings home unloads as always."
+        } else {
+            "Nothing moves by itself at the outpost: [u] puts the whole hold into its store, as far as the store has room. \
+             A raid the outpost loses takes its share of the store and of the holds here, and destroys a quarter of the ships standing here."
+        },
+        AMBER_DIM,
+    ));
+    lines
+}
+
+// ── Outpost panel ──────────────────────────────────────────────────
+
+/// "38.9 metal, 19.4 deuterium" made in a game hour; "nothing" for none.
+fn yield_an_hour(per_tick: &iac_shared::Resources) -> String {
+    let rate = |per_tick: f32| {
+        let an_hour = per_tick * 3600.0;
+        if an_hour >= 100.0 { format!("{an_hour:.0}") } else { format!("{an_hour:.1}") }
+    };
+    let parts: Vec<String> = iac_shared::constants::ResourceKind::ALL
+        .into_iter()
+        .filter(|kind| per_tick.get(*kind) > 0.0)
+        .map(|kind| format!("{} {}", rate(per_tick.get(kind)), kind.label()))
+        .collect();
+    if parts.is_empty() { "nothing".to_string() } else { parts.join(", ") }
+}
+
+/// "1000 metal, 500 crystal, 200 deuterium", the parts above zero rounded up.
+fn amounts(r: &iac_shared::Resources) -> String {
+    let parts: Vec<String> = iac_shared::constants::ResourceKind::ALL
+        .into_iter()
+        .filter(|kind| r.get(*kind) > 0.0)
+        .map(|kind| format!("{:.0} {}", r.get(kind).ceil(), kind.label()))
+        .collect();
+    if parts.is_empty() { "nothing".to_string() } else { parts.join(", ") }
+}
+
+fn hops_home(hops: Option<u32>) -> String {
+    hops.map_or("more than 64 hops".to_string(), |h| format!("{h} hop{}", if h == 1 { "" } else { "s" }))
+}
+
+fn render_outpost_panel(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
+    let block = titled_block(" OUTPOST ", AMBER_DIM);
+    let inner = block.inner(area);
+    frame.render_widget(&block, area);
+    let lines = match &state.outpost {
+        Some(post) => outpost_lines(state, post),
+        None => founding_lines(state),
+    };
+    frame.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }), inner);
+}
+
+/// The player's outpost as text: the figures the web console's panel shows.
+fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState) -> Vec<ratatui::text::Line<'static>> {
+    use iac_shared::constants::ResourceKind;
+    use iac_shared::protocol::OutpostWork;
+    use ratatui::text::Line;
+    let left = |end: u64| ticks_label(end.saturating_sub(state.tick));
+    let level = if post.level == 0 { "not yet open".to_string() } else { format!("level {} of {}", post.level, post.max_level) };
+    let doing = match &post.work {
+        Some(work) if work.kind == OutpostWork::Build => {
+            format!("{}building level {}, {} left", if post.breached { "breached, " } else { "" }, work.level, left(work.end_tick))
+        }
+        Some(work) => format!("breached, under repair, {} left", left(work.end_tick)),
+        None if post.breached => "breached, the repair waits for its store".to_string(),
+        None => "in service".to_string(),
+    };
+    let mut lines = vec![
+        Line::styled(
+            format!("Outpost at {} ring {}: {level}, {doing}", post.location, post.location.dist_from_origin()),
+            if post.breached { RED_ALERT } else { AMBER_FULL },
+        ),
+        Line::raw(""),
+    ];
+    if post.breached {
+        lines.push(Line::styled(
+            "Breached: no extractor, no refuelling and no platform until the repair is done. The store, loading and unloading work.",
+            RED_DIM,
+        ));
+    }
+    if let Some(cost) = &post.repair_cost {
+        let short = post.store.shortfall(*cost);
+        lines.push(Line::styled(
+            if short.total() > 0.0 {
+                format!(
+                    "The repair costs {} from the store, which is short by {}: it stays breached until a fleet unloads the rest.",
+                    amounts(cost), amounts(&short),
+                )
+            } else {
+                format!("The repair costs {} from the store.", amounts(cost))
+            },
+            RED_ALERT,
+        ));
+    }
+    for kind in ResourceKind::ALL {
+        let (stock, cap, floor) = (post.store.get(kind), post.store_cap.get(kind), post.protected.get(kind));
+        lines.push(Line::styled(
+            format!(
+                " {:<10} {:>9.0} / {:<9.0} protected {:.0}, raidable {:.0}{}",
+                kind.label(), stock.floor(), cap.floor(), floor, (stock - floor).max(0.0).floor(),
+                if stock >= cap { "  FULL: the extractor makes no more of it" } else { "" },
+            ),
+            if stock >= cap { RED_ALERT } else { AMBER_BRIGHT },
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        if post.in_service {
+            format!("Yield an hour: {}   (site grade {:.1} of 12)", yield_an_hour(&post.production), post.grade)
+        } else {
+            format!("Yield an hour: nothing, {}   (site grade {:.1} of 12)", if post.breached { "breached" } else { "not yet open" }, post.grade)
+        },
+        AMBER,
+    ));
+    let ships = (post.defence_power - post.platform_power).max(0.0);
+    let cover = post.defence_power / post.next_raid_estimate_power.max(1.0);
+    lines.push(Line::styled(
+        format!(
+            "Defence: platform {:.0} + ships here {:.0} = {:.0}, {cover:.2}x the raid estimate of {:.0}",
+            post.platform_power, ships, post.defence_power, post.next_raid_estimate_power,
+        ),
+        if cover >= 1.0 { GREEN_GOOD } else { RED_ALERT },
+    ));
+    lines.push(match post.raid_arrival_tick {
+        Some(arrival) => Line::styled(format!("RAID ARRIVES IN {}", left(arrival)), RED_ALERT),
+        None => Line::styled("No raid announced.", AMBER),
+    });
+    lines.push(Line::styled(format!("Way home: {}", hops_home(post.hops_home)), AMBER));
+    lines.push(Line::raw(""));
+    match &post.next_level {
+        Some(next) => {
+            let after = match &post.work {
+                Some(work) if work.kind == OutpostWork::Build => format!("After level {}: level {}", work.level, next.level),
+                _ => format!("Next: level {}", next.level),
+            };
+            let short = post.store.shortfall(next.cost);
+            lines.push(Line::styled(
+                format!(
+                    "{after} costs {} from the store and takes {}; it makes {} an hour, its store takes {}, its platform is {:.0}",
+                    amounts(&next.cost), ticks_label(next.ticks), yield_an_hour(&next.production), amounts(&next.store_cap), next.platform_power,
+                ),
+                AMBER_BRIGHT,
+            ));
+            lines.push(if short.total() > 0.0 {
+                Line::styled(format!("The store is short by {}.   [U] Upgrade", amounts(&short)), RED_ALERT)
+            } else {
+                Line::styled(" [U] Upgrade", AMBER_FULL)
+            });
+        }
+        None => lines.push(Line::styled(format!("Level {} is the highest.", post.max_level), AMBER_DIM)),
+    }
+    lines.push(Line::raw(""));
+    let here: Vec<String> = state
+        .fleets
+        .iter()
+        .filter(|f| f.location == post.location)
+        .map(|f| format!("fleet {} ({} ships, hold {:.0}/{:.0})", f.id, f.ships.len(), f.cargo.total(), f.cargo_capacity))
+        .collect();
+    lines.push(Line::styled(
+        if here.is_empty() {
+            "No fleet of yours stands here.".to_string()
+        } else {
+            format!("Standing here: {}.  [f] opens a fleet's panel to load from the store and unload into it.", here.join(", "))
+        },
+        AMBER,
+    ));
+    lines.push(Line::styled(
+        "A fleet here is in a raid's reach: a raid the outpost loses takes a quarter of the store and of the holds here above the \
+         protected floor and destroys a quarter of the ships standing here.",
+        AMBER_DIM,
+    ));
+    lines.push(Line::raw(""));
+    lines.push(if state.outpost_panel.is_some_and(|panel| panel.abandon_armed) {
+        Line::styled(
+            format!(
+                "ABANDON THE OUTPOST AT {}? Its store is left as wreckage in the sector, its score is gone and nothing is refunded.  [y] abandon it, any other key keeps it",
+                post.location,
+            ),
+            RED_ALERT,
+        )
+    } else {
+        Line::styled(" [A] Abandon the outpost (asks first)", AMBER_DIM)
+    });
+    lines
+}
+
+/// The founding survey of the sector the active fleet stands in.
+fn founding_lines(state: &ClientState) -> Vec<ratatui::text::Line<'static>> {
+    use iac_shared::constants::ResourceKind;
+    use ratatui::text::Line;
+    let Some(fleet) = state.active_fleet() else {
+        return vec![Line::styled("No fleet to found an outpost with.", AMBER_DIM)];
+    };
+    let mut lines = vec![
+        Line::styled(
+            format!(
+                "You have no outpost. Fleet {} at {} holds {:.0} metal, {:.0} crystal, {:.0} deuterium.",
+                fleet.id, fleet.location, fleet.cargo.metal, fleet.cargo.crystal, fleet.cargo.deuterium,
+            ),
+            AMBER_FULL,
+        ),
+        Line::styled(
+            "One outpost an empire, on a sector of rings 9 to 20, founded by a fleet standing there and paid from its hold.",
+            AMBER_DIM,
+        ),
+        Line::raw(""),
+    ];
+    let Some(survey) = state.site_survey() else {
+        lines.push(Line::styled(" [F] Survey this sector", AMBER_FULL));
+        return lines;
+    };
+    let ore = |density: iac_shared::constants::Density| format!("{density:?}").to_lowercase();
+    lines.push(Line::styled(
+        format!(
+            "Site {} ring {}: grade {:.1} of 12 (metal {}, crystal {}, deuterium {})",
+            survey.sector, survey.ring, survey.grade,
+            ore(survey.densities.metal), ore(survey.densities.crystal), ore(survey.densities.deuterium),
+        ),
+        AMBER_BRIGHT,
+    ));
+    lines.push(Line::styled(format!("Level 1 makes {} an hour", yield_an_hour(&survey.production)), AMBER_BRIGHT));
+    lines.push(Line::styled(
+        format!(
+            "Raids of about {:.0} against a platform of {:.0}; {} from home",
+            survey.raid_power, survey.platform_power, hops_home(survey.hops_home),
+        ),
+        if survey.raid_power > survey.platform_power { RED_ALERT } else { GREEN_GOOD },
+    ));
+    lines.push(Line::styled(
+        format!("Level 1 costs {} from this hold and takes {}", amounts(&survey.cost), ticks_label(survey.build_ticks)),
+        AMBER_BRIGHT,
+    ));
+    for kind in ResourceKind::ALL {
+        let (cost, aboard) = (survey.cost.get(kind), fleet.cargo.get(kind));
+        lines.push(Line::styled(
+            format!(
+                " {:<10} {:>6.0}   aboard {:.0}{}",
+                kind.label(), cost, aboard.floor(),
+                if aboard < cost { format!("   short {:.0}", (cost - aboard).ceil()) } else { String::new() },
+            ),
+            if aboard < cost { RED_ALERT } else { AMBER },
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(match &survey.refusal {
+        Some(why) => Line::styled(format!("Cannot be founded now: {why}"), RED_ALERT),
+        None => Line::styled(" [Enter] Found the outpost here", AMBER_FULL),
+    });
+    lines.push(Line::styled(
+        "Raiders come for an outpost as they do for the homeworld. A raid it loses breaches it and destroys a quarter of the ships standing there.",
         AMBER_DIM,
     ));
     lines
