@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../console/economy_view.dart' show shortReason;
+import '../console/economy_view.dart' show shortfall;
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
@@ -80,8 +80,16 @@ class GameController extends ChangeNotifier {
   /// the log drops), for scenes that animate them.
   Stream<proto.GameEvent> get gameEvents => _events.stream;
 
+  final StreamController<proto.ErrorMessage> _refusals = StreamController.broadcast(sync: true);
+
+  /// Every order the world refused, with its own sentence of why. The world
+  /// is the judge of an order; the console shows what it said at once.
+  Stream<proto.ErrorMessage> get refusals => _refusals.stream;
+
   void _tap(proto.ServerMessage m) {
     switch (m) {
+      case proto.ErrorMessage():
+        _refusals.add(m);
       case proto.TickUpdate(:final events):
         for (final e in events ?? const <proto.GameEvent>[]) {
           if (e.kind is proto.ExchangedEvent) _quoteAsked.clear();
@@ -93,6 +101,13 @@ class GameController extends ChangeNotifier {
       case proto.ExchangeQuote(:final terms):
         if (_quoteTyped.remove((terms.fleetId, terms.give, terms.want))) {
           for (final line in quoteLines(m).reversed) {
+            _mapper.pushLog(line, EventLevel.bright);
+          }
+        }
+      case proto.LeaderboardReply():
+        if (_boardTyped) {
+          _boardTyped = false;
+          for (final line in boardLines(m).reversed) {
             _mapper.pushLog(line, EventLevel.bright);
           }
         }
@@ -389,6 +404,7 @@ class GameController extends ChangeNotifier {
     stop();
     connection.dispose();
     _events.close();
+    _refusals.close();
     super.dispose();
   }
 
@@ -515,7 +531,7 @@ class GameController extends ChangeNotifier {
     final String echo;
     proto.Resources batch(proto.Resources unit) =>
         proto.Resources(metal: unit.metal * shipBatch, crystal: unit.crystal * shipBatch, deuterium: unit.deuterium * shipBatch);
-    String? short;
+    proto.Resources? missing;
     switch (hwTab) {
       case HomeworldTab.buildings:
         final o = c.buildings[i];
@@ -538,7 +554,7 @@ class GameController extends ChangeNotifier {
         name = o.shipClass.label;
         command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
         echo = 'ship ${o.shipClass.label} x$shipBatch';
-        short = shortReason(_state.stock, batch(o.unitCost));
+        missing = shortfall(_state.stock, batch(o.unitCost));
       case HomeworldTab.defence:
         final o = c.defences[i];
         requires = o.requires;
@@ -546,7 +562,7 @@ class GameController extends ChangeNotifier {
         name = o.kind.label;
         command = proto.BuildDefenceCommand(kind: o.kind, count: shipBatch);
         echo = 'defence ${o.kind.label} x$shipBatch';
-        short = shortReason(_state.stock, batch(o.unitCost));
+        missing = shortfall(_state.stock, batch(o.unitCost));
       case HomeworldTab.storage:
         return;
     }
@@ -556,8 +572,8 @@ class GameController extends ChangeNotifier {
       note('$name is locked: needs ${unmet.join(', ')}', level: EventLevel.bright);
     } else if (maxed) {
       note('$name is already at its maximum level', level: EventLevel.bright);
-    } else if (short != null) {
-      note('$name x$shipBatch not ordered: ${short.replaceFirst('Short', 'short')}. A batch is paid in full when it is ordered.', level: EventLevel.bright);
+    } else if (missing != null) {
+      note('$name x$shipBatch not ordered: ${shortBy(missing)}. A batch is paid in full when it is ordered.', level: EventLevel.bright);
     } else {
       note('> $echo', level: EventLevel.full);
       sendCommand(command);
@@ -726,6 +742,10 @@ class GameController extends ChangeNotifier {
   final Map<TradeKey, (int, double?)> _quoteAsked = {};
   final Set<TradeKey> _quoteTyped = {};
 
+  /// The player typed `leaderboard`: the next board is printed in the log.
+  /// The board the console refreshes by itself only feeds the ranking panel.
+  bool _boardTyped = false;
+
   /// Ask the server what [amount] of [give] would bring [fleetId] in [want]
   /// at the hub's exchange (`exchange_quote`); without [amount], all the
   /// hold carries. Debounced, and skipped while a recent (under 3 ticks)
@@ -833,6 +853,7 @@ class GameController extends ChangeNotifier {
           if (m case proto.CommandMessage(command: proto.ExchangeQuoteCommand q)) {
             _quoteTyped.add((q.fleetId, q.give, q.want));
           }
+          if (m case proto.CommandMessage(command: proto.LeaderboardCommand())) _boardTyped = true;
           send(m);
         }
       case ParsedLocal(:final lines):

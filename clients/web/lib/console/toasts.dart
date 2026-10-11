@@ -22,16 +22,23 @@ class Toast {
 }
 
 class ToastController extends ChangeNotifier {
+  static const _most = 4;
+
   final List<Toast> items = [];
   int _id = 0;
 
-  void show(String title, String message,
+  /// Raises a toast and returns its id, for [dismiss]. Past [_most] the
+  /// oldest toast makes room, a plain one before one that asks something: a
+  /// question stays until it is answered or runs out.
+  int show(String title, String message,
       {ToastTone tone = ToastTone.amber, Duration life = const Duration(milliseconds: 4200), List<ToastAction> actions = const []}) {
     items.add(Toast(++_id, title, message, tone, clock.now().add(life), actions));
-    while (items.length > 4) {
-      items.removeAt(0);
+    while (items.length > _most) {
+      final plain = items.indexWhere((t) => t.actions.isEmpty);
+      items.removeAt(plain < 0 ? 0 : plain);
     }
     notifyListeners();
+    return _id;
   }
 
   void dismiss(int id) {

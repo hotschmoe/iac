@@ -28,6 +28,14 @@ const voice = {
 
 const hubVoice = 'Neutral post. No ore, no hostiles. The exchange is open.';
 
+/// What the dock does for a fleet and what it does not: nothing in the field
+/// reaches a docked fleet, a raid that beats the home defence does.
+const dockVoice = 'A DOCKED FLEET REFUELS AND UNLOADS, AND NOTHING IN THE FIELD REACHES IT.\n'
+    'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS.';
+const dockVoiceLaden = 'A DOCKED FLEET REFUELS, AND NOTHING IN THE FIELD REACHES IT.\n'
+    'HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.\n'
+    'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS AND TAKES ITS SHARE OF THE HOLD.';
+
 String zoneName(proto.Hex h) {
   final d = h.distFromOrigin;
   return d == 0 ? 'Central Hub' : d <= 8 ? 'Inner Ring' : d <= 20 ? 'Outer Ring' : 'The Wandering';
@@ -51,7 +59,14 @@ class SectorHead extends StatelessWidget {
 
   /// The sector is a hub sector with the exchange.
   final bool exchange;
-  const SectorHead({super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow, this.exchange = false});
+
+  /// Room for the note, which sits level with the north-west gate card: it
+  /// wraps before the card, and is left out where that leaves it no room.
+  final double noteWidth;
+
+  static const _leastNoteWidth = 200.0;
+  const SectorHead(
+      {super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow, this.exchange = false, this.noteWidth = double.infinity});
 
   @override
   Widget build(BuildContext context) {
@@ -81,9 +96,10 @@ class SectorHead extends StatelessWidget {
           Kv('Range', v: '${loc.distFromOrigin} FROM HUB - ${fromHome == 0 ? 'AT HOME' : '$fromHome FROM HOME'}', size: 11),
         ],
         Padding(padding: EdgeInsets.only(top: narrow ? 3 : 8, bottom: 4), child: thrLine),
-        if (!narrow)
-          Padding(
+        if (!narrow && noteWidth >= _leastNoteWidth)
+          Container(
             padding: const EdgeInsets.only(top: 6),
+            constraints: BoxConstraints(maxWidth: noteWidth),
             child: Text.rich(
               TextSpan(children: [
                 TextSpan(text: 'NOTE ', style: T.mono(size: 11, color: C.a700, weight: FontWeight.w600, spacing: 1)),
@@ -351,7 +367,7 @@ class ContactsPanel extends StatelessWidget {
           _t(threat.composition.map((e) => '${e.$2}x ${shipAbbr(e.$1)}').join(' + '), trail: ThreatBadge(th, sm: true)),
           _d(Text('${threat.behavior?.wire.toUpperCase() ?? ''} - POWER ${threat.power.round()}${combat ? ' - ENGAGED' : ''}', style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
           if (o == null)
-            _d(Text('ODDS: ASKING THE SERVER', key: const Key('contact-odds-pending'), style: _ds))
+            _d(Text('ODDS: REQUESTED', key: const Key('contact-odds-pending'), style: _ds))
           else ...[
             Padding(padding: const EdgeInsets.only(top: 6), child: Text.rich(key: const Key('contact-odds'), TextSpan(children: [
               TextSpan(text: o.label, style: TextStyle(color: o.color, fontWeight: FontWeight.w600)),
@@ -452,7 +468,7 @@ class ContactsPanel extends StatelessWidget {
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           _t('Homeworld'),
           _d(Text(
-              fleet.laden ? 'DOCKED FLEETS ARE SAFE.\nHOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.' : 'DOCKED FLEETS ARE SAFE.',
+              fleet.laden ? dockVoiceLaden : dockVoice,
               key: const Key('contact-dock'),
               style: _ds)),
           Padding(
@@ -816,10 +832,13 @@ class GateCard extends StatelessWidget {
   final void Function(bool) onHover;
   const GateCard({super.key, required this.dir, required this.narrow, required this.known, required this.sector, required this.threat, required this.intel, required this.fuel, required this.isHome, required this.hint, this.tick = 0, this.band, this.preview, required this.hover, required this.onTap, required this.onHover});
 
+  /// Width of a card on a desktop arena.
+  static const width = 150.0;
+
   @override
   Widget build(BuildContext context) {
     final dashed = !known || intel.aged;
-    final w = narrow ? 92.0 : 150.0;
+    final w = narrow ? 92.0 : width;
     final th = known ? threat.rating : 0;
     final hot = th >= 5;
     final terr = known ? (sector?.terrain.label.split(' ').first ?? '') : 'Uncharted';
@@ -957,6 +976,9 @@ class Dock extends StatelessWidget {
   final void Function(String?) onHint;
   const Dock({super.key, required this.actions, required this.narrow, required this.scanCooldown, required this.scanSecs, required this.onAct, required this.onHint});
 
+  /// Width of one action on a desktop arena.
+  static const tileWidth = 76.0;
+
   @override
   Widget build(BuildContext context) {
     final tiles = [for (final a in actions) GuideTarget('dock-${a.id}', child: _tile(a))];
@@ -988,7 +1010,7 @@ class Dock extends StatelessWidget {
                 behavior: HitTestBehavior.opaque,
                 onTap: a.ok ? () => onAct(a.id) : () => onHint(a.reason),
                 child: Container(
-                  width: narrow ? null : 76,
+                  width: narrow ? null : tileWidth,
                   height: narrow ? 52 : 60,
                   decoration: BoxDecoration(color: bg, border: Border(right: const BorderSide(color: C.lineLo), bottom: a.active && !on ? const BorderSide(color: C.own, width: 2) : BorderSide.none)),
                   child: Stack(alignment: Alignment.center, children: [

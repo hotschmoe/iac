@@ -16,6 +16,7 @@ import 'package:iac_client/models/resources.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/views/rail.dart';
+import 'package:iac_client/views/windshield/parts.dart' show ContactsPanel;
 
 import 'support/demo_controller.dart';
 import 'support/harness.dart';
@@ -586,7 +587,10 @@ void main() {
     c.place(101, demoHome, const proto.Resources());
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     Screen screen() => Console.of(tester.element(find.byType(Rail))).screen;
-    expect(tester.widget<Text>(find.byKey(const Key('contact-dock'))).data, 'DOCKED FLEETS ARE SAFE.');
+    final dock = find.byKey(const Key('contact-dock'));
+    expect(tester.widget<Text>(dock).data, allOf(contains('NOTHING IN THE FIELD REACHES IT'), contains('A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS')),
+        reason: 'the dock is out of the field, not out of a raid\'s reach');
+    expect(tester.widget<Text>(dock).data, isNot(contains('SAFE')));
 
     await tester.tap(find.byKey(const ValueKey('contact-load')));
     await tester.pump(const Duration(milliseconds: 300));
@@ -599,7 +603,10 @@ void main() {
 
     Console.of(tester.element(find.byType(Rail))).go(Screen.windshield);
     await tester.pump(const Duration(milliseconds: 300));
-    expect(tester.widget<Text>(find.byKey(const Key('contact-dock'))).data, contains('HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.'));
+    expect(tester.widget<Text>(dock).data,
+        allOf(contains('HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.'), contains('TAKES ITS SHARE OF THE HOLD'), isNot(contains('UNLOADS'))));
+    final card = tester.getRect(find.byType(ContactsPanel)), words = tester.getRect(dock);
+    expect(words.left >= card.left && words.right <= card.right, isTrue, reason: 'the longer sentence wraps inside the contacts panel');
     expect(find.text('CARGO - LADEN'), findsOneWidget);
     await shot(tester, 'ws-home-laden-1440');
     c.selectHomeworldTab(HomeworldTab.buildings);

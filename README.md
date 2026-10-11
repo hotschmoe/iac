@@ -366,17 +366,19 @@ and Flutter; no other tool.
   blitz world with 8 hands-on bots at 350 ticks/s over its first two hours and
   180 in its third. Fewer and less attentive bots catch up faster.
 - **One tab.** A second tab on the same browser is told the world is open
-  elsewhere and does not run it.
+  elsewhere and does not run it. That takes the browser's locks, which a page
+  has only in a secure context: over HTTPS, or from `localhost`. Served over
+  plain http to another machine on the LAN, a second tab is not kept out and
+  the two would overwrite each other's save; the front door says so there.
 - **A save from another version** (save format, economy or world generation)
   is refused with the reason, as the server refuses such a database; it stays
   stored until a new game replaces it.
 - **Abandon this world** on the front door deletes the save after asking.
 - **Multiplayer from the same bundle.** `?ws=` or `?name=` in the URL, or
   "Connect to a server instead", goes to a server's login as usual.
-- The bundle loads nothing from other hosts except that the Flutter engine
-  asks `fonts.gstatic.com` for its default Roboto, as the multiplayer client
-  always has; unreachable, nothing changes (the console draws in the bundled
-  Plex).
+- The bundle loads nothing from other hosts. The Flutter engine would ask
+  `fonts.gstatic.com` for its default Roboto; `pubspec.yaml` names the bundled
+  Plex Mono as the `Roboto` family, so neither build of the client does.
 
 ```sh
 scripts/play.sh --single-player --no-serve          # just the bundle

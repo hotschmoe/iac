@@ -62,6 +62,17 @@ String ago(int t) => t < 60
             ? '${t ~/ 3600}h'
             : '${t ~/ 86400}d';
 
+/// "1,234,567".
+String groupDigits(int v) {
+  final s = v.toString();
+  final b = StringBuffer();
+  for (var i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
+    b.write(s[i]);
+  }
+  return b.toString();
+}
+
 String clockFmt(int t) {
   t = t < 0 ? 0 : t;
   final h = t ~/ 3600, m = t % 3600 ~/ 60, s = t % 60;

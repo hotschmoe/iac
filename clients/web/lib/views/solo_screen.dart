@@ -150,6 +150,14 @@ class _SoloScreenState extends State<SoloScreen> {
                 const SizedBox(height: 18),
                 ...body,
                 if (s.warning != null) ...[const SizedBox(height: 14), _note(s.warning!, color: C.ember, key: const Key('solo-warning'))],
+                if (!s.exclusive) ...[
+                  const SizedBox(height: 14),
+                  _note(
+                      'This page is not served over HTTPS or from this machine, so the browser cannot keep a second tab out of this world: '
+                      'play it in one tab, or the two will overwrite each other\'s save.',
+                      color: C.a300,
+                      key: const Key('solo-one-tab')),
+                ],
                 if (widget.onMultiplayer != null && (s.phase == SoloPhase.idle || s.phase == SoloPhase.held || s.phase == SoloPhase.failed || s.phase == SoloPhase.locked)) ...[
                   const SizedBox(height: 22),
                   ConsoleButton('Connect to a server instead', onPressed: widget.onMultiplayer, small: true),

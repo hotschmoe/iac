@@ -531,7 +531,7 @@ class RoutePanel extends StatelessWidget {
           RatioGauge(wi.r),
         ],
         if (unrated > 0)
-          Text('$unrated HOSTILE HOP${unrated == 1 ? '' : 'S'} NOT RATED YET: ASKING THE SERVER',
+          Text('$unrated HOSTILE HOP${unrated == 1 ? '' : 'S'} NOT RATED YET: ODDS REQUESTED',
               key: const Key('route-odds-pending'), style: T.mono(size: 10, color: C.text3)),
         Container(
           margin: const EdgeInsets.only(top: 8),
@@ -673,7 +673,7 @@ class HoldPanel extends StatelessWidget {
         Kv('Hostiles', v: th.compLabel, vc: C.threat(th.rating)),
         Kv('Their power', v: '${th.power.round()}'),
         if (o == null)
-          Kv('Ratio', v: 'asking the server')
+          Kv('Ratio', v: 'requested')
         else ...[
           Kv('Ratio', v: '${o.r.toStringAsFixed(2)} ${o.label}', vc: o.color),
           RatioGauge(o.r),

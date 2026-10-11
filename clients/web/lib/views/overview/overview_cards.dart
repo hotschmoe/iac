@@ -375,7 +375,7 @@ class _BuildSlotA extends StatelessWidget {
           _SugTile(
             tileKey: Key('sug-build-${o.buildingType.name}'),
             name: '${o.buildingType.label} L${o.next!.level}',
-            note: '${o.next!.ticks ~/ 60 > 0 ? '${o.next!.ticks ~/ 60}m' : '${o.next!.ticks}s'} build',
+            note: '${clockFmt(o.next!.ticks)} build',
             cost: o.next!.cost,
             why: shortReason(s.stock, o.next!.cost),
             onTap: () => act.build(o.buildingType),
@@ -492,8 +492,13 @@ class _ResearchCard extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         _qTitle('Nothing in the lab'),
-        _qSub('Pick one. Grey = cannot afford yet.'),
-        if (choices.isEmpty) const WhyText('No research is available: all maxed or locked.'),
+        if (choices.isEmpty)
+          WhyText(switch (nearestLocked([for (final o in s.catalog?.research ?? const <proto.ResearchOption>[]) if (o.next != null) (o.tech.label, o.requires)])) {
+            null => 'Every tech is at its maximum level.',
+            final lock => 'Nothing can be researched yet: $lock.',
+          })
+        else
+          _qSub('Pick one. Grey = cannot afford yet.'),
         for (final o in choices)
           _SugTile(
             tileKey: Key('sug-research-${o.tech.name}'),
@@ -566,7 +571,11 @@ class _ShipyardCard extends StatelessWidget {
         _qTitle(slots == null || slots.shipQueued.isEmpty ? 'Yard idle' : 'Yard idle, ${slots.shipQueued.length} waiting'),
         _qSub(slots == null || slots.shipQueued.isEmpty ? 'A batch is paid in full when ordered' : 'Paid batches start once what they need is built.'),
         if (slots != null) _queuedRows(slots.shipQueued, first: 1),
-        if (choices.isEmpty) const WhyText('No ship class is unlocked yet. Upgrade the Shipyard.'),
+        if (choices.isEmpty)
+          WhyText(switch (nearestLocked([for (final o in s.catalog?.ships ?? const <proto.ShipOption>[]) (o.shipClass.label, o.requires)])) {
+            null => 'No ship class is on offer.',
+            final lock => 'No ship can be ordered yet: $lock.',
+          }),
         for (final o in choices)
           _SugTile(
             tileKey: Key('sug-ship-${o.shipClass.name}'),

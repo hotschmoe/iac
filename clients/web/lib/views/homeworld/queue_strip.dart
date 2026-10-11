@@ -25,6 +25,7 @@ class QueueStrip extends StatelessWidget {
     final shWait = state.waitingShips.firstOrNull;
     final rs = state.research.name == 'Idle' ? null : state.research;
     final rsWait = state.research.waiting.firstOrNull;
+    bool built(proto.BuildingType t) => (state.catalog?.buildings.where((b) => b.buildingType == t).firstOrNull?.level ?? 0) > 0;
     final pills = <Widget>[
       _Pill(
           key: const Key('hw-pill-building'),
@@ -48,7 +49,12 @@ class QueueStrip extends StatelessWidget {
       _Pill(
           key: const Key('hw-pill-research'),
           label: 'Research',
-          title: rs?.name ?? (rsWait == null ? 'Idle: pick a tech' : 'Idle, an order is waiting'),
+          title: rs?.name ??
+              (rsWait != null
+                  ? 'Idle, an order is waiting'
+                  : built(proto.BuildingType.researchLab)
+                      ? 'Idle: pick a tech'
+                      : 'No Research Lab yet'),
           time: rs?.time,
           waiting: rs == null ? rsWait : null,
           pct: rs?.pct,
@@ -58,7 +64,12 @@ class QueueStrip extends StatelessWidget {
       _Pill(
           key: const Key('hw-pill-ship'),
           label: 'Shipyard',
-          title: sh?.name ?? (shWait == null ? 'Idle: build a ship' : 'Idle, a batch is waiting'),
+          title: sh?.name ??
+              (shWait != null
+                  ? 'Idle, a batch is waiting'
+                  : built(proto.BuildingType.shipyard)
+                      ? 'Idle: build a ship'
+                      : 'No Shipyard yet'),
           time: sh?.time,
           waiting: sh == null ? shWait : null,
           pct: sh?.pct,

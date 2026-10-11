@@ -35,7 +35,7 @@ class ToastLayer extends StatelessWidget {
           builder: (context, _) => Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.end,
-            children: [for (final t in toasts.items) Padding(padding: const EdgeInsets.only(top: 6), child: _ToastTile(key: ValueKey(t.id), t: t, toasts: toasts))],
+            children: [for (final t in toasts.items) Padding(key: ValueKey(t.id), padding: const EdgeInsets.only(top: 6), child: _ToastTile(t: t, toasts: toasts))],
           ),
         ),
       );
@@ -44,7 +44,7 @@ class ToastLayer extends StatelessWidget {
 class _ToastTile extends StatefulWidget {
   final Toast t;
   final ToastController toasts;
-  const _ToastTile({super.key, required this.t, required this.toasts});
+  const _ToastTile({required this.t, required this.toasts});
   @override
   State<_ToastTile> createState() => _ToastTileState();
 }
@@ -71,23 +71,25 @@ class _ToastTileState extends State<_ToastTile> with SingleTickerProviderStateMi
   @override
   Widget build(BuildContext context) {
     final col = _toneColor(widget.t.tone);
+    final dismiss = widget.t.actions.isEmpty ? () => widget.toasts.dismiss(widget.t.id) : null;
     return Semantics(
+      container: true,
       liveRegion: true,
       label: '${widget.t.title}. ${widget.t.message}',
-      excludeSemantics: true,
+      onDismiss: dismiss,
       child: AnimatedBuilder(
         animation: _c,
         builder: (_, child) => ClipRect(
-            child: Align(alignment: Alignment.centerLeft, widthFactor: reducedMotion(context) ? 1 : (_c.value * 22).floor() / 22, child: child)),
+            child: Align(alignment: Alignment.centerLeft, widthFactor: reducedMotion(context) ? 1 : (_c.value * 22).floor() / 22, child: GestureDetector(onTap: dismiss, child: child))),
         child: Container(
           constraints: const BoxConstraints(maxWidth: 340),
           padding: const EdgeInsets.fromLTRB(12, 7, 12, 7),
           decoration: BoxDecoration(
               color: const Color(0xFF0B0805), border: Border(left: BorderSide(color: col, width: 3), top: const BorderSide(color: C.lineHi), right: const BorderSide(color: C.lineHi), bottom: const BorderSide(color: C.lineHi))),
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(widget.t.title.toUpperCase(), style: T.cond(size: 10, color: C.a300, spacing: 1.6)),
+            ExcludeSemantics(child: Text(widget.t.title.toUpperCase(), style: T.cond(size: 10, color: C.a300, spacing: 1.6))),
             const SizedBox(height: 2),
-            Text(widget.t.message, style: T.mono(size: 11, color: C.text, height: 1.35)),
+            ExcludeSemantics(child: Text(widget.t.message, style: T.mono(size: 11, color: C.text, height: 1.35))),
             if (widget.t.actions.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 7, bottom: 2),

@@ -183,16 +183,17 @@ void main() {
       expect(hw.homeDefencePower, 340.5);
       expect(hw.nextRaidEstimatePower, 300.25);
       expect(hw.catalog.defences.map((d) => d.count), [12, 0, 3]);
-      expect(hw.catalog.defences.first.requires.first.label, 'Shipyard >= 1');
+      expect(hw.catalog.defences.first.requires.first.label, 'Shipyard level 1');
     });
 
-    test('the mapper logs the table and keeps it, with the agent label', () {
+    test('the mapper keeps the table, and the log has its lines with the agent label for a player who asks', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'leaderboard');
       final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
       expect(mapper.leaderboard!.entries.length, 2);
       expect(mapper.leaderboard!.entries[1].agent, isTrue);
       expect(mapper.leaderboard!.you!.rank, 14);
-      expect(mapper.log.map((l) => l.message), contains(startsWith('#2 Claude-7 [AI]')));
+      expect(boardLines(mapper.leaderboard!), contains(startsWith('#2 Claude-7 [AI]')));
+      expect(mapper.log, isEmpty, reason: 'a board nobody typed for feeds the ranking panel, not the log');
       expect(mapper.toUiState().leaderboard, same(mapper.leaderboard));
     });
 
@@ -204,7 +205,7 @@ void main() {
       expect(board.bots.map((e) => e.name), ['BOT-explorer-2', 'BOT-turtle-1']);
       expect(board.bots.every((e) => isBotName(e.name)), isTrue);
       expect(board.entries.any((e) => isBotName(e.name)), isFalse);
-      expect(mapper.log.map((l) => l.message), contains('2 built-in bots, unranked; best BOT-explorer-2 505.0'));
+      expect(boardLines(board), contains('2 built-in bots, unranked; best BOT-explorer-2 505.0'));
       final rank = EconomyView.of(mapper.toUiState(), me: 'Admiral').rank!;
       expect(rank.board.map((r) => (r.$1, r.$2, r.$3)), [(1, 'Admiral', 'HUM'), (0, 'BOT-explorer-2', 'BOT'), (0, 'BOT-turtle-1', 'BOT')]);
     });
@@ -240,11 +241,11 @@ void main() {
       final mapper = StateMapper()..apply(ServerMessage.fromJson(readJson(f)));
       final ui = mapper.toUiState();
       expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
-      expect(ui.buildQueue[2].time, 'short 121 crystal, starts in about 01:35');
-      expect(ui.buildQueue[3].time, 'held by a reserved order, starts in about 01:35');
+      expect(ui.buildQueue[2].time, 'short by 121 Cr, starts in about 1:35');
+      expect(ui.buildQueue[3].time, 'held by a reserved order, starts in about 1:35');
       expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2', 'Pulse Turret x10']);
-      expect(ui.shipyard.map((q) => q.time).skip(1), ['paid, waiting for the yard, starts in about 04:00', 'paid, waiting for a prerequisite']);
-      expect(ui.research.waiting.single.time, 'short 1200 deuterium, starts in about 30:00');
+      expect(ui.shipyard.map((q) => q.time).skip(1), ['paid, waiting for the yard, starts in about 4:00', 'paid, waiting for a prerequisite']);
+      expect(ui.research.waiting.single.time, 'short by 1,200 De, starts in about 30:00');
     });
 
     test('full_state carries the homeworld catalog the server computed', () {
@@ -255,8 +256,8 @@ void main() {
       expect(cat.ships.map((s) => s.shipClass), ShipClass.values);
       final yard = cat.buildings.firstWhere((b) => b.buildingType == BuildingType.shipyard);
       expect(yard.next, isNotNull);
-      expect(yard.requires.single.label, 'Metal Mine >= 2');
-      expect(cat.ships.first.requires.first.label, 'Shipyard >= 1');
+      expect(yard.requires.single.label, 'Metal Mine level 2');
+      expect(cat.ships.first.requires.first.label, 'Shipyard level 1');
     });
   });
 

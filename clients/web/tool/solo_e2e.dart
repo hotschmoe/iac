@@ -16,16 +16,21 @@
 // from its WebAssembly build to its JavaScript one: the other way a browser
 // may run the same bundle.
 //
-// It plays one blitz world: new game, the homeworld on screen, an order
-// accepted and completed, a hold loaded from the stockpile at the dock and
-// unloaded again, a ship batch the stockpile does not cover refused
-// with nothing charged and its order button off, a building queued ahead of
-// its resources shown with its shortfall at desktop and phone width, the
-// bots on the board and acting, a reload that
-// restores the world, a two-hour absence caught up and reported with the
-// page staying responsive, a stall of the running page, a second tab kept
-// out, and abandoning the save. The worker's clock is moved from here (its
-// `Date.now` is shifted before it starts), so an absence takes seconds.
+// It plays one blitz world: new game with no other host asked for anything,
+// the homeworld on screen, an order accepted and completed, the offer of
+// browser notices answered from its own button, toasts that stay whole
+// while their neighbours leave, a hold loaded from the stockpile at the dock
+// and unloaded again, a ship batch the stockpile does not cover refused with
+// nothing charged and its order button off, the engine's refusal of a typed
+// order shown on screen, a building queued ahead of its resources shown
+// with its shortfall at desktop and phone width, every screen pictured at
+// both widths, the bots on the board and acting, a reload that restores the
+// world, a two-hour absence caught up and reported with the page staying
+// responsive, a stall of the running page, a second tab kept out,
+// abandoning the save, and the same page from an origin that is not a
+// secure context, where no tab can be kept out and the front door says so.
+// The worker's clock is moved from here (its `Date.now` is shifted before
+// it starts), so an absence takes seconds.
 // Last, when an `iac-server` binary is there (--server), it serves the same
 // bundle from it on the next port and checks that the page plays
 // multiplayer over a WebSocket. It prints what it measured and exits
@@ -37,6 +42,10 @@ import 'dart:io';
 
 const absenceSeconds = 2 * 3600;
 const stallSeconds = 30 * 60;
+
+/// A name for this machine that is not `localhost`: a page from it over
+/// plain http is no secure context, as on a LAN.
+const plainHost = 'iac-lan.test';
 
 class Failure implements Exception {
   Failure(this.message);
@@ -153,6 +162,12 @@ class Browser {
   /// Every URL the page asked the network for.
   final Set<String> requested = {};
 
+  /// What the page asked a host other than [host] for.
+  List<String> elsewhere(StaticHost host) => [
+        for (final url in requested)
+          if (url.startsWith('http') && !url.startsWith(host.url)) url,
+      ];
+
   /// The WebSockets the page opened, and the text frames they received.
   final List<String> sockets = [];
   final List<String> socketFrames = [];
@@ -206,6 +221,13 @@ class Browser {
     x: r.x + r.width / 2, y: r.y + r.height / 2, area: r.width * r.height,
   };
 }).filter((n) => n.text && n.area > 0)
+''';
+
+  static const _toasts = r'''
+[...document.querySelectorAll('flt-semantics')].map((e) => {
+  const own = [...e.childNodes].filter((n) => n.nodeType === 3 || n.nodeName === 'SPAN').map((n) => n.textContent).join(' ');
+  return { text: ((e.getAttribute('aria-label') || '') + ' ' + own).trim(), width: e.getBoundingClientRect().width };
+}).filter((n) => /^(Command|Complete|Refused)\. /.test(n.text))
 ''';
 
   static Future<Browser> open(Devtools devtools, Directory shots) async {
@@ -295,9 +317,20 @@ class Browser {
 
   Future<String> text() async => (await screen()).map((n) => n['text']).join('\n');
 
+  /// The command, completion and refusal toasts on screen: text and width.
+  Future<List<Map<String, dynamic>>> toasts() async => ((await eval(_toasts)) as List).cast<Map<String, dynamic>>();
+
   Future<void> shot(String name) async {
     final result = await _send('Page.captureScreenshot', {'format': 'png'});
     File('${_shots.path}/$name.png').writeAsBytesSync(base64Decode(result['data'] as String));
+  }
+
+  /// One picture at desktop width and one at a phone's.
+  Future<void> shotBoth(String name) async {
+    await shot('$name-1440');
+    await resize(390, 844);
+    await shot('$name-390');
+    await resize(1440, 900);
   }
 
   /// The viewport of a desktop window or of a phone held upright.
@@ -352,22 +385,27 @@ class Browser {
   Future<void> type(String text) async {
     for (final char in text.split('')) {
       final upper = char.toUpperCase();
-      final code = char == ' ' ? 'Space' : 'Key$upper';
+      final code = char == ' ' ? 'Space' : RegExp(r'\d').hasMatch(char) ? 'Digit$char' : 'Key$upper';
       await press(char, code, upper.codeUnitAt(0), text: char);
     }
   }
 
-  /// Open the `/` palette, wait until its field takes the keys, type
-  /// [text] and submit it.
-  Future<void> command(String text) async {
-    await press('/', 'Slash', 191, text: '/');
-    await until('the command palette to take the keyboard', () => eval('''(() => {
+  static const _typing = '''(() => {
       let at = document.activeElement;
       while (at && at.shadowRoot && at.shadowRoot.activeElement) at = at.shadowRoot.activeElement;
       return !!at && (at.tagName === 'INPUT' || at.tagName === 'TEXTAREA');
-    })()'''));
+    })()''';
+
+  /// Open the `/` palette, wait until its field takes the keys, type
+  /// [text], submit it and wait until the field has let the keys go again:
+  /// a second command typed while the first field is still closing would
+  /// lose its Enter.
+  Future<void> command(String text) async {
+    await press('/', 'Slash', 191, text: '/');
+    await until('the command palette to take the keyboard', () => eval(_typing));
     await type(text);
     await press('Enter', 'Enter', 13, text: '\r');
+    await until('the command palette to let the keyboard go', () async => (await eval(_typing)) == false);
   }
 
   Future<Map<String, dynamic>> status() async =>
@@ -425,8 +463,8 @@ Future<void> main(List<String> args) async {
     '--no-default-browser-check',
     '--window-size=1440,900',
     // No host but this machine exists for the page: the bundle has to be
-    // enough on its own.
-    '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
+    // enough on its own. One more name leads here, for the plain-http check.
+    '--host-resolver-rules=MAP $plainHost 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
     '--no-proxy-server',
     // With WebGL the page runs as a browser with a GPU runs it (the
     // dart2wasm build on skwasm); without, Flutter falls back to its
@@ -486,12 +524,42 @@ Future<void> multiplayer(Browser browser, Directory bundle, String server, int p
         () async => browser.socketFrames.where((frame) => frame.contains('"type":"tick_update"')).length >= 3);
     await browser.untilText('wire');
     check(true, 'the console is live on the server as Wire');
+    final elsewhere = [
+      for (final url in browser.requested)
+        if (url.startsWith('http') && !url.startsWith('http://127.0.0.1:')) url,
+    ];
+    check(elsewhere.isEmpty, 'and as a multiplayer client it asked no other host for anything either ($elsewhere)');
     await browser.shot('11-multiplayer');
   } finally {
     process.kill();
     await process.exitCode;
     data.deleteSync(recursive: true);
   }
+}
+
+/// A toast slides in once. Three raised one after another leave one after
+/// another, and while one leaves the others must stay as wide as they were.
+Future<void> toastsStayWhole(Browser browser) async {
+  print('toasts');
+  await browser.until('the earlier toasts to leave', () async => (await browser.toasts()).isEmpty);
+  for (final command in ['status', 'fleet', 'help']) {
+    await browser.command(command);
+  }
+  final widest = <String, num>{};
+  var together = 0;
+  String? shrank;
+  await browser.until('the three toasts to come and go', () async {
+    final now = await browser.toasts();
+    if (now.length > together) together = now.length;
+    for (final toast in now) {
+      final text = toast['text'] as String, width = toast['width'] as num, was = widest[text] ?? 0;
+      if (width + 1 < was) shrank ??= '"$text" went from ${was.round()} to ${width.round()} px';
+      if (width > was) widest[text] = width;
+    }
+    return now.isEmpty && widest.isNotEmpty;
+  }, timeout: const Duration(seconds: 20));
+  check(together == 3, 'three toasts were up together');
+  check(shrank == null, 'each stayed whole while the others left${shrank == null ? '' : ': $shrank'}');
 }
 
 /// The player's first fleet in the newest tick update.
@@ -508,8 +576,6 @@ Future<void> loadHold(Browser browser) async {
   await browser.untilText('build slot a');
   await browser.press('5', 'Digit5', 53, text: '5');
   await browser.untilText('load a hold');
-  await browser.until('the offer of browser notices to leave',
-      () async => !(await browser.text()).toLowerCase().contains('tell you when this finishes'));
   final empty = await firstFleet(browser);
   final hold = (empty['cargo_capacity'] as num).floor();
   check(empty['laden'] == false && (empty['cargo']['deuterium'] as num) == 0 && hold > 100, 'the fleet is docked with an empty hold of $hold');
@@ -585,11 +651,6 @@ Future<void> shipBatches(Browser browser) async {
   await browser.untilText('short by');
   final wanted = (await browser.text()).toLowerCase();
   check(wanted.contains('build x5') && wanted.contains('short by') && wanted.contains(' de'), 'a batch of five shows as unavailable, with what is missing');
-  // The offer of browser notices, made when the Shipyard started, covers the
-  // order button, and the ship cards at phone width. Its buttons are not in
-  // the semantics tree, so the pictures wait out its thirty seconds.
-  await browser.until('the offer of browser notices to leave',
-      () async => !(await browser.text()).toLowerCase().contains('tell you when this finishes'));
   await browser.shot('03b-batch-short-1440');
   await browser.click('build x5');
   await browser.press('Enter', 'Enter', 13, text: '\r');
@@ -620,7 +681,11 @@ Future<void> shipBatches(Browser browser) async {
           message.startsWith('Scout x1 costs 200 metal, 50 crystal and 30 deuterium; the stockpile is short by ') &&
           message.endsWith(' deuterium. Nothing was ordered: a batch is paid in full when it is ordered.'),
       'the engine refuses a scout the stockpile does not cover and says what is missing: $message');
-  await Future<void>.delayed(const Duration(milliseconds: 2500));
+  await browser.until('the refusal on screen', () async => (await browser.toasts()).any((t) => t['text'] == 'Refused. $message'));
+  check(true, 'and the page shows the engine\'s sentence where the player is looking');
+  await Future<void>.delayed(const Duration(milliseconds: 600));
+  await browser.shot('03f-typed-order-refused');
+  await Future<void>.delayed(const Duration(milliseconds: 1900));
   final after = await stockpile(browser);
   check(
       (before['deuterium'] as num) - (after['deuterium'] as num) < 30 &&
@@ -631,9 +696,13 @@ Future<void> shipBatches(Browser browser) async {
 
   await browser.command('build shipyard');
   await browser.press('1', 'Digit1', 49, text: '1');
-  await browser.untilText('short ');
-  final box = (await browser.text()).split('\n').firstWhere((line) => line.contains('short') && line.contains('deuterium'), orElse: () => '');
-  check(box.contains('SHIPYARD LV.2') && box.contains('deuterium'), 'the building box shows the waiting Shipyard and what it is short of: $box');
+  final box = await browser.until('the waiting Shipyard in the building box', () async {
+    for (final line in (await browser.text()).split('\n')) {
+      if (line.contains('SHIPYARD LV.2') && line.contains('short by')) return line;
+    }
+    return null;
+  });
+  check(box.contains(' De'), 'the building box shows the waiting Shipyard and what it is short of: $box');
   await browser.shot('03c-waiting-short-1440');
   await browser.resize(390, 844);
   await browser.shot('03d-waiting-short-390');
@@ -648,6 +717,120 @@ Future<void> shipBatches(Browser browser) async {
   await browser.untilText('admiral');
   check((await browser.tap('t.errors.length === 1 && t.errors[0].code === "InsufficientResources"')) == true,
       'the refused scout is the only error frame so far');
+}
+
+/// Every screen and panel a new commander meets, pictured at desktop and at
+/// phone width for whoever reads the pictures: the check here is only that
+/// each one opens. The fleet scans from home on the way.
+Future<void> screens(Browser browser) async {
+  print('screens');
+  await browser.shotBoth('20-overview');
+  await browser.wheel(900);
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await browser.shot('20b-overview-lower-1440');
+  await browser.wheel(-900);
+
+  await browser.type('gw');
+  await browser.untilText('fleet status');
+  await browser.type('v');
+  await browser.until('the scan to come back', () => browser.tap('t.events.some((e) => e.kind === "ScanCompleted")'));
+  await Future<void>.delayed(const Duration(seconds: 1));
+  await browser.shotBoth('21-windshield');
+  await browser.resize(1100, 800);
+  await browser.shot('21b-windshield-1100');
+  await browser.resize(1440, 900);
+
+  await browser.click('load hold');
+  await browser.untilText('load a hold');
+  check(true, 'the windshield\'s Load hold button opens the hold panel on the Storage tab');
+  await browser.type('gw');
+  await browser.untilText('fleet status');
+  await browser.command('load deut');
+  await browser.until('the hold laden', () async => (await firstFleet(browser))['laden'] == true);
+  await browser.untilText('cargo - laden');
+  await browser.shot('21c-windshield-laden-1440');
+  await browser.resize(390, 844);
+  await browser.click('status');
+  await browser.wheel(500, x: 195);
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await browser.shot('21c-windshield-laden-390');
+  await browser.click('status');
+  await browser.resize(1440, 900);
+  await browser.type('l');
+  await browser.untilText('load a hold');
+  check(true, 'and so does L, with the hold laden');
+  await browser.command('unload');
+  await browser.until('the hold empty again', () async => (await firstFleet(browser))['laden'] == false);
+  await browser.type('gw');
+  await browser.untilText('fleet status');
+
+  await browser.type('t');
+  await browser.untilText('give from the hold');
+  await browser.shotBoth('22-windshield-exchange');
+  await browser.type('t');
+  await browser.until('the exchange panel to close', () async => !(await browser.text()).toLowerCase().contains('give from the hold'));
+  await browser.click('manage fleet');
+  await browser.untilText('hide fleet');
+  await browser.shotBoth('23-windshield-fleet');
+  await browser.click('hide fleet');
+
+  await browser.type('gm');
+  await browser.untilText('click to plan a route');
+  await browser.shotBoth('24-map');
+
+  await browser.type('gh');
+  await browser.untilText('build slot a');
+  for (final (digit, tab) in [('1', 'buildings'), ('2', 'research'), ('3', 'shipyard'), ('4', 'defence'), ('5', 'storage')]) {
+    await browser.type(digit);
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await browser.shotBoth('25-homeworld-$tab');
+  }
+  await browser.type('1');
+
+  await browser.press('?', 'Slash', 191, text: '?');
+  await browser.untilText('key reference');
+  await browser.shotBoth('26-keys-and-settings');
+  await browser.press('Escape', 'Escape', 27);
+  await browser.until('the key reference to close', () async => !(await browser.text()).toLowerCase().contains('key reference'));
+  await browser.click('alerts');
+  await browser.untilText('esc to close');
+  await browser.shotBoth('27-alerts');
+  await browser.press('Escape', 'Escape', 27);
+
+  await browser.type('go');
+  await browser.untilText('admiral');
+  check(true, 'overview, windshield, exchange, fleet, map, the five homeworld tabs, keys and alerts all open, at 1440 and 390 px');
+}
+
+/// The page as a player on the LAN gets it: over plain http from a name that
+/// is not this machine's, which is no secure context. The browser gives such
+/// a page no locks, so a second tab is not kept out and finds the save the
+/// first one is playing. Both front doors say to play in one tab.
+Future<void> plainHttp(Devtools devtools, StaticHost host, Directory shots) async {
+  print('a page that is not a secure context');
+  final url = 'http://$plainHost:${host.port}/';
+  final first = await Browser.open(devtools, shots);
+  await first.goto(url);
+  final idle = await first.untilStatus('idle', (s) => s['phase'] == 'idle');
+  check((await first.eval('window.isSecureContext === false && !("locks" in navigator)')) == true,
+      'the page from $url is not a secure context and has no locks');
+  check(idle['exclusive'] == false, 'the engine says it cannot keep a second tab out');
+  await first.untilText('in one tab');
+  await first.shot('12-plain-http-front-door');
+  await first.click('blitz');
+  await first.untilText('always at the controls');
+  await first.click('start');
+  await first.untilStatus('running', (s) => s['phase'] == 'running' && s['world'] != null);
+
+  final second = await Browser.open(devtools, shots);
+  await second.goto(url);
+  final found = await second.untilStatus('the save or a lock', (s) => s['phase'] == 'held' || s['phase'] == 'locked');
+  check(found['phase'] == 'held', 'a second tab is not kept out there: it finds the save the first tab is playing');
+  await second.untilText('in one tab');
+  check(true, 'and its front door says to play in one tab, as the first one did');
+  await second.shot('12b-plain-http-second-tab');
+  await second.close();
+  await first.close();
 }
 
 /// The whole check, on a browser with nothing in it.
@@ -690,9 +873,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   final fetchedFiles = host.fetched.length;
   final client = host.fetched.containsKey('/main.dart.wasm') ? 'dart2wasm on skwasm' : 'dart2js on CanvasKit';
   check(software != host.fetched.containsKey('/main.dart.wasm'), 'Flutter runs its ${software ? 'JavaScript' : 'WebAssembly'} build ($client)');
-  final elsewhere = browser.requested.where((u) => u.startsWith('http') && !u.startsWith(host.url)).toList();
-  check(elsewhere.every((u) => u.startsWith('https://fonts.gstatic.com/s/roboto/')),
-      'the bundle runs with no other host reachable; all it asked elsewhere for is Flutter\'s default Roboto ($elsewhere)');
+  check(browser.elsewhere(host).isEmpty, 'the bundle loads with no other host reachable, and asks none for anything (${browser.elsewhere(host)})');
   await browser.shot('01-new-game');
 
   print('new game');
@@ -723,7 +904,15 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   final after = (await browser.last('tick_update'))!;
   check(level(after['homeworld_update'] as Map<String, dynamic>, 'MetalMine') == 2, 'the order was accepted and completed: Metal Mine level 2');
   check((await browser.tap('t.errors.length')) == 0, 'no error frame so far');
+  await browser.untilText('tell you when this finishes');
+  await Future<void>.delayed(const Duration(milliseconds: 600));
   await browser.shot('03-order-done');
+  await browser.click('not now');
+  await browser.until('the offer of browser notices to leave',
+      () async => !(await browser.text()).toLowerCase().contains('tell you when this finishes'));
+  check(true, 'the offer of browser notices outlasts the toasts raised after it and is answered from its own button');
+
+  await toastsStayWhole(browser);
 
   print('the exchange');
   final hub = (first['world']['hub'] as List).cast<Map<String, dynamic>>();
@@ -741,6 +930,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
 
   await loadHold(browser);
   await shipBatches(browser);
+  await screens(browser);
 
   print('bots');
   final board = (jsonDecode(await browser.until('a leaderboard', () => browser.tap('t.boards.length ? JSON.stringify(t.boards[0]) : null')) as String)
@@ -853,6 +1043,9 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   })''');
   check(left == 0, 'the save is gone from IndexedDB');
   await browser.untilText('new game');
+  check(browser.elsewhere(host).isEmpty, 'in all of that the page asked no other host for anything (${browser.elsewhere(host)})');
+
+  await plainHttp(devtools, host, shots);
 
   if (File(server).existsSync()) {
     print('the same bundle against a real server');

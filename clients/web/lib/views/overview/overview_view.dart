@@ -344,7 +344,7 @@ class _FleetCard extends StatelessWidget {
           Tag(status.label, on: status == ui.FleetStatus.harvesting, color: chipCol),
         ]),
         const SizedBox(height: 4),
-        Text('${f.sector.q},${f.sector.r} - ${f.sector.zone.toUpperCase()} - ${home == 0 ? 'AT HOME' : '$home HOPS HOME'}', style: T.mono(size: 10, color: C.text3)),
+        Text('${f.sector.q},${f.sector.r} - ${f.sector.zone.toUpperCase()} - ${home == 0 ? 'AT HOME' : '$home HOP${home == 1 ? '' : 'S'} HOME'}', style: T.mono(size: 10, color: C.text3)),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 9),
           child: SizedBox(
@@ -518,7 +518,7 @@ class _RankPanel extends StatelessWidget {
     return OvPanel(
       key: const Key('rank-panel'),
       title: 'Ranking',
-      subText: 'one world, humans + agents; bots unranked',
+      subText: 'bots are not ranked',
       padding: const EdgeInsets.only(bottom: 6),
       child: Column(children: [
         for (final r in rank.board)

@@ -128,6 +128,10 @@ class SoloStatus {
   /// Saves are not being written, and why.
   final String? warning;
 
+  /// The browser keeps a second tab out of this world. It cannot for a page
+  /// that is not served over HTTPS or from this machine.
+  final bool exclusive;
+
   /// Ticks per second while catching up.
   final double rate;
   const SoloStatus({
@@ -137,6 +141,7 @@ class SoloStatus {
     this.refused,
     this.error,
     this.warning,
+    this.exclusive = true,
     this.rate = 0,
   });
 
@@ -151,6 +156,7 @@ class SoloStatus {
         refused: m['refused'] as String?,
         error: m['error'] as String?,
         warning: m['warning'] as String?,
+        exclusive: m['exclusive'] as bool? ?? true,
         rate: (m['rate'] as num? ?? 0).toDouble(),
       );
 
