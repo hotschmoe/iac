@@ -175,7 +175,7 @@ cd clients/web && flutter pub get && flutter analyze && flutter test
 scripts/play.sh                   # build web client + serve it and WS on one port (0.0.0.0:${PORT:-7777})
 cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web   # same, without rebuilding
 scripts/play.sh --single-player   # static single-player bundle (client + iac_solo.wasm) in clients/web/build/single-player, served on 127.0.0.1:${PORT:-7777}; --no-serve only builds
-cd clients/web && dart run tool/solo_e2e.dart   # that bundle end to end in headless Chromium (about two minutes; needs the bundle, and target/debug/iac-server for its multiplayer check)
+cd clients/web && dart run tool/solo_e2e.dart   # that bundle end to end in headless Chromium (about three minutes; needs the bundle, and target/debug/iac-server for its multiplayer check)
 ```
 
 The server serves static files (SPA fallback, COOP/COEP headers) and WebSockets (any path; `/ws` for web, `/` for TUI) on one port.
