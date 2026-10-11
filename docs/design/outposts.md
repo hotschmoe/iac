@@ -5,7 +5,9 @@ when it was written. Since then the engine half of slice 1 has been built on the
 recommended answers to the six questions of section 8, which the owner has not yet
 given: `decisions.md` (2026-10-11, outposts) says where each lives in the code, and
 the journal entry "outposts, slice 1: the engine" lists where the build departs
-from section 7. The text below is the proposal as it was written.
+from section 7. The measurement section 7.8 asks for has been made: its results
+stand under the table there, and no constant moved. The rest of the text below is
+the proposal as it was written.
 
 **Source note.** *Decided* means an owner decision, quoted in section 2. *Measured*
 means read from the repository's code or produced by its engine; section 9 says
@@ -1134,6 +1136,93 @@ Numbers that would mean a constant is wrong:
 | Share of a week's yield a defended one loses | none | any | the floor, the fog |
 | Day-7 total of check-in against hands-on, same personality, with and without `--outpost` | within 3 points | wider | yield |
 | Ticks per second of the 16-seat week | within 3% | slower | `process_outposts` |
+
+**Measured, 2026-10-11.** Status: every row measured at season pace over 7 days;
+no `OUTPOST_*` constant moved; one row is in its "wrong when" band for a reason
+no constant reaches, and one was and is mended in code. The journal entry
+"outposts measured" has the command lines.
+
+What was built for it: `FieldTally::outpost_hauled`, read from a counter on the
+outpost that `load` adds to and no rule reads; `sim-run --outpost
+<ring>:<grade>:<level>[:<repairs>]`, which stands the outpost for every bot at the
+start of day 3 through `Headless::install_outposts`, with `<level>+` for a level
+under construction and `<repairs>` for how many repairs the store is stocked for;
+and a scenario of garrisoned outposts in `sim/tests/outposts.rs`. The report also
+counts what the extractor could have made, what a full store turned away, what the
+repairs cost, raids that found the outpost already breached, and the time spent
+breached with no repair running, for want of materials or behind a build.
+
+Two kinds of world were run. The 16-seat week (every style once and an idle
+player) on seeds 1 to 3 gives the rows that need the bots' homes. Six check-in
+turtles, who never fly, on seeds 1 to 5 give 30 outposts for each ring and level;
+a raid's outcome depends on the ring and the level only.
+
+| Measure | Expected | Measured | Verdict |
+|---|---|---|---|
+| Level-3 yield on a grade-5 site at rings 12 to 16, share of the owner's home output on day 7 | 4 to 6% | 4.6%, 4.7%, 4.7% (median of 15 bots and three rings, seeds 1, 2, 3); 3.2% the least, 6.8% the most. By ring: 3.8 to 4.0% at 12, 4.6 to 4.8% at 14, 5.6 to 5.8% at 16 | as expected |
+| The same for the best site in the world | 16% | 14.8%, 18.5%, 18.5% (the median bot; the richest site is grade 10 in ring 19 on seed 1 and grade 12 in ring 19 on seeds 2 and 3); 21.6% for the weakest home | as expected |
+| Payback of level 1 on a grade-3 site at ring 12 | 120 game hours | 120.2. The Metal Mine levels the 45 bots bought on day 3 run from 10 to 16, the median 12, which pays back in 103 h: the outpost is 16% slower. For check-in bots alone the median is level 11, 79 h: 51% slower | on the edge for check-in empires early on day 3, inside for everyone by its end. Left |
+| Raids lost by the platform alone where 5.4 calls it safe | none | none: level 2 at rings 9, 10, 11 and 12, 0 of 624 at each; level 3 at rings 12 to 17, 0 of 624 at each | as expected |
+| Raids lost by level 1 alone at ring 9 | about 2 in 5 | 87 of 200 raids that met a standing platform, 44% (36 to 49% by seed) | as expected |
+| Raids lost by the platform alone at rings 18 to 20 | most | 25% at ring 18 (70 of 282), 79% at ring 19 (97 of 123), all at ring 20 (98 of 98) | most at 19 and 20; ring 18 is the edge 5.4 says it is. Left |
+| Share of a week's yield a level-3 outpost keeps at rings 18 to 20 with nobody home | 40 to 60% | 11%, 4% and 3% of what the extractor could have made is in the store at the end, at rings 18, 19 and 20. Had someone emptied the store before every raid: 35%, 21%, 18% | **wrong: under 20%.** Not the constants; see below |
+| Share of a week's yield a defended one loses | none | none: a Corvette at ring 9 and three at ring 12 beside level 1, level 2 alone at ring 12, level 3 alone at ring 17, with a Frigate at ring 18 and with two Cruisers at ring 20, each repelled every raid of a season week | as expected |
+| Day-7 total of check-in against hands-on, with and without | within 3 points | plus 0.2 to 0.3 points for the turtle pair, who never fly. For the four that fly, between minus 14 and plus 22 points, mean plus 2.0; three worlds that differ only in the ring the outposts stand in differ by as much | cannot be read: a world with outposts is another world to the bots that fly. The part that is arithmetic is 0.3 points |
+| Ticks per second of the 16-seat week | within 3% | first 4.3%, 4.1% and 4.5% slower with outposts (seeds 1, 2, 3, side by side, unpinned). Over half of that was `outpost_at`, which every sector view asks and which searched the outposts one by one; it reads an index now. After: 0.7% slower (seed 1, each run pinned to a core, repeated with the cores exchanged) | was wrong, by `outpost_at` and not `process_outposts`; within 3% now |
+
+**The row that is wrong, and why no constant fixes it.** A lost raid breaches the
+outpost, a breached outpost extracts nothing, and the repair costs metal, crystal
+and deuterium. Four in five of the sites these runs stood on lack one of the three
+ores. Such a site pays for
+exactly as many repairs as its store was stocked for: the floor keeps the first
+repair from the raid, the repair spends it, and after the next lost raid the
+outpost waits for a delivery. Left alone for the five days:
+
+| Outpost, store stocked for one repair | Raids lost of those that met the platform | End the week breached and waiting | Share of the time waiting |
+|---|---|---|---|
+| Level 1, ring 9 | 44% | 24 of 30 | 59% |
+| Level 1, ring 12 | all | 29 of 30 | 81% |
+| Level 2, ring 13 | 8% | 10 of 30 | 11% |
+| Level 2, ring 14 | 60% | 23 of 30 | 62% |
+| Level 3, ring 18 | 25% | 23 of 30 | 48% |
+| Level 3, ring 19 | 79% | 25 of 30 | 70% |
+| Level 3, ring 20 | all | 26 of 30 | 74% |
+| Level 2 at rings 9 to 12, level 3 at rings 12 to 17 | none | none | none |
+
+The floor does what 5.4 says, once. At level 3 in ring 20 on sites of grade 6 to 8
+lacking an ore, an empty store waits 95% of the time, a store stocked for one
+repair 86%, for four 77%, and all 22 such outposts end the week waiting in each
+case. The sites with all
+three ores are the design's case: at rings 18, 19 and 20 none, one and two of
+them ever waited, 39%, 17% and 12% of what they could have made is in a store
+nobody emptied, and 76%, 55% and 46% would have come home had the store been
+emptied before each raid, which is the 40 to 60 percent of this row.
+
+`OUTPOST_RAID_LOSS` and `OUTPOST_REPAIR_SHARE` were tried at 0.10 each and put
+back. What is left in the store at rings 18, 19 and 20 rose to 21%, 11% and 10%,
+and 23, 24 and 24 of 30 still ended the week waiting, for 48%, 67% and 69% of the
+time. The numbers size the skim and the repair; they do not let a site make the
+resource it lacks. So this is the rule of 5.4 ("the repair waits for a delivery")
+meeting the fact of 5.2 that most sites make one or two resources, and it is the
+owner's to decide: `decisions.md`, 2026-10-11 (outposts measured), lists the
+choices.
+
+**A raid lost while a level is building.** Level 2 with level 3 under construction
+(9.4 hours at season pace), store stocked for the repair of level 3: at rings 15
+to 17, 28 or 29 of 30 lost the first raid that came, at ring 14 half, at ring 13
+two, at ring 12 none. Each of those stood breached for 6 hours on average, 3.6 of
+them waiting for the build to end and 2.3 repairing: 60 game hours at pace 1 with
+no extractor, no tanks and no platform. The raid clock of a newly stood outpost gives
+the first 4.3 hours free, so an outpost that has stood a while and orders level 3
+is open to this for the whole build.
+
+**What this cannot say.** Nobody hauls, so nothing reaches a homeworld: the
+check-in and hands-on row measures 21 points of level and nothing of income.
+"Kept" is what lies in a store nobody empties, which a raid skims again every
+time; an owner who hauls keeps more, up to the second figure given. A full store
+stops the extractor, so the safe outposts of these runs made half of what they
+could. No convoy flew, no bot chose a site, and the garrisons were put there by
+hand.
 
 ### 7.9 Size, honestly
 

@@ -4016,3 +4016,204 @@ no screen for one. No bot founds one, so no balance run measures one; the number
 7.8's table are untested and every `OUTPOST_*` constant stands as proposed. No
 convoy has been flown by a person through the lairs of the Outer Ring. PvP does not
 exist.
+
+## 2026-10-11: outposts measured
+
+The engine of slice 1 landed with every `OUTPOST_*` constant as proposed and no
+way to measure one, because no bot founds an outpost. This entry is the
+measurement `docs/design/outposts.md` asks for in 7.8: the instrument, the ten
+rows, the two questions the engine's builder left, and what was run. No constant
+moved. One row is wrong, and it is a rule that makes it so.
+
+**The instrument.**
+
+- *`outpost_hauled`.* `Outpost` has a counter, `hauled`, that `load` adds to when
+  it takes from the store. No rule reads it, it defaults to nothing in a save
+  written before it, and a world without outposts is the world it was: the
+  16-seat week of seed 1 gives master's report byte for byte, snapshot
+  `a3c0c71da910a49c`. `Headless` reads the counter once a tick.
+- *`sim-run --outpost <ring>:<grade>:<level>[:<repairs>]`.* At the start of day 3
+  `Headless::install_outposts` stands an outpost for every bot by one edit of the
+  snapshot: on the sector of that ring whose generated ore is nearest that grade,
+  among those that are no Anomaly, hold no derelict, keep three hexes from the
+  outposts already stood and have nobody in them that tick. The raid clock starts
+  as if level 1 had just been finished. `<level>+` has the next level under
+  construction; `<repairs>` is how many repairs the store is stocked for, one
+  unless said. The report prints what it found for each seat, because a ring
+  seldom has fifteen sites of one grade: asked for grade 5 in ring 14, seed 1 gave
+  grades 2.5 to 6.
+- *What the report counts besides.* What the extractor could have made (its rate
+  of every tick it stood), what a full store turned away, what the repairs cost,
+  the raids that found the outpost already breached, and the ticks spent breached
+  with no repair running, for want of materials or behind a build. Yield is summed
+  in f64 now: a tick's yield is a few ten-thousandths of a point, below what an
+  f32 total resolves after a day. The table also says where each outpost stands,
+  its rate against its owner's mines, and, on the day it was stood, what level 1
+  there pays back in against its owner's next Metal Mine level.
+- *A scenario*, `a_season_week_of_raids_takes_nothing_from_an_outpost_defended_as_its_ring_asks`:
+  six idle empires, each given an outpost as `sim-run` gives one and the garrison
+  5.4 names for its ring.
+
+**Two kinds of world.** The rows that need the bots' homes come from the 16-seat
+week on seeds 1, 2 and 3. A raid's outcome depends on the ring and the level only,
+and a 16-seat week takes eight minutes, so the raid rows come from six check-in
+turtles, who never fly, on seeds 1 to 5: thirty outposts for each ring and level,
+nine seconds a run.
+
+```sh
+sim-run --pace season --days 7 --seed N                      # N = 1, 2, 3
+sim-run --pace season --days 7 --seed N --outpost 14:5:3     # and 12:5:3, 16:5:3 on seed 1
+sim-run --pace season --days 7 --seed N --seat turtle:check-in:6 --outpost SPEC   # N = 1 to 5
+#   SPEC: 9:3:1  9:3:1:0  9:3:1:4  12:3:1
+#         9:5:2  10:5:2  11:5:2  12:5:2  13:5:2  14:5:2
+#         12:5:3 to 20:5:3  18:3:3  20:7:3  20:7:3:0  20:7:3:4
+#         12:5:2+ to 17:5:2+
+sim-run --pace season --ticks 172801 --seed N --seat turtle:check-in --outpost R:12:3   # the richest free site of ring R, 9 to 20
+```
+
+**The ten rows.** The table is in `outposts.md` 7.8 under the design's own. In
+short:
+
+- *Yield.* Level 3 on a grade-5 site at rings 12 to 16 is 4.6, 4.7 and 4.7 percent
+  of its owner's home output on day 7 (the median of 15 bots and three rings, by
+  seed), from 3.2 to 6.8. Home output on day 7 runs from 15,300 to 21,900 units an
+  hour. The richest site is grade 10 in ring 19 on seed 1 (2,757 an hour at level
+  3) and grade 12 in ring 19 on seeds 2 and 3 (3,308): 14.8, 18.5 and 18.5 percent
+  for the median bot, 21.6 for the weakest home. Expected 4 to 6 and 16.
+- *Payback.* Level 1 on a grade-3 site at ring 12: 120.2 game hours. The design
+  set it against Metal Mine 13 (135 hours). The 45 bots bought 115 Metal Mine
+  levels on day 3, from 10 to 16: the median is 12 (103 hours) over all of them, 11
+  (79 hours) for check-in bots, 12 for hybrid and 14 (176 hours) for hands-on.
+  Thirty-five of the 115 are levels 10 and 11, against which the outpost is more
+  than half slower. By the end of day 3 all but two bots are at level 12 or
+  beyond. On the edge, and left.
+- *Raids.* Level 2 alone lost none of 624 raids at each of rings 9 to 12 and level
+  3 none at each of rings 12 to 17. Level 2 loses 8 percent at ring 13 and 60 at
+  ring 14. Level 1 alone at ring 9 lost 87 of 200 (44 percent). Level 3 alone lost
+  25 percent at ring 18, 79 at ring 19 and all at ring 20. The arithmetic of 5.4
+  gives 38, 25, 79 and 100.
+- *Defended.* The scenario above: a Corvette at ring 9 and three at ring 12 beside
+  level 1, level 2 alone at ring 12, level 3 alone at ring 17, with a Frigate at
+  ring 18 and with two Cruisers at ring 20. Each repelled every raid of a season
+  week and holds everything it made.
+- *Check-in against hands-on.* The turtle pair, who never fly, moved by 0.2 to 0.3
+  points: 21 points of outpost on both sides. The four pairs that fly moved by
+  minus 14 to plus 22. That is not the outposts' yield, which nobody hauls. A
+  world with outposts is another world to a bot that flies: fifteen lairs are
+  displaced, and the cap on combat and exploration points sits 5 points higher.
+  The seed-1 world with the outposts in ring 12, 14 or 16 gives the explorer pair
+  70, 83 and 67 percent, and 61 without. The row cannot be read from pairs of
+  weeks.
+- *Kept with nobody home, and speed:* below.
+
+**The row that is wrong.** A level-3 outpost left alone at rings 18, 19 and 20
+has 11, 4 and 3 percent of what its extractor could have made in its store at the
+end of the week; 40 to 60 was expected and under 20 is "one bad week ends it".
+The reason is the one the engine's builder flagged. A repair costs all three
+resources, a breached outpost extracts nothing, and of the sites these runs stood
+on four in five lack an ore.
+
+| Outpost, stocked for one repair | Lost, of raids that met the platform | End the week breached and waiting | Time waiting |
+|---|---|---|---|
+| Level 1, ring 9 | 44% | 24 of 30 | 59% |
+| Level 1, ring 12 | all | 29 of 30 | 81% |
+| Level 2, ring 13 | 8% | 10 of 30 | 11% |
+| Level 2, ring 14 | 60% | 23 of 30 | 62% |
+| Level 3, ring 18 | 25% | 23 of 30 | 48% |
+| Level 3, ring 19 | 79% | 25 of 30 | 70% |
+| Level 3, ring 20 | all | 26 of 30 | 74% |
+
+Where no raid is lost nothing waits. Split by ore, at level 3 and grade 5:
+
+| Ring | Sites with all three ores: ever waited, left in the store, yield less repairs | Sites lacking one: end waiting, left in the store |
+|---|---|---|
+| 18 | 0 of 5, 39%, 76% | 23 of 25, 6% |
+| 19 | 1 of 6, 17%, 55% | 24 of 24, 0.3% |
+| 20 | 2 of 6, 12%, 46% | 24 of 24, 0.2% |
+
+"Left in the store" is of what the extractor could have made, in a store nobody
+emptied, which every raid skims again. "Yield less repairs" is what would have
+come home had someone emptied the store before each raid; it is the design's 40
+to 60 percent, and the three-ore sites meet it.
+
+*Is the floor doing its job when the store starts with the repair in it?* Once.
+The raid leaves the repair, the repair spends it, and the second lost raid finds a
+store that cannot pay. At level 3 in ring 20 on sites lacking an ore an empty
+store waits 95 percent of the time, one repair in store 86, four repairs 77, and
+all 22 outposts end the week waiting in each case. At level 1 in ring 9: 89, 74
+and 57 percent, all 24. A waiting outpost is raided on the same clock, and each
+raid takes a quarter above the floor again: of the raids on level 3 at ring 20,
+228 of 326 found it already breached.
+
+*The constants the row names do not reach it.* `OUTPOST_RAID_LOSS` and
+`OUTPOST_REPAIR_SHARE` were set to 0.10, the three rings run again, and the
+constants put back. Left in the store: 21, 11 and 10 percent. Ending the week
+waiting: 23, 24 and 24 of 30. They size the skim and the repair; they do not make
+deuterium on a site without any. `decisions.md` lists four ways out for the owner.
+The smallest is a repair paid by weight in whatever the store holds.
+
+**A raid lost while level 3 is building.** Level 2 with level 3 under
+construction, stocked for the repair of level 3. The build takes 9.4 hours at
+season pace and the platform is level 2's 100 until it ends. At rings 15, 16 and
+17, 28, 29 and 29 of 30 lost the first raid that came; at ring 14 fifteen, at ring
+13 two, at ring 12 none. Those that lost stood breached for 6 hours on average:
+3.6 behind the build and 2.3 for the repair. At pace 1 that is 60 game hours
+without extractor, tanks or platform. A newly stood outpost has 4.3 raid-free
+hours, so one that has stood a while is open for the whole 9.4. The breach costs
+5 percent of five days' yield; the worse part is that level 3 is the level a
+player buys to be safe at rings 13 to 17, and buying it at rings 15 to 17 means an
+almost certain breach unless a garrison stands in for the missing platform.
+
+**Speed.** This row was in its band when first measured. Side by side, the week
+with `--outpost 14:5:3` ran 4.3, 4.1 and 4.5 percent slower than the week without
+on seeds 1, 2 and 3 (1194 against 1247 ticks a second, 1148 against 1197, 1160
+against 1215). A profile of four days of seed 1 put more than half of the
+difference in one question, `GameEngine::outpost_at`: every sector view and every
+lair check asks whether an outpost stands in the sector, and the answer searched
+the outposts one by one. That was 5.1 of the 8.8 seconds the four days took
+longer. `process_outposts`, which the row names, was a tenth of a percent. The
+engine now keeps the owner of the outpost in each sector beside the outposts
+themselves (`outpost_sites`), changed where one is founded or abandoned. The same
+four days fell from 168.8 to 163.7 seconds, against 160.0 without outposts, and
+the week is the same world before and after, snapshot `493f12eb5502e117`.
+
+Measured again, the unpinned pairs say little: 2.1, 4.7 and 5.7 percent slower.
+This machine's cores run from 1.8 to 2.6 GHz and a process lands where it lands.
+So the week of seed 1 was run pinned, without outposts on core 10 and with them on
+core 11, and again with the cores exchanged: 501.9 and 513.6 seconds without,
+515.3 and 506.7 with. With outposts it is 0.7 percent slower; the two cores differ
+by 2 percent between themselves. That world also plays 1.1 percent more bot
+turns, 329,120 against 325,590. In a world whose bots do the same either way,
+twelve check-in turtles, twelve outposts cost 5.3 seconds of a week (18.7 against
+13.4): a microsecond per outpost and tick, which for fifteen outposts is 1.3
+percent of the 16-seat week. Where that microsecond goes was not taken apart; the
+sector an outpost keeps live on its owner's chart and the outpost's state in every
+`tick_update` are the likely places. A quiet world ticks so cheaply that twelve
+outposts are 40 percent on top of it.
+
+**What it cannot say.** Nothing is hauled, so no outpost paid for anything at
+home and the score rows measure 21 points of level. An owner who hauls keeps more
+than a store nobody empties; how much more depends on how often, which only a
+convoy measures. A full store stops the extractor, so the outposts that lost no
+raid made about half of what they could have (level 3 in ring 14 fills its
+crystal in two days). The sites are the nearest to a grade among those free in a
+ring, not sites a player would choose for their ore. Raids on a store nobody
+empties and on docks nobody stands at say nothing of ships lost there.
+
+**What was run.** The weeks above: 10 of the 16-seat week on the final engine (6
+side by side, 4 pinned), 8 before the index and one on master's tip; 145 of six
+turtles; 36 two-day runs for the richest sites; and 15 with the two constants at
+0.10. `cargo build --workspace --all-targets`,
+`cargo test --workspace --no-fail-fast` (148 tests, none failed: the 147 there
+were and the garrison scenario), `cargo clippy --workspace --all-targets` (no
+warning), `tools/check_sim_constants.py` (agrees, outposts included), the wasm
+build of `iac-solo`. `sim-run --pace season --days 7 --seed 1` from the final
+binary is master's report byte for byte. Flutter was not run: no protocol type,
+fixture or file under `clients/` changed.
+
+**Not verified.** No convoy was flown and no bot chose a site, garrisoned or
+hauled. The four ways out of the waiting outpost were not built or measured.
+Persistent pace and blitz were not run: the raid clock is the homeworld's at every
+pace, but the build and repair times against it are not the same ratio, so the
+waiting shares belong to a season world. Nobody has played an outpost in a
+browser or the TUI.
