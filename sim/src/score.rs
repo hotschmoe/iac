@@ -51,8 +51,50 @@ impl Score {
     }
 
     pub fn total(&self) -> f32 {
+        self.total_under(ExtraRule::GAME)
+    }
+
+    pub fn total_under(&self, rule: ExtraRule) -> f32 {
         let core = self.core();
-        core + (self.combat + self.explore).min(EXTRA_CAP * core)
+        core + rule.counted(self.combat + self.explore, core)
+    }
+}
+
+/// How combat and exploration points count toward a score. Every world plays
+/// under `ExtraRule::GAME`. The others are alternatives for `sim-run --cap`
+/// to measure: nothing a client sees is scored with them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExtraRule {
+    /// In full up to this share of core, not at all beyond it.
+    Cap(f32),
+    /// In full up to this share of core (the knee). Beyond it the counted
+    /// points grow with the square root of the raw ones: four times the
+    /// points count double.
+    Soft(f32),
+    /// In full.
+    Uncapped,
+}
+
+impl ExtraRule {
+    pub const GAME: ExtraRule = ExtraRule::Cap(EXTRA_CAP);
+
+    /// What `raw` combat and exploration points add to a score of `core`.
+    pub fn counted(self, raw: f32, core: f32) -> f32 {
+        match self {
+            ExtraRule::Cap(share) => raw.min(share * core),
+            ExtraRule::Soft(knee) if raw > knee * core => (knee * core * raw).sqrt(),
+            ExtraRule::Soft(_) | ExtraRule::Uncapped => raw,
+        }
+    }
+
+    /// What one more point would add to a score standing at `raw` and `core`:
+    /// 1 while points count in full, 0 once they do not count at all.
+    pub fn next_point(self, raw: f32, core: f32) -> f32 {
+        match self {
+            ExtraRule::Cap(share) if raw >= share * core => 0.0,
+            ExtraRule::Soft(knee) if raw > knee * core => 0.5 * (knee * core / raw).sqrt(),
+            ExtraRule::Cap(_) | ExtraRule::Soft(_) | ExtraRule::Uncapped => 1.0,
+        }
     }
 }
 

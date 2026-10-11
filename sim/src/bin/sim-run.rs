@@ -14,12 +14,13 @@ use iac_shared::constants::DEFAULT_WORLD_SEED;
 use iac_shared::pace::Pace;
 use iac_shared::world::home_seats;
 use iac_sim::bot::{Attention, Bot, Personality, Style, DAY, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
-use iac_sim::headless::{Headless, PlayerSummary, ScoreBreakdown, SlotIdle};
+use iac_sim::headless::{Headless, IdleWhy, PlayerSummary, ScoreBreakdown, SlotIdle, Why, WHY_LABELS};
+use iac_sim::score::ExtraRule;
 use iac_sim::script::IdlePlayer;
 use serde_json::json;
 
 const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--seat <spec>]... [--sessions <n>]
-               [--ticks <n> | --hours <n> | --days <n>] [--every <ticks>] [--ignore-cap] [--json]
+               [--ticks <n> | --hours <n> | --days <n>] [--every <ticks>] [--ignore-cap] [--cap <rule>] [--json]
   --pace      world pace (default season)
   --seed      world seed (default: the server's default)
   --seat      who plays; repeatable. <personality>:<attention>[:<count>] or idle[:<count>]
@@ -32,6 +33,12 @@ const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--sea
   --every     ticks between score samples (default: a day; a tenth of a run under two days)
   --ignore-cap  bots keep flying for combat and exploration points past the score cap
                 (measures what the map offers; by default they stop once the cap is banked)
+  --cap       score the run, and have the bots play, under another rule for combat and
+              exploration points than the game's (which is 0.25); the world itself is untouched
+                <share>       counted up to that share of core, not beyond: 0.5
+                soft:<share>  counted in full up to that share of core, beyond it by the
+                              square root (four times the points count double)
+                none          counted in full
   --json      print the full record as JSON instead of the tables";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -58,6 +65,31 @@ struct Args {
     every: Option<u64>,
     json: bool,
     ignore_cap: bool,
+    rule: ExtraRule,
+}
+
+fn parse_rule(text: &str) -> Result<ExtraRule, String> {
+    let share = |text: &str| match text.parse::<f32>() {
+        Ok(share) if share > 0.0 && share.is_finite() => Ok(share),
+        _ => Err(format!("--cap: '{text}' is not a share of core above zero")),
+    };
+    match text.split_once(':') {
+        None if text == "none" => Ok(ExtraRule::Uncapped),
+        None => share(text).map(ExtraRule::Cap),
+        Some(("soft", knee)) => share(knee).map(ExtraRule::Soft),
+        Some(_) => Err(format!("--cap: '{text}' is not <share>, soft:<share> or none")),
+    }
+}
+
+fn rule_text(rule: ExtraRule) -> String {
+    match rule {
+        ExtraRule::Cap(share) => format!("extra = min(combat + explore, {:.0}% of core)", 100.0 * share),
+        ExtraRule::Soft(knee) => format!(
+            "extra = combat + explore up to k = {:.0}% of core, beyond it sqrt(k * (combat + explore))",
+            100.0 * knee
+        ),
+        ExtraRule::Uncapped => "extra = combat + explore".to_string(),
+    }
 }
 
 fn parse_seat(spec: &str) -> Result<Vec<Kind>, String> {
@@ -80,6 +112,7 @@ fn parse_args() -> Result<Args, String> {
         every: None,
         json: false,
         ignore_cap: false,
+        rule: ExtraRule::GAME,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -102,6 +135,7 @@ fn parse_args() -> Result<Args, String> {
             "--seed" => args.seed = number("--seed")?,
             "--seat" => args.seats.extend(parse_seat(&value)?),
             "--sessions" => args.sessions = number("--sessions")?,
+            "--cap" => args.rule = parse_rule(&value)?,
             "--ticks" => args.ticks = number("--ticks")?,
             "--hours" => args.ticks = number("--hours")? * 3600,
             "--days" => args.ticks = number("--days")? * DAY,
@@ -142,7 +176,7 @@ fn seat_all(world: &mut Headless, args: &Args) -> Result<(), String> {
             Kind::Idle => world.add_player(Box::new(IdlePlayer { label: name }), style)?,
             Kind::Bot(bot_style) => {
                 let bot_style = Style { sessions_per_day: args.sessions, ignore_cap: args.ignore_cap, ..bot_style };
-                world.add_player(Box::new(Bot::new(name, bot_style)), style)?
+                world.add_player(Box::new(Bot::new(name, bot_style).under(args.rule)), style)?
             }
         };
     }
@@ -177,6 +211,15 @@ struct StyleRow {
     ships_lost: f32,
     refuel_deuterium: f32,
     idle: SlotIdle,
+    why: IdleWhy<f32>,
+    /// Share of what the mines made that a full store turned away.
+    spilled: f32,
+    fleet_hours: f32,
+    unpaid_hours: f32,
+}
+
+fn whys(why: &mut IdleWhy<f32>) -> impl Iterator<Item = &mut f32> {
+    [&mut why.building, &mut why.research, &mut why.shipyard].into_iter().flat_map(Why::each)
 }
 
 fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
@@ -192,6 +235,10 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
                 ships_lost: 0.0,
                 refuel_deuterium: 0.0,
                 idle: SlotIdle::default(),
+                why: IdleWhy::default(),
+                spilled: 0.0,
+                fleet_hours: 0.0,
+                unpaid_hours: 0.0,
             });
             rows.len() - 1
         });
@@ -213,6 +260,15 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
         row.idle.building += p.idle.building;
         row.idle.research += p.idle.research;
         row.idle.shipyard += p.idle.shipyard;
+        let mut why = p.idle_why.shares();
+        for (sum, share) in whys(&mut row.why).zip(whys(&mut why)) {
+            *sum += *share;
+        }
+        if p.mined > 0.0 {
+            row.spilled += p.spilled / p.mined;
+        }
+        row.fleet_hours += p.field.fleet_hours;
+        row.unpaid_hours += p.field.unpaid_hours;
     }
     for row in &mut rows {
         let n = row.players as f32;
@@ -220,9 +276,13 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
         for value in [
             &mut s.econ, &mut s.fleet, &mut s.defence, &mut s.core, &mut s.combat, &mut s.explore, &mut s.extra,
             &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost, &mut row.refuel_deuterium,
-            &mut row.idle.building, &mut row.idle.research, &mut row.idle.shipyard,
+            &mut row.idle.building, &mut row.idle.research, &mut row.idle.shipyard, &mut row.spilled,
+            &mut row.fleet_hours, &mut row.unpaid_hours,
         ] {
             *value /= n;
+        }
+        for share in whys(&mut row.why) {
+            *share /= n;
         }
     }
     rows
@@ -244,8 +304,8 @@ fn style_table(players: &[PlayerSummary]) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<20} {:>2} {SCORE_HEADER} {:>7} {:>7} {:>6} {:>8} {:>11} {:>9} {:>11}",
-        "style", "n", "haul", "raidsal", "lost", "refuel", "idle b/r/y", "vs turtle", "vs hands-on"
+        "{:<20} {:>2} {SCORE_HEADER} {:>7} {:>7} {:>6} {:>8} {:>7} {:>7} {:>6} {:>9} {:>11}",
+        "style", "n", "haul", "raidsal", "lost", "refuel", "spilled", "field h", "unpaid", "vs turtle", "vs hands-on"
     );
     for row in &rows {
         let (personality, attention) = row.style.split_once('/').unwrap_or((row.style.as_str(), ""));
@@ -253,7 +313,7 @@ fn style_table(players: &[PlayerSummary]) -> String {
         let hands_on = total_of(format!("{personality}/{}", Attention::HandsOn.label()));
         let _ = writeln!(
             out,
-            "{:<20} {:>2} {} {:>7.1} {:>7.1} {:>6.1} {:>8.0} {:>11} {:>9} {:>11}",
+            "{:<20} {:>2} {} {:>7.1} {:>7.1} {:>6.1} {:>8.0} {:>6.1}% {:>7.0} {:>6} {:>9} {:>11}",
             row.style,
             row.players,
             score_columns(&row.score),
@@ -261,15 +321,33 @@ fn style_table(players: &[PlayerSummary]) -> String {
             row.raid_salvage,
             row.ships_lost,
             row.refuel_deuterium,
-            format!(
-                "{:.0}/{:.0}/{:.0}%",
-                100.0 * row.idle.building,
-                100.0 * row.idle.research,
-                100.0 * row.idle.shipyard
-            ),
+            100.0 * row.spilled,
+            row.fleet_hours,
+            percent(row.unpaid_hours, Some(row.fleet_hours)),
             percent(row.score.total, turtle),
             percent(row.score.total, hands_on),
         );
+    }
+    out
+}
+
+/// Why each kind of slot stood empty, by style: every reason as a percent of
+/// the slot's idle time.
+fn why_table(players: &[PlayerSummary]) -> String {
+    let labels: String = WHY_LABELS.iter().map(|label| format!(" {label:>8}")).collect();
+    let mut out = String::new();
+    let _ = writeln!(out, "{:<20} {:<9} {:>5}{labels}", "style", "slot", "idle");
+    for mut row in styles(players) {
+        let slots = [
+            ("building", row.idle.building, &mut row.why.building),
+            ("lab", row.idle.research, &mut row.why.research),
+            ("shipyard", row.idle.shipyard, &mut row.why.shipyard),
+        ];
+        for (slot, idle, why) in slots {
+            let shares: String = why.each().into_iter().map(|share| format!(" {:>8.0}", 100.0 * *share)).collect();
+            let style = if slot == "building" { row.style.as_str() } else { "" };
+            let _ = writeln!(out, "{style:<20} {slot:<9} {:>4.0}%{shares}", 100.0 * idle);
+        }
     }
     out
 }
@@ -308,6 +386,7 @@ fn main() {
     };
 
     let mut world = Headless::new(args.seed, args.pace);
+    world.score_under(args.rule);
     if let Err(msg) = seat_all(&mut world, &args) {
         eprintln!("sim-run: {msg}");
         std::process::exit(2);
@@ -328,6 +407,7 @@ fn main() {
             "ticks": args.ticks,
             "sample_every": every,
             "sessions_per_day": args.sessions,
+            "score_rule": rule_text(args.rule),
             "snapshot_hash": hash,
             "players": players,
         });
@@ -341,12 +421,25 @@ fn main() {
             args.ticks as f64 / DAY as f64,
             args.sessions,
         );
-        println!("score = core + extra; core = econ + fleet + defence; extra = min(combat + explore, 25% of core)");
+        println!("score = core + extra; core = econ + fleet + defence; {}", rule_text(args.rule));
         println!("haul and raidsal: resources from the field and from repelled raids, in the points they buy");
         println!("refuel: deuterium paid to fill fleet tanks");
-        println!("idle b/r/y: share of the run the building slots, the lab and the shipyard stood empty\n");
+        println!("spilled: share of what the mines made that a full store turned away");
+        println!("field h: hours away from home, summed over fleets; unpaid: the part of them flown while");
+        println!("  one more combat or exploration point would not have counted\n");
         println!("{}", sample_table(&players));
         println!("{}", style_table(&players));
+        println!("idle: share of the run the slot stood empty (building slots counted one by one)");
+        println!("why it stood empty, in percent of its idle time:");
+        println!("  short     an order waits for resources (yard: the planner wants a unit the stockpile does not cover)");
+        println!("  blocked   an order waits for a prerequisite, or the planner's next choice needs something not built");
+        println!("  unbuilt   the lab or the yard is not built");
+        println!("  unspent   nothing ordered, and the stockpile covers what the planner wants");
+        println!("  poor      nothing ordered, and the stockpile does not cover what the planner wants");
+        println!("  declined  nothing ordered: the planner's rule says not yet, though the stockpile covers a level");
+        println!("  not yet   nothing ordered: the planner's rule says not yet, and the stockpile covers no level");
+        println!("  done      nothing left to order\n");
+        println!("{}", why_table(&players));
     }
     let turns: u64 = players.iter().map(|p| p.turns).sum();
     eprintln!(

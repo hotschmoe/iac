@@ -35,8 +35,8 @@ use std::collections::BTreeMap;
 use iac_shared::protocol::{Command, GameState, ServerMessage};
 use serde::{Deserialize, Serialize};
 
-use crate::score::EXTRA_CAP;
-use crate::script::{Order, ScriptedPlayer};
+use crate::score::ExtraRule;
+use crate::script::{Order, Outlook, ScriptedPlayer};
 
 pub use roster::Roster;
 
@@ -212,6 +212,9 @@ pub struct Bot {
     memory: Memory,
     /// Asked and answered within a turn, so never part of the record.
     odds: field::Odds,
+    /// The score rule of the world it plays in: the world's, not the bot's,
+    /// so not part of the record either.
+    rule: ExtraRule,
 }
 
 impl Bot {
@@ -222,7 +225,20 @@ impl Bot {
     /// A bot that carries on from what the world stored of it.
     pub fn from_record(name: impl Into<String>, record: BotRecord) -> Bot {
         let style = Style { sessions_per_day: record.style.sessions_per_day.clamp(1, MAX_SESSIONS_PER_DAY), ..record.style };
-        Bot { name: name.into(), style, world_seed: 0, player_id: 0, memory: record.memory, odds: field::Odds::new() }
+        Bot {
+            name: name.into(),
+            style,
+            world_seed: 0,
+            player_id: 0,
+            memory: record.memory,
+            odds: field::Odds::new(),
+            rule: ExtraRule::GAME,
+        }
+    }
+
+    /// The same bot in a world scored by `rule`, for a run that measures one.
+    pub fn under(self, rule: ExtraRule) -> Bot {
+        Bot { rule, ..self }
     }
 
     pub fn record(&self) -> BotRecord {
@@ -233,9 +249,14 @@ impl Bot {
         self.style
     }
 
-    /// Whether more combat or exploration points would still raise the score.
+    /// Whether more combat or exploration points would still raise the
+    /// score. Under a rule with no hard cap every point does.
     fn points_wanted(&self) -> bool {
-        self.style.ignore_cap || self.memory.standing.is_none_or(|s| s.extra < CAP_HEADROOM * EXTRA_CAP * s.core)
+        self.style.ignore_cap
+            || self.memory.standing.is_none_or(|s| match self.rule {
+                ExtraRule::Cap(share) => s.extra < CAP_HEADROOM * share * s.core,
+                ExtraRule::Soft(_) | ExtraRule::Uncapped => true,
+            })
     }
 
     /// What the admiral is told for the turn at `turn`.
@@ -388,5 +409,9 @@ impl ScriptedPlayer for Bot {
             }
             _ => {}
         }
+    }
+
+    fn outlook(&self, state: &GameState) -> Option<Outlook> {
+        home::outlook(state, self.style.personality, self.brief(state.tick + 1).away_for)
     }
 }
