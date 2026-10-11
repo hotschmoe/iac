@@ -53,6 +53,17 @@ neither client judges it.
   a sector outside rings 9 to 20 is refused for its ring. The inspector and
   the log print it as any survey.
 
+Two more, from watching an outpost in a real browser:
+
+- **A panel that opens on the windshield takes down the toasts that ask
+  nothing.** On a phone they stand where the sheet opens and covered its top
+  rows for nine seconds. Dismissed, not pushed aside: there is no free place
+  on a phone to push them to, what they said is in the log, and a toast with
+  buttons stays. One raised after the panel opened still shows over it.
+- **The browser drive of an outpost's life is not a kept tool.** It takes
+  eleven minutes and its raid is a roll. `tool/solo_e2e.dart` stays the one
+  browser check, and it still founds nothing.
+
 ## 2026-10-11 (outposts, slice 1: what the clients show)
 
 **Decided by the agent that built it, not by the owner, and open to change.**
