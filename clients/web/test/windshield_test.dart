@@ -1057,15 +1057,14 @@ void main() {
       final toast = find.descendant(
           of: find.byType(ToastLayer), matching: find.text('fleet 999 not found (or it has no ships left); its standing orders were not changed'));
       expect(toast, findsOneWidget, reason: 'the world\'s refusal, where the player is looking');
+      final dock = tester.getRect(find.byKey(const ValueKey('dock-scan')));
+      expect(tester.getRect(toast).bottom < dock.top, isTrue, reason: 'on the windshield a toast sits at the top at every width, clear of the dock');
+      expect(tester.getRect(toast).left >= tester.getRect(find.byKey(const ValueKey('arena'))).left, isTrue, reason: 'inside the screen, not over the rail beside it');
       if (size.width < 1440) {
-        final dock = tester.getRect(find.byKey(const ValueKey('dock-scan')));
         final sheet = tester.getRect(find.byKey(const ValueKey('status-sheet')));
-        expect(tester.getRect(toast).bottom < dock.top, isTrue,
-            reason: 'where the windshield runs its dock along the bottom, at a phone\'s width or a narrow window\'s, a toast sits at the top, clear of it');
         expect(tester.getRect(toast).right < sheet.left, isTrue, reason: 'and to the left of the button that opens the sheet');
-        expect(tester.getRect(toast).left >= tester.getRect(find.byKey(const ValueKey('arena'))).left, isTrue, reason: 'inside the screen, not over the rail beside it');
       } else {
-        expect(tester.getRect(toast).top > size.height / 2 && tester.getRect(toast).right > size.width - 40, isTrue, reason: 'with the side columns up, a toast is at the bottom right');
+        expect(tester.getRect(toast).right < panel.left, isTrue, reason: 'with the side columns up, it is left of the one that holds the panels and their buttons');
       }
       await shot(tester, 'ws-orders-refused-${size.width.round()}');
       if (size.width == 1100) {

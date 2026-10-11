@@ -21,29 +21,30 @@ Color _toneColor(ToastTone t) => switch (t) {
     };
 
 /// The toasts: bottom right of the console on a desktop. On a phone the
-/// bottom is the dock, the order buttons and the screen bar, so the shell
-/// stands them at the top of the screen instead, under the HUD and the guide
-/// strip, and to the left: the corner on the right is where the phone
-/// layouts keep the button that opens their sheet.
+/// bottom is the dock, the order buttons and the screen bar, and on the
+/// windshield the right is a column of panels at any width, so there the
+/// shell stands them at the top of the screen instead ([top]), under the HUD
+/// and the guide strip, and to the left: the corner on the right is where
+/// the phone layouts keep the button that opens their sheet.
 class ToastLayer extends StatelessWidget {
   final ToastController toasts;
-  final bool narrow;
-  const ToastLayer({super.key, required this.toasts, required this.narrow});
+  final bool top;
+  const ToastLayer({super.key, required this.toasts, required this.top});
 
-  /// What a phone's toasts leave free on the right.
+  /// What the toasts at the top leave free on the right.
   static const cornerKept = 96.0;
 
   @override
   Widget build(BuildContext context) => Positioned(
-        right: narrow ? cornerKept : 16,
-        top: narrow ? 0 : null,
-        bottom: narrow ? null : 16,
-        left: narrow ? 16 : null,
+        right: top ? cornerKept : 16,
+        top: top ? 0 : null,
+        bottom: top ? null : 16,
+        left: top ? 16 : null,
         child: ListenableBuilder(
           listenable: toasts,
           builder: (context, _) => Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: narrow ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+            crossAxisAlignment: top ? CrossAxisAlignment.start : CrossAxisAlignment.end,
             children: [for (final t in toasts.items) Padding(key: ValueKey(t.id), padding: const EdgeInsets.only(top: 6), child: _ToastTile(t: t, toasts: toasts))],
           ),
         ),
