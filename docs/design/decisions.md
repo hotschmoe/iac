@@ -3,6 +3,66 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-12 (seven loose ends: the Vault and a batch, a fight's forfeit, Stop, and where status text stands)
+
+**Decided by the agent that built it, not by the owner, and open to change.**
+Seven things earlier passes saw and left. Each is its own commit.
+
+- **A ship or defence batch asks the Storage Vault before it asks the
+  stockpile.** A batch that costs more than a stockpile cap is refused with
+  `StorageTooSmall` and the sentence a building or a tech gets, even when the
+  stockpile holds enough. The stockpile can hold more than its cap only
+  through refunds, so this closes one door: money past the cap cannot buy
+  what the Vault could never hold. It still buys anything that fits.
+- **Refunds are as they were, and now written down.** A cancel returns half
+  of what the order has paid, and the refund is added past the cap. That was
+  reported earlier and judged harmless, because cancelling costs half; it is
+  in `RULES.md` and the README under Queues and slots.
+- **A fight that catches a fleet charging a jump says what fuel is forfeit**,
+  as a warning `Alert`, in the terms `stop` uses: the fleet, the sector, the
+  jump's target, the fuel. It is raised where the jump is abandoned
+  (`engage_fleet`), so the fleet that was attacked hears it just before the
+  fight is announced and a fleet drawn into another's fight just after. The
+  fuel named is what a jump costs the fleet at that moment, as for `stop`.
+  No event kind, no state.
+- **The web Stop works for as long as the engine takes a stop.** While the
+  ships fly out and the jump is not yet answered, the Stop tile and `X` send
+  the order; every other act still waits for the jump. The scene gives the
+  jump up at once and does not wait for the engine: if the stop was too late
+  the fleet arrives and the arrival is played, and if it was in time the
+  ships are already home. A jump that is never answered ends the same way
+  after 2.6 seconds; it used to leave the ships off the arena.
+- **A status that comes and goes has room kept for it; it is not moved under
+  the controls.** The orders panel's newest report keeps five lines and the
+  fleet status keeps four under its Orders row while the fleet is under
+  orders. Under the form the report would be still, and off a 900 px screen:
+  why a fleet holds is the first thing that panel is for. The cost is blank
+  lines when the sentence is short. Two things still move: a sentence longer
+  than the room grows its box, and the list of earlier reports at the foot
+  of the open orders panel pushes the panels below it as it fills.
+- **On the windshield the toasts stand at the top at every width**, over the
+  sector head, which has no controls. They did so below 1167 px already. At
+  the bottom right they lay over the foot of the column that holds every
+  panel. The other screens keep the bottom right on a desktop. A panel that
+  opens on a desktop no longer takes the earlier toasts down, because none
+  is in its way; the phone layout's sheet still does. One toast of the
+  longest sentence the engine has clears the gate cards and the fleets. A
+  stack of three reaches the corner of the north-west gate card, and a
+  taller one the fleet rail, as on narrower windows. The bottom left, over
+  the feed, has a little more room and was not taken: a toast as wide as
+  they are would stand on the dock's first tile once the dock has nine.
+- **Resizing the window keeps what is open.** The windshield's panels move
+  between the desktop column and the phone sheet with their state, and the
+  shell's screens keep theirs when the outpost's strip and the bottom rail
+  come or go in one step.
+- **A new outpost says nothing about its empty store to the fleets that
+  founded it.** The fleets standing there when level 1 opens count as told.
+  A fleet that arrives later is warned, and so is one that fills up and
+  thirsts there again. The other way, waiting until the store has ever held
+  deuterium, needs a field in the outpost, the snapshot and the save for one
+  message. The sentence still says "no deuterium left" to a second fleet
+  that reaches an outpost nobody has stocked yet.
+
 ## 2026-10-11 (outposts: what the engine tells a client beforehand)
 
 **Decided by the agent that built it, not by the owner, and open to change.**
