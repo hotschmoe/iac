@@ -62,6 +62,9 @@ String ago(int t) => t < 60
             ? '${t ~/ 3600}h'
             : '${t ~/ 86400}d';
 
+/// "1 hop", "20 hops".
+String hopCount(int n) => '$n hop${n == 1 ? '' : 's'}';
+
 /// "1,234,567".
 String groupDigits(int v) {
   final s = v.toString();

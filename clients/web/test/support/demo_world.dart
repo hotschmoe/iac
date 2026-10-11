@@ -83,6 +83,10 @@ class DemoWorld {
   final Map<int, HarvestResource> _harvest = {};
   final Map<int, List<Hex>> _recall = {};
   final Set<int> _provoked = {};
+
+  /// Orders given through `policy_update`, by fleet: their settings and the
+  /// tick their hold was last said (0 before the first).
+  final Map<int, (PolicyParams, int)> _orders = {};
   int _nextNpcFleet = 9100;
   int _nextShip = 3000;
   int _raidArrival = 0;
@@ -609,6 +613,85 @@ class DemoWorld {
     return [_tickUpdate()];
   }
 
+  /// Empty the laden hold of [f] into the stockpile as far as the caps
+  /// allow and end the mark; returns what went back.
+  Resources _unload(FleetState f) {
+    final before = _resources;
+    _resources = _clampCaps(Resources(
+      metal: before.metal + f.cargo.metal,
+      crystal: before.crystal + f.cargo.crystal,
+      deuterium: before.deuterium + f.cargo.deuterium,
+    ));
+    final back = Resources(
+      metal: _resources.metal - before.metal,
+      crystal: _resources.crystal - before.crystal,
+      deuterium: _resources.deuterium - before.deuterium,
+    );
+    _setFleet(_copy(_find(f.id)!,
+        laden: false,
+        cargo: Resources(
+          metal: f.cargo.metal - back.metal,
+          crystal: f.cargo.crystal - back.crystal,
+          deuterium: f.cargo.deuterium - back.deuterium,
+        )));
+    return back;
+  }
+
+  /// The server's `policy_update`, with the reports it makes: `clear` for
+  /// manual, `engage` naming the settings the orders fly with, and the end
+  /// of a hold loaded by hand.
+  List<ServerMessage> _policy(int fleetId, PolicyPreset preset, PolicyParams params) {
+    final f = _find(fleetId);
+    if (f == null) {
+      return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left); its standing orders were not changed')];
+    }
+    if (preset == PolicyPreset.manual) {
+      _orders.remove(fleetId);
+      _setFleet(_copy(f, clearPolicy: true));
+      _ev(PolicyActionEvent(fleetId: fleetId, preset: PolicyPreset.manual, action: 'clear', reason: 'standing orders cleared'));
+      return [_tickUpdate()];
+    }
+    _orders[fleetId] = (params, 0);
+    _setFleet(_copy(f, policy: preset));
+    if (f.laden) _unload(f);
+    final fuel = params.fuelBudgetPct >= 100 ? 'fuel unbounded' : 'fuel budget ${params.fuelBudgetPct}% of deuterium income';
+    _ev(PolicyActionEvent(
+        fleetId: fleetId,
+        preset: preset,
+        action: 'engage',
+        reason: 'doctrine set: ${preset.label} (range ${params.maxRange}, engage ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x, $fuel)'
+            '${f.laden ? '; the hold loaded by hand goes back to the stockpile' : ''}'));
+    return [_tickUpdate()];
+  }
+
+  /// The scripted world flies no doctrine. A fleet given orders here that
+  /// stands free holds, and says why in the engine's sentence for a board
+  /// with nothing on it: when the orders are first weighed and once a
+  /// minute after.
+  void _stepOrders() {
+    for (final f in _fleets) {
+      final given = _orders[f.id];
+      final preset = f.policy;
+      if (given == null || preset == null) continue;
+      final (params, saidAt) = given;
+      if (f.state != FleetStatus.idle && f.state != FleetStatus.docked) continue;
+      if (saidAt != 0 && _tick < saidAt + 60) continue;
+      _orders[f.id] = (params, _tick);
+      final within = 'within ${params.maxRange} hops of home';
+      _ev(PolicyActionEvent(
+          fleetId: f.id,
+          preset: preset,
+          action: 'hold',
+          reason: switch (preset) {
+            PolicyPreset.prospect => 'every lane within 32 hops of ${f.location} is charted $within',
+            PolicyPreset.mineAndReturn => 'no seam $within repays the fuel to fetch it (stripped tiles refill over hours)',
+            PolicyPreset.salvageAndSites => 'board is clear $within: no derelict, no wreckage that repays the fuel',
+            PolicyPreset.patrolHome => 'no contact $within that the fleet rates ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x against',
+            PolicyPreset.manual => '',
+          }));
+    }
+  }
+
   /// Put [fleetId] at [at] with [cargo] aboard, for a test that needs a
   /// fleet somewhere the scripted layout does not reach.
   void place(int fleetId, Hex at, Resources cargo) {
@@ -656,6 +739,7 @@ class DemoWorld {
     _stepQueues();
     _stepSalvage();
     _stepRaid();
+    _stepOrders();
 
     if (_tick % 120 == 0) {
       _ev(const AlertEvent(level: AlertLevel.info, message: 'Demo mode: no server connected'));
@@ -1676,11 +1760,8 @@ class DemoWorld {
     switch (msg) {
       case CommandMessage(:final command):
         return _command(command);
-      case PolicyUpdate(:final fleetId, :final preset):
-        final f = _find(fleetId);
-        if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
-        _setFleet(_copy(f, policy: preset, clearPolicy: preset == PolicyPreset.manual));
-        return [_tickUpdate()];
+      case PolicyUpdate(:final fleetId, :final preset, :final params):
+        return _policy(fleetId, preset, params ?? const PolicyParams());
       case RequestFullState():
         return [initial()];
       case AuthRequest():
@@ -2076,24 +2157,7 @@ class DemoWorld {
         if (!f.laden) {
           return [_err(ErrorCode.invalidCommand, 'fleet $fleetId was not loaded by hand; a docked fleet unloads by itself as the stockpile has room')];
         }
-        final before = _resources;
-        _resources = _clampCaps(Resources(
-          metal: before.metal + f.cargo.metal,
-          crystal: before.crystal + f.cargo.crystal,
-          deuterium: before.deuterium + f.cargo.deuterium,
-        ));
-        final back = Resources(
-          metal: _resources.metal - before.metal,
-          crystal: _resources.crystal - before.crystal,
-          deuterium: _resources.deuterium - before.deuterium,
-        );
-        _setFleet(_copy(f,
-            laden: false,
-            cargo: Resources(
-              metal: f.cargo.metal - back.metal,
-              crystal: f.cargo.crystal - back.crystal,
-              deuterium: f.cargo.deuterium - back.deuterium,
-            )));
+        final back = _unload(f);
         _ev(AlertEvent(
             level: AlertLevel.info, message: 'fleet $fleetId unloaded ${_amount(back)} into the stockpile', fleetId: fleetId, sector: f.location));
         return [_tickUpdate()];

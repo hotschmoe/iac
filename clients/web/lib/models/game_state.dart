@@ -18,6 +18,34 @@ class LogEntry {
   });
 }
 
+/// Each line of [log], newest first, with a name that stays its own while
+/// newer lines arrive above it: of two lines alike, the older is `#0`.
+List<(String, LogEntry)> namedLog(List<LogEntry> log) {
+  final seen = <String, int>{};
+  final named = [
+    for (final e in log.reversed)
+      ('${e.tick}|${e.message}#${seen.update('${e.tick}|${e.message}', (n) => n + 1, ifAbsent: () => 0)}', e),
+  ];
+  return named.reversed.toList();
+}
+
+/// One report from a fleet's standing orders, in the engine's words.
+class PolicyAct {
+  /// When the engine last said it. A hold is said again while it lasts, with
+  /// fresh figures; [since] is when it was first said.
+  final int tick;
+  final int since;
+  final proto.PolicyPreset preset;
+
+  /// The engine's verb: `engage` confirms new orders, `clear` ends them,
+  /// `hold` is the fleet standing still, the rest are what it did.
+  final String action;
+  final String reason;
+  const PolicyAct({required this.tick, required this.since, required this.preset, required this.action, required this.reason});
+
+  bool get isHold => action == 'hold';
+}
+
 enum EventLevel {
   full(Color(0xFFFFB000)),
   bright(Color(0xD9FFB000)),
@@ -193,6 +221,16 @@ class GameState {
   /// The announced, unresolved raid.
   final proto.RaidIncomingEvent? raid;
 
+  /// What each fleet's standing orders reported lately, newest first, by
+  /// fleet id.
+  final Map<int, List<PolicyAct>> policyActs;
+
+  /// The settings this console last gave each fleet's standing orders, by
+  /// fleet id, while those orders stand. The wire carries a fleet's doctrine
+  /// and not its settings, so orders given elsewhere, or before this
+  /// session, have none here.
+  final Map<int, proto.PolicyParams> policyParams;
+
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -221,7 +259,16 @@ class GameState {
     this.world,
     this.leaderboard,
     this.raid,
+    this.policyActs = const {},
+    this.policyParams = const {},
   });
+
+  /// Why [fleet] stands still under its orders: the hold they last
+  /// reported, unless they have acted since or been cleared.
+  PolicyAct? holdOf(FleetState fleet) {
+    final last = policyActs[fleet.id]?.firstOrNull;
+    return fleet.policy != null && last != null && last.isHold ? last : null;
+  }
 
   /// Whether [at] is a hub sector that offers the exchange.
   bool exchangeAt(proto.Hex at) => world?.servicesAt(at).contains(proto.HubService.exchange) ?? false;
@@ -311,6 +358,8 @@ class GameState {
     proto.WorldInfo? world,
     proto.LeaderboardReply? leaderboard,
     proto.RaidIncomingEvent? raid,
+    Map<int, List<PolicyAct>>? policyActs,
+    Map<int, proto.PolicyParams>? policyParams,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -340,5 +389,7 @@ class GameState {
         world: world ?? this.world,
         leaderboard: leaderboard ?? this.leaderboard,
         raid: raid ?? this.raid,
+        policyActs: policyActs ?? this.policyActs,
+        policyParams: policyParams ?? this.policyParams,
       );
 }

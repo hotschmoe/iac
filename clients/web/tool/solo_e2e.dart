@@ -20,7 +20,9 @@
 // the homeworld on screen, an order accepted and completed, the offer of
 // browser notices answered from its own button, toasts that stay whole
 // while their neighbours leave, a hold loaded from the stockpile at the dock
-// and unloaded again, a ship batch the stockpile does not cover refused with
+// and unloaded again, standing orders given through their panel with the
+// fleet holding for the reason the engine gives and then set back to manual,
+// a ship batch the stockpile does not cover refused with
 // nothing charged and its order button off, the engine's refusal of a typed
 // order shown on screen, a building queued ahead of its resources shown
 // with its shortfall at desktop and phone width, every screen pictured at
@@ -28,7 +30,8 @@
 // world, a two-hour absence caught up and reported with the page staying
 // responsive, a stall of the running page, a second tab kept out,
 // abandoning the save, and the same page from an origin that is not a
-// secure context, where no tab can be kept out and the front door says so.
+// secure context, where no tab can be kept out and the save cannot be
+// marked to keep, and the front door says both.
 // The worker's clock is moved from here (its `Date.now` is shifted before
 // it starts), so an absence takes seconds.
 // Last, when an `iac-server` binary is there (--server), it serves the same
@@ -618,6 +621,83 @@ Future<void> loadHold(Browser browser) async {
   await browser.untilText('admiral');
 }
 
+/// Standing orders through the panel, against the engine itself. P opens it
+/// on a fleet flown by hand. A patrol of one hex that fights only at ten to
+/// one is chosen with the steppers and set: the wire carries what the typed
+/// `policy patrol range=1 engage=10.0` would, the engine confirms the orders
+/// with the settings they fly with, and the fleet reports what it does under
+/// them or why it holds, which is the world's to decide (it has held for its
+/// shields and it has attacked a scout in the home sector). The panel shows
+/// that sentence as the engine sent it, and for a hold the fleet status does
+/// too, at desktop width, in the sheet at 1100 px and on a phone. Manual
+/// clears the orders again.
+Future<void> standingOrders(Browser browser) async {
+  print('standing orders');
+  final before = await firstFleet(browser);
+  check(before['policy'] == null, 'the fleet is flown by hand');
+  await browser.type('p');
+  await browser.untilText('no report yet');
+  final listed = (await browser.text()).toLowerCase();
+  check(['manual', 'prospect', 'mine+return', 'salvage+sites', 'patrol home'].every((d) => listed.contains('doctrine $d')),
+      'P opens the standing orders, with the five doctrines and a line for each');
+  await browser.shot('21d-orders-manual-1440');
+
+  await browser.click('doctrine patrol home');
+  await browser.untilText('least odds to fight');
+  for (var i = 0; i < 3; i++) {
+    await browser.click('range from home down');
+  }
+  for (var i = 0; i < 6; i++) {
+    await browser.click('least odds to fight up');
+  }
+  await browser.until('the steppers at one hex and ten to one', () async {
+    final text = await browser.text();
+    return text.contains('1 HEX') && text.contains('10.0X');
+  });
+  await browser.click('set patrol home');
+  await browser.until('the orders on the wire', () => browser.tap('''t.sent.some((m) => m.type === "policy_update" && m.fleet_id === ${before['id']} &&
+      m.preset === "patrol_home" && JSON.stringify(m.params) ===
+      JSON.stringify({min_fuel_pct: 10, cargo_return_pct: 85, max_range: 1, engage_ratio_x10: 100, fuel_budget_pct: 20}))'''));
+  check(true, 'Set sends the doctrine with its settings, as the typed policy does');
+
+  Future<String> report(String action) async => await browser.until(
+      'the engine\'s "$action" report',
+      () => browser.tap('t.events.findLast((e) => e.kind === "PolicyAction" && e.action === "$action")?.reason ?? null')) as String;
+  final set = await report('engage');
+  check(set == 'doctrine set: patrol home (range 1, engage 10.0x, fuel budget 20% of deuterium income)', 'the engine confirms the orders: $set');
+  const newest = 'JSON.stringify(t.events.findLast((e) => e.kind === "PolicyAction" && !["engage", "clear"].includes(e.action)) ?? null)';
+  final first = jsonDecode(await browser.until('a report of what the fleet does under them',
+      () => browser.tap(newest).then((found) => found == 'null' ? null : found)) as String) as Map<String, dynamic>;
+  final held = first['action'] == 'hold';
+  check('${first['reason']}'.isNotEmpty, held ? 'the fleet holds, and the engine says why: ${first['reason']}' : 'the fleet acts, and the engine says why: ${first['action']}, ${first['reason']}');
+  await browser.until('the newest report on screen, in the engine\'s words', () async {
+    final now = jsonDecode(await browser.tap(newest) as String) as Map<String, dynamic>;
+    final text = await browser.text(), reason = '${now['reason']}';
+    if (now['action'] != 'hold') return text.contains('LAST REPORT: ${'${now['action']}'.toUpperCase()}') && text.contains(reason);
+    return text.contains('HOLDING FOR') && text.contains('PATROL HOME - HOLDING') && reason.allMatches(text).length >= 2;
+  });
+  check(true, held ? 'the panel and the fleet status both show that sentence, word for word' : 'the panel shows that sentence, word for word');
+  check((await firstFleet(browser))['policy'] == 'patrol_home', 'the fleet is under patrol home');
+  await browser.shot('21d-orders-report-1440');
+  await browser.resize(1100, 800);
+  await browser.shot('21d-orders-report-1100');
+  await browser.resize(390, 844);
+  await browser.shot('21d-orders-report-390');
+  await browser.resize(1440, 900);
+
+  await browser.click('doctrine manual');
+  await browser.click('clear orders');
+  await browser.until('manual on the wire',
+      () => browser.tap('t.sent.some((m) => m.type === "policy_update" && m.preset === "manual" && !("params" in m))'));
+  check(await report('clear') == 'standing orders cleared', 'Manual clears the orders, and the engine says so');
+  await browser.until('the fleet flown by hand again', () async => (await firstFleet(browser))['policy'] == null);
+  await browser.untilText('last report: clear');
+  await browser.press('Escape', 'Escape', 27);
+  await browser.until('the orders panel to close', () async => !(await browser.text()).toLowerCase().contains('last report: clear'));
+  await browser.until('the fleet to finish a jump its orders had begun', () async => (await firstFleet(browser))['state'] != 'Moving');
+  await Future<void>.delayed(const Duration(seconds: 2));
+}
+
 const scoutCost = {'metal': 200, 'crystal': 50, 'deuterium': 30};
 
 /// The stockpile in the newest tick update that carries one.
@@ -736,8 +816,10 @@ Future<void> screens(Browser browser) async {
   await browser.until('the scan to come back', () => browser.tap('t.events.some((e) => e.kind === "ScanCompleted")'));
   await Future<void>.delayed(const Duration(seconds: 1));
   await browser.shotBoth('21-windshield');
-  await browser.resize(1100, 800);
-  await browser.shot('21b-windshield-1100');
+  for (final (width, height) in [(1100, 800), (1180, 800), (1366, 768)]) {
+    await browser.resize(width, height);
+    await browser.shot('21b-windshield-$width');
+  }
   await browser.resize(1440, 900);
 
   await browser.click('load hold');
@@ -763,6 +845,8 @@ Future<void> screens(Browser browser) async {
   await browser.until('the hold empty again', () async => (await firstFleet(browser))['laden'] == false);
   await browser.type('gw');
   await browser.untilText('fleet status');
+
+  await standingOrders(browser);
 
   await browser.type('t');
   await browser.untilText('give from the hold');
@@ -800,6 +884,14 @@ Future<void> screens(Browser browser) async {
   await browser.type('go');
   await browser.untilText('admiral');
   check(true, 'overview, windshield, exchange, fleet, map, the five homeworld tabs, keys and alerts all open, at 1440 and 390 px');
+
+  await browser.command('help');
+  await browser.wheel(1600);
+  await browser.untilText('h[arvest] [metal|crystal|deut]');
+  check(true, 'the log shows the answer to help from its first line');
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await browser.shotBoth('28-overview-log-help');
+  await browser.wheel(-1600);
 }
 
 /// The page as a player on the LAN gets it: over plain http from a name that
@@ -816,6 +908,9 @@ Future<void> plainHttp(Devtools devtools, StaticHost host, Directory shots) asyn
       'the page from $url is not a secure context and has no locks');
   check(idle['exclusive'] == false, 'the engine says it cannot keep a second tab out');
   await first.untilText('in one tab');
+  check((await first.eval('!("storage" in navigator)')) == true, 'nor can such a page ask the browser to keep its save');
+  await first.untilText('may clear the save when the device runs short of storage');
+  check(true, 'and the front door says that the browser may clear the save');
   await first.shot('12-plain-http-front-door');
   await first.click('blitz');
   await first.untilText('always at the controls');
@@ -874,6 +969,9 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   final client = host.fetched.containsKey('/main.dart.wasm') ? 'dart2wasm on skwasm' : 'dart2js on CanvasKit';
   check(software != host.fetched.containsKey('/main.dart.wasm'), 'Flutter runs its ${software ? 'JavaScript' : 'WebAssembly'} build ($client)');
   check(browser.elsewhere(host).isEmpty, 'the bundle loads with no other host reachable, and asks none for anything (${browser.elsewhere(host)})');
+  final door = (await browser.text()).toLowerCase();
+  check(!door.contains('in one tab') && !door.contains('clear the save'),
+      'from this machine the front door has nothing to say about a second tab or a save the browser may clear');
   await browser.shot('01-new-game');
 
   print('new game');

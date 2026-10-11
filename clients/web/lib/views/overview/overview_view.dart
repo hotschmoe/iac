@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../console/economy_view.dart';
+import '../../console/intel.dart' show hopCount;
 import '../../console/prefs.dart';
 import '../../console/services.dart';
 import '../../design/draw.dart';
@@ -244,7 +245,7 @@ class _NextCard extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       footer: Align(
         alignment: Alignment.centerLeft,
-        child: ConsoleButton(n.button, primary: true, keyHint: n.action == NextAction.queueResearch || n.action == NextAction.queueBuild ? 'Ret' : null, reason: n.disabledReason, onPressed: n.disabledReason == null ? run : null),
+        child: ConsoleButton(n.button, primary: true, keyHint: n.action == NextAction.queueResearch || n.action == NextAction.queueBuild ? 'Ret' : null, onPressed: run),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(n.title.toUpperCase(), style: T.cond(size: 20, color: C.a100, spacing: 1.2, height: 1.2)),
@@ -262,7 +263,6 @@ class _NextCard extends StatelessWidget {
           const SizedBox(height: 8),
         ],
         if (n.cost != null) Padding(padding: const EdgeInsets.only(bottom: 8), child: costRow(n.cost!)),
-        if (n.disabledReason != null) WhyText(n.disabledReason!),
       ]),
     ));
   }
@@ -356,7 +356,7 @@ class _FleetCard extends StatelessWidget {
             }, size: 24),
           ),
         ),
-        _kvr('Fuel', hops == null ? '${f.fuel}' : '$hops hops', warn: low ? ' LOW' : null),
+        _kvr('Fuel', hops == null ? '${f.fuel}' : 'for ${hopCount(hops)}', warn: low ? ' LOW' : null),
         LedBar(f.fuelMax > 0 ? f.fuel / f.fuelMax : 0, color: low ? C.ember : C.own, height: 6),
         _kvr('Cargo', '${f.cargo.total} / ${f.cargo.capacity}'),
         LedBar(f.cargo.fraction, color: C.a400, height: 6),
@@ -488,10 +488,12 @@ class _LogPanel extends StatelessWidget {
           child: events.isEmpty
               ? Padding(padding: const EdgeInsets.all(12), child: Text('No ${filter.label.toLowerCase()} events yet.', style: T.mono(size: 11, color: C.text3)))
               : SingleChildScrollView(
+                  key: const Key('log-lines'),
                   padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
                   child: Column(children: [
-                    for (final e in events)
+                    for (final (name, e) in namedLog(events))
                       Padding(
+                        key: ValueKey(name),
                         padding: const EdgeInsets.symmetric(vertical: 2),
                         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                           Text('> ', style: T.mono(size: 10.5, color: e.message.startsWith('!') ? C.ember : C.a700)),

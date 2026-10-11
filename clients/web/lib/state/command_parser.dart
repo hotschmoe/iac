@@ -69,13 +69,24 @@ const helpLines = [
   '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump|modfab>',
   '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research> [id]  [waiting]',
   '        buildings and research queue ahead of resources and pay when they start; a ship batch is paid in full when ordered',
-  'fleets: f[leet] [n]  select/list   p[olicy] [manual|prospect|mine|salvage|patrol]  (no arg cycles)',
-  '        policy settings: range=<hexes from home> engage=<least odds ratio> fuel=<% of deuterium income for its fuel, 100 = no bound>',
-  '                         cargo=<% hold that sends it home> reserve=<% tank kept spare>   e.g. policy mine range=8 fuel=40',
-  '        split <class> [count]  detach ships into a new fleet   merge <fleet id>  fold a fleet in this sector into the active one',
-  'hub:    trade|quote <give> <want> [amount|all]  sell cargo at the exchange, or ask first from anywhere   e.g. quote metal deut 400',
-  '        load <resource> [amount|all]  stockpile into the hold, at home   unload  put it back   metal|crystal|deut, no amount = all',
-  'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
+  'fleets: f[leet] [n]  select/list   split <class> [count]  detach ships into a new fleet',
+  '        merge <fleet id>  fold a fleet in this sector into the active one',
+  'orders: p[olicy] <manual|prospect|mine|salvage|patrol>  standing orders: the active fleet flies itself and reports each act and each hold with its reason',
+  '        prospect  scans, then charts the sectors in range',
+  '        mine      strips the seams that repay their fuel and brings the ore home',
+  '        salvage   scoops wreckage and boards derelicts, nearest first',
+  '        patrol    hunts the hostiles it rates at its engage ratio, in range of home',
+  '        manual    clears the orders (also: off); policy with no name steps to the next doctrine',
+  '        settings, after the name or alone:  range=<hexes from home, 1-30>  engage=<least odds ratio, 0.1-10>',
+  '                  fuel=<% of deuterium income it may burn, 100 = no bound>  cargo=<% of the hold that sends it home, 10-100>',
+  '                  reserve=<% of the tank kept spare, 0-90>     e.g. policy mine range=8 fuel=40',
+  'hub:    quote <give> <want> [amount|all]  ask the exchange what a trade would return, from anywhere   e.g. quote metal deut 400',
+  '        trade <give> <want> [amount|all]  sell cargo from the hold, standing on the hub; no amount = all of it aboard',
+  'hold:   load <metal|crystal|deut> [amount|all]  stockpile into the hold of the active fleet, idle at home with no standing orders;',
+  '                  no amount = all that fits. The dock leaves a loaded hold alone until the fleet has been away',
+  '        unload    put a hold loaded by hand back: what the stockpile has room for now, the rest as room opens',
+  'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw',
+  'keys:   on the windshield 1-9 select a fleet and P opens its standing orders; ? lists every key',
 ];
 
 const _dirs = {
@@ -387,10 +398,27 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
   return ParsedError('Unknown: "${words.join(' ')}" -- type help');
 }
 
-const _policyUsage = 'policy: manual|prospect|mine|salvage|patrol  [range=1-30] [engage=0.1-10] [fuel=0-100] [cargo=10-100] [reserve=0-90]';
+/// The line that gives the active fleet [preset] with [params], as a player
+/// types it: a setting at the server's default is left unsaid.
+String policyCommand(PolicyPreset preset, [PolicyParams params = const PolicyParams()]) {
+  const usual = PolicyParams();
+  final name = _policies.entries.firstWhere((e) => e.value == preset).key;
+  if (preset == PolicyPreset.manual) return 'policy $name';
+  return [
+    'policy $name',
+    if (params.maxRange != usual.maxRange) 'range=${params.maxRange}',
+    if (params.engageRatioX10 != usual.engageRatioX10) 'engage=${params.engageRatioX10 / 10}',
+    if (params.fuelBudgetPct != usual.fuelBudgetPct) 'fuel=${params.fuelBudgetPct}',
+    if (params.cargoReturnPct != usual.cargoReturnPct) 'cargo=${params.cargoReturnPct}',
+    if (params.minFuelPct != usual.minFuelPct) 'reserve=${params.minFuelPct}',
+  ].join(' ');
+}
+
+const _policyUsage ='policy: manual|prospect|mine|salvage|patrol  [range=1-30] [engage=0.1-10] [fuel=0-100] [cargo=10-100] [reserve=0-90]';
 
 /// Doctrine settings typed as `key=value` over the server's defaults; null
-/// when one of them does not parse.
+/// when one of them does not parse or lies outside what the server takes,
+/// so the settings sent are the settings in force.
 PolicyParams? _policyParams(List<String> settings) {
   const preset = PolicyParams();
   var (reserve, cargo, range) = (preset.minFuelPct, preset.cargoReturnPct, preset.maxRange);
@@ -413,6 +441,10 @@ PolicyParams? _policyParams(List<String> settings) {
       default:
         return null;
     }
+  }
+  bool within(int value, int least, int most) => value >= least && value <= most;
+  if (!within(reserve, 0, 90) || !within(cargo, 10, 100) || !within(range, 1, 30) || !within(engage, 1, 100) || !within(fuel, 0, 100)) {
+    return null;
   }
   return PolicyParams(
     minFuelPct: reserve,

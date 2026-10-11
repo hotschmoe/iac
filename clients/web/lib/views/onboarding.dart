@@ -23,6 +23,35 @@ class GuideStrip extends StatelessWidget {
   final bool narrow;
   const GuideStrip({super.key, required this.screen, required this.narrow});
 
+  /// Room the buttons get on a desktop strip, the same for every lesson so
+  /// that the note beside them wraps the same way.
+  static const _actionsWidth = 250.0;
+
+  static TextStyle get _noteStyle => T.mono(size: 11, color: C.text2, height: 1.4);
+
+  static TextSpan _noteSpan(String note) => TextSpan(children: [
+        TextSpan(text: 'NOTE ', style: T.mono(size: 11, color: C.a700, weight: FontWeight.w600, spacing: 1)),
+        TextSpan(text: note),
+      ]);
+
+  /// The height of the longest note of the walk at [width], on this screen
+  /// or on the lesson's own. The strip keeps it for every lesson, so the
+  /// screen under it does not move when one lesson gives way to the next.
+  double _tallestNote(BuildContext context, Onboarding guide, double width) {
+    final scaler = MediaQuery.textScalerOf(context);
+    var tallest = 0.0;
+    for (final lesson in guide.guided) {
+      if (lesson == Lesson.token) continue;
+      for (final at in {screen, lesson.screen ?? screen}) {
+        final painter = TextPainter(text: TextSpan(children: [_noteSpan(guide.note(lesson, at))], style: _noteStyle), textDirection: TextDirection.ltr, textScaler: scaler)
+          ..layout(maxWidth: width);
+        if (painter.height > tallest) tallest = painter.height;
+        painter.dispose();
+      }
+    }
+    return tallest;
+  }
+
   @override
   Widget build(BuildContext context) {
     final con = Console.of(context);
@@ -46,17 +75,16 @@ class GuideStrip extends StatelessWidget {
             SegBar(steps.length, steps.where(guide.done).length, w: 9, h: 4),
           ]),
         ]);
-        final text = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(l.title.toUpperCase(), style: T.cond(size: 13, color: C.a100, spacing: 1.4)),
-          const SizedBox(height: 2),
-          Text.rich(
-            TextSpan(children: [
-              TextSpan(text: 'NOTE ', style: T.mono(size: 11, color: C.a700, weight: FontWeight.w600, spacing: 1)),
-              TextSpan(text: note),
-            ]),
-            style: T.mono(size: 11, color: C.text2, height: 1.4),
-          ),
-        ]);
+        final text = LayoutBuilder(
+          builder: (context, box) => Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(l.title.toUpperCase(), style: T.cond(size: 13, color: C.a100, spacing: 1.4)),
+            const SizedBox(height: 2),
+            ConstrainedBox(
+              constraints: BoxConstraints(minHeight: l == Lesson.token ? 0 : _tallestNote(context, guide, box.maxWidth)),
+              child: Text.rich(_noteSpan(note), style: _noteStyle),
+            ),
+          ]),
+        );
         final buttons = <Widget>[
           if (l.keys != null && !narrow && !elsewhere) for (final k in l.keys!.split(' ')) KeyCap(k),
           if (token != null) ...[
@@ -67,11 +95,10 @@ class GuideStrip extends StatelessWidget {
             ConsoleButton('I have saved it', key: const Key('guide-token-saved'), small: true, onPressed: guide.tokenSaved),
           ],
           if (elsewhere) ConsoleButton('Open ${l.screen!.name}', key: const Key('guide-go'), small: true, primary: true, onPressed: () => con.go(l.screen!)),
-          if (l == Lesson.orders)
-            ConsoleButton('Set mine + return', key: const Key('guide-orders'), small: true, primary: true, onPressed: () => con.openPalette('policy mine')),
           ConsoleButton('Skip guide', key: const Key('guide-skip'), small: true, onPressed: () => _skip(con)),
         ];
-        final actions = Wrap(spacing: 6, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: buttons);
+        final actions = Wrap(
+            spacing: 6, runSpacing: 4, alignment: narrow ? WrapAlignment.start : WrapAlignment.end, crossAxisAlignment: WrapCrossAlignment.center, children: buttons);
         final tokenBox = token == null
             ? null
             : Container(
@@ -105,7 +132,7 @@ class GuideStrip extends StatelessWidget {
                     const SizedBox(width: 16),
                     Expanded(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [text, ?tokenBox])),
                     const SizedBox(width: 14),
-                    ConstrainedBox(constraints: const BoxConstraints(maxWidth: 420), child: actions),
+                    SizedBox(width: _actionsWidth, child: actions),
                   ]),
           ),
         );

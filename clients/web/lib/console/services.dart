@@ -28,9 +28,6 @@ class Console {
   /// Switch screens (set by the shell).
   void Function(Screen) go = (_) {};
 
-  /// Open the `/` command palette with optional text (set by the shell).
-  void Function([String text]) openPalette = ([_ = '']) {};
-
   Console({required this.game, required this.prefs, required this.toasts, required this.sfx, required Notifier notifier})
       : onboarding = Onboarding(game, prefs),
         attention = Attention(game: game, prefs: prefs, toasts: toasts, notifier: notifier) {

@@ -4,6 +4,8 @@ import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/console/kv_store.dart';
 import 'package:iac_client/console/prefs.dart';
+import 'package:iac_client/design/panel.dart';
+import 'package:iac_client/state/command_parser.dart';
 import 'package:iac_client/state/connection_provider.dart';
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/state/token_store.dart';
@@ -105,18 +107,20 @@ void main() {
     await endShell(tester, c);
   });
 
-  testWidgets('unaffordable suggestions are disabled and say why', (tester) async {
+  testWidgets('a tech the stockpile does not cover queues from its tile, which says what it is short of; a ship batch stays off', (tester) async {
     final c = await _boot(tester, stock: const proto.Resources(metal: 1, crystal: 1, deuterium: 0));
     c.cancelHomeworldQueue(proto.QueueType.research);
     await tester.pump(const Duration(milliseconds: 1200));
-    expect(find.textContaining('Short by'), findsWidgets);
-    final before = c.state.events.length;
     final tiles = find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith('sug-research-'));
     await _scrollTo(tester, tiles.first);
-    await tester.tap(tiles.first, warnIfMissed: false);
+    expect(find.descendant(of: tiles.first, matching: find.textContaining(RegExp(r'^Short by .*: it queues now and starts when that is covered\.$'))), findsOneWidget);
+    await shot(tester, 'overview-short-tiles-1440');
+    final more = find.descendant(of: find.byKey(const Key('card-shipyard')), matching: find.byType(ConsoleButton)).first;
+    expect(tester.widget<ConsoleButton>(more).onPressed, isNull, reason: 'a ship batch is paid in full when ordered, so short of it there is nothing to order');
+    expect(tester.widget<ConsoleButton>(more).reason, startsWith('Short by'));
+    await tester.tap(tiles.first);
     await tester.pump(const Duration(milliseconds: 200));
-    expect(c.state.events.where((e) => e.message.startsWith('> research ')).length, 0);
-    expect(before, isNonNegative);
+    expect(c.state.events.where((e) => e.message.startsWith('> research ')).length, 1, reason: 'a building or a tech queues ahead of its resources');
     await endShell(tester, c);
   });
 
@@ -138,11 +142,36 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     final log = find.byKey(const Key('log-panel'));
     await _scrollTo(tester, log);
-    expect(find.descendant(of: log, matching: find.textContaining('FULL STATE SYNC')), findsOneWidget);
+    expect(find.descendant(of: log, matching: find.text('UPLINK ESTABLISHED. HOMEWORLD AT [4,-2].')), findsOneWidget);
     await tester.tap(find.descendant(of: log, matching: find.text('COMBAT')));
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.descendant(of: log, matching: find.textContaining('FULL STATE SYNC')), findsNothing);
+    expect(find.descendant(of: log, matching: find.textContaining('UPLINK ESTABLISHED')), findsNothing);
     expect(find.descendant(of: log, matching: find.textContaining('DESTROYED')), findsOneWidget);
+    await endShell(tester, c);
+  });
+
+  testWidgets('the log holds the whole answer to help and what came before it, and scrolls through them; help spells out orders, load and unload', (tester) async {
+    final c = await _boot(tester);
+    c.note('Before the question');
+    c.handleCommand('help');
+    await tester.pump(const Duration(milliseconds: 100));
+    final lines = c.state.events.map((e) => e.message).toList();
+    expect(lines.take(helpLines.length), helpLines, reason: 'the answer reads top down');
+    expect(lines, containsAll(['> help', 'Before the question']), reason: 'and has not pushed out what came before it');
+    expect(
+        helpLines.join('\n'),
+        allOf(contains('p[olicy] <manual|prospect|mine|salvage|patrol>'), contains('range=<hexes from home, 1-30>'), contains('load <metal|crystal|deut> [amount|all]'),
+            contains('unload    put a hold loaded by hand back'), isNot(contains('TAB'))));
+    final log = find.byKey(const Key('log-panel'));
+    await _scrollTo(tester, log);
+    expect(find.descendant(of: log, matching: find.text(helpLines.first.toUpperCase())), findsOneWidget);
+    final scroll = tester.state<ScrollableState>(find.descendant(of: find.byKey(const Key('log-lines')), matching: find.byType(Scrollable)));
+    expect(scroll.position.maxScrollExtent, greaterThan(0), reason: 'the panel shows a screenful and scrolls to the rest');
+    await shot(tester, 'overview-log-help-1440');
+    scroll.position.jumpTo(scroll.position.maxScrollExtent);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.descendant(of: log, matching: find.text('BEFORE THE QUESTION')).hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
 

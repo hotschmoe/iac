@@ -58,10 +58,13 @@ class _Worker implements SoloPort {
   void protectStorage() {}
 
   @override
+  bool canProtectStorage = true;
+
+  @override
   void close() {}
 
-  void status(String phase, {Map<String, dynamic>? world, String? refused, String? error, double rate = 0}) =>
-      _handler!('status', jsonEncode({'phase': phase, 'options': _options, 'world': world, 'refused': ?refused, 'error': ?error, 'rate': rate}));
+  void status(String phase, {Map<String, dynamic>? world, String? refused, String? error, double rate = 0, bool exclusive = true}) => _handler!(
+      'status', jsonEncode({'phase': phase, 'options': _options, 'world': world, 'refused': ?refused, 'error': ?error, 'rate': rate, 'exclusive': exclusive}));
 
   void frame(Map<String, dynamic> message) => _handler!('frame', jsonEncode(message));
 
@@ -95,6 +98,8 @@ void main() {
     worker.status('idle');
     await tester.pump();
     expect(find.text('NEW GAME'), findsOneWidget);
+    expect(find.byKey(const Key('solo-one-tab')), findsNothing);
+    expect(find.byKey(const Key('solo-save-unkept')), findsNothing, reason: 'said only where the browser cannot be asked to keep the save');
     await _tap(tester, 'blitz x600');
     await _tap(tester, '4');
     await _tap(tester, 'start');
@@ -115,6 +120,19 @@ void main() {
     worker.status('running', world: _world());
     await tester.pump();
     expect(entered, [true], reason: 'entered once, as a world just started');
+  });
+
+  testWidgets('over plain http the front door says to play in one tab and that the browser may clear the save', (tester) async {
+    final worker = _Worker()..canProtectStorage = false;
+    final engine = SoloEngine(worker);
+    await _pumpSolo(tester, engine, []);
+    worker.status('idle', exclusive: false);
+    await tester.pump();
+    expect(tester.widget<Text>(find.byKey(const Key('solo-one-tab'))).data, contains('play it in one tab'));
+    expect(tester.widget<Text>(find.byKey(const Key('solo-save-unkept'))).data,
+        allOf(contains('cannot ask the browser to keep its save'), contains('may clear the save when the device runs short of storage')));
+    expect(tester.takeException(), isNull);
+    engine.dispose();
   });
 
   testWidgets('a saved world is continued through its absence and the report, or abandoned after asking', (tester) async {

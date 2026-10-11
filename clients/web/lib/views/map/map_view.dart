@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
+import '../../console/intel.dart' show hopCount;
 import '../../console/route_planner.dart';
 import '../../console/services.dart';
 import '../../console/threat.dart';
@@ -221,7 +222,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
     plan.mode = RouteMode.safe;
     plan.set([dest], p);
     _alts = {for (final m in RouteMode.values) m: _chain([dest], m)};
-    con.toasts.show('Rerouted', 'Safest known lane, ${p.hops} hops. Engage to go.', tone: ToastTone.teal);
+    con.toasts.show('Rerouted', 'Safest known lane, ${hopCount(p.hops)}. Engage to go.', tone: ToastTone.teal);
     setState(() => _sheet = true);
   }
 

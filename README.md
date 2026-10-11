@@ -276,10 +276,16 @@ What every doctrine does:
 `clients/web/` is a Flutter web app with the amber CRT look: command center,
 windshield and star map, driven by a command bar (`help` lists commands) and
 hotkeys (`1`/`2`/`3` views, numpad 1-6 to move, Esc leaves the bar). It speaks
-the Rust wire protocol over `/ws` on the page's own host and port. Standing
-orders take their settings on the command bar:
+the Rust wire protocol over `/ws` on the page's own host and port. In the
+windshield `P` (or Orders under Fleet status) opens the standing orders of the
+active fleet: the doctrine in force, what it last reported and, when the fleet
+stands still, the engine's reason for the hold; the five doctrines with a line
+each, and steppers for the range, the least odds and the fuel budget. Its
+button sends what the command bar sends for
 `policy mine range=8 engage=1.5 fuel=40 cargo=85 reserve=10` (any subset;
-`fuel` is `fuel_budget_pct`, 100 for no bound). At the hub the windshield
+`fuel` is `fuel_budget_pct`, 100 for no bound; `policy manual` clears). The
+wire carries a fleet's doctrine and not its settings, so the panel shows the
+settings only of orders given from that console in that session. At the hub the windshield
 lists the exchange among its contacts; `T` (or the Trade tile) opens the
 exchange panel, which shows the server's quote for the trade picked and
 sends it. `quote metal deut 400` and `trade metal deut 400` do the same from
@@ -370,6 +376,9 @@ and Flutter; no other tool.
   has only in a secure context: over HTTPS, or from `localhost`. Served over
   plain http to another machine on the LAN, a second tab is not kept out and
   the two would overwrite each other's save; the front door says so there.
+  Such a page cannot ask the browser to keep its save either
+  (`navigator.storage` is missing too), so the browser may clear it when the
+  device runs short of storage; the front door says that as well.
 - **A save from another version** (save format, economy or world generation)
   is refused with the reason, as the server refuses such a database; it stays
   stored until a new game replaces it.

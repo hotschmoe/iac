@@ -14,9 +14,11 @@ import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/models/homeworld.dart';
 import 'package:iac_client/models/resources.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
+import 'package:iac_client/state/command_parser.dart';
 import 'package:iac_client/state/game_controller.dart';
+import 'package:iac_client/views/overlays.dart' show ToastLayer;
 import 'package:iac_client/views/rail.dart';
-import 'package:iac_client/views/windshield/parts.dart' show ContactsPanel;
+import 'package:iac_client/views/windshield/parts.dart' show ContactsPanel, Dock, Feed, FleetRail, GateCard, SectorHead, StatusPanel, doctrineLine;
 
 import 'support/demo_controller.dart';
 import 'support/harness.dart';
@@ -87,7 +89,8 @@ proto.ThreatInfo _threatOf(List<proto.NpcFleetInfo>? groups) {
   return proto.ThreatInfo(rating: rating, estPower: power, basis: proto.ThreatBasis.observed);
 }
 
-ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80}) => ui.FleetState(
+ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, String? policy}) => ui.FleetState(
+      policy: policy,
       id: id,
       name: 'F$id',
       sector: at,
@@ -519,6 +522,8 @@ void main() {
     expect(find.text('0 TO 632 OF 4185'), findsOneWidget);
     expect(find.text('25% TO 33%'), findsOneWidget);
     expect(find.text('4185 PER 4:16:04 - EMPTY IN 38:41'), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('ex-meter-note')), matching: find.textContaining('The meter is what you have sold here lately.')), findsOneWidget,
+        reason: 'the panel says what its meter is');
     expect(find.byKey(const Key('ex-why')), findsNothing);
     await shot(tester, 'ws-exchange-1440');
 
@@ -660,5 +665,282 @@ void main() {
     expect(c.state.events.first.message, 'trade: give and want are both metal');
     expect(tester.takeException(), isNull);
     await endShell(tester, c);
+  });
+
+  testWidgets('P opens the standing orders: every doctrine with its line, the settings in the rules\' units, and Set sends what the typed policy sends', (tester) async {
+    final c = await pumpFake(tester, calm());
+    expect(find.byKey(const ValueKey('orders-panel')), findsNothing);
+    expect(tester.widget<Text>(find.descendant(of: find.byKey(const Key('status-orders')), matching: find.text('MANUAL'))).data, 'MANUAL');
+    expect(find.descendant(of: find.byType(StatusPanel), matching: find.text('16 HOPS')), findsOneWidget, reason: 'fuel for 16 hops');
+    expect(find.descendant(of: find.byKey(const Key('status-way-home')), matching: find.text('10 FUEL')), findsOneWidget, reason: 'the way home needs 10 fuel');
+    expect(find.text('-5 FUEL'), findsNWidgets(3), reason: 'each gate card says what the jump burns, in words');
+
+    await key(tester, LogicalKeyboardKey.keyP, 'p');
+    final panel = find.byKey(const ValueKey('orders-panel'));
+    expect(panel, findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('MANUAL')), findsOneWidget);
+    for (final p in proto.PolicyPreset.values) {
+      expect(find.descendant(of: find.byKey(ValueKey('orders-doctrine-${p.name}')), matching: find.text(p.label.toUpperCase())), findsOneWidget);
+      expect(find.descendant(of: find.byKey(ValueKey('orders-doctrine-${p.name}')), matching: find.text(doctrineLine(p))), findsOneWidget);
+    }
+    expect(find.byKey(const ValueKey('orders-range-up')), findsNothing, reason: 'manual has no settings');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNull);
+    expect(find.descendant(of: find.byKey(const Key('orders-why')), matching: find.text('F1 has no standing orders.')), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('orders-report')), matching: find.text('NO REPORT YET')), findsOneWidget);
+    await shot(tester, 'ws-orders-manual-1440');
+
+    await tester.tap(find.byKey(const ValueKey('orders-doctrine-mineAndReturn')));
+    await tester.pump();
+    String shown(String id) => tester.widget<Text>(find.byKey(Key('orders-$id'))).data!;
+    expect((shown('range'), shown('engage'), shown('fuel')), ('4 HEXES', '1.5X', '20%'), reason: 'the server\'s defaults');
+    for (var i = 0; i < 4; i++) {
+      await tester.tap(find.byKey(const ValueKey('orders-range-up')));
+      await tester.pump();
+    }
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-engage-up')));
+    await tester.tap(find.byKey(const ValueKey('orders-engage-up')));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-fuel-up')));
+    await tester.tap(find.byKey(const ValueKey('orders-fuel-up')));
+    await tester.pump();
+    expect((shown('range'), shown('engage'), shown('fuel')), ('8 HEXES', '2.0X', '35%'));
+    await shot(tester, 'ws-orders-form-1440');
+
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
+    expect(find.descendant(of: find.byKey(const ValueKey('orders-set')), matching: find.text('SET MINE+RETURN')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 50));
+    final typed = parseCommand(
+        'policy mine range=8 engage=2 fuel=35',
+        const CommandContext(fleetId: 1, fleetSector: here, sectors: {}, fleets: [], cursor: here, tick: 500)) as ParsedSend;
+    expect(c.sent.whereType<proto.PolicyUpdate>().single.toJson(), typed.messages.single.toJson());
+    expect(typed.messages.single.toJson(), {
+      'type': 'policy_update',
+      'fleet_id': 1,
+      'preset': 'mine_and_return',
+      'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 8, 'engage_ratio_x10': 20, 'fuel_budget_pct': 35},
+    });
+
+    const held = 'refuelling on a fuel budget of 35% of deuterium income (tank 80 of 120, full in about 236 s)';
+    c.push(world([
+      fleet(1, [('Scout', 1), ('Corvette', 2)], policy: 'mine+return'),
+    ], calm().sectors, tick: 520)
+        .copyWith(policyActs: {
+      1: const [
+        PolicyAct(tick: 518, since: 506, preset: proto.PolicyPreset.mineAndReturn, action: 'hold', reason: held),
+        PolicyAct(tick: 503, since: 503, preset: proto.PolicyPreset.mineAndReturn, action: 'move', reason: 'heading to claim'),
+      ],
+    }));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('MINE+RETURN')), findsOneWidget);
+    expect(find.byKey(const Key('orders-settings-unknown')), findsOneWidget, reason: 'the wire carries the doctrine, not its settings: orders this console did not give show none');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data, 'HOLDING FOR 0:14');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data, held, reason: 'the engine\'s sentence, as it sent it');
+    expect(find.textContaining('heading to claim', findRichText: true), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('status-orders')), matching: find.text('MINE+RETURN - HOLDING')), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('status-hold')), matching: find.text(held)), findsOneWidget, reason: 'why it holds shows with the panel shut too');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNotNull, reason: 'orders with settings unknown here can be given again');
+    await shot(tester, 'ws-orders-holding-1440');
+
+    await key(tester, LogicalKeyboardKey.escape, '');
+    expect(panel, findsNothing);
+    expect(find.byKey(const Key('status-hold')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await finish(tester, c);
+  });
+
+  testWidgets('orders given through the panel come back from the scripted world as the engine reports them: set, hold with its reason, a hand-loaded hold unloaded, cleared (demo)', (tester) async {
+    const demoHome = proto.Hex(4, -2);
+    final c = DemoController()..startDemo();
+    c.place(101, demoHome, const proto.Resources());
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    c.handleCommand('load metal 50');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.currentFleet.laden, isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('orders-toggle')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byKey(const Key('orders-laden')), findsNothing, reason: 'manual leaves a hold loaded by hand alone');
+    await tester.tap(find.byKey(const ValueKey('orders-doctrine-patrolHome')));
+    await tester.pump();
+    expect(tester.widget<Text>(find.byKey(const Key('orders-laden'))).data,
+        'The hold of F101 was loaded by hand. Standing orders unload at the dock: giving them ends that, and the hold goes back to the stockpile.');
+    await shot(tester, 'ws-orders-laden-1440');
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 100));
+    String reason() => tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data!;
+    String head() => tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data!;
+    const unloaded = 'doctrine set: patrol home (range 4, engage 1.5x, fuel budget 20% of deuterium income); the hold loaded by hand goes back to the stockpile';
+    expect(find.descendant(of: find.byKey(const ValueKey('orders-panel')), matching: find.textContaining(unloaded, findRichText: true)), findsOneWidget,
+        reason: 'the engine\'s report of the new orders, which says what became of the hold');
+    expect((c.currentFleet.laden, c.state.holds[101]!.metal), (false, 0));
+    expect(c.state.events.map((e) => e.message), containsAll(['F101 [patrol home] engage: $unloaded', '> policy patrol']),
+        reason: 'the log shows the report and the line a player would have typed');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 4 HEXES - ENGAGE 1.5X - FUEL 20%');
+
+    await tester.pump(const Duration(seconds: 1));
+    expect(head(), startsWith('HOLDING FOR'));
+    expect(reason(), 'no contact within 4 hops of home that the fleet rates 1.5x against');
+    expect(find.descendant(of: find.byKey(const Key('status-hold')), matching: find.text(reason())), findsOneWidget);
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNull);
+    expect(find.descendant(of: find.byKey(const Key('orders-why')), matching: find.text('These are the orders in force.')), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-range-down')));
+    await tester.tap(find.byKey(const ValueKey('orders-range-down')));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-fuel-up')));
+    for (var i = 0; i < 4; i++) {
+      await tester.tap(find.byKey(const ValueKey('orders-fuel-up')));
+      await tester.pump();
+    }
+    expect(tester.widget<Text>(find.byKey(const Key('orders-fuel'))).data, 'NO BOUND');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-fuel-up'))).onPressed, isNull);
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 3, engage 1.5x, fuel unbounded)'));
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 3 HEXES - ENGAGE 1.5X - FUEL NO BOUND');
+    await tester.pump(const Duration(seconds: 1));
+    expect(reason(), 'no contact within 3 hops of home that the fleet rates 1.5x against');
+
+    c.send(const proto.PolicyUpdate(fleetId: 101, preset: proto.PolicyPreset.patrolHome, params: proto.PolicyParams(maxRange: 2)));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 2, engage 1.5x, fuel budget 20% of deuterium income)'));
+    expect(find.byKey(const Key('orders-settings')), findsNothing, reason: 'orders the engine confirms that this console did not give are someone else\'s');
+    expect(find.byKey(const Key('orders-settings-unknown')), findsOneWidget, reason: 'and their settings are not claimed to be known here');
+
+    c.handleCommand('load metal 10');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.descendant(of: find.byType(ToastLayer), matching: find.textContaining('is under standing orders (patrol home)')), findsOneWidget,
+        reason: 'a hold is not loaded by hand under orders, and the refusal is a toast');
+
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-doctrine-manual')));
+    await tester.tap(find.byKey(const ValueKey('orders-doctrine-manual')));
+    await tester.pump();
+    expect(find.descendant(of: find.byKey(const ValueKey('orders-set')), matching: find.text('CLEAR ORDERS')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(head(), startsWith('LAST REPORT: CLEAR'));
+    expect(reason(), 'standing orders cleared');
+    expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('MANUAL')), findsOneWidget);
+    expect(find.byKey(const Key('status-hold')), findsNothing);
+    expect(c.currentFleet.policy, isNull);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 10));
+    await endShell(tester, c);
+  });
+
+  testWidgets('390, 1100 and 1440 wide: the orders panel opens with no overflow, from the status sheet where the layout has one, and a refusal shows with it without covering a phone\'s dock (demo)', (tester) async {
+    for (final size in const [Size(390, 844), Size(1100, 800), Size(1440, 900)]) {
+      final c = DemoController()..startDemo();
+      c.place(101, const proto.Hex(4, -2), const proto.Resources());
+      await pumpShell(tester, screen: Screen.windshield, controller: c, size: size);
+      c.handleCommand('policy mine range=8 fuel=35');
+      await tester.pump(const Duration(seconds: 1));
+      if (size.width < 1440) {
+        await tester.tap(find.byKey(const ValueKey('status-sheet')));
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.tap(find.byKey(const ValueKey('orders-toggle')));
+      } else {
+        expect(find.byKey(const ValueKey('status-sheet')), findsNothing);
+        await key(tester, LogicalKeyboardKey.keyP, 'p');
+      }
+      await tester.pump(const Duration(milliseconds: 100));
+      final panel = tester.getRect(find.byKey(const ValueKey('orders-panel')));
+      expect(panel.left >= 0 && panel.right <= size.width, isTrue);
+      if (size.height >= 900) {
+        final set = tester.getRect(find.byKey(const ValueKey('orders-set')));
+        const guideStrip = 66;
+        expect(set.bottom + guideStrip <= tester.getRect(find.byType(Dock)).bottom, isTrue,
+            reason: 'on a 900 px window the form shows down to its button without scrolling, with the guide strip above it too: $set');
+      }
+      expect(tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data, 'no seam within 8 hops of home repays the fuel to fetch it (stripped tiles refill over hours)');
+      expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 8 HEXES - ENGAGE 1.5X - FUEL 35%', reason: 'typed orders are known to the panel too');
+      await shot(tester, 'ws-orders-${size.width.round()}');
+
+      c.send(const proto.PolicyUpdate(fleetId: 999, preset: proto.PolicyPreset.prospect));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump(const Duration(milliseconds: 500));
+      final toast = find.descendant(
+          of: find.byType(ToastLayer), matching: find.text('fleet 999 not found (or it has no ships left); its standing orders were not changed'));
+      expect(toast, findsOneWidget, reason: 'the world\'s refusal, where the player is looking');
+      if (size.width < 820) {
+        final dock = tester.getRect(find.byKey(const ValueKey('dock-scan')));
+        final sheet = tester.getRect(find.byKey(const ValueKey('status-sheet')));
+        expect(tester.getRect(toast).bottom < dock.top, isTrue, reason: 'a toast on a phone sits under the HUD, clear of the dock');
+        expect(tester.getRect(toast).right < sheet.left, isTrue, reason: 'and to the left of the button that opens the sheet');
+      }
+      await shot(tester, 'ws-orders-refused-${size.width.round()}');
+      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 10));
+      await endShell(tester, c);
+    }
+  });
+
+  testWidgets('from the phone layout up to 1440 wide no gate card stands under a side column, the sector head or the feed', (tester) async {
+    const all = [proto.Hex(2, -1), proto.Hex(3, -1), proto.Hex(3, 0), proto.Hex(2, 1), proto.Hex(1, 1), proto.Hex(1, 0)];
+    final long = [
+      for (var i = 0; i < 12; i++)
+        LogEntry(
+            tick: 400 + i,
+            message: i.isEven
+                ? 'Refused: Scout x1 costs 200 metal, 50 crystal and 30 deuterium; the stockpile is short by 78 metal and 10 deuterium. Nothing was ordered: a batch is paid in full when it is ordered.'
+                : 'F1 scan at [2,0]: 18 sectors revealed, 4 hostiles, worst T2, 9 faint contacts (threat band 1/1/1/1/1/1/1/1/1)',
+            level: EventLevel.normal),
+    ];
+    final state = world([
+      fleet(1, [('Scout', 1), ('Corvette', 2)]),
+    ], {
+      here: sector(here, lanes: all),
+      for (final h in all) h: sector(h, lanes: [here]),
+    }).copyWith(events: long.reversed.toList());
+    final c = await pumpFake(tester, state);
+    var desktop = 0, phone = 0;
+    for (final height in const [700.0, 800.0, 900.0]) {
+      for (final width in const [1000.0, 1100.0, 1160.0, 1170.0, 1200.0, 1280.0, 1366.0, 1440.0]) {
+        tester.view.physicalSize = Size(width, height);
+        await tester.pump(const Duration(milliseconds: 100));
+        final at = '${width.round()}x${height.round()}';
+        final cards = [for (final k in const ['q', 'w', 'e', 'a', 's', 'd']) tester.getRect(find.byKey(ValueKey('gate-$k')))];
+        final arena = tester.getRect(find.byKey(const ValueKey('arena')));
+        for (final card in cards) {
+          expect(card.left >= arena.left && card.right <= arena.right, isTrue, reason: 'a gate card runs off the arena at $at');
+        }
+        final Map<String, Rect> blocks;
+        if (find.byKey(const ValueKey('status-sheet')).evaluate().isNotEmpty) {
+          phone++;
+          expect(find.byType(StatusPanel), findsNothing, reason: 'the phone layout keeps the panels in its sheet at $at');
+          expect(cards.every((card) => card.width == GateCard.width), isTrue, reason: 'an arena this wide has room for the full cards at $at');
+          blocks = {
+            'the Status button': tester.getRect(find.byKey(const ValueKey('status-sheet'))),
+            'the dock': tester.getRect(find.byType(Dock)),
+          };
+        } else {
+          desktop++;
+          final feed = tester.getRect(find.byType(Feed));
+          expect(feed.height, inInclusiveRange(14, Feed.mostLines * 18), reason: 'the feed keeps to its ${Feed.mostLines} rows at $at');
+          expect(find.descendant(of: find.byType(Feed), matching: find.textContaining('00411', findRichText: true)), findsOneWidget,
+              reason: 'and the newest line is the one it keeps at $at');
+          expect(find.descendant(of: find.byType(Feed), matching: find.textContaining('00400', findRichText: true)), findsNothing,
+              reason: 'the oldest of twelve long lines is left to the Overview\'s log at $at');
+          blocks = {
+            'the right column': tester.getRect(find.byType(StatusPanel)).expandToInclude(tester.getRect(find.byType(ContactsPanel))),
+            'the feed': feed,
+          };
+        }
+        blocks['the fleet rail'] = tester.getRect(find.byType(FleetRail));
+        blocks['the sector head'] = tester.getRect(find.byType(SectorHead));
+        for (final MapEntry(key: name, value: block) in blocks.entries) {
+          for (final card in cards) {
+            expect(card.overlaps(block), isFalse, reason: 'a gate card stands under $name at $at: $card and $block');
+          }
+        }
+        await shot(tester, 'ws-fit-$at');
+        expect(tester.takeException(), isNull, reason: at);
+      }
+    }
+    expect(desktop > 0 && phone > 0, isTrue, reason: 'both layouts were looked at');
+    await finish(tester, c);
   });
 }

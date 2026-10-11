@@ -48,11 +48,14 @@ class _ShellState extends State<Shell> {
   late final Console _con =
       Console(game: widget.controller, prefs: _prefs, toasts: _toasts, sfx: Sfx(), notifier: widget.notifier ?? Notifier());
   late final FrameGovernor _gov = FrameGovernor(_prefs);
+
+  /// The toasts stand in another place on a phone; the key keeps the ones
+  /// that are up when a window is dragged from one layout to the other.
+  final GlobalKey _toastLayer = GlobalKey();
   late final AppLifecycleListener _lifecycle;
 
   late Screen _screen = widget.initial;
   bool _help = false, _alerts = false, _palette = false;
-  String _paletteText = '';
   DateTime? _gAt;
   int _gToast = 0;
   StreamSubscription<proto.ErrorMessage>? _refusals;
@@ -64,10 +67,6 @@ class _ShellState extends State<Shell> {
     super.initState();
     _con.screen = _screen;
     _con.go = _go;
-    _con.openPalette = ([t = '']) => setState(() {
-          _palette = true;
-          _paletteText = t;
-        });
     _prefs.addListener(_onPrefs);
     _onPrefs();
     HardwareKeyboard.instance.addHandler(_onKey);
@@ -192,10 +191,7 @@ class _ShellState extends State<Shell> {
     }
     if (_help || _alerts) return false;
     if (ch == '/') {
-      setState(() {
-        _palette = true;
-        _paletteText = '';
-      });
+      setState(() => _palette = true);
       return true;
     }
     final lc = ch?.toLowerCase();
@@ -280,20 +276,22 @@ class _ShellState extends State<Shell> {
                   ),
                   GuideStrip(screen: _screen, narrow: narrow),
                   Expanded(
-                    child: Row(children: [
-                      if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark),
-                      Expanded(child: _screens()),
+                    child: Stack(fit: StackFit.expand, children: [
+                      Row(children: [
+                        if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark),
+                        Expanded(child: _screens()),
+                      ]),
+                      if (narrow) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: true),
                     ]),
                   ),
                   if (narrow) Rail(active: _screen, bottom: true, onGo: _go, badges: badges, mark: mark),
                 ]),
-                ToastLayer(toasts: _toasts, narrow: narrow),
+                if (!narrow) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: false),
                 if (_alerts) AlertsPopover(con: _con, narrow: narrow, onClose: () => setState(() => _alerts = false)),
                 if (_help) HelpOverlay(con: _con, governor: _gov, onClose: () => setState(() => _help = false)),
                 if (_palette)
                   CommandPalette(
                     narrow: narrow,
-                    initial: _paletteText,
                     onSubmit: _runCommand,
                     onClose: () => setState(() => _palette = false),
                   ),

@@ -84,6 +84,18 @@ List<String> boardLines(proto.LeaderboardReply b) => [
       if (b.bots.isNotEmpty) '${b.bots.length} built-in bots, unranked; best ${b.bots.first.name} ${b.bots.first.score.toStringAsFixed(1)}',
     ];
 
+/// Orders this console gave a fleet: when, the doctrine and its settings.
+/// The engine confirms every change of orders with one report; [unconfirmed]
+/// counts the ones still owed for what this console sent, so a confirmation
+/// beyond them is someone else's orders, with settings unknown here.
+class _OrdersGiven {
+  _OrdersGiven(this.at, this.preset, this.params, this.unconfirmed);
+  final int at;
+  final proto.PolicyPreset preset;
+  final proto.PolicyParams params;
+  int unconfirmed;
+}
+
 class StateMapper {
   int tick = 0;
   DateTime? connectedAt;
@@ -118,10 +130,20 @@ class StateMapper {
   /// `exchange_quote` answers by (fleet id, give, want).
   final Map<TradeKey, QuoteEntry> quotes = {};
 
+  /// Lines the log keeps, newest first. The Overview's log scrolls through
+  /// all of them.
+  static const logLines = 120;
+
   final List<LogEntry> log = [];
 
-  /// Last hold reason shown per fleet; a repeat is not logged again.
-  final Map<int, String> _lastHold = {};
+  /// Reports a fleet's standing orders keep for the orders panel.
+  static const policyActsKept = 6;
+
+  /// What each fleet's standing orders reported lately, newest first.
+  final Map<int, List<PolicyAct>> policyActs = {};
+
+  /// The orders last given from this console, by fleet.
+  final Map<int, _OrdersGiven> _ordersGiven = {};
   final List<Alert> alerts = [];
 
   bool get hasState => player != null;
@@ -138,7 +160,8 @@ class StateMapper {
     sectors.clear();
     signals.clear();
     signalBands.clear();
-    _lastHold.clear();
+    policyActs.clear();
+    _ordersGiven.clear();
     previews.clear();
     odds.clear();
     quotes.clear();
@@ -176,6 +199,7 @@ class StateMapper {
   }
 
   void _applyFull(proto.GameState s) {
+    final first = connectedAt == null;
     tick = s.tick;
     connectedAt = clock.now();
     player = s.player;
@@ -191,7 +215,8 @@ class StateMapper {
     previews.clear();
     odds.clear();
     quotes.clear();
-    pushLog('Full state sync: tick $tick, homeworld ${s.player.homeworld}', EventLevel.bright);
+    pushLog(first ? 'Uplink established. Homeworld at ${s.player.homeworld}.' : 'Uplink refreshed: the console is in step with the world again.',
+        EventLevel.bright);
   }
 
   void _applyTick(proto.TickUpdate u) {
@@ -208,6 +233,7 @@ class StateMapper {
     for (final e in u.events ?? const <proto.GameEvent>[]) {
       _ingestEvent(e);
     }
+    policyActs.removeWhere((id, _) => fleets.every((f) => f.id != id));
   }
 
   void _applyPreview(proto.MovePreview p) {
@@ -233,9 +259,11 @@ class StateMapper {
     ));
   }
 
-  void pushLog(String msg, [EventLevel level = EventLevel.normal]) {
-    log.insert(0, LogEntry(tick: tick, message: msg, level: level));
-    if (log.length > 14) log.removeRange(14, log.length);
+  void pushLog(String msg, [EventLevel level = EventLevel.normal]) => _log(LogEntry(tick: tick, message: msg, level: level));
+
+  void _log(LogEntry entry) {
+    log.insert(0, entry);
+    if (log.length > logLines) log.removeRange(logLines, log.length);
   }
 
   void _pushAlert(Alert a) {
@@ -376,13 +404,7 @@ class StateMapper {
         msg = '! ${_fleet(k.fleetId)} ambushed aboard derelict in ${k.sector} (hostile ${k.npcFleetId})';
         level = EventLevel.bright;
       case proto.PolicyActionEvent():
-        if (k.action == 'hold') {
-          final key = '${k.preset.name}|${holdKey(k.reason)}';
-          if (_lastHold[k.fleetId] == key) return;
-          _lastHold[k.fleetId] = key;
-        } else {
-          _lastHold.remove(k.fleetId);
-        }
+        if (_notePolicy(e.tick, k)) return;
         msg = '${_fleet(k.fleetId)} [${k.preset.label}] ${k.action}: ${k.reason}';
         level = EventLevel.dim;
       case proto.AlertEvent():
@@ -399,13 +421,48 @@ class StateMapper {
         ));
     }
 
-    log.insert(0, LogEntry(tick: e.tick, message: msg, level: level));
-    if (log.length > 14) log.removeRange(14, log.length);
+    _log(LogEntry(tick: e.tick, message: msg, level: level));
   }
 
   /// A hold reason without its parenthesised figures, which drift while the
   /// cause stays the same.
   static String holdKey(String reason) => reason.replaceAll(RegExp(r'\([^)]*\)'), '');
+
+  /// Keep what a fleet's orders just reported. A hold said again for the
+  /// same cause takes the place of the one before it, with its figures, and
+  /// is not news: true then, and the log does not repeat it.
+  bool _notePolicy(int at, proto.PolicyActionEvent k) {
+    if (k.action == 'engage' || k.action == 'clear') {
+      final given = _ordersGiven[k.fleetId];
+      if (given != null && given.unconfirmed-- == 0) _ordersGiven.remove(k.fleetId);
+    }
+    final acts = policyActs.putIfAbsent(k.fleetId, () => []);
+    final last = acts.firstOrNull;
+    final again = last != null && last.isHold && k.action == 'hold' && last.preset == k.preset && holdKey(last.reason) == holdKey(k.reason);
+    final act = PolicyAct(tick: at, since: again ? last.since : at, preset: k.preset, action: k.action, reason: k.reason);
+    if (again) {
+      acts[0] = act;
+    } else {
+      acts.insert(0, act);
+      if (acts.length > policyActsKept) acts.removeLast();
+    }
+    return again;
+  }
+
+  /// The player gave [fleetId] these orders from this console.
+  void noteOrders(int fleetId, proto.PolicyPreset preset, proto.PolicyParams? params) => _ordersGiven[fleetId] =
+      _OrdersGiven(tick, preset, params ?? const proto.PolicyParams(), (_ordersGiven[fleetId]?.unconfirmed ?? 0) + 1);
+
+  /// The settings this console gave the orders [f] flies under, if it gave
+  /// them. Orders the engine has had two ticks to take and does not show
+  /// were refused or replaced from elsewhere, and are forgotten.
+  proto.PolicyParams? _ordersOf(proto.FleetState f) {
+    final given = _ordersGiven[f.id];
+    if (given == null) return null;
+    if ((f.policy ?? proto.PolicyPreset.manual) == given.preset) return given.preset == proto.PolicyPreset.manual ? null : given.params;
+    if (tick - given.at > 2) _ordersGiven.remove(f.id);
+    return null;
+  }
 
   static String _age(int ticks) {
     final t = math.max(0, ticks);
@@ -481,6 +538,8 @@ class StateMapper {
       world: world,
       leaderboard: leaderboard,
       raid: raid,
+      policyActs: {for (final f in fleets) f.id: ?policyActs[f.id]?.toList()},
+      policyParams: {for (final f in fleets) f.id: ?_ordersOf(f)},
     );
   }
 

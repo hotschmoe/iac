@@ -2927,3 +2927,203 @@ whose fleets die with cargo now leave it as wreckage, which was not measured.
   profile and database are in fresh temporary directories, its pictures in one
   fixed one (`<temp>/iac-solo-e2e-shots`, `--shots`); the harness keeps its run in
   the checkout.
+
+## 2026-10-11: standing orders in the web client, and the layout the owner decided
+
+The polish pass above left a list for a decision. The owner decided it; this is
+that work, and the one feature on it. Web client only (`clients/web`, two README
+passages); no rule, constant or wire message. Branch
+`worktree-agent-a9b40a8a3122c8e92`, not merged.
+
+**The panel.** In the windshield `P`, or Orders under Fleet status, opens the
+standing orders of the selected fleet; in the phone layout it is in the status
+sheet. From the top:
+- *In force.* The doctrine, from the fleet row. Under it the settings, when
+  this console gave them (see below).
+- *The newest report.* A fleet under orders reports every act and every hold
+  as a `PolicyAction`. The panel keeps the last six per fleet and shows the
+  newest in a box: "HOLDING FOR 2:05" with the engine's reason when it is a
+  hold, "LAST REPORT: MOVE, 0:12 AGO" with its reason otherwise. The sentence
+  is the engine's, unchanged. A hold said again for the same cause (the engine
+  repeats it once a minute with fresh figures) takes the place of the one
+  before it, as it already did in the log. Fleet status says "PATROL HOME -
+  HOLDING" and the reason with the panel shut.
+- *The form.* The five doctrines as tiles, manual among them, each with one
+  line on what it does and when it goes home, taken from RULES.md. Three
+  steppers: range in hexes (1 to 30), least odds as a ratio shown on the odds
+  gauge the contacts use (0.5 to 10.0 in eleven steps), fuel budget in percent
+  of deuterium income (10, 20, 35, 50, 75, no bound). Any other value can
+  still be typed. One line says when any doctrine turns home, with the cargo
+  and reserve percentages in force.
+- *The button.* "Set mine+return", or "Clear orders" for manual. It builds the
+  line a player would type (`policy mine range=8 fuel=35`, a setting at the
+  server's default left unsaid) and hands it to `handleCommand`, so the panel
+  and the command bar go through one parser and cannot send different things;
+  the log shows the line. A doctrine at its defaults goes out with no
+  `params`, as the typed `policy mine` does.
+- *A hold loaded by hand.* With a doctrine chosen for a laden fleet the form
+  says that standing orders unload at the dock and that giving them puts the
+  hold back; the engine's `engage` report, which ends "; the hold loaded by
+  hand goes back to the stockpile", then shows in the box.
+- *A refusal* is the toast every refusal is.
+
+**What the wire does not carry.** `FleetState` has `policy`, the doctrine, and
+nothing of its `PolicyParams`. The engine says the range, the ratio and the
+budget once, in the sentence of its `engage` report. So the panel can show the
+settings in force only for orders given from that console in that session:
+the mapper remembers what was sent and forgets it when the fleet's doctrine no
+longer matches or a second confirmation arrives that this console did not
+ask for. For any other fleet under orders the panel says so in a sentence, the
+steppers start at the server's defaults, and Set gives the orders again. This
+is the one thing in the brief the protocol does not allow. The fix is small
+and not this pass's to make: `params` beside `policy` on `FleetState`. The
+settings are not parsed out of the engine's sentence.
+
+**The TUI has no panel.** The brief said to read it for what a player needs to
+see. It has `p`, which steps to the next doctrine, and `P`, which steps the fuel
+budget through 10, 20, 35, 50 and 100. The web steps include those.
+
+**The typed policy checks its ranges.** `policy mine range=99` was sent and
+clamped to 30 by the engine without a word (and a value over 255 would not
+have fitted the wire's byte at all). It is now refused with the usage line,
+which lists the ranges, so what is sent is what is in force.
+
+**Windshield widths.** The hex was sized by the room between the columns and
+the cards stood outside it, so below about 1400 px they ran under the columns.
+The radius is now also bounded by what leaves the slanted cards between the
+columns, and the sector head is as wide as the north-west card leaves it (by
+the old numbers that card stood on the head's rows on a window 768 px high;
+no picture of it was taken). With that the desktop layout fits down to an arena of 1089 px, a
+window of 1167, where the hex is at its least, 130 px. Looked at from 1000 to
+1440 px wide and 700 to 900 high. Below 1167 the windshield takes the phone
+layout, as decided. Two things were added to it there, because a 1100 px
+window is not a phone: it keeps the full gate cards (threat digit, ore bars,
+fuel) while the arena is at least 704 px wide and 549 high, which is every
+window above a phone held upright, and its status sheet is 380 px wide at the
+right instead of the width of the window. The right column now runs to the
+bottom of the arena where the dock does not reach under it (a window of 1334
+px and up), so the orders form shows down to its button on a 900 px window.
+
+**Feed.** Eight rows of text at most, and never past the south-west gate card.
+An entry is shown whole or not at all, the newest first to be kept, measured
+with the font it is drawn in. The rest is in the Overview's log.
+
+**Overview tiles.** A building or a tech queues from its tile and from the
+next-up card whether or not the stockpile covers it, with "Short by 35 Fe, 4
+Cr: it queues now and starts when that is covered." on it. Ship batches stay
+off when short. Two things followed: a lab with an order waiting was called
+idle and offered the same tech again, which would have queued its next level,
+so waiting counts as busy; and the idle research card now lists what waits, as
+the build card does.
+
+**Toasts on a phone.** At the top of the screen, under the HUD and under the
+guide strip while it shows, at the left, 96 px short of the right edge. Under
+the HUD alone they covered the buttons of the guide strip; across the whole
+width they covered the windshield's Status button, the map's Panel button and
+the Cancel of the homeworld's queue rows, which all sit in that corner. On the
+windshield's phone layout at desktop widths (820 to 1167 px) they are still at
+the bottom right, over the last tiles of the dock.
+
+**Words.** Fleet status reads "FUEL FOR 20 HOPS" and "WAY HOME NEEDS 6 FUEL"
+(or "WAY HOME: AT THE DOCK"); a gate card "-6 FUEL". The exchange panel says
+what its meter is: what you have sold lately, the fuller the higher the fee,
+emptying with time; and for an empire with no mine output that the fee is at
+its highest and the meter does not fall. Not "in a day": the window is a day
+only at pace 1. The log keeps 120 lines (the Overview's panel already
+scrolled; 14 was only the store) and help is 24, with the doctrines, their
+settings, load and unload each on a line of its own. The first log line is
+"Uplink established. Homeworld at [5,-1]." Hop counts go through one function.
+Help no longer says TAB cycles fleets: TAB moves the keyboard focus in a
+browser and was left to do that; the help names 1-9 and P instead, and the
+unused `cycleFleet` is gone. The phone map's layer row has its frame round the
+viewport, so it ends at its own edge short of Panel, and no key hints. The
+guide strip keeps the height of the longest note of its walk, measured at the
+width it has, and its buttons a fixed width on a desktop so that the note
+wraps the same for every lesson.
+
+**The guide.** Its last lesson pointed at the command palette with `policy
+mine` typed in. It now marks the Orders button (on a phone the Status button,
+then Orders in the sheet). The palette no longer takes a text to start with;
+nothing else used it.
+
+**Plain http.** The page tests for `navigator.storage` and, where it is
+missing, the front door says under the one-tab sentence that the browser
+cannot be asked to keep the save and may clear it when the device runs short
+of storage.
+
+**The scripted world** answers `policy_update` as the engine does: `clear`,
+`engage` with the settings, the end of a hand-loaded hold, the refusal for a
+fleet that is not there. It flies no doctrine, so a free fleet given orders
+there holds, in the engine's sentence for an empty board, once a minute.
+
+**Tests.** Widget tests against the scripted world and a recording
+controller: the panel by key and by button at 1440, in the sheet at 1100 and
+390; that Set sends the same JSON as the parser gives for the typed line; the
+hold in the panel and in fleet status; the laden notice and the engine's
+report of the unload; settings unknown for orders not given here; the refusal
+toast clear of a phone's dock and of the Status button; every gate card
+against the columns, the fleet rail, the sector head, the feed and, in the
+phone layout, the dock and the Status button, at 24 window sizes; the feed's
+rows and which line it keeps; the tile that queues short and the batch that
+does not; help whole in the log and the log scrolling to what came before it;
+the layer row inside its frame; the guide strip the same height from the scan
+lesson to the orders lesson; the front door's two sentences.
+
+**The check.** `solo_e2e.dart` opens the panel with P in the real bundle,
+picks patrol home, steps the range to one hex and the odds to 10.0, and sets
+it. The wire carries the doctrine with all five settings; the engine answers
+"doctrine set: patrol home (range 1, engage 10.0x, fuel budget 20% of
+deuterium income)"; the fleet's next report is read off the wire and looked
+for on the page, word for word. Then Manual, and "standing orders cleared".
+What the fleet reports is the world's to decide: in two runs a hold, "shields
+recharging (75%)", in the next an act, "engaging hostiles", with a hostile
+scout in the home sector. The step was first written to wait for
+"no contact within 1 hops", on the guess that nothing rates ten to one. Three
+scouts rate exactly 10.00 against one, the ratio's ceiling, so the patrol
+hunted for three minutes and the wait timed out. The check also pictures the
+windshield at 1180 and 1366 px, reads the first line of help in the log, and
+looks for the save sentence on the plain-http page and for its absence on the
+page from this machine.
+
+**Seen on the way (not changed).**
+- In two runs of the check the fleet at the dock, which had fought nothing,
+  held first for "shields recharging (75%)". A third scout had just joined it
+  from the yard; whether that is where the quarter went was not looked into.
+- In the phone layout the banner (ENGAGED, VICTORY) is drawn over the open
+  status sheet.
+- The compact gate cards of a phone show the key and the terrain only, while
+  the guide's jump lesson speaks of "the T digit" and "the bars".
+- The gate card's odds line still ends "HOME 2H"; there is no room for the
+  word beside a long verdict.
+- With eight fleets the desktop fleet rail runs down into the feed.
+- On a desktop a toast still covers the bottom of the right column, where the
+  orders form has its button.
+
+**Merged master** (`84bf51b`: holds after losses, recall refused at home, the
+refusal of standing orders names the fleet) into the branch with no conflict.
+The scripted world took the engine's new refusal sentence.
+
+**Run.** On the merged tree: `flutter analyze` clean; `flutter test` pinned to
+the big cores (`taskset -c 0,1,6-11`), 364 of 364 in three full runs.
+`play.sh --single-player --no-serve`, `cargo build -p iac-server`, and
+`solo_e2e.dart --port 7970`: OK in 188 s, the orders step and the multiplayer
+step included (OK in 180 s on the tree before the merge). The pictures of the
+windshield at 1440, 1366, 1180, 1100 and 390 px, of the panel at 1440, 1100
+and 390, of the overview, the log with help, the phone map and both front
+doors were read.
+
+Two earlier runs of the check failed in the new step, on my expectation of
+what the fleet would report (above). One earlier full run of `flutter test`,
+pinned, failed in `shell_test` "a toast slides in once" with a column of an
+Overview queue card 142 px too tall for its box. That file passed twice alone
+and the six full runs after it passed; no cause was found. It is the kind the
+last entry describes, a layout result that cannot be, but that entry's cure
+was the pinning, and this run was pinned.
+
+**Not verified.** No real phone and no browser but headless Chromium; the
+JavaScript build (`--software`) was not run. The panel against a multiplayer
+server: the check's server step logs in and stops there, and the client code
+is the same. Orders given to one account from two consoles at once were tried
+only against the scripted world. No Rust was touched and `cargo test` was not
+run on the merged tree. Window sizes between the ones named were not looked
+at.
