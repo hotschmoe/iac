@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../console/intel.dart';
+import '../../console/outpost.dart' show surveyClear, surveyLines;
 import '../../console/route_planner.dart';
 import '../../console/services.dart';
 import '../../console/threat.dart';
@@ -12,6 +13,7 @@ import '../../design/panel.dart';
 import '../../design/symbols.dart';
 import '../../design/tokens.dart';
 import '../../models/fleet.dart' as ui;
+import '../../models/game_state.dart' show SurveyEntry, previewFreshTicks;
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/map/map_state.dart';
 
@@ -263,6 +265,7 @@ class LegendPanel extends StatelessWidget {
           _sym((c, s) => Draw.symbol(c, Sym.derelict, s.width / 2, s.height / 2, 8, color: C.rare, lw: 1.6, bloom: false), 'derelict', C.rare, 16),
           _sym((c, s) => Draw.symbol(c, Sym.ore, s.width / 2, s.height / 2, 7, color: C.metal, lw: 1.6, bloom: false), 'ore', C.metal),
           _sym((c, s) => Draw.symbol(c, Sym.hub, s.width / 2, s.height / 2, 8, color: C.a200, lw: 1.4, bloom: false), 'hub', C.a200, 16),
+          _sym((c, s) => Draw.symbol(c, Sym.outpost, s.width / 2, s.height / 2, 8, color: C.a200, lw: 1.4, bloom: false), 'outpost, yours filled', C.a200, 16),
         ]),
       ]),
     );
@@ -315,6 +318,7 @@ class Inspector extends StatelessWidget {
     final expect = 1.2 + d * .11;
     final selected = plan.selected == h;
     final onFleet = fleet.sector == h;
+    final survey = fleet.id == 0 ? null : st.surveyOf(fleet.id, h);
     return ConsolePanel(
       title: selected ? 'Selected' : 'Sector',
       subText: zoneOf(h),
@@ -333,6 +337,17 @@ class Inspector extends StatelessWidget {
                 'METER ${st.exchange.pressure.round()} OF ${st.exchange.span.round()}.',
                 C.gold,
                 C.a700,
+                fill: false),
+          ),
+        if (sec?.outpost case final post?)
+          KeyedSubtree(
+            key: const Key('inspector-outpost'),
+            child: _box(
+                '${post.mine ? 'YOUR OUTPOST' : 'OUTPOST OF ${post.owner.toUpperCase()}'}. '
+                '${post.level == 0 ? 'NOT YET OPEN' : 'LEVEL ${post.level}'}${post.breached ? ', BREACHED' : ''}.'
+                '${it.live ? '' : ' AS SEEN ${ago(it.ticksOld).toUpperCase()} AGO: IT MAY HAVE CHANGED SINCE, OR BE GONE.'}',
+                post.breached ? C.ember : post.mine ? C.own : C.gold,
+                post.mine ? C.ownDim : C.a700,
                 fill: false),
           ),
         if (sec == null)
@@ -401,7 +416,34 @@ class Inspector extends StatelessWidget {
                 small: true,
                 onPressed: onFleet && fleet.id != 0 ? () => con.game.sendCommand(proto.ScanCommand(fleetId: fleet.id)) : null,
                 reason: 'Needs a fleet in this sector: ${fleet.name} is ${hopCount(proto.Hex.distance(fleet.sector, h))} away'),
+          ConsoleButton(survey == null ? 'Survey site' : 'Survey again',
+              key: const ValueKey('inspector-survey'),
+              small: true,
+              onPressed: fleet.id == 0 ? null : () => con.game.surveySite(h),
+              reason: 'No fleet to ask for'),
         ]),
+        if (survey != null) _survey(survey, st.tick),
+      ]),
+    );
+  }
+
+  /// The survey of this sector as the server last answered it: its three
+  /// lines, and what it said of founding there, in its own sentence.
+  Widget _survey(SurveyEntry asked, int tick) {
+    final s = asked.survey;
+    final old = tick - asked.tick;
+    return Container(
+      key: const Key('inspector-survey-reply'),
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.fromLTRB(9, 6, 9, 7),
+      decoration: BoxDecoration(color: C.inset, border: Border.all(color: C.lineLo)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+        Lbl(old <= previewFreshTicks ? 'Outpost survey for F${s.fleetId}' : 'Outpost survey for F${s.fleetId}, ${ago(old)} ago'),
+        const SizedBox(height: 3),
+        for (final line in surveyLines(s)) Text(line, style: T.mono(size: 10.5, color: C.text2, height: 1.35)),
+        const SizedBox(height: 3),
+        Text(s.refusal ?? surveyClear(s),
+            key: const Key('inspector-survey-verdict'), style: T.mono(size: 10.5, color: s.refusal == null ? C.ok : C.ember, height: 1.35)),
       ]),
     );
   }

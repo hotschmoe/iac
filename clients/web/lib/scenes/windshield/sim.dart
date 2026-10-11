@@ -128,6 +128,10 @@ class WindshieldSim {
 
   /// The fleet stands on a hub sector with the exchange (set by the view).
   bool atExchange = false;
+
+  /// The outpost standing in the fleet's sector, whoever owns it (set by the
+  /// view).
+  proto.OutpostBrief? outpost;
   proto.SectorState? sector;
   ui.FleetState? fleet;
 

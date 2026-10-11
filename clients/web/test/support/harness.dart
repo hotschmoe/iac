@@ -68,6 +68,21 @@ Future<GameController> pumpShell(
   return c;
 }
 
+/// Every piece of text under [box] is drawn whole and inside it.
+void expectTextFits(WidgetTester tester, Finder box, {required String reason}) {
+  expect(box, findsOneWidget, reason: reason);
+  final frame = tester.getRect(box).inflate(.5);
+  final texts = find.descendant(of: box, matching: find.byType(RichText));
+  expect(texts, findsWidgets, reason: reason);
+  for (final e in texts.evaluate()) {
+    final paragraph = e.renderObject! as RenderParagraph;
+    final rect = paragraph.localToGlobal(Offset.zero) & paragraph.size;
+    final words = paragraph.text.toPlainText();
+    expect(frame.contains(rect.topLeft) && frame.contains(rect.bottomRight), isTrue, reason: '$reason: "$words" at $rect leaves $frame');
+    expect(paragraph.didExceedMaxLines, isFalse, reason: '$reason: "$words" is cut short');
+  }
+}
+
 /// Writes a PNG of the current frame to $IAC_SHOTS (when set).
 Future<void> shot(WidgetTester tester, String name) async {
   final dir = Platform.environment['IAC_SHOTS'];

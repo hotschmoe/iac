@@ -13,6 +13,8 @@ const _items = [
   (Screen.homeworld, 'homeworld', 'Homeworld', 'H'),
 ];
 
+const _outpostItem = (Screen.outpost, 'outpost', 'Outpost', 'P');
+
 class Rail extends StatelessWidget {
   final Screen active;
   final bool bottom;
@@ -21,7 +23,10 @@ class Rail extends StatelessWidget {
 
   /// The screen the guide's current lesson is on, when it is not this one.
   final Screen? mark;
-  const Rail({super.key, required this.active, required this.bottom, required this.onGo, this.badges = const {}, this.mark});
+
+  /// The player has an outpost: its screen has a tile.
+  final bool outpost;
+  const Rail({super.key, required this.active, required this.bottom, required this.onGo, this.badges = const {}, this.mark, this.outpost = false});
 
   /// What the rail takes of the window's width when it stands at the left.
   static const width = 78.0;
@@ -30,7 +35,7 @@ class Rail extends StatelessWidget {
   Widget build(BuildContext context) {
     final still = reducedMotion(context);
     final tiles = [
-      for (final it in _items)
+      for (final it in [..._items, if (outpost) _outpostItem])
         CustomPaint(
           foregroundPainter: mark == it.$1 ? GuideBrackets(still: still, inset: 5) : null,
           child: _RailTile(

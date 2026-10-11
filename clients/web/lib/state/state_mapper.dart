@@ -10,14 +10,19 @@ import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
 import 'command_parser.dart' show QueueIds;
 
-/// Holds the latest protocol snapshots (full_state + tick_update deltas) and
-/// maps them to the amber UI presentation models.
 /// "1,234 Fe, 56 Cr": the parts of [r] that [whole] does not make zero, in
 /// the units the stockpile counters carry.
 String _amounts(proto.Resources r, int Function(double) whole) => [
       for (final (amount, unit) in [(whole(r.metal), 'Fe'), (whole(r.crystal), 'Cr'), (whole(r.deuterium), 'De')])
         if (amount > 0) '${groupDigits(amount)} $unit',
     ].join(', ');
+
+/// "90 Fe, 22 Cr" as the console prints an amount paid, hauled, held or
+/// lost; "nothing" for none.
+String amountsOf(proto.Resources r) {
+  final amounts = _amounts(r, (v) => v.round());
+  return amounts.isEmpty ? 'nothing' : amounts;
+}
 
 /// "short by 1,234 Fe, 56 Cr": the parts of [missing] above zero, each
 /// rounded up. Every shortfall the console prints is this phrase; [opening]
@@ -84,6 +89,8 @@ List<String> boardLines(proto.LeaderboardReply b) => [
       if (b.bots.isNotEmpty) '${b.bots.length} built-in bots, unranked; best ${b.bots.first.name} ${b.bots.first.score.toStringAsFixed(1)}',
     ];
 
+/// Holds the latest protocol snapshots (full_state + tick_update deltas) and
+/// maps them to the amber UI presentation models.
 class StateMapper {
   int tick = 0;
   DateTime? connectedAt;
@@ -100,8 +107,8 @@ class StateMapper {
   /// The player's outpost as the server last sent it; null with none.
   proto.OutpostState? outpost;
 
-  /// The last outpost survey the server answered.
-  proto.OutpostSurvey? survey;
+  /// `outpost_survey` answers by (fleet id, sector key).
+  final Map<(int, int), SurveyEntry> surveys = {};
 
   /// The raid on the homeworld the server last announced and has not yet
   /// resolved. A raid on the outpost is told by [outpost].
@@ -149,7 +156,7 @@ class StateMapper {
     world = null;
     leaderboard = null;
     outpost = null;
-    survey = null;
+    surveys.clear();
     raid = null;
     sectors.clear();
     signals.clear();
@@ -187,7 +194,8 @@ class StateMapper {
       case proto.LeaderboardReply():
         leaderboard = msg;
       case proto.OutpostSurvey():
-        survey = msg;
+        surveys[(msg.fleetId, msg.sector.toKey())] = SurveyEntry(msg, tick);
+        surveys.removeWhere((_, e) => tick - e.tick > 600);
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }
@@ -211,6 +219,7 @@ class StateMapper {
     previews.clear();
     odds.clear();
     quotes.clear();
+    surveys.clear();
     pushLog(first ? 'Uplink established. Homeworld at ${s.player.homeworld}.' : 'Uplink refreshed: the console is in step with the world again.',
         EventLevel.bright);
   }
@@ -288,13 +297,13 @@ class StateMapper {
           msg = '!! YOUR FLEET ${_fleet(k.fleetId)} DESTROYED in ${k.sector}';
           level = EventLevel.bright;
         } else if (k.isNpc) {
-          msg = 'Hostile ${k.label.isEmpty ? 'fleet ${k.fleetId}' : k.label} destroyed in ${k.sector} -- wreckage ${_res(k.salvage)}';
+          msg = 'Hostile ${k.label.isEmpty ? 'fleet ${k.fleetId}' : k.label} destroyed in ${k.sector} -- wreckage ${amountsOf(k.salvage)}';
         } else {
           msg = "${k.owner}'s fleet ${_fleet(k.fleetId)} destroyed in ${k.sector}";
           level = EventLevel.dim;
         }
       case proto.ResourceHarvestedEvent():
-        msg = '${_fleet(k.fleetId)} harvested ${_res(k.resources)} over ${k.ticks}s';
+        msg = '${_fleet(k.fleetId)} harvested ${amountsOf(k.resources)} over ${k.ticks}s';
       case proto.SectorEnteredEvent():
         msg = '${_fleet(k.fleetId)} entered ${k.sector}${k.firstVisit ? ' (first visit)' : ''}';
       case proto.CombatStartedEvent():
@@ -302,14 +311,14 @@ class StateMapper {
         level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.CombatEndedEvent():
         final outcome = k.mine ? (k.playerVictory ? 'victory' : 'defeat') : (k.playerVictory ? 'won by others' : 'lost by others');
-        final pile = k.salvage == null ? '' : ' -- wreckage ${_res(k.salvage!)}';
+        final pile = k.salvage == null ? '' : ' -- wreckage ${amountsOf(k.salvage!)}';
         msg = '! Combat ended in ${k.sector}: $outcome$pile';
         level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.SalvageCollectedEvent():
-        msg = '${_fleet(k.fleetId)} collected salvage ${_res(k.resources)}'
-            '${k.remaining == null ? '' : ", ${_res(k.remaining!)} left behind"}';
+        msg = '${_fleet(k.fleetId)} collected salvage ${amountsOf(k.resources)}'
+            '${k.remaining == null ? '' : ", ${amountsOf(k.remaining!)} left behind"}';
       case proto.SalvageDespawnedEvent():
-        msg = 'Wreckage in ${k.sector} drifted away (${_res(k.resources)})';
+        msg = 'Wreckage in ${k.sector} drifted away (${amountsOf(k.resources)})';
         level = EventLevel.dim;
       case proto.StorageNearCapEvent():
         final eta = k.fullInS == null ? '' : ', full in ${_fmtTicks(k.fullInS!)}';
@@ -337,13 +346,13 @@ class StateMapper {
       case proto.QueueEvent():
         msg = switch (k.action) {
           proto.QueueAction.started => k.paid.metal + k.paid.crystal + k.paid.deuterium > 0
-              ? '${k.item} started, paid ${_res(k.paid)}'
+              ? '${k.item} started, paid ${amountsOf(k.paid)}'
               : '${k.item} started',
           proto.QueueAction.waiting => k.paid.metal + k.paid.crystal + k.paid.deuterium > 0
-              ? '${k.item} ordered, paid ${_res(k.paid)}, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, null, k.startIn)}'
+              ? '${k.item} ordered, paid ${amountsOf(k.paid)}, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, null, k.startIn)}'
               : '${k.item} queued, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, k.waitingFor, k.startIn)}',
           proto.QueueAction.cancelled => k.refunded.metal + k.refunded.crystal + k.refunded.deuterium > 0
-              ? '${k.item} cancelled, refunded ${_res(k.refunded)}'
+              ? '${k.item} cancelled, refunded ${amountsOf(k.refunded)}'
               : '${k.item} cancelled (nothing had been paid)',
         };
       case proto.ScanCompletedEvent():
@@ -363,12 +372,18 @@ class StateMapper {
       case proto.RaidIncomingEvent(outpost: final at?):
         msg = '! RAID INCOMING on your outpost at $at (${k.threat}, power ${k.estPower.round()}) -- arrival tick ${k.arrivalTick}';
         level = EventLevel.bright;
+        _pushAlert(Alert(
+          icon: '!',
+          message: 'Raid incoming on your outpost (${k.threat}, power ${k.estPower.round()})',
+          detail: 'Arrives tick ${k.arrivalTick} -- ${math.max(0, k.arrivalTick - tick)}s',
+          level: AlertTone.glow,
+        ));
       case proto.RaidResolvedEvent(outpost: final at?):
         final fight = 'raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}';
         msg = k.defended
             ? '! Raid on your outpost at $at repelled ($fight)'
-            : '! Raid broke your outpost at $at ($fight): lost ${_res(k.resourcesLost)}'
-                '${k.shipsLost > 0 ? ', ${k.shipsLost} ships there destroyed' : ''}'
+            : '! Raid broke your outpost at $at ($fight): lost ${amountsOf(k.resourcesLost)}'
+                '${k.shipsLost > 0 ? ', ${k.shipsLost} ship${k.shipsLost == 1 ? '' : 's'} there destroyed' : ''}'
                 '${k.breached ? '; it is breached until it has repaired itself' : ''}';
         level = EventLevel.bright;
       case proto.RaidIncomingEvent():
@@ -388,15 +403,15 @@ class StateMapper {
             : ', ${k.structuresLost} structures lost (${k.structuresRestored} will be rebuilt)';
         final pile = k.salvageDropped == null
             ? ''
-            : ', wreckage ${_res(k.salvageDropped!)}${k.salvageDespawnTick == null ? '' : ' drifts away in ${clockFmt(math.max(0, k.salvageDespawnTick! - tick))}'}';
+            : ', wreckage ${amountsOf(k.salvageDropped!)}${k.salvageDespawnTick == null ? '' : ' drifts away in ${clockFmt(math.max(0, k.salvageDespawnTick! - tick))}'}';
         msg = k.defended
             ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})$structures$pile'
-            : '! Raid broke through (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}): lost ${_res(k.resourcesLost)}$structures${k.shipsLost > 0 ? ', ${k.shipsLost} docked ships destroyed' : ''}';
+            : '! Raid broke through (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}): lost ${amountsOf(k.resourcesLost)}$structures${k.shipsLost > 0 ? ', ${k.shipsLost} docked ships destroyed' : ''}';
         level = EventLevel.bright;
       case proto.SiteExplorationStartedEvent():
         msg = '${_fleet(k.fleetId)} boarding derelict (tier ${k.tier}) in ${k.sector}, done tick ${k.endTick}';
       case proto.SiteExploredEvent():
-        msg = '${_fleet(k.fleetId)} derelict yielded ${_res(k.resources)}'
+        msg = '${_fleet(k.fleetId)} derelict yielded ${amountsOf(k.resources)}'
             '${k.recoveredShip != null ? ', recovered ${k.recoveredShip!.label}' : ''}'
             '${k.techCache != null ? ', data core: ${k.techCache!.label}' : ''}'
             '${k.relic ? ', ANCIENT RELIC' : ''}${k.points > 0 ? ' (+${k.points.toStringAsFixed(2)} explore)' : ''}';
@@ -463,12 +478,6 @@ class StateMapper {
     return '${t ~/ 3600}h';
   }
 
-  /// "90 Fe, 22 Cr" as the log prints an amount paid, hauled or lost.
-  static String _res(proto.Resources r) {
-    final amounts = _amounts(r, (v) => v.round());
-    return amounts.isEmpty ? 'nothing' : amounts;
-  }
-
   int get clockSec =>
       connectedAt == null ? tick : clock.now().difference(connectedAt!).inSeconds;
 
@@ -530,6 +539,8 @@ class StateMapper {
       world: world,
       leaderboard: leaderboard,
       raid: raid,
+      outpost: outpost,
+      surveys: {for (final e in surveys.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       policyActs: {for (final f in fleets) f.id: ?policyActs[f.id]?.toList()},
     );
   }
@@ -588,6 +599,7 @@ class StateMapper {
       fuelMax: math.max(1, f.fuelMax.round()),
       jumpFuel: f.jumpFuel.round(),
       homeFuel: f.homeFuel.round(),
+      outpostFuel: f.outpostFuel?.round(),
       cooldown: f.cooldownRemaining,
       power: f.power,
       rangeHops: f.rangeHops,
@@ -707,7 +719,7 @@ class StateMapper {
       exits: '${sec.connections.length} of 6',
       salvage: (salvage == null || salvage.total <= 0)
           ? 'none'
-          : '${_res(salvage)}${despawnLabel(sec, tick) == null ? '' : ', ${despawnLabel(sec, tick)}'}${sec.pinsStale ? ' (stale)' : ''}',
+          : '${amountsOf(salvage)}${despawnLabel(sec, tick) == null ? '' : ', ${despawnLabel(sec, tick)}'}${sec.pinsStale ? ' (stale)' : ''}',
       site: site == null ? 'none' : 'tier ${site.tier} (${site.risk.label})',
     );
   }

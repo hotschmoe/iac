@@ -69,6 +69,10 @@ class FleetState {
   /// Fuel per jump and fuel for the charted way home (0 at the homeworld).
   final int jumpFuel;
   final int homeFuel;
+
+  /// Fuel for the way to the player's outpost, 0 standing at it; null
+  /// unless that outpost is in service.
+  final int? outpostFuel;
   final int cooldown;
   final double power;
   final int rangeHops;
@@ -101,6 +105,7 @@ class FleetState {
     this.fuelMax = 1,
     this.jumpFuel = 0,
     this.homeFuel = 0,
+    this.outpostFuel,
     this.cooldown = 0,
     this.power = 0,
     this.rangeHops = 0,

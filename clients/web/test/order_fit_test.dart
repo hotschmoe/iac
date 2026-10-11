@@ -4,7 +4,6 @@
 // digits; the screens are pumped at desktop width and at a phone's.
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/console/services.dart';
@@ -96,21 +95,6 @@ Future<_Broke> _open(WidgetTester tester, Size size, Screen screen) async {
   return c;
 }
 
-/// Every piece of text under [box] is drawn whole and inside it.
-void _expectTextFits(WidgetTester tester, Finder box, {required String reason}) {
-  expect(box, findsOneWidget, reason: reason);
-  final frame = tester.getRect(box).inflate(.5);
-  final texts = find.descendant(of: box, matching: find.byType(RichText));
-  expect(texts, findsWidgets, reason: reason);
-  for (final e in texts.evaluate()) {
-    final paragraph = e.renderObject! as RenderParagraph;
-    final rect = paragraph.localToGlobal(Offset.zero) & paragraph.size;
-    final words = paragraph.text.toPlainText();
-    expect(frame.contains(rect.topLeft) && frame.contains(rect.bottomRight), isTrue, reason: '$reason: "$words" at $rect leaves $frame');
-    expect(paragraph.didExceedMaxLines, isFalse, reason: '$reason: "$words" is cut short');
-  }
-}
-
 Future<void> _show(WidgetTester tester, Finder target) async {
   await tester.ensureVisible(target);
   await tester.pump(const Duration(milliseconds: 100));
@@ -132,9 +116,9 @@ void main() {
         final pill = find.byKey(Key('hw-pill-$queue'));
         expect(find.descendant(of: pill, matching: find.textContaining('${order.toUpperCase()}  $waits')), findsOneWidget,
             reason: 'the $queue box names its waiting order and why it waits');
-        _expectTextFits(tester, pill, reason: '$queue box');
+        expectTextFits(tester, pill, reason: '$queue box');
       }
-      _expectTextFits(tester, find.byKey(const Key('hw-pill-slot-b')), reason: 'locked slot box');
+      expectTextFits(tester, find.byKey(const Key('hw-pill-slot-b')), reason: 'locked slot box');
 
       for (final tab in HomeworldTab.values) {
         c.selectHomeworldTab(tab);
@@ -155,11 +139,11 @@ void main() {
       await tester.tap(card);
       await tester.pump();
       expect(find.descendant(of: card, matching: find.text(_shortBy)), findsOneWidget, reason: 'the ship card names the shortfall');
-      _expectTextFits(tester, card, reason: 'ship card');
+      expectTextFits(tester, card, reason: 'ship card');
 
       final order = find.byKey(const ValueKey('hw-queue'));
       await _show(tester, order);
-      _expectTextFits(tester, find.byKey(const Key('hw-inspector')), reason: 'inspector');
+      expectTextFits(tester, find.byKey(const Key('hw-inspector')), reason: 'inspector');
       expect(find.descendant(of: find.byKey(const Key('hw-inspector')), matching: find.text(_shortBy)), findsOneWidget);
       await tester.tap(order, warnIfMissed: false);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -171,7 +155,7 @@ void main() {
       await tester.pump();
       const ten = 'Short by 12,345,670 Fe, 12,345,670 Cr, 12,345,670 De';
       expect(find.descendant(of: find.byKey(const Key('hw-inspector')), matching: find.text(ten)), findsOneWidget, reason: 'the check is the whole batch at the chosen count');
-      _expectTextFits(tester, find.byKey(const Key('hw-inspector')), reason: 'inspector, batch of ten');
+      expectTextFits(tester, find.byKey(const Key('hw-inspector')), reason: 'inspector, batch of ten');
       expect(tester.takeException(), isNull);
 
       c.selectHomeworldTab(HomeworldTab.defence);
@@ -179,7 +163,7 @@ void main() {
       final turret = find.byKey(const ValueKey('hw-card-0'));
       await _show(tester, turret);
       expect(find.descendant(of: turret, matching: find.text(ten)), findsOneWidget, reason: 'a defence batch is a shipyard batch');
-      _expectTextFits(tester, turret, reason: 'defence row');
+      expectTextFits(tester, turret, reason: 'defence row');
       await tester.tap(find.descendant(of: turret, matching: find.text('BUILD X10')), warnIfMissed: false);
       await tester.pump();
       expect(c.orders, isEmpty);
@@ -194,7 +178,7 @@ void main() {
       for (final card in ['card-slot-a', 'card-research', 'card-shipyard']) {
         final panel = find.byKey(Key(card));
         await _show(tester, panel);
-        _expectTextFits(tester, panel, reason: card);
+        expectTextFits(tester, panel, reason: card);
         await shot(tester, 'fit-overview-$card-${size.width.round()}');
       }
       expect(find.descendant(of: find.byKey(const Key('card-slot-a')), matching: find.text(_waitingShort)), findsOneWidget);

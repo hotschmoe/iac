@@ -85,8 +85,12 @@ const helpLines = [
   'hold:   load <metal|crystal|deut> [amount|all]  stockpile into the hold of the active fleet, idle at home with no standing orders;',
   '                  no amount = all that fits. The dock leaves a loaded hold alone until the fleet has been away',
   '        unload    put a hold loaded by hand back: what the stockpile has room for now, the rest as room opens',
-  'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw',
-  'keys:   on the windshield 1-9 select a fleet and P opens its standing orders; ? lists every key',
+  '        at your outpost load takes from its store and unload puts the whole hold into it, as far as it has room',
+  'outpost: survey [q r]  what an outpost would be worth in a charted sector, and why it cannot be founded now; none = where the fleet stands',
+  '        found     the active fleet founds your outpost where it stands, in rings 9 to 20, paid from its hold',
+  '        outpost upgrade  build the next level, paid from the outpost\'s own store     outpost abandon  give it up; nothing is refunded',
+  'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw  5|op',
+  'keys:   on the windshield 1-9 select a fleet, P opens its standing orders and O the outpost; ? lists every key',
 ];
 
 const _dirs = {
@@ -154,7 +158,13 @@ const _resources = {
 
 const _tradeUsage = '<metal|crystal|deut> <metal|crystal|deut> [amount|all]  (give, want; no amount = all the hold carries)';
 
-const _loadUsage = 'load: <metal|crystal|deut> [amount|all]  (stockpile into the hold of a fleet docked at home; no amount = all that fits)';
+const _loadUsage = 'load: <metal|crystal|deut> [amount|all]  (the dock\'s stock into the hold of a fleet at home or at your outpost; no amount = all that fits)';
+
+const _foundUsage = 'found: takes no argument (the active fleet founds your outpost in the sector it stands in)';
+
+const _surveyUsage = 'survey: [q r]  (what an outpost would be worth in a charted sector; none = where the active fleet stands)';
+
+const _outpostUsage = 'outpost: upgrade|abandon';
 
 const _policies = {
   'manual': PolicyPreset.manual,
@@ -377,6 +387,23 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
 
     case 'unload':
       return needFleet((id) => UnloadCommand(fleetId: id));
+
+    case 'found':
+      if (args.isNotEmpty) return const ParsedError(_foundUsage);
+      return needFleet((id) => FoundOutpostCommand(fleetId: id));
+
+    case 'survey':
+      final at = [for (final a in args) int.tryParse(a)];
+      if (at.contains(null) || (at.isNotEmpty && at.length != 2)) return const ParsedError(_surveyUsage);
+      final sector = at.isEmpty ? null : Hex(at[0]!, at[1]!);
+      return needFleet((id) => OutpostSurveyCommand(fleetId: id, sector: sector));
+
+    case 'outpost':
+      return switch (args) {
+        ['upgrade'] => const ParsedSend([CommandMessage(UpgradeOutpostCommand())]),
+        ['abandon'] => const ParsedSend([CommandMessage(AbandonOutpostCommand())]),
+        _ => const ParsedError(_outpostUsage),
+      };
 
     case 'p' || 'policy':
       if (fid == null) return const ParsedError('No fleet selected (you have none)');
