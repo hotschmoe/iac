@@ -800,8 +800,15 @@
   },
   "known_sectors": [],
   "player": {
+    "exchange": {
+      "clear_in": 0,
+      "fee": 0.75,
+      "pressure": 0.0,
+      "span": 0.0,
+      "window_ticks": 5238
+    },
     "homeworld": {
-      "q": 0,
+      "q": 3,
       "r": 0
     },
     "id": 1,
@@ -816,6 +823,17 @@
   "type": "full_state",
   "world": {
     "economy_version": 2,
+    "hub": [
+      {
+        "location": {
+          "q": 0,
+          "r": 0
+        },
+        "services": [
+          "exchange"
+        ]
+      }
+    ],
     "pace": 42.0,
     "tick_hz": 1,
     "worldgen_version": 1

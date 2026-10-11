@@ -1,0 +1,29 @@
+{
+  "amount": 632.5,
+  "fee": 0.28850001096725464,
+  "fleet_id": 3,
+  "give": "metal",
+  "kind": "Exchanged",
+  "meter": {
+    "clear_in": 0,
+    "fee": 0.25,
+    "pressure": 0.0,
+    "span": 4185.0,
+    "window_ticks": 15364
+  },
+  "meter_after": {
+    "clear_in": 2322,
+    "fee": 0.32499998807907104,
+    "pressure": 632.5,
+    "span": 4185.0,
+    "window_ticks": 15364
+  },
+  "par": 316.25,
+  "receive": 225.0,
+  "sector": {
+    "q": 0,
+    "r": 0
+  },
+  "tick": 1234,
+  "want": "deuterium"
+}

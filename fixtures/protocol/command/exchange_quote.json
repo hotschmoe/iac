@@ -1,0 +1,7 @@
+{
+  "action": "exchange_quote",
+  "amount": 120.0,
+  "fleet_id": 3,
+  "give": "deuterium",
+  "want": "crystal"
+}

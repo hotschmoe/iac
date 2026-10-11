@@ -75,6 +75,9 @@
     "Deuterium",
     "Auto"
   ],
+  "HubService": [
+    "exchange"
+  ],
   "NpcBehavior": [
     "Passive",
     "Patrol",

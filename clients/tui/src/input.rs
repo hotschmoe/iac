@@ -5,7 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use iac_shared::hex::HexDirection;
 use iac_shared::protocol::{Command, HarvestResource};
 
-use crate::state::{ClientState, HomeworldNav, ScrollDirection, View, ZoomLevel};
+use crate::state::{ClientState, ExchangeStep, HomeworldNav, ScrollDirection, View, ZoomLevel};
 
 #[derive(Debug, Clone)]
 pub enum InputAction {
@@ -41,6 +41,9 @@ pub enum InputAction {
     FleetPanelMark,
     FleetPanelSplit,
     FleetPanelMerge,
+    ToggleExchangePanel,
+    ExchangeStep(ExchangeStep),
+    ExchangeTrade,
 }
 
 pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
@@ -54,6 +57,21 @@ pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
         return match key.code {
             KeyCode::Char('q') => InputAction::Quit,
             _ => InputAction::CloseLeaderboard,
+        };
+    }
+
+    // The exchange overlay captures the keyboard while it is open.
+    if state.exchange_panel.is_some() {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Char('e') => InputAction::ToggleExchangePanel,
+            KeyCode::Char('g') => InputAction::ExchangeStep(ExchangeStep::Give),
+            KeyCode::Char('w') => InputAction::ExchangeStep(ExchangeStep::Want),
+            KeyCode::Left | KeyCode::Char('-') => InputAction::ExchangeStep(ExchangeStep::Amount(-1)),
+            KeyCode::Right | KeyCode::Char('+') | KeyCode::Char('=') => InputAction::ExchangeStep(ExchangeStep::Amount(1)),
+            KeyCode::Enter => InputAction::ExchangeTrade,
+            KeyCode::Tab => InputAction::CycleFleet,
+            KeyCode::Char('q') => InputAction::Quit,
+            _ => InputAction::None,
         };
     }
 
@@ -160,6 +178,7 @@ fn map_char(c: char, state: &ClientState) -> InputAction {
         'p' => InputAction::CyclePolicy,
         'P' => InputAction::CycleFuelBudget,
         'f' => InputAction::ToggleFleetPanel,
+        'e' => InputAction::ToggleExchangePanel,
 
         _ => InputAction::None,
     }
@@ -186,6 +205,7 @@ fn map_homeworld_char(c: char) -> InputAction {
         '?' => InputAction::ToggleKeybinds,
         't' => InputAction::ToggleTechTree,
         'f' => InputAction::ToggleFleetPanel,
+        'e' => InputAction::ToggleExchangePanel,
 
         // Cancel the oldest running item (half refunded) ...
         'x' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Building, waiting: false },

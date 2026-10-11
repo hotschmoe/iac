@@ -2,7 +2,7 @@
 // it: bytes in, bytes out, the wire protocol inside. The real engine and
 // the real bots run behind it; time is whatever the test says it is.
 
-use iac_solo::{Machine, CATCH_UP_LIMIT};
+use iac_solo::{Machine, CATCH_UP_LIMIT, SAVE_FORMAT};
 use serde_json::{json, Value};
 
 const T0: u64 = 1_800_000_000_000;
@@ -242,9 +242,9 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let (_, reply) = load(T0, other_generator.as_bytes());
     assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 3"), "{reply}");
 
-    let other_format = text.replacen("\"format\":1", "\"format\":7", 1);
+    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":7", 1);
     let (_, reply) = load(T0, other_format.as_bytes());
-    assert!(reply["refused"].as_str().unwrap().contains("format 7, this build reads format 1"), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 7, this build reads format {SAVE_FORMAT}")), "{reply}");
 
     let (_, reply) = load(T0, &document[..document.len() - 40]);
     assert!(reply["refused"].as_str().unwrap().contains("damaged"), "{reply}");

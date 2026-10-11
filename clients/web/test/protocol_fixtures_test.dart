@@ -68,6 +68,7 @@ void main() {
         'server_message/error__server_error': ErrorMessage,
         'server_message/preview_move': MovePreview,
         'server_message/leaderboard': LeaderboardReply,
+        'server_message/exchange_quote': ExchangeQuote,
       };
       for (final e in expected.entries) {
         final dir = e.key.split('/')[0];
@@ -79,16 +80,40 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 26 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 27 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 26);
+      expect(kinds.length, 27);
     });
 
-    test('command fixtures cover all 19 commands', () {
+    test('command fixtures cover all 21 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 19);
+      expect(kinds.length, 21);
+    });
+
+    test('full_state names the hub and the player meter at its exchange', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
+      final s = ServerMessage.fromJson(readJson(f)) as GameState;
+      expect(s.world.servicesAt(Hex.origin), [HubService.exchange]);
+      expect(s.world.servicesAt(const Hex(1, 0)), isEmpty);
+      expect(s.world.nearest(HubService.exchange, const Hex(4, -2)), Hex.origin);
+      expect((s.player.exchange.pressure, s.player.exchange.span, s.player.exchange.clearIn), (632.5, 4185, 2322));
+      expect(s.player.exchange.fill, closeTo(632.5 / 4185, 1e-9));
+    });
+
+    test('a quote is kept for the fleet and the pair it was asked for, a refused one with its reason', () {
+      final files = fixtureFiles('protocol/server_message');
+      final mapper = StateMapper();
+      for (final name in ['exchange_quote', 'exchange_quote__refused']) {
+        mapper.apply(ServerMessage.fromJson(readJson(files.firstWhere((f) => baseName(f) == name))));
+      }
+      final open = mapper.quotes[(3, ResourceKind.metal, ResourceKind.deuterium)]!.quote;
+      expect((open.terms.amount, open.terms.receive, open.refusal), (632.5, 225, isNull));
+      final refused = mapper.quotes[(3, ResourceKind.deuterium, ResourceKind.metal)]!.quote;
+      expect(refused.refusal, contains('3 hexes from the exchange at the hub'));
+      expect(refused.terms.meterAfter.clearIn, isNull);
+      expect(mapper.log, isEmpty, reason: 'quotes are asked for by the panel; they do not write to the log');
     });
 
     test('full_state exposes sector connections', () {
@@ -268,6 +293,7 @@ void main() {
     check('DefenceKind', DefenceKind.fromJson, (DefenceKind e) => e.toJson());
     check('ErrorCode', ErrorCode.fromJson, (ErrorCode e) => e.toJson());
     check('ChartMark', ChartMark.fromJson, (ChartMark e) => e.toJson());
+    check('HubService', HubService.fromJson, (HubService e) => e.toJson());
 
     test('Dart enums have no values Rust lacks', () {
       void same(String name, int dartCount) => expect(dartCount, (enums[name] as List).length, reason: name);
@@ -288,6 +314,7 @@ void main() {
       same('DefenceKind', DefenceKind.values.length);
       same('ErrorCode', ErrorCode.values.length);
       same('ChartMark', ChartMark.values.length);
+      same('HubService', HubService.values.length);
     });
 
     test('error code numbers are not on the wire but match Rust repr', () {

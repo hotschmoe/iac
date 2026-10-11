@@ -1413,6 +1413,13 @@
     }
   ],
   "player": {
+    "exchange": {
+      "clear_in": 2322,
+      "fee": 0.32499998807907104,
+      "pressure": 632.5,
+      "span": 4185.0,
+      "window_ticks": 15364
+    },
     "homeworld": {
       "q": 4,
       "r": -2
@@ -1433,6 +1440,17 @@
       "endgame_s": 622000,
       "first_cruiser_s": 165600
     },
+    "hub": [
+      {
+        "location": {
+          "q": 0,
+          "r": 0
+        },
+        "services": [
+          "exchange"
+        ]
+      }
+    ],
     "pace": 10.0,
     "preset": "season",
     "tick_hz": 1,

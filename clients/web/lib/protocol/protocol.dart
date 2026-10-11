@@ -329,6 +329,21 @@ enum ResourceKind {
   String get wire => _snake(name);
   String toJson() => wire;
   static ResourceKind fromJson(Object? v) => _enumFrom(values, v, _snake);
+
+  /// What one unit counts toward score, and its par value at the exchange.
+  double get weight => switch (this) { metal => 1, crystal => 1.5, deuterium => 2 };
+
+  double of(Resources r) => switch (this) { metal => r.metal, crystal => r.crystal, deuterium => r.deuterium };
+}
+
+/// What a sector of the hub offers.
+enum HubService {
+  /// The NPC exchange: a fleet here trades one resource in its hold for another.
+  exchange;
+
+  String get wire => _snake(name);
+  String toJson() => wire;
+  static HubService fromJson(Object? v) => _enumFrom(values, v, _snake);
 }
 
 enum SiteRisk {
@@ -594,6 +609,18 @@ sealed class Command {
       'explore_site' => ExploreSiteCommand(fleetId: fleet()),
       'split' => SplitCommand(fleetId: _i(m['fleet_id']), shipIds: _list(m['ship_ids'], _i)),
       'merge' => MergeCommand(fleetId: _i(m['fleet_id']), otherFleetId: _i(m['other_fleet_id'])),
+      'exchange' => ExchangeCommand(
+          fleetId: _i(m['fleet_id']),
+          give: ResourceKind.fromJson(m['give']),
+          want: ResourceKind.fromJson(m['want']),
+          amount: _opt(m['amount'], _f),
+        ),
+      'exchange_quote' => ExchangeQuoteCommand(
+          fleetId: _i(m['fleet_id']),
+          give: ResourceKind.fromJson(m['give']),
+          want: ResourceKind.fromJson(m['want']),
+          amount: _opt(m['amount'], _f),
+        ),
       final a => throw FormatException('unknown Command action "$a"'),
     };
   }
@@ -762,6 +789,38 @@ class MergeCommand extends Command {
   Json toJson() => {'action': 'merge', 'fleet_id': fleetId, 'other_fleet_id': otherFleetId};
 }
 
+Json _exchangeJson(String action, int fleetId, ResourceKind give, ResourceKind want, double? amount) {
+  final m = <String, dynamic>{'action': action, 'fleet_id': fleetId, 'give': give.toJson(), 'want': want.toJson()};
+  _put(m, 'amount', amount);
+  return m;
+}
+
+/// Sell [amount] of [give] from the fleet's hold to the hub's exchange for
+/// [want]; without [amount], all of [give] the fleet carries. The fleet must
+/// stand idle on a hub sector that offers the exchange. The answer is an
+/// [ExchangedEvent].
+class ExchangeCommand extends Command {
+  final int fleetId;
+  final ResourceKind give;
+  final ResourceKind want;
+  final double? amount;
+  const ExchangeCommand({required this.fleetId, required this.give, required this.want, this.amount});
+  @override
+  Json toJson() => _exchangeJson('exchange', fleetId, give, want, amount);
+}
+
+/// Ask what [ExchangeCommand] with the same fields would give, without
+/// trading; the reply is an [ExchangeQuote]. It answers for a fleet anywhere.
+class ExchangeQuoteCommand extends Command {
+  final int fleetId;
+  final ResourceKind give;
+  final ResourceKind want;
+  final double? amount;
+  const ExchangeQuoteCommand({required this.fleetId, required this.give, required this.want, this.amount});
+  @override
+  Json toJson() => _exchangeJson('exchange_quote', fleetId, give, want, amount);
+}
+
 // ── Server → Client ───────────────────────────────────────────────
 
 /// {"type": "auth_result" | "tick_update" | "full_state" | "event" | "error", ...}
@@ -783,6 +842,7 @@ sealed class ServerMessage {
       'preview_move' => MovePreview.fromJson(m),
       'odds' => FleetOdds.fromJson(m),
       'leaderboard' => LeaderboardReply.fromJson(m),
+      'exchange_quote' => ExchangeQuote.fromJson(m),
       'error' => ErrorMessage.fromJson(m),
       final t => throw FormatException('unknown ServerMessage type "$t"'),
     };
@@ -902,6 +962,10 @@ class WorldInfo {
   final int economyVersion;
   final int worldgenVersion;
   final WorldEstimate? estimate;
+
+  /// The neutral post at the centre of the map: every hub sector and what
+  /// it offers.
+  final List<HubSite> hub;
   const WorldInfo({
     required this.pace,
     this.preset,
@@ -909,7 +973,26 @@ class WorldInfo {
     required this.economyVersion,
     required this.worldgenVersion,
     this.estimate,
+    this.hub = const [],
   });
+
+  /// What the hub offers at [at]; nothing anywhere else.
+  List<HubService> servicesAt(Hex at) {
+    for (final site in hub) {
+      if (site.location == at) return site.services;
+    }
+    return const [];
+  }
+
+  /// The hub sector nearest [from] that offers [service].
+  Hex? nearest(HubService service, Hex from) {
+    Hex? best;
+    for (final site in hub) {
+      if (!site.services.contains(service)) continue;
+      if (best == null || Hex.distance(site.location, from) < Hex.distance(best, from)) best = site.location;
+    }
+    return best;
+  }
 
   factory WorldInfo.fromJson(Object? json) {
     final m = _obj(json);
@@ -920,6 +1003,7 @@ class WorldInfo {
       economyVersion: _i(m['economy_version']),
       worldgenVersion: _i(m['worldgen_version']),
       estimate: _opt(m['estimate'], WorldEstimate.fromJson),
+      hub: _opt(m['hub'], (v) => _list(v, HubSite.fromJson)) ?? const [],
     );
   }
 
@@ -929,6 +1013,7 @@ class WorldInfo {
       'tick_hz': tickHz,
       'economy_version': economyVersion,
       'worldgen_version': worldgenVersion,
+      'hub': [for (final site in hub) site.toJson()],
     };
     _put(m, 'preset', preset);
     _put(m, 'estimate', estimate?.toJson());
@@ -939,6 +1024,135 @@ class WorldInfo {
   String get label {
     final n = pace == pace.roundToDouble() ? pace.round().toString() : pace.toString();
     return preset == null ? 'x$n' : 'x$n $preset';
+  }
+}
+
+/// One sector of the hub.
+class HubSite {
+  final Hex location;
+  final List<HubService> services;
+  const HubSite({required this.location, required this.services});
+
+  factory HubSite.fromJson(Object? json) {
+    final m = _obj(json);
+    return HubSite(location: Hex.fromJson(m['location']), services: _list(m['services'], HubService.fromJson));
+  }
+
+  Json toJson() => {'location': location.toJson(), 'services': [for (final s in services) s.toJson()]};
+}
+
+/// A player's standing at the hub's exchange. The fee on a unit of weight
+/// sold is 25 percent of par while [pressure] is 0 and rises in a straight
+/// line to 75 percent at [span]; the meter falls by one [span] every
+/// [windowTicks].
+class ExchangeMeter {
+  /// Weight sold and not yet forgotten.
+  final double pressure;
+
+  /// The pressure at which the fee stops rising; 0 for an empire with no
+  /// mine output.
+  final double span;
+
+  /// The fee on the next unit of weight sold, 0.25 to 0.75.
+  final double fee;
+  final int windowTicks;
+
+  /// Ticks until the meter is empty; 0 when it is, null when it does not fall.
+  final int? clearIn;
+  const ExchangeMeter({this.pressure = 0, this.span = 0, this.fee = 0, this.windowTicks = 0, this.clearIn});
+
+  factory ExchangeMeter.fromJson(Object? json) {
+    final m = _obj(json);
+    return ExchangeMeter(
+      pressure: _f(m['pressure']),
+      span: _f(m['span']),
+      fee: _f(m['fee']),
+      windowTicks: _i(m['window_ticks']),
+      clearIn: m['clear_in'] as int?,
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{'pressure': pressure, 'span': span, 'fee': fee, 'window_ticks': windowTicks};
+    _put(m, 'clear_in', clearIn);
+    return m;
+  }
+
+  /// How full the meter is, 0 to 1; full when it has no span.
+  double get fill => span > 0 ? (pressure / span).clamp(0, 1).toDouble() : 1;
+}
+
+/// One trade at the hub's exchange, quoted or made: [amount] of [give] for
+/// [receive] of [want]. Par values are the score weights (metal 1, crystal
+/// 1.5, deuterium 2 a unit); the exchange always keeps a fee.
+class ExchangeTerms {
+  final int fleetId;
+  final ResourceKind give;
+  final ResourceKind want;
+  final double amount;
+
+  /// Units of [want] that come back: whole units, rounded down.
+  final double receive;
+
+  /// Units of [want] the same [amount] is worth with no fee.
+  final double par;
+
+  /// The share of par the exchange keeps on this trade.
+  final double fee;
+  final ExchangeMeter meter;
+  final ExchangeMeter meterAfter;
+  const ExchangeTerms({
+    required this.fleetId,
+    required this.give,
+    required this.want,
+    required this.amount,
+    required this.receive,
+    required this.par,
+    required this.fee,
+    required this.meter,
+    required this.meterAfter,
+  });
+
+  factory ExchangeTerms.fromJson(Json m) => ExchangeTerms(
+        fleetId: _i(m['fleet_id']),
+        give: ResourceKind.fromJson(m['give']),
+        want: ResourceKind.fromJson(m['want']),
+        amount: _f(m['amount']),
+        receive: _f(m['receive']),
+        par: _f(m['par']),
+        fee: _f(m['fee']),
+        meter: ExchangeMeter.fromJson(m['meter']),
+        meterAfter: ExchangeMeter.fromJson(m['meter_after']),
+      );
+
+  Json toJson() => {
+        'fleet_id': fleetId,
+        'give': give.toJson(),
+        'want': want.toJson(),
+        'amount': amount,
+        'receive': receive,
+        'par': par,
+        'fee': fee,
+        'meter': meter.toJson(),
+        'meter_after': meterAfter.toJson(),
+      };
+}
+
+/// Answer to [ExchangeQuoteCommand]: the terms, and in [refusal] why the
+/// trade itself would be refused right now, if it would.
+class ExchangeQuote extends ServerMessage {
+  final ExchangeTerms terms;
+  final String? refusal;
+  const ExchangeQuote({required this.terms, this.refusal});
+
+  factory ExchangeQuote.fromJson(Json m) =>
+      ExchangeQuote(terms: ExchangeTerms.fromJson(m), refusal: m['refusal'] as String?);
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{'type': 'exchange_quote', ...terms.toJson()};
+    _put(m, 'refusal', refusal);
+    return m;
   }
 }
 
@@ -1174,7 +1388,16 @@ class PlayerState {
   final String name;
   final Resources resources;
   final Hex homeworld;
-  const PlayerState({required this.id, required this.name, required this.resources, required this.homeworld});
+
+  /// Where the player's meter at the hub's exchange stands this tick.
+  final ExchangeMeter exchange;
+  const PlayerState({
+    required this.id,
+    required this.name,
+    required this.resources,
+    required this.homeworld,
+    this.exchange = const ExchangeMeter(),
+  });
 
   factory PlayerState.fromJson(Object? json) {
     final m = _obj(json);
@@ -1183,6 +1406,7 @@ class PlayerState {
       name: m['name'] as String,
       resources: Resources.fromJson(m['resources']),
       homeworld: Hex.fromJson(m['homeworld']),
+      exchange: _opt(m['exchange'], ExchangeMeter.fromJson) ?? const ExchangeMeter(),
     );
   }
 
@@ -1191,6 +1415,7 @@ class PlayerState {
         'name': name,
         'resources': resources.toJson(),
         'homeworld': homeworld.toJson(),
+        'exchange': exchange.toJson(),
       };
 }
 
@@ -2414,6 +2639,7 @@ sealed class EventKind {
       'StorageFull' => StorageFullEvent.fromJson(m),
       'ChartDelivered' => ChartDeliveredEvent.fromJson(m),
       'Queue' => QueueEvent.fromJson(m),
+      'Exchanged' => ExchangedEvent.fromJson(m),
       final k => throw FormatException('unknown EventKind "$k"'),
     };
   }
@@ -3156,6 +3382,20 @@ class ChartDeliveredEvent extends EventKind {
 
   @override
   Json toJson() => {'kind': 'ChartDelivered', 'fleet_id': fleetId, 'sectors': sectors, 'points': points};
+}
+
+/// A fleet traded at the hub's exchange: what it gave, what it got, the fee
+/// and where the player's meter now stands.
+class ExchangedEvent extends EventKind {
+  final Hex sector;
+  final ExchangeTerms terms;
+  const ExchangedEvent({required this.sector, required this.terms});
+
+  factory ExchangedEvent.fromJson(Json m) =>
+      ExchangedEvent(sector: Hex.fromJson(m['sector']), terms: ExchangeTerms.fromJson(m));
+
+  @override
+  Json toJson() => {'kind': 'Exchanged', 'sector': sector.toJson(), ...terms.toJson()};
 }
 
 /// The answer to a build, research, ship or defence order or a cancel, and

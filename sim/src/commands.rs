@@ -3,10 +3,11 @@
 
 use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
 use iac_shared::protocol::{
-    ClientMessage, Command, ErrorCode, ErrorMessage, FleetOdds, HarvestResource, ServerMessage, MAX_ODDS_SECTORS,
+    ClientMessage, Command, ErrorCode, ErrorMessage, ExchangeQuote, FleetOdds, HarvestResource, ServerMessage,
+    MAX_ODDS_SECTORS,
 };
 
-use crate::engine::{AuthError, FleetStatus, GameEngine};
+use crate::engine::{AuthError, ExchangeDeal, FleetStatus, GameEngine};
 use crate::views;
 
 /// What a command produced for its sender: an optional answer, an optional
@@ -48,6 +49,14 @@ impl GameEngine {
             Command::Odds { fleet_id, ref sectors } => self.odds_for(pid, fleet_id, sectors).map(|sectors| {
                 reply = Some(ServerMessage::Odds(FleetOdds { fleet_id, sectors }));
             }),
+            Command::Exchange { fleet_id, give, want, amount } => self.handle_exchange(pid, fleet_id, give, want, amount),
+            Command::ExchangeQuote { fleet_id, give, want, amount } => self
+                .exchange_deal(pid, fleet_id, give, want, amount)
+                .map(|deal| {
+                    let refusal = deal.refusal.map(|r| r.reason);
+                    reply = Some(ServerMessage::ExchangeQuote(ExchangeQuote { terms: deal.terms, refusal }));
+                })
+                .map_err(|refusal| refusal.code),
         };
         let error = result.err().map(|code| (code, command_error_message(self, pid, &cmd, code)));
         CommandOutcome { reply, error }
@@ -79,7 +88,10 @@ impl GameEngine {
 
 /// Whether `cmd` only asks: it is answered and leaves the world as it was.
 pub fn is_query(cmd: &Command) -> bool {
-    matches!(cmd, Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. })
+    matches!(
+        cmd,
+        Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. } | Command::ExchangeQuote { .. }
+    )
 }
 
 /// What a session that has not logged in is sent for anything but `auth`.
@@ -125,6 +137,8 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Split { fleet_id, .. }
         | Command::PreviewMove { fleet_id, .. }
         | Command::Odds { fleet_id, .. }
+        | Command::Exchange { fleet_id, .. }
+        | Command::ExchangeQuote { fleet_id, .. }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
@@ -245,6 +259,13 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
     let fid = fleet_id.unwrap_or(0);
 
     match (code, cmd) {
+        (
+            _,
+            Command::Exchange { fleet_id, give, want, amount } | Command::ExchangeQuote { fleet_id, give, want, amount },
+        ) => match engine.exchange_deal(player_id, *fleet_id, *give, *want, *amount) {
+            Err(refusal) | Ok(ExchangeDeal { refusal: Some(refusal), .. }) => refusal.reason,
+            Ok(_) => format!("command rejected ({code:?})"),
+        },
         (ErrorCode::FleetNotFound, _) => format!("fleet {fid} not found (or it has no ships left)"),
         (ErrorCode::OnCooldown, Command::Attack { target_fleet_id, .. })
             if fleet.is_some_and(|f| f.state != FleetStatus::InCombat && f.state != FleetStatus::Moving) =>
