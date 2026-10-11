@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../console/economy_view.dart' show shortReason;
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
@@ -485,8 +486,10 @@ class GameController extends ChangeNotifier {
   }
 
   /// Queue the card at [index] (the selection by default). Locked and
-  /// maxed cards are answered locally; the server stays the judge of
-  /// everything else, including whether the player can pay.
+  /// maxed cards are answered locally, and so is a shipyard batch the
+  /// stockpile does not cover, which is paid in full when it is ordered and
+  /// would be refused. The server stays the judge of everything else: a
+  /// building or a tech queues whether or not the player can pay yet.
   void activateHomeworldCard([int? index]) {
     final c = _state.catalog;
     final i = index ?? hwCursor;
@@ -498,6 +501,9 @@ class GameController extends ChangeNotifier {
     final String name;
     final proto.Command command;
     final String echo;
+    proto.Resources batch(proto.Resources unit) =>
+        proto.Resources(metal: unit.metal * shipBatch, crystal: unit.crystal * shipBatch, deuterium: unit.deuterium * shipBatch);
+    String? short;
     switch (hwTab) {
       case HomeworldTab.buildings:
         final o = c.buildings[i];
@@ -520,6 +526,7 @@ class GameController extends ChangeNotifier {
         name = o.shipClass.label;
         command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
         echo = 'ship ${o.shipClass.label} x$shipBatch';
+        short = shortReason(_state.stock, batch(o.unitCost));
       case HomeworldTab.defence:
         final o = c.defences[i];
         requires = o.requires;
@@ -527,6 +534,7 @@ class GameController extends ChangeNotifier {
         name = o.kind.label;
         command = proto.BuildDefenceCommand(kind: o.kind, count: shipBatch);
         echo = 'defence ${o.kind.label} x$shipBatch';
+        short = shortReason(_state.stock, batch(o.unitCost));
       case HomeworldTab.storage:
         return;
     }
@@ -536,6 +544,8 @@ class GameController extends ChangeNotifier {
       note('$name is locked: needs ${unmet.join(', ')}', level: EventLevel.bright);
     } else if (maxed) {
       note('$name is already at its maximum level', level: EventLevel.bright);
+    } else if (short != null) {
+      note('$name x$shipBatch not ordered: ${short.replaceFirst('Short', 'short')}. A batch is paid in full when it is ordered.', level: EventLevel.bright);
     } else {
       note('> $echo', level: EventLevel.full);
       sendCommand(command);
@@ -598,7 +608,8 @@ class GameController extends ChangeNotifier {
   }
 
   /// Cancel the [index]th running item of [queue] (half refunded), or with
-  /// [waiting] the [index]th item still waiting (nothing was paid). The
+  /// [waiting] the [index]th item still waiting (a building or a tech paid
+  /// nothing; a shipyard batch paid when ordered and gets half back). The
   /// command carries the item's stable id, so a line that moves under the
   /// click cannot change what is cancelled.
   void cancelHomeworldQueue(proto.QueueType queue, {int index = 0, bool waiting = false}) {

@@ -68,6 +68,8 @@ const helpLines = [
   'base:   b[uild] <metal|crystal|deut|shipyard|lab|fuel|sensor|defense|vault|fab>',
   '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump|modfab>',
   '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research> [id]  [waiting]',
+  '        buildings and research queue ahead of resources and pay when they start; a ship batch is paid in full when',
+  '        ordered and is refused, with what is missing, until the stockpile covers all of it',
   'fleets: f[leet] [n]  select/list   p[olicy] [manual|prospect|mine|salvage|patrol]  (no arg cycles)',
   '        policy settings: range=<hexes from home> engage=<least odds ratio> fuel=<% of deuterium income for its fuel, 100 = no bound>',
   '                         cargo=<% hold that sends it home> reserve=<% tank kept spare>   e.g. policy mine range=8 fuel=40',

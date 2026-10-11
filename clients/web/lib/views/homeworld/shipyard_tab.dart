@@ -38,11 +38,12 @@ class ShipyardTab extends StatelessWidget {
     final locked = o.requires.any((r) => !r.met);
     final sel = ctrl.hwCursor == i;
     final spec = specFor(ctrl, index: i);
+    final blocked = locked ? null : spec?.reason;
     final total = o.unitCost.metal + o.unitCost.crystal + o.unitCost.deuterium;
     return Semantics(
       button: true,
       selected: sel,
-      label: '${o.shipClass.label}${locked ? ', locked' : ''}',
+      label: '${o.shipClass.label}${locked ? ', locked' : blocked == null ? '' : ', unavailable: $blocked'}',
       excludeSemantics: true,
       onTap: () => onSelect(i),
       child: MouseRegion(
@@ -52,7 +53,7 @@ class ShipyardTab extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: () => onSelect(i),
           child: Opacity(
-            opacity: locked ? .6 : 1,
+            opacity: locked ? .6 : blocked != null ? .8 : 1,
             child: ConsolePanel(
               border: sel ? C.a200 : (spec?.canQueue ?? false) ? C.ownDim : C.line,
               mark: sel ? C.a200 : null,
@@ -71,6 +72,11 @@ class ShipyardTab extends StatelessWidget {
                     Text('${o.unitCost.metal.round()} Fe  ${o.unitCost.crystal.round()} Cr  ${o.unitCost.deuterium.round()} De  ${fmtTicks(o.ticksPerShip)}',
                         style: T.mono(size: 10, color: C.a300)),
                     if (locked) WhyText('Locked: needs ${o.requires.where((r) => !r.met).map((r) => r.label).join(', ')}'),
+                    if (blocked != null) ...[
+                      const SizedBox(height: 3),
+                      Text('X${ctrl.shipBatch} UNAVAILABLE', style: T.cond(size: 10, color: C.threat(5), spacing: 1.2)),
+                      Text(blocked, style: T.mono(size: 10, color: C.threat(5), height: 1.3)),
+                    ],
                   ]),
                 ),
               ]),

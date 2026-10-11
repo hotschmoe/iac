@@ -79,20 +79,23 @@ class PanelHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final col = color ?? C.a400;
+    // Title and note split the row three to two. In equal thirds with a
+    // spacer between them "BUILD SLOT A" was cut short in a card with room
+    // to spare.
     return Container(
       padding: const EdgeInsets.fromLTRB(11, 7, 11, 6),
       decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.lineLo))),
       child: Row(children: [
         Container(width: 5, height: 5, color: col),
         const SizedBox(width: 8),
-        Flexible(child: Text(text.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: 10.5, color: col, spacing: 2))),
-        const Spacer(),
+        Expanded(flex: 3, child: Text(text.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: 10.5, color: col, spacing: 2))),
+        const SizedBox(width: 8),
         ?sub,
         if (subText != null)
-          Flexible(
-              child: Text(subText!,
-                  overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: C.text3))),
-        ?trailing,
+          Expanded(
+              flex: 2,
+              child: Text(subText!, textAlign: TextAlign.right, overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: C.text3))),
+        if (trailing != null) ...[const SizedBox(width: 6), trailing!],
       ]),
     );
   }
