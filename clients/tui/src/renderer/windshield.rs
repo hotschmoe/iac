@@ -37,7 +37,7 @@ pub fn render(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     let log_inner = log_block.inner(rows[1]);
     frame.render_widget(&log_block, rows[1]);
 
-    let lines = event_lines(state, log_inner.height as usize);
+    let lines = event_lines(state, log_inner.height as usize, log_inner.width as usize);
     frame.render_widget(Paragraph::new(lines), log_inner);
 }
 

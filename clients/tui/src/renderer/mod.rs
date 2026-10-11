@@ -761,7 +761,10 @@ fn res_short(r: &iac_shared::Resources) -> String {
 }
 
 /// Render the recent event log as styled lines, newest first.
-pub fn event_lines(state: &ClientState, max_lines: usize) -> Vec<ratatui::text::Line<'static>> {
+/// The newest events as rows for a panel `width` columns wide and
+/// `max_lines` tall. An event longer than the panel wraps onto indented
+/// rows: the end of a sentence is where it says what something cost.
+pub fn event_lines(state: &ClientState, max_lines: usize, width: usize) -> Vec<ratatui::text::Line<'static>> {
     let mut lines = Vec::new();
     let mut i = 0;
     while lines.len() < max_lines {
@@ -770,12 +773,31 @@ pub fn event_lines(state: &ClientState, max_lines: usize) -> Vec<ratatui::text::
         let text = format_event(event);
         // Multi-line events (e.g. scan signals) expand to several rows.
         for part in text.trim_end_matches('\n').split('\n') {
-            lines.push(ratatui::text::Line::styled(part.to_string(), style));
+            for row in wrap_rows(part, width) {
+                lines.push(ratatui::text::Line::styled(row, style));
+            }
         }
         i += 1;
     }
     lines.truncate(max_lines);
     lines
+}
+
+fn wrap_rows(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    for (i, word) in text.split(' ').enumerate() {
+        if !row.trim().is_empty() && row.chars().count() + 1 + word.chars().count() > width {
+            rows.push(std::mem::replace(&mut row, format!("      {word}")));
+        } else {
+            if i > 0 {
+                row.push(' ');
+            }
+            row.push_str(word);
+        }
+    }
+    rows.push(row);
+    rows
 }
 
 /// Compute queue progress.

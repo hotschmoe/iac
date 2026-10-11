@@ -55,7 +55,7 @@ fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: ratatui:
         .fleets
         .iter()
         .enumerate()
-        .map(|(i, fleet)| {
+        .flat_map(|(i, fleet)| {
             let marker = if i == state.active_fleet_idx { ">" } else { " " };
             let in_combat = matches!(fleet.state, iac_shared::protocol::FleetStatus::InCombat);
             let status = match fleet.state {
@@ -72,16 +72,7 @@ fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: ratatui:
                 marker, fleet.id, fleet.location.q, fleet.location.r, status
             );
             if let Some(orders) = fleet.policy {
-                let p = orders.params;
-                let fuel = if p.fuel_budget_pct >= iac_shared::constants::POLICY_FUEL_UNBOUNDED_PCT {
-                    "unbounded".to_string()
-                } else {
-                    format!("{}%", p.fuel_budget_pct)
-                };
-                text.push_str(&format!(
-                    " AUTO:{} {}hex {:.1}x fuel {fuel}",
-                    orders.preset.label(), p.max_range, f32::from(p.engage_ratio_x10) / 10.0,
-                ));
+                text.push_str(&format!(" AUTO:{}", orders.preset.label()));
             }
             if fleet.laden {
                 text.push_str(" LADEN");
@@ -96,7 +87,19 @@ fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: ratatui:
             } else {
                 AMBER
             };
-            Line::styled(text, style)
+            let settings = fleet.policy.map(|orders| {
+                let p = orders.params;
+                let fuel = if p.fuel_budget_pct >= iac_shared::constants::POLICY_FUEL_UNBOUNDED_PCT {
+                    "unbounded".to_string()
+                } else {
+                    format!("{}%", p.fuel_budget_pct)
+                };
+                Line::styled(
+                    format!("    range {}  engage {:.1}x  fuel {fuel}", p.max_range, f32::from(p.engage_ratio_x10) / 10.0),
+                    AMBER_DIM,
+                )
+            });
+            std::iter::once(Line::styled(text, style)).chain(settings)
         })
         .collect();
 
@@ -108,6 +111,6 @@ fn render_event_log(frame: &mut Frame<'_>, state: &ClientState, area: ratatui::l
     let inner = block.inner(area);
     frame.render_widget(&block, area);
 
-    let lines = event_lines(state, inner.height as usize);
+    let lines = event_lines(state, inner.height as usize, inner.width as usize);
     frame.render_widget(Paragraph::new(lines), inner);
 }
