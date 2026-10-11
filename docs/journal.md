@@ -3098,3 +3098,32 @@ page from this machine.
 - With eight fleets the desktop fleet rail runs down into the feed.
 - On a desktop a toast still covers the bottom of the right column, where the
   orders form has its button.
+
+**Merged master** (`84bf51b`: holds after losses, recall refused at home, the
+refusal of standing orders names the fleet) into the branch with no conflict.
+The scripted world took the engine's new refusal sentence.
+
+**Run.** On the merged tree: `flutter analyze` clean; `flutter test` pinned to
+the big cores (`taskset -c 0,1,6-11`), 364 of 364 in three full runs.
+`play.sh --single-player --no-serve`, `cargo build -p iac-server`, and
+`solo_e2e.dart --port 7970`: OK in 188 s, the orders step and the multiplayer
+step included (OK in 180 s on the tree before the merge). The pictures of the
+windshield at 1440, 1366, 1180, 1100 and 390 px, of the panel at 1440, 1100
+and 390, of the overview, the log with help, the phone map and both front
+doors were read.
+
+Two earlier runs of the check failed in the new step, on my expectation of
+what the fleet would report (above). One earlier full run of `flutter test`,
+pinned, failed in `shell_test` "a toast slides in once" with a column of an
+Overview queue card 142 px too tall for its box. That file passed twice alone
+and the six full runs after it passed; no cause was found. It is the kind the
+last entry describes, a layout result that cannot be, but that entry's cure
+was the pinning, and this run was pinned.
+
+**Not verified.** No real phone and no browser but headless Chromium; the
+JavaScript build (`--software`) was not run. The panel against a multiplayer
+server: the check's server step logs in and stops there, and the client code
+is the same. Orders given to one account from two consoles at once were tried
+only against the scripted world. No Rust was touched and `cargo test` was not
+run on the merged tree. Window sizes between the ones named were not looked
+at.

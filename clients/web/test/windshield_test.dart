@@ -804,6 +804,12 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(reason(), 'no contact within 3 hops of home that the fleet rates 1.5x against');
 
+    c.send(const proto.PolicyUpdate(fleetId: 101, preset: proto.PolicyPreset.patrolHome, params: proto.PolicyParams(maxRange: 2)));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 2, engage 1.5x, fuel budget 20% of deuterium income)'));
+    expect(find.byKey(const Key('orders-settings')), findsNothing, reason: 'orders the engine confirms that this console did not give are someone else\'s');
+    expect(find.byKey(const Key('orders-settings-unknown')), findsOneWidget, reason: 'and their settings are not claimed to be known here');
+
     c.handleCommand('load metal 10');
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.descendant(of: find.byType(ToastLayer), matching: find.textContaining('is under standing orders (patrol home)')), findsOneWidget,
