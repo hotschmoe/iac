@@ -29,7 +29,7 @@ const voice = {
 
 const hubVoice = 'Neutral post. No ore, no hostiles. The exchange is open.';
 
-const outpostVoice = 'A station holds this sector. No pack lives here while it stands; raiders still come for it.';
+const outpostVoice = 'A station holds this sector. Raiders come for it.';
 
 /// What the dock does for a fleet and what it does not: nothing in the field
 /// reaches a docked fleet, a raid that beats the home defence does.

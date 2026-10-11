@@ -5,7 +5,9 @@ when it was written. Since then the engine half of slice 1 has been built on the
 recommended answers to the six questions of section 8, which the owner has not yet
 given: `decisions.md` (2026-10-11, outposts) says where each lives in the code, and
 the journal entry "outposts, slice 1: the engine" lists where the build departs
-from section 7. The text below is the proposal as it was written.
+from section 7. The client half (7.6) followed: the journal entry "outposts,
+slice 1: the clients" says what the web console and the TUI show and where they
+depart from 7.6. The text below is the proposal as it was written.
 
 **Source note.** *Decided* means an owner decision, quoted in section 2. *Measured*
 means read from the repository's code or produced by its engine; section 9 says

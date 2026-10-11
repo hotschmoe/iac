@@ -3,6 +3,50 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-11 (outposts, slice 1: what the clients show)
+
+**Decided by the agent that built it, not by the owner, and open to change.**
+Where the web console and the TUI depart from section 7.6 of
+`docs/design/outposts.md`, or settle what it left open.
+
+- **`O` opens the founding panel anywhere, not only in rings 9 to 20.** The
+  dock's Found tile stands in those rings only, as 7.6 has it; the key works
+  wherever a fleet is, because the panel is how a player learns the rule: at
+  home it shows the server's sentence about the rings. It is also what the
+  browser check can reach.
+- **Upgrade is never switched off by the console.** The server has no
+  sentence for an upgrade it would refuse until the upgrade is ordered
+  (`outpost_survey` carries one for founding; `OutpostState` carries none
+  for the next level). The panel prints the shortfall as a figure and the
+  job under way, leaves the button pressable, and the server's refusal comes
+  back as a toast in its own words. A console that worded the refusal itself
+  would be a second judge.
+- **The outpost has a screen of its own**, on the rail while an outpost
+  stands (`G` then `P`; typed `5`, `op` or `outpost`), beside the panel the
+  windshield opens. 7.6 says "also in the rail"; a tile that only jumped to
+  the windshield would have needed a fleet to be selected.
+- **The HUD line is in the bar from 1100 px and a strip under it below
+  that.** The bar of a phone has no room for a fourth figure.
+- **The percentage in the HUD line is the fullest resource of the store**,
+  not the store as a whole: one resource at its cap is what stops the
+  extractor.
+- **The outpost's dock is the homeworld's hold panel**, given the outpost's
+  store to draw on, not a second panel. On the windshield it stands under
+  the outpost panel for the fleets standing there; `L` there opens it.
+- **A sector with an outpost shows the station in place of the threat
+  digit** on the map. The server rates such a sector as empty.
+- **The map inspector prints the survey as three lines and the verdict**, as
+  7.6 has it; the founding panel prints it as rows with the cost set against
+  the hold. The inspector column is now bounded and scrolls, so a long reply
+  cannot run under the route panel.
+- **"Raid repelled" at the outpost is a background notice too.** 7.6 lists a
+  raid, a breach, a finished level and a full store; the owner's brief added
+  a repair that waits. The outcome of an announced raid is told either way.
+- **TUI keys.** `o`, `F`, `U`, `A` then `y` were all free and are as 7.6
+  names them. `U`, `A` and Enter act inside the `o` overlay only, so that no
+  stray key upgrades or abandons; `F` works from any view and opens the
+  overlay on the survey.
+
 ## 2026-10-11 (outposts, slice 1: built on the design's recommendations, pending the owner's answers)
 
 **Not decided by the owner.** `docs/design/outposts.md` ends with six

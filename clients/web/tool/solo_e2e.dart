@@ -22,6 +22,9 @@
 // while their neighbours leave, a hold loaded from the stockpile at the dock
 // and unloaded again, standing orders given through their panel with the
 // fleet holding for the reason the engine gives and then set back to manual,
+// the founding panel of an outpost opened where the starter fleet stands,
+// with the engine's survey and its reason why none can be founded there
+// (founding itself takes a convoy in rings 9 to 20 and is not played),
 // a ship batch the stockpile does not cover refused with
 // nothing charged and its order button off, the engine's refusal of a typed
 // order shown on screen, a building queued ahead of its resources shown
@@ -710,6 +713,64 @@ Future<void> standingOrders(Browser browser) async {
 const scoutCost = {'metal': 200, 'crystal': 50, 'deuterium': 30};
 
 /// The stockpile in the newest tick update that carries one.
+/// The founding panel, against the engine itself. An outpost is founded by a
+/// loaded convoy standing in rings 9 to 20, which is further than this check
+/// has the time to fly: it founds nothing. O opens the panel for the starter
+/// fleet where it stands, the survey of its sector is asked of the engine in
+/// the worker and answered, and the panel shows the engine's reason why no
+/// outpost can be founded there, word for word, at desktop width and in a
+/// phone's sheet, with Found off. A typed `found` is refused by the engine in
+/// the same sentence.
+Future<void> founding(Browser browser) async {
+  print('founding an outpost');
+  final id = (await firstFleet(browser))['id'] as int;
+  final errors = await browser.tap('t.errors.length') as int;
+
+  await browser.type('o');
+  await browser.untilText('found an outpost');
+  await browser.until('the survey on the wire', () => browser.tap('t.sent.some((m) => m.action === "outpost_survey" && m.fleet_id === $id)'));
+  final survey = await browser.until('the engine\'s survey', () => browser.last('outpost_survey'));
+  final at = survey['sector'] as Map<String, dynamic>;
+  final (q, r) = (at['q'] as int, at['r'] as int);
+  final ring = [q.abs(), r.abs(), (q + r).abs()].reduce((a, b) => a > b ? a : b);
+  final cost = survey['cost'] as Map<String, dynamic>;
+  check(
+      survey['fleet_id'] == id &&
+          '${(await firstFleet(browser))['location']}' == '$at' &&
+          survey['ring'] == ring &&
+          cost['metal'] == 1000 &&
+          cost['crystal'] == 500 &&
+          cost['deuterium'] == 200,
+      'the engine in the worker surveys the sector the fleet stands in: ring $ring, level 1 for 1000 metal, 500 crystal and 200 deuterium');
+  final refusal = survey['refusal'] as String?;
+  check(refusal != null && (ring >= 9 || refusal == 'fleet $id is at ring $ring; an outpost stands in rings 9 to 20'),
+      'and says why no outpost can be founded there now: $refusal');
+  await browser.untilText(refusal!);
+  check(true, 'the founding panel shows that sentence, word for word');
+  check((await browser.tap('t.errors.length')) == errors, 'a survey is an answer, not an error');
+  await browser.shot('21e-founding-refused-1440');
+  await browser.resize(390, 844);
+  await browser.untilText(refusal);
+  await browser.shot('21e-founding-refused-390');
+  await browser.resize(1440, 900);
+
+  await browser.click('found outpost');
+  await Future<void>.delayed(const Duration(milliseconds: 600));
+  check((await browser.tap('t.sent.some((m) => m.action === "found_outpost")')) == false, 'Found is off: a press sends nothing');
+  await browser.command('found');
+  await browser.until('the typed found on the wire', () => browser.tap('t.sent.some((m) => m.action === "found_outpost" && m.fleet_id === $id)'));
+  final refused = await browser.until('the engine\'s refusal', () async {
+    final last = await browser.last('error');
+    return last != null && last['message'] == refusal ? last : null;
+  });
+  check(refused['code'] == 'InvalidTarget' || ring >= 9, 'a typed found is refused by the engine in the same sentence (${refused['code']})');
+  await browser.until('the refusal on screen', () async => (await browser.toasts()).any((t) => t['text'] == 'Refused. $refusal'));
+  check((await browser.last('tick_update'))!['outpost'] == null, 'and no outpost was founded');
+
+  await browser.type('o');
+  await browser.until('the founding panel to close', () async => !(await browser.text()).toLowerCase().contains('found an outpost'));
+}
+
 Future<Map<String, dynamic>> stockpile(Browser browser) async {
   final player = await browser.until('a tick update with the stockpile', () async => (await browser.last('tick_update'))?['player']);
   return ((player as Map<String, dynamic>)['resources'] as Map<String, dynamic>);
@@ -856,6 +917,7 @@ Future<void> screens(Browser browser) async {
   await browser.untilText('fleet status');
 
   await standingOrders(browser);
+  await founding(browser);
 
   await browser.type('t');
   await browser.untilText('give from the hold');

@@ -24,6 +24,9 @@ import 'support/harness.dart';
 const _desktop = Size(1440, 900);
 const _phone = Size(390, 844);
 
+/// The narrowest window that still gets the windshield's desktop layout.
+const _least = Size(1167, 800);
+
 /// A site of the scripted world an outpost can be founded on, one a patrol
 /// holds, and the scripted homeworld, at ring 4.
 const _site = proto.Hex(10, 0);
@@ -212,7 +215,7 @@ void main() {
     await endShell(tester, c);
   });
 
-  for (final size in [_desktop, _phone]) {
+  for (final size in [_desktop, _least, _phone]) {
     final wide = size.width.round();
     testWidgets('$wide wide: the outpost panel and its dock hold seven-digit figures, in the windshield and on the outpost\'s own screen', (tester) async {
       final c = await _open(tester, _bigOutpost(), size: size);
