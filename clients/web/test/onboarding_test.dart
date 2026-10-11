@@ -14,6 +14,7 @@ import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/state/token_store.dart';
 import 'package:iac_client/views/onboarding.dart';
 import 'package:iac_client/views/rail.dart';
+import 'package:iac_client/views/windshield/parts.dart' show GateCard;
 
 import 'support/fake_server.dart';
 import 'support/harness.dart';
@@ -234,6 +235,30 @@ void main() {
     expect(guide.active, isFalse);
     await endShell(tester, c);
     c.dispose();
+  });
+
+  testWidgets('the jump and harvest lessons speak of the gate cards the windshield has laid out: the full ones, or a phone\'s small ones', (tester) async {
+    for (final (size, small) in const [(Size(1440, 900), false), (Size(1100, 800), false), (Size(390, 844), true)]) {
+      final c = await pumpShell(tester, size: size, screen: Screen.windshield);
+      final guide = _guide(tester);
+      guide.setActive(true);
+      await tester.pump(const Duration(milliseconds: 200));
+      final cards = tester.widgetList<GateCard>(find.byType(GateCard));
+      expect(cards.isNotEmpty && cards.every((g) => g.narrow == small), isTrue, reason: 'at $size the gate cards are ${small ? 'the small ones' : 'the full ones'}');
+      final jump = guide.note(Lesson.jump, Screen.windshield), harvest = guide.note(Lesson.harvest, Screen.windshield);
+      if (small) {
+        expect(jump, startsWith('Each gate card is a lane, named by its key. An amber gate is quiet; any other colour is hostile or uncharted, and the Map says which.'));
+        expect(jump, endsWith('Tap a gate to jump.'));
+        expect('$jump $harvest', allOf(isNot(contains('T digit')), isNot(contains('bars')), isNot(contains('Hover'))),
+            reason: 'a small card shows a key and a terrain: no threat digit, no ore bars, and nothing to hover');
+      } else {
+        expect(jump, startsWith('Each gate card is a lane: the T digit is its threat, the bars its ore.'));
+        expect(find.descendant(of: find.byType(GateCard), matching: find.textContaining(RegExp(r'^T\d '), findRichText: true)), findsWidgets,
+            reason: 'and the full cards do carry the digit the sentence speaks of');
+      }
+      expect(tester.takeException(), isNull);
+      await endShell(tester, c);
+    }
   });
 
   testWidgets('the strip takes its own row on a phone and nothing overflows on any screen', (tester) async {

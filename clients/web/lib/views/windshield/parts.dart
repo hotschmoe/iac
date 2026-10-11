@@ -111,11 +111,29 @@ class SectorHead extends StatelessWidget {
 
 // ── Fleet rail ─────────────────────────────────────────────────
 
-class FleetRail extends StatelessWidget {
+/// The player's fleets, one card each. On a desktop they stand in a column
+/// that takes the height it is given and scrolls when the fleets need more,
+/// keeping the selected one in view.
+class FleetRail extends StatefulWidget {
   final GameController ctrl;
   final bool narrow;
   final bool combat;
   const FleetRail({super.key, required this.ctrl, required this.narrow, required this.combat});
+
+  /// Room for one card of the column, the least the rail is given.
+  static const cardHeight = 86.0;
+
+  @override
+  State<FleetRail> createState() => _FleetRailState();
+}
+
+class _FleetRailState extends State<FleetRail> {
+  final Map<int, GlobalKey> _places = {};
+  int? _inView;
+
+  GameController get ctrl => widget.ctrl;
+  bool get narrow => widget.narrow;
+  bool get combat => widget.combat;
 
   @override
   Widget build(BuildContext context) {
@@ -126,7 +144,23 @@ class FleetRail extends StatelessWidget {
     if (narrow) {
       return Row(children: [for (final c in cards) Expanded(child: Padding(padding: const EdgeInsets.only(right: 4), child: c))]);
     }
-    return Column(mainAxisSize: MainAxisSize.min, children: [for (final c in cards) Padding(padding: const EdgeInsets.only(bottom: 6), child: c)]);
+    _places.removeWhere((id, _) => fleets.every((f) => f.id != id));
+    final selected = ctrl.activeFleetId;
+    if (selected != _inView) {
+      _inView = selected;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final card = _places[selected]?.currentContext;
+        if (card == null) return;
+        Scrollable.ensureVisible(card, alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd);
+        Scrollable.ensureVisible(card, alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart);
+      });
+    }
+    return SingleChildScrollView(
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        for (var i = 0; i < cards.length; i++)
+          Padding(key: _places.putIfAbsent(fleets[i].id, GlobalKey.new), padding: const EdgeInsets.only(bottom: 6), child: cards[i]),
+      ]),
+    );
   }
 
   Widget _card(int i, ui.FleetState f) {

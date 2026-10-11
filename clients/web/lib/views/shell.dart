@@ -14,6 +14,7 @@ import '../design/lens.dart';
 import '../design/tokens.dart';
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
+import '../scenes/windshield/geometry.dart';
 import '../state/game_controller.dart';
 import 'homeworld/homeworld_view.dart';
 import 'hud.dart';
@@ -49,8 +50,10 @@ class _ShellState extends State<Shell> {
       Console(game: widget.controller, prefs: _prefs, toasts: _toasts, sfx: Sfx(), notifier: widget.notifier ?? Notifier());
   late final FrameGovernor _gov = FrameGovernor(_prefs);
 
-  /// The toasts stand in another place on a phone; the key keeps the ones
-  /// that are up when a window is dragged from one layout to the other.
+  /// The toasts stand at the top where the layout runs a dock along the
+  /// bottom: on a phone, and on the windshield in any window too narrow for
+  /// its side columns. The key keeps the ones that are up when the layout
+  /// changes under them.
   final GlobalKey _toastLayer = GlobalKey();
   late final AppLifecycleListener _lifecycle;
 
@@ -265,6 +268,7 @@ class _ShellState extends State<Shell> {
               final badges = {Screen.overview: widget.controller.state.alerts.where((a) => a.level == AlertTone.glow).length};
               final lesson = _con.onboarding.current?.screen;
               final mark = lesson == _screen ? null : lesson;
+              final toastsOnTop = narrow || _screen == Screen.windshield && box.maxWidth - Rail.width < Geo.desktopLeast;
               return Stack(children: [
                 Column(children: [
                   Hud(
@@ -276,17 +280,19 @@ class _ShellState extends State<Shell> {
                   ),
                   GuideStrip(screen: _screen, narrow: narrow),
                   Expanded(
-                    child: Stack(fit: StackFit.expand, children: [
-                      Row(children: [
-                        if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark),
-                        Expanded(child: _screens()),
-                      ]),
-                      if (narrow) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: true),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark),
+                      Expanded(
+                        child: Stack(fit: StackFit.expand, children: [
+                          _screens(),
+                          if (toastsOnTop) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: true),
+                        ]),
+                      ),
                     ]),
                   ),
                   if (narrow) Rail(active: _screen, bottom: true, onGo: _go, badges: badges, mark: mark),
                 ]),
-                if (!narrow) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: false),
+                if (!toastsOnTop) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: false),
                 if (_alerts) AlertsPopover(con: _con, narrow: narrow, onClose: () => setState(() => _alerts = false)),
                 if (_help) HelpOverlay(con: _con, governor: _gov, onClose: () => setState(() => _help = false)),
                 if (_palette)

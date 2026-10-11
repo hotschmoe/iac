@@ -855,6 +855,64 @@ void main() {
     await endShell(tester, c);
   });
 
+  testWidgets('in the phone layout the open status sheet stands on an opaque ground, and a banner is drawn under it, at 390 and 1100 wide', (tester) async {
+    for (final size in const [Size(390, 844), Size(1100, 800)]) {
+      final c = await pumpFake(tester, calm(), size: size);
+      await tester.tap(find.byKey(const ValueKey('status-sheet')));
+      await tester.pump(const Duration(milliseconds: 100));
+      final sheet = find.byKey(const ValueKey('status-sheet-open'));
+      final ground = find.descendant(of: sheet, matching: find.byType(ColoredBox)).first;
+      expect(tester.widget<ColoredBox>(ground).color.a, 1.0, reason: 'nothing of the map shows through the sheet');
+      for (final panel in [find.byType(StatusPanel), find.byType(ContactsPanel)]) {
+        final at = tester.getRect(panel), under = tester.getRect(ground);
+        expect(under.left <= at.left && under.right >= at.right && under.top <= at.top && under.bottom >= at.bottom, isTrue, reason: 'the ground is under every panel of the sheet');
+      }
+
+      c.push(world([fleet(1, [('Scout', 1), ('Corvette', 2)], at: const proto.Hex(2, -1)), fleet(2, [('Hauler', 1)], at: home)], calm().sectors, tick: 503));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.descendant(of: find.byKey(const ValueKey('banner')), matching: find.textContaining('SECTOR')), findsOneWidget, reason: 'a banner is up');
+      final layers = tester.widget<Stack>(find.ancestor(of: sheet, matching: find.byType(Stack)).first).children.map((w) => w.key).toList();
+      expect(layers.indexOf(const ValueKey('banner')), lessThan(layers.indexOf(const ValueKey('status-sheet-open'))),
+          reason: 'the sheet is drawn after the banner, so the banner does not cover what the player opened to read');
+      await shot(tester, 'ws-sheet-banner-${size.width.round()}');
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
+  testWidgets('with eight fleets the desktop fleet rail ends above the feed and scrolls; the fleet selected is brought into view', (tester) async {
+    final eight = world([
+      fleet(1, [('Scout', 1), ('Corvette', 2)]),
+      for (var id = 2; id <= 8; id++) fleet(id, [('Hauler', 1)], at: home),
+    ], calm().sectors).copyWith(events: [
+      for (var i = 0; i < 12; i++) LogEntry(tick: 480 + i, message: 'F1 harvested 40 Fe, 12 Cr over 10s', level: EventLevel.normal),
+    ]);
+    for (final size in const [Size(1440, 900), Size(1440, 720), Size(1200, 800)]) {
+      final c = await pumpFake(tester, eight, size: size);
+      final rail = tester.getRect(find.byType(FleetRail)), feed = tester.getRect(find.byType(Feed));
+      expect(rail.bottom <= feed.top, isTrue, reason: 'at $size the rail ($rail) ends above the feed ($feed)');
+      Rect card(int id) => tester.getRect(find.byKey(ValueKey('fleet-card-$id')));
+      bool shown(int id) => card(id).top >= rail.top - .5 && card(id).bottom <= rail.bottom + .5;
+      expect((shown(1), shown(8)), (true, false), reason: 'eight cards are more than the rail has room for: the last is scrolled out');
+
+      await shot(tester, 'ws-rail-eight-${size.width.round()}x${size.height.round()}');
+      c.activeFleet = 7;
+      c.push(eight);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(shown(8), isTrue, reason: 'selecting the eighth fleet brings its card into the rail');
+      await shot(tester, 'ws-rail-eighth-selected-${size.width.round()}x${size.height.round()}');
+      c.activeFleet = 0;
+      c.push(eight);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(shown(1), isTrue);
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
   testWidgets('a fleet under orders this console never gave shows their settings, and the steppers start from them (demo)', (tester) async {
     final c = DemoController()..startDemo();
     await pumpShell(tester, screen: Screen.windshield, controller: c);
@@ -910,13 +968,23 @@ void main() {
       final toast = find.descendant(
           of: find.byType(ToastLayer), matching: find.text('fleet 999 not found (or it has no ships left); its standing orders were not changed'));
       expect(toast, findsOneWidget, reason: 'the world\'s refusal, where the player is looking');
-      if (size.width < 820) {
+      if (size.width < 1440) {
         final dock = tester.getRect(find.byKey(const ValueKey('dock-scan')));
         final sheet = tester.getRect(find.byKey(const ValueKey('status-sheet')));
-        expect(tester.getRect(toast).bottom < dock.top, isTrue, reason: 'a toast on a phone sits under the HUD, clear of the dock');
+        expect(tester.getRect(toast).bottom < dock.top, isTrue,
+            reason: 'where the windshield runs its dock along the bottom, at a phone\'s width or a narrow window\'s, a toast sits at the top, clear of it');
         expect(tester.getRect(toast).right < sheet.left, isTrue, reason: 'and to the left of the button that opens the sheet');
+        expect(tester.getRect(toast).left >= tester.getRect(find.byKey(const ValueKey('arena'))).left, isTrue, reason: 'inside the screen, not over the rail beside it');
+      } else {
+        expect(tester.getRect(toast).top > size.height / 2 && tester.getRect(toast).right > size.width - 40, isTrue, reason: 'with the side columns up, a toast is at the bottom right');
       }
       await shot(tester, 'ws-orders-refused-${size.width.round()}');
+      if (size.width == 1100) {
+        Console.of(tester.element(find.byType(Rail))).go(Screen.overview);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(tester.getRect(toast).top > size.height / 2 && tester.getRect(toast).right > size.width - 40, isTrue,
+            reason: 'the Overview keeps its desktop layout at this width, and the same toast goes to its bottom right');
+      }
       expect(tester.takeException(), isNull);
       await tester.pump(const Duration(seconds: 10));
       await endShell(tester, c);
