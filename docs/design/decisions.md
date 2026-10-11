@@ -3,6 +3,90 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-11 (the windshield's phone layout: sheet, banner, toasts, guide, fleet rail)
+
+**Decided by the agent that built it, not by the owner, and open to change.**
+Four things the layout pass before it listed as still wrong.
+
+- **An open status sheet is not covered.** A banner (NEW SECTOR, ENGAGED,
+  VICTORY) is drawn under the sheet. Where the sheet takes only the right of
+  a wide arena the banner is centred in what is left beside it; on a phone,
+  where the sheet takes the width, the banner is not seen while the sheet is
+  open. The event it announces is in the log either way.
+- **The sheet stands on an opaque ground** the size of its panels, not of
+  the whole sheet area: a short sheet does not black out the map below it.
+- **Toasts follow the layout, not the width.** They stand at the top
+  wherever the screen in view runs a dock along the bottom: every screen
+  below 820 px, and the windshield in any window too narrow for its side
+  columns (up to 1167 px). The other screens keep their desktop layout at
+  those widths and keep their toasts at the bottom right.
+- **The guide has two wordings for a gate card, and the cards were left as
+  they are.** A phone's small card shows a key and a terrain. The jump and
+  harvest lessons now say so there, point at the gate's colour and at the
+  Map, and say "tap"; with full cards they speak of the T digit, the bars
+  and hovering, as before. Putting the digit and the bars on a 92 px card
+  was the other way and was not taken: the terrain name would not have
+  fitted beside them.
+- **The desktop fleet rail ends where the feed may begin** (the bottom of
+  the south-west gate card) and scrolls inside that; the fleet selected is
+  brought into view. No count of fleets is cut off and none is hidden for
+  good.
+
+## 2026-10-11 (a fleet's orders are on its row; what an order costs is said)
+
+**Decided by the agent that built it, not by the owner, and open to change.**
+The two principles are the owner's: a console shows what a fleet has been
+told whoever told it, and anything that costs the player or ends their work
+is told to them as an event with its reason.
+
+- **`FleetState.policy` is one object, `{preset, params}`, or absent.** The
+  doctrine and its five settings travel together and are present exactly
+  when the fleet is under orders. Two fields side by side (`policy` and a
+  separate `policy_params`) could have disagreed, on the wire or in a client
+  that read one and not the other; one object cannot. The name `policy` was
+  kept: it is the word of `policy_update`, and the object reads as the
+  message that set it. A client that read `policy` as a string must be
+  changed; none was kept working.
+- **The settings are the ones in force**, after the server's clamping, all
+  five, never a subset.
+- **The web panel keeps nothing of its own.** What it remembered of orders
+  it had sent is gone; it shows and starts from the fleet row.
+- **Settings given without a doctrine change the orders in force.** In the
+  web command bar `policy range=6` used to mean the current doctrine at the
+  defaults plus that range. It now keeps the other four settings. A line
+  that names a doctrine (`policy mine range=6`) still starts from the
+  defaults, which is what the panel's button sends. The TUI's `p` and `P`
+  keep the settings the fleet has in the same way.
+- **`stop` on a charging jump says what fuel is forfeit; on a boarding, that
+  the site is on alert.** Both are warning `Alert`s. Halting a harvest costs
+  nothing and says nothing. The boarding case was not on the list this work
+  was given; it is the same order silently costing the player, in the same
+  function.
+- **The fuel named is what a jump costs the fleet at the moment of the
+  stop**, not a figure stored when the jump was ordered. The two differ only
+  if a Fuel Efficiency level finishes during the second or two a jump
+  charges. Storing it would have meant a field in the fleet, the snapshot,
+  the SQLite schema and the save format for that case.
+- **A recall is answered with one `Alert` that carries its whole cost**: the
+  fuel, a jump abandoned with the fuel it had burned, how many ships took
+  hull damage and how much, how many broke up. It is a warning when a ship
+  was harmed and info when none was, so a clean recall is a log line and a
+  costly one is also a toast.
+- **A harvest that ends by itself says why, once, as a warning `Alert`**:
+  the hold is full, or nothing (or none of the resource named) is left to
+  mine there. A warning and not info because the web client raises a toast
+  only for warnings, and a fleet that has stopped working is what the player
+  needs to see. A fleet under standing orders is not reported this way: its
+  doctrine says what it does about it in its next report.
+- **No new event kind.** All of these are `Alert`s with the fleet and the
+  sector, as the hold alerts are.
+- **An alert toast in the web client stays nine seconds**, as a refusal
+  does. These sentences run to five lines of a toast and 4.2 seconds did not
+  read them.
+- **Not changed, and seen:** a fight that catches a fleet charging a jump
+  also forfeits the jump's fuel and says nothing of it; the fight itself is
+  announced.
+
 ## 2026-10-11 (recall is refused at home)
 
 **Decided by the agent that built it, not by the owner, and open to change.**
