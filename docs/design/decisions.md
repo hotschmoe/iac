@@ -3,21 +3,22 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
-## 2026-10-11 (orders pay when they are given)
+## 2026-10-11 (ship batches pay when they are ordered)
 
-Owner, after playing single player. Supersedes "one queue rule" and the
-`reserve` flag and per-unit ship payment of the mechanics pass, both below.
+Owner, after playing single player. Amends "ships pay per unit" in the
+mechanics pass below; the queue rule for buildings and research stands.
 
-- **An order is accepted only if the stockpile covers all of it now**, and it
-  pays then: a building level, a research level, a whole ship or defence batch.
-  Otherwise it is refused, with the exact shortfall, until the resources are
-  there.
-- **Nothing waits on resources.** A paid order waits only for a slot or for
-  something queued ahead of it to finish. The `reserve` flag and the shortfall
-  on waiting orders go away with the state they described.
+- **A ship or defence batch is accepted only if the stockpile covers the whole
+  batch now**, and it pays then. Otherwise it is refused, with the exact
+  shortfall, until the resources are there. A paid batch waits only for the
+  yard or for something queued ahead of it to finish.
+- **Buildings and research keep queueing ahead of resources.** They are
+  accepted affordable or not and pay when they start. That is how time away
+  turns income into progress for a check-in player, and for a single-player
+  world while its tab is closed.
 - **Not decided by the owner (implemented as the simplest rule, open to
-  change):** cancelling any order refunds half of what it paid for work not yet
-  delivered, waiting or running, so the waiting line cannot be used to keep
+  change):** cancelling a batch refunds half of what it paid for units not yet
+  delivered, waiting or running, so the yard's line cannot be used to keep
   resources out of the store.
 
 ## 2026-10-10 (the hub, PvP by zone, outposts, more worlds)
