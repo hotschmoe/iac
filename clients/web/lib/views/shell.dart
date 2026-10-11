@@ -131,7 +131,7 @@ class _ShellState extends State<Shell> {
     _lastLogKey = key;
     for (final e in fresh.take(2).toList().reversed) {
       if (e.message.startsWith('!')) {
-        _toasts.show('Alert', e.message.replaceFirst(RegExp(r'^!+\s*'), ''), tone: ToastTone.red);
+        _toasts.show('Alert', e.message.replaceFirst(RegExp(r'^!+\s*'), ''), tone: ToastTone.red, life: const Duration(seconds: 9));
         _con.play('alert');
       } else if (e.message.startsWith('Building complete') || e.message.startsWith('Research complete') || e.message.startsWith('Shipyard:')) {
         _toasts.show('Complete', e.message, tone: ToastTone.teal);
