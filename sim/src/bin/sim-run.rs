@@ -259,6 +259,7 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
         sum.econ += s.econ;
         sum.fleet += s.fleet;
         sum.defence += s.defence;
+        sum.outpost += s.outpost;
         sum.core += s.core;
         sum.combat += s.combat;
         sum.explore += s.explore;
@@ -285,8 +286,8 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
         let n = row.players as f32;
         let s = &mut row.score;
         for value in [
-            &mut s.econ, &mut s.fleet, &mut s.defence, &mut s.core, &mut s.combat, &mut s.explore, &mut s.extra,
-            &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost, &mut row.refuel_deuterium,
+            &mut s.econ, &mut s.fleet, &mut s.defence, &mut s.outpost, &mut s.core, &mut s.combat, &mut s.explore,
+            &mut s.extra, &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost, &mut row.refuel_deuterium,
             &mut row.idle.building, &mut row.idle.research, &mut row.idle.shipyard, &mut row.spilled,
             &mut row.fleet_hours, &mut row.unpaid_hours,
         ] {
@@ -304,6 +305,40 @@ fn percent(value: f32, of: Option<f32>) -> String {
         Some(of) if of > 0.0 => format!("{:>5.0}%", 100.0 * value / of),
         _ => "     -".to_string(),
     }
+}
+
+/// What each player's outpost scored, made and lost to raids; None when no
+/// player has had one, which is every world bots play alone.
+fn outpost_table(players: &[PlayerSummary], ticks: u64) -> Option<String> {
+    let touched = |p: &&PlayerSummary| {
+        let f = &p.field;
+        p.score.outpost > 0.0 || f.outpost_yield > 0.0 || f.outpost_ticks_breached > 0 || f.outpost_raids_repelled + f.outpost_raids_lost > 0
+    };
+    let rows: Vec<&PlayerSummary> = players.iter().filter(touched).collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<24} {:>7} {:>8} {:>8} {:>8} {:>5} {:>8}",
+        "outposts", "points", "yield", "raided", "repelled", "lost", "breached"
+    );
+    for p in rows {
+        let f = &p.field;
+        let _ = writeln!(
+            out,
+            "{:<24} {:>7.2} {:>8.1} {:>8.1} {:>8} {:>5} {:>7.1}%",
+            p.name,
+            p.score.outpost,
+            f.outpost_yield,
+            f.outpost_raided,
+            f.outpost_raids_repelled,
+            f.outpost_raids_lost,
+            100.0 * f.outpost_ticks_breached as f64 / ticks.max(1) as f64,
+        );
+    }
+    Some(out)
 }
 
 /// Final scores by style, with the two comparisons the balance targets ask
@@ -494,6 +529,11 @@ fn main() {
         println!("  one more combat or exploration point would not have counted\n");
         println!("{}", sample_table(&players));
         println!("{}", style_table(&players));
+        if let Some(table) = outpost_table(&players, args.ticks) {
+            println!("outposts: core also counts the finished levels of a player's outpost (points); yield and raided are");
+            println!("  what its extractor made and what lost raids took, in the points they buy; breached: share of the run\n");
+            println!("{table}");
+        }
         println!("idle: share of the run the slot stood empty (building slots counted one by one)");
         println!("why it stood empty, in percent of its idle time:");
         println!("  short     an order waits for resources (yard: the planner wants a unit the stockpile does not cover)");

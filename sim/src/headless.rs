@@ -23,6 +23,8 @@ pub struct ScoreBreakdown {
     pub econ: f32,
     pub fleet: f32,
     pub defence: f32,
+    /// The finished levels of the player's outpost.
+    pub outpost: f32,
     pub core: f32,
     /// Raw combat points, before the cap.
     pub combat: f32,
@@ -39,6 +41,7 @@ impl ScoreBreakdown {
             econ: s.econ,
             fleet: s.fleet,
             defence: s.defence,
+            outpost: s.outpost,
             core: s.core(),
             combat: s.combat,
             explore: s.explore,
@@ -63,8 +66,20 @@ pub struct FieldTally {
     pub ships_lost: u32,
     /// Deuterium paid at the homeworld to fill fleet tanks.
     pub refuel_deuterium: f32,
+    /// Raids on the homeworld.
     pub raids_repelled: u32,
     pub raids_lost: u32,
+    /// Raids on the outpost.
+    pub outpost_raids_repelled: u32,
+    pub outpost_raids_lost: u32,
+    /// What lost raids took from the outpost's store and the holds there.
+    pub outpost_raided: f32,
+    /// What the outpost's extractor put into its store: its rate, as far as
+    /// the store had room, counted each tick the outpost stood in service.
+    /// The tick a raid breaches it or a repair ends may be off by one.
+    pub outpost_yield: f32,
+    /// Ticks the outpost stood breached.
+    pub outpost_ticks_breached: u64,
     /// Hours spent away from home, summed over fleets.
     pub fleet_hours: f32,
     /// The part of `fleet_hours` flown while one more combat or exploration
@@ -388,8 +403,10 @@ impl Headless {
         }
         let tanks: Vec<(u64, f32, bool)> =
             self.engine.fleets.values().map(|f| (f.id, f.fuel, f.state == FleetStatus::Moving)).collect();
+        let stores: Vec<(u64, Resources)> = self.engine.outposts.iter().map(|(owner, o)| (*owner, o.store)).collect();
         self.engine.tick()?;
         self.count_refuelling(&tanks);
+        self.count_outposts(&stores);
         self.count_slots();
         self.run_meters();
         if self.engine.current_tick().is_multiple_of(PROBE_EVERY) {
@@ -586,6 +603,23 @@ impl Headless {
         }
     }
 
+    /// One tick of every outpost: breached, or extracting into the room its
+    /// store had before the tick.
+    fn count_outposts(&mut self, stores: &[(u64, Resources)]) {
+        let engine = &self.engine;
+        for &(owner, before) in stores {
+            let Some(outpost) = engine.outposts.get(&owner) else { continue };
+            let Some(t) = tally_of(&mut self.entries, Some(owner)) else { continue };
+            if outpost.breached {
+                t.outpost_ticks_breached += 1;
+                continue;
+            }
+            let cap = scaling::outpost_store_cap(outpost.level, &engine.pace());
+            let made = before.add_capped(engine.outpost_production(outpost), cap).sub(before);
+            t.outpost_yield += scaling::resource_weight(&made);
+        }
+    }
+
     fn count(&mut self, events: &[GameEvent]) {
         if events.is_empty() {
             return;
@@ -636,7 +670,15 @@ impl Headless {
                 }
                 EventKind::RaidResolved(e) => {
                     if let Some(t) = tally_of(entries, Some(e.player_id)) {
-                        if e.defended { t.raids_repelled += 1 } else { t.raids_lost += 1 }
+                        match (e.outpost.is_some(), e.defended) {
+                            (false, true) => t.raids_repelled += 1,
+                            (false, false) => t.raids_lost += 1,
+                            (true, true) => t.outpost_raids_repelled += 1,
+                            (true, false) => {
+                                t.outpost_raids_lost += 1;
+                                t.outpost_raided += scaling::resource_weight(&e.resources_lost);
+                            }
+                        }
                         t.ships_lost += e.ships_lost;
                     }
                 }

@@ -81,6 +81,7 @@ can pick up where you left off if your session is restarted.
 - Density: None, Sparse, Moderate, Rich, Pristine
 - NpcBehavior: Passive, Patrol, Aggressive, Swarm
 - SiteRisk: quiet, uneasy, hot
+- OutpostWork: build, repair
 
 ### Command reference (stdin)
 
@@ -107,8 +108,12 @@ can pick up where you left off if your session is restarted.
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
 | `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (0,0). The answer is an `Exchanged` event (what was given and received, the fee, the meter before and after; see The hub and its exchange). Refused with nothing changed and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
 | `exchange_quote` | same as `exchange` | do not trade: reply `exchange_quote` with `amount`, `receive`, `par`, `fee`, `meter` and `meter_after`, exactly what `exchange` with the same fields would do (`./play do` prints it as one `quote ...` line). It answers from anywhere and for an amount the fleet does not carry; `refusal` is then the sentence the trade would be refused with right now |
-| `load` | `fleet_id`, `resource` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | move `amount` of `resource` from your stockpile into the fleet's hold; without `amount`, all the stockpile holds and the hold has room for. One resource an order. The fleet must stand idle at your homeworld with no standing orders. It is then `laden`: the dock leaves its hold alone until the fleet has been away (see Loading a hold). The answer is an `Alert` (info) saying what went aboard. Refused with nothing moved and a sentence saying what is short: `NoResources` when the stockpile holds less than `amount` or none, `CargoFull` when the hold lacks the room, `NotInSector` away from home, `OnCooldown` in transit or busy, `InvalidCommand` for an amount that is not positive or a fleet under standing orders |
-| `unload` | `fleet_id` | put a `laden` hold back: what the caps allow goes into the stockpile now and the dock takes the rest as room opens. The answer is an `Alert` (info). Refused with `InvalidCommand` when the fleet was not loaded by `load`, `NotInSector` away from home |
+| `load` | `fleet_id`, `resource` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | move `amount` of `resource` from your stockpile into the fleet's hold; without `amount`, all the stockpile holds and the hold has room for. One resource an order. The fleet must stand idle at your homeworld with no standing orders. It is then `laden`: the dock leaves its hold alone until the fleet has been away (see Loading a hold). The answer is an `Alert` (info) saying what went aboard. Refused with nothing moved and a sentence saying what is short: `NoResources` when the stockpile holds less than `amount` or none, `CargoFull` when the hold lacks the room, `NotInSector` away from home, `OnCooldown` in transit or busy, `InvalidCommand` for an amount that is not positive or a fleet under standing orders. At your outpost `load` takes from the outpost's store instead and does not make the fleet `laden`; see Outposts |
+| `unload` | `fleet_id` | put a `laden` hold back: what the caps allow goes into the stockpile now and the dock takes the rest as room opens. The answer is an `Alert` (info). Refused with `InvalidCommand` when the fleet was not loaded by `load`, `NotInSector` away from home. At your outpost `unload` puts the whole hold of any fleet into the outpost's store as far as it has room (`NoResources` for an empty hold); see Outposts |
+| `found_outpost` | `fleet_id` | found your outpost in the sector the fleet stands in, paying 1000 metal, 500 crystal and 200 deuterium from its hold. The fleet must stand idle with no standing orders; the sector must be in rings 9 to 20, not an Anomaly, without a derelict, without a group in it (win the sector first), and at least 3 hexes from every other outpost; you may have one outpost. The answer is an `Alert` (info) with the tick it will be finished. Refused with nothing changed and a sentence saying why: `InvalidTarget` for a sector that does not qualify, `InvalidCommand` if you already have an outpost or the fleet is under standing orders, `NoResources` naming what the hold lacks, `OnCooldown` for a fleet that is moving, fighting or busy |
+| `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, `densities`, `grade`, the `cost` and `build_ticks` of level 1, `production` a tick at level 1, `raid_power` (the middle of the raids that ring sends), `platform_power`, `hops_home`, and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector on your chart may be asked about; `InvalidTarget` for one you have never seen. For a sector the fleet does not stand in, a `refusal` that only says the fleet is elsewhere means the site itself qualifies |
+| `upgrade_outpost` | none | build the next level of your outpost, paid in full from the outpost's own store at that moment. The answer is an `Alert` (info). Refused with `InsufficientResources` and the exact shortfall when the store does not cover it, `MaxLevelReached` at level 3, `InvalidCommand` with no outpost, while it is building or repairing, or while it is breached |
+| `abandon_outpost` | none | give up your outpost. Its store is left as wreckage in the sector for 180 ticks, its score is gone, nothing is refunded, and you may found another. `InvalidCommand` with no outpost |
 
 Standing orders are a separate message type (not a command):
 
@@ -339,7 +344,8 @@ What every doctrine does:
   class unlocks (Corvette Tech needs only Shipyard 1, Frigate and Cruiser
   Tech need more), emergency jump, Modular Fabrication (building slots). The Research
   Lab divides research time by (1 + 0.10 x level).
-- **Fleets** — up to 3 deployed (8 in all), 64 ships each, hex movement with
+- **Fleets** — up to 3 away from your homeworld and your finished outpost (8
+  in all), 64 ships each, hex movement with
   fuel mass costs. Docking at home unloads cargo and refuels but never merges
   fleets: use `split` and `merge`. New ships join an idle fleet at home that
   has no standing orders, or form their own. Each fleet reports its `power`
@@ -354,7 +360,9 @@ What every doctrine does:
   `fuel_budget_pct`. `preview_move` answers
   what a jump costs before you make it. A manual jump that leaves
   too little to get home still happens, but raises an `Alert` event
-  (warning, or critical if the fleet will be stranded on arrival). A fleet
+  (warning, or critical if the fleet will be stranded on arrival); it raises
+  none while the fuel left still reaches your outpost in service, where the
+  tank is filled (`outpost_fuel` in the fleet row is what that way costs). A fleet
   away from home with less than one jump of fuel is stranded: its emergency
   reserve slowly recovers exactly one jump (about 5 minutes from empty,
   announced at each quarter), enough to hop toward home, then the wait starts
@@ -503,16 +511,100 @@ What every doctrine does:
     home with the stockpile (see Raids). Loading moves no score.
   - The trip: `load` the resource that is at its cap, fly to 0,0, `exchange`,
     fly home; the dock unloads what you bought.
+- **Outposts** — one station per empire, on a sector of rings 9 to 20, the
+  space where PvP will be allowed. It is built from what you carry to it.
+  `load` the founding cost at home, fly it out, clear the sector if a pack
+  lives there, and `found_outpost`; `outpost_survey` tells you beforehand
+  what the site is worth.
+  - **The site** decides the yield. A sector's `grade` is the sum of its ore:
+    Sparse 0.5, Moderate 1, Rich 2, Pristine 4, for metal, crystal and
+    deuterium. The outpost's extractor makes, per resource and game hour,
+    `2 x density x ring factor x level` times P; the ring factor is 1.10 per
+    ring from ring 3 (1.77 at ring 9, 5.05 at ring 20). It reads the ore the
+    sector was made with, not what harvesting has left this hour, and it
+    does not empty the tiles. A site makes only what it has ore of: most
+    make no deuterium.
+  - **Levels**: 1 costs 1000/500/200 and takes 15 game hours divided by P; 2
+    costs 2500/1250/500 (37.5 h); 3 costs 6250/3125/1250 (93.75 h). Level 1
+    is paid from the founding fleet's hold, levels 2 and 3 from the outpost's
+    store when you order them. The outpost works at its old level while it
+    builds. While level 1 is being built the outpost has a store and nothing
+    else, and no raid comes.
+  - **The store** is its own, apart from your stockpile: 3000/1500/750 at
+    level 1, times 2.5 a level, times sqrt(P). The extractor stops at the
+    cap, with one `Alert` (warning) per resource each time it fills. Nothing
+    in the store scores, and nothing in it can be spent at home until a fleet
+    has carried it there: `load` at the outpost, fly home, and the home dock
+    unloads as always. At the outpost no hold is emptied by itself; `unload`
+    does it.
+  - **A dock**: a fleet without standing orders that stands at your outpost
+    is refuelled from the outpost's deuterium at 0.08 a fuel unit, as far as
+    it has any; a tank it cannot fill is reported once per stay. Any of your
+    fleets arriving at the finished outpost banks its charts. A fleet
+    standing at the finished outpost does not count against your three
+    deployed fleets, and needs a free slot to leave. New ships still appear
+    at home. Hull is not repaired there. A fleet at an outpost is not safe:
+    see Raids below.
+  - **Quiet**: while an outpost stands, no group lives in its sector or
+    wanders in, and the sector reads as empty to `preview_move` and `odds`
+    (T1, power 0, ratio 10). The lair it displaced returns after its usual
+    delay when the outpost is abandoned.
+  - **Raids**: pirates of its ring raid it on the homeworld's raid clock,
+    with the same warning, starting a day of that clock after level 1 is
+    finished (`RaidIncoming` and `RaidResolved` carry `outpost`). A raid's
+    power is `2 x` the ring's group power times 0.80 to 1.15: about 38 at
+    ring 9, 70 at ring 12, 154 at ring 16, 341 at ring 20, whatever your
+    empire is worth. The platform (40, 100, 250 by level) and your ships
+    standing there defend. Repelled: your ships' shields are halved, nothing
+    else, and no salvage. Lost: a quarter of the ships there are destroyed
+    (at least one), and what they carried goes into the store; a quarter of
+    the store, and of the cargo aboard fleets there, above the protected
+    floor is taken; and the outpost is breached: no extractor, no
+    refuelling, no platform. The floor is what the next repair costs: a
+    quarter of the cost of the level it stands at, or of the level it is
+    building. After a lost raid none comes for 48 game hours divided by
+    P^0.75. No raid destroys an outpost.
+  - **Repair**: a breached outpost repairs itself. When its store covers
+    the repair it pays (250/125/50 at level 1, 625/312.5/125 at level 2,
+    1562.5/781.25/312.5 at level 3) and is whole after a quarter of that
+    level's build time; an `Alert` says when it starts and when it ends. A
+    breached outpost extracts nothing, so a store that does not cover the
+    repair never will by itself: the repair waits for a delivery and one
+    `Alert` (warning) says what is missing. Keep the repair cost of every
+    resource your site does not make in the store; a raid cannot take it. A
+    breach suffered during an upgrade is repaired once the upgrade is done.
+  - **Score**: each finished level adds its cost at score weight to `core`
+    (2.15, 5.375, 13.44) while the outpost stands. It does not raise the
+    raids on your homeworld.
+  - **State**: `full_state.outpost` and every `tick_update.outpost` (absent
+    when you have none): `location`, `level`, `max_level`, `in_service`,
+    `breached`, `work` (`kind`, `level`, `start_tick`, `end_tick`), `store`,
+    `store_cap`, `protected`, `production`, `grade`, `platform_power`,
+    `defence_power`, `next_raid_estimate_power`, `raid_arrival_tick`,
+    `next_level` (what `upgrade_outpost` would cost and give), `repair_cost`,
+    `hops_home`. Each fleet reports `outpost_fuel`, the fuel the way there
+    costs, while the outpost is in service. A sector view carries `outpost`
+    (`owner`, `level`, `breached`, `mine`) when one stands there, yours or
+    another empire's. `OutpostCompleted` says a level is finished.
+  - Standing orders do not use the outpost: a fleet under orders measures
+    from your homeworld and returns there, is not refuelled at the outpost
+    and keeps its hold there; only its charts are banked if it arrives.
+    `recall` still jumps to the homeworld, never to the outpost.
+  - The trip: `load` at home what the outpost needs (deuterium for tanks,
+    the next level's cost, the repair cost), fly out, `unload`, `load` what
+    it has made, fly home.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
-  the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2
+  the defence structures + the finished levels of your outpost, each priced
+  at cost x (1 metal, 1.5 crystal, 2
   deuterium) / 1000. Kills add the weight of the pile they leave (so points
   follow the finds factor and the sector's heat), in full up to 4x the NPC
   group's power and falling as 4/ratio beyond (half at 8x, a 5% floor, never
   zero), once per respawn. Exploration adds `0.5 x weight(loot) + 1.5 x T^1.5`
   for the first boarding of each derelict, 30 for a relic, and
   `0.15 + 0.10 x T^1.5` for each new sector whose chart you deliver to the
-  homeworld (the fleet must dock alive: `ChartDelivered`). `score = core + min(combat + explore, 0.25 x core)`. Cancelling
+  homeworld or to your finished outpost (the fleet must arrive alive:
+  `ChartDelivered`). `score = core + min(combat + explore, 0.25 x core)`. Cancelling
   a build or losing a ship scores nothing; resources received from others
   never count. Accounts that log in with `"agent": true` (the headless client
   does) carry the `agent` flag on the board, which labels and never scores.

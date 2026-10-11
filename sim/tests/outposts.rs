@@ -15,6 +15,7 @@ use iac_shared::constants::{
     SALVAGE_DESPAWN_TICKS,
 };
 use iac_shared::hex::{hex_ring, Hex};
+use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, ErrorCode, EventKind, OutpostState, OutpostSurvey, OutpostWork,
     PolicyPreset, RaidIncomingEvent, RaidResolvedEvent, ServerMessage, ThreatBasis,
@@ -22,6 +23,8 @@ use iac_shared::protocol::{
 use iac_shared::scaling::{self, RatioLabel};
 use iac_shared::world::{NpcBehaviorType, SectorTemplate};
 use iac_sim::engine::{template_npc_id, FleetStatus};
+use iac_sim::headless::Headless;
+use iac_sim::script::IdlePlayer;
 use iac_sim::GameEngine;
 
 use ResourceKind::{Crystal, Deuterium, Metal};
@@ -1082,6 +1085,58 @@ fn thirty_days_of_raids_never_destroy_an_undefended_outpost() {
 
     assert_eq!(e.state().homeworld.next_raid_estimate_power, estimate, "the outpost never sized a raid on the homeworld");
     assert_eq!(e.score_row().core, core, "and its level still counts");
+}
+
+#[test]
+fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
+    let weight = |r: Resources| scaling::resource_weight(&r);
+    let mut held = Headless::new(SEED, Pace::parse("blitz").unwrap());
+    let mut bare = Headless::new(SEED, Pace::parse("blitz").unwrap());
+    let stocked = res(4000.0, 2000.0, 1000.0);
+    let settle = |world: &mut Headless, ring: u16, upgrade: bool| -> u64 {
+        let pid = world.add_player(Box::new(IdlePlayer { label: "Keeper".to_string() }), "idle").expect("a seat");
+        let fid = world.engine.fleets.values().find(|f| f.owner_id == pid).unwrap().id;
+        let home = world.engine.players[&pid].homeworld;
+        let at = site(&world.engine, ring, |t| t.metal_density != Density::None);
+        muster(&mut world.engine, fid, &[(ShipClass::Hauler, 2)], at);
+        edit(&mut world.engine, |s| s.fleets.get_mut(&fid).unwrap().cargo = COST.add(stocked));
+        for cmd in [Command::FoundOutpost { fleet_id: fid }, Command::Unload { fleet_id: fid }] {
+            assert!(world.engine.execute(pid, cmd).error.is_none());
+        }
+        world.run(90).unwrap();
+        if upgrade {
+            assert!(world.engine.execute(pid, Command::UpgradeOutpost).error.is_none());
+        }
+        muster(&mut world.engine, fid, &[(ShipClass::Scout, 1)], home);
+        world.run(scaling::outpost_build_ticks(2, &world.engine.pace())).unwrap();
+        pid
+    };
+    let keeper = settle(&mut held, 10, true);
+    let loser = settle(&mut bare, 18, false);
+
+    let before = (held.summaries()[0].field, held.engine.outposts[&keeper].store);
+    held.run(6000).unwrap();
+    let report = held.summaries().remove(0);
+    let post = &held.engine.outposts[&keeper];
+    assert!((report.score.outpost - 7.525).abs() < 1e-3 && report.score.core >= report.score.econ + report.score.fleet + 7.5);
+    assert!(report.field.outpost_raids_repelled >= 2, "{:?}", report.field);
+    assert_eq!((report.field.outpost_raids_lost, report.field.outpost_ticks_breached, report.field.outpost_raided), (0, 0, 0.0));
+    assert_eq!((report.field.raids_repelled, report.field.raids_lost), (0, 0), "the homeworld's raids are counted apart");
+    let made = report.field.outpost_yield - before.0.outpost_yield;
+    let grew = weight(post.store) - weight(before.1);
+    assert!(made > 1.0 && (made - grew).abs() < 0.002 * made, "the yield counted is what the store gained: {made} against {grew}");
+
+    bare.run(6000).unwrap();
+    let report = bare.summaries().remove(0);
+    let field = report.field;
+    assert!(field.outpost_raids_lost >= 2 && field.outpost_raids_repelled == 0, "{field:?}");
+    assert!(field.outpost_raided > 0.0 && field.outpost_ticks_breached >= u64::from(field.outpost_raids_lost) * 23, "{field:?}");
+    assert!((report.score.outpost - 2.15).abs() < 1e-3);
+    let post = &bare.engine.outposts[&loser];
+    let repairs = weight(res(250.0, 125.0, 50.0)) * (field.outpost_raids_lost - u32::from(post.breached && post.job.is_none())) as f32;
+    let kept = weight(post.store) - weight(stocked);
+    let owed = field.outpost_yield - field.outpost_raided - repairs;
+    assert!((kept - owed).abs() < 0.02 * field.outpost_yield, "yield less raids less repairs is what the store kept: {kept} against {owed}");
 }
 
 /// A world with an outpost, a convoy shuttling out and back, levels and raids, played for

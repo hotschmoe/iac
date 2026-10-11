@@ -203,6 +203,7 @@ dirty_sectors:   AutoHashMap(u32, void)
 | Active combats (sides, round, peak power) | In-memory, checkpointed | Yes, in `runtime_state` |
 | Raid clocks and announced raids, scan reveals, storage and salvage alert marks, harvest tallies | In-memory, checkpointed | Yes, in `runtime_state` |
 | Built-in bots: which accounts they are, personality and attention, and what each remembers between turns (the end of its first look-in, next wake and plan ticks, its own leaderboard row as last asked, the routes its fleets are walking) | In-memory, written when a bot's turn changes it | Yes, in `runtime_state` (kind `bot`, id = player id); the account itself is an ordinary `players` row |
+| Outposts: sector, level, store, the build or repair under way, breached, its own raid clock and announced raid, and which warnings its owner has been given | In-memory, written every tick it changes (the extractor changes it every tick it runs) | Yes, in `runtime_state` (kind `outpost`, id = the owner's player id). A row of this kind that cannot be read refuses the world: it holds a player's store |
 | A bot's view of the world (`script::Seat`) | In-memory only | No — rebuilt from the full state at its next turn, as for a client that reconnects |
 | Build/research queues | In-memory, checkpointed | Yes, in `buildings` + `research` + `build_queue` |
 | Events not yet broadcast | In-memory only | No — drained to clients before every persist |
