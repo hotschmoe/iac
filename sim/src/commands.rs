@@ -78,7 +78,10 @@ impl GameEngine {
             ClientMessage::PolicyUpdate(update) => self
                 .handle_policy_update(pid, update.fleet_id, update.preset, update.params)
                 .err()
-                .map(|code| refusal(code, "PolicyUpdate failed"))
+                .map(|code| {
+                    let fleet = update.fleet_id;
+                    refusal(code, &format!("fleet {fleet} not found (or it has no ships left); its standing orders were not changed"))
+                })
                 .into_iter()
                 .collect(),
             ClientMessage::RequestFullState => {

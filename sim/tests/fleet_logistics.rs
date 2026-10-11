@@ -8,8 +8,8 @@ use common::*;
 use iac_shared::hex::Hex;
 use iac_shared::constants::{Resources, ShipClass, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
 use iac_shared::protocol::{
-    AlertEvent, AlertLevel, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, ServerMessage, ThreatBasis,
-    MAX_ODDS_SECTORS,
+    AlertEvent, AlertLevel, ClientMessage, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, PolicyUpdate,
+    ServerMessage, ThreatBasis, MAX_ODDS_SECTORS,
 };
 use iac_shared::scaling::{ratio_label, RatioLabel};
 use iac_shared::world::NpcBehaviorType;
@@ -529,6 +529,17 @@ fn recall_at_home_is_refused_and_the_jump_the_fleet_paid_for_goes_on() {
     e.run_until(200, |e| e.engine.fleets[&fid].action_cooldown == 0);
     e.order(Command::Recall { fleet_id: fid }).expect("one hop out there is somewhere to come home from");
     assert_eq!(e.engine.fleets[&fid].location, home);
+}
+
+#[test]
+fn standing_orders_for_a_fleet_that_is_not_the_players_are_refused_by_name() {
+    let (mut e, _, rival_fleet) = with_rival("Meddler");
+    let orders = ClientMessage::PolicyUpdate(PolicyUpdate { fleet_id: rival_fleet, preset: PolicyPreset::Prospect, params: None });
+    let answer = e.engine.answer(e.pid, orders);
+    let [ServerMessage::Error(refusal)] = answer.as_slice() else { panic!("one refusal: {answer:?}") };
+    assert_eq!(refusal.code, ErrorCode::FleetNotFound);
+    assert!(refusal.message.starts_with(&format!("fleet {rival_fleet} not found")), "{}", refusal.message);
+    assert!(run(&mut e.engine, 5).iter().all(|ev| !matches!(ev.kind, EventKind::PolicyAction(_))), "no orders were set");
 }
 
 fn wreckage(e: &Empire, at: Hex) -> Resources {
