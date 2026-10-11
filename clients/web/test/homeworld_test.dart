@@ -222,7 +222,7 @@ void main() {
     await snap(tester, 'homeworld/hold-1440');
 
     await press(tester, 'hold-unload');
-    expect(c.state.events.map((e) => e.message), contains('fleet 102 unloaded 200 metal, 200 crystal into the stockpile'));
+    expect(c.state.events.map((e) => e.message), contains('fleet 102 unloaded 200 metal and 200 crystal into the stockpile'));
     expect(c.state.holds[102]!.total, 0);
     expect(c.state.stock.metal, closeTo(metal, 10), reason: 'what was loaded is back, and a tick or two of the mines');
     expect(find.text('LADEN'), findsNothing);

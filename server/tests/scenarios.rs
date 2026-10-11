@@ -669,7 +669,7 @@ async fn reply_of(ws: &mut Ws, kind: &str) -> Value {
 }
 
 #[tokio::test]
-async fn an_outpost_is_surveyed_refused_founded_and_outlives_a_server_killed_while_it_is_being_built() {
+async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_it_is_being_built_and_is_abandoned_through_the_headless_client() {
     use iac_shared::constants::{Density, TerrainType};
     let db = fresh_db("scenario_outpost");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
@@ -770,6 +770,36 @@ async fn an_outpost_is_surveyed_refused_founded_and_outlives_a_server_killed_whi
     let made = opened["outpost"]["store"]["metal"].as_f64().unwrap();
     let later = update_where(&mut ws, |_| true).await;
     assert!(made > store[0] && later["outpost"]["store"]["metal"].as_f64().unwrap() > made, "the yield goes on: {later}");
+    drop(ws);
+
+    let mut pipe = HeadlessClient::start(port, "Settler", &token, db.parent().unwrap());
+    let auth = pipe.next();
+    assert_eq!((auth["type"].as_str(), auth["success"].as_bool()), (Some("auth_result"), Some(true)), "{auth}");
+    let seen = pipe.until(|m| m["type"] == "full_state");
+    assert_eq!((hex_of(&seen["outpost"]["location"]), seen["outpost"]["level"].as_u64()), (site, Some(1)), "the pipe prints the outpost as the server sent it: {seen}");
+    assert_eq!(seen["fleets"][0]["outpost_fuel"].as_f64(), Some(0.0), "{seen}");
+    let marked = seen["known_sectors"].as_array().unwrap().iter().find(|s| hex_of(&s["location"]) == site).unwrap();
+    assert_eq!(marked["outpost"], json!({"owner": "Settler", "level": 1, "breached": false, "mine": true}));
+
+    pipe.say(&json!({"action": "outpost_survey", "fleet_id": fleet}).to_string());
+    let survey = pipe.until(|m| m["type"] == "outpost_survey");
+    let taken = format!("you already have an outpost at {site}; an empire has one, and abandon_outpost gives it up");
+    assert_eq!((hex_of(&survey["sector"]), survey["refusal"].as_str()), (site, Some(taken.as_str())), "a bare command is wrapped and its reply printed: {survey}");
+    pipe.say(&json!({"type": "command", "action": "upgrade_outpost"}).to_string());
+    let short = pipe.until(|m| m["type"] == "error");
+    assert_eq!(short["code"].as_str(), Some("InsufficientResources"), "{short}");
+    let costs = format!("outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at {site} is short by ");
+    assert!(short["message"].as_str().unwrap().starts_with(&costs), "the refusal passes through word for word: {short}");
+    pipe.say(r#"{"action": "found_outpost"}"#);
+    let unread = pipe.until(|m| m["type"] == "client_error");
+    assert!(unread["message"].as_str().unwrap().contains("fleet_id"), "a line the client cannot read is answered in band and not sent: {unread}");
+    assert!(pipe.until(|m| m["type"] == "tick_update").get("outpost").is_some(), "the outpost still stands");
+
+    pipe.say(&json!({"action": "abandon_outpost"}).to_string());
+    let gone = pipe.until(|m| m["type"] == "tick_update" && m.get("outpost").is_none());
+    assert!(alerts_of(&gone).iter().any(|a| a.starts_with(&format!("your outpost at {site} is abandoned: "))), "{gone}");
+    assert!(gone["fleets"][0].get("outpost_fuel").is_none(), "{gone}");
+    drop(pipe);
     remove_db(&db);
 }
 

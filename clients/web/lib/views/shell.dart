@@ -20,13 +20,14 @@ import 'homeworld/homeworld_view.dart';
 import 'hud.dart';
 import 'map/map_view.dart';
 import 'onboarding.dart';
+import 'outpost_view.dart';
 import 'overlays.dart';
 import 'overview/overview_view.dart';
 import 'rail.dart';
 import 'windshield/windshield_view.dart';
 
 /// The operator-console frame: HUD on top, the guide strip while a lesson is
-/// open, rail left (bottom bar when narrow), the four screens, and the
+/// open, rail left (bottom bar when narrow), the screens, and the
 /// overlays (toasts, help, alerts, `/` palette). It also tells the console's
 /// `Attention` whether the page is in the foreground and puts its count of
 /// missed notices in the tab title.
@@ -136,7 +137,10 @@ class _ShellState extends State<Shell> {
       if (e.message.startsWith('!')) {
         _toasts.show('Alert', e.message.replaceFirst(RegExp(r'^!+\s*'), ''), tone: ToastTone.red, life: const Duration(seconds: 9));
         _con.play('alert');
-      } else if (e.message.startsWith('Building complete') || e.message.startsWith('Research complete') || e.message.startsWith('Shipyard:')) {
+      } else if (e.message.startsWith('Building complete') ||
+          e.message.startsWith('Research complete') ||
+          e.message.startsWith('Shipyard:') ||
+          e.message.startsWith('Outpost at')) {
         _toasts.show('Complete', e.message, tone: ToastTone.teal);
         _con.play('ok');
       }
@@ -206,6 +210,7 @@ class _ShellState extends State<Shell> {
         'w' => Screen.windshield,
         'm' => Screen.map,
         'h' => Screen.homeworld,
+        'p' => Screen.outpost,
         _ => null,
       };
       if (t != null) {
@@ -215,7 +220,7 @@ class _ShellState extends State<Shell> {
     }
     if (lc == 'g') {
       _gAt = clock.now();
-      _gToast = _toasts.show('Go to', 'O overview, W windshield, M map, H homeworld', life: const Duration(milliseconds: 1500));
+      _gToast = _toasts.show('Go to', 'O overview, W windshield, M map, H homeworld, P outpost', life: const Duration(milliseconds: 1500));
       return true;
     }
     if (_con.dispatchKey(e)) return true;
@@ -235,6 +240,7 @@ class _ShellState extends State<Shell> {
       '2' || 'ws' || 'windshield' => Screen.windshield,
       '3' || 'map' || 'sm' => Screen.map,
       '4' || 'hw' || 'home' || 'homeworld' => Screen.homeworld,
+      '5' || 'op' || 'outpost' => Screen.outpost,
       _ => null,
     };
     if (screen != null) {
@@ -269,6 +275,7 @@ class _ShellState extends State<Shell> {
               final lesson = _con.onboarding.current?.screen;
               final mark = lesson == _screen ? null : lesson;
               final toastsOnTop = narrow || _screen == Screen.windshield && box.maxWidth - Rail.width < Geo.desktopLeast;
+              final outpost = widget.controller.state.outpost != null;
               return Stack(children: [
                 Column(children: [
                   Hud(
@@ -278,10 +285,11 @@ class _ShellState extends State<Shell> {
                     onHelp: () => setState(() => _help = !_help),
                     onAlerts: () => setState(() => _alerts = !_alerts),
                   ),
+                  if (outpost && box.maxWidth < Hud.outpostFrom) const OutpostStrip(),
                   GuideStrip(screen: _screen, narrow: narrow),
                   Expanded(
                     child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                      if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark),
+                      if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark, outpost: outpost),
                       Expanded(
                         child: Stack(fit: StackFit.expand, children: [
                           _screens(),
@@ -290,7 +298,7 @@ class _ShellState extends State<Shell> {
                       ),
                     ]),
                   ),
-                  if (narrow) Rail(active: _screen, bottom: true, onGo: _go, badges: badges, mark: mark),
+                  if (narrow) Rail(active: _screen, bottom: true, onGo: _go, badges: badges, mark: mark, outpost: outpost),
                 ]),
                 if (!toastsOnTop) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: false),
                 if (_alerts) AlertsPopover(con: _con, narrow: narrow, onClose: () => setState(() => _alerts = false)),
@@ -311,6 +319,6 @@ class _ShellState extends State<Shell> {
 
   Widget _screens() => IndexedStack(
         index: _screen.index,
-        children: const [OverviewView(), WindshieldView(), MapView(), HomeworldView()],
+        children: const [OverviewView(), WindshieldView(), MapView(), HomeworldView(), OutpostView()],
       );
 }

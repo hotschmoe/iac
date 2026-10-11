@@ -242,6 +242,11 @@ fn classify_hex(state: &ClientState, coord: Hex) -> HexCell {
         return HexCell { symbol: "X", style: AMBER_FULL };
     }
 
+    // The player's own outpost: known whether or not a fleet has eyes on it.
+    if let Some(post) = state.outpost.as_ref().filter(|post| post.location == coord) {
+        return HexCell { symbol: "O", style: if post.breached { RED_ALERT } else { AMBER_FULL } };
+    }
+
     // Known sector: live intel renders at full heat, memory fades.
     if let Some(sector) = state.known_sectors.get(&key) {
         let cell = classify_known(sector);
@@ -290,6 +295,9 @@ fn classify_hex(state: &ClientState, coord: Hex) -> HexCell {
 const THREAT_DIGITS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
 fn classify_known(sector: &iac_shared::protocol::SectorState) -> HexCell {
+    if let Some(post) = &sector.outpost {
+        return HexCell { symbol: if post.mine { "O" } else { "o" }, style: if post.breached { RED_ALERT } else { CYAN_INTEL } };
+    }
     if sector.hostiles.is_some() {
         return HexCell { symbol: THREAT_DIGITS[usize::from(sector.threat.rating.clamp(1, 9)) - 1], style: RED_ALERT };
     }
@@ -346,7 +354,7 @@ fn render_map_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
 
     // Line 3: legend.
     frame.render_widget(
-        Paragraph::new(" @You AFleet HHome XHub(exchange) 1-9 Hostile(threat) $Salvage DDerelict %OrePing ?Anomaly ·Fog  bright=live dim=memory")
+        Paragraph::new(" @You AFleet HHome XHub(exchange) OYourOutpost oOutpost 1-9 Hostile(threat) $Salvage DDerelict %OrePing ?Anomaly ·Fog  bright=live dim=memory")
             .style(AMBER_DIM),
         rows[2],
     );
@@ -395,6 +403,15 @@ fn inspect_line(state: &ClientState) -> (String, Style) {
         }
         if let Some(site) = &sector.site {
             line.push_str(&format!("  DERELICT T{} ({})", site.tier, site.risk.label()));
+        }
+        if let Some(post) = &sector.outpost {
+            line.push_str(&format!(
+                "  {} {}{}{}",
+                if post.mine { "YOUR OUTPOST".to_string() } else { format!("OUTPOST of {}", post.owner) },
+                if post.level == 0 { "not yet open".to_string() } else { format!("L{}", post.level) },
+                if post.breached { " BREACHED" } else { "" },
+                if sector.live { "" } else { " (as charted: it may have changed)" },
+            ));
         }
         match sector.chart {
             Some(ChartMark::Aboard) => line.push_str("  chart:aboard (dock to bank it)"),

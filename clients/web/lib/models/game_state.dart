@@ -154,6 +154,14 @@ class QuoteEntry {
 /// A trade at the exchange as the client names it: one quote is kept per key.
 typedef TradeKey = (int fleetId, proto.ResourceKind give, proto.ResourceKind want);
 
+/// An `outpost_survey` answer and the tick it arrived. The figures are the
+/// site's own and do not age; the refusal is true of that tick.
+class SurveyEntry {
+  final proto.OutpostSurvey survey;
+  final int tick;
+  const SurveyEntry(this.survey, this.tick);
+}
+
 /// Ticks a preview or odds stay on screen, and how soon they are asked for
 /// again (the refresh lands well before they lapse, so the readout never
 /// blinks out).
@@ -218,8 +226,14 @@ class GameState {
   /// The last score table the server sent, if asked for.
   final proto.LeaderboardReply? leaderboard;
 
-  /// The announced, unresolved raid.
+  /// The announced, unresolved raid on the homeworld.
   final proto.RaidIncomingEvent? raid;
+
+  /// The player's outpost as the server last sent it; null with none.
+  final proto.OutpostState? outpost;
+
+  /// The server's latest `outpost_survey` per (fleet id, sector).
+  final Map<(int, proto.Hex), SurveyEntry> surveys;
 
   /// What each fleet's standing orders reported lately, newest first, by
   /// fleet id.
@@ -253,8 +267,18 @@ class GameState {
     this.world,
     this.leaderboard,
     this.raid,
+    this.outpost,
+    this.surveys = const {},
     this.policyActs = const {},
   });
+
+  /// The survey of [sector] for [fleetId] as the server last answered it.
+  SurveyEntry? surveyOf(int fleetId, proto.Hex sector) => surveys[(fleetId, sector)];
+
+  bool surveyNeedsRefresh(int fleetId, proto.Hex sector) {
+    final e = surveys[(fleetId, sector)];
+    return e == null || tick - e.tick >= previewRefreshTicks;
+  }
 
   /// Why [fleet] stands still under its orders: the hold they last
   /// reported, unless they have acted since or been cleared.
@@ -351,6 +375,8 @@ class GameState {
     proto.WorldInfo? world,
     proto.LeaderboardReply? leaderboard,
     proto.RaidIncomingEvent? raid,
+    proto.OutpostState? outpost,
+    Map<(int, proto.Hex), SurveyEntry>? surveys,
     Map<int, List<PolicyAct>>? policyActs,
   }) =>
       GameState(
@@ -381,6 +407,8 @@ class GameState {
         world: world ?? this.world,
         leaderboard: leaderboard ?? this.leaderboard,
         raid: raid ?? this.raid,
+        outpost: outpost ?? this.outpost,
+        surveys: surveys ?? this.surveys,
         policyActs: policyActs ?? this.policyActs,
       );
 }

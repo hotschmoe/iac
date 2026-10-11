@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../console/economy_view.dart' show shortfall;
+import '../console/outpost.dart' show surveyReport;
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
@@ -108,6 +109,12 @@ class GameController extends ChangeNotifier {
         if (_boardTyped) {
           _boardTyped = false;
           for (final line in boardLines(m).reversed) {
+            _mapper.pushLog(line, EventLevel.bright);
+          }
+        }
+      case proto.OutpostSurvey(:final fleetId, :final sector):
+        if (_surveyTyped.remove((fleetId, sector))) {
+          for (final line in surveyReport(m).reversed) {
             _mapper.pushLog(line, EventLevel.bright);
           }
         }
@@ -392,6 +399,10 @@ class GameController extends ChangeNotifier {
       t.cancel();
     }
     _quoteTimers.clear();
+    for (final t in _surveyTimers.values) {
+      t.cancel();
+    }
+    _surveyTimers.clear();
     _retry?.cancel();
     _msgSub?.cancel();
     _statusSub?.cancel();
@@ -778,18 +789,50 @@ class GameController extends ChangeNotifier {
     sendCommand(proto.ExchangeCommand(fleetId: id, give: give, want: want, amount: amount));
   }
 
-  /// Move [amount] of [resource] from the stockpile into the hold of
-  /// [fleetId], docked at home; without [amount], all that fits.
+  /// Move [amount] of [resource] into the hold of [fleetId] from the dock it
+  /// stands at, the stockpile at home or the store at the outpost; without
+  /// [amount], all that fits.
   void loadHold(int fleetId, proto.ResourceKind resource, {double? amount}) {
     note('> load ${amount == null ? 'all' : amount.round()} ${resource.name} into F$fleetId', level: EventLevel.full);
     sendCommand(proto.LoadCommand(fleetId: fleetId, resource: resource, amount: amount));
   }
 
-  /// Put the hold [fleetId] was loaded with back into the stockpile.
+  /// Empty the hold of [fleetId] into the dock it stands at: at home the
+  /// hold it was loaded with, at the outpost all it carries.
   void unloadHold(int fleetId) {
     note('> unload F$fleetId', level: EventLevel.full);
     sendCommand(proto.UnloadCommand(fleetId: fleetId));
   }
+
+  final Map<(int, proto.Hex), Timer> _surveyTimers = {};
+  final Map<(int, proto.Hex), int> _surveyAsked = {};
+  final Set<(int, proto.Hex)> _surveyTyped = {};
+
+  /// Keep the survey of [sector] for [fleetId] fresh while a panel shows it
+  /// (`outpost_survey`): its refusal is true of the tick it was asked.
+  /// Debounced, and skipped while a recent (under 3 ticks) answer or request
+  /// stands; the answer lands in [GameState.surveys].
+  void requestSurvey(int fleetId, proto.Hex sector) {
+    if (fleetId == 0 || !hasState || !isLive) return;
+    final key = (fleetId, sector);
+    if (_surveyTimers.containsKey(key) || !state.surveyNeedsRefresh(fleetId, sector)) return;
+    final asked = _surveyAsked[key];
+    if (asked != null && state.tick - asked < previewRefreshTicks) return;
+    _surveyTimers[key] = Timer(previewDebounce, () {
+      _surveyTimers.remove(key);
+      if (_disposed || !isLive) return;
+      _surveyAsked.removeWhere((_, tick) => state.tick - tick > 60);
+      _surveyAsked[key] = state.tick;
+      sendCommand(proto.OutpostSurveyCommand(fleetId: fleetId, sector: sector));
+    });
+  }
+
+  /// The outpost orders and the survey asked for by hand, each the line a
+  /// player would type: the survey's answer is printed in the log as well.
+  void surveySite(proto.Hex sector) => handleCommand('survey ${sector.q} ${sector.r}');
+  void foundOutpost() => handleCommand('found');
+  void upgradeOutpost() => handleCommand('outpost upgrade');
+  void abandonOutpost() => handleCommand('outpost abandon');
 
   /// Give the selected fleet standing orders, or clear them with
   /// [proto.PolicyPreset.manual]. It is the typed `policy` and nothing
@@ -856,6 +899,9 @@ class GameController extends ChangeNotifier {
             _quoteTyped.add((q.fleetId, q.give, q.want));
           }
           if (m case proto.CommandMessage(command: proto.LeaderboardCommand())) _boardTyped = true;
+          if (m case proto.CommandMessage(command: proto.OutpostSurveyCommand s)) {
+            _surveyTyped.add((s.fleetId, s.sector ?? currentFleet.sector));
+          }
           send(m);
         }
       case ParsedLocal(:final lines):

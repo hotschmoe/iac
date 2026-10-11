@@ -328,7 +328,13 @@ class MapPainter extends CustomPainter {
         final on = still || ((t * 2 + h.q).floor() % 2 == 0);
         c.drawPath(Draw.hexPath(p, rn * 1.4), Draw.line(tc!, 1, on ? .6 : .2));
       }
-      if (th.rating > 0 && s >= .55) {
+      if (sec.outpost case final post? when s >= .4) {
+        final size = math.max(7.0, hr * .42);
+        final seen = live || !layers.age ? 1.0 : math.max(.45, f);
+        final station = post.breached ? C.ember : post.mine ? C.own : C.a200;
+        if (post.mine) c.drawRect(Rect.fromCenter(center: p, width: size * .96, height: size * .96), Paint()..color = station.withValues(alpha: seen * .5));
+        Draw.symbol(c, Sym.outpost, p.dx, p.dy, size, color: station, alpha: seen, lw: 1.3, bloom: false);
+      } else if (th.rating > 0 && s >= .55) {
         if (s >= .8) {
           c.save();
           c.translate(p.dx, p.dy);

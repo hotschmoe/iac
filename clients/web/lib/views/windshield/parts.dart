@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../console/intel.dart';
+import '../../console/outpost.dart';
 import '../../console/threat.dart';
 import '../../design/beat.dart';
 import '../../design/gauges.dart';
@@ -27,6 +28,8 @@ const voice = {
 };
 
 const hubVoice = 'Neutral post. No ore, no hostiles. The exchange is open.';
+
+const outpostVoice = 'A station holds this sector. Raiders come for it.';
 
 /// What the dock does for a fleet and what it does not: nothing in the field
 /// reaches a docked fleet, a raid that beats the home defence does.
@@ -60,10 +63,14 @@ class SectorHead extends StatelessWidget {
   /// The sector is a hub sector with the exchange.
   final bool exchange;
 
+  /// The outpost standing in the sector, whoever owns it.
+  final proto.OutpostBrief? outpost;
+
   /// The most the head takes of the phone layout, where it has no rows:
   /// the coordinates and the threat line.
   static const phoneWidth = 250.0;
-  const SectorHead({super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow, this.exchange = false});
+  const SectorHead(
+      {super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow, this.exchange = false, this.outpost});
 
   @override
   Widget build(BuildContext context) {
@@ -83,7 +90,15 @@ class SectorHead extends StatelessWidget {
     ]);
     return IgnorePointer(
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-        Lbl(atHome ? 'Homeworld orbit' : exchange ? 'The hub - exchange' : 'Sector'),
+        Lbl(atHome
+            ? 'Homeworld orbit'
+            : exchange
+                ? 'The hub - exchange'
+                : outpost == null
+                    ? 'Sector'
+                    : outpost!.mine
+                        ? 'Your outpost'
+                        : 'Outpost of ${outpost!.owner}'),
         const SizedBox(height: 3),
         coord,
         if (!narrow) ...[
@@ -99,7 +114,7 @@ class SectorHead extends StatelessWidget {
             child: Text.rich(
               TextSpan(children: [
                 TextSpan(text: 'NOTE ', style: T.mono(size: 11, color: C.a700, weight: FontWeight.w600, spacing: 1)),
-                TextSpan(text: exchange ? hubVoice : voice[terr]),
+                TextSpan(text: exchange ? hubVoice : outpost != null ? outpostVoice : voice[terr]),
               ]),
               style: T.mono(size: 11, color: C.text3, height: 1.45),
             ),
@@ -232,10 +247,13 @@ class StatusPanel extends StatelessWidget {
   /// The fleet stands in its homeworld's sector.
   final bool atHome;
 
+  /// The fleet stands in the sector of the player's outpost.
+  final bool atOutpost;
+
   /// The hold its standing orders last announced, while it still stands.
   final PolicyAct? holding;
   final Widget? footer;
-  const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.holding, this.footer});
+  const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.atOutpost = false, this.holding, this.footer});
 
   @override
   Widget build(BuildContext context) {
@@ -293,6 +311,11 @@ class StatusPanel extends StatelessWidget {
               const Kv('Way home', v: 'AT THE DOCK')
             else
               Kv('Way home needs', key: const Key('status-way-home'), v: '$need FUEL${low ? '  LOW' : ''}', vc: low ? C.threat(6) : null),
+            if (f.outpostFuel case final toOutpost?)
+              Kv('Way to outpost needs',
+                  key: const Key('status-way-outpost'),
+                  v: atOutpost ? 'AT THE OUTPOST' : '$toOutpost FUEL${toOutpost > f.fuel ? '  SHORT' : ''}',
+                  vc: !atOutpost && toOutpost > f.fuel ? C.threat(6) : null),
             Kv('Fleet power', v: f.power.round().toString()),
             Kv('Scan range', v: '$scanRange'),
             Kv('Orders', key: const Key('status-orders'), v: holding == null ? pol : '$pol - HOLDING', vc: C.a300),
@@ -331,6 +354,15 @@ class ContactsPanel extends StatelessWidget {
 
   /// The exchange panel is open.
   final bool trading;
+
+  /// The outpost standing in this sector, whoever owns it.
+  final proto.OutpostBrief? outpost;
+
+  /// The player's own outpost when it is the one standing here.
+  final proto.OutpostState? station;
+
+  /// The outpost panel is open.
+  final bool outpostOpen;
   final String? target;
   final void Function(String k) onTarget;
   final void Function(String k) onHover;
@@ -356,6 +388,9 @@ class ContactsPanel extends StatelessWidget {
     required this.boarding,
     this.exchange,
     this.trading = false,
+    this.outpost,
+    this.station,
+    this.outpostOpen = false,
     required this.target,
     required this.onTarget,
     required this.onHover,
@@ -500,6 +535,27 @@ class ContactsPanel extends StatelessWidget {
               padding: const EdgeInsets.only(top: 7),
               child: ConsoleButton(trading ? 'Close exchange' : 'Open exchange',
                   key: const ValueKey('contact-trade'), small: true, keyHint: 'T', active: trading, onPressed: () => onAct('trade'))),
+        ]),
+      ));
+    }
+    if (outpost case final post?) {
+      final own = station;
+      rows.add(_row(
+        'p',
+        SymIcon((c, sz) => Draw.symbol(c, Sym.outpost, sz.width / 2, sz.height / 2, 12, color: post.mine ? C.own : C.a300, lw: 1.2, bloom: false), size: 26),
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _t(post.mine ? 'Your outpost' : 'Outpost of ${post.owner}'),
+          _d(Text(
+              own != null
+                  ? '${outpostStanding(own, tick)}\n${outpostDockVoice(own)}'
+                  : '${post.level == 0 ? 'NOT YET OPEN' : 'LEVEL ${post.level}'}${post.breached ? ' - BREACHED' : ''}',
+              key: const Key('contact-outpost'),
+              style: _ds.copyWith(color: post.breached ? C.threat(6) : C.text3))),
+          if (own != null)
+            Padding(
+                padding: const EdgeInsets.only(top: 7),
+                child: ConsoleButton(outpostOpen ? 'Close outpost' : 'Open outpost',
+                    key: const ValueKey('contact-outpost-open'), small: true, keyHint: 'O', active: outpostOpen, onPressed: () => onAct('outpost'))),
         ]),
       ));
     }

@@ -29,6 +29,21 @@ class _Explore {
   _Explore(this.fleetId, this.sector, this.endTick);
 }
 
+/// The player's outpost in the scripted world.
+class _Outpost {
+  final Hex at;
+  int level = 0;
+  Resources store = const Resources();
+  OutpostWorkState? work;
+  bool breached = false;
+  bool repairWarned = false;
+
+  /// An announced raid: the tick it arrives and its power.
+  (int, double)? raid;
+  final Set<ResourceKind> fullSaid = {};
+  _Outpost(this.at);
+}
+
 /// The scripted world the widget tests run on (`DemoController`): the Dart
 /// VM cannot run the real engine, and the tests want the same events at the
 /// same ticks every time. It is not shipped; offline play is the
@@ -38,7 +53,11 @@ class _Explore {
 /// fights, salvage, derelict boarding and a raid cycle, and the economy
 /// rework (storage caps, build slots, pending queues, defences, raids). Its
 /// numbers follow the economy formulas at pace 1, with a time-lapse on
-/// production and build times so things move.
+/// production and build times so things move. It has one outpost to found:
+/// the survey with the engine's refusals, the store with load and unload,
+/// the levels, abandoning, and a raid a test announces ([raidOutpost]),
+/// which breaches it when lost and is repaired from the store. Its levels
+/// take seconds, and a raid there takes from the store only, not the holds.
 ///
 /// Layout (home H=(4,-2); fleet 101 starts at S0=(6,-4)):
 ///   N (6,-5) T3 corvette patrol    NE (7,-5) nebula, derelict tier 1
@@ -92,6 +111,7 @@ class DemoWorld {
   int _raidArrival = 0;
   final Set<ResourceKind> _capAlerted = {};
   final Set<ResourceKind> _fullAlerted = {};
+  _Outpost? _outpost;
 
   late Resources _resources = const Resources(metal: 7340, crystal: 6900, deuterium: 880);
   late List<FleetState> _fleets;
@@ -439,6 +459,7 @@ class DemoWorld {
       lastSeen: isLive ? _tick : (_seen[k] ?? 0),
       live: isLive,
       pinsStale: !isLive && (sv != null || _sites[k] != null),
+      outpost: _outpost?.at == h ? OutpostBrief(owner: 'Demo', level: _outpost!.level, breached: _outpost!.breached, mine: true) : null,
     );
   }
 
@@ -451,6 +472,7 @@ class DemoWorld {
         player: _player(),
         fleets: [for (final f in _fleets) _norm(f)],
         homeworld: _hw,
+        outpost: _outpostState(),
         knownSectors: _knownSectors(),
         world: const WorldInfo(
           pace: _pace,
@@ -553,34 +575,29 @@ class DemoWorld {
   List<ServerMessage> _load(int fleetId, ResourceKind resource, double? amount) {
     final f = _find(fleetId);
     if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
-    if (f.location != _home) {
-      final hexes = Hex.distance(f.location, _home);
-      return [
-        _err(
-            ErrorCode.notInSector,
-            'fleet $fleetId is at ${f.location}, $hexes hex${hexes == 1 ? '' : 'es'} from home $_home; '
-            'a hold is filled from the stockpile, and emptied into it, at the homeworld only'),
-      ];
-    }
+    final away = _awayFromDocks(f);
+    if (away != null) return [away];
+    final post = f.location == _home ? null : _outpost;
     if (f.policy != null) {
       return [
         _err(
             ErrorCode.invalidCommand,
-            'fleet $fleetId is under standing orders (${f.policy!.preset.label}), which unload at the dock; '
+            'fleet $fleetId is under standing orders (${f.policy!.preset.label}), which ${post == null ? 'unload at the dock' : 'do not use the outpost'}; '
             'set it to manual before loading its hold by hand'),
       ];
     }
-    final stock = resource.of(_resources);
+    final source = post == null ? 'the stockpile' : 'the outpost\'s store';
+    final stock = resource.of(post?.store ?? _resources);
     final aboard = f.cargo.total;
     final room = max(0.0, f.cargoCapacity - aboard);
     final full = _err(ErrorCode.cargoFull, 'the hold of fleet $fleetId is full: it carries ${aboard.round()} of ${f.cargoCapacity.round()}');
     if (amount != null && amount > stock) {
       return [
         _err(ErrorCode.noResources,
-            'the stockpile holds ${stock.toStringAsFixed(1)} ${resource.name}; fleet $fleetId cannot load ${amount.toStringAsFixed(1)}'),
+            '$source holds ${stock.toStringAsFixed(1)} ${resource.name}; fleet $fleetId cannot load ${amount.toStringAsFixed(1)}'),
       ];
     }
-    if (amount == null && stock <= 0) return [_err(ErrorCode.noResources, 'the stockpile holds no ${resource.name} to load')];
+    if (amount == null && stock <= 0) return [_err(ErrorCode.noResources, '$source holds no ${resource.name} to load')];
     if (room <= 0) return [full];
     if (amount != null && amount > room) {
       return [
@@ -591,26 +608,54 @@ class DemoWorld {
       ];
     }
     final loaded = amount ?? min(stock, room);
-    double moved(ResourceKind k) => k == resource ? loaded : 0;
-    _resources = Resources(
-      metal: _resources.metal - moved(ResourceKind.metal),
-      crystal: _resources.crystal - moved(ResourceKind.crystal),
-      deuterium: _resources.deuterium - moved(ResourceKind.deuterium),
+    final taken = Resources(
+      metal: resource == ResourceKind.metal ? loaded : 0,
+      crystal: resource == ResourceKind.crystal ? loaded : 0,
+      deuterium: resource == ResourceKind.deuterium ? loaded : 0,
     );
-    _setFleet(_copy(f,
-        laden: true,
-        cargo: Resources(
-          metal: f.cargo.metal + moved(ResourceKind.metal),
-          crystal: f.cargo.crystal + moved(ResourceKind.crystal),
-          deuterium: f.cargo.deuterium + moved(ResourceKind.deuterium),
-        )));
+    if (post == null) {
+      _resources = _less(_resources, taken);
+    } else {
+      post.store = _less(post.store, taken);
+    }
+    _setFleet(_copy(f, laden: post == null, cargo: _plus(f.cargo, taken)));
+    final carries = 'it carries ${(aboard + loaded).round()} of ${f.cargoCapacity.round()}';
     _ev(AlertEvent(
         level: AlertLevel.info,
-        message: 'fleet $fleetId loaded ${loaded.round()} ${resource.name} from the stockpile: it carries ${(aboard + loaded).round()} of '
-            '${f.cargoCapacity.round()} and keeps it aboard until it next returns home, or until unload',
+        message: post == null
+            ? 'fleet $fleetId loaded ${loaded.round()} ${resource.name} from the stockpile: $carries and keeps it aboard until it next returns home, or until unload'
+            : 'fleet $fleetId loaded ${loaded.round()} ${resource.name} from the outpost\'s store: $carries',
         fleetId: fleetId,
         sector: f.location));
     return [_tickUpdate()];
+  }
+
+  static Resources _plus(Resources a, Resources b) =>
+      Resources(metal: a.metal + b.metal, crystal: a.crystal + b.crystal, deuterium: a.deuterium + b.deuterium);
+
+  static Resources _less(Resources a, Resources b) =>
+      Resources(metal: max(0, a.metal - b.metal), crystal: max(0, a.crystal - b.crystal), deuterium: max(0, a.deuterium - b.deuterium));
+
+  static Resources _least(Resources a, Resources b) =>
+      Resources(metal: min(a.metal, b.metal), crystal: min(a.crystal, b.crystal), deuterium: min(a.deuterium, b.deuterium));
+
+  /// The server's refusal for a fleet that is at neither dock, or null when
+  /// it stands at the homeworld or at the outpost.
+  ServerMessage? _awayFromDocks(FleetState f) {
+    final post = _outpost?.at;
+    if (f.location == _home || f.location == post) return null;
+    String hexesTo(Hex dock) {
+      final hexes = Hex.distance(f.location, dock);
+      return '$hexes hex${hexes == 1 ? '' : 'es'}';
+    }
+
+    return _err(
+        ErrorCode.notInSector,
+        post == null
+            ? 'fleet ${f.id} is at ${f.location}, ${hexesTo(_home)} from home $_home; '
+                'a hold is filled from the stockpile, and emptied into it, at the homeworld only'
+            : 'fleet ${f.id} is at ${f.location}, ${hexesTo(_home)} from home $_home and ${hexesTo(post)} from your outpost $post; '
+                'a hold is filled and emptied by hand at those two docks only');
   }
 
   /// Empty the laden hold of [f] into the stockpile as far as the caps
@@ -635,6 +680,345 @@ class DemoWorld {
           deuterium: f.cargo.deuterium - back.deuterium,
         )));
     return back;
+  }
+
+  // ── Outpost (shared/src/scaling.rs at pace 1; levels at the demo's own speed) ──
+
+  static const _outpostCost = Resources(metal: 1000, crystal: 500, deuterium: 200);
+  static const _outpostStoreBase = Resources(metal: 3000, crystal: 1500, deuterium: 750);
+  static const _outpostMaxLevel = 3;
+
+  /// Demo-only: level 1 is built in this many ticks, not the 54,000 of pace 1.
+  static const _outpostLevelTicks = 20;
+  static const _densityGrade = {Density.none: 0.0, Density.sparse: .5, Density.moderate: 1.0, Density.rich: 2.0, Density.pristine: 4.0};
+
+  static double _outpostGrowth(int level) => pow(2.5, max(1, level) - 1).toDouble();
+  static Resources _levelCost(int level) => _times(_outpostCost, _outpostGrowth(level));
+  static int _levelTicks(int level) => (_outpostLevelTicks * _outpostGrowth(level)).round();
+  static Resources _repairCost(int level) => level == 0 ? const Resources() : _times(_levelCost(level), .25);
+  static Resources _storeCap(int level) => _times(_outpostStoreBase, _outpostGrowth(level));
+  static double _platform(int level) => level == 0 ? 0 : 40 * _outpostGrowth(level);
+  static double _outpostRaidEstimate(Hex at) => 2 * _ringThreat(at).estPower * .975;
+
+  Resources _siteYield(Hex at, int level) {
+    final ore = _base(at).resources;
+    final ring = at.distFromOrigin.clamp(3, 20);
+    double perTick(Density d) => 2 * _densityGrade[d]! * pow(1.1, ring - 3) * level / 3600;
+    return Resources(metal: perTick(ore.metal), crystal: perTick(ore.crystal), deuterium: perTick(ore.deuterium));
+  }
+
+  double _siteGrade(Hex at) {
+    final ore = _base(at).resources;
+    return _densityGrade[ore.metal]! + _densityGrade[ore.crystal]! + _densityGrade[ore.deuterium]!;
+  }
+
+  bool get _inService => _outpost != null && _outpost!.level >= 1 && !_outpost!.breached;
+
+  OutpostState? _outpostState() {
+    final o = _outpost;
+    if (o == null) return null;
+    final building = o.work?.kind == OutpostWork.build ? o.work!.level : null;
+    final next = (building ?? o.level) + 1;
+    final platform = o.breached ? 0.0 : _platform(o.level);
+    final ships = [for (final f in _fleets) if (f.location == o.at) ...f.ships].fold(0.0, (p, s) => p + _power[s.shipClass]!);
+    return OutpostState(
+      location: o.at,
+      level: o.level,
+      maxLevel: _outpostMaxLevel,
+      inService: _inService,
+      breached: o.breached,
+      work: o.work,
+      store: o.store,
+      storeCap: _storeCap(o.level),
+      protected: _repairCost(building ?? o.level),
+      production: _inService ? _siteYield(o.at, o.level) : const Resources(),
+      grade: _siteGrade(o.at),
+      platformPower: platform,
+      defencePower: platform + ships,
+      nextRaidEstimatePower: _outpostRaidEstimate(o.at),
+      raidArrivalTick: o.raid?.$1,
+      nextLevel: next > _outpostMaxLevel
+          ? null
+          : OutpostLevel(
+              level: next,
+              cost: _levelCost(next),
+              ticks: _levelTicks(next),
+              storeCap: _storeCap(next),
+              platformPower: _platform(next),
+              production: _siteYield(o.at, next)),
+      repairCost: o.breached && o.work == null ? _repairCost(o.level) : null,
+      hopsHome: Hex.distance(o.at, _home),
+    );
+  }
+
+  /// Why [f] cannot found an outpost in [at] now, in the order and the
+  /// sentences of the server's `outpost_site`; null when it can.
+  (ErrorCode, String)? _siteRefusal(FleetState f, Hex at) {
+    final id = f.id;
+    final here = f.location == at;
+    final ring = at.distFromOrigin;
+    if (ring < 9 || ring > 20) {
+      return (ErrorCode.invalidTarget, '${here ? 'fleet $id' : '$at'} is at ring $ring; an outpost stands in rings 9 to 20');
+    }
+    if (_base(at).terrain == TerrainType.anomaly) return (ErrorCode.invalidTarget, '$at is an Anomaly; no outpost stands in one');
+    if (_sites.containsKey(at.toKey())) {
+      return (ErrorCode.invalidTarget, 'a derelict drifts at $at; no outpost stands beside one, stripped or not');
+    }
+    if (_outpost case final mine?) {
+      return (ErrorCode.invalidCommand, 'you already have an outpost at ${mine.at}; an empire has one, and abandon_outpost gives it up');
+    }
+    if (!here) {
+      final hexes = Hex.distance(f.location, at);
+      return (
+        ErrorCode.notInSector,
+        'fleet $id is at ${f.location}, $hexes hex${hexes == 1 ? '' : 'es'} from $at; an outpost is founded by a fleet standing in its sector',
+      );
+    }
+    switch (f.state) {
+      case FleetStatus.moving:
+        return (ErrorCode.onCooldown, 'fleet $id is in transit; it can found an outpost once it stands idle');
+      case FleetStatus.inCombat:
+        return (ErrorCode.onCooldown, 'fleet $id is in combat; an outpost is founded on a sector its founder has won');
+      case FleetStatus.harvesting || FleetStatus.returning || FleetStatus.exploring:
+        return (ErrorCode.onCooldown, 'fleet $id is busy; it can found an outpost once it is idle');
+      case FleetStatus.idle || FleetStatus.docked:
+        break;
+    }
+    final group = _hostiles[at.toKey()]?.firstOrNull;
+    if (group != null) {
+      return (ErrorCode.invalidTarget, 'a ${group.behavior.wire.toLowerCase()} group holds $at; an outpost is founded on a sector its founder has won');
+    }
+    if (f.policy case final orders?) {
+      return (ErrorCode.invalidCommand, 'fleet $id is under standing orders (${orders.preset.label}); set it to manual before founding an outpost');
+    }
+    final short = _less(_outpostCost, f.cargo);
+    if (short.total > 0) {
+      return (
+        ErrorCode.noResources,
+        'the hold of fleet $id lacks ${_amount(short)} of the ${_amount(_outpostCost)} an outpost costs; '
+            'it is built from what the founding fleet carries, loaded at home',
+      );
+    }
+    return null;
+  }
+
+  /// The server's `outpost_survey`: the site's figures, and why it cannot be
+  /// founded now.
+  List<ServerMessage> _survey(int fleetId, Hex? sector) {
+    final f = _find(fleetId);
+    if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+    final at = sector ?? f.location;
+    if (at != f.location && !_seen.containsKey(at.toKey())) {
+      return [_err(ErrorCode.invalidTarget, '$at is not on your chart; a survey reads a sector you have seen')];
+    }
+    return [
+      OutpostSurvey(
+        fleetId: fleetId,
+        sector: at,
+        ring: at.distFromOrigin,
+        densities: _base(at).resources,
+        grade: _siteGrade(at),
+        cost: _outpostCost,
+        buildTicks: _levelTicks(1),
+        production: _siteYield(at, 1),
+        raidPower: _outpostRaidEstimate(at),
+        platformPower: _platform(1),
+        hopsHome: Hex.distance(at, _home),
+        refusal: _siteRefusal(f, at)?.$2,
+      ),
+    ];
+  }
+
+  void _outpostAlert(AlertLevel level, Hex at, String message) => _ev(AlertEvent(level: level, message: message, sector: at));
+
+  List<ServerMessage> _found(int fleetId) {
+    final f = _find(fleetId);
+    if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+    final at = f.location;
+    if (_siteRefusal(f, at) case (final code, final why)?) return [_err(code, why)];
+    final ticks = _levelTicks(1);
+    _setFleet(_copy(f, cargo: _less(f.cargo, _outpostCost)));
+    _outpost = _Outpost(at)..work = OutpostWorkState(kind: OutpostWork.build, level: 1, startTick: _tick, endTick: _tick + ticks);
+    _dirty.add(at.toKey());
+    _ev(AlertEvent(
+        level: AlertLevel.info,
+        message: 'fleet $fleetId founded your outpost at $at for ${_amount(_outpostCost)}: level 1 is finished at tick ${_tick + ticks}, in $ticks ticks. '
+            'Until then it has a store and nothing else',
+        fleetId: fleetId,
+        sector: at));
+    return [_tickUpdate()];
+  }
+
+  List<ServerMessage> _upgradeOutpost() {
+    final o = _outpost;
+    if (o == null) return [_err(ErrorCode.invalidCommand, 'you have no outpost to upgrade')];
+    if (o.work case final job?) {
+      final doing = job.kind == OutpostWork.build ? 'building level ${job.level}' : 'under repair';
+      return [_err(ErrorCode.invalidCommand, 'your outpost at ${o.at} is $doing until tick ${job.endTick}; it does one job at a time')];
+    }
+    if (o.breached) {
+      return [
+        _err(ErrorCode.invalidCommand,
+            'your outpost at ${o.at} is breached; it repairs itself first, once its store holds ${_amount(_repairCost(o.level))}'),
+      ];
+    }
+    if (o.level >= _outpostMaxLevel) {
+      return [_err(ErrorCode.maxLevelReached, 'your outpost at ${o.at} is at level $_outpostMaxLevel, the highest')];
+    }
+    final next = o.level + 1;
+    final cost = _levelCost(next);
+    final short = _less(cost, o.store);
+    if (short.total > 0) {
+      return [
+        _err(
+            ErrorCode.insufficientResources,
+            'outpost level $next costs ${_amount(cost)}; the store at ${o.at} is short by ${_amount(short)}. Nothing was started: '
+            'a level is paid in full from the outpost\'s own store when it is ordered'),
+      ];
+    }
+    final ticks = _levelTicks(next);
+    o.store = _less(o.store, cost);
+    o.work = OutpostWorkState(kind: OutpostWork.build, level: next, startTick: _tick, endTick: _tick + ticks);
+    _outpostAlert(
+        AlertLevel.info,
+        o.at,
+        'your outpost at ${o.at} began level $next, paid ${_amount(cost)} from its store: finished at tick ${_tick + ticks}, in $ticks ticks. '
+        'It works at level ${o.level} until then');
+    return [_tickUpdate()];
+  }
+
+  List<ServerMessage> _abandonOutpost() {
+    final o = _outpost;
+    if (o == null) return [_err(ErrorCode.invalidCommand, 'you have no outpost to abandon')];
+    _outpost = null;
+    final k = o.at.toKey();
+    if (o.store.total > 0) _salvage[k] = (_plus(_salvage[k]?.$1 ?? const Resources(), o.store), _tick + 180);
+    _dirty.add(k);
+    final left = o.store.total > 0 ? '${_amount(o.store)} from its store drifts there as wreckage for 180 ticks' : 'its store was empty';
+    _outpostAlert(AlertLevel.info, o.at, 'your outpost at ${o.at} is abandoned: $left. Nothing is refunded, and you may found another');
+    return [_tickUpdate()];
+  }
+
+  /// The server's `unload` at the outpost: the whole hold into the store, as
+  /// far as the store has room.
+  List<ServerMessage> _unloadIntoStore(FleetState f, _Outpost o) {
+    if (f.cargo.total <= 0) {
+      return [_err(ErrorCode.noResources, 'the hold of fleet ${f.id} is empty; there is nothing to unload into the outpost\'s store')];
+    }
+    final moved = _least(_less(_storeCap(o.level), o.store), f.cargo);
+    final left = _less(f.cargo, moved);
+    o.store = _plus(o.store, moved);
+    _setFleet(_copy(f, cargo: left, laden: false));
+    _ev(AlertEvent(
+        level: AlertLevel.info,
+        message: 'fleet ${f.id} unloaded ${_amount(moved)} into the outpost\'s store'
+            '${left.total > 0 ? '; ${_amount(left)} stays aboard, the store is full' : ''}',
+        fleetId: f.id,
+        sector: f.location));
+    return [_tickUpdate()];
+  }
+
+  /// Announce a raid of [power] on the outpost, arriving in [inTicks]: the
+  /// scripted world sends none by itself, so a test decides when one comes
+  /// and whether the outpost holds.
+  void raidOutpost(double power, {int inTicks = 10}) {
+    final o = _outpost!;
+    o.raid = (_tick + inTicks, power);
+    _ev(RaidIncomingEvent(playerId: _playerId, arrivalTick: _tick + inTicks, threat: 'moderate', estPower: power, outpost: o.at));
+  }
+
+  /// The outpost's tick, in the server's order: a finished job, the
+  /// extractor, the repair of a breach, what is said about the store, then
+  /// a raid that has arrived.
+  void _stepOutpost() {
+    final o = _outpost;
+    if (o == null) return;
+    final job = o.work;
+    if (job != null && _tick >= job.endTick) {
+      o.work = null;
+      _dirty.add(o.at.toKey());
+      if (job.kind == OutpostWork.build) {
+        o.level = job.level;
+        _ev(OutpostCompletedEvent(playerId: _playerId, sector: o.at, level: job.level));
+      } else {
+        o.breached = false;
+        o.repairWarned = false;
+        _outpostAlert(AlertLevel.info, o.at, 'your outpost at ${o.at} is repaired: its extractor, its tanks and its platform work again');
+      }
+    }
+    final cap = _storeCap(o.level);
+    if (_inService) o.store = _least(_plus(o.store, _siteYield(o.at, o.level)), cap);
+    if (o.breached && o.work == null) {
+      final cost = _repairCost(o.level);
+      final short = _less(cost, o.store);
+      if (short.total <= 0) {
+        final ticks = (_levelTicks(o.level) * .25).round();
+        o.store = _less(o.store, cost);
+        o.work = OutpostWorkState(kind: OutpostWork.repair, level: o.level, startTick: _tick, endTick: _tick + ticks);
+        o.repairWarned = false;
+        _outpostAlert(AlertLevel.info, o.at,
+            'your outpost at ${o.at} began its repair, paid ${_amount(cost)} from its store: it is whole at tick ${_tick + ticks}, in $ticks ticks');
+      } else if (!o.repairWarned) {
+        o.repairWarned = true;
+        _outpostAlert(
+            AlertLevel.warning,
+            o.at,
+            'your outpost at ${o.at} is breached and cannot repair itself: its store lacks ${_amount(short)} of the ${_amount(cost)} the repair '
+            'costs. It makes nothing, fills no tank and has no platform until a fleet unloads the rest');
+      }
+    }
+    final makes = _inService ? _siteYield(o.at, o.level) : const Resources();
+    for (final k in ResourceKind.values) {
+      if (k.of(o.store) < k.of(cap)) {
+        o.fullSaid.remove(k);
+      } else if (o.fullSaid.add(k) && k.of(makes) > 0) {
+        _outpostAlert(
+            AlertLevel.warning,
+            o.at,
+            'your outpost at ${o.at} holds all the ${k.name} its store takes (${k.of(cap).round()}): the extractor makes no more '
+            'of it until a fleet loads some');
+      }
+    }
+    final raid = o.raid;
+    if (raid != null && _tick >= raid.$1) _resolveOutpostRaid(o, raid.$2);
+  }
+
+  /// A raid on the outpost arrives. Repelled, nothing is lost. Lost, a
+  /// quarter of the ships standing there are destroyed (at least one, and
+  /// never a fleet's last ship here), a quarter of the store above the
+  /// protected floor is taken, and the outpost is breached.
+  void _resolveOutpostRaid(_Outpost o, double power) {
+    o.raid = null;
+    final state = _outpostState()!;
+    final defended = state.defencePower >= power;
+    var lost = const Resources();
+    var shipsLost = 0;
+    if (!defended) {
+      final there = [for (final f in _fleets) if (f.location == o.at) f];
+      var toLose = there.isEmpty ? 0 : max(1, there.fold(0, (n, f) => n + f.ships.length) ~/ 4);
+      for (final f in there) {
+        final gone = min(toLose, f.ships.length - 1);
+        if (gone <= 0) continue;
+        _setFleet(_copy(f, ships: f.ships.sublist(gone)));
+        toLose -= gone;
+        shipsLost += gone;
+      }
+      lost = _times(_less(o.store, state.protected), .25);
+      o.store = _less(o.store, lost);
+      o.breached = true;
+      o.repairWarned = false;
+      _dirty.add(o.at.toKey());
+    }
+    _ev(RaidResolvedEvent(
+        playerId: _playerId,
+        outpost: o.at,
+        defended: defended,
+        breached: !defended,
+        resourcesLost: lost,
+        raidPower: power,
+        defensePower: state.defencePower,
+        protectedKept: defended ? const Resources() : _least(o.store, state.protected),
+        shipsLost: shipsLost));
   }
 
   /// The server's `policy_update`, with the reports it makes: `clear` for
@@ -739,6 +1123,7 @@ class DemoWorld {
     _stepQueues();
     _stepSalvage();
     _stepRaid();
+    _stepOutpost();
     _stepOrders();
 
     if (_tick % 120 == 0) {
@@ -790,6 +1175,7 @@ class DemoWorld {
       player: _player(),
       fleets: List.of(_fleets),
       homeworldUpdate: _hw,
+      outpost: _outpostState(),
       sectorUpdates: secs.isEmpty ? null : secs,
       events: events.isEmpty ? null : events,
     );
@@ -1172,6 +1558,7 @@ class DemoWorld {
         fuelMax: f.fuelMax,
         jumpFuel: _jump(f.ships).toDouble(),
         homeFuel: f.location == _home ? 0 : (Hex.distance(f.location, _home) * _jump(f.ships)).toDouble(),
+        outpostFuel: _inService ? (Hex.distance(f.location, _outpost!.at) * _jump(f.ships)).toDouble() : null,
         cooldownRemaining: f.cooldownRemaining,
         power: f.ships.fold<double>(0, (p, s) => p + _power[s.shipClass]!),
         rangeHops: f.fuel ~/ _jump(f.ships),
@@ -1334,11 +1721,19 @@ class DemoWorld {
       ? _hw.catalog.ships.firstWhere((o) => o.shipClass == item.ship).ticksPerShip
       : _hw.catalog.defences.firstWhere((o) => o.kind == item.defence).ticksPerUnit;
 
-  String _amount(Resources r) => [
-        if (r.metal > 0) '${r.metal.ceil()} metal',
-        if (r.crystal > 0) '${r.crystal.ceil()} crystal',
-        if (r.deuterium > 0) '${r.deuterium.ceil()} deuterium',
-      ].join(', ');
+  /// "200 metal, 50 crystal and 30 deuterium", as the server's `amount_words`.
+  String _amount(Resources r) {
+    final parts = [
+      if (r.metal > 0) '${r.metal.ceil()} metal',
+      if (r.crystal > 0) '${r.crystal.ceil()} crystal',
+      if (r.deuterium > 0) '${r.deuterium.ceil()} deuterium',
+    ];
+    return switch (parts) {
+      [] => 'nothing',
+      [final one] => one,
+      [...final first, final last] => '${first.join(', ')} and $last',
+    };
+  }
 
   /// A batch is accepted only if the stockpile covers every unit now, and
   /// it pays then; a paid batch waits only for the yard.
@@ -2149,13 +2544,21 @@ class DemoWorld {
         return _exchange(fleetId, give, want, amount, quote: false);
       case ExchangeQuoteCommand(:final fleetId, :final give, :final want, :final amount):
         return _exchange(fleetId, give, want, amount, quote: true);
-      case FoundOutpostCommand() || OutpostSurveyCommand() || UpgradeOutpostCommand() || AbandonOutpostCommand():
-        return [_err(ErrorCode.invalidCommand, 'the scripted world has no outposts')];
+      case FoundOutpostCommand(:final fleetId):
+        return _found(fleetId);
+      case OutpostSurveyCommand(:final fleetId, :final sector):
+        return _survey(fleetId, sector);
+      case UpgradeOutpostCommand():
+        return _upgradeOutpost();
+      case AbandonOutpostCommand():
+        return _abandonOutpost();
       case LoadCommand(:final fleetId, :final resource, :final amount):
         return _load(fleetId, resource, amount);
       case UnloadCommand(:final fleetId):
         final f = _find(fleetId);
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+        final post = _outpost;
+        if (post != null && f.location == post.at) return _unloadIntoStore(f, post);
         if (!f.laden) {
           return [_err(ErrorCode.invalidCommand, 'fleet $fleetId was not loaded by hand; a docked fleet unloads by itself as the stockpile has room')];
         }

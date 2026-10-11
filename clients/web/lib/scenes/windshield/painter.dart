@@ -59,6 +59,7 @@ class ArenaPainter extends CustomPainter {
     for (final a in sim.ast) {
       _asteroid(a, t);
     }
+    if (sim.outpost != null) _outpost(sim.outpost!);
     _salvage(t);
     _derelict(t);
     _hostiles(t);
@@ -354,6 +355,27 @@ class ArenaPainter extends CustomPainter {
     Draw.path(c, Sym.hub.outline, o.dx, o.dy, s, sim.reduced ? 0 : t * .04, _gold, 1.3, alpha: hl ? 1 : .85, bloom: bloom);
     Draw.text(c, 'EXCHANGE', o.dx, o.dy + s * 1.1, T.cond(size: 10, color: _gold.withValues(alpha: .9), spacing: 2), anchor: .5);
     if (hl) Draw.reticle(c, o.dx, o.dy, s, _gold);
+  }
+
+  /// The station stands where the exchange does at the hub, which no outpost
+  /// shares a sector with, on a ground of its own: the rocks of the sector
+  /// drift behind it. The player's own is filled; a breached one is drawn
+  /// broken.
+  void _outpost(proto.OutpostBrief post) {
+    final o = wp(.38, -.26), hl = sim.target == 'p' || sim.hoverT == 'p';
+    final s = g.rh * .15;
+    final col = post.breached ? _ember : post.mine ? _own : _gold;
+    final label = '${post.mine ? 'YOUR OUTPOST' : 'OUTPOST'}${post.level > 0 ? ' L${post.level}' : ''}${post.breached ? ' BREACHED' : ''}';
+    final style = T.cond(size: 10, color: col.withValues(alpha: .9), spacing: 2);
+    final name = Draw.tp(label, style);
+    final ground = Paint()..color = const Color(0xF007050A);
+    c.drawCircle(o, s * 1.05, ground);
+    c.drawRect(Rect.fromCenter(center: o + Offset(0, s * 1.3), width: name.width + 10, height: name.height + 2), ground);
+    if (post.mine) c.drawRect(Rect.fromCenter(center: o, width: s * .96, height: s * .96), Paint()..color = col.withValues(alpha: .22));
+    Draw.symbol(c, Sym.outpost, o.dx, o.dy, s, color: col, lw: 1.3, alpha: hl ? 1 : .85, bloom: bloom);
+    if (post.breached) Draw.dashedLine(c, o + Offset(-s * .48, s * .48), o + Offset(s * .48, -s * .48), Draw.line(col, 1.3), 4, 3);
+    Draw.text(c, label, o.dx, o.dy + s * 1.3, style, anchor: .5);
+    if (hl) Draw.reticle(c, o.dx, o.dy, s, col);
   }
 
   void _derelict(double t) {

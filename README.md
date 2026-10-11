@@ -95,7 +95,14 @@ want, Left/Right the share of the hold, and it shows the server's quote;
 Enter trades when the fleet is at the hub (marked `X` on the star map). `f`
 opens the fleet panel (split, merge); with the fleet at home it also loads
 the hold from the stockpile: `r` picks the resource, Left/Right the share of
-what fits, `l` loads and `u` unloads.
+what fits, `l` loads and `u` unloads. With the fleet at your outpost the same
+keys load from the outpost's store and unload into it. `o` opens the outpost
+overlay: your outpost's level and job, store, yield, defence against the raid
+estimate, the raid on its way and the next level, with `U` to upgrade and `A`
+then `y` to abandon; with no outpost it is the founding survey of the sector
+the active fleet stands in, where `F` surveys (also from outside the
+overlay) and Enter founds. The star map marks your outpost `O` and another
+empire's `o`.
 
 ## Headless / LLM agent mode
 
@@ -307,6 +314,21 @@ stockpile and shows what is aboard and what would fit; `L` in the windshield
 opens it for the active fleet, and `load metal 400`, `load metal` (all that
 fits) and `unload` do the same from the command bar.
 
+Outposts: in rings 9 to 20 the windshield's dock has a Found tile, and `O`
+opens the founding panel anywhere: the server's survey of the sector the
+fleet stands in, the cost of level 1 set against its hold, and a Found
+button that is off, with the server's sentence under it, while the server
+would refuse. Once you have an outpost `O` opens its panel instead (level and
+job with its countdown, the store against cap and protected floor, the yield
+an hour, the defence against the raid estimate and the raid on its way, the
+next level with Upgrade, Abandon behind a second press) with the hold panel
+under it, pointed at the outpost's store for the fleets standing there. The
+outpost also has a screen of its own on the rail (`G` then `P`) and a line in
+the HUD while it stands, a mark on the map (filled for your own) with a note
+in the sector inspector, which has a Survey site button for any charted
+sector. From the command bar: `found`, `survey [q r]`, `outpost upgrade`,
+`outpost abandon`.
+
 - `?name=Admiral` skips the name prompt; `?token=...` supplies the account
   token (see "Accounts and tokens"); `?ws=ws://host:port/ws` points at another
   server. The token the server issues is remembered in the browser's
@@ -325,7 +347,9 @@ fits) and `unload` do the same from the command bar.
   account in the browser.
 - **Notifications.** While the tab is in the background, a finished or idle
   queue, a raid (announced, 60 ticks out, resolved), a lost fleet, a critical
-  alert or full storage is counted in the tab title, `(2) IN AMBER CLAD`, and,
+  alert or full storage, and at the outpost a raid, a breach, a finished
+  level, a full store or a repair that waits for its materials, is counted in
+  the tab title, `(2) IN AMBER CLAD`, and,
   if you turned notifications on, raised as a browser notification. The
   browser is asked for permission only when you press the button for it (the
   one-time offer after your first order starts, or `?` > Notifications).
@@ -403,7 +427,7 @@ and Flutter; no other tool.
 
 ```sh
 scripts/play.sh --single-player --no-serve          # just the bundle
-cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium (about two minutes)
+cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium (about three minutes)
 cargo test -p iac-solo                               # the host natively, through the same door of bytes
 ```
 
