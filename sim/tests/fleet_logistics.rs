@@ -6,16 +6,18 @@ mod common;
 
 use common::*;
 use iac_shared::hex::Hex;
-use iac_shared::constants::{Resources, ShipClass, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
+use iac_shared::constants::{Density, Resources, ShipClass, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
+use iac_shared::pace::Pace;
 use iac_shared::protocol::{
-    AlertEvent, AlertLevel, ClientMessage, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, PolicyUpdate,
-    ServerMessage, ThreatBasis, MAX_ODDS_SECTORS,
+    AlertEvent, AlertLevel, ClientMessage, Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset,
+    PolicyUpdate, ServerMessage, ThreatBasis, MAX_ODDS_SECTORS,
 };
 use iac_shared::scaling::{ratio_label, RatioLabel};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus};
 use iac_sim::odds::{self, Force};
 use iac_sim::persist::ExploreCredit;
+use iac_sim::GameEngine;
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
     e.since(mark, |k| match k {
@@ -680,4 +682,251 @@ fn a_recall_that_breaks_ships_leaves_their_share_of_the_cargo_where_it_jumped_fr
         back.cargo,
     );
     assert_eq!(wreckage(&e, home), Resources::default());
+
+    let told = alerts_since(&e, mark);
+    let cost = told.iter().find(|a| a.message.starts_with(&format!("fleet {fid} made the emergency jump home from {far} for "))).expect("the cost of the jump");
+    assert!(matches!(cost.level, AlertLevel::Warning) && cost.sector == Some(far), "{cost:?}");
+    assert!(cost.message.contains(&format!(": {broke} of its 20 ships broke up in the jump")), "{}", cost.message);
+}
+
+#[test]
+fn a_jump_called_off_tells_its_owner_what_fuel_is_forfeit_and_a_halted_harvest_is_quiet() {
+    let mut e = Empire::join(world("persistent"), "Hesitant");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let out = outward_chain(&e.engine, home, 1)[0];
+
+    let tank = fuel_of(&e, fid);
+    e.order(Command::Move { fleet_id: fid, target: out }).expect("a jump out");
+    assert_eq!(tank - fuel_of(&e, fid), 6.0, "two scouts burn 6 fuel a jump, paid when it is ordered");
+    let mark = e.mark();
+    e.order(Command::Stop { fleet_id: fid }).expect("stop calls a charging jump off");
+    let told = alerts_since(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0].message, format!("fleet {fid} called off its jump to {out}: the 6 fuel it burned for the jump is forfeit"));
+    assert!(matches!(told[0].level, AlertLevel::Warning) && told[0].fleet_id == Some(fid) && told[0].sector == Some(home), "{:?}", told[0]);
+    let halted = &e.engine.fleets[&fid];
+    assert_eq!((halted.state, halted.location, halted.fuel), (FleetStatus::Idle, home, tank - 6.0), "the fuel is gone, as the event says");
+
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().state = FleetStatus::Harvesting);
+    let mark = e.mark();
+    e.order(Command::Stop { fleet_id: fid }).expect("stop halts a harvest");
+    assert!(alerts_since(&e, mark).is_empty(), "halting a harvest costs nothing and says nothing");
+    let (code, why) = e.refusal(Command::Stop { fleet_id: fid });
+    assert_eq!((code, why), (ErrorCode::InvalidCommand, format!("fleet {fid} has nothing to stop")));
+}
+
+#[test]
+fn backing_out_of_a_boarding_tells_its_owner_the_site_is_on_alert() {
+    let mut e = Empire::join(world("test"), "Coldfeet");
+    let fid = e.fid;
+    let site = (-30i16..30)
+        .flat_map(|q| (-30i16..30).map(move |r| Hex { q, r }))
+        .find(|&h| e.engine.derelict_site_at(h).is_some() && e.engine.world_gen.generate_sector(h).npc_template.is_none())
+        .expect("a derelict with no hostile group over it");
+    deploy(&mut e.engine, fid, site, None);
+    let risk = |e: &Empire| e.engine.derelict_site_at(site).expect("the site stands").1;
+    let quiet = risk(&e);
+
+    e.order(Command::ExploreSite { fleet_id: fid }).expect("a boarding party goes in");
+    let mark = e.mark();
+    e.order(Command::Stop { fleet_id: fid }).expect("stop pulls it out");
+    let told = alerts_since(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(
+        told[0].message,
+        format!("fleet {fid} backed out of the derelict at {site}: nothing was recovered and the site is on alert, so the next boarding there is likelier to be ambushed"),
+    );
+    assert!(matches!(told[0].level, AlertLevel::Warning), "{:?}", told[0]);
+    assert_eq!((e.engine.fleets[&fid].state, risk(&e)), (FleetStatus::Idle, quiet + 1), "which is what the engine did");
+}
+
+#[test]
+fn a_recall_tells_its_owner_what_the_jump_cost_in_fuel_in_hull_and_in_a_jump_abandoned() {
+    let mut e = Empire::join(world("persistent"), "Limper");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let far = Hex { q: home.q + 25, r: home.r };
+    muster(&mut e.engine, fid, &[(ShipClass::Scout, 20)], far);
+    let fuel = e.engine.recall_fuel_cost(&e.engine.fleets[&fid]);
+    assert_eq!(fuel, 3000.0, "twenty scouts, 60 fuel a hex, 25 hexes, doubled");
+
+    let mark = e.mark();
+    e.order(Command::Recall { fleet_id: fid }).expect("recall");
+    let back = e.fleet();
+    assert_eq!((back.location, back.ships.len()), (home, 20), "a whole hull loses at most four fifths of itself: none broke up");
+    let hurt: Vec<f32> = back.ships.iter().filter(|s| s.hull < s.hull_max).map(|s| s.hull_max - s.hull).collect();
+    assert!(hurt.len() > 2 && hurt.len() < 20, "half the ships are damaged at this range, give or take: {}", hurt.len());
+    let told = alerts_since(&e, mark);
+    assert_eq!(told.len(), 1, "one event for the jump: {told:?}");
+    assert_eq!(
+        told[0].message,
+        format!(
+            "fleet {fid} made the emergency jump home from {far} for 3000 fuel: {} of its 20 ships took {:.0} hull damage, which is not repaired",
+            hurt.len(),
+            hurt.iter().sum::<f32>(),
+        ),
+    );
+    assert!(matches!(told[0].level, AlertLevel::Warning) && told[0].sector == Some(far), "{:?}", told[0]);
+
+    let mut e = Empire::join(world("persistent"), "Drilled");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let chain = outward_chain(&e.engine, home, 2);
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.emergency_jump = 10);
+    e.travel(chain[0]);
+    e.run_until(200, |e| e.engine.fleets[&fid].action_cooldown == 0);
+    e.order(Command::Move { fleet_id: fid, target: chain[1] }).expect("a jump further out");
+    let mark = e.mark();
+    e.order(Command::Recall { fleet_id: fid }).expect("recall from one hop out, a jump charging");
+    let told = alerts_since(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(
+        told[0].message,
+        format!(
+            "fleet {fid} made the emergency jump home from {} for 12 fuel, abandoning the jump to {} it had burned 6 fuel for: no ship was damaged",
+            chain[0], chain[1],
+        ),
+    );
+    assert!(matches!(told[0].level, AlertLevel::Info), "a jump that harmed nothing is news, not a warning: {:?}", told[0]);
+    assert_eq!(e.fleet().location, home);
+}
+
+#[test]
+fn a_harvest_that_ends_by_itself_says_why_once_and_a_fleet_under_orders_leaves_it_to_its_doctrine() {
+    let seam = |e: &Empire| {
+        let home = e.engine.players[&e.pid].homeworld;
+        let quiet = |h: Hex| e.engine.world_gen.generate_sector(h).npc_template.is_none();
+        (-3i16..=3)
+            .flat_map(|q| (-3i16..=3).map(move |r| Hex { q: home.q + q, r: home.r + r }))
+            .filter(|&h| h != home && quiet(h) && e.engine.world_gen.generate_sector(h).metal_density != Density::None)
+            .find(|&h| lane_path(&e.engine, h, home, 3).is_some_and(|way| way.into_iter().all(quiet)))
+            .expect("a metal seam near home with a quiet way back")
+    };
+    let stopped = |e: &Empire, mark: usize| -> Vec<String> {
+        alerts_since(e, mark).into_iter().map(|a| a.message).filter(|m| m.contains("stopped mining")).collect()
+    };
+
+    let mut e = Empire::join(world("test"), "Miner");
+    let fid = e.fid;
+    let at = seam(&e);
+    muster(&mut e.engine, fid, &[(ShipClass::Scout, 2)], at);
+    let hold = e.fleet().cargo_capacity;
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().cargo.crystal = hold - 1.0);
+    let mark = e.mark();
+    e.order(Command::Harvest { fleet_id: fid, resource: HarvestResource::Metal }).expect("harvest");
+    e.run_until(60, |e| e.engine.fleets[&fid].state != FleetStatus::Harvesting);
+    e.run(30);
+    assert_eq!(
+        stopped(&e, mark),
+        [format!("fleet {fid} stopped mining at {at}: its hold is full; it carries {hold:.0} of {hold:.0}")],
+        "said when the harvest ends, and not again while the fleet stands there",
+    );
+    let told = alerts_since(&e, mark);
+    assert!(matches!(told[0].level, AlertLevel::Warning) && told[0].fleet_id == Some(fid) && told[0].sector == Some(at), "{:?}", told[0]);
+
+    let mut e = Empire::join(world("test"), "Stripper");
+    let fid = e.fid;
+    muster(&mut e.engine, fid, &[(ShipClass::Hauler, 40)], at);
+    let hold = e.fleet().cargo_capacity;
+    let mark = e.mark();
+    e.order(Command::Harvest { fleet_id: fid, resource: HarvestResource::Metal }).expect("harvest");
+    e.run_until(4000, |e| e.engine.fleets[&fid].state != FleetStatus::Harvesting);
+    e.run(30);
+    let aboard = e.fleet().cargo.total();
+    assert!(aboard > 0.0 && aboard < hold, "forty Haulers strip the metal with room to spare: {aboard} of {hold}");
+    assert_eq!(
+        stopped(&e, mark),
+        [format!("fleet {fid} stopped mining at {at}: no metal is left to mine there; it carries {aboard:.0} of {hold:.0}")],
+    );
+
+    let mut e = Empire::join(world("test"), "Ordered");
+    let (pid, fid) = (e.pid, e.fid);
+    muster(&mut e.engine, fid, &[(ShipClass::Scout, 2)], at);
+    let hold = e.fleet().cargo_capacity;
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().cargo.crystal = hold - 1.0);
+    e.order(Command::Harvest { fleet_id: fid, resource: HarvestResource::Metal }).expect("harvest");
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::MineAndReturn, None).expect("orders for a fleet at work");
+    let mark = e.mark();
+    e.run_until(60, |e| e.engine.fleets[&fid].state != FleetStatus::Harvesting);
+    e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
+    let said = policy_reasons(&e, mark, "move");
+    assert!(said[0].starts_with("returning: cargo 100%"), "the doctrine says what the full hold means for it: {said:?}");
+    assert_eq!(stopped(&e, mark), Vec::<String>::new(), "so the fleet is not reported twice");
+}
+
+fn reports(e: &Empire, mark: usize) -> Vec<(String, String)> {
+    e.since(mark, |k| match k {
+        EventKind::PolicyAction(p) if p.action != "engage" => Some((p.action.clone(), p.reason.clone())),
+        _ => None,
+    })
+}
+
+fn shields(e: &Empire) -> f32 {
+    let ships = e.fleet().ships;
+    ships.iter().map(|s| s.shield).sum::<f32>() / ships.iter().map(|s| s.shield_max).sum::<f32>()
+}
+
+#[test]
+fn a_ship_from_the_yard_or_a_fleet_merged_in_leaves_the_docked_fleet_fit_for_its_orders() {
+    let mut e = Empire::join(world("test"), "Yardmaster");
+    let (pid, fid) = (e.pid, e.fid);
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.shipyard = 1);
+    e.set_stockpile(Resources { metal: 400.0, crystal: 100.0, deuterium: 60.0 });
+    e.order(Command::BuildShip { ship_class: ShipClass::Scout, count: 1 }).expect("a scout ordered");
+    e.run_until(400, |e| e.fleet().ships.len() == 3);
+    assert_eq!(shields(&e), 1.0, "the scout the yard delivers joins the docked fleet with its shields up: {:?}", e.fleet().ships);
+
+    let newest = e.fleet().ships[2].id;
+    e.order(Command::Split { fleet_id: fid, ship_ids: vec![newest] }).expect("split it off");
+    let other = e.state().fleets.iter().find(|f| f.id != fid).expect("the new fleet").id;
+    e.order(Command::Merge { fleet_id: fid, other_fleet_id: other }).expect("and merge it back");
+    assert_eq!((e.fleet().ships.len(), shields(&e)), (3, 1.0), "a merge brings ships in as they are");
+
+    let mark = e.mark();
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).expect("orders");
+    e.run_until(30, |e| !reports(e, mark).is_empty());
+    let first = reports(&e, mark).remove(0);
+    assert!(!first.1.contains("shields"), "its first report under orders is not a wait for shields: {first:?}");
+}
+
+#[test]
+fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_dock_and_not_before() {
+    let mut e = (1u64..400)
+        .find_map(|seed| {
+            let e = Empire::join(GameEngine::new(seed, Pace::parse("blitz").expect("known pace")), "Warden");
+            let home = e.engine.players[&e.pid].homeworld;
+            e.engine.pending_template_npc(home).is_some().then_some(e)
+        })
+        .expect("a world whose first home has a convoy standing over it");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    muster(&mut e.engine, fid, &[(ShipClass::Scout, 3)], home);
+    assert_eq!(shields(&e), 1.0);
+
+    let mark = e.mark();
+    let params = PolicyParams { max_range: 1, engage_ratio_x10: 100, ..PolicyParams::default() };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, Some(params)).expect("patrol orders");
+    e.run_until(10, |e| !reports(e, mark).is_empty());
+    assert_eq!(reports(&e, mark), [("attack".to_string(), "engaging hostiles".to_string())], "its first act under orders is the fight");
+
+    let ended = |e: &Empire| {
+        e.since(mark, |k| match k {
+            EventKind::CombatEnded(c) => Some((c.sector, c.player_victory)),
+            _ => None,
+        })
+    };
+    e.run_until(300, |e| !ended(e).is_empty());
+    assert_eq!(ended(&e), [(home, true)], "three scouts beat the convoy, in the home sector");
+    let worn = shields(&e);
+    assert!(worn < 0.95, "and the convoy shot back: shields at {:.0}%", worn * 100.0);
+
+    e.run_until(20, |e| reports(e, mark).iter().any(|(action, _)| action == "hold"));
+    let held = reports(&e, mark).into_iter().find(|(action, _)| action == "hold").expect("a hold").1;
+    assert!(held.starts_with("shields recharging ("), "the hold is for the shields the fight cost: {held}");
+    e.run_until(200, |e| shields(e) >= 0.95);
+    let mark = e.mark();
+    e.run_until(70, |e| !reports(e, mark).is_empty());
+    let next = reports(&e, mark).remove(0);
+    assert!(!next.1.contains("shields"), "with the shields back the patrol goes on with its beat: {next:?}");
 }

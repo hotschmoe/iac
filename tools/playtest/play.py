@@ -612,6 +612,17 @@ def affordable(fs):
     return out
 
 
+def orders_words(f):
+    """A fleet's standing orders as the server carries them: the doctrine and every setting in force, or manual."""
+    orders = f.get("policy")
+    if not orders:
+        return "manual"
+    p = orders["params"]
+    fuel = "unbounded" if p["fuel_budget_pct"] >= 100 else f"{p['fuel_budget_pct']}%"
+    return (f"{orders['preset']} (range {p['max_range']}, engage {p['engage_ratio_x10'] / 10:.1f}x, fuel {fuel}, "
+            f"home at cargo {p['cargo_return_pct']}%, reserve {p['min_fuel_pct']}%)")
+
+
 def fleet_rows(fs):
     out = []
     sectors = {(s["location"]["q"], s["location"]["r"]): s for s in fs.get("known_sectors") or []}
@@ -622,7 +633,7 @@ def fleet_rows(fs):
             ships[s["class"]] = ships.get(s["class"], 0) + 1
             hull += s["hull"]; hull_max += s["hull_max"]
         loc = [f["location"]["q"], f["location"]["r"]]
-        row = {"id": f["id"], "at": loc, "state": f["state"], "policy": f.get("policy") or "manual",
+        row = {"id": f["id"], "at": loc, "state": f["state"], "policy": orders_words(f),
                "fuel": round(f["fuel"]), "fuel_max": round(f["fuel_max"]), "range_hops": f.get("range_hops"),
                "power": round(f.get("power", 0)), "cooldown": f.get("cooldown_remaining", 0),
                "cargo": [round((f.get("cargo") or {}).get(k, 0)) for k in RES], "cargo_cap": round(f.get("cargo_capacity", 0)),
@@ -765,7 +776,7 @@ def snapshot(fs):
     return {"tick": fs["tick"],
             "q": {n: {"room": q["room"], "open": q["open"], "aff": aff[n]} for n, q in qs.items()},
             "fleets": {f["id"]: {"state": f["state"], "at": (f["location"]["q"], f["location"]["r"]),
-                                 "auto": (f.get("policy") or "manual") != "manual", "blocked": bool(f.get("cargo_blocked"))}
+                                 "auto": bool(f.get("policy")), "blocked": bool(f.get("cargo_blocked"))}
                        for f in fs.get("fleets") or []},
             "busy": {n: len(q["running"]) + len(q["waiting"]) for n, q in qs.items()}}
 
@@ -929,7 +940,7 @@ def summarize(fs, doc, odds):
             classes[s["class"]] = classes.get(s["class"], 0) + 1
             hull += s["hull"]; hull_max += s["hull_max"]
         cargo = sum((f.get("cargo") or {}).values())
-        print(f"\nFleet {f['id']} at {loc[0]},{loc[1]}  {f['state']}  policy={f.get('policy') or 'manual'}  cooldown={f.get('cooldown_remaining', 0)}"
+        print(f"\nFleet {f['id']} at {loc[0]},{loc[1]}  {f['state']}  policy={orders_words(f)}  cooldown={f.get('cooldown_remaining', 0)}"
               f"  power {f.get('power', 0):.0f}  range {f.get('range_hops', 0)} hops out and back"
               + ("  CARGO BLOCKED: stockpile full, spend something" if f.get("cargo_blocked") else "")
               + ("  LADEN: loaded by hand, stays aboard at the dock (unload puts it back)" if f.get("laden") else ""))

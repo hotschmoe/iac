@@ -6,7 +6,7 @@ use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BuildQueueItem, BuildingState, DefenceState, FleetState, GameEvent, GameState, HomeworldState,
     PlayerState, QueuedBuild, QueuedResearch, QueuedShip, ResearchItem, ResearchState, ShipState,
-    ShipyardQueueItem, TickUpdate, WorldInfo,
+    ShipyardQueueItem, StandingOrders, TickUpdate, WorldInfo,
 };
 use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
 
@@ -111,7 +111,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
                 && fleet.cargo.total() > 0.0
                 && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
             laden: fleet.laden,
-            policy: engine.policies.get(&fleet.id).map(|p| p.preset),
+            policy: engine.policies.get(&fleet.id).map(|p| StandingOrders { preset: p.preset, params: p.params }),
         });
     }
     list.sort_by_key(|f| f.id);

@@ -225,12 +225,6 @@ class GameState {
   /// fleet id.
   final Map<int, List<PolicyAct>> policyActs;
 
-  /// The settings this console last gave each fleet's standing orders, by
-  /// fleet id, while those orders stand. The wire carries a fleet's doctrine
-  /// and not its settings, so orders given elsewhere, or before this
-  /// session, have none here.
-  final Map<int, proto.PolicyParams> policyParams;
-
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -260,7 +254,6 @@ class GameState {
     this.leaderboard,
     this.raid,
     this.policyActs = const {},
-    this.policyParams = const {},
   });
 
   /// Why [fleet] stands still under its orders: the hold they last
@@ -359,7 +352,6 @@ class GameState {
     proto.LeaderboardReply? leaderboard,
     proto.RaidIncomingEvent? raid,
     Map<int, List<PolicyAct>>? policyActs,
-    Map<int, proto.PolicyParams>? policyParams,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -390,6 +382,5 @@ class GameState {
         leaderboard: leaderboard ?? this.leaderboard,
         raid: raid ?? this.raid,
         policyActs: policyActs ?? this.policyActs,
-        policyParams: policyParams ?? this.policyParams,
       );
 }

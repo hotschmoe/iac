@@ -3127,3 +3127,195 @@ is the same. Orders given to one account from two consoles at once were tried
 only against the scripted world. No Rust was touched and `cargo test` was not
 run on the merged tree. Window sizes between the ones named were not looked
 at.
+
+## 2026-10-11: a fleet's orders on its row, orders that say what they cost, and the windshield's leftovers
+
+What the four entries above found and left. Engine, protocol, both clients,
+`play.py`, the rules text. No constant, no save format, no SQLite column. The
+choices are the agent's and are in decisions.md under the same date. Branch
+`worktree-agent-a621c335bb11e0908`, not merged.
+
+**A fleet's orders are on the wire.** `FleetState.policy` was the doctrine
+alone; the range, the ratio and the budget were said once, in the `engage`
+report. It is now `{preset, params}`: the doctrine with all five settings as
+the server holds them after clamping, present exactly when the fleet is under
+orders and absent otherwise (`StandingOrders` in `shared/src/protocol.rs`,
+filled in `sim/src/views.rs`). One object and not a second field beside the
+first, so that the two cannot disagree. The bots read the doctrine in two
+lines of `sim/src/bot/field.rs`, changed to compile and no more.
+- *Web.* The orders panel shows the settings in force for any fleet under
+  orders and starts its steppers from them. The mapper's memory of what this
+  console had sent, the count of confirmations it was owed, the "not given
+  from this console" sentence and the `policyParams` map are gone. A step of
+  one stepper sends that setting changed and the other four as they are in
+  force. In the command bar, settings with no doctrine (`policy range=6`)
+  now change the orders in force; they used to reset the rest to the
+  defaults, which nobody could see until now.
+- *TUI.* The windshield's fleet panel lists the doctrine and the five
+  settings; the command center's fleet list puts range, ratio and budget on a
+  line under the fleet. `p` (next doctrine) and `P` (next fuel budget) keep
+  the settings the fleet has; `p` used to send the defaults and `P` stepped a
+  number of its own.
+- *play.py* prints `prospect (range 6, engage 2.0x, fuel 35%, home at cargo
+  85%, reserve 10%)` where it printed the doctrine.
+
+**Orders that cost without a word.** Three places, all answered with an
+`Alert` that names the fleet and the sector; no new event kind.
+- `stop` on a charging jump: "fleet 2 called off its jump to [-3,0]: the 6
+  fuel it burned for the jump is forfeit", a warning. `stop` on a boarding
+  left the site likelier to ambush and said nothing; it now says "backed out
+  of the derelict at [..]: nothing was recovered and the site is on alert, so
+  the next boarding there is likelier to be ambushed". That one was not on
+  the list; it is the same order in the same function. Halting a harvest
+  costs nothing and says nothing.
+- `recall`: one alert with the whole cost. "fleet 2 made the emergency jump
+  home from [28,-3] for 3000 fuel: 10 of its 20 ships took 141 hull damage,
+  which is not repaired"; with ships lost, "3 of its 20 ships broke up in the
+  jump and 5 more took ..."; with a jump charging, ", abandoning the jump to
+  [..] it had burned 6 fuel for". A warning when a ship was harmed, info
+  ("no ship was damaged") when none was. Until now a recall that broke
+  nothing sent no event at all.
+- A harvest that ends by itself: "fleet 2 stopped mining at [3,-2]: its hold
+  is full; it carries 40 of 40", or "nothing is left to mine there", or "no
+  crystal is left to mine there" for a named resource. Once, in the tick it
+  ends. A fleet under standing orders is skipped: its doctrine reports
+  "returning: cargo 100%" or moves to the next seam, and the test holds it to
+  one report.
+The fuel in the stop sentence is what a jump costs the fleet when it is
+stopped; it is not stored when the jump is ordered (decisions.md says why).
+
+**How the two clients show them.** Web: a warning is a red toast and a bright
+log line, info a log line. The longest of these sentences is five lines of a
+toast, and an alert toast lasted 4.2 seconds; it now stays nine, as a refusal
+does. TUI: the event feed cut a line at the panel's edge, which is where
+these sentences say the cost; a long event now wraps onto an indented row.
+Both were existing faults that the hold alerts of the entry above already
+had.
+
+**The recordings.** `chart_golden.txt` and the determinism runs needed
+nothing. The three changes add events and leave the world as it was: the
+chart recording hashes each player's sector updates and chart, not events,
+and it held for all 4000 ticks; the determinism tests compare two runs of the
+same build. There was no first divergence to trace.
+
+**A new ship and the shield hold.** Not the ship. A scout from the yard
+arrives with full shields (`add_ship_to_homeworld` builds it at its stats),
+a merge brings ships in as they are, and nothing else at the dock touches a
+shield but a repelled raid, which halves them. What the browser check met
+was a fight it did not look for: the picture of the second failing run
+(`web2/e2e2/21d-orders-first-hold-1440.png`) has "HOSTILE SCOUT CONVOY
+DESTROYED IN [-2,4]", "COMBAT ENDED IN [-2,4]: VICTORY" and then "HOLD:
+SHIELDS RECHARGING (76%)" in its feed, and [-2,4] is the homeworld. A convoy
+may stand on a home seat (world generation keeps only groups that shoot
+first off home ground; the rules say so, the comment on `is_home_ground`
+did not and now does). Patrol at range 1 and ten to one, with three scouts
+against a one-scout convoy, attacks it, wins and waits for the shields the
+fight cost. The check of that day waited for the first *hold* and never saw
+the attack before it. Reproduced in the engine on the first world seed whose
+first home has a convoy over it: attack, victory in the home sector, shields
+below 95 percent, "shields recharging (70%)", shields back, the beat goes on.
+Nothing was changed in the engine or the doctrine. One thing the
+reproduction shows that is not this item's: at blitz pace the convoy over a
+home is back within the minute and the patrol fights it again.
+
+**The windshield's leftovers** (web, the list of the entry above).
+- An open status sheet is drawn over the banner, on an opaque ground the
+  size of its panels. At 1100 px, where the sheet takes the right 380, the
+  banner is centred in what is left and shows whole beside it; on a phone it
+  is behind the sheet.
+- Toasts stand at the top wherever the windshield runs its dock along the
+  bottom, which is up to a window of 1167 px, inside the screen and not over
+  the rail. The other screens keep their desktop layout between 820 and
+  1167 and their toasts at the bottom right.
+- The windshield tells the guide which gate cards it has laid out. With a
+  phone's small cards the jump lesson reads "Each gate card is a lane, named
+  by its key. An amber gate is quiet; any other colour is hostile or
+  uncharted, and the Map says which. The marked gates are quiet. Tap a gate
+  to jump.", and the harvest lesson points at the Map's Ore layer instead of
+  bars that are not there. The cards were left alone.
+- The desktop fleet rail ends at the line the feed may rise to and scrolls;
+  selecting a fleet brings its card into view.
+
+**Seen on the way (not changed).**
+- In the web windshield the Stop tile and `X` do nothing while a jump's
+  animation runs (`act` returns while `sim.warp` is set), so there a jump can
+  be called off only from the command bar, and a scout's jump charges for
+  one tick. A step for the browser check that pressed a gate key and `X`
+  after a tick was written, failed for that reason and was taken out.
+- A fight that catches a fleet charging a jump forfeits the jump's fuel too
+  (`engage_fleet`), and says only that the fight began.
+- `ensure_batch_paid_for` accepts a ship batch the stockpile covers without
+  asking whether it fits the Vault; buildings and research always ask. With
+  refunds paid past the cap a batch can cost more than the cap.
+- The misplaced comment line "Stable id of the hostile a sector's template
+  spawns" sits above `hold_key` in `engine.rs`.
+- One stash entry of this pass, `followup-a621-decisions`, is on the shared
+  stack. Its content is committed; it was left for the owner to drop.
+
+**Tests.** `sim/tests/fleet_logistics.rs`: the stop on a jump with its
+sentence, the fuel gone, the harvest halted in silence and the second stop
+refused; the boarding backed out of and the site's count one higher; a recall
+of twenty scouts from 25 hexes with the damaged ships and the hull lost
+counted off the fleet row and compared with the sentence, and a recall of a
+fleet charging a jump with Emergency Jump high enough that nothing is
+harmed; the older recall test now reads the count of ships that broke up out
+of the alert; a harvest ended by a full hold, said once in thirty ticks, one
+ended by a seam forty Haulers strip, and one under mine+return that reports
+through its doctrine and not twice; a scout built by the yard, split off and
+merged back, with shields full and no shield hold as the first report; the
+patrol at its own dock. `server/tests/scenarios.rs`: the boarding scenario
+gives its fleet orders with a range of 99, sees them on the row clamped to
+30, kills the server, and a client that logs in afterwards reads the same
+object. `solo/tests/single_player.rs`: orders before the save, 150 ticks
+replayed, the two worlds equal, and the commander's next login reads them.
+Fixtures regenerated (`full_state`, `tick_update`). Flutter: the fixtures;
+the panel for a fleet whose orders came in the state and never from this
+console, with its steppers and the one changed setting on the wire; the
+scripted world's fleet 103, under orders since before the console opened;
+orders from another console and typed settings alone; the three cost
+sentences as toast and log line at 1440 and 390; sheet, banner and ground at
+390 and 1100; toasts at 1100 on the windshield and on the Overview; the two
+wordings of the lesson against the cards on screen at three sizes; eight
+fleets at three window sizes. `solo_e2e.dart` reads the settings off the
+fleet row and the panel after Set, and gives the fleet orders before its
+reload step: the reloaded page reads `{"preset":"prospect","params":{...
+"max_range":2,...,"fuel_budget_pct":35}}` off the wire and shows "RANGE 2
+HEXES - ENGAGE 1.5X - FUEL 35%" for orders that page never gave.
+
+**Run.** On the tree merged with master (`48f15ba`, the outposts design, a
+document): `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`, 127 tests (121 before), all pass, run without `nice` because
+the sandbox refuses `nice ... cargo test`; clippy clean with `-D warnings`;
+`check_sim_constants.py` agrees; the wasm release build; the 36 offline tests
+of `play.py`; `flutter analyze` clean; `flutter test` pinned, 369 of 369
+(365, 366 and 369 in the full runs on the way, none failing but the one
+below). `play.sh --single-player --no-serve`, `cargo build -p iac-server`
+and `solo_e2e.dart --port 7982`: OK in 184 s with the bundle rebuilt on the
+merged tree (OK in 191 s before the merge), the multiplayer step included.
+Its pictures were read at 1440, 1100 and 390 px: the panel after the reload
+with the settings of orders that page did not give, the sheet at 1100 with
+the banner whole beside it, the sheet on a phone with nothing over it and
+nothing showing through, and the jump lesson in its two wordings. The widget
+tests' pictures of the eight-fleet rail, the toasts at 1100 and the cost
+toasts at 1440 and 390 were read too. The TUI was driven in a pseudo-terminal
+against a real server at pace 1 (ports 7981 and 7984 to 7986): the settings
+under the doctrine, `P` stepping 20, 35, 50 and `p` keeping it, the fleet
+list, and "T31: [warning] fleet 2 called off its jump to [-3,0]: the 6 fuel
+it burned for the jump is forfeit", wrapped at 100 columns.
+
+Failures on the way, all mine: the harvest test first looked for its seam
+from the corner of the map and found one the doctrine could not come home
+from; the patrol test first asserted no shield hold for 70 ticks after the
+shields were back and met the convoy's return; one full `flutter test` run
+failed in the new eight-fleet test, which pressed `8` on a fake controller
+that does not select; the browser check failed once in the step described
+under "Seen on the way" (log kept).
+
+**Not verified.** The three cost alerts were not seen in the real bundle:
+the page shows any `Alert` the same way, and the widget test fed the three
+sentences through the real mapper and shell. Recall and harvest alerts were
+not seen in the TUI, only the stop. The panel against a multiplayer server
+in a browser (the Rust scenario reads the wire; the client code is the
+same). No real phone and no browser but headless Chromium; the JavaScript
+build was not run. The balance report was not run: bots get more alerts and
+read none of them, and no rule changed. The LLM harness was not run.

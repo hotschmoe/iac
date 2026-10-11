@@ -62,6 +62,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   /// The most the status sheet of the phone layout takes of a wide arena.
   static const _sheetWidth = 380.0;
 
+  /// Where the desktop layout's fleet rail starts, under the sector head.
+  static const _railTop = 230.0;
+
   Console get con => _con!;
 
   @override
@@ -430,7 +433,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final th = SectorThreat.of(s);
       if (th.hostile) con.game.requestOdds(f.id, [f.sector]);
       sim.layout(g);
-      final lanes = [for (final d in dirs) s?.connections.contains(f.sector + d.v) ?? false];
+      con.onboarding.gateCards(small: g.compact);
+      final lanes =[for (final d in dirs) s?.connections.contains(f.sector + d.v) ?? false];
       final homePath = f.sector == st.homeworld
           ? null
           : RoutePlanner.plan(sectors: st.sectors, tick: st.tick, fleet: f, from: f.sector, to: st.homeworld, home: st.homeworld, mode: RouteMode.fast);
@@ -505,6 +509,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       ];
       final atExchange = st.exchangeAt(f.sector);
       final feedWidth = math.min(340.0, (size.width - dockActions.length * Dock.tileWidth) / 2 - 30);
+      final feedCeiling = g.cardCenter(dirs[4]).dy + GateCard.tallest / 2;
 
       final rightCol = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
@@ -592,7 +597,14 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             top: 14,
             width: narrow ? math.min(SectorHead.phoneWidth, size.width - 96) : math.min(300, g.cardCenter(dirs[5]).dx - GateCard.width / 2 - 26),
             child: SectorHead(loc: f.sector, home: st.homeworld, sector: s, threat: th, narrow: narrow, exchange: atExchange)),
-        if (!narrow) Positioned(left: 16, top: 230, width: 208, child: FleetRail(ctrl: con.game, narrow: false, combat: combat)),
+        if (!narrow)
+          Positioned(
+              left: 16,
+              top: _railTop,
+              width: 208,
+              child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: math.max(FleetRail.cardHeight, feedCeiling - _railTop)),
+                  child: FleetRail(ctrl: con.game, narrow: false, combat: combat))),
         if (narrow) Positioned(left: 8, right: 8, bottom: 70, child: FleetRail(ctrl: con.game, narrow: true, combat: combat)),
         if (narrow)
           Positioned(
@@ -607,21 +619,23 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               width: 300,
               bottom: (size.width + dockActions.length * Dock.tileWidth) / 2 + 8 <= size.width - 316 ? 14 : 100,
               child: SingleChildScrollView(child: rightCol)),
+        Positioned(
+            key: const ValueKey('banner'),
+            left: 0,
+            right: narrow && _sheet && size.width > _sheetWidth + 16 ? _sheetWidth + 8 : 0,
+            top: narrow ? 90 : size.height * .21,
+            child: IgnorePointer(child: Center(child: _BannerBox(c: _banner, h: _bannerH, p: _bannerP, red: _bannerRed)))),
         if (narrow && _sheet)
           Positioned(
+              key: const ValueKey('status-sheet-open'),
               left: size.width > _sheetWidth + 16 ? null : 8,
               right: 8,
               width: size.width > _sheetWidth + 16 ? _sheetWidth : null,
               top: 40,
               bottom: 130,
-              child: SingleChildScrollView(child: rightCol)),
+              child: SingleChildScrollView(child: ColoredBox(color: C.deep, child: rightCol))),
         if (!narrow && feedWidth >= 200)
-          Positioned(
-              left: 16,
-              bottom: 14,
-              width: feedWidth,
-              child: Feed(events: st.events, maxHeight: size.height - 14 - 8 - (g.cardCenter(dirs[4]).dy + GateCard.tallest / 2))),
-        Positioned(left: 0, right: 0, top: narrow ? 90 : size.height * .21, child: IgnorePointer(child: Center(child: _BannerBox(c: _banner, h: _bannerH, p: _bannerP, red: _bannerRed)))),
+          Positioned(left: 16, bottom: 14, width: feedWidth, child: Feed(events: st.events, maxHeight: size.height - 14 - 8 - feedCeiling)),
         if (_hsub)
           Positioned(left: 0, right: 0, bottom: narrow ? 66 : 80, child: Center(child: IntrinsicWidth(child: ConsolePanel(flat: true, child: Row(mainAxisSize: MainAxisSize.min, children: [
             for (final k in const ['auto', 'm', 'c', 'd'])

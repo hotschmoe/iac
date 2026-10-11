@@ -23,6 +23,9 @@ class Rail extends StatelessWidget {
   final Screen? mark;
   const Rail({super.key, required this.active, required this.bottom, required this.onGo, this.badges = const {}, this.mark});
 
+  /// What the rail takes of the window's width when it stands at the left.
+  static const width = 78.0;
+
   @override
   Widget build(BuildContext context) {
     final still = reducedMotion(context);
@@ -42,7 +45,7 @@ class Rail extends StatelessWidget {
         ),
     ];
     return Container(
-      width: bottom ? null : 78,
+      width: bottom ? null : width,
       height: bottom ? 54 : null,
       decoration: BoxDecoration(
           color: C.rail,

@@ -120,7 +120,13 @@ void main() {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
       final s = ServerMessage.fromJson(readJson(f)) as GameState;
       expect(s.knownSectors.first.connections, isNotEmpty);
-      expect(s.fleets.first.policy, isNotNull);
+      expect(
+          s.fleets.first.policy,
+          const StandingOrders(
+              preset: PolicyPreset.salvageAndSites,
+              params: PolicyParams(minFuelPct: 25, cargoReturnPct: 70, maxRange: 9, engageRatioX10: 22, fuelBudgetPct: 100)),
+          reason: 'a fleet under orders carries the doctrine and every setting in force');
+      expect(s.fleets[1].policy, isNull, reason: 'and one flown by hand carries none');
       expect(s.homeworld.buildings.length, BuildingType.values.length);
       expect(s.homeworld.storage.cap.metal, 7500);
       expect(s.homeworld.storage.capped, [ResourceKind.deuterium]);

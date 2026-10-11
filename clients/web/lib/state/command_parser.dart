@@ -77,7 +77,7 @@ const helpLines = [
   '        salvage   scoops wreckage and boards derelicts, nearest first',
   '        patrol    hunts the hostiles it rates at its engage ratio, in range of home',
   '        manual    clears the orders (also: off); policy with no name steps to the next doctrine',
-  '        settings, after the name or alone:  range=<hexes from home, 1-30>  engage=<least odds ratio, 0.1-10>',
+  '        settings, after the name, or alone to change the orders in force:  range=<hexes from home, 1-30>  engage=<least odds ratio, 0.1-10>',
   '                  fuel=<% of deuterium income it may burn, 100 = no bound>  cargo=<% of the hold that sends it home, 10-100>',
   '                  reserve=<% of the tank kept spare, 0-90>     e.g. policy mine range=8 fuel=40',
   'hub:    quote <give> <want> [amount|all]  ask the exchange what a trade would return, from anywhere   e.g. quote metal deut 400',
@@ -203,7 +203,7 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
           for (var i = 0; i < ctx.fleets.length; i++)
             '${ctx.fleets[i].id == fid ? '>' : ' '}${i + 1}: F${ctx.fleets[i].id} ${ctx.fleets[i].state.wire} '
                 '${ctx.fleets[i].location} ships ${ctx.fleets[i].ships.length}'
-                '${ctx.fleets[i].policy == null ? '' : ' [${ctx.fleets[i].policy!.label}]'}',
+                '${ctx.fleets[i].policy == null ? '' : ' [${ctx.fleets[i].policy!.preset.label}]'}',
         ]);
       }
       final n = int.tryParse(args.first);
@@ -382,16 +382,17 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
       if (fid == null) return const ParsedError('No fleet selected (you have none)');
       final names = [for (final a in args) if (!a.contains('=')) a];
       final settings = [for (final a in args) if (a.contains('=')) a];
+      final standing = ctx.fleet?.policy;
       PolicyPreset? preset;
       if (names.isEmpty) {
-        final cur = ctx.fleet?.policy ?? PolicyPreset.manual;
+        final cur = standing?.preset ?? PolicyPreset.manual;
         preset = settings.isEmpty ? PolicyPreset.values[(cur.index + 1) % PolicyPreset.values.length] : cur;
       } else {
         preset = _policies[names.first];
       }
       if (preset == null) return const ParsedError(_policyUsage);
       if (settings.isEmpty) return ParsedSend([PolicyUpdate(fleetId: fid, preset: preset)]);
-      final params = _policyParams(settings);
+      final params = _policyParams(settings, over: names.isEmpty ? standing?.params : null);
       if (params == null || preset == PolicyPreset.manual) return const ParsedError(_policyUsage);
       return ParsedSend([PolicyUpdate(fleetId: fid, preset: preset, params: params)]);
   }
@@ -416,11 +417,12 @@ String policyCommand(PolicyPreset preset, [PolicyParams params = const PolicyPar
 
 const _policyUsage ='policy: manual|prospect|mine|salvage|patrol  [range=1-30] [engage=0.1-10] [fuel=0-100] [cargo=10-100] [reserve=0-90]';
 
-/// Doctrine settings typed as `key=value` over the server's defaults; null
-/// when one of them does not parse or lies outside what the server takes,
-/// so the settings sent are the settings in force.
-PolicyParams? _policyParams(List<String> settings) {
-  const preset = PolicyParams();
+/// Doctrine settings typed as `key=value` over [over], the settings the
+/// fleet's orders have when the line names no doctrine, or else over the
+/// server's defaults; null when one of them does not parse or lies outside
+/// what the server takes, so the settings sent are the settings in force.
+PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
+  final preset = over ?? const PolicyParams();
   var (reserve, cargo, range) = (preset.minFuelPct, preset.cargoReturnPct, preset.maxRange);
   var (engage, fuel) = (preset.engageRatioX10, preset.fuelBudgetPct);
   for (final setting in settings) {

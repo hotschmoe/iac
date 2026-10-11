@@ -89,8 +89,8 @@ proto.ThreatInfo _threatOf(List<proto.NpcFleetInfo>? groups) {
   return proto.ThreatInfo(rating: rating, estPower: power, basis: proto.ThreatBasis.observed);
 }
 
-ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, String? policy}) => ui.FleetState(
-      policy: policy,
+ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, proto.StandingOrders? orders}) => ui.FleetState(
+      orders: orders,
       id: id,
       name: 'F$id',
       sector: at,
@@ -721,9 +721,12 @@ void main() {
       'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 8, 'engage_ratio_x10': 20, 'fuel_budget_pct': 35},
     });
 
-    const held = 'refuelling on a fuel budget of 35% of deuterium income (tank 80 of 120, full in about 236 s)';
+    const held = 'refuelling on a fuel budget of 50% of deuterium income (tank 80 of 120, full in about 236 s)';
     c.push(world([
-      fleet(1, [('Scout', 1), ('Corvette', 2)], policy: 'mine+return'),
+      fleet(1, [('Scout', 1), ('Corvette', 2)],
+          orders: const proto.StandingOrders(
+              preset: proto.PolicyPreset.mineAndReturn,
+              params: proto.PolicyParams(minFuelPct: 15, cargoReturnPct: 60, maxRange: 6, engageRatioX10: 30, fuelBudgetPct: 50))),
     ], calm().sectors, tick: 520)
         .copyWith(policyActs: {
       1: const [
@@ -733,14 +736,28 @@ void main() {
     }));
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('MINE+RETURN')), findsOneWidget);
-    expect(find.byKey(const Key('orders-settings-unknown')), findsOneWidget, reason: 'the wire carries the doctrine, not its settings: orders this console did not give show none');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 6 HEXES - ENGAGE 3.0X - FUEL 50%',
+        reason: 'the fleet row carries the settings in force, whoever gave the orders and whenever');
+    expect((shown('range'), shown('engage'), shown('fuel')), ('6 HEXES', '3.0X', '50%'), reason: 'the steppers start from the orders in force, not from what was last set here');
+    expect(find.text('It turns home at 60% hold, or with fuel down to the way back plus 15% of the tank.'), findsOneWidget);
     expect(tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data, 'HOLDING FOR 0:14');
     expect(tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data, held, reason: 'the engine\'s sentence, as it sent it');
     expect(find.textContaining('heading to claim', findRichText: true), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('status-orders')), matching: find.text('MINE+RETURN - HOLDING')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('status-hold')), matching: find.text(held)), findsOneWidget, reason: 'why it holds shows with the panel shut too');
-    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNotNull, reason: 'orders with settings unknown here can be given again');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNull);
+    expect(find.descendant(of: find.byKey(const Key('orders-why')), matching: find.text('These are the orders in force.')), findsOneWidget);
     await shot(tester, 'ws-orders-holding-1440');
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-range-up')));
+    await tester.tap(find.byKey(const ValueKey('orders-range-up')));
+    await tester.pump();
+    expect(shown('range'), '7 HEXES');
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(c.sent.whereType<proto.PolicyUpdate>().last.toJson()['params'],
+        {'min_fuel_pct': 15, 'cargo_return_pct': 60, 'max_range': 7, 'engage_ratio_x10': 30, 'fuel_budget_pct': 50},
+        reason: 'one step changes one setting and keeps the other four as they are in force');
 
     await key(tester, LogicalKeyboardKey.escape, '');
     expect(panel, findsNothing);
@@ -807,8 +824,15 @@ void main() {
     c.send(const proto.PolicyUpdate(fleetId: 101, preset: proto.PolicyPreset.patrolHome, params: proto.PolicyParams(maxRange: 2)));
     await tester.pump(const Duration(milliseconds: 100));
     expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 2, engage 1.5x, fuel budget 20% of deuterium income)'));
-    expect(find.byKey(const Key('orders-settings')), findsNothing, reason: 'orders the engine confirms that this console did not give are someone else\'s');
-    expect(find.byKey(const Key('orders-settings-unknown')), findsOneWidget, reason: 'and their settings are not claimed to be known here');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 1.5X - FUEL 20%',
+        reason: 'orders given from another console show with their settings, as the fleet row carries them');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-range'))).data, '2 HEXES', reason: 'and the steppers follow them');
+
+    c.handleCommand('policy engage=3 cargo=60');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 3.0X - FUEL 20%',
+        reason: 'settings typed with no doctrine change the orders in force and leave the rest of them');
+    expect(find.text('It turns home at 60% hold, or with fuel down to the way back plus 10% of the tank.'), findsOneWidget);
 
     c.handleCommand('load metal 10');
     await tester.pump(const Duration(milliseconds: 100));
@@ -828,6 +852,85 @@ void main() {
     expect(c.currentFleet.policy, isNull);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 10));
+    await endShell(tester, c);
+  });
+
+  testWidgets('in the phone layout the open status sheet stands on an opaque ground, and a banner is drawn under it, at 390 and 1100 wide', (tester) async {
+    for (final size in const [Size(390, 844), Size(1100, 800)]) {
+      final c = await pumpFake(tester, calm(), size: size);
+      await tester.tap(find.byKey(const ValueKey('status-sheet')));
+      await tester.pump(const Duration(milliseconds: 100));
+      final sheet = find.byKey(const ValueKey('status-sheet-open'));
+      final ground = find.descendant(of: sheet, matching: find.byType(ColoredBox)).first;
+      expect(tester.widget<ColoredBox>(ground).color.a, 1.0, reason: 'nothing of the map shows through the sheet');
+      for (final panel in [find.byType(StatusPanel), find.byType(ContactsPanel)]) {
+        final at = tester.getRect(panel), under = tester.getRect(ground);
+        expect(under.left <= at.left && under.right >= at.right && under.top <= at.top && under.bottom >= at.bottom, isTrue, reason: 'the ground is under every panel of the sheet');
+      }
+
+      c.push(world([fleet(1, [('Scout', 1), ('Corvette', 2)], at: const proto.Hex(2, -1)), fleet(2, [('Hauler', 1)], at: home)], calm().sectors, tick: 503));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.descendant(of: find.byKey(const ValueKey('banner')), matching: find.textContaining('SECTOR')), findsOneWidget, reason: 'a banner is up');
+      final layers = tester.widget<Stack>(find.ancestor(of: sheet, matching: find.byType(Stack)).first).children.map((w) => w.key).toList();
+      expect(layers.indexOf(const ValueKey('banner')), lessThan(layers.indexOf(const ValueKey('status-sheet-open'))),
+          reason: 'the sheet is drawn after the banner, so the banner does not cover what the player opened to read');
+      await shot(tester, 'ws-sheet-banner-${size.width.round()}');
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
+  testWidgets('with eight fleets the desktop fleet rail ends above the feed and scrolls; the fleet selected is brought into view', (tester) async {
+    final eight = world([
+      fleet(1, [('Scout', 1), ('Corvette', 2)]),
+      for (var id = 2; id <= 8; id++) fleet(id, [('Hauler', 1)], at: home),
+    ], calm().sectors).copyWith(events: [
+      for (var i = 0; i < 12; i++) LogEntry(tick: 480 + i, message: 'F1 harvested 40 Fe, 12 Cr over 10s', level: EventLevel.normal),
+    ]);
+    for (final size in const [Size(1440, 900), Size(1440, 720), Size(1200, 800)]) {
+      final c = await pumpFake(tester, eight, size: size);
+      final rail = tester.getRect(find.byType(FleetRail)), feed = tester.getRect(find.byType(Feed));
+      expect(rail.bottom <= feed.top, isTrue, reason: 'at $size the rail ($rail) ends above the feed ($feed)');
+      Rect card(int id) => tester.getRect(find.byKey(ValueKey('fleet-card-$id')));
+      bool shown(int id) => card(id).top >= rail.top - .5 && card(id).bottom <= rail.bottom + .5;
+      expect((shown(1), shown(8)), (true, false), reason: 'eight cards are more than the rail has room for: the last is scrolled out');
+
+      await shot(tester, 'ws-rail-eight-${size.width.round()}x${size.height.round()}');
+      c.activeFleet = 7;
+      c.push(eight);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(shown(8), isTrue, reason: 'selecting the eighth fleet brings its card into the rail');
+      await shot(tester, 'ws-rail-eighth-selected-${size.width.round()}x${size.height.round()}');
+      c.activeFleet = 0;
+      c.push(eight);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(shown(1), isTrue);
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
+  testWidgets('a fleet under orders this console never gave shows their settings, and the steppers start from them (demo)', (tester) async {
+    final c = DemoController()..startDemo();
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    c.selectFleet(2);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect((c.currentFleet.id, c.currentFleet.policy), (103, 'prospect'));
+    expect(c.state.policyActs[103], isNull, reason: 'nothing about these orders was said in this session');
+
+    await key(tester, LogicalKeyboardKey.keyP, 'p');
+    await tester.pump(const Duration(milliseconds: 100));
+    String shown(String id) => tester.widget<Text>(find.byKey(Key('orders-$id'))).data!;
+    expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('PROSPECT')), findsOneWidget);
+    expect(shown('settings'), 'RANGE 6 HEXES - ENGAGE 2.0X - FUEL 35%');
+    expect((shown('range'), shown('engage'), shown('fuel')), ('6 HEXES', '2.0X', '35%'));
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNull);
+    expect(find.descendant(of: find.byKey(const Key('orders-why')), matching: find.text('These are the orders in force.')), findsOneWidget);
+    await shot(tester, 'ws-orders-given-elsewhere-1440');
+    expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
 
@@ -865,13 +968,23 @@ void main() {
       final toast = find.descendant(
           of: find.byType(ToastLayer), matching: find.text('fleet 999 not found (or it has no ships left); its standing orders were not changed'));
       expect(toast, findsOneWidget, reason: 'the world\'s refusal, where the player is looking');
-      if (size.width < 820) {
+      if (size.width < 1440) {
         final dock = tester.getRect(find.byKey(const ValueKey('dock-scan')));
         final sheet = tester.getRect(find.byKey(const ValueKey('status-sheet')));
-        expect(tester.getRect(toast).bottom < dock.top, isTrue, reason: 'a toast on a phone sits under the HUD, clear of the dock');
+        expect(tester.getRect(toast).bottom < dock.top, isTrue,
+            reason: 'where the windshield runs its dock along the bottom, at a phone\'s width or a narrow window\'s, a toast sits at the top, clear of it');
         expect(tester.getRect(toast).right < sheet.left, isTrue, reason: 'and to the left of the button that opens the sheet');
+        expect(tester.getRect(toast).left >= tester.getRect(find.byKey(const ValueKey('arena'))).left, isTrue, reason: 'inside the screen, not over the rail beside it');
+      } else {
+        expect(tester.getRect(toast).top > size.height / 2 && tester.getRect(toast).right > size.width - 40, isTrue, reason: 'with the side columns up, a toast is at the bottom right');
       }
       await shot(tester, 'ws-orders-refused-${size.width.round()}');
+      if (size.width == 1100) {
+        Console.of(tester.element(find.byType(Rail))).go(Screen.overview);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(tester.getRect(toast).top > size.height / 2 && tester.getRect(toast).right > size.width - 40, isTrue,
+            reason: 'the Overview keeps its desktop layout at this width, and the same toast goes to its bottom right');
+      }
       expect(tester.takeException(), isNull);
       await tester.pump(const Duration(seconds: 10));
       await endShell(tester, c);
