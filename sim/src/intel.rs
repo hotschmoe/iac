@@ -12,6 +12,11 @@
 // something dynamic could have touched it (an override, an NPC group, or the
 // place an NPC group left) and some player is watching it. A live sector's
 // `last_seen` is implicit (the last refresh) and is written down when it lapses.
+// So is its ore: a stripped tile refills every tick, and writing that into
+// every watcher's memory every tick was most of the upkeep. What the watchers
+// of such a sector hold in common is kept once (`KnownSectors::shown`); their
+// memories are rewritten only when something other than the ore moves, and
+// take the ore from there when the sector lapses or a row is asked for.
 
 use std::collections::BTreeSet;
 
@@ -34,10 +39,11 @@ const LIVE_TOUCH_TICKS: u64 = 60;
 
 #[derive(Debug, Clone)]
 struct Remembered {
-    /// Meaningful only while the sector is not live; see `KnownSectors::seen`.
+    /// Meaningful only while the sector is not live; see `KnownSectors::settled`.
     last_seen: u64,
     /// As last observed, with `last_seen` zeroed. `live` is always false and
     /// `player_fleets` empty: other empires' positions are not remembered.
+    /// While the sector is live its `ore_reserve` may lag; see `KnownSectors::shown`.
     state: SectorState,
 }
 
@@ -68,6 +74,10 @@ pub struct KnownSectors {
     coverage: KeyMap<u64, Coverage>,
     /// Sector key to the players (ascending) that have it live.
     watchers: KeyMap<u32, Vec<u64>>,
+    /// Watched sectors with moving parts, as their watchers were last shown
+    /// them. Each watcher's memory equals this in everything but the ore,
+    /// which is current here and only here.
+    shown: KeyMap<u32, SectorState>,
     /// Remembered, not live sectors with a salvage pile: (despawn tick, key).
     pins: KeyMap<u64, BTreeSet<(u64, u32)>>,
     /// Keys that stopped being live at the last refresh.
@@ -131,9 +141,19 @@ impl KnownSectors {
         for key in dynamic {
             let Some(pids) = self.watchers.get(&key) else { continue };
             let seen = &observed[&key];
+            if let Some(shown) = self.shown.get_mut(&key) {
+                let ore = std::mem::replace(&mut shown.ore_reserve, seen.ore_reserve);
+                if shown == seen {
+                    if ore == seen.ore_reserve {
+                        shown.ore_reserve = ore;
+                    }
+                    continue;
+                }
+            }
             for &pid in pids {
                 Self::record(&mut self.by_player, &mut self.dirty, pid, key, seen, tick);
             }
+            self.shown.insert(key, seen.clone());
         }
 
         self.expire_pins(tick);
@@ -200,16 +220,20 @@ impl KnownSectors {
     }
 
     fn leave(&mut self, pid: u64, key: u32) {
+        if let Some(r) = self.by_player.get_mut(&pid).and_then(|m| m.get_mut(&key)) {
+            r.last_seen = self.refreshed;
+            if let Some(shown) = self.shown.get(&key) {
+                r.state.ore_reserve = shown.ore_reserve;
+            }
+            if let Some(despawn) = r.state.salvage_despawn_tick {
+                self.pins.entry(pid).or_default().insert((despawn, key));
+            }
+        }
         if let Some(watchers) = self.watchers.get_mut(&key) {
             watchers.retain(|&p| p != pid);
             if watchers.is_empty() {
                 self.watchers.remove(&key);
-            }
-        }
-        if let Some(r) = self.by_player.get_mut(&pid).and_then(|m| m.get_mut(&key)) {
-            r.last_seen = self.refreshed;
-            if let Some(despawn) = r.state.salvage_despawn_tick {
-                self.pins.entry(pid).or_default().insert((despawn, key));
+                self.shown.remove(&key);
             }
         }
         self.lapsed.entry(pid).or_default().push(key);
@@ -298,7 +322,8 @@ impl KnownSectors {
         }
     }
 
-    /// A charted sector as last seen.
+    /// A charted sector as last seen. While the sector is live for the
+    /// player its ore may lag behind (`shown`); everything else is current.
     pub fn remembered(&self, player_id: u64, coord: Hex) -> Option<&SectorState> {
         self.by_player.get(&player_id)?.get(&coord.to_key()).map(|r| &r.state)
     }
@@ -333,24 +358,28 @@ impl KnownSectors {
 
     fn row(&self, player_id: u64, key: u32) -> Option<KnownRow> {
         let r = self.by_player.get(&player_id)?.get(&key)?;
-        let last_seen = self.seen(player_id, key, r);
-        let mut state = r.state.clone();
-        state.last_seen = last_seen;
-        Some(KnownRow { player_id, sector: Hex::from_key(key), last_seen, state })
+        let state = self.settled(player_id, key, r);
+        Some(KnownRow { player_id, sector: Hex::from_key(key), last_seen: state.last_seen, state })
     }
 
-    /// A live sector was seen at the last refresh; the rest carry their own stamp.
-    fn seen(&self, player_id: u64, key: u32, r: &Remembered) -> u64 {
+    /// A remembered sector with what is implicit while it is live written
+    /// in: it was seen at the last refresh, and its ore is the ore shown
+    /// then. A sector that is not live carries both itself.
+    fn settled(&self, player_id: u64, key: u32, r: &Remembered) -> SectorState {
+        let mut state = r.state.clone();
         if self.coverage.get(&player_id).is_some_and(|c| c.contains(key)) {
-            self.refreshed
+            state.last_seen = self.refreshed;
+            if let Some(shown) = self.shown.get(&key) {
+                state.ore_reserve = shown.ore_reserve;
+            }
         } else {
-            r.last_seen
+            state.last_seen = r.last_seen;
         }
+        state
     }
 
     fn stale_view(&self, player_id: u64, key: u32, r: &Remembered) -> SectorState {
-        let mut s = r.state.clone();
-        s.last_seen = self.seen(player_id, key, r);
+        let mut s = self.settled(player_id, key, r);
         s.live = false;
         s.pins_stale = s.salvage.is_some() || s.site.is_some();
         s
