@@ -63,6 +63,72 @@ Seven things earlier passes saw and left. Each is its own commit.
   message. The sentence still says "no deuterium left" to a second fleet
   that reaches an outpost nobody has stocked yet.
 
+## 2026-10-12 (outposts measured: no constant moved, one rule for the owner)
+
+**Not decided by the owner.** The measurement `docs/design/outposts.md` asks
+for in 7.8 was made; its table of results stands there and the journal entry
+"outposts measured" has the command lines. Every `OUTPOST_*` constant is
+still the design's proposal and still provisional.
+
+- **No constant moved.** Nine of the ten rows read as the design expected or
+  cannot be read; the tenth is wrong for a reason no constant reaches.
+  - Yield (`OUTPOST_YIELD_PER_HOUR`, 2.0): level 3 on a grade-5 site at rings
+    12 to 16 is 4.6 to 4.7 percent of its owner's home output on day 7, and
+    the richest site of a world 15 to 19 percent, against 4 to 6 and 16
+    expected.
+  - Cost (`OUTPOST_COST`): level 1 on a grade-3 site at ring 12 pays back in
+    120 game hours. The Metal Mine levels bots buy on day 3 run from 10 to
+    16. Against the median of all 45 bots (level 12, 103 hours) the outpost
+    is 16 percent slower; against the median of the check-in bots (level
+    11, 79 hours) it is 51 percent slower, one point past the half the
+    design allows. Left alone: by the end of day 3 all but two bots are
+    buying level 12 or higher, and a convoy takes longer than that to get
+    there.
+  - Platform and raid (`OUTPOST_PLATFORM_POWER`, `OUTPOST_RAID_FACTOR`): no
+    raid lost where the design calls the platform safe; level 1 alone at
+    ring 9 loses 44 percent; level 3 alone loses 25, 79 and 100 percent at
+    rings 18, 19 and 20.
+  - A defended outpost lost nothing in a season week, at each garrison the
+    design names.
+- **The row that is wrong is a rule.** A level-3 outpost left alone at rings
+  18 to 20 keeps 11, 4 and 3 percent of what its extractor could have made,
+  against 40 to 60 expected and 20 as the floor. A repair costs metal,
+  crystal and deuterium; four sites in five lack one of them; a breached
+  outpost extracts nothing. So a site that lacks an ore pays for as many
+  repairs as it was stocked for and then waits for a delivery: 23 to 26 of
+  30 unattended outposts end the week breached and waiting wherever raids
+  are lost, and spend half to three quarters of it so. Sites with all three
+  ores behave as the design says. `OUTPOST_RAID_LOSS` and
+  `OUTPOST_REPAIR_SHARE` were tried at 0.10 and put back: 23 to 24 of 30
+  still end the week waiting. The choices, none of them built:
+  1. *Keep it.* An undefended outpost that loses raids is dead until its
+     owner comes. Then the design's "gives back about half" should read
+     "gives back nothing once it has lost twice", and the client should say
+     so before the founding.
+  2. *The repair is paid by weight.* It costs the score weight of a quarter
+     of the level (250 metal, 125 crystal and 50 deuterium weigh 537.5 at
+     level 1) in whatever the store holds. Any site that makes anything
+     repairs itself. This is the smallest change that gives the design's
+     numbers.
+  3. *An unpaid repair takes longer.* A store that cannot pay repairs
+     anyway, in four times the time. Nothing is ever stuck, and a delivery
+     is a speed-up.
+  4. *A breached outpost extracts at a quarter rate.* It helps only sites
+     with all three ores, which need no help.
+- **A breach during a build waits for the build.** Measured: level 2 with
+  level 3 building loses the first raid at rings 15 to 17 and then stands
+  breached for 6 hours of a season world, 3.6 of them behind the build.
+  Whether a repair should interrupt a build is the owner's.
+- **`outpost_at` reads an index.** The engine keeps the owner of the outpost
+  in each sector beside `outposts` (`GameEngine::outpost_sites`), changed by
+  founding and abandoning only. Every sector view asks whether an outpost
+  stands there, and with fifteen outposts the search through them was half
+  of what outposts cost a 16-seat week. The answers are the same.
+- **What the report's outposts are.** `sim-run --outpost` edits the world's
+  snapshot. Nothing is founded, carried or paid, the site is the free sector
+  of the ring nearest the grade asked, and a lair there is displaced as a
+  founding displaces it. No bot supplies, defends or hauls from it.
+
 ## 2026-10-11 (outposts: what the engine tells a client beforehand)
 
 **Decided by the agent that built it, not by the owner, and open to change.**
@@ -255,9 +321,9 @@ code had moved, and open to change.**
   kind `outpost` in SQLite, which needs no new table or column. A row of
   that kind that cannot be read refuses the world.
 - **The report counts what the engine says.** `sim-run` counts outpost
-  raids, what they took, yield and ticks breached. It does not count what
-  `load` takes from a store: the engine answers `load` with an alert and
-  nothing a report can count, and no bot hauls.
+  raids, what they took, yield and ticks breached. What `load` takes from a
+  store it reads from `Outpost::hauled`, a counter `load` adds to and no rule
+  reads; no bot hauls.
 
 ## 2026-10-11 (the windshield's phone layout: sheet, banner, toasts, guide, fleet rail)
 

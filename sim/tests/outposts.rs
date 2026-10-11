@@ -3,8 +3,9 @@
 // refuses one, what the extractor makes at three paces, the dock (store,
 // tanks, charts, the fleet cap), the levels paid from the store, the score,
 // giving one up, the raids of its ring won and lost with the breach and the
-// repair, a month of them on an outpost nobody defends, and the whole of it
-// replayed and resumed from a snapshot.
+// repair, a month of them on an outpost nobody defends, a week of them on
+// outposts defended as their rings ask, what the balance report counts, and
+// the whole of it replayed and resumed from a snapshot.
 
 #[allow(dead_code)]
 mod common;
@@ -23,7 +24,7 @@ use iac_shared::protocol::{
 use iac_shared::scaling::{self, RatioLabel};
 use iac_shared::world::{NpcBehaviorType, SectorTemplate};
 use iac_sim::engine::{template_npc_id, FleetStatus};
-use iac_sim::headless::Headless;
+use iac_sim::headless::{Headless, OutpostOrder};
 use iac_sim::script::IdlePlayer;
 use iac_sim::GameEngine;
 
@@ -1162,6 +1163,29 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     let made = report.field.outpost_yield - before.0.outpost_yield;
     let grew = weight(post.store) - weight(before.1);
     assert!(made > 1.0 && (made - grew).abs() < 0.002 * made, "the yield counted is what the store gained: {made} against {grew}");
+    let field = report.field;
+    assert!(
+        (field.outpost_yield + field.outpost_spilled - field.outpost_potential).abs() < 0.002 * field.outpost_potential,
+        "never breached, it made its rate of every tick but what the full store turned away: {field:?}",
+    );
+    assert_eq!((field.outpost_repairs, field.outpost_ticks_waiting, field.outpost_hauled), (0.0, 0, 0.0));
+    let site = report.outpost.expect("the report says where it stands");
+    assert_eq!((site.sector, site.ring, site.level, site.breached, site.waiting), (post.sector, 10, 2, false, false));
+    assert!((site.payback_hours - 1700.0 / (2.0 * site.grade * scaling::ring_mult(10))).abs() < 0.05, "{site:?}");
+    assert_eq!(site.next_mine_level, 2, "an idle empire's next Metal Mine level");
+
+    let (fid, at) = (held.engine.fleets.values().find(|f| f.owner_id == keeper).unwrap().id, post.sector);
+    muster(&mut held.engine, fid, &[(ShipClass::Hauler, 2)], at);
+    for (resource, amount) in [(Metal, Some(300.0)), (Crystal, None)] {
+        assert!(held.engine.execute(keeper, Command::Load { fleet_id: fid, resource, amount }).error.is_none());
+    }
+    let aboard = held.engine.fleets[&fid].cargo;
+    assert!(aboard.metal == 300.0 && aboard.crystal >= 750.0, "{aboard:?}");
+    held.run(1).unwrap();
+    let hauled = held.summaries()[0].field.outpost_hauled;
+    assert!((hauled - weight(aboard)).abs() < 1e-3, "what load took from the store is counted as hauled: {hauled} against {aboard:?}");
+    held.run(50).unwrap();
+    assert_eq!(held.summaries()[0].field.outpost_hauled, hauled, "and counted once");
 
     bare.run(6000).unwrap();
     let report = bare.summaries().remove(0);
@@ -1171,9 +1195,68 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     assert!((report.score.outpost - 2.15).abs() < 1e-3);
     let post = &bare.engine.outposts[&loser];
     let repairs = weight(res(250.0, 125.0, 50.0)) * (field.outpost_raids_lost - u32::from(post.breached && post.job.is_none())) as f32;
+    assert!((field.outpost_repairs - repairs).abs() < 1e-3, "every repair it paid is counted: {field:?}");
     let kept = weight(post.store) - weight(stocked);
     let owed = field.outpost_yield - field.outpost_raided - repairs;
     assert!((kept - owed).abs() < 0.02 * field.outpost_yield, "yield less raids less repairs is what the store kept: {kept} against {owed}");
+    assert_eq!((field.outpost_raids_on_breach, field.outpost_ticks_waiting), (0, 0), "stocked, it was whole again before each raid");
+    assert!(field.outpost_potential > field.outpost_yield + field.outpost_spilled, "a breached outpost makes less than its rate: {field:?}");
+}
+
+/// An idle empire with an outpost stood for it as `sim-run --outpost` stands one, its fleet
+/// mustered there as `garrison` when there is one.
+fn stand(world: &mut Headless, ring: u16, level: u8, garrison: &[(ShipClass, usize)]) -> u64 {
+    let label = format!("Keeper-{}", world.players());
+    let pid = world.add_player(Box::new(IdlePlayer { label }), "idle").expect("a seat");
+    let fid = world.engine.fleets.values().find(|f| f.owner_id == pid).unwrap().id;
+    let order = OutpostOrder { ring, grade: 5.0, level, building: false, repairs: 1 };
+    let at = world.install_outposts(&[pid], order).expect("a free site in the ring")[0];
+    if !garrison.is_empty() {
+        muster(&mut world.engine, fid, garrison, at);
+    }
+    pid
+}
+
+/// A ring, a level, and the ships standing there.
+type Post = (u16, u8, &'static [(ShipClass, usize)]);
+
+#[test]
+fn a_season_week_of_raids_takes_nothing_from_an_outpost_defended_as_its_ring_asks() {
+    use ShipClass::{Corvette, Cruiser, Frigate};
+    let weight = |r: Resources| scaling::resource_weight(&r);
+    let mut world = Headless::new(SEED, Pace::parse("season").unwrap());
+    let posts: [Post; 6] = [
+        (9, 1, &[(Corvette, 1)]),
+        (12, 1, &[(Corvette, 3)]),
+        (12, 2, &[]),
+        (17, 3, &[]),
+        (18, 3, &[(Frigate, 1)]),
+        (20, 3, &[(Cruiser, 2)]),
+    ];
+    let keepers: Vec<u64> = posts.iter().map(|&(ring, level, garrison)| stand(&mut world, ring, level, garrison)).collect();
+    let sites: Vec<Hex> = keepers.iter().map(|pid| world.engine.outposts[pid].sector).collect();
+    for (i, a) in sites.iter().enumerate() {
+        let t = world.engine.world_gen.generate_sector(*a);
+        assert!(t.terrain != TerrainType::Anomaly && !t.has_derelict, "{a} is ground an outpost may stand on");
+        assert_eq!(a.dist_from_origin(), posts[i].0);
+        assert!(sites[..i].iter().all(|b| Hex::distance(a, b) >= 3), "{a} keeps its distance");
+    }
+    let stocked: Vec<f32> = keepers.iter().map(|pid| weight(world.engine.outposts[pid].store)).collect();
+
+    world.run(7 * 86_400).unwrap();
+
+    for ((report, (ring, level, _)), stocked) in world.summaries().into_iter().zip(posts).zip(stocked) {
+        let field = report.field;
+        let what = format!("level {level} at ring {ring}: {field:?}");
+        assert!(field.outpost_raids_repelled >= 8, "raids came all week, {what}");
+        assert_eq!((field.outpost_raids_lost, field.outpost_raided, field.outpost_ticks_breached, field.ships_lost), (0, 0.0, 0, 0), "{what}");
+        assert_eq!(field.outpost_ticks, 7 * 86_400);
+        let site = report.outpost.unwrap();
+        assert!(site.level == level && !site.breached && site.grade > 0.0, "{site:?}");
+        let kept = weight(site.store) - stocked;
+        assert!((kept - field.outpost_yield).abs() < 0.005 * field.outpost_yield, "all it made is in its store, {what}: {kept}");
+        assert!((field.outpost_yield + field.outpost_spilled - field.outpost_potential).abs() < 0.005 * field.outpost_potential, "{what}");
+    }
 }
 
 /// A world with an outpost, a convoy shuttling out and back, levels and raids, played for
