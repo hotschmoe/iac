@@ -8,12 +8,14 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/console/threat.dart';
 import 'package:iac_client/console/services.dart';
+import 'package:iac_client/design/panel.dart';
 import 'package:iac_client/models/fleet.dart' as ui;
 import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/models/homeworld.dart';
 import 'package:iac_client/models/resources.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/game_controller.dart';
+import 'package:iac_client/views/rail.dart';
 
 import 'support/demo_controller.dart';
 import 'support/harness.dart';
@@ -576,6 +578,44 @@ void main() {
     await shot(tester, 'ws-exchange-refused-1440');
     expect(tester.takeException(), isNull);
     await finish(tester, wide);
+  });
+
+  testWidgets('docked at home the homeworld contact offers the load control; L opens it for this fleet, and a laden hold says so (demo)', (tester) async {
+    const demoHome = proto.Hex(4, -2);
+    final c = DemoController()..startDemo();
+    c.place(101, demoHome, const proto.Resources());
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    Screen screen() => Console.of(tester.element(find.byType(Rail))).screen;
+    expect(tester.widget<Text>(find.byKey(const Key('contact-dock'))).data, 'DOCKED FLEETS ARE SAFE.');
+
+    await tester.tap(find.byKey(const ValueKey('contact-load')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect((screen(), c.hwTab), (Screen.homeworld, HomeworldTab.storage));
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('hold-fleet-101'))).primary, isTrue, reason: 'the fleet the player came from');
+    await tester.ensureVisible(find.byKey(const ValueKey('hold-load')));
+    await tester.tap(find.byKey(const ValueKey('hold-load')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.holds[101]!.metal, 250, reason: 'all that fits of the first resource');
+
+    Console.of(tester.element(find.byType(Rail))).go(Screen.windshield);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.widget<Text>(find.byKey(const Key('contact-dock'))).data, contains('HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.'));
+    expect(find.text('CARGO - LADEN'), findsOneWidget);
+    await shot(tester, 'ws-home-laden-1440');
+    c.selectHomeworldTab(HomeworldTab.buildings);
+    await key(tester, LogicalKeyboardKey.keyL, 'l');
+    await tester.pump(const Duration(milliseconds: 300));
+    expect((screen(), c.hwTab), (Screen.homeworld, HomeworldTab.storage));
+
+    c.selectFleet(2);
+    Console.of(tester.element(find.byType(Rail))).go(Screen.windshield);
+    await tester.pump(const Duration(milliseconds: 300));
+    await key(tester, LogicalKeyboardKey.keyL, 'l');
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(screen(), Screen.windshield, reason: 'a fleet away from home is told why, and stays');
+    expect(find.text('A hold is loaded from the stockpile at the homeworld only.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
   });
 
   testWidgets('a fleet at the hub quotes and trades against the scripted world, by panel and by typed command (demo)', (tester) async {

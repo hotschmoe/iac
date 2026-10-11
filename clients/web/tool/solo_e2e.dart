@@ -17,7 +17,8 @@
 // may run the same bundle.
 //
 // It plays one blitz world: new game, the homeworld on screen, an order
-// accepted and completed, a ship batch the stockpile does not cover refused
+// accepted and completed, a hold loaded from the stockpile at the dock and
+// unloaded again, a ship batch the stockpile does not cover refused
 // with nothing charged and its order button off, a building queued ahead of
 // its resources shown with its shortfall at desktop and phone width, the
 // bots on the board and acting, a reload that
@@ -339,8 +340,8 @@ class Browser {
     await _send('Input.dispatchMouseEvent', {'type': 'mouseReleased', ...at});
   }
 
-  Future<void> wheel(int deltaY) =>
-      _send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': 720, 'y': 500, 'deltaX': 0, 'deltaY': deltaY});
+  Future<void> wheel(int deltaY, {int x = 720}) =>
+      _send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': 500, 'deltaX': 0, 'deltaY': deltaY});
 
   Future<void> press(String key, String code, int keyCode, {String? text}) async {
     final base = {'key': key, 'code': code, 'windowsVirtualKeyCode': keyCode};
@@ -491,6 +492,64 @@ Future<void> multiplayer(Browser browser, Directory bundle, String server, int p
     await process.exitCode;
     data.deleteSync(recursive: true);
   }
+}
+
+/// The player's first fleet in the newest tick update.
+Future<Map<String, dynamic>> firstFleet(Browser browser) async =>
+    ((await browser.last('tick_update'))!['fleets'] as List).first as Map<String, dynamic>;
+
+/// A new empire's two scouts stand at the home dock with an empty hold and
+/// the stockpile holds 100 deuterium, which no mine adds to yet. The Storage
+/// tab's hold panel loads it, the dock leaves it aboard, the panel says so
+/// at desktop width and at a phone's, and a typed `unload` puts it back.
+Future<void> loadHold(Browser browser) async {
+  print('loading a hold');
+  await browser.click('homeworld');
+  await browser.untilText('build slot a');
+  await browser.press('5', 'Digit5', 53, text: '5');
+  await browser.untilText('load a hold');
+  await browser.until('the offer of browser notices to leave',
+      () async => !(await browser.text()).toLowerCase().contains('tell you when this finishes'));
+  final empty = await firstFleet(browser);
+  final hold = (empty['cargo_capacity'] as num).floor();
+  check(empty['laden'] == false && (empty['cargo']['deuterium'] as num) == 0 && hold > 100, 'the fleet is docked with an empty hold of $hold');
+  check((await browser.text()).contains('0 / $hold'), 'the panel shows what is aboard and the size of the hold');
+  await browser.shot('03a-hold-empty-1440');
+
+  await browser.click('deuterium 100 in the stockpile');
+  await browser.click('load 100 de');
+  await browser.until('the load on the wire',
+      () => browser.tap('t.sent.some((m) => m.action === "load" && m.resource === "deuterium" && !("amount" in m))'));
+  await browser.until('the hold loaded and marked', () async {
+    final fleet = await firstFleet(browser);
+    return fleet['laden'] == true && (fleet['cargo']['deuterium'] as num) == 100;
+  });
+  check((await browser.tap('t.events.some((e) => e.kind === "Alert" && e.message.includes("loaded 100 deuterium from the stockpile"))')) == true,
+      'the engine moved 100 deuterium into the hold and said so');
+  check(((await stockpile(browser))['deuterium'] as num) == 0, 'out of the stockpile');
+  await Future<void>.delayed(const Duration(seconds: 4));
+  final later = await firstFleet(browser);
+  check(later['laden'] == true && (later['cargo']['deuterium'] as num) == 100, 'four ticks later the dock has left it aboard');
+  await browser.untilText('laden');
+  check((await browser.text()).contains('100 / $hold'), 'the panel shows the laden hold');
+  await browser.shot('03a-hold-laden-1440');
+  await browser.resize(390, 844);
+  await browser.wheel(600, x: 195);
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await browser.shot('03a-hold-laden-390');
+  await browser.wheel(-600, x: 195);
+  await browser.resize(1440, 900);
+
+  await browser.command('unload');
+  await browser.until('the unload on the wire', () => browser.tap('t.sent.some((m) => m.action === "unload")'));
+  await browser.until('the hold empty again', () async {
+    final fleet = await firstFleet(browser);
+    return fleet['laden'] == false && (fleet['cargo']['deuterium'] as num) == 0;
+  });
+  check(((await stockpile(browser))['deuterium'] as num) == 100, 'a typed unload put the 100 deuterium back');
+  check((await browser.tap('t.errors.length')) == 0, 'no error frame so far');
+  await browser.click('overview');
+  await browser.untilText('admiral');
 }
 
 const scoutCost = {'metal': 200, 'crystal': 50, 'deuterium': 30};
@@ -680,6 +739,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   check('${quote['refusal']}'.contains('from the exchange at the hub'), 'and says the fleet is not at the hub: ${quote['refusal']}');
   check((await browser.tap('t.errors.length')) == 0, 'a quote is an answer, not an error');
 
+  await loadHold(browser);
   await shipBatches(browser);
 
   print('bots');

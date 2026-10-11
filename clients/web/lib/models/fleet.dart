@@ -73,6 +73,16 @@ class FleetState {
   final int rangeHops;
   final String? policy;
 
+  /// Loaded by hand at the home dock, which leaves this hold alone until the
+  /// fleet has been away.
+  final bool laden;
+
+  /// At home with cargo the stockpile has no room for yet.
+  final bool cargoBlocked;
+
+  /// Exact hold size as the server enforces it ([cargo] is rounded for display).
+  final double holdCapacity;
+
   const FleetState({
     required this.id,
     required this.name,
@@ -91,6 +101,9 @@ class FleetState {
     this.power = 0,
     this.rangeHops = 0,
     this.policy,
+    this.laden = false,
+    this.cargoBlocked = false,
+    this.holdCapacity = 0,
   });
 
   /// Away from home with less than one jump of fuel.

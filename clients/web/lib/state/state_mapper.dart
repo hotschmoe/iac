@@ -541,6 +541,9 @@ class StateMapper {
       power: f.power,
       rangeHops: f.rangeHops,
       policy: f.policy?.label,
+      laden: f.laden,
+      cargoBlocked: f.cargoBlocked,
+      holdCapacity: f.cargoCapacity,
     );
   }
 
