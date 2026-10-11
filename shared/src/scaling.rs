@@ -813,6 +813,10 @@ impl ShipyardItem {
         }
     }
 
+    pub fn batch_cost(self, count: u16) -> Resources {
+        self.unit_cost().scale(f32::from(count))
+    }
+
     pub fn unit_ticks(self, shipyard_level: u8, pace: &Pace) -> u64 {
         match self {
             ShipyardItem::Ship(c) => ship_build_time(c, shipyard_level, pace),

@@ -524,7 +524,10 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
         EventKind::Queue(e) => {
             use iac_shared::protocol::{QueueAction, WaitReason};
             let line = match e.action {
-                QueueAction::Started => format!("{} started, paid {}", e.item, res_short(&e.paid)),
+                QueueAction::Started if e.paid.total() > 0.0 => {
+                    format!("{} started, paid {}", e.item, res_short(&e.paid))
+                }
+                QueueAction::Started => format!("{} started", e.item),
                 QueueAction::Waiting => {
                     let why = match e.waiting_on {
                         Some(WaitReason::Resources) => e.waiting_for.map_or("waiting for resources".to_string(), |r| format!("short {}", res_short(&r))),
@@ -533,9 +536,14 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
                         Some(WaitReason::Order) => "waiting behind an earlier order".to_string(),
                         None => "waiting".to_string(),
                     };
+                    let queued = if e.paid.total() > 0.0 {
+                        format!("{} ordered, paid {}", e.item, res_short(&e.paid))
+                    } else {
+                        format!("{} queued", e.item)
+                    };
                     match e.start_in {
-                        Some(t) => format!("{} queued, {why}, starts in about {t}s", e.item),
-                        None => format!("{} queued, {why}", e.item),
+                        Some(t) => format!("{queued}, {why}, starts in about {t}s"),
+                        None => format!("{queued}, {why}"),
                     }
                 }
                 QueueAction::Cancelled => {

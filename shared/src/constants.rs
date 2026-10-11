@@ -2,9 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Bumped when costs, times or production formulas change; a database from
-/// another economy version is refused (start a new world).
-pub const ECONOMY_VERSION: u32 = 2;
+/// Bumped when costs, times, production formulas or the moment an order pays
+/// change; a database from another economy version is refused (start a new
+/// world).
+pub const ECONOMY_VERSION: u32 = 3;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 3;
 

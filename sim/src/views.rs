@@ -166,17 +166,13 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
         }
     }).collect();
     let shipyard_pending: Vec<QueuedShip> = player.ship_pending.iter().zip(&waits.ships).map(|(q, w)| {
-        let cost = q.item.unit_cost().scale(f32::from(q.count - q.built));
         QueuedShip {
             id: q.id,
             item: q.item,
             count: q.count,
-            built: q.built,
-            reserve: q.reserve,
-            cost,
+            cost: q.item.batch_cost(q.count),
             unit_cost: q.item.unit_cost(),
             ticks: q.item.unit_ticks(player.buildings.shipyard, &pace),
-            waiting_for: w.short,
             waiting_on: w.reason,
             start_in: w.start_in,
         }

@@ -28,6 +28,19 @@ String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
     proto.WaitReason.prerequisite => 'waiting for a prerequisite',
     proto.WaitReason.order => 'held by a reserved order',
   };
+  return _withStart(why, startIn);
+}
+
+/// "paid, waiting for the yard, starts in about 00:40": a shipyard batch is
+/// paid for when it is ordered, so it only ever waits its turn.
+String batchWaitSummary(proto.BatchWait on, int? startIn) => _withStart(
+    switch (on) {
+      proto.BatchWait.slot => 'paid, waiting for the yard',
+      proto.BatchWait.prerequisite => 'paid, waiting for a prerequisite',
+    },
+    startIn);
+
+String _withStart(String why, int? startIn) {
   if (startIn == null) return why;
   final m = (startIn ~/ 60).toString().padLeft(2, '0');
   final s = (startIn % 60).toString().padLeft(2, '0');
@@ -300,9 +313,12 @@ class StateMapper {
         level = EventLevel.bright;
       case proto.QueueEvent():
         msg = switch (k.action) {
-          proto.QueueAction.started => '${k.item} started, paid ${_res(k.paid)}',
-          proto.QueueAction.waiting =>
-            '${k.item} queued, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, k.waitingFor, k.startIn)}',
+          proto.QueueAction.started => k.paid.metal + k.paid.crystal + k.paid.deuterium > 0
+              ? '${k.item} started, paid ${_res(k.paid)}'
+              : '${k.item} started',
+          proto.QueueAction.waiting => k.paid.metal + k.paid.crystal + k.paid.deuterium > 0
+              ? '${k.item} ordered, paid ${_res(k.paid)}, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, null, k.startIn)}'
+              : '${k.item} queued, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, k.waitingFor, k.startIn)}',
           proto.QueueAction.cancelled => k.refunded.metal + k.refunded.crystal + k.refunded.deuterium > 0
               ? '${k.item} cancelled, refunded ${_res(k.refunded)}'
               : '${k.item} cancelled (nothing had been paid)',
@@ -539,14 +555,8 @@ class StateMapper {
     );
   }
 
-  /// A queue entry that has not started: why, the exact shortfall and the
-  /// estimated start.
-  QueueItem _waitingItem(String name, proto.Resources? need, proto.WaitReason on, int? startIn) => QueueItem(
-        name: name,
-        time: waitSummary(on, need, startIn),
-        pct: 0,
-        active: false,
-      );
+  /// A queue entry that has not started; [waits] says why and when it will.
+  QueueItem _waitingItem(String name, String waits) => QueueItem(name: name, time: waits, pct: 0, active: false);
 
   /// Stable ids of a queue's running and waiting items, in line order.
   QueueIds queueIds(proto.QueueType queue) {
@@ -564,17 +574,13 @@ class StateMapper {
     };
   }
 
-  /// "Scout x5 (2 built)": a batch pays per unit, so progress is units built.
-  static String shipOrderLabel(proto.QueuedShip p) =>
-      p.built > 0 ? '${p.item.label} x${p.count} (${p.built} built)' : '${p.item.label} x${p.count}';
-
   List<QueueItem> _mapBuildQueue(proto.HomeworldState? hw) {
     if (hw == null) return const [];
     return [
       for (final q in hw.buildQueue)
         _queueItem('${q.buildingType.label} Lv.${q.targetLevel}', q.startTick, q.endTick),
       for (final q in hw.buildPending)
-        _waitingItem('${q.buildingType.label} Lv.${q.targetLevel}', q.waitingFor, q.waitingOn, q.startIn),
+        _waitingItem('${q.buildingType.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn)),
     ];
   }
 
@@ -584,7 +590,7 @@ class StateMapper {
     return [
       if (q != null) _queueItem('${q.item.label} x${q.count} (${q.built} built)', q.startTick, q.endTick),
       for (final p in hw.shipyardPending)
-        _waitingItem(shipOrderLabel(p), p.waitingFor, p.waitingOn, p.startIn),
+        _waitingItem('${p.item.label} x${p.count}', batchWaitSummary(p.waitingOn, p.startIn)),
     ];
   }
 
@@ -604,7 +610,7 @@ class StateMapper {
     ];
     final waiting = [
       for (final p in hw?.researchPending ?? const <proto.QueuedResearch>[])
-        _waitingItem('${p.tech.label} Lv.${p.targetLevel}', p.waitingFor, p.waitingOn, p.startIn),
+        _waitingItem('${p.tech.label} Lv.${p.targetLevel}', waitSummary(p.waitingOn, p.waitingFor, p.startIn)),
     ];
     final a = hw?.researchActive;
     if (a == null) {

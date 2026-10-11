@@ -500,7 +500,7 @@ mod tests {
         let mut e = engine.lock().unwrap();
         e.players.get_mut(&pid).unwrap().buildings.shipyard = 2;
 
-        let cmd = Command::BuildShip { ship_class: ShipClass::Frigate, count: 1, reserve: false };
+        let cmd = Command::BuildShip { ship_class: ShipClass::Frigate, count: 1 };
         assert_eq!(
             command_error_message(&e, pid, &cmd, ErrorCode::ShipLocked),
             "Frigate needs Frigate Tech level 1 (you have 0)"

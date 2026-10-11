@@ -377,7 +377,7 @@ class _BuildSlotA extends StatelessWidget {
             name: '${o.buildingType.label} L${o.next!.level}',
             note: '${o.next!.ticks ~/ 60 > 0 ? '${o.next!.ticks ~/ 60}m' : '${o.next!.ticks}s'} build',
             cost: o.next!.cost,
-            why: canAfford(s.stock, o.next!.cost) ? null : 'Short by ${shortBy(s.stock, o.next!.cost)}',
+            why: shortReason(s.stock, o.next!.cost),
             onTap: () => act.build(o.buildingType),
           ),
       ]),
@@ -500,7 +500,7 @@ class _ResearchCard extends StatelessWidget {
             name: '${o.tech.label} L${o.next!.level}',
             note: clockFmt(o.next!.ticks),
             cost: o.next!.cost,
-            why: canAfford(s.stock, o.next!.cost) ? null : 'Short by ${shortBy(s.stock, o.next!.cost)}',
+            why: shortReason(s.stock, o.next!.cost),
             onTap: () => act.research(o.tech),
           ),
       ]),
@@ -531,8 +531,7 @@ class _ShipyardCard extends StatelessWidget {
       if (cls == null || cost == null) {
         why = 'Ship class not in the catalog';
       } else {
-        final total = proto.Resources(metal: cost.metal * batch, crystal: cost.crystal * batch, deuterium: cost.deuterium * batch);
-        if (!canAfford(s.stock, total)) why = 'Short by ${shortBy(s.stock, total)}';
+        why = shortReason(s.stock, proto.Resources(metal: cost.metal * batch, crystal: cost.crystal * batch, deuterium: cost.deuterium * batch));
       }
       return OvPanel(
         key: const Key('card-shipyard'),
@@ -565,7 +564,7 @@ class _ShipyardCard extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         _qTitle(slots == null || slots.shipQueued.isEmpty ? 'Yard idle' : 'Yard idle, ${slots.shipQueued.length} waiting'),
-        _qSub(slots == null || slots.shipQueued.isEmpty ? 'Build ships for the dock' : 'Waiting orders start when the shortfall is covered.'),
+        _qSub(slots == null || slots.shipQueued.isEmpty ? 'A batch is paid in full when ordered' : 'Paid batches start once what they need is built.'),
         if (slots != null) _queuedRows(slots.shipQueued, first: 1),
         if (choices.isEmpty) const WhyText('No ship class is unlocked yet. Upgrade the Shipyard.'),
         for (final o in choices)
@@ -574,7 +573,7 @@ class _ShipyardCard extends StatelessWidget {
             name: '${o.shipClass.label} x1',
             note: '${clockFmt(o.ticksPerShip)} each',
             cost: o.unitCost,
-            why: canAfford(s.stock, o.unitCost) ? null : 'Short by ${shortBy(s.stock, o.unitCost)}',
+            why: shortReason(s.stock, o.unitCost),
             onTap: () => act.ship(o.shipClass, 1),
           ),
       ]),

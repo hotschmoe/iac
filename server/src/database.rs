@@ -1328,11 +1328,11 @@ impl Database {
         }
         if let Some(q) = &player.ship_queue {
             let (kind, item) = shipyard_item_to_row(q.item);
-            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, q.reserve as i64])?;
+            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, 0i64])?;
         }
         for q in &player.ship_pending {
             let (kind, item) = shipyard_item_to_row(q.item);
-            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 1i64, 0i64, 0i64, q.id as i64, q.reserve as i64])?;
+            stmt.execute(params![pid, kind, item, none, q.count as i64, 0i64, 1i64, 0i64, 0i64, q.id as i64, 0i64])?;
         }
         if let Some(q) = &player.research_queue {
             stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, 0i64])?;
@@ -1389,11 +1389,10 @@ impl Database {
                 "ship" | "defence" => {
                     let Some(sc) = item.and_then(|i| shipyard_item_from_row(&qt, i)) else { continue; };
                     if pending {
-                        data.ship_pending.push(PendingShip { id, item: sc, count: count as u16, built: built as u16, reserve });
+                        data.ship_pending.push(PendingShip { id, item: sc, count: count as u16 });
                     } else {
                         data.ship = Some(ShipQueueEntry {
                             id,
-                            reserve,
                             item: sc,
                             count: count as u16,
                             built: built as u16,
@@ -1746,8 +1745,8 @@ mod tests {
                         tech: ResearchType::from_usize(rng.random_range(0..ResearchType::COUNT)).unwrap(),
                         reserve: false,
                     }),
-                    9 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2, reserve: false }),
-                    10 => Some(Command::BuildDefence { kind: DefenceKind::PulseTurret, count: 2, reserve: false }),
+                    9 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2 }),
+                    10 => Some(Command::BuildDefence { kind: DefenceKind::PulseTurret, count: 2 }),
                     11 => here.map(|at| Command::Attack { fleet_id, target_fleet_id: template_npc_id(at) }),
                     12 => Some(Command::Recall { fleet_id }),
                     13 => Some(Command::ExploreSite { fleet_id }),

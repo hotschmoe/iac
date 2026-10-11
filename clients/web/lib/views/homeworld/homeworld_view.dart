@@ -114,7 +114,7 @@ class _HomeworldViewState extends State<HomeworldView> {
           final tabs = _Tabs(ctrl: c, narrow: narrow);
           final main = _main(c, eco, con);
           final listTab = c.hwTab != HomeworldTab.storage;
-          final insp = listTab ? Inspector(spec: specFor(c), ctrl: c, onQueue: _queue) : null;
+          final insp = listTab ? Inspector(key: const Key('hw-inspector'), spec: specFor(c), ctrl: c, onQueue: _queue) : null;
           if (narrow) {
             return Container(
               color: C.deep,

@@ -17,7 +17,10 @@
 // may run the same bundle.
 //
 // It plays one blitz world: new game, the homeworld on screen, an order
-// accepted and completed, the bots on the board and acting, a reload that
+// accepted and completed, a ship batch the stockpile does not cover refused
+// with nothing charged and its order button off, a building queued ahead of
+// its resources shown with its shortfall at desktop and phone width, the
+// bots on the board and acting, a reload that
 // restores the world, a two-hour absence caught up and reported with the
 // page staying responsive, a stall of the running page, a second tab kept
 // out, and abandoning the save. The worker's clock is moved from here (its
@@ -296,6 +299,12 @@ class Browser {
     File('${_shots.path}/$name.png').writeAsBytesSync(base64Decode(result['data'] as String));
   }
 
+  /// The viewport of a desktop window or of a phone held upright.
+  Future<void> resize(int width, int height) async {
+    await _send('Emulation.setDeviceMetricsOverride', {'width': width, 'height': height, 'deviceScaleFactor': 1, 'mobile': false});
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+  }
+
   Future<T> until<T>(String what, Future<T?> Function() probe, {Duration timeout = const Duration(seconds: 60)}) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
@@ -484,6 +493,104 @@ Future<void> multiplayer(Browser browser, Directory bundle, String server, int p
   }
 }
 
+const scoutCost = {'metal': 200, 'crystal': 50, 'deuterium': 30};
+
+/// The stockpile in the newest tick update that carries one.
+Future<Map<String, dynamic>> stockpile(Browser browser) async {
+  final player = await browser.until('a tick update with the stockpile', () async => (await browser.last('tick_update'))?['player']);
+  return ((player as Map<String, dynamic>)['resources'] as Map<String, dynamic>);
+}
+
+/// A ship batch is paid in full when it is ordered. A new empire has 100
+/// deuterium and makes none, a Shipyard takes 50 and a scout 30: so with a
+/// new Shipyard the order button for a batch of five is off and says what is
+/// missing, one scout is ordered and paid for at once, a second is refused
+/// by the engine and costs nothing, and a building the stockpile cannot pay
+/// for queues and shows its shortfall in its box, at desktop width and at a
+/// phone's.
+Future<void> shipBatches(Browser browser) async {
+  print('ship batches');
+  await browser.command('build shipyard');
+  await browser.until('the Shipyard to finish',
+      () => browser.tap('t.events.some((e) => e.kind === "BuildingCompleted" && e.building_type === "Shipyard")'),
+      timeout: const Duration(minutes: 3));
+  final young = await stockpile(browser);
+  check((young['deuterium'] as num) == 50 && (young['metal'] as num) >= 200 && (young['crystal'] as num) >= 50,
+      'the stockpile covers one scout and not two: $young');
+
+  await browser.click('homeworld');
+  await browser.untilText('build slot a');
+  await browser.press('3', 'Digit3', 51, text: '3');
+  await browser.untilText('scout');
+  await browser.press('=', 'Equal', 187, text: '=');
+  await browser.untilText('short by');
+  final wanted = (await browser.text()).toLowerCase();
+  check(wanted.contains('build x5') && wanted.contains('short by') && wanted.contains(' de'), 'a batch of five shows as unavailable, with what is missing');
+  // The offer of browser notices, made when the Shipyard started, covers the
+  // order button, and the ship cards at phone width. Its buttons are not in
+  // the semantics tree, so the pictures wait out its thirty seconds.
+  await browser.until('the offer of browser notices to leave',
+      () async => !(await browser.text()).toLowerCase().contains('tell you when this finishes'));
+  await browser.shot('03b-batch-short-1440');
+  await browser.click('build x5');
+  await browser.press('Enter', 'Enter', 13, text: '\r');
+  await browser.untilText('cannot queue');
+  await Future<void>.delayed(const Duration(milliseconds: 1200));
+  check((await browser.tap('t.sent.some((m) => m.action === "build_ship")')) == false,
+      'neither its order button nor Enter sends a batch the stockpile does not cover');
+
+  await browser.press('-', 'Minus', 189, text: '-');
+  await browser.until('the button for one scout', () async => (await browser.text()).toLowerCase().contains('build x1'));
+  await browser.press('Enter', 'Enter', 13, text: '\r');
+  await browser.until('one scout ordered on the wire',
+      () => browser.tap('t.sent.some((m) => m.action === "build_ship" && m.ship_class === "Scout" && m.count === 1)'));
+  final started = jsonDecode(await browser.until('the batch to start',
+      () => browser.tap('JSON.stringify(t.events.find((e) => e.kind === "Queue" && e.queue_type === "Ship" && e.action === "Started") ?? null)')
+          .then((found) => found == 'null' ? null : found)) as String) as Map<String, dynamic>;
+  check(scoutCost.entries.every((e) => (started['paid'][e.key] as num) == e.value), 'one scout was paid for in full when it was ordered: ${started['paid']}');
+
+  await browser.until('the scout to be delivered', () => browser.tap('t.events.some((e) => e.kind === "ShipBuilt" && e.ship_class === "Scout")'));
+  await Future<void>.delayed(const Duration(milliseconds: 2500));
+  final before = await stockpile(browser);
+  check((before['deuterium'] as num) < 30, 'which left less deuterium than a scout costs: $before');
+  await browser.command('ship scout');
+  final refusal = await browser.until('the refusal on the wire', () => browser.last('error'));
+  final message = refusal['message'] as String;
+  check(
+      refusal['code'] == 'InsufficientResources' &&
+          message.startsWith('Scout x1 costs 200 metal, 50 crystal and 30 deuterium; the stockpile is short by ') &&
+          message.endsWith(' deuterium. Nothing was ordered: a batch is paid in full when it is ordered.'),
+      'the engine refuses a scout the stockpile does not cover and says what is missing: $message');
+  await Future<void>.delayed(const Duration(milliseconds: 2500));
+  final after = await stockpile(browser);
+  check(
+      (before['deuterium'] as num) - (after['deuterium'] as num) < 30 &&
+          (after['metal'] as num) >= (before['metal'] as num) &&
+          (after['crystal'] as num) >= (before['crystal'] as num),
+      'nothing was charged for it: $before then $after');
+  check((await browser.tap('t.events.filter((e) => e.kind === "Queue" && e.queue_type === "Ship").length')) == 1, 'and nothing was ordered');
+
+  await browser.command('build shipyard');
+  await browser.press('1', 'Digit1', 49, text: '1');
+  await browser.untilText('short ');
+  final box = (await browser.text()).split('\n').firstWhere((line) => line.contains('short') && line.contains('deuterium'), orElse: () => '');
+  check(box.contains('SHIPYARD LV.2') && box.contains('deuterium'), 'the building box shows the waiting Shipyard and what it is short of: $box');
+  await browser.shot('03c-waiting-short-1440');
+  await browser.resize(390, 844);
+  await browser.shot('03d-waiting-short-390');
+  await browser.press('3', 'Digit3', 51, text: '3');
+  await browser.untilText('scout');
+  await browser.press('=', 'Equal', 187, text: '=');
+  await browser.untilText('short by');
+  await browser.shot('03e-batch-short-390');
+  await browser.resize(1440, 900);
+  await browser.press('-', 'Minus', 189, text: '-');
+  await browser.click('overview');
+  await browser.untilText('admiral');
+  check((await browser.tap('t.errors.length === 1 && t.errors[0].code === "InsufficientResources"')) == true,
+      'the refused scout is the only error frame so far');
+}
+
 /// The whole check, on a browser with nothing in it.
 Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Directory shots,
     {required bool software, required bool trace, required String server}) async {
@@ -572,6 +679,8 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
       'the engine quotes 100 metal at ${quote['receive']} deuterium, a fee of ${((quote['fee'] as num) * 100).round()}%');
   check('${quote['refusal']}'.contains('from the exchange at the hub'), 'and says the fleet is not at the hub: ${quote['refusal']}');
   check((await browser.tap('t.errors.length')) == 0, 'a quote is an answer, not an error');
+
+  await shipBatches(browser);
 
   print('bots');
   final board = (jsonDecode(await browser.until('a leaderboard', () => browser.tap('t.boards.length ? JSON.stringify(t.boards[0]) : null')) as String)
@@ -665,7 +774,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
       timeout: const Duration(minutes: 3));
   check((await browser.tap('t.events.some((e) => e.kind === "Alert" && e.message.startsWith("Away 30m"))')) == true,
       'the open session was brought up to date and told');
-  check((await browser.tap('t.errors.length')) == 0, 'no error frame in the whole run');
+  check((await browser.tap('t.errors.length')) == 0, 'no error frame since the page was last loaded');
 
   print('abandon');
   await browser.reload();

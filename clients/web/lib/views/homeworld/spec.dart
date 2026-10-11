@@ -1,3 +1,4 @@
+import '../../console/economy_view.dart';
 import '../../console/intel.dart';
 import '../../console/threat.dart';
 import '../../protocol/protocol.dart' as proto;
@@ -33,20 +34,10 @@ class ItemSpec {
   bool get canQueue => reason == null;
 }
 
-String shortfall(proto.Resources cost, proto.Resources stock) {
-  final parts = <String>[];
-  void add(double need, double have, String n) {
-    if (need > have) parts.add('${(need - have).ceil()} more $n');
-  }
-
-  add(cost.metal, stock.metal, 'Fe');
-  add(cost.crystal, stock.crystal, 'Cr');
-  add(cost.deuterium, stock.deuterium, 'De');
-  return parts.join(', ');
-}
-
-/// Locked, maxed and queue-full block queueing; cost never does: an order
-/// that cannot be paid yet waits in line and pays when it starts.
+/// Locked, maxed and queue-full block queueing. For a building or a tech
+/// cost does not: an order that cannot be paid yet waits in line and pays
+/// when it starts. A shipyard batch is paid in full when it is ordered, so
+/// [specFor] adds the shortfall of the whole batch as its reason.
 String? whyNot({
   required List<proto.Requirement> requires,
   required bool maxed,
@@ -128,12 +119,13 @@ ItemSpec? specFor(GameController c, {int? index}) {
         ticks: o.ticksPerShip * n,
         requires: o.requires,
         reason: whyNot(
-            requires: o.requires,
-            maxed: false,
-            queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
-            capacity: hw == null ? 0 : 1 + hw.queueWaitingMax),
+                requires: o.requires,
+                maxed: false,
+                queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
+                capacity: hw == null ? 0 : 1 + hw.queueWaitingMax) ??
+            shortReason(c.state.stock, total),
         actionLabel: 'Build x$n',
-        note: 'Ships join the dock fleet when built.',
+        note: 'The whole batch is paid when ordered. Ships join the dock fleet when built.',
         ship: o.shipClass,
       );
     case HomeworldTab.defence:
@@ -149,12 +141,13 @@ ItemSpec? specFor(GameController c, {int? index}) {
         ticks: o.ticksPerUnit * n,
         requires: o.requires,
         reason: whyNot(
-            requires: o.requires,
-            maxed: false,
-            queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
-            capacity: hw == null ? 0 : 1 + hw.queueWaitingMax),
+                requires: o.requires,
+                maxed: false,
+                queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
+                capacity: hw == null ? 0 : 1 + hw.queueWaitingMax) ??
+            shortReason(c.state.stock, total),
         actionLabel: 'Build x$n',
-        note: 'Built in the shipyard queue. Power ${o.power.toStringAsFixed(0)} each.',
+        note: 'Built in the shipyard queue, the whole batch paid when ordered. Power ${o.power.toStringAsFixed(0)} each.',
       );
     case HomeworldTab.storage:
       return null;

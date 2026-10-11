@@ -85,14 +85,14 @@ class PanelHeader extends StatelessWidget {
       child: Row(children: [
         Container(width: 5, height: 5, color: col),
         const SizedBox(width: 8),
-        Flexible(child: Text(text.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: 10.5, color: col, spacing: 2))),
-        const Spacer(),
+        Expanded(flex: 3, child: Text(text.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: 10.5, color: col, spacing: 2))),
+        const SizedBox(width: 8),
         ?sub,
         if (subText != null)
-          Flexible(
-              child: Text(subText!,
-                  overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: C.text3))),
-        ?trailing,
+          Expanded(
+              flex: 2,
+              child: Text(subText!, textAlign: TextAlign.right, overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: C.text3))),
+        if (trailing != null) ...[const SizedBox(width: 6), trailing!],
       ]),
     );
   }

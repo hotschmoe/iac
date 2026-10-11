@@ -211,7 +211,8 @@ fn map_homeworld_char(c: char) -> InputAction {
         'x' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Building, waiting: false },
         'X' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Ship, waiting: false },
         'z' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Research, waiting: false },
-        // ... or the next waiting one (nothing was paid)
+        // ... or the next waiting one (a building or research order paid
+        // nothing; a ship batch paid when it was ordered and gets half back)
         'c' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Building, waiting: true },
         'C' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Ship, waiting: true },
         'Z' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Research, waiting: true },

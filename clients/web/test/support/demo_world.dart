@@ -803,13 +803,13 @@ class DemoWorld {
         ]);
         _ev(DefenceBuiltEvent(defence: k, count: 1, playerId: _playerId));
       }
-      // A batch pays per unit: between units it goes back to the front of the
-      // line with its progress, and the next unit starts when it can be paid.
-      final rest = s.count - s.built - 1;
-      _hw = _hwWith(clearShip: true, shipPending: [
-        if (rest > 0) _waitingShip(s.id, s.item, s.count, s.built + 1, false),
-        ..._hw.shipyardPending,
-      ]);
+      // The batch was paid for when it was ordered: it holds the yard until
+      // its last unit is delivered.
+      if (s.built + 1 < s.count) {
+        _hw = _hwWith(ship: ShipyardQueueItem(id: s.id, item: s.item, count: s.count, built: s.built + 1, startTick: _tick, endTick: _tick + _unitTicksOf(s.item)));
+      } else {
+        _hw = _hwWith(clearShip: true);
+      }
     }
     _startWaiting();
   }
@@ -1177,31 +1177,44 @@ class DemoWorld {
 
   Resources _unitCostOf(ShipyardItem item) => item.ship != null ? _shipCost[item.ship]! : _defenceCost[item.defence]!;
 
-  QueuedShip _waitingShip(int id, ShipyardItem item, int count, int built, bool reserve) {
-    final unit = _unitCostOf(item);
-    return QueuedShip(
-      id: id,
-      item: item,
-      count: count,
-      built: built,
-      reserve: reserve,
-      cost: _times(unit, count - built),
-      unitCost: unit,
-      ticks: item.ship != null ? _hw.catalog.ships.firstWhere((o) => o.shipClass == item.ship).ticksPerShip : _hw.catalog.defences.firstWhere((o) => o.kind == item.defence).ticksPerUnit,
-      waitingFor: _missing(unit),
-      waitingOn: WaitReason.slot,
-    );
-  }
+  int _unitTicksOf(ShipyardItem item) => item.ship != null
+      ? _hw.catalog.ships.firstWhere((o) => o.shipClass == item.ship).ticksPerShip
+      : _hw.catalog.defences.firstWhere((o) => o.kind == item.defence).ticksPerUnit;
 
-  List<ServerMessage> _queueYard(ShipyardItem item, int count, bool reserve) {
+  String _amount(Resources r) => [
+        if (r.metal > 0) '${r.metal.ceil()} metal',
+        if (r.crystal > 0) '${r.crystal.ceil()} crystal',
+        if (r.deuterium > 0) '${r.deuterium.ceil()} deuterium',
+      ].join(', ');
+
+  /// A batch is accepted only if the stockpile covers every unit now, and
+  /// it pays then; a paid batch waits only for the yard.
+  List<ServerMessage> _orderYard(ShipyardItem item, int count) {
     if ((_hw.shipyardQueue == null ? 0 : 1) + _hw.shipyardPending.length >= 1 + _hw.queueWaitingMax) {
       return [_err(ErrorCode.queueFull, 'The shipyard queue is full (1 running + ${_hw.queueWaitingMax} waiting)')];
     }
-    final order = _waitingShip(_newQueueId(), item, count, 0, reserve);
-    _hw = _hwWith(shipPending: [..._hw.shipyardPending, order]);
-    _startWaiting();
-    final waiting = _hw.shipyardPending.where((q) => q.id == order.id).firstOrNull;
-    if (waiting != null) _announceWait(order.id, QueueType.ship, '${item.label} x$count', waiting.waitingFor, waiting.waitingOn);
+    final unit = _unitCostOf(item);
+    final cost = _times(unit, count);
+    final label = '${item.label} x$count';
+    final short = _missing(cost);
+    if (short != null) {
+      return [
+        _err(ErrorCode.insufficientResources,
+            '$label costs ${_amount(cost)}; the stockpile is short by ${_amount(short)}. Nothing was ordered: a batch is paid in full when it is ordered.'),
+      ];
+    }
+    _pay(cost);
+    final id = _newQueueId();
+    if (_hw.shipyardQueue == null) {
+      _hw = _hwWith(ship: ShipyardQueueItem(id: id, item: item, count: count, built: 0, startTick: _tick, endTick: _tick + _unitTicksOf(item)));
+      _ev(QueueEvent(playerId: _playerId, queueType: QueueType.ship, id: id, item: label, action: QueueAction.started, paid: cost));
+    } else {
+      _hw = _hwWith(shipPending: [
+        ..._hw.shipyardPending,
+        QueuedShip(id: id, item: item, count: count, cost: cost, unitCost: unit, ticks: _unitTicksOf(item)),
+      ]);
+      _ev(QueueEvent(playerId: _playerId, queueType: QueueType.ship, id: id, item: label, action: QueueAction.waiting, paid: cost, waitingOn: WaitReason.slot));
+    }
     return [_tickUpdate()];
   }
 
@@ -1318,19 +1331,13 @@ class DemoWorld {
         _startResearch(q.id, q.tech, q.targetLevel);
       }
     }
-    if (_hw.shipyardQueue == null) {
-      final si = _firstStartable<QueuedShip>(_hw.shipyardPending, (_) => true, (q) => _affordable(q.unitCost), (q) => q.reserve);
-      if (si >= 0) {
-        final q = _hw.shipyardPending[si];
-        _pay(q.unitCost);
-        _hw = _hwWith(
-          shipPending: [for (var i = 0; i < _hw.shipyardPending.length; i++) if (i != si) _hw.shipyardPending[i]],
-          ship: ShipyardQueueItem(id: q.id, item: q.item, count: q.count, built: q.built, startTick: _tick, endTick: _tick + q.ticks),
-        );
-        if (q.built == 0) {
-          _ev(QueueEvent(playerId: _playerId, queueType: QueueType.ship, id: q.id, item: '${q.item.label} x${q.count}', action: QueueAction.started, paid: q.unitCost));
-        }
-      }
+    if (_hw.shipyardQueue == null && _hw.shipyardPending.isNotEmpty) {
+      final q = _hw.shipyardPending.first;
+      _hw = _hwWith(
+        shipPending: _hw.shipyardPending.sublist(1),
+        ship: ShipyardQueueItem(id: q.id, item: q.item, count: q.count, built: 0, startTick: _tick, endTick: _tick + q.ticks),
+      );
+      _ev(QueueEvent(playerId: _playerId, queueType: QueueType.ship, id: q.id, item: '${q.item.label} x${q.count}', action: QueueAction.started));
     }
     _refreshWaits();
   }
@@ -1375,24 +1382,6 @@ class DemoWorld {
               ticks: q.ticks,
               waitingFor: _missing(q.cost),
               waitingOn: on<QueuedResearch>(_hw.researchPending, i, _researchReady(q.tech, q.targetLevel), q.cost, _hw.researchActive == null, (e) => e.reserve),
-            );
-          }(),
-      ],
-      shipPending: [
-        for (var i = 0; i < _hw.shipyardPending.length; i++)
-          () {
-            final q = _hw.shipyardPending[i];
-            return QueuedShip(
-              id: q.id,
-              item: q.item,
-              count: q.count,
-              built: q.built,
-              reserve: q.reserve,
-              cost: q.cost,
-              unitCost: q.unitCost,
-              ticks: q.ticks,
-              waitingFor: _missing(q.unitCost),
-              waitingOn: on<QueuedShip>(_hw.shipyardPending, i, true, q.unitCost, _hw.shipyardQueue == null, (e) => e.reserve),
             );
           }(),
       ],
@@ -1823,16 +1812,16 @@ class DemoWorld {
         final waiting = _hw.researchPending.where((q) => q.id == id).firstOrNull;
         if (waiting != null) _announceWait(id, QueueType.research, '${tech.label} Lv.${proj + 1}', waiting.waitingFor, waiting.waitingOn);
         return [_tickUpdate()];
-      case BuildShipCommand(:final shipClass, :final count, :final reserve):
+      case BuildShipCommand(:final shipClass, :final count):
         final o = _hw.catalog.ships.firstWhere((o) => o.shipClass == shipClass);
         if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.shipLocked, 'Ship class not unlocked')];
-        return _queueYard(ShipyardItem.ship(shipClass), count, reserve);
-      case BuildDefenceCommand(:final kind, :final count, :final reserve):
+        return _orderYard(ShipyardItem.ship(shipClass), count);
+      case BuildDefenceCommand(:final kind, :final count):
         final o = _hw.catalog.defences.firstWhere((o) => o.kind == kind);
         if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.defenceLocked, '${kind.label} is locked')];
-        return _queueYard(ShipyardItem.defence(kind), count, reserve);
+        return _orderYard(ShipyardItem.defence(kind), count);
       case CancelBuildCommand(:final queueType, :final id):
         late final String label;
         late final Resources paid;
@@ -1862,7 +1851,7 @@ class DemoWorld {
             final gone = _hw.shipyardQueue;
             if (gone == null || gone.id != id) return [_err(ErrorCode.invalidTarget, 'No order $id is under way in the shipyard queue')];
             label = gone.built > 0 ? '${gone.item.label} x${gone.count} (${gone.built} already built and kept)' : '${gone.item.label} x${gone.count}';
-            paid = _unitCostOf(gone.item);
+            paid = _times(_unitCostOf(gone.item), gone.count - gone.built);
             _hw = _hwWith(clearShip: true);
           case QueueType.research:
             final gone = _hw.researchActive;
@@ -1888,6 +1877,7 @@ class DemoWorld {
         return [_tickUpdate()];
       case CancelQueuedCommand(:final queueType, :final id):
         late final String label;
+        var refund = const Resources();
         switch (queueType) {
           case QueueType.building when _hw.buildPending.any((q) => q.id == id):
             final q = _hw.buildPending.firstWhere((q) => q.id == id);
@@ -1899,6 +1889,7 @@ class DemoWorld {
           case QueueType.ship when _hw.shipyardPending.any((q) => q.id == id):
             final q = _hw.shipyardPending.firstWhere((q) => q.id == id);
             label = '${q.item.label} x${q.count}';
+            refund = _times(q.cost, 0.5);
             _hw = _hwWith(shipPending: [
               for (final e in _hw.shipyardPending)
                 if (e.id != id) e,
@@ -1913,7 +1904,12 @@ class DemoWorld {
           default:
             return [_err(ErrorCode.invalidTarget, 'No order $id is waiting in the ${queueType.name} queue')];
         }
-        _ev(QueueEvent(playerId: _playerId, queueType: queueType, id: id, item: label, action: QueueAction.cancelled));
+        _resources = _clampCaps(Resources(
+          metal: _resources.metal + refund.metal,
+          crystal: _resources.crystal + refund.crystal,
+          deuterium: _resources.deuterium + refund.deuterium,
+        ));
+        _ev(QueueEvent(playerId: _playerId, queueType: queueType, id: id, item: label, action: QueueAction.cancelled, refunded: refund));
         _startWaiting();
         return [_tickUpdate()];
       case SplitCommand(:final fleetId, :final shipIds):

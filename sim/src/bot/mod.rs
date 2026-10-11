@@ -166,6 +166,9 @@ pub struct Memory {
     intro_until: Option<u64>,
     wake: u64,
     next_plan: u64,
+    /// Deuterium of the unit the shipyard wanted at the last plan and could
+    /// not pay for; the pilot does not fly it away.
+    yard_deuterium: f32,
     /// The bot's own row of the leaderboard, as last asked.
     standing: Option<Standing>,
     /// The lanes each fleet is following, by fleet id.
@@ -238,7 +241,12 @@ impl Bot {
     /// What the admiral is told for the turn at `turn`.
     fn brief(&self, turn: u64) -> field::Brief {
         let away_for = (self.style.attention != Attention::HandsOn).then(|| self.absence(turn));
-        field::Brief { personality: self.style.personality, away_for, points_wanted: self.points_wanted() }
+        field::Brief {
+            personality: self.style.personality,
+            away_for,
+            points_wanted: self.points_wanted(),
+            yard_deuterium: self.memory.yard_deuterium,
+        }
     }
 
     fn hash(&self, a: u64, b: u64) -> u64 {
@@ -339,20 +347,21 @@ impl ScriptedPlayer for Bot {
             return;
         }
 
-        let brief = self.brief(turn);
-        let away_for = brief.away_for;
+        let away_for = self.brief(turn).away_for;
         if closing || turn >= self.memory.next_plan {
             let before = orders.len();
-            home::plan(state, self.style.personality, away_for, orders);
+            let yard_saving = home::plan(state, self.style.personality, away_for, orders);
             let placed = orders.len() > before;
             orders.push(Order::Command(Command::Leaderboard { limit: 1 }));
             // A player who stays queues one order at a time: once one is
             // placed it looks again at once, in case the next can follow.
             let again = if placed && away_for.is_none() { 1 } else { PLAN_PERIOD };
             self.memory.next_plan = turn + again;
+            self.memory.yard_deuterium = yard_saving.deuterium;
         }
 
         self.memory.routes.retain(|id, _| state.fleets.iter().any(|f| f.id == *id));
+        let brief = self.brief(turn);
         let mut admiral = field::Admiral::new(state, brief, &mut self.memory.routes, &self.odds, orders);
         let idle_for = match presence {
             Presence::Managing { closing } => {

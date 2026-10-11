@@ -184,6 +184,25 @@ enum WaitReason {
   static WaitReason fromJson(Object? v) => _enumFrom(values, v, _pascal);
 }
 
+/// Why a shipyard batch has not started yet. A batch is paid for when it is
+/// ordered, so it never waits on resources or behind a reserving order.
+enum BatchWait {
+  /// The yard is busy with a batch ahead of it.
+  slot,
+
+  /// A Shipyard level, building or tech it needs is still being built.
+  prerequisite;
+
+  String get wire => _pascal(name);
+  String toJson() => wire;
+  static BatchWait fromJson(Object? v) => _enumFrom(values, v, _pascal);
+
+  WaitReason get reason => switch (this) {
+        BatchWait.slot => WaitReason.slot,
+        BatchWait.prerequisite => WaitReason.prerequisite,
+      };
+}
+
 enum BuildingType {
   metalMine('Metal Mine'),
   crystalMine('Crystal Mine'),
@@ -286,6 +305,7 @@ enum ErrorCode {
   resourceNotPresent(1016),
   storageTooSmall(1017),
   defenceLocked(1018),
+  insufficientResources(1019),
   authFailed(2000),
   alreadyAuthenticated(2001),
   invalidName(2002),
@@ -592,12 +612,10 @@ sealed class Command {
       'build_ship' => BuildShipCommand(
           shipClass: ShipClass.fromJson(m['ship_class']),
           count: (m['count'] as int?) ?? 1,
-          reserve: (m['reserve'] as bool?) ?? false,
         ),
       'build_defence' => BuildDefenceCommand(
           kind: DefenceKind.fromJson(m['kind']),
           count: (m['count'] as int?) ?? 1,
-          reserve: (m['reserve'] as bool?) ?? false,
         ),
       'cancel_build' => CancelBuildCommand(queueType: QueueType.fromJson(m['queue_type']), id: _i(m['id'])),
       'cancel_queued' => CancelQueuedCommand(queueType: QueueType.fromJson(m['queue_type']), id: _i(m['id'])),
@@ -683,25 +701,29 @@ class ResearchCommand extends Command {
   Json toJson() => {'action': 'research', 'tech': tech.toJson(), 'reserve': reserve};
 }
 
+/// Order [count] ships as one batch. Unlike a building or research order it
+/// is accepted only if the stockpile covers every unit now, and paid then;
+/// otherwise it is refused with [ErrorCode.insufficientResources] and the
+/// shortfall.
 class BuildShipCommand extends Command {
   final ShipClass shipClass;
   final int count;
-  final bool reserve;
-  const BuildShipCommand({required this.shipClass, this.count = 1, this.reserve = false});
+  const BuildShipCommand({required this.shipClass, this.count = 1});
   @override
-  Json toJson() => {'action': 'build_ship', 'ship_class': shipClass.toJson(), 'count': count, 'reserve': reserve};
+  Json toJson() => {'action': 'build_ship', 'ship_class': shipClass.toJson(), 'count': count};
 }
 
 class BuildDefenceCommand extends Command {
   final DefenceKind kind;
   final int count;
-  final bool reserve;
-  const BuildDefenceCommand({required this.kind, this.count = 1, this.reserve = false});
+  const BuildDefenceCommand({required this.kind, this.count = 1});
   @override
-  Json toJson() => {'action': 'build_defence', 'kind': kind.toJson(), 'count': count, 'reserve': reserve};
+  Json toJson() => {'action': 'build_defence', 'kind': kind.toJson(), 'count': count};
 }
 
-/// Cancel an item that has started (half refunded), by its stable queue [id].
+/// Cancel an item that has started, by its stable queue [id]. A building or
+/// research level gets half its cost back; a shipyard batch half the price of
+/// the units not yet delivered.
 class CancelBuildCommand extends Command {
   final QueueType queueType;
   final int id;
@@ -710,7 +732,8 @@ class CancelBuildCommand extends Command {
   Json toJson() => {'action': 'cancel_build', 'queue_type': queueType.toJson(), 'id': id};
 }
 
-/// Remove an item still waiting in a queue; nothing was paid.
+/// Remove an item still waiting in a queue. A building or research order
+/// paid nothing; a shipyard batch paid when it was ordered and gets half back.
 class CancelQueuedCommand extends Command {
   final QueueType queueType;
   final int id;
@@ -2447,32 +2470,26 @@ class QueuedResearch {
   }
 }
 
-/// A shipyard order waiting its turn. The batch pays per unit: [built] of
-/// [count] are done, [cost] is the rest of the batch, [unitCost] the next
-/// unit, [ticks] one ship, and [waitingFor] the shortfall for the next unit.
+/// A shipyard batch that is paid for and waiting its turn. [cost] is what
+/// the whole batch paid when it was ordered (half comes back on cancel),
+/// [unitCost] one unit, [ticks] the time for one unit.
 class QueuedShip {
   final int id;
   final ShipyardItem item;
   final int count;
-  final int built;
-  final bool reserve;
   final Resources cost;
   final Resources unitCost;
   final int ticks;
-  final Resources? waitingFor;
-  final WaitReason waitingOn;
+  final BatchWait waitingOn;
   final int? startIn;
   const QueuedShip({
     required this.id,
     required this.item,
     required this.count,
-    this.built = 0,
-    this.reserve = false,
     required this.cost,
     required this.unitCost,
     required this.ticks,
-    this.waitingFor,
-    this.waitingOn = WaitReason.slot,
+    this.waitingOn = BatchWait.slot,
     this.startIn,
   });
 
@@ -2482,13 +2499,10 @@ class QueuedShip {
       id: _i(m['id']),
       item: ShipyardItem.fromJson(m['item']),
       count: _i(m['count']),
-      built: (m['built'] as int?) ?? 0,
-      reserve: (m['reserve'] as bool?) ?? false,
       cost: Resources.fromJson(m['cost']),
       unitCost: Resources.fromJson(m['unit_cost']),
       ticks: _i(m['ticks']),
-      waitingFor: _opt(m['waiting_for'], Resources.fromJson),
-      waitingOn: WaitReason.fromJson(m['waiting_on']),
+      waitingOn: BatchWait.fromJson(m['waiting_on']),
       startIn: _opt(m['start_in'], _i),
     );
   }
@@ -2498,14 +2512,11 @@ class QueuedShip {
       'id': id,
       'item': item.toJson(),
       'count': count,
-      'built': built,
-      'reserve': reserve,
       'cost': cost.toJson(),
       'unit_cost': unitCost.toJson(),
       'ticks': ticks,
+      'waiting_on': waitingOn.toJson(),
     };
-    _put(m, 'waiting_for', waitingFor?.toJson());
-    m['waiting_on'] = waitingOn.toJson();
     _put(m, 'start_in', startIn);
     return m;
   }
@@ -3411,13 +3422,19 @@ class QueueEvent extends EventKind {
   final String item;
   final QueueAction action;
 
-  /// [QueueAction.started]: what was paid.
+  /// What this event took from the stockpile. A building or research level
+  /// pays when it starts. A shipyard batch pays for every unit when it is
+  /// ordered: on the event that answers the order (started, or waiting when
+  /// it joined the line), and nothing on the later start of one that waited.
   final Resources paid;
 
-  /// [QueueAction.cancelled]: what came back.
+  /// [QueueAction.cancelled]: what came back. Half of the payment for a
+  /// started building or research level, nothing for a waiting one; for a
+  /// shipyard batch, half the price of the units not yet delivered.
   final Resources refunded;
 
-  /// [QueueAction.waiting]: the exact shortfall, null when nothing is short.
+  /// [QueueAction.waiting]: the exact shortfall of a building or research
+  /// order, null when nothing is short. Never set for a shipyard batch.
   final Resources? waitingFor;
   final WaitReason? waitingOn;
 

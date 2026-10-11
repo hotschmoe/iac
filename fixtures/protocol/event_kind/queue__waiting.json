@@ -1,14 +1,14 @@
 {
   "action": "Waiting",
-  "id": 335,
-  "item": "Corvette x3",
+  "id": 330,
+  "item": "Shipyard Lv.3",
   "kind": "Queue",
   "paid": {
     "crystal": 0.0,
     "deuterium": 0.0,
     "metal": 0.0
   },
-  "queue_type": "Ship",
+  "queue_type": "Building",
   "refunded": {
     "crystal": 0.0,
     "deuterium": 0.0,

@@ -15,7 +15,7 @@ const ORDERS: [Command; 6] = [
     Command::Build { building_type: BuildingType::Shipyard, reserve: false },
     Command::Build { building_type: BuildingType::ResearchLab, reserve: false },
     Command::Research { tech: ResearchType::CorvetteTech, reserve: false },
-    Command::BuildShip { ship_class: ShipClass::Corvette, count: 2, reserve: false },
+    Command::BuildShip { ship_class: ShipClass::Corvette, count: 2 },
 ];
 
 fn ticks_to_finish_the_build_order(pace: &str) -> u64 {

@@ -577,10 +577,9 @@ def queues_of(fs):
     run_s = [{"item": sq["item"], "done": sq["built"], "of": sq["count"], "eta_s": max(sq["end_tick"] - t, 0)}] if sq else []
     wait_s = []
     for i, q in enumerate(hw.get("shipyard_pending") or []):
-        d = wait_item(i, q["item"], None, q["ticks"], q.get("waiting_for"), q)
+        d = wait_item(i, q["item"], None, q["ticks"], None, q)
         d["count"] = q["count"]
-        if q.get("built"):
-            d["built"] = q["built"]
+        d["paid"] = {k: round(q["cost"][k]) for k in RES if q.get("cost", {}).get(k, 0) > 0}
         wait_s.append(d)
     return {"build": mk(hw.get("build_slots", 1), run_b, wait_b), "research": mk(1, run_r, wait_r), "ship": mk(1, run_s, wait_s)}
 
@@ -900,14 +899,15 @@ def summarize(fs, doc, odds):
             if w.get("short"):
                 need = " NEEDS " + ", ".join(f"{v} {k}" for k, v in w["short"].items())
                 need += f" (about {age(w['covered_in_s'])} of income)" if "covered_in_s" in w else " (no income of it yet)"
-            if not need and q["open"] == 0 and len(q["running"]) >= q["slots"]:
+            if "paid" in w:
+                need = " PAID " + ", ".join(f"{v} {k}" for k, v in w["paid"].items()) + " (half back if cancelled)"
+            elif not need and q["open"] == 0 and len(q["running"]) >= q["slots"]:
                 need = " (starts when a slot frees up; paid then)"
             why = f" [waits on {str(w['waiting_on']).lower()}" + (f", starts in ~{age(w['start_in_s'])}]" if "start_in_s" in w else "]") \
                 if w.get("waiting_on") else ""
             tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
-            done = f" ({w['built']}/{w['count']} built)" if w.get("built") else ""
             hold = " RESERVE (holds the line)" if w.get("reserve") else ""
-            print(f"    waiting {tag}: {what}{w['item']}{to}{done} ({age(w['ticks'])}{' each' if what else ''}){need}{why}{hold}")
+            print(f"    waiting {tag}: {what}{w['item']}{to} ({age(w['ticks'])}{' each' if what else ''}){need}{why}{hold}")
     stand = [f"{d['count']}x {d['kind']}" + (f" (+{d['restoring']} being rebuilt)" if d.get("restoring") else "")
              for d in hw.get("defences") or [] if d["count"] or d.get("restoring")]
     print(f"Defence power {hw.get('home_defence_power', 0):.0f} against an expected raid of about "
@@ -1302,7 +1302,9 @@ def queue_outcome(cmd, queue_events, used):
             return f"{q['item']} #{q.get('id', '?')} started" + (f", paid {res(paid)}" if paid else "")
         if act == "waiting":
             eta = f", starts in ~{age(q['start_in'])}" if q.get("start_in") is not None else ""
-            return f"{q['item']} #{q.get('id', '?')} queued, waits on {str(q.get('waiting_on', '?')).lower()}{eta}"
+            paid = {k: v for k, v in (q.get("paid") or {}).items() if v}
+            took = f"ordered, paid {res(paid)}" if paid else "queued"
+            return f"{q['item']} #{q.get('id', '?')} {took}, waits on {str(q.get('waiting_on', '?')).lower()}{eta}"
         return f"{q['item']} {act}"
     return None
 

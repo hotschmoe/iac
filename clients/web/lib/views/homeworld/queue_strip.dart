@@ -4,6 +4,7 @@ import '../../console/economy_view.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
 import '../../models/game_state.dart';
+import '../../models/homeworld.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
 
@@ -23,17 +24,21 @@ class QueueStrip extends StatelessWidget {
     final bWait = state.waitingBuild.firstOrNull;
     final shWait = state.waitingShips.firstOrNull;
     final rs = state.research.name == 'Idle' ? null : state.research;
+    final rsWait = state.research.waiting.firstOrNull;
     final pills = <Widget>[
       _Pill(
+          key: const Key('hw-pill-building'),
           label: 'Build slot A${slots == null ? '' : ' - queue ${slots.depth}/${slots.maxDepth}'}',
-          title: b?.name ?? (bWait == null ? 'Idle: pick a building' : 'Idle, waiting: ${bWait.name}'),
-          time: b?.time ?? bWait?.time,
+          title: b?.name ?? (bWait == null ? 'Idle: pick a building' : 'Idle, an order is waiting'),
+          time: b?.time,
+          waiting: b == null ? bWait : null,
           pct: b?.pct,
           cancelKey: 'hw-cancel-building',
-          onCancel: b == null && bWait == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.building),
+          onCancel: b == null && bWait == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.building, waiting: b == null),
           onTap: () => ctrl.selectHomeworldTab(HomeworldTab.buildings)),
       if (slots != null)
         _Pill(
+            key: const Key('hw-pill-slot-b'),
             label: 'Build slot B',
             title: slots.slotBUnlocked ? (slots.slotB?.name ?? 'Idle') : 'Locked',
             sub: slots.slotBUnlocked ? null : slots.slotBRequirement,
@@ -41,42 +46,53 @@ class QueueStrip extends StatelessWidget {
             time: null,
             pct: null),
       _Pill(
+          key: const Key('hw-pill-research'),
           label: 'Research',
-          title: rs?.name ?? 'Idle: pick a tech',
+          title: rs?.name ?? (rsWait == null ? 'Idle: pick a tech' : 'Idle, an order is waiting'),
           time: rs?.time,
+          waiting: rs == null ? rsWait : null,
           pct: rs?.pct,
           cancelKey: 'hw-cancel-research',
-          onCancel: rs == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.research),
+          onCancel: rs == null && rsWait == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.research, waiting: rs == null),
           onTap: () => ctrl.selectHomeworldTab(HomeworldTab.research)),
       _Pill(
+          key: const Key('hw-pill-ship'),
           label: 'Shipyard',
-          title: sh?.name ?? (shWait == null ? 'Idle: build a ship' : 'Idle, waiting: ${shWait.name}'),
-          time: sh?.time ?? shWait?.time,
+          title: sh?.name ?? (shWait == null ? 'Idle: build a ship' : 'Idle, a batch is waiting'),
+          time: sh?.time,
+          waiting: sh == null ? shWait : null,
           pct: sh?.pct,
           cancelKey: 'hw-cancel-ship',
-          onCancel: sh == null && shWait == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.ship),
+          onCancel: sh == null && shWait == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.ship, waiting: sh == null),
           onTap: () => ctrl.selectHomeworldTab(HomeworldTab.shipyard)),
     ];
     return Container(
       decoration: const BoxDecoration(color: C.hud, border: Border(bottom: BorderSide(color: C.line))),
       child: narrow
           ? Wrap(children: [for (final p in pills) FractionallySizedBox(widthFactor: 1, child: p)])
-          : Row(children: [for (final p in pills) Expanded(child: p)]),
+          : IntrinsicHeight(child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [for (final p in pills) Expanded(child: p)])),
     );
   }
 }
 
+/// One queue's box. A running item shows its clock beside the title. A
+/// waiting order's name and what it waits for (a shortfall of up to three
+/// resources and an estimate) is a sentence of any length, so it gets the
+/// full width under the title and wraps there.
 class _Pill extends StatelessWidget {
   final String label, title;
   final String? sub, time, cancelKey;
+  final QueueItem? waiting;
   final double? pct;
   final bool locked;
   final VoidCallback? onCancel, onTap;
-  const _Pill({required this.label, required this.title, this.sub, this.time, this.pct, this.locked = false, this.cancelKey, this.onCancel, this.onTap});
+  const _Pill(
+      {super.key, required this.label, required this.title, this.sub, this.time, this.waiting, this.pct, this.locked = false, this.cancelKey, this.onCancel, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final idle = pct == null && !locked;
+    final next = waiting;
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
@@ -86,24 +102,39 @@ class _Pill extends StatelessWidget {
           constraints: const BoxConstraints(minHeight: 42),
           decoration: BoxDecoration(border: const Border(right: BorderSide(color: C.lineLo), bottom: BorderSide(color: C.lineLo)), color: idle ? C.a(C.a500, .03) : null),
           child: Stack(children: [
-            Padding(padding: const EdgeInsets.fromLTRB(14, 6, 10, 8), child: Row(children: [
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-                  Lbl(label, size: 9),
-                  Text(
-                    (locked ? 'LOCKED: ${sub ?? ''}' : title).toUpperCase(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: T.cond(size: 13, color: idle ? C.a400 : C.a200, spacing: .8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 6, 10, 8),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                Row(children: [
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                      Lbl(label, size: 9),
+                      Text(
+                        title.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: T.cond(size: 13, color: idle ? C.a400 : C.a200, spacing: .8),
+                      ),
+                    ]),
                   ),
+                  if (time != null) Text(time!, style: T.mono(size: 15, color: C.a100, weight: FontWeight.w500)),
+                  if (onCancel != null) ...[
+                    const SizedBox(width: 8),
+                    ConsoleButton('Cancel', key: ValueKey<String>(cancelKey!), small: true, onPressed: onCancel),
+                  ],
                 ]),
-              ),
-              if (time != null) Text(time!, style: T.mono(size: 15, color: C.a100, weight: FontWeight.w500)),
-              if (onCancel != null) ...[
-                const SizedBox(width: 8),
-                ConsoleButton('Cancel', key: ValueKey<String>(cancelKey!), small: true, onPressed: onCancel),
-              ],
-            ])),
+                if (next != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Text.rich(TextSpan(children: [
+                      TextSpan(text: '${next.name.toUpperCase()}  ', style: T.mono(size: 10.5, color: C.text2, weight: FontWeight.w500)),
+                      TextSpan(text: next.time, style: T.mono(size: 10.5, color: C.text3, height: 1.3)),
+                    ])),
+                  ),
+                if (locked && sub != null)
+                  Padding(padding: const EdgeInsets.only(top: 3), child: Text(sub!, style: T.mono(size: 10.5, color: C.text3, height: 1.3))),
+              ]),
+            ),
             if (pct != null)
               Positioned(
                 left: 0,

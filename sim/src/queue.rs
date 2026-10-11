@@ -1,25 +1,29 @@
 // Queue projection: for every waiting order, why it has not started and
 // roughly when it will.
 //
-// A free slot starts the earliest waiting order that can start now: what it
-// needs is built and the stockpile covers its cost (one unit, for a ship
-// batch). An order that cannot start keeps its place and does not hold the
-// others back, unless it carries `reserve`: then, while it is ready and
-// short of resources, nothing behind it starts.
+// Buildings and research: a free slot starts the earliest waiting order
+// that can start now, meaning what it needs is built and the stockpile
+// covers its cost. An order that cannot start keeps its place and does not
+// hold the others back, unless it carries `reserve`: then, while it is ready
+// and short of resources, nothing behind it starts.
 //
-// The estimate walks the line once with the current production, handing
-// earlier orders the stockpile first. It ignores what the other two queues
-// will spend and any building that raises production meanwhile, so it is a
-// guide, not a promise.
+// Shipyard: a batch is paid for when it is ordered, so it waits only for the
+// yard or for something queued ahead that it needs, and the yard takes the
+// earliest batch whose prerequisites are built.
+//
+// The estimate walks each line once with the current production, handing
+// earlier orders the stockpile first. It ignores what the other queues will
+// spend and any building that raises production or speed meanwhile, so it is
+// a guide, not a promise.
 
 use iac_shared::constants::Resources;
 use iac_shared::pace::Pace;
-use iac_shared::protocol::WaitReason;
+use iac_shared::protocol::{BatchWait, WaitReason};
 use iac_shared::scaling::{self, BuildingLevels, BuildingType, ResearchLevels, ResearchType, ShipyardItem};
 
 use crate::engine::Player;
 
-/// One waiting order's outlook.
+/// One waiting building or research order's outlook.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Wait {
     pub reason: WaitReason,
@@ -29,11 +33,19 @@ pub struct Wait {
     pub short: Option<Resources>,
 }
 
+/// One waiting shipyard batch's outlook.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchOutlook {
+    pub reason: BatchWait,
+    /// Ticks until its first unit starts; None when that cannot be estimated.
+    pub start_in: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct QueueWaits {
     pub buildings: Vec<Wait>,
     pub research: Vec<Wait>,
-    pub ships: Vec<Wait>,
+    pub ships: Vec<BatchOutlook>,
 }
 
 #[derive(Clone, Copy)]
@@ -49,7 +61,7 @@ struct Item {
     reserve: bool,
     duration: u64,
     ready: Ready,
-    finishes: Option<Done>,
+    finishes: Done,
 }
 
 pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
@@ -68,16 +80,15 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
             reserve: q.reserve,
             duration: scaling::building_time(b, target, player.buildings.fabricator, pace),
             ready: Box::new(move |bl, _| bl.get(b) + 1 == target && scaling::building_prerequisites_met(b, bl)),
-            finishes: Some(Done::Building(b, target)),
+            finishes: Done::Building(b, target),
         }
     }).collect();
     let buildings = walk(player, &items, slots, &mut finishes, rate);
 
-    let mut slots = vec![player.research_queue.as_ref().map_or(0, |q| q.end_tick.saturating_sub(tick))];
+    let slots = vec![player.research_queue.as_ref().map_or(0, |q| q.end_tick.saturating_sub(tick))];
     if let Some(q) = &player.research_queue {
         finishes.push((q.end_tick.saturating_sub(tick), Done::Research(q.tech, q.target_level)));
     }
-    slots.truncate(1);
     let items: Vec<Item> = player.research_pending.iter().map(|q| {
         let (t, target) = (q.tech, q.target_level);
         Item {
@@ -87,29 +98,12 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
             ready: Box::new(move |bl, rl| {
                 bl.research_lab > 0 && rl.get(t) + 1 == target && scaling::research_prerequisites_met(t, bl, rl)
             }),
-            finishes: Some(Done::Research(t, target)),
+            finishes: Done::Research(t, target),
         }
     }).collect();
     let research = walk(player, &items, slots, &mut finishes, rate);
 
-    let running = player.ship_queue.as_ref().map_or(0, |q| q.end_tick.saturating_sub(tick));
-    let items: Vec<Item> = player.ship_pending.iter().map(|q| {
-        let item = q.item;
-        Item {
-            cost: item.unit_cost(),
-            reserve: q.reserve,
-            duration: item.unit_ticks(player.buildings.shipyard, pace),
-            ready: Box::new(move |bl, rl| {
-                bl.shipyard > 0
-                    && match item {
-                        ShipyardItem::Ship(class) => scaling::ship_class_unlocked(class, rl),
-                        ShipyardItem::Defence(kind) => scaling::defence_prerequisites_met(kind, bl, rl),
-                    }
-            }),
-            finishes: None,
-        }
-    }).collect();
-    let ships = walk(player, &items, vec![running], &mut finishes, rate);
+    let ships = batches(player, tick, pace, &finishes);
 
     QueueWaits { buildings, research, ships }
 }
@@ -178,9 +172,7 @@ fn walk(
                 if let Some(slot) = slots.iter_mut().min() {
                     *slot = at + item.duration;
                 }
-                if let Some(done) = item.finishes {
-                    finishes.push((at + item.duration, done));
-                }
+                finishes.push((at + item.duration, item.finishes));
                 claimed.push((at, item.cost));
                 if ready_now && item.reserve {
                     gate = Some(at);
@@ -192,6 +184,35 @@ fn walk(
                 }
             }
         }
+    }
+    out
+}
+
+/// The shipyard line. The yard is taken until the running batch has
+/// delivered its last unit; each waiting batch then holds it for all of its
+/// units.
+fn batches(player: &Player, tick: u64, pace: &Pace, finishes: &[(u64, Done)]) -> Vec<BatchOutlook> {
+    let yard = player.buildings.shipyard;
+    let mut free_at = player.ship_queue.as_ref().map_or(0, |q| {
+        let later_units = u64::from(q.undelivered().saturating_sub(1));
+        q.end_tick.saturating_sub(tick) + later_units * q.item.unit_ticks(yard, pace)
+    });
+    let mut out = Vec::with_capacity(player.ship_pending.len());
+    for q in &player.ship_pending {
+        let item = q.item;
+        let ready = move |bl: &BuildingLevels, rl: &ResearchLevels| {
+            bl.shipyard > 0
+                && match item {
+                    ShipyardItem::Ship(class) => scaling::ship_class_unlocked(class, rl),
+                    ShipyardItem::Defence(kind) => scaling::defence_prerequisites_met(kind, bl, rl),
+                }
+        };
+        let reason = if ready(&player.buildings, &player.research) { BatchWait::Slot } else { BatchWait::Prerequisite };
+        let start = ready_at(player, finishes, &ready).map(|at| at.max(free_at));
+        if let Some(at) = start {
+            free_at = at + u64::from(q.count) * item.unit_ticks(yard, pace);
+        }
+        out.push(BatchOutlook { reason, start_in: start });
     }
     out
 }

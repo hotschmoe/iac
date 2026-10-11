@@ -239,6 +239,21 @@ impl Empire {
         }
     }
 
+    pub fn refusal(&mut self, cmd: Command) -> (ErrorCode, String) {
+        let outcome = self.engine.execute(self.pid, cmd);
+        self.absorb();
+        outcome.error.expect("the command is refused")
+    }
+
+    pub fn stockpile(&self) -> iac_shared::constants::Resources {
+        self.engine.players[&self.pid].resources
+    }
+
+    pub fn set_stockpile(&mut self, resources: iac_shared::constants::Resources) {
+        let pid = self.pid;
+        edit(&mut self.engine, |s| s.players.get_mut(&pid).unwrap().resources = resources);
+    }
+
     pub fn run(&mut self, ticks: u64) {
         for _ in 0..ticks {
             self.engine.tick().expect("tick");

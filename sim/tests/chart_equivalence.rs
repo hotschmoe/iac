@@ -67,7 +67,7 @@ fn script(engine: &mut GameEngine, pids: &[u64]) {
                 tech: ResearchType::from_usize(rng.random_range(0..ResearchType::COUNT)).unwrap(),
                 reserve: false,
             }),
-            8 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2, reserve: false }),
+            8 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2 }),
             9 => here.map(|at| Command::Attack { fleet_id, target_fleet_id: template_npc_id(at) }),
             10 => Some(Command::Recall { fleet_id }),
             _ => Some(Command::CollectSalvage { fleet_id }),

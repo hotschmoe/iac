@@ -30,34 +30,13 @@ bool eventMatches(EventFilter f, String msg) => switch (f) {
       EventFilter.intel => _intel.hasMatch(msg) && !_combat.hasMatch(msg) && !_economy.hasMatch(msg),
     };
 
-bool canAfford(proto.Resources stock, proto.Resources cost) =>
-    stock.metal >= cost.metal && stock.crystal >= cost.crystal && stock.deuterium >= cost.deuterium;
-
-String shortBy(proto.Resources stock, proto.Resources cost) {
-  final o = <String>[];
-  if (stock.metal < cost.metal) o.add('${_n((cost.metal - stock.metal).ceil())} Fe');
-  if (stock.crystal < cost.crystal) o.add('${_n((cost.crystal - stock.crystal).ceil())} Cr');
-  if (stock.deuterium < cost.deuterium) o.add('${_n((cost.deuterium - stock.deuterium).ceil())} De');
-  return o.join(', ');
-}
-
-String _n(int v) {
-  final s = v.toString();
-  final b = StringBuffer();
-  for (var i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
-    b.write(s[i]);
-  }
-  return b.toString();
-}
-
-String fmtInt(num v) => _n(v.round());
+String fmtInt(num v) => groupDigits(v.round());
 
 String costText(proto.Resources c) {
   final o = <String>[];
-  if (c.metal > 0) o.add('${_n(c.metal.round())} Fe');
-  if (c.crystal > 0) o.add('${_n(c.crystal.round())} Cr');
-  if (c.deuterium > 0) o.add('${_n(c.deuterium.round())} De');
+  if (c.metal > 0) o.add('${fmtInt(c.metal)} Fe');
+  if (c.crystal > 0) o.add('${fmtInt(c.crystal)} Cr');
+  if (c.deuterium > 0) o.add('${fmtInt(c.deuterium)} De');
   return o.join('  ');
 }
 
@@ -141,17 +120,16 @@ NextUp nextUp(GameState s, EconomyView eco) {
   final rc = researchChoices(s.catalog);
   if (labIdle && rc.isNotEmpty) {
     final o = rc.first;
-    final ok = canAfford(stock, o.next!.cost);
-    return NextUp('NEXT UP', 'Research ${o.tech.label} L${o.next!.level}', 'The lab is idle. ${ok ? 'You can afford it now.' : 'Short by ${shortBy(stock, o.next!.cost)}.'}', 'Queue it', NextAction.queueResearch,
-        cost: o.next!.cost, tech: o.tech, disabledReason: ok ? null : 'Short by ${shortBy(stock, o.next!.cost)}');
+    final short = shortReason(stock, o.next!.cost);
+    return NextUp('NEXT UP', 'Research ${o.tech.label} L${o.next!.level}', 'The lab is idle. ${short == null ? 'You can afford it now.' : '$short.'}', 'Queue it', NextAction.queueResearch,
+        cost: o.next!.cost, tech: o.tech, disabledReason: short);
   }
   if (s.buildQueue.isEmpty) {
     final bc = buildingChoices(s.catalog, limit: 1);
     if (bc.isNotEmpty) {
       final o = bc.first;
-      final ok = canAfford(stock, o.next!.cost);
       return NextUp('NEXT UP', 'Upgrade ${o.buildingType.label} L${o.next!.level}', 'The build slot is idle. Mines compound; idle slots are lost production.', 'Queue it', NextAction.queueBuild,
-          cost: o.next!.cost, building: o.buildingType, disabledReason: ok ? null : 'Short by ${shortBy(stock, o.next!.cost)}');
+          cost: o.next!.cost, building: o.buildingType, disabledReason: shortReason(stock, o.next!.cost));
     }
   }
   for (final f in s.fleets) {

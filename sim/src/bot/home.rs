@@ -8,10 +8,15 @@
 // held at a share of the empire's building and research points, and home
 // defence at a margin over the next raid.
 //
-// Orders are sent with `reserve`, so a queue runs in the order planned. A
-// player who stays queues one order at a time; one about to leave fills
-// every queue, gives each building place to an order worth its share of
-// the income to come, and spends what no order has claimed.
+// Building and research orders are sent with `reserve`, so a queue runs in
+// the order planned. A player who stays queues one order at a time; one
+// about to leave fills every queue, gives each building place to an order
+// worth its share of the income to come, and spends what no order has
+// claimed.
+//
+// A shipyard batch is paid for whole when it is ordered, so the planner cuts
+// a batch to the units the stockpile covers now and orders the rest at a
+// later look.
 
 use iac_shared::constants::{ResourceKind, Resources, ShipClass};
 use iac_shared::pace::Pace;
@@ -74,7 +79,7 @@ const ABSORB: f32 = 0.6;
 const SCARCITY_PULL: f32 = 4.0;
 const MAX_SHIP_BATCH: f32 = 12.0;
 const MAX_DEFENCE_BATCH: f32 = 100.0;
-const MAX_SURPLUS_BATCH: f32 = 500.0;
+const MAX_SURPLUS_BATCH: u16 = 500;
 
 use ResearchType as T;
 
@@ -305,33 +310,37 @@ struct Planner<'a> {
     pace: Pace,
     built: BuildingLevels,
     plan: Projection,
-    /// The stockpile less everything already waiting or ordered this turn.
+    /// The stockpile less the batches ordered this turn: what a batch can
+    /// be paid from.
+    stock: Resources,
+    /// `stock` less every building and research order already waiting or
+    /// queued this turn: what no order has claimed.
     spare: Resources,
     /// Places left in the shipyard queue.
     yard_room: usize,
     /// Buildings that something the profile wants is waiting on.
     needs: Vec<(BuildingType, u8)>,
+    /// The price of the unit the yard wants next when the stockpile does not
+    /// cover even one.
+    yard_saving: Resources,
 }
 
 /// Queue what the empire should build next. `away_for` is how long the
 /// player will be gone after this look-in; None for a player who stays.
-pub(super) fn plan(state: &GameState, personality: Personality, away_for: Option<u64>, orders: &mut Vec<Order>) {
-    let Ok(pace) = Pace::new(state.world.pace) else { return };
+/// Returns what the shipyard is saving for: a batch cannot be ordered ahead
+/// of the resources, so nothing in the queues says so.
+pub(super) fn plan(state: &GameState, personality: Personality, away_for: Option<u64>, orders: &mut Vec<Order>) -> Resources {
+    let Ok(pace) = Pace::new(state.world.pace) else { return Resources::default() };
     let home = &state.homeworld;
     let mut built = BuildingLevels::default();
     for b in &home.buildings {
         built.set(b.building_type, b.level);
     }
-    let batch_rest = home.shipyard_queue.iter().map(|q| {
-        q.item.unit_cost().scale(f32::from(q.count.saturating_sub(q.built + 1)))
-    });
     let waiting = home
         .build_pending
         .iter()
         .map(|q| q.cost)
         .chain(home.research_pending.iter().map(|q| q.cost))
-        .chain(home.shipyard_pending.iter().map(|q| q.cost))
-        .chain(batch_rest)
         .fold(Resources::default(), Resources::add);
     let mut planner = Planner {
         state,
@@ -340,9 +349,11 @@ pub(super) fn plan(state: &GameState, personality: Personality, away_for: Option
         pace,
         built,
         plan: Projection::of(home),
+        stock: state.player.resources,
         spare: state.player.resources.sub(waiting),
         yard_room: 0,
         needs: Vec::new(),
+        yard_saving: Resources::default(),
     };
     planner.research(away_for.is_some(), orders);
     planner.shipyard(orders);
@@ -350,6 +361,7 @@ pub(super) fn plan(state: &GameState, personality: Personality, away_for: Option
     if away_for.is_some() {
         planner.surplus(orders);
     }
+    planner.yard_saving
 }
 
 impl Planner<'_> {
@@ -437,32 +449,57 @@ impl Planner<'_> {
             return;
         }
         self.yard_room = self.room(held, self.home.shipyard_pending.len(), 1, true);
-        if let Some(count) = self.turrets_wanted() {
-            self.batch(ShipyardItem::Defence(DefenceKind::PulseTurret), count, orders);
-        }
-        if let Some((class, count)) = self.ships_wanted() {
-            self.batch(ShipyardItem::Ship(class), count, orders);
-        }
-    }
-
-    fn batch(&mut self, item: ShipyardItem, count: u16, orders: &mut Vec<Order>) {
-        if self.yard_room == 0 || count == 0 {
+        // A batch waiting for the yard is already paid for: the plan orders
+        // more only once the line behind the running batch is clear, so it
+        // does not pay far ahead of what the yard can build.
+        if !self.home.shipyard_pending.is_empty() {
             return;
         }
-        self.yard_room -= 1;
-        self.spare = self.spare.sub(item.unit_cost().scale(f32::from(count)));
-        orders.push(Order::Command(match item {
-            ShipyardItem::Ship(ship_class) => Command::BuildShip { ship_class, count, reserve: false },
-            ShipyardItem::Defence(kind) => Command::BuildDefence { kind, count, reserve: false },
-        }));
+        if let Some(count) = self.turrets_wanted() {
+            self.wanted(ShipyardItem::Defence(DefenceKind::PulseTurret), count, orders);
+        }
+        if let Some((class, count)) = self.ships_wanted() {
+            self.wanted(ShipyardItem::Ship(class), count, orders);
+        }
     }
 
+    /// Order up to `count` of something the plan calls for, as many as the
+    /// stockpile covers; when it covers none, the yard is saving for one.
+    fn wanted(&mut self, item: ShipyardItem, count: u16, orders: &mut Vec<Order>) {
+        if self.yard_room > 0 && !self.batch(item, count, self.stock, orders) {
+            self.yard_saving = self.yard_saving.add(item.unit_cost());
+        }
+    }
+
+    /// Order up to `count` of `item`. A batch is paid for whole when it is
+    /// ordered, so it is cut to the units `purse` covers; a later look
+    /// orders the rest. False when it covers none or the yard has no room.
+    fn batch(&mut self, item: ShipyardItem, count: u16, purse: Resources, orders: &mut Vec<Order>) -> bool {
+        let unit = item.unit_cost();
+        let covered = ResourceKind::ALL
+            .into_iter()
+            .filter(|&k| unit.get(k) > 0.0)
+            .map(|k| (purse.get(k) / unit.get(k)).floor().max(0.0))
+            .fold(f32::from(count), f32::min) as u16;
+        if self.yard_room == 0 || covered == 0 {
+            return false;
+        }
+        self.yard_room -= 1;
+        let cost = item.batch_cost(covered);
+        self.stock = self.stock.sub(cost);
+        self.spare = self.spare.sub(cost);
+        orders.push(Order::Command(match item {
+            ShipyardItem::Ship(ship_class) => Command::BuildShip { ship_class, count: covered },
+            ShipyardItem::Defence(kind) => Command::BuildDefence { kind, count: covered },
+        }));
+        true
+    }
 
     /// What is in stock beyond every order placed would sit there scoring
     /// nothing until the next look-in. An empire that flies puts it into
     /// Pulse Turrets, which cost no deuterium; one that does not, into the
-    /// heaviest hull it can build. Only stock already in hand is spent, so
-    /// no queued order is kept waiting by it.
+    /// heaviest hull it can build. Only stock no order has claimed is spent,
+    /// so no queued order is kept waiting by it.
     fn surplus(&mut self, orders: &mut Vec<Order>) {
         let turret = DefenceKind::PulseTurret;
         let item = if self.profile.fleet_share > 0.0 {
@@ -476,20 +513,14 @@ impl Planner<'_> {
                 None => return,
             }
         };
-        let unit = item.unit_cost();
-        let count = ResourceKind::ALL
-            .into_iter()
-            .filter(|&k| unit.get(k) > 0.0)
-            .map(|k| self.spare.get(k) / unit.get(k))
-            .fold(MAX_SURPLUS_BATCH, f32::min);
-        if self.plan.buildings.shipyard >= 1 && count >= 1.0 && fits(unit, self.cap()) {
-            self.batch(item, count as u16, orders);
+        if self.plan.buildings.shipyard >= 1 && fits(item.unit_cost(), self.cap()) {
+            self.batch(item, MAX_SURPLUS_BATCH, self.spare, orders);
         }
     }
 
     fn ordered(&self) -> impl Iterator<Item = (ShipyardItem, u16)> + '_ {
         let running = self.home.shipyard_queue.iter().map(|q| (q.item, q.count - q.built));
-        let waiting = self.home.shipyard_pending.iter().map(|q| (q.item, q.count - q.built));
+        let waiting = self.home.shipyard_pending.iter().map(|q| (q.item, q.count));
         running.chain(waiting)
     }
 

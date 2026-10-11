@@ -2,7 +2,37 @@ import 'dart:math' as math;
 
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
-import '../state/state_mapper.dart' show waitSummary;
+import '../state/state_mapper.dart' show batchWaitSummary, waitSummary;
+
+/// "1,234,567".
+String groupDigits(int v) {
+  final s = v.toString();
+  final b = StringBuffer();
+  for (var i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
+    b.write(s[i]);
+  }
+  return b.toString();
+}
+
+bool canAfford(proto.Resources stock, proto.Resources cost) =>
+    stock.metal >= cost.metal && stock.crystal >= cost.crystal && stock.deuterium >= cost.deuterium;
+
+/// "1,234 Fe, 56 Cr": what [cost] needs beyond [stock], each part rounded up.
+String shortBy(proto.Resources stock, proto.Resources cost) {
+  final o = <String>[];
+  if (stock.metal < cost.metal) o.add('${groupDigits((cost.metal - stock.metal).ceil())} Fe');
+  if (stock.crystal < cost.crystal) o.add('${groupDigits((cost.crystal - stock.crystal).ceil())} Cr');
+  if (stock.deuterium < cost.deuterium) o.add('${groupDigits((cost.deuterium - stock.deuterium).ceil())} De');
+  return o.join(', ');
+}
+
+/// "Short by 11 De" when [stock] does not cover [cost], else null. A
+/// shipyard batch is paid in full when it is ordered and refused otherwise,
+/// so this is the reason its control is off; the overview's suggestion tiles
+/// use it for every kind of order.
+String? shortReason(proto.Resources stock, proto.Resources cost) =>
+    canAfford(stock, cost) ? null : 'Short by ${shortBy(stock, cost)}';
 
 /// Presentation model for the economy side of the protocol: pace, storage
 /// caps, build slots and queues, defences and raids, score. Views read only
@@ -167,7 +197,7 @@ class EconomyView {
       maxDepth: hw.buildSlots + hw.queueWaitingMax,
       slotCount: hw.buildSlots,
       queued: [for (final q in hw.buildPending) QueuedItemView('${q.buildingType.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
-      shipQueued: [for (final q in hw.shipyardPending) QueuedItemView('${q.item.label} x${q.count}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
+      shipQueued: [for (final q in hw.shipyardPending) QueuedItemView('${q.item.label} x${q.count}', batchWaitSummary(q.waitingOn, q.startIn))],
       researchQueued: [for (final q in hw.researchPending) QueuedItemView('${q.tech.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
       slotBUnlocked: hw.buildSlots >= 2,
       slotBRequirement: 'Needs Modular Fabrication${unmet.isEmpty ? '' : ' (requires ${unmet.join(', ')})'}',

@@ -96,10 +96,10 @@ can pick up where you left off if your session is restarted.
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
 | `build` | `building_type`, `reserve` (default false) | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts). Every order gets a stable `id`, reported in its `Queue` event and in the queue lists. `reserve: true` makes the order hold the line while it is short (see Queues and slots) |
 | `research` | `tech`, `reserve` | research one level, same rules (one lab) |
-| `build_ship` | `ship_class`, `count`, `reserve` | queue a ship batch (one shipyard). The batch is one order that pays and starts one unit at a time, so 5 ordered with money for 2 builds 2 and waits for the third |
-| `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count`, `reserve` | queue home defence structures in the shipyard queue, paid per unit like ships; `DefenceLocked` until the Defense Grid and research it needs are in place |
-| `cancel_build` | `queue_type`, `id` | cancel the item with that `id` once it has started, with a 50% refund (one unit for a ship batch; units already built are kept); waiting items of the same building or tech move up a level; a `Queue` event confirms what was refunded. `InvalidTarget` names where the id actually is (another queue, still waiting, or gone) |
-| `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits; nothing was paid, so nothing comes back; a `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
+| `build_ship` | `ship_class`, `count` | order a ship batch (one shipyard). Unlike a building or a tech, a batch is accepted only if your stockpile covers every unit now, and it is paid in full at that moment; otherwise it is refused with `InsufficientResources` and a message naming the shortfall per resource and how many units the stockpile would cover (5 ordered with money for 2 is refused; order 2). A paid batch starts at once or waits for the yard |
+| `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count` | order home defence structures in the shipyard queue, paid in full when ordered like ships; `DefenceLocked` until the Defense Grid and research it needs are in place |
+| `cancel_build` | `queue_type`, `id` | cancel the item with that `id` once it has started. A building or tech refunds 50% of its cost, and waiting items of the same building or tech move up a level. A ship or defence batch keeps the units already built and refunds 50% of the price of every unit not yet delivered, the one under way included. A `Queue` event confirms what was refunded. `InvalidTarget` names where the id actually is (another queue, still waiting, or gone) |
+| `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits. A waiting building or tech paid nothing, so nothing comes back; a waiting batch paid when it was ordered and gets 50% back. A `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, and the odds `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest. `ratio` is not `fleet_power / est_power`: see Threat |
 | `odds` | `fleet_id`, `sectors:[{q,r},...]` (at most 256) | do not move: reply `odds` with `fleet_id` and, for each sector in the order asked, `{sector, threat, ratio, label}`: how that fleet would fare there. Any sector may be named: adjacent or far, the one the fleet is in, seen or never seen |
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit, plus `bots` (same rows, ranked among themselves) when the world has built-in bots |
@@ -276,8 +276,9 @@ What every doctrine does:
   cargo unloads only what fits and the rest waits aboard
   (`cargo_blocked: true`). `StorageNearCap` (85%) and `StorageFull` events
   warn you. A Vault also protects 8% of the cap per level (to 60%) from raids.
-- **Queues and slots** — one rule for buildings, research, ships and
-  defences. An order that can ever start is always accepted, whether or not a
+- **Queues and slots** — buildings and research queue ahead of resources;
+  ship and defence batches are paid in full when ordered (below). A building
+  or research order that can ever start is always accepted, whether or not a
   slot is free or you can pay yet. Each order has a stable `id` (cancel by it,
   never by position). Whenever a slot is free, the server starts the earliest
   waiting order that can start now: what it needs is built and the stockpile
@@ -291,10 +292,16 @@ What every doctrine does:
   such as a Shipyard behind the Metal Mine it needs, never holds the line.
   Research and buildings can both be queued behind a prerequisite that is
   itself still queued, and a tech that is running can be queued again for its
-  next level. A ship batch is one order that pays and starts one unit at a
-  time: it shows `built` of `count`, and when it cannot pay for the next unit
-  it goes back to waiting (`waiting_for` is the next unit's shortfall) and
-  lets another order use the yard. Buildings run in `build_slots` parallel
+  next level. A ship or defence batch is one order under a different rule: it
+  is accepted only if the stockpile covers the whole batch now, pays for every
+  unit at that moment, and is otherwise refused with `InsufficientResources`
+  ("Scout x5 costs 1000 metal, 250 crystal and 150 deuterium; the stockpile is
+  short by 120 metal and 30 deuterium. Nothing was ordered: a batch is paid in
+  full when it is ordered. The stockpile covers 4."). Nothing in the yard ever
+  waits on resources: a paid batch waits only for the yard to be free or for a
+  queued Shipyard level or tech it needs, takes no `reserve`, and once started
+  builds every unit without stopping (`shipyard_queue` shows `built` of
+  `count`). Buildings run in `build_slots` parallel
   slots (1, plus one per Modular Fabrication level, max 3); research and the
   shipyard have one.
   Each queue holds its running items plus `queue_waiting_max` (3) waiting ones,
@@ -302,16 +309,24 @@ What every doctrine does:
   refuses with `QueueFull`. Orders that can never start are refused with a
   specific error: `PrerequisitesNotMet` (naming what is missing),
   `MaxLevelReached`, `StorageTooSmall` (naming the Vault level it needs),
-  `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`.
-  `build_pending` / `research_pending` / `shipyard_pending` list each waiting
+  `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`. For a batch,
+  `StorageTooSmall` means the whole batch costs more than a stockpile cap and
+  says how many units fit.
+  `build_pending` / `research_pending` list each waiting
   order with its `id`, `waiting_for` (the exact shortfall), `waiting_on` (`Slot`,
   `Resources`, `Prerequisite` or `Order`: held behind an earlier `reserve`
   order) and
   `start_in` (estimated ticks to start at current production, ignoring what the
-  other queues spend). Every order, start and cancel is answered by a `Queue`
-  event: `Started` (what was paid), `Waiting` (shortfall and estimate) or
-  `Cancelled` (what was refunded: half for a running item, nothing for a
-  waiting one). A queue with nothing running but orders waiting is not idle.
+  other queues spend). `shipyard_pending` lists each paid batch with its `id`,
+  `count`, `cost` (what it paid), `waiting_on` (`Slot` or `Prerequisite`,
+  nothing else) and `start_in`. Every order, start and cancel is answered by a
+  `Queue` event: `Started`, `Waiting` (shortfall and estimate) or `Cancelled`
+  (what was refunded: half for a running building or tech, nothing for a
+  waiting one, half of the undelivered units for a batch, waiting or running).
+  `paid` on the event is what it took from the stockpile: a building or tech
+  pays on `Started`; a batch pays on the event that answers the order
+  (`Started`, or `Waiting` when the yard is busy) and nothing when it starts
+  later. A queue with nothing running but orders waiting is not idle.
 - **Research** — 13 techs: hulls, shields, weapons, fuel, navigation, ship
   class unlocks (Corvette Tech needs only Shipyard 1, Frigate and Cruiser
   Tech need more), emergency jump, Modular Fabrication (building slots). The Research
