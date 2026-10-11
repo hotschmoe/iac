@@ -678,6 +678,10 @@ sealed class Command {
           amount: _opt(m['amount'], _f),
         ),
       'unload' => UnloadCommand(fleetId: _i(m['fleet_id'])),
+      'found_outpost' => FoundOutpostCommand(fleetId: _i(m['fleet_id'])),
+      'outpost_survey' => OutpostSurveyCommand(fleetId: _i(m['fleet_id']), sector: _opt(m['sector'], Hex.fromJson)),
+      'upgrade_outpost' => const UpgradeOutpostCommand(),
+      'abandon_outpost' => const AbandonOutpostCommand(),
       final a => throw FormatException('unknown Command action "$a"'),
     };
   }
@@ -901,12 +905,55 @@ class LoadCommand extends Command {
 }
 
 /// Put a hold loaded by [LoadCommand] back into the stockpile, as far as the
-/// caps allow; the dock takes the rest as room opens.
+/// caps allow; the dock takes the rest as room opens. At the player's outpost
+/// it puts the whole hold of any fleet into the outpost's store, as far as
+/// the store has room, and [LoadCommand] there takes from that store.
 class UnloadCommand extends Command {
   final int fleetId;
   const UnloadCommand({required this.fleetId});
   @override
   Json toJson() => {'action': 'unload', 'fleet_id': fleetId};
+}
+
+/// Found the player's outpost in the sector the fleet stands in, paid from
+/// its hold ([OutpostSurvey.cost]). The answer is an info alert, or the
+/// refusal [OutpostSurvey.refusal] gives beforehand.
+class FoundOutpostCommand extends Command {
+  final int fleetId;
+  const FoundOutpostCommand({required this.fleetId});
+  @override
+  Json toJson() => {'action': 'found_outpost', 'fleet_id': fleetId};
+}
+
+/// Ask what an outpost in [sector] would be worth, without founding: the
+/// fleet's own sector when none is named, otherwise any sector on the
+/// player's chart. The reply is an [OutpostSurvey].
+class OutpostSurveyCommand extends Command {
+  final int fleetId;
+  final Hex? sector;
+  const OutpostSurveyCommand({required this.fleetId, this.sector});
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{'action': 'outpost_survey', 'fleet_id': fleetId};
+    _put(m, 'sector', sector?.toJson());
+    return m;
+  }
+}
+
+/// Build the next level of the player's outpost, paid in full from the
+/// outpost's own store ([OutpostState.nextLevel]).
+class UpgradeOutpostCommand extends Command {
+  const UpgradeOutpostCommand();
+  @override
+  Json toJson() => {'action': 'upgrade_outpost'};
+}
+
+/// Give up the player's outpost: its store drifts as wreckage in the sector
+/// and nothing is refunded.
+class AbandonOutpostCommand extends Command {
+  const AbandonOutpostCommand();
+  @override
+  Json toJson() => {'action': 'abandon_outpost'};
 }
 
 // ── Server → Client ───────────────────────────────────────────────
@@ -931,6 +978,7 @@ sealed class ServerMessage {
       'odds' => FleetOdds.fromJson(m),
       'leaderboard' => LeaderboardReply.fromJson(m),
       'exchange_quote' => ExchangeQuote.fromJson(m),
+      'outpost_survey' => OutpostSurvey.fromJson(m),
       'error' => ErrorMessage.fromJson(m),
       final t => throw FormatException('unknown ServerMessage type "$t"'),
     };
@@ -972,6 +1020,10 @@ class TickUpdate extends ServerMessage {
   final List<FleetState> fleets;
   final List<SectorState>? sectorUpdates;
   final HomeworldState? homeworldUpdate;
+
+  /// The player's outpost, whole, every tick they have one; null means
+  /// they have none.
+  final OutpostState? outpost;
   final List<GameEvent>? events;
   const TickUpdate({
     required this.tick,
@@ -979,6 +1031,7 @@ class TickUpdate extends ServerMessage {
     required this.fleets,
     this.sectorUpdates,
     this.homeworldUpdate,
+    this.outpost,
     this.events,
   });
 
@@ -988,6 +1041,7 @@ class TickUpdate extends ServerMessage {
         fleets: _list(m['fleets'], FleetState.fromJson),
         sectorUpdates: _opt(m['sector_updates'], (v) => _list(v, SectorState.fromJson)),
         homeworldUpdate: _opt(m['homeworld_update'], HomeworldState.fromJson),
+        outpost: _opt(m['outpost'], OutpostState.fromJson),
         events: _opt(m['events'], (v) => _list(v, GameEvent.fromJson)),
       );
 
@@ -998,6 +1052,7 @@ class TickUpdate extends ServerMessage {
     m['fleets'] = fleets.map((e) => e.toJson()).toList();
     _put(m, 'sector_updates', sectorUpdates?.map((e) => e.toJson()).toList());
     _put(m, 'homeworld_update', homeworldUpdate?.toJson());
+    _put(m, 'outpost', outpost?.toJson());
     _put(m, 'events', events?.map((e) => e.toEventJson()).toList());
     return m;
   }
@@ -1009,6 +1064,9 @@ class GameState extends ServerMessage {
   final PlayerState player;
   final List<FleetState> fleets;
   final HomeworldState homeworld;
+
+  /// The player's outpost; null when they have none.
+  final OutpostState? outpost;
   final List<SectorState> knownSectors;
   final WorldInfo world;
   const GameState({
@@ -1016,6 +1074,7 @@ class GameState extends ServerMessage {
     required this.player,
     required this.fleets,
     required this.homeworld,
+    this.outpost,
     required this.knownSectors,
     required this.world,
   });
@@ -1025,20 +1084,327 @@ class GameState extends ServerMessage {
         player: PlayerState.fromJson(m['player']),
         fleets: _list(m['fleets'], FleetState.fromJson),
         homeworld: HomeworldState.fromJson(m['homeworld']),
+        outpost: _opt(m['outpost'], OutpostState.fromJson),
         knownSectors: _list(m['known_sectors'], SectorState.fromJson),
         world: WorldInfo.fromJson(m['world']),
       );
 
   @override
+  Json toJson() {
+    final m = <String, dynamic>{
+      'type': 'full_state',
+      'tick': tick,
+      'player': player.toJson(),
+      'fleets': fleets.map((e) => e.toJson()).toList(),
+      'homeworld': homeworld.toJson(),
+      'known_sectors': knownSectors.map((e) => e.toJson()).toList(),
+      'world': world.toJson(),
+    };
+    _put(m, 'outpost', outpost?.toJson());
+    return m;
+  }
+}
+
+/// Which job an outpost has under way.
+enum OutpostWork {
+  build,
+  repair;
+
+  String get wire => _snake(name);
+  String toJson() => wire;
+  static OutpostWork fromJson(Object? v) => _enumFrom(values, v, _snake);
+}
+
+/// The one job an outpost has under way: [level] is the level being built,
+/// or the level being repaired.
+class OutpostWorkState {
+  final OutpostWork kind;
+  final int level;
+  final int startTick;
+  final int endTick;
+  const OutpostWorkState({required this.kind, required this.level, required this.startTick, required this.endTick});
+
+  factory OutpostWorkState.fromJson(Object? json) {
+    final m = _obj(json);
+    return OutpostWorkState(
+      kind: OutpostWork.fromJson(m['kind']),
+      level: _i(m['level']),
+      startTick: _i(m['start_tick']),
+      endTick: _i(m['end_tick']),
+    );
+  }
+
+  Json toJson() => {'kind': kind.toJson(), 'level': level, 'start_tick': startTick, 'end_tick': endTick};
+}
+
+/// One level of an outpost, as an upgrade to it.
+class OutpostLevel {
+  final int level;
+  final Resources cost;
+  final int ticks;
+  final Resources storeCap;
+  final double platformPower;
+
+  /// What the extractor makes each tick at this level, on this site.
+  final Resources production;
+  const OutpostLevel({
+    required this.level,
+    required this.cost,
+    required this.ticks,
+    required this.storeCap,
+    required this.platformPower,
+    required this.production,
+  });
+
+  factory OutpostLevel.fromJson(Object? json) {
+    final m = _obj(json);
+    return OutpostLevel(
+      level: _i(m['level']),
+      cost: Resources.fromJson(m['cost']),
+      ticks: _i(m['ticks']),
+      storeCap: Resources.fromJson(m['store_cap']),
+      platformPower: _f(m['platform_power']),
+      production: Resources.fromJson(m['production']),
+    );
+  }
+
   Json toJson() => {
-        'type': 'full_state',
-        'tick': tick,
-        'player': player.toJson(),
-        'fleets': fleets.map((e) => e.toJson()).toList(),
-        'homeworld': homeworld.toJson(),
-        'known_sectors': knownSectors.map((e) => e.toJson()).toList(),
-        'world': world.toJson(),
+        'level': level,
+        'cost': cost.toJson(),
+        'ticks': ticks,
+        'store_cap': storeCap.toJson(),
+        'platform_power': platformPower,
+        'production': production.toJson(),
       };
+}
+
+/// The player's outpost: a station on one sector of rings 9 to 20. It is a
+/// dock with a store of its own: `load` and `unload` there move cargo
+/// between a hold and [store], nothing moves by itself, and nothing in the
+/// store scores or can be spent at home. A fleet standing there is not safe:
+/// a lost raid destroys a quarter of the ships there.
+class OutpostState {
+  final Hex location;
+
+  /// 0 while the first level is being built.
+  final int level;
+  final int maxLevel;
+
+  /// Level 1 or more and not breached: the extractor runs, tanks are filled
+  /// and the platform defends.
+  final bool inService;
+
+  /// A lost raid broke it: no extractor, no refuelling, no platform until
+  /// the repair is done. The store, load, unload and chart banking work.
+  final bool breached;
+  final OutpostWorkState? work;
+  final Resources store;
+  final Resources storeCap;
+
+  /// What a raid cannot take: the repair cost of the level it stands at, or
+  /// of the level it is building.
+  final Resources protected;
+
+  /// Per tick now; zero while not [inService].
+  final Resources production;
+
+  /// The site's grade, 0 to 12.
+  final double grade;
+
+  /// 0 while breached or unfinished.
+  final double platformPower;
+
+  /// The platform and the owner's ships standing in the sector.
+  final double defencePower;
+  final double nextRaidEstimatePower;
+
+  /// Tick an announced raid arrives; null when none is on its way.
+  final int? raidArrivalTick;
+
+  /// What [UpgradeOutpostCommand] would build; null at [maxLevel].
+  final OutpostLevel? nextLevel;
+
+  /// What the repair will take from the store once the store covers it;
+  /// present while breached with no repair under way.
+  final Resources? repairCost;
+
+  /// Lane hops to the homeworld; null beyond 64.
+  final int? hopsHome;
+  const OutpostState({
+    required this.location,
+    required this.level,
+    required this.maxLevel,
+    required this.inService,
+    required this.breached,
+    this.work,
+    required this.store,
+    required this.storeCap,
+    required this.protected,
+    required this.production,
+    required this.grade,
+    required this.platformPower,
+    required this.defencePower,
+    required this.nextRaidEstimatePower,
+    this.raidArrivalTick,
+    this.nextLevel,
+    this.repairCost,
+    this.hopsHome,
+  });
+
+  factory OutpostState.fromJson(Object? json) {
+    final m = _obj(json);
+    return OutpostState(
+      location: Hex.fromJson(m['location']),
+      level: _i(m['level']),
+      maxLevel: _i(m['max_level']),
+      inService: m['in_service'] as bool,
+      breached: m['breached'] as bool,
+      work: _opt(m['work'], OutpostWorkState.fromJson),
+      store: Resources.fromJson(m['store']),
+      storeCap: Resources.fromJson(m['store_cap']),
+      protected: Resources.fromJson(m['protected']),
+      production: Resources.fromJson(m['production']),
+      grade: _f(m['grade']),
+      platformPower: _f(m['platform_power']),
+      defencePower: _f(m['defence_power']),
+      nextRaidEstimatePower: _f(m['next_raid_estimate_power']),
+      raidArrivalTick: m['raid_arrival_tick'] as int?,
+      nextLevel: _opt(m['next_level'], OutpostLevel.fromJson),
+      repairCost: _opt(m['repair_cost'], Resources.fromJson),
+      hopsHome: m['hops_home'] as int?,
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{
+      'location': location.toJson(),
+      'level': level,
+      'max_level': maxLevel,
+      'in_service': inService,
+      'breached': breached,
+      'store': store.toJson(),
+      'store_cap': storeCap.toJson(),
+      'protected': protected.toJson(),
+      'production': production.toJson(),
+      'grade': grade,
+      'platform_power': platformPower,
+      'defence_power': defencePower,
+      'next_raid_estimate_power': nextRaidEstimatePower,
+    };
+    _put(m, 'work', work?.toJson());
+    _put(m, 'raid_arrival_tick', raidArrivalTick);
+    _put(m, 'next_level', nextLevel?.toJson());
+    _put(m, 'repair_cost', repairCost?.toJson());
+    _put(m, 'hops_home', hopsHome);
+    return m;
+  }
+}
+
+/// An outpost standing in a sector, as anyone with eyes on the sector sees it.
+class OutpostBrief {
+  final String owner;
+
+  /// 0 while its first level is being built.
+  final int level;
+  final bool breached;
+
+  /// It is the receiver's own.
+  final bool mine;
+  const OutpostBrief({required this.owner, required this.level, required this.breached, this.mine = false});
+
+  factory OutpostBrief.fromJson(Object? json) {
+    final m = _obj(json);
+    return OutpostBrief(
+      owner: m['owner'] as String,
+      level: _i(m['level']),
+      breached: m['breached'] as bool,
+      mine: (m['mine'] as bool?) ?? false,
+    );
+  }
+
+  Json toJson() => {'owner': owner, 'level': level, 'breached': breached, 'mine': mine};
+}
+
+/// Answer to [OutpostSurveyCommand]: what an outpost in [sector] would cost,
+/// make and face. The numbers are the site's own; only [refusal] depends on
+/// the asking fleet and on the moment.
+class OutpostSurvey extends ServerMessage {
+  final int fleetId;
+  final Hex sector;
+  final int ring;
+
+  /// The ore the sector was made with, which is what the extractor reads.
+  final SectorResources densities;
+
+  /// 0 to 12: Sparse 0.5, Moderate 1, Rich 2, Pristine 4, summed.
+  final double grade;
+
+  /// What founding takes from the hold: level 1.
+  final Resources cost;
+  final int buildTicks;
+
+  /// Per tick at level 1.
+  final Resources production;
+
+  /// The middle of the raids this ring sends.
+  final double raidPower;
+  final double platformPower;
+
+  /// Lane hops from the sector to the homeworld; null beyond 64.
+  final int? hopsHome;
+
+  /// Why [FoundOutpostCommand] would be refused right now; null when the
+  /// fleet could found here this tick.
+  final String? refusal;
+  const OutpostSurvey({
+    required this.fleetId,
+    required this.sector,
+    required this.ring,
+    required this.densities,
+    required this.grade,
+    required this.cost,
+    required this.buildTicks,
+    required this.production,
+    required this.raidPower,
+    required this.platformPower,
+    this.hopsHome,
+    this.refusal,
+  });
+
+  factory OutpostSurvey.fromJson(Json m) => OutpostSurvey(
+        fleetId: _i(m['fleet_id']),
+        sector: Hex.fromJson(m['sector']),
+        ring: _i(m['ring']),
+        densities: SectorResources.fromJson(m['densities']),
+        grade: _f(m['grade']),
+        cost: Resources.fromJson(m['cost']),
+        buildTicks: _i(m['build_ticks']),
+        production: Resources.fromJson(m['production']),
+        raidPower: _f(m['raid_power']),
+        platformPower: _f(m['platform_power']),
+        hopsHome: m['hops_home'] as int?,
+        refusal: m['refusal'] as String?,
+      );
+
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{
+      'type': 'outpost_survey',
+      'fleet_id': fleetId,
+      'sector': sector.toJson(),
+      'ring': ring,
+      'densities': densities.toJson(),
+      'grade': grade,
+      'cost': cost.toJson(),
+      'build_ticks': buildTicks,
+      'production': production.toJson(),
+      'raid_power': raidPower,
+      'platform_power': platformPower,
+    };
+    _put(m, 'hops_home', hopsHome);
+    _put(m, 'refusal', refusal);
+    return m;
+  }
 }
 
 /// The world's fixed settings. [pace] scales economy timers and never
@@ -1538,6 +1904,10 @@ class FleetState {
   /// Loaded by [LoadCommand] and still at home: the dock leaves the hold alone.
   final bool laden;
 
+  /// Fuel the way to the owner's outpost costs, 0 at the outpost; null
+  /// unless that outpost is in service.
+  final double? outpostFuel;
+
   /// The standing orders flying this fleet, doctrine and settings together;
   /// null for a fleet flown by hand.
   final StandingOrders? policy;
@@ -1557,6 +1927,7 @@ class FleetState {
     this.rangeHops = 0,
     this.cargoBlocked = false,
     this.laden = false,
+    this.outpostFuel,
     this.policy,
   });
 
@@ -1578,6 +1949,7 @@ class FleetState {
       rangeHops: (m['range_hops'] as int?) ?? 0,
       cargoBlocked: (m['cargo_blocked'] as bool?) ?? false,
       laden: (m['laden'] as bool?) ?? false,
+      outpostFuel: _opt(m['outpost_fuel'], _f),
       policy: _opt(m['policy'], StandingOrders.fromJson),
     );
   }
@@ -1600,6 +1972,7 @@ class FleetState {
       'cargo_blocked': cargoBlocked,
       'laden': laden,
     };
+    _put(m, 'outpost_fuel', outpostFuel);
     _put(m, 'policy', policy?.toJson());
     return m;
   }
@@ -1670,6 +2043,10 @@ class SectorState {
   /// holds or has delivered one. Current even when the sector is not [live].
   final ChartMark? chart;
 
+  /// The outpost standing here, whoever owns it; when not [live], the one
+  /// last seen. While it stands no group lives in the sector.
+  final OutpostBrief? outpost;
+
   /// Danger of the sector; when not [live] it is the rating last seen.
   final ThreatInfo threat;
 
@@ -1695,6 +2072,7 @@ class SectorState {
     this.site,
     this.oreReserve,
     this.chart,
+    this.outpost,
     required this.threat,
     required this.lastSeen,
     required this.live,
@@ -1715,6 +2093,7 @@ class SectorState {
       site: _opt(m['site'], SiteBrief.fromJson),
       oreReserve: _opt(m['ore_reserve'], OreReserve.fromJson),
       chart: _opt(m['chart'], ChartMark.fromJson),
+      outpost: _opt(m['outpost'], OutpostBrief.fromJson),
       threat: ThreatInfo.fromJson(m['threat']),
       lastSeen: _i(m['last_seen']),
       live: m['live'] as bool,
@@ -1739,6 +2118,7 @@ class SectorState {
     _put(m, 'site', site?.toJson());
     _put(m, 'ore_reserve', oreReserve?.toJson());
     _put(m, 'chart', chart?.toJson());
+    _put(m, 'outpost', outpost?.toJson());
     if (pinsStale) m['pins_stale'] = true;
     return m;
   }
@@ -2725,6 +3105,7 @@ sealed class EventKind {
       'ChartDelivered' => ChartDeliveredEvent.fromJson(m),
       'Queue' => QueueEvent.fromJson(m),
       'Exchanged' => ExchangedEvent.fromJson(m),
+      'OutpostCompleted' => OutpostCompletedEvent.fromJson(m),
       final k => throw FormatException('unknown EventKind "$k"'),
     };
   }
@@ -3275,6 +3656,23 @@ class SectorThreat {
   Json toJson() => {'sector': sector.toJson(), 'threat': threat.toJson()};
 }
 
+/// A level of the player's outpost is finished; level 1 opens it.
+class OutpostCompletedEvent extends EventKind {
+  final int playerId;
+  final Hex sector;
+  final int level;
+  const OutpostCompletedEvent({required this.playerId, required this.sector, required this.level});
+
+  factory OutpostCompletedEvent.fromJson(Json m) => OutpostCompletedEvent(
+        playerId: _i(m['player_id']),
+        sector: Hex.fromJson(m['sector']),
+        level: _i(m['level']),
+      );
+
+  @override
+  Json toJson() => {'kind': 'OutpostCompleted', 'player_id': playerId, 'sector': sector.toJson(), 'level': level};
+}
+
 class RaidIncomingEvent extends EventKind {
   final int playerId;
   final int arrivalTick;
@@ -3282,11 +3680,15 @@ class RaidIncomingEvent extends EventKind {
 
   /// The raid fleet's power, on the same scale as the homeworld's defence.
   final double estPower;
+
+  /// The outpost the raid is bound for; null for a raid on the homeworld.
+  final Hex? outpost;
   const RaidIncomingEvent({
     required this.playerId,
     required this.arrivalTick,
     required this.threat,
     this.estPower = 0,
+    this.outpost,
   });
 
   factory RaidIncomingEvent.fromJson(Json m) => RaidIncomingEvent(
@@ -3294,21 +3696,33 @@ class RaidIncomingEvent extends EventKind {
         arrivalTick: _i(m['arrival_tick']),
         threat: m['threat'] as String,
         estPower: m['est_power'] == null ? 0 : _f(m['est_power']),
+        outpost: _opt(m['outpost'], Hex.fromJson),
       );
 
   @override
-  Json toJson() => {
-        'kind': 'RaidIncoming',
-        'player_id': playerId,
-        'arrival_tick': arrivalTick,
-        'threat': threat,
-        'est_power': estPower,
-      };
+  Json toJson() {
+    final m = <String, dynamic>{
+      'kind': 'RaidIncoming',
+      'player_id': playerId,
+      'arrival_tick': arrivalTick,
+      'threat': threat,
+      'est_power': estPower,
+    };
+    _put(m, 'outpost', outpost?.toJson());
+    return m;
+  }
 }
 
 class RaidResolvedEvent extends EventKind {
   final int playerId;
+
+  /// The outpost that was raided; null for a raid on the homeworld.
+  final Hex? outpost;
   final bool defended;
+
+  /// The raid broke the outpost: it makes nothing, fills no tank and has no
+  /// platform until it has repaired itself from its store.
+  final bool breached;
   final Resources resourcesLost;
   final Resources? salvageDropped;
 
@@ -3324,7 +3738,9 @@ class RaidResolvedEvent extends EventKind {
   final int shipsLost;
   const RaidResolvedEvent({
     required this.playerId,
+    this.outpost,
     required this.defended,
+    this.breached = false,
     required this.resourcesLost,
     this.salvageDropped,
     this.salvageDespawnTick,
@@ -3338,7 +3754,9 @@ class RaidResolvedEvent extends EventKind {
 
   factory RaidResolvedEvent.fromJson(Json m) => RaidResolvedEvent(
         playerId: _i(m['player_id']),
+        outpost: _opt(m['outpost'], Hex.fromJson),
         defended: m['defended'] as bool,
+        breached: (m['breached'] as bool?) ?? false,
         resourcesLost: Resources.fromJson(m['resources_lost']),
         salvageDropped: _opt(m['salvage_dropped'], Resources.fromJson),
         salvageDespawnTick: _opt(m['salvage_despawn_tick'], _i),
@@ -3356,6 +3774,7 @@ class RaidResolvedEvent extends EventKind {
       'kind': 'RaidResolved',
       'player_id': playerId,
       'defended': defended,
+      'breached': breached,
       'resources_lost': resourcesLost.toJson(),
       'raid_power': raidPower,
       'defense_power': defensePower,
@@ -3364,6 +3783,7 @@ class RaidResolvedEvent extends EventKind {
       'protected_kept': protectedKept.toJson(),
       'ships_lost': shipsLost,
     };
+    _put(m, 'outpost', outpost?.toJson());
     _put(m, 'salvage_dropped', salvageDropped?.toJson());
     _put(m, 'salvage_despawn_tick', salvageDespawnTick);
     return m;

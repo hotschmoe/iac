@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped when costs, times, production formulas or the moment an order pays
 /// change; a database from another economy version is refused (start a new
 /// world).
-pub const ECONOMY_VERSION: u32 = 3;
+pub const ECONOMY_VERSION: u32 = 4;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 3;
 
@@ -586,6 +586,38 @@ pub const EXCHANGE_FEE_MAX: f64 = 0.75;
 pub const EXCHANGE_METER_SHARE: f64 = 0.15;
 /// One window in pace-1 ticks (attention class); the meter forgets one span per window.
 pub const EXCHANGE_WINDOW_TICKS: u64 = 86_400;
+
+/// Outposts (`docs/design/outposts.md`). Every number here is a proposal the
+/// owner has not signed off: change it here and in
+/// `docs/design/economy/sim.py`. None of them is a duration; the build and
+/// repair times follow from `OUTPOST_BUILD_RATE` (economy class), the store
+/// from `OUTPOST_STORE_BASE` (finds class, like the holds that fill it) and
+/// the yield from `OUTPOST_YIELD_PER_HOUR` (economy class). Costs, the
+/// platform and the raid do not scale with pace.
+/// The rings an outpost may stand in.
+pub const OUTPOST_MIN_RING: u16 = 9;
+pub const OUTPOST_MAX_RING: u16 = 20;
+/// Fewest hexes between two outposts.
+pub const OUTPOST_SPACING: u16 = 3;
+pub const OUTPOST_MAX_LEVEL: u8 = 3;
+/// Level 1; each further level costs `OUTPOST_GROWTH` times the last.
+pub const OUTPOST_COST: Resources = Resources { metal: 1000.0, crystal: 500.0, deuterium: 200.0 };
+/// Cost, store and platform grow by this factor a level.
+pub const OUTPOST_GROWTH: f64 = 2.5;
+/// Metal plus crystal of a level's cost that one game hour of building pays for.
+pub const OUTPOST_BUILD_RATE: f64 = 100.0;
+/// The store at level 1, before the pace multiplier.
+pub const OUTPOST_STORE_BASE: Resources = Resources { metal: 3000.0, crystal: 1500.0, deuterium: 750.0 };
+/// Units a game hour, per level, for each point of the site's grade, times the ring factor.
+pub const OUTPOST_YIELD_PER_HOUR: f64 = 2.0;
+/// Defence power of the platform at level 1.
+pub const OUTPOST_PLATFORM_POWER: f32 = 40.0;
+/// A raid on an outpost is this many times the group its ring spawns.
+pub const OUTPOST_RAID_FACTOR: f32 = 2.0;
+/// Share of every resource above the protected floor that a lost raid takes.
+pub const OUTPOST_RAID_LOSS: f32 = 0.25;
+/// A repair costs this share of the level's cost and takes this share of its build time.
+pub const OUTPOST_REPAIR_SHARE: f32 = 0.25;
 
 /// WebSocket server defaults.
 pub const DEFAULT_PORT: u16 = 7777;

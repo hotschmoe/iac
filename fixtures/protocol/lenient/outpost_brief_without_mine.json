@@ -1,0 +1,68 @@
+{
+  "canonical": {
+    "fleets": [],
+    "sector_updates": [
+      {
+        "connections": [],
+        "last_seen": 9,
+        "live": true,
+        "location": {
+          "q": 10,
+          "r": -2
+        },
+        "outpost": {
+          "breached": false,
+          "level": 2,
+          "mine": false,
+          "owner": "Rival"
+        },
+        "resources": {
+          "crystal": "None",
+          "deuterium": "None",
+          "metal": "None"
+        },
+        "terrain": "Empty",
+        "threat": {
+          "basis": "observed",
+          "est_power": 0.0,
+          "rating": 1
+        }
+      }
+    ],
+    "tick": 9,
+    "type": "tick_update"
+  },
+  "input": {
+    "fleets": [],
+    "sector_updates": [
+      {
+        "connections": [],
+        "last_seen": 9,
+        "live": true,
+        "location": {
+          "q": 10,
+          "r": -2
+        },
+        "outpost": {
+          "breached": false,
+          "level": 2,
+          "owner": "Rival"
+        },
+        "resources": {
+          "crystal": "None",
+          "deuterium": "None",
+          "metal": "None"
+        },
+        "terrain": "Empty",
+        "threat": {
+          "basis": "observed",
+          "est_power": 0.0,
+          "rating": 1
+        }
+      }
+    ],
+    "tick": 9,
+    "type": "tick_update"
+  },
+  "type": "ServerMessage"
+}

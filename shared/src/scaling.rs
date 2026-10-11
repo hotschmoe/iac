@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{
     Density, ResourceKind, Resources, ShipClass, ShipStats, Zone, EXCHANGE_FEE_MAX, EXCHANGE_FEE_MIN,
-    EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS,
+    EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS, OUTPOST_BUILD_RATE, OUTPOST_COST, OUTPOST_GROWTH,
+    OUTPOST_PLATFORM_POWER, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR,
 };
 use crate::pace::Pace;
 
@@ -906,6 +907,78 @@ pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32
 /// raid is rolled between 0.80 and 1.15 times this.
 pub fn raid_power_base(econ: f32) -> f32 {
     5.0 + 11.0 * econ.powf(0.75)
+}
+
+// ── Outposts ─────────────────────────────────────────────────────
+//
+// One level sets everything an outpost is: what it costs, how long it takes,
+// what its store holds, what its platform is worth and how many site rates
+// its extractor makes. Level 0 is an outpost whose first level is still
+// being built.
+
+/// What level `level` costs: `OUTPOST_COST * 2.5^(level - 1)`.
+pub fn outpost_cost(level: u8) -> Resources {
+    grown_cost(
+        [OUTPOST_COST.metal.into(), OUTPOST_COST.crystal.into(), OUTPOST_COST.deuterium.into()],
+        OUTPOST_GROWTH,
+        level,
+    )
+}
+
+/// Ticks to build level `level`, from its cost like every other build time.
+pub fn outpost_build_ticks(level: u8, pace: &Pace) -> u64 {
+    pace.econ_ticks(cost_seconds(outpost_cost(level), OUTPOST_BUILD_RATE, 1.0))
+}
+
+fn outpost_growth(level: u8) -> f32 {
+    OUTPOST_GROWTH.powi(i32::from(level.max(1)) - 1) as f32
+}
+
+/// What the store holds per resource. An outpost under construction has the store of level 1.
+pub fn outpost_store_cap(level: u8, pace: &Pace) -> Resources {
+    OUTPOST_STORE_BASE.scale(outpost_growth(level) * pace.cargo_mult())
+}
+
+/// Defence power of the platform; none before level 1 is finished.
+pub fn outpost_platform_power(level: u8) -> f32 {
+    if level == 0 { 0.0 } else { OUTPOST_PLATFORM_POWER * outpost_growth(level) }
+}
+
+/// A site's grade: the harvest multipliers of its metal, crystal and deuterium ore, summed. 0 to 12.
+pub fn site_grade(densities: [Density; 3]) -> f32 {
+    densities.into_iter().map(Density::harvest_multiplier).sum()
+}
+
+/// What the extractor of an outpost at `ring` adds to its store each tick,
+/// from the densities the sector was generated with.
+pub fn outpost_yield_per_tick(densities: [Density; 3], ring: u16, level: u8, pace: &Pace) -> Resources {
+    let per_tick = |density: Density| {
+        let per_hour = OUTPOST_YIELD_PER_HOUR * f64::from(density.harvest_multiplier()) * f64::from(ring_mult(ring));
+        pace.rate((per_hour / 3600.0 * f64::from(level)) as f32)
+    };
+    let [metal, crystal, deuterium] = densities;
+    Resources { metal: per_tick(metal), crystal: per_tick(crystal), deuterium: per_tick(deuterium) }
+}
+
+/// Mean power of a raid on an outpost at `ring`; the actual raid is rolled
+/// between 0.80 and 1.15 times this, as a homeworld's is.
+pub fn outpost_raid_power(ring: u16) -> f32 {
+    OUTPOST_RAID_FACTOR * npc_group_power(ring)
+}
+
+/// What repairing a breached outpost of `level` costs. It is also the floor
+/// of the store that a raid cannot take.
+pub fn outpost_repair_cost(level: u8) -> Resources {
+    if level == 0 { Resources::default() } else { outpost_cost(level).scale(OUTPOST_REPAIR_SHARE) }
+}
+
+pub fn outpost_repair_ticks(level: u8, pace: &Pace) -> u64 {
+    pace.econ_ticks(cost_seconds(outpost_cost(level), OUTPOST_BUILD_RATE, 1.0) * f64::from(OUTPOST_REPAIR_SHARE))
+}
+
+/// Score points of an outpost standing at `level`: every finished level at the weight of its cost.
+pub fn outpost_points(level: u8) -> f32 {
+    (1..=level).map(|l| resource_weight(&outpost_cost(l))).sum()
 }
 
 // ── Ore ──────────────────────────────────────────────────────────

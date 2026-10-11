@@ -25,7 +25,7 @@ use iac_sim::engine::AuthError;
 use iac_sim::{commands, views, GameEngine};
 use serde::{Deserialize, Serialize};
 
-use crate::away::{Absence, Tally};
+use crate::away::{Absence, Standing, Tally};
 use crate::save::{self, Bookmark};
 
 pub const TICK_MS: u64 = 1000 / TICK_RATE_HZ;
@@ -323,7 +323,13 @@ impl World {
         let tick = self.engine.current_tick();
         let played = tick - catch_up.from_tick;
         if played >= REPORT_MIN_TICKS || catch_up.over_limit > 0 || cut_short > 0 {
-            let absence = Absence { played, over_limit: catch_up.over_limit, cut_short, tally: catch_up.tally };
+            let absence = Absence {
+                played,
+                over_limit: catch_up.over_limit,
+                cut_short,
+                tally: catch_up.tally,
+                outpost: self.engine.outposts.get(&self.commander).map(Standing::of),
+            };
             self.notices.extend(absence.notices(self.commander, tick));
         }
         self.save_soon = true;

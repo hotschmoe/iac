@@ -627,6 +627,152 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
     remove_db(&db);
 }
 
+/// The hops from `from` to the nearest sector `goal` accepts, over sectors
+/// where nothing attacks a fleet on sight.
+fn calm_route(world: &WorldGen, from: Hex, goal: impl Fn(Hex) -> bool) -> Vec<Hex> {
+    use iac_shared::world::NpcBehaviorType;
+    let calm = |at: Hex| world.generate_sector(at).npc_template.is_none_or(|npc| npc.behavior == NpcBehaviorType::Passive);
+    let mut parent = std::collections::HashMap::from([(from, from)]);
+    let mut frontier = std::collections::VecDeque::from([(from, 0u8)]);
+    let mut found = None;
+    while let Some((at, hops)) = frontier.pop_front() {
+        if at != from && goal(at) {
+            found = Some(at);
+            break;
+        }
+        if hops == 14 {
+            continue;
+        }
+        for &next in world.connected_neighbors(at).slice() {
+            if calm(next) && !parent.contains_key(&next) {
+                parent.insert(next, at);
+                frontier.push_back((next, hops + 1));
+            }
+        }
+    }
+    let mut route = vec![found.expect("such a sector within fourteen calm hops")];
+    while *route.last().unwrap() != from {
+        route.push(parent[route.last().unwrap()]);
+    }
+    route.reverse();
+    route.split_off(1)
+}
+
+async fn reply_of(ws: &mut Ws, kind: &str) -> Value {
+    loop {
+        let msg = next_json(ws).await;
+        assert!(msg["type"] != "error", "{msg}");
+        if msg["type"] == kind {
+            return msg;
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_outpost_is_surveyed_refused_founded_and_outlives_a_server_killed_while_it_is_being_built() {
+    use iac_shared::constants::{Density, TerrainType};
+    let db = fresh_db("scenario_outpost");
+    let world = WorldGen::init(DEFAULT_WORLD_SEED);
+    let site_for_an_outpost = |at: Hex| {
+        let t = world.generate_sector(at);
+        at.dist_from_origin() >= 9
+            && t.npc_template.is_none()
+            && !t.has_derelict
+            && t.terrain != TerrainType::Anomaly
+            && t.metal_density != Density::None
+    };
+    let amounts = |v: &Value| ["metal", "crystal", "deuterium"].map(|k| v[k].as_f64().unwrap());
+
+    let (token, fleet, site, end_tick, store) = {
+        let (_guard, port) = start_server_with(&db, &["--pace", "6000"]);
+        let (mut ws, reply) = login(port, "Settler", None).await;
+        let token = reply["token"].as_str().unwrap().to_string();
+        let state = full_state(&mut ws).await;
+        let fleet = state["fleets"][0]["id"].as_u64().unwrap();
+        let home = hex_of(&state["player"]["homeworld"]);
+        assert!(state.get("outpost").is_none() && state["fleets"][0].get("outpost_fuel").is_none(), "{state}");
+        let not_here = format!("fleet {fleet} is at ring {}; an outpost stands in rings 9 to 20", home.dist_from_origin());
+
+        command(&mut ws, json!({"action": "outpost_survey", "fleet_id": fleet})).await;
+        let at_home = reply_of(&mut ws, "outpost_survey").await;
+        assert_eq!((hex_of(&at_home["sector"]), at_home["refusal"].as_str()), (home, Some(not_here.as_str())), "{at_home}");
+        assert_eq!((amounts(&at_home["cost"]), at_home["build_ticks"].as_u64(), at_home["hops_home"].as_u64()), ([1000.0, 500.0, 200.0], Some(9), Some(0)));
+        command(&mut ws, json!({"action": "found_outpost", "fleet_id": fleet})).await;
+        let first = refused(&mut ws).await;
+        assert_eq!((first["code"].as_str(), first["message"].as_str()), (Some("InvalidTarget"), Some(not_here.as_str())), "{first}");
+        command(&mut ws, json!({"action": "upgrade_outpost"})).await;
+        let second = refused(&mut ws).await;
+        assert_eq!((second["code"].as_str(), second["message"].as_str()), (Some("InvalidCommand"), Some("you have no outpost to upgrade")), "{second}");
+
+        command(&mut ws, json!({"action": "build", "building_type": "DeuteriumSynthesizer"})).await;
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let msg = next_json(&mut ws).await;
+            assert!(Instant::now() < deadline, "the stockpile never covered an outpost: {msg}");
+            if msg["type"] == "tick_update" && amounts(&msg["player"]["resources"]).iter().zip([1100.0, 600.0, 400.0]).all(|(have, need)| *have >= need) {
+                break;
+            }
+        }
+        for (resource, amount) in [("metal", 1100), ("crystal", 600), ("deuterium", 300)] {
+            command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": resource, "amount": amount})).await;
+            update_where(&mut ws, |m| m["fleets"][0]["cargo"][resource] == f64::from(amount)).await;
+        }
+
+        let route = calm_route(&world, home, site_for_an_outpost);
+        let site = *route.last().unwrap();
+        fly(&mut ws, fleet, &route).await;
+        command(&mut ws, json!({"action": "outpost_survey", "fleet_id": fleet})).await;
+        let quote = reply_of(&mut ws, "outpost_survey").await;
+        assert!(quote.get("refusal").is_none(), "{quote}");
+        assert_eq!((hex_of(&quote["sector"]), quote["ring"].as_u64(), quote["hops_home"].as_u64()), (site, Some(u64::from(site.dist_from_origin())), Some(route.len() as u64)));
+        assert!(quote["production"]["metal"].as_f64().unwrap() > 0.0 && quote["grade"].as_f64().unwrap() >= 0.5, "{quote}");
+
+        command(&mut ws, json!({"action": "found_outpost", "fleet_id": fleet})).await;
+        let founded = update_where(&mut ws, |m| m.get("outpost").is_some()).await;
+        let post = &founded["outpost"];
+        assert_eq!((hex_of(&post["location"]), post["level"].as_u64(), post["in_service"].as_bool()), (site, Some(0), Some(false)), "{post}");
+        assert_eq!((post["work"]["kind"].as_str(), post["work"]["level"].as_u64()), (Some("build"), Some(1)), "{post}");
+        let end_tick = post["work"]["end_tick"].as_u64().unwrap();
+        assert_eq!(end_tick, post["work"]["start_tick"].as_u64().unwrap() + 9);
+        assert!(alerts_of(&founded).iter().any(|a| a.starts_with(&format!("fleet {fleet} founded your outpost at {site}"))), "{founded}");
+        assert_eq!(amounts(&founded["fleets"][0]["cargo"]), [100.0, 100.0, 100.0], "the hold paid the cost: {founded}");
+
+        command(&mut ws, json!({"action": "unload", "fleet_id": fleet})).await;
+        let stocked = update_where(&mut ws, |m| m["outpost"]["store"]["metal"] == 100.0).await;
+        let store = amounts(&stocked["outpost"]["store"]);
+        assert_eq!((store, amounts(&stocked["fleets"][0]["cargo"])), ([100.0, 100.0, 100.0], [0.0, 0.0, 0.0]), "{stocked}");
+        let mark = full_state(&mut ws).await["known_sectors"].as_array().unwrap().iter().find(|s| hex_of(&s["location"]) == site).unwrap()["outpost"].clone();
+        assert_eq!(mark, json!({"owner": "Settler", "level": 0, "breached": false, "mine": true}));
+
+        let saved = update_where(&mut ws, |_| true).await;
+        assert!(saved["tick"].as_u64().unwrap() < end_tick, "the build must still be under way when the server dies: {saved}");
+        (token, fleet, site, end_tick, store)
+    };
+
+    let (_guard, port) = start_server(&db);
+    let (mut ws, reply) = login(port, "Settler", Some(&token)).await;
+    assert_eq!(reply["success"], true, "{reply}");
+    let state = full_state(&mut ws).await;
+    let post = &state["outpost"];
+    assert!(state["tick"].as_u64().unwrap() < end_tick, "the restart came back inside the build: {}", state["tick"]);
+    assert_eq!((hex_of(&post["location"]), post["level"].as_u64()), (site, Some(0)), "the outpost came back with the world: {post}");
+    assert_eq!((post["work"]["kind"].as_str(), post["work"]["end_tick"].as_u64()), (Some("build"), Some(end_tick)), "its countdown is as it was: {post}");
+    assert_eq!(amounts(&post["store"]), store, "and so is its store: {post}");
+    let settler = state["fleets"].as_array().unwrap().iter().find(|f| f["id"] == fleet).expect("the fleet survived the restart");
+    assert_eq!(hex_of(&settler["location"]), site);
+
+    let opened = update_where(&mut ws, |m| m["outpost"]["level"] == 1).await;
+    assert_eq!(opened["tick"].as_u64(), Some(end_tick), "level 1 is finished on the tick it was promised for");
+    let done: Vec<Value> = events_of(&opened).into_iter().filter(|e| e["kind"] == "OutpostCompleted").collect();
+    assert_eq!(done.len(), 1, "{opened}");
+    assert_eq!((hex_of(&done[0]["sector"]), done[0]["level"].as_u64()), (site, Some(1)));
+    assert_eq!((opened["outpost"]["in_service"].as_bool(), opened["fleets"][0]["outpost_fuel"].as_f64()), (Some(true), Some(0.0)), "{opened}");
+    let made = opened["outpost"]["store"]["metal"].as_f64().unwrap();
+    let later = update_where(&mut ws, |_| true).await;
+    assert!(made > store[0] && later["outpost"]["store"]["metal"].as_f64().unwrap() > made, "the yield goes on: {later}");
+    remove_db(&db);
+}
+
 async fn leaderboard(ws: &mut Ws) -> Value {
     command(ws, json!({"action": "leaderboard", "limit": 20})).await;
     loop {

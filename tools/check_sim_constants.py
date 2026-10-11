@@ -249,6 +249,47 @@ def check_exchange(sim, rust):
               sim.exchange_return(row["pressure"], row["value"], row["span"]), rel=1e-9, absolute=1e-9)
 
 
+def check_outposts(sim, rust):
+    for name, want in (
+        ("OUTPOST_MIN_RING", sim.OUTPOST_MIN_RING), ("OUTPOST_MAX_RING", sim.OUTPOST_MAX_RING),
+        ("OUTPOST_SPACING", sim.OUTPOST_SPACING), ("OUTPOST_MAX_LEVEL", sim.OUTPOST_MAX_LEVEL),
+        ("OUTPOST_GROWTH", sim.OUTPOST_GROWTH), ("OUTPOST_BUILD_RATE", sim.OUTPOST_BUILD_RATE),
+        ("OUTPOST_YIELD_PER_HOUR", sim.OUTPOST_YIELD_PER_HOUR), ("OUTPOST_PLATFORM_POWER", sim.OUTPOST_PLATFORM_POWER),
+        ("OUTPOST_RAID_FACTOR", sim.OUTPOST_RAID_FACTOR), ("OUTPOST_RAID_LOSS", sim.OUTPOST_RAID_LOSS),
+        ("OUTPOST_REPAIR_SHARE", sim.OUTPOST_REPAIR_SHARE),
+    ):
+        check(name, source_const("shared/src/constants.rs", name), want, 1e-9)
+    post = rust["outpost"]
+    for i in range(3):
+        check(f"OUTPOST_COST[{i}]", post["cost"][i], sim.OUTPOST_COST[i])
+        check(f"OUTPOST_STORE_BASE[{i}]", post["store_base"][i], sim.OUTPOST_STORE_BASE[i])
+        check(f"outpost store before level 1 [{i}]", post["store_cap_unbuilt"][i], sim.outpost_store_cap(0)[i], rel=1e-6)
+    check("outpost platform before level 1", post["platform_unbuilt"], sim.outpost_platform(0))
+    if len(post["levels"]) != sim.OUTPOST_MAX_LEVEL:
+        problems.append(f"outpost levels: rust {len(post['levels'])} vs sim {sim.OUTPOST_MAX_LEVEL}")
+    for row in post["levels"]:
+        level = row["level"]
+        for i in range(3):
+            check(f"outpost L{level} cost[{i}]", row["cost"][i], sim.outpost_cost(level)[i], absolute=0.51)
+            check(f"outpost L{level} repair cost[{i}]", row["repair_cost"][i], sim.outpost_repair_cost(level)[i], absolute=0.26)
+        for pace, ticks, repair, cap in zip(post["paces"], row["ticks"], row["repair_ticks"], row["store_cap"]):
+            secs = sim.outpost_build_s(level, pace)
+            check(f"outpost L{level} ticks at pace {pace}", ticks, secs, rel=0.01, absolute=1)
+            check(f"outpost L{level} repair ticks at pace {pace}", repair, secs * sim.OUTPOST_REPAIR_SHARE, rel=0.01, absolute=1)
+            for i in range(3):
+                check(f"outpost L{level} store[{i}] at pace {pace}", cap[i], sim.outpost_store_cap(level, pace)[i], rel=1e-5)
+        check(f"outpost L{level} platform", row["platform"], sim.outpost_platform(level), 1e-6)
+        check(f"outpost L{level} points", row["points"], sim.outpost_points(level), 1e-4)
+    for row in post["yields"]:
+        for key, got in zip("SMRP", row["per_hour"]):
+            check(f"outpost yield {key} ring {row['ring']} L{row['level']}", got,
+                  sim.outpost_yield_h(key, row["ring"], row["level"]), rel=1e-4)
+    check("outpost yield scales with pace", post["season_yield_per_hour"], sim.outpost_yield_h("R", 12, 2, 10.0), rel=1e-4)
+    check("site grade P+R+S", post["grade"], sim.DENS_YIELD["P"] + sim.DENS_YIELD["R"] + sim.DENS_YIELD["S"], 1e-6)
+    for ring, got in zip(range(sim.OUTPOST_MIN_RING, sim.OUTPOST_MAX_RING + 1), post["raid_power"]):
+        check(f"outpost raid power ring {ring}", got, sim.outpost_raid_power(ring), 1e-4)
+
+
 def main():
     sim = load_sim()
     rust = rust_numbers()
@@ -260,13 +301,14 @@ def main():
     check_ore(sim, rust)
     check_loot(sim, rust)
     check_exchange(sim, rust)
+    check_outposts(sim, rust)
     if problems:
         print(f"{len(problems)} mismatch(es) between shared/ and docs/design/economy/sim.py:")
         for p in problems[:60]:
             print("  " + p)
         sys.exit(1)
     print("economy constants agree with sim.py "
-          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient, ore, loot, exchange)")
+          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient, ore, loot, exchange, outposts)")
 
 
 if __name__ == "__main__":

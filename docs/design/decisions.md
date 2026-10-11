@@ -3,6 +3,96 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-11 (outposts, slice 1: built on the design's recommendations, pending the owner's answers)
+
+**Not decided by the owner.** `docs/design/outposts.md` ends with six
+questions only the owner can answer. Slice 1 of the engine was built before
+they were answered, on the design's recommended answer to each. Each is
+listed here with the code it lives in, so that a different answer is a
+change in a known place and not a search.
+
+1. **An outpost produces.** Its extractor makes
+   `2 x density x ring factor x level` an hour per resource. *Where:*
+   `OUTPOST_YIELD_PER_HOUR` in `shared/src/constants.rs`,
+   `scaling::outpost_yield_per_tick`, `GameEngine::run_extractor` in
+   `sim/src/engine.rs`. *If no:* remove the extractor step from
+   `process_outposts` and `production`, `grade` from the survey and the state.
+2. **It is carried in holds, with `load`; no ship class was added.**
+   *Where:* `GameEngine::outpost_site` (the hold must carry the cost) and
+   `handle_found_outpost` (the hold pays). *If a ship:* a sixth `ShipClass`
+   and the founding rule in those two functions.
+3. **No NPC raid destroys an outpost.** A lost raid breaches it and it
+   repairs itself from its store. *Where:* `GameEngine::resolve_outpost_raid`
+   (sets `breached`, never removes the entry) and `repair_outpost`. *If yes:*
+   the lost branch of `resolve_outpost_raid`, a longer grace in
+   `RaidTimers`, and a line in `solo/src/away.rs`.
+4. **One outpost each, in rings 9 to 20.** *Where:* `OUTPOST_MIN_RING`,
+   `OUTPOST_MAX_RING`; one each is the key of `GameEngine::outposts`
+   (`BTreeMap<owner, Outpost>`) and the rule in `outpost_site`. *If more than
+   one:* the map's key, and every `outposts.get(&player_id)` in the engine,
+   `views.rs`, `intel.rs`, `score.rs` and `solo/src/away.rs`.
+5. **`recall` is left as it is.** It still jumps a fleet to the homeworld
+   with its whole hold from anywhere, the outpost included, so a convoy can
+   load at the outpost, and recall home with everything. *Where:*
+   `GameEngine::handle_recall`, untouched. The design proposes to ration it
+   with the gateway in slice 2.
+6. **A fleet standing at its owner's finished outpost does not count against
+   the three deployed fleets**, and needs a free slot to leave. *Where:*
+   `GameEngine::count_deployed_fleets` and `docked_at_outpost`, read by
+   `handle_move` and `handle_split`. *If it should count:* drop
+   `docked_at_outpost` from those three.
+
+Every `OUTPOST_*` number is the design's proposal and provisional in the way
+the exchange's four are: `shared/src/constants.rs` and
+`docs/design/economy/sim.py`, kept equal by `tools/check_sim_constants.py`.
+
+**Decided by the agent that built it, where the design was silent or the
+code had moved, and open to change.**
+
+- **A sector with a group in it cannot be founded on.** The design says the
+  founding fleet stands idle "so no fight is going on", which a passive pack
+  does not prevent. `outpost_site` refuses while a group stands in the
+  sector or its lair has not been cleared: the site is taken from its pack,
+  passive or not.
+- **The founding rules are checked in an order that makes a survey from
+  afar useful.** Ring, Anomaly, derelict and spacing first, then "you
+  already have one", then where the fleet is, then what the fleet is doing,
+  the group, standing orders and the hold. A survey of a distant sector that
+  is refused only because the fleet is elsewhere names a site that
+  qualifies.
+- **The protected floor is the cost of the next repair**, which is the
+  repair of the level being built while a level is being built. The design
+  says a raid never takes the materials the repair needs; with the floor at
+  the standing level a breach suffered during an upgrade would have left the
+  store short of the dearer repair that follows it.
+- **A breach during a build or a repair waits its turn.** One job at a time,
+  as the design has it: the build goes on, and the repair starts when it is
+  done. A raid lost during a repair leaves the repair running, and the
+  outpost is whole when it ends.
+- **A breached outpost that cannot pay its repair stays breached.** It
+  extracts nothing while breached, so it cannot save up the repair either.
+  On most sites that is the rule the owner meets first, because the repair
+  costs crystal and deuterium and most sites make neither. The warning and
+  the rules say to keep the repair cost in the store.
+- **A fleet charging a jump out of the outpost is not refuelled there**, and
+  a tank the store cannot fill is reported once per stay. At the homeworld a
+  departing fleet is still topped up; at an outpost that would have raised a
+  dry-store warning on every departure.
+- **`unload` at the outpost is refused for an empty hold** (`NoResources`),
+  not answered with an alert that nothing moved. `load` there is refused
+  for a fleet under standing orders, as at home.
+- **`settle_hold` reads the dock from where the fleet is.** Cargo shed by
+  ships lost at the outpost goes into its store as far as there is room, the
+  rest is lost, as at the homeworld.
+- **The outpost is not a field of `Player`.** As the design has it:
+  `GameEngine::outposts`, `Snapshot::outposts`, a `runtime_state` row of
+  kind `outpost` in SQLite, which needs no new table or column. A row of
+  that kind that cannot be read refuses the world.
+- **The report counts what the engine says.** `sim-run` counts outpost
+  raids, what they took, yield and ticks breached. It does not count what
+  `load` takes from a store: the engine answers `load` with an alert and
+  nothing a report can count, and no bot hauls.
+
 ## 2026-10-11 (the windshield's phone layout: sheet, banner, toasts, guide, fleet rail)
 
 **Decided by the agent that built it, not by the owner, and open to change.**

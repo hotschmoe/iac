@@ -5,7 +5,10 @@
 
 use serde_json::{json, Map, Value};
 
-use iac_shared::constants::{defense_grid_scout_units, Density, ShipClass, FUEL_DEUT_PER_UNIT, FUEL_RATE_PER_MASS};
+use iac_shared::constants::{
+    defense_grid_scout_units, Density, ShipClass, FUEL_DEUT_PER_UNIT, FUEL_RATE_PER_MASS, OUTPOST_COST,
+    OUTPOST_MAX_LEVEL, OUTPOST_MAX_RING, OUTPOST_MIN_RING, OUTPOST_STORE_BASE,
+};
 use iac_shared::pace::{Pace, PRESETS};
 use iac_shared::scaling::*;
 
@@ -138,6 +141,44 @@ fn main() {
         })
         .collect();
     out.insert("exchange".into(), json!({"spans": exchange_spans, "returns": exchange_returns}));
+    let paces = [1.0, 10.0, 600.0].map(|p| Pace::new(p).unwrap());
+    let outpost_levels: Vec<Value> = (1..=OUTPOST_MAX_LEVEL)
+        .map(|level| {
+            json!({
+                "level": level,
+                "cost": triple(outpost_cost(level)),
+                "ticks": paces.iter().map(|pace| outpost_build_ticks(level, pace)).collect::<Vec<_>>(),
+                "store_cap": paces.iter().map(|pace| triple(outpost_store_cap(level, pace))).collect::<Vec<_>>(),
+                "platform": outpost_platform_power(level),
+                "repair_cost": triple(outpost_repair_cost(level)),
+                "repair_ticks": paces.iter().map(|pace| outpost_repair_ticks(level, pace)).collect::<Vec<_>>(),
+                "points": outpost_points(level),
+            })
+        })
+        .collect();
+    let densities = [Density::Sparse, Density::Moderate, Density::Rich, Density::Pristine];
+    let outpost_yields: Vec<Value> = (OUTPOST_MIN_RING..=OUTPOST_MAX_RING)
+        .flat_map(|ring| (1..=OUTPOST_MAX_LEVEL).map(move |level| (ring, level)))
+        .map(|(ring, level)| {
+            let per_hour: Vec<f32> = densities
+                .iter()
+                .map(|d| outpost_yield_per_tick([*d, Density::None, Density::None], ring, level, &p1).metal * 3600.0)
+                .collect();
+            json!({"ring": ring, "level": level, "per_hour": per_hour})
+        })
+        .collect();
+    out.insert("outpost".into(), json!({
+        "paces": [1.0, 10.0, 600.0],
+        "cost": triple(OUTPOST_COST),
+        "store_base": triple(OUTPOST_STORE_BASE),
+        "store_cap_unbuilt": triple(outpost_store_cap(0, &p1)),
+        "platform_unbuilt": outpost_platform_power(0),
+        "levels": outpost_levels,
+        "yields": outpost_yields,
+        "season_yield_per_hour": outpost_yield_per_tick([Density::Rich; 3], 12, 2, &paces[1]).metal * 3600.0,
+        "grade": site_grade([Density::Pristine, Density::Rich, Density::Sparse]),
+        "raid_power": (OUTPOST_MIN_RING..=OUTPOST_MAX_RING).map(outpost_raid_power).collect::<Vec<_>>(),
+    }));
     out.insert("misc".into(), json!({
         "fuel_deut_per_unit": FUEL_DEUT_PER_UNIT,
         "fuel_rate_per_mass": FUEL_RATE_PER_MASS,

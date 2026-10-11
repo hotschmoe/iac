@@ -1,10 +1,10 @@
 // Score: one ranking for humans and agents (docs/design/economy/spec.md section 9).
 //
-//   core  = econ + fleet + defence
+//   core  = econ + fleet + defence + outpost
 //   score = core + min(combat + explore, 0.25 * core)
 //
-// econ, fleet and defence are recomputed from state whenever they are
-// asked for; combat and explore accumulate in the player row. Everything is
+// econ, fleet, defence and outpost are recomputed from state whenever they
+// are asked for; combat and explore accumulate in the player row. Everything is
 // priced with `scaling::resource_weight`, so crystal and deuterium count
 // for more than metal.
 
@@ -12,7 +12,7 @@ use iac_shared::constants::Resources;
 use iac_shared::protocol::{LeaderboardEntry, LeaderboardReply};
 use iac_shared::scaling::{self, DefenceKind};
 
-use crate::engine::{Fleet, GameEngine, Player};
+use crate::engine::{GameEngine, Player};
 
 /// Combat and exploration together may add at most this share of `core`.
 pub const EXTRA_CAP: f32 = 0.25;
@@ -41,13 +41,16 @@ pub struct Score {
     pub econ: f32,
     pub fleet: f32,
     pub defence: f32,
+    /// The finished levels of the outpost, while it stands. Kept apart from
+    /// `econ`, which sizes the raids on the homeworld.
+    pub outpost: f32,
     pub combat: f32,
     pub explore: f32,
 }
 
 impl Score {
     pub fn core(&self) -> f32 {
-        self.econ + self.fleet + self.defence
+        self.econ + self.fleet + self.defence + self.outpost
     }
 
     pub fn total(&self) -> f32 {
@@ -150,9 +153,12 @@ impl Meter {
     }
 }
 
-/// `fleets` are all of the player's fleets, docked or away.
-pub fn score_of<'a>(player: &Player, fleets: impl Iterator<Item = &'a Fleet>) -> Score {
-    let fleet: f32 = fleets
+/// `player`'s score: their levels, every ship of theirs docked or away,
+/// their defences and the finished levels of their outpost.
+pub fn score_of(engine: &GameEngine, player: &Player) -> Score {
+    let fleet: f32 = engine
+        .fleets
+        .values()
         .filter(|f| f.owner_id == player.id)
         .flat_map(|f| f.ships[0..f.ship_count].iter())
         .filter(|s| s.hull > 0.0)
@@ -166,6 +172,7 @@ pub fn score_of<'a>(player: &Player, fleets: impl Iterator<Item = &'a Fleet>) ->
         econ: scaling::econ_points(&player.buildings, &player.research),
         fleet,
         defence: DEFENCE_SHARE * defence,
+        outpost: scaling::outpost_points(engine.outposts.get(&player.id).map_or(0, |o| o.level)),
         combat: player.combat_points,
         explore: player.explore_points,
     }
@@ -204,7 +211,7 @@ pub fn leaderboard(engine: &GameEngine, limit: usize, viewer: u64) -> Leaderboar
     let mut rows: Vec<(&Player, Score)> = engine
         .players
         .values()
-        .map(|p| (p, score_of(p, engine.fleets.values())))
+        .map(|p| (p, score_of(engine, p)))
         .collect();
     rows.sort_by(|a, b| {
         b.1.total().total_cmp(&a.1.total()).then_with(|| a.0.id.cmp(&b.0.id))

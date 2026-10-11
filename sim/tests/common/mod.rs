@@ -137,6 +137,22 @@ pub fn lair(engine: &GameEngine, ring: u16, wanted: impl Fn(NpcBehaviorType) -> 
         .expect("such a lair in the ring")
 }
 
+pub fn sector_in_ring(engine: &GameEngine, ring: u16, wanted: impl Fn(Hex, &iac_shared::world::SectorTemplate) -> bool) -> Hex {
+    iac_shared::hex::hex_ring(Hex::ORIGIN, ring)
+        .find(|at| wanted(*at, &engine.world_gen.generate_sector(*at)))
+        .unwrap_or_else(|| panic!("no such sector in ring {ring}"))
+}
+
+pub fn sweep(engine: &mut GameEngine, lanes: &[Hex]) {
+    let tick = engine.current_tick();
+    edit(engine, |s| {
+        for at in lanes {
+            s.sector_overrides.entry(at.to_key()).or_default().npc_cleared_tick = Some(tick);
+        }
+        s.npc_fleets.retain(|_, npc| !lanes.contains(&npc.location));
+    });
+}
+
 pub struct Fights {
     pub fought: usize,
     pub won: usize,

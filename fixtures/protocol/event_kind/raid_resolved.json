@@ -1,4 +1,5 @@
 {
+  "breached": false,
   "defended": false,
   "defense_power": 80.5,
   "kind": "RaidResolved",

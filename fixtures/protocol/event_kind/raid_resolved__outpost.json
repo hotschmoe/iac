@@ -1,0 +1,26 @@
+{
+  "breached": true,
+  "defended": false,
+  "defense_power": 62.0,
+  "kind": "RaidResolved",
+  "outpost": {
+    "q": 10,
+    "r": -2
+  },
+  "player_id": 42,
+  "protected_kept": {
+    "crystal": 96.0,
+    "deuterium": 50.0,
+    "metal": 250.0
+  },
+  "raid_power": 82.5,
+  "resources_lost": {
+    "crystal": 0.0,
+    "deuterium": 32.5,
+    "metal": 40.625
+  },
+  "ships_lost": 1,
+  "structures_lost": 0,
+  "structures_restored": 0,
+  "tick": 1234
+}

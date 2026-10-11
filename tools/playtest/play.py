@@ -123,6 +123,7 @@ def merge_view(fs, m):
             if m.get(k) is not None:
                 fs[dst] = m[k]
         fs["fleets"] = m.get("fleets", fs.get("fleets"))
+        fs["outpost"] = m.get("outpost")
         if m.get("sector_updates"):
             idx = {(s["location"]["q"], s["location"]["r"]): i for i, s in enumerate(fs["known_sectors"])}
             for s in m["sector_updates"]:
@@ -261,6 +262,11 @@ def collapse_events(msgs, mine_only=False, errors=True):
                 continue
             slot(("x", id(m)), "  " + quote_line(m))
             continue
+        if t == "outpost_survey":
+            if not errors:
+                continue
+            slot(("x", id(m)), "  " + survey_line(m))
+            continue
         if t in ("leaderboard", "odds"):
             continue
         for e in (m.get("events") or []) if t == "tick_update" else ([m] if t == "event" else []):
@@ -381,6 +387,38 @@ def meter_text(m):
 def quote_line(m):
     return (f"quote fleet {m['fleet_id']}: {trade_text(m)}; after it {meter_text(m['meter_after'])}"
             + (f"  CANNOT TRADE NOW: {m['refusal']}" if m.get("refusal") else ""))
+
+
+def survey_line(m):
+    """One line for an outpost_survey reply: what the site makes, what raids it, what founding costs."""
+    s, home = m["sector"], m.get("hops_home")
+    return (f"survey {s['q']},{s['r']} ring {m['ring']} grade {m['grade']:g}: makes {res_rate(m['production'])} an hour at level 1; "
+            f"raids of about {m['raid_power']:.0f} against a platform of {m['platform_power']:.0f}; "
+            f"costs {res(m['cost'])}, built in {age(m['build_ticks'])}"
+            + (f"; {home} hops from home" if home is not None else "")
+            + (f"  CANNOT FOUND NOW: {m['refusal']}" if m.get("refusal") else "  CAN BE FOUNDED NOW"))
+
+
+def res_rate(per_tick):
+    return "/".join(f"{(per_tick or {}).get(k, 0) * 3600:.4g}" for k in RES)
+
+
+def outpost_mark(o):
+    """An outpost standing in a sector, as a sector view names it."""
+    whose = "YOUR OUTPOST" if o.get("mine") else f"outpost of {o['owner']}"
+    return f"{whose} level {o['level']}" + (" BREACHED" if o.get("breached") else "")
+
+
+def outpost_line(o, now):
+    """One line for the player's outpost: level and state, store, yield, defence against the next raid."""
+    work, raid = o.get("work"), o.get("raid_arrival_tick")
+    state = "BREACHED" if o["breached"] else "in service" if o["in_service"] else "under construction"
+    doing = f", {work['kind']} of level {work['level']} done in {age(work['end_tick'] - now)}" if work else ""
+    owed = f", repair waits for {res(o['repair_cost'])}" if o.get("repair_cost") else ""
+    return (f"Outpost at {o['location']['q']},{o['location']['r']} level {o['level']}/{o['max_level']} {state}{doing}{owed}: "
+            f"store {res(o['store'])} of {res(o['store_cap'])} (raid-protected {res(o['protected'])}), "
+            f"makes {res_rate(o['production'])} an hour, defence {o['defence_power']:.0f} against raids of about "
+            f"{o['next_raid_estimate_power']:.0f}" + (f", RAID ARRIVES in {age(raid - now)}" if raid else ""))
 
 
 def age(ticks):
@@ -516,6 +554,8 @@ def describe(sec, loc, sectors, now, indent="", odds=None):
         print(f"{indent}derelict site tier {sec['site']['tier']} risk {sec['site']['risk']}{stale}")
     if sec.get("chart"):
         print(f"{indent}chart: " + CHART_MARKS.get(sec["chart"], sec["chart"]))
+    if sec.get("outpost"):
+        print(f"{indent}{outpost_mark(sec['outpost'])}")
 
 
 
@@ -750,6 +790,8 @@ def build_state(fs, board=None, left=None, alerts=None):
         "world": {"pace": world.get("pace"), "preset": world.get("preset")},
         "alerts": derived_alerts(fs, fleets) + list(alerts or []),
     }
+    if fs.get("outpost"):
+        doc["outpost"] = fs["outpost"]
     return doc
 
 
@@ -871,6 +913,8 @@ def cmd_status(name, brief=False):
               + f"  defence {doc['defence']['power']} vs raid ~{doc['defence']['raid_estimate']}")
         for n, q in doc["queues"].items():
             print("  " + queue_line(n, q))
+        if fs.get("outpost"):
+            print("  " + outpost_line(fs["outpost"], fs["tick"]))
         for f in doc["fleets"]:
             print("  " + fleet_line(f))
         for a in doc["alerts"]:
@@ -929,6 +973,8 @@ def summarize(fs, doc, odds):
     for s in hw.get("docked_ships") or []:
         docked[s["class"]] = docked.get(s["class"], 0) + 1
     print("Docked ships: " + (", ".join(f"{n}x {c}" for c, n in docked.items()) or "none"))
+    if fs.get("outpost"):
+        print(outpost_line(fs["outpost"], fs["tick"]))
     sectors = {(s["location"]["q"], s["location"]["r"]): s for s in fs.get("known_sectors") or []}
     live = sum(1 for s in sectors.values() if s.get("live"))
     print(f"Known sectors: {len(sectors)} ({live} live, {len(sectors) - live} remembered/stale)")
@@ -1151,6 +1197,7 @@ def cmd_map(name, radius=4):
         if s.get("salvage"): bits.append("salvage")
         if s.get("site"): bits.append(f"derelict t{s['site']['tier']} {s['site']['risk']}")
         if s.get("chart"): bits.append(f"chart {s['chart']}")
+        if s.get("outpost"): bits.append(outpost_mark(s["outpost"]))
         print(f"  {k[0]},{k[1]}: " + "  ".join(bits))
 
 
@@ -1411,9 +1458,9 @@ def cmd_do(name, args):
     for e in client_errs + left:
         print("  rejected: " + " ".join(x for x in (e.get("code"), e.get("message")) if x))
     for m in lines:
-        if m.get("type") in ("preview_move", "odds", "leaderboard", "exchange_quote"):
+        if m.get("type") in ("preview_move", "odds", "leaderboard", "exchange_quote", "outpost_survey"):
             print("  " + {"preview_move": preview_line, "odds": odds_line, "leaderboard": leaderboard_line,
-                          "exchange_quote": quote_line}[m["type"]](m))
+                          "exchange_quote": quote_line, "outpost_survey": survey_line}[m["type"]](m))
     ev = collapse_events([m for m in lines if m.get("type") == "tick_update"], errors=False)
     if ev:
         print_events(ev, 8)

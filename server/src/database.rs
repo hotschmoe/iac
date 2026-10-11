@@ -19,7 +19,7 @@ use iac_sim::engine::{
 };
 use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams, SectorState};
 use iac_sim::persist::{
-    ExploreCredit, FleetClocks, KnownRow, Persist, PersistBatch, RuntimeEntry, RuntimeRow, WorldMeta,
+    ExploreCredit, FleetClocks, KnownRow, Persist, PersistBatch, RuntimeEntry, RuntimeKind, RuntimeRow, WorldMeta,
 };
 use iac_sim::snapshot::Snapshot;
 
@@ -1071,8 +1071,9 @@ impl Database {
 
     /// Rows that no longer parse (written by an older engine) are skipped:
     /// that group, combat or clock starts over, as all of them once did on
-    /// every restart.
-    pub fn load_runtime(&self) -> Result<Vec<(u64, RuntimeEntry)>, rusqlite::Error> {
+    /// every restart. An outpost is not a clock: it holds what a player
+    /// built and stored, so one that cannot be read refuses the world.
+    pub fn load_runtime(&self) -> Result<Vec<(u64, RuntimeEntry)>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT kind, id, data FROM runtime_state")?;
         let rows = stmt.query_map(params![], |row| {
@@ -1083,6 +1084,13 @@ impl Database {
             let (kind, id, data) = row?;
             match serde_json::from_str::<RuntimeEntry>(&data) {
                 Ok(entry) => out.push((id as u64, entry)),
+                Err(e) if kind == RuntimeKind::Outpost.name() => {
+                    return Err(format!(
+                        "the outpost of player {id} in this database cannot be read ({e}); it holds that player's \
+                         store, so the world is not opened without it"
+                    )
+                    .into());
+                }
                 Err(e) => warn!("Skipping unreadable runtime state {kind} {id}: {e}"),
             }
         }
@@ -1774,6 +1782,88 @@ mod tests {
         events
     }
 
+    /// A fifth empire that plays no random orders: it carries an outpost to
+    /// the Outer Ring, stocks it over further trips and raises it a level.
+    struct Settler {
+        pid: u64,
+        fleet: u64,
+        home: Hex,
+        site: Hex,
+        /// Lane hops from home to the site, the site last, by sectors where nothing attacks on sight.
+        way: Vec<Hex>,
+    }
+
+    impl Settler {
+        fn join(engine: &mut GameEngine) -> Settler {
+            use iac_shared::world::NpcBehaviorType;
+            let pid = engine.authenticate("Settler", None, false, || "f".repeat(64)).unwrap().player_id;
+            let fleet = engine.fleets.values().find(|f| f.owner_id == pid).unwrap().id;
+            let home = engine.players[&pid].homeworld;
+            let calm = |at: Hex| {
+                engine.world_gen.generate_sector(at).npc_template.is_none_or(|npc| npc.behavior == NpcBehaviorType::Passive)
+            };
+            let mut came_from = std::collections::HashMap::from([(home.to_key(), home)]);
+            let mut frontier = std::collections::VecDeque::from([home]);
+            let mut site = None;
+            while let Some(at) = frontier.pop_front() {
+                let t = engine.world_gen.generate_sector(at);
+                let open = t.npc_template.is_none() && !t.has_derelict && t.terrain != iac_shared::constants::TerrainType::Anomaly;
+                if at.dist_from_origin() >= 9 && open {
+                    site = Some(at);
+                    break;
+                }
+                for &next in engine.world_gen.connected_neighbors(at).slice() {
+                    if calm(next) && !came_from.contains_key(&next.to_key()) {
+                        came_from.insert(next.to_key(), at);
+                        frontier.push_back(next);
+                    }
+                }
+            }
+            let site = site.expect("an outpost site reachable by calm lanes");
+            let mut way = vec![site];
+            while came_from[&way[way.len() - 1].to_key()] != home {
+                way.push(came_from[&way[way.len() - 1].to_key()]);
+            }
+            way.reverse();
+            Settler { pid, fleet, home, site, way }
+        }
+
+        /// The settler's order for this tick, from what the engine holds.
+        fn play(&self, engine: &mut GameEngine) {
+            let (pid, fleet_id) = (self.pid, self.fleet);
+            let stock = &mut engine.players.get_mut(&pid).unwrap().resources;
+            (stock.metal, stock.crystal, stock.deuterium) = (stock.metal.max(9000.0), stock.crystal.max(5000.0), stock.deuterium.max(3000.0));
+            let Some(fleet) = engine.fleets.get(&fleet_id) else { return };
+            if !matches!(fleet.state, FleetStatus::Idle | FleetStatus::Docked) || fleet.action_cooldown > 0 {
+                return;
+            }
+            let (at, laden) = (fleet.location, fleet.cargo.total() > 0.0);
+            let hop_toward = |goal: Hex| {
+                let place = self.way.iter().position(|hop| *hop == at);
+                if goal == self.site {
+                    self.way[place.map_or(0, |i| i + 1)]
+                } else {
+                    place.and_then(|i| i.checked_sub(1)).map_or(self.home, |i| self.way[i])
+                }
+            };
+            if at == self.home && !laden {
+                for (resource, amount) in [(ResourceKind::Metal, 1500.0), (ResourceKind::Crystal, 800.0), (ResourceKind::Deuterium, 400.0)] {
+                    let _ = engine.execute(pid, Command::Load { fleet_id, resource, amount: Some(amount) });
+                }
+            } else if at == self.site {
+                let _ = engine.execute(pid, Command::FoundOutpost { fleet_id });
+                let _ = engine.execute(pid, Command::Unload { fleet_id });
+                let _ = engine.execute(pid, Command::UpgradeOutpost);
+                if engine.outposts.get(&pid).is_some_and(|o| o.level >= 1) {
+                    let _ = engine.execute(pid, Command::Move { fleet_id, target: hop_toward(self.home) });
+                }
+            } else {
+                let goal = if laden { self.site } else { self.home };
+                let _ = engine.execute(pid, Command::Move { fleet_id, target: hop_toward(goal) });
+            }
+        }
+    }
+
     /// Where two JSON trees first differ. Leaves are compared as written, so
     /// 0.0 and -0.0 differ here as they do in the hash.
     fn first_difference(a: &serde_json::Value, b: &serde_json::Value, at: &str) -> Option<String> {
@@ -1819,6 +1909,8 @@ mod tests {
         jumps: u32,
         boardings: u32,
         all_at_once: u32,
+        outpost_builds: u32,
+        outpost_warnings: u32,
     }
 
     #[test]
@@ -1829,15 +1921,22 @@ mod tests {
         let mut hosted = host(&path, Some(pace));
         let pids = enroll(&mut straight);
         assert_eq!(enroll(&mut hosted), pids);
+        let settler = Settler::join(&mut straight);
+        assert_eq!(Settler::join(&mut hosted).pid, settler.pid);
 
         let mut caught = Caught::default();
         let mut raids_announced = 0u32;
         let mut last_restart = 0u64;
         let (mut raids, mut doctrine_moves, mut laden_holds) = (0u32, 0u32, 0u32);
+        let (mut outpost_raids, mut stored_outposts) = (0u32, 0u32);
         for _ in 0..TICKS {
+            settler.play(&mut straight);
             step(&mut straight, &pids);
+            settler.play(&mut hosted);
             for event in step(&mut hosted, &pids) {
                 match event {
+                    EventKind::RaidIncoming(r) if r.outpost.is_some() => {}
+                    EventKind::RaidResolved(r) if r.outpost.is_some() => outpost_raids += 1,
                     EventKind::RaidIncoming(_) => raids_announced += 1,
                     EventKind::RaidResolved(_) => {
                         raids_announced -= 1;
@@ -1853,6 +1952,7 @@ mod tests {
                 hosted.flush_persistence().unwrap();
                 let stored = Database::init(&path).unwrap().load_snapshot(DEFAULT_WORLD_SEED, None).unwrap();
                 laden_holds += u32::from(stored.fleets.values().any(|f| f.laden && f.cargo.total() > 0.0));
+                stored_outposts += u32::from(stored.outposts.get(&settler.pid).is_some_and(|o| o.store.total() > 0.0));
                 assert_same(&committed(hosted.snapshot()), &committed(stored), &format!("killed after tick {tick}"));
             }
 
@@ -1861,7 +1961,13 @@ mod tests {
             let scan = pids.iter().any(|&pid| !hosted.scan_revealed_coords(pid).is_empty());
             let jump = hosted.fleets.values().any(|f| f.state == FleetStatus::Moving);
             let boarding = hosted.fleets.values().any(|f| f.state == FleetStatus::Exploring);
-            let rare = (fight && raid && scan && jump && caught.all_at_once < 3) || (boarding && caught.boardings < 3);
+            let outpost = hosted.outposts.get(&settler.pid);
+            let outpost_build = outpost.is_some_and(|o| o.job.is_some());
+            let outpost_warning = outpost.is_some_and(|o| o.raid.incoming.is_some());
+            let rare = (fight && raid && scan && jump && caught.all_at_once < 3)
+                || (boarding && caught.boardings < 3)
+                || (outpost_build && caught.outpost_builds < 3)
+                || (outpost_warning && caught.outpost_warnings < 3);
             if tick.is_multiple_of(RESTART_EVERY) || (rare && tick > last_restart + 5) {
                 last_restart = tick;
                 caught.fights += u32::from(fight);
@@ -1870,6 +1976,8 @@ mod tests {
                 caught.jumps += u32::from(jump);
                 caught.boardings += u32::from(boarding);
                 caught.all_at_once += u32::from(fight && raid && scan && jump);
+                caught.outpost_builds += u32::from(outpost_build);
+                caught.outpost_warnings += u32::from(outpost_warning);
 
                 hosted.checkpoint();
                 hosted.persist_dirty_state();
@@ -1893,6 +2001,17 @@ mod tests {
         );
         assert!(raids > 0 && doctrine_moves > 0, "{raids} raids resolved, {doctrine_moves} moves by standing orders");
         assert!(laden_holds > 0, "no kill found a hold loaded at the dock in the database");
+        let outpost = hosted.outposts.get(&settler.pid).expect("the settler founded an outpost");
+        assert!(
+            outpost.sector == settler.site && outpost.level >= 2,
+            "the outpost was to be stocked over several trips and raised a level: it stands at level {}",
+            outpost.level,
+        );
+        assert!(
+            caught.outpost_builds > 0 && caught.outpost_warnings > 0 && outpost_raids > 0,
+            "no restart fell inside an outpost's build, or none inside the warning of a raid on it ({outpost_raids} resolved): {caught:?}",
+        );
+        assert!(stored_outposts > 0, "no kill found a stocked outpost in the database");
     }
 
     #[test]
@@ -1946,7 +2065,7 @@ mod tests {
         }
 
         let score = |engine: &GameEngine| -> f32 {
-            engine.bots().keys().map(|id| iac_sim::score::score_of(&engine.players[id], engine.fleets.values()).total()).sum()
+            engine.bots().keys().map(|id| iac_sim::score::score_of(engine, &engine.players[id]).total()).sum()
         };
         assert!(score(&hosted) > 50.0 * wanted.len() as f32, "the bots played: {} points between them", score(&hosted));
         assert!(hosted.players.values().any(|p| p.explore_points > 0.0), "a bot's fleet flew out and came home");
