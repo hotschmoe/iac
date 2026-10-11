@@ -79,7 +79,7 @@ fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: ratatui:
                     format!("{}%", p.fuel_budget_pct)
                 };
                 text.push_str(&format!(
-                    " AUTO:{} (range {}, engage {:.1}x, fuel {fuel})",
+                    " AUTO:{} {}hex {:.1}x fuel {fuel}",
                     orders.preset.label(), p.max_range, f32::from(p.engage_ratio_x10) / 10.0,
                 ));
             }
