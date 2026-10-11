@@ -163,8 +163,8 @@ Example session:
 | `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it) |
 | `attack` | `fleet_id`, `target_fleet_id` | engage an NPC fleet |
 | `collect_salvage` | `fleet_id` | scoop wreckage |
-| `recall` | `fleet_id` | emergency-jump home (2× fuel, hull risk) |
-| `stop` | `fleet_id` | abort a move, harvest, or boarding |
+| `recall` | `fleet_id` | emergency-jump home from another sector (2× fuel, hull risk); a jump the fleet was charging is abandoned with its fuel. Refused with `InvalidCommand` and nothing changed for a fleet at your homeworld: there is nothing to come back from, a jump it is charging there goes on, and `stop` is the order that halts it |
+| `stop` | `fleet_id` | abort a move, harvest, or boarding; a jump called off does not return the fuel it burned |
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
 | `build` | `building_type`, `reserve` (default false) | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts). Every order gets a stable `id`, reported in its `Queue` event and in the queue lists. `reserve: true` makes the order hold the line while it is short (see Queues and slots) |
 | `research` | `tech`, `reserve` | research one level, same rules (one lab) |
@@ -561,7 +561,8 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   reserve slowly recovers exactly one jump (about 5 minutes from empty,
   announced at each quarter), enough to hop toward home, then the wait starts
   over. `merge` with a fresh fleet from home pools fuel and also rescues it.
-  `recall` costs 2x the jump fuel per hex, all or nothing.
+  `recall` costs 2x the jump fuel per hex, all or nothing; ships that break
+  up in it leave their share of the cargo where the fleet jumped from.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
   chains (corvettes shred scouts…), victors drop salvage (`FleetDestroyed.salvage`
   is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
@@ -570,7 +571,11 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   events for fights your fleets or homeworld are in, or that happen in a
   sector where you have a fleet or your homeworld. Each carries `owner`
   (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
-  `Critical` `Alert`. Hostile ids in a sector view are the ids `attack` and
+  `Critical` `Alert`. A fleet that loses ships keeps only what the holds of
+  the ships it has left carry: the rest, each resource in proportion, drifts
+  as wreckage in that sector, where anyone can `collect_salvage` it for 180
+  ticks, and a destroyed fleet leaves its whole cargo so (an `Alert` says how
+  much and where). Fuel beyond the tanks that are left is lost. Hostile ids in a sector view are the ids `attack` and
   `CombatStarted.enemy_fleet_id` use; messages name a hostile by its `label`
   ("3x corvette pack"), not by id. `ResourceHarvested` is one event per fleet
   every 10 ticks (and when harvesting stops).
@@ -636,7 +641,9 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   raid over defence power), 70% of them rebuilt free shortly after. Lost: a
   hard-capped slice of the stockpile above the Vault-protected share (≤8%),
   half the structures gone for good, a quarter of the ships docked at home
-  destroyed (at least one), and a long grace period. Cargo aboard fleets at
+  destroyed (at least one), and a long grace period. What the destroyed
+  ships carried beyond the holds left goes to the stockpile as far as the
+  Vault has room, and the rest is lost. Cargo aboard fleets at
   home counts as stockpile: the raid takes its slice of the two together,
   above one protected share, from stockpile and holds alike, so a hold at the
   dock hides nothing (`resources_lost` and `protected_kept` cover both). Never
@@ -689,8 +696,9 @@ Change the Rust protocol, regenerate, then fix the Dart side until
     the fleet's first jump, so what it brings home unloads as cargo always
     has. To put a load back without leaving, `unload`: what the caps allow
     goes back at once, the rest as room opens.
-  - A laden fleet is an ordinary fleet: same fuel, same fights, and its
-    cargo is lost with it. Split it and both halves stay laden; merge and
+  - A laden fleet is an ordinary fleet: same fuel, same fights, and what
+    the ships it loses carried is shed like any cargo (see Combat and
+    Raids). Split it and both halves stay laden; merge and
     the fleet that absorbs keeps its own state.
   - `load` is refused for a fleet under standing orders, which unload at the
     dock. Giving a laden fleet standing orders ends the mark and its hold

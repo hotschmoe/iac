@@ -5,6 +5,7 @@
 // Ported from Zig network.zig.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use std::path::PathBuf;
@@ -61,13 +62,15 @@ impl Network {
         }
     }
 
+    /// Bind and serve. Returns the address bound, which names the port the
+    /// system chose when the server was started on port 0.
     pub async fn start_listening(
         &self,
         host: &str,
         web_dir: Option<PathBuf>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let addr = format!("{}:{}", host, self.port);
-        let listener = TcpListener::bind(&addr).await?;
+    ) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
+        let listener = TcpListener::bind((host, self.port)).await?;
+        let addr = listener.local_addr()?;
         info!("HTTP/WebSocket server listening on {} (ws://{}/ws)", addr, addr);
 
         let state = HttpState {
@@ -87,7 +90,7 @@ impl Network {
             }
         });
 
-        Ok(())
+        Ok(addr)
     }
 
     pub fn process_incoming(&self) -> Result<(), Box<dyn std::error::Error>> {
