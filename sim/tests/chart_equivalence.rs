@@ -21,6 +21,12 @@
 // longer carry: the recording held to tick 1010, and at tick 1011 a fleet
 // destroyed at [1,6] with 34.9 units aboard now leaves them there as
 // wreckage, which its owner's chart shows.
+//
+// And when `recall` began to be refused at the homeworld: that recording
+// held to tick 111, where the script recalls a fleet harvesting at its own
+// homeworld [-5,1]. The recall used to halt the harvest; refused, the fleet
+// mines on and the sector's ore reads lower from tick 112. The script does
+// the same at ticks 427 and 1615.
 
 use iac_shared::constants::{ShipClass, DEFAULT_WORLD_SEED};
 use iac_shared::pace::Pace;

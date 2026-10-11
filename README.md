@@ -163,8 +163,8 @@ Example session:
 | `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it) |
 | `attack` | `fleet_id`, `target_fleet_id` | engage an NPC fleet |
 | `collect_salvage` | `fleet_id` | scoop wreckage |
-| `recall` | `fleet_id` | emergency-jump home (2× fuel, hull risk) |
-| `stop` | `fleet_id` | abort a move, harvest, or boarding |
+| `recall` | `fleet_id` | emergency-jump home from another sector (2× fuel, hull risk); a jump the fleet was charging is abandoned with its fuel. Refused with `InvalidCommand` and nothing changed for a fleet at your homeworld: there is nothing to come back from, a jump it is charging there goes on, and `stop` is the order that halts it |
+| `stop` | `fleet_id` | abort a move, harvest, or boarding; a jump called off does not return the fuel it burned |
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
 | `build` | `building_type`, `reserve` (default false) | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts). Every order gets a stable `id`, reported in its `Queue` event and in the queue lists. `reserve: true` makes the order hold the line while it is short (see Queues and slots) |
 | `research` | `tech`, `reserve` | research one level, same rules (one lab) |
@@ -552,7 +552,8 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   reserve slowly recovers exactly one jump (about 5 minutes from empty,
   announced at each quarter), enough to hop toward home, then the wait starts
   over. `merge` with a fresh fleet from home pools fuel and also rescues it.
-  `recall` costs 2x the jump fuel per hex, all or nothing.
+  `recall` costs 2x the jump fuel per hex, all or nothing; ships that break
+  up in it leave their share of the cargo where the fleet jumped from.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
   chains (corvettes shred scouts…), victors drop salvage (`FleetDestroyed.salvage`
   is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its

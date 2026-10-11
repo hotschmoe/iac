@@ -560,6 +560,13 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
         let no_stock = refused(&mut ws).await;
         assert_eq!(no_stock["code"], "NoResources", "{no_stock}");
         assert!(no_stock["message"].as_str().unwrap().ends_with(&format!("metal; fleet {fleet} cannot load 9000.0")), "{no_stock}");
+        command(&mut ws, json!({"action": "recall", "fleet_id": fleet})).await;
+        let at_home = refused(&mut ws).await;
+        assert_eq!(at_home["code"], "InvalidCommand", "{at_home}");
+        assert_eq!(
+            at_home["message"],
+            format!("fleet {fleet} is already at its homeworld; recall only brings a fleet home from another sector"),
+        );
 
         for _ in 0..3 {
             let later = update_where(&mut ws, |_| true).await;

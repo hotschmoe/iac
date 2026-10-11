@@ -491,6 +491,46 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     assert!(docked.range_hops >= near.range_hops, "and the range shown in the field was not more than a full tank gives");
 }
 
+#[test]
+fn recall_at_home_is_refused_and_the_jump_the_fleet_paid_for_goes_on() {
+    let mut e = Empire::join(world("persistent"), "Homebody");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let out = outward_chain(&e.engine, home, 1)[0];
+    let docked = e.engine.snapshot().hash();
+
+    let (code, why) = e.refusal(Command::Recall { fleet_id: fid });
+    assert_eq!(code, ErrorCode::InvalidCommand);
+    assert!(why.contains(&format!("fleet {fid} is already at its homeworld")), "{why}");
+    assert_eq!(e.engine.snapshot().hash(), docked, "a refused recall changes nothing");
+
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().state = FleetStatus::Harvesting);
+    let mining = e.engine.snapshot().hash();
+    let (code, why) = e.refusal(Command::Recall { fleet_id: fid });
+    assert_eq!(code, ErrorCode::InvalidCommand);
+    assert!(why.contains("at work there") && why.contains("stop"), "{why}");
+    assert_eq!(e.engine.snapshot().hash(), mining, "a fleet harvesting at home is not halted by it");
+    e.order(Command::Stop { fleet_id: fid }).expect("stop is the order that halts it");
+
+    let tank = fuel_of(&e, fid);
+    e.order(Command::Move { fleet_id: fid, target: out }).expect("a jump out");
+    let paid = tank - fuel_of(&e, fid);
+    assert!(paid > 0.0, "the jump is paid for when it is ordered");
+    let charging = e.engine.snapshot().hash();
+
+    let (code, why) = e.refusal(Command::Recall { fleet_id: fid });
+    assert_eq!(code, ErrorCode::InvalidCommand);
+    assert!(why.contains(&format!("charging a jump to {out}")) && why.contains("stop"), "{why}");
+    assert_eq!(e.engine.snapshot().hash(), charging, "the jump, its fuel and its countdown are as they were");
+
+    e.run_until(200, |e| e.engine.fleets[&fid].location == out);
+    assert_eq!(e.engine.fleets[&fid].state, FleetStatus::Idle, "the fuel bought the jump it was spent on");
+
+    e.run_until(200, |e| e.engine.fleets[&fid].action_cooldown == 0);
+    e.order(Command::Recall { fleet_id: fid }).expect("one hop out there is somewhere to come home from");
+    assert_eq!(e.engine.fleets[&fid].location, home);
+}
+
 fn wreckage(e: &Empire, at: Hex) -> Resources {
     e.engine.sector_overrides.get(&at.to_key()).and_then(|o| o.salvage).unwrap_or_default()
 }

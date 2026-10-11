@@ -407,6 +407,19 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         }
         (ErrorCode::InvalidTarget, Command::ExploreSite { .. }) => "no derelict to board in this sector".to_string(),
         (ErrorCode::InvalidCommand, Command::Stop { .. }) => format!("fleet {fid} has nothing to stop"),
+        (ErrorCode::InvalidCommand, Command::Recall { .. }) => {
+            let rule = "recall only brings a fleet home from another sector";
+            match fleet.map(|f| (f.state, f.move_target)) {
+                Some((FleetStatus::Moving, Some(target))) => format!(
+                    "fleet {fid} is at its homeworld, charging a jump to {target}; {rule}. \
+                     To call the jump off use stop (the fuel it burned is not returned)"
+                ),
+                Some((FleetStatus::Harvesting | FleetStatus::Exploring, _)) => {
+                    format!("fleet {fid} is at its homeworld and at work there; {rule}. To halt it use stop")
+                }
+                _ => format!("fleet {fid} is already at its homeworld; {rule}"),
+            }
+        }
         (ErrorCode::InvalidCommand, Command::Odds { sectors, .. }) => {
             format!("odds takes at most {MAX_ODDS_SECTORS} sectors a request; {} were named", sectors.len())
         }

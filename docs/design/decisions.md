@@ -3,6 +3,27 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-11 (recall is refused at home)
+
+**Decided by the agent that built it, not by the owner, and open to change.**
+The principle is the owner's: an order does what its name says or is refused
+with one clear sentence, and it never silently costs the player.
+
+- **`recall` is refused for a fleet at its own homeworld**, with
+  `InvalidCommand`, nothing changed and a sentence. It used to be accepted
+  there: it cost nothing, did nothing to an idle fleet, called off a jump the
+  fleet was charging (whose fuel was spent and was refilled from the
+  stockpile), and halted a fleet harvesting at home.
+- **A jump ordered at home and paid for goes on.** The refusal names its
+  target and says that `stop` is the order that calls it off.
+- **A called-off jump keeps the fuel it burned**, as it always has for
+  `stop` and for a fight that catches a fleet charging. A recall from
+  another sector abandons a charging jump the same way and then pays for
+  its own. That is now written in the rules; it was true and unsaid.
+- **No refund was added.** A refund on `stop` would make every jump free to
+  take back until it lands; the code has long called the lost fuel "the
+  price of hesitation" (`handle_stop`).
+
 ## 2026-10-11 (a fleet carries no more than the ships it has left can hold)
 
 **Decided by the agent that built it, not by the owner, and open to change.**
@@ -67,8 +88,9 @@ and is open to change.**
   room opens. Refused for a fleet that was not loaded by hand.
 - **The state is a mark on the fleet (`laden`) that ends with the fleet's
   next jump.** While it is set the dock leaves the hold alone; a fleet that
-  has jumped away comes home unmarked and unloads as always. Recall from
-  home and a cancelled jump do not end it. It is a column of the fleet's
+  has jumped away comes home unmarked and unloads as always. A cancelled
+  jump does not end it (and recall at home, which did not either, is now
+  refused: see the entry above). It is a column of the fleet's
   row in SQLite and a field of the fleet in the snapshot, so `SAVE_FORMAT`
   went from 2 to 3; `ECONOMY_VERSION` stands (no cost, time, production
   formula or payment moment changed, and the server adds the column to an

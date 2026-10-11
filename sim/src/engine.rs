@@ -3500,9 +3500,15 @@ impl GameEngine {
         self.hop_fuel_cost(fleet) * dist * RECALL_FUEL_MULTIPLIER
     }
 
+    /// Emergency jump home from another sector. A jump the fleet was
+    /// charging is abandoned with its fuel, as `stop` would. At the
+    /// homeworld there is nowhere to come back from and the order is
+    /// refused: a fleet charging a jump there keeps the jump it paid for,
+    /// and one harvesting there goes on.
     pub fn handle_recall(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         let player = self.players.get(&fleet.owner_id).ok_or(ErrorCode::ServerError)?;
+        if fleet.location == player.homeworld { return Err(ErrorCode::InvalidCommand); }
 
         let dist = Hex::distance(&fleet.location, &player.homeworld) as f32;
         let fuel_cost = self.recall_fuel_cost(fleet);
