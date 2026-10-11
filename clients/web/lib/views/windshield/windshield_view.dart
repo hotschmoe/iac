@@ -288,7 +288,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       return;
     }
     final f = _fleet;
-    if (f == null || sim.warp != null) return;
+    if (f == null) return;
+    final jumping = sim.warp;
+    if (jumping != null && !(id == 'stop' && jumping.waiting)) return;
     final s = _sec(f.sector);
     final th = SectorThreat.of(s);
     final why = _reason(id, f, th, s);
@@ -338,6 +340,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         con.game.sendCommand(proto.RecallCommand(fleetId: f.id));
         con.play('ok');
       case 'stop':
+        sim.cancelWarp();
         con.game.sendCommand(proto.StopCommand(fleetId: f.id));
       case 'trade':
         setState(() {

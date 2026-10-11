@@ -348,6 +348,37 @@ void main() {
     await finish(tester, c);
   });
 
+  testWidgets('Stop calls off a jump the windshield is still playing, by its tile and by X; nothing else acts until the jump is over', (tester) async {
+    final c = await pumpFake(tester, calm());
+    Iterable<int> stops() => c.commands.whereType<proto.StopCommand>().map((s) => s.fleetId);
+    int moves() => c.commands.whereType<proto.MoveCommand>().length;
+
+    await key(tester, LogicalKeyboardKey.keyE, 'e');
+    await tester.pump(const Duration(milliseconds: 300));
+    await key(tester, LogicalKeyboardKey.keyV, 'v');
+    expect(c.commands.whereType<proto.ScanCommand>(), isEmpty, reason: 'a scan waits for the jump');
+    await tester.tap(find.byKey(const ValueKey('dock-stop')));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(stops(), [1], reason: 'the tile sends the stop while the ships fly out');
+    await shot(tester, 'ws-jump-called-off-1440');
+
+    await key(tester, LogicalKeyboardKey.keyE, 'e');
+    expect(moves(), 2, reason: 'the scene has given the jump up: the gate takes the next order at once');
+    await tester.pump(const Duration(milliseconds: 300));
+    await key(tester, LogicalKeyboardKey.keyX, 'x');
+    expect(stops(), [1, 1], reason: 'and so does X');
+
+    await key(tester, LogicalKeyboardKey.keyE, 'e');
+    expect(moves(), 3);
+    final there = fleet(1, [('Scout', 1), ('Corvette', 2)], at: const proto.Hex(3, -1));
+    c.push(c.fake.copyWith(fleets: [there, ...c.fake.fleets.skip(1)]));
+    await tester.pump(const Duration(milliseconds: 100));
+    await key(tester, LogicalKeyboardKey.keyX, 'x');
+    expect(stops(), [1, 1], reason: 'a fleet that has arrived has no jump to call off');
+    await tester.pump(const Duration(seconds: 3));
+    await finish(tester, c);
+  });
+
   testWidgets('a key with no lane toasts and sends nothing', (tester) async {
     final c = await pumpFake(tester, calm());
     await key(tester, LogicalKeyboardKey.keyS, 's');

@@ -396,7 +396,16 @@ class WindshieldSim {
     onCue?.call('jump');
   }
 
-  void cancelWarp() => warp = null;
+  /// End a jump the fleet never made: called off, refused, or not answered.
+  /// The ships stand in formation again.
+  void cancelWarp() {
+    if (warp == null) return;
+    warp = null;
+    for (final u in own) {
+      u.x = u.tx;
+      u.y = u.ty;
+    }
+  }
 
   void placeArrival(double ang) {
     for (final u in own) {
@@ -518,9 +527,7 @@ class WindshieldSim {
       var p = (now - w.t0) / 1.1;
       if (w.waiting && p >= .5) {
         p = .5;
-        if (now - w.t0 > 2.6) {
-          warp = null;
-        }
+        if (now - w.t0 > 2.6) cancelWarp();
       }
       if (p >= 1) {
         warp = null;
