@@ -73,8 +73,8 @@ const helpLines = [
   '        policy settings: range=<hexes from home> engage=<least odds ratio> fuel=<% of deuterium income for its fuel, 100 = no bound>',
   '                         cargo=<% hold that sends it home> reserve=<% tank kept spare>   e.g. policy mine range=8 fuel=40',
   '        split <class> [count]  detach ships into a new fleet   merge <fleet id>  fold a fleet in this sector into the active one',
-  'hub:    trade <give> <want> [amount|all]  sell cargo at the exchange   quote <give> <want> [amount|all]  ask first, from anywhere',
-  '        resources: metal|crystal|deut   no amount = all the hold carries   e.g. quote metal deut 400',
+  'hub:    trade|quote <give> <want> [amount|all]  sell cargo at the exchange, or ask first from anywhere   e.g. quote metal deut 400',
+  '        load <resource> [amount|all]  stockpile into the hold, at home   unload  put it back   metal|crystal|deut, no amount = all',
   'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
 ];
 
@@ -142,6 +142,8 @@ const _resources = {
 };
 
 const _tradeUsage = '<metal|crystal|deut> <metal|crystal|deut> [amount|all]  (give, want; no amount = all the hold carries)';
+
+const _loadUsage = 'load: <metal|crystal|deut> [amount|all]  (stockpile into the hold of a fleet docked at home; no amount = all that fits)';
 
 const _policies = {
   'manual': PolicyPreset.manual,
@@ -351,6 +353,19 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
       return needFleet((id) => verb == 'quote'
           ? ExchangeQuoteCommand(fleetId: id, give: give, want: want, amount: amount)
           : ExchangeCommand(fleetId: id, give: give, want: want, amount: amount));
+
+    case 'load':
+      final resource = _resources[args.elementAtOrNull(0)];
+      if (resource == null || args.length > 2) return const ParsedError(_loadUsage);
+      double? amount;
+      if (args.length == 2 && args[1] != 'all') {
+        amount = double.tryParse(args[1]);
+        if (amount == null || amount <= 0) return const ParsedError(_loadUsage);
+      }
+      return needFleet((id) => LoadCommand(fleetId: id, resource: resource, amount: amount));
+
+    case 'unload':
+      return needFleet((id) => UnloadCommand(fleetId: id));
 
     case 'p' || 'policy':
       if (fid == null) return const ParsedError('No fleet selected (you have none)');

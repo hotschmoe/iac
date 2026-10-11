@@ -63,11 +63,35 @@ impl HomeworldTab {
     }
 }
 
-/// Fleet-management overlay: pick ships of the active fleet to split off.
-#[derive(Debug, Clone, Default)]
+/// Fleet-management overlay: pick ships of the active fleet to split off,
+/// and what to load into its hold at the home dock.
+#[derive(Debug, Clone)]
 pub struct FleetPanel {
     pub cursor: usize,
     pub marked: Vec<u64>,
+    /// The resource `load` would take from the stockpile.
+    pub resource: ResourceKind,
+    /// Index into `HOLD_SHARES`: how much of what fits.
+    pub share: usize,
+}
+
+/// One change to the load the fleet panel offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadStep {
+    Resource,
+    Amount(i32),
+}
+
+/// What the fleet panel would load into the active fleet's hold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadOffer {
+    pub fleet_id: u64,
+    pub resource: ResourceKind,
+    /// The most the stockpile holds and the hold has room for, as the
+    /// client last saw them.
+    pub fits: f32,
+    /// What the order asks for; None for all that fits.
+    pub amount: Option<f32>,
 }
 
 /// Exchange overlay: the trade being put together for the active fleet, and
@@ -76,7 +100,7 @@ pub struct FleetPanel {
 pub struct ExchangePanel {
     pub give: ResourceKind,
     pub want: ResourceKind,
-    /// Index into `EXCHANGE_SHARES`: how much of what the hold carries of `give`.
+    /// Index into `HOLD_SHARES`: how much of what the hold carries of `give`.
     pub share: usize,
     pub quote: Option<ExchangeQuote>,
     /// Tick a quote for this trade was last asked for.
@@ -99,8 +123,9 @@ fn resource_after(kind: ResourceKind) -> ResourceKind {
     }
 }
 
-/// The shares of the hold the exchange overlay steps through, in percent.
-pub const EXCHANGE_SHARES: [u8; 4] = [25, 50, 75, 100];
+/// The shares the exchange overlay (of what the hold carries) and the fleet
+/// panel's load (of what fits) step through, in percent.
+pub const HOLD_SHARES: [u8; 4] = [25, 50, 75, 100];
 /// A shown quote is asked for again after this many ticks: the meter moves.
 pub const EXCHANGE_REQUOTE_TICKS: u64 = 5;
 
@@ -322,10 +347,18 @@ impl ClientState {
 
     // ── Fleet management ─────────────────────────────────────────────
 
+    /// Open or close the fleet panel. Opening it offers to load a resource
+    /// whose stockpile is at its cap, if one is.
     pub fn toggle_fleet_panel(&mut self) {
+        let surplus = self.homeworld.as_ref().and_then(|h| h.storage.capped.first().copied());
         self.fleet_panel = match self.fleet_panel {
             Some(_) => None,
-            None if self.active_fleet().is_some() => Some(FleetPanel::default()),
+            None if self.active_fleet().is_some() => Some(FleetPanel {
+                cursor: 0,
+                marked: Vec::new(),
+                resource: surplus.unwrap_or(ResourceKind::Metal),
+                share: HOLD_SHARES.len() - 1,
+            }),
             None => None,
         };
         self.exchange_panel = None;
@@ -397,6 +430,49 @@ impl ClientState {
         }
     }
 
+    // ── Loading at the dock ──────────────────────────────────────────
+
+    /// Whether the active fleet stands on the player's homeworld.
+    pub fn active_fleet_at_home(&self) -> bool {
+        match (self.active_fleet(), &self.player) {
+            (Some(fleet), Some(player)) => fleet.location == player.homeworld,
+            _ => false,
+        }
+    }
+
+    pub fn fleet_panel_load_step(&mut self, step: LoadStep) {
+        let Some(panel) = self.fleet_panel.as_mut() else { return; };
+        match step {
+            LoadStep::Resource => panel.resource = resource_after(panel.resource),
+            LoadStep::Amount(delta) => {
+                panel.share = (panel.share as i32 + delta).clamp(0, HOLD_SHARES.len() as i32 - 1) as usize;
+            }
+        }
+    }
+
+    /// The load the fleet panel shows. With nothing that fits it still
+    /// asks for all that does, so the server says which is short.
+    pub fn load_offer(&self) -> Option<LoadOffer> {
+        let panel = self.fleet_panel.as_ref()?;
+        let fleet = self.active_fleet()?;
+        let stock = self.player.as_ref()?.resources.get(panel.resource);
+        let room = fleet.cargo_capacity - fleet.cargo.total();
+        let fits = stock.min(room).max(0.0);
+        let pct = HOLD_SHARES[panel.share];
+        let amount = (pct < 100 && fits > 0.0).then(|| fits * f32::from(pct) / 100.0);
+        Some(LoadOffer { fleet_id: fleet.id, resource: panel.resource, fits, amount })
+    }
+
+    pub fn fleet_panel_load(&self) -> Option<Command> {
+        let offer = self.load_offer()?;
+        Some(Command::Load { fleet_id: offer.fleet_id, resource: offer.resource, amount: offer.amount })
+    }
+
+    pub fn fleet_panel_unload(&self) -> Option<Command> {
+        self.fleet_panel.as_ref()?;
+        Some(Command::Unload { fleet_id: self.active_fleet()?.id })
+    }
+
     // ── Exchange ─────────────────────────────────────────────────────
 
     /// Whether `at` is a hub sector that offers the exchange.
@@ -422,7 +498,7 @@ impl ClientState {
         self.exchange_panel = Some(ExchangePanel {
             give,
             want: resource_after(give),
-            share: EXCHANGE_SHARES.len() - 1,
+            share: HOLD_SHARES.len() - 1,
             quote: None,
             asked: None,
         });
@@ -442,7 +518,7 @@ impl ClientState {
         if held <= 0.0 {
             return None;
         }
-        let pct = EXCHANGE_SHARES[panel.share];
+        let pct = HOLD_SHARES[panel.share];
         let amount = (pct < 100).then(|| held * f32::from(pct) / 100.0);
         Some((fleet.id, panel.give, panel.want, amount))
     }
@@ -469,7 +545,7 @@ impl ClientState {
             ExchangeStep::Give => panel.give = resource_after(panel.give),
             ExchangeStep::Want => panel.want = resource_after(panel.want),
             ExchangeStep::Amount(delta) => {
-                panel.share = (panel.share as i32 + delta).clamp(0, EXCHANGE_SHARES.len() as i32 - 1) as usize;
+                panel.share = (panel.share as i32 + delta).clamp(0, HOLD_SHARES.len() as i32 - 1) as usize;
             }
         }
         if panel.want == panel.give {

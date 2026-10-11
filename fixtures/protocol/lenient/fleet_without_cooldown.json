@@ -15,6 +15,7 @@
         "home_fuel": 0.0,
         "id": 1,
         "jump_fuel": 0.0,
+        "laden": false,
         "location": {
           "q": 0,
           "r": 0

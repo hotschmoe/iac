@@ -630,6 +630,8 @@ def fleet_rows(fs):
                "jump_fuel": round(f.get("jump_fuel", 0)), "home_fuel": round(f.get("home_fuel", 0))}
         if f.get("cargo_blocked"):
             row["cargo_blocked"] = True
+        if f.get("laden"):
+            row["laden"] = True
         sec = sectors.get(tuple(loc))
         if sec:
             row["exits"] = [DIRS.get((c["q"] - loc[0], c["r"] - loc[1]), "?") + f"->{c['q']},{c['r']}" for c in sec.get("connections") or []]
@@ -834,7 +836,7 @@ def fleet_line(f):
     cargo = sum(f["cargo"])
     return (f"fleet {f['id']} @{f['at'][0]},{f['at'][1]} {f['state']} {f['policy']} power {f['power']} fuel {f['fuel']}/{f['fuel_max']} "
             f"range {f['range_hops']} cargo {cargo}/{f['cargo_cap']} " + "+".join(f"{n}x{c}" for c, n in f["ships"].items())
-            + (" CARGO BLOCKED" if f.get("cargo_blocked") else ""))
+            + (" CARGO BLOCKED" if f.get("cargo_blocked") else "") + (" LADEN" if f.get("laden") else ""))
 
 
 def cmd_state(name, pretty=False):
@@ -929,7 +931,8 @@ def summarize(fs, doc, odds):
         cargo = sum((f.get("cargo") or {}).values())
         print(f"\nFleet {f['id']} at {loc[0]},{loc[1]}  {f['state']}  policy={f.get('policy') or 'manual'}  cooldown={f.get('cooldown_remaining', 0)}"
               f"  power {f.get('power', 0):.0f}  range {f.get('range_hops', 0)} hops out and back"
-              + ("  CARGO BLOCKED: stockpile full, spend something" if f.get("cargo_blocked") else ""))
+              + ("  CARGO BLOCKED: stockpile full, spend something" if f.get("cargo_blocked") else "")
+              + ("  LADEN: loaded by hand, stays aboard at the dock (unload puts it back)" if f.get("laden") else ""))
         print(f"  ships: " + ", ".join(f"{n}x {c}" for c, n in classes.items())
               + f"  hull {hull:.0f}/{hull_max:.0f}  fuel {f['fuel']:.0f}/{f['fuel_max']:.0f}"
               + f"  cargo {cargo:.0f}/{f['cargo_capacity']:.0f} ({res(f.get('cargo'))})")

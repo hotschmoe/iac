@@ -1,0 +1,6 @@
+{
+  "action": "load",
+  "amount": 1200.5,
+  "fleet_id": 3,
+  "resource": "metal"
+}

@@ -74,6 +74,9 @@ fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: ratatui:
             if let Some(preset) = fleet.policy {
                 text.push_str(&format!(" AUTO:{}", preset.label()));
             }
+            if fleet.laden {
+                text.push_str(" LADEN");
+            }
             if fleet.cooldown_remaining > 0 {
                 text.push_str(&format!(" (cd {}s)", fleet.cooldown_remaining));
             }

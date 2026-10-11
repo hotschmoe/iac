@@ -87,9 +87,9 @@ void main() {
       expect(kinds.length, 27);
     });
 
-    test('command fixtures cover all 21 commands', () {
+    test('command fixtures cover all 23 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 21);
+      expect(kinds.length, 23);
     });
 
     test('full_state names the hub and the player meter at its exchange', () {
@@ -125,6 +125,18 @@ void main() {
       expect(s.homeworld.storage.cap.metal, 7500);
       expect(s.homeworld.storage.capped, [ResourceKind.deuterium]);
       expect(s.homeworld.storage.fullInS.crystal, isNull);
+    });
+
+    test('a fleet says when its hold was loaded at the dock, and load says what it takes', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update');
+      final u = ServerMessage.fromJson(readJson(f)) as TickUpdate;
+      expect([for (final fleet in u.fleets) fleet.laden], [false, true]);
+      final commands = {for (final f in fixtureFiles('protocol/command')) baseName(f): Command.fromJson(readJson(f))};
+      final exact = commands['load'] as LoadCommand;
+      final all = commands['load__all_that_fits'] as LoadCommand;
+      expect((exact.fleetId, exact.resource, exact.amount), (3, ResourceKind.metal, 1200.5));
+      expect((all.resource, all.amount), (ResourceKind.deuterium, null));
+      expect((commands['unload'] as UnloadCommand).fleetId, 3);
     });
 
     test('the ratio verdict bands match the server', () {
