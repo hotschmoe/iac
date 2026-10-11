@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../models/fleet.dart' as ui;
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
+import 'intel.dart' show hopCount;
 import 'route_planner.dart';
 import 'threat.dart';
 import 'toasts.dart';
@@ -42,7 +43,7 @@ class RouteRunner extends ChangeNotifier {
     pendingTarget = null;
     phase = RunPhase.running;
     _lastTick = -1;
-    toasts.show('Route engaged', '${plan.hops} hops to ${plan.to}', tone: ToastTone.teal);
+    toasts.show('Route engaged', '${hopCount(plan.hops)} to ${plan.to}', tone: ToastTone.teal);
     notifyListeners();
     _onCtrl();
   }
