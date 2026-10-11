@@ -48,6 +48,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _sheet = false;
   bool _manage = false;
   bool _trade = false;
+  bool _orders = false;
   DateTime? _armedUntil;
   DateTime? _scanAt;
   String? _dockHint;
@@ -323,7 +324,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       case 'trade':
         setState(() {
           _trade = !_trade;
-          if (_trade) _sheet = true;
+          if (_trade) {
+            _sheet = true;
+            _orders = false;
+          }
         });
         con.play('click');
       case 'load':
@@ -332,6 +336,20 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         return;
     }
     if (id != 'harvest') setState(() => _hsub = false);
+  }
+
+  /// Open or shut the standing orders of the selected fleet. It is a panel,
+  /// not an act of the fleet: a jump under way does not keep it shut.
+  void _toggleOrders() {
+    if (_fleet == null) return;
+    setState(() {
+      _orders = !_orders;
+      if (_orders) {
+        _sheet = true;
+        _trade = false;
+      }
+    });
+    con.play('click');
   }
 
   void _fire(ui.FleetState f, SectorThreat th) {
@@ -359,12 +377,13 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _onKey(KeyEvent e) {
     final ch = e.character?.toLowerCase();
     if (e.logicalKey == LogicalKeyboardKey.escape) {
-      if (sim.target != null || _hsub || _sheet || _trade) {
+      if (sim.target != null || _hsub || _sheet || _trade || _orders) {
         setState(() {
           sim.target = null;
           _hsub = false;
           _sheet = false;
           _trade = false;
+          _orders = false;
         });
         return true;
       }
@@ -374,6 +393,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final di = dirs.where((d) => d.key == ch).firstOrNull;
     if (di != null) {
       jump(di);
+      return true;
+    }
+    if (ch == 'p') {
+      _toggleOrders();
       return true;
     }
     const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop', 't': 'trade', 'l': 'load'};
@@ -483,12 +506,18 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final atExchange = st.exchangeAt(f.sector);
       final feedWidth = math.min(340.0, (size.width - dockActions.length * Dock.tileWidth) / 2 - 30);
 
-      final rightCol =Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      final rightCol = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
         if (_trade) ...[ExchangePanel(controller: con.game), const SizedBox(height: 8)],
         StatusPanel(
           f: f,
           shieldFrac: shield,
-          footer: ConsoleButton(_manage ? 'Hide fleet' : 'Manage fleet', key: const ValueKey('manage-toggle'), small: true, active: _manage, onPressed: () => setState(() => _manage = !_manage)),
+          atHome: f.sector == st.homeworld,
+          holding: st.holdOf(f),
+          footer: Wrap(spacing: 6, runSpacing: 6, children: [
+            GuideTarget('orders', child: ConsoleButton(_orders ? 'Hide orders' : 'Orders', key: const ValueKey('orders-toggle'), small: true, keyHint: 'P', active: _orders, onPressed: _toggleOrders)),
+            ConsoleButton(_manage ? 'Hide fleet' : 'Manage fleet', key: const ValueKey('manage-toggle'), small: true, active: _manage, onPressed: () => setState(() => _manage = !_manage)),
+          ]),
         ),
         if (_manage) ...[const SizedBox(height: 8), FleetManagePanel(controller: con.game)],
         const SizedBox(height: 8),

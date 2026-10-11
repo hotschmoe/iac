@@ -137,6 +137,8 @@ void main() {
     expect(tester.widget<Rail>(find.byType(Rail)).mark, isNull);
     expect(_strip('Press SCAN.'), findsOneWidget);
     expect(_marked('dock-scan'), findsOneWidget);
+    double strip() => tester.getSize(find.byKey(const Key('guide-strip'))).height;
+    final kept = strip();
     await tester.tap(find.byKey(const ValueKey('dock-scan')));
     await _settle(tester, () => server.received.any((m) => m['action'] == 'scan'));
     server.send(_tick(4822, _fleet(), events: [golden('event_kind', 'scan_completed')]));
@@ -145,6 +147,7 @@ void main() {
     expect(_strip('JUMP THROUGH A GATE'), findsOneWidget);
     expect(_strip('The marked gates are quiet.'), findsOneWidget);
     expect(_marked('gates'), findsOneWidget);
+    expect(strip(), kept, reason: 'the strip keeps the height of its longest note, so the screen under it does not move between lessons');
     server.send(_tick(4823, _fleet(at: _oreField, state: 'Idle')));
     await _settle(tester, () => _guide(tester).current == Lesson.harvest);
     expect(_strip('Ore in this sector.'), findsOneWidget);
@@ -156,11 +159,18 @@ void main() {
 
     server.send(_tick(4825, _fleet()));
     await _settle(tester, () => _guide(tester).current == Lesson.orders);
-    await tester.tap(find.byKey(const Key('guide-orders')));
+    expect(_strip('Press ORDERS under Fleet status'), findsOneWidget);
+    expect(_marked('orders'), findsOneWidget);
+    expect(strip(), kept);
+    await tester.tap(find.byKey(const ValueKey('orders-toggle')));
     await tester.pump(const Duration(milliseconds: 100));
-    expect(tester.widget<TextField>(find.byKey(const Key('palette-field'))).controller!.text, 'policy mine');
-    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.tap(find.byKey(const ValueKey('orders-doctrine-mineAndReturn')));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
     await _settle(tester, () => server.received.any((m) => m['type'] == 'policy_update' && m['preset'] == 'mine_and_return'));
+    expect(server.received.last.containsKey('params'), isFalse, reason: 'the doctrine at its defaults is what a typed "policy mine" sends');
     server.send(_tick(4826, _fleet(policy: 'mine_and_return')));
     await _settle(tester, () => _guide(tester).current == null);
 
