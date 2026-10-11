@@ -126,12 +126,13 @@ impl KnownSectors {
         let observed = observe(engine, &wanted);
 
         for &(pid, key) in &entered {
-            self.record(pid, key, &observed[&key], tick);
+            Self::record(&mut self.by_player, &mut self.dirty, pid, key, &observed[&key], tick);
         }
         for key in dynamic {
-            let Some(pids) = self.watchers.get(&key).cloned() else { continue };
-            for pid in pids {
-                self.record(pid, key, &observed[&key], tick);
+            let Some(pids) = self.watchers.get(&key) else { continue };
+            let seen = &observed[&key];
+            for &pid in pids {
+                Self::record(&mut self.by_player, &mut self.dirty, pid, key, seen, tick);
             }
         }
 
@@ -240,23 +241,36 @@ impl KnownSectors {
     }
 
     /// Write what the player sees of a live sector into their memory.
-    fn record(&mut self, pid: u64, key: u32, observed: &SectorState, tick: u64) {
-        let memory = self.by_player.entry(pid).or_default();
+    fn record(
+        by_player: &mut KeyMap<u64, KeyMap<u32, Remembered>>,
+        dirty: &mut KeySet<(u64, u32)>,
+        pid: u64,
+        key: u32,
+        observed: &SectorState,
+        tick: u64,
+    ) {
+        let memory = by_player.entry(pid).or_default();
         match memory.get_mut(&key) {
-            Some(r) if r.state == *observed => {}
             Some(r) => {
                 // Refilling ore moves every tick; it is written with the periodic touch.
-                let mut probe = observed.clone();
-                probe.ore_reserve = r.state.ore_reserve;
-                if probe != r.state {
-                    self.dirty.insert((pid, key));
+                let ore = std::mem::replace(&mut r.state.ore_reserve, observed.ore_reserve);
+                if r.state != *observed {
+                    r.state = observed.clone();
+                    dirty.insert((pid, key));
+                } else if ore == observed.ore_reserve {
+                    r.state.ore_reserve = ore;
+                    return;
+                } else {
+                    // Equal is not identical for a float (0.0 and -0.0): the
+                    // memory takes the observed bits, as a copy would.
+                    r.state.salvage = observed.salvage;
+                    r.state.threat = observed.threat;
                 }
-                r.state = observed.clone();
                 r.last_seen = tick;
             }
             None => {
                 memory.insert(key, Remembered { last_seen: tick, state: observed.clone() });
-                self.dirty.insert((pid, key));
+                dirty.insert((pid, key));
             }
         }
     }
