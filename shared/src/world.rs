@@ -3,15 +3,17 @@
 // Only modified sectors need database storage.
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::hash::Hasher;
 use std::sync::Arc;
 
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::constants::{Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
-use crate::scaling::{npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ship_power};
+use crate::scaling::{
+    npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ore_reserve_units, ship_power,
+};
 use crate::hex::{hex_ring, Hex};
+use crate::keymap::{KeyMap, KeySet};
 
 /// A home seat is a sector of the home band whose `q - r` is a multiple of
 /// three. Every rotation and mirror of the grid maps that lattice onto
@@ -70,10 +72,10 @@ pub fn nearest_hub(from: Hex, service: HubService) -> Option<Hex> {
 /// sectors tick after tick), which changes speed and nothing else.
 pub struct WorldGen {
     pub world_seed: u64,
-    sectors: RefCell<HashMap<u32, SectorTemplate>>,
-    links: RefCell<HashMap<u32, ConnectedList>>,
-    reach: RefCell<HashMap<ReachKey, Arc<[Hex]>>>,
-    hops: RefCell<HashMap<HopsKey, Option<u32>>>,
+    sectors: RefCell<KeyMap<u32, SectorTemplate>>,
+    links: RefCell<KeyMap<u32, ConnectedList>>,
+    reach: RefCell<KeyMap<ReachKey, Arc<[Hex]>>>,
+    hops: RefCell<KeyMap<HopsKey, Option<u32>>>,
 }
 
 /// Origin sector key and hop count of a cached `reachable_within`.
@@ -125,6 +127,7 @@ impl WorldGen {
                 metal_density: Density::None,
                 crystal_density: Density::None,
                 deut_density: Density::None,
+                ore_units: [0.0; 3],
                 npc_template: None,
                 has_derelict: false,
             };
@@ -146,6 +149,7 @@ impl WorldGen {
             metal_density: resources.metal,
             crystal_density: resources.crystal,
             deut_density: resources.deut,
+            ore_units: [resources.metal, resources.crystal, resources.deut].map(|d| ore_reserve_units(d, dist)),
             npc_template,
             has_derelict,
         }
@@ -210,15 +214,15 @@ impl WorldGen {
         if let Some(found) = self.reach.borrow().get(&key) {
             return Arc::clone(found);
         }
-        let mut visited: HashMap<u32, ()> = HashMap::new();
+        let mut visited: KeySet<u32> = KeySet::default();
         let mut frontier = vec![origin];
         let mut result: Vec<Hex> = Vec::new();
-        visited.insert(origin.to_key(), ());
+        visited.insert(origin.to_key());
         for _ in 0..max_hops {
             let mut next = Vec::new();
             for coord in &frontier {
                 for n in self.connected_neighbors(*coord).slice() {
-                    if visited.insert(n.to_key(), ()).is_some() {
+                    if !visited.insert(n.to_key()) {
                         continue;
                     }
                     next.push(*n);
@@ -246,7 +250,7 @@ impl WorldGen {
             return *found;
         }
         let goal = to.to_key();
-        let mut visited: HashSet<u32> = HashSet::from([from.to_key()]);
+        let mut visited: KeySet<u32> = KeySet::from_iter([from.to_key()]);
         let mut frontier = vec![from];
         let mut found = None;
         'search: for hops in 1..=u32::from(max_hops) {
@@ -533,6 +537,9 @@ pub struct SectorTemplate {
     pub metal_density: Density,
     pub crystal_density: Density,
     pub deut_density: Density,
+    /// Raw units the full metal, crystal and deuterium tiles hold
+    /// (`scaling::ore_reserve_units`).
+    pub ore_units: [f32; 3],
     pub npc_template: Option<NpcTemplate>,
     pub has_derelict: bool,
 }

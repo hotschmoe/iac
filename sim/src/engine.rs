@@ -10,6 +10,7 @@ use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 
 use iac_shared::hex::Hex;
+use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::constants::{
     Resources, ResourceKind, ShipClass, Density,
     STARTING_RESOURCES, STARTING_SCOUTS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, STRANDED_RECOVERY_TICKS,
@@ -443,10 +444,73 @@ pub struct FleetPolicy {
     pub fuel_since: u64,
 }
 
+/// The square of sectors within `radius` hexes of `centre`, one slot each:
+/// a search confined to it indexes a table instead of hashing sector keys.
+#[derive(Clone, Copy)]
+struct Window {
+    centre: Hex,
+    radius: u8,
+}
+
+impl Window {
+    fn side(&self) -> i32 {
+        2 * i32::from(self.radius) + 1
+    }
+
+    fn slots(&self) -> usize {
+        (self.side() * self.side()) as usize
+    }
+
+    fn slot(&self, coord: Hex) -> Option<usize> {
+        let side = self.side();
+        let q = i32::from(coord.q) - i32::from(self.centre.q) + i32::from(self.radius);
+        let r = i32::from(coord.r) - i32::from(self.centre.r) + i32::from(self.radius);
+        ((0..side).contains(&q) && (0..side).contains(&r)).then_some((q * side + r) as usize)
+    }
+
+    fn coord(&self, slot: usize) -> Hex {
+        let side = self.side();
+        let (q, r) = (slot as i32 / side, slot as i32 % side);
+        Hex::new(
+            (i32::from(self.centre.q) + q - i32::from(self.radius)) as i16,
+            (i32::from(self.centre.r) + r - i32::from(self.radius)) as i16,
+        )
+    }
+}
+
+/// The ships a fight in a sector would meet: the group the ring spawns at
+/// that distance from the hub, or ships that were counted.
+#[derive(Clone, Copy)]
+enum Opposing {
+    Ring(u16),
+    Ships(Force),
+}
+
+impl Opposing {
+    fn force(self) -> Force {
+        match self {
+            Opposing::Ring(dist) => Force::of_ring(dist),
+            Opposing::Ships(force) => force,
+        }
+    }
+}
+
+/// One fleet's ratio against each ring's group. Most sectors a fleet is
+/// rated in hold nothing its owner has counted, so the answer is the ring's
+/// and is worked out once per ring for as long as the fleet is asked about.
+#[derive(Default)]
+struct RingOdds(RefCell<KeyMap<u16, f32>>);
+
 /// Where a doctrine lets one fleet go, worked out once per evaluation: the
 /// fleet's odds in every sector asked about, against what its owner knows.
+/// An evaluation searches the same sectors several times over (a lane
+/// without a fight, then any lane, then the reason nothing was found), so
+/// what it learns of a sector is kept until it ends; the world cannot move
+/// while the engine is borrowed.
 struct Reach<'a> {
     engine: &'a GameEngine,
+    fleet: &'a Fleet,
+    params: PolicyParams,
     owner: u64,
     ours: Force,
     home: Hex,
@@ -460,21 +524,60 @@ struct Reach<'a> {
     room: f32,
     /// Sectors where a hostile group stands, and whether one of them
     /// attacks whoever enters.
-    groups: HashMap<u32, bool>,
-    live: HashSet<u32>,
-    rated: RefCell<HashMap<u32, (ThreatInfo, f32)>>,
+    groups: KeyMap<u32, bool>,
+    live: KeySet<u32>,
+    /// The sectors a search inside `range` can ask about.
+    window: Window,
+    rings: RingOdds,
+    rated: SectorMemo<(ThreatInfo, f32)>,
+    fights: SectorMemo<bool>,
+    seams: SectorMemo<Option<f32>>,
+    boardable: SectorMemo<bool>,
+}
+
+/// One answer per sector for the length of an evaluation: a table over a
+/// window, a map for the few sectors asked about beyond it.
+struct SectorMemo<T> {
+    near: RefCell<Vec<Option<T>>>,
+    far: RefCell<KeyMap<u32, T>>,
+}
+
+impl<T> Default for SectorMemo<T> {
+    fn default() -> SectorMemo<T> {
+        SectorMemo { near: RefCell::default(), far: RefCell::default() }
+    }
+}
+
+impl<T: Copy> SectorMemo<T> {
+    fn recall(&self, window: Window, coord: Hex, work: impl FnOnce() -> T) -> T {
+        let Some(slot) = window.slot(coord) else {
+            let key = coord.to_key();
+            if let Some(&known) = self.far.borrow().get(&key) {
+                return known;
+            }
+            let found = work();
+            self.far.borrow_mut().insert(key, found);
+            return found;
+        };
+        if let Some(known) = self.near.borrow().get(slot).copied().flatten() {
+            return known;
+        }
+        let found = work();
+        let mut near = self.near.borrow_mut();
+        if near.is_empty() {
+            near.resize(window.slots(), None);
+        }
+        near[slot] = Some(found);
+        found
+    }
 }
 
 impl Reach<'_> {
     fn rating(&self, coord: Hex) -> (ThreatInfo, f32) {
-        let key = coord.to_key();
-        if let Some(&rated) = self.rated.borrow().get(&key) {
-            return rated;
-        }
-        let (threat, theirs) = self.engine.opposition(self.owner, coord, self.live.contains(&key));
-        let rated = (threat, self.engine.odds_ratio(&self.ours, &theirs));
-        self.rated.borrow_mut().insert(key, rated);
-        rated
+        self.rated.recall(self.window, coord, || {
+            let (threat, theirs) = self.engine.opposition(self.owner, coord, self.live.contains(&coord.to_key()));
+            (threat, self.engine.ratio_against(&self.ours, theirs, &self.rings))
+        })
     }
 
     fn ratio(&self, coord: Hex) -> f32 {
@@ -532,8 +635,24 @@ impl Reach<'_> {
     /// Entering `coord` starts a fight: a group there is not passive.
     fn starts_fight(&self, coord: Hex) -> bool {
         let passive = iac_shared::world::NpcBehaviorType::Passive;
-        self.groups.get(&coord.to_key()).copied().unwrap_or(false)
-            || self.engine.pending_template_npc(coord).is_some_and(|t| t.behavior != passive)
+        self.fights.recall(self.window, coord, || {
+            self.groups.get(&coord.to_key()).copied().unwrap_or(false)
+                || self.engine.pending_template_npc(coord).is_some_and(|t| t.behavior != passive)
+        })
+    }
+
+    /// Score weight of the seam in `coord` as it would land in the hold;
+    /// None where the tiles hold too little to stake.
+    fn seam(&self, coord: Hex) -> Option<f32> {
+        self.seams.recall(self.window, coord, || {
+            let ore = self.engine.ore_reserve_at(coord)?;
+            (ore_units(&ore) >= POLICY_MIN_SEAM_UNITS).then(|| self.engine.seam_worth(self.owner, &ore, self.room))
+        })
+    }
+
+    /// Whether the doctrine boards a derelict in `coord`.
+    fn boards(&self, coord: Hex) -> bool {
+        self.boardable.recall(self.window, coord, || self.engine.site_is_boardable(self.fleet, &self.params, coord))
     }
 
     /// Whether resources worth `weight` (`scaling::resource_weight`) repay
@@ -674,11 +793,11 @@ pub struct GameEngine {
 
     /// (player, sector key) pairs the player has entered; answers
     /// "first visit?" without touching the database.
-    explored: HashSet<(u64, u32)>,
+    explored: KeySet<(u64, u32)>,
     /// Explored edges not yet handed to the persister.
     new_edges: Vec<ExploredEdge>,
     /// Explore credits already paid: once per player and sector.
-    credited: HashSet<(u64, u32, ExploreCredit)>,
+    credited: KeySet<(u64, u32, ExploreCredit)>,
     new_credits: Vec<(u64, Hex, ExploreCredit)>,
     /// (player, sector key) whose chart mark may have changed since the
     /// last chart refresh: delivered, or lost with the fleet that held it.
@@ -686,7 +805,7 @@ pub struct GameEngine {
     /// What each player has seen of the galaxy, live or remembered.
     pub known: KnownSectors,
     /// Ratios already worked out, by the two sides; speed only.
-    odds_memo: RefCell<HashMap<(Force, Force), f32>>,
+    odds_memo: RefCell<KeyMap<(Force, Force), f32>>,
 }
 
 /// Entries kept in the odds memo before it is emptied.
@@ -1403,22 +1522,19 @@ impl GameEngine {
     /// Stripped tiles refill over `scaling::ore_regen_hours`, paused while a
     /// fleet sits on the sector, and never past the generated density.
     fn process_sector_regen(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
-        for sector_key in keys {
-            let Some(ov) = self.sector_overrides.get(&sector_key) else { continue; };
-            if !ov.has_ore_damage() { continue; }
+        let occupied: KeySet<u32> = self.fleets.values().map(|f| f.location.to_key()).collect();
+        let pace = self.world.pace;
+        let persist = self.current_tick.is_multiple_of(REGEN_PERSIST_TICKS);
+        for (&sector_key, ov) in self.sector_overrides.iter_mut() {
+            if !ov.has_ore_damage() || occupied.contains(&sector_key) { continue; }
 
             let coord = Hex::from_key(sector_key);
-            if self.fleets.values().any(|f| f.location == coord) { continue; }
-
             let dist = coord.dist_from_origin();
             let template = self.world_gen.generate_sector(coord);
-            let pace = self.world.pace;
-            let ov_mut = self.sector_overrides.get_mut(&sector_key).unwrap();
-            let mut moved = regen_resource(&mut ov_mut.metal_harvested, &mut ov_mut.metal_density, template.metal_density, dist, &pace);
-            moved |= regen_resource(&mut ov_mut.crystal_harvested, &mut ov_mut.crystal_density, template.crystal_density, dist, &pace);
-            moved |= regen_resource(&mut ov_mut.deut_harvested, &mut ov_mut.deut_density, template.deut_density, dist, &pace);
-            if moved || !ov_mut.has_ore_damage() || self.current_tick.is_multiple_of(REGEN_PERSIST_TICKS) {
+            let mut moved = regen_resource(&mut ov.metal_harvested, &mut ov.metal_density, template.metal_density, dist, &pace);
+            moved |= regen_resource(&mut ov.crystal_harvested, &mut ov.crystal_density, template.crystal_density, dist, &pace);
+            moved |= regen_resource(&mut ov.deut_harvested, &mut ov.deut_density, template.deut_density, dist, &pace);
+            if moved || !ov.has_ore_damage() || persist {
                 self.dirty_sectors.insert(sector_key, ());
             }
         }
@@ -1507,9 +1623,7 @@ impl GameEngine {
     }
 
     fn process_salvage_despawn(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
-        for key in keys {
-            let Some(ov) = self.sector_overrides.get_mut(&key) else { continue; };
+        for (&key, ov) in self.sector_overrides.iter_mut() {
             if let Some(despawn_tick) = ov.salvage_despawn_tick
                 && self.current_tick >= despawn_tick
             {
@@ -1534,17 +1648,13 @@ impl GameEngine {
 
     fn process_npc_behavior(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Respawn check
-        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
-        for key in keys {
-            let Some(ov) = self.sector_overrides.get(&key) else { continue; };
+        for (&key, ov) in self.sector_overrides.iter_mut() {
             let Some(cleared_tick) = ov.npc_cleared_tick else { continue; };
             let coord = Hex::from_key(key);
             let hours = scaling::npc_respawn_hours(coord.dist_from_origin());
             let delay = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
-            if self.current_tick >= cleared_tick + delay
-                && let Some(ov_mut) = self.sector_overrides.get_mut(&key)
-            {
-                ov_mut.npc_cleared_tick = None;
+            if self.current_tick >= cleared_tick + delay {
+                ov.npc_cleared_tick = None;
                 self.dirty_sectors.insert(key, ());
             }
         }
@@ -2456,7 +2566,7 @@ impl GameEngine {
     /// The sectors whose chart some fleet of `player_id` still carries. A
     /// fleet that lost its last ship counts until it is reaped, which is
     /// when `chart_news` tells its owner's clients.
-    pub fn charts_aboard(&self, player_id: u64) -> HashSet<u32> {
+    pub fn charts_aboard(&self, player_id: u64) -> KeySet<u32> {
         self.fleets
             .values()
             .filter(|f| f.owner_id == player_id)
@@ -2465,7 +2575,7 @@ impl GameEngine {
     }
 
     /// Where `player_id`'s chart of a sector stands, given `charts_aboard`.
-    pub fn chart_mark(&self, player_id: u64, sector_key: u32, aboard: &HashSet<u32>) -> Option<ChartMark> {
+    pub fn chart_mark(&self, player_id: u64, sector_key: u32, aboard: &KeySet<u32>) -> Option<ChartMark> {
         if self.credited.contains(&(player_id, sector_key, ExploreCredit::Charted)) {
             Some(ChartMark::Delivered)
         } else if aboard.contains(&sector_key) {
@@ -2670,15 +2780,30 @@ impl GameEngine {
             return Err(ErrorCode::InvalidCommand);
         }
         let ours = fleet_force(fleet);
-        let live: HashSet<u32> = crate::intel::live_coords(self, player_id).iter().map(|h| h.to_key()).collect();
+        let rings = RingOdds::default();
+        let live: KeySet<u32> = crate::intel::live_coords(self, player_id).iter().map(|h| h.to_key()).collect();
         Ok(sectors
             .iter()
             .map(|&coord| {
                 let (threat, theirs) = self.opposition(player_id, coord, live.contains(&coord.to_key()));
-                let ratio = self.odds_ratio(&ours, &theirs);
+                let ratio = self.ratio_against(&ours, theirs, &rings);
                 SectorOdds { sector: coord, threat, ratio, label: scaling::ratio_label(ratio) }
             })
             .collect())
+    }
+
+    /// `odds_ratio` of `ours` against `theirs`. `rings` must be `ours`'s own.
+    fn ratio_against(&self, ours: &Force, theirs: Opposing, rings: &RingOdds) -> f32 {
+        if let Opposing::Ring(dist) = theirs
+            && let Some(&ratio) = rings.0.borrow().get(&dist)
+        {
+            return ratio;
+        }
+        let ratio = self.odds_ratio(ours, &theirs.force());
+        if let Opposing::Ring(dist) = theirs {
+            rings.0.borrow_mut().insert(dist, ratio);
+        }
+        ratio
     }
 
     /// The ratio of `ours` against `theirs` (`odds::outlook`), `ours` firing first.
@@ -2699,21 +2824,29 @@ impl GameEngine {
     /// What the ore tiles of `coord` hold now; None when the sector has no ore.
     pub fn ore_reserve_at(&self, coord: Hex) -> Option<OreReserve> {
         let template = self.world_gen.generate_sector(coord);
-        let ov = self.sector_overrides.get(&coord.to_key());
+        self.ore_reserve_in(coord, &template, self.sector_overrides.get(&coord.to_key()))
+    }
+
+    /// `ore_reserve_at` for a caller that holds the sector's template and override.
+    pub(crate) fn ore_reserve_in(
+        &self,
+        coord: Hex,
+        template: &world::SectorTemplate,
+        ov: Option<&SectorOverride>,
+    ) -> Option<OreReserve> {
         let dist = coord.dist_from_origin();
-        let tile = |template_d: Density, current: Option<Density>, harvested: f32| {
-            let max_units = scaling::ore_reserve_units(template_d, dist);
+        let tile = |template_d: Density, max_units: f32, current: Option<Density>, harvested: f32| {
             let gone = scaling::ore_extracted(template_d, current.unwrap_or(template_d), harvested, dist);
-            let rate = scaling::ore_regen_per_tick(template_d, dist, &self.world.pace);
-            TileReserve {
-                units: (max_units - gone).max(0.0),
-                max_units,
-                refills_in_s: (gone > scaling::ORE_EPSILON && rate > 0.0).then(|| (gone / rate).ceil() as u64),
-            }
+            let refills_in_s = (gone > scaling::ORE_EPSILON)
+                .then(|| scaling::ore_regen_per_tick(template_d, dist, &self.world.pace))
+                .filter(|rate| *rate > 0.0)
+                .map(|rate| (gone / rate).ceil() as u64);
+            TileReserve { units: (max_units - gone).max(0.0), max_units, refills_in_s }
         };
-        let metal = tile(template.metal_density, ov.and_then(|o| o.metal_density), ov.map_or(0.0, |o| o.metal_harvested));
-        let crystal = tile(template.crystal_density, ov.and_then(|o| o.crystal_density), ov.map_or(0.0, |o| o.crystal_harvested));
-        let deuterium = tile(template.deut_density, ov.and_then(|o| o.deut_density), ov.map_or(0.0, |o| o.deut_harvested));
+        let [metal, crystal, deuterium] = template.ore_units;
+        let metal = tile(template.metal_density, metal, ov.and_then(|o| o.metal_density), ov.map_or(0.0, |o| o.metal_harvested));
+        let crystal = tile(template.crystal_density, crystal, ov.and_then(|o| o.crystal_density), ov.map_or(0.0, |o| o.crystal_harvested));
+        let deuterium = tile(template.deut_density, deuterium, ov.and_then(|o| o.deut_density), ov.map_or(0.0, |o| o.deut_harvested));
         (metal.max_units + crystal.max_units + deuterium.max_units > 0.0)
             .then_some(OreReserve { metal, crystal, deuterium })
     }
@@ -2729,43 +2862,59 @@ impl GameEngine {
     /// sight, those remembered at the strength last seen, otherwise the
     /// group the ring spawns.
     pub fn known_opposition(&self, player_id: u64, coord: Hex) -> (ThreatInfo, Force) {
-        self.opposition(player_id, coord, crate::intel::live_coords(self, player_id).contains(&coord))
+        let live = crate::intel::live_coords(self, player_id).contains(&coord);
+        let (threat, theirs) = self.opposition(player_id, coord, live);
+        (threat, theirs.force())
     }
 
-    fn opposition(&self, player_id: u64, coord: Hex, live: bool) -> (ThreatInfo, Force) {
+    fn opposition(&self, player_id: u64, coord: Hex, live: bool) -> (ThreatInfo, Opposing) {
         if live {
-            return (self.sector_threat(coord), self.sector_force(coord));
+            return (self.sector_threat(coord), self.sector_opposing(coord));
         }
         match self.known.remembered(player_id, coord) {
-            Some(seen) => (seen.threat, remembered_force(seen)),
-            None => (ring_threat(coord, ThreatBasis::Estimate), Force::of_ring(coord.dist_from_origin())),
+            Some(seen) => (seen.threat, remembered_opposing(seen)),
+            None => (ring_threat(coord, ThreatBasis::Estimate), Opposing::Ring(coord.dist_from_origin())),
         }
     }
 
     /// The threat of `coord` right now. A group on the spot (or its template
     /// before it materialises) is rated by its own power; otherwise the ring's.
     pub fn sector_threat(&self, coord: Hex) -> ThreatInfo {
-        self.threat_among(coord, self.npc_fleets.values().filter(|n| n.location == coord))
+        let template = self.world_gen.generate_sector(coord);
+        let pending = self.pending_template_in(coord, &template, self.sector_overrides.get(&coord.to_key()));
+        let here = self.npc_fleets.values().filter(|n| n.location == coord);
+        self.threat_among(coord, &template, pending.as_ref(), here)
     }
 
     /// The ships a fight in `coord` would meet right now: the groups on the
     /// spot, the lair's group before it materialises, otherwise the ring's.
     pub fn sector_force(&self, coord: Hex) -> Force {
+        self.sector_opposing(coord).force()
+    }
+
+    fn sector_opposing(&self, coord: Hex) -> Opposing {
         let mut force = Force::default();
         for npc in self.npc_fleets.values().filter(|n| n.location == coord) {
             force.join(&Force::of_ships(&npc.ships[..npc.ship_count as usize]));
         }
         if !force.is_empty() {
-            return force;
+            return Opposing::Ships(force);
         }
         match self.pending_template_npc(coord) {
-            Some(tmpl) => Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier),
-            None => Force::of_ring(coord.dist_from_origin()),
+            Some(tmpl) => Opposing::Ships(Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier)),
+            None => Opposing::Ring(coord.dist_from_origin()),
         }
     }
 
-    /// `sector_threat` for a caller that already knows which groups stand in `coord`.
-    pub fn threat_among<'a>(&self, coord: Hex, npcs: impl Iterator<Item = &'a NpcFleet>) -> ThreatInfo {
+    /// `sector_threat` for a caller that already knows which groups stand in
+    /// `coord` and holds its template and what `pending_template_npc` says.
+    pub(crate) fn threat_among<'a>(
+        &self,
+        coord: Hex,
+        template: &world::SectorTemplate,
+        pending: Option<&world::NpcTemplate>,
+        npcs: impl Iterator<Item = &'a NpcFleet>,
+    ) -> ThreatInfo {
         let mut observed: Option<f32> = None;
         for npc in npcs.filter(|n| n.ship_count > 0) {
             let power: f32 = npc.ships[..npc.ship_count as usize].iter()
@@ -2775,14 +2924,14 @@ impl GameEngine {
             *observed.get_or_insert(0.0) += power * behavior_threat_bonus(npc.behavior);
         }
         if observed.is_none()
-            && let Some(tmpl) = self.pending_template_npc(coord)
+            && let Some(tmpl) = pending
         {
             observed = Some(tmpl.power() * behavior_threat_bonus(tmpl.behavior));
         }
         match observed {
             Some(est_power) => ThreatInfo { rating: scaling::threat_rating(est_power), est_power, basis: ThreatBasis::Observed },
             None => {
-                let lair = self.world_gen.generate_sector(coord).npc_template.is_some();
+                let lair = template.npc_template.is_some();
                 ring_threat(coord, if lair { ThreatBasis::Template } else { ThreatBasis::Estimate })
             }
         }
@@ -2860,10 +3009,10 @@ impl GameEngine {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
         let Some(player) = self.players.get(&fleet.owner_id) else { return; };
         if target == player.homeworld { return; }
+        let have = fleet.fuel;
+        if have + 0.001 >= self.direct_hops_home(fleet.owner_id, target) as f32 * hop_cost { return; }
         let route = self.home_route(fleet.owner_id, target);
         let need = route.direct as f32 * hop_cost;
-        let have = fleet.fuel;
-        if have + 0.001 >= need { return; }
         let (level, outcome) = if have + 0.001 < hop_cost {
             (AlertLevel::Critical, "it will be stranded on arrival; the emergency reserve recovers one hop in about 5 minutes")
         } else {
@@ -3631,7 +3780,16 @@ impl GameEngine {
     pub fn derelict_site_at(&self, coord: Hex) -> Option<(u8, u8)> {
         let template = self.world_gen.generate_sector(coord);
         if !template.has_derelict { return None; }
-        let ov = self.sector_overrides.get(&coord.to_key());
+        Self::derelict_site_in(coord, &template, self.sector_overrides.get(&coord.to_key()))
+    }
+
+    /// `derelict_site_at` for a caller that holds the sector's template and override.
+    pub(crate) fn derelict_site_in(
+        coord: Hex,
+        template: &world::SectorTemplate,
+        ov: Option<&SectorOverride>,
+    ) -> Option<(u8, u8)> {
+        if !template.has_derelict { return None; }
         if ov.map(|o| o.site_looted_tick.is_some()).unwrap_or(false) { return None; }
         let bumps = ov.map(|o| o.site_ambush_bumps).unwrap_or(0);
         Some((scaling::derelict_tier(coord.dist_from_origin()), bumps))
@@ -4237,31 +4395,37 @@ impl GameEngine {
         passable: &dyn Fn(Hex) -> bool,
         goal: &dyn Fn(Hex, u32) -> bool,
     ) -> Option<Vec<Hex>> {
-        let mut prev: HashMap<u32, u32> = HashMap::new();
+        // A sector `max_hops` jumps out lies within as many hexes, so the
+        // search cannot leave the window and indexes it: where each sector
+        // was reached from, by slot.
+        const UNSEEN: u32 = u32::MAX;
+        let window = Window { centre: from, radius: max_hops };
+        let start = window.slot(from)?;
+        let mut prev: Vec<u32> = vec![UNSEEN; window.slots()];
         let mut frontier = vec![from];
-        prev.insert(from.to_key(), from.to_key());
-        let mut found: Option<Hex> = None;
+        prev[start] = start as u32;
+        let mut found: Option<usize> = None;
 
         'search: for hops in 1..=u32::from(max_hops) {
             let mut next = Vec::new();
             for coord in &frontier {
+                let Some(at) = window.slot(*coord) else { continue; };
                 for &n in self.world_gen.connected_neighbors(*coord).slice() {
-                    let key = n.to_key();
-                    if prev.contains_key(&key) || !passable(n) { continue; }
-                    prev.insert(key, coord.to_key());
-                    if goal(n, hops) { found = Some(n); break 'search; }
+                    let Some(slot) = window.slot(n) else { continue; };
+                    if prev[slot] != UNSEEN || !passable(n) { continue; }
+                    prev[slot] = at as u32;
+                    if goal(n, hops) { found = Some(slot); break 'search; }
                     next.push(n);
                 }
             }
             frontier = next;
         }
 
-        let from_key = from.to_key();
-        let mut path = vec![found?];
-        let mut cur = found?.to_key();
-        while prev[&cur] != from_key {
-            cur = prev[&cur];
-            path.push(Hex::from_key(cur));
+        let mut cur = found?;
+        let mut path = vec![window.coord(cur)];
+        while prev[cur] as usize != start {
+            cur = prev[cur] as usize;
+            path.push(window.coord(cur));
         }
         path.reverse();
         Some(path)
@@ -4269,25 +4433,33 @@ impl GameEngine {
 
     /// What the doctrine of `fleet` lets it do this evaluation.
     fn policy_reach<'a>(&'a self, fleet: &'a Fleet, params: &PolicyParams, home: Hex) -> Reach<'a> {
+        let range = self.policy_effective_range(fleet, params);
         Reach {
             engine: self,
+            fleet,
+            params: *params,
             owner: fleet.owner_id,
             ours: fleet_force(fleet),
             home,
             need: f32::from(params.engage_ratio_x10) / 10.0,
-            range: self.policy_effective_range(fleet, params),
+            range,
             jump_weight: scaling::resource_weight(&Resources {
                 deuterium: self.hop_fuel_cost(fleet) * FUEL_DEUT_PER_UNIT,
                 ..Resources::default()
             }),
             room: (fleet_cargo_capacity(fleet, &self.world.pace) - fleet.cargo.total()).max(0.0),
-            groups: self.npc_fleets.values().filter(|n| n.ship_count > 0).fold(HashMap::new(), |mut groups, n| {
+            groups: self.npc_fleets.values().filter(|n| n.ship_count > 0).fold(KeyMap::default(), |mut groups, n| {
                 *groups.entry(n.location.to_key()).or_insert(false) |=
                     n.behavior != iac_shared::world::NpcBehaviorType::Passive;
                 groups
             }),
             live: crate::intel::live_coords(self, fleet.owner_id).iter().map(|h| h.to_key()).collect(),
-            rated: RefCell::new(HashMap::new()),
+            window: Window { centre: home, radius: range.saturating_add(1) },
+            rings: RingOdds::default(),
+            rated: SectorMemo::default(),
+            fights: SectorMemo::default(),
+            seams: SectorMemo::default(),
+            boardable: SectorMemo::default(),
         }
     }
 
@@ -4383,13 +4555,12 @@ impl GameEngine {
 
     /// Raw ore units the tiles of `coord` hold right now.
     fn seam_units(&self, coord: Hex) -> f32 {
-        self.ore_reserve_at(coord).map_or(0.0, |o| o.metal.units + o.crystal.units + o.deuterium.units)
+        self.ore_reserve_at(coord).map_or(0.0, |ore| ore_units(&ore))
     }
 
-    /// Score weight of the ore in `coord` as it would land in the hold of
-    /// one of `owner`'s fleets with `room` units free.
-    fn seam_worth(&self, owner: u64, coord: Hex, room: f32) -> f32 {
-        let Some(ore) = self.ore_reserve_at(coord) else { return 0.0; };
+    /// Score weight of `ore` as it would land in the hold of one of
+    /// `owner`'s fleets with `room` units free.
+    fn seam_worth(&self, owner: u64, ore: &OreReserve, room: f32) -> f32 {
         let yield_mult = self.players.get(&owner)
             .map_or(1.0, |p| scaling::harvest_yield(p.research.harvesting_efficiency));
         let load = Resources { metal: ore.metal.units, crystal: ore.crystal.units, deuterium: ore.deuterium.units }
@@ -4531,11 +4702,7 @@ impl GameEngine {
 
         let plan = {
             let reach = self.policy_reach(&fleet, &params, home);
-            let ore = |n: Hex, hops: u32| {
-                n != home
-                    && self.seam_units(n) >= POLICY_MIN_SEAM_UNITS
-                    && reach.repays(self.seam_worth(owner, n, reach.room), hops)
-            };
+            let ore = |n: Hex, hops: u32| n != home && reach.seam(n).is_some_and(|worth| reach.repays(worth, hops));
             let seam = |n: Hex, hops: u32| ore(n, hops) && !reach.starts_fight(n);
             let kept = staked
                 .filter(|&claim| !ran_dry && claim != location)
@@ -4615,7 +4782,7 @@ impl GameEngine {
             };
             let payday = |n: Hex, hops: u32| {
                 n != home && n != location && !reach.starts_fight(n)
-                    && (wreck(n, hops) || self.site_is_boardable(&fleet, &params, n))
+                    && (wreck(n, hops) || reach.boards(n))
             };
             match reach.path_worth(location, &payday) {
                 Some(path) => Ok(path[0]),
@@ -4849,13 +5016,23 @@ impl GameEngine {
     /// been cleared or has wandered off as a live fleet): the hostile a sector
     /// view lists under `template_npc_id(coord)`.
     pub fn pending_template_npc(&self, coord: Hex) -> Option<iac_shared::world::NpcTemplate> {
-        let cleared = self.sector_overrides.get(&coord.to_key())
-            .map(|o| o.npc_cleared_tick.is_some())
-            .unwrap_or(false);
-        if cleared || self.npc_fleets.contains_key(&template_npc_id(coord)) {
+        let template = self.world_gen.generate_sector(coord);
+        template.npc_template.as_ref()?;
+        self.pending_template_in(coord, &template, self.sector_overrides.get(&coord.to_key()))
+    }
+
+    /// `pending_template_npc` for a caller that holds the sector's template and override.
+    pub(crate) fn pending_template_in(
+        &self,
+        coord: Hex,
+        template: &world::SectorTemplate,
+        ov: Option<&SectorOverride>,
+    ) -> Option<iac_shared::world::NpcTemplate> {
+        let cleared = ov.is_some_and(|o| o.npc_cleared_tick.is_some());
+        if template.npc_template.is_none() || cleared || self.npc_fleets.contains_key(&template_npc_id(coord)) {
             return None;
         }
-        self.world_gen.generate_sector(coord).npc_template
+        template.npc_template.clone()
     }
 
     fn spawn_npc_fleet(&mut self, location: Hex, npc: iac_shared::world::NpcTemplate, npc_fleet_id: u64) -> Result<NpcFleet, Box<dyn std::error::Error>> {
@@ -5435,6 +5612,11 @@ fn ring_threat(coord: Hex, basis: ThreatBasis) -> ThreatInfo {
 /// Why a hauling doctrine leaves a seam, a wreck or a derelict where it is.
 const NO_FIGHT_FOR_IT: &str = "sits among hostiles that attack on sight; this doctrine picks no fight for it (a patrol can clear them)";
 
+/// Raw ore units the tiles hold between them.
+fn ore_units(ore: &OreReserve) -> f32 {
+    ore.metal.units + ore.crystal.units + ore.deuterium.units
+}
+
 /// Score weight of `load` once it sits in a hold with `room` units free:
 /// all of it, or the share that fits.
 fn worth_aboard(load: Resources, room: f32) -> f32 {
@@ -5445,9 +5627,9 @@ fn worth_aboard(load: Resources, room: f32) -> f32 {
 
 /// The ships of a remembered sector: the groups last seen there, scaled to
 /// the power they were rated at, or the ring's group if none was in sight.
-fn remembered_force(seen: &SectorState) -> Force {
+fn remembered_opposing(seen: &SectorState) -> Opposing {
     use iac_shared::protocol::NpcBehavior::{Aggressive, Swarm};
-    let ring = || Force::of_ring(seen.location.dist_from_origin());
+    let ring = || Opposing::Ring(seen.location.dist_from_origin());
     let Some(groups) = seen.hostiles.as_ref().filter(|_| seen.threat.basis == ThreatBasis::Observed) else {
         return ring();
     };
@@ -5466,7 +5648,7 @@ fn remembered_force(seen: &SectorState) -> Force {
     for ship in groups.iter().flat_map(|g| &g.ships) {
         force.add_group(ship.ship_class, f32::from(ship.count), multiplier);
     }
-    force
+    Opposing::Ships(force)
 }
 
 fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {

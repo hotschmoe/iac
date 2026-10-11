@@ -12,11 +12,17 @@
 // something dynamic could have touched it (an override, an NPC group, or the
 // place an NPC group left) and some player is watching it. A live sector's
 // `last_seen` is implicit (the last refresh) and is written down when it lapses.
+// So is its ore: a stripped tile refills every tick, and writing that into
+// every watcher's memory every tick was most of the upkeep. What the watchers
+// of such a sector hold in common is kept once (`KnownSectors::shown`); their
+// memories are rewritten only when something other than the ore moves, and
+// take the ore from there when the sector lapses or a row is asked for.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 
 use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
+use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::protocol::{
     FleetBrief, NpcBehavior, NpcFleetInfo, NpcShipInfo, SectorResources, SectorState, ShipClassCounts,
     SiteBrief,
@@ -33,10 +39,11 @@ const LIVE_TOUCH_TICKS: u64 = 60;
 
 #[derive(Debug, Clone)]
 struct Remembered {
-    /// Meaningful only while the sector is not live; see `KnownSectors::seen`.
+    /// Meaningful only while the sector is not live; see `KnownSectors::settled`.
     last_seen: u64,
     /// As last observed, with `last_seen` zeroed. `live` is always false and
     /// `player_fleets` empty: other empires' positions are not remembered.
+    /// While the sector is live its `ore_reserve` may lag; see `KnownSectors::shown`.
     state: SectorState,
 }
 
@@ -44,10 +51,10 @@ struct Remembered {
 #[derive(Debug, Default)]
 struct Coverage {
     sensor: Option<(Hex, u8)>,
-    sensor_set: HashSet<u32>,
+    sensor_set: KeySet<u32>,
     fleets: Vec<u32>,
     scans: Vec<u32>,
-    extras: HashSet<u32>,
+    extras: KeySet<u32>,
 }
 
 impl Coverage {
@@ -63,19 +70,23 @@ impl Coverage {
 /// Every player's explored-sector memory.
 #[derive(Debug, Default)]
 pub struct KnownSectors {
-    by_player: HashMap<u64, HashMap<u32, Remembered>>,
-    coverage: HashMap<u64, Coverage>,
+    by_player: KeyMap<u64, KeyMap<u32, Remembered>>,
+    coverage: KeyMap<u64, Coverage>,
     /// Sector key to the players (ascending) that have it live.
-    watchers: HashMap<u32, Vec<u64>>,
+    watchers: KeyMap<u32, Vec<u64>>,
+    /// Watched sectors with moving parts, as their watchers were last shown
+    /// them. Each watcher's memory equals this in everything but the ore,
+    /// which is current here and only here.
+    shown: KeyMap<u32, SectorState>,
     /// Remembered, not live sectors with a salvage pile: (despawn tick, key).
-    pins: HashMap<u64, BTreeSet<(u64, u32)>>,
+    pins: KeyMap<u64, BTreeSet<(u64, u32)>>,
     /// Keys that stopped being live at the last refresh.
-    lapsed: HashMap<u64, Vec<u32>>,
+    lapsed: KeyMap<u64, Vec<u32>>,
     /// Remembered sectors whose salvage pin expired at the last refresh.
-    expired: HashMap<u64, Vec<u32>>,
+    expired: KeyMap<u64, Vec<u32>>,
     /// Sectors whose chart mark may have moved since the refresh before.
-    marked: HashMap<u64, Vec<u32>>,
-    dirty: HashSet<(u64, u32)>,
+    marked: KeyMap<u64, Vec<u32>>,
+    dirty: KeySet<(u64, u32)>,
     /// Sectors an NPC group stood in or was homed to at the last refresh.
     npc_sectors: Vec<u32>,
     refreshed: u64,
@@ -107,7 +118,7 @@ impl KnownSectors {
             self.marked.entry(pid).or_default().push(key);
         }
 
-        let mut fleet_cells: HashMap<u64, Vec<u32>> = HashMap::new();
+        let mut fleet_cells: KeyMap<u64, Vec<u32>> = KeyMap::default();
         for fleet in engine.fleets.values().filter(|f| f.ship_count > 0) {
             fleet_cells.entry(fleet.owner_id).or_default().push(fleet.location.to_key());
         }
@@ -119,19 +130,30 @@ impl KnownSectors {
             self.update_coverage(engine, pid, cells, &mut entered);
         }
 
-        let mut wanted: HashSet<u32> = entered.iter().map(|&(_, key)| key).collect();
+        let mut wanted: KeySet<u32> = entered.iter().map(|&(_, key)| key).collect();
         let dynamic = self.dynamic_watched(engine);
         wanted.extend(dynamic.iter().copied());
         let observed = observe(engine, &wanted);
 
         for &(pid, key) in &entered {
-            self.record(pid, key, &observed[&key], tick);
+            Self::record(&mut self.by_player, &mut self.dirty, pid, key, &observed[&key], tick);
         }
         for key in dynamic {
-            let Some(pids) = self.watchers.get(&key).cloned() else { continue };
-            for pid in pids {
-                self.record(pid, key, &observed[&key], tick);
+            let Some(pids) = self.watchers.get(&key) else { continue };
+            let seen = &observed[&key];
+            if let Some(shown) = self.shown.get_mut(&key) {
+                let ore = std::mem::replace(&mut shown.ore_reserve, seen.ore_reserve);
+                if shown == seen {
+                    if ore == seen.ore_reserve {
+                        shown.ore_reserve = ore;
+                    }
+                    continue;
+                }
             }
+            for &pid in pids {
+                Self::record(&mut self.by_player, &mut self.dirty, pid, key, seen, tick);
+            }
+            self.shown.insert(key, seen.clone());
         }
 
         self.expire_pins(tick);
@@ -198,16 +220,20 @@ impl KnownSectors {
     }
 
     fn leave(&mut self, pid: u64, key: u32) {
+        if let Some(r) = self.by_player.get_mut(&pid).and_then(|m| m.get_mut(&key)) {
+            r.last_seen = self.refreshed;
+            if let Some(shown) = self.shown.get(&key) {
+                r.state.ore_reserve = shown.ore_reserve;
+            }
+            if let Some(despawn) = r.state.salvage_despawn_tick {
+                self.pins.entry(pid).or_default().insert((despawn, key));
+            }
+        }
         if let Some(watchers) = self.watchers.get_mut(&key) {
             watchers.retain(|&p| p != pid);
             if watchers.is_empty() {
                 self.watchers.remove(&key);
-            }
-        }
-        if let Some(r) = self.by_player.get_mut(&pid).and_then(|m| m.get_mut(&key)) {
-            r.last_seen = self.refreshed;
-            if let Some(despawn) = r.state.salvage_despawn_tick {
-                self.pins.entry(pid).or_default().insert((despawn, key));
+                self.shown.remove(&key);
             }
         }
         self.lapsed.entry(pid).or_default().push(key);
@@ -225,7 +251,7 @@ impl KnownSectors {
         npc_sectors.sort_unstable();
         npc_sectors.dedup();
 
-        let mut seen: HashSet<u32> = HashSet::new();
+        let mut seen: KeySet<u32> = KeySet::default();
         let dynamic = engine
             .sector_overrides
             .keys()
@@ -239,23 +265,36 @@ impl KnownSectors {
     }
 
     /// Write what the player sees of a live sector into their memory.
-    fn record(&mut self, pid: u64, key: u32, observed: &SectorState, tick: u64) {
-        let memory = self.by_player.entry(pid).or_default();
+    fn record(
+        by_player: &mut KeyMap<u64, KeyMap<u32, Remembered>>,
+        dirty: &mut KeySet<(u64, u32)>,
+        pid: u64,
+        key: u32,
+        observed: &SectorState,
+        tick: u64,
+    ) {
+        let memory = by_player.entry(pid).or_default();
         match memory.get_mut(&key) {
-            Some(r) if r.state == *observed => {}
             Some(r) => {
                 // Refilling ore moves every tick; it is written with the periodic touch.
-                let mut probe = observed.clone();
-                probe.ore_reserve = r.state.ore_reserve;
-                if probe != r.state {
-                    self.dirty.insert((pid, key));
+                let ore = std::mem::replace(&mut r.state.ore_reserve, observed.ore_reserve);
+                if r.state != *observed {
+                    r.state = observed.clone();
+                    dirty.insert((pid, key));
+                } else if ore == observed.ore_reserve {
+                    r.state.ore_reserve = ore;
+                    return;
+                } else {
+                    // Equal is not identical for a float (0.0 and -0.0): the
+                    // memory takes the observed bits, as a copy would.
+                    r.state.salvage = observed.salvage;
+                    r.state.threat = observed.threat;
                 }
-                r.state = observed.clone();
                 r.last_seen = tick;
             }
             None => {
                 memory.insert(key, Remembered { last_seen: tick, state: observed.clone() });
-                self.dirty.insert((pid, key));
+                dirty.insert((pid, key));
             }
         }
     }
@@ -283,7 +322,8 @@ impl KnownSectors {
         }
     }
 
-    /// A charted sector as last seen.
+    /// A charted sector as last seen. While the sector is live for the
+    /// player its ore may lag behind (`shown`); everything else is current.
     pub fn remembered(&self, player_id: u64, coord: Hex) -> Option<&SectorState> {
         self.by_player.get(&player_id)?.get(&coord.to_key()).map(|r| &r.state)
     }
@@ -318,24 +358,28 @@ impl KnownSectors {
 
     fn row(&self, player_id: u64, key: u32) -> Option<KnownRow> {
         let r = self.by_player.get(&player_id)?.get(&key)?;
-        let last_seen = self.seen(player_id, key, r);
-        let mut state = r.state.clone();
-        state.last_seen = last_seen;
-        Some(KnownRow { player_id, sector: Hex::from_key(key), last_seen, state })
+        let state = self.settled(player_id, key, r);
+        Some(KnownRow { player_id, sector: Hex::from_key(key), last_seen: state.last_seen, state })
     }
 
-    /// A live sector was seen at the last refresh; the rest carry their own stamp.
-    fn seen(&self, player_id: u64, key: u32, r: &Remembered) -> u64 {
+    /// A remembered sector with what is implicit while it is live written
+    /// in: it was seen at the last refresh, and its ore is the ore shown
+    /// then. A sector that is not live carries both itself.
+    fn settled(&self, player_id: u64, key: u32, r: &Remembered) -> SectorState {
+        let mut state = r.state.clone();
         if self.coverage.get(&player_id).is_some_and(|c| c.contains(key)) {
-            self.refreshed
+            state.last_seen = self.refreshed;
+            if let Some(shown) = self.shown.get(&key) {
+                state.ore_reserve = shown.ore_reserve;
+            }
         } else {
-            r.last_seen
+            state.last_seen = r.last_seen;
         }
+        state
     }
 
     fn stale_view(&self, player_id: u64, key: u32, r: &Remembered) -> SectorState {
-        let mut s = r.state.clone();
-        s.last_seen = self.seen(player_id, key, r);
+        let mut s = self.settled(player_id, key, r);
         s.live = false;
         s.pins_stale = s.salvage.is_some() || s.site.is_some();
         s
@@ -345,7 +389,7 @@ impl KnownSectors {
     /// last observed.
     pub fn chart(&self, engine: &GameEngine, player_id: u64) -> Vec<SectorState> {
         let live = live_coords(engine, player_id);
-        let live_keys: HashSet<u32> = live.iter().map(|h| h.to_key()).collect();
+        let live_keys: KeySet<u32> = live.iter().map(|h| h.to_key()).collect();
         let mut out = live_states(engine, &live, player_id);
         if let Some(memory) = self.by_player.get(&player_id) {
             out.extend(
@@ -400,7 +444,7 @@ fn mark_charts(engine: &GameEngine, player_id: u64, sectors: &mut [SectorState])
 /// Sectors the server is watching for this player right now: fleet
 /// locations, the homeworld sensor array, and unexpired active scans.
 pub fn live_coords(engine: &GameEngine, player_id: u64) -> Vec<Hex> {
-    let mut seen: HashSet<u32> = HashSet::new();
+    let mut seen: KeySet<u32> = KeySet::default();
     let mut out: Vec<Hex> = Vec::new();
     let mut add = |c: Hex| {
         if seen.insert(c.to_key()) {
@@ -446,20 +490,20 @@ fn template_hostile(coord: Hex, tmpl: &NpcTemplate) -> NpcFleetInfo {
 
 /// Where the NPC groups and (optionally) fleets stand, for the sectors asked about.
 struct Presence<'a> {
-    npcs: HashMap<u32, Vec<&'a NpcFleet>>,
-    fleets: HashMap<u32, Vec<&'a Fleet>>,
+    npcs: KeyMap<u32, Vec<&'a NpcFleet>>,
+    fleets: KeyMap<u32, Vec<&'a Fleet>>,
 }
 
 impl<'a> Presence<'a> {
-    fn of(engine: &'a GameEngine, keys: &HashSet<u32>, with_fleets: bool) -> Presence<'a> {
-        let mut npcs: HashMap<u32, Vec<&NpcFleet>> = HashMap::new();
+    fn of(engine: &'a GameEngine, keys: &KeySet<u32>, with_fleets: bool) -> Presence<'a> {
+        let mut npcs: KeyMap<u32, Vec<&NpcFleet>> = KeyMap::default();
         for npc in engine.npc_fleets.values() {
             let key = npc.location.to_key();
             if keys.contains(&key) {
                 npcs.entry(key).or_default().push(npc);
             }
         }
-        let mut fleets: HashMap<u32, Vec<&Fleet>> = HashMap::new();
+        let mut fleets: KeyMap<u32, Vec<&Fleet>> = KeyMap::default();
         if with_fleets {
             for fleet in engine.fleets.values().filter(|f| f.ship_count > 0) {
                 let key = fleet.location.to_key();
@@ -481,7 +525,7 @@ impl<'a> Presence<'a> {
 
 /// What a memory snapshot of each sector holds this tick: other empires'
 /// fleets left out and the stamp zeroed.
-fn observe(engine: &GameEngine, keys: &HashSet<u32>) -> HashMap<u32, SectorState> {
+fn observe(engine: &GameEngine, keys: &KeySet<u32>) -> KeyMap<u32, SectorState> {
     let presence = Presence::of(engine, keys, false);
     keys.iter()
         .map(|&key| {
@@ -495,7 +539,7 @@ fn observe(engine: &GameEngine, keys: &HashSet<u32>) -> HashMap<u32, SectorState
 
 /// The sectors as they are this tick for `viewer`, in `coords` order.
 fn live_states(engine: &GameEngine, coords: &[Hex], viewer: u64) -> Vec<SectorState> {
-    let keys: HashSet<u32> = coords.iter().map(|c| c.to_key()).collect();
+    let keys: KeySet<u32> = coords.iter().map(|c| c.to_key()).collect();
     let presence = Presence::of(engine, &keys, true);
     coords.iter().map(|&c| presence.state(engine, c, Some(viewer))).collect()
 }
@@ -503,7 +547,7 @@ fn live_states(engine: &GameEngine, coords: &[Hex], viewer: u64) -> Vec<SectorSt
 /// The sector as it is this tick. Other empires' fleets are listed unless
 /// `viewer` is None (a memory snapshot), and `viewer`'s own fleets never are.
 pub fn build_sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>) -> SectorState {
-    let keys = HashSet::from([coord.to_key()]);
+    let keys = KeySet::from_iter([coord.to_key()]);
     Presence::of(engine, &keys, viewer.is_some()).state(engine, coord, viewer)
 }
 
@@ -512,6 +556,7 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
     let neighbors = engine.world_gen.connected_neighbors(coord);
     let ov = engine.sector_overrides.get(&coord.to_key());
     let (metal_d, crystal_d, deut_d) = SectorOverride::effective_densities(ov, &template);
+    let pending = engine.pending_template_in(coord, &template, ov);
 
     let mut hostile_list: Vec<NpcFleetInfo> = Vec::new();
     for npc in npcs {
@@ -531,9 +576,9 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
     // A template hostile that has not materialised yet carries the id it
     // will have once it does (see `template_npc_id`).
     if hostile_list.is_empty()
-        && let Some(tmpl) = engine.pending_template_npc(coord)
+        && let Some(tmpl) = &pending
     {
-        hostile_list.push(template_hostile(coord, &tmpl));
+        hostile_list.push(template_hostile(coord, tmpl));
     }
 
     let mut player_fleet_list: Vec<FleetBrief> = Vec::new();
@@ -573,12 +618,11 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
         player_fleets: (!player_fleet_list.is_empty()).then_some(player_fleet_list),
         salvage,
         salvage_despawn_tick: salvage.and(ov.and_then(|o| o.salvage_despawn_tick)),
-        site: engine
-            .derelict_site_at(coord)
+        site: GameEngine::derelict_site_in(coord, &template, ov)
             .map(|(tier, bumps)| SiteBrief { tier, risk: site_risk_label(coord, bumps) }),
-        ore_reserve: engine.ore_reserve_at(coord),
+        ore_reserve: engine.ore_reserve_in(coord, &template, ov),
         chart: None,
-        threat: engine.threat_among(coord, npcs.iter().copied()),
+        threat: engine.threat_among(coord, &template, pending.as_ref(), npcs.iter().copied()),
         last_seen: engine.current_tick,
         live: true,
         pins_stale: false,
