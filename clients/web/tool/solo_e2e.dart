@@ -20,7 +20,8 @@
 // the homeworld on screen, an order accepted and completed, the offer of
 // browser notices answered from its own button, toasts that stay whole
 // while their neighbours leave, a hold loaded from the stockpile at the dock
-// and unloaded again, standing orders given through their panel with the
+// and unloaded again, a jump called off from the Stop tile while the
+// windshield still plays it, standing orders given through their panel with the
 // fleet holding for the reason the engine gives and then set back to manual,
 // the founding panel of an outpost opened where the starter fleet stands,
 // with the engine's survey and its reason why none can be founded there
@@ -361,23 +362,28 @@ class Browser {
       '"$wanted" on screen', () async => (await text()).toLowerCase().contains(wanted.toLowerCase()),
       timeout: timeout);
 
-  /// A real click on the control whose label contains [label].
-  Future<void> click(String label) async {
-    final node = await until('a control labelled "$label"', () async {
-      final matches = [
-        for (final n in await screen())
-          if ((n['text'] as String).toLowerCase().contains(label.toLowerCase())) n,
-      ]..sort((a, b) {
-          final byRole = (b['button'] == true ? 1 : 0) - (a['button'] == true ? 1 : 0);
-          return byRole != 0 ? byRole : (a['area'] as num).compareTo(b['area'] as num);
-        });
-      return matches.isEmpty ? null : matches.first;
-    });
+  /// The control whose label contains [label], once it is on screen.
+  Future<Map<String, dynamic>> find(String label) => until('a control labelled "$label"', () async {
+        final matches = [
+          for (final n in await screen())
+            if ((n['text'] as String).toLowerCase().contains(label.toLowerCase())) n,
+        ]..sort((a, b) {
+            final byRole = (b['button'] == true ? 1 : 0) - (a['button'] == true ? 1 : 0);
+            return byRole != 0 ? byRole : (a['area'] as num).compareTo(b['area'] as num);
+          });
+        return matches.isEmpty ? null : matches.first;
+      });
+
+  /// A real click where [node] was found.
+  Future<void> clickAt(Map<String, dynamic> node) async {
     final at = {'x': node['x'], 'y': node['y'], 'button': 'left', 'clickCount': 1};
     await _send('Input.dispatchMouseEvent', {'type': 'mouseMoved', ...at, 'button': 'none'});
     await _send('Input.dispatchMouseEvent', {'type': 'mousePressed', ...at});
     await _send('Input.dispatchMouseEvent', {'type': 'mouseReleased', ...at});
   }
+
+  /// A real click on the control whose label contains [label].
+  Future<void> click(String label) async => clickAt(await find(label));
 
   Future<void> wheel(int deltaY, {int x = 720}) =>
       _send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': 500, 'deltaX': 0, 'deltaY': deltaY});
@@ -710,6 +716,54 @@ Future<void> standingOrders(Browser browser) async {
   await Future<void>.delayed(const Duration(seconds: 2));
 }
 
+/// The windshield's gate keys and the lane each one flies.
+const gates = {'w': (0, -1), 'e': (1, -1), 'd': (1, 0), 's': (0, 1), 'a': (-1, 1), 'q': (-1, 0)};
+
+/// A jump called off from the windshield while the windshield still plays
+/// it. A scout's jump charges for one tick, and the engine takes a stop for
+/// that long and no longer: so the gate key and the Stop tile are pressed
+/// one after the other just after a tick, with most of a second before the
+/// next. The engine gets the move and then the stop, abandons the jump and
+/// says what fuel is forfeit; the fleet stays where it was.
+Future<void> callOffAJump(Browser browser) async {
+  print('calling off a jump');
+  final fleet = await firstFleet(browser);
+  final id = fleet['id'] as int;
+  final at = fleet['location'] as Map<String, dynamic>;
+  final (q, r) = (at['q'] as int, at['r'] as int);
+  check(fleet['policy'] == null && fleet['state'] != 'Moving' && fleet['cooldown_remaining'] == 0, 'the fleet is flown by hand and stands ready at [$q,$r]');
+  final sectors = ((await browser.last('full_state'))!['known_sectors'] as List).cast<Map<String, dynamic>>();
+  final lanes = (sectors.firstWhere((s) => '${s['location']}' == '$at')['connections'] as List).cast<Map<String, dynamic>>();
+  final gate = gates.entries.firstWhere((g) => lanes.any((l) => l['q'] == q + g.value.$1 && l['r'] == r + g.value.$2));
+  final target = '[${q + gate.value.$1},${r + gate.value.$2}]';
+  final errors = await browser.tap('t.errors.length') as int;
+
+  final stop = await browser.find('stop');
+  final ticks = await browser.tap('t.counts.tick_update') as int;
+  await browser.until('the next tick', () async => (await browser.tap('t.counts.tick_update') as int) > ticks);
+  await browser.type(gate.key);
+  await browser.clickAt(stop);
+  await browser.until('the jump and then the stop on the wire', () => browser.tap('''(() => {
+    const move = t.sent.findIndex((m) => m.action === "move" && m.fleet_id === $id);
+    return move >= 0 && t.sent.findIndex((m) => m.action === "stop" && m.fleet_id === $id) > move;
+  })()'''));
+  check(true, 'the ${gate.key.toUpperCase()} gate key sends the jump to $target, and the Stop tile sends the stop while the windshield plays it');
+  final said = await browser.until('the engine\'s word on the jump',
+      () => browser.tap('t.events.find((e) => e.kind === "Alert" && e.message.startsWith("fleet $id called off its jump"))?.message ?? null')) as String;
+  check(RegExp('^fleet $id called off its jump to ${RegExp.escape(target)}: the [0-9.]+ fuel it burned for the jump is forfeit\$').hasMatch(said),
+      'the engine abandons the jump and says what it cost: $said');
+  check((await browser.tap('t.errors.length')) == errors, 'the stop was taken, not refused');
+  await browser.until('the fleet at rest where it was', () async {
+    final now = await firstFleet(browser);
+    return now['state'] != 'Moving' && '${now['location']}' == '$at';
+  });
+  await browser.untilText(said);
+  check(true, 'the fleet stays at [$q,$r], and the page shows the engine\'s sentence');
+  await Future<void>.delayed(const Duration(milliseconds: 600));
+  await browser.shot('21a-jump-called-off-1440');
+  await Future<void>.delayed(const Duration(seconds: 2));
+}
+
 const scoutCost = {'metal': 200, 'crystal': 50, 'deuterium': 30};
 
 /// The stockpile in the newest tick update that carries one.
@@ -916,6 +970,7 @@ Future<void> screens(Browser browser) async {
   await browser.type('gw');
   await browser.untilText('fleet status');
 
+  await callOffAJump(browser);
   await standingOrders(browser);
   await founding(browser);
 
