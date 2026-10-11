@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 
-use iac_shared::constants::ShipClass;
+use iac_shared::constants::{ResourceKind, ShipClass};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
-    Command, EventKind, FleetState, GameEvent, HomeworldState,
+    Command, EventKind, ExchangeQuote, FleetState, GameEvent, HomeworldState,
     LeaderboardReply, PlayerState, SectorState, ServerMessage, WorldInfo,
 };
+use iac_shared::world::HubService;
 use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
 
 /// UI view modes.
@@ -68,6 +69,40 @@ pub struct FleetPanel {
     pub cursor: usize,
     pub marked: Vec<u64>,
 }
+
+/// Exchange overlay: the trade being put together for the active fleet, and
+/// the server's quote for it.
+#[derive(Debug, Clone)]
+pub struct ExchangePanel {
+    pub give: ResourceKind,
+    pub want: ResourceKind,
+    /// Index into `EXCHANGE_SHARES`: how much of what the hold carries of `give`.
+    pub share: usize,
+    pub quote: Option<ExchangeQuote>,
+    /// Tick a quote for this trade was last asked for.
+    pub asked: Option<u64>,
+}
+
+/// One change to the trade in the exchange overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExchangeStep {
+    Give,
+    Want,
+    Amount(i32),
+}
+
+fn resource_after(kind: ResourceKind) -> ResourceKind {
+    match kind {
+        ResourceKind::Metal => ResourceKind::Crystal,
+        ResourceKind::Crystal => ResourceKind::Deuterium,
+        ResourceKind::Deuterium => ResourceKind::Metal,
+    }
+}
+
+/// The shares of the hold the exchange overlay steps through, in percent.
+pub const EXCHANGE_SHARES: [u8; 4] = [25, 50, 75, 100];
+/// A shown quote is asked for again after this many ticks: the meter moves.
+pub const EXCHANGE_REQUOTE_TICKS: u64 = 5;
 
 /// Navigation actions within the homeworld view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +186,7 @@ pub struct ClientState {
     pub show_keybinds: bool,
     pub show_tech_tree: bool,
     pub fleet_panel: Option<FleetPanel>,
+    pub exchange_panel: Option<ExchangePanel>,
     pub homeworld_tab: HomeworldTab,
     pub homeworld_cursor: usize,
     pub status_message: String,
@@ -210,6 +246,7 @@ impl ClientState {
             show_keybinds: false,
             show_tech_tree: false,
             fleet_panel: None,
+            exchange_panel: None,
             homeworld_tab: HomeworldTab::Buildings,
             homeworld_cursor: 0,
             status_message: String::new(),
@@ -237,6 +274,7 @@ impl ClientState {
                         .insert(contact.sector.to_key(), (contact.signal, event.tick));
                 }
             }
+            EventKind::Exchanged(_) => self.drop_exchange_quote(),
             _ => {}
         }
         self.event_log.push(event.clone());
@@ -290,6 +328,7 @@ impl ClientState {
             None if self.active_fleet().is_some() => Some(FleetPanel::default()),
             None => None,
         };
+        self.exchange_panel = None;
         self.show_keybinds = false;
         self.show_tech_tree = false;
     }
@@ -355,6 +394,101 @@ impl ClientState {
                 self.status_set_tick = self.tick;
                 None
             }
+        }
+    }
+
+    // ── Exchange ─────────────────────────────────────────────────────
+
+    /// Whether `at` is a hub sector that offers the exchange.
+    pub fn exchange_at(&self, at: Hex) -> bool {
+        self.world.as_ref().is_some_and(|w| {
+            w.hub.iter().any(|site| site.location == at && site.services.contains(&HubService::Exchange))
+        })
+    }
+
+    /// Open or close the exchange overlay. Opening it offers what the hold
+    /// carries most of and asks the server for a quote.
+    pub fn toggle_exchange_panel(&mut self) -> Option<Command> {
+        if self.exchange_panel.take().is_some() {
+            return None;
+        }
+        let cargo = self.active_fleet()?.cargo;
+        let mut give = ResourceKind::Metal;
+        for kind in ResourceKind::ALL {
+            if cargo.get(kind) > cargo.get(give) {
+                give = kind;
+            }
+        }
+        self.exchange_panel = Some(ExchangePanel {
+            give,
+            want: resource_after(give),
+            share: EXCHANGE_SHARES.len() - 1,
+            quote: None,
+            asked: None,
+        });
+        self.fleet_panel = None;
+        self.show_keybinds = false;
+        self.show_tech_tree = false;
+        self.exchange_quote_command()
+    }
+
+    /// The trade the overlay shows: fleet, give, want and the amount (None
+    /// for all the hold carries of `give`). No trade while the hold has
+    /// none of `give`.
+    fn exchange_order(&self) -> Option<(u64, ResourceKind, ResourceKind, Option<f32>)> {
+        let panel = self.exchange_panel.as_ref()?;
+        let fleet = self.active_fleet()?;
+        let held = fleet.cargo.get(panel.give);
+        if held <= 0.0 {
+            return None;
+        }
+        let pct = EXCHANGE_SHARES[panel.share];
+        let amount = (pct < 100).then(|| held * f32::from(pct) / 100.0);
+        Some((fleet.id, panel.give, panel.want, amount))
+    }
+
+    fn exchange_quote_command(&mut self) -> Option<Command> {
+        let (fleet_id, give, want, amount) = self.exchange_order()?;
+        let tick = self.tick;
+        self.exchange_panel.as_mut()?.asked = Some(tick);
+        Some(Command::ExchangeQuote { fleet_id, give, want, amount })
+    }
+
+    /// The quote request to send when the overlay has none or its quote has aged.
+    pub fn exchange_requote(&mut self) -> Option<Command> {
+        let asked = self.exchange_panel.as_ref()?.asked;
+        if asked.is_some_and(|at| self.tick.saturating_sub(at) < EXCHANGE_REQUOTE_TICKS) {
+            return None;
+        }
+        self.exchange_quote_command()
+    }
+
+    pub fn exchange_step(&mut self, step: ExchangeStep) -> Option<Command> {
+        let panel = self.exchange_panel.as_mut()?;
+        match step {
+            ExchangeStep::Give => panel.give = resource_after(panel.give),
+            ExchangeStep::Want => panel.want = resource_after(panel.want),
+            ExchangeStep::Amount(delta) => {
+                panel.share = (panel.share as i32 + delta).clamp(0, EXCHANGE_SHARES.len() as i32 - 1) as usize;
+            }
+        }
+        if panel.want == panel.give {
+            panel.want = resource_after(panel.want);
+        }
+        panel.quote = None;
+        self.exchange_quote_command()
+    }
+
+    /// The trade as the overlay shows it.
+    pub fn exchange_trade(&self) -> Option<Command> {
+        let (fleet_id, give, want, amount) = self.exchange_order()?;
+        Some(Command::Exchange { fleet_id, give, want, amount })
+    }
+
+    fn drop_exchange_quote(&mut self) {
+        if let Some(panel) = self.exchange_panel.as_mut() {
+            panel.quote = None;
+            panel.asked = None;
         }
     }
 
@@ -459,6 +593,15 @@ impl ClientState {
                 self.status_message = format!("F{} odds: {}", o.fleet_id, sectors.join("  "));
                 self.status_set_tick = self.tick;
             }
+            ServerMessage::ExchangeQuote(q) => {
+                let active = self.active_fleet().map(|f| f.id);
+                if let Some(panel) = self.exchange_panel.as_mut()
+                    && active == Some(q.terms.fleet_id)
+                    && (panel.give, panel.want) == (q.terms.give, q.terms.want)
+                {
+                    panel.quote = Some(q.clone());
+                }
+            }
             // Login is settled before the TUI starts (connection::login).
             ServerMessage::AuthResult(_) => {}
             ServerMessage::Error(err) => {
@@ -538,6 +681,7 @@ impl ClientState {
             self.active_fleet_idx = (self.active_fleet_idx + 1) % self.fleets.len();
             self.prev_fleet_location = None;
             self.target_idx = 0;
+            self.drop_exchange_quote();
             if let Some(fleet) = self.active_fleet() {
                 self.map_center = fleet.location;
             }
@@ -687,19 +831,16 @@ impl ClientState {
                         open.then_some(Command::Research { tech: o.tech, reserve: false })
                     }
                     HomeworldTab::Shipyard => {
+                        let count = self.ship_build_count;
+                        let stock = self.player.as_ref()?.resources;
+                        let covered = |unit: iac_shared::constants::Resources| stock.can_afford(unit.scale(f32::from(count)));
                         if let Some(o) = cat.ships.get(i) {
-                            return o.requires.iter().all(|r| r.met).then_some(Command::BuildShip {
-                                ship_class: o.ship_class,
-                                count: self.ship_build_count,
-                                reserve: false,
-                            });
+                            let open = o.requires.iter().all(|r| r.met) && covered(o.unit_cost);
+                            return open.then_some(Command::BuildShip { ship_class: o.ship_class, count });
                         }
                         let o = cat.defences.get(i - cat.ships.len())?;
-                        o.requires.iter().all(|r| r.met).then_some(Command::BuildDefence {
-                            kind: o.kind,
-                            count: self.ship_build_count,
-                            reserve: false,
-                        })
+                        let open = o.requires.iter().all(|r| r.met) && covered(o.unit_cost);
+                        open.then_some(Command::BuildDefence { kind: o.kind, count })
                     }
                 };
             }

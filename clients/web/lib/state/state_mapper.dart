@@ -28,10 +28,46 @@ String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
     proto.WaitReason.prerequisite => 'waiting for a prerequisite',
     proto.WaitReason.order => 'held by a reserved order',
   };
+  return _withStart(why, startIn);
+}
+
+/// "paid, waiting for the yard, starts in about 00:40": a shipyard batch is
+/// paid for when it is ordered, so it only ever waits its turn.
+String batchWaitSummary(proto.BatchWait on, int? startIn) => _withStart(
+    switch (on) {
+      proto.BatchWait.slot => 'paid, waiting for the yard',
+      proto.BatchWait.prerequisite => 'paid, waiting for a prerequisite',
+    },
+    startIn);
+
+String _withStart(String why, int? startIn) {
   if (startIn == null) return why;
   final m = (startIn ~/ 60).toString().padLeft(2, '0');
   final s = (startIn % 60).toString().padLeft(2, '0');
   return '$why, starts in about $m:$s';
+}
+
+/// "meter 632 of 4185, next unit at 33%, clear in 38:41": where a player
+/// stands at the exchange.
+String meterSummary(proto.ExchangeMeter m) {
+  final clear = switch (m.clearIn) {
+    null => ', does not fall',
+    0 => '',
+    final t => ', clear in ${clockFmt(t)}',
+  };
+  return 'meter ${m.pressure.round()} of ${m.span.round()}, next unit at ${(m.fee * 100).round()}%$clear';
+}
+
+/// A quote as the log prints it: the trade, the meter it leaves, and why
+/// it would be refused, if it would.
+List<String> quoteLines(proto.ExchangeQuote q) {
+  final t = q.terms;
+  return [
+    'Quote F${t.fleetId}: ${t.amount.round()} ${t.give.name} gives ${t.receive.round()} ${t.want.name} '
+        '(par ${t.par.round()}, fee ${(t.fee * 100).round()}%)',
+    'After it: ${meterSummary(t.meterAfter)}',
+    if (q.refusal != null) 'Cannot trade now: ${q.refusal}',
+  ];
 }
 
 class StateMapper {
@@ -65,6 +101,9 @@ class StateMapper {
   /// `odds` answers by (fleet id, sector key).
   final Map<(int, int), OddsEntry> odds = {};
 
+  /// `exchange_quote` answers by (fleet id, give, want).
+  final Map<TradeKey, QuoteEntry> quotes = {};
+
   final List<LogEntry> log = [];
 
   /// Last hold reason shown per fleet; a repeat is not logged again.
@@ -88,6 +127,7 @@ class StateMapper {
     _lastHold.clear();
     previews.clear();
     odds.clear();
+    quotes.clear();
     log.clear();
     alerts.clear();
   }
@@ -110,6 +150,10 @@ class StateMapper {
           odds[(msg.fleetId, o.sector.toKey())] = OddsEntry(o, tick);
         }
         odds.removeWhere((_, e) => tick - e.tick > 60);
+      case proto.ExchangeQuote():
+        final t = msg.terms;
+        quotes[(t.fleetId, t.give, t.want)] = QuoteEntry(msg, tick);
+        quotes.removeWhere((_, e) => tick - e.tick > 60);
       case proto.LeaderboardReply():
         leaderboard = msg;
         for (final e in [...msg.entries.take(5), if (msg.you != null) msg.you!]) {
@@ -143,6 +187,7 @@ class StateMapper {
     signalBands.removeWhere((k, _) => sectors.containsKey(k));
     previews.clear();
     odds.clear();
+    quotes.clear();
     pushLog('Full state sync: tick $tick, homeworld ${s.player.homeworld}', EventLevel.bright);
   }
 
@@ -268,9 +313,12 @@ class StateMapper {
         level = EventLevel.bright;
       case proto.QueueEvent():
         msg = switch (k.action) {
-          proto.QueueAction.started => '${k.item} started, paid ${_res(k.paid)}',
-          proto.QueueAction.waiting =>
-            '${k.item} queued, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, k.waitingFor, k.startIn)}',
+          proto.QueueAction.started => k.paid.metal + k.paid.crystal + k.paid.deuterium > 0
+              ? '${k.item} started, paid ${_res(k.paid)}'
+              : '${k.item} started',
+          proto.QueueAction.waiting => k.paid.metal + k.paid.crystal + k.paid.deuterium > 0
+              ? '${k.item} ordered, paid ${_res(k.paid)}, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, null, k.startIn)}'
+              : '${k.item} queued, ${waitSummary(k.waitingOn ?? proto.WaitReason.slot, k.waitingFor, k.startIn)}',
           proto.QueueAction.cancelled => k.refunded.metal + k.refunded.crystal + k.refunded.deuterium > 0
               ? '${k.item} cancelled, refunded ${_res(k.refunded)}'
               : '${k.item} cancelled (nothing had been paid)',
@@ -319,6 +367,12 @@ class StateMapper {
       case proto.ChartDeliveredEvent():
         msg = '${_fleet(k.fleetId)} delivered the chart of ${k.sectors} sectors '
             '(+${k.points.toStringAsFixed(2)} explore)';
+        level = EventLevel.bright;
+      case proto.ExchangedEvent():
+        final t = k.terms;
+        quotes.clear();
+        msg = '${_fleet(t.fleetId)} traded ${t.amount.round()} ${t.give.name} for ${t.receive.round()} ${t.want.name} '
+            'at the exchange (fee ${(t.fee * 100).round()}%)';
         level = EventLevel.bright;
       case proto.SiteAmbushEvent():
         msg = '! ${_fleet(k.fleetId)} ambushed aboard derelict in ${k.sector} (hostile ${k.npcFleetId})';
@@ -417,6 +471,9 @@ class StateMapper {
       signalBands: {for (final e in signalBands.entries) proto.Hex.fromKey(e.key): e.value},
       previews: {for (final e in previews.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       odds: {for (final e in odds.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
+      quotes: Map.of(quotes),
+      exchange: p?.exchange ?? const proto.ExchangeMeter(),
+      holds: {for (final f in fleets) f.id: f.cargo},
       stock: res,
       catalog: hw?.catalog,
       hw: hw,
@@ -498,14 +555,8 @@ class StateMapper {
     );
   }
 
-  /// A queue entry that has not started: why, the exact shortfall and the
-  /// estimated start.
-  QueueItem _waitingItem(String name, proto.Resources? need, proto.WaitReason on, int? startIn) => QueueItem(
-        name: name,
-        time: waitSummary(on, need, startIn),
-        pct: 0,
-        active: false,
-      );
+  /// A queue entry that has not started; [waits] says why and when it will.
+  QueueItem _waitingItem(String name, String waits) => QueueItem(name: name, time: waits, pct: 0, active: false);
 
   /// Stable ids of a queue's running and waiting items, in line order.
   QueueIds queueIds(proto.QueueType queue) {
@@ -523,17 +574,13 @@ class StateMapper {
     };
   }
 
-  /// "Scout x5 (2 built)": a batch pays per unit, so progress is units built.
-  static String shipOrderLabel(proto.QueuedShip p) =>
-      p.built > 0 ? '${p.item.label} x${p.count} (${p.built} built)' : '${p.item.label} x${p.count}';
-
   List<QueueItem> _mapBuildQueue(proto.HomeworldState? hw) {
     if (hw == null) return const [];
     return [
       for (final q in hw.buildQueue)
         _queueItem('${q.buildingType.label} Lv.${q.targetLevel}', q.startTick, q.endTick),
       for (final q in hw.buildPending)
-        _waitingItem('${q.buildingType.label} Lv.${q.targetLevel}', q.waitingFor, q.waitingOn, q.startIn),
+        _waitingItem('${q.buildingType.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn)),
     ];
   }
 
@@ -543,7 +590,7 @@ class StateMapper {
     return [
       if (q != null) _queueItem('${q.item.label} x${q.count} (${q.built} built)', q.startTick, q.endTick),
       for (final p in hw.shipyardPending)
-        _waitingItem(shipOrderLabel(p), p.waitingFor, p.waitingOn, p.startIn),
+        _waitingItem('${p.item.label} x${p.count}', batchWaitSummary(p.waitingOn, p.startIn)),
     ];
   }
 
@@ -563,7 +610,7 @@ class StateMapper {
     ];
     final waiting = [
       for (final p in hw?.researchPending ?? const <proto.QueuedResearch>[])
-        _waitingItem('${p.tech.label} Lv.${p.targetLevel}', p.waitingFor, p.waitingOn, p.startIn),
+        _waitingItem('${p.tech.label} Lv.${p.targetLevel}', waitSummary(p.waitingOn, p.waitingFor, p.startIn)),
     ];
     final a = hw?.researchActive;
     if (a == null) {

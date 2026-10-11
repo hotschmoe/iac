@@ -241,6 +241,40 @@ void main() {
     await endShell(tester, g);
   });
 
+  testWidgets('the map marks the hub the world names, and the inspector says what its exchange charges this player', (tester) async {
+    const hub = proto.Hex(2, -1);
+    final g = FakeGame();
+    g.fake = g.fake.copyWith(
+      world: const proto.WorldInfo(
+        pace: 10,
+        tickHz: 1,
+        economyVersion: 2,
+        worldgenVersion: 3,
+        hub: [proto.HubSite(location: hub, services: [proto.HubService.exchange])],
+      ),
+      exchange: const proto.ExchangeMeter(pressure: 1046, span: 4185, fee: .375, windowTicks: 15364, clearIn: 3841),
+    );
+    await pumpShell(tester, size: _win, screen: Screen.map, controller: g);
+    await tester.pump(const Duration(milliseconds: 100));
+    final painter = tester.widgetList<CustomPaint>(find.byType(CustomPaint)).map((p) => p.painter).whereType<MapPainter>().first;
+    expect(painter.data.hub.single.location, hub);
+
+    final m = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await m.addPointer(location: Offset.zero);
+    await m.moveTo(at(const proto.Hex(1, -1), _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('inspector-hub')), findsNothing);
+    await m.moveTo(at(hub, _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    final note = tester.widget<Text>(find.descendant(of: find.byKey(const Key('inspector-hub')), matching: find.byType(Text)));
+    expect(note.data, contains('TRADES CARGO FOR CARGO AT THE EXCHANGE'));
+    expect(note.data, contains('YOUR NEXT UNIT PAYS 38%; METER 1046 OF 4185'));
+    await shot(tester, 'hub-1440');
+    expect(tester.takeException(), isNull);
+    await m.removePointer();
+    await endShell(tester, g);
+  });
+
   testWidgets('a route into hostiles shows no ratio until the server sends its odds, then the server\'s', (tester) async {
     final g = await openMap(tester);
     const lair = proto.Hex(3, 0);

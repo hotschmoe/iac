@@ -37,6 +37,7 @@ class Icons24 {
     'board': parseSvgPathData('M3 12h13M12 7l5 5-5 5M20 4v16'),
     'recall': parseSvgPathData('M4 12a8 8 0 1 0 3-6.2M4 4v4h4'),
     'stop': parseSvgPathData('M6 6h12v12H6z'),
+    'trade': parseSvgPathData('M4 8h15M15 4l4 4-4 4M20 16H5M9 12l-4 4 4 4'),
     'palette': parseSvgPathData('M4 7l5 5-5 5M12 18h8'),
   };
 

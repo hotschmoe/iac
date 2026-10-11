@@ -8,7 +8,7 @@ mod common;
 use common::*;
 use iac_shared::constants::{Resources, ShipClass};
 use iac_shared::hex::Hex;
-use iac_shared::protocol::{Command, ErrorCode, EventKind, QueueAction, QueueEvent, QueueType, ServerMessage, WaitReason};
+use iac_shared::protocol::{BatchWait, Command, ErrorCode, EventKind, QueueAction, QueueEvent, QueueType, ServerMessage, WaitReason};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{template_npc_id, AuthError};
@@ -62,6 +62,8 @@ fn chart_the_neighbourhood(e: &mut Empire) {
     e.travel(home);
     assert_eq!(e.engine.players[&e.pid].explore_points, paid, "the same sector never pays twice");
 }
+
+const HALF: f32 = scaling::CANCEL_REFUND_FRACTION;
 
 fn item_started(events: &[QueueEvent], item: &str) -> Option<usize> {
     events.iter().position(|q| q.action == QueueAction::Started && q.item.starts_with(item))
@@ -217,30 +219,87 @@ fn hostile_lair(e: &Empire) -> (Hex, f32) {
     (at, power)
 }
 
-fn build_a_battle_group(e: &mut Empire, count: u16) {
-    let pid = e.pid;
-    let unit = ShipClass::Corvette.build_cost();
-    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().resources = unit.scale(2.0));
-    let mark = e.mark();
-    e.order(Command::BuildShip { ship_class: ShipClass::Corvette, count, reserve: false }).expect("batch accepted");
-    let started = e.queue_events(mark);
-    assert_eq!(started.iter().filter(|q| q.action == QueueAction::Started).count(), 1);
-    assert_eq!(started[0].paid, unit, "a batch pays one unit as it starts");
-    assert_eq!(e.state().player.resources, unit, "the stockpile paid one unit, not the batch");
+fn yard_idle(e: &Empire) -> bool {
+    let home = e.state().homeworld;
+    home.shipyard_queue.is_none() && home.shipyard_pending.is_empty()
+}
 
-    let mut starved = false;
-    e.run_until(2000, |e| {
-        let home = e.state().homeworld;
-        starved |= home.shipyard_pending.iter().any(|q| q.waiting_on == WaitReason::Resources && q.built > 0 && q.unit_cost == unit);
-        home.shipyard_queue.is_none() && home.shipyard_pending.is_empty()
-    });
-    assert!(starved, "the batch waited for money between units");
+fn corvettes(count: u16) -> Command {
+    Command::BuildShip { ship_class: ShipClass::Corvette, count }
+}
+
+fn build_a_battle_group(e: &mut Empire, count: u16) {
+    let unit = ShipClass::Corvette.build_cost();
+    let batch = unit.scale(f32::from(count));
+    let pair = unit.scale(2.0);
+    let mark = e.mark();
+
+    e.set_stockpile(pair);
+    let (code, message) = e.refusal(corvettes(count));
+    assert_eq!(code, ErrorCode::InsufficientResources);
+    let short = batch.sub(pair);
+    let wanted = format!(
+        "Corvette x{count} costs {} metal, {} crystal and {} deuterium; the stockpile is short by {} metal, {} crystal and {} deuterium.",
+        batch.metal, batch.crystal, batch.deuterium, short.metal, short.crystal, short.deuterium
+    );
+    assert!(
+        message.starts_with(&wanted)
+            && message.ends_with("Nothing was ordered: a batch is paid in full when it is ordered. The stockpile covers 2."),
+        "{message}"
+    );
+    assert_eq!(e.stockpile(), pair, "a batch the stockpile does not cover is not built in part");
+    assert!(yard_idle(e) && e.queue_events(mark).is_empty());
+
+    e.set_stockpile(batch);
+    e.order(corvettes(count)).expect("the stockpile covers the whole batch");
+    let started = e.queue_events(mark);
+    assert_eq!((started.len(), started[0].action, started[0].paid), (1, QueueAction::Started, batch), "a batch pays for every unit when it is ordered");
+    assert_eq!(e.stockpile(), Resources::default());
+
+    e.set_stockpile(pair.add(unit));
+    e.order(corvettes(2)).expect("a second batch behind the first");
+    e.order(corvettes(1)).expect("and a third");
+    assert_eq!(e.stockpile(), Resources::default(), "a batch waiting for the yard has paid as well");
+    let (second, third) = (e.queue_events(mark)[1].clone(), e.queue_events(mark)[2].clone());
+    assert_eq!((second.action, second.waiting_on, second.waiting_for, second.paid), (QueueAction::Waiting, Some(WaitReason::Slot), None, pair));
+    let line = e.state().homeworld.shipyard_pending;
+    assert_eq!(line.iter().map(|q| (q.id, q.waiting_on, q.cost)).collect::<Vec<_>>(), [(second.id, BatchWait::Slot, pair), (third.id, BatchWait::Slot, unit)]);
+    assert!(line[0].start_in.is_some_and(|ticks| ticks > 0) && line[1].start_in > line[0].start_in, "{line:?}");
+
+    e.order(Command::CancelQueued { queue_type: QueueType::Ship, id: third.id }).expect("cancel the waiting batch");
+    assert_eq!(e.queue_events(mark)[3].refunded, unit.scale(HALF), "a waiting batch refunds half of what it paid");
+    assert_eq!(e.stockpile(), unit.scale(HALF));
+
+    e.run_until(2000, |e| e.state().homeworld.shipyard_queue.is_some_and(|q| q.built >= 1));
+    let running = e.state().homeworld.shipyard_queue.expect("the batch still holds the yard");
+    assert!(running.built < running.count);
+    let before = e.stockpile();
+    let cancel_mark = e.mark();
+    e.order(Command::CancelBuild { queue_type: QueueType::Ship, id: running.id }).expect("cancel the part-built batch");
+    let cancelled = e.queue_events(cancel_mark);
+    let refund = unit.scale(f32::from(running.count - running.built)).scale(HALF);
+    assert_eq!(cancelled[0].refunded, refund, "half of every unit not delivered, the one under way included");
+    assert!(cancelled[0].item.contains(&format!("{} already built and kept", running.built)), "{}", cancelled[0].item);
+    assert_eq!(e.stockpile(), before.add(refund));
+    assert_eq!(
+        (cancelled[1].id, cancelled[1].action, cancelled[1].paid),
+        (second.id, QueueAction::Started, Resources::default()),
+        "the paid batch behind it takes the yard the moment it is free and pays nothing more"
+    );
+
+    let rest = count.saturating_sub(running.built + 2);
+    if rest > 0 {
+        e.set_stockpile(unit.scale(f32::from(rest)));
+        e.order(corvettes(rest)).expect("the rest of the group");
+    }
+    e.run_until(2000, yard_idle);
     let built: u16 = e.since(mark, |k| match k {
         EventKind::ShipBuilt(b) if b.ship_class == ShipClass::Corvette => Some(b.count),
         _ => None,
     }).iter().sum();
-    assert_eq!(built, count);
-    assert_eq!(e.fleet().ships.len(), 2 + usize::from(count), "new hulls reinforce the fleet at home");
+    assert_eq!(built, running.built + 2 + rest);
+    assert!(built >= count);
+    assert_eq!(e.fleet().ships.len(), 2 + usize::from(built), "new hulls reinforce the fleet at home");
 }
 
 fn hunt_pirates(e: &mut Empire, lair: Hex) {
@@ -292,14 +351,14 @@ fn withstand_a_raid(e: &mut Empire) {
     e.run_until(100, |e| e.state().homeworld.build_queue.is_empty() && e.state().homeworld.build_pending.is_empty());
     let mark = e.mark();
 
-    let home = e.state().homeworld;
-    let wanted = 1.6 * home.next_raid_estimate_power;
-    if home.home_defence_power < wanted {
-        let count = ((wanted - home.home_defence_power) / scaling::ship_power(ShipClass::Corvette)).ceil() as u16;
-        e.order(Command::BuildShip { ship_class: ShipClass::Corvette, count, reserve: false }).expect("reinforcements");
-        e.run_until(3000, |e| e.state().homeworld.shipyard_queue.is_none() && e.state().homeworld.shipyard_pending.is_empty());
+    for _ in 0..5000 {
+        if !reinforce(e) && yard_idle(e) {
+            break;
+        }
+        e.run(1);
     }
-    assert!(e.state().homeworld.home_defence_power >= wanted);
+    let home = e.state().homeworld;
+    assert!(home.home_defence_power >= 1.6 * home.next_raid_estimate_power);
 
     e.run_until(5000, |e| e.log[mark..].iter().any(|ev| matches!(ev.kind, EventKind::RaidIncoming(_))));
     let forecast = e.since(mark, |k| match k {
@@ -361,16 +420,32 @@ fn settle_the_score(e: &mut Empire) {
     assert!(table.you.is_none());
 }
 
+/// Order the corvettes home defence still lacks, as many as the stockpile
+/// covers, once the yard is clear. True while more are wanted.
+fn reinforce(e: &mut Empire) -> bool {
+    let home = e.state().homeworld;
+    let wanted = 1.6 * home.next_raid_estimate_power;
+    if home.home_defence_power >= wanted {
+        return false;
+    }
+    if yard_idle(e) {
+        let lacking = ((wanted - home.home_defence_power) / scaling::ship_power(ShipClass::Corvette)).ceil();
+        let unit = ShipClass::Corvette.build_cost();
+        let stock = e.stockpile();
+        let covered = (stock.metal / unit.metal).min(stock.crystal / unit.crystal).min(stock.deuterium / unit.deuterium).floor();
+        let count = lacking.min(covered) as u16;
+        if count > 0 {
+            e.order(corvettes(count)).expect("reinforcements the stockpile covers");
+        }
+    }
+    true
+}
+
 fn hold_the_line(e: &mut Empire, ticks: u64) {
     let mark = e.mark();
     for _ in 0..ticks {
         e.run(1);
-        let home = e.state().homeworld;
-        let wanted = 1.6 * home.next_raid_estimate_power;
-        if home.home_defence_power < wanted && home.shipyard_queue.is_none() && home.shipyard_pending.is_empty() {
-            let count = ((wanted - home.home_defence_power) / scaling::ship_power(ShipClass::Corvette)).ceil() as u16;
-            e.order(Command::BuildShip { ship_class: ShipClass::Corvette, count, reserve: false }).expect("reinforcements");
-        }
+        reinforce(e);
     }
     let raids = e.since(mark, |k| match k {
         EventKind::RaidResolved(r) => Some(r.clone()),

@@ -32,7 +32,7 @@ CHART_MARKS = {"aboard": "aboard one of your fleets; it scores when that fleet d
                "delivered": "delivered (already scored; no need to visit again)"}
 NOTABLE = {"BuildingCompleted", "ResearchCompleted", "ShipBuilt", "DefenceBuilt", "FleetArrived", "CombatStarted",
            "ShipDestroyed", "FleetDestroyed", "RaidIncoming", "RaidResolved", "SiteExplored", "SiteAmbush",
-           "SalvageCollected", "ChartDelivered", "ScanCompleted"}
+           "SalvageCollected", "ChartDelivered", "ScanCompleted", "Exchanged"}
 
 
 def session():
@@ -256,6 +256,11 @@ def collapse_events(msgs, mine_only=False, errors=True):
                 continue
             slot(("x", id(m)), "  " + preview_line(m))
             continue
+        if t == "exchange_quote":
+            if not errors:
+                continue
+            slot(("x", id(m)), "  " + quote_line(m))
+            continue
         if t in ("leaderboard", "odds"):
             continue
         for e in (m.get("events") or []) if t == "tick_update" else ([m] if t == "event" else []):
@@ -332,6 +337,8 @@ def event_text(e):
         return f"fleet {e['fleet_id']} {e.get('preset')} {e.get('action')}: {e.get('reason')}"
     if k == "ResourceHarvested":
         return f"fleet {e['fleet_id']} harvested {res(e.get('resources'))} in {e.get('ticks')}t"
+    if k == "Exchanged":
+        return f"fleet {e['fleet_id']} traded at the exchange: {trade_text(e)}; {meter_text(e['meter_after'])}"
     rest = {a: b for a, b in e.items() if a not in ("kind", "tick", "player_id")}
     return k + " " + json.dumps(rest, separators=(",", ":"))[:220]
 
@@ -356,6 +363,24 @@ def preview_line(m):
             + ("" if m["can_jump"] else "  CANNOT JUMP: not enough fuel")
             + ("" if m["can_return"] else "  CANNOT RETURN afterwards")
             + f"; T{t['rating']} NPC power {t['est_power']:.0f} ({t['basis']}); " + odds_text(m["fleet_id"], m))
+
+
+def trade_text(t):
+    """'632 metal -> 225 deuterium (par 316, fee 29%)' for the terms of a quote or an Exchanged event."""
+    return (f"{t['amount']:.0f} {t['give']} -> {t['receive']:.0f} {t['want']} "
+            f"(par {t['par']:.0f}, fee {t['fee'] * 100:.0f}%)")
+
+
+def meter_text(m):
+    """Where the exchange meter stands: the fee on the next unit and when it is empty again."""
+    clear = m.get("clear_in")
+    falls = "does not fall (no mine output)" if clear is None else "empty" if clear == 0 else f"empty in {age(clear)}"
+    return f"meter {m['pressure']:.0f} of {m['span']:.0f}, next unit at {m['fee'] * 100:.0f}% fee, {falls}"
+
+
+def quote_line(m):
+    return (f"quote fleet {m['fleet_id']}: {trade_text(m)}; after it {meter_text(m['meter_after'])}"
+            + (f"  CANNOT TRADE NOW: {m['refusal']}" if m.get("refusal") else ""))
 
 
 def age(ticks):
@@ -447,7 +472,9 @@ def world_line(world):
     label = f"x{pace:g}" + (f" {world['preset']}" if world.get("preset") else "")
     est = world.get("estimate")
     tail = f"; a competent player reaches a Cruiser in about {age(est['first_cruiser_s'])} and the endgame in about {age(est['endgame_s'])}" if est else ""
-    return f"World: pace {label} (build, research and ship times, and mine output, scale with it; fuel, cooldowns and combat do not){tail}"
+    hub = "; ".join(f"hub at {hexs(h['location'])} offers {', '.join(h['services'])}" for h in world.get("hub") or [])
+    return (f"World: pace {label} (build, research and ship times, and mine output, scale with it; fuel, cooldowns and combat do not){tail}"
+            + (f"; {hub}" if hub else ""))
 
 
 def describe(sec, loc, sectors, now, indent="", odds=None):
@@ -550,10 +577,9 @@ def queues_of(fs):
     run_s = [{"item": sq["item"], "done": sq["built"], "of": sq["count"], "eta_s": max(sq["end_tick"] - t, 0)}] if sq else []
     wait_s = []
     for i, q in enumerate(hw.get("shipyard_pending") or []):
-        d = wait_item(i, q["item"], None, q["ticks"], q.get("waiting_for"), q)
+        d = wait_item(i, q["item"], None, q["ticks"], None, q)
         d["count"] = q["count"]
-        if q.get("built"):
-            d["built"] = q["built"]
+        d["paid"] = {k: round(q["cost"][k]) for k in RES if q.get("cost", {}).get(k, 0) > 0}
         wait_s.append(d)
     return {"build": mk(hw.get("build_slots", 1), run_b, wait_b), "research": mk(1, run_r, wait_r), "ship": mk(1, run_s, wait_s)}
 
@@ -857,6 +883,8 @@ def summarize(fs, doc, odds):
           + "  (per hour: " + "/".join(f"{x * 3600:.4g}" for x in per_tick) + ")")
     eta = [f"{k} full in {age(v)}" for k, v in st["full_in_s"].items() if v]
     print(f"Raid-protected stock: {res(st['protected'])}" + (f"   ({', '.join(eta)})" if eta else ""))
+    if p.get("exchange"):
+        print("Exchange (a fleet at the hub sells cargo for cargo): " + meter_text(p["exchange"]))
     print("Buildings: " + ", ".join(f"{b['building_type']} {b['level']}" for b in hw["buildings"]))
     print("Research:  " + (", ".join(f"{r['tech']} {r['level']}" for r in hw["research"]) or "none"))
     labels = {"build": "Build queue", "research": "Research queue", "ship": "Shipyard queue"}
@@ -871,14 +899,15 @@ def summarize(fs, doc, odds):
             if w.get("short"):
                 need = " NEEDS " + ", ".join(f"{v} {k}" for k, v in w["short"].items())
                 need += f" (about {age(w['covered_in_s'])} of income)" if "covered_in_s" in w else " (no income of it yet)"
-            if not need and q["open"] == 0 and len(q["running"]) >= q["slots"]:
+            if "paid" in w:
+                need = " PAID " + ", ".join(f"{v} {k}" for k, v in w["paid"].items()) + " (half back if cancelled)"
+            elif not need and q["open"] == 0 and len(q["running"]) >= q["slots"]:
                 need = " (starts when a slot frees up; paid then)"
             why = f" [waits on {str(w['waiting_on']).lower()}" + (f", starts in ~{age(w['start_in_s'])}]" if "start_in_s" in w else "]") \
                 if w.get("waiting_on") else ""
             tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
-            done = f" ({w['built']}/{w['count']} built)" if w.get("built") else ""
             hold = " RESERVE (holds the line)" if w.get("reserve") else ""
-            print(f"    waiting {tag}: {what}{w['item']}{to}{done} ({age(w['ticks'])}{' each' if what else ''}){need}{why}{hold}")
+            print(f"    waiting {tag}: {what}{w['item']}{to} ({age(w['ticks'])}{' each' if what else ''}){need}{why}{hold}")
     stand = [f"{d['count']}x {d['kind']}" + (f" (+{d['restoring']} being rebuilt)" if d.get("restoring") else "")
              for d in hw.get("defences") or [] if d["count"] or d.get("restoring")]
     print(f"Defence power {hw.get('home_defence_power', 0):.0f} against an expected raid of about "
@@ -1273,7 +1302,9 @@ def queue_outcome(cmd, queue_events, used):
             return f"{q['item']} #{q.get('id', '?')} started" + (f", paid {res(paid)}" if paid else "")
         if act == "waiting":
             eta = f", starts in ~{age(q['start_in'])}" if q.get("start_in") is not None else ""
-            return f"{q['item']} #{q.get('id', '?')} queued, waits on {str(q.get('waiting_on', '?')).lower()}{eta}"
+            paid = {k: v for k, v in (q.get("paid") or {}).items() if v}
+            took = f"ordered, paid {res(paid)}" if paid else "queued"
+            return f"{q['item']} #{q.get('id', '?')} {took}, waits on {str(q.get('waiting_on', '?')).lower()}{eta}"
         return f"{q['item']} {act}"
     return None
 
@@ -1366,8 +1397,9 @@ def cmd_do(name, args):
     for e in client_errs + left:
         print("  rejected: " + " ".join(x for x in (e.get("code"), e.get("message")) if x))
     for m in lines:
-        if m.get("type") in ("preview_move", "odds", "leaderboard"):
-            print("  " + {"preview_move": preview_line, "odds": odds_line, "leaderboard": leaderboard_line}[m["type"]](m))
+        if m.get("type") in ("preview_move", "odds", "leaderboard", "exchange_quote"):
+            print("  " + {"preview_move": preview_line, "odds": odds_line, "leaderboard": leaderboard_line,
+                          "exchange_quote": quote_line}[m["type"]](m))
     ev = collapse_events([m for m in lines if m.get("type") == "tick_update"], errors=False)
     if ev:
         print_events(ev, 8)

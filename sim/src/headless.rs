@@ -73,11 +73,43 @@ impl FieldTally {
     }
 }
 
+/// Ticks a player's production slots existed and ticks they stood empty,
+/// counted since the player was seated.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct SlotTicks {
+    ticks: u64,
+    building: u64,
+    building_idle: u64,
+    research_idle: u64,
+    shipyard_idle: u64,
+}
+
+/// Share of the time each kind of slot stood empty, 0 to 1. Building slots
+/// are counted one by one; a lab or a yard not built yet counts as empty.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct SlotIdle {
+    pub building: f32,
+    pub research: f32,
+    pub shipyard: f32,
+}
+
+impl From<SlotTicks> for SlotIdle {
+    fn from(t: SlotTicks) -> SlotIdle {
+        let share = |idle: u64, of: u64| if of == 0 { 0.0 } else { idle as f32 / of as f32 };
+        SlotIdle {
+            building: share(t.building_idle, t.building),
+            research: share(t.research_idle, t.ticks),
+            shipyard: share(t.shipyard_idle, t.ticks),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Sample {
     pub tick: u64,
     pub score: ScoreBreakdown,
     pub field: FieldTally,
+    pub idle: SlotIdle,
     /// Score weight of the unspent stockpile.
     pub stock: f32,
     pub ships: usize,
@@ -91,6 +123,7 @@ pub struct PlayerSummary {
     pub player_id: u64,
     pub score: ScoreBreakdown,
     pub field: FieldTally,
+    pub idle: SlotIdle,
     pub samples: Vec<Sample>,
     pub buildings: BTreeMap<String, u8>,
     pub research: BTreeMap<String, u8>,
@@ -104,6 +137,7 @@ struct Entry {
     seat: Seat<Box<dyn ScriptedPlayer>>,
     style: String,
     tally: FieldTally,
+    slots: SlotTicks,
     samples: Vec<Sample>,
 }
 
@@ -131,7 +165,13 @@ impl Headless {
         let seat = Seat::join(&mut self.engine, player, None, || format!("{number:064x}"))
             .map_err(|e| format!("cannot add player '{name}': {e:?}"))?;
         let player_id = seat.player_id();
-        self.entries.push(Entry { seat, style: style.into(), tally: FieldTally::default(), samples: Vec::new() });
+        self.entries.push(Entry {
+            seat,
+            style: style.into(),
+            tally: FieldTally::default(),
+            slots: SlotTicks::default(),
+            samples: Vec::new(),
+        });
         Ok(player_id)
     }
 
@@ -149,6 +189,7 @@ impl Headless {
             self.engine.fleets.values().map(|f| (f.id, f.fuel, f.state == FleetStatus::Moving)).collect();
         self.engine.tick()?;
         self.count_refuelling(&tanks);
+        self.count_slots();
         for entry in &mut self.entries {
             entry.seat.observe(&self.engine);
         }
@@ -192,6 +233,7 @@ impl Headless {
             tick,
             score: score::score_of(player, self.engine.fleets.values()).into(),
             field: entry.tally,
+            idle: entry.slots.into(),
             stock: scaling::resource_weight(&player.resources),
             ships: self.ships_of(player.id),
         })
@@ -199,6 +241,19 @@ impl Headless {
 
     fn ships_of(&self, player_id: u64) -> usize {
         self.engine.fleets.values().filter(|f| f.owner_id == player_id).map(|f| f.ship_count).sum()
+    }
+
+    fn count_slots(&mut self) {
+        for entry in &mut self.entries {
+            let Some(player) = self.engine.players.get(&entry.seat.player_id()) else { continue };
+            let slots = &mut entry.slots;
+            let building = player.building_slots() as u64;
+            slots.building += building;
+            slots.building_idle += building.saturating_sub(player.building_queue.len() as u64);
+            slots.ticks += 1;
+            slots.research_idle += u64::from(player.research_queue.is_none());
+            slots.shipyard_idle += u64::from(player.ship_queue.is_none());
+        }
     }
 
     /// Fuel only rises at the homeworld, where it is bought; a fleet that
@@ -300,6 +355,7 @@ impl Headless {
                     player_id: player.id,
                     score: score::score_of(player, self.engine.fleets.values()).into(),
                     field: entry.tally,
+                    idle: entry.slots.into(),
                     samples: entry.samples.clone(),
                     buildings,
                     research,

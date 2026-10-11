@@ -26,6 +26,8 @@ const voice = {
   proto.TerrainType.anomaly: 'Instruments disagree. Readings unreliable.',
 };
 
+const hubVoice = 'Neutral post. No ore, no hostiles. The exchange is open.';
+
 String zoneName(proto.Hex h) {
   final d = h.distFromOrigin;
   return d == 0 ? 'Central Hub' : d <= 8 ? 'Inner Ring' : d <= 20 ? 'Outer Ring' : 'The Wandering';
@@ -46,7 +48,10 @@ class SectorHead extends StatelessWidget {
   final proto.SectorState? sector;
   final SectorThreat threat;
   final bool narrow;
-  const SectorHead({super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow});
+
+  /// The sector is a hub sector with the exchange.
+  final bool exchange;
+  const SectorHead({super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow, this.exchange = false});
 
   @override
   Widget build(BuildContext context) {
@@ -66,7 +71,7 @@ class SectorHead extends StatelessWidget {
     ]);
     return IgnorePointer(
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-        Lbl(atHome ? 'Homeworld orbit' : 'Sector'),
+        Lbl(atHome ? 'Homeworld orbit' : exchange ? 'The hub - exchange' : 'Sector'),
         const SizedBox(height: 3),
         coord,
         if (!narrow) ...[
@@ -82,7 +87,7 @@ class SectorHead extends StatelessWidget {
             child: Text.rich(
               TextSpan(children: [
                 TextSpan(text: 'NOTE ', style: T.mono(size: 11, color: C.a700, weight: FontWeight.w600, spacing: 1)),
-                TextSpan(text: voice[terr]),
+                TextSpan(text: exchange ? hubVoice : voice[terr]),
               ]),
               style: T.mono(size: 11, color: C.text3, height: 1.45),
             ),
@@ -261,6 +266,13 @@ class ContactsPanel extends StatelessWidget {
   final bool hasDerelict;
   final bool harvesting;
   final bool boarding;
+
+  /// The player's meter at the exchange when the fleet stands on it; null
+  /// anywhere else.
+  final proto.ExchangeMeter? exchange;
+
+  /// The exchange panel is open.
+  final bool trading;
   final String? target;
   final void Function(String k) onTarget;
   final void Function(String k) onHover;
@@ -281,6 +293,8 @@ class ContactsPanel extends StatelessWidget {
     required this.hasDerelict,
     required this.harvesting,
     required this.boarding,
+    this.exchange,
+    this.trading = false,
     required this.target,
     required this.onTarget,
     required this.onHover,
@@ -410,6 +424,23 @@ class ContactsPanel extends StatelessWidget {
         actions: ConsoleButton('Board', small: true, keyHint: 'B', onPressed: () => onAct('board')),
       ));
     }
+    if (exchange case final meter?) {
+      rows.add(_row(
+        'x',
+        SymIcon((c, sz) => Draw.symbol(c, Sym.hub, sz.width / 2, sz.height / 2, 13, color: C.gold, lw: 1.2, bloom: false), size: 26),
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _t('Hub exchange'),
+          _d(Text(
+              'TRADES CARGO FOR CARGO, FOR A FEE.\nNEXT UNIT AT ${(meter.fee * 100).round()}% - METER ${meter.pressure.round()} OF ${meter.span.round()}',
+              key: const Key('contact-exchange'),
+              style: _ds)),
+          Padding(
+              padding: const EdgeInsets.only(top: 7),
+              child: ConsoleButton(trading ? 'Close exchange' : 'Open exchange',
+                  key: const ValueKey('contact-trade'), small: true, keyHint: 'T', active: trading, onPressed: () => onAct('trade'))),
+        ]),
+      ));
+    }
     if (atHome) {
       rows.add(_row(
         'home',
@@ -532,6 +563,153 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
   }
 }
 
+// ── Exchange ───────────────────────────────────────────────────
+
+const _resAbbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr', proto.ResourceKind.deuterium: 'De'};
+
+Color _resColor(proto.ResourceKind k) => C.ore(k.name);
+
+/// Shares of the hold of the chosen resource a trade offers, in percent. The
+/// whole of it is sent with no amount, which the server reads as all aboard.
+const exchangeShares = [25, 50, 75, 100];
+
+/// Quote and make a trade at the hub's exchange for the selected fleet. The
+/// numbers are the server's: the panel only picks what to ask.
+class ExchangePanel extends StatefulWidget {
+  final GameController controller;
+  const ExchangePanel({super.key, required this.controller});
+  @override
+  State<ExchangePanel> createState() => _ExchangePanelState();
+}
+
+class _ExchangePanelState extends State<ExchangePanel> {
+  proto.ResourceKind? _give;
+  proto.ResourceKind? _want;
+  int _share = 100;
+  int? _forFleet;
+  GameController get c => widget.controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final st = c.state;
+    final fleet = c.currentFleet;
+    if (_forFleet != fleet.id) {
+      _forFleet = fleet.id;
+      _give = null;
+      _want = null;
+      _share = 100;
+    }
+    final hold = st.holds[fleet.id] ?? const proto.Resources();
+    var give = _give ?? proto.ResourceKind.metal;
+    if (_give == null) {
+      for (final k in proto.ResourceKind.values) {
+        if (k.of(hold) > give.of(hold)) give = k;
+      }
+    }
+    final want = _want != null && _want != give ? _want! : proto.ResourceKind.values.firstWhere((k) => k != give);
+    final held = give.of(hold);
+    final amount = _share == 100 ? null : held * _share / 100;
+    final offered = amount ?? held;
+    if (held > 0) c.requestQuote(fleet.id, give, want, amount: amount);
+    final latest = st.quoteFor(fleet.id, give, want);
+    final quote = latest != null && held > 0 && (latest.terms.amount - offered).abs() <= math.max(.01, offered * .05) ? latest : null;
+    final meter = quote?.terms.meter ?? st.exchange;
+    final after = quote?.terms.meterAfter;
+    final here = st.exchangeAt(fleet.sector);
+    final why = held <= 0
+        ? 'The hold carries no ${give.name}.'
+        : quote == null
+            ? 'Waiting for the quote.'
+            : quote.refusal;
+
+    Widget pick(proto.ResourceKind k, {required bool on, required String label, required VoidCallback onPressed, String? reason, required String id}) =>
+        ConsoleButton(label, key: ValueKey(id), small: true, primary: on, onPressed: reason == null ? onPressed : null, reason: reason, semanticsLabel: '$id ${k.name}');
+
+    return ConsolePanel(
+      title: 'Exchange',
+      subText: here ? 'at the hub' : 'quote only',
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+        const Lbl('Give from the hold'),
+        const SizedBox(height: 4),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final k in proto.ResourceKind.values)
+            pick(k,
+                id: 'ex-give-${k.name}',
+                on: k == give,
+                label: '${_resAbbr[k]} ${k.of(hold).floor()}',
+                reason: k.of(hold) > 0 || k == give ? null : 'None aboard',
+                onPressed: () => setState(() => _give = k)),
+        ]),
+        const SizedBox(height: 8),
+        const Lbl('Take'),
+        const SizedBox(height: 4),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final k in proto.ResourceKind.values)
+            pick(k,
+                id: 'ex-want-${k.name}',
+                on: k == want,
+                label: _resAbbr[k]!,
+                reason: k == give ? 'That is what the fleet gives' : null,
+                onPressed: () => setState(() => _want = k)),
+        ]),
+        const SizedBox(height: 8),
+        const Lbl('How much'),
+        const SizedBox(height: 4),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final s in exchangeShares)
+            ConsoleButton(s == 100 ? 'All' : '$s%', key: ValueKey('ex-share-$s'), small: true, primary: s == _share, onPressed: () => setState(() => _share = s)),
+        ]),
+        const SizedBox(height: 10),
+        if (quote != null) ...[
+          Text.rich(
+            key: const Key('ex-quote'),
+            TextSpan(children: [
+              TextSpan(text: '${quote.terms.amount.floor()} ${_resAbbr[give]}', style: TextStyle(color: _resColor(give))),
+              const TextSpan(text: '  GIVES  ', style: TextStyle(color: C.text3)),
+              TextSpan(text: '${quote.terms.receive.round()} ${_resAbbr[want]}', style: TextStyle(color: _resColor(want), fontWeight: FontWeight.w600)),
+            ]),
+            style: T.mono(size: 13),
+          ),
+          const SizedBox(height: 4),
+          Kv('Fee', v: '${(quote.terms.fee * 100).round()}% OF PAR ${quote.terms.par.round()} ${_resAbbr[want]!.toUpperCase()}'),
+        ] else
+          Text(held <= 0 ? 'NOTHING TO GIVE' : 'ASKING THE EXCHANGE', key: const Key('ex-pending'), style: T.mono(size: 11, color: C.text3)),
+        Kv('Meter',
+            key: const Key('ex-meter'),
+            v: after == null
+                ? '${meter.pressure.round()} OF ${meter.span.round()}'
+                : '${meter.pressure.round()} TO ${after.pressure.round()} OF ${meter.span.round()}'),
+        const SizedBox(height: 4),
+        LedBar((after ?? meter).fill, color: (after ?? meter).fill >= 1 ? C.ember : C.a400, mark: C.text2, markAt: meter.fill),
+        const SizedBox(height: 4),
+        Kv('Fee on the next unit',
+            v: after == null ? '${(meter.fee * 100).round()}%' : '${(meter.fee * 100).round()}% TO ${(after.fee * 100).round()}%'),
+        Kv('Meter falls', key: const Key('ex-recovery'), v: _recovery(after ?? meter)),
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: ConsoleButton('Trade',
+              key: const ValueKey('ex-trade'),
+              small: true,
+              primary: why == null,
+              onPressed: why == null ? () => c.trade(give, want, amount: amount) : null,
+              reason: why),
+        ),
+        if (why != null) WhyText(why, key: const Key('ex-why')),
+      ]),
+    );
+  }
+
+  /// "4185 PER 4:16:04 - EMPTY IN 38:41".
+  static String _recovery(proto.ExchangeMeter m) {
+    if (m.span <= 0) return 'NEVER: NO MINE OUTPUT';
+    final rate = '${m.span.round()} PER ${clockFmt(m.windowTicks)}';
+    final left = m.clearIn;
+    return left == null || left == 0 ? rate : '$rate - EMPTY IN ${clockFmt(left)}';
+  }
+}
+
 // ── Teleprinter ────────────────────────────────────────────────
 
 class Feed extends StatelessWidget {
@@ -540,7 +718,7 @@ class Feed extends StatelessWidget {
 
   Color _col(String m) {
     if (m.startsWith('!') || m.contains('LOST') || m.contains('destroyed') && m.contains('Your')) return const Color(0xFFFF9A86);
-    if (m.contains('harvested') || m.contains('collected') || m.contains('complete') || m.contains('ready') || m.contains('arrived') || m.contains('entered')) return const Color(0xFF8EEADF);
+    if (m.contains('harvested') || m.contains('collected') || m.contains('traded') || m.contains('complete') || m.contains('ready') || m.contains('arrived') || m.contains('entered')) return const Color(0xFF8EEADF);
     if (m.contains('derelict') || m.contains('first visit')) return const Color(0xFFCDB7FF);
     return C.text2;
   }

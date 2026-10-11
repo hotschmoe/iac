@@ -54,6 +54,8 @@ pub fn view(frame: &mut Frame<'_>, state: &ClientState) {
         render_keybinds(frame, chunks[1]);
     } else if state.fleet_panel.is_some() {
         render_fleet_panel(frame, state, chunks[1]);
+    } else if state.exchange_panel.is_some() {
+        render_exchange_panel(frame, state, chunks[1]);
     } else if state.show_tech_tree && state.current_view == crate::state::View::Homeworld {
         homeworld::render_tech_tree(frame, state, chunks[1]);
     } else {
@@ -119,12 +121,14 @@ fn render_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
 
     let text: &str = if state.fleet_panel.is_some() {
         " FLEETS | [Up/Down] Ship  [Space] Mark  [s] Split marked  [g] Merge in  [Tab] Fleet  [f] Close"
+    } else if state.exchange_panel.is_some() {
+        " EXCHANGE | [g] Give  [w] Want  [Left/Right] Amount  [Enter] Trade  [Tab] Fleet  [e] Close"
     } else if state.show_tech_tree && state.current_view == crate::state::View::Homeworld {
         " TECH TREE | [t] Close  [?] Keys"
     } else {
         match state.current_view {
             crate::state::View::CommandCenter => " CMD CENTER | [w] Windshield  [m] Map  [b] Base  [?] Keys",
-            crate::state::View::Windshield => " WINDSHIELD | [1-6] Move  [v] Scan  [h] Harvest  [x] Board  [a] Attack  [p] Orders  [f] Fleets  [?] Keys",
+            crate::state::View::Windshield => " WINDSHIELD | [1-6] Move  [v] Scan  [h] Harvest  [x] Board  [a] Attack  [e] Exchange  [p] Orders  [f] Fleets  [?] Keys",
             crate::state::View::StarMap => " STAR MAP | [Arrows] Crosshair  [Enter] Plot Course  [z/x] Zoom  [?] Keys",
             crate::state::View::Homeworld => " HOMEWORLD | Tab Switch  Arrows Select  Enter Build  [+/-] Count  [x/X/z] Cancel running  [c/C/Z] Cancel waiting  [t] Tree  [?] Keys",
         }
@@ -179,6 +183,8 @@ P         Fuel budget of orders:
           10 > 20 > 35 > 50 % of
           deuterium income > no
           bound
+e         Exchange: quote and
+          trade cargo at the hub
 
 HOMEWORLD
 ─────────────────────────────
@@ -298,6 +304,113 @@ fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+// ── Exchange panel ─────────────────────────────────────────────────
+
+fn render_exchange_panel(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
+    use iac_shared::constants::{EXCHANGE_FEE_MAX, EXCHANGE_FEE_MIN};
+    use iac_shared::world::HubService;
+    use ratatui::text::Line;
+    let block = titled_block(" EXCHANGE ", AMBER_DIM);
+    let inner = block.inner(area);
+    frame.render_widget(&block, area);
+
+    let (Some(fleet), Some(panel)) = (state.active_fleet(), state.exchange_panel.as_ref()) else {
+        return;
+    };
+    let held = fleet.cargo.get(panel.give);
+    let place = if state.exchange_at(fleet.location) {
+        Line::styled("The exchange is here. It trades one resource for another and always keeps a fee.", AMBER_BRIGHT)
+    } else {
+        let hub = state
+            .world
+            .iter()
+            .flat_map(|w| &w.hub)
+            .find(|site| site.services.contains(&HubService::Exchange))
+            .map_or("the hub".to_string(), |site| format!("the hub [{},{}]", site.location.q, site.location.r));
+        Line::styled(
+            format!("The exchange is at {hub}: a fleet trades what is in its hold, on the spot. This quote is for planning."),
+            AMBER_BRIGHT,
+        )
+    };
+    let mut lines = vec![
+        Line::styled(
+            format!(
+                "Fleet {} at [{},{}]  hold {:.0}/{:.0}: {:.0} metal, {:.0} crystal, {:.0} deuterium",
+                fleet.id, fleet.location.q, fleet.location.r, fleet.cargo.total(), fleet.cargo_capacity,
+                fleet.cargo.metal, fleet.cargo.crystal, fleet.cargo.deuterium,
+            ),
+            AMBER_FULL,
+        ),
+        place,
+        Line::styled(
+            format!(
+                "Par: metal 1, crystal 1.5, deuterium 2 a unit. The fee is {:.0}% of par with an empty meter and rises to {:.0}% as you sell.",
+                EXCHANGE_FEE_MIN * 100.0, EXCHANGE_FEE_MAX * 100.0,
+            ),
+            AMBER_DIM,
+        ),
+        Line::raw(""),
+        Line::styled(format!(" [g] Give     {:<10} {:.0} aboard", panel.give.label().to_uppercase(), held), AMBER_FULL),
+        Line::styled(format!(" [w] Want     {}", panel.want.label().to_uppercase()), AMBER_FULL),
+        Line::styled(
+            format!(" [<-/->]      {}% of the {} aboard", crate::state::EXCHANGE_SHARES[panel.share], panel.give.label()),
+            AMBER_FULL,
+        ),
+        Line::raw(""),
+    ];
+    match &panel.quote {
+        Some(quote) => {
+            let t = &quote.terms;
+            lines.push(Line::styled(
+                format!(
+                    " {:.0} {} gives {:.0} {}   (par {:.0}, fee {:.0}%)",
+                    t.amount, t.give.label(), t.receive, t.want.label(), t.par, t.fee * 100.0,
+                ),
+                GREEN_GOOD,
+            ));
+            lines.push(Line::styled(
+                format!(
+                    " Meter {:.0} -> {:.0} of {:.0}: the fee on the next unit goes from {:.0}% to {:.0}%",
+                    t.meter.pressure, t.meter_after.pressure, t.meter.span, t.meter.fee * 100.0, t.meter_after.fee * 100.0,
+                ),
+                AMBER,
+            ));
+            lines.push(Line::styled(
+                match t.meter_after.clear_in {
+                    Some(clear) => format!(
+                        " The meter falls by {:.0} every {}; after this trade it is empty again in {}",
+                        t.meter.span, ticks_label(t.meter.window_ticks), ticks_label(clear),
+                    ),
+                    None => " The meter does not fall: this empire has no mine output".to_string(),
+                },
+                AMBER,
+            ));
+            lines.push(Line::raw(""));
+            lines.push(match &quote.refusal {
+                Some(why) => Line::styled(format!(" Cannot trade now: {why}"), RED_ALERT),
+                None => Line::styled(" [Enter] Trade", AMBER_FULL),
+            });
+        }
+        None if held <= 0.0 => {
+            lines.push(Line::styled(format!(" Nothing to give: the hold carries no {}.", panel.give.label()), AMBER_DIM));
+        }
+        None => lines.push(Line::styled(" Asking the exchange...", AMBER_DIM)),
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }), inner);
+}
+
+/// "4h16m", "12m05s", "40s".
+fn ticks_label(ticks: u64) -> String {
+    let (h, m, s) = (ticks / 3600, ticks % 3600 / 60, ticks % 60);
+    if h > 0 {
+        format!("{h}h{m:02}m")
+    } else if m > 0 {
+        format!("{m}m{s:02}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
 // ── Shared helpers ─────────────────────────────────────────────────
 
 /// Create a bordered block with a title. Callers pass titles already
@@ -411,7 +524,10 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
         EventKind::Queue(e) => {
             use iac_shared::protocol::{QueueAction, WaitReason};
             let line = match e.action {
-                QueueAction::Started => format!("{} started, paid {}", e.item, res_short(&e.paid)),
+                QueueAction::Started if e.paid.total() > 0.0 => {
+                    format!("{} started, paid {}", e.item, res_short(&e.paid))
+                }
+                QueueAction::Started => format!("{} started", e.item),
                 QueueAction::Waiting => {
                     let why = match e.waiting_on {
                         Some(WaitReason::Resources) => e.waiting_for.map_or("waiting for resources".to_string(), |r| format!("short {}", res_short(&r))),
@@ -420,9 +536,14 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
                         Some(WaitReason::Order) => "waiting behind an earlier order".to_string(),
                         None => "waiting".to_string(),
                     };
+                    let queued = if e.paid.total() > 0.0 {
+                        format!("{} ordered, paid {}", e.item, res_short(&e.paid))
+                    } else {
+                        format!("{} queued", e.item)
+                    };
                     match e.start_in {
-                        Some(t) => format!("{} queued, {why}, starts in about {t}s", e.item),
-                        None => format!("{} queued, {why}", e.item),
+                        Some(t) => format!("{queued}, {why}, starts in about {t}s"),
+                        None => format!("{queued}, {why}"),
                     }
                 }
                 QueueAction::Cancelled => {
@@ -486,6 +607,14 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
         EventKind::ChartDelivered(e) => {
             format!(" T{}: Chart delivered: {} sectors, +{:.2} explore points\n", event.tick, e.sectors, e.points)
         }
+        EventKind::Exchanged(e) => {
+            let t = &e.terms;
+            format!(
+                " T{}: F{} traded {:.0} {} for {:.0} {} at the exchange (fee {:.0}%, meter {:.0} of {:.0})\n",
+                event.tick, t.fleet_id, t.amount, t.give.label(), t.receive, t.want.label(), t.fee * 100.0,
+                t.meter_after.pressure, t.meter_after.span,
+            )
+        }
         EventKind::SiteAmbush(e) => {
             format!(
                 " T{}: !! AMBUSH — the wreck was bait! [{},{}] !!\n",
@@ -547,7 +676,7 @@ pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
         | EventKind::ShipBuilt(_) => GREEN_GOOD,
         EventKind::ScanCompleted(_) => CYAN_INTEL,
         EventKind::SiteExplorationStarted(_) => CYAN_INTEL,
-        EventKind::SiteExplored(_) | EventKind::ChartDelivered(_) => GREEN_GOOD,
+        EventKind::SiteExplored(_) | EventKind::ChartDelivered(_) | EventKind::Exchanged(_) => GREEN_GOOD,
         EventKind::SiteAmbush(_) => RED_ALERT,
         EventKind::PolicyAction(_) => AMBER,
         EventKind::SectorEntered(_) | EventKind::FleetArrived(_) => AMBER_BRIGHT,

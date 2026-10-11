@@ -33,7 +33,7 @@ use iac_shared::constants::{
     defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
-use iac_shared::world::{self, WorldGen};
+use iac_shared::world::{self, HubService, WorldGen};
 use iac_shared::scaling::{
     self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION, DefenceKind, RatioLabel, ShipyardItem,
@@ -42,6 +42,7 @@ use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
     MovePreview, OreReserve, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
     StorageFullEvent, StorageNearCapEvent, StorageState,
+    ExchangeMeter, ExchangeTerms, ExchangedEvent,
 };
 
 use crate::auth::{self, TokenHash};
@@ -177,9 +178,14 @@ pub struct Player {
     pub explore_points: f32,
     /// Ancient relics found; reserved for the item system.
     pub relics: u32,
+    /// The exchange meter as it read at `exchange_tick`, in weight units. It
+    /// falls between trades: read it through `GameEngine::exchange_meter`.
+    pub exchange_pressure: f64,
+    pub exchange_tick: u64,
 }
 
-/// A queued item holds no resources: it pays when it starts.
+/// A queued building or research level holds no resources: it pays when it
+/// starts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingBuilding {
     pub id: u64,
@@ -196,15 +202,14 @@ pub struct PendingResearch {
     pub reserve: bool,
 }
 
-/// A shipyard order: a batch that pays per unit. `built` units are done; a
-/// batch between units sits here again until the next unit can be paid.
+/// A shipyard batch waiting its turn. Unlike a building or research order
+/// it paid for every unit when it was ordered, so it waits only for the yard
+/// or for something queued ahead of it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingShip {
     pub id: u64,
     pub item: ShipyardItem,
     pub count: u16,
-    pub built: u16,
-    pub reserve: bool,
 }
 
 /// Defence structures standing at home, and those a repelled raid knocked
@@ -282,11 +287,17 @@ pub struct ShipQueueEntry {
     pub id: u64,
     pub item: ShipyardItem,
     pub count: u16,
-    /// Units finished before the one under way.
+    /// Units delivered; one more is under way from `start_tick` to `end_tick`.
     pub built: u16,
-    pub reserve: bool,
     pub start_tick: u64,
     pub end_tick: u64,
+}
+
+impl ShipQueueEntry {
+    /// Units paid for and not yet delivered, the one under way included.
+    pub fn undelivered(&self) -> u16 {
+        self.count.saturating_sub(self.built)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -716,6 +727,22 @@ pub struct HomeRoute {
     pub charted: Option<u32>,
     pub direct: u32,
     pub unexplored: bool,
+}
+
+/// A trade worked out against the exchange; see `GameEngine::exchange_deal`.
+#[derive(Debug)]
+pub struct ExchangeDeal {
+    pub terms: ExchangeTerms,
+    /// The exact meter reading the trade leaves.
+    pub pressure_after: f64,
+    pub refusal: Option<ExchangeRefusal>,
+}
+
+/// Why the exchange turns a trade down.
+#[derive(Debug)]
+pub struct ExchangeRefusal {
+    pub code: ErrorCode,
+    pub reason: String,
 }
 
 pub struct GameEngine {
@@ -1658,7 +1685,9 @@ impl GameEngine {
             }
 
             let connections = self.world_gen.connected_neighbors(npc.location);
-            let conns: Vec<Hex> = connections.slice().iter().copied().filter(|c| !world::is_home_ground(*c)).collect();
+            let conns: Vec<Hex> = connections.slice().iter().copied()
+                .filter(|c| !world::is_home_ground(*c) && !world::is_hub(*c))
+                .collect();
             if conns.is_empty() { continue; }
 
             let idx = rng.random_range(0..conns.len());
@@ -1836,6 +1865,7 @@ impl GameEngine {
 
     fn process_build_queues(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let tick = self.current_tick;
+        let pace = self.world.pace;
         let mut completed_ships: Vec<(u64, ShipyardItem)> = Vec::new();
         let mut fuel_recalc_players: Vec<u64> = Vec::new();
         let pids: Vec<u64> = self.players.keys().copied().collect();
@@ -1881,13 +1911,15 @@ impl GameEngine {
                 });
             }
 
-            if player.ship_queue.as_ref().is_some_and(|q| tick >= q.end_tick) {
-                let q = player.ship_queue.take().unwrap();
+            let yard = player.buildings.shipyard;
+            if let Some(q) = player.ship_queue.as_mut().filter(|q| tick >= q.end_tick) {
                 completed_ships.push((pid, q.item));
-                if q.built + 1 < q.count {
-                    player.ship_pending.insert(0, PendingShip {
-                        id: q.id, item: q.item, count: q.count, built: q.built + 1, reserve: q.reserve,
-                    });
+                q.built += 1;
+                if q.built < q.count {
+                    q.start_tick = tick;
+                    q.end_tick = tick + q.item.unit_ticks(yard, &pace);
+                } else {
+                    player.ship_queue = None;
                 }
                 self.dirty_players.insert(pid, ());
             }
@@ -1927,11 +1959,13 @@ impl GameEngine {
         Ok(())
     }
 
-    /// Start waiting orders. A free slot starts the earliest waiting order
-    /// that can start now (what it needs is built and the stockpile covers
-    /// it). An order that cannot keeps its place and is checked again next
-    /// tick; one with `reserve` set holds the line instead, so nothing behind
-    /// it starts while it is ready and short.
+    /// Start waiting orders. A free building slot or lab starts the earliest
+    /// waiting order that can start now (what it needs is built and the
+    /// stockpile covers it). An order that cannot keeps its place and is
+    /// checked again next tick; one with `reserve` set holds the line
+    /// instead, so nothing behind it starts while it is ready and short. A
+    /// free yard starts the earliest batch whose prerequisites are built: a
+    /// batch is paid for when it is ordered, so the stockpile has no say.
     fn advance_queues(&mut self, pid: u64) {
         while let Some(i) = self.players.get(&pid).and_then(|p| {
             if p.building_queue.len() >= p.building_slots() {
@@ -1965,15 +1999,10 @@ impl GameEngine {
             if p.ship_queue.is_some() {
                 return None;
             }
-            first_startable(
-                &p.ship_pending,
-                |q| self.ship_ready(p, q.item),
-                |q| p.resources.can_afford(q.item.unit_cost()),
-                |q| q.reserve,
-            )
+            p.ship_pending.iter().position(|q| self.ship_ready(p, q.item))
         }) {
             let q = self.players.get_mut(&pid).unwrap().ship_pending.remove(i);
-            self.start_ship_unit(pid, q);
+            self.start_ship_batch(pid, q, Resources::default());
         }
     }
 
@@ -2019,18 +2048,23 @@ impl GameEngine {
     }
 
     /// Report a freshly accepted order that did not start: why, the exact
-    /// shortfall and the estimated start.
-    fn announce_waiting(&mut self, pid: u64, queue_type: iac_shared::protocol::QueueType, id: u64, item: String) {
+    /// shortfall and the estimated start. `paid` is what the order took from
+    /// the stockpile when it was given: a shipyard batch's whole price,
+    /// nothing for a building or research level.
+    fn announce_waiting(&mut self, pid: u64, queue_type: iac_shared::protocol::QueueType, id: u64, item: String, paid: Resources) {
         use iac_shared::protocol::{QueueAction, QueueType};
         let Some(p) = self.players.get(&pid) else { return; };
         let waits = crate::queue::project(p, self.current_tick, &self.world.pace);
         let wait = match queue_type {
-            QueueType::Building => p.building_pending.iter().position(|q| q.id == id).and_then(|i| waits.buildings.get(i)),
-            QueueType::Research => p.research_pending.iter().position(|q| q.id == id).and_then(|i| waits.research.get(i)),
-            QueueType::Ship => p.ship_pending.iter().position(|q| q.id == id).and_then(|i| waits.ships.get(i)),
+            QueueType::Building => p.building_pending.iter().position(|q| q.id == id).and_then(|i| waits.buildings.get(i)).cloned(),
+            QueueType::Research => p.research_pending.iter().position(|q| q.id == id).and_then(|i| waits.research.get(i)).cloned(),
+            QueueType::Ship => p.ship_pending.iter().position(|q| q.id == id).and_then(|i| waits.ships.get(i)).map(|batch| {
+                crate::queue::Wait { reason: batch.reason.into(), start_in: batch.start_in, short: None }
+            }),
         };
-        let Some(wait) = wait.cloned() else { return; };
+        let Some(wait) = wait else { return; };
         let mut event = self.queue_event(pid, queue_type, id, item, QueueAction::Waiting);
+        event.paid = paid;
         event.waiting_for = wait.short;
         event.waiting_on = Some(wait.reason);
         event.start_in = wait.start_in;
@@ -2071,28 +2105,27 @@ impl GameEngine {
         self.push_queue_event(event);
     }
 
-    /// Pay for and begin the next unit of a shipyard batch. Only the first
-    /// unit announces itself; later units start quietly and show up as
+    /// Begin the first unit of a shipyard batch, which was paid for when it
+    /// was ordered: `paid` is that payment when the batch starts in the same
+    /// call, so the event that answers the order can say so, and nothing
+    /// when it starts later. The batch then holds the yard until its last
+    /// unit is delivered (`process_build_queues`); each unit shows up as
     /// `ShipBuilt` / `DefenceBuilt`.
-    fn start_ship_unit(&mut self, pid: u64, order: PendingShip) {
+    fn start_ship_batch(&mut self, pid: u64, order: PendingShip, paid: Resources) {
         use iac_shared::protocol::{QueueAction, QueueType};
         let tick = self.current_tick;
         let pace = self.world.pace;
         let Some(p) = self.players.get_mut(&pid) else { return; };
         let item = order.item;
-        let cost = item.unit_cost();
-        p.resources = p.resources.sub(cost);
         let per_unit = item.unit_ticks(p.buildings.shipyard, &pace);
         p.ship_queue = Some(ShipQueueEntry {
-            id: order.id, item, count: order.count, built: order.built, reserve: order.reserve,
+            id: order.id, item, count: order.count, built: 0,
             start_tick: tick, end_tick: tick + per_unit,
         });
         self.dirty_players.insert(pid, ());
-        if order.built == 0 {
-            let mut event = self.queue_event(pid, QueueType::Ship, order.id, format!("{} x{}", item.label(), order.count), QueueAction::Started);
-            event.paid = cost;
-            self.push_queue_event(event);
-        }
+        let mut event = self.queue_event(pid, QueueType::Ship, order.id, format!("{} x{}", item.label(), order.count), QueueAction::Started);
+        event.paid = paid;
+        self.push_queue_event(event);
     }
 
     // ── Homeworld Raids ───────────────────────────────────────────
@@ -2597,6 +2630,8 @@ impl GameEngine {
             combat_points: 0.0,
             explore_points: 0.0,
             relics: 0,
+            exchange_pressure: 0.0,
+            exchange_tick: 0,
         };
 
         self.players.insert(player_id, player);
@@ -3070,6 +3105,146 @@ impl GameEngine {
         Err(ErrorCode::InvalidTarget)
     }
 
+    /// The exact reading, span and window of `player`'s exchange meter now.
+    fn exchange_standing(&self, player: &Player) -> (f64, f64, u64) {
+        let pace = self.world.pace;
+        let span = scaling::exchange_span(&player.production_per_tick(&pace), &pace);
+        let window = scaling::exchange_window(&pace);
+        let elapsed = self.current_tick.saturating_sub(player.exchange_tick);
+        (scaling::exchange_pressure_after(player.exchange_pressure, elapsed, span, window), span, window)
+    }
+
+    /// Where `player`'s meter at the hub's exchange stands this tick.
+    pub fn exchange_meter(&self, player: &Player) -> ExchangeMeter {
+        let (pressure, span, window) = self.exchange_standing(player);
+        exchange_meter_at(pressure, span, window)
+    }
+
+    /// What the exchange would give `fleet_id` for `amount` of `give` (all it
+    /// carries when None), paid in `want`; nothing changes. `Err` when there
+    /// is no trade to work out; a trade that can be worked out but not made
+    /// right now carries the reason in `refusal`.
+    pub fn exchange_deal(
+        &self,
+        player_id: u64,
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        amount: Option<f32>,
+    ) -> Result<ExchangeDeal, ExchangeRefusal> {
+        let refuse = |code: ErrorCode, reason: String| ExchangeRefusal { code, reason };
+        let fleet = self.owned_fleet(player_id, fleet_id)
+            .map_err(|code| refuse(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
+        let player = self.players.get(&player_id)
+            .ok_or_else(|| refuse(ErrorCode::ServerError, "internal server error".to_string()))?;
+        if give == want {
+            return Err(refuse(
+                ErrorCode::InvalidCommand,
+                format!("the exchange trades one resource for another; give and want are both {}", give.label()),
+            ));
+        }
+        let held = fleet.cargo.get(give);
+        let amount = match amount {
+            Some(asked) if asked.is_finite() && asked > 0.0 => asked,
+            Some(_) => {
+                return Err(refuse(ErrorCode::InvalidCommand, "the amount to trade must be a positive number".to_string()));
+            }
+            None if held > 0.0 => held,
+            None => {
+                return Err(refuse(ErrorCode::NoResources, format!(
+                    "fleet {fleet_id} holds no {} to trade (its hold: {:.0} metal, {:.0} crystal, {:.0} deuterium)",
+                    give.label(), fleet.cargo.metal, fleet.cargo.crystal, fleet.cargo.deuterium,
+                )));
+            }
+        };
+
+        let (pressure, span, window) = self.exchange_standing(player);
+        let value = f64::from(amount) * f64::from(give.weight());
+        let par = value / f64::from(want.weight());
+        let receive = (scaling::exchange_return(pressure, value, span) / f64::from(want.weight())).floor().max(0.0);
+        let terms = ExchangeTerms {
+            fleet_id,
+            give,
+            want,
+            amount,
+            receive: receive as f32,
+            par: par as f32,
+            fee: (1.0 - receive / par) as f32,
+            meter: exchange_meter_at(pressure, span, window),
+            meter_after: exchange_meter_at(pressure + value, span, window),
+        };
+
+        let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
+        let aboard = fleet.cargo.total();
+        let after = aboard - amount + terms.receive;
+        let refusal = if fleet.state == FleetStatus::Moving {
+            Some(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is in transit; it can trade once it has arrived")))
+        } else if !world::hub_services(fleet.location).contains(&HubService::Exchange) {
+            Some(refuse(ErrorCode::NotInSector, match world::nearest_hub(fleet.location, HubService::Exchange) {
+                Some(hub) => {
+                    let hexes = Hex::distance(&fleet.location, &hub);
+                    format!(
+                        "fleet {fleet_id} is at {}, {hexes} hex{} from the exchange at the hub {hub}; \
+                         a fleet trades what is in its hold, on the spot",
+                        fleet.location, if hexes == 1 { "" } else { "es" },
+                    )
+                }
+                None => "this world has no exchange".to_string(),
+            }))
+        } else if !Self::fleet_is_free(fleet) {
+            Some(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is busy; it can trade once it is idle")))
+        } else if amount > held {
+            Some(refuse(ErrorCode::NoResources, format!(
+                "fleet {fleet_id} holds {held:.1} {}; it cannot give {amount:.1}", give.label(),
+            )))
+        } else if receive < 1.0 {
+            Some(refuse(ErrorCode::InvalidCommand, format!(
+                "{amount:.1} {} is too little to trade: at a fee of {:.0}% it returns less than one {}",
+                give.label(), terms.meter.fee * 100.0, want.label(),
+            )))
+        } else if terms.receive > amount && after > capacity + 0.01 {
+            Some(refuse(ErrorCode::CargoFull, format!(
+                "{amount:.0} {} returns {receive:.0} {}, and the hold of fleet {fleet_id} has no room for it: \
+                 it carries {aboard:.0} of {capacity:.0} and would carry {after:.0}; trade a smaller amount",
+                give.label(), want.label(),
+            )))
+        } else {
+            None
+        };
+        Ok(ExchangeDeal { terms, pressure_after: pressure + value, refusal })
+    }
+
+    /// Trade at the hub's exchange: the fleet's hold and its owner's meter
+    /// change, nothing else does.
+    pub fn handle_exchange(
+        &mut self,
+        player_id: u64,
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        amount: Option<f32>,
+    ) -> Result<(), ErrorCode> {
+        let (terms, pressure_after) = match self.exchange_deal(player_id, fleet_id, give, want, amount) {
+            Ok(ExchangeDeal { terms, pressure_after, refusal: None }) => (terms, pressure_after),
+            Ok(ExchangeDeal { refusal: Some(refusal), .. }) | Err(refusal) => return Err(refusal.code),
+        };
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        let left = if amount.is_some() { (fleet.cargo.get(give) - terms.amount).max(0.0) } else { 0.0 };
+        *fleet.cargo.get_mut(give) = left;
+        *fleet.cargo.get_mut(want) += terms.receive;
+        let sector = fleet.location;
+        let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
+        player.exchange_pressure = pressure_after;
+        player.exchange_tick = self.current_tick;
+        self.dirty_fleets.insert(fleet_id, ());
+        self.dirty_players.insert(player_id, ());
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Exchanged(ExchangedEvent { sector, terms }),
+        });
+        Ok(())
+    }
+
     /// Fuel an emergency jump home would burn: the per-hop cost over the
     /// straight distance, doubled. All-or-nothing: a fleet with less than
     /// this does not move at all.
@@ -3273,6 +3448,17 @@ impl GameEngine {
         Ok(())
     }
 
+    /// A shipyard batch is paid in full when it is ordered. One the
+    /// stockpile does not cover is refused; a batch larger than a stockpile
+    /// cap cannot be saved up for, and the refusal says that instead.
+    fn ensure_batch_paid_for(&self, player: &Player, cost: Resources) -> Result<(), ErrorCode> {
+        if player.resources.can_afford(cost) {
+            return Ok(());
+        }
+        self.ensure_fits_storage(player, cost)?;
+        Err(ErrorCode::InsufficientResources)
+    }
+
     /// What `cmd` would cost, with a label for messages; None for commands
     /// that cost nothing.
     pub fn command_cost(&self, player_id: u64, cmd: &Command) -> Option<(String, Resources)> {
@@ -3286,13 +3472,13 @@ impl GameEngine {
                 let level = p.projected_research().get(*tech) + 1;
                 Some((format!("{} Lv.{level}", tech.label()), scaling::research_cost(*tech, level)))
             }
-            Command::BuildShip { ship_class, .. } => Some((
-                format!("one {}", ship_class.label()),
-                ship_class.build_cost(),
+            Command::BuildShip { ship_class, count } => Some((
+                format!("{} x{count}", ship_class.label()),
+                ShipyardItem::Ship(*ship_class).batch_cost(*count),
             )),
-            Command::BuildDefence { kind, .. } => Some((
-                format!("one {}", kind.label()),
-                kind.build_cost(),
+            Command::BuildDefence { kind, count } => Some((
+                format!("{} x{count}", kind.label()),
+                ShipyardItem::Defence(*kind).batch_cost(*count),
             )),
             _ => None,
         }
@@ -3321,7 +3507,7 @@ impl GameEngine {
         player_mut.building_pending.push(PendingBuilding { id, building_type, target_level, reserve });
         self.dirty_players.insert(player_id, ());
         self.advance_queues(player_id);
-        self.announce_waiting(player_id, QueueType::Building, id, format!("{} Lv.{target_level}", building_type.label()));
+        self.announce_waiting(player_id, QueueType::Building, id, format!("{} Lv.{target_level}", building_type.label()), Resources::default());
         Ok(())
     }
 
@@ -3348,49 +3534,58 @@ impl GameEngine {
         player_mut.research_pending.push(PendingResearch { id, tech, target_level, reserve });
         self.dirty_players.insert(player_id, ());
         self.advance_queues(player_id);
-        self.announce_waiting(player_id, QueueType::Research, id, format!("{} Lv.{target_level}", tech.label()));
+        self.announce_waiting(player_id, QueueType::Research, id, format!("{} Lv.{target_level}", tech.label()), Resources::default());
         Ok(())
     }
 
-    pub fn handle_build_ship(&mut self, player_id: u64, ship_class: ShipClass, count: u16, reserve: bool) -> Result<(), ErrorCode> {
+    pub fn handle_build_ship(&mut self, player_id: u64, ship_class: ShipClass, count: u16) -> Result<(), ErrorCode> {
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
         if player.projected_buildings().shipyard == 0 { return Err(ErrorCode::NoShipyard); }
         if !scaling::ship_class_unlocked(ship_class, &player.projected_research()) { return Err(ErrorCode::ShipLocked); }
-        self.queue_shipyard(player_id, ShipyardItem::Ship(ship_class), count, reserve)
+        self.order_shipyard(player_id, ShipyardItem::Ship(ship_class), count)
     }
 
-    pub fn handle_build_defence(&mut self, player_id: u64, kind: DefenceKind, count: u16, reserve: bool) -> Result<(), ErrorCode> {
+    pub fn handle_build_defence(&mut self, player_id: u64, kind: DefenceKind, count: u16) -> Result<(), ErrorCode> {
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
         if player.projected_buildings().shipyard == 0 { return Err(ErrorCode::NoShipyard); }
         if !scaling::defence_prerequisites_met(kind, &player.projected_buildings(), &player.projected_research()) {
             return Err(ErrorCode::DefenceLocked);
         }
-        self.queue_shipyard(player_id, ShipyardItem::Defence(kind), count, reserve)
+        self.order_shipyard(player_id, ShipyardItem::Defence(kind), count)
     }
 
-    /// Queue a shipyard batch behind the ones already there. It pays and
-    /// starts one unit at a time (see `advance_queues`).
-    fn queue_shipyard(&mut self, player_id: u64, item: ShipyardItem, count: u16, reserve: bool) -> Result<(), ErrorCode> {
+    /// Order a shipyard batch behind the ones already there. The whole batch
+    /// is paid for now; it starts at once when the yard is free and what it
+    /// needs is built, and the yard then builds it unit by unit.
+    fn order_shipyard(&mut self, player_id: u64, item: ShipyardItem, count: u16) -> Result<(), ErrorCode> {
         use iac_shared::protocol::QueueType;
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
         if count == 0 { return Err(ErrorCode::InvalidCommand); }
         if player.ship_queue.iter().count() + player.ship_pending.len() > scaling::QUEUE_WAITING {
             return Err(ErrorCode::QueueFull);
         }
-        self.ensure_fits_storage(player, item.unit_cost())?;
+        let cost = item.batch_cost(count);
+        self.ensure_batch_paid_for(player, cost)?;
+        let starts_now = player.ship_queue.is_none() && self.ship_ready(player, item);
 
         let id = self.next_id();
         let player_mut = self.players.get_mut(&player_id).unwrap();
-        player_mut.ship_pending.push(PendingShip { id, item, count, built: 0, reserve });
+        player_mut.resources = player_mut.resources.sub(cost);
         self.dirty_players.insert(player_id, ());
-        self.advance_queues(player_id);
-        self.announce_waiting(player_id, QueueType::Ship, id, format!("{} x{count}", item.label()));
+        let order = PendingShip { id, item, count };
+        if starts_now {
+            self.start_ship_batch(player_id, order, cost);
+        } else {
+            self.players.get_mut(&player_id).unwrap().ship_pending.push(order);
+            self.announce_waiting(player_id, QueueType::Ship, id, format!("{} x{count}", item.label()), cost);
+        }
         Ok(())
     }
 
-    /// Cancel an item that has started, by id. It keeps half its payment
-    /// (one unit for a ship batch), and waiting items of the same kind move
-    /// up a level.
+    /// Cancel an item that has started, by id. A building or research level
+    /// keeps half its payment, and waiting items of the same kind move up a
+    /// level. A shipyard batch keeps the units delivered and half the price
+    /// of the rest.
     pub fn handle_cancel_build(&mut self, player_id: u64, queue_type: iac_shared::protocol::QueueType, id: u64) -> Result<(), ErrorCode> {
         use iac_shared::protocol::{QueueAction, QueueType};
         let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
@@ -3413,7 +3608,7 @@ impl GameEngine {
                 } else {
                     format!("{} x{}", q.item.label(), q.count)
                 };
-                (label, q.item.unit_cost().scale(CANCEL_REFUND_FRACTION))
+                (label, q.item.batch_cost(q.undelivered()).scale(CANCEL_REFUND_FRACTION))
             }
             QueueType::Research => {
                 let q = player.research_queue.take_if(|q| q.id == id).ok_or(ErrorCode::InvalidTarget)?;
@@ -3435,12 +3630,13 @@ impl GameEngine {
         Ok(())
     }
 
-    /// Remove a waiting item by id. Nothing was paid for it, so nothing comes
-    /// back (units of a part-built batch are kept).
+    /// Remove a waiting item by id. A waiting building or research level
+    /// paid nothing, so nothing comes back; a waiting shipyard batch paid
+    /// when it was ordered and gets half back.
     pub fn handle_cancel_queued(&mut self, player_id: u64, queue_type: iac_shared::protocol::QueueType, id: u64) -> Result<(), ErrorCode> {
         use iac_shared::protocol::{QueueAction, QueueType};
         let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
-        let item = match queue_type {
+        let (item, refund) = match queue_type {
             QueueType::Building => {
                 let index = player.building_pending.iter().position(|q| q.id == id).ok_or(ErrorCode::InvalidTarget)?;
                 let q = player.building_pending.remove(index);
@@ -3449,16 +3645,12 @@ impl GameEngine {
                 {
                     later.target_level -= 1;
                 }
-                format!("{} Lv.{}", q.building_type.label(), q.target_level)
+                (format!("{} Lv.{}", q.building_type.label(), q.target_level), Resources::default())
             }
             QueueType::Ship => {
                 let index = player.ship_pending.iter().position(|q| q.id == id).ok_or(ErrorCode::InvalidTarget)?;
                 let q = player.ship_pending.remove(index);
-                if q.built > 0 {
-                    format!("{} x{} ({} already built and kept)", q.item.label(), q.count, q.built)
-                } else {
-                    format!("{} x{}", q.item.label(), q.count)
-                }
+                (format!("{} x{}", q.item.label(), q.count), q.item.batch_cost(q.count).scale(CANCEL_REFUND_FRACTION))
             }
             QueueType::Research => {
                 let index = player.research_pending.iter().position(|q| q.id == id).ok_or(ErrorCode::InvalidTarget)?;
@@ -3468,11 +3660,13 @@ impl GameEngine {
                 {
                     later.target_level -= 1;
                 }
-                format!("{} Lv.{}", q.tech.label(), q.target_level)
+                (format!("{} Lv.{}", q.tech.label(), q.target_level), Resources::default())
             }
         };
+        player.resources = player.resources.add(refund);
         self.dirty_players.insert(player_id, ());
-        let event = self.queue_event(player_id, queue_type, id, item, QueueAction::Cancelled);
+        let mut event = self.queue_event(player_id, queue_type, id, item, QueueAction::Cancelled);
+        event.refunded = refund;
         self.push_queue_event(event);
         self.advance_queues(player_id);
         Ok(())
@@ -5375,6 +5569,23 @@ fn first_startable<T>(
 
 pub fn template_npc_id(coord: Hex) -> u64 {
     TEMPLATE_NPC_ID_BASE + u64::from(coord.to_key())
+}
+
+fn exchange_meter_at(pressure: f64, span: f64, window: u64) -> ExchangeMeter {
+    let clear_in = if pressure <= 0.0 {
+        Some(0)
+    } else if span > 0.0 {
+        Some((pressure / span * window as f64).ceil() as u64)
+    } else {
+        None
+    };
+    ExchangeMeter {
+        pressure: pressure as f32,
+        span: span as f32,
+        fee: scaling::exchange_fee(pressure, span) as f32,
+        window_ticks: window,
+        clear_in,
+    }
 }
 
 /// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.

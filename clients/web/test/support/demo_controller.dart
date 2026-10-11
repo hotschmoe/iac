@@ -23,6 +23,13 @@ class DemoController extends GameController {
     }
   }
 
+  /// Put a fleet of the scripted world at [at] with [cargo] aboard.
+  void place(int fleetId, proto.Hex at, proto.Resources cargo) {
+    final world = _world!;
+    world.place(fleetId, at, cargo);
+    receive(world.initial());
+  }
+
   @override
   String? get account => 'demo';
 

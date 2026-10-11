@@ -423,6 +423,8 @@ impl Database {
         Self::ensure_column(&conn, "fleet_policies", "fuel_budget_pct", "INTEGER NOT NULL DEFAULT 100")?;
         Self::ensure_column(&conn, "fleet_policies", "fuel_credit", "REAL NOT NULL DEFAULT 0")?;
         Self::ensure_column(&conn, "fleet_policies", "fuel_since", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "players", "exchange_pressure", "REAL NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "players", "exchange_tick", "INTEGER NOT NULL DEFAULT 0")?;
 
         info!("Schema verified");
         Ok(())
@@ -619,8 +621,9 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO players (id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash,
-                                             agent, combat_points, explore_points, relics)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                             agent, combat_points, explore_points, relics,
+                                             exchange_pressure, exchange_tick)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 player.id as i64,
                 &player.name,
@@ -634,6 +637,8 @@ impl Database {
                 player.combat_points as f64,
                 player.explore_points as f64,
                 player.relics as i64,
+                player.exchange_pressure,
+                player.exchange_tick as i64,
             ],
         )?;
         Ok(())
@@ -643,7 +648,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, name, homeworld_q, homeworld_r, metal, crystal, deuterium, token_hash,
-                    agent, combat_points, explore_points, relics FROM players",
+                    agent, combat_points, explore_points, relics, exchange_pressure, exchange_tick FROM players",
         )?;
         let players = stmt.query_map(params![], |row| {
             Ok(Player {
@@ -672,6 +677,8 @@ impl Database {
                 combat_points: row.get::<_, f64>(9)? as f32,
                 explore_points: row.get::<_, f64>(10)? as f32,
                 relics: row.get::<_, i64>(11)? as u32,
+                exchange_pressure: row.get::<_, f64>(12)?,
+                exchange_tick: row.get::<_, i64>(13)? as u64,
             })
         })?;
         players.collect()
@@ -1321,11 +1328,11 @@ impl Database {
         }
         if let Some(q) = &player.ship_queue {
             let (kind, item) = shipyard_item_to_row(q.item);
-            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, q.reserve as i64])?;
+            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, 0i64])?;
         }
         for q in &player.ship_pending {
             let (kind, item) = shipyard_item_to_row(q.item);
-            stmt.execute(params![pid, kind, item, none, q.count as i64, q.built as i64, 1i64, 0i64, 0i64, q.id as i64, q.reserve as i64])?;
+            stmt.execute(params![pid, kind, item, none, q.count as i64, 0i64, 1i64, 0i64, 0i64, q.id as i64, 0i64])?;
         }
         if let Some(q) = &player.research_queue {
             stmt.execute(params![pid, "research", q.tech as i64, q.target_level as i64, 1i64, 0i64, 0i64, q.start_tick as i64, q.end_tick as i64, q.id as i64, 0i64])?;
@@ -1382,11 +1389,10 @@ impl Database {
                 "ship" | "defence" => {
                     let Some(sc) = item.and_then(|i| shipyard_item_from_row(&qt, i)) else { continue; };
                     if pending {
-                        data.ship_pending.push(PendingShip { id, item: sc, count: count as u16, built: built as u16, reserve });
+                        data.ship_pending.push(PendingShip { id, item: sc, count: count as u16 });
                     } else {
                         data.ship = Some(ShipQueueEntry {
                             id,
-                            reserve,
                             item: sc,
                             count: count as u16,
                             built: built as u16,
@@ -1739,8 +1745,8 @@ mod tests {
                         tech: ResearchType::from_usize(rng.random_range(0..ResearchType::COUNT)).unwrap(),
                         reserve: false,
                     }),
-                    9 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2, reserve: false }),
-                    10 => Some(Command::BuildDefence { kind: DefenceKind::PulseTurret, count: 2, reserve: false }),
+                    9 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2 }),
+                    10 => Some(Command::BuildDefence { kind: DefenceKind::PulseTurret, count: 2 }),
                     11 => here.map(|at| Command::Attack { fleet_id, target_fleet_id: template_npc_id(at) }),
                     12 => Some(Command::Recall { fleet_id }),
                     13 => Some(Command::ExploreSite { fleet_id }),

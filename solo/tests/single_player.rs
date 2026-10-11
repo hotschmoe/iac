@@ -2,7 +2,7 @@
 // it: bytes in, bytes out, the wire protocol inside. The real engine and
 // the real bots run behind it; time is whatever the test says it is.
 
-use iac_solo::{Machine, CATCH_UP_LIMIT};
+use iac_solo::{Machine, CATCH_UP_LIMIT, SAVE_FORMAT};
 use serde_json::{json, Value};
 
 const T0: u64 = 1_800_000_000_000;
@@ -228,23 +228,75 @@ fn an_absence_is_played_reported_and_limited() {
 }
 
 #[test]
+fn a_ship_batch_the_stockpile_does_not_cover_is_refused_and_costs_nothing() {
+    const SCOUT: [f64; 3] = [200.0, 50.0, 30.0];
+    let stock_of = |state: &Value| ["metal", "crystal", "deuterium"].map(|k| state["player"]["resources"][k].as_f64().unwrap());
+    let covered = |stock: [f64; 3]| (0..3).map(|k| (stock[k] / SCOUT[k]).floor() as u64).min().unwrap();
+
+    let mut machine = new_game(T0, "blitz", &[]);
+    log_in(&mut machine, T0);
+    for building in ["MetalMine", "Shipyard"] {
+        let queued = send(&mut machine, T0, json!({"type": "command", "action": "build", "building_type": building}));
+        assert!(queued.iter().all(|f| f["type"] != "error"), "a building queues ahead of what it needs: {queued:?}");
+    }
+
+    let mut now = T0;
+    let state = loop {
+        now += 1000;
+        play(&mut machine, now - 1000, 1);
+        let state = send(&mut machine, now, json!({"type": "request_full_state"})).remove(0);
+        let yard = state["homeworld"]["buildings"].as_array().unwrap().iter().any(|b| b["building_type"] == "Shipyard" && b["level"] == 1);
+        if yard && covered(stock_of(&state)) >= 1 {
+            break state;
+        }
+        assert!(now < T0 + 600_000, "no shipyard and a scout's worth of stock within ten minutes of blitz");
+    };
+    let stock = stock_of(&state);
+    let fits = covered(stock);
+
+    let too_many = send(&mut machine, now, json!({"type": "command", "action": "build_ship", "ship_class": "Scout", "count": fits + 1}));
+    assert_eq!(too_many.len(), 1, "{too_many:?}");
+    assert_eq!((too_many[0]["type"].as_str(), too_many[0]["code"].as_str()), (Some("error"), Some("InsufficientResources")));
+    let message = too_many[0]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(&format!("Scout x{} costs {} metal, ", fits + 1, 200 * (fits + 1)))
+            && message.contains("; the stockpile is short by ")
+            && message.ends_with(&format!("Nothing was ordered: a batch is paid in full when it is ordered. The stockpile covers {fits}.")),
+        "{message}"
+    );
+    let after = send(&mut machine, now, json!({"type": "request_full_state"})).remove(0);
+    assert_eq!(stock_of(&after), stock, "the refused batch cost nothing");
+    assert_eq!(after["homeworld"]["shipyard_queue"], Value::Null);
+
+    let ordered = send(&mut machine, now, json!({"type": "command", "action": "build_ship", "ship_class": "Scout", "count": fits}));
+    assert!(ordered.iter().all(|f| f["type"] != "error"), "{ordered:?}");
+    let paid = send(&mut machine, now, json!({"type": "request_full_state"})).remove(0);
+    let left = stock_of(&paid);
+    for k in 0..3 {
+        assert!((stock[k] - SCOUT[k] * fits as f64 - left[k]).abs() < 0.01, "the whole batch is paid when it is ordered: {stock:?} to {left:?}");
+    }
+    assert_eq!((paid["homeworld"]["shipyard_queue"]["count"].as_u64(), paid["homeworld"]["shipyard_queue"]["built"].as_u64()), (Some(fits), Some(0)));
+}
+
+#[test]
 fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let mut machine = new_game(T0, "season", &[]);
     let document = save(&mut machine, T0);
     let text = String::from_utf8(document.clone()).unwrap();
 
-    let other_economy = text.replacen("\"economy_version\":2", "\"economy_version\":1", 1);
+    let other_economy = text.replacen("\"economy_version\":3", "\"economy_version\":2", 1);
     let (_, reply) = load(T0, other_economy.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert_eq!(reply["refused"], "this save is economy version 1, this build runs version 2; start a new game");
+    assert_eq!(reply["refused"], "this save is economy version 2, this build runs version 3; start a new game");
 
     let other_generator = text.replacen("\"worldgen_version\":3", "\"worldgen_version\":2", 1);
     let (_, reply) = load(T0, other_generator.as_bytes());
     assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 3"), "{reply}");
 
-    let other_format = text.replacen("\"format\":1", "\"format\":7", 1);
+    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":7", 1);
     let (_, reply) = load(T0, other_format.as_bytes());
-    assert!(reply["refused"].as_str().unwrap().contains("format 7, this build reads format 1"), "{reply}");
+    assert_eq!(reply["world"], Value::Null);
+    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 7, this build reads format {SAVE_FORMAT}")), "{reply}");
 
     let (_, reply) = load(T0, &document[..document.len() - 40]);
     assert!(reply["refused"].as_str().unwrap().contains("damaged"), "{reply}");

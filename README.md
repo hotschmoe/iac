@@ -87,7 +87,10 @@ TUI basics: `w` windshield / `m` star map / `b` homeworld / `` ` `` command
 center, `?` for all keybinds. In the windshield: `1-6` move, `v` scan,
 `h` harvest, `a` attack, `s` salvage, `r` recall, `S` stop. `p` cycles the
 active fleet's standing orders; `P` steps the fuel budget they are given with
-(10, 20, 35, 50 percent of deuterium income, then no bound).
+(10, 20, 35, 50 percent of deuterium income, then no bound). `e` opens the
+exchange overlay for the active fleet: `g` and `w` pick what to give and
+want, Left/Right the share of the hold, and it shows the server's quote;
+Enter trades when the fleet is at the hub (marked `X` on the star map).
 
 ## Headless / LLM agent mode
 
@@ -100,7 +103,7 @@ cargo run -p iac-client -- --headless --name MyAgent [--token <token>]
 
 - **stdout** — every server message, one JSON object per line: `auth_result`,
   `full_state`, `tick_update` (with `events`), `error`, plus the replies to
-  `preview_move`, `odds` and `leaderboard`. Every `tick_update`
+  `preview_move`, `odds`, `exchange_quote` and `leaderboard`. Every `tick_update`
   carries the complete `fleets` list: a fleet missing from it is gone, and
   `"fleets":[]` means every fleet was lost. A final
   `{"type":"connection_closed"}` is emitted if the server hangs up.
@@ -162,15 +165,17 @@ Example session:
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
 | `build` | `building_type`, `reserve` (default false) | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts). Every order gets a stable `id`, reported in its `Queue` event and in the queue lists. `reserve: true` makes the order hold the line while it is short (see Queues and slots) |
 | `research` | `tech`, `reserve` | research one level, same rules (one lab) |
-| `build_ship` | `ship_class`, `count`, `reserve` | queue a ship batch (one shipyard). The batch is one order that pays and starts one unit at a time, so 5 ordered with money for 2 builds 2 and waits for the third |
-| `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count`, `reserve` | queue home defence structures in the shipyard queue, paid per unit like ships; `DefenceLocked` until the Defense Grid and research it needs are in place |
-| `cancel_build` | `queue_type`, `id` | cancel the item with that `id` once it has started, with a 50% refund (one unit for a ship batch; units already built are kept); waiting items of the same building or tech move up a level; a `Queue` event confirms what was refunded. `InvalidTarget` names where the id actually is (another queue, still waiting, or gone) |
-| `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits; nothing was paid, so nothing comes back; a `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
+| `build_ship` | `ship_class`, `count` | order a ship batch (one shipyard). Unlike a building or a tech, a batch is accepted only if your stockpile covers every unit now, and it is paid in full at that moment; otherwise it is refused with `InsufficientResources` and a message naming the shortfall per resource and how many units the stockpile would cover (5 ordered with money for 2 is refused; order 2). A paid batch starts at once or waits for the yard |
+| `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count` | order home defence structures in the shipyard queue, paid in full when ordered like ships; `DefenceLocked` until the Defense Grid and research it needs are in place |
+| `cancel_build` | `queue_type`, `id` | cancel the item with that `id` once it has started. A building or tech refunds 50% of its cost, and waiting items of the same building or tech move up a level. A ship or defence batch keeps the units already built and refunds 50% of the price of every unit not yet delivered, the one under way included. A `Queue` event confirms what was refunded. `InvalidTarget` names where the id actually is (another queue, still waiting, or gone) |
+| `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits. A waiting building or tech paid nothing, so nothing comes back; a waiting batch paid when it was ordered and gets 50% back. A `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, and the odds `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest. `ratio` is not `fleet_power / est_power`: see Odds |
 | `odds` | `fleet_id`, `sectors:[{q,r},...]` (at most 256) | do not move: reply `odds` with `fleet_id` and, for each sector in the order asked, `{sector, threat, ratio, label}`: how that fleet would fare there. Any sector may be named: adjacent or far, the one the fleet is in, seen or never seen |
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit. Built-in bots are never in `entries`: when the world has any, `bots` lists them in the same row shape, ranked among themselves, so a rank in `entries` counts humans and AI agents only |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
+| `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (`full_state.world.hub`). The answer is an `Exchanged` event with what was given and received, the fee and the meter before and after (see The hub and its exchange). Refused with nothing changed, and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
+| `exchange_quote` | same as `exchange` | do not trade: reply `exchange_quote` with `amount`, `receive`, `par`, `fee`, `meter` and `meter_after`, exactly what `exchange` with the same fields would do. It answers from anywhere and for an amount the fleet does not carry; `refusal` is then the sentence the trade would be refused with right now |
 
 Standing orders are a separate message type (not a command):
 
@@ -269,7 +274,11 @@ hotkeys (`1`/`2`/`3` views, numpad 1-6 to move, Esc leaves the bar). It speaks
 the Rust wire protocol over `/ws` on the page's own host and port. Standing
 orders take their settings on the command bar:
 `policy mine range=8 engage=1.5 fuel=40 cargo=85 reserve=10` (any subset;
-`fuel` is `fuel_budget_pct`, 100 for no bound).
+`fuel` is `fuel_budget_pct`, 100 for no bound). At the hub the windshield
+lists the exchange among its contacts; `T` (or the Trade tile) opens the
+exchange panel, which shows the server's quote for the trade picked and
+sends it. `quote metal deut 400` and `trade metal deut 400` do the same from
+the command bar (no amount: all the hold carries).
 
 - `?name=Admiral` skips the name prompt; `?token=...` supplies the account
   token (see "Accounts and tokens"); `?ws=ws://host:port/ws` points at another
@@ -455,8 +464,9 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   cargo unloads only what fits and the rest waits aboard
   (`cargo_blocked: true`). `StorageNearCap` (85%) and `StorageFull` events
   warn you. A Vault also protects 8% of the cap per level (to 60%) from raids.
-- **Queues and slots** — one rule for buildings, research, ships and
-  defences. An order that can ever start is always accepted, whether or not a
+- **Queues and slots** — buildings and research queue ahead of resources;
+  ship and defence batches are paid in full when ordered (below). A building
+  or research order that can ever start is always accepted, whether or not a
   slot is free or you can pay yet. Each order has a stable `id` (cancel by it,
   never by position). Whenever a slot is free, the server starts the earliest
   waiting order that can start now: what it needs is built and the stockpile
@@ -470,10 +480,16 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   such as a Shipyard behind the Metal Mine it needs, never holds the line.
   Research and buildings can both be queued behind a prerequisite that is
   itself still queued, and a tech that is running can be queued again for its
-  next level. A ship batch is one order that pays and starts one unit at a
-  time: it shows `built` of `count`, and when it cannot pay for the next unit
-  it goes back to waiting (`waiting_for` is the next unit's shortfall) and
-  lets another order use the yard. Buildings run in `build_slots` parallel
+  next level. A ship or defence batch is one order under a different rule: it
+  is accepted only if the stockpile covers the whole batch now, pays for every
+  unit at that moment, and is otherwise refused with `InsufficientResources`
+  ("Scout x5 costs 1000 metal, 250 crystal and 150 deuterium; the stockpile is
+  short by 120 metal and 30 deuterium. Nothing was ordered: a batch is paid in
+  full when it is ordered. The stockpile covers 4."). Nothing in the yard ever
+  waits on resources: a paid batch waits only for the yard to be free or for a
+  queued Shipyard level or tech it needs, takes no `reserve`, and once started
+  builds every unit without stopping (`shipyard_queue` shows `built` of
+  `count`). Buildings run in `build_slots` parallel
   slots (1, plus one per Modular Fabrication level, max 3); research and the
   shipyard have one.
   Each queue holds its running items plus `queue_waiting_max` (3) waiting ones,
@@ -481,16 +497,24 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   refuses with `QueueFull`. Orders that can never start are refused with a
   specific error: `PrerequisitesNotMet` (naming what is missing),
   `MaxLevelReached`, `StorageTooSmall` (naming the Vault level it needs),
-  `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`.
-  `build_pending` / `research_pending` / `shipyard_pending` list each waiting
+  `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`. For a batch,
+  `StorageTooSmall` means the whole batch costs more than a stockpile cap and
+  says how many units fit.
+  `build_pending` / `research_pending` list each waiting
   order with its `id`, `waiting_for` (the exact shortfall), `waiting_on` (`Slot`,
   `Resources`, `Prerequisite` or `Order`: held behind an earlier `reserve`
   order) and
   `start_in` (estimated ticks to start at current production, ignoring what the
-  other queues spend). Every order, start and cancel is answered by a `Queue`
-  event: `Started` (what was paid), `Waiting` (shortfall and estimate) or
-  `Cancelled` (what was refunded: half for a running item, nothing for a
-  waiting one). A queue with nothing running but orders waiting is not idle.
+  other queues spend). `shipyard_pending` lists each paid batch with its `id`,
+  `count`, `cost` (what it paid), `waiting_on` (`Slot` or `Prerequisite`,
+  nothing else) and `start_in`. Every order, start and cancel is answered by a
+  `Queue` event: `Started`, `Waiting` (shortfall and estimate) or `Cancelled`
+  (what was refunded: half for a running building or tech, nothing for a
+  waiting one, half of the undelivered units for a batch, waiting or running).
+  `paid` on the event is what it took from the stockpile: a building or tech
+  pays on `Started`; a batch pays on the event that answers the order
+  (`Started`, or `Waiting` when the yard is busy) and nothing when it starts
+  later. A queue with nothing running but orders waiting is not idle.
 - **Research** — 13 techs: hulls, shields, weapons, fuel, navigation, ship
   class unlocks (Corvette Tech needs only Shipyard 1, Frigate and Cruiser
   Tech need more), emergency jump, Modular Fabrication (building slots). The Research
@@ -597,6 +621,39 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   a fleet docked at home scoops it into storage by itself, up to what the
   Vault holds (`SalvageCollected` says what); with no fleet docked, or the
   Vault full, an `Alert` fires once when 60 s are left.
+- **The hub and its exchange** — the sector at the centre, `[0,0]`, is a
+  neutral post: empty space with no ore, no hostile group and no derelict,
+  and no hostile group wanders in. `full_state.world.hub` lists it with what
+  it offers (`"services":["exchange"]`). A fleet standing there trades what
+  is in its hold, one resource for another (`exchange`; ask first with
+  `exchange_quote`, from anywhere). What comes back goes into the same hold
+  and unloads at home like any cargo. The exchange always keeps a fee, so a
+  trade never raises what you own and never touches score: it is a way to
+  turn a surplus into what you are short of, at a loss.
+  - Par values are the score weights: metal 1, crystal 1.5, deuterium 2 a
+    unit. Selling counts in weight (units x par).
+  - You have a meter (`player.exchange`): the weight you sold and that has
+    not been forgotten yet (`pressure`). The fee on a unit of weight is 25%
+    of par while the meter is empty and rises in a straight line to 75% when
+    it reads `span`, and stays there beyond. A trade pays the fee of every
+    unit it moves the meter through, so one large order and the same order
+    in pieces return the same; `receive` is rounded down to whole units.
+  - `span` is 15% of what your own mines make in one window, in weight, so
+    it grows with your mines; an empire with no mine output pays 75%.
+  - The meter falls by one `span` every `window_ticks` (86400 ticks at pace
+    1, divided by P^0.75: about 4.3 h at season, 12 min at blitz), online or
+    not. `clear_in` is the ticks until it is empty.
+  - Example, season pace, mines 10/9/8 (`span` 4185): one Hauler's 632 metal
+    is 632 weight, worth 316 deuterium at par. From an empty meter the fee
+    runs from 25% to 33% across the trade, 29% on the whole: 225 deuterium.
+    The meter then reads 632 and is empty again in 39 minutes. The same 632
+    sold with the meter above 4185 would bring 79.
+  - A hold is filled in the field (ore, wreckage, derelict loot): no command
+    loads it from the stockpile. What the exchange takes is therefore field
+    cargo, including cargo a full store would not accept (`cargo_blocked`).
+  - The four numbers (25%, 75%, 15%, the window) are provisional.
+  - Standing orders do not use the exchange, and the built-in bots do not
+    either.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
   the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2

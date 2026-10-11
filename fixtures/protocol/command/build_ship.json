@@ -1,6 +1,5 @@
 {
   "action": "build_ship",
   "count": 3,
-  "reserve": false,
   "ship_class": "Frigate"
 }

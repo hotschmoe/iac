@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../console/economy_view.dart' show shortReason;
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
@@ -83,10 +84,18 @@ class GameController extends ChangeNotifier {
     switch (m) {
       case proto.TickUpdate(:final events):
         for (final e in events ?? const <proto.GameEvent>[]) {
+          if (e.kind is proto.ExchangedEvent) _quoteAsked.clear();
           _events.add(e);
         }
       case proto.GameEvent():
+        if (m.kind is proto.ExchangedEvent) _quoteAsked.clear();
         _events.add(m);
+      case proto.ExchangeQuote(:final terms):
+        if (_quoteTyped.remove((terms.fleetId, terms.give, terms.want))) {
+          for (final line in quoteLines(m).reversed) {
+            _mapper.pushLog(line, EventLevel.bright);
+          }
+        }
       default:
         break;
     }
@@ -364,6 +373,10 @@ class GameController extends ChangeNotifier {
     }
     _oddsTimers.clear();
     _oddsWanted.clear();
+    for (final t in _quoteTimers.values) {
+      t.cancel();
+    }
+    _quoteTimers.clear();
     _retry?.cancel();
     _msgSub?.cancel();
     _statusSub?.cancel();
@@ -485,8 +498,10 @@ class GameController extends ChangeNotifier {
   }
 
   /// Queue the card at [index] (the selection by default). Locked and
-  /// maxed cards are answered locally; the server stays the judge of
-  /// everything else, including whether the player can pay.
+  /// maxed cards are answered locally, and so is a shipyard batch the
+  /// stockpile does not cover, which is paid in full when it is ordered and
+  /// would be refused. The server stays the judge of everything else: a
+  /// building or a tech queues whether or not the player can pay yet.
   void activateHomeworldCard([int? index]) {
     final c = _state.catalog;
     final i = index ?? hwCursor;
@@ -498,6 +513,9 @@ class GameController extends ChangeNotifier {
     final String name;
     final proto.Command command;
     final String echo;
+    proto.Resources batch(proto.Resources unit) =>
+        proto.Resources(metal: unit.metal * shipBatch, crystal: unit.crystal * shipBatch, deuterium: unit.deuterium * shipBatch);
+    String? short;
     switch (hwTab) {
       case HomeworldTab.buildings:
         final o = c.buildings[i];
@@ -520,6 +538,7 @@ class GameController extends ChangeNotifier {
         name = o.shipClass.label;
         command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
         echo = 'ship ${o.shipClass.label} x$shipBatch';
+        short = shortReason(_state.stock, batch(o.unitCost));
       case HomeworldTab.defence:
         final o = c.defences[i];
         requires = o.requires;
@@ -527,6 +546,7 @@ class GameController extends ChangeNotifier {
         name = o.kind.label;
         command = proto.BuildDefenceCommand(kind: o.kind, count: shipBatch);
         echo = 'defence ${o.kind.label} x$shipBatch';
+        short = shortReason(_state.stock, batch(o.unitCost));
       case HomeworldTab.storage:
         return;
     }
@@ -536,6 +556,8 @@ class GameController extends ChangeNotifier {
       note('$name is locked: needs ${unmet.join(', ')}', level: EventLevel.bright);
     } else if (maxed) {
       note('$name is already at its maximum level', level: EventLevel.bright);
+    } else if (short != null) {
+      note('$name x$shipBatch not ordered: ${short.replaceFirst('Short', 'short')}. A batch is paid in full when it is ordered.', level: EventLevel.bright);
     } else {
       note('> $echo', level: EventLevel.full);
       sendCommand(command);
@@ -598,7 +620,8 @@ class GameController extends ChangeNotifier {
   }
 
   /// Cancel the [index]th running item of [queue] (half refunded), or with
-  /// [waiting] the [index]th item still waiting (nothing was paid). The
+  /// [waiting] the [index]th item still waiting (a building or a tech paid
+  /// nothing; a shipyard batch paid when ordered and gets half back). The
   /// command carries the item's stable id, so a line that moves under the
   /// click cannot change what is cancelled.
   void cancelHomeworldQueue(proto.QueueType queue, {int index = 0, bool waiting = false}) {
@@ -698,6 +721,48 @@ class GameController extends ChangeNotifier {
     });
   }
 
+  final Map<TradeKey, Timer> _quoteTimers = {};
+  final Map<TradeKey, (double?,)> _quoteWanted = {};
+  final Map<TradeKey, (int, double?)> _quoteAsked = {};
+  final Set<TradeKey> _quoteTyped = {};
+
+  /// Ask the server what [amount] of [give] would bring [fleetId] in [want]
+  /// at the hub's exchange (`exchange_quote`); without [amount], all the
+  /// hold carries. Debounced, and skipped while a recent (under 3 ticks)
+  /// answer or request for the same trade stands; the answer lands in
+  /// [GameState.quotes].
+  void requestQuote(int fleetId, proto.ResourceKind give, proto.ResourceKind want, {double? amount}) {
+    if (fleetId == 0 || !hasState || !isLive) return;
+    final key = (fleetId, give, want);
+    if (_quoteTimers.containsKey(key)) {
+      if (_quoteWanted[key] == (amount,)) return;
+      _quoteTimers.remove(key)?.cancel();
+    }
+    final asked = _quoteAsked[key];
+    if (asked != null && asked.$2 == amount) {
+      if (!state.quoteNeedsRefresh(fleetId, give, want) || state.tick - asked.$1 < previewRefreshTicks) return;
+    }
+    _quoteWanted[key] = (amount,);
+    _quoteTimers[key] = Timer(previewDebounce, () {
+      _quoteTimers.remove(key);
+      if (_disposed || !isLive) return;
+      _quoteAsked[key] = (state.tick, amount);
+      sendCommand(proto.ExchangeQuoteCommand(fleetId: fleetId, give: give, want: want, amount: amount));
+    });
+  }
+
+  /// Sell [amount] of [give] from the selected fleet's hold at the exchange
+  /// for [want]; without [amount], all of it.
+  void trade(proto.ResourceKind give, proto.ResourceKind want, {double? amount}) {
+    final id = activeFleetId;
+    if (id == null) {
+      note('No fleet to trade with', level: EventLevel.bright);
+      return;
+    }
+    note('> trade ${amount == null ? 'all' : amount.round()} ${give.name} for ${want.name}', level: EventLevel.full);
+    sendCommand(proto.ExchangeCommand(fleetId: id, give: give, want: want, amount: amount));
+  }
+
   /// Windshield: fly the active fleet one hop in [direction] (0-5, same
   /// order as [proto.HexDirection]) if the server lists that lane.
   void moveFleet(int direction) {
@@ -752,6 +817,9 @@ class GameController extends ChangeNotifier {
     switch (result) {
       case ParsedSend(:final messages):
         for (final m in messages) {
+          if (m case proto.CommandMessage(command: proto.ExchangeQuoteCommand q)) {
+            _quoteTyped.add((q.fleetId, q.give, q.want));
+          }
           send(m);
         }
       case ParsedLocal(:final lines):

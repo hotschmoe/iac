@@ -10,6 +10,7 @@ use crate::scaling::{
 };
 use crate::hex::Hex;
 use crate::pace::Pace;
+use crate::world::{HubService, HUB};
 use crate::Resources;
 
 // ── Client → Server Messages ──────────────────────────────────────
@@ -90,18 +91,22 @@ pub enum Command {
         #[serde(default)]
         reserve: bool,
     },
-    /// Queue `count` ships as one batch; same rule as `build`. A batch pays
-    /// and starts one unit at a time: the batch is one order, and each unit
-    /// is paid when it starts, so a batch of 5 with money for 2 builds 2.
+    /// Order `count` ships as one batch. Unlike a building or research
+    /// order, a batch is accepted only if the stockpile covers every unit
+    /// now, and it pays then; otherwise it is refused with
+    /// `InsufficientResources` and a message naming the shortfall per
+    /// resource. A paid batch gets a stable `id` and starts at once when the
+    /// yard is free and what it needs is built; otherwise it waits for the
+    /// yard or for something queued ahead of it (a Shipyard level, a tech).
+    /// Also refused with `NoShipyard`, `ShipLocked`, `StorageTooSmall` (a
+    /// batch larger than a stockpile cap) or `QueueFull`.
     #[serde(rename = "build_ship")]
     BuildShip {
         ship_class: ShipClass,
         #[serde(default = "default_ship_count")]
         count: u16,
-        #[serde(default)]
-        reserve: bool,
     },
-    /// Queue `count` defence structures in the shipyard queue; same rule as
+    /// Order `count` defence structures in the shipyard queue; same rule as
     /// `build_ship`. They stay at home and never burn fuel; rejected with
     /// `DefenceLocked` until the Defense Grid and research it needs are in place.
     #[serde(rename = "build_defence")]
@@ -109,19 +114,21 @@ pub enum Command {
         kind: DefenceKind,
         #[serde(default = "default_ship_count")]
         count: u16,
-        #[serde(default)]
-        reserve: bool,
     },
-    /// Cancel an item that has started, by its stable `id`; half of what it
-    /// paid comes back (one unit for a ship batch; units already built are
-    /// kept) and a `Queue` event with `action: Cancelled` says what was
-    /// refunded. `InvalidTarget` when `id` is not running in `queue_type`.
+    /// Cancel an item that has started, by its stable `id`. A building or
+    /// research level gets back half of what it paid. A shipyard batch gets
+    /// back half the price of every unit not yet delivered (the unit under
+    /// way is not delivered; units already built are kept). A `Queue` event
+    /// with `action: Cancelled` says what was refunded. `InvalidTarget` when
+    /// `id` is not running in `queue_type`.
     #[serde(rename = "cancel_build")]
     CancelBuild { queue_type: QueueType, id: u64 },
-    /// Remove an item that is still waiting in the queue, by its stable `id`;
-    /// nothing was paid for it, so nothing is refunded (a `Queue` event with
-    /// `action: Cancelled` confirms it). `InvalidTarget` when `id` is not
-    /// waiting in `queue_type`, even if it exists in another queue.
+    /// Remove an item that is still waiting in the queue, by its stable `id`.
+    /// A waiting building or research order has paid nothing, so nothing is
+    /// refunded; a waiting shipyard batch paid when it was ordered and gets
+    /// half back (a `Queue` event with `action: Cancelled` says how much).
+    /// `InvalidTarget` when `id` is not waiting in `queue_type`, even if it
+    /// exists in another queue.
     #[serde(rename = "cancel_queued")]
     CancelQueued { queue_type: QueueType, id: u64 },
     /// Ask for the score table. The reply is a `leaderboard` message.
@@ -171,6 +178,36 @@ pub enum Command {
     /// This works anywhere, so a fresh fleet can rescue a stranded one.
     #[serde(rename = "merge")]
     Merge { fleet_id: u64, other_fleet_id: u64 },
+    /// Sell `amount` units of `give` from the hold of `fleet_id` to the hub's
+    /// exchange and take `want` into the hold; without `amount`, all of
+    /// `give` the fleet carries. The fleet must stand idle on a hub sector
+    /// that offers the exchange (`WorldInfo.hub`). The answer is an
+    /// `Exchanged` event; see `ExchangeTerms` for the rate. Refused, with
+    /// nothing changed, when the fleet is elsewhere (`NotInSector`) or busy
+    /// (`OnCooldown`), holds less than `amount` or none (`NoResources`),
+    /// would get back less than one unit, names one resource twice or an
+    /// `amount` that is not positive (`InvalidCommand`), or the trade would
+    /// overfill the hold (`CargoFull`).
+    #[serde(rename = "exchange")]
+    Exchange {
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        amount: Option<f32>,
+    },
+    /// Ask what `exchange` with the same fields would give, without trading.
+    /// The reply is an `exchange_quote` message. It answers for a fleet
+    /// anywhere and for an `amount` the fleet does not carry: `refusal` then
+    /// says why the trade itself would be refused right now.
+    #[serde(rename = "exchange_quote")]
+    ExchangeQuote {
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        amount: Option<f32>,
+    },
 }
 
 fn default_ship_count() -> u16 {
@@ -314,6 +351,71 @@ pub enum ServerMessage {
     Odds(FleetOdds),
     #[serde(rename = "leaderboard")]
     Leaderboard(LeaderboardReply),
+    #[serde(rename = "exchange_quote")]
+    ExchangeQuote(ExchangeQuote),
+}
+
+/// One trade at the hub's exchange, quoted or made: `amount` of `give` for
+/// `receive` of `want`.
+///
+/// The exchange trades resource for resource and always keeps a fee, so a
+/// trade never raises what the player owns. Par values are the score
+/// weights: metal 1, crystal 1.5, deuterium 2 a unit. Each player has a
+/// meter that counts the weight they sold (`ExchangeMeter`). The fee on a
+/// unit of weight is 25 percent of par while the meter is empty and rises in
+/// a straight line to 75 percent when it reads `span`, and stays there
+/// beyond. A trade pays the fee of every unit it moves the meter through,
+/// so one large order and the same order in pieces return the same;
+/// `receive` is rounded down to whole units. The meter falls by one `span`
+/// every `window_ticks`, whether or not the player is connected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExchangeTerms {
+    pub fleet_id: u64,
+    pub give: ResourceKind,
+    pub want: ResourceKind,
+    /// Units of `give` handed over.
+    pub amount: f32,
+    /// Units of `want` that come back: whole units, rounded down.
+    pub receive: f32,
+    /// Units of `want` the same `amount` is worth at par, with no fee.
+    pub par: f32,
+    /// The share of par the exchange keeps on this trade, `1 - receive / par`.
+    pub fee: f32,
+    /// The player's meter before the trade.
+    pub meter: ExchangeMeter,
+    /// And after it.
+    pub meter_after: ExchangeMeter,
+}
+
+/// A player's standing at the exchange.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExchangeMeter {
+    /// Weight sold and not yet forgotten.
+    pub pressure: f32,
+    /// The pressure at which the fee stops rising: 15 percent of what the
+    /// player's own mines make in one window, in weight units. It grows
+    /// with the mines; 0 for an empire with no mine output, which pays the
+    /// top fee.
+    pub span: f32,
+    /// The fee on the next unit of weight sold, 0.25 to 0.75.
+    pub fee: f32,
+    /// The meter forgets one `span` every this many ticks.
+    pub window_ticks: u64,
+    /// Ticks until the meter is empty again; 0 when it is, absent when it
+    /// does not fall (`span` is 0).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub clear_in: Option<u64>,
+}
+
+/// Answer to `exchange_quote`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExchangeQuote {
+    #[serde(flatten)]
+    pub terms: ExchangeTerms,
+    /// Why `exchange` with the same fields would be refused right now;
+    /// absent when it would go through.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refusal: Option<String>,
 }
 
 /// The score table: one ranking for every player, human or agent.
@@ -523,6 +625,17 @@ pub struct WorldInfo {
     /// Simulation estimate for a competent player; present for presets.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub estimate: Option<WorldEstimate>,
+    /// The neutral post at the centre of the map: every hub sector and what
+    /// it offers. A hub sector has no ore, no hostile group and no derelict.
+    #[serde(default)]
+    pub hub: Vec<HubSite>,
+}
+
+/// One sector of the hub.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HubSite {
+    pub location: Hex,
+    pub services: Vec<HubService>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -544,6 +657,10 @@ impl WorldInfo {
                 first_cruiser_s: p.first_cruiser_s,
                 endgame_s: p.endgame_s,
             }),
+            hub: HUB
+                .iter()
+                .map(|(location, services)| HubSite { location: *location, services: services.to_vec() })
+                .collect(),
         }
     }
 }
@@ -556,6 +673,9 @@ pub struct PlayerState {
     pub name: String,
     pub resources: Resources,
     pub homeworld: Hex,
+    /// Where the player's meter at the hub's exchange stands this tick.
+    #[serde(default)]
+    pub exchange: ExchangeMeter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1136,6 +1256,25 @@ pub enum WaitReason {
     Order,
 }
 
+/// Why a shipyard batch has not started yet. A batch is paid for when it is
+/// ordered, so it never waits on resources or behind a reserving order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BatchWait {
+    /// The yard is busy with a batch ahead of it.
+    Slot,
+    /// A Shipyard level, building or tech it needs is still being built.
+    Prerequisite,
+}
+
+impl From<BatchWait> for WaitReason {
+    fn from(wait: BatchWait) -> WaitReason {
+        match wait {
+            BatchWait::Slot => WaitReason::Slot,
+            BatchWait::Prerequisite => WaitReason::Prerequisite,
+        }
+    }
+}
+
 /// A building waiting to start. A free slot starts the earliest waiting
 /// order that can start now; an order that cannot keeps its place unless it
 /// has `reserve` set, in which case it holds the line while short. `id` is
@@ -1178,33 +1317,30 @@ pub struct QueuedResearch {
     pub start_in: Option<u64>,
 }
 
-/// A shipyard order waiting its turn; see `QueuedBuild`. The batch is one
-/// order that pays per unit: `built` of `count` are done, `cost` is the whole
-/// batch, `unit_cost` the next unit, `ticks` the time for one unit, and
-/// `waiting_for` the shortfall for the next unit only. A batch with some
-/// units built that cannot pay for the next one goes back to waiting here.
+/// A shipyard batch that is paid for and waiting its turn. `id` is stable
+/// for the life of the order (cancel by it; half of `cost` comes back).
+/// `cost` is what the whole batch paid when it was ordered, `unit_cost` one
+/// unit, `ticks` the time for one unit; `start_in` is the estimated ticks
+/// until its first unit starts (absent when it depends on something that
+/// cannot be estimated). A batch that has started builds every unit without
+/// stopping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedShip {
     pub id: u64,
     /// A ship class or a defence structure: the wire carries just its name.
     pub item: ShipyardItem,
     pub count: u16,
-    #[serde(default)]
-    pub built: u16,
-    #[serde(default)]
-    pub reserve: bool,
     pub cost: Resources,
     pub unit_cost: Resources,
     pub ticks: u64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub waiting_for: Option<Resources>,
-    pub waiting_on: WaitReason,
+    pub waiting_on: BatchWait,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub start_in: Option<u64>,
 }
 
-/// The unit in production. `built` units of `count` are finished; the one
-/// under way was paid for when it started.
+/// The batch in production. `built` units of `count` are delivered and one
+/// more is under way until `end_tick`; the whole batch was paid for when it
+/// was ordered.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipyardQueueItem {
     pub id: u64,
@@ -1274,12 +1410,22 @@ pub enum EventKind {
     StorageFull(StorageFullEvent),
     ChartDelivered(ChartDeliveredEvent),
     Queue(QueueEvent),
+    Exchanged(ExchangedEvent),
+}
+
+/// A fleet traded at the hub's exchange: what it gave, what it got, the fee
+/// and where the player's meter now stands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangedEvent {
+    pub sector: Hex,
+    #[serde(flatten)]
+    pub terms: ExchangeTerms,
 }
 
 /// What happened to a queue order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QueueAction {
-    /// The order began and was paid for.
+    /// The order began.
     Started,
     /// The order was accepted but cannot start yet.
     Waiting,
@@ -1300,15 +1446,21 @@ pub struct QueueEvent {
     /// "Metal Mine Lv.5", "Corvette x3".
     pub item: String,
     pub action: QueueAction,
-    /// `Started`: what was paid (a ship batch pays per unit: its first unit;
-    /// later units start without an event).
+    /// What this event took from the stockpile. A building or research
+    /// level pays when it starts (`Started`). A shipyard batch pays for
+    /// every unit when it is ordered: on the event that answers the order,
+    /// `Started` if it began at once or `Waiting` if it joined the line, and
+    /// nothing on the later `Started` of a batch that waited.
     #[serde(default)]
     pub paid: Resources,
-    /// `Cancelled`: what came back (half of the payment for a started item,
-    /// nothing for a waiting one).
+    /// `Cancelled`: what came back. Half of the payment for a started
+    /// building or research level, nothing for a waiting one; for a
+    /// shipyard batch, waiting or started, half the price of the units not
+    /// yet delivered.
     #[serde(default)]
     pub refunded: Resources,
-    /// `Waiting`: the exact shortfall, absent when nothing is short.
+    /// `Waiting`: the exact shortfall of a building or research order,
+    /// absent when nothing is short. Never present for a shipyard batch.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub waiting_for: Option<Resources>,
     /// `Waiting`: why it has not started.
@@ -1712,6 +1864,7 @@ pub enum ErrorCode {
     ResourceNotPresent = 1016,
     StorageTooSmall = 1017,
     DefenceLocked = 1018,
+    InsufficientResources = 1019,
     AuthFailed = 2000,
     AlreadyAuthenticated = 2001,
     InvalidName = 2002,

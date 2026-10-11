@@ -2,9 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Bumped when costs, times or production formulas change; a database from
-/// another economy version is refused (start a new world).
-pub const ECONOMY_VERSION: u32 = 2;
+/// Bumped when costs, times, production formulas or the moment an order pays
+/// change; a database from another economy version is refused (start a new
+/// world).
+pub const ECONOMY_VERSION: u32 = 3;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 3;
 
@@ -349,6 +350,15 @@ impl ResourceKind {
             ResourceKind::Deuterium => "deuterium",
         }
     }
+
+    /// What one unit counts toward score, and its par value at the exchange.
+    pub fn weight(self) -> f32 {
+        match self {
+            ResourceKind::Metal => 1.0,
+            ResourceKind::Crystal => 1.5,
+            ResourceKind::Deuterium => 2.0,
+        }
+    }
 }
 
 impl Resources {
@@ -564,6 +574,18 @@ pub const POLICY_FUEL_PAYBACK: f32 = 1.5;
 pub const POLICY_SHIELDS_READY: f32 = 0.95;
 /// How far along the lanes a doctrine looks for its next sector.
 pub const POLICY_SEARCH_HOPS: u8 = 32;
+
+/// The hub exchange (`scaling::exchange_return`). These four numbers are a
+/// proposal the owner has not signed off: change them here and in
+/// `docs/design/economy/sim.py`.
+/// The fee on the first unit sold with an empty meter, as a share of par.
+pub const EXCHANGE_FEE_MIN: f64 = 0.25;
+/// The fee once the meter reads its span or more.
+pub const EXCHANGE_FEE_MAX: f64 = 0.75;
+/// The meter's span: this share of what the player's mines make in one window.
+pub const EXCHANGE_METER_SHARE: f64 = 0.15;
+/// One window in pace-1 ticks (attention class); the meter forgets one span per window.
+pub const EXCHANGE_WINDOW_TICKS: u64 = 86_400;
 
 /// WebSocket server defaults.
 pub const DEFAULT_PORT: u16 = 7777;

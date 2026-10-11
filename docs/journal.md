@@ -2063,8 +2063,9 @@ Engine speed was the limit of the single-player build: a week away from a season
 world with 20 check-in bots took 17 minutes to catch up (entry "single player in one
 browser tab"). No rule, constant, wire message or bot decision was changed. The same
 seed and the same orders give the same world, tick for tick, and that was the test of
-every step. Branch `worktree-agent-a4fd2784a38fcfc24`, eleven commits on master as of
-7845559, not merged.
+every step. Branch `worktree-agent-a4fd2784a38fcfc24`: eleven commits on master as of
+7845559, where everything below was measured, then master merged in (see "Found on
+the way"). Not merged into master.
 
 **How "the same" was checked.** A scratch harness (not in the repository) drives
 `iac_solo::Machine::call` the way the worker does: `new_game`, `advance` in slices,
@@ -2275,16 +2276,283 @@ ways to compute the same thing.
   in the odds) is the likely place. It matters the day a save moves between a server
   and a browser.
 - Master moved while this was done (the hub's exchange, ship batches that pay when
-  ordered). `git merge-tree` merges this branch with it without a conflict.
+  ordered) and was merged into the branch at the end. Git found no conflict outside
+  this journal, and the result did not compile: the hub's sector is written out by
+  hand in `compute_sector` and needed its `ore_units`. The hashes were then taken
+  again, the new master against the merged branch: B, C, D, E, F, the first four
+  days of A and both restarts match (71 hashes and the two restarts). The speeds
+  are the same as above within the spread (B 303 to 631, D 2529 to 5627).
 
-**Checked.** `cargo build --workspace --all-targets`, `cargo test --workspace
---no-fail-fast` (the chart recording untouched), `cargo clippy --workspace
---all-targets`, `tools/check_sim_constants.py`, and the wasm builds of `iac-sim` and
-`iac-solo`, on the last commit. Native: all 83 hashes of A to F, both restarts and
-the live-tick run match master. Wasm: A, B, C, E, L6 and the live-tick run match
-master's wasm.
+**Checked.** On the last commit before the merge and again on the merge:
+`cargo build --workspace --all-targets`, `cargo test --workspace --no-fail-fast`
+(the chart recording untouched), `cargo clippy --workspace --all-targets`,
+`tools/check_sim_constants.py`, and the wasm builds of `iac-sim` and `iac-solo`.
+Before the merge, native: all 83 hashes of A to F, both restarts and the live-tick
+run match master; wasm: A, B, C, E, L6 and the live-tick run match master's wasm.
 
 **Not verified.** A browser: wasm was run under node only. Other seeds than the one
-each case uses. A server with SQLite beyond its own tests. The trial merge with the
-new master was built and tested in a scratch copy (below) but its speed was not
-measured.
+each case uses. A server with SQLite beyond its own tests. After the merge: the
+whole week, wasm, and the live-tick run were not repeated.
+
+## 2026-10-11: the hub and its exchange
+
+Owner decision (decisions.md, "the hub, PvP by zone, outposts, more worlds"): a
+neutral post at the centre with an NPC exchange that is a surplus sink, never a
+faucet, with a per-player rate that worsens with use and recovers, and no hard cap.
+The numbers are the proposal of `starting-positions-2026-10-10.md` section 6.3, which
+the owner has not signed off: four constants in `shared/src/constants.rs`
+(`EXCHANGE_FEE_MIN` 0.25, `EXCHANGE_FEE_MAX` 0.75, `EXCHANGE_METER_SHARE` 0.15,
+`EXCHANGE_WINDOW_TICKS` 86400, attention class), mirrored in `sim.py` and checked by
+`check_sim_constants.py`. Branch `worktree-agent-aecb404c2c2075d43`, not merged.
+
+**The rule.** A fleet standing idle on the hub sector sells one resource from its hold
+and takes another into the same hold. Par is the score weight (`ResourceKind::weight`,
+which `resource_weight` now reads too). Each player has a meter in weight units: two
+numbers on the `Player` row, the reading and the tick it was read, so it costs nothing
+per tick. The fee on a unit of weight is 25% with the meter empty, rises in a straight
+line to 75% at one span and is flat beyond; a trade pays the integral
+(`scaling::exchange_return`), so an order in pieces returns what the whole order would.
+The span is 15% of one window of the player's own mine output; the meter falls one
+span per window. The receipt is rounded down to whole units, which is the only place
+an order in pieces can differ, and only downward.
+
+**Choices made here, for the owner to confirm.**
+- *The hub is data.* `world::HUB` lists hub sectors with their services (one sector,
+  one service today) and goes out in `WorldInfo.hub`; nothing tests for the origin. A
+  hub sector generates as empty space with no ore, group or derelict, which the origin
+  already was, so no sector changed and `WORLDGEN_VERSION` stands. Patrols no longer
+  jump into a hub sector; with nothing to attack and nothing wandering in, there is no
+  fight there.
+- *A trade that would not fit is refused*, not trimmed, with the numbers. Only
+  deuterium for metal and crystal for metal can grow the load.
+- *Refused too:* a fleet elsewhere or in transit, more than the hold carries, an empty
+  hold, one resource named twice, an amount that is not positive, and a trade that
+  returns less than one unit. Every refusal is a sentence from one place
+  (`GameEngine::exchange_deal`), which the quote, the error and the tests all read.
+- *The quote answers from anywhere* and for an amount the fleet does not carry, with
+  the reason the trade itself would be refused now. A player decides at home whether
+  the trip pays.
+- *The answer to a trade is an event* (`Exchanged`), like the answer to a queue order,
+  carrying the terms and the meter before and after; `PlayerState.exchange` carries
+  the meter every tick.
+- *The meter falls at the rate of the mines the player has now.* A mine finished
+  between two trades speeds up the whole interval. Settling the meter at each mine
+  completion would be exact; it would also put exchange code in the queue handlers.
+- *No standing order trades, and the bots do not either.* A pilot that flies to the
+  hub by the chart, with odds for every hop and cargo the store refused, is not a
+  small addition to `bot/field.rs`.
+
+**What it does not do.** Nothing loads a hold from the stockpile. The exchange
+therefore takes field cargo only: ore, wreckage, derelict loot, and cargo a full store
+would not accept. Mine output lost at the cap still has no way out. A `load` command
+needs a rule for cargo that must stay aboard at the dock, where every hold unloads each
+tick; that is a decision, not a detail. A new empire's span is small (144 weight at
+season pace with two level-1 mines), so its first hold already pays about half.
+A sector in sight with nobody in it is still rated at its ring's group, the hub
+included: previews and doctrines see T1 odds at a place where nothing can fight.
+
+**Clients.** Web: the hub is drawn on the map from `WorldInfo.hub` and the inspector
+says what the next unit would pay; in the windshield the exchange is a contact and a
+station in the scene, `T` or the Trade tile opens a panel that asks the server for a
+quote on every change and sends the trade (it never computes a rate), and `quote` and
+`trade` work from the command bar. TUI: `e` opens an overlay that does the same, the
+hub is `X` on the star map. Headless: the two commands and their replies pass through
+unchanged. `play.py` prints quotes, trades and the meter.
+
+**Tests.** `sim/tests/exchange.rs`: a Hauler flies 632 metal to the hub and gets the
+quoted 225 deuterium; a seeded run of trades with waits between never returns more
+than 75% of the weight given and never moves the score; four orders in pieces against
+the whole order; the meter falls one span per window, is written with the player's
+row, and comes back identical from a JSON snapshot; every refusal with its sentence;
+the hub empty on six seeds and over 200 patrol jumps from its neighbours that never
+enter it (the last one fails with the rule switched off). `server/tests/scenarios.rs`: a
+real client harvests, is quoted from afar, flies to the hub, trades over the
+WebSocket, and after the server is killed and restarted the meter and the hold are as
+they were. Flutter: fixtures for every new shape, the panel at 1440 and 390 with long
+numbers and a long refusal, the trade against the scripted world. `solo_e2e.dart`
+asks the engine in the worker for a quote. No recorded hash changed: `SAVE_FORMAT` is
+2 because the snapshot's player rows grew.
+
+**Not verified.** No trade was made in a browser against a real engine: the web panel
+is driven in widget tests against recorded states and the scripted world, and the
+single-player check only quotes. The TUI overlay was run in a pseudo-terminal against
+a real server and shown a quote; Enter was pressed away from the hub, not at it.
+Persistent and blitz pace were not played, only season, test and pace 1. `play.py`
+was exercised on fixtures, not in a session (the harness is on hold).
+
+## 2026-10-11: batches pay when they are ordered, and queue boxes that fit
+
+Owner decision (decisions.md, top entry): a ship or defence batch needs its whole
+price in the stockpile when it is ordered; buildings and research still queue ahead
+of resources. With it a web client fault: the small boxes over the homeworld
+overflowed when an order was waiting. No cost, time, production, pay, point value or
+cap was changed. Branch `worktree-agent-a14873c5a5d25dc14`, not merged.
+
+**The rule.**
+- *Buildings and research* are as they were. An order that can ever start is
+  accepted whether or not the stockpile covers it, pays when it starts, reports
+  what it is short of while it waits (`WaitReason::Resources`, `short`) and may hold
+  the line with `reserve`. Cancelled while it runs: half back. Cancelled while it
+  waits: nothing, it paid nothing.
+- *A ship or defence batch* is accepted only if the stockpile covers every unit now,
+  and the whole price leaves the stockpile at that moment. Otherwise it is refused
+  with `InsufficientResources` (1019, new), nothing is queued and nothing is charged:
+  with 600 metal, 250 crystal and 70 deuterium in stock, five scouts get `Scout x5
+  costs 1000 metal, 250 crystal and 150 deuterium; the stockpile is short by 400
+  metal and 80 deuterium. Nothing was ordered: a batch is paid in full when it is
+  ordered. The stockpile covers 2.` (the last sentence only for a batch of more than
+  one with at least one unit covered). A batch the Storage Vault could
+  never hold is still `StorageTooSmall`, and that sentence now adds how many units
+  would fit.
+- A paid batch can still wait: for the yard (another batch is in it) or for a
+  Shipyard or prerequisite that is queued and not built. It cannot wait for
+  resources, so a ship entry has no `short` and no `reserve`; its wait is a
+  `BatchWait` (`Slot` or `Prerequisite`), a type with no third case.
+- Before this a batch paid one unit at a time as each unit started, and a batch that
+  ran short went back to waiting part built. Both are gone: the running batch
+  carries `built` and starts its next unit in place.
+- *Cancelling a batch* returns half of what it paid for every unit not yet
+  delivered, the unit under way included, whether the batch waits or runs. Units
+  delivered stay.
+
+**Protocol.** `BuildShip` and `BuildDefence` lose `reserve`. `QueuedShip` is `id,
+item, count, cost, unit_cost, ticks, waiting_on: BatchWait, start_in`. `QueueEvent.paid`
+is what that event took from the stockpile: a building or tech pays on `Started`; a
+batch pays on the event that answers the order, `Started` or `Waiting`, and its later
+`Started` carries zero. `ECONOMY_VERSION` 2 to 3, so the server refuses a database
+from before and single player refuses an older save (`SAVE_FORMAT` 1 to 2): a
+waiting batch in an old world was unpaid and would load as paid. No SQLite column was
+added or removed; ship rows write 0 for `reserve`. Fixtures regenerated
+(`queue__batch_waiting` is new), Dart mirror follows.
+
+**Engine.** `order_shipyard` pays `ShipyardItem::batch_cost(count)` and then starts
+or queues. `queue::batches` gives each waiting batch its estimate: the running batch
+holds the yard for its remaining units, each waiting one for its count.
+
+**Bots.** The home planner is unchanged for buildings and research. For the yard it
+orders only what is paid for: a wanted batch is cut to the units the stockpile
+covers, and it orders nothing while a batch already waits (money paid far ahead of
+the yard is money the buildings cannot use). When not one unit is covered the
+planner remembers one unit's deuterium as what the yard is saving for, and the pilot
+leaves that much out of its fuel money as it did when the unpaid order sat in the
+queue (`Memory.yard_deuterium`). Surplus batches are cut the same way.
+
+**The box that overflowed.** `clients/web/lib/views/homeworld/queue_strip.dart`, the
+strip of boxes over the homeworld (build slot A, slot B, research, shipyard). Each box
+drew its title in an `Expanded` and then the queue's time text at 15 px with no
+flex. For a running item that text is a clock. For a waiting order it was the whole
+sentence ("short 274 metal, 27 crystal, 70 deuterium, starts in about 12:40"), wider
+than the box: 474 px over in the building box and 42 px over in the shipyard box at
+1440. Now the clock stays beside the title for a running item only, and a waiting
+order gets its own line under the title, name first, where the sentence wraps. The
+research box shows a waiting tech as the others do, and Cancel on a box with nothing
+running cancels the waiting order. `PanelHeader` gave title and subtitle equal
+thirds and cut "BUILD SLOT A" short on the overview cards; the title now has three
+parts of the row to the subtitle's two.
+
+**The order control.** In the web shipyard and defence tabs a batch the stockpile
+does not cover at the chosen count shows `X5 UNAVAILABLE` and `Short by 858 Fe, 78
+Cr, 130 De` on its card, the build button is off with the same line under it, and
+neither the button, Enter nor activating the card sends a command. A typed `ship`
+command still goes to the server and gets its refusal. The TUI card shows `SHORT`
+with the amounts and Enter sends nothing; a paid waiting batch reads "paid, yard
+busy" or "paid, needs prerequisite". `play.py` prints what a waiting batch paid.
+
+**Tests.** `sim/tests/empire_arc.rs`: a batch refused with the exact sentence, paid
+in full, two more waiting and paid, a waiting one cancelled for half, a part-built
+one cancelled for half of what is not delivered, the next starting with nothing more
+to pay. With the check switched off the scene fails. `sim/tests/bots.rs`: a check-in
+builder orders only ships and turrets its stockpile covers. `solo/tests`: the refusal
+and the unchanged state through the worker protocol.
+`clients/web/test/order_fit_test.dart`: homeworld boxes, ship and defence cards and
+overview tiles at 1440 and 390 px with a shortfall of 1,234,567 of each resource and
+a paid batch of 1000 waiting; it fails on any layout overflow and on any text that
+leaves its box or is cut. `tool/solo_e2e.dart` in the real browser: a batch of five
+is unavailable and says why, button and Enter send nothing, one scout is paid at
+once, a second is refused and costs nothing, a Shipyard the stockpile cannot pay for
+queues and shows its shortfall, pictures at both widths. The chart recording
+(`chart_golden.txt`) is unchanged.
+
+**Measured.** Season, 7 days, seeds 1 to 3, the default 16 seats, before (the commit
+before this work with the idle count added to `sim-run`) and after. `sim-run` now
+reports, per player, the share of the week each of the building slot, lab and yard
+stood empty. Mean (min-max over seeds), day 7.
+
+| style | total before | total after | core before | core after | idle building / lab / yard, before | after |
+|---|---|---|---|---|---|---|
+| turtle / check-in | 1755 (1556-1874) | 1616 (1466-1874) | 1755 | 1616 | 82/95/97% | 84/95/97% |
+| miner / check-in | 2228 (2022-2332) | 2252 (2065-2360) | 1803 | 1801 | 82/95/97% | 82/95/97% |
+| raider / check-in | 1929 (1702-2234) | 2072 (1857-2350) | 1543 | 1672 | 85/94/94% | 84/95/94% |
+| explorer / check-in | 2187 (1933-2354) | 2272 (2133-2507) | 1749 | 1817 | 83/95/96% | 82/95/96% |
+| mixed / check-in | 2181 (2012-2349) | 2116 (2014-2265) | 1745 | 1693 | 84/95/95% | 84/95/95% |
+| turtle / hands-on | 2400 (2400-2400) | 2400 (2400-2400) | 2400 | 2400 | 77/95/98% | 77/95/98% |
+| miner / hands-on | 4026 (3912-4250) | 3849 (3718-3917) | 3221 | 3079 | 71/95/95% | 72/95/95% |
+| raider / hands-on | 2926 (2861-3002) | 2905 (2873-2931) | 2341 | 2324 | 81/95/92% | 81/95/92% |
+| explorer / hands-on | 3406 (3029-3701) | 3508 (3021-3804) | 2724 | 2806 | 76/95/94% | 75/95/94% |
+| mixed / hands-on | 3086 (2889-3255) | 3195 (3120-3281) | 2469 | 2556 | 79/95/93% | 78/95/92% |
+
+Hybrids, total: turtle 1876 to 1877, miner 2893 to 2803, raider 2225 to 2257,
+explorer 2389 to 2438, mixed 2160 to 2163.
+
+Check-in as a share of the same personality flown hands-on, total by day (mean of
+seeds; day 7 with min-max), before then after:
+
+| | d1 | d2 | d3 | d4 | d5 | d6 | d7 |
+|---|---|---|---|---|---|---|---|
+| turtle, before | 40% | 50% | 48% | 57% | 68% | 81% | 73 (65-78)% |
+| turtle, after | 40% | 46% | 38% | 48% | 61% | 78% | 67 (61-78)% |
+| miner, before | 25% | 22% | 31% | 43% | 50% | 51% | 55 (52-60)% |
+| miner, after | 25% | 22% | 31% | 42% | 51% | 53% | 58 (56-60)% |
+| raider, before | 56% | 44% | 49% | 60% | 67% | 72% | 66 (57-77)% |
+| raider, after | 55% | 46% | 48% | 59% | 64% | 71% | 71 (63-82)% |
+| explorer, before | 37% | 36% | 41% | 40% | 51% | 60% | 65 (55-75)% |
+| explorer, after | 36% | 37% | 42% | 41% | 52% | 54% | 65 (56-72)% |
+| mixed, before | 39% | 45% | 60% | 64% | 66% | 70% | 71 (65-76)% |
+| mixed, after | 38% | 44% | 53% | 63% | 64% | 67% | 66 (61-71)% |
+
+Hybrid on day 7, before then after: turtle 78 then 78%, miner 72 then 73%, raider 76
+then 78%, explorer 70 then 70%, mixed 71 then 68%.
+
+What is noise: all of it, as far as three seeds can say. Every after range overlaps
+its before range. The one number that looks like a finding is the check-in turtle
+(73 to 67%), and it is one seat: seed 1 is the same to the point (1874), seed 2 is
+1556 to 1509, seed 3 is 1836 to 1466. A turtle flies nothing, so its week is the home
+planner alone and cheap to run: eight check-in turtles alone in a world, seeds 1 to
+10, before and after (80 turtle-weeks each, ten seconds a world). Mean day-7 score
+1761 before and 1751 after (median 1824 and 1821); 52 of 80 seats the same to two
+points, 11 up by more than 20 (361 the most) and 10 down (686 the most); idle
+82/95/97% both times. A different order time early in the week sends about a quarter
+of the seats down a different road, in either direction, and the rule does not
+favour one. The idle shares did not move for any style.
+
+**What it says about the gap.** The rule did not open it and does not close it.
+Check-in stays at 58 to 71% of hands-on on day 7 and 25 to 55% on day 1. The idle
+columns say where to look: a check-in empire's building slot stands empty 82 to 84%
+of the week against 72 to 81% for a pilot, and lab and yard are empty about 95% for
+everybody. Every style leaves its slots empty most of the week, so the queues are
+short of resources or of orders far more than of time. The count does not yet say
+which: an empty slot with an order waiting on resources and an empty slot with no
+order at all are counted alike. Splitting them is the next measurement; it would say
+whether the limit is income (production, costs and times, none of them open here) or
+the planner (what it queues at a look-in, and how many look-ins a day: `--sessions`,
+default 4). Neither was tried.
+
+**Seen on the way (not changed).**
+- A refund is added to the stockpile without regard to the Storage Vault, as a
+  running building's refund already was. Ordering a batch and cancelling it parks
+  half its price above the cap at the cost of the other half. A lost raid takes at
+  most 8% of exposed metal and crystal and 5% of deuterium, so hiding stock in a
+  batch from a raid loses more than the raid would.
+- A paid batch whose queued Shipyard or prerequisite is cancelled stays paid and
+  waiting until its owner cancels it for half or queues the prerequisite again.
+- The boxes over the homeworld write a shortfall as "short 1234567 metal" (the
+  server's summary) and the cards as "Short by 1,234,567 Fe". Both fit; they do not
+  match.
+- The offer of browser notices covers the order button at desktop width and the
+  lower ship cards at phone width for its thirty seconds, and its buttons are not in
+  the semantics tree. The browser check waits it out before its pictures.
+
+**Not verified.** The TUI is compiled and its code path read, not driven against a
+live server. `play.py` is syntax-checked and its offline tests pass; the harness is
+on hold and was not run. Persistent pace and blitz were not measured. The browser
+run is headless Chromium at 1440 and 390 px; no other browser and no real phone.

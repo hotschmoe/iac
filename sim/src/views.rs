@@ -17,12 +17,7 @@ pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
     let player = engine.players.get(&player_id)?;
     Some(GameState {
         tick: engine.current_tick(),
-        player: PlayerState {
-            id: player.id,
-            name: player.name.clone(),
-            resources: player.resources,
-            homeworld: player.homeworld,
-        },
+        player: player_state(engine, player),
         fleets: collect_player_fleets(engine, player_id),
         homeworld: build_homeworld_state(engine, player),
         known_sectors: engine.known.chart(engine, player_id),
@@ -36,12 +31,7 @@ pub fn tick_update(engine: &GameEngine, player_id: u64, events: &[GameEvent]) ->
     let player_data = engine.players.get(&player_id);
     let sector_updates = engine.known.tick_updates(engine, player_id);
 
-    let player = player_data.map(|p| PlayerState {
-        id: p.id,
-        name: p.name.clone(),
-        resources: p.resources,
-        homeworld: p.homeworld,
-    });
+    let player = player_data.map(|p| player_state(engine, p));
     let homeworld_update = player_data.map(|p| build_homeworld_state(engine, p));
     let player_events: Vec<GameEvent> = player_data
         .map(|p| events.iter().filter_map(|e| event_for(e, p, engine)).collect())
@@ -54,6 +44,16 @@ pub fn tick_update(engine: &GameEngine, player_id: u64, events: &[GameEvent]) ->
         sector_updates: if sector_updates.is_empty() { None } else { Some(sector_updates) },
         homeworld_update,
         events: if player_events.is_empty() { None } else { Some(player_events) },
+    }
+}
+
+fn player_state(engine: &GameEngine, player: &Player) -> PlayerState {
+    PlayerState {
+        id: player.id,
+        name: player.name.clone(),
+        resources: player.resources,
+        homeworld: player.homeworld,
+        exchange: engine.exchange_meter(player),
     }
 }
 
@@ -166,17 +166,13 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
         }
     }).collect();
     let shipyard_pending: Vec<QueuedShip> = player.ship_pending.iter().zip(&waits.ships).map(|(q, w)| {
-        let cost = q.item.unit_cost().scale(f32::from(q.count - q.built));
         QueuedShip {
             id: q.id,
             item: q.item,
             count: q.count,
-            built: q.built,
-            reserve: q.reserve,
-            cost,
+            cost: q.item.batch_cost(q.count),
             unit_cost: q.item.unit_cost(),
             ticks: q.item.unit_ticks(player.buildings.shipyard, &pace),
-            waiting_for: w.short,
             waiting_on: w.reason,
             start_in: w.start_in,
         }
@@ -303,6 +299,7 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
         K::SiteExplorationStarted(e) => own_fleet(e.fleet_id),
         K::SiteExplored(e) => own_fleet(e.fleet_id),
         K::ChartDelivered(e) => own_fleet(e.fleet_id),
+        K::Exchanged(e) => own_fleet(e.terms.fleet_id),
         K::Queue(e) => e.player_id == Some(player.id),
         K::SiteAmbush(e) => own_fleet(e.fleet_id),
         K::PolicyAction(e) => own_fleet(e.fleet_id),

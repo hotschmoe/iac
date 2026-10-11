@@ -125,6 +125,9 @@ class WindshieldSim {
   proto.Hex? loc;
   proto.Hex home = proto.Hex.origin;
   bool atHome = false;
+
+  /// The fleet stands on a hub sector with the exchange (set by the view).
+  bool atExchange = false;
   proto.SectorState? sector;
   ui.FleetState? fleet;
 

@@ -317,6 +317,24 @@ async fn run(
                             let _ = cmd_tx.send(ClientMessage::Command(cmd));
                         }
                     }
+                    input::InputAction::ToggleExchangePanel => {
+                        let cmd = state.lock().await.toggle_exchange_panel();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
+                    input::InputAction::ExchangeStep(step) => {
+                        let cmd = state.lock().await.exchange_step(step);
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
+                    input::InputAction::ExchangeTrade => {
+                        let cmd = state.lock().await.exchange_trade();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
                     input::InputAction::PlotRoute => {
                         let mut st = state.lock().await;
                         let target = st.map_center;
@@ -350,6 +368,9 @@ async fn run(
         {
             let mut st = state.lock().await;
             if let Some(cmd) = st.next_route_move() {
+                let _ = cmd_tx.send(ClientMessage::Command(cmd));
+            }
+            if let Some(cmd) = st.exchange_requote() {
                 let _ = cmd_tx.send(ClientMessage::Command(cmd));
             }
         }

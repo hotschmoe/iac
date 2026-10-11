@@ -141,6 +141,65 @@ GameState rated(GameState s, proto.Hex at, double ratio, proto.RatioLabel label)
       (1, at): OddsEntry(proto.SectorOdds(sector: at, threat: s.sectors[at]!.threat, ratio: ratio, label: label), s.tick),
     });
 
+const _emptyMeter = proto.ExchangeMeter(pressure: 0, span: 4185, fee: .25, windowTicks: 15364, clearIn: 0);
+
+/// What the season-pace server answers for selling [amount] from an empty meter.
+proto.ExchangeQuote quoteOf({
+  double amount = 632,
+  double receive = 225,
+  proto.ResourceKind give = proto.ResourceKind.metal,
+  proto.ResourceKind want = proto.ResourceKind.deuterium,
+  String? refusal,
+}) {
+  final value = amount * give.weight;
+  final par = value / want.weight;
+  return proto.ExchangeQuote(
+    terms: proto.ExchangeTerms(
+      fleetId: 1,
+      give: give,
+      want: want,
+      amount: amount,
+      receive: receive,
+      par: par,
+      fee: 1 - receive / par,
+      meter: _emptyMeter,
+      meterAfter: proto.ExchangeMeter(
+          pressure: value, span: 4185, fee: .25 + .5 * math.min(1, value / 4185), windowTicks: 15364, clearIn: (value / 4185 * 15364).ceil()),
+    ),
+    refusal: refusal,
+  );
+}
+
+/// One Hauler of fleet 1 at [at] in a world whose hub, with its exchange, is the origin.
+GameState atHub({
+  proto.Hex at = proto.Hex.origin,
+  proto.Resources hold = const proto.Resources(metal: 632, crystal: 0.4),
+  List<proto.ExchangeQuote> quotes = const [],
+}) {
+  const none = proto.SectorResources(metal: proto.Density.none, crystal: proto.Density.none, deuterium: proto.Density.none);
+  const beside = proto.Hex(1, 0);
+  final s = world([
+    fleet(1, [('Hauler', 1)], at: at),
+  ], {
+    proto.Hex.origin: sector(proto.Hex.origin, lanes: [beside, const proto.Hex(0, 1)], res: none, terrain: proto.TerrainType.empty),
+    beside: sector(beside, lanes: [proto.Hex.origin], res: none, terrain: proto.TerrainType.empty),
+  });
+  return s.copyWith(
+    homeworld: const proto.Hex(4, -2),
+    world: const proto.WorldInfo(
+      pace: 10,
+      preset: 'season',
+      tickHz: 1,
+      economyVersion: 2,
+      worldgenVersion: 3,
+      hub: [proto.HubSite(location: proto.Hex.origin, services: [proto.HubService.exchange])],
+    ),
+    holds: {1: hold},
+    exchange: _emptyMeter,
+    quotes: {for (final q in quotes) (q.terms.fleetId, q.terms.give, q.terms.want): QuoteEntry(q, s.tick)},
+  );
+}
+
 Future<FakeController> pumpFake(WidgetTester tester, GameState s, {Size size = const Size(1440, 900)}) async {
   final c = FakeController(s);
   await pumpShell(tester, screen: Screen.windshield, size: size, controller: c);
@@ -426,4 +485,133 @@ void main() {
     await endShell(tester, c);
   });
 
+  testWidgets('at the hub the exchange is a contact; T opens the panel, which asks for a quote, shows it and sends the trade', (tester) async {
+    final c = await pumpFake(tester, atHub());
+    expect(tester.widget<Text>(find.byKey(const Key('contact-exchange'))).data, contains('NEXT UNIT AT 25% - METER 0 OF 4185'));
+    expect(find.text('THE HUB - EXCHANGE'), findsOneWidget);
+    expect(find.byKey(const ValueKey('ex-trade')), findsNothing);
+    await shot(tester, 'ws-hub-1440');
+
+    await key(tester, LogicalKeyboardKey.keyT, 't');
+    expect(find.byKey(const Key('ex-pending')), findsOneWidget);
+    expect(tester.widget<Text>(find.descendant(of: find.byKey(const Key('ex-why')), matching: find.byType(Text))).data, 'Waiting for the quote.');
+    expect(c.commands.whereType<proto.ExchangeQuoteCommand>(), isEmpty, reason: 'debounced');
+    await tester.pump(const Duration(milliseconds: 250));
+    var asked = c.commands.whereType<proto.ExchangeQuoteCommand>().single;
+    expect((asked.fleetId, asked.give, asked.want, asked.amount), (1, proto.ResourceKind.metal, proto.ResourceKind.crystal, null), reason: 'what the hold carries most of, all of it');
+
+    await tester.tap(find.byKey(const ValueKey('ex-want-deuterium')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    asked = c.commands.whereType<proto.ExchangeQuoteCommand>().last;
+    expect((asked.give, asked.want, asked.amount), (proto.ResourceKind.metal, proto.ResourceKind.deuterium, null));
+    await tester.tap(find.byKey(const ValueKey('ex-trade')));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(c.commands.whereType<proto.ExchangeCommand>(), isEmpty, reason: 'nothing is traded before the server has quoted it');
+
+    c.push(atHub(quotes: [quoteOf()]));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.widget<Text>(find.byKey(const Key('ex-quote'))).textSpan!.toPlainText(), '632 Fe  GIVES  225 De');
+    expect(find.text('29% OF PAR 316 DE'), findsOneWidget);
+    expect(find.text('0 TO 632 OF 4185'), findsOneWidget);
+    expect(find.text('25% TO 33%'), findsOneWidget);
+    expect(find.text('4185 PER 4:16:04 - EMPTY IN 38:41'), findsOneWidget);
+    expect(find.byKey(const Key('ex-why')), findsNothing);
+    await shot(tester, 'ws-exchange-1440');
+
+    await tester.tap(find.byKey(const ValueKey('ex-trade')));
+    await tester.pump(const Duration(milliseconds: 50));
+    final trade = c.commands.whereType<proto.ExchangeCommand>().single;
+    expect((trade.fleetId, trade.give, trade.want, trade.amount), (1, proto.ResourceKind.metal, proto.ResourceKind.deuterium, null));
+    c.ev.add(proto.GameEvent(tick: 501, kind: proto.ExchangedEvent(sector: proto.Hex.origin, terms: quoteOf().terms)));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('TRADED'), findsOneWidget);
+    expect(find.text('632 METAL FOR 225 DEUTERIUM, FEE 29%.'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('ex-share-50')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(c.commands.whereType<proto.ExchangeQuoteCommand>().last.amount, 316);
+    expect(find.byKey(const Key('ex-pending')), findsOneWidget, reason: 'the quote on screen was for another amount');
+
+    await key(tester, LogicalKeyboardKey.keyT, 't');
+    expect(find.byKey(const ValueKey('ex-trade')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await finish(tester, c);
+  });
+
+  testWidgets('a trade the server would refuse is disabled with the server\'s reason; away from the hub the panel only quotes', (tester) async {
+    const why = 'fleet 1 is at [1,0], 1 hex from the exchange at the hub [0,0]; a fleet trades what is in its hold, on the spot';
+    final c = await pumpFake(tester, atHub(at: const proto.Hex(1, 0), quotes: [quoteOf(want: proto.ResourceKind.crystal, receive: 300, refusal: why)]));
+    expect(find.byKey(const Key('contact-exchange')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('dock-trade')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('quote only'), findsOneWidget);
+    expect(tester.widget<Text>(find.byKey(const Key('ex-quote'))).textSpan!.toPlainText(), '632 Fe  GIVES  300 Cr');
+    expect(tester.widget<Text>(find.descendant(of: find.byKey(const Key('ex-why')), matching: find.byType(Text))).data, why);
+    await tester.tap(find.byKey(const ValueKey('ex-trade')));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(c.commands.whereType<proto.ExchangeCommand>(), isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+    await finish(tester, c);
+  });
+
+  testWidgets('390 wide: the exchange panel opens in the sheet with no overflow, long numbers and a long refusal included', (tester) async {
+    const big = proto.Resources(metal: 123456.7, crystal: 98765.4, deuterium: 54321);
+    const why = '123457 metal returns 46296 deuterium, and the hold of fleet 1 has no room for it: it carries 276543 of 276600 and would carry 199382; trade a smaller amount';
+    final c = await pumpFake(tester, atHub(hold: big, quotes: [quoteOf(amount: 123456.7, receive: 46296, want: proto.ResourceKind.crystal, refusal: why)]), size: const Size(390, 844));
+    await tester.tap(find.byKey(const ValueKey('dock-trade')));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.byKey(const Key('ex-quote')), findsOneWidget);
+    expect(find.byKey(const Key('ex-why')), findsOneWidget);
+    await shot(tester, 'ws-exchange-390');
+    expect(tester.takeException(), isNull);
+    await finish(tester, c);
+
+    final wide = await pumpFake(tester, atHub(hold: big, quotes: [quoteOf(amount: 123456.7, receive: 46296, want: proto.ResourceKind.crystal, refusal: why)]));
+    await key(tester, LogicalKeyboardKey.keyT, 't');
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.byKey(const Key('ex-why')), findsOneWidget);
+    await shot(tester, 'ws-exchange-refused-1440');
+    expect(tester.takeException(), isNull);
+    await finish(tester, wide);
+  });
+
+  testWidgets('a fleet at the hub quotes and trades against the scripted world, by panel and by typed command (demo)', (tester) async {
+    final c = DemoController()..startDemo();
+    c.place(101, proto.Hex.origin, const proto.Resources(metal: 200, crystal: 12));
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    expect(c.state.exchangeAt(c.currentFleet.sector), isTrue);
+    expect(find.byKey(const Key('contact-exchange')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('contact-trade')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pump(const Duration(milliseconds: 50));
+    final quote = c.state.quoteFor(101, proto.ResourceKind.metal, proto.ResourceKind.crystal)!;
+    expect(quote.refusal, isNull);
+    expect(quote.terms.amount, 200);
+    expect(quote.terms.receive, lessThanOrEqualTo(200 * .75 / 1.5));
+    expect(tester.widget<Text>(find.byKey(const Key('ex-quote'))).textSpan!.toPlainText(), '200 Fe  GIVES  ${quote.terms.receive.round()} Cr');
+
+    await tester.tap(find.byKey(const ValueKey('ex-trade')));
+    await tester.pump(const Duration(milliseconds: 100));
+    final hold = c.state.holds[101]!;
+    expect((hold.metal, hold.crystal), (0, 12 + quote.terms.receive));
+    expect(c.state.exchange.pressure, closeTo(200, 2), reason: 'the weight sold, less what a tick or two of the demo forgot');
+    expect(c.state.events.map((e) => e.message), contains(startsWith('F101 traded 200 metal for ${quote.terms.receive.round()} crystal at the exchange')));
+    expect(tester.widget<Text>(find.byKey(const Key('contact-exchange'))).data, matches(RegExp(r'METER (19\d|200) OF')));
+
+    c.handleCommand('quote crystal metal 40');
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(c.state.events.map((e) => e.message), contains(startsWith('Quote F101: 40 crystal gives')));
+    c.handleCommand('trade crystal for metal all');
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(c.state.holds[101]!.crystal, 0);
+    c.handleCommand('trade metal metal');
+    expect(c.state.events.first.message, 'trade: give and want are both metal');
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
 }

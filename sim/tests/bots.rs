@@ -97,6 +97,20 @@ fn a_check_in_miner_brings_ore_home_under_standing_orders_within_its_fuel_budget
 }
 
 #[test]
+fn a_check_in_builder_orders_only_the_ships_and_turrets_its_stockpile_covers() {
+    let mut world = Headless::new(7, Pace::parse("season").unwrap());
+    let style = Style::new(Personality::Turtle, Attention::CheckIn);
+    world.add_player(Box::new(Bot::new("turtle-check-in", style)), style.label()).expect("seat bot");
+    world.run(2 * DAY).unwrap();
+
+    let turtle = &world.summaries()[0];
+    assert!(turtle.turns < 2 * DAY / 20, "it looked in a few times: {} turns", turtle.turns);
+    assert_eq!(turtle.orders_refused, 0, "a batch is paid when it is ordered, so it sends none it cannot pay for");
+    assert!(turtle.score.defence > 0.0 && turtle.ships > 2, "it did order turrets and hulls: {:?}, {} ships", turtle.score, turtle.ships);
+    assert!(turtle.buildings["Metal Mine"] >= 6, "{:?}", turtle.buildings);
+}
+
+#[test]
 fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
     let mut world = world(7);
     world.run_sampled(TICKS, TICKS / 3).unwrap();

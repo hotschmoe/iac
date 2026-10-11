@@ -1,12 +1,13 @@
 // Client command handling: routes a protocol `Command` to the engine and words
 // the refusal. Pure state in, state out; hosts add transport and sessions.
 
-use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
+use iac_shared::constants::{ResourceKind, Resources, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
 use iac_shared::protocol::{
-    ClientMessage, Command, ErrorCode, ErrorMessage, FleetOdds, HarvestResource, ServerMessage, MAX_ODDS_SECTORS,
+    ClientMessage, Command, ErrorCode, ErrorMessage, ExchangeQuote, FleetOdds, HarvestResource, ServerMessage,
+    MAX_ODDS_SECTORS,
 };
 
-use crate::engine::{AuthError, FleetStatus, GameEngine};
+use crate::engine::{AuthError, ExchangeDeal, FleetStatus, GameEngine};
 use crate::views;
 
 /// What a command produced for its sender: an optional answer, an optional
@@ -29,8 +30,8 @@ impl GameEngine {
             Command::Attack { fleet_id, target_fleet_id } => self.handle_attack(pid, fleet_id, target_fleet_id),
             Command::Build { building_type, reserve } => self.handle_build(pid, building_type, reserve),
             Command::Research { tech, reserve } => self.handle_research(pid, tech, reserve),
-            Command::BuildShip { ship_class, count, reserve } => self.handle_build_ship(pid, ship_class, count, reserve),
-            Command::BuildDefence { kind, count, reserve } => self.handle_build_defence(pid, kind, count, reserve),
+            Command::BuildShip { ship_class, count } => self.handle_build_ship(pid, ship_class, count),
+            Command::BuildDefence { kind, count } => self.handle_build_defence(pid, kind, count),
             Command::CancelBuild { queue_type, id } => self.handle_cancel_build(pid, queue_type, id),
             Command::CancelQueued { queue_type, id } => self.handle_cancel_queued(pid, queue_type, id),
             Command::Stop { fleet_id } => self.handle_stop(pid, fleet_id),
@@ -48,6 +49,14 @@ impl GameEngine {
             Command::Odds { fleet_id, ref sectors } => self.odds_for(pid, fleet_id, sectors).map(|sectors| {
                 reply = Some(ServerMessage::Odds(FleetOdds { fleet_id, sectors }));
             }),
+            Command::Exchange { fleet_id, give, want, amount } => self.handle_exchange(pid, fleet_id, give, want, amount),
+            Command::ExchangeQuote { fleet_id, give, want, amount } => self
+                .exchange_deal(pid, fleet_id, give, want, amount)
+                .map(|deal| {
+                    let refusal = deal.refusal.map(|r| r.reason);
+                    reply = Some(ServerMessage::ExchangeQuote(ExchangeQuote { terms: deal.terms, refusal }));
+                })
+                .map_err(|refusal| refusal.code),
         };
         let error = result.err().map(|code| (code, command_error_message(self, pid, &cmd, code)));
         CommandOutcome { reply, error }
@@ -79,7 +88,10 @@ impl GameEngine {
 
 /// Whether `cmd` only asks: it is answered and leaves the world as it was.
 pub fn is_query(cmd: &Command) -> bool {
-    matches!(cmd, Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. })
+    matches!(
+        cmd,
+        Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. } | Command::ExchangeQuote { .. }
+    )
 }
 
 /// What a session that has not logged in is sent for anything but `auth`.
@@ -125,6 +137,8 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Split { fleet_id, .. }
         | Command::PreviewMove { fleet_id, .. }
         | Command::Odds { fleet_id, .. }
+        | Command::Exchange { fleet_id, .. }
+        | Command::ExchangeQuote { fleet_id, .. }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
@@ -211,7 +225,6 @@ fn cancel_refusal(engine: &GameEngine, player_id: u64, queue_type: iac_shared::p
 
 /// Names what a rejected order costs and which Storage Vault level would hold it.
 fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
-    use iac_shared::constants::ResourceKind;
     let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
         return "the payment is larger than a storage cap".to_string();
     };
@@ -229,9 +242,71 @@ fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command)
         Some(level) => format!("needs Storage Vault level {level}"),
         None => "no Storage Vault can hold it".to_string(),
     };
+    let smaller = match batch_of(cmd) {
+        Some((unit, count)) if count > 1 => match units_covered(cap, unit) {
+            0 => String::new(),
+            fits => format!(", or order {fits} or fewer at a time"),
+        },
+        _ => String::new(),
+    };
     format!(
-        "{label} costs {} {}, more than the {} {} your stockpile holds; {fix}",
+        "{label} costs {} {}, more than the {} {} your stockpile holds; {fix}{smaller}",
         cost.get(worst).ceil(), worst.label(), cap.get(worst).floor(), worst.label(),
+    )
+}
+
+/// The unit price and count of a shipyard order.
+fn batch_of(cmd: &Command) -> Option<(Resources, u16)> {
+    match cmd {
+        Command::BuildShip { ship_class, count } => Some((ship_class.build_cost(), *count)),
+        Command::BuildDefence { kind, count } => Some((kind.build_cost(), *count)),
+        _ => None,
+    }
+}
+
+/// How many units at `unit` price `stock` pays for in full.
+fn units_covered(stock: Resources, unit: Resources) -> u32 {
+    ResourceKind::ALL
+        .into_iter()
+        .filter(|&k| unit.get(k) > 0.0)
+        .map(|k| (stock.get(k) / unit.get(k)).floor().max(0.0) as u32)
+        .min()
+        .unwrap_or(0)
+}
+
+/// "759 metal and 190 crystal": the non-zero parts of an amount, each
+/// rounded up to a whole unit.
+fn amount_words(amount: Resources) -> String {
+    let parts: Vec<String> = ResourceKind::ALL
+        .into_iter()
+        .filter(|&k| amount.get(k) > 0.0)
+        .map(|k| format!("{} {}", amount.get(k).ceil(), k.label()))
+        .collect();
+    match parts.as_slice() {
+        [] => "nothing".to_string(),
+        [one] => one.clone(),
+        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+    }
+}
+
+/// A shipyard batch is paid in full when it is ordered; this names what the
+/// stockpile lacks, per resource, and how many units it would cover.
+fn insufficient_resources_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
+    let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
+        return "the stockpile does not cover this batch; nothing was ordered".to_string();
+    };
+    let short = p.resources.shortfall(cost);
+    let covered = match batch_of(cmd) {
+        Some((unit, count)) if count > 1 => match units_covered(p.resources, unit) {
+            0 => String::new(),
+            fits => format!(" The stockpile covers {fits}."),
+        },
+        _ => String::new(),
+    };
+    format!(
+        "{label} costs {}; the stockpile is short by {}. Nothing was ordered: a batch is paid in full when it is ordered.{covered}",
+        amount_words(cost),
+        amount_words(short),
     )
 }
 
@@ -245,6 +320,13 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
     let fid = fleet_id.unwrap_or(0);
 
     match (code, cmd) {
+        (
+            _,
+            Command::Exchange { fleet_id, give, want, amount } | Command::ExchangeQuote { fleet_id, give, want, amount },
+        ) => match engine.exchange_deal(player_id, *fleet_id, *give, *want, *amount) {
+            Err(refusal) | Ok(ExchangeDeal { refusal: Some(refusal), .. }) => refusal.reason,
+            Ok(_) => format!("command rejected ({code:?})"),
+        },
         (ErrorCode::FleetNotFound, _) => format!("fleet {fid} not found (or it has no ships left)"),
         (ErrorCode::OnCooldown, Command::Attack { target_fleet_id, .. })
             if fleet.is_some_and(|f| f.state != FleetStatus::InCombat && f.state != FleetStatus::Moving) =>
@@ -296,6 +378,7 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
         (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),
+        (ErrorCode::InsufficientResources, _) => insufficient_resources_message(engine, player_id, cmd),
         (ErrorCode::DefenceLocked, Command::BuildDefence { kind, .. }) => engine
             .players
             .get(&player_id)
