@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
-import '../state/state_mapper.dart' show waitSummary;
+import '../state/state_mapper.dart' show batchWaitSummary, waitSummary;
 
 /// Presentation model for the economy side of the protocol: pace, storage
 /// caps, build slots and queues, defences and raids, score. Views read only
@@ -167,7 +167,7 @@ class EconomyView {
       maxDepth: hw.buildSlots + hw.queueWaitingMax,
       slotCount: hw.buildSlots,
       queued: [for (final q in hw.buildPending) QueuedItemView('${q.buildingType.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
-      shipQueued: [for (final q in hw.shipyardPending) QueuedItemView('${q.item.label} x${q.count}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
+      shipQueued: [for (final q in hw.shipyardPending) QueuedItemView('${q.item.label} x${q.count}', batchWaitSummary(q.waitingOn, q.startIn))],
       researchQueued: [for (final q in hw.researchPending) QueuedItemView('${q.tech.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
       slotBUnlocked: hw.buildSlots >= 2,
       slotBRequirement: 'Needs Modular Fabrication${unmet.isEmpty ? '' : ' (requires ${unmet.join(', ')})'}',

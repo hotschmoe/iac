@@ -687,19 +687,16 @@ impl ClientState {
                         open.then_some(Command::Research { tech: o.tech, reserve: false })
                     }
                     HomeworldTab::Shipyard => {
+                        let count = self.ship_build_count;
+                        let stock = self.player.as_ref()?.resources;
+                        let covered = |unit: iac_shared::constants::Resources| stock.can_afford(unit.scale(f32::from(count)));
                         if let Some(o) = cat.ships.get(i) {
-                            return o.requires.iter().all(|r| r.met).then_some(Command::BuildShip {
-                                ship_class: o.ship_class,
-                                count: self.ship_build_count,
-                                reserve: false,
-                            });
+                            let open = o.requires.iter().all(|r| r.met) && covered(o.unit_cost);
+                            return open.then_some(Command::BuildShip { ship_class: o.ship_class, count });
                         }
                         let o = cat.defences.get(i - cat.ships.len())?;
-                        o.requires.iter().all(|r| r.met).then_some(Command::BuildDefence {
-                            kind: o.kind,
-                            count: self.ship_build_count,
-                            reserve: false,
-                        })
+                        let open = o.requires.iter().all(|r| r.met) && covered(o.unit_cost);
+                        open.then_some(Command::BuildDefence { kind: o.kind, count })
                     }
                 };
             }

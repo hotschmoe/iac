@@ -284,13 +284,15 @@ pub(super) fn questions(state: &GameState, brief: Brief, questions: &mut Vec<Com
     }
 }
 
-/// Deuterium in stock beyond what the next order in each queue costs.
-fn fuel_money(state: &GameState) -> f32 {
+/// Deuterium in stock beyond what the next order in each queue costs. A
+/// waiting building or research order shows its cost; a shipyard batch can
+/// only be ordered once it is covered, so the home planner says what the
+/// yard is saving for.
+fn fuel_money(state: &GameState, brief: Brief) -> f32 {
     let home = &state.homeworld;
     let building = home.build_pending.first().map_or(0.0, |q| q.cost.deuterium);
     let research = home.research_pending.first().map_or(0.0, |q| q.cost.deuterium);
-    let yard = home.shipyard_pending.first().map_or(0.0, |q| q.unit_cost.deuterium);
-    state.player.resources.deuterium - building - research - yard
+    state.player.resources.deuterium - building - research - brief.yard_deuterium
 }
 
 /// A wing that flies for points has nothing to gain once the score cap is
@@ -312,7 +314,7 @@ fn held_at_home(state: &GameState, brief: Brief, unit: Unit) -> Option<u64> {
         return Some(5);
     }
     let deployed = state.fleets.iter().filter(|f| f.location != home).count();
-    let fuelled = fuel_money(state) >= FUEL_DEUT_PER_UNIT * fleet.fuel_max;
+    let fuelled = fuel_money(state, brief) >= FUEL_DEUT_PER_UNIT * fleet.fuel_max;
     (deployed >= MAX_FLEETS_PER_PLAYER || !fuelled).then_some(WAIT)
 }
 
@@ -324,6 +326,8 @@ pub(super) struct Brief {
     pub away_for: Option<u64>,
     /// More combat or exploration points would still raise the score.
     pub points_wanted: bool,
+    /// Deuterium of the unit the shipyard wants next and cannot pay for yet.
+    pub yard_deuterium: f32,
 }
 
 /// One turn's worth of fleet orders for one empire.

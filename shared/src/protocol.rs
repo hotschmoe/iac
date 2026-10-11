@@ -90,18 +90,22 @@ pub enum Command {
         #[serde(default)]
         reserve: bool,
     },
-    /// Queue `count` ships as one batch; same rule as `build`. A batch pays
-    /// and starts one unit at a time: the batch is one order, and each unit
-    /// is paid when it starts, so a batch of 5 with money for 2 builds 2.
+    /// Order `count` ships as one batch. Unlike a building or research
+    /// order, a batch is accepted only if the stockpile covers every unit
+    /// now, and it pays then; otherwise it is refused with
+    /// `InsufficientResources` and a message naming the shortfall per
+    /// resource. A paid batch gets a stable `id` and starts at once when the
+    /// yard is free and what it needs is built; otherwise it waits for the
+    /// yard or for something queued ahead of it (a Shipyard level, a tech).
+    /// Also refused with `NoShipyard`, `ShipLocked`, `StorageTooSmall` (a
+    /// batch larger than a stockpile cap) or `QueueFull`.
     #[serde(rename = "build_ship")]
     BuildShip {
         ship_class: ShipClass,
         #[serde(default = "default_ship_count")]
         count: u16,
-        #[serde(default)]
-        reserve: bool,
     },
-    /// Queue `count` defence structures in the shipyard queue; same rule as
+    /// Order `count` defence structures in the shipyard queue; same rule as
     /// `build_ship`. They stay at home and never burn fuel; rejected with
     /// `DefenceLocked` until the Defense Grid and research it needs are in place.
     #[serde(rename = "build_defence")]
@@ -109,19 +113,21 @@ pub enum Command {
         kind: DefenceKind,
         #[serde(default = "default_ship_count")]
         count: u16,
-        #[serde(default)]
-        reserve: bool,
     },
-    /// Cancel an item that has started, by its stable `id`; half of what it
-    /// paid comes back (one unit for a ship batch; units already built are
-    /// kept) and a `Queue` event with `action: Cancelled` says what was
-    /// refunded. `InvalidTarget` when `id` is not running in `queue_type`.
+    /// Cancel an item that has started, by its stable `id`. A building or
+    /// research level gets back half of what it paid. A shipyard batch gets
+    /// back half the price of every unit not yet delivered (the unit under
+    /// way is not delivered; units already built are kept). A `Queue` event
+    /// with `action: Cancelled` says what was refunded. `InvalidTarget` when
+    /// `id` is not running in `queue_type`.
     #[serde(rename = "cancel_build")]
     CancelBuild { queue_type: QueueType, id: u64 },
-    /// Remove an item that is still waiting in the queue, by its stable `id`;
-    /// nothing was paid for it, so nothing is refunded (a `Queue` event with
-    /// `action: Cancelled` confirms it). `InvalidTarget` when `id` is not
-    /// waiting in `queue_type`, even if it exists in another queue.
+    /// Remove an item that is still waiting in the queue, by its stable `id`.
+    /// A waiting building or research order has paid nothing, so nothing is
+    /// refunded; a waiting shipyard batch paid when it was ordered and gets
+    /// half back (a `Queue` event with `action: Cancelled` says how much).
+    /// `InvalidTarget` when `id` is not waiting in `queue_type`, even if it
+    /// exists in another queue.
     #[serde(rename = "cancel_queued")]
     CancelQueued { queue_type: QueueType, id: u64 },
     /// Ask for the score table. The reply is a `leaderboard` message.
@@ -1136,6 +1142,25 @@ pub enum WaitReason {
     Order,
 }
 
+/// Why a shipyard batch has not started yet. A batch is paid for when it is
+/// ordered, so it never waits on resources or behind a reserving order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BatchWait {
+    /// The yard is busy with a batch ahead of it.
+    Slot,
+    /// A Shipyard level, building or tech it needs is still being built.
+    Prerequisite,
+}
+
+impl From<BatchWait> for WaitReason {
+    fn from(wait: BatchWait) -> WaitReason {
+        match wait {
+            BatchWait::Slot => WaitReason::Slot,
+            BatchWait::Prerequisite => WaitReason::Prerequisite,
+        }
+    }
+}
+
 /// A building waiting to start. A free slot starts the earliest waiting
 /// order that can start now; an order that cannot keeps its place unless it
 /// has `reserve` set, in which case it holds the line while short. `id` is
@@ -1178,33 +1203,30 @@ pub struct QueuedResearch {
     pub start_in: Option<u64>,
 }
 
-/// A shipyard order waiting its turn; see `QueuedBuild`. The batch is one
-/// order that pays per unit: `built` of `count` are done, `cost` is the whole
-/// batch, `unit_cost` the next unit, `ticks` the time for one unit, and
-/// `waiting_for` the shortfall for the next unit only. A batch with some
-/// units built that cannot pay for the next one goes back to waiting here.
+/// A shipyard batch that is paid for and waiting its turn. `id` is stable
+/// for the life of the order (cancel by it; half of `cost` comes back).
+/// `cost` is what the whole batch paid when it was ordered, `unit_cost` one
+/// unit, `ticks` the time for one unit; `start_in` is the estimated ticks
+/// until its first unit starts (absent when it depends on something that
+/// cannot be estimated). A batch that has started builds every unit without
+/// stopping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedShip {
     pub id: u64,
     /// A ship class or a defence structure: the wire carries just its name.
     pub item: ShipyardItem,
     pub count: u16,
-    #[serde(default)]
-    pub built: u16,
-    #[serde(default)]
-    pub reserve: bool,
     pub cost: Resources,
     pub unit_cost: Resources,
     pub ticks: u64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub waiting_for: Option<Resources>,
-    pub waiting_on: WaitReason,
+    pub waiting_on: BatchWait,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub start_in: Option<u64>,
 }
 
-/// The unit in production. `built` units of `count` are finished; the one
-/// under way was paid for when it started.
+/// The batch in production. `built` units of `count` are delivered and one
+/// more is under way until `end_tick`; the whole batch was paid for when it
+/// was ordered.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipyardQueueItem {
     pub id: u64,
@@ -1279,7 +1301,7 @@ pub enum EventKind {
 /// What happened to a queue order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QueueAction {
-    /// The order began and was paid for.
+    /// The order began.
     Started,
     /// The order was accepted but cannot start yet.
     Waiting,
@@ -1300,15 +1322,21 @@ pub struct QueueEvent {
     /// "Metal Mine Lv.5", "Corvette x3".
     pub item: String,
     pub action: QueueAction,
-    /// `Started`: what was paid (a ship batch pays per unit: its first unit;
-    /// later units start without an event).
+    /// What this event took from the stockpile. A building or research
+    /// level pays when it starts (`Started`). A shipyard batch pays for
+    /// every unit when it is ordered: on the event that answers the order,
+    /// `Started` if it began at once or `Waiting` if it joined the line, and
+    /// nothing on the later `Started` of a batch that waited.
     #[serde(default)]
     pub paid: Resources,
-    /// `Cancelled`: what came back (half of the payment for a started item,
-    /// nothing for a waiting one).
+    /// `Cancelled`: what came back. Half of the payment for a started
+    /// building or research level, nothing for a waiting one; for a
+    /// shipyard batch, waiting or started, half the price of the units not
+    /// yet delivered.
     #[serde(default)]
     pub refunded: Resources,
-    /// `Waiting`: the exact shortfall, absent when nothing is short.
+    /// `Waiting`: the exact shortfall of a building or research order,
+    /// absent when nothing is short. Never present for a shipyard batch.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub waiting_for: Option<Resources>,
     /// `Waiting`: why it has not started.
@@ -1712,6 +1740,7 @@ pub enum ErrorCode {
     ResourceNotPresent = 1016,
     StorageTooSmall = 1017,
     DefenceLocked = 1018,
+    InsufficientResources = 1019,
     AuthFailed = 2000,
     AlreadyAuthenticated = 2001,
     InvalidName = 2002,

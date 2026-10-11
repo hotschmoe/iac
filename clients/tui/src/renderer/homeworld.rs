@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use iac_shared::constants::Resources;
-use iac_shared::protocol::{HomeworldState, Requirement, WaitReason};
+use iac_shared::protocol::{BatchWait, HomeworldState, Requirement, WaitReason};
 
 use crate::state::{ClientState, HomeworldTab};
 use super::{
@@ -118,14 +118,15 @@ fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &Hom
             };
             content.push_str(&extra);
             requires = reqs;
-            if requires.iter().all(|r| r.met) {
-                if batch > 1 {
-                    content.push_str(&format!(" READY - Enter queues {}\n", batch));
-                } else {
-                    content.push_str(" READY\n");
-                }
-            } else {
+            let short = state.player.as_ref().map(|p| p.resources.shortfall(unit_cost.scale(batch as f32)));
+            if requires.iter().any(|r| !r.met) {
                 content.push_str(" LOCKED\n");
+            } else if let Some(short) = short.filter(|s| s.total() > 0.0) {
+                content.push_str(&format!(" SHORT {}\n", shortfall_label(&short)));
+            } else if batch > 1 {
+                content.push_str(&format!(" READY - Enter orders {}\n", batch));
+            } else {
+                content.push_str(" READY\n");
             }
             maxed = false;
             cost_info = Some((unit_cost.scale(batch as f32), unit_ticks * batch as u64));
@@ -261,7 +262,7 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     }
     if !hw.shipyard_pending.is_empty() {
         let names: Vec<String> = hw.shipyard_pending.iter()
-            .map(|q| waiting_label(&format!("{}/{} {}", q.built, q.count, q.item.label()), 0, &q.waiting_for, q.waiting_on, q.start_in))
+            .map(|q| batch_label(q.count, q.item.label(), q.waiting_on, q.start_in))
             .collect();
         text.push_str(&format!(" +[{}]", names.join(", ")));
     }
@@ -312,25 +313,40 @@ fn render_status_bar(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     frame.render_widget(Paragraph::new(text).style(AMBER_BRIGHT).wrap(Wrap { trim: false }), inner);
 }
 
-/// "Metal Lv3 (need 35 Fe, ~40s)" for a waiting queue entry; level 0 omits the level.
+/// "35 Fe  12 Cr": what the stockpile lacks, each part rounded up.
+fn shortfall_label(short: &Resources) -> String {
+    let mut need = Vec::new();
+    if short.metal > 0.0 { need.push(format!("{:.0} Fe", short.metal.ceil())); }
+    if short.crystal > 0.0 { need.push(format!("{:.0} Cr", short.crystal.ceil())); }
+    if short.deuterium > 0.0 { need.push(format!("{:.0} De", short.deuterium.ceil())); }
+    need.join("  ")
+}
+
+/// "Metal Lv3 (need 35 Fe, ~40s)" for a waiting building or research order.
 fn waiting_label(name: &str, level: u8, short: &Option<Resources>, on: WaitReason, start_in: Option<u64>) -> String {
-    let lv = if level > 0 { format!(" Lv{level}") } else { String::new() };
     let why = match (on, short) {
-        (WaitReason::Resources, Some(r)) => {
-            let mut need = Vec::new();
-            if r.metal > 0.0 { need.push(format!("{:.0} Fe", r.metal.ceil())); }
-            if r.crystal > 0.0 { need.push(format!("{:.0} Cr", r.crystal.ceil())); }
-            if r.deuterium > 0.0 { need.push(format!("{:.0} De", r.deuterium.ceil())); }
-            format!("need {}", need.join(" "))
-        }
+        (WaitReason::Resources, Some(r)) => format!("need {}", shortfall_label(r)),
         (WaitReason::Resources, None) => "need resources".to_string(),
         (WaitReason::Slot, _) => "slot busy".to_string(),
         (WaitReason::Prerequisite, _) => "needs prerequisite".to_string(),
         (WaitReason::Order, _) => "held by a reserved order".to_string(),
     };
+    with_start(&format!("{name} Lv{level}"), &why, start_in)
+}
+
+/// "3x Corvette (paid, yard busy, ~40s)" for a shipyard batch waiting its turn.
+fn batch_label(count: u16, name: &str, on: BatchWait, start_in: Option<u64>) -> String {
+    let why = match on {
+        BatchWait::Slot => "paid, yard busy",
+        BatchWait::Prerequisite => "paid, needs prerequisite",
+    };
+    with_start(&format!("{count}x {name}"), why, start_in)
+}
+
+fn with_start(what: &str, why: &str, start_in: Option<u64>) -> String {
     match start_in {
-        Some(t) => format!("{name}{lv} ({why}, ~{t}s)"),
-        None => format!("{name}{lv} ({why})"),
+        Some(t) => format!("{what} ({why}, ~{t}s)"),
+        None => format!("{what} ({why})"),
     }
 }
 

@@ -50,7 +50,7 @@ async fn auth_state_and_command_roundtrip() {
     );
     assert_eq!(state["world"]["pace"], 1.0, "default world is persistent: {state}");
     assert_eq!(state["world"]["preset"], "persistent");
-    assert_eq!(state["world"]["economy_version"], 2);
+    assert_eq!(state["world"]["economy_version"], 3);
 
     // Server should stream tick updates (1 Hz tick loop).
     let tick = loop {

@@ -1,0 +1,21 @@
+{
+  "action": "Waiting",
+  "id": 335,
+  "item": "Corvette x3",
+  "kind": "Queue",
+  "paid": {
+    "crystal": 300.0,
+    "deuterium": 180.0,
+    "metal": 1200.0
+  },
+  "player_id": 7,
+  "queue_type": "Ship",
+  "refunded": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "start_in": 240,
+  "tick": 1234,
+  "waiting_on": "Slot"
+}

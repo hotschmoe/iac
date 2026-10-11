@@ -205,7 +205,8 @@ void main() {
       expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
       expect(ui.buildQueue[2].time, 'short 121 crystal, starts in about 01:35');
       expect(ui.buildQueue[3].time, 'held by a reserved order, starts in about 01:35');
-      expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2 (1 built)', 'Pulse Turret x10']);
+      expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2', 'Pulse Turret x10']);
+      expect(ui.shipyard.map((q) => q.time).skip(1), ['paid, waiting for the yard, starts in about 04:00', 'paid, waiting for a prerequisite']);
       expect(ui.research.waiting.single.time, 'short 1200 deuterium, starts in about 30:00');
     });
 
@@ -261,6 +262,8 @@ void main() {
     check('AlertLevel', AlertLevel.fromJson, (AlertLevel e) => e.toJson());
     check('HarvestResource', HarvestResource.fromJson, (HarvestResource e) => e.toJson());
     check('QueueType', QueueType.fromJson, (QueueType e) => e.toJson());
+    check('WaitReason', WaitReason.fromJson, (WaitReason e) => e.toJson());
+    check('BatchWait', BatchWait.fromJson, (BatchWait e) => e.toJson());
     check('PolicyPreset', PolicyPreset.fromJson, (PolicyPreset e) => e.toJson());
     check('BuildingType', BuildingType.fromJson, (BuildingType e) => e.toJson());
     check('ResearchType', ResearchType.fromJson, (ResearchType e) => e.toJson());
@@ -281,6 +284,8 @@ void main() {
       same('AlertLevel', AlertLevel.values.length);
       same('HarvestResource', HarvestResource.values.length);
       same('QueueType', QueueType.values.length);
+      same('WaitReason', WaitReason.values.length);
+      same('BatchWait', BatchWait.values.length);
       same('PolicyPreset', PolicyPreset.values.length);
       same('BuildingType', BuildingType.values.length);
       same('ResearchType', ResearchType.values.length);

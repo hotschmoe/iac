@@ -1,7 +1,7 @@
 // Client command handling: routes a protocol `Command` to the engine and words
 // the refusal. Pure state in, state out; hosts add transport and sessions.
 
-use iac_shared::constants::{MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
+use iac_shared::constants::{ResourceKind, Resources, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
 use iac_shared::protocol::{
     ClientMessage, Command, ErrorCode, ErrorMessage, FleetOdds, HarvestResource, ServerMessage, MAX_ODDS_SECTORS,
 };
@@ -29,8 +29,8 @@ impl GameEngine {
             Command::Attack { fleet_id, target_fleet_id } => self.handle_attack(pid, fleet_id, target_fleet_id),
             Command::Build { building_type, reserve } => self.handle_build(pid, building_type, reserve),
             Command::Research { tech, reserve } => self.handle_research(pid, tech, reserve),
-            Command::BuildShip { ship_class, count, reserve } => self.handle_build_ship(pid, ship_class, count, reserve),
-            Command::BuildDefence { kind, count, reserve } => self.handle_build_defence(pid, kind, count, reserve),
+            Command::BuildShip { ship_class, count } => self.handle_build_ship(pid, ship_class, count),
+            Command::BuildDefence { kind, count } => self.handle_build_defence(pid, kind, count),
             Command::CancelBuild { queue_type, id } => self.handle_cancel_build(pid, queue_type, id),
             Command::CancelQueued { queue_type, id } => self.handle_cancel_queued(pid, queue_type, id),
             Command::Stop { fleet_id } => self.handle_stop(pid, fleet_id),
@@ -211,7 +211,6 @@ fn cancel_refusal(engine: &GameEngine, player_id: u64, queue_type: iac_shared::p
 
 /// Names what a rejected order costs and which Storage Vault level would hold it.
 fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
-    use iac_shared::constants::ResourceKind;
     let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
         return "the payment is larger than a storage cap".to_string();
     };
@@ -229,9 +228,71 @@ fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command)
         Some(level) => format!("needs Storage Vault level {level}"),
         None => "no Storage Vault can hold it".to_string(),
     };
+    let smaller = match batch_of(cmd) {
+        Some((unit, count)) if count > 1 => match units_covered(cap, unit) {
+            0 => String::new(),
+            fits => format!(", or order {fits} or fewer at a time"),
+        },
+        _ => String::new(),
+    };
     format!(
-        "{label} costs {} {}, more than the {} {} your stockpile holds; {fix}",
+        "{label} costs {} {}, more than the {} {} your stockpile holds; {fix}{smaller}",
         cost.get(worst).ceil(), worst.label(), cap.get(worst).floor(), worst.label(),
+    )
+}
+
+/// The unit price and count of a shipyard order.
+fn batch_of(cmd: &Command) -> Option<(Resources, u16)> {
+    match cmd {
+        Command::BuildShip { ship_class, count } => Some((ship_class.build_cost(), *count)),
+        Command::BuildDefence { kind, count } => Some((kind.build_cost(), *count)),
+        _ => None,
+    }
+}
+
+/// How many units at `unit` price `stock` pays for in full.
+fn units_covered(stock: Resources, unit: Resources) -> u32 {
+    ResourceKind::ALL
+        .into_iter()
+        .filter(|&k| unit.get(k) > 0.0)
+        .map(|k| (stock.get(k) / unit.get(k)).floor().max(0.0) as u32)
+        .min()
+        .unwrap_or(0)
+}
+
+/// "759 metal and 190 crystal": the non-zero parts of an amount, each
+/// rounded up to a whole unit.
+fn amount_words(amount: Resources) -> String {
+    let parts: Vec<String> = ResourceKind::ALL
+        .into_iter()
+        .filter(|&k| amount.get(k) > 0.0)
+        .map(|k| format!("{} {}", amount.get(k).ceil(), k.label()))
+        .collect();
+    match parts.as_slice() {
+        [] => "nothing".to_string(),
+        [one] => one.clone(),
+        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+    }
+}
+
+/// A shipyard batch is paid in full when it is ordered; this names what the
+/// stockpile lacks, per resource, and how many units it would cover.
+fn insufficient_resources_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
+    let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
+        return "the stockpile does not cover this batch; nothing was ordered".to_string();
+    };
+    let short = p.resources.shortfall(cost);
+    let covered = match batch_of(cmd) {
+        Some((unit, count)) if count > 1 => match units_covered(p.resources, unit) {
+            0 => String::new(),
+            fits => format!(" The stockpile covers {fits}."),
+        },
+        _ => String::new(),
+    };
+    format!(
+        "{label} costs {}; the stockpile is short by {}. Nothing was ordered: a batch is paid in full when it is ordered.{covered}",
+        amount_words(cost),
+        amount_words(short),
     )
 }
 
@@ -296,6 +357,7 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
         (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),
+        (ErrorCode::InsufficientResources, _) => insufficient_resources_message(engine, player_id, cmd),
         (ErrorCode::DefenceLocked, Command::BuildDefence { kind, .. }) => engine
             .players
             .get(&player_id)

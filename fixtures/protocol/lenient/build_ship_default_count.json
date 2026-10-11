@@ -2,7 +2,6 @@
   "canonical": {
     "action": "build_ship",
     "count": 1,
-    "reserve": false,
     "ship_class": "Scout"
   },
   "input": {
