@@ -180,7 +180,7 @@ fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
 #[test]
 fn the_view_a_bot_folds_from_tick_updates_is_the_full_state() {
     let (mut engine, mut roster, _human) = hosted(7);
-    let mut compared = 0;
+    let (mut compared, mut marked) = (0, 0);
     for _ in 0..1_500 {
         host_tick(&mut engine, &mut roster);
         for seat in roster.seats() {
@@ -206,11 +206,11 @@ fn the_view_a_bot_folds_from_tick_updates_is_the_full_state() {
                 );
             }
             compared += 1;
+            marked = marked.max(view.known_sectors.iter().filter(|s| s.chart.is_some()).count());
         }
     }
     assert!(compared > 2_500, "bots acting tick after tick were followed: {compared} views compared");
-    let charted = roster.seats().iter().filter_map(|seat| seat.view()).flat_map(|view| &view.known_sectors);
-    assert!(charted.filter(|s| s.chart.is_some()).count() > 50, "charts were made and marked");
+    assert!(marked > 50, "charts were made and marked: {marked} in the fullest view compared");
 }
 
 #[test]
