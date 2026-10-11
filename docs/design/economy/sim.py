@@ -255,6 +255,40 @@ def exchange_return(pressure, value, span):
         return on_ramp + (1.0 - EXCHANGE_FEE_MAX) * (x - ramp)
     return kept(pressure + value) - kept(pressure)
 
+# outposts (provisional: the owner has not signed off on these numbers; docs/design/outposts.md)
+OUTPOST_MIN_RING, OUTPOST_MAX_RING = 9, 20
+OUTPOST_SPACING = 3          # fewest hexes between two outposts
+OUTPOST_MAX_LEVEL = 3
+OUTPOST_COST = (1000.0, 500.0, 200.0)        # level 1; costs never scale with pace
+OUTPOST_GROWTH = 2.5         # cost, store and platform per level
+OUTPOST_BUILD_RATE = 100.0   # (metal+crystal) of a level's cost per game-hour of build time
+OUTPOST_STORE_BASE = (3000.0, 1500.0, 750.0)  # level 1 at pace 1; x P**0.5, like the holds that fill it
+OUTPOST_YIELD_PER_HOUR = 2.0  # per grade point, per level, x ring multiplier, x P
+OUTPOST_PLATFORM_POWER = 40.0
+OUTPOST_RAID_FACTOR = 2.0    # a raid is this many times the ring's group, x the home raid's 0.80..1.15 roll
+OUTPOST_RAID_LOSS = 0.25     # share of every resource above the floor that a lost raid takes
+OUTPOST_REPAIR_SHARE = 0.25  # a repair costs this share of the level's cost and of its build time
+DENS_YIELD = {'S': 0.5, 'M': 1.0, 'R': 2.0, 'P': 4.0}   # grade points per density (the harvest multiplier)
+def outpost_cost(level):
+    return tuple(x * OUTPOST_GROWTH ** (level - 1) for x in OUTPOST_COST)
+def outpost_build_s(level, P=1.0):
+    c = outpost_cost(level)
+    return (c[0] + c[1]) / OUTPOST_BUILD_RATE * 3600.0 / P
+def outpost_store_cap(level, P=1.0):
+    return tuple(x * OUTPOST_GROWTH ** (max(level, 1) - 1) * P ** 0.5 for x in OUTPOST_STORE_BASE)
+def outpost_platform(level):
+    return OUTPOST_PLATFORM_POWER * OUTPOST_GROWTH ** (level - 1) if level > 0 else 0.0
+def outpost_yield_h(density, d, level, P=1.0):
+    """Units a game hour of one resource whose ore is `density` ('S', 'M', 'R', 'P'), at ring d."""
+    return OUTPOST_YIELD_PER_HOUR * DENS_YIELD[density] * ORE_RING_MULT(d) * level * P
+def outpost_raid_power(d):   # before the 0.80..1.15 roll
+    cls, count, mult = npc_group(d)
+    return OUTPOST_RAID_FACTOR * count * mult * ship_power(cls)
+def outpost_repair_cost(level):
+    return tuple(x * OUTPOST_REPAIR_SHARE for x in outpost_cost(level))
+def outpost_points(level):
+    return sum(wv(outpost_cost(l)) for l in range(1, level + 1))
+
 # =====================================================================
 # 2. PACING PRESETS
 # =====================================================================
