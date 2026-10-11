@@ -34,6 +34,29 @@ String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
   return '$why, starts in about $m:$s';
 }
 
+/// "meter 632 of 4185, next unit at 33%, clear in 38:41": where a player
+/// stands at the exchange.
+String meterSummary(proto.ExchangeMeter m) {
+  final clear = switch (m.clearIn) {
+    null => ', does not fall',
+    0 => '',
+    final t => ', clear in ${clockFmt(t)}',
+  };
+  return 'meter ${m.pressure.round()} of ${m.span.round()}, next unit at ${(m.fee * 100).round()}%$clear';
+}
+
+/// A quote as the log prints it: the trade, the meter it leaves, and why
+/// it would be refused, if it would.
+List<String> quoteLines(proto.ExchangeQuote q) {
+  final t = q.terms;
+  return [
+    'Quote F${t.fleetId}: ${t.amount.round()} ${t.give.name} gives ${t.receive.round()} ${t.want.name} '
+        '(par ${t.par.round()}, fee ${(t.fee * 100).round()}%)',
+    'After it: ${meterSummary(t.meterAfter)}',
+    if (q.refusal != null) 'Cannot trade now: ${q.refusal}',
+  ];
+}
+
 class StateMapper {
   int tick = 0;
   DateTime? connectedAt;
@@ -65,6 +88,9 @@ class StateMapper {
   /// `odds` answers by (fleet id, sector key).
   final Map<(int, int), OddsEntry> odds = {};
 
+  /// `exchange_quote` answers by (fleet id, give, want).
+  final Map<TradeKey, QuoteEntry> quotes = {};
+
   final List<LogEntry> log = [];
 
   /// Last hold reason shown per fleet; a repeat is not logged again.
@@ -88,6 +114,7 @@ class StateMapper {
     _lastHold.clear();
     previews.clear();
     odds.clear();
+    quotes.clear();
     log.clear();
     alerts.clear();
   }
@@ -110,6 +137,10 @@ class StateMapper {
           odds[(msg.fleetId, o.sector.toKey())] = OddsEntry(o, tick);
         }
         odds.removeWhere((_, e) => tick - e.tick > 60);
+      case proto.ExchangeQuote():
+        final t = msg.terms;
+        quotes[(t.fleetId, t.give, t.want)] = QuoteEntry(msg, tick);
+        quotes.removeWhere((_, e) => tick - e.tick > 60);
       case proto.LeaderboardReply():
         leaderboard = msg;
         for (final e in [...msg.entries.take(5), if (msg.you != null) msg.you!]) {
@@ -143,6 +174,7 @@ class StateMapper {
     signalBands.removeWhere((k, _) => sectors.containsKey(k));
     previews.clear();
     odds.clear();
+    quotes.clear();
     pushLog('Full state sync: tick $tick, homeworld ${s.player.homeworld}', EventLevel.bright);
   }
 
@@ -320,6 +352,12 @@ class StateMapper {
         msg = '${_fleet(k.fleetId)} delivered the chart of ${k.sectors} sectors '
             '(+${k.points.toStringAsFixed(2)} explore)';
         level = EventLevel.bright;
+      case proto.ExchangedEvent():
+        final t = k.terms;
+        quotes.clear();
+        msg = '${_fleet(t.fleetId)} traded ${t.amount.round()} ${t.give.name} for ${t.receive.round()} ${t.want.name} '
+            'at the exchange (fee ${(t.fee * 100).round()}%)';
+        level = EventLevel.bright;
       case proto.SiteAmbushEvent():
         msg = '! ${_fleet(k.fleetId)} ambushed aboard derelict in ${k.sector} (hostile ${k.npcFleetId})';
         level = EventLevel.bright;
@@ -417,6 +455,9 @@ class StateMapper {
       signalBands: {for (final e in signalBands.entries) proto.Hex.fromKey(e.key): e.value},
       previews: {for (final e in previews.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       odds: {for (final e in odds.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
+      quotes: Map.of(quotes),
+      exchange: p?.exchange ?? const proto.ExchangeMeter(),
+      holds: {for (final f in fleets) f.id: f.cargo},
       stock: res,
       catalog: hw?.catalog,
       hw: hw,

@@ -347,6 +347,19 @@ class Browser {
     }
   }
 
+  /// Open the `/` palette, wait until its field takes the keys, type
+  /// [text] and submit it.
+  Future<void> command(String text) async {
+    await press('/', 'Slash', 191, text: '/');
+    await until('the command palette to take the keyboard', () => eval('''(() => {
+      let at = document.activeElement;
+      while (at && at.shadowRoot && at.shadowRoot.activeElement) at = at.shadowRoot.activeElement;
+      return !!at && (at.tagName === 'INPUT' || at.tagName === 'TEXTAREA');
+    })()'''));
+    await type(text);
+    await press('Enter', 'Enter', 13, text: '\r');
+  }
+
   Future<Map<String, dynamic>> status() async =>
       (jsonDecode(await eval('JSON.stringify(window.__solo.statuses.at(-1) ?? {})') as String) as Map<String, dynamic>);
 
@@ -536,9 +549,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   check((await browser.tap('t.sent.some((m) => m.type === "auth" && !("token" in m))')) == true, 'the client logged in with the wire protocol, no token');
 
   print('an order');
-  await browser.press('/', 'Slash', 191, text: '/');
-  await browser.type('build metal');
-  await browser.press('Enter', 'Enter', 13, text: '\r');
+  await browser.command('build metal');
   await browser.until('the build command on the wire',
       () => browser.tap('t.sent.some((m) => m.type === "command" && m.action === "build" && m.building_type === "MetalMine")'));
   await browser.until('the Metal Mine to finish', () => browser.tap(
@@ -547,6 +558,20 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   check(level(after['homeworld_update'] as Map<String, dynamic>, 'MetalMine') == 2, 'the order was accepted and completed: Metal Mine level 2');
   check((await browser.tap('t.errors.length')) == 0, 'no error frame so far');
   await browser.shot('03-order-done');
+
+  print('the exchange');
+  final hub = (first['world']['hub'] as List).cast<Map<String, dynamic>>();
+  check(hub.length == 1 && '${hub.single['location']}' == '{q: 0, r: 0}' && '${hub.single['services']}' == '[exchange]',
+      'the world names its hub at the centre, with the exchange');
+  check((first['player']['exchange'] as Map)['pressure'] == 0, 'the commander starts with an empty meter');
+  await browser.command('quote metal deut 100');
+  await browser.until('the quote request on the wire', () => browser.tap(
+      't.sent.some((m) => m.action === "exchange_quote" && m.give === "metal" && m.want === "deuterium" && m.amount === 100)'));
+  final quote = await browser.until('the engine\'s quote', () => browser.last('exchange_quote'));
+  check(quote['amount'] == 100 && (quote['receive'] as num) >= 12 && (quote['receive'] as num) <= 37 && quote['par'] == 50,
+      'the engine quotes 100 metal at ${quote['receive']} deuterium, a fee of ${((quote['fee'] as num) * 100).round()}%');
+  check('${quote['refusal']}'.contains('from the exchange at the hub'), 'and says the fleet is not at the hub: ${quote['refusal']}');
+  check((await browser.tap('t.errors.length')) == 0, 'a quote is an answer, not an error');
 
   print('bots');
   final board = (jsonDecode(await browser.until('a leaderboard', () => browser.tap('t.boards.length ? JSON.stringify(t.boards[0]) : null')) as String)

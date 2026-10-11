@@ -116,6 +116,16 @@ class OddsEntry {
   const OddsEntry(this.odds, this.tick);
 }
 
+/// An `exchange_quote` answer and the tick it arrived.
+class QuoteEntry {
+  final proto.ExchangeQuote quote;
+  final int tick;
+  const QuoteEntry(this.quote, this.tick);
+}
+
+/// A trade at the exchange as the client names it: one quote is kept per key.
+typedef TradeKey = (int fleetId, proto.ResourceKind give, proto.ResourceKind want);
+
 /// Ticks a preview or odds stay on screen, and how soon they are asked for
 /// again (the refresh lands well before they lapse, so the readout never
 /// blinks out).
@@ -153,6 +163,15 @@ class GameState {
   /// The server's latest `odds` answer per (fleet id, sector). The client
   /// never works a ratio out itself; read them with [oddsFor].
   final Map<(int, proto.Hex), OddsEntry> odds;
+
+  /// The server's latest `exchange_quote` per (fleet id, give, want).
+  final Map<TradeKey, QuoteEntry> quotes;
+
+  /// Where the player's meter at the hub's exchange stands.
+  final proto.ExchangeMeter exchange;
+
+  /// Exact hold of each fleet by id (fleet cargo above is rounded for display).
+  final Map<int, proto.Resources> holds;
 
   /// Exact stockpile (the resource stocks above are rounded for display).
   final proto.Resources stock;
@@ -193,6 +212,9 @@ class GameState {
     this.signalBands = const {},
     this.previews = const {},
     this.odds = const {},
+    this.quotes = const {},
+    this.exchange = const proto.ExchangeMeter(),
+    this.holds = const {},
     this.stock = const proto.Resources(),
     this.catalog,
     this.hw,
@@ -200,6 +222,20 @@ class GameState {
     this.leaderboard,
     this.raid,
   });
+
+  /// Whether [at] is a hub sector that offers the exchange.
+  bool exchangeAt(proto.Hex at) => world?.servicesAt(at).contains(proto.HubService.exchange) ?? false;
+
+  /// The quote for a trade if it is recent enough to show.
+  proto.ExchangeQuote? quoteFor(int fleetId, proto.ResourceKind give, proto.ResourceKind want) {
+    final e = quotes[(fleetId, give, want)];
+    return e != null && tick - e.tick <= previewFreshTicks ? e.quote : null;
+  }
+
+  bool quoteNeedsRefresh(int fleetId, proto.ResourceKind give, proto.ResourceKind want) {
+    final e = quotes[(fleetId, give, want)];
+    return e == null || tick - e.tick >= previewRefreshTicks;
+  }
 
   /// The order the slot is working on; waiting orders follow it in the list
   /// but are not running, so `buildQueue.first` is not "the running order".
@@ -266,6 +302,9 @@ class GameState {
     Map<proto.Hex, int>? signalBands,
     Map<(int, proto.Hex), PreviewEntry>? previews,
     Map<(int, proto.Hex), OddsEntry>? odds,
+    Map<TradeKey, QuoteEntry>? quotes,
+    proto.ExchangeMeter? exchange,
+    Map<int, proto.Resources>? holds,
     proto.Resources? stock,
     proto.HomeworldCatalog? catalog,
     proto.HomeworldState? hw,
@@ -292,6 +331,9 @@ class GameState {
         signalBands: signalBands ?? this.signalBands,
         previews: previews ?? this.previews,
         odds: odds ?? this.odds,
+        quotes: quotes ?? this.quotes,
+        exchange: exchange ?? this.exchange,
+        holds: holds ?? this.holds,
         stock: stock ?? this.stock,
         catalog: catalog ?? this.catalog,
         hw: hw ?? this.hw,

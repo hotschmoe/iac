@@ -46,6 +46,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _hsub = false;
   bool _sheet = false;
   bool _manage = false;
+  bool _trade = false;
   DateTime? _armedUntil;
   DateTime? _scanAt;
   String? _dockHint;
@@ -138,12 +139,17 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final f = _fleet;
     final before = sim.loc;
     sim.sync(f: f, s: f == null ? null : _sec(f.sector), homeHex: con.state.homeworld);
+    sim.atExchange = f != null && con.state.exchangeAt(f.sector);
     if (f != null && before != null && before != sim.loc && sim.warp != null) {
       final first = _firstVisits.remove(f.sector);
       final s = _sec(f.sector);
       final th = SectorThreat.of(s);
-      _showBanner(first ? 'NEW SECTOR' : 'SECTOR ${f.sector.q}, ${f.sector.r}',
-          first ? 'First visit. ${voice[s?.terrain ?? proto.TerrainType.empty]}' : '${s?.terrain.label ?? ''} / ${zoneName(f.sector)}', th.rating >= 5);
+      if (sim.atExchange) {
+        _showBanner('THE HUB', 'Exchange open. Trade cargo for cargo.', false);
+      } else {
+        _showBanner(first ? 'NEW SECTOR' : 'SECTOR ${f.sector.q}, ${f.sector.r}',
+            first ? 'First visit. ${voice[s?.terrain ?? proto.TerrainType.empty]}' : '${s?.terrain.label ?? ''} / ${zoneName(f.sector)}', th.rating >= 5);
+      }
     }
   }
 
@@ -175,6 +181,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _showBanner('AMBUSH', 'Whatever killed the crew is still aboard.', true);
       case proto.SalvageCollectedEvent():
         sim.salvage?.fly = sim.now;
+        con.play('ok');
+      case proto.ExchangedEvent(:final terms):
+        _showBanner('TRADED', '${terms.amount.round()} ${terms.give.name} for ${terms.receive.round()} ${terms.want.name}, fee ${(terms.fee * 100).round()}%.', false);
         con.play('ok');
       case proto.ScanCompletedEvent():
         final f = _fleet;
@@ -305,6 +314,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         con.play('ok');
       case 'stop':
         con.game.sendCommand(proto.StopCommand(fleetId: f.id));
+      case 'trade':
+        setState(() {
+          _trade = !_trade;
+          if (_trade) _sheet = true;
+        });
+        con.play('click');
     }
     if (id != 'harvest') setState(() => _hsub = false);
   }
@@ -334,11 +349,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _onKey(KeyEvent e) {
     final ch = e.character?.toLowerCase();
     if (e.logicalKey == LogicalKeyboardKey.escape) {
-      if (sim.target != null || _hsub || _sheet) {
+      if (sim.target != null || _hsub || _sheet || _trade) {
         setState(() {
           sim.target = null;
           _hsub = false;
           _sheet = false;
+          _trade = false;
         });
         return true;
       }
@@ -350,7 +366,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       jump(di);
       return true;
     }
-    const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop'};
+    const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop', 't': 'trade'};
     final a = m[ch];
     if (a != null) {
       act(a);
@@ -452,9 +468,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         da('board', 'Board', 'b', active: exploring),
         da('recall', 'Recall', 'r'),
         da('stop', 'Stop', 'x'),
+        da('trade', 'Trade', 't', active: _trade),
       ];
+      final atExchange = st.exchangeAt(f.sector);
 
       final rightCol = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (_trade) ...[ExchangePanel(controller: con.game), const SizedBox(height: 8)],
         StatusPanel(
           f: f,
           shieldFrac: shield,
@@ -475,6 +494,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           hasDerelict: hasDer,
           harvesting: harvesting,
           boarding: exploring,
+          exchange: atExchange ? st.exchange : null,
+          trading: _trade,
           target: sim.target,
           onTarget: (k) => setState(() {
             sim.target = sim.target == k ? null : k;
@@ -525,7 +546,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         Positioned.fill(child: ScanOverlay(prefs: con.prefs)),
         if (combat) Positioned.fill(child: IgnorePointer(child: Blink(period: 13, onSteps: 7, builder: (_, on) => _Alarm(on: on)))),
         ...cards,
-        Positioned(left: 16, top: 14, width: narrow ? null : 300, right: narrow ? 80 : null, child: SectorHead(loc: f.sector, home: st.homeworld, sector: s, threat: th, narrow: narrow)),
+        Positioned(left: 16, top: 14, width: narrow ? null : 300, right: narrow ? 80 : null, child: SectorHead(loc: f.sector, home: st.homeworld, sector: s, threat: th, narrow: narrow, exchange: atExchange)),
         if (!narrow) Positioned(left: 16, top: 230, width: 208, child: FleetRail(ctrl: con.game, narrow: false, combat: combat)),
         if (narrow) Positioned(left: 8, right: 8, bottom: 70, child: FleetRail(ctrl: con.game, narrow: true, combat: combat)),
         if (narrow) Positioned(top: 8, right: 10, child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () => setState(() => _sheet = !_sheet))),
@@ -589,6 +610,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       h = 's';
     } else if (sim.derelict != null && near(g.wp(sim.derelict!.x, sim.derelict!.y), g.rh * .3)) {
       h = 'd';
+    } else if (sim.atExchange && near(g.wp(.38, -.26), g.rh * .17)) {
+      h = 'x';
     } else if (sim.ast.any((a) => a.ore != null && near(g.wp(a.x, a.y), a.r * g.rh * 1.3))) {
       h = 'o';
     }

@@ -388,10 +388,13 @@ class MapPainter extends CustomPainter {
     final r = math.max(10.0, hr * .62);
     Draw.symbol(c, Sym.home, hp.dx, hp.dy, r * 1.55, color: const Color(0xFFFFC864), lw: 1.3);
     Draw.text(c, 'HOME', hp.dx, hp.dy + r * 1.7, T.cond(size: math.max(9, (hr * .34).roundToDouble()), color: C.own, spacing: 1), anchor: .5);
-    final o = vp.toScreen(0, 0);
-    Draw.symbol(c, Sym.hub, o.dx, o.dy, math.max(10, hr * .9), color: C.a200, alpha: .9, lw: 1.2);
-    if (s > .5) {
-      Draw.text(c, 'C E N T R A L   H U B', o.dx, o.dy - hr * 1.3, T.cond(size: 10, color: C.a(C.a200, .8), spacing: 1), anchor: .5);
+    for (final site in data.hub) {
+      final o = vp.toScreen(site.location.q, site.location.r);
+      Draw.symbol(c, Sym.hub, o.dx, o.dy, math.max(10, hr * .9), color: C.a200, alpha: .9, lw: 1.2);
+      if (s > .5) {
+        final offers = site.services.contains(proto.HubService.exchange) ? 'H U B   E X C H A N G E' : 'H U B';
+        Draw.text(c, offers, o.dx, o.dy - hr * 1.3, T.cond(size: 10, color: C.a(C.a200, .8), spacing: 1), anchor: .5);
+      }
     }
   }
 

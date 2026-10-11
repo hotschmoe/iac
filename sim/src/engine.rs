@@ -3018,14 +3018,8 @@ impl GameEngine {
         let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
         let aboard = fleet.cargo.total();
         let after = aboard - amount + terms.receive;
-        let refusal = if !Self::fleet_is_free(fleet) {
-            let doing = match fleet.state {
-                FleetStatus::Moving => "in transit",
-                FleetStatus::InCombat => "in combat",
-                FleetStatus::Exploring => "busy boarding a derelict",
-                _ => "busy",
-            };
-            Some(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is {doing}; it can trade once it is idle")))
+        let refusal = if fleet.state == FleetStatus::Moving {
+            Some(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is in transit; it can trade once it has arrived")))
         } else if !world::hub_services(fleet.location).contains(&HubService::Exchange) {
             Some(refuse(ErrorCode::NotInSector, match world::nearest_hub(fleet.location, HubService::Exchange) {
                 Some(hub) => {
@@ -3038,6 +3032,8 @@ impl GameEngine {
                 }
                 None => "this world has no exchange".to_string(),
             }))
+        } else if !Self::fleet_is_free(fleet) {
+            Some(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is busy; it can trade once it is idle")))
         } else if amount > held {
             Some(refuse(ErrorCode::NoResources, format!(
                 "fleet {fleet_id} holds {held:.1} {}; it cannot give {amount:.1}", give.label(),

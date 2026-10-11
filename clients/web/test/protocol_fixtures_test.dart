@@ -109,7 +109,7 @@ void main() {
         mapper.apply(ServerMessage.fromJson(readJson(files.firstWhere((f) => baseName(f) == name))));
       }
       final open = mapper.quotes[(3, ResourceKind.metal, ResourceKind.deuterium)]!.quote;
-      expect((open.terms.amount, open.terms.receive, open.refusal), (632.5, 225, isNull));
+      expect((open.terms.amount, open.terms.receive, open.refusal), (632.5, 225, null));
       final refused = mapper.quotes[(3, ResourceKind.deuterium, ResourceKind.metal)]!.quote;
       expect(refused.refusal, contains('3 hexes from the exchange at the hub'));
       expect(refused.terms.meterAfter.clearIn, isNull);

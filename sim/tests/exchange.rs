@@ -221,11 +221,11 @@ fn no_run_of_trades_leaves_a_player_with_more_than_they_brought() {
 
 #[test]
 fn an_order_in_pieces_returns_what_the_whole_order_would() {
-    let cases: [(&str, (u8, u8, u8), f32, &[f32]); 4] = [
-        ("from an empty meter", (10, 9, 8), 0.0, &[100.0; 6]),
-        ("across the span", (2, 1, 1), 0.0, &[37.5, 400.0, 262.5, 800.0]),
-        ("from a part-filled meter", (6, 5, 4), 500.0, &[5.0, 7.0, 9.0, 579.0, 150.0, 250.0]),
-        ("above the span", (1, 1, 1), 4000.0, &[333.0, 333.0, 334.0]),
+    let cases = [
+        ("from an empty meter", (10, 9, 8), 0.0, vec![100.0; 6]),
+        ("across the span", (2, 1, 1), 0.0, vec![37.5, 400.0, 262.5, 800.0]),
+        ("from a part-filled meter", (6, 5, 4), 500.0, vec![5.0, 7.0, 9.0, 579.0, 150.0, 250.0]),
+        ("above the span", (1, 1, 1), 4000.0, vec![333.0, 333.0, 334.0]),
     ];
     for (name, mines, sold_before, pieces) in cases {
         let total: f32 = pieces.iter().sum();
@@ -240,7 +240,7 @@ fn an_order_in_pieces_returns_what_the_whole_order_would() {
         assert_eq!(one, asked.terms, "{name}");
 
         let mut received = 0.0;
-        for &piece in pieces {
+        for &piece in &pieces {
             received += trade(&mut split, Metal, Deuterium, Some(piece)).expect("one piece").receive;
         }
         assert!(received <= one.receive, "{name}: pieces gave {received}, the whole order {}", one.receive);
