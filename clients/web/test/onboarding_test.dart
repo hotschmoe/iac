@@ -51,7 +51,12 @@ Map<String, dynamic> _fleet({Map<String, int> at = _home, String state = 'Docked
     ..['cooldown_remaining'] = 0
     ..['home_fuel'] = at == _home ? 0.0 : 31.5
     ..remove('policy');
-  if (policy != null) f['policy'] = policy;
+  if (policy != null) {
+    f['policy'] = {
+      'preset': policy,
+      'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 4, 'engage_ratio_x10': 15, 'fuel_budget_pct': 20},
+    };
+  }
   return f;
 }
 

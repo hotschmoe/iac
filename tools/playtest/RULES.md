@@ -118,7 +118,11 @@ Standing orders are a separate message type (not a command):
 ```
 
 `params` is optional, and so is every field in it: send only what you want to
-change (`"params":{"max_range":2}`) and the rest take their defaults.
+change (`"params":{"max_range":2}`) and the rest take their defaults. A fleet
+under orders carries them in its row: `fleets[].policy` is
+`{"preset": ..., "params": {...}}` with all five settings as the server holds
+them (after clamping), in `full_state` and in every `tick_update`. A fleet you
+fly by hand has no `policy` field.
 
 | param | default | meaning |
 |-------|---------|---------|

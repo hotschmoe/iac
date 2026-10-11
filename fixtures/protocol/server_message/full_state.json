@@ -19,7 +19,16 @@
         "q": 3,
         "r": -2
       },
-      "policy": "salvage_and_sites",
+      "policy": {
+        "params": {
+          "cargo_return_pct": 70,
+          "engage_ratio_x10": 22,
+          "fuel_budget_pct": 100,
+          "max_range": 9,
+          "min_fuel_pct": 25
+        },
+        "preset": "salvage_and_sites"
+      },
       "power": 61.5,
       "range_hops": 4,
       "ships": [

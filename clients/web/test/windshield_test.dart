@@ -89,8 +89,8 @@ proto.ThreatInfo _threatOf(List<proto.NpcFleetInfo>? groups) {
   return proto.ThreatInfo(rating: rating, estPower: power, basis: proto.ThreatBasis.observed);
 }
 
-ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, String? policy}) => ui.FleetState(
-      policy: policy,
+ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, proto.StandingOrders? orders}) => ui.FleetState(
+      orders: orders,
       id: id,
       name: 'F$id',
       sector: at,
@@ -721,9 +721,12 @@ void main() {
       'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 8, 'engage_ratio_x10': 20, 'fuel_budget_pct': 35},
     });
 
-    const held = 'refuelling on a fuel budget of 35% of deuterium income (tank 80 of 120, full in about 236 s)';
+    const held = 'refuelling on a fuel budget of 50% of deuterium income (tank 80 of 120, full in about 236 s)';
     c.push(world([
-      fleet(1, [('Scout', 1), ('Corvette', 2)], policy: 'mine+return'),
+      fleet(1, [('Scout', 1), ('Corvette', 2)],
+          orders: const proto.StandingOrders(
+              preset: proto.PolicyPreset.mineAndReturn,
+              params: proto.PolicyParams(minFuelPct: 15, cargoReturnPct: 60, maxRange: 6, engageRatioX10: 30, fuelBudgetPct: 50))),
     ], calm().sectors, tick: 520)
         .copyWith(policyActs: {
       1: const [
@@ -733,14 +736,28 @@ void main() {
     }));
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('MINE+RETURN')), findsOneWidget);
-    expect(find.byKey(const Key('orders-settings-unknown')), findsOneWidget, reason: 'the wire carries the doctrine, not its settings: orders this console did not give show none');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 6 HEXES - ENGAGE 3.0X - FUEL 50%',
+        reason: 'the fleet row carries the settings in force, whoever gave the orders and whenever');
+    expect((shown('range'), shown('engage'), shown('fuel')), ('6 HEXES', '3.0X', '50%'), reason: 'the steppers start from the orders in force, not from what was last set here');
+    expect(find.text('It turns home at 60% hold, or with fuel down to the way back plus 15% of the tank.'), findsOneWidget);
     expect(tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data, 'HOLDING FOR 0:14');
     expect(tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data, held, reason: 'the engine\'s sentence, as it sent it');
     expect(find.textContaining('heading to claim', findRichText: true), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('status-orders')), matching: find.text('MINE+RETURN - HOLDING')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('status-hold')), matching: find.text(held)), findsOneWidget, reason: 'why it holds shows with the panel shut too');
-    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNotNull, reason: 'orders with settings unknown here can be given again');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNull);
+    expect(find.descendant(of: find.byKey(const Key('orders-why')), matching: find.text('These are the orders in force.')), findsOneWidget);
     await shot(tester, 'ws-orders-holding-1440');
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-range-up')));
+    await tester.tap(find.byKey(const ValueKey('orders-range-up')));
+    await tester.pump();
+    expect(shown('range'), '7 HEXES');
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(c.sent.whereType<proto.PolicyUpdate>().last.toJson()['params'],
+        {'min_fuel_pct': 15, 'cargo_return_pct': 60, 'max_range': 7, 'engage_ratio_x10': 30, 'fuel_budget_pct': 50},
+        reason: 'one step changes one setting and keeps the other four as they are in force');
 
     await key(tester, LogicalKeyboardKey.escape, '');
     expect(panel, findsNothing);
@@ -807,8 +824,15 @@ void main() {
     c.send(const proto.PolicyUpdate(fleetId: 101, preset: proto.PolicyPreset.patrolHome, params: proto.PolicyParams(maxRange: 2)));
     await tester.pump(const Duration(milliseconds: 100));
     expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 2, engage 1.5x, fuel budget 20% of deuterium income)'));
-    expect(find.byKey(const Key('orders-settings')), findsNothing, reason: 'orders the engine confirms that this console did not give are someone else\'s');
-    expect(find.byKey(const Key('orders-settings-unknown')), findsOneWidget, reason: 'and their settings are not claimed to be known here');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 1.5X - FUEL 20%',
+        reason: 'orders given from another console show with their settings, as the fleet row carries them');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-range'))).data, '2 HEXES', reason: 'and the steppers follow them');
+
+    c.handleCommand('policy engage=3 cargo=60');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 3.0X - FUEL 20%',
+        reason: 'settings typed with no doctrine change the orders in force and leave the rest of them');
+    expect(find.text('It turns home at 60% hold, or with fuel down to the way back plus 10% of the tank.'), findsOneWidget);
 
     c.handleCommand('load metal 10');
     await tester.pump(const Duration(milliseconds: 100));
@@ -828,6 +852,27 @@ void main() {
     expect(c.currentFleet.policy, isNull);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 10));
+    await endShell(tester, c);
+  });
+
+  testWidgets('a fleet under orders this console never gave shows their settings, and the steppers start from them (demo)', (tester) async {
+    final c = DemoController()..startDemo();
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    c.selectFleet(2);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect((c.currentFleet.id, c.currentFleet.policy), (103, 'prospect'));
+    expect(c.state.policyActs[103], isNull, reason: 'nothing about these orders was said in this session');
+
+    await key(tester, LogicalKeyboardKey.keyP, 'p');
+    await tester.pump(const Duration(milliseconds: 100));
+    String shown(String id) => tester.widget<Text>(find.byKey(Key('orders-$id'))).data!;
+    expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('PROSPECT')), findsOneWidget);
+    expect(shown('settings'), 'RANGE 6 HEXES - ENGAGE 2.0X - FUEL 35%');
+    expect((shown('range'), shown('engage'), shown('fuel')), ('6 HEXES', '2.0X', '35%'));
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNull);
+    expect(find.descendant(of: find.byKey(const Key('orders-why')), matching: find.text('These are the orders in force.')), findsOneWidget);
+    await shot(tester, 'ws-orders-given-elsewhere-1440');
+    expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
 

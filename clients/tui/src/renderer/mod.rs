@@ -335,9 +335,9 @@ fn hold_lines(state: &ClientState, fleet: &iac_shared::protocol::FleetState) -> 
         ));
         return lines;
     }
-    if let Some(preset) = fleet.policy {
+    if let Some(orders) = fleet.policy {
         lines.push(Line::styled(
-            format!("Under standing orders ({}), which unload at the dock: set manual with [p] to load by hand.", preset.label()),
+            format!("Under standing orders ({}), which unload at the dock: set manual with [p] to load by hand.", orders.preset.label()),
             AMBER_DIM,
         ));
         return lines;

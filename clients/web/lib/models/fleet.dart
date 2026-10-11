@@ -1,4 +1,5 @@
 import '../protocol/hex.dart';
+import '../protocol/protocol.dart' as proto show StandingOrders;
 
 enum FleetStatus {
   docked('DOCKED'),
@@ -71,7 +72,10 @@ class FleetState {
   final int cooldown;
   final double power;
   final int rangeHops;
-  final String? policy;
+
+  /// The standing orders the fleet flies under, with the settings in force;
+  /// null when it is flown by hand.
+  final proto.StandingOrders? orders;
 
   /// Loaded by hand at the home dock, which leaves this hold alone until the
   /// fleet has been away.
@@ -100,11 +104,14 @@ class FleetState {
     this.cooldown = 0,
     this.power = 0,
     this.rangeHops = 0,
-    this.policy,
+    this.orders,
     this.laden = false,
     this.cargoBlocked = false,
     this.holdCapacity = 0,
   });
+
+  /// The doctrine's label, as the server names it; null when flown by hand.
+  String? get policy => orders?.preset.label;
 
   /// Away from home with less than one jump of fuel.
   bool get stranded => homeFuel > 0 && jumpFuel > 0 && fuel < jumpFuel;

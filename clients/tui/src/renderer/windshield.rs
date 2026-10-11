@@ -385,9 +385,21 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     if fleet.cooldown_remaining > 0 {
         status_line.push_str(&format!("  cd {}s", fleet.cooldown_remaining));
     }
-    if let Some(preset) = fleet.policy {
-        status_line.push_str(&format!("  AUTO:{}", preset.label()));
-    }
+    let orders_lines: Vec<Line> = fleet.policy.map_or_else(Vec::new, |orders| {
+        let p = orders.params;
+        let fuel = if p.fuel_budget_pct >= iac_shared::constants::POLICY_FUEL_UNBOUNDED_PCT {
+            "  fuel unbounded".to_string()
+        } else {
+            format!("  fuel budget {}%", p.fuel_budget_pct)
+        };
+        vec![
+            Line::styled(format!(" Orders: {}", orders.preset.label()), GREEN_GOOD),
+            Line::styled(format!("  range {}  engage {:.1}x", p.max_range, f32::from(p.engage_ratio_x10) / 10.0), AMBER),
+            Line::styled(fuel, AMBER),
+            Line::styled(format!("  home at cargo {}%", p.cargo_return_pct), AMBER),
+            Line::styled(format!("  fuel reserve {}%", p.min_fuel_pct), AMBER),
+        ]
+    });
 
     // Hull turns red when the fleet is under 50% — glanceable danger.
     let hull_style = if hull_max > 0.0 && hull_cur / hull_max < 0.5 {
@@ -407,8 +419,9 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         fuel_line.push_str("  STRANDED, reserve recharging");
     }
 
-    let lines = vec![
-        Line::styled(status_line, status_style),
+    let mut lines = vec![Line::styled(status_line, status_style)];
+    lines.extend(orders_lines);
+    lines.extend([
         Line::styled(format!(" Ships: {}", ships_str), AMBER_BRIGHT),
         Line::styled(fuel_line, fuel_style),
         Line::raw(""),
@@ -423,7 +436,7 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         Line::styled(format!("  Fe {:.0}", fleet.cargo.metal), AMBER),
         Line::styled(format!("  Cr {:.0}", fleet.cargo.crystal), AMBER),
         Line::styled(format!("  De {:.0}", fleet.cargo.deuterium), AMBER),
-    ];
+    ]);
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

@@ -677,7 +677,16 @@ Future<void> standingOrders(Browser browser) async {
     return text.contains('HOLDING FOR') && text.contains('PATROL HOME - HOLDING') && reason.allMatches(text).length >= 2;
   });
   check(true, held ? 'the panel and the fleet status both show that sentence, word for word' : 'the panel shows that sentence, word for word');
-  check((await firstFleet(browser))['policy'] == 'patrol_home', 'the fleet is under patrol home');
+  final flown = (await firstFleet(browser))['policy'];
+  check(
+      jsonEncode(flown) ==
+          jsonEncode({
+            'preset': 'patrol_home',
+            'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 1, 'engage_ratio_x10': 100, 'fuel_budget_pct': 20},
+          }),
+      'the fleet row carries patrol home with the settings in force: ${jsonEncode(flown)}');
+  await browser.untilText('range 1 hex - engage 10.0x - fuel 20%');
+  check(true, 'and the panel shows them under the doctrine');
   await browser.shot('21d-orders-report-1440');
   await browser.resize(1100, 800);
   await browser.shot('21d-orders-report-1100');
@@ -1058,6 +1067,24 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   await second.close();
 
   print('reload');
+  const kept = {
+    'preset': 'prospect',
+    'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 2, 'engage_ratio_x10': 15, 'fuel_budget_pct': 35},
+  };
+  await browser.type('gw');
+  await browser.untilText('fleet status');
+  await browser.type('p');
+  await browser.click('doctrine prospect');
+  await browser.untilText('least odds to fight');
+  for (var i = 0; i < 2; i++) {
+    await browser.click('range from home down');
+  }
+  await browser.click('fuel budget, of income up');
+  await browser.click('set prospect');
+  await browser.until('the fleet under prospect at two hexes and 35%', () async => jsonEncode((await firstFleet(browser))['policy']) == jsonEncode(kept));
+  await browser.press('Escape', 'Escape', 27);
+  await browser.type('go');
+  await browser.untilText('admiral');
   await Future<void>.delayed(const Duration(seconds: 3));
   final before = (await browser.last('tick_update'))!;
   await browser.reload();
@@ -1075,6 +1102,21 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
       'the same homeworld, with the Metal Mine still at level 2');
   await browser.untilText('admiral');
   await browser.shot('06-restored');
+  final flownAfter = ((restored['fleets'] as List).first as Map<String, dynamic>)['policy'];
+  check(jsonEncode(flownAfter) == jsonEncode(kept), 'the reloaded page reads the fleet\'s orders with their settings off the wire: ${jsonEncode(flownAfter)}');
+  await browser.type('gw');
+  await browser.untilText('fleet status');
+  await browser.type('p');
+  await browser.untilText('range 2 hexes - engage 1.5x - fuel 35%');
+  check(true, 'and the panel shows the settings in force for orders this page did not give');
+  await browser.shot('06b-orders-restored-1440');
+  await browser.click('doctrine manual');
+  await browser.click('clear orders');
+  await browser.until('the fleet flown by hand again', () async => (await firstFleet(browser))['policy'] == null);
+  await browser.press('Escape', 'Escape', 27);
+  await browser.until('the fleet to finish a jump its orders had begun', () async => (await firstFleet(browser))['state'] != 'Moving');
+  await browser.type('go');
+  await browser.untilText('admiral');
 
   print('absence of ${absenceSeconds ~/ 3600} hours');
   await Future<void>.delayed(const Duration(seconds: 3));

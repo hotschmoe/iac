@@ -573,19 +573,30 @@ impl ClientState {
         self.ship_build_count = next.clamp(1, MAX_SHIP_BUILD_COUNT as i32) as u16;
     }
 
-    /// The doctrine settings this client sends with standing orders.
+    /// The doctrine settings this client sends with standing orders: the
+    /// ones the active fleet flies under, so that a new doctrine or budget
+    /// keeps the rest, or the defaults with the budget last chosen here.
     pub fn orders_params(&self) -> iac_shared::protocol::PolicyParams {
-        iac_shared::protocol::PolicyParams { fuel_budget_pct: self.orders_fuel_budget, ..Default::default() }
+        match self.active_fleet().and_then(|f| f.policy) {
+            Some(orders) => orders.params,
+            None => iac_shared::protocol::PolicyParams { fuel_budget_pct: self.orders_fuel_budget, ..Default::default() },
+        }
     }
 
-    pub fn step_orders_fuel_budget(&mut self) {
-        let at = ORDERS_FUEL_BUDGETS.iter().position(|pct| *pct == self.orders_fuel_budget).unwrap_or(0);
-        self.orders_fuel_budget = ORDERS_FUEL_BUDGETS[(at + 1) % ORDERS_FUEL_BUDGETS.len()];
-        self.status_message = match self.orders_fuel_budget {
+    /// Step the fuel budget to the next of `ORDERS_FUEL_BUDGETS` above the
+    /// one in force, or back to the least: the settings to send with it.
+    pub fn step_orders_fuel_budget(&mut self) -> iac_shared::protocol::PolicyParams {
+        let mut params = self.orders_params();
+        params.fuel_budget_pct = ORDERS_FUEL_BUDGETS.iter().copied()
+            .find(|pct| *pct > params.fuel_budget_pct)
+            .unwrap_or(ORDERS_FUEL_BUDGETS[0]);
+        self.orders_fuel_budget = params.fuel_budget_pct;
+        self.status_message = match params.fuel_budget_pct {
             100 => "standing orders: fuel unbounded".to_string(),
             pct => format!("standing orders: fuel budget {pct}% of deuterium income"),
         };
         self.status_set_tick = self.tick;
+        params
     }
 
     // ── Server message handling ──────────────────────────────────────

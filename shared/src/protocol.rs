@@ -299,7 +299,7 @@ impl PolicyPreset {
 
 /// Doctrine thresholds. Every field is optional on the wire; an omitted field
 /// (or an omitted `params` object) takes the default in constants.rs.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PolicyParams {
     /// Spare fuel, as a percent of the tank, kept on top of the exact fuel
@@ -348,6 +348,15 @@ impl Default for PolicyParams {
             fuel_budget_pct: crate::constants::POLICY_DEFAULT_FUEL_BUDGET_PCT,
         }
     }
+}
+
+/// The standing orders a fleet flies under, as `FleetState` carries them:
+/// the doctrine and every setting in force, after the server's clamping.
+/// The doctrine is never `manual`; a fleet flown by hand has no orders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandingOrders {
+    pub preset: PolicyPreset,
+    pub params: PolicyParams,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -746,9 +755,10 @@ pub struct FleetState {
     /// next jump, so what the fleet brings home unloads as any cargo does.
     #[serde(default)]
     pub laden: bool,
-    /// Standing orders currently flying this fleet, if any.
+    /// Standing orders currently flying this fleet, if any: the doctrine
+    /// with its settings, so the two cannot be told apart or disagree.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub policy: Option<PolicyPreset>,
+    pub policy: Option<StandingOrders>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

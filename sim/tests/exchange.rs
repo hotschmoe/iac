@@ -670,7 +670,7 @@ fn standing_orders_end_a_hand_loaded_hold() {
     assert!(e.engine.answer(pid, orders).is_empty());
     e.absorb();
     let fleet = e.fleet();
-    assert_eq!((fleet.cargo, fleet.laden, fleet.policy), (Resources::default(), false, Some(PolicyPreset::Prospect)));
+    assert_eq!((fleet.cargo, fleet.laden, fleet.policy.map(|p| p.preset)), (Resources::default(), false, Some(PolicyPreset::Prospect)));
     assert_eq!(e.stockpile().metal, 5000.0);
     let set = e.since(mark, |k| match k {
         EventKind::PolicyAction(p) => Some(p.reason.clone()),

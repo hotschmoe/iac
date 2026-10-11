@@ -93,7 +93,7 @@ fn ship(id: u64, class: ShipClass, hull: f32, shield: f32, weapon: f32) -> ShipS
     }
 }
 
-fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<PolicyPreset>) -> FleetState {
+fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOrders>) -> FleetState {
     FleetState {
         id,
         location: loc,
@@ -711,7 +711,10 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 tick: 4821,
                 player: Some(sample_player()),
                 fleets: vec![
-                    sample_fleet(1, h(3, -2), FleetStatus::Harvesting, Some(PolicyPreset::PatrolHome)),
+                    sample_fleet(1, h(3, -2), FleetStatus::Harvesting, Some(StandingOrders {
+                        preset: PolicyPreset::PatrolHome,
+                        params: PolicyParams::default(),
+                    })),
                     FleetState { laden: true, ..sample_fleet(2, h(4, -2), FleetStatus::Docked, None) },
                 ],
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
@@ -766,7 +769,16 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 tick: 4820,
                 player: sample_player(),
                 fleets: vec![
-                    sample_fleet(1, h(3, -2), FleetStatus::Moving, Some(PolicyPreset::SalvageAndSites)),
+                    sample_fleet(1, h(3, -2), FleetStatus::Moving, Some(StandingOrders {
+                        preset: PolicyPreset::SalvageAndSites,
+                        params: PolicyParams {
+                            min_fuel_pct: 25,
+                            cargo_return_pct: 70,
+                            max_range: 9,
+                            engage_ratio_x10: 22,
+                            fuel_budget_pct: 100,
+                        },
+                    })),
                     sample_fleet(2, h(4, -2), FleetStatus::Exploring, None),
                     FleetState {
                         ships: vec![],

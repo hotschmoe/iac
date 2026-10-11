@@ -273,7 +273,7 @@ async fn run(
                         if let Some(fleet) = st.active_fleet() {
                             use iac_shared::protocol::PolicyPreset;
                             let presets = PolicyPreset::ALL;
-                            let current = fleet.policy.unwrap_or(PolicyPreset::Manual);
+                            let current = fleet.policy.map_or(PolicyPreset::Manual, |orders| orders.preset);
                             let idx = presets.iter().position(|p| *p == current).unwrap_or(0);
                             let next = presets[(idx + 1) % presets.len()];
                             let msg = ClientMessage::PolicyUpdate(iac_shared::protocol::PolicyUpdate {
@@ -286,12 +286,12 @@ async fn run(
                     }
                     input::InputAction::CycleFuelBudget => {
                         let mut st = state.lock().await;
-                        st.step_orders_fuel_budget();
-                        if let Some((fleet_id, preset)) = st.active_fleet().and_then(|f| Some((f.id, f.policy?))) {
+                        let params = st.step_orders_fuel_budget();
+                        if let Some((fleet_id, orders)) = st.active_fleet().and_then(|f| Some((f.id, f.policy?))) {
                             let msg = ClientMessage::PolicyUpdate(iac_shared::protocol::PolicyUpdate {
                                 fleet_id,
-                                preset,
-                                params: Some(st.orders_params()),
+                                preset: orders.preset,
+                                params: Some(params),
                             });
                             let _ = cmd_tx.send(msg);
                         }

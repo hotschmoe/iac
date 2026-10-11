@@ -86,8 +86,10 @@ leaderboard lists them apart (see `leaderboard` below).
 TUI basics: `w` windshield / `m` star map / `b` homeworld / `` ` `` command
 center, `?` for all keybinds. In the windshield: `1-6` move, `v` scan,
 `h` harvest, `a` attack, `s` salvage, `r` recall, `S` stop. `p` cycles the
-active fleet's standing orders; `P` steps the fuel budget they are given with
-(10, 20, 35, 50 percent of deuterium income, then no bound). `e` opens the
+active fleet's standing orders; `P` steps their fuel budget (10, 20, 35, 50
+percent of deuterium income, then no bound). The fleet panel of the
+windshield lists the settings in force under the doctrine, and both keys keep
+the settings the fleet already has. `e` opens the
 exchange overlay for the active fleet: `g` and `w` pick what to give and
 want, Left/Right the share of the hold, and it shows the server's quote;
 Enter trades when the fleet is at the hub (marked `X` on the star map). `f`
@@ -190,7 +192,11 @@ Standing orders are a separate message type (not a command):
 ```
 
 `params` is optional, and so is every field in it: send only what you want to
-change (`"params":{"max_range":2}`) and the rest take their defaults.
+change (`"params":{"max_range":2}`) and the rest take their defaults. A fleet
+under orders carries them in its row: `fleets[].policy` is
+`{"preset": ..., "params": {...}}` with all five settings as the server holds
+them (after clamping), in `full_state` and in every `tick_update`. A fleet you
+fly by hand has no `policy` field.
 
 | param | default | meaning |
 |-------|---------|---------|
@@ -284,8 +290,10 @@ each, and steppers for the range, the least odds and the fuel budget. Its
 button sends what the command bar sends for
 `policy mine range=8 engage=1.5 fuel=40 cargo=85 reserve=10` (any subset;
 `fuel` is `fuel_budget_pct`, 100 for no bound; `policy manual` clears). The
-wire carries a fleet's doctrine and not its settings, so the panel shows the
-settings only of orders given from that console in that session. At the hub the windshield
+fleet row carries the settings with the doctrine, so the panel shows the
+settings in force for any fleet under orders, whoever gave them and whenever,
+and its steppers start from them; settings typed with no doctrine
+(`policy range=6`) change the orders in force and keep the rest. At the hub the windshield
 lists the exchange among its contacts; `T` (or the Trade tile) opens the
 exchange panel, which shows the server's quote for the trade picked and
 sends it. `quote metal deut 400` and `trade metal deut 400` do the same from

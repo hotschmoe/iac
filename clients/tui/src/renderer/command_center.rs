@@ -71,8 +71,17 @@ fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: ratatui:
                 " {}Fleet {} [{},{}] {}",
                 marker, fleet.id, fleet.location.q, fleet.location.r, status
             );
-            if let Some(preset) = fleet.policy {
-                text.push_str(&format!(" AUTO:{}", preset.label()));
+            if let Some(orders) = fleet.policy {
+                let p = orders.params;
+                let fuel = if p.fuel_budget_pct >= iac_shared::constants::POLICY_FUEL_UNBOUNDED_PCT {
+                    "unbounded".to_string()
+                } else {
+                    format!("{}%", p.fuel_budget_pct)
+                };
+                text.push_str(&format!(
+                    " AUTO:{} (range {}, engage {:.1}x, fuel {fuel})",
+                    orders.preset.label(), p.max_range, f32::from(p.engage_ratio_x10) / 10.0,
+                ));
             }
             if fleet.laden {
                 text.push_str(" LADEN");
