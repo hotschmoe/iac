@@ -435,8 +435,14 @@ pub struct FleetPolicy {
 
 /// Where a doctrine lets one fleet go, worked out once per evaluation: the
 /// fleet's odds in every sector asked about, against what its owner knows.
+/// An evaluation searches the same sectors several times over (a lane
+/// without a fight, then any lane, then the reason nothing was found), so
+/// what it learns of a sector is kept until it ends; the world cannot move
+/// while the engine is borrowed.
 struct Reach<'a> {
     engine: &'a GameEngine,
+    fleet: &'a Fleet,
+    params: PolicyParams,
     owner: u64,
     ours: Force,
     home: Hex,
@@ -452,19 +458,30 @@ struct Reach<'a> {
     /// attacks whoever enters.
     groups: KeyMap<u32, bool>,
     live: KeySet<u32>,
-    rated: RefCell<KeyMap<u32, (ThreatInfo, f32)>>,
+    rated: SectorMemo<(ThreatInfo, f32)>,
+    fights: SectorMemo<bool>,
+    seams: SectorMemo<Option<f32>>,
+    boardable: SectorMemo<bool>,
+}
+
+type SectorMemo<T> = RefCell<KeyMap<u32, T>>;
+
+fn recall<T: Copy>(memo: &SectorMemo<T>, coord: Hex, work: impl FnOnce() -> T) -> T {
+    let key = coord.to_key();
+    if let Some(&known) = memo.borrow().get(&key) {
+        return known;
+    }
+    let found = work();
+    memo.borrow_mut().insert(key, found);
+    found
 }
 
 impl Reach<'_> {
     fn rating(&self, coord: Hex) -> (ThreatInfo, f32) {
-        let key = coord.to_key();
-        if let Some(&rated) = self.rated.borrow().get(&key) {
-            return rated;
-        }
-        let (threat, theirs) = self.engine.opposition(self.owner, coord, self.live.contains(&key));
-        let rated = (threat, self.engine.odds_ratio(&self.ours, &theirs));
-        self.rated.borrow_mut().insert(key, rated);
-        rated
+        recall(&self.rated, coord, || {
+            let (threat, theirs) = self.engine.opposition(self.owner, coord, self.live.contains(&coord.to_key()));
+            (threat, self.engine.odds_ratio(&self.ours, &theirs))
+        })
     }
 
     fn ratio(&self, coord: Hex) -> f32 {
@@ -522,8 +539,24 @@ impl Reach<'_> {
     /// Entering `coord` starts a fight: a group there is not passive.
     fn starts_fight(&self, coord: Hex) -> bool {
         let passive = iac_shared::world::NpcBehaviorType::Passive;
-        self.groups.get(&coord.to_key()).copied().unwrap_or(false)
-            || self.engine.pending_template_npc(coord).is_some_and(|t| t.behavior != passive)
+        recall(&self.fights, coord, || {
+            self.groups.get(&coord.to_key()).copied().unwrap_or(false)
+                || self.engine.pending_template_npc(coord).is_some_and(|t| t.behavior != passive)
+        })
+    }
+
+    /// Score weight of the seam in `coord` as it would land in the hold;
+    /// None where the tiles hold too little to stake.
+    fn seam(&self, coord: Hex) -> Option<f32> {
+        recall(&self.seams, coord, || {
+            (self.engine.seam_units(coord) >= POLICY_MIN_SEAM_UNITS)
+                .then(|| self.engine.seam_worth(self.owner, coord, self.room))
+        })
+    }
+
+    /// Whether the doctrine boards a derelict in `coord`.
+    fn boards(&self, coord: Hex) -> bool {
+        recall(&self.boardable, coord, || self.engine.site_is_boardable(self.fleet, &self.params, coord))
     }
 
     /// Whether resources worth `weight` (`scaling::resource_weight`) repay
@@ -4078,6 +4111,8 @@ impl GameEngine {
     fn policy_reach<'a>(&'a self, fleet: &'a Fleet, params: &PolicyParams, home: Hex) -> Reach<'a> {
         Reach {
             engine: self,
+            fleet,
+            params: *params,
             owner: fleet.owner_id,
             ours: fleet_force(fleet),
             home,
@@ -4095,6 +4130,9 @@ impl GameEngine {
             }),
             live: crate::intel::live_coords(self, fleet.owner_id).iter().map(|h| h.to_key()).collect(),
             rated: RefCell::default(),
+            fights: RefCell::default(),
+            seams: RefCell::default(),
+            boardable: RefCell::default(),
         }
     }
 
@@ -4338,11 +4376,7 @@ impl GameEngine {
 
         let plan = {
             let reach = self.policy_reach(&fleet, &params, home);
-            let ore = |n: Hex, hops: u32| {
-                n != home
-                    && self.seam_units(n) >= POLICY_MIN_SEAM_UNITS
-                    && reach.repays(self.seam_worth(owner, n, reach.room), hops)
-            };
+            let ore = |n: Hex, hops: u32| n != home && reach.seam(n).is_some_and(|worth| reach.repays(worth, hops));
             let seam = |n: Hex, hops: u32| ore(n, hops) && !reach.starts_fight(n);
             let kept = staked
                 .filter(|&claim| !ran_dry && claim != location)
@@ -4422,7 +4456,7 @@ impl GameEngine {
             };
             let payday = |n: Hex, hops: u32| {
                 n != home && n != location && !reach.starts_fight(n)
-                    && (wreck(n, hops) || self.site_is_boardable(&fleet, &params, n))
+                    && (wreck(n, hops) || reach.boards(n))
             };
             match reach.path_worth(location, &payday) {
                 Some(path) => Ok(path[0]),
