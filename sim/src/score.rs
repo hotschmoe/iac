@@ -51,8 +51,102 @@ impl Score {
     }
 
     pub fn total(&self) -> f32 {
+        self.total_under(ExtraRule::GAME)
+    }
+
+    pub fn total_under(&self, rule: ExtraRule) -> f32 {
         let core = self.core();
-        core + (self.combat + self.explore).min(EXTRA_CAP * core)
+        core + rule.counted(self.combat + self.explore, core)
+    }
+}
+
+/// How combat and exploration points count toward a score. Every world plays
+/// under `ExtraRule::GAME`. The others are alternatives for `sim-run --cap`
+/// to measure: nothing a client sees is scored with them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExtraRule {
+    /// In full up to this share of core, not at all beyond it.
+    Cap(f32),
+    /// In full up to this share of core (the knee). Beyond it the counted
+    /// points grow with the square root of the raw ones: four times the
+    /// points count double.
+    Soft(f32),
+    /// In full.
+    Uncapped,
+}
+
+impl ExtraRule {
+    pub const GAME: ExtraRule = ExtraRule::Cap(EXTRA_CAP);
+
+    /// What `raw` combat and exploration points add to a score of `core`.
+    pub fn counted(self, raw: f32, core: f32) -> f32 {
+        match self {
+            ExtraRule::Cap(share) => raw.min(share * core),
+            ExtraRule::Soft(knee) if raw > knee * core => (knee * core * raw).sqrt(),
+            ExtraRule::Soft(_) | ExtraRule::Uncapped => raw,
+        }
+    }
+
+    /// What one more point would add to a score standing at `raw` and `core`:
+    /// 1 while points count in full, 0 once they do not count at all.
+    pub fn next_point(self, raw: f32, core: f32) -> f32 {
+        match self {
+            ExtraRule::Cap(share) if raw >= share * core => 0.0,
+            ExtraRule::Soft(knee) if raw > knee * core => 0.5 * (knee * core / raw).sqrt(),
+            ExtraRule::Cap(_) | ExtraRule::Soft(_) | ExtraRule::Uncapped => 1.0,
+        }
+    }
+}
+
+/// Ticks in which a `Meter` drains by one allowance.
+const METER_WINDOW: f64 = 86_400.0;
+
+/// A daily allowance for combat and exploration points: another alternative
+/// no world plays under, which `sim-run --meter` measures beside the run's
+/// own rule. The meter fills with every point earned and drains by one
+/// allowance (`share` of core) a day. A point counts in full while the
+/// meter stands under one allowance and by the square root beyond it: a
+/// burst of four allowances counts as two. Unlike a cap this needs a memory:
+/// what a point counted is banked when it is earned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Meter {
+    pub share: f32,
+    level: f64,
+    banked: f64,
+}
+
+impl Meter {
+    pub fn new(share: f32) -> Meter {
+        Meter { share, level: 0.0, banked: 0.0 }
+    }
+
+    /// What the points earned so far have added to the score.
+    pub fn banked(&self) -> f32 {
+        self.banked as f32
+    }
+
+    fn allowance(&self, core: f32) -> f64 {
+        f64::from(self.share) * f64::from(core)
+    }
+
+    /// One tick passes for an empire of `core`.
+    pub fn drain(&mut self, core: f32) {
+        self.level = (self.level - self.allowance(core) / METER_WINDOW).max(0.0);
+    }
+
+    /// An empire of `core` earns `points`.
+    pub fn earn(&mut self, points: f32, core: f32) {
+        let allowance = self.allowance(core);
+        let counted_up_to = |level: f64| if level <= allowance { level } else { (allowance * level).sqrt() };
+        let after = self.level + f64::from(points);
+        self.banked += counted_up_to(after) - counted_up_to(self.level);
+        self.level = after;
+    }
+
+    /// What one more point would add now: 1 under the allowance, less beyond it.
+    pub fn next_point(&self, core: f32) -> f32 {
+        let allowance = self.allowance(core);
+        if self.level <= allowance { 1.0 } else { (0.5 * (allowance / self.level).sqrt()) as f32 }
     }
 }
 

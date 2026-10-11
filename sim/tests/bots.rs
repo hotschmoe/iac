@@ -111,6 +111,28 @@ fn a_check_in_builder_orders_only_the_ships_and_turrets_its_stockpile_covers() {
 }
 
 #[test]
+fn a_pilot_pays_for_no_batch_whose_tech_or_building_still_waits_for_resources() {
+    let mut world = Headless::new(1, Pace::parse("season").unwrap());
+    let style = Style::new(Personality::Raider, Attention::HandsOn);
+    let id = world.add_player(Box::new(Bot::new("raider-hands-on", style)), style.label()).expect("seat bot");
+    let mut yard_busy = 0;
+    for _ in 0..DAY / 2 {
+        world.step().unwrap();
+        let player = &world.engine.players[&id];
+        yard_busy += u64::from(player.ship_queue.is_some());
+        if player.ship_queue.is_none() && !player.ship_pending.is_empty() {
+            assert!(
+                player.research_queue.is_some() || !player.building_queue.is_empty(),
+                "tick {}: {:?} is paid for and waits on something that has not started",
+                world.engine.current_tick(),
+                player.ship_pending[0].item,
+            );
+        }
+    }
+    assert!(yard_busy > 0, "the raider did order ships and turrets");
+}
+
+#[test]
 fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
     let mut world = world(7);
     world.run_sampled(TICKS, TICKS / 3).unwrap();
@@ -158,7 +180,7 @@ fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
 #[test]
 fn the_view_a_bot_folds_from_tick_updates_is_the_full_state() {
     let (mut engine, mut roster, _human) = hosted(7);
-    let mut compared = 0;
+    let (mut compared, mut marked) = (0, 0);
     for _ in 0..1_500 {
         host_tick(&mut engine, &mut roster);
         for seat in roster.seats() {
@@ -184,11 +206,11 @@ fn the_view_a_bot_folds_from_tick_updates_is_the_full_state() {
                 );
             }
             compared += 1;
+            marked = marked.max(view.known_sectors.iter().filter(|s| s.chart.is_some()).count());
         }
     }
     assert!(compared > 2_500, "bots acting tick after tick were followed: {compared} views compared");
-    let charted = roster.seats().iter().filter_map(|seat| seat.view()).flat_map(|view| &view.known_sectors);
-    assert!(charted.filter(|s| s.chart.is_some()).count() > 50, "charts were made and marked");
+    assert!(marked > 50, "charts were made and marked: {marked} in the fullest view compared");
 }
 
 #[test]

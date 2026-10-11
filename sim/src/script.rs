@@ -79,6 +79,36 @@ pub trait ScriptedPlayer {
     fn hear(&mut self, reply: &ServerMessage) {
         let _ = reply;
     }
+
+    /// What the player would queue at home if it looked at `state` now; None
+    /// for a player that keeps no plan. A report asks this to say why a slot
+    /// stands empty, so answering must leave the player as it was.
+    fn outlook(&self, state: &GameState) -> Option<Outlook> {
+        let _ = state;
+        None
+    }
+}
+
+/// What a scripted player would do with a free place in one homeworld queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Want {
+    /// Place an order; `covered` when the stockpile it may spend pays for it now.
+    Order { covered: bool },
+    /// Its next choice needs something that is not built yet.
+    Prerequisite,
+    /// Levels are left to order but its own rule says not yet; `covered` when
+    /// the stockpile would pay for the cheapest of them.
+    NotYet { covered: bool },
+    /// Everything it would ever order here is built.
+    Nothing,
+}
+
+/// A scripted player's `Want` for each homeworld queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outlook {
+    pub building: Want,
+    pub research: Want,
+    pub shipyard: Want,
 }
 
 impl<P: ScriptedPlayer + ?Sized> ScriptedPlayer for Box<P> {
@@ -108,6 +138,10 @@ impl<P: ScriptedPlayer + ?Sized> ScriptedPlayer for Box<P> {
 
     fn hear(&mut self, reply: &ServerMessage) {
         (**self).hear(reply);
+    }
+
+    fn outlook(&self, state: &GameState) -> Option<Outlook> {
+        (**self).outlook(state)
     }
 }
 
