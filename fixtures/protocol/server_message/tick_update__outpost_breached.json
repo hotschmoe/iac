@@ -1,0 +1,180 @@
+{
+  "events": [
+    {
+      "breached": true,
+      "defended": false,
+      "defense_power": 294.0,
+      "kind": "RaidResolved",
+      "outpost": {
+        "q": 10,
+        "r": -2
+      },
+      "player_id": 42,
+      "protected_kept": {
+        "crystal": 781.25,
+        "deuterium": 312.5,
+        "metal": 1562.5
+      },
+      "raid_power": 310.5,
+      "resources_lost": {
+        "crystal": 0.0,
+        "deuterium": 96.0,
+        "metal": 1840.5
+      },
+      "ships_lost": 1,
+      "structures_lost": 0,
+      "structures_restored": 0,
+      "tick": 5000
+    }
+  ],
+  "fleets": [
+    {
+      "cargo": {
+        "crystal": 3.0,
+        "deuterium": 0.0,
+        "metal": 12.5
+      },
+      "cargo_blocked": false,
+      "cargo_capacity": 220.0,
+      "cooldown_remaining": 3,
+      "fuel": 271.5,
+      "fuel_max": 500.0,
+      "home_fuel": 220.5,
+      "id": 7,
+      "jump_fuel": 31.5,
+      "laden": false,
+      "location": {
+        "q": 10,
+        "r": -2
+      },
+      "outpost_fuel": 0.0,
+      "power": 61.5,
+      "range_hops": 4,
+      "ships": [
+        {
+          "class": "Scout",
+          "hull": 80.5,
+          "hull_max": 100.0,
+          "id": 71,
+          "shield": 25.0,
+          "shield_max": 50.0,
+          "weapon_power": 4.0
+        },
+        {
+          "class": "Hauler",
+          "hull": 100.0,
+          "hull_max": 100.0,
+          "id": 72,
+          "shield": 0.0,
+          "shield_max": 50.0,
+          "weapon_power": 0.0
+        }
+      ],
+      "state": "Idle"
+    }
+  ],
+  "outpost": {
+    "breached": true,
+    "defence_power": 0.0,
+    "grade": 3.0,
+    "in_service": false,
+    "level": 3,
+    "location": {
+      "q": 10,
+      "r": -2
+    },
+    "max_level": 3,
+    "next_raid_estimate_power": 37.900001525878906,
+    "platform_power": 0.0,
+    "production": {
+      "crystal": 0.0,
+      "deuterium": 0.0,
+      "metal": 0.0
+    },
+    "protected": {
+      "crystal": 781.25,
+      "deuterium": 312.5,
+      "metal": 1562.5
+    },
+    "repair_cost": {
+      "crystal": 781.25,
+      "deuterium": 312.5,
+      "metal": 1562.5
+    },
+    "store": {
+      "crystal": 781.25,
+      "deuterium": 0.0,
+      "metal": 1200.0
+    },
+    "store_cap": {
+      "crystal": 29646.353515625,
+      "deuterium": 14823.1767578125,
+      "metal": 59292.70703125
+    }
+  },
+  "sector_updates": [
+    {
+      "connections": [
+        {
+          "q": 4,
+          "r": -2
+        },
+        {
+          "q": 4,
+          "r": -3
+        },
+        {
+          "q": 2,
+          "r": -2
+        },
+        {
+          "q": 2,
+          "r": -1
+        },
+        {
+          "q": 3,
+          "r": -1
+        }
+      ],
+      "last_seen": 4821,
+      "live": true,
+      "location": {
+        "q": 10,
+        "r": -2
+      },
+      "ore_reserve": {
+        "crystal": {
+          "max_units": 0.0,
+          "units": 0.0
+        },
+        "deuterium": {
+          "max_units": 19.5,
+          "units": 19.5
+        },
+        "metal": {
+          "max_units": 42.900001525878906,
+          "units": 42.900001525878906
+        }
+      },
+      "outpost": {
+        "breached": true,
+        "level": 3,
+        "mine": true,
+        "owner": "Admiral"
+      },
+      "resources": {
+        "crystal": "None",
+        "deuterium": "Moderate",
+        "metal": "Rich"
+      },
+      "terrain": "AsteroidField",
+      "threat": {
+        "basis": "observed",
+        "est_power": 0.0,
+        "rating": 1
+      }
+    }
+  ],
+  "tick": 5000,
+  "type": "tick_update"
+}

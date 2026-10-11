@@ -24,8 +24,8 @@ use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::protocol::{
-    FleetBrief, NpcBehavior, NpcFleetInfo, NpcShipInfo, SectorResources, SectorState, ShipClassCounts,
-    SiteBrief,
+    FleetBrief, NpcBehavior, NpcFleetInfo, NpcShipInfo, OutpostBrief, SectorResources, SectorState,
+    ShipClassCounts, SiteBrief,
 };
 use iac_shared::scaling;
 use iac_shared::world::{NpcBehaviorType, NpcTemplate};
@@ -54,6 +54,7 @@ struct Coverage {
     sensor_set: KeySet<u32>,
     fleets: Vec<u32>,
     scans: Vec<u32>,
+    outpost: Option<u32>,
     extras: KeySet<u32>,
 }
 
@@ -89,6 +90,8 @@ pub struct KnownSectors {
     dirty: KeySet<(u64, u32)>,
     /// Sectors an NPC group stood in or was homed to at the last refresh.
     npc_sectors: Vec<u32>,
+    /// Sectors an outpost stood in at the last refresh.
+    outpost_sectors: Vec<u32>,
     refreshed: u64,
 }
 
@@ -170,16 +173,17 @@ impl KnownSectors {
         });
         let mut scans: Vec<u32> = engine.scan_revealed_coords(pid).into_iter().map(Hex::to_key).collect();
         scans.sort_unstable();
+        let outpost = engine.outposts.get(&pid).map(|o| o.sector.to_key());
 
         let old = self.coverage.remove(&pid).unwrap_or_default();
-        if old.sensor == sensor && old.fleets == fleets && old.scans == scans {
+        if old.sensor == sensor && old.fleets == fleets && old.scans == scans && old.outpost == outpost {
             self.coverage.insert(pid, old);
             return;
         }
 
         let sensor_changed = old.sensor != sensor;
-        let mut now = Coverage { sensor, fleets, scans, ..Coverage::default() };
-        now.extras = now.fleets.iter().chain(&now.scans).copied().collect();
+        let mut now = Coverage { sensor, fleets, scans, outpost, ..Coverage::default() };
+        now.extras = now.fleets.iter().chain(&now.scans).chain(&now.outpost).copied().collect();
         if sensor_changed {
             if let Some((origin, range)) = sensor {
                 now.sensor_set = engine.get_sensor_revealed_coords(origin, range).iter().map(|h| h.to_key()).collect();
@@ -241,7 +245,8 @@ impl KnownSectors {
     }
 
     /// Watched sectors whose content may differ from what the players hold:
-    /// those with an override, an NPC group, or that had one at the last refresh.
+    /// those with an override, an NPC group or an outpost, or that had a
+    /// group or an outpost at the last refresh.
     fn dynamic_watched(&mut self, engine: &GameEngine) -> Vec<u32> {
         let mut npc_sectors: Vec<u32> = engine
             .npc_fleets
@@ -250,6 +255,7 @@ impl KnownSectors {
             .collect();
         npc_sectors.sort_unstable();
         npc_sectors.dedup();
+        let outpost_sectors: Vec<u32> = engine.outposts.values().map(|o| o.sector.to_key()).collect();
 
         let mut seen: KeySet<u32> = KeySet::default();
         let dynamic = engine
@@ -257,10 +263,13 @@ impl KnownSectors {
             .keys()
             .chain(&npc_sectors)
             .chain(&self.npc_sectors)
+            .chain(&outpost_sectors)
+            .chain(&self.outpost_sectors)
             .copied()
             .filter(|key| self.watchers.contains_key(key) && seen.insert(*key))
             .collect();
         self.npc_sectors = npc_sectors;
+        self.outpost_sectors = outpost_sectors;
         dynamic
     }
 
@@ -432,17 +441,23 @@ impl KnownSectors {
     }
 }
 
-/// Chart marks belong to the viewer, not to the sector, so they are laid
-/// over a view when it is built and never remembered.
+/// Chart marks, and whether an outpost is the viewer's own, belong to the
+/// viewer and not to the sector, so they are laid over a view when it is
+/// built and never remembered.
 fn mark_charts(engine: &GameEngine, player_id: u64, sectors: &mut [SectorState]) {
     let aboard = engine.charts_aboard(player_id);
+    let name = engine.players.get(&player_id).map(|p| p.name.as_str());
     for sector in sectors {
         sector.chart = engine.chart_mark(player_id, sector.location.to_key(), &aboard);
+        if let Some(outpost) = &mut sector.outpost {
+            outpost.mine = name == Some(outpost.owner.as_str());
+        }
     }
 }
 
 /// Sectors the server is watching for this player right now: fleet
-/// locations, the homeworld sensor array, and unexpired active scans.
+/// locations, their outpost, the homeworld sensor array, and unexpired
+/// active scans.
 pub fn live_coords(engine: &GameEngine, player_id: u64) -> Vec<Hex> {
     let mut seen: KeySet<u32> = KeySet::default();
     let mut out: Vec<Hex> = Vec::new();
@@ -460,6 +475,7 @@ pub fn live_coords(engine: &GameEngine, player_id: u64) -> Vec<Hex> {
         .collect();
     fleet_locations.sort_by_key(|h| h.to_key());
     fleet_locations.into_iter().for_each(&mut add);
+    engine.outposts.get(&player_id).map(|o| o.sector).into_iter().for_each(&mut add);
 
     if let Some(p) = engine.players.get(&player_id) {
         let range = scaling::sensor_range(p.buildings.sensor_array);
@@ -622,6 +638,12 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
             .map(|(tier, bumps)| SiteBrief { tier, risk: site_risk_label(coord, bumps) }),
         ore_reserve: engine.ore_reserve_in(coord, &template, ov),
         chart: None,
+        outpost: engine.outpost_at(coord).map(|(owner, outpost)| OutpostBrief {
+            owner: engine.players.get(&owner).map(|o| o.name.clone()).unwrap_or_else(|| "Unknown".to_string()),
+            level: outpost.level,
+            breached: outpost.breached,
+            mine: false,
+        }),
         threat: engine.threat_among(coord, &template, pending.as_ref(), npcs.iter().copied()),
         last_seen: engine.current_tick,
         live: true,

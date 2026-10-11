@@ -436,7 +436,7 @@ impl Headless {
         let player = self.engine.players.get(&entry.seat.player_id())?;
         Some(Sample {
             tick,
-            score: ScoreBreakdown::under(score::score_of(player, self.engine.fleets.values()), self.rule),
+            score: ScoreBreakdown::under(score::score_of(&self.engine, player), self.rule),
             field: entry.tally,
             idle: entry.slots.into(),
             idle_why: entry.why,
@@ -466,7 +466,7 @@ impl Headless {
             let points = player.combat_points + player.explore_points;
             let earned = points - entry.points_seen;
             if earned > 0.0 || look || entry.core_seen == 0.0 {
-                entry.core_seen = score::score_of(player, engine.fleets.values()).core();
+                entry.core_seen = score::score_of(engine, player).core();
             }
             for metered in &mut entry.meters {
                 metered.meter.drain(entry.core_seen);
@@ -516,7 +516,7 @@ impl Headless {
             let Some(player) = engine.players.get(&id) else { continue };
 
             let out = engine.fleets.values().filter(|f| f.owner_id == id && f.location != player.homeworld).count();
-            let score = score::score_of(player, engine.fleets.values());
+            let score = score::score_of(engine, player);
             let hours = out as f32 * PROBE_EVERY as f32 / 3600.0;
             entry.tally.fleet_hours += hours;
             entry.tally.unpaid_hours += hours * (1.0 - rule.next_point(score.combat + score.explore, score.core()));
@@ -672,7 +672,7 @@ impl Headless {
                     name: player.name.clone(),
                     style: entry.style.clone(),
                     player_id: player.id,
-                    score: ScoreBreakdown::under(score::score_of(player, self.engine.fleets.values()), self.rule),
+                    score: ScoreBreakdown::under(score::score_of(&self.engine, player), self.rule),
                     field: entry.tally,
                     idle: entry.slots.into(),
                     idle_why: entry.why,

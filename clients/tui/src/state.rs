@@ -689,6 +689,14 @@ impl ClientState {
                     panel.quote = Some(q.clone());
                 }
             }
+            ServerMessage::OutpostSurvey(s) => {
+                let verdict = s.refusal.clone().unwrap_or_else(|| "can be founded now".to_string());
+                self.status_message = format!(
+                    "Outpost site {} ring {} grade {:.1}: raid {:.0} vs platform {:.0}; {verdict}",
+                    s.sector, s.ring, s.grade, s.raid_power, s.platform_power,
+                );
+                self.status_set_tick = self.tick;
+            }
             // Login is settled before the TUI starts (connection::login).
             ServerMessage::AuthResult(_) => {}
             ServerMessage::Error(err) => {

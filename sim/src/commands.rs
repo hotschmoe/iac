@@ -59,6 +59,13 @@ impl GameEngine {
                 .map_err(|refusal| refusal.code),
             Command::Load { fleet_id, resource, amount } => self.handle_load(pid, fleet_id, resource, amount),
             Command::Unload { fleet_id } => self.handle_unload(pid, fleet_id),
+            Command::FoundOutpost { fleet_id } => self.handle_found_outpost(pid, fleet_id),
+            Command::OutpostSurvey { fleet_id, sector } => self
+                .outpost_survey(pid, fleet_id, sector)
+                .map(|survey| reply = Some(ServerMessage::OutpostSurvey(survey)))
+                .map_err(|refusal| refusal.code),
+            Command::UpgradeOutpost => self.handle_upgrade_outpost(pid),
+            Command::AbandonOutpost => self.handle_abandon_outpost(pid),
         };
         let error = result.err().map(|code| (code, command_error_message(self, pid, &cmd, code)));
         CommandOutcome { reply, error }
@@ -95,7 +102,11 @@ impl GameEngine {
 pub fn is_query(cmd: &Command) -> bool {
     matches!(
         cmd,
-        Command::Odds { .. } | Command::PreviewMove { .. } | Command::Leaderboard { .. } | Command::ExchangeQuote { .. }
+        Command::Odds { .. }
+            | Command::PreviewMove { .. }
+            | Command::Leaderboard { .. }
+            | Command::ExchangeQuote { .. }
+            | Command::OutpostSurvey { .. }
     )
 }
 
@@ -146,6 +157,8 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::ExchangeQuote { fleet_id, .. }
         | Command::Load { fleet_id, .. }
         | Command::Unload { fleet_id }
+        | Command::FoundOutpost { fleet_id }
+        | Command::OutpostSurvey { fleet_id, .. }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
@@ -153,7 +166,9 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::BuildDefence { .. }
         | Command::Leaderboard { .. }
         | Command::CancelBuild { .. }
-        | Command::CancelQueued { .. } => None,
+        | Command::CancelQueued { .. }
+        | Command::UpgradeOutpost
+        | Command::AbandonOutpost => None,
     }
 }
 
@@ -344,6 +359,20 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
             Some(refusal) => refusal.reason,
             None => format!("command rejected ({code:?})"),
         },
+        (_, Command::FoundOutpost { .. }) => match fleet.map(|f| engine.outpost_site(player_id, f, f.location)) {
+            Some(Err(refusal)) => refusal.reason,
+            Some(Ok(())) => format!("command rejected ({code:?})"),
+            None => format!("fleet {fid} not found (or it has no ships left)"),
+        },
+        (_, Command::OutpostSurvey { fleet_id, sector }) => match engine.outpost_survey(player_id, *fleet_id, *sector) {
+            Err(refusal) => refusal.reason,
+            Ok(_) => format!("command rejected ({code:?})"),
+        },
+        (_, Command::UpgradeOutpost) => match engine.outpost_upgrade(player_id) {
+            Err(refusal) => refusal.reason,
+            Ok(_) => format!("command rejected ({code:?})"),
+        },
+        (ErrorCode::InvalidCommand, Command::AbandonOutpost) => "you have no outpost to abandon".to_string(),
         (ErrorCode::FleetNotFound, _) => format!("fleet {fid} not found (or it has no ships left)"),
         (ErrorCode::OnCooldown, Command::Attack { target_fleet_id, .. })
             if fleet.is_some_and(|f| f.state != FleetStatus::InCombat && f.state != FleetStatus::Moving) =>

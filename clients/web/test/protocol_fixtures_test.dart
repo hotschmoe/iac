@@ -69,6 +69,7 @@ void main() {
         'server_message/preview_move': MovePreview,
         'server_message/leaderboard': LeaderboardReply,
         'server_message/exchange_quote': ExchangeQuote,
+        'server_message/outpost_survey': OutpostSurvey,
       };
       for (final e in expected.entries) {
         final dir = e.key.split('/')[0];
@@ -80,16 +81,36 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 27 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 28 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
+      expect(kinds.length, 28);
+    });
+
+    test('command fixtures cover all 27 commands', () {
+      final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
       expect(kinds.length, 27);
     });
 
-    test('command fixtures cover all 23 commands', () {
-      final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 23);
+    test('a state with an outpost carries it, its sector mark and the fuel to it', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state__with_outpost');
+      final state = ServerMessage.fromJson(readJson(f)) as GameState;
+      final outpost = state.outpost!;
+      expect((outpost.level, outpost.maxLevel, outpost.inService, outpost.breached), (1, 3, true, false));
+      expect((outpost.work!.kind, outpost.work!.level, outpost.nextLevel!.level), (OutpostWork.build, 2, 3));
+      expect((outpost.raidArrivalTick, outpost.repairCost, outpost.hopsHome), (4990, null, 7));
+      expect(state.fleets.map((fleet) => fleet.outpostFuel), [0.0, 220.5]);
+      final marks = state.knownSectors.map((s) => (s.outpost!.owner, s.outpost!.level, s.outpost!.mine, s.live));
+      expect(marks, [('Admiral', 1, true, true), ('Rival', 0, false, false)]);
+
+      final mapped = StateMapper()..apply(state);
+      expect(mapped.outpost!.location, outpost.location);
+      final t = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update__outpost_breached');
+      mapped.apply(ServerMessage.fromJson(readJson(t)));
+      expect((mapped.outpost!.breached, mapped.outpost!.repairCost!.metal, mapped.raid), (true, 1562.5, null));
+      mapped.apply(const TickUpdate(tick: 5001, fleets: []));
+      expect(mapped.outpost, null, reason: 'a tick without an outpost means the player has none');
     });
 
     test('full_state names the hub and the player meter at its exchange', () {
@@ -316,6 +337,7 @@ void main() {
     check('ErrorCode', ErrorCode.fromJson, (ErrorCode e) => e.toJson());
     check('ChartMark', ChartMark.fromJson, (ChartMark e) => e.toJson());
     check('HubService', HubService.fromJson, (HubService e) => e.toJson());
+    check('OutpostWork', OutpostWork.fromJson, (OutpostWork e) => e.toJson());
 
     test('Dart enums have no values Rust lacks', () {
       void same(String name, int dartCount) => expect(dartCount, (enums[name] as List).length, reason: name);
@@ -339,6 +361,7 @@ void main() {
       same('ErrorCode', ErrorCode.values.length);
       same('ChartMark', ChartMark.values.length);
       same('HubService', HubService.values.length);
+      same('OutpostWork', OutpostWork.values.length);
     });
 
     test('error code numbers are not on the wire but match Rust repr', () {

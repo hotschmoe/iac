@@ -1,16 +1,16 @@
 // What a player is allowed to see: the protocol's full-state and per-tick
 // views of the engine, and which events reach whom.
 
-use iac_shared::constants::{RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
+use iac_shared::constants::{OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
-    BuildQueueItem, BuildingState, DefenceState, FleetState, GameEvent, GameState, HomeworldState,
-    PlayerState, QueuedBuild, QueuedResearch, QueuedShip, ResearchItem, ResearchState, ShipState,
-    ShipyardQueueItem, StandingOrders, TickUpdate, WorldInfo,
+    BuildQueueItem, BuildingState, DefenceState, FleetState, GameEvent, GameState, HomeworldState, OutpostLevel,
+    OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch, QueuedShip,
+    ResearchItem, ResearchState, ShipState, ShipyardQueueItem, StandingOrders, TickUpdate, WorldInfo,
 };
-use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
+use iac_shared::scaling::{self, BuildingType, DefenceKind, ResearchType};
 
-use crate::engine::{fleet_cargo_capacity, FleetStatus, GameEngine, Player};
+use crate::engine::{fleet_cargo_capacity, outpost_raid_estimate, FleetStatus, GameEngine, OutpostTask, Player};
 
 /// The whole picture for one player, as sent on login and on request.
 pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
@@ -20,6 +20,7 @@ pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
         player: player_state(engine, player),
         fleets: collect_player_fleets(engine, player_id),
         homeworld: build_homeworld_state(engine, player),
+        outpost: outpost_state(engine, player),
         known_sectors: engine.known.chart(engine, player_id),
         world: WorldInfo::new(engine.pace(), engine.world.economy_version, engine.world.worldgen_version),
     })
@@ -43,8 +44,53 @@ pub fn tick_update(engine: &GameEngine, player_id: u64, events: &[GameEvent]) ->
         fleets: collect_player_fleets(engine, player_id),
         sector_updates: if sector_updates.is_empty() { None } else { Some(sector_updates) },
         homeworld_update,
+        outpost: player_data.and_then(|p| outpost_state(engine, p)),
         events: if player_events.is_empty() { None } else { Some(player_events) },
     }
+}
+
+fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
+    let outpost = engine.outposts.get(&player.id)?;
+    let pace = engine.pace();
+    let ring = outpost.sector.dist_from_origin();
+    let densities = engine.site_densities(outpost.sector);
+    let next = outpost.job.map_or(outpost.level + 1, |job| match job.task {
+        OutpostTask::Build { level } => level + 1,
+        OutpostTask::Repair => outpost.level + 1,
+    });
+    Some(OutpostState {
+        location: outpost.sector,
+        level: outpost.level,
+        max_level: OUTPOST_MAX_LEVEL,
+        in_service: outpost.in_service(),
+        breached: outpost.breached,
+        work: outpost.job.map(|job| {
+            let (kind, level) = match job.task {
+                OutpostTask::Build { level } => (OutpostWork::Build, level),
+                OutpostTask::Repair => (OutpostWork::Repair, outpost.level),
+            };
+            OutpostWorkState { kind, level, start_tick: job.start_tick, end_tick: job.end_tick }
+        }),
+        store: outpost.store,
+        store_cap: scaling::outpost_store_cap(outpost.level, &pace),
+        protected: scaling::outpost_repair_cost(outpost.level),
+        production: engine.outpost_production(outpost),
+        grade: scaling::site_grade(densities),
+        platform_power: if outpost.breached { 0.0 } else { scaling::outpost_platform_power(outpost.level) },
+        defence_power: engine.outpost_defense_power(player.id),
+        next_raid_estimate_power: outpost_raid_estimate(ring),
+        raid_arrival_tick: outpost.raid.incoming.map(|raid| raid.arrival_tick),
+        next_level: (next <= OUTPOST_MAX_LEVEL).then(|| OutpostLevel {
+            level: next,
+            cost: scaling::outpost_cost(next),
+            ticks: scaling::outpost_build_ticks(next, &pace),
+            store_cap: scaling::outpost_store_cap(next, &pace),
+            platform_power: scaling::outpost_platform_power(next),
+            production: scaling::outpost_yield_per_tick(densities, ring, next, &pace),
+        }),
+        repair_cost: (outpost.breached && outpost.job.is_none()).then(|| scaling::outpost_repair_cost(outpost.level)),
+        hops_home: engine.world_gen.lane_hops(outpost.sector, player.homeworld, 64),
+    })
 }
 
 fn player_state(engine: &GameEngine, player: &Player) -> PlayerState {
@@ -92,7 +138,8 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
         };
 
         let jump_fuel = engine.hop_fuel_cost(fleet);
-        let home_fuel = engine.route_home_cost(fleet, fleet.move_target.unwrap_or(fleet.location));
+        let bound_for = fleet.move_target.unwrap_or(fleet.location);
+        let home_fuel = engine.route_home_cost(fleet, bound_for);
         list.push(FleetState {
             id: fleet.id,
             location: fleet.location,
@@ -111,6 +158,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
                 && fleet.cargo.total() > 0.0
                 && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
             laden: fleet.laden,
+            outpost_fuel: engine.outpost_route_cost(fleet, bound_for),
             policy: engine.policies.get(&fleet.id).map(|p| StandingOrders { preset: p.preset, params: p.params }),
         });
     }
@@ -245,9 +293,10 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
     }
 }
 
-/// True when the player has a fleet in `sector` or their homeworld is there.
+/// True when the player has a fleet in `sector` or their homeworld or outpost is there.
 fn present_at(engine: &GameEngine, player: &Player, sector: Hex) -> bool {
     player.homeworld == sector
+        || engine.outposts.get(&player.id).is_some_and(|o| o.sector == sector)
         || engine.fleets.values().any(|f| f.owner_id == player.id && f.location == sector && f.ship_count > 0)
 }
 
@@ -308,6 +357,7 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
         K::StorageNearCap(e) => e.player_id.is_none_or(|p| p == player.id),
         K::StorageFull(e) => e.player_id.is_none_or(|p| p == player.id),
         K::Alert(e) => e.player_id.is_none_or(|p| p == player.id),
+        K::OutpostCompleted(e) => e.player_id == player.id,
     };
     relevant.then_some(out)
 }

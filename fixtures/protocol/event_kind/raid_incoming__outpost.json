@@ -1,0 +1,12 @@
+{
+  "arrival_tick": 4990,
+  "est_power": 41.5,
+  "kind": "RaidIncoming",
+  "outpost": {
+    "q": 10,
+    "r": -2
+  },
+  "player_id": 42,
+  "threat": "light",
+  "tick": 1234
+}

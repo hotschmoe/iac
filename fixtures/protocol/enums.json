@@ -89,6 +89,10 @@
     "Aggressive",
     "Swarm"
   ],
+  "OutpostWork": [
+    "build",
+    "repair"
+  ],
   "PolicyPreset": [
     "manual",
     "prospect",

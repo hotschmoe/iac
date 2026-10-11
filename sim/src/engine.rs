@@ -30,6 +30,7 @@ use iac_shared::constants::{
     EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_FUEL_PAYBACK, POLICY_FUEL_UNBOUNDED_PCT,
     POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_SHIELDS_READY,
+    OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_MAX_LEVEL, OUTPOST_SPACING,
     defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
@@ -43,6 +44,7 @@ use iac_shared::protocol::{
     MovePreview, OreReserve, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
     StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
+    OutpostCompletedEvent, OutpostSurvey, SectorResources,
 };
 
 use crate::auth::{self, TokenHash};
@@ -420,6 +422,52 @@ impl RaidTimers {
     }
 }
 
+/// A player's outpost. `level` is 0 until its first level is finished.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Outpost {
+    pub sector: Hex,
+    pub level: u8,
+    pub store: Resources,
+    pub job: Option<OutpostJob>,
+    pub breached: bool,
+    /// Its own raid clock; `first_seen_tick` is the tick level 1 was finished.
+    pub raid: RaidState,
+    /// Per resource: the owner has been told the store is full.
+    pub full_marks: [bool; 3],
+    /// The owner has been told the repair is waiting for materials.
+    pub repair_warned: bool,
+    /// Fleets standing here that were told the store could not fill their tank.
+    pub dry_tanks: Vec<u64>,
+    pub founded_tick: u64,
+}
+
+impl Outpost {
+    /// The extractor runs, tanks are filled and the platform defends.
+    pub fn in_service(&self) -> bool {
+        self.level >= 1 && !self.breached
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutpostJob {
+    pub task: OutpostTask,
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutpostTask {
+    Build { level: u8 },
+    Repair,
+}
+
+/// Where a fleet's hold is filled and emptied by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dock {
+    Home,
+    Outpost,
+}
+
 /// Harvest yield not yet reported to the owner.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HarvestReport {
@@ -759,6 +807,10 @@ impl Refusal {
 /// stock it was shown is not refused over a rounding.
 const LOAD_SLACK: f32 = 0.01;
 
+/// An outpost's store that was reported full is reported again only after
+/// it has fallen below this share of its cap.
+const STORE_REFILL_RATIO: f32 = 0.95;
+
 pub struct GameEngine {
     pub world_gen: WorldGen,
     pub world: WorldMeta,
@@ -785,6 +837,8 @@ pub struct GameEngine {
     /// The accounts that are built-in bots: what each is and remembers.
     /// The engine only keeps and ranks them; a host's `bot::Roster` plays them.
     bots: BTreeMap<u64, BotRecord>,
+    /// Outposts by owner: one each.
+    pub outposts: BTreeMap<u64, Outpost>,
     /// Standing orders per fleet.
     pub policies: BTreeMap<u64, FleetPolicy>,
 
@@ -838,9 +892,10 @@ impl GameEngine {
         let Snapshot {
             world_seed, meta, tick, mut next_id, mut players, fleets, npc_fleets, combats,
             sector_overrides, mut policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
-            harvest_reports, mut bots, pending_events, explored, credited, known,
+            harvest_reports, mut bots, mut outposts, pending_events, explored, credited, known,
         } = snapshot;
         bots.retain(|player_id, _| players.contains_key(player_id));
+        outposts.retain(|player_id, _| players.contains_key(player_id));
 
         for player in players.values_mut() {
             assign_missing_queue_ids(player, &mut next_id);
@@ -863,6 +918,7 @@ impl GameEngine {
             home_salvage_warned,
             harvest_reports,
             bots,
+            outposts,
             policies,
             pending_events,
             pending_arrivals: Vec::new(),
@@ -905,6 +961,7 @@ impl GameEngine {
             home_salvage_warned: self.home_salvage_warned.clone(),
             harvest_reports: self.harvest_reports.clone(),
             bots: self.bots.clone(),
+            outposts: self.outposts.clone(),
             pending_events: self.pending_events.clone(),
             explored: self.explored.iter().copied().collect(),
             credited: self.credited.iter().copied().collect(),
@@ -951,6 +1008,7 @@ impl GameEngine {
         self.process_sector_regen()?;
         self.process_npc_behavior()?;
         self.process_homeworlds()?;
+        self.process_outposts();
         self.process_build_queues()?;
         self.process_raids()?;
         self.process_defence_restore();
@@ -1085,6 +1143,7 @@ impl GameEngine {
         let arrival_ids: Vec<u64> = self.pending_arrivals.drain(..).collect();
         for fleet_id in arrival_ids {
             self.check_homeworld_docking(fleet_id)?;
+            self.check_outpost_docking(fleet_id);
             self.announce_if_stranded(fleet_id);
             self.check_npc_encounter(fleet_id)?;
         }
@@ -1726,7 +1785,7 @@ impl GameEngine {
 
             let connections = self.world_gen.connected_neighbors(npc.location);
             let conns: Vec<Hex> = connections.slice().iter().copied()
-                .filter(|c| !world::is_home_ground(*c) && !world::is_hub(*c))
+                .filter(|c| !world::is_home_ground(*c) && !world::is_hub(*c) && self.outpost_at(*c).is_none())
                 .collect();
             if conns.is_empty() { continue; }
 
@@ -2312,6 +2371,7 @@ impl GameEngine {
                     arrival_tick,
                     threat: threat.to_string(),
                     est_power: power,
+                    outpost: None,
                 }),
             });
             info!("Raid forecast for player {} ({} threat, arrives tick {})", pid, threat, arrival_tick);
@@ -2372,40 +2432,14 @@ impl GameEngine {
         } else {
             (structures_lost, structures_restored) =
                 self.damage_structures(player_id, RAID_LOST_STRUCTURE_FRACTION, false);
-            ships_lost = self.destroy_docked_ships(player_id, RAID_LOST_SHIP_FRACTION, &mut rng);
-            // Cargo aboard fleets at home is raided as stockpile: one pile,
-            // one protected floor, and each part pays its share of the loss.
-            let holds: Vec<u64> = self.fleets.values()
-                .filter(|f| f.owner_id == player_id && f.location == homeworld && f.ship_count > 0 && f.cargo.total() > 0.0)
-                .map(|f| f.id)
-                .collect();
-            let aboard = holds.iter().fold(Resources::default(), |sum, fid| sum.add(self.fleets[fid].cargo));
-            let player_mut = self.players.get_mut(&player_id).unwrap();
-            let protected = scaling::storage_protected(player_mut.buildings.storage_vault, &self.world.pace);
-            let pile = player_mut.resources.add(aboard);
-            protected_kept = protected.min(pile);
-            let exposed = pile.sub(protected);
-            resources_lost = Resources {
-                metal: exposed.metal.max(0.0) * RAID_LOSS_CAP_METAL,
-                crystal: exposed.crystal.max(0.0) * RAID_LOSS_CAP_CRYSTAL,
-                deuterium: exposed.deuterium.max(0.0) * RAID_LOSS_CAP_DEUT,
-            };
-            let share_of = |part: Resources| {
-                let mut share = Resources::default();
-                for kind in ResourceKind::ALL {
-                    if pile.get(kind) > 0.0 {
-                        *share.get_mut(kind) = resources_lost.get(kind) * (part.get(kind) / pile.get(kind));
-                    }
-                }
-                share
-            };
-            player_mut.resources = player_mut.resources.sub(share_of(player_mut.resources));
+            ships_lost = self.destroy_docked_ships(player_id, homeworld, RAID_LOST_SHIP_FRACTION, &mut rng);
+            let player = &self.players[&player_id];
+            let protected = scaling::storage_protected(player.buildings.storage_vault, &self.world.pace);
+            let rate = Resources { metal: RAID_LOSS_CAP_METAL, crystal: RAID_LOSS_CAP_CRYSTAL, deuterium: RAID_LOSS_CAP_DEUT };
+            let left;
+            (left, resources_lost, protected_kept) = self.skim_dock(player_id, homeworld, player.resources, protected, rate);
+            self.players.get_mut(&player_id).unwrap().resources = left;
             self.dirty_players.insert(player_id, ());
-            for fid in holds {
-                let fleet = self.fleets.get_mut(&fid).unwrap();
-                fleet.cargo = fleet.cargo.sub(share_of(fleet.cargo));
-                self.dirty_fleets.insert(fid, ());
-            }
         }
 
         let tick = self.current_tick;
@@ -2428,7 +2462,9 @@ impl GameEngine {
             tick: self.current_tick,
             kind: EventKind::RaidResolved(iac_shared::protocol::RaidResolvedEvent {
                 player_id,
+                outpost: None,
                 defended,
+                breached: false,
                 resources_lost,
                 salvage_dropped,
                 salvage_despawn_tick,
@@ -2447,6 +2483,49 @@ impl GameEngine {
         );
 
         Ok(())
+    }
+
+    /// What a lost raid takes at a dock of `owner`'s in `sector`. The dock's
+    /// own `stock` and the cargo aboard the owner's fleets there are raided
+    /// as one pile with one `protected` floor: `rate` of what lies above it
+    /// is taken, and each part pays its share. Returns the stock that is
+    /// left, what was taken in all, and what the floor kept.
+    fn skim_dock(
+        &mut self,
+        owner: u64,
+        sector: Hex,
+        stock: Resources,
+        protected: Resources,
+        rate: Resources,
+    ) -> (Resources, Resources, Resources) {
+        let holds: Vec<u64> = self.fleets.values()
+            .filter(|f| f.owner_id == owner && f.location == sector && f.ship_count > 0 && f.cargo.total() > 0.0)
+            .map(|f| f.id)
+            .collect();
+        let aboard = holds.iter().fold(Resources::default(), |sum, fid| sum.add(self.fleets[fid].cargo));
+        let pile = stock.add(aboard);
+        let kept = protected.min(pile);
+        let exposed = pile.sub(protected);
+        let lost = Resources {
+            metal: exposed.metal.max(0.0) * rate.metal,
+            crystal: exposed.crystal.max(0.0) * rate.crystal,
+            deuterium: exposed.deuterium.max(0.0) * rate.deuterium,
+        };
+        let share_of = |part: Resources| {
+            let mut share = Resources::default();
+            for kind in ResourceKind::ALL {
+                if pile.get(kind) > 0.0 {
+                    *share.get_mut(kind) = lost.get(kind) * (part.get(kind) / pile.get(kind));
+                }
+            }
+            share
+        };
+        for fid in holds {
+            let fleet = self.fleets.get_mut(&fid).unwrap();
+            fleet.cargo = fleet.cargo.sub(share_of(fleet.cargo));
+            self.dirty_fleets.insert(fid, ());
+        }
+        (stock.sub(share_of(stock)), lost, kept)
     }
 
     /// A raid wears down the structures at home: `fraction` of each kind is
@@ -2475,14 +2554,14 @@ impl GameEngine {
         (lost, coming)
     }
 
-    /// A lost raid reaches the ships docked at home: `fraction` of them (at
-    /// least one) are destroyed, chosen at random, and the holds they leave
-    /// are settled. Returns how many.
-    fn destroy_docked_ships(&mut self, player_id: u64, fraction: f32, rng: &mut StdRng) -> u32 {
-        let Some(home) = self.players.get(&player_id).map(|p| p.homeworld) else { return 0; };
+    /// A lost raid reaches the ships of `player_id` at their dock in `dock`,
+    /// the homeworld or the outpost: `fraction` of them (at least one) are
+    /// destroyed, chosen at random, and the holds they leave are settled.
+    /// Returns how many.
+    fn destroy_docked_ships(&mut self, player_id: u64, dock: Hex, fraction: f32, rng: &mut StdRng) -> u32 {
         let mut docked: Vec<(u64, usize)> = Vec::new();
         let mut fleet_ids: Vec<u64> = self.fleets.values()
-            .filter(|f| f.owner_id == player_id && f.location == home && f.ship_count > 0)
+            .filter(|f| f.owner_id == player_id && f.location == dock && f.ship_count > 0)
             .map(|f| f.id)
             .collect();
         fleet_ids.sort_unstable();
@@ -2573,6 +2652,472 @@ impl GameEngine {
         power += defense_grid_scout_units(player.buildings.defense_grid)
             * scaling::ship_power(ShipClass::Scout);
         power + player.defences.power(player.buildings.defense_grid)
+    }
+
+    // ── Outposts ──────────────────────────────────────────────────
+
+    /// The outpost standing in `sector`, with its owner.
+    pub fn outpost_at(&self, sector: Hex) -> Option<(u64, &Outpost)> {
+        self.outposts.iter().find(|(_, o)| o.sector == sector).map(|(owner, o)| (*owner, o))
+    }
+
+    /// `fleet` is at its owner's finished outpost.
+    pub fn docked_at_outpost(&self, fleet: &Fleet) -> bool {
+        self.outposts.get(&fleet.owner_id).is_some_and(|o| o.level >= 1 && o.sector == fleet.location)
+    }
+
+    /// The ore `sector` was generated with: what an extractor there reads.
+    pub fn site_densities(&self, sector: Hex) -> [Density; 3] {
+        let template = self.world_gen.generate_sector(sector);
+        [template.metal_density, template.crystal_density, template.deut_density]
+    }
+
+    /// What the extractor of `outpost` adds to its store each tick now.
+    pub fn outpost_production(&self, outpost: &Outpost) -> Resources {
+        if !outpost.in_service() { return Resources::default(); }
+        scaling::outpost_yield_per_tick(
+            self.site_densities(outpost.sector),
+            outpost.sector.dist_from_origin(),
+            outpost.level,
+            &self.world.pace,
+        )
+    }
+
+    /// What a raid on `owner`'s outpost meets: the platform, none while
+    /// breached, and the owner's ships in the sector.
+    pub fn outpost_defense_power(&self, owner: u64) -> f32 {
+        let Some(outpost) = self.outposts.get(&owner) else { return 0.0; };
+        let platform = if outpost.breached { 0.0 } else { scaling::outpost_platform_power(outpost.level) };
+        let ships: f32 = self.fleets.values()
+            .filter(|f| f.owner_id == owner && f.location == outpost.sector)
+            .map(fleet_power)
+            .sum();
+        platform + ships
+    }
+
+    fn outpost_alert(&mut self, owner: u64, level: AlertLevel, sector: Hex, message: String) {
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Alert(AlertEvent { player_id: Some(owner), level, message, sector: Some(sector), fleet_id: None }),
+        });
+    }
+
+    /// Whether `fleet` may found its owner's outpost in `sector` right now.
+    /// Every founding rule is checked and worded here: the survey, the
+    /// command and its refusal all read this. The rules a sector can fail
+    /// from afar come first, so a survey of a distant sector that is refused
+    /// only for the fleet not standing there names a site that qualifies.
+    pub fn outpost_site(&self, player_id: u64, fleet: &Fleet, sector: Hex) -> Result<(), Refusal> {
+        let refuse = |code: ErrorCode, reason: String| Err(Refusal::new(code, reason));
+        let fleet_id = fleet.id;
+        let here = fleet.location == sector;
+        let ring = sector.dist_from_origin();
+        if !(OUTPOST_MIN_RING..=OUTPOST_MAX_RING).contains(&ring) {
+            let subject = if here { format!("fleet {fleet_id}") } else { sector.to_string() };
+            return refuse(ErrorCode::InvalidTarget, format!(
+                "{subject} is at ring {ring}; an outpost stands in rings {OUTPOST_MIN_RING} to {OUTPOST_MAX_RING}",
+            ));
+        }
+        let template = self.world_gen.generate_sector(sector);
+        if template.terrain == iac_shared::constants::TerrainType::Anomaly {
+            return refuse(ErrorCode::InvalidTarget, format!("{sector} is an Anomaly; no outpost stands in one"));
+        }
+        if template.has_derelict {
+            return refuse(ErrorCode::InvalidTarget, format!(
+                "a derelict drifts at {sector}; no outpost stands beside one, stripped or not",
+            ));
+        }
+        let crowding = self.outposts.iter()
+            .filter(|(owner, _)| **owner != player_id)
+            .map(|(owner, other)| (Hex::distance(&sector, &other.sector), *owner, other.sector))
+            .filter(|(hexes, ..)| *hexes < OUTPOST_SPACING)
+            .min_by_key(|(hexes, owner, _)| (*hexes, *owner));
+        if let Some((hexes, owner, at)) = crowding {
+            let whose = self.players.get(&owner).map_or("another empire", |p| p.name.as_str());
+            return refuse(ErrorCode::InvalidTarget, format!(
+                "{sector} is {hexes} hex{} from the outpost of {whose} at {at}; outposts stand at least \
+                 {OUTPOST_SPACING} hexes apart",
+                if hexes == 1 { "" } else { "es" },
+            ));
+        }
+        if let Some(mine) = self.outposts.get(&player_id) {
+            return refuse(ErrorCode::InvalidCommand, format!(
+                "you already have an outpost at {}; an empire has one, and abandon_outpost gives it up",
+                mine.sector,
+            ));
+        }
+        if !here {
+            let hexes = Hex::distance(&fleet.location, &sector);
+            return refuse(ErrorCode::NotInSector, format!(
+                "fleet {fleet_id} is at {}, {hexes} hex{} from {sector}; an outpost is founded by a fleet standing in its sector",
+                fleet.location, if hexes == 1 { "" } else { "es" },
+            ));
+        }
+        match fleet.state {
+            FleetStatus::Moving => {
+                return refuse(ErrorCode::OnCooldown, format!(
+                    "fleet {fleet_id} is in transit; it can found an outpost once it stands idle",
+                ));
+            }
+            FleetStatus::InCombat => {
+                return refuse(ErrorCode::OnCooldown, format!(
+                    "fleet {fleet_id} is in combat; an outpost is founded on a sector its founder has won",
+                ));
+            }
+            _ if !Self::fleet_is_free(fleet) => {
+                return refuse(ErrorCode::OnCooldown, format!(
+                    "fleet {fleet_id} is busy; it can found an outpost once it is idle",
+                ));
+            }
+            _ => {}
+        }
+        let group = self.npc_fleets.values()
+            .find(|n| n.location == sector && n.ship_count > 0)
+            .map(|n| n.label.clone())
+            .or_else(|| self.pending_template_npc(sector).map(|t| t.label()));
+        if let Some(group) = group {
+            return refuse(ErrorCode::InvalidTarget, format!(
+                "a {group} holds {sector}; an outpost is founded on a sector its founder has won",
+            ));
+        }
+        if let Some(policy) = self.policies.get(&fleet_id) {
+            return refuse(ErrorCode::InvalidCommand, format!(
+                "fleet {fleet_id} is under standing orders ({}); set it to manual before founding an outpost",
+                policy.preset.label(),
+            ));
+        }
+        let cost = scaling::outpost_cost(1);
+        let short = fleet.cargo.shortfall(cost);
+        if short.total() > 0.0 {
+            return refuse(ErrorCode::NoResources, format!(
+                "the hold of fleet {fleet_id} lacks {} of the {} an outpost costs; it is built from what the \
+                 founding fleet carries, loaded at home",
+                crate::commands::amount_words(short),
+                crate::commands::amount_words(cost),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Answer to `outpost_survey`: what an outpost in `sector` (the fleet's
+    /// own when None) would be worth, and why it cannot be founded now.
+    pub fn outpost_survey(&self, player_id: u64, fleet_id: u64, sector: Option<Hex>) -> Result<OutpostSurvey, Refusal> {
+        let fleet = self.owned_fleet(player_id, fleet_id)
+            .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
+        let sector = sector.unwrap_or(fleet.location);
+        if sector != fleet.location && self.known.remembered(player_id, sector).is_none() {
+            return Err(Refusal::new(
+                ErrorCode::InvalidTarget,
+                format!("{sector} is not on your chart; a survey reads a sector you have seen"),
+            ));
+        }
+        let pace = self.world.pace;
+        let ring = sector.dist_from_origin();
+        let densities = self.site_densities(sector);
+        let [metal, crystal, deuterium] = densities;
+        let home = self.players.get(&player_id).map(|p| p.homeworld);
+        Ok(OutpostSurvey {
+            fleet_id,
+            sector,
+            ring,
+            densities: SectorResources { metal, crystal, deuterium },
+            grade: scaling::site_grade(densities),
+            cost: scaling::outpost_cost(1),
+            build_ticks: scaling::outpost_build_ticks(1, &pace),
+            production: scaling::outpost_yield_per_tick(densities, ring, 1, &pace),
+            raid_power: outpost_raid_estimate(ring),
+            platform_power: scaling::outpost_platform_power(1),
+            hops_home: home.and_then(|home| self.world_gen.lane_hops(sector, home, 64)),
+            refusal: self.outpost_site(player_id, fleet, sector).err().map(|refusal| refusal.reason),
+        })
+    }
+
+    /// Found `player_id`'s outpost where `fleet_id` stands: the hold pays
+    /// level 1 and the build starts.
+    pub fn handle_found_outpost(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        let sector = fleet.location;
+        self.outpost_site(player_id, fleet, sector).map_err(|refusal| refusal.code)?;
+        let cost = scaling::outpost_cost(1);
+        let tick = self.current_tick;
+        let ticks = scaling::outpost_build_ticks(1, &self.world.pace);
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        fleet.cargo = fleet.cargo.sub(cost);
+        self.dirty_fleets.insert(fleet_id, ());
+        self.outposts.insert(player_id, Outpost {
+            sector,
+            level: 0,
+            store: Resources::default(),
+            job: Some(OutpostJob { task: OutpostTask::Build { level: 1 }, start_tick: tick, end_tick: tick + ticks }),
+            breached: false,
+            raid: RaidState {
+                first_seen_tick: tick,
+                next_roll_tick: tick,
+                last_raid_tick: 0,
+                suppress_until: 0,
+                missed_rolls: 0,
+                incoming: None,
+            },
+            full_marks: [false; 3],
+            repair_warned: false,
+            dry_tanks: Vec::new(),
+            founded_tick: tick,
+        });
+        self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
+        self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
+            "fleet {fleet_id} founded your outpost at {sector} for {}: level 1 is finished at tick {}, in {ticks} ticks. \
+             Until then it has a store and nothing else",
+            crate::commands::amount_words(cost),
+            tick + ticks,
+        ));
+        Ok(())
+    }
+
+    /// Give up `player_id`'s outpost: its store drifts in the sector and
+    /// the lair it displaced returns after its usual delay.
+    pub fn handle_abandon_outpost(&mut self, player_id: u64) -> Result<(), ErrorCode> {
+        let outpost = self.outposts.remove(&player_id).ok_or(ErrorCode::InvalidCommand)?;
+        self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
+        let sector = outpost.sector;
+        let left = if outpost.store.total() > 0.0 {
+            self.drop_salvage(sector, outpost.store);
+            format!(
+                "{} from its store drifts there as wreckage for {SALVAGE_DESPAWN_TICKS} ticks",
+                crate::commands::amount_words(outpost.store),
+            )
+        } else {
+            "its store was empty".to_string()
+        };
+        if self.world_gen.generate_sector(sector).npc_template.is_some() {
+            let tick = self.current_tick;
+            self.ensure_override(sector.to_key()).npc_cleared_tick = Some(tick);
+            self.dirty_sectors.insert(sector.to_key(), ());
+        }
+        self.outpost_alert(player_id, AlertLevel::Info, sector, format!(
+            "your outpost at {sector} is abandoned: {left}. Nothing is refunded, and you may found another",
+        ));
+        Ok(())
+    }
+
+    /// The level `upgrade_outpost` would build for `player_id` and what it
+    /// would take from the store, or why it is refused right now.
+    pub fn outpost_upgrade(&self, player_id: u64) -> Result<(u8, Resources), Refusal> {
+        let refuse = |code: ErrorCode, reason: String| Err(Refusal::new(code, reason));
+        let Some(outpost) = self.outposts.get(&player_id) else {
+            return refuse(ErrorCode::InvalidCommand, "you have no outpost to upgrade".to_string());
+        };
+        let sector = outpost.sector;
+        if let Some(job) = outpost.job {
+            let doing = match job.task {
+                OutpostTask::Build { level } => format!("building level {level}"),
+                OutpostTask::Repair => "under repair".to_string(),
+            };
+            return refuse(ErrorCode::InvalidCommand, format!(
+                "your outpost at {sector} is {doing} until tick {}; it does one job at a time",
+                job.end_tick,
+            ));
+        }
+        if outpost.breached {
+            return refuse(ErrorCode::InvalidCommand, format!(
+                "your outpost at {sector} is breached; it repairs itself first, once its store holds {}",
+                crate::commands::amount_words(scaling::outpost_repair_cost(outpost.level)),
+            ));
+        }
+        if outpost.level >= OUTPOST_MAX_LEVEL {
+            return refuse(ErrorCode::MaxLevelReached, format!(
+                "your outpost at {sector} is at level {OUTPOST_MAX_LEVEL}, the highest",
+            ));
+        }
+        let next = outpost.level + 1;
+        let cost = scaling::outpost_cost(next);
+        let short = outpost.store.shortfall(cost);
+        if short.total() > 0.0 {
+            return refuse(ErrorCode::InsufficientResources, format!(
+                "outpost level {next} costs {}; the store at {sector} is short by {}. Nothing was started: \
+                 a level is paid in full from the outpost's own store when it is ordered",
+                crate::commands::amount_words(cost),
+                crate::commands::amount_words(short),
+            ));
+        }
+        Ok((next, cost))
+    }
+
+    /// Build the next level of `player_id`'s outpost, paid from its store.
+    pub fn handle_upgrade_outpost(&mut self, player_id: u64) -> Result<(), ErrorCode> {
+        let (level, cost) = self.outpost_upgrade(player_id).map_err(|refusal| refusal.code)?;
+        let tick = self.current_tick;
+        let ticks = scaling::outpost_build_ticks(level, &self.world.pace);
+        let outpost = self.outposts.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
+        outpost.store = outpost.store.sub(cost);
+        outpost.job = Some(OutpostJob { task: OutpostTask::Build { level }, start_tick: tick, end_tick: tick + ticks });
+        let sector = outpost.sector;
+        self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
+        self.outpost_alert(player_id, AlertLevel::Info, sector, format!(
+            "your outpost at {sector} began level {level}, paid {} from its store: finished at tick {}, in {ticks} ticks. \
+             It works at level {} until then",
+            crate::commands::amount_words(cost),
+            tick + ticks,
+            level - 1,
+        ));
+        Ok(())
+    }
+
+    /// A fleet that arrived at its owner's finished outpost hands over its
+    /// charts and, flown by hand, has its tank filled.
+    fn check_outpost_docking(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        if !self.docked_at_outpost(fleet) { return; }
+        let Some(player) = self.players.get(&fleet.owner_id) else { return; };
+        let fuel_max = fleet_fuel_max(fleet, player);
+        self.deliver_charts(fleet_id);
+        if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+            fleet.fuel_max = fuel_max;
+            fleet.fuel = fleet.fuel.min(fuel_max);
+            self.dirty_fleets.insert(fleet_id, ());
+        }
+        self.refuel_at_outpost(fleet_id);
+    }
+
+    /// Fill the tank of a fleet standing at its owner's outpost from the
+    /// store's deuterium, at the homeworld's price and as far as the store
+    /// pays. A fleet under standing orders is left alone: its orders do not
+    /// use the outpost. So is one charging a jump: it has left. A tank the
+    /// outpost cannot fill is reported once per stay.
+    fn refuel_at_outpost(&mut self, fleet_id: u64) {
+        if self.policies.contains_key(&fleet_id) { return; }
+        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
+        if fleet.state == FleetStatus::Moving { return; }
+        let owner = fleet.owner_id;
+        let Some(outpost) = self.outposts.get_mut(&owner).filter(|o| o.level >= 1 && o.sector == fleet.location) else {
+            return;
+        };
+        let missing = fleet.fuel_max - fleet.fuel;
+        if missing <= 0.0 { return; }
+        let units = if outpost.breached { 0.0 } else { missing.min(outpost.store.deuterium / FUEL_DEUT_PER_UNIT) };
+        if units > 0.0 {
+            outpost.store.deuterium = (outpost.store.deuterium - units * FUEL_DEUT_PER_UNIT).max(0.0);
+            fleet.fuel = if units >= missing { fleet.fuel_max } else { fleet.fuel + units };
+            self.dirty_fleets.insert(fleet_id, ());
+            self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+        }
+        if units >= missing || outpost.dry_tanks.contains(&fleet_id) { return; }
+        outpost.dry_tanks.push(fleet_id);
+        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+        let (sector, fuel, fuel_max) = (outpost.sector, fleet.fuel, fleet.fuel_max);
+        let why = if outpost.breached {
+            "is breached and fills no tank until it is repaired".to_string()
+        } else {
+            format!("has no deuterium left for the tank of fleet {fleet_id}; unload some into its store")
+        };
+        self.push_alert(AlertLevel::Warning, fleet_id, sector, format!(
+            "your outpost at {sector} {why}: fleet {fleet_id} stands at {} of {} fuel",
+            fuel_words(fuel), fuel_words(fuel_max),
+        ));
+    }
+
+    /// Each outpost's tick, in owner order: a finished job, the extractor,
+    /// then the tanks of the fleets there, then what the owner is told
+    /// about the store.
+    fn process_outposts(&mut self) {
+        let owners: Vec<u64> = self.outposts.keys().copied().collect();
+        for owner in owners {
+            self.finish_outpost_job(owner);
+            self.run_extractor(owner);
+            self.fill_tanks_at_outpost(owner);
+            self.note_full_store(owner);
+        }
+    }
+
+    /// The extractor of an outpost in service adds its yield to the store,
+    /// up to the caps.
+    fn run_extractor(&mut self, owner: u64) {
+        let Some(outpost) = self.outposts.get(&owner) else { return; };
+        let made = self.outpost_production(outpost);
+        if made.total() <= 0.0 { return; }
+        let cap = scaling::outpost_store_cap(outpost.level, &self.world.pace);
+        let store = outpost.store.add_capped(made, cap);
+        if store == outpost.store { return; }
+        self.outposts.get_mut(&owner).unwrap().store = store;
+        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+    }
+
+    fn finish_outpost_job(&mut self, owner: u64) {
+        let tick = self.current_tick;
+        let roll_interval = RaidTimers::new(&self.world.pace).roll_interval;
+        let Some(outpost) = self.outposts.get_mut(&owner) else { return; };
+        let Some(job) = outpost.job.filter(|job| tick >= job.end_tick) else { return; };
+        outpost.job = None;
+        let sector = outpost.sector;
+        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+        match job.task {
+            OutpostTask::Build { level } => {
+                outpost.level = level;
+                if level == 1 {
+                    outpost.raid.first_seen_tick = tick;
+                    outpost.raid.next_roll_tick = tick + roll_interval;
+                }
+                self.pending_events.push(GameEvent {
+                    tick,
+                    kind: EventKind::OutpostCompleted(OutpostCompletedEvent { player_id: owner, sector, level }),
+                });
+            }
+            OutpostTask::Repair => {
+                outpost.breached = false;
+                outpost.repair_warned = false;
+                self.outpost_alert(owner, AlertLevel::Info, sector, format!(
+                    "your outpost at {sector} is repaired: its extractor, its tanks and its platform work again",
+                ));
+            }
+        }
+    }
+
+    fn fill_tanks_at_outpost(&mut self, owner: u64) {
+        let Some(outpost) = self.outposts.get(&owner).filter(|o| o.level >= 1) else { return; };
+        let sector = outpost.sector;
+        let stands = |f: &Fleet| {
+            f.owner_id == owner && f.location == sector && f.ship_count > 0 && f.state != FleetStatus::Moving
+        };
+        let thirsty: Vec<u64> = self.fleets.values().filter(|f| stands(f) && f.fuel < f.fuel_max).map(|f| f.id).collect();
+        if !outpost.dry_tanks.iter().all(|id| thirsty.contains(id)) {
+            let outpost = self.outposts.get_mut(&owner).unwrap();
+            outpost.dry_tanks.retain(|id| thirsty.contains(id));
+            self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+        }
+        for fleet_id in thirsty {
+            self.refuel_at_outpost(fleet_id);
+        }
+    }
+
+    /// One warning per resource each time the store fills with something
+    /// the extractor makes: from there on that yield is lost.
+    fn note_full_store(&mut self, owner: u64) {
+        let Some(outpost) = self.outposts.get(&owner) else { return; };
+        let cap = scaling::outpost_store_cap(outpost.level, &self.world.pace);
+        let makes = self.outpost_production(outpost);
+        let sector = outpost.sector;
+        let mut marks = outpost.full_marks;
+        let mut filled = Vec::new();
+        for (i, kind) in ResourceKind::ALL.into_iter().enumerate() {
+            let (stock, cap) = (outpost.store.get(kind), cap.get(kind));
+            if stock >= cap && !marks[i] {
+                marks[i] = true;
+                if makes.get(kind) > 0.0 {
+                    filled.push((kind, cap));
+                }
+            } else if marks[i] && stock < cap * STORE_REFILL_RATIO {
+                marks[i] = false;
+            }
+        }
+        if marks == outpost.full_marks { return; }
+        self.outposts.get_mut(&owner).unwrap().full_marks = marks;
+        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+        for (kind, cap) in filled {
+            self.outpost_alert(owner, AlertLevel::Warning, sector, format!(
+                "your outpost at {sector} holds all the {} its store takes ({cap:.0}): the extractor makes no more \
+                 of it until a fleet loads some",
+                kind.label(),
+            ));
+        }
     }
 
     // ── Cooldowns ─────────────────────────────────────────────────
@@ -2826,9 +3371,8 @@ impl GameEngine {
         if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
         if fleet.action_cooldown > 0 { return Err(ErrorCode::OnCooldown); }
 
-        // Fleet cap check
         if let Some(player) = self.players.get(&fleet.owner_id)
-            && fleet.location == player.homeworld
+            && (fleet.location == player.homeworld || self.docked_at_outpost(fleet))
             && self.count_deployed_fleets(fleet.owner_id, player.homeworld) >= MAX_FLEETS_PER_PLAYER
         {
             return Err(ErrorCode::FleetLimitReached);
@@ -3022,7 +3566,7 @@ impl GameEngine {
         for npc in self.npc_fleets.values().filter(|n| n.location == coord) {
             force.join(&Force::of_ships(&npc.ships[..npc.ship_count as usize]));
         }
-        if !force.is_empty() {
+        if !force.is_empty() || self.outpost_at(coord).is_some() {
             return Opposing::Ships(force);
         }
         match self.pending_template_npc(coord) {
@@ -3052,6 +3596,9 @@ impl GameEngine {
             && let Some(tmpl) = pending
         {
             observed = Some(tmpl.power() * behavior_threat_bonus(tmpl.behavior));
+        }
+        if observed.is_none() && self.outpost_at(coord).is_some() {
+            observed = Some(0.0);
         }
         match observed {
             Some(est_power) => ThreatInfo { rating: scaling::threat_rating(est_power), est_power, basis: ThreatBasis::Observed },
@@ -3105,7 +3652,20 @@ impl GameEngine {
     /// generator remembers: views and autopilots ask this every tick.
     fn direct_hops_home(&self, owner: u64, from: Hex) -> u32 {
         let Some(home) = self.players.get(&owner).map(|p| p.homeworld) else { return 0; };
-        self.world_gen.lane_hops(from, home, 64).unwrap_or(Hex::distance(&from, &home) as u32)
+        self.lane_hops(from, home)
+    }
+
+    /// Fewest jumps from `from` to `to` over the real lanes; the straight
+    /// distance when no route of 64 hops exists.
+    fn lane_hops(&self, from: Hex, to: Hex) -> u32 {
+        self.world_gen.lane_hops(from, to, 64).unwrap_or(Hex::distance(&from, &to) as u32)
+    }
+
+    /// Fuel the way from `from` to the fleet's owner's outpost costs, while
+    /// that outpost is in service.
+    pub fn outpost_route_cost(&self, fleet: &Fleet, from: Hex) -> Option<f32> {
+        let outpost = self.outposts.get(&fleet.owner_id).filter(|o| o.in_service())?;
+        Some(self.lane_hops(from, outpost.sector) as f32 * self.hop_fuel_cost(fleet))
     }
 
     /// Fuel the fleet would burn getting home from `from`, one jump per hop.
@@ -3136,6 +3696,11 @@ impl GameEngine {
         if target == player.homeworld { return; }
         let have = fleet.fuel;
         if have + 0.001 >= self.direct_hops_home(fleet.owner_id, target) as f32 * hop_cost { return; }
+        if self.outposts.get(&fleet.owner_id)
+            .is_some_and(|o| o.in_service() && have + 0.001 >= self.lane_hops(target, o.sector) as f32 * hop_cost)
+        {
+            return;
+        }
         let route = self.home_route(fleet.owner_id, target);
         let need = route.direct as f32 * hop_cost;
         let (level, outcome) = if have + 0.001 < hop_cost {
@@ -3370,39 +3935,58 @@ impl GameEngine {
         Ok(())
     }
 
-    /// `fleet_id` standing free at its owner's homeworld, the one place a
-    /// hold is loaded or unloaded by hand; `verb` words the refusal.
-    fn fleet_at_dock(&self, player_id: u64, fleet_id: u64, verb: &str) -> Result<(&Fleet, &Player), Refusal> {
+    /// `fleet_id` standing free at a dock of its owner's, the homeworld or
+    /// the outpost: the places a hold is loaded or unloaded by hand. `verb`
+    /// words the refusal.
+    fn fleet_at_dock(&self, player_id: u64, fleet_id: u64, verb: &str) -> Result<(&Fleet, &Player, Dock), Refusal> {
         let fleet = self.owned_fleet(player_id, fleet_id)
             .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
         let player = self.players.get(&player_id)
             .ok_or_else(|| Refusal::new(ErrorCode::ServerError, "internal server error".to_string()))?;
+        let outpost = self.outposts.get(&player_id).map(|o| o.sector);
         if fleet.state == FleetStatus::Moving {
+            let place = if outpost.is_some() { "at home or at your outpost" } else { "at home" };
             return Err(Refusal::new(
                 ErrorCode::OnCooldown,
-                format!("fleet {fleet_id} is in transit; it can {verb} once it stands idle at home"),
+                format!("fleet {fleet_id} is in transit; it can {verb} once it stands idle {place}"),
             ));
         }
-        if fleet.location != player.homeworld {
-            let hexes = Hex::distance(&fleet.location, &player.homeworld);
-            return Err(Refusal::new(ErrorCode::NotInSector, format!(
-                "fleet {fleet_id} is at {}, {hexes} hex{} from home {}; a hold is filled from the stockpile, \
-                 and emptied into it, at the homeworld only",
-                fleet.location, if hexes == 1 { "" } else { "es" }, player.homeworld,
-            )));
-        }
+        let dock = if fleet.location == player.homeworld {
+            Dock::Home
+        } else if outpost == Some(fleet.location) {
+            Dock::Outpost
+        } else {
+            let hexes_to = |dock: Hex| {
+                let hexes = Hex::distance(&fleet.location, &dock);
+                format!("{hexes} hex{}", if hexes == 1 { "" } else { "es" })
+            };
+            let home = player.homeworld;
+            return Err(Refusal::new(ErrorCode::NotInSector, match outpost {
+                None => format!(
+                    "fleet {fleet_id} is at {}, {} from home {home}; a hold is filled from the stockpile, \
+                     and emptied into it, at the homeworld only",
+                    fleet.location, hexes_to(home),
+                ),
+                Some(outpost) => format!(
+                    "fleet {fleet_id} is at {}, {} from home {home} and {} from your outpost {outpost}; \
+                     a hold is filled and emptied by hand at those two docks only",
+                    fleet.location, hexes_to(home), hexes_to(outpost),
+                ),
+            }));
+        };
         if !Self::fleet_is_free(fleet) {
             return Err(Refusal::new(
                 ErrorCode::OnCooldown,
                 format!("fleet {fleet_id} is busy; it can {verb} once it is idle"),
             ));
         }
-        Ok((fleet, player))
+        Ok((fleet, player, dock))
     }
 
     /// How much of `resource` a `load` order would put aboard `fleet_id`:
-    /// `amount`, or all the stockpile holds and the hold has room for when
-    /// None. Nothing changes.
+    /// `amount`, or all the dock holds and the hold has room for when None.
+    /// The dock's stock is the stockpile at home and the outpost's store at
+    /// the outpost. Nothing changes.
     pub fn load_order(
         &self,
         player_id: u64,
@@ -3410,28 +3994,48 @@ impl GameEngine {
         resource: ResourceKind,
         amount: Option<f32>,
     ) -> Result<f32, Refusal> {
-        let (fleet, player) = self.fleet_at_dock(player_id, fleet_id, "load")?;
+        self.load_at_dock(player_id, fleet_id, resource, amount).map(|(loaded, _)| loaded)
+    }
+
+    fn load_at_dock(
+        &self,
+        player_id: u64,
+        fleet_id: u64,
+        resource: ResourceKind,
+        amount: Option<f32>,
+    ) -> Result<(f32, Dock), Refusal> {
+        let (fleet, player, dock) = self.fleet_at_dock(player_id, fleet_id, "load")?;
         if let Some(policy) = self.policies.get(&fleet_id) {
+            let rule = match dock {
+                Dock::Home => "which unload at the dock",
+                Dock::Outpost => "which do not use the outpost",
+            };
             return Err(Refusal::new(ErrorCode::InvalidCommand, format!(
-                "fleet {fleet_id} is under standing orders ({}), which unload at the dock; \
+                "fleet {fleet_id} is under standing orders ({}), {rule}; \
                  set it to manual before loading its hold by hand",
                 policy.preset.label(),
             )));
         }
         let label = resource.label();
-        let stock = player.resources.get(resource);
+        let (source, stock) = match dock {
+            Dock::Home => ("the stockpile", player.resources.get(resource)),
+            Dock::Outpost => (
+                "the outpost's store",
+                self.outposts.get(&player_id).map_or(0.0, |o| o.store.get(resource)),
+            ),
+        };
         let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
         let aboard = fleet.cargo.total();
         let room = (capacity - aboard).max(0.0);
         let full = || Refusal::new(ErrorCode::CargoFull, format!(
             "the hold of fleet {fleet_id} is full: it carries {aboard:.0} of {capacity:.0}",
         ));
-        match amount {
+        let loaded = match amount {
             Some(asked) if !(asked.is_finite() && asked > 0.0) => {
                 Err(Refusal::new(ErrorCode::InvalidCommand, "the amount to load must be a positive number".to_string()))
             }
             Some(asked) if asked > stock + LOAD_SLACK => Err(Refusal::new(ErrorCode::NoResources, format!(
-                "the stockpile holds {stock:.1} {label}; fleet {fleet_id} cannot load {asked:.1}",
+                "{source} holds {stock:.1} {label}; fleet {fleet_id} cannot load {asked:.1}",
             ))),
             Some(_) if room <= LOAD_SLACK => Err(full()),
             Some(asked) if asked > room + LOAD_SLACK => Err(Refusal::new(ErrorCode::CargoFull, format!(
@@ -3441,15 +4045,17 @@ impl GameEngine {
             Some(asked) => Ok(asked.min(stock).min(room)),
             None if stock <= LOAD_SLACK => Err(Refusal::new(
                 ErrorCode::NoResources,
-                format!("the stockpile holds no {label} to load"),
+                format!("{source} holds no {label} to load"),
             )),
             None if room <= LOAD_SLACK => Err(full()),
             None => Ok(stock.min(room)),
-        }
+        }?;
+        Ok((loaded, dock))
     }
 
-    /// Move stockpile into a docked hold and mark the fleet laden, so the
-    /// dock leaves the hold alone.
+    /// Move stock into the hold of a fleet at a dock. At home the fleet is
+    /// marked laden, so the dock leaves the hold alone; at the outpost
+    /// nothing unloads by itself.
     pub fn handle_load(
         &mut self,
         player_id: u64,
@@ -3457,23 +4063,37 @@ impl GameEngine {
         resource: ResourceKind,
         amount: Option<f32>,
     ) -> Result<(), ErrorCode> {
-        let loaded = self.load_order(player_id, fleet_id, resource, amount).map_err(|refusal| refusal.code)?;
-        let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
-        let home = player.homeworld;
-        let stock = player.resources.get_mut(resource);
-        *stock = (*stock - loaded).max(0.0);
+        let (loaded, dock) = self.load_at_dock(player_id, fleet_id, resource, amount).map_err(|refusal| refusal.code)?;
+        match dock {
+            Dock::Home => {
+                let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
+                let stock = player.resources.get_mut(resource);
+                *stock = (*stock - loaded).max(0.0);
+                self.dirty_players.insert(player_id, ());
+            }
+            Dock::Outpost => {
+                let outpost = self.outposts.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
+                let stock = outpost.store.get_mut(resource);
+                *stock = (*stock - loaded).max(0.0);
+                self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
+            }
+        }
         let capacity = self.fleets.get(&fleet_id).map_or(0.0, |f| fleet_cargo_capacity(f, &self.world.pace));
         let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
         *fleet.cargo.get_mut(resource) += loaded;
-        fleet.laden = true;
-        let aboard = fleet.cargo.total();
+        fleet.laden = dock == Dock::Home;
+        let (aboard, sector) = (fleet.cargo.total(), fleet.location);
         self.dirty_fleets.insert(fleet_id, ());
-        self.dirty_players.insert(player_id, ());
-        self.push_alert(AlertLevel::Info, fleet_id, home, format!(
-            "fleet {fleet_id} loaded {loaded:.0} {} from the stockpile: it carries {aboard:.0} of {capacity:.0} \
-             and keeps it aboard until it next returns home, or until unload",
-            resource.label(),
-        ));
+        let label = resource.label();
+        self.push_alert(AlertLevel::Info, fleet_id, sector, match dock {
+            Dock::Home => format!(
+                "fleet {fleet_id} loaded {loaded:.0} {label} from the stockpile: it carries {aboard:.0} of {capacity:.0} \
+                 and keeps it aboard until it next returns home, or until unload",
+            ),
+            Dock::Outpost => format!(
+                "fleet {fleet_id} loaded {loaded:.0} {label} from the outpost's store: it carries {aboard:.0} of {capacity:.0}",
+            ),
+        });
         Ok(())
     }
 
@@ -3481,35 +4101,65 @@ impl GameEngine {
     pub fn unload_refusal(&self, player_id: u64, fleet_id: u64) -> Option<Refusal> {
         match self.fleet_at_dock(player_id, fleet_id, "unload") {
             Err(refusal) => Some(refusal),
-            Ok((fleet, _)) if !fleet.laden => Some(Refusal::new(ErrorCode::InvalidCommand, format!(
+            Ok((fleet, _, Dock::Home)) if !fleet.laden => Some(Refusal::new(ErrorCode::InvalidCommand, format!(
                 "fleet {fleet_id} was not loaded by hand; a docked fleet unloads by itself as the stockpile has room",
             ))),
+            Ok((fleet, _, Dock::Outpost)) if fleet.cargo.total() <= LOAD_SLACK => Some(Refusal::new(
+                ErrorCode::NoResources,
+                format!("the hold of fleet {fleet_id} is empty; there is nothing to unload into the outpost's store"),
+            )),
             Ok(_) => None,
         }
     }
 
-    /// End a hand-loaded hold: what fits goes back to the stockpile now and
-    /// the dock takes the rest as room opens.
+    /// At home, end a hand-loaded hold: what fits goes back to the
+    /// stockpile now and the dock takes the rest as room opens. At the
+    /// outpost, put the hold into the store as far as the store has room.
     pub fn handle_unload(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         if let Some(refusal) = self.unload_refusal(player_id, fleet_id) {
             return Err(refusal.code);
         }
         let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
-        let (before, home) = (fleet.cargo, fleet.location);
+        let (before, sector) = (fleet.cargo, fleet.location);
+        let at_home = self.players.get(&player_id).is_some_and(|p| p.homeworld == sector);
         fleet.laden = false;
         self.dirty_fleets.insert(fleet_id, ());
-        self.unload_cargo(fleet_id);
+        if at_home {
+            self.unload_cargo(fleet_id);
+        } else {
+            self.unload_into_store(fleet_id);
+        }
         let left = self.fleets.get(&fleet_id).map_or(Resources::default(), |f| f.cargo);
+        let (into, until) = if at_home {
+            ("the stockpile", "stays aboard until the stockpile has room")
+        } else {
+            ("the outpost's store", "stays aboard, the store is full")
+        };
         let rest = if left.total() > LOAD_SLACK {
-            format!("; {} stays aboard until the stockpile has room", crate::commands::amount_words(left))
+            format!("; {} {until}", crate::commands::amount_words(left))
         } else {
             String::new()
         };
-        self.push_alert(AlertLevel::Info, fleet_id, home, format!(
-            "fleet {fleet_id} unloaded {} into the stockpile{rest}",
+        self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
+            "fleet {fleet_id} unloaded {} into {into}{rest}",
             crate::commands::amount_words(before.sub(left)),
         ));
         Ok(())
+    }
+
+    /// Move as much of the fleet's cargo into its owner's outpost as the
+    /// store's caps allow; the rest stays aboard.
+    fn unload_into_store(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
+        let owner = fleet.owner_id;
+        let Some(outpost) = self.outposts.get_mut(&owner) else { return; };
+        let cap = scaling::outpost_store_cap(outpost.level, &self.world.pace);
+        let moved = outpost.store.shortfall(cap).min(fleet.cargo);
+        if moved.total() <= 0.0 { return; }
+        outpost.store = outpost.store.add(moved);
+        fleet.cargo = fleet.cargo.sub(moved);
+        self.dirty_fleets.insert(fleet_id, ());
+        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
     }
 
     /// Fuel an emergency jump home would burn: the per-hop cost over the
@@ -3656,6 +4306,7 @@ impl GameEngine {
         let owned = self.fleets.values().filter(|f| f.owner_id == player_id && f.ship_count > 0).count();
         if owned >= MAX_FLEETS_TOTAL { return Err(ErrorCode::FleetLimitReached); }
         if fleet.location != player.homeworld
+            && !self.docked_at_outpost(fleet)
             && self.count_deployed_fleets(player_id, player.homeworld) >= MAX_FLEETS_PER_PLAYER
         {
             return Err(ErrorCode::FleetLimitReached);
@@ -5220,7 +5871,7 @@ impl GameEngine {
         let cleared = self.sector_overrides.get(&coord.to_key())
             .map(|o| o.npc_cleared_tick.is_some())
             .unwrap_or(false);
-        !cleared && self.world_gen.generate_sector(coord).npc_template.is_some()
+        !cleared && self.outpost_at(coord).is_none() && self.world_gen.generate_sector(coord).npc_template.is_some()
     }
 
     /// What a scanner hears at the edge of its range: the strongest
@@ -5278,9 +5929,10 @@ impl GameEngine {
             .or_default()
     }
 
+    /// Fleets away from both docks: the homeworld and the owner's finished outpost.
     fn count_deployed_fleets(&self, player_id: u64, homeworld: Hex) -> usize {
         self.fleets.values().filter(|f| {
-            f.owner_id == player_id && f.location != homeworld && f.ship_count > 0
+            f.owner_id == player_id && f.location != homeworld && f.ship_count > 0 && !self.docked_at_outpost(f)
         }).count()
     }
 
@@ -5365,7 +6017,11 @@ impl GameEngine {
         ov: Option<&SectorOverride>,
     ) -> Option<iac_shared::world::NpcTemplate> {
         let cleared = ov.is_some_and(|o| o.npc_cleared_tick.is_some());
-        if template.npc_template.is_none() || cleared || self.npc_fleets.contains_key(&template_npc_id(coord)) {
+        if template.npc_template.is_none()
+            || cleared
+            || self.npc_fleets.contains_key(&template_npc_id(coord))
+            || self.outpost_at(coord).is_some()
+        {
             return None;
         }
         template.npc_template.clone()
@@ -5823,6 +6479,7 @@ impl GameEngine {
             }
             RuntimeKind::HarvestReport => self.harvest_reports.get(&id).cloned().map(RuntimeEntry::HarvestReport),
             RuntimeKind::Bot => self.bots.get(&id).cloned().map(Box::new).map(RuntimeEntry::Bot),
+            RuntimeKind::Outpost => self.outposts.get(&id).cloned().map(Box::new).map(RuntimeEntry::Outpost),
         }
     }
 
@@ -5932,6 +6589,11 @@ fn exchange_meter_at(pressure: f64, span: f64, window: u64) -> ExchangeMeter {
 }
 
 /// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.
+/// The middle of the raids an outpost at `ring` faces.
+pub fn outpost_raid_estimate(ring: u16) -> f32 {
+    scaling::outpost_raid_power(ring) * (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0
+}
+
 fn npc_salvage(npc: &NpcFleet, pace: &Pace) -> Resources {
     scaling::split_loot(scaling::wreck_value(npc.power)).scale(pace.finds_mult())
 }
@@ -5973,6 +6635,9 @@ fn worth_aboard(load: Resources, room: f32) -> f32 {
 fn remembered_opposing(seen: &SectorState) -> Opposing {
     use iac_shared::protocol::NpcBehavior::{Aggressive, Swarm};
     let ring = || Opposing::Ring(seen.location.dist_from_origin());
+    if seen.outpost.is_some() && seen.hostiles.is_none() {
+        return Opposing::Ships(Force::default());
+    }
     let Some(groups) = seen.hostiles.as_ref().filter(|_| seen.threat.basis == ThreatBasis::Observed) else {
         return ring();
     };

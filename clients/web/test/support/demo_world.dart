@@ -2149,6 +2149,8 @@ class DemoWorld {
         return _exchange(fleetId, give, want, amount, quote: false);
       case ExchangeQuoteCommand(:final fleetId, :final give, :final want, :final amount):
         return _exchange(fleetId, give, want, amount, quote: true);
+      case FoundOutpostCommand() || OutpostSurveyCommand() || UpgradeOutpostCommand() || AbandonOutpostCommand():
+        return [_err(ErrorCode.invalidCommand, 'the scripted world has no outposts')];
       case LoadCommand(:final fleetId, :final resource, :final amount):
         return _load(fleetId, resource, amount);
       case UnloadCommand(:final fleetId):

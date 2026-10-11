@@ -142,11 +142,11 @@ class Attention extends ChangeNotifier {
           (finished[proto.QueueType.ship] ??= []).add('$count x ${defence.label}');
         case proto.QueueEvent(action: proto.QueueAction.started):
           _offer();
-        case proto.RaidIncomingEvent(:final arrivalTick, :final estPower):
+        case proto.RaidIncomingEvent(outpost: null, :final arrivalTick, :final estPower):
           final left = arrivalTick - s.tick;
           if (left <= raidClosingTicks) _raidWarned = arrivalTick;
           out.add(Notice('raid', 'Raid incoming', 'A raid of estimated power ${estPower.round()} reaches your homeworld in ${clockFmt(left)}.${_defence(s)}', critical: true));
-        case proto.RaidResolvedEvent(:final defended, :final raidPower, :final defensePower, :final resourcesLost, :final shipsLost):
+        case proto.RaidResolvedEvent(outpost: null, :final defended, :final raidPower, :final defensePower, :final resourcesLost, :final shipsLost):
           out.add(defended
               ? Notice('raid', 'Raid repelled', 'Your defence of ${defensePower.round()} held against a raid of ${raidPower.round()}.')
               : Notice(

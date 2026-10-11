@@ -221,6 +221,10 @@ pub enum Command {
     /// `amount` or none (`NoResources`), the hold lacks the room
     /// (`CargoFull`), `amount` is not positive or the fleet is under
     /// standing orders (`InvalidCommand`).
+    ///
+    /// At the player's outpost the same order takes from the outpost's
+    /// store instead. Nothing there unloads by itself, so the fleet is not
+    /// marked `laden`.
     #[serde(rename = "load")]
     Load {
         fleet_id: u64,
@@ -233,8 +237,48 @@ pub enum Command {
     /// as room opens, as for any docked fleet. The answer is an `Alert`
     /// (info) event. Refused when the fleet is elsewhere (`NotInSector`),
     /// busy (`OnCooldown`) or was not loaded (`InvalidCommand`).
+    ///
+    /// At the player's outpost it puts the whole hold of any fleet into the
+    /// outpost's store as far as the store has room, and is never refused
+    /// for a hold that was not loaded by hand.
     #[serde(rename = "unload")]
     Unload { fleet_id: u64 },
+    /// Found the player's outpost in the sector `fleet_id` stands in, paid
+    /// from its hold (`OutpostSurvey.cost`). The fleet must stand idle
+    /// there and fly no standing orders; the sector must lie in rings 9 to
+    /// 20, be no Anomaly, hold no derelict and no group, and lie at least
+    /// 3 hexes from every other outpost; a player has one outpost. The
+    /// answer is an `Alert` (info) event with the tick the first level is
+    /// finished. Refused, with nothing changed and the sentence
+    /// `outpost_survey` gives as `refusal`: `InvalidTarget` for a sector
+    /// that does not qualify, `InvalidCommand` with an outpost already or
+    /// under standing orders, `NoResources` naming what the hold lacks,
+    /// `OnCooldown` for a fleet that is moving, fighting or busy.
+    #[serde(rename = "found_outpost")]
+    FoundOutpost { fleet_id: u64 },
+    /// Ask what an outpost in `sector` would be worth, without founding:
+    /// the sector `fleet_id` stands in when none is named, otherwise any
+    /// sector on the player's chart (`InvalidTarget` for one never seen).
+    /// The reply is an `outpost_survey` message.
+    #[serde(rename = "outpost_survey")]
+    OutpostSurvey {
+        fleet_id: u64,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        sector: Option<Hex>,
+    },
+    /// Build the next level of the player's outpost, paid in full from the
+    /// outpost's own store at that moment (`OutpostState.next_level`). The
+    /// answer is an `Alert` (info) event. Refused with
+    /// `InsufficientResources` and the exact shortfall when the store does
+    /// not cover it, `MaxLevelReached` at the last level, `InvalidCommand`
+    /// with no outpost, while it builds or repairs, or while it is breached.
+    #[serde(rename = "upgrade_outpost")]
+    UpgradeOutpost,
+    /// Give up the player's outpost. Its store drifts as wreckage in the
+    /// sector, nothing is refunded and another may be founded. The answer
+    /// is an `Alert` (info) event. `InvalidCommand` with no outpost.
+    #[serde(rename = "abandon_outpost")]
+    AbandonOutpost,
 }
 
 fn default_ship_count() -> u16 {
@@ -389,6 +433,43 @@ pub enum ServerMessage {
     Leaderboard(LeaderboardReply),
     #[serde(rename = "exchange_quote")]
     ExchangeQuote(ExchangeQuote),
+    #[serde(rename = "outpost_survey")]
+    OutpostSurvey(OutpostSurvey),
+}
+
+/// Answer to `outpost_survey`: what an outpost in `sector` would cost, make
+/// and face, worked out by the server. The numbers are the site's own; only
+/// `refusal` depends on the asking fleet and on the moment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutpostSurvey {
+    pub fleet_id: u64,
+    pub sector: Hex,
+    /// Hexes from the centre of the map.
+    pub ring: u16,
+    /// The ore the sector was made with, which is what the extractor reads:
+    /// harvesting the tiles does not lower it.
+    pub densities: SectorResources,
+    /// 0 to 12: Sparse 0.5, Moderate 1, Rich 2, Pristine 4, summed over the
+    /// three resources.
+    pub grade: f32,
+    /// What founding takes from the hold: level 1.
+    pub cost: Resources,
+    /// Ticks level 1 takes to build at this world's pace.
+    pub build_ticks: u64,
+    /// What the extractor would add to the store each tick at level 1.
+    pub production: Resources,
+    /// The middle of the raids this ring sends; one rolls 0.80 to 1.15
+    /// times its ring's base.
+    pub raid_power: f32,
+    /// What the platform defends with at level 1.
+    pub platform_power: f32,
+    /// Lane hops from the sector to the homeworld; absent beyond 64.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub hops_home: Option<u32>,
+    /// Why `found_outpost` would be refused right now; absent when the
+    /// fleet could found here this tick.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refusal: Option<String>,
 }
 
 /// One trade at the hub's exchange, quoted or made: `amount` of `give` for
@@ -626,6 +707,10 @@ pub struct TickUpdate {
     pub sector_updates: Option<Vec<SectorState>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub homeworld_update: Option<HomeworldState>,
+    /// The player's outpost, whole, every tick they have one. Absent means
+    /// they have none: a client drops the one it held.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub outpost: Option<OutpostState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub events: Option<Vec<GameEvent>>,
 }
@@ -642,8 +727,117 @@ pub struct GameState {
     pub player: PlayerState,
     pub fleets: Vec<FleetState>,
     pub homeworld: HomeworldState,
+    /// The player's outpost; absent when they have none.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub outpost: Option<OutpostState>,
     pub known_sectors: Vec<SectorState>,
     pub world: WorldInfo,
+}
+
+/// A player's outpost: a station on one sector of rings 9 to 20, built from
+/// what fleets carry to it. One level (1 to `max_level`) sets its store, its
+/// platform and how many site rates its extractor makes.
+///
+/// It is a dock. `load` and `unload` there move cargo between a hold and
+/// `store`, never the stockpile, and nothing moves by itself. A fleet
+/// standing there without standing orders is refuelled from the store's
+/// deuterium while the outpost is `in_service`; any fleet of the owner
+/// arriving at a finished outpost hands over its charts; a fleet standing
+/// at a finished outpost does not count against the deployed fleets.
+/// Nothing in the store scores or can be spent at home.
+///
+/// Pirates of its ring raid it on the homeworld's raid clock
+/// (`RaidIncoming` and `RaidResolved` carry `outpost`). A lost raid takes a
+/// quarter of what lies above `protected` in the store and in the holds of
+/// fleets standing there, destroys a quarter of those ships, and breaches
+/// the outpost. No raid destroys it, and a fleet standing there is not safe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutpostState {
+    pub location: Hex,
+    /// 0 while the first level is being built.
+    pub level: u8,
+    pub max_level: u8,
+    /// Level 1 or more and not breached: the extractor runs, tanks are
+    /// filled and the platform defends.
+    pub in_service: bool,
+    /// A lost raid broke it: no extractor, no refuelling, no platform until
+    /// the repair is done. `store`, `load`, `unload` and chart banking work.
+    pub breached: bool,
+    /// The one job under way: a level being built, or the repair.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub work: Option<OutpostWorkState>,
+    pub store: Resources,
+    /// The most the store holds of each resource. The extractor stops
+    /// there, and `unload` leaves aboard what does not fit.
+    pub store_cap: Resources,
+    /// What a raid cannot take: the repair cost of the level it stands at.
+    pub protected: Resources,
+    /// What the extractor adds to the store each tick now; zero while not
+    /// `in_service`.
+    pub production: Resources,
+    /// The site's grade, 0 to 12; see `OutpostSurvey.grade`.
+    pub grade: f32,
+    /// What the platform defends with; 0 while breached or unfinished.
+    pub platform_power: f32,
+    /// The platform and the owner's ships standing in the sector: what the
+    /// next raid meets.
+    pub defence_power: f32,
+    /// The middle of the raids this ring sends.
+    pub next_raid_estimate_power: f32,
+    /// Tick an announced raid arrives; absent when none is on its way.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub raid_arrival_tick: Option<u64>,
+    /// What `upgrade_outpost` would build; absent at `max_level`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub next_level: Option<OutpostLevel>,
+    /// What the repair will take from the store once the store covers it;
+    /// present while breached with no repair under way.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub repair_cost: Option<Resources>,
+    /// Lane hops to the homeworld; absent beyond 64.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub hops_home: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutpostWork {
+    Build,
+    Repair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutpostWorkState {
+    pub kind: OutpostWork,
+    /// The level being built, or the level being repaired.
+    pub level: u8,
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+/// One level of an outpost, as an upgrade to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutpostLevel {
+    pub level: u8,
+    pub cost: Resources,
+    pub ticks: u64,
+    pub store_cap: Resources,
+    pub platform_power: f32,
+    /// What the extractor makes each tick at this level, on this site.
+    pub production: Resources,
+}
+
+/// An outpost standing in a sector, as anyone with eyes on the sector sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutpostBrief {
+    /// The empire it belongs to.
+    pub owner: String,
+    /// 0 while its first level is being built.
+    pub level: u8,
+    pub breached: bool,
+    /// It is the receiver's own.
+    #[serde(default)]
+    pub mine: bool,
 }
 
 /// The world's fixed settings, sent with every `full_state`. `pace` scales
@@ -755,6 +949,11 @@ pub struct FleetState {
     /// next jump, so what the fleet brings home unloads as any cargo does.
     #[serde(default)]
     pub laden: bool,
+    /// Fuel the way to the owner's outpost costs: the fewest lane hops
+    /// there times `jump_fuel`, 0 at the outpost. Present while that
+    /// outpost is in service, which is when it fills a tank.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub outpost_fuel: Option<f32>,
     /// Standing orders currently flying this fleet, if any: the doctrine
     /// with its settings, so the two cannot be told apart or disagree.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -835,6 +1034,11 @@ pub struct SectorState {
     /// once more in `sector_updates`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub chart: Option<ChartMark>,
+    /// The outpost standing here, whoever owns it. While it stands no group
+    /// lives in the sector or wanders in. When not `live` it is the outpost
+    /// last seen, which may have grown, been breached or been abandoned.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub outpost: Option<OutpostBrief>,
     /// How dangerous the sector is. When not `live` it is the rating last
     /// seen, as old as `last_seen`.
     pub threat: ThreatInfo,
@@ -849,7 +1053,8 @@ pub struct SectorState {
 #[serde(rename_all = "snake_case")]
 pub enum ChartMark {
     /// A fleet that entered the sector still carries the chart: it is paid
-    /// when that fleet docks at the homeworld and lost if the fleet is.
+    /// when that fleet docks at the homeworld or arrives at its owner's
+    /// finished outpost, and lost if the fleet is.
     Aboard,
     /// Delivered and paid; entering again earns nothing.
     Delivered,
@@ -1453,6 +1658,16 @@ pub enum EventKind {
     ChartDelivered(ChartDeliveredEvent),
     Queue(QueueEvent),
     Exchanged(ExchangedEvent),
+    OutpostCompleted(OutpostCompletedEvent),
+}
+
+/// A level of the player's outpost is finished. Level 1 opens it: the
+/// extractor starts, tanks are filled and the raid clock begins to run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutpostCompletedEvent {
+    pub player_id: u64,
+    pub sector: Hex,
+    pub level: u8,
 }
 
 /// A fleet traded at the hub's exchange: what it gave, what it got, the fee
@@ -1567,7 +1782,8 @@ fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
 
-/// A fleet docked at the homeworld and handed over the sectors it charted.
+/// A fleet docked at the homeworld, or arrived at its owner's finished
+/// outpost, and handed over the sectors it charted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChartDeliveredEvent {
     pub fleet_id: u64,
@@ -1814,7 +2030,8 @@ impl SignalKind {
     }
 }
 
-/// Advance warning that a raid fleet is vectoring toward the homeworld.
+/// Advance warning that a raid fleet is vectoring toward the homeworld, or
+/// toward the player's outpost when `outpost` names its sector.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaidIncomingEvent {
     pub player_id: u64,
@@ -1823,18 +2040,32 @@ pub struct RaidIncomingEvent {
     /// half of it), "moderate" (under all of it) or "heavy".
     pub threat: String,
     /// The raid fleet's power, fixed at forecast time, on the same scale as
-    /// `home_defence_power`.
+    /// `home_defence_power` and `OutpostState.defence_power`.
     #[serde(default)]
     pub est_power: f32,
+    /// The outpost the raid is bound for; absent for a raid on the homeworld.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub outpost: Option<Hex>,
 }
 
-/// Outcome of a homeworld raid.
+/// Outcome of a raid on the homeworld, or on the player's outpost when
+/// `outpost` names its sector. An outpost has no structures and a repelled
+/// raid on one leaves no salvage, so those fields are zero and absent then.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaidResolvedEvent {
     pub player_id: u64,
+    /// The outpost that was raided; absent for a raid on the homeworld.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub outpost: Option<Hex>,
     pub defended: bool,
+    /// The raid broke the outpost: it makes nothing, fills no tank and has
+    /// no platform until it has repaired itself from its store. Always
+    /// false for a raid on the homeworld.
+    #[serde(default)]
+    pub breached: bool,
     /// What a lost raid took: its share of the stockpile and of the cargo
-    /// aboard fleets at home, counted as one pile above the protected floor.
+    /// aboard fleets at home, counted as one pile above the protected
+    /// floor. At an outpost, the same of its store and the fleets there.
     pub resources_lost: Resources,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage_dropped: Option<Resources>,
@@ -1852,10 +2083,12 @@ pub struct RaidResolvedEvent {
     #[serde(default)]
     pub structures_restored: u32,
     /// What the Storage Vault kept out of reach of a successful raid, of
-    /// the stockpile and the cargo aboard fleets at home together.
+    /// the stockpile and the cargo aboard fleets at home together. At an
+    /// outpost, what its protected floor kept.
     #[serde(default)]
     pub protected_kept: Resources,
-    /// Ships docked at home that a lost raid destroyed.
+    /// Ships docked at home, or standing at the outpost, that a lost raid
+    /// destroyed.
     #[serde(default)]
     pub ships_lost: u32,
 }

@@ -113,7 +113,96 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         range_hops: 4,
         cargo_blocked: false,
         laden: false,
+        outpost_fuel: None,
         policy,
+    }
+}
+
+fn sample_outpost() -> OutpostState {
+    OutpostState {
+        location: h(10, -2),
+        level: 1,
+        max_level: 3,
+        in_service: true,
+        breached: false,
+        work: Some(OutpostWorkState { kind: OutpostWork::Build, level: 2, start_tick: 4700, end_tick: 18_200 }),
+        store: res(412.5, 96.0, 180.25),
+        store_cap: res(9486.833, 4743.4165, 2371.7083),
+        protected: res(250.0, 125.0, 50.0),
+        production: res(0.010_794, 0.0, 0.005_397),
+        grade: 3.0,
+        platform_power: 40.0,
+        defence_power: 172.0,
+        next_raid_estimate_power: 37.9,
+        raid_arrival_tick: Some(4990),
+        next_level: Some(OutpostLevel {
+            level: 3,
+            cost: res(6250.0, 3125.0, 1250.0),
+            ticks: 33_750,
+            store_cap: res(59_292.707, 29_646.354, 14_823.177),
+            platform_power: 250.0,
+            production: res(0.032_382, 0.0, 0.016_191),
+        }),
+        repair_cost: None,
+        hops_home: Some(7),
+    }
+}
+
+fn breached_outpost() -> OutpostState {
+    OutpostState {
+        level: 3,
+        in_service: false,
+        breached: true,
+        work: None,
+        store: res(1200.0, 781.25, 0.0),
+        store_cap: res(59_292.707, 29_646.354, 14_823.177),
+        protected: res(1562.5, 781.25, 312.5),
+        production: res(0.0, 0.0, 0.0),
+        platform_power: 0.0,
+        defence_power: 0.0,
+        raid_arrival_tick: None,
+        next_level: None,
+        repair_cost: Some(res(1562.5, 781.25, 312.5)),
+        hops_home: None,
+        ..sample_outpost()
+    }
+}
+
+fn outpost_sector(brief: OutpostBrief) -> SectorState {
+    SectorState {
+        location: h(10, -2),
+        terrain: TerrainType::AsteroidField,
+        resources: SectorResources { metal: Density::Rich, crystal: Density::None, deuterium: Density::Moderate },
+        hostiles: None,
+        player_fleets: None,
+        salvage: None,
+        salvage_despawn_tick: None,
+        site: None,
+        ore_reserve: Some(OreReserve {
+            metal: TileReserve { units: 42.9, max_units: 42.9, refills_in_s: None },
+            crystal: TileReserve { units: 0.0, max_units: 0.0, refills_in_s: None },
+            deuterium: TileReserve { units: 19.5, max_units: 19.5, refills_in_s: None },
+        }),
+        outpost: Some(brief),
+        threat: ThreatInfo { rating: 1, est_power: 0.0, basis: ThreatBasis::Observed },
+        ..rich_sector()
+    }
+}
+
+fn sample_survey() -> OutpostSurvey {
+    OutpostSurvey {
+        fleet_id: 7,
+        sector: h(10, -2),
+        ring: 10,
+        densities: SectorResources { metal: Density::Rich, crystal: Density::None, deuterium: Density::Moderate },
+        grade: 3.0,
+        cost: res(1000.0, 500.0, 200.0),
+        build_ticks: 5400,
+        production: res(0.021_652, 0.0, 0.010_826),
+        raid_power: 37.9,
+        platform_power: 40.0,
+        hops_home: Some(7),
+        refusal: None,
     }
 }
 
@@ -157,6 +246,7 @@ fn rich_sector() -> SectorState {
             deuterium: TileReserve { units: 0.0, max_units: 0.0, refills_in_s: None },
         }),
         chart: None,
+        outpost: None,
         threat: ThreatInfo { rating: 4, est_power: 46.5, basis: ThreatBasis::Observed },
         last_seen: 4821,
         live: true,
@@ -192,6 +282,7 @@ fn bare_sector() -> SectorState {
         site: None,
         ore_reserve: None,
         chart: None,
+        outpost: None,
         threat: ThreatInfo { rating: 1, est_power: 4.0, basis: ThreatBasis::Estimate },
         last_seen: 4821,
         live: true,
@@ -220,6 +311,7 @@ fn anomaly_sector() -> SectorState {
             deuterium: TileReserve { units: 22.0, max_units: 22.0, refills_in_s: None },
         }),
         chart: Some(ChartMark::Delivered),
+        outpost: None,
         threat: ThreatInfo { rating: 5, est_power: 65.0, basis: ThreatBasis::Template },
         last_seen: 4240,
         live: false,
@@ -451,6 +543,10 @@ fn command_name(c: &Command) -> &'static str {
         Command::ExchangeQuote { .. } => "exchange_quote",
         Command::Load { .. } => "load",
         Command::Unload { .. } => "unload",
+        Command::FoundOutpost { .. } => "found_outpost",
+        Command::OutpostSurvey { .. } => "outpost_survey",
+        Command::UpgradeOutpost => "upgrade_outpost",
+        Command::AbandonOutpost => "abandon_outpost",
     }
 }
 
@@ -465,6 +561,7 @@ fn server_message_name(m: &ServerMessage) -> &'static str {
         ServerMessage::Odds(_) => "odds",
         ServerMessage::Leaderboard(_) => "leaderboard",
         ServerMessage::ExchangeQuote(_) => "exchange_quote",
+        ServerMessage::OutpostSurvey(_) => "outpost_survey",
     }
 }
 
@@ -497,6 +594,7 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::ChartDelivered(_) => "chart_delivered",
         EventKind::Queue(_) => "queue",
         EventKind::Exchanged(_) => "exchanged",
+        EventKind::OutpostCompleted(_) => "outpost_completed",
     }
 }
 
@@ -600,6 +698,11 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::Load { fleet_id: 3, resource: ResourceKind::Metal, amount: Some(1200.5) }),
         ("all_that_fits", Command::Load { fleet_id: 3, resource: ResourceKind::Deuterium, amount: None }),
         ("", Command::Unload { fleet_id: 3 }),
+        ("", Command::FoundOutpost { fleet_id: 7 }),
+        ("", Command::OutpostSurvey { fleet_id: 7, sector: Some(h(10, -2)) }),
+        ("own_sector", Command::OutpostSurvey { fleet_id: 7, sector: None }),
+        ("", Command::UpgradeOutpost),
+        ("", Command::AbandonOutpost),
     ]
 }
 
@@ -719,6 +822,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 ],
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
                 homeworld_update: Some(sample_homeworld()),
+                outpost: None,
                 events: Some(vec![
                     GameEvent {
                         tick: 4821,
@@ -749,6 +853,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 fleets: vec![],
                 sector_updates: None,
                 homeworld_update: None,
+                outpost: None,
                 events: None,
             }),
         ),
@@ -760,7 +865,46 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 fleets: vec![],
                 sector_updates: Some(vec![]),
                 homeworld_update: Some(idle_homeworld()),
+                outpost: None,
                 events: Some(vec![]),
+            }),
+        ),
+        (
+            "outpost_breached".into(),
+            ServerMessage::TickUpdate(TickUpdate {
+                tick: 5000,
+                player: None,
+                fleets: vec![FleetState {
+                    outpost_fuel: Some(0.0),
+                    home_fuel: 220.5,
+                    ..sample_fleet(7, h(10, -2), FleetStatus::Idle, None)
+                }],
+                sector_updates: Some(vec![outpost_sector(OutpostBrief {
+                    owner: "Admiral".into(),
+                    level: 3,
+                    breached: true,
+                    mine: true,
+                })]),
+                homeworld_update: None,
+                outpost: Some(breached_outpost()),
+                events: Some(vec![GameEvent {
+                    tick: 5000,
+                    kind: EventKind::RaidResolved(RaidResolvedEvent {
+                        player_id: 42,
+                        outpost: Some(h(10, -2)),
+                        defended: false,
+                        breached: true,
+                        resources_lost: res(1840.5, 0.0, 96.0),
+                        salvage_dropped: None,
+                        salvage_despawn_tick: None,
+                        raid_power: 310.5,
+                        defense_power: 294.0,
+                        structures_lost: 0,
+                        structures_restored: 0,
+                        protected_kept: res(1562.5, 781.25, 312.5),
+                        ships_lost: 1,
+                    }),
+                }]),
             }),
         ),
         (
@@ -787,8 +931,36 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     },
                 ],
                 homeworld: sample_homeworld(),
+                outpost: None,
                 known_sectors: vec![rich_sector(), bare_sector(), anomaly_sector(), stale_pins_sector()],
                 world: WorldInfo::new(Pace::new(10.0).unwrap(), 2, 1),
+            }),
+        ),
+        (
+            "with_outpost".into(),
+            ServerMessage::FullState(GameState {
+                tick: 4820,
+                player: sample_player(),
+                fleets: vec![
+                    FleetState {
+                        outpost_fuel: Some(0.0),
+                        home_fuel: 220.5,
+                        ..sample_fleet(7, h(10, -2), FleetStatus::Idle, None)
+                    },
+                    FleetState { outpost_fuel: Some(220.5), ..sample_fleet(2, h(4, -2), FleetStatus::Docked, None) },
+                ],
+                homeworld: idle_homeworld(),
+                outpost: Some(sample_outpost()),
+                known_sectors: vec![
+                    outpost_sector(OutpostBrief { owner: "Admiral".into(), level: 1, breached: false, mine: true }),
+                    SectorState {
+                        location: h(14, -6),
+                        live: false,
+                        last_seen: 3100,
+                        ..outpost_sector(OutpostBrief { owner: "Rival".into(), level: 0, breached: false, mine: false })
+                    },
+                ],
+                world: WorldInfo::new(Pace::new(10.0).unwrap(), 4, 3),
             }),
         ),
         (
@@ -804,6 +976,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 },
                 fleets: vec![],
                 homeworld: idle_homeworld(),
+                outpost: None,
                 known_sectors: vec![],
                 world: WorldInfo::new(Pace::new(42.0).unwrap(), 2, 1),
             }),
@@ -936,6 +1109,32 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 "fleet 3 is at [3,-2], 3 hexes from the exchange at the hub [0,0]; a fleet trades what is in its hold, on the spot"
                     .into(),
             ),
+        }),
+    ));
+    v.push(("".into(), ServerMessage::OutpostSurvey(sample_survey())));
+    v.push((
+        "refused".into(),
+        ServerMessage::OutpostSurvey(OutpostSurvey {
+            fleet_id: 1,
+            sector: h(4, -2),
+            ring: 4,
+            densities: SectorResources { metal: Density::None, crystal: Density::None, deuterium: Density::None },
+            grade: 0.0,
+            production: res(0.0, 0.0, 0.0),
+            raid_power: 12.8,
+            hops_home: Some(0),
+            refusal: Some("fleet 1 is at ring 4; an outpost stands in rings 9 to 20".into()),
+            ..sample_survey()
+        }),
+    ));
+    v.push((
+        "far".into(),
+        ServerMessage::OutpostSurvey(OutpostSurvey {
+            hops_home: None,
+            refusal: Some(
+                "fleet 7 is at [4,-2], 6 hexes from [10,-2]; an outpost is founded by a fleet standing in its sector".into(),
+            ),
+            ..sample_survey()
         }),
     ));
     for code in ALL_ERROR_CODES {
@@ -1090,10 +1289,51 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             arrival_tick: 5000,
             threat: "moderate".into(),
             est_power: 353.5,
+            outpost: None,
         })),
+        ("outpost", EventKind::RaidIncoming(RaidIncomingEvent {
+            player_id: 42,
+            arrival_tick: 4990,
+            threat: "light".into(),
+            est_power: 41.5,
+            outpost: Some(h(10, -2)),
+        })),
+        ("outpost", EventKind::RaidResolved(RaidResolvedEvent {
+            player_id: 42,
+            outpost: Some(h(10, -2)),
+            defended: false,
+            breached: true,
+            resources_lost: res(40.625, 0.0, 32.5),
+            salvage_dropped: None,
+            salvage_despawn_tick: None,
+            raid_power: 82.5,
+            defense_power: 62.0,
+            structures_lost: 0,
+            structures_restored: 0,
+            protected_kept: res(250.0, 96.0, 50.0),
+            ships_lost: 1,
+        })),
+        ("outpost_defended", EventKind::RaidResolved(RaidResolvedEvent {
+            player_id: 42,
+            outpost: Some(h(10, -2)),
+            defended: true,
+            breached: false,
+            resources_lost: res(0.0, 0.0, 0.0),
+            salvage_dropped: None,
+            salvage_despawn_tick: None,
+            raid_power: 41.5,
+            defense_power: 172.0,
+            structures_lost: 0,
+            structures_restored: 0,
+            protected_kept: res(0.0, 0.0, 0.0),
+            ships_lost: 0,
+        })),
+        ("", EventKind::OutpostCompleted(OutpostCompletedEvent { player_id: 42, sector: h(10, -2), level: 1 })),
         ("", EventKind::RaidResolved(RaidResolvedEvent {
             player_id: 42,
+            outpost: None,
             defended: false,
+            breached: false,
             resources_lost: res(100.0, 50.0, 25.0),
             salvage_dropped: Some(res(10.0, 5.0, 0.0)),
             salvage_despawn_tick: Some(4940),
@@ -1106,7 +1346,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
         })),
         ("defended", EventKind::RaidResolved(RaidResolvedEvent {
             player_id: 42,
+            outpost: None,
             defended: true,
+            breached: false,
             resources_lost: res(0.0, 0.0, 0.0),
             salvage_dropped: None,
             salvage_despawn_tick: None,
@@ -1283,6 +1525,22 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
         ("build_defence_default_count", "Command", json!({"action": "build_defence", "kind": "PulseTurret"})),
         ("raid_incoming_without_power", "ServerMessage",
             json!({"type": "event", "tick": 3, "kind": "RaidIncoming", "player_id": 1, "arrival_tick": 90, "threat": "light"})),
+        ("raid_resolved_without_breached", "ServerMessage",
+            json!({"type": "event", "tick": 3, "kind": "RaidResolved", "player_id": 1, "defended": true,
+                   "resources_lost": {"metal": 0.0, "crystal": 0.0, "deuterium": 0.0},
+                   "raid_power": 40.0, "defense_power": 80.0})),
+        (
+            "outpost_brief_without_mine",
+            "ServerMessage",
+            json!({"type": "tick_update", "tick": 9, "fleets": [], "sector_updates": [{
+                "location": {"q": 10, "r": -2}, "terrain": "Empty",
+                "resources": {"metal": "None", "crystal": "None", "deuterium": "None"},
+                "connections": [], "last_seen": 9, "live": true,
+                "threat": {"rating": 1, "est_power": 0.0, "basis": "observed"},
+                "outpost": {"owner": "Rival", "level": 2, "breached": false}
+            }]}),
+        ),
+        ("survey_without_sector", "Command", json!({"action": "outpost_survey", "fleet_id": 7})),
         ("leaderboard_default_limit", "Command", json!({"action": "leaderboard"})),
         ("auth_without_token", "ClientMessage", json!({"type": "auth", "player_name": "x"})),
         ("bare_auth_result", "ServerMessage", json!({"type": "auth_result", "success": false})),
@@ -1421,6 +1679,7 @@ fn generate() -> Files {
         "NpcBehavior": [NpcBehavior::Passive, NpcBehavior::Patrol, NpcBehavior::Aggressive, NpcBehavior::Swarm],
         "SiteRisk": [SiteRisk::Quiet, SiteRisk::Uneasy, SiteRisk::Hot],
         "ChartMark": [ChartMark::Aboard, ChartMark::Delivered],
+        "OutpostWork": [OutpostWork::Build, OutpostWork::Repair],
         "SignalKind": [SignalKind::RichOre, SignalKind::HostileMass, SignalKind::Derelict, SignalKind::Anomaly],
         "AlertLevel": [AlertLevel::Info, AlertLevel::Warning, AlertLevel::Critical],
         "HarvestResource": [HarvestResource::Metal, HarvestResource::Crystal, HarvestResource::Deuterium, HarvestResource::Auto],

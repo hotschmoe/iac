@@ -10,7 +10,7 @@ use iac_shared::protocol::SectorState;
 use serde::{Deserialize, Serialize};
 
 use crate::bot::BotRecord;
-use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Player, RaidState, SectorOverride};
+use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Outpost, Player, RaidState, SectorOverride};
 
 /// Settings fixed when a world is created.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -57,7 +57,8 @@ pub struct FleetClocks {
 
 /// The `Snapshot` maps a host stores entry by entry, without a schema of
 /// their own. The id is the map's key: an NPC group, a combat, a player
-/// (also for `Bot`: the bot's account) or a fleet.
+/// (also for `Bot`: the bot's account, and for `Outpost`: its owner) or a
+/// fleet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RuntimeKind {
     NpcFleet,
@@ -68,6 +69,7 @@ pub enum RuntimeKind {
     HomeSalvageWarned,
     HarvestReport,
     Bot,
+    Outpost,
 }
 
 impl RuntimeKind {
@@ -81,6 +83,7 @@ impl RuntimeKind {
             RuntimeKind::HomeSalvageWarned => "home_salvage_warned",
             RuntimeKind::HarvestReport => "harvest_report",
             RuntimeKind::Bot => "bot",
+            RuntimeKind::Outpost => "outpost",
         }
     }
 }
@@ -95,6 +98,7 @@ pub enum RuntimeEntry {
     HomeSalvageWarned(u64),
     HarvestReport(HarvestReport),
     Bot(Box<BotRecord>),
+    Outpost(Box<Outpost>),
 }
 
 /// One entry as it is now; `None` once it is gone.

@@ -1,0 +1,29 @@
+{
+  "build_ticks": 5400,
+  "cost": {
+    "crystal": 500.0,
+    "deuterium": 200.0,
+    "metal": 1000.0
+  },
+  "densities": {
+    "crystal": "None",
+    "deuterium": "Moderate",
+    "metal": "Rich"
+  },
+  "fleet_id": 7,
+  "grade": 3.0,
+  "platform_power": 40.0,
+  "production": {
+    "crystal": 0.0,
+    "deuterium": 0.01082600001245737,
+    "metal": 0.02165200002491474
+  },
+  "raid_power": 37.900001525878906,
+  "refusal": "fleet 7 is at [4,-2], 6 hexes from [10,-2]; an outpost is founded by a fleet standing in its sector",
+  "ring": 10,
+  "sector": {
+    "q": 10,
+    "r": -2
+  },
+  "type": "outpost_survey"
+}

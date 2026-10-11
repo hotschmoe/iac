@@ -619,10 +619,26 @@ pub fn format_event(event: &iac_shared::protocol::GameEvent) -> String {
             format!(" T{}: {}\n", event.tick, line)
         }
         EventKind::RaidIncoming(e) => {
+            let bound = e.outpost.map_or_else(String::new, |at| format!(" on your outpost {at}"));
             format!(
-                " T{}: !! {} RAID inbound (power {:.0}), ETA T{} !!\n",
+                " T{}: !! {} RAID inbound{bound} (power {:.0}), ETA T{} !!\n",
                 event.tick, e.threat.to_uppercase(), e.est_power, e.arrival_tick
             )
+        }
+        EventKind::RaidResolved(e) if e.outpost.is_some() => {
+            let at = e.outpost.map_or_else(String::new, |at| at.to_string());
+            if e.defended {
+                format!(" T{}: Raid on your outpost {at} REPELLED ({:.0} vs {:.0})\n", event.tick, e.raid_power, e.defense_power)
+            } else {
+                format!(
+                    " T{}: Raid broke your outpost {at} ({:.0} vs {:.0}) — {:.0} resources and {} ship(s) lost{}\n",
+                    event.tick, e.raid_power, e.defense_power, e.resources_lost.total(), e.ships_lost,
+                    if e.breached { ", BREACHED until repaired" } else { "" },
+                )
+            }
+        }
+        EventKind::OutpostCompleted(e) => {
+            format!(" T{}: Outpost at {} finished level {}\n", event.tick, e.sector, e.level)
         }
         EventKind::RaidResolved(e) => {
             let structures = if e.structures_lost > 0 {
@@ -735,6 +751,7 @@ pub fn event_style(event: &iac_shared::protocol::GameEvent) -> Style {
         | EventKind::SalvageCollected(_)
         | EventKind::BuildingCompleted(_)
         | EventKind::ResearchCompleted(_)
+        | EventKind::OutpostCompleted(_)
         | EventKind::ShipBuilt(_) => GREEN_GOOD,
         EventKind::ScanCompleted(_) => CYAN_INTEL,
         EventKind::SiteExplorationStarted(_) => CYAN_INTEL,

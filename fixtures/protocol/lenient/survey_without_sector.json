@@ -1,0 +1,11 @@
+{
+  "canonical": {
+    "action": "outpost_survey",
+    "fleet_id": 7
+  },
+  "input": {
+    "action": "outpost_survey",
+    "fleet_id": 7
+  },
+  "type": "Command"
+}

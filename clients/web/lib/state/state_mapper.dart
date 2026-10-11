@@ -97,7 +97,14 @@ class StateMapper {
   proto.WorldInfo? world;
   proto.LeaderboardReply? leaderboard;
 
-  /// The raid the server last announced and has not yet resolved.
+  /// The player's outpost as the server last sent it; null with none.
+  proto.OutpostState? outpost;
+
+  /// The last outpost survey the server answered.
+  proto.OutpostSurvey? survey;
+
+  /// The raid on the homeworld the server last announced and has not yet
+  /// resolved. A raid on the outpost is told by [outpost].
   proto.RaidIncomingEvent? raid;
 
   /// Known sectors keyed by [proto.Hex.toKey].
@@ -141,6 +148,8 @@ class StateMapper {
     homeworld = null;
     world = null;
     leaderboard = null;
+    outpost = null;
+    survey = null;
     raid = null;
     sectors.clear();
     signals.clear();
@@ -177,6 +186,8 @@ class StateMapper {
         quotes.removeWhere((_, e) => tick - e.tick > 60);
       case proto.LeaderboardReply():
         leaderboard = msg;
+      case proto.OutpostSurvey():
+        survey = msg;
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }
@@ -189,6 +200,7 @@ class StateMapper {
     player = s.player;
     fleets = List.of(s.fleets);
     homeworld = s.homeworld;
+    outpost = s.outpost;
     world = s.world;
     sectors.clear();
     for (final sec in s.knownSectors) {
@@ -208,6 +220,7 @@ class StateMapper {
     if (u.player != null) player = u.player;
     fleets = List.of(u.fleets);
     if (u.homeworldUpdate != null) homeworld = u.homeworldUpdate;
+    outpost = u.outpost;
     for (final sec in u.sectorUpdates ?? const <proto.SectorState>[]) {
       final key = sec.location.toKey();
       sectors[key] = sec;
@@ -344,6 +357,20 @@ class StateMapper {
             signalBands[key] = s.threatBand;
           }
         }
+      case proto.OutpostCompletedEvent():
+        msg = 'Outpost at ${k.sector}: level ${k.level} complete';
+        level = EventLevel.bright;
+      case proto.RaidIncomingEvent(outpost: final at?):
+        msg = '! RAID INCOMING on your outpost at $at (${k.threat}, power ${k.estPower.round()}) -- arrival tick ${k.arrivalTick}';
+        level = EventLevel.bright;
+      case proto.RaidResolvedEvent(outpost: final at?):
+        final fight = 'raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}';
+        msg = k.defended
+            ? '! Raid on your outpost at $at repelled ($fight)'
+            : '! Raid broke your outpost at $at ($fight): lost ${_res(k.resourcesLost)}'
+                '${k.shipsLost > 0 ? ', ${k.shipsLost} ships there destroyed' : ''}'
+                '${k.breached ? '; it is breached until it has repaired itself' : ''}';
+        level = EventLevel.bright;
       case proto.RaidIncomingEvent():
         raid = k;
         msg = '! RAID INCOMING (${k.threat}, power ${k.estPower.round()}) -- arrival tick ${k.arrivalTick}';

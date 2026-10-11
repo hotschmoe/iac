@@ -19,7 +19,7 @@ use iac_sim::engine::{
 };
 use iac_shared::protocol::{HarvestResource, PolicyPreset, PolicyParams, SectorState};
 use iac_sim::persist::{
-    ExploreCredit, FleetClocks, KnownRow, Persist, PersistBatch, RuntimeEntry, RuntimeRow, WorldMeta,
+    ExploreCredit, FleetClocks, KnownRow, Persist, PersistBatch, RuntimeEntry, RuntimeKind, RuntimeRow, WorldMeta,
 };
 use iac_sim::snapshot::Snapshot;
 
@@ -1071,8 +1071,9 @@ impl Database {
 
     /// Rows that no longer parse (written by an older engine) are skipped:
     /// that group, combat or clock starts over, as all of them once did on
-    /// every restart.
-    pub fn load_runtime(&self) -> Result<Vec<(u64, RuntimeEntry)>, rusqlite::Error> {
+    /// every restart. An outpost is not a clock: it holds what a player
+    /// built and stored, so one that cannot be read refuses the world.
+    pub fn load_runtime(&self) -> Result<Vec<(u64, RuntimeEntry)>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT kind, id, data FROM runtime_state")?;
         let rows = stmt.query_map(params![], |row| {
@@ -1083,6 +1084,13 @@ impl Database {
             let (kind, id, data) = row?;
             match serde_json::from_str::<RuntimeEntry>(&data) {
                 Ok(entry) => out.push((id as u64, entry)),
+                Err(e) if kind == RuntimeKind::Outpost.name() => {
+                    return Err(format!(
+                        "the outpost of player {id} in this database cannot be read ({e}); it holds that player's \
+                         store, so the world is not opened without it"
+                    )
+                    .into());
+                }
                 Err(e) => warn!("Skipping unreadable runtime state {kind} {id}: {e}"),
             }
         }
@@ -1946,7 +1954,7 @@ mod tests {
         }
 
         let score = |engine: &GameEngine| -> f32 {
-            engine.bots().keys().map(|id| iac_sim::score::score_of(&engine.players[id], engine.fleets.values()).total()).sum()
+            engine.bots().keys().map(|id| iac_sim::score::score_of(engine, &engine.players[id]).total()).sum()
         };
         assert!(score(&hosted) > 50.0 * wanted.len() as f32, "the bots played: {} points between them", score(&hosted));
         assert!(hosted.players.values().any(|p| p.explore_points > 0.0), "a bot's fleet flew out and came home");

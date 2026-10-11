@@ -15,7 +15,7 @@ use xxhash_rust::xxh3::xxh3_64;
 use crate::world::{CatchUp, Clock};
 
 /// Bumped when the header or what the snapshot must hold changes.
-pub const SAVE_FORMAT: u32 = 3;
+pub const SAVE_FORMAT: u32 = 4;
 
 #[derive(Debug, Deserialize)]
 struct Stamp {
