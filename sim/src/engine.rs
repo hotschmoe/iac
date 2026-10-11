@@ -1444,22 +1444,19 @@ impl GameEngine {
     /// Stripped tiles refill over `scaling::ore_regen_hours`, paused while a
     /// fleet sits on the sector, and never past the generated density.
     fn process_sector_regen(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
-        for sector_key in keys {
-            let Some(ov) = self.sector_overrides.get(&sector_key) else { continue; };
-            if !ov.has_ore_damage() { continue; }
+        let occupied: KeySet<u32> = self.fleets.values().map(|f| f.location.to_key()).collect();
+        let pace = self.world.pace;
+        let persist = self.current_tick.is_multiple_of(REGEN_PERSIST_TICKS);
+        for (&sector_key, ov) in self.sector_overrides.iter_mut() {
+            if !ov.has_ore_damage() || occupied.contains(&sector_key) { continue; }
 
             let coord = Hex::from_key(sector_key);
-            if self.fleets.values().any(|f| f.location == coord) { continue; }
-
             let dist = coord.dist_from_origin();
             let template = self.world_gen.generate_sector(coord);
-            let pace = self.world.pace;
-            let ov_mut = self.sector_overrides.get_mut(&sector_key).unwrap();
-            let mut moved = regen_resource(&mut ov_mut.metal_harvested, &mut ov_mut.metal_density, template.metal_density, dist, &pace);
-            moved |= regen_resource(&mut ov_mut.crystal_harvested, &mut ov_mut.crystal_density, template.crystal_density, dist, &pace);
-            moved |= regen_resource(&mut ov_mut.deut_harvested, &mut ov_mut.deut_density, template.deut_density, dist, &pace);
-            if moved || !ov_mut.has_ore_damage() || self.current_tick.is_multiple_of(REGEN_PERSIST_TICKS) {
+            let mut moved = regen_resource(&mut ov.metal_harvested, &mut ov.metal_density, template.metal_density, dist, &pace);
+            moved |= regen_resource(&mut ov.crystal_harvested, &mut ov.crystal_density, template.crystal_density, dist, &pace);
+            moved |= regen_resource(&mut ov.deut_harvested, &mut ov.deut_density, template.deut_density, dist, &pace);
+            if moved || !ov.has_ore_damage() || persist {
                 self.dirty_sectors.insert(sector_key, ());
             }
         }
@@ -2911,10 +2908,10 @@ impl GameEngine {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
         let Some(player) = self.players.get(&fleet.owner_id) else { return; };
         if target == player.homeworld { return; }
+        let have = fleet.fuel;
+        if have + 0.001 >= self.direct_hops_home(fleet.owner_id, target) as f32 * hop_cost { return; }
         let route = self.home_route(fleet.owner_id, target);
         let need = route.direct as f32 * hop_cost;
-        let have = fleet.fuel;
-        if have + 0.001 >= need { return; }
         let (level, outcome) = if have + 0.001 < hop_cost {
             (AlertLevel::Critical, "it will be stranded on arrival; the emergency reserve recovers one hop in about 5 minutes")
         } else {
