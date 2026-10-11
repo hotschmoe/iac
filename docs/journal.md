@@ -4537,3 +4537,197 @@ Persistent pace and blitz were not run: the raid clock is the homeworld's at eve
 pace, but the build and repair times against it are not the same ratio, so the
 waiting shares belong to a season world. The speed before the index was measured
 unpinned only. No person has played an outpost by hand.
+
+## 2026-10-12: seven loose ends
+
+Seven things earlier entries saw and left, each small, each its own commit so
+that any one can be dropped. Engine, web client, the browser check, the rules
+text. No constant, no protocol type, no fixture, no save format, no SQLite
+column. What was chosen is in decisions.md under the same date. Branch
+`worktree-agent-a1739234e1caebc4e`, not merged.
+
+**1. A batch asks the Vault first.** `ensure_batch_paid_for` took any batch the
+stockpile covered and asked about the Vault only when it did not. The stockpile
+can stand above its cap, through refunds, and then a batch could cost more than
+the cap. It now asks `ensure_fits_storage` first, as `handle_build` and
+`handle_research` do, and the refusal is theirs. At pace 1 with no Vault, 26
+scouts read "Scout x26 costs 5200 metal, more than the 5000 metal your stockpile
+holds; needs Storage Vault level 1, or order 25 or fewer at a time", whatever
+the stockpile holds. Refunds are untouched. `RULES.md` and the README
+now say what a cancel returns (half of what the order has paid: a running
+building or tech half its cost, a waiting one nothing, a batch half of every
+unit not delivered) and that the refund is added past the cap, where the mines
+add nothing and nothing is taken away.
+- *The bots.* The home planner cuts a batch to the units its purse covers
+  (`batch` in `sim/src/bot/home.rs`) and never cancels, so its stockpile never
+  stands above the cap and no batch it orders can cost more than the cap. Read,
+  then measured: `sim-run --pace season --days 7 --seed 1` with this one change
+  and without it gives the same report, every line but the last, which is how
+  long the run took (snapshot `a3c0c71da910a49c` both times).
+- *Test.* `sim/tests/empire_arc.rs`: the largest batch the Vault holds is
+  ordered and cancelled with the stockpile full, which leaves it half a batch
+  above the cap for three ticks; one scout more than fits is refused with the
+  sentence above and nothing charged, though the stockpile covers it; the batch
+  that fits is taken from the same stockpile. On the engine as it was the test
+  fails at the refusal.
+
+**2. A fight says what a jump cost.** `engage_fleet` abandons a jump the fleet
+was charging, and the fuel went with it in silence. It raises a warning `Alert`
+in the terms of the stop: "fleet F was caught in a fight at A while charging
+its jump to B: the jump is abandoned, and the N fuel it burned for the jump is
+forfeit". The scenario that already flew this
+(`sim/tests/scenarios_world.rs`, a fleet charging a jump while its escort picks
+a fight in the same sector) now reads the sentence, the level, the fleet and the
+sector, finds it once and not for the escort, and counts the fuel gone. `RULES.md`
+and the README say it in the `move` row.
+
+**3. Stop during the jump animation.** `act` in
+`views/windshield/windshield_view.dart` returned for every tile and key while
+`sim.warp` was set. A scout's jump charges for one tick and the animation's
+outbound half lasts until the fleet arrives, so the Stop tile and `X` were dead
+for exactly as long as the engine would take the order. Stop now passes while the
+warp is outbound (`Warp.waiting`), and the scene gives the jump up at that moment
+(`WindshieldSim.cancelWarp`, which was there and called from nowhere): the ships
+stand in formation again and the gate keys take the next order. Nothing else
+acts until the jump is over, and once the fleet has arrived Stop is as silent as
+it was. On the way: a jump that is never answered ended after 2.6 seconds, and
+as the code reads the ships stayed where the outbound half leaves them, a hex
+radius out, until the next sector was built (read, not seen); it ends through
+the same function now.
+- *The browser check has its step back* (`callOffAJump` in `tool/solo_e2e.dart`).
+  It reads a lane off the wire, finds the Stop tile, waits for a tick, presses
+  the gate key and clicks the tile, and then wants the move and the stop on the
+  wire in that order, the engine's "fleet 2 called off its jump to [2,-5]: the 9
+  fuel it burned for the jump is forfeit", no refusal, the fleet where it was
+  and the sentence on screen. The engine's ticks are pumped every 200 ms and the
+  check polls every 150, so the pair is sent with some 600 ms or more before
+  the next tick.
+
+**4. The orders panel holds still.** The report at the head of the panel was as
+tall as its sentence, one line for "intercepting contact" and four for
+"refuelling: a fuel budget of 35% ...", and every doctrine tile and stepper
+stood under it. Not a box that appears: a box that grows. It keeps room for
+five lines now, the settings line has its row whether or not orders stand, and
+the fleet status keeps four lines under its Orders row while the fleet is under
+orders, so that the Orders and Manage fleet buttons and the contacts under them
+stay as well. Left: a sentence longer than the room grows its box (the ones
+that name a refused sector with its rating are the long ones; how many lines
+they take was not measured), and the list of earlier reports at the foot of the
+open orders panel still pushes the panels under it as it fills to five.
+
+**5. Toasts and the resized window.**
+- On the windshield the toasts stand at the top left at every width, over the
+  sector head. Below 1167 px they already did. At the bottom right they lay over
+  the foot of the right-hand column, which is where every panel has its
+  buttons. A desktop panel no longer takes the earlier toasts down when it
+  opens, since none is in its way; the phone layout's sheet still does. The
+  other screens are as they were. Seen in the browser check's own pictures:
+  three toasts up together (a fight begun, the guide's "first hour" line, the
+  fight won) reach the corner of the north-west gate card.
+- *The resized window.* Two causes. The windshield builds its panels in the
+  desktop column or in the phone sheet, two places in the tree, so crossing
+  1167 px built them anew: the panel stayed open and forgot what was begun in
+  it (the Abandon that was asked, a doctrine picked and not set). And a resize
+  in one step from a desktop to a phone, with an outpost, rebuilt every screen:
+  the outpost's strip arrives above the screens and the bottom rail below them
+  in the same frame, and Flutter matched neither end of the column. Each is one
+  key: a `GlobalKey` on the panels' column and a `ValueKey` on the shell's
+  screens. It was no more than that.
+
+**6. The new outpost's first word.** Kept the rule and made the founders an
+exception to it: when level 1 opens, the fleets standing there go on the
+`dry_tanks` list without the alert, so their stay is silent. A fleet that
+arrives later is told, and so is one that leaves and comes back. The other way,
+waiting until the store has ever held deuterium, needs a field in the outpost,
+the snapshot and the save. `sim/tests/outposts.rs`: the founding scenario's
+convoy stands at the new outpost with a tank its journey emptied and hears no
+warning in the tick it opens or the three after; on the engine as it was that
+assertion fails on "has no deuterium left for the tank of fleet 2". The
+scenario of the dry store (a fleet that jumps out and back is told once) is
+unchanged and passes.
+
+**7. The comment.** "Stable id of the hostile a sector's template spawns" stood
+above `hold_key`; `template_npc_id` is forty lines further down and had none.
+Moved.
+
+**Seen on the way (not changed).**
+- Neither client asks about the Vault before it offers a batch, as far as their
+  code reads: with a stockpile above its cap the shipyard offers a batch the
+  engine then refuses, and the engine's sentence is the first the player hears
+  of it.
+- `tool/solo_e2e.dart` has a doc line of its own in the wrong place ("The
+  stockpile in the newest tick update that carries one" above `founding`).
+- The other screens keep their toasts at the bottom right on a desktop. Whether
+  a stack of them reaches a button there was not looked at.
+
+**Widget tests** (Flutter, the whole shell; five new, 409 in all).
+`windshield_test.dart`: a jump ordered, a scan refused meanwhile, the Stop tile
+sending the stop, the next gate key taken at once, `X` doing the same, and no
+stop sent for a fleet that has arrived; a fleet under orders whose report goes
+from one line to a hold of four, to a hold of one, to none, with the five
+controls of the form where they were each time and, with the panel shut, the
+status buttons and the contacts where they were, at 1440 and 390. The test that
+had a toast "at the bottom right" at 1440 now has it left of the panel column.
+`outpost_test.dart`: at 1440 a refusal stays up when the outpost's panel opens,
+and the longest refusal the outpost has, raised with Abandon asked, lies left of
+the column and over none of six buttons, no gate card and no fleet; at 390 the
+toast of the step before makes way for the sheet and a later one shows; a
+window taken from 1440 to 1100 to 390 and back keeps the panel and the Abandon
+question at each width and the order still goes out. The scripted founding test
+expected the earlier toast gone at 1440 and now expects it kept.
+
+**What was run**, on the tree merged with master (`b3bddaf`, outposts
+measured; one conflict, both branches' entries at the head of decisions.md, both
+kept). `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`: 149 tests, none failed (148 on master and the batch test);
+`cargo clippy --workspace --all-targets`: no warning; `check_sim_constants.py`
+agrees; the wasm release build of `iac-solo`; `flutter analyze`: no issue.
+`sim-run --pace season --days 7 --seed 1` from this tree and from master's tip,
+built apart in a scratch directory: the same report, every line but the one
+that times the run. `flutter test`, pinned to the big cores, four whole runs:
+three passed all 409, the two on the merged tree among them. The first failed
+31 tests, every test of `windshield_test.dart` and nothing else, from that
+file's first frame: "Offset argument contained a NaN value" out of the arena
+painter's trigonometry (`_ship`, `_planet`, `_terrain`). The file passed alone
+straight after and in the three runs that followed, and nothing here touches
+that painter's time or geometry. Its log is kept. It is called a flake of the
+Dart VM on this machine and not explained further.
+`scripts/play.sh --single-player --no-serve` and `tool/solo_e2e.dart` on ports
+8030 and 8031: five runs, two before the merge and three after it with the
+bundle rebuilt, each `SOLO E2E OK` in 192 to 194 s with 93 checks (88 before),
+the multiplayer step included. The new step took the stop in all five, on the
+W gate four times and the E gate once. In none of the five did the patrol's
+first report happen to be a hold, so the click that used to miss was never
+raced by a box growing under it: five passes in five say little against a
+failure of one in four, and the widget test is the evidence for item 4. The
+pictures of the first run were read: the jump called off at 1440 with the ships
+in formation and the alert at the top left, the orders panel with its report at
+1440 and 390, the founding panel, the phone windshield.
+
+**Failures on the way, all mine.** A dry-store assertion written for the
+founding scenario's return trip was wrong: the extractor had filled the store
+by then and the tank was full, so it was taken out and the existing dry-store
+scenario left to stand for that case. The first toast picture showed no toast:
+one pump of the test clock does not advance a toast's slide-in. The first
+position check measured the toasts' column, which is as wide as the screen,
+and not the toast.
+
+**The machine.** `nice` was refused in front of `cargo test` and taken in front
+of `cargo build`; the tests ran without it, and one build after the merge did
+too, by oversight. `taskset` was taken inside a wrapper script. Chromium would
+not start with `TMPDIR` in the scratch directory, as the entry before last
+found: its socket path is too long. A wrapper given to `--chromium` stands in
+the scratch directory and names it `/proc/self/cwd`, which keeps every file of
+the check there and needs no change to the tool. The tool's last line still
+fails to delete its Chromium profile now and then (once in five here, after
+`SOLO E2E OK`).
+
+**Not verified.** No person played any of this. The fight alert was not seen in
+a browser or in the TUI: the clients show any `Alert` alike, and the engine
+scenario reads it. The Vault refusal of a batch was not seen in a client. The
+new outpost's silence was not seen in a browser: founding takes the
+eleven-minute drive of the entry before last, which was not repeated. The
+resized window was tested by resizing the test's view, not by dragging a real
+one. In the browser the toasts were seen at the top left at 1440 and 390 only. The TUI was not
+run; nothing of it changed. `tools/playtest/tests` were not run; `play.py` did
+not change. The LLM harness was not run.
