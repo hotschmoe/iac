@@ -410,11 +410,6 @@ class GameController extends ChangeNotifier {
 
   // ── Map UI ────────────────────────────────────────────────────
 
-  void cycleFleet() {
-    if (_state.fleets.isEmpty) return;
-    selectFleet((activeFleet + 1) % _state.fleets.length);
-  }
-
   void selectFleet(int index) {
     if (index < 0 || index >= _state.fleets.length) return;
     activeFleet = index;
@@ -796,6 +791,13 @@ class GameController extends ChangeNotifier {
     sendCommand(proto.UnloadCommand(fleetId: fleetId));
   }
 
+  /// Give the selected fleet standing orders, or clear them with
+  /// [proto.PolicyPreset.manual]. It is the typed `policy` and nothing
+  /// else: the line a player would type goes through the command bar's own
+  /// door, so the two cannot send different things.
+  void setOrders(proto.PolicyPreset preset, [proto.PolicyParams params = const proto.PolicyParams()]) =>
+      handleCommand(policyCommand(preset, params));
+
   /// Windshield: fly the active fleet one hop in [direction] (0-5, same
   /// order as [proto.HexDirection]) if the server lists that lane.
   void moveFleet(int direction) {
@@ -854,6 +856,7 @@ class GameController extends ChangeNotifier {
             _quoteTyped.add((q.fleetId, q.give, q.want));
           }
           if (m case proto.CommandMessage(command: proto.LeaderboardCommand())) _boardTyped = true;
+          if (m case proto.PolicyUpdate(:final fleetId, :final preset, :final params)) _mapper.noteOrders(fleetId, preset, params);
           send(m);
         }
       case ParsedLocal(:final lines):
