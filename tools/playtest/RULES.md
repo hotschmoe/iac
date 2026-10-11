@@ -107,6 +107,8 @@ can pick up where you left off if your session is restarted.
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
 | `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (0,0). The answer is an `Exchanged` event (what was given and received, the fee, the meter before and after; see The hub and its exchange). Refused with nothing changed and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
 | `exchange_quote` | same as `exchange` | do not trade: reply `exchange_quote` with `amount`, `receive`, `par`, `fee`, `meter` and `meter_after`, exactly what `exchange` with the same fields would do (`./play do` prints it as one `quote ...` line). It answers from anywhere and for an amount the fleet does not carry; `refusal` is then the sentence the trade would be refused with right now |
+| `load` | `fleet_id`, `resource` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | move `amount` of `resource` from your stockpile into the fleet's hold; without `amount`, all the stockpile holds and the hold has room for. One resource an order. The fleet must stand idle at your homeworld with no standing orders. It is then `laden`: the dock leaves its hold alone until the fleet has been away (see Loading a hold). The answer is an `Alert` (info) saying what went aboard. Refused with nothing moved and a sentence saying what is short: `NoResources` when the stockpile holds less than `amount` or none, `CargoFull` when the hold lacks the room, `NotInSector` away from home, `OnCooldown` in transit or busy, `InvalidCommand` for an amount that is not positive or a fleet under standing orders |
+| `unload` | `fleet_id` | put a `laden` hold back: what the caps allow goes into the stockpile now and the dock takes the rest as room opens. The answer is an `Alert` (info). Refused with `InvalidCommand` when the fleet was not loaded by `load`, `NotInSector` away from home |
 
 Standing orders are a separate message type (not a command):
 
@@ -276,6 +278,8 @@ What every doctrine does:
   cargo unloads only what fits and the rest waits aboard
   (`cargo_blocked: true`). `StorageNearCap` (85%) and `StorageFull` events
   warn you. A Vault also protects 8% of the cap per level (to 60%) from raids.
+  A full stockpile has a way out: `load` the surplus into a hold and sell it
+  at the hub (Loading a hold, below).
 - **Queues and slots** — buildings and research queue ahead of resources;
   ship and defence batches are paid in full when ordered (below). A building
   or research order that can ever start is always accepted, whether or not a
@@ -425,7 +429,10 @@ What every doctrine does:
   raid over defence power), 70% of them rebuilt free shortly after. Lost: a
   hard-capped slice of the stockpile above the Vault-protected share (≤8%),
   half the structures gone for good, a quarter of the ships docked at home
-  destroyed (at least one), and a long grace period. Never
+  destroyed (at least one), and a long grace period. Cargo aboard fleets at
+  home counts as stockpile: the raid takes its slice of the two together,
+  above one protected share, from stockpile and holds alike, so a hold at the
+  dock hides nothing. Never
   buildings, never queues. `RaidResolved` reports `structures_lost`,
   `structures_restored`, `protected_kept`, `ships_lost` and, for a repelled
   raid, `salvage_despawn_tick`. The orbital salvage is on your own planet, so
@@ -458,10 +465,32 @@ What every doctrine does:
     is worth 316 deuterium at par. From an empty meter the fee runs from 25%
     to 33% across the trade, 29% on the whole: 225 deuterium. The same 632
     sold with the meter above 4185 would bring 79.
-  - A hold is filled in the field (ore, wreckage, derelict loot): no command
-    loads it from the stockpile. What the exchange takes is field cargo,
-    including cargo a full store would not accept (`cargo_blocked`).
+  - What the exchange takes is what a hold carries: field cargo (ore,
+    wreckage, derelict loot, cargo a full store would not accept) or a
+    surplus loaded from the stockpile at home.
   - Standing orders do not use the exchange.
+- **Loading a hold** — `load` moves stockpile into the hold of a fleet
+  standing idle at your homeworld, one resource an order: an exact `amount`,
+  or with none all that the stockpile holds and the hold has room for. An
+  order that cannot be met in full moves nothing and says what is short, the
+  stockpile or the room.
+  - A loaded fleet is `laden` (in its fleet row): the dock, which empties
+    every other hold each tick, leaves this one alone. The mark ends with
+    the fleet's first jump, so what it brings home unloads as cargo always
+    has. To put a load back without leaving, `unload`: what the caps allow
+    goes back at once, the rest as room opens.
+  - A laden fleet is an ordinary fleet: same fuel, same fights, and its
+    cargo is lost with it. Split it and both halves stay laden; merge and
+    the fleet that absorbs keeps its own state.
+  - `load` is refused for a fleet under standing orders, which unload at the
+    dock. Giving a laden fleet standing orders ends the mark and its hold
+    goes back to the stockpile.
+  - A hold is storage of a kind: a fleet at home holds what it can carry on
+    top of the Vault. It is dear storage (a Hauler costs 950 resources and
+    holds 200 x sqrt(P)), and no hiding place: a lost raid counts cargo at
+    home with the stockpile (see Raids). Loading moves no score.
+  - The trip: `load` the resource that is at its cap, fly to 0,0, `exchange`,
+    fly home; the dock unloads what you bought.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
   the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2

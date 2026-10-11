@@ -3,6 +3,74 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-11 (a hold is loaded from the stockpile at home)
+
+Owner: the hub's exchange is a surplus sink, so a player whose stockpile is
+full of one resource must be able to carry the surplus to the hub. The owner
+set the frame: a `load` command for a fleet docked at home, limited by the
+stockpile and by free cargo room; an order that cannot be met in full is
+refused with what is short; loaded cargo stays aboard at the dock until the
+fleet has been away; a way to put it back by hand; the state survives a
+restart and a save; a laden fleet is otherwise an ordinary fleet; no rule is
+dodged by it; the bots do not use it.
+
+**Everything below was decided by the agent that built it, not by the owner,
+and is open to change.**
+
+- **One resource an order, not an amount of each.** `load` takes `fleet_id`,
+  `resource` and an optional `amount`; three resources are three orders. The
+  owner's frame said "an amount of each resource". "All that fits" has one
+  meaning for one resource and none for three, the surplus is nearly always
+  one resource, a refusal can then name exactly what is short, and the
+  exchange already speaks in one resource at a time. Cost: a mixed load is
+  not atomic.
+- **"All that fits" is the same command with no amount**, as `exchange`
+  reads a missing `amount`. It is refused only when nothing fits: the
+  stockpile holds none or the hold is full.
+- **`unload` is its own command**, not `load` with zero. It ends the state
+  and returns the hold as far as the caps allow; the dock takes the rest as
+  room opens. Refused for a fleet that was not loaded by hand.
+- **The state is a mark on the fleet (`laden`) that ends with the fleet's
+  next jump.** While it is set the dock leaves the hold alone; a fleet that
+  has jumped away comes home unmarked and unloads as always. Recall from
+  home and a cancelled jump do not end it. It is a column of the fleet's
+  row in SQLite and a field of the fleet in the snapshot, so `SAVE_FORMAT`
+  went from 2 to 3; `ECONOMY_VERSION` stands (no cost, time, production
+  formula or payment moment changed, and the server adds the column to an
+  existing database).
+- **Standing orders and a hand-loaded hold do not mix.** `load` is refused
+  for a fleet under standing orders; giving a laden fleet standing orders
+  ends the mark and unloads it. A doctrine waits at the dock for a hold it
+  cannot empty, so the two together would hold the fleet for ever.
+- **Split and merge.** Both halves of a split laden fleet stay laden. A
+  merged fleet keeps the state of the fleet that absorbs, as it keeps that
+  fleet's standing orders.
+- **A lost raid counts cargo aboard fleets at home with the stockpile.** One
+  pile, one protected floor, the same 8/8/5 percent of what is exposed,
+  taken from stockpile and holds in proportion. Before, cargo at the dock
+  was out of a raid's reach, which did not matter while only a full
+  stockpile left any there. This changes the rule for every fleet with
+  cargo at home, loaded by hand or not. Loading therefore changes nothing a
+  raid takes. Ships destroyed by the raid still take nothing from the hold
+  they carried (see below).
+- **Holds as storage are allowed and not limited.** A fleet at home holds
+  its capacity on top of the Vault. At pace 1 a Hauler holds 200 for 950
+  resources of hull, 4.75 a unit stored; Vault level 3 adds 12,375 units
+  for 867 (0.07 a unit), and level 20 still costs 0.6 a unit. The most
+  a player can hold aboard is 8 fleets of 64 Haulers, 102,400 at pace 1:
+  9.3 Vault-0 stockpiles, 1.2 at Vault 5, 0.16 at Vault 10 (at season pace
+  5.2, 0.7 and 0.09; at blitz 14.6, 1.9 and 0.25, because holds grow with
+  the square root of the pace and caps slower beyond a season). So it
+  matters most to a young empire with an unusually large fleet.
+- **Score.** Loading and unloading move none: score counts buildings,
+  research, ships and defences, never stock or cargo.
+- **The answer to `load` and `unload` is an info `Alert`**, as for `split`
+  and `merge`, and the fleet row (`cargo`, `laden`) in the next update. No
+  new event kind and no new error code.
+- **Not decided, left as found:** a fleet that loses ships (in a fight, to
+  a recall, to a lost raid) keeps its whole cargo even beyond the hold that
+  is left. With `load` a player can now put that case together at home.
+
 ## 2026-10-11 (ship batches pay when they are ordered)
 
 Owner, after playing single player. Amends "ships pay per unit" in the
