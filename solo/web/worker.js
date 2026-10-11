@@ -14,13 +14,16 @@
 //   worker -> page
 //     frame         text: one server frame (wire JSON)
 //     status        text: JSON {phase, world, options, refused, error,
-//                   warning, rate, tick_ms, tick_ms_max}
+//                   warning, exclusive, rate, tick_ms, tick_ms_max}
 //       phase    loading | idle (no world) | held (a save is loaded, its
 //                clock not started) | running | locked (another tab has the
 //                world) | failed
 //       error    why the last request was not carried out, or why the
 //                engine stopped
 //       warning  saves are not being written, and why
+//       exclusive  false where the browser gives a page no locks (one not
+//                served over HTTPS or from this machine): a second tab is
+//                not kept out, and the two would overwrite each other's save
 //       rate     ticks per second while catching up
 //       tick_ms, tick_ms_max  what a live tick cost since the last status:
 //                the mean and the worst
@@ -49,6 +52,7 @@ let options = null;
 let last = { world: null, refused: null };
 let error = null;
 let warning = null;
+const exclusive = Boolean(navigator.locks);
 let panic = null;
 let rate = 0;
 let live = { ticks: 0, ms: 0, worst: 0 };
@@ -91,6 +95,7 @@ function sendStatus() {
     refused: last.refused,
     error,
     warning,
+    exclusive,
     rate,
     tick_ms: live.ticks === 0 ? 0 : live.ms / live.ticks,
     tick_ms_max: live.worst,
@@ -260,7 +265,7 @@ async function handle(message) {
 // The world's lock, held for the life of this worker. A reloading page's old
 // worker lets go a moment after the new one starts, so it waits briefly.
 function holdLock() {
-  if (!navigator.locks) return Promise.resolve(true);
+  if (!exclusive) return Promise.resolve(true);
   return new Promise((resolve) => {
     const giveUp = new AbortController();
     const timer = setTimeout(() => giveUp.abort(), LOCK_WAIT_MS);
