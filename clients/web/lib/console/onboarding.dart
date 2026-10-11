@@ -20,7 +20,7 @@ enum Lesson {
   jump('Jump through a gate', 'One hop per jump. Read the threat digit first.', guided: true, screen: Screen.windshield, target: 'gates', keys: 'Q W E A S D'),
   harvest('Harvest ore', 'Ore fills the hold every tick.', guided: true, screen: Screen.windshield, target: 'dock-harvest', keys: 'H'),
   unload('Recall and unload', 'Docking at home empties the hold into storage.', guided: true, screen: Screen.windshield, target: 'dock-recall', keys: 'R'),
-  orders('Set standing orders', 'A fleet with orders flies itself.', guided: true, keys: '/'),
+  orders('Set standing orders', 'A fleet with orders flies itself.', guided: true, screen: Screen.windshield, target: 'orders', keys: 'P'),
   mine('Metal Mine to level 3', 'Metal pays for everything else.'),
   corvette('Build a Corvette', 'Needs a Shipyard. Your first combat hull.'),
   range('Fly 6 sectors from home', 'Ore and loot improve with distance. Watch the fuel home.'),
@@ -135,7 +135,7 @@ class Onboarding extends ChangeNotifier {
             'RECALL flies the fleet home, and docking empties the hold into storage.';
       case Lesson.orders:
         return 'Tired of flying? A fleet with standing orders flies itself. '
-            'MINE + RETURN harvests and comes home when the hold is full: enter "policy mine" in the command palette.';
+            'Press ORDERS under Fleet status, choose MINE + RETURN and set it: the fleet harvests and comes home when the hold fills.';
       case Lesson.mine || Lesson.corvette || Lesson.range || Lesson.board || Lesson.fight:
         return l.hint;
     }
@@ -160,6 +160,7 @@ class Onboarding extends ChangeNotifier {
         Lesson.scan => 'Your fleet is docked at home. Take the wheel.',
         Lesson.jump => 'The lanes are charted. Take a gate out.',
         Lesson.harvest => 'Ore is cargo you can bring home.',
+        Lesson.orders => 'A fleet with standing orders flies itself.',
         _ => 'Bring the cargo home.',
       };
 
