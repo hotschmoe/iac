@@ -3865,3 +3865,8 @@ range, check-in against hands-on 73, 61, 77, 66 and 74% (73, 61, 79, 66, 75 befo
 the building slots' split the same to a point in every row. The slot tables and the
 25% cap row above stand for the merged tree. The other cap rows, the meters, the
 look-in sweep and the queue-depth runs were not repeated on it.
+
+Master moved once more before the hand-off (`44a084d`: a fleet's row carries its
+standing orders whole, a jump called off, a recall and a harvest say what they
+cost). Merged again; build, tests, clippy, the constants check and the wasm build
+pass on the result. No week was run on that tree.
