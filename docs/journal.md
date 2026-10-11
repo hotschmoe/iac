@@ -2801,3 +2801,129 @@ file passes when run again. Output kept in the hand-off.
 check was run on the WebAssembly build; on the JavaScript build (`--software`)
 only the load, a new game and the four screens, to see that no font is fetched
 elsewhere there either.
+
+## 2026-10-11: three loose ends: holds after losses, recall at home, test ports
+
+Three things the hold entry above listed under "Seen on the way". Rust only
+(`sim`, `server`, their tests, the rules text); no wire message, constant or save
+format changed. The choices are the agent's and are in decisions.md under the same
+date. Branch `worktree-agent-aead3c1377ff261e8`, not merged.
+
+**A fleet that loses ships.** Ships leave a fleet in three places: a combat round
+(`process_combat`), a recall that breaks ships (`handle_recall`) and a lost raid at
+the dock (`destroy_docked_ships`). In all three the tank was already cut to what the
+ships left carry, and the hold was not: cargo stayed whole. One function,
+`settle_hold`, now runs in all three. The fleet keeps `fleet_cargo_capacity` of the
+ships left, each resource scaled alike, and sheds the rest:
+- *away from home* into the sector's wreckage through `drop_salvage`, the pile a kill
+  leaves, with the same 180 ticks from the last addition. A fleet with no ships left
+  has a hold of nothing and sheds everything, so a destroyed fleet's cargo now lies
+  where it fell instead of vanishing. A won fight reports the whole pile in
+  `CombatEnded.salvage`, the shed cargo included; the kill's score still follows only
+  what the hostile group was worth.
+- *in a recall* before the fleet is moved, so the share of the ships that broke up
+  stays in the sector it jumped from. Settling it at home would have handed the
+  cargo of destroyed ships to the stockpile.
+- *at the home dock* into the stockpile up to the Vault cap, the rest lost. The raid
+  settles holds before it takes its slice, so what moved is raided with the rest.
+
+The owner gets a warning `Alert` with the amount and where it went. Nothing is
+created anywhere: hold, pile and stockpile together never hold more than the hold
+did. Split and merge share cargo by hold and cannot put a fleet over, so they are
+unchanged. A fleet already over its hold in a stored world stays so until it next
+loses a ship. `fleet_cargo_capacity` summed no floats to -0.0 for an empty fleet,
+which scaled the cargo to -0.0; it is folded from 0.0 as `fleet_fuel_max` is.
+
+**Recall at home.** Reproduced on a new empire at pace 1: `recall` for the starting
+fleet docked at home answered Ok and changed nothing. After `move` to a neighbour
+(tank 120 to 114, state Moving) `recall` answered Ok again: state Idle, no target, and
+the dock refilled the 6 fuel for 0.48 deuterium. So it called off a paid jump and
+said nothing. The chart recording showed a third effect: it halted a fleet harvesting
+at its own homeworld. It is now refused with `InvalidCommand` and nothing changed
+(the tests compare the snapshot hash before and after), with one of three sentences:
+already at home; charging a jump to a named sector, which `stop` calls off without
+returning the fuel; at work there, which `stop` halts. A jump ordered at home goes
+on. Away from home nothing changed: recall abandons a jump the fleet was charging
+with its fuel, as `stop` and a fight do, and RULES.md and the README now say that of
+both orders. No refund was added to `stop`.
+
+**The chart recording, twice.** `chart_golden.txt` pins what a scripted blitz world
+sends for 4000 ticks, and both rules change that world. Each was traced with a
+temporary print before recording again.
+- Holds: the old recording held to tick 1010. At 1011 a fleet is destroyed at [1,6]
+  with 34.9 units aboard (23.5 metal, 11.4 crystal); the update of that tick now has
+  `salvage` of exactly that with `salvage_despawn_tick` 1191. 280 lines differ: 1011
+  to 1107, 1150, 1191, and 2892 to 3072, the 180 ticks of a second such pile at
+  [-7,5]. Four other fleets die with cargo (ticks 277, 1579, 1706, 2364) and leave
+  piles that change no line of the recording.
+- Recall: that recording held to tick 111, where the script recalls a fleet
+  harvesting at its homeworld [-5,1]. Refused, it mines on and the ore reads lower
+  from 112. The script does the same at 427 and 1615; 434 lines differ. No recall of
+  a fleet charging a jump at home occurs in the script.
+The determinism tests compare two runs with each other and needed nothing.
+
+**Server tests on ports of their own.** `smoke.rs`, `scenarios.rs` and `web.rs` named
+their ports (17931 to 17956, 7910, 7931) and their databases after them. Now
+`iac-server --port 0` binds a port the system picks and the server prints
+`listening on <address>:<port>` on stdout once it listens, on any port. The helpers
+in `server/tests/common` start every server that way, read the line, and hand the
+port back with the guard; a thread keeps reading the pipe so the server never
+blocks on it. A test connects only after its server listens. Picking a free port in
+the test and passing it on was the smaller change and was not taken: the port is
+free between the two binds, and a client retrying against a port in the dynamic
+range can connect to itself. Databases are in `<temp>/iac_<test>_<pid>/world.db`.
+Cleaning up is as before for the database tests: a passing test removes its
+database files, now also the directory it then leaves empty; a failing one leaves
+them. `web.rs` used to leave its directory behind and clear it at the next start;
+with the process id in the name that would never happen, so a passing web test now
+removes its own directory. `web.rs` uses the shared helpers; its copy of the guard is
+gone.
+
+**One refusal sentence.** A `policy_update` for a fleet that is not the player's was
+refused with "PolicyUpdate failed". It names the fleet now.
+
+**Tests.** `sim/tests/fleet_logistics.rs`: a two-Scout fleet nine tenths full loses
+one ship to a hostile and has half its hold, the rest in the sector to the unit, the
+alert, the victory reporting the pile, and a full hold scooping nothing back; a fleet
+destroyed with cargo, its cargo in the sector, and another player's fleet collecting
+all of it; a recall from 25 hexes that breaks ships of twenty, their share at the
+sector left and the rest home; recall at home refused idle, harvesting and charging
+a jump, the jump arriving, and a recall from one hop out; standing orders for a
+rival's fleet. `sim/tests/exchange.rs`: eight laden Haulers lose two to a raid, with
+room in the stockpile (nothing lost but the raid's take) and with a full one (the
+two holds lost, the stockpile not over its cap); the older raid test now loads what
+six Haulers carry. `server/tests/smoke.rs`: two servers at once, one name registered
+on each, each port answering with its own world's pace. `scenarios.rs`: the recall
+refusal over the WebSocket. `scenarios_world.rs`: the recall that frees a fleet for
+standing orders is given in the field.
+
+**Run.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`, 121 tests (114 before), all pass, while a second `cargo test -p
+iac-server` from another target directory ran its 37 at the same time, all pass;
+clippy clean with `-D warnings`; `check_sim_constants.py` agrees; the wasm release
+build; the 36 offline tests of `play.py`.
+
+**Not verified.** The Flutter tests and `solo_e2e.dart` were not run: `clients/web`
+is untouched and no wire type changed, but a typed `recall` at home now shows a
+refusal there. The TUI was not driven by hand; it shows the server's sentence in
+its status line as for any refusal. The balance report was not run again: bots
+whose fleets die with cargo now leave it as wreckage, which was not measured.
+
+**Seen on the way (not changed).**
+- `stop` on a jump returns Ok and sends no event; the fuel is gone. The rules say so
+  now, the engine still does not (`handle_stop`).
+- A recall damages hulls without an event unless a ship is destroyed; the fleet row
+  shows it.
+- A harvest that ends because the hold is full or the seam is out only changes the
+  fleet's state (`process_harvesting`).
+- A cancelled order's refund is added past the Vault cap (`handle_cancel_build`,
+  `handle_cancel_queued`).
+- The in-process tests of `server/src/database.rs` name their databases
+  `iac_<name>_<pid>.db` in the temporary directory and never remove them: several
+  thousand files on this machine.
+- `solo_e2e.dart` defaults to port 7881 (and the next for its multiplayer check) and
+  the playtest harness to 7777, so two checkouts running either with its defaults
+  collide; both take another port by `--port` or `IAC_PORT`. The browser check's
+  profile and database are in fresh temporary directories, its pictures in one
+  fixed one (`<temp>/iac-solo-e2e-shots`, `--shots`); the harness keeps its run in
+  the checkout.
