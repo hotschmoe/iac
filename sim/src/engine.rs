@@ -6796,12 +6796,12 @@ fn exchange_meter_at(pressure: f64, span: f64, window: u64) -> ExchangeMeter {
     }
 }
 
-/// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.
 /// The middle of the raids an outpost at `ring` faces.
 pub fn outpost_raid_estimate(ring: u16) -> f32 {
     scaling::outpost_raid_power(ring) * (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0
 }
 
+/// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.
 fn npc_salvage(npc: &NpcFleet, pace: &Pace) -> Resources {
     scaling::split_loot(scaling::wreck_value(npc.power)).scale(pace.finds_mult())
 }
