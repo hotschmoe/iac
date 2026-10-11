@@ -86,7 +86,7 @@ const helpLines = [
   '                  no amount = all that fits. The dock leaves a loaded hold alone until the fleet has been away',
   '        unload    put a hold loaded by hand back: what the stockpile has room for now, the rest as room opens',
   '        at your outpost load takes from its store and unload puts the whole hold into it, as far as it has room',
-  'outpost: survey [q r]  what an outpost would be worth in a charted sector, and why it cannot be founded now; none = where the fleet stands',
+  'outpost: survey [q r]  what an outpost would be worth in a sector (its ore only if it is on your chart), and why it cannot be founded now; none = where the fleet stands',
   '        found     the active fleet founds your outpost where it stands, in rings 9 to 20, paid from its hold',
   '        outpost upgrade  build the next level, paid from the outpost\'s own store     outpost abandon  give it up; nothing is refunded',
   'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw  5|op',
@@ -162,7 +162,7 @@ const _loadUsage = 'load: <metal|crystal|deut> [amount|all]  (the dock\'s stock 
 
 const _foundUsage = 'found: takes no argument (the active fleet founds your outpost in the sector it stands in)';
 
-const _surveyUsage = 'survey: [q r]  (what an outpost would be worth in a charted sector; none = where the active fleet stands)';
+const _surveyUsage = 'survey: [q r]  (what an outpost would be worth in a sector, its ore only if it is on your chart; none = where the active fleet stands)';
 
 const _outpostUsage = 'outpost: upgrade|abandon';
 

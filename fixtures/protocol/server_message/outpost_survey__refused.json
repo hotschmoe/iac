@@ -5,26 +5,31 @@
     "deuterium": 200.0,
     "metal": 1000.0
   },
-  "densities": {
-    "crystal": "None",
-    "deuterium": "None",
-    "metal": "None"
-  },
   "fleet_id": 1,
-  "grade": 0.0,
-  "hops_home": 0,
   "platform_power": 40.0,
-  "production": {
-    "crystal": 0.0,
-    "deuterium": 0.0,
-    "metal": 0.0
+  "raid_power": {
+    "least": 10.5,
+    "most": 15.100000381469727
   },
-  "raid_power": 12.800000190734863,
   "refusal": "fleet 1 is at ring 4; an outpost stands in rings 9 to 20",
   "ring": 4,
   "sector": {
     "q": 4,
     "r": -2
+  },
+  "site": {
+    "densities": {
+      "crystal": "None",
+      "deuterium": "None",
+      "metal": "None"
+    },
+    "grade": 0.0,
+    "hops_home": 0,
+    "production": {
+      "crystal": 0.0,
+      "deuterium": 0.0,
+      "metal": 0.0
+    }
   },
   "type": "outpost_survey"
 }

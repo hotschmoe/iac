@@ -696,7 +696,7 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_i
         command(&mut ws, json!({"action": "outpost_survey", "fleet_id": fleet})).await;
         let at_home = reply_of(&mut ws, "outpost_survey").await;
         assert_eq!((hex_of(&at_home["sector"]), at_home["refusal"].as_str()), (home, Some(not_here.as_str())), "{at_home}");
-        assert_eq!((amounts(&at_home["cost"]), at_home["build_ticks"].as_u64(), at_home["hops_home"].as_u64()), ([1000.0, 500.0, 200.0], Some(9), Some(0)));
+        assert_eq!((amounts(&at_home["cost"]), at_home["build_ticks"].as_u64(), at_home["site"]["hops_home"].as_u64()), ([1000.0, 500.0, 200.0], Some(9), Some(0)));
         command(&mut ws, json!({"action": "found_outpost", "fleet_id": fleet})).await;
         let first = refused(&mut ws).await;
         assert_eq!((first["code"].as_str(), first["message"].as_str()), (Some("InvalidTarget"), Some(not_here.as_str())), "{first}");
@@ -724,8 +724,9 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_i
         command(&mut ws, json!({"action": "outpost_survey", "fleet_id": fleet})).await;
         let quote = reply_of(&mut ws, "outpost_survey").await;
         assert!(quote.get("refusal").is_none(), "{quote}");
-        assert_eq!((hex_of(&quote["sector"]), quote["ring"].as_u64(), quote["hops_home"].as_u64()), (site, Some(u64::from(site.dist_from_origin())), Some(route.len() as u64)));
-        assert!(quote["production"]["metal"].as_f64().unwrap() > 0.0 && quote["grade"].as_f64().unwrap() >= 0.5, "{quote}");
+        assert_eq!((hex_of(&quote["sector"]), quote["ring"].as_u64(), quote["site"]["hops_home"].as_u64()), (site, Some(u64::from(site.dist_from_origin())), Some(route.len() as u64)));
+        assert!(quote["site"]["production"]["metal"].as_f64().unwrap() > 0.0 && quote["site"]["grade"].as_f64().unwrap() >= 0.5, "{quote}");
+        assert!(quote["raid_power"]["least"].as_f64().unwrap() < quote["raid_power"]["most"].as_f64().unwrap(), "{quote}");
 
         command(&mut ws, json!({"action": "found_outpost", "fleet_id": fleet})).await;
         let founded = update_where(&mut ws, |m| m.get("outpost").is_some()).await;
@@ -736,13 +737,19 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_i
         assert_eq!(end_tick, post["work"]["start_tick"].as_u64().unwrap() + 9);
         assert!(alerts_of(&founded).iter().any(|a| a.starts_with(&format!("fleet {fleet} founded your outpost at {site}"))), "{founded}");
         assert_eq!(amounts(&founded["fleets"][0]["cargo"]), [100.0, 100.0, 100.0], "the hold paid the cost: {founded}");
+        assert_eq!(
+            (founded["fleets"][0]["at_outpost"].as_bool(), founded["fleets"][0].get("outpost_fuel")),
+            (Some(true), None),
+            "the fleet stands at an outpost that fills no tank yet: {founded}",
+        );
 
         command(&mut ws, json!({"action": "unload", "fleet_id": fleet})).await;
         let stocked = update_where(&mut ws, |m| m["outpost"]["store"]["metal"] == 100.0).await;
         let store = amounts(&stocked["outpost"]["store"]);
         assert_eq!((store, amounts(&stocked["fleets"][0]["cargo"])), ([100.0, 100.0, 100.0], [0.0, 0.0, 0.0]), "{stocked}");
-        let mark = full_state(&mut ws).await["known_sectors"].as_array().unwrap().iter().find(|s| hex_of(&s["location"]) == site).unwrap()["outpost"].clone();
-        assert_eq!(mark, json!({"owner": "Settler", "level": 0, "breached": false, "mine": true}));
+        let charted = full_state(&mut ws).await["known_sectors"].as_array().unwrap().iter().find(|s| hex_of(&s["location"]) == site).unwrap().clone();
+        assert_eq!(charted["outpost"], json!({"owner": "Settler", "level": 0, "breached": false, "mine": true}));
+        assert_eq!(charted["threat"], json!({"rating": 0, "est_power": 0.0, "basis": "observed"}), "nothing to fight where an outpost stands");
 
         let saved = update_where(&mut ws, |_| true).await;
         assert!(saved["tick"].as_u64().unwrap() < end_tick, "the build must still be under way when the server dies: {saved}");
@@ -790,6 +797,7 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_i
     assert_eq!(short["code"].as_str(), Some("InsufficientResources"), "{short}");
     let costs = format!("outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at {site} is short by ");
     assert!(short["message"].as_str().unwrap().starts_with(&costs), "the refusal passes through word for word: {short}");
+    assert!(seen["outpost"]["upgrade_refusal"].as_str().unwrap().starts_with(&costs), "and the state had said it beforehand: {seen}");
     pipe.say(r#"{"action": "found_outpost"}"#);
     let unread = pipe.until(|m| m["type"] == "client_error");
     assert!(unread["message"].as_str().unwrap().contains("fleet_id"), "a line the client cannot read is answered in band and not sent: {unread}");

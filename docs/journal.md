@@ -4170,3 +4170,161 @@ and its breached and under-warning states not at all. The windshield with the
 ninth dock tile has been pictured at three widths and not measured against the
 gate cards at every width between, as the eight-tile dock is. Background notices
 were tested with a stand-in for the browser's notifications, not in a browser.
+
+## 2026-10-12: outposts, slice 1: an outpost seen in a browser, and what the engine now says beforehand
+
+The follow-up to the two entries above. Two things were owed: nobody had seen an
+outpost founded or run in a real browser against a real engine, and the client
+entry ended with a list of things the engine's answers made awkward. Both are done
+here. What was decided is in `docs/design/decisions.md` under "what the engine
+tells a client beforehand". Branch `worktree-agent-a042404dfca1fb663`, not merged.
+
+**An outpost has now been founded and run in a real browser.** Headless Chromium
+with the multiplayer web client as `flutter build web` makes it, logged in over a
+WebSocket to a real `iac-server` at pace 3000, driven over the DevTools protocol:
+the outpost's own controls by real clicks and keys, the rest by typed commands. The
+whole life was played twice, in 10 minutes 41 and 10 minutes 51, with the same
+world seed and the same course both times:
+
+- A new empire built its mines, a Shipyard to level 3 and a lab, researched
+  Corvettes and Haulers, and built six Corvettes and two Haulers (typed orders).
+  They joined the two starter Scouts at the dock.
+- `O` at home opened the founding panel with the engine's sentence about the ring.
+  1100 metal, 650 crystal and 600 deuterium were loaded (typed) and the convoy flew
+  six hops out. A scan at ring 9 showed three sectors of rings 10 and 11 held by
+  packs. It flew to `[-4,-7]`, ring 11, held by two Corvettes.
+- The founding panel there showed the site, raids of 47 to 67 in red beside a
+  platform of 40, the cost against the hold, Found off, and under it "a 2x corvette
+  convoy holds [-4,-7]; an outpost is founded on a sector its founder has won".
+  `attack` (typed), the fight was won with no ship lost, and one to three ticks
+  later the panel's own next survey came back clear, Found lit, and a click on it
+  founded the outpost. At this pace a ring-11 pack is back five ticks after it is cleared, so
+  that click was inside a window of a few seconds; both runs made it.
+- The panel turned into the outpost's panel: not yet open, building level 1 with
+  its countdown, the store at zero, Upgrade off with "is building level 1 until
+  tick 221; it does one job at a time". Level 1 opened on its tick.
+- Until then the tank had been taking the extractor's deuterium as it was made
+  (308 fuel on arrival, 464 seven ticks after the outpost opened, the store's
+  deuterium at zero). Unload, by the button of the dock panel under it, put 100
+  metal, 150 crystal and 400 deuterium into the store, and the tank was full at
+  620 when it was next looked at.
+- Upgrade stood off with the engine's shortfall sentence under it, and a click on
+  it sent nothing.
+- The convoy went home for level 2. The outpost stood alone, platform 40 against
+  raids of 47 to 67. A raid was announced 3 minutes 40 after the hold was loaded
+  at home, 30 ticks ahead: the bar's line turned red with its countdown, and the panel said
+  "RAID ARRIVES IN 0:29" and "DEFENCE BELOW THE WEAKEST RAID". It was lost (56 and
+  52 against 40) and took a quarter above the floor.
+  - In the first run the store covered the repair: the repair started on the next
+    tick and took five, and the panel read "BREACHED, UNDER REPAIR, 0:05 LEFT".
+  - In the second run the crystal had been loaded back out of the store first. The
+    outpost stayed breached, the panel said what the repair costs and that the
+    store "IS SHORT BY 125 CR", Upgrade stood off with "is breached; it repairs
+    itself first, once its store holds 250 metal, 125 crystal and 50 deuterium",
+    the station in the scene was drawn broken and red, and the returning fleet read
+    "AT THE OUTPOST" while the outpost filled no tank.
+- Back at the outpost, Unload delivered 3200 metal, 1700 crystal and 900 deuterium.
+  The repair ran, Upgrade lit, a click on it started level 2, Load took the metal
+  the extractor had made, level 2 opened on its tick.
+- Abandon asked first, Keep it kept it, Abandon and Abandon it gave it up. The
+  store drifted in the sector as wreckage and the sector was rated T3 again.
+
+Every panel was pictured at 1440 and 390 px in each of these states, and whole at a
+taller window, and the pictures were looked at.
+
+**What the browser showed that was wrong, and is changed.**
+- *The multiplayer client could not load without the internet.* `scripts/play.sh`
+  built it without `--no-web-resources-cdn`, so the page fetched its renderer from
+  `www.gstatic.com`. The single-player bundle already carried it. The flag is now on
+  both.
+- *Toasts over a panel.* On a phone the toasts stand at the top of the screen and
+  the windshield's sheet opens 40 px under that, so the refusals and alerts of the
+  step before lay over the top rows of the founding panel for their nine seconds.
+  A panel that opens on the windshield (orders, exchange, outpost, the phone's
+  status sheet) now takes down the toasts that ask nothing
+  (`ToastController.dismissPlain`); what they said stays in the log, and a toast
+  with buttons stays. A toast raised while the panel is open still shows.
+- *A tooltip as wide as the screen.* A disabled button carries its reason as a
+  tooltip. With the engine's sentence as the reason that was one line 1270 px
+  wide across the windshield. Tooltips now wrap at 340 px.
+- *The founding survey's raid row wrapped.* "38 TO 55 AGAINST 40" under a long
+  label broke over two lines at 1440. The raids and the platform have a row each.
+- *"L0" in the bar.* While level 1 is being built the bar read `L0 STORE 0%`. It
+  reads `NOT OPEN STORE 0%`.
+
+**What the browser showed that was left.**
+- A window dragged across a layout breakpoint shuts the windshield's open panel
+  (and forgets an Abandon that was asked): the two layouts are different trees. A
+  phone does not do this. Not changed.
+- On a desktop the toasts stand over the foot of the right-hand column. One raised
+  while the outpost's panel is open can cover Upgrade and Abandon until it leaves or
+  is clicked away.
+- The first thing an outpost says when it opens is a warning: the founding fleet
+  stands there with a tank that is not full and the store is empty, so "has no
+  deuterium left for the tank of fleet 2" comes with "level 1 complete". It is the
+  rule as written (once per stay), and it tells the founder to unload.
+
+**The engine's answers** (the six of the client entry; each in the engine, both
+clients, the fixtures, the Dart mirror, `RULES.md`, `play.py` and the README).
+1. *Upgrade.* `OutpostState.upgrade_refusal` is the sentence `upgrade_outpost`
+   would be refused with now. Upgrade is off with it underneath, in both clients.
+2. *Raids.* `raid_power` in the survey and in the state is `least` and `most`, the
+   bounds of the roll. The single estimate is gone for outposts.
+3. *Full store, waiting repair.* State, not event kinds: `yield_lost` and
+   `repair_waiting_for`. The notices read them.
+4. *Threat.* A sector with an outpost is rated 0, power 0. The web inspector reads
+   "--" and the sector head "CLEAR", the TUI "T0", with no branch on the outpost in
+   either. Odds and standing orders already met an empty force there.
+5. *At the outpost.* `FleetState.at_outpost`, in any state of the outpost.
+6. *A survey of a sector never seen* is a reply with a refusal and no `site`.
+
+**Not a kept tool.** The drive is a script of its own and stays out of the
+repository. A run is eleven minutes, most of it the walk to the first raid, and
+the raid is a roll: a check of five minutes cannot see a raid, a breach or a paid
+level 2, and without those it would repeat what `server/tests/scenarios.rs` already
+checks over the WebSocket. A faster pace does not help: at pace 6000 a cleared
+pack is back in under three ticks, before Found can be pressed. It imported the
+browser plumbing of `tool/solo_e2e.dart` as a library and copied none of it but
+the twelve lines that start Chromium.
+
+**TUI.** Run in a tmux pane against the same server and the same account while the
+browser played, with its token store pointed at a scratch directory. The `o`
+overlay was captured building, in service, under warning ("RAID ARRIVES IN 24s",
+the defence line against "raids of 47 to 67"), breached with the repair waiting
+(the cost, "short by 125 crystal", "Cannot be ordered now: your outpost at
+[-4,-7] is breached; ..."), `A` armed and kept, and abandoned. Nothing was wrong
+in it. The header shows no countdown for a raid on the outpost; outside the
+overlay the raid is a line in the event log.
+
+**What was run.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast` (147 tests, none failed); `cargo clippy --workspace --all-targets`
+(no warning); `tools/check_sim_constants.py` (agrees); the wasm build of
+`iac-solo`; `flutter analyze` (no issue); `flutter test` (404 tests);
+`tools/playtest/tests` (36, the harness's own formatters, not the harness); the
+single-player bundle and `tool/solo_e2e.dart` on it (OK in 190 s, 88 checks). No
+snapshot, save or SQLite row changed: the new fields are in the views only.
+
+The tool sandbox refused `nice` and `taskset` in front of any command with `test`
+in it, so the cargo tests ran without `nice` and the Flutter tests without the
+core pin. Of five whole unpinned runs of the Flutter suite three passed all 404,
+the last of them on the final tree. One failed two tests (`map_test.dart`,
+"shift+click appends a waypoint", a flex of 238 by 2308 px that overflowed;
+`overview_test.dart`, "event filter chips filter the log") and one failed one
+(`onboarding_test.dart`, the first-steps walk, `offset.isFinite` inside Flutter's
+semantics). Each of the three files passed when run alone straight after, and no
+test failed twice: the flake CLAUDE.md describes for an unpinned run. The logs of
+the failing runs are kept.
+
+`solo_e2e.dart` printed `SOLO E2E OK` and then exited 255: its last line deletes
+its own Chromium profile, and the directory was not yet empty. A first attempt
+with `TMPDIR` pointed at a deep scratch directory failed before it began
+("Chromium did not start"): Chromium keeps a socket under `TMPDIR` and the path
+was too long for one. Neither is changed here.
+
+**Not verified.** Nobody has played this by hand: the browser was driven by a
+script, and the pictures were read by the agent that wrote the panels' changes.
+The run was one seed at one pace; a repelled raid at the outpost, level 3, a store
+at its cap (`yield_lost`), another empire's outpost on the map, and the background
+notices in a real browser were not reached. The moves, the loading at home and the
+attack were typed, not clicked. The widget tests cover the full store and the
+notices against the recorded states and the scripted world, as before.

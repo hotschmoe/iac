@@ -276,9 +276,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       case 'recall':
         return f.sector == con.state.homeworld ? 'Already at the homeworld.' : null;
       case 'load':
-        final post = con.state.outpost?.location;
-        if (f.sector == con.state.homeworld || f.sector == post) return null;
-        return post == null ? 'A hold is loaded from the stockpile at the homeworld only.' : 'A hold is loaded at the homeworld and at your outpost only.';
+        if (f.sector == con.state.homeworld || f.atOutpost) return null;
+        return con.state.outpost == null ? 'A hold is loaded from the stockpile at the homeworld only.' : 'A hold is loaded at the homeworld and at your outpost only.';
     }
     return null;
   }
@@ -349,6 +348,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             _outpost = false;
           }
         });
+        if (_trade) con.toasts.dismissPlain();
         con.play('click');
       case 'load':
         if (f.sector == con.state.homeworld) {
@@ -363,7 +363,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   }
 
   /// Open or shut the standing orders of the selected fleet. It is a panel,
-  /// not an act of the fleet: a jump under way does not keep it shut.
+  /// not an act of the fleet: a jump under way does not keep it shut. A
+  /// panel opens where the toasts stand (the top of a phone's sheet, the
+  /// foot of the desktop column), so the toasts that ask nothing make way.
   void _toggleOrders() {
     if (_fleet == null) return;
     setState(() {
@@ -374,6 +376,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _outpost = false;
       }
     });
+    if (_orders) con.toasts.dismissPlain();
     con.play('click');
   }
 
@@ -391,6 +394,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _orders = false;
       }
     });
+    if (_outpost) con.toasts.dismissPlain();
     con.play('click');
   }
 
@@ -539,7 +543,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final exploring = f.status == ui.FleetStatus.exploring;
       final shield = _shieldFrac();
       final mine = st.outpost;
-      final atOutpost = mine != null && f.sector == mine.location;
+      final atOutpost = f.atOutpost;
 
       DockAction da(String id, String label, String key, {bool active = false, bool fire = false}) =>
           DockAction(id, label, key, reason: _reason(id, f, th, s), active: active, fire: fire);
@@ -572,7 +576,6 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           f: f,
           shieldFrac: shield,
           atHome: f.sector == st.homeworld,
-          atOutpost: atOutpost,
           holding: st.holdOf(f),
           footer: Wrap(spacing: 6, runSpacing: 6, children: [
             GuideTarget('orders', child: ConsoleButton(_orders ? 'Hide orders' : 'Orders', key: const ValueKey('orders-toggle'), small: true, keyHint: 'P', active: _orders, onPressed: _toggleOrders)),
@@ -669,7 +672,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               top: 8,
               right: 10,
               child: GuideTarget(_sheet ? 'status-sheet' : 'orders',
-                  child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () => setState(() => _sheet = !_sheet)))),
+                  child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () {
+                    setState(() => _sheet = !_sheet);
+                    if (_sheet) con.toasts.dismissPlain();
+                  }))),
         if (!narrow)
           Positioned(
               right: 16,

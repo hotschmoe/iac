@@ -600,6 +600,7 @@ class StateMapper {
       jumpFuel: f.jumpFuel.round(),
       homeFuel: f.homeFuel.round(),
       outpostFuel: f.outpostFuel?.round(),
+      atOutpost: f.atOutpost,
       cooldown: f.cooldownRemaining,
       power: f.power,
       rangeHops: f.rangeHops,

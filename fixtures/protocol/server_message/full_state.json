@@ -1,6 +1,7 @@
 {
   "fleets": [
     {
+      "at_outpost": false,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,
@@ -54,6 +55,7 @@
       "state": "Moving"
     },
     {
+      "at_outpost": false,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,
@@ -97,6 +99,7 @@
       "state": "Exploring"
     },
     {
+      "at_outpost": false,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,

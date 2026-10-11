@@ -111,8 +111,8 @@ can pick up where you left off if your session is restarted.
 | `load` | `fleet_id`, `resource` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | move `amount` of `resource` from your stockpile into the fleet's hold; without `amount`, all the stockpile holds and the hold has room for. One resource an order. The fleet must stand idle at your homeworld with no standing orders. It is then `laden`: the dock leaves its hold alone until the fleet has been away (see Loading a hold). The answer is an `Alert` (info) saying what went aboard. Refused with nothing moved and a sentence saying what is short: `NoResources` when the stockpile holds less than `amount` or none, `CargoFull` when the hold lacks the room, `NotInSector` away from home, `OnCooldown` in transit or busy, `InvalidCommand` for an amount that is not positive or a fleet under standing orders. At your outpost `load` takes from the outpost's store instead and does not make the fleet `laden`; see Outposts |
 | `unload` | `fleet_id` | put a `laden` hold back: what the caps allow goes into the stockpile now and the dock takes the rest as room opens. The answer is an `Alert` (info). Refused with `InvalidCommand` when the fleet was not loaded by `load`, `NotInSector` away from home. At your outpost `unload` puts the whole hold of any fleet into the outpost's store as far as it has room (`NoResources` for an empty hold); see Outposts |
 | `found_outpost` | `fleet_id` | found your outpost in the sector the fleet stands in, paying 1000 metal, 500 crystal and 200 deuterium from its hold. The fleet must stand idle with no standing orders; the sector must be in rings 9 to 20, not an Anomaly, without a derelict, without a group in it (win the sector first), and at least 3 hexes from every other outpost; you may have one outpost. The answer is an `Alert` (info) with the tick it will be finished. Refused with nothing changed and a sentence saying why: `InvalidTarget` for a sector that does not qualify, `InvalidCommand` if you already have an outpost or the fleet is under standing orders, `NoResources` naming what the hold lacks, `OnCooldown` for a fleet that is moving, fighting or busy |
-| `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, `densities`, `grade`, the `cost` and `build_ticks` of level 1, `production` a tick at level 1, `raid_power` (the middle of the raids that ring sends), `platform_power`, `hops_home`, and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector on your chart may be asked about; `InvalidTarget` for one you have never seen. For a sector the fleet does not stand in, a `refusal` that only says the fleet is elsewhere means the site itself qualifies |
-| `upgrade_outpost` | none | build the next level of your outpost, paid in full from the outpost's own store at that moment. The answer is an `Alert` (info). Refused with `InsufficientResources` and the exact shortfall when the store does not cover it, `MaxLevelReached` at level 3, `InvalidCommand` with no outpost, while it is building or repairing, or while it is breached |
+| `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, the `cost` and `build_ticks` of level 1, `raid_power` (`least` and `most`: the weakest and the strongest raid that ring sends), `platform_power`, `site` (`densities`, `grade`, `production` a tick at level 1, `hops_home`) and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector may be asked about. One you have never seen is answered without `site` and with a `refusal` that says it is not on your chart (or that its ring is outside 9 to 20): what follows from the ring is told, what is there is not. For a sector the fleet does not stand in, a `refusal` that only says the fleet is elsewhere means the site itself qualifies |
+| `upgrade_outpost` | none | build the next level of your outpost, paid in full from the outpost's own store at that moment. The answer is an `Alert` (info). Refused with `InsufficientResources` and the exact shortfall when the store does not cover it, `MaxLevelReached` at level 3, `InvalidCommand` with no outpost, while it is building or repairing, or while it is breached. `outpost.upgrade_refusal` in your state is that refusal's sentence beforehand, absent when the order would be accepted |
 | `abandon_outpost` | none | give up your outpost. Its store is left as wreckage in the sector for 180 ticks, its score is gone, nothing is refunded, and you may found another. `InvalidCommand` with no outpost |
 
 Standing orders are a separate message type (not a command):
@@ -254,6 +254,8 @@ What every doctrine does:
   `rating` T1 to T9 (one step per doubling of power over 4), `est_power` and
   `basis` (`observed`: a group is there, its own power, Aggressive and Swarm
   +25%; `template`: a lair that is away or cleared; `estimate`: ring only).
+  A sector an outpost stands in is rated 0, power 0, `observed`: there is
+  nothing to fight there and nothing comes.
   A stale chart entry keeps the rating last seen. Scans list the threat of
   every revealed sector (`threats`) and each faint contact has a
   `threat_band` (1: T1-3, 2: T4-6, 3: T7-9). Pirates return
@@ -546,16 +548,18 @@ What every doctrine does:
     at home. Hull is not repaired there. A fleet at an outpost is not safe:
     see Raids below.
   - **Quiet**: while an outpost stands, no group lives in its sector or
-    wanders in, and the sector reads as empty to `preview_move` and `odds`
-    (T1, power 0, ratio 10). The lair it displaced returns after its usual
+    wanders in, and the sector reads as empty to `preview_move`, `odds` and
+    its own `threat` (rating 0, power 0, ratio 10). The lair it displaced returns after its usual
     delay when the outpost is abandoned.
   - **Raids**: pirates of its ring raid it on the homeworld's raid clock,
     with the same warning, starting a day of that clock after level 1 is
     finished (`RaidIncoming` and `RaidResolved` carry `outpost`). A raid's
-    power is `2 x` the ring's group power times 0.80 to 1.15: about 38 at
-    ring 9, 70 at ring 12, 154 at ring 16, 341 at ring 20, whatever your
-    empire is worth. The platform (40, 100, 250 by level) and your ships
-    standing there defend. Repelled: your ships' shields are halved, nothing
+    power is `2 x` the ring's group power times 0.80 to 1.15: 31 to 45 at
+    ring 9, 57 to 82 at ring 12, 126 to 182 at ring 16, 280 to 402 at ring
+    20, whatever your empire is worth (`raid_power` in the survey and in
+    your outpost's state gives the two ends). The platform (40, 100, 250 by
+    level) and your ships standing there defend, and the defence counts a
+    tenth more or less by chance. Repelled: your ships' shields are halved, nothing
     else, and no salvage. Lost: a quarter of the ships there are destroyed
     (at least one), and what they carried goes into the store; a quarter of
     the store, and of the cargo aboard fleets there, above the protected
@@ -579,10 +583,15 @@ What every doctrine does:
   - **State**: `full_state.outpost` and every `tick_update.outpost` (absent
     when you have none): `location`, `level`, `max_level`, `in_service`,
     `breached`, `work` (`kind`, `level`, `start_tick`, `end_tick`), `store`,
-    `store_cap`, `protected`, `production`, `grade`, `platform_power`,
-    `defence_power`, `next_raid_estimate_power`, `raid_arrival_tick`,
-    `next_level` (what `upgrade_outpost` would cost and give), `repair_cost`,
-    `hops_home`. Each fleet reports `outpost_fuel`, the fuel the way there
+    `store_cap`, `protected`, `production`, `yield_lost` (the resources the
+    extractor makes and the store is full of, so that yield is lost),
+    `grade`, `platform_power`, `defence_power`, `raid_power` (`least`,
+    `most`), `raid_arrival_tick`, `next_level` (what `upgrade_outpost` would
+    cost and give), `upgrade_refusal` (why it would be refused now),
+    `repair_cost`, `repair_waiting_for` (what the store lacks of it, while a
+    repair waits), `hops_home`. Each fleet reports `at_outpost` (it is in
+    your outpost's sector, finished, building or breached: `load` and
+    `unload` use the store there) and `outpost_fuel`, the fuel the way there
     costs, while the outpost is in service. A sector view carries `outpost`
     (`owner`, `level`, `breached`, `mine`) when one stands there, yours or
     another empire's. `OutpostCompleted` says a level is finished.

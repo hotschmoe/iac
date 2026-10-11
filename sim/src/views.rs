@@ -1,7 +1,7 @@
 // What a player is allowed to see: the protocol's full-state and per-tick
 // views of the engine, and which events reach whom.
 
-use iac_shared::constants::{OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
+use iac_shared::constants::{ResourceKind, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BuildQueueItem, BuildingState, DefenceState, FleetState, GameEvent, GameState, HomeworldState, OutpostLevel,
@@ -10,7 +10,7 @@ use iac_shared::protocol::{
 };
 use iac_shared::scaling::{self, BuildingType, DefenceKind, ResearchType};
 
-use crate::engine::{fleet_cargo_capacity, outpost_raid_estimate, FleetStatus, GameEngine, OutpostTask, Player};
+use crate::engine::{fleet_cargo_capacity, outpost_raid_range, FleetStatus, GameEngine, OutpostTask, Player};
 
 /// The whole picture for one player, as sent on login and on request.
 pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
@@ -58,6 +58,9 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
         OutpostTask::Build { level } => level + 1,
         OutpostTask::Repair => outpost.level + 1,
     });
+    let production = engine.outpost_production(outpost);
+    let store_cap = scaling::outpost_store_cap(outpost.level, &pace);
+    let repair_cost = (outpost.breached && outpost.job.is_none()).then(|| scaling::outpost_repair_cost(outpost.level));
     Some(OutpostState {
         location: outpost.sector,
         level: outpost.level,
@@ -72,13 +75,17 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
             OutpostWorkState { kind, level, start_tick: job.start_tick, end_tick: job.end_tick }
         }),
         store: outpost.store,
-        store_cap: scaling::outpost_store_cap(outpost.level, &pace),
+        store_cap,
         protected: outpost.protected(),
-        production: engine.outpost_production(outpost),
+        production,
+        yield_lost: ResourceKind::ALL
+            .into_iter()
+            .filter(|&kind| production.get(kind) > 0.0 && outpost.store.get(kind) >= store_cap.get(kind))
+            .collect(),
         grade: scaling::site_grade(densities),
         platform_power: if outpost.breached { 0.0 } else { scaling::outpost_platform_power(outpost.level) },
         defence_power: engine.outpost_defense_power(player.id),
-        next_raid_estimate_power: outpost_raid_estimate(ring),
+        raid_power: outpost_raid_range(ring),
         raid_arrival_tick: outpost.raid.incoming.map(|raid| raid.arrival_tick),
         next_level: (next <= OUTPOST_MAX_LEVEL).then(|| OutpostLevel {
             level: next,
@@ -88,7 +95,9 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
             platform_power: scaling::outpost_platform_power(next),
             production: scaling::outpost_yield_per_tick(densities, ring, next, &pace),
         }),
-        repair_cost: (outpost.breached && outpost.job.is_none()).then(|| scaling::outpost_repair_cost(outpost.level)),
+        upgrade_refusal: engine.outpost_upgrade(player.id).err().map(|refusal| refusal.reason),
+        repair_cost,
+        repair_waiting_for: repair_cost.map(|cost| outpost.store.shortfall(cost)).filter(|short| short.total() > 0.0),
         hops_home: engine.world_gen.lane_hops(outpost.sector, player.homeworld, 64),
     })
 }
@@ -158,6 +167,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
                 && fleet.cargo.total() > 0.0
                 && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
             laden: fleet.laden,
+            at_outpost: engine.outposts.get(&player_id).is_some_and(|o| o.sector == fleet.location),
             outpost_fuel: engine.outpost_route_cost(fleet, bound_for),
             policy: engine.policies.get(&fleet.id).map(|p| StandingOrders { preset: p.preset, params: p.params }),
         });

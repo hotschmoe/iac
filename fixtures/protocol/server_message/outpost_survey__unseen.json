@@ -1,0 +1,21 @@
+{
+  "build_ticks": 5400,
+  "cost": {
+    "crystal": 500.0,
+    "deuterium": 200.0,
+    "metal": 1000.0
+  },
+  "fleet_id": 7,
+  "platform_power": 40.0,
+  "raid_power": {
+    "least": 38.29999923706055,
+    "most": 55.099998474121094
+  },
+  "refusal": "[10,-2] is not on your chart; a survey reads the site of a sector you have seen",
+  "ring": 10,
+  "sector": {
+    "q": 10,
+    "r": -2
+  },
+  "type": "outpost_survey"
+}

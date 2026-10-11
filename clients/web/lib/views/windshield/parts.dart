@@ -247,13 +247,10 @@ class StatusPanel extends StatelessWidget {
   /// The fleet stands in its homeworld's sector.
   final bool atHome;
 
-  /// The fleet stands in the sector of the player's outpost.
-  final bool atOutpost;
-
   /// The hold its standing orders last announced, while it still stands.
   final PolicyAct? holding;
   final Widget? footer;
-  const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.atOutpost = false, this.holding, this.footer});
+  const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.holding, this.footer});
 
   @override
   Widget build(BuildContext context) {
@@ -311,11 +308,13 @@ class StatusPanel extends StatelessWidget {
               const Kv('Way home', v: 'AT THE DOCK')
             else
               Kv('Way home needs', key: const Key('status-way-home'), v: '$need FUEL${low ? '  LOW' : ''}', vc: low ? C.threat(6) : null),
-            if (f.outpostFuel case final toOutpost?)
+            if (f.atOutpost)
+              const Kv('Way to outpost', key: Key('status-way-outpost'), v: 'AT THE OUTPOST')
+            else if (f.outpostFuel case final toOutpost?)
               Kv('Way to outpost needs',
                   key: const Key('status-way-outpost'),
-                  v: atOutpost ? 'AT THE OUTPOST' : '$toOutpost FUEL${toOutpost > f.fuel ? '  SHORT' : ''}',
-                  vc: !atOutpost && toOutpost > f.fuel ? C.threat(6) : null),
+                  v: '$toOutpost FUEL${toOutpost > f.fuel ? '  SHORT' : ''}',
+                  vc: toOutpost > f.fuel ? C.threat(6) : null),
             Kv('Fleet power', v: f.power.round().toString()),
             Kv('Scan range', v: '$scanRange'),
             Kv('Orders', key: const Key('status-orders'), v: holding == null ? pol : '$pol - HOLDING', vc: C.a300),

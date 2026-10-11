@@ -113,6 +113,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         range_hops: 4,
         cargo_blocked: false,
         laden: false,
+        at_outpost: false,
         outpost_fuel: None,
         policy,
     }
@@ -130,10 +131,11 @@ fn sample_outpost() -> OutpostState {
         store_cap: res(9486.833, 4743.4165, 2371.7083),
         protected: res(250.0, 125.0, 50.0),
         production: res(0.010_794, 0.0, 0.005_397),
+        yield_lost: vec![],
         grade: 3.0,
         platform_power: 40.0,
         defence_power: 172.0,
-        next_raid_estimate_power: 37.9,
+        raid_power: PowerRange { least: 38.3, most: 55.1 },
         raid_arrival_tick: Some(4990),
         next_level: Some(OutpostLevel {
             level: 3,
@@ -143,7 +145,9 @@ fn sample_outpost() -> OutpostState {
             platform_power: 250.0,
             production: res(0.032_382, 0.0, 0.016_191),
         }),
+        upgrade_refusal: Some("your outpost at [10,-2] is building level 2 until tick 18200; it does one job at a time".into()),
         repair_cost: None,
+        repair_waiting_for: None,
         hops_home: Some(7),
     }
 }
@@ -162,7 +166,11 @@ fn breached_outpost() -> OutpostState {
         defence_power: 0.0,
         raid_arrival_tick: None,
         next_level: None,
+        upgrade_refusal: Some(
+            "your outpost at [10,-2] is breached; it repairs itself first, once its store holds 1563 metal, 782 crystal and 313 deuterium".into(),
+        ),
         repair_cost: Some(res(1562.5, 781.25, 312.5)),
+        repair_waiting_for: Some(res(362.5, 0.0, 312.5)),
         hops_home: None,
         ..sample_outpost()
     }
@@ -184,7 +192,7 @@ fn outpost_sector(brief: OutpostBrief) -> SectorState {
             deuterium: TileReserve { units: 19.5, max_units: 19.5, refills_in_s: None },
         }),
         outpost: Some(brief),
-        threat: ThreatInfo { rating: 1, est_power: 0.0, basis: ThreatBasis::Observed },
+        threat: ThreatInfo { rating: 0, est_power: 0.0, basis: ThreatBasis::Observed },
         ..rich_sector()
     }
 }
@@ -194,14 +202,16 @@ fn sample_survey() -> OutpostSurvey {
         fleet_id: 7,
         sector: h(10, -2),
         ring: 10,
-        densities: SectorResources { metal: Density::Rich, crystal: Density::None, deuterium: Density::Moderate },
-        grade: 3.0,
+        site: Some(SurveySite {
+            densities: SectorResources { metal: Density::Rich, crystal: Density::None, deuterium: Density::Moderate },
+            grade: 3.0,
+            production: res(0.021_652, 0.0, 0.010_826),
+            hops_home: Some(7),
+        }),
         cost: res(1000.0, 500.0, 200.0),
         build_ticks: 5400,
-        production: res(0.021_652, 0.0, 0.010_826),
-        raid_power: 37.9,
+        raid_power: PowerRange { least: 38.3, most: 55.1 },
         platform_power: 40.0,
-        hops_home: Some(7),
         refusal: None,
     }
 }
@@ -875,7 +885,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 tick: 5000,
                 player: None,
                 fleets: vec![FleetState {
-                    outpost_fuel: Some(0.0),
+                    at_outpost: true,
                     home_fuel: 220.5,
                     ..sample_fleet(7, h(10, -2), FleetStatus::Idle, None)
                 }],
@@ -905,6 +915,37 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                         ships_lost: 1,
                     }),
                 }]),
+            }),
+        ),
+        (
+            "outpost_store_full".into(),
+            ServerMessage::TickUpdate(TickUpdate {
+                tick: 20_000,
+                player: None,
+                fleets: vec![],
+                sector_updates: None,
+                homeworld_update: None,
+                outpost: Some(OutpostState {
+                    work: None,
+                    store: res(9486.833, 96.0, 180.25),
+                    yield_lost: vec![ResourceKind::Metal],
+                    raid_arrival_tick: None,
+                    next_level: Some(OutpostLevel {
+                        level: 2,
+                        cost: res(2500.0, 1250.0, 500.0),
+                        ticks: 13_500,
+                        store_cap: res(23_717.082, 11_858.541, 5929.2705),
+                        platform_power: 100.0,
+                        production: res(0.021_588, 0.0, 0.010_794),
+                    }),
+                    upgrade_refusal: Some(
+                        "outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at [10,-2] is short by \
+                         1154 crystal and 320 deuterium. A level is paid in full from the outpost's own store when it is ordered"
+                            .into(),
+                    ),
+                    ..sample_outpost()
+                }),
+                events: None,
             }),
         ),
         (
@@ -943,6 +984,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 player: sample_player(),
                 fleets: vec![
                     FleetState {
+                        at_outpost: true,
                         outpost_fuel: Some(0.0),
                         home_fuel: 220.5,
                         ..sample_fleet(7, h(10, -2), FleetStatus::Idle, None)
@@ -1118,11 +1160,13 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             fleet_id: 1,
             sector: h(4, -2),
             ring: 4,
-            densities: SectorResources { metal: Density::None, crystal: Density::None, deuterium: Density::None },
-            grade: 0.0,
-            production: res(0.0, 0.0, 0.0),
-            raid_power: 12.8,
-            hops_home: Some(0),
+            site: Some(SurveySite {
+                densities: SectorResources { metal: Density::None, crystal: Density::None, deuterium: Density::None },
+                grade: 0.0,
+                production: res(0.0, 0.0, 0.0),
+                hops_home: Some(0),
+            }),
+            raid_power: PowerRange { least: 10.5, most: 15.1 },
             refusal: Some("fleet 1 is at ring 4; an outpost stands in rings 9 to 20".into()),
             ..sample_survey()
         }),
@@ -1130,10 +1174,18 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
     v.push((
         "far".into(),
         ServerMessage::OutpostSurvey(OutpostSurvey {
-            hops_home: None,
+            site: sample_survey().site.map(|site| SurveySite { hops_home: None, ..site }),
             refusal: Some(
                 "fleet 7 is at [4,-2], 6 hexes from [10,-2]; an outpost is founded by a fleet standing in its sector".into(),
             ),
+            ..sample_survey()
+        }),
+    ));
+    v.push((
+        "unseen".into(),
+        ServerMessage::OutpostSurvey(OutpostSurvey {
+            site: None,
+            refusal: Some("[10,-2] is not on your chart; a survey reads the site of a sector you have seen".into()),
             ..sample_survey()
         }),
     ));

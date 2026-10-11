@@ -39,8 +39,11 @@ Map<String, dynamic> _recorded(String name) =>
 
 Map<String, dynamic> _each(num v) => {'metal': v, 'crystal': v, 'deuterium': v};
 
+const _bigRefusal = 'outpost level 3 costs 23456789 metal, 23456789 crystal and 23456789 deuterium; the store at [10,-2] is short by 22222222 metal, '
+    '22222222 crystal and 22222222 deuterium. A level is paid in full from the outpost\'s own store when it is ordered';
+
 /// The recorded state with an outpost, every figure of the outpost at seven
-/// digits and more.
+/// digits and more, and the longest sentence an upgrade is refused with.
 Map<String, dynamic> _bigOutpost() {
   final json = _recorded('full_state__with_outpost');
   (json['outpost'] as Map<String, dynamic>)
@@ -50,7 +53,8 @@ Map<String, dynamic> _bigOutpost() {
     ..['production'] = _each(12.3456)
     ..['defence_power'] = 1234567.8
     ..['platform_power'] = 123456.7
-    ..['next_raid_estimate_power'] = 7654321.5
+    ..['raid_power'] = {'least': 6543210.5, 'most': 7654321.5}
+    ..['upgrade_refusal'] = _bigRefusal
     ..['hops_home'] = 64;
   ((json['outpost'] as Map<String, dynamic>)['next_level'] as Map<String, dynamic>)
     ..['cost'] = _each(23456789)
@@ -160,17 +164,19 @@ void main() {
     expect(find.descendant(of: find.byKey(const Key('outpost-store-deuterium')), matching: find.text('180 / 2,371')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('38.9 FE, 19.4 DE')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('outpost-defence')), matching: find.text('40 + 132 = 172')), findsOneWidget);
-    expect(find.descendant(of: find.byKey(const Key('outpost-raid-estimate')), matching: find.text('38')), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('outpost-raid-range')), matching: find.text('38 TO 55')), findsOneWidget);
     expect(_said(tester, 'outpost-raid'), 'RAID ARRIVES IN 2:50');
-    expect(_said(tester, 'outpost-cover'), 'DEFENCE 4.54X THE ESTIMATE');
+    expect(_said(tester, 'outpost-cover'), 'DEFENCE ABOVE THE STRONGEST RAID');
     expect(find.text('AFTER LEVEL 2: LEVEL 3'), findsOneWidget, reason: 'the level that could be ordered once the one being built is done');
     expect(find.descendant(of: find.byKey(const Key('outpost-next-cost')), matching: find.text('6,250 FE, 3,125 CR, 1,250 DE')), findsOneWidget);
     expect(find.text('9:22:30'), findsOneWidget);
-    expect(_said(tester, 'outpost-short'), 'THE STORE IS SHORT BY 5,838 FE, 3,029 CR, 1,070 DE');
+    expect(_why(tester, 'outpost-upgrade-why'), 'your outpost at [10,-2] is building level 2 until tick 18200; it does one job at a time',
+        reason: 'the server says beforehand why an upgrade would be refused, and the panel shows its sentence');
     await shot(tester, 'outpost-panel-1440');
 
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('outpost-upgrade'))).onPressed, isNull);
     await _press(tester, 'outpost-upgrade');
-    expect(c.commands.whereType<proto.UpgradeOutpostCommand>(), hasLength(1), reason: 'the server is the judge of an upgrade, and its refusal comes back as its own sentence');
+    expect(c.commands.whereType<proto.UpgradeOutpostCommand>(), isEmpty, reason: 'nothing is ordered against the server\'s refusal');
 
     await _press(tester, 'outpost-abandon');
     expect(c.commands.whereType<proto.AbandonOutpostCommand>(), isEmpty, reason: 'one press only asks');
@@ -207,6 +213,9 @@ void main() {
     expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('NOTHING: BREACHED')), findsOneWidget);
     expect(_said(tester, 'outpost-max'), 'LEVEL 3 IS THE HIGHEST.');
     expect(find.byKey(const ValueKey('outpost-upgrade')), findsNothing);
+    expect(find.descendant(of: find.byKey(const Key('status-way-outpost')), matching: find.text('AT THE OUTPOST')), findsOneWidget,
+        reason: 'the fleet is told to stand at the outpost while it is breached and fills no tank');
+    expect(find.byKey(const ValueKey('dock-outpost')), findsOneWidget);
     expect(find.descendant(of: _hudLine, matching: find.text('L3 STORE 3% BREACHED')), findsOneWidget);
     expect(_said(tester, 'contact-outpost'), allOf(contains('NO TANK IS FILLED HERE WHILE IT IS BREACHED'), contains('A RAID THE OUTPOST LOSES DESTROYS A QUARTER')));
     expect(find.descendant(of: find.byType(ToastLayer), matching: find.textContaining('Raid broke your outpost at [10,-2]')), findsOneWidget);
@@ -225,7 +234,9 @@ void main() {
       expectTextFits(tester, find.byKey(const ValueKey('hold-panel')), reason: 'dock, $wide');
       expect(find.descendant(of: find.byKey(const Key('outpost-store-crystal')), matching: find.text('1,234,567 / 12,345,678')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('44,444 FE, 44,444 CR, 44,444 DE')), findsOneWidget);
-      expect(_said(tester, 'outpost-short'), 'THE STORE IS SHORT BY 22,222,222 FE, 22,222,222 CR, 22,222,222 DE');
+      expect(find.descendant(of: find.byKey(const Key('outpost-raid-range')), matching: find.text('6,543,211 TO 7,654,322')), findsOneWidget);
+      expect(_said(tester, 'outpost-cover'), 'DEFENCE BELOW THE WEAKEST RAID');
+      expect(_why(tester, 'outpost-upgrade-why'), _bigRefusal);
       expect(tester.takeException(), isNull, reason: 'the windshield at $wide');
       await shot(tester, 'outpost-big-windshield-$wide');
       await tester.ensureVisible(find.byKey(const ValueKey('hold-panel')));
@@ -260,14 +271,15 @@ void main() {
       final asked = c.commands.whereType<proto.OutpostSurveyCommand>().single;
       expect((asked.fleetId, asked.sector), (7, const proto.Hex(10, -2)));
 
-      c.feed(_recorded('outpost_survey')
-        ..['refusal'] = refusal
-        ..['production'] = _each(12.3456));
+      final refused = _recorded('outpost_survey')..['refusal'] = refusal;
+      (refused['site'] as Map<String, dynamic>)['production'] = _each(12.3456);
+      c.feed(refused);
       await tester.pump(const Duration(milliseconds: 300));
       expect(_why(tester, 'found-why'), refusal);
       expect(find.descendant(of: find.byKey(const Key('survey-grade')), matching: find.text('3.0 OF 12')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-yield')), matching: find.text('44,444 FE, 44,444 CR, 44,444 DE AN HOUR')), findsOneWidget);
-      expect(find.descendant(of: find.byKey(const Key('survey-raid')), matching: find.text('38 AGAINST 40')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('survey-raid')), matching: find.text('38 TO 55')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('survey-platform')), matching: find.text('40')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-time')), matching: find.text('1:30:00')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-cost-metal')), matching: find.text('ABOARD 0 - SHORT 1,000')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-cost-crystal')), matching: find.text('ABOARD 1,234,567')), findsOneWidget);
@@ -310,6 +322,7 @@ void main() {
         contains(startsWith('fleet 101 founded your outpost at [10,0] for 1000 metal, 500 crystal and 200 deuterium: level 1 is finished at tick')));
     expect(_said(tester, 'outpost-standing'), startsWith('NOT YET OPEN - BUILDING LEVEL 1, 0:'));
     expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('NOTHING: NOT YET OPEN')), findsOneWidget);
+    expect(find.descendant(of: _hudLine, matching: find.text('NOT OPEN STORE 0%')), findsOneWidget, reason: 'no level stands yet, so the bar names none');
     expect(_railTile(), findsOneWidget);
 
     await tester.pump(const Duration(seconds: 20));
@@ -326,12 +339,14 @@ void main() {
     expect(short, startsWith('Refused: outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at [10,0] is short by 2500 metal, 12'));
     expect(find.descendant(of: find.byType(ToastLayer), matching: find.text(short.substring('Refused: '.length))), findsOneWidget,
         reason: 'the refusal is shown as the world worded it');
+    expect(_why(tester, 'outpost-upgrade-why'), short.substring('Refused: '.length), reason: 'and the panel had said it beforehand, in the same sentence');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('outpost-upgrade'))).onPressed, isNull);
 
     c.place(101, _site, const proto.Resources(metal: 2600, crystal: 1300, deuterium: 600));
     c.handleCommand('unload');
     await tester.pump(const Duration(milliseconds: 300));
     expect(c.state.events.map((e) => e.message), contains('fleet 101 unloaded 2600 metal, 1300 crystal and 600 deuterium into the outpost\'s store'));
-    expect(find.byKey(const Key('outpost-short')), findsNothing);
+    expect(find.byKey(const Key('outpost-upgrade-why')), findsNothing);
     await _press(tester, 'outpost-upgrade');
     expect(_said(tester, 'outpost-standing'), startsWith('LEVEL 1 OF 3 - BUILDING LEVEL 2, 0:'));
     expect(find.text('AFTER LEVEL 2: LEVEL 3'), findsOneWidget);
@@ -385,9 +400,14 @@ void main() {
     c.place(101, _demoHome, _levelOne);
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     expect(find.byKey(const ValueKey('dock-outpost')), findsNothing);
+    c.handleCommand('found');
+    await tester.pump(const Duration(milliseconds: 400));
+    final refused = find.descendant(of: find.byType(ToastLayer), matching: find.text('fleet 101 is at ring 4; an outpost stands in rings 9 to 20'));
+    expect(refused, findsOneWidget);
     await _key(tester, LogicalKeyboardKey.keyO, 'o');
     await tester.pump(const Duration(milliseconds: 250));
     await tester.pump(const Duration(milliseconds: 50));
+    expect(refused, findsNothing, reason: 'a panel opens where the toasts stand, so the toast of the step before makes way');
     expect(_why(tester, 'found-why'), 'fleet 101 is at ring 4; an outpost stands in rings 9 to 20');
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('found-order'))).onPressed, isNull);
 
@@ -416,8 +436,8 @@ void main() {
 
     c.handleCommand('survey');
     expect(log().take(5), [
-      'Site [10,0], ring 10: grade 1.5, level 1 makes 3.9 Cr, 1.9 De an hour',
-      'Raids of about 47 against a platform of 40; 8 hops from home',
+      'Site [10,0], ring 10: grade 1.5, level 1 makes 3.9 Cr, 1.9 De an hour, 8 hops from home',
+      'Raids of 38 to 55 against a platform of 40',
       'Level 1 costs 1,000 Fe, 500 Cr, 200 De from the founding hold and takes 0:20',
       'F101 can found it now',
       '> survey',
@@ -425,7 +445,12 @@ void main() {
     c.handleCommand('survey 4 -2');
     expect(log()[3], 'Cannot be founded now: [4,-2] is at ring 4; an outpost stands in rings 9 to 20');
     c.handleCommand('survey 20 -10');
-    expect(log().first, 'Refused: [20,-10] is not on your chart; a survey reads a sector you have seen');
+    expect(log().take(4), [
+      'Site [20,-10], ring 20: not on your chart, so its ore and its yield are not known',
+      'Raids of 280 to 402 against a platform of 40',
+      'Level 1 costs 1,000 Fe, 500 Cr, 200 De from the founding hold and takes 0:20',
+      'Cannot be founded now: [20,-10] is not on your chart; a survey reads the site of a sector you have seen',
+    ], reason: 'a sector never seen is answered with what its ring decides and nothing of what is there');
     c.handleCommand('survey here');
     expect(log().first, startsWith('survey: [q r]'));
     c.handleCommand('outpost');
@@ -484,8 +509,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     final reply = find.byKey(const Key('inspector-survey-reply'));
     for (final line in [
-      'Site [10,-2], ring 10: grade 3.0, level 1 makes 77.9 Fe, 39.0 De an hour',
-      'Raids of about 38 against a platform of 40; more than 64 hops from home',
+      'Site [10,-2], ring 10: grade 3.0, level 1 makes 77.9 Fe, 39.0 De an hour, more than 64 hops from home',
+      'Raids of 38 to 55 against a platform of 40',
       'Level 1 costs 1,000 Fe, 500 Cr, 200 De from the founding hold and takes 1:30:00',
     ]) {
       expect(find.descendant(of: reply, matching: find.text(line)), findsOneWidget);

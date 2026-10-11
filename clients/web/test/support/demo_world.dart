@@ -445,13 +445,18 @@ class DemoWorld {
     final isLive = live ?? _liveNow.contains(k);
     final hs = _hostiles[k];
     final sv = _salvage[k];
+    final quiet = _outpost?.at == h && (hs == null || hs.isEmpty);
     return SectorState(
       location: h,
       terrain: b.terrain,
       resources: b.resources,
       connections: b.connections,
       oreReserve: b.oreReserve,
-      threat: hs == null || hs.isEmpty ? b.threat : _observedThreat(hs),
+      threat: quiet
+          ? const ThreatInfo(rating: 0, estPower: 0, basis: ThreatBasis.observed)
+          : hs == null || hs.isEmpty
+              ? b.threat
+              : _observedThreat(hs),
       hostiles: hs == null || hs.isEmpty ? null : hs,
       salvage: sv?.$1,
       salvageDespawnTick: sv?.$2,
@@ -698,7 +703,10 @@ class DemoWorld {
   static Resources _repairCost(int level) => level == 0 ? const Resources() : _times(_levelCost(level), .25);
   static Resources _storeCap(int level) => _times(_outpostStoreBase, _outpostGrowth(level));
   static double _platform(int level) => level == 0 ? 0 : 40 * _outpostGrowth(level);
-  static double _outpostRaidEstimate(Hex at) => 2 * _ringThreat(at).estPower * .975;
+  static PowerRange _outpostRaids(Hex at) {
+    final base = 2 * _ringThreat(at).estPower;
+    return PowerRange(least: base * .8, most: base * 1.15);
+  }
 
   Resources _siteYield(Hex at, int level) {
     final ore = _base(at).resources;
@@ -721,6 +729,10 @@ class DemoWorld {
     final next = (building ?? o.level) + 1;
     final platform = o.breached ? 0.0 : _platform(o.level);
     final ships = [for (final f in _fleets) if (f.location == o.at) ...f.ships].fold(0.0, (p, s) => p + _power[s.shipClass]!);
+    final cap = _storeCap(o.level);
+    final makes = _inService ? _siteYield(o.at, o.level) : const Resources();
+    final repair = o.breached && o.work == null ? _repairCost(o.level) : null;
+    final repairShort = repair == null ? null : _less(repair, o.store);
     return OutpostState(
       location: o.at,
       level: o.level,
@@ -729,13 +741,14 @@ class DemoWorld {
       breached: o.breached,
       work: o.work,
       store: o.store,
-      storeCap: _storeCap(o.level),
+      storeCap: cap,
       protected: _repairCost(building ?? o.level),
-      production: _inService ? _siteYield(o.at, o.level) : const Resources(),
+      production: makes,
+      yieldLost: [for (final k in ResourceKind.values) if (k.of(makes) > 0 && k.of(o.store) >= k.of(cap)) k],
       grade: _siteGrade(o.at),
       platformPower: platform,
       defencePower: platform + ships,
-      nextRaidEstimatePower: _outpostRaidEstimate(o.at),
+      raidPower: _outpostRaids(o.at),
       raidArrivalTick: o.raid?.$1,
       nextLevel: next > _outpostMaxLevel
           ? null
@@ -746,7 +759,9 @@ class DemoWorld {
               storeCap: _storeCap(next),
               platformPower: _platform(next),
               production: _siteYield(o.at, next)),
-      repairCost: o.breached && o.work == null ? _repairCost(o.level) : null,
+      upgradeRefusal: _upgradeRefusal()?.$2,
+      repairCost: repair,
+      repairWaitingFor: repairShort != null && repairShort.total > 0 ? repairShort : null,
       hopsHome: Hex.distance(o.at, _home),
     );
   }
@@ -808,23 +823,25 @@ class DemoWorld {
     final f = _find(fleetId);
     if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
     final at = sector ?? f.location;
-    if (at != f.location && !_seen.containsKey(at.toKey())) {
-      return [_err(ErrorCode.invalidTarget, '$at is not on your chart; a survey reads a sector you have seen')];
-    }
+    final seen = at == f.location || _seen.containsKey(at.toKey());
+    final ring = at.distFromOrigin;
     return [
       OutpostSurvey(
         fleetId: fleetId,
         sector: at,
-        ring: at.distFromOrigin,
-        densities: _base(at).resources,
-        grade: _siteGrade(at),
+        ring: ring,
+        site: seen
+            ? SurveySite(densities: _base(at).resources, grade: _siteGrade(at), production: _siteYield(at, 1), hopsHome: Hex.distance(at, _home))
+            : null,
         cost: _outpostCost,
         buildTicks: _levelTicks(1),
-        production: _siteYield(at, 1),
-        raidPower: _outpostRaidEstimate(at),
+        raidPower: _outpostRaids(at),
         platformPower: _platform(1),
-        hopsHome: Hex.distance(at, _home),
-        refusal: _siteRefusal(f, at)?.$2,
+        refusal: seen
+            ? _siteRefusal(f, at)?.$2
+            : ring < 9 || ring > 20
+                ? '$at is at ring $ring; an outpost stands in rings 9 to 20'
+                : '$at is not on your chart; a survey reads the site of a sector you have seen',
       ),
     ];
   }
@@ -849,33 +866,42 @@ class DemoWorld {
     return [_tickUpdate()];
   }
 
-  List<ServerMessage> _upgradeOutpost() {
+  /// Why `upgrade_outpost` would be refused now, in the order and the
+  /// sentences of the server's `outpost_upgrade`; null when it would not.
+  (ErrorCode, String)? _upgradeRefusal() {
     final o = _outpost;
-    if (o == null) return [_err(ErrorCode.invalidCommand, 'you have no outpost to upgrade')];
+    if (o == null) return (ErrorCode.invalidCommand, 'you have no outpost to upgrade');
     if (o.work case final job?) {
       final doing = job.kind == OutpostWork.build ? 'building level ${job.level}' : 'under repair';
-      return [_err(ErrorCode.invalidCommand, 'your outpost at ${o.at} is $doing until tick ${job.endTick}; it does one job at a time')];
+      return (ErrorCode.invalidCommand, 'your outpost at ${o.at} is $doing until tick ${job.endTick}; it does one job at a time');
     }
     if (o.breached) {
-      return [
-        _err(ErrorCode.invalidCommand,
-            'your outpost at ${o.at} is breached; it repairs itself first, once its store holds ${_amount(_repairCost(o.level))}'),
-      ];
+      return (
+        ErrorCode.invalidCommand,
+        'your outpost at ${o.at} is breached; it repairs itself first, once its store holds ${_amount(_repairCost(o.level))}',
+      );
     }
     if (o.level >= _outpostMaxLevel) {
-      return [_err(ErrorCode.maxLevelReached, 'your outpost at ${o.at} is at level $_outpostMaxLevel, the highest')];
+      return (ErrorCode.maxLevelReached, 'your outpost at ${o.at} is at level $_outpostMaxLevel, the highest');
     }
     final next = o.level + 1;
     final cost = _levelCost(next);
     final short = _less(cost, o.store);
     if (short.total > 0) {
-      return [
-        _err(
-            ErrorCode.insufficientResources,
-            'outpost level $next costs ${_amount(cost)}; the store at ${o.at} is short by ${_amount(short)}. Nothing was started: '
-            'a level is paid in full from the outpost\'s own store when it is ordered'),
-      ];
+      return (
+        ErrorCode.insufficientResources,
+        'outpost level $next costs ${_amount(cost)}; the store at ${o.at} is short by ${_amount(short)}. '
+            'A level is paid in full from the outpost\'s own store when it is ordered',
+      );
     }
+    return null;
+  }
+
+  List<ServerMessage> _upgradeOutpost() {
+    if (_upgradeRefusal() case (final code, final why)?) return [_err(code, why)];
+    final o = _outpost!;
+    final next = o.level + 1;
+    final cost = _levelCost(next);
     final ticks = _levelTicks(next);
     o.store = _less(o.store, cost);
     o.work = OutpostWorkState(kind: OutpostWork.build, level: next, startTick: _tick, endTick: _tick + ticks);
@@ -1558,6 +1584,7 @@ class DemoWorld {
         fuelMax: f.fuelMax,
         jumpFuel: _jump(f.ships).toDouble(),
         homeFuel: f.location == _home ? 0 : (Hex.distance(f.location, _home) * _jump(f.ships)).toDouble(),
+        atOutpost: _outpost?.at == f.location,
         outpostFuel: _inService ? (Hex.distance(f.location, _outpost!.at) * _jump(f.ships)).toDouble() : null,
         cooldownRemaining: f.cooldownRemaining,
         power: f.ships.fold<double>(0, (p, s) => p + _power[s.shipClass]!),

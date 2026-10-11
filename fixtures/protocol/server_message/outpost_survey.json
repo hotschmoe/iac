@@ -5,25 +5,30 @@
     "deuterium": 200.0,
     "metal": 1000.0
   },
-  "densities": {
-    "crystal": "None",
-    "deuterium": "Moderate",
-    "metal": "Rich"
-  },
   "fleet_id": 7,
-  "grade": 3.0,
-  "hops_home": 7,
   "platform_power": 40.0,
-  "production": {
-    "crystal": 0.0,
-    "deuterium": 0.01082600001245737,
-    "metal": 0.02165200002491474
+  "raid_power": {
+    "least": 38.29999923706055,
+    "most": 55.099998474121094
   },
-  "raid_power": 37.900001525878906,
   "ring": 10,
   "sector": {
     "q": 10,
     "r": -2
+  },
+  "site": {
+    "densities": {
+      "crystal": "None",
+      "deuterium": "Moderate",
+      "metal": "Rich"
+    },
+    "grade": 3.0,
+    "hops_home": 7,
+    "production": {
+      "crystal": 0.0,
+      "deuterium": 0.01082600001245737,
+      "metal": 0.02165200002491474
+    }
   },
   "type": "outpost_survey"
 }
