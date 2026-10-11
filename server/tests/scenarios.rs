@@ -208,10 +208,14 @@ async fn a_cancel_aimed_at_an_order_that_started_meanwhile_is_refused_and_leaves
 }
 
 #[tokio::test]
-async fn a_killed_server_comes_back_with_the_scan_live_and_the_boarding_under_way() {
+async fn a_killed_server_comes_back_with_the_scan_live_the_boarding_under_way_and_the_orders_as_set() {
     let db = fresh_db("scenario_boarding");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
     let quiet = |at: Hex| world.generate_sector(at).npc_template.is_none();
+    let orders = json!({
+        "preset": "prospect",
+        "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 30, "engage_ratio_x10": 25, "fuel_budget_pct": 35},
+    });
 
     let (token, fleet, site, scanned, end_tick) = {
         let (_guard, port) = start_server(&db);
@@ -273,29 +277,34 @@ async fn a_killed_server_comes_back_with_the_scan_live_and_the_boarding_under_wa
 
         let mut scanned = Vec::<Hex>::new();
         let mut end_tick = None;
-        let mut send = true;
+        let mut ask = true;
         let mut ticks_saved = 0;
         while ticks_saved < 3 {
             assert!(Instant::now() < deadline, "the boarding never started");
-            if send && end_tick.is_none() {
+            if ask && end_tick.is_none() {
                 command(&mut ws, order(if scanned.is_empty() { "scan" } else { "explore_site" }, None)).await;
-                send = false;
+                ask = false;
             }
             let msg = next_json(&mut ws).await;
             if msg["type"] == "error" {
                 tokio::time::sleep(Duration::from_millis(500)).await;
-                send = true;
+                ask = true;
             }
-            if msg["type"] == "tick_update" && end_tick.is_some() {
+            if msg["type"] == "tick_update" && msg["fleets"][0]["policy"] == orders {
                 ticks_saved += 1;
             }
             for e in events_of(&msg) {
                 if e["kind"] == "ScanCompleted" {
                     scanned = e["threats"].as_array().unwrap().iter().map(|t| hex_of(&t["sector"])).collect();
-                    send = true;
+                    ask = true;
                 }
                 if e["kind"] == "SiteExplorationStarted" {
                     end_tick = e["end_tick"].as_u64();
+                    assert!(msg["fleets"][0].get("policy").is_none(), "a fleet flown by hand carries no orders: {msg}");
+                    send(&mut ws, json!({
+                        "type": "policy_update", "fleet_id": fleet, "preset": "prospect",
+                        "params": {"max_range": 99, "engage_ratio_x10": 25, "fuel_budget_pct": 35},
+                    })).await;
                 }
             }
         }
@@ -311,6 +320,10 @@ async fn a_killed_server_comes_back_with_the_scan_live_and_the_boarding_under_wa
     assert_eq!(hex_of(&boarder["location"]), site);
     assert_eq!(boarder["state"], "Exploring", "the boarding was dropped: {boarder}");
     assert_eq!(boarder["cooldown_remaining"].as_u64().unwrap(), end_tick - now, "the boarding lost its place: {boarder}");
+    assert_eq!(
+        boarder["policy"], orders,
+        "a console that never gave the orders reads the doctrine and every setting in force, the range as the server clamped it: {boarder}",
+    );
 
     assert!(scanned.len() > 1, "the scan reached beyond the fleet's own sector");
     let chart = state["known_sectors"].as_array().unwrap();

@@ -387,12 +387,12 @@ impl<'a> Admiral<'a> {
             return;
         }
         let resting = leaving && fleet.location == self.home && unit.free() && fleet.fuel >= fleet.fuel_max;
-        let preset = match fleet.policy.and_then(|flown| doctrines.iter().position(|d| *d == flown)) {
+        let preset = match fleet.policy.and_then(|flown| doctrines.iter().position(|d| *d == flown.preset)) {
             Some(flown) if resting => doctrines[1 - flown],
             Some(flown) => doctrines[flown],
             None => doctrines[0],
         };
-        if fleet.policy != Some(preset) || leaving {
+        if fleet.policy.map(|flown| flown.preset) != Some(preset) || leaving {
             let orders = Wing::orders(preset, fleet);
             self.orders.push(Order::Policy(PolicyUpdate { fleet_id: fleet.id, ..orders }));
         }

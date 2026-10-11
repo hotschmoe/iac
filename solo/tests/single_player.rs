@@ -142,8 +142,15 @@ fn a_new_world_is_played_over_the_wire_as_on_a_server() {
 #[test]
 fn a_reload_plays_the_unsaved_ticks_again_and_arrives_at_the_same_world() {
     let mut watched = new_game(T0, "blitz", &["all:hands-on"]);
-    log_in(&mut watched, T0);
+    let login = log_in(&mut watched, T0);
+    let fleet = login[1]["fleets"][0]["id"].as_u64().unwrap();
+    assert_eq!(login[1]["fleets"][0].get("policy"), None, "a fleet flown by hand carries no orders");
     send(&mut watched, T0, json!({"type": "command", "action": "build", "building_type": "CrystalMine"}));
+    let given = send(&mut watched, T0, json!({
+        "type": "policy_update", "fleet_id": fleet, "preset": "patrol_home",
+        "params": {"max_range": 2, "engage_ratio_x10": 100, "fuel_budget_pct": 50},
+    }));
+    assert!(given.iter().all(|f| f["type"] != "error"), "{given:?}");
     play(&mut watched, T0, 100);
     let saved = save(&mut watched, T0 + 100_000);
     play(&mut watched, T0 + 100_000, 150);
@@ -166,6 +173,17 @@ fn a_reload_plays_the_unsaved_ticks_again_and_arrives_at_the_same_world() {
 
     let reloaded_at_250 = save(&mut reloaded, T0 + 250_000);
     assert!(snapshot_of(&reloaded_at_250) == snapshot_of(&watched_at_250), "the two worlds differ at tick 250");
+
+    let back = log_in(&mut reloaded, T0 + 250_000);
+    let flown = back[1]["fleets"].as_array().unwrap().iter().find(|f| f["id"] == fleet).expect("the fleet is in the reloaded world");
+    assert_eq!(
+        flown["policy"],
+        json!({
+            "preset": "patrol_home",
+            "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 2, "engage_ratio_x10": 100, "fuel_budget_pct": 50},
+        }),
+        "the console that opens the save reads the orders and every setting in force: {flown}",
+    );
 }
 
 #[test]

@@ -1452,6 +1452,7 @@ impl GameEngine {
                     f.state = FleetStatus::Idle;
                 }
                 self.dirty_fleets.insert(fid, ());
+                self.alert_harvest_ended(fid, "its hold is full");
                 continue;
             }
 
@@ -1499,12 +1500,33 @@ impl GameEngine {
             } else if let Some(f) = self.fleets.get_mut(&fid) {
                 // Nothing harvestable here — stop instead of spinning forever.
                 f.state = FleetStatus::Idle;
+                self.alert_harvest_ended(fid, match target {
+                    HarvestResource::Auto => "nothing is left to mine there",
+                    HarvestResource::Metal => "no metal is left to mine there",
+                    HarvestResource::Crystal => "no crystal is left to mine there",
+                    HarvestResource::Deuterium => "no deuterium is left to mine there",
+                });
             }
             self.dirty_fleets.insert(fid, ());
         }
 
         self.flush_harvest_reports();
         Ok(())
+    }
+
+    /// Tell the owner that a harvest ended by itself, and why. A fleet
+    /// under standing orders is left to its doctrine, which reports what it
+    /// does about it.
+    fn alert_harvest_ended(&mut self, fleet_id: u64, why: &str) {
+        if self.policies.contains_key(&fleet_id) { return; }
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let at = fleet.location;
+        let message = format!(
+            "fleet {fleet_id} stopped mining at {at}: {why}; it carries {:.0} of {:.0}",
+            fleet.cargo.total(),
+            fleet_cargo_capacity(fleet, &self.world.pace),
+        );
+        self.push_alert(AlertLevel::Warning, fleet_id, at, message);
     }
 
     fn accumulate_harvest(&mut self, sector_key: u32, resource: &str, amount: f32, current_density: Density) -> Result<(), Box<dyn std::error::Error>> {
@@ -3504,7 +3526,8 @@ impl GameEngine {
     /// charging is abandoned with its fuel, as `stop` would. At the
     /// homeworld there is nowhere to come back from and the order is
     /// refused: a fleet charging a jump there keeps the jump it paid for,
-    /// and one harvesting there goes on.
+    /// and one harvesting there goes on. The owner is told what the jump
+    /// cost: the fuel, a jump abandoned, hull damage and ships lost.
     pub fn handle_recall(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         let player = self.players.get(&fleet.owner_id).ok_or(ErrorCode::ServerError)?;
@@ -3513,6 +3536,10 @@ impl GameEngine {
         let dist = Hex::distance(&fleet.location, &player.homeworld) as f32;
         let fuel_cost = self.recall_fuel_cost(fleet);
         if fleet.fuel < fuel_cost { return Err(ErrorCode::InsufficientFuel); }
+        let from = fleet.location;
+        let abandoned = fleet.move_target
+            .filter(|_| fleet.state == FleetStatus::Moving)
+            .map(|target| (target, self.hop_fuel_cost(fleet)));
 
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.fuel -= fuel_cost;
@@ -3526,12 +3553,14 @@ impl GameEngine {
         );
 
         let ships_before = fleet_mut.ship_count;
+        let (mut damaged, mut hull_lost) = (0usize, 0.0f32);
         let mut i = 0;
         while i < fleet_mut.ship_count {
             let roll = rng.random_range(0.0..1.0);
             if roll < damage_chance {
                 let damage_pct = RECALL_HULL_DAMAGE_MIN + rng.random_range(0.0..1.0) * (RECALL_HULL_DAMAGE_MAX - RECALL_HULL_DAMAGE_MIN);
-                fleet_mut.ships[i].hull -= fleet_mut.ships[i].hull_max * damage_pct;
+                let dealt = fleet_mut.ships[i].hull_max * damage_pct;
+                fleet_mut.ships[i].hull -= dealt;
 
                 if fleet_mut.ships[i].hull <= 0.0 {
                     self.pending_events.push(GameEvent {
@@ -3552,14 +3581,43 @@ impl GameEngine {
                     fleet_mut.ships[fleet_mut.ship_count] = Ship::default();
                     continue;
                 }
+                damaged += 1;
+                hull_lost += dealt;
             }
             i += 1;
         }
 
         let home = player.homeworld;
-        if fleet_mut.ship_count < ships_before {
+        let lost = ships_before - fleet_mut.ship_count;
+        if lost > 0 {
             self.settle_hold(fleet_id);
         }
+        let of_ships = |n: usize| match (n, ships_before) {
+            (_, 1) => "its one ship".to_string(),
+            (n, all) if n == all => format!("all {all} of its ships"),
+            (n, all) => format!("{n} of its {all} ships"),
+        };
+        let harm = match (lost, damaged) {
+            (0, 0) => "no ship was damaged".to_string(),
+            (0, _) => format!("{} took {hull_lost:.0} hull damage, which is not repaired", of_ships(damaged)),
+            (_, 0) => format!("{} broke up in the jump", of_ships(lost)),
+            _ => format!(
+                "{} broke up in the jump and {damaged} more took {hull_lost:.0} hull damage, which is not repaired",
+                of_ships(lost),
+            ),
+        };
+        let jump = abandoned.map_or_else(String::new, |(target, fuel)| {
+            format!(", abandoning the jump to {target} it had burned {} fuel for", fuel_words(fuel))
+        });
+        self.push_alert(
+            if lost + damaged > 0 { AlertLevel::Warning } else { AlertLevel::Info },
+            fleet_id,
+            from,
+            format!(
+                "fleet {fleet_id} made the emergency jump home from {from} for {} fuel{jump}: {harm}",
+                fuel_words(fuel_cost),
+            ),
+        );
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.location = home;
         fleet_mut.state = if fleet_mut.ship_count == 0 { FleetStatus::Docked } else { FleetStatus::Idle };
@@ -4002,18 +4060,32 @@ impl GameEngine {
     }
 
     /// Stop whatever the fleet is doing. Aborting a jump forfeits the fuel
-    /// already burned — that's the price of hesitation.
+    /// already burned — that's the price of hesitation — and backing out of
+    /// a boarding leaves the site on alert; the owner is told of either.
     pub fn handle_stop(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         match fleet.state {
             FleetStatus::Moving | FleetStatus::Harvesting | FleetStatus::Exploring => {
-                // Backing out of a boarding leaves the site on alert.
                 let was_exploring = fleet.state == FleetStatus::Exploring;
+                let location = fleet.location;
+                let cost = match (fleet.state, fleet.move_target) {
+                    (FleetStatus::Moving, Some(target)) => Some(format!(
+                        "fleet {fleet_id} called off its jump to {target}: the {} fuel it burned for the jump is forfeit",
+                        fuel_words(self.hop_fuel_cost(fleet)),
+                    )),
+                    (FleetStatus::Exploring, _) => Some(format!(
+                        "fleet {fleet_id} backed out of the derelict at {location}: nothing was recovered and the site is on alert, so the next boarding there is likelier to be ambushed",
+                    )),
+                    _ => None,
+                };
                 if was_exploring {
-                    let key = fleet.location.to_key();
+                    let key = location.to_key();
                     let ov = self.ensure_override(key);
                     ov.site_ambush_bumps = ov.site_ambush_bumps.saturating_add(1);
                     self.dirty_sectors.insert(key, ());
+                }
+                if let Some(message) = cost {
+                    self.push_alert(AlertLevel::Warning, fleet_id, location, message);
                 }
                 let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
                 fleet_mut.state = FleetStatus::Idle;
@@ -5791,6 +5863,12 @@ fn assign_missing_queue_ids(player: &mut Player, next_id: &mut u64) {
 }
 
 // ── Helper Functions ──────────────────────────────────────────────
+
+/// A fuel amount in a sentence: whole when it is whole, else to a tenth.
+fn fuel_words(fuel: f32) -> String {
+    let tenths = (fuel * 10.0).round() / 10.0;
+    if tenths.fract() == 0.0 { format!("{tenths:.0}") } else { format!("{tenths:.1}") }
+}
 
 /// Stable id of the hostile a sector's template spawns; see `TEMPLATE_NPC_ID_BASE`.
 /// A hold reason without its parenthesised figures (power, ratio), which drift

@@ -111,11 +111,29 @@ class SectorHead extends StatelessWidget {
 
 // ── Fleet rail ─────────────────────────────────────────────────
 
-class FleetRail extends StatelessWidget {
+/// The player's fleets, one card each. On a desktop they stand in a column
+/// that takes the height it is given and scrolls when the fleets need more,
+/// keeping the selected one in view.
+class FleetRail extends StatefulWidget {
   final GameController ctrl;
   final bool narrow;
   final bool combat;
   const FleetRail({super.key, required this.ctrl, required this.narrow, required this.combat});
+
+  /// Room for one card of the column, the least the rail is given.
+  static const cardHeight = 86.0;
+
+  @override
+  State<FleetRail> createState() => _FleetRailState();
+}
+
+class _FleetRailState extends State<FleetRail> {
+  final Map<int, GlobalKey> _places = {};
+  int? _inView;
+
+  GameController get ctrl => widget.ctrl;
+  bool get narrow => widget.narrow;
+  bool get combat => widget.combat;
 
   @override
   Widget build(BuildContext context) {
@@ -126,7 +144,23 @@ class FleetRail extends StatelessWidget {
     if (narrow) {
       return Row(children: [for (final c in cards) Expanded(child: Padding(padding: const EdgeInsets.only(right: 4), child: c))]);
     }
-    return Column(mainAxisSize: MainAxisSize.min, children: [for (final c in cards) Padding(padding: const EdgeInsets.only(bottom: 6), child: c)]);
+    _places.removeWhere((id, _) => fleets.every((f) => f.id != id));
+    final selected = ctrl.activeFleetId;
+    if (selected != _inView) {
+      _inView = selected;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final card = _places[selected]?.currentContext;
+        if (card == null) return;
+        Scrollable.ensureVisible(card, alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd);
+        Scrollable.ensureVisible(card, alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart);
+      });
+    }
+    return SingleChildScrollView(
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        for (var i = 0; i < cards.length; i++)
+          Padding(key: _places.putIfAbsent(fleets[i].id, GlobalKey.new), padding: const EdgeInsets.only(bottom: 6), child: cards[i]),
+      ]),
+    );
   }
 
   Widget _card(int i, ui.FleetState f) {
@@ -609,8 +643,7 @@ const engageSteps = [5, 9, 11, 13, 15, 20, 25, 30, 40, 60, 100];
 /// 100 lifts the bound; any percentage can be typed (`policy ... fuel=`).
 const fuelBudgets = [10, 20, 35, 50, 75, 100];
 
-proto.PolicyPreset presetOf(ui.FleetState f) =>
-    proto.PolicyPreset.values.where((p) => p.label == f.policy).firstOrNull ?? proto.PolicyPreset.manual;
+proto.PolicyPreset presetOf(ui.FleetState f) => f.orders?.preset ?? proto.PolicyPreset.manual;
 
 /// What a doctrine does and when it goes home, as RULES.md has it.
 String doctrineLine(proto.PolicyPreset p) => switch (p) {
@@ -644,7 +677,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
   proto.PolicyPreset? _preset;
   int? _range, _engage, _fuel;
   int? _forFleet;
-  String? _stood;
+  proto.StandingOrders? _stood;
   GameController get c => widget.controller;
 
   void _forget() {
@@ -658,15 +691,14 @@ class _OrdersPanelState extends State<OrdersPanel> {
   Widget build(BuildContext context) {
     final st = c.state;
     final fleet = c.currentFleet;
+    final standing = fleet.orders;
     final inForce = presetOf(fleet);
-    final known = st.policyParams[fleet.id];
-    final standing = '${inForce.name} ${known?.toJson()}';
     if (_forFleet != fleet.id || _stood != standing) {
       _forFleet = fleet.id;
       _stood = standing;
       _forget();
     }
-    final usual = known ?? const proto.PolicyParams();
+    final usual = standing?.params ?? const proto.PolicyParams();
     final preset = _preset ?? inForce;
     final manual = preset == proto.PolicyPreset.manual;
     final form = proto.PolicyParams(
@@ -676,8 +708,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
       engageRatioX10: _engage ?? usual.engageRatioX10,
       fuelBudgetPct: _fuel ?? usual.fuelBudgetPct,
     );
-    final same = preset == inForce &&
-        (manual || (known != null && form.maxRange == known.maxRange && form.engageRatioX10 == known.engageRatioX10 && form.fuelBudgetPct == known.fuelBudgetPct));
+    final same = preset == inForce && (manual || form == usual);
     final why = !same
         ? null
         : manual
@@ -692,11 +723,10 @@ class _OrdersPanelState extends State<OrdersPanel> {
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
         Kv('In force', key: const Key('orders-in-force'), v: inForce.label.toUpperCase(), vc: C.a300),
-        if (inForce != proto.PolicyPreset.manual)
-          known != null
-              ? Padding(padding: const EdgeInsets.only(top: 4), child: Text(settingsLine(known), key: const Key('orders-settings'), style: T.mono(size: 10, color: C.text2, height: 1.3)))
-              : const WhyText('Its range, ratio and fuel budget are not shown: the engine says them once, when orders are given, and these were not given from this console in this session.',
-                  key: Key('orders-settings-unknown')),
+        if (standing != null)
+          Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(settingsLine(standing.params), key: const Key('orders-settings'), style: T.mono(size: 10, color: C.text2, height: 1.3))),
         const SizedBox(height: 6),
         _report(st.tick, fleet, acts.firstOrNull),
         const SizedBox(height: 8),

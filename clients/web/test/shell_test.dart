@@ -135,6 +135,40 @@ void main() {
     await endShell(tester, c);
   });
 
+  testWidgets('what an order cost, and a harvest that ended, show as the engine said them: a toast that stays to be read and a log line, at desktop and phone width', (tester) async {
+    const said = [
+      'fleet 2 called off its jump to [3,-2]: the 6 fuel it burned for the jump is forfeit',
+      'fleet 2 stopped mining at [3,-2]: no crystal is left to mine there; it carries 212 of 632',
+      'fleet 2 made the emergency jump home from [12,-7] for 3000 fuel, abandoning the jump to [13,-7] it had burned 60 fuel for: '
+          '3 of its 20 ships broke up in the jump and 5 more took 212 hull damage, which is not repaired',
+    ];
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final c = await pumpShell(tester, size: size, screen: Screen.windshield);
+      final toasts = find.byType(ToastLayer);
+      for (final (i, sentence) in said.indexed) {
+        c.receive(proto.GameEvent(
+            tick: 4900 + i,
+            kind: proto.AlertEvent(level: proto.AlertLevel.warning, message: sentence, fleetId: 2, sector: const proto.Hex(3, -2))));
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(find.descendant(of: toasts, matching: find.text(sentence)), findsOneWidget, reason: 'the sentence, whole');
+        expect(c.state.events.map((e) => e.message), contains('! $sentence'));
+        expect(tester.takeException(), isNull, reason: '$sentence at ${size.width}');
+        await shot(tester, 'cost-toast-$i-${size.width.round()}');
+        await tester.pump(const Duration(seconds: 6));
+        expect(find.descendant(of: toasts, matching: find.text(sentence)), findsOneWidget, reason: 'it stays up long enough to read');
+        await tester.pump(const Duration(seconds: 6));
+      }
+      c.receive(const proto.GameEvent(
+          tick: 4910,
+          kind: proto.AlertEvent(level: proto.AlertLevel.info, message: 'fleet 2 made the emergency jump home from [3,-2] for 12 fuel: no ship was damaged', fleetId: 2)));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.descendant(of: toasts, matching: find.textContaining('no ship was damaged')), findsNothing, reason: 'a jump that harmed nothing is a log line only');
+      expect(c.state.events.map((e) => e.message), contains('fleet 2 made the emergency jump home from [3,-2] for 12 fuel: no ship was damaged'));
+      await endShell(tester, c);
+    }
+  });
+
   testWidgets('between a phone and a wide desktop the HUD gives the stockpiles the room, at full size', (tester) async {
     final c = await pumpShell(tester, size: const Size(1000, 760));
     expect(tester.takeException(), isNull);

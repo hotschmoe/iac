@@ -44,7 +44,16 @@
         "q": 3,
         "r": -2
       },
-      "policy": "patrol_home",
+      "policy": {
+        "params": {
+          "cargo_return_pct": 85,
+          "engage_ratio_x10": 15,
+          "fuel_budget_pct": 20,
+          "max_range": 4,
+          "min_fuel_pct": 10
+        },
+        "preset": "patrol_home"
+      },
       "power": 61.5,
       "range_hops": 4,
       "ships": [

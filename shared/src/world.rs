@@ -31,8 +31,9 @@ pub fn home_seats() -> impl Iterator<Item = Hex> {
         .filter(|coord| is_home_seat(*coord))
 }
 
-/// A home seat or a sector beside one. No hostile group is generated here
-/// and none wanders in.
+/// A home seat or a sector beside one. No group that shoots first is
+/// generated here and none wanders in; a convoy, which never does, may stand
+/// here, on the seat itself too.
 pub fn is_home_ground(coord: Hex) -> bool {
     is_home_seat(coord) || coord.neighbors().into_iter().any(is_home_seat)
 }

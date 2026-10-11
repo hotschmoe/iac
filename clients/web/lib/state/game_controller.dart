@@ -856,7 +856,6 @@ class GameController extends ChangeNotifier {
             _quoteTyped.add((q.fleetId, q.give, q.want));
           }
           if (m case proto.CommandMessage(command: proto.LeaderboardCommand())) _boardTyped = true;
-          if (m case proto.PolicyUpdate(:final fleetId, :final preset, :final params)) _mapper.noteOrders(fleetId, preset, params);
           send(m);
         }
       case ParsedLocal(:final lines):

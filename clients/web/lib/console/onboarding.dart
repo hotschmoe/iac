@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../models/fleet.dart';
 import '../models/game_state.dart';
@@ -17,7 +18,7 @@ enum Lesson {
   token('Save your account token', '', guided: true, listed: false),
   build('Queue a building', 'Mines compound. Keep the build slot busy.', guided: true, screen: Screen.overview, target: 'build'),
   scan('Scan the lanes', 'Charts the lanes and contacts around a fleet.', guided: true, screen: Screen.windshield, target: 'dock-scan', keys: 'V'),
-  jump('Jump through a gate', 'One hop per jump. Read the threat digit first.', guided: true, screen: Screen.windshield, target: 'gates', keys: 'Q W E A S D'),
+  jump('Jump through a gate', 'One hop per jump. Read the threat first.', guided: true, screen: Screen.windshield, target: 'gates', keys: 'Q W E A S D'),
   harvest('Harvest ore', 'Ore fills the hold every tick.', guided: true, screen: Screen.windshield, target: 'dock-harvest', keys: 'H'),
   unload('Recall and unload', 'Docking at home empties the hold into storage.', guided: true, screen: Screen.windshield, target: 'dock-recall', keys: 'R'),
   orders('Set standing orders', 'A fleet with orders flies itself.', guided: true, screen: Screen.windshield, target: 'orders', keys: 'P'),
@@ -66,6 +67,22 @@ class Onboarding extends ChangeNotifier {
 
   /// The fleet that harvested, which [Lesson.unload] waits to see at home.
   int? _hauler;
+
+  /// Whether the windshield shows its small gate cards, which name a lane's
+  /// key and terrain and nothing more. The notes that read a gate card
+  /// follow it.
+  bool _smallGates = false;
+  bool _gone = false;
+
+  /// The windshield says which gate cards it has laid out. It says so while
+  /// it is laid out, so whoever listens hears after the frame.
+  void gateCards({required bool small}) {
+    if (small == _smallGates) return;
+    _smallGates = small;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!_gone) notifyListeners();
+    });
+  }
 
   bool get active => _active;
   bool done(Lesson l) => _done.contains(l);
@@ -120,14 +137,19 @@ class Onboarding extends ChangeNotifier {
       case Lesson.scan:
         return 'A scan charts the lanes and contacts around the fleet. Press SCAN.';
       case Lesson.jump:
+        if (_smallGates) {
+          return 'Each gate card is a lane, named by its key. An amber gate is quiet; any other colour is hostile or uncharted, and the Map says which. '
+              '${_quietGates().isEmpty ? 'No gate here is quiet.' : 'The marked gates are quiet.'} Tap a gate to jump.';
+        }
         return 'Each gate card is a lane: the T digit is its threat, the bars its ore. '
             '${_quietGates().isEmpty ? 'No gate here is quiet: hover each for your odds' : 'The marked gates are quiet. Hover any gate for your odds'}'
             ' and stay out of RISKY and DEADLY. Click a gate to jump.';
       case Lesson.harvest:
         final ore = s.sectors[fleet.sector]?.resources;
         final here = ore != null && ore.metal.index + ore.crystal.index + ore.deuterium.index > 0;
-        return here
-            ? 'Ore in this sector. Press HARVEST, then AUTO: the hold fills every tick.'
+        if (here) return 'Ore in this sector. Press HARVEST, then AUTO: the hold fills every tick.';
+        return _smallGates
+            ? 'No ore in this sector. Jump on: the Ore layer of the Map shows which sectors have it.'
             : 'No ore in this sector. Jump on: ore shows as Fe, Cr and De bars on the gate cards.';
       case Lesson.unload:
         final hauler = s.fleets.where((f) => f.id == _hauler).firstOrNull ?? fleet;
@@ -256,6 +278,7 @@ class Onboarding extends ChangeNotifier {
 
   @override
   void dispose() {
+    _gone = true;
     game.removeListener(_onGame);
     _events?.cancel();
     super.dispose();

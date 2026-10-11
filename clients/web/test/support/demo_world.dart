@@ -84,9 +84,9 @@ class DemoWorld {
   final Map<int, List<Hex>> _recall = {};
   final Set<int> _provoked = {};
 
-  /// Orders given through `policy_update`, by fleet: their settings and the
-  /// tick their hold was last said (0 before the first).
-  final Map<int, (PolicyParams, int)> _orders = {};
+  /// The fleets given orders through `policy_update`: the tick each one's
+  /// hold was last said (0 before the first).
+  final Map<int, int> _holdSaid = {};
   int _nextNpcFleet = 9100;
   int _nextShip = 3000;
   int _raidArrival = 0;
@@ -152,7 +152,7 @@ class DemoWorld {
         cargoCapacity: 40,
         fuel: 44,
         fuelMax: 60,
-        policy: PolicyPreset.prospect,
+        policy: const StandingOrders(preset: PolicyPreset.prospect, params: PolicyParams(maxRange: 6, engageRatioX10: 20, fuelBudgetPct: 35)),
       )),
     ];
     _harvest[103] = HarvestResource.auto;
@@ -566,7 +566,7 @@ class DemoWorld {
       return [
         _err(
             ErrorCode.invalidCommand,
-            'fleet $fleetId is under standing orders (${f.policy!.label}), which unload at the dock; '
+            'fleet $fleetId is under standing orders (${f.policy!.preset.label}), which unload at the dock; '
             'set it to manual before loading its hold by hand'),
       ];
     }
@@ -646,13 +646,13 @@ class DemoWorld {
       return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left); its standing orders were not changed')];
     }
     if (preset == PolicyPreset.manual) {
-      _orders.remove(fleetId);
+      _holdSaid.remove(fleetId);
       _setFleet(_copy(f, clearPolicy: true));
       _ev(PolicyActionEvent(fleetId: fleetId, preset: PolicyPreset.manual, action: 'clear', reason: 'standing orders cleared'));
       return [_tickUpdate()];
     }
-    _orders[fleetId] = (params, 0);
-    _setFleet(_copy(f, policy: preset));
+    _holdSaid[fleetId] = 0;
+    _setFleet(_copy(f, policy: StandingOrders(preset: preset, params: params)));
     if (f.laden) _unload(f);
     final fuel = params.fuelBudgetPct >= 100 ? 'fuel unbounded' : 'fuel budget ${params.fuelBudgetPct}% of deuterium income';
     _ev(PolicyActionEvent(
@@ -670,13 +670,13 @@ class DemoWorld {
   /// minute after.
   void _stepOrders() {
     for (final f in _fleets) {
-      final given = _orders[f.id];
-      final preset = f.policy;
-      if (given == null || preset == null) continue;
-      final (params, saidAt) = given;
+      final saidAt = _holdSaid[f.id];
+      final orders = f.policy;
+      if (saidAt == null || orders == null) continue;
+      final StandingOrders(:preset, :params) = orders;
       if (f.state != FleetStatus.idle && f.state != FleetStatus.docked) continue;
       if (saidAt != 0 && _tick < saidAt + 60) continue;
-      _orders[f.id] = (params, _tick);
+      _holdSaid[f.id] = _tick;
       final within = 'within ${params.maxRange} hops of home';
       _ev(PolicyActionEvent(
           fleetId: f.id,
@@ -1185,7 +1185,7 @@ class DemoWorld {
     Hex? location,
     FleetStatus? state,
     Resources? cargo,
-    PolicyPreset? policy,
+    StandingOrders? policy,
     bool clearPolicy = false,
     List<ShipState>? ships,
     double? fuel,

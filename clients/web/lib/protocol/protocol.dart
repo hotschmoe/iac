@@ -588,6 +588,39 @@ class PolicyParams {
         'engage_ratio_x10': engageRatioX10,
         'fuel_budget_pct': fuelBudgetPct,
       };
+
+  @override
+  bool operator ==(Object other) =>
+      other is PolicyParams &&
+      other.minFuelPct == minFuelPct &&
+      other.cargoReturnPct == cargoReturnPct &&
+      other.maxRange == maxRange &&
+      other.engageRatioX10 == engageRatioX10 &&
+      other.fuelBudgetPct == fuelBudgetPct;
+
+  @override
+  int get hashCode => Object.hash(minFuelPct, cargoReturnPct, maxRange, engageRatioX10, fuelBudgetPct);
+}
+
+/// The standing orders a fleet flies under, as [FleetState] carries them:
+/// the doctrine, never manual, and every setting in force.
+class StandingOrders {
+  final PolicyPreset preset;
+  final PolicyParams params;
+  const StandingOrders({required this.preset, this.params = const PolicyParams()});
+
+  factory StandingOrders.fromJson(Object? json) {
+    final m = _obj(json);
+    return StandingOrders(preset: PolicyPreset.fromJson(m['preset']), params: PolicyParams.fromJson(m['params']));
+  }
+
+  Json toJson() => {'preset': preset.toJson(), 'params': params.toJson()};
+
+  @override
+  bool operator ==(Object other) => other is StandingOrders && other.preset == preset && other.params == params;
+
+  @override
+  int get hashCode => Object.hash(preset, params);
 }
 
 /// {"action": "move" | "harvest" | ..., ...}
@@ -1504,7 +1537,10 @@ class FleetState {
 
   /// Loaded by [LoadCommand] and still at home: the dock leaves the hold alone.
   final bool laden;
-  final PolicyPreset? policy;
+
+  /// The standing orders flying this fleet, doctrine and settings together;
+  /// null for a fleet flown by hand.
+  final StandingOrders? policy;
   const FleetState({
     required this.id,
     required this.location,
@@ -1542,7 +1578,7 @@ class FleetState {
       rangeHops: (m['range_hops'] as int?) ?? 0,
       cargoBlocked: (m['cargo_blocked'] as bool?) ?? false,
       laden: (m['laden'] as bool?) ?? false,
-      policy: _opt(m['policy'], PolicyPreset.fromJson),
+      policy: _opt(m['policy'], StandingOrders.fromJson),
     );
   }
 
