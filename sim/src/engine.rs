@@ -439,6 +439,10 @@ pub struct Outpost {
     /// Fleets standing here that were told the store could not fill their tank.
     pub dry_tanks: Vec<u64>,
     pub founded_tick: u64,
+    /// Everything `load` has taken out of the store. No rule reads it: it is
+    /// what the balance report counts as hauled.
+    #[serde(default)]
+    pub hauled: Resources,
 }
 
 impl Outpost {
@@ -851,6 +855,10 @@ pub struct GameEngine {
     bots: BTreeMap<u64, BotRecord>,
     /// Outposts by owner: one each.
     pub outposts: BTreeMap<u64, Outpost>,
+    /// The owner of the outpost in each sector that holds one: `outposts`
+    /// read the other way, for `outpost_at`, which every sector view asks.
+    /// An outpost never moves, so founding and abandoning are all that change it.
+    outpost_sites: KeyMap<u32, u64>,
     /// Standing orders per fleet.
     pub policies: BTreeMap<u64, FleetPolicy>,
 
@@ -930,6 +938,7 @@ impl GameEngine {
             home_salvage_warned,
             harvest_reports,
             bots,
+            outpost_sites: outposts.iter().map(|(owner, outpost)| (outpost.sector.to_key(), *owner)).collect(),
             outposts,
             policies,
             pending_events,
@@ -2831,7 +2840,8 @@ impl GameEngine {
 
     /// The outpost standing in `sector`, with its owner.
     pub fn outpost_at(&self, sector: Hex) -> Option<(u64, &Outpost)> {
-        self.outposts.iter().find(|(_, o)| o.sector == sector).map(|(owner, o)| (*owner, o))
+        let owner = *self.outpost_sites.get(&sector.to_key())?;
+        self.outposts.get(&owner).map(|outpost| (owner, outpost))
     }
 
     /// `fleet` is at its owner's finished outpost.
@@ -3051,7 +3061,9 @@ impl GameEngine {
             repair_warned: false,
             dry_tanks: Vec::new(),
             founded_tick: tick,
+            hauled: Resources::default(),
         });
+        self.outpost_sites.insert(sector.to_key(), player_id);
         self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
         self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
             "fleet {fleet_id} founded your outpost at {sector} for {}: level 1 is finished at tick {}, in {ticks} ticks. \
@@ -3066,6 +3078,7 @@ impl GameEngine {
     /// the lair it displaced returns after its usual delay.
     pub fn handle_abandon_outpost(&mut self, player_id: u64) -> Result<(), ErrorCode> {
         let outpost = self.outposts.remove(&player_id).ok_or(ErrorCode::InvalidCommand)?;
+        self.outpost_sites.remove(&outpost.sector.to_key());
         self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
         let sector = outpost.sector;
         let left = if outpost.store.total() > 0.0 {
@@ -4299,6 +4312,7 @@ impl GameEngine {
                 let outpost = self.outposts.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
                 let stock = outpost.store.get_mut(resource);
                 *stock = (*stock - loaded).max(0.0);
+                *outpost.hauled.get_mut(resource) += loaded;
                 self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
             }
         }

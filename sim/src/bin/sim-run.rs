@@ -14,14 +14,14 @@ use iac_shared::constants::DEFAULT_WORLD_SEED;
 use iac_shared::pace::Pace;
 use iac_shared::world::home_seats;
 use iac_sim::bot::{Attention, Bot, Personality, Style, DAY, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
-use iac_sim::headless::{Headless, IdleWhy, PlayerSummary, ScoreBreakdown, SlotIdle, Why, WHY_LABELS};
+use iac_sim::headless::{Headless, IdleWhy, OutpostOrder, PlayerSummary, ScoreBreakdown, SlotIdle, Why, WHY_LABELS};
 use iac_sim::score::ExtraRule;
 use iac_sim::script::IdlePlayer;
 use serde_json::json;
 
 const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--seat <spec>]... [--sessions <n>]
                [--ticks <n> | --hours <n> | --days <n>] [--every <ticks>] [--ignore-cap] [--cap <rule>]
-               [--meter <share>]... [--json]
+               [--meter <share>]... [--outpost <ring>:<grade>:<level>[:<repairs>]] [--json]
   --pace      world pace (default season)
   --seed      world seed (default: the server's default)
   --seat      who plays; repeatable. <personality>:<attention>[:<count>] or idle[:<count>]
@@ -44,6 +44,12 @@ const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--sea
               repeatable. A meter fills with the points earned and drains by one allowance
               a day; a point counts in full while it stands under one allowance, by the
               square root beyond. The bots do not play to it: pair it with --cap none
+  --outpost   stand an outpost of <level> (1 to 3) for every bot at the start of day 3, on the
+              sector of <ring> (9 to 20) whose ore is nearest <grade> (0 to 12) among those free,
+              three hexes from the next. Nothing is founded or paid, and no bot supplies it,
+              defends it or hauls from it: it measures the extractor, the raids and the store.
+                <level>+   the next level is under construction from that tick
+                <repairs>  how many repairs its store is stocked for (default 1)
   --json      print the full record as JSON instead of the tables";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -72,6 +78,35 @@ struct Args {
     ignore_cap: bool,
     rule: ExtraRule,
     meters: Vec<f32>,
+    outpost: Option<OutpostOrder>,
+}
+
+/// The tick `--outpost` stands its outposts: the start of day 3.
+const OUTPOST_TICK: u64 = 2 * DAY;
+
+fn parse_outpost(text: &str) -> Result<OutpostOrder, String> {
+    let wrong = || format!("--outpost: '{text}' is not <ring>:<grade>:<level>[:<repairs>]");
+    let mut parts = text.split(':');
+    let (Some(ring), Some(grade), Some(level)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(wrong());
+    };
+    let (level, building) = match level.strip_suffix('+') {
+        Some(level) => (level, true),
+        None => (level, false),
+    };
+    let repairs = match (parts.next(), parts.next()) {
+        (None, _) => 1,
+        (Some(repairs), None) => repairs.parse().map_err(|_| wrong())?,
+        _ => return Err(wrong()),
+    };
+    let grade = grade.parse::<f32>().ok().filter(|grade| grade.is_finite()).ok_or_else(wrong)?;
+    Ok(OutpostOrder {
+        ring: ring.parse().map_err(|_| wrong())?,
+        grade,
+        level: level.parse().map_err(|_| wrong())?,
+        building,
+        repairs,
+    })
 }
 
 fn parse_share(flag: &str, text: &str) -> Result<f32, String> {
@@ -123,6 +158,7 @@ fn parse_args() -> Result<Args, String> {
         ignore_cap: false,
         rule: ExtraRule::GAME,
         meters: Vec::new(),
+        outpost: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -147,6 +183,7 @@ fn parse_args() -> Result<Args, String> {
             "--sessions" => args.sessions = number("--sessions")?,
             "--cap" => args.rule = parse_rule(&value)?,
             "--meter" => args.meters.push(parse_share("--meter", &value)?),
+            "--outpost" => args.outpost = Some(parse_outpost(&value)?),
             "--ticks" => args.ticks = number("--ticks")?,
             "--hours" => args.ticks = number("--hours")? * 3600,
             "--days" => args.ticks = number("--days")? * DAY,
@@ -165,11 +202,16 @@ fn parse_args() -> Result<Args, String> {
     if args.seats.len() > homes {
         return Err(format!("--seat asks for {} players; a world has {homes} home seats", args.seats.len()));
     }
+    if args.outpost.is_some() && args.ticks <= OUTPOST_TICK {
+        return Err("--outpost stands its outposts at the start of day 3; the run ends before that".to_string());
+    }
     Ok(args)
 }
 
-fn seat_all(world: &mut Headless, args: &Args) -> Result<(), String> {
+/// Seat everyone asked for; returns the player ids of the bots.
+fn seat_all(world: &mut Headless, args: &Args) -> Result<Vec<u64>, String> {
     let mut seen: Vec<(String, usize)> = Vec::new();
+    let mut bots = Vec::new();
     for &kind in &args.seats {
         let style = kind.style();
         let number = match seen.iter_mut().find(|(s, _)| *s == style) {
@@ -184,14 +226,16 @@ fn seat_all(world: &mut Headless, args: &Args) -> Result<(), String> {
         };
         let name = format!("{}-{number}", style.replace('/', "-"));
         match kind {
-            Kind::Idle => world.add_player(Box::new(IdlePlayer { label: name }), style)?,
+            Kind::Idle => {
+                world.add_player(Box::new(IdlePlayer { label: name }), style)?;
+            }
             Kind::Bot(bot_style) => {
                 let bot_style = Style { sessions_per_day: args.sessions, ignore_cap: args.ignore_cap, ..bot_style };
-                world.add_player(Box::new(Bot::new(name, bot_style).under(args.rule)), style)?
+                bots.push(world.add_player(Box::new(Bot::new(name, bot_style).under(args.rule)), style)?);
             }
-        };
+        }
     }
-    Ok(())
+    Ok(bots)
 }
 
 fn when(tick: u64) -> String {
@@ -309,11 +353,8 @@ fn percent(value: f32, of: Option<f32>) -> String {
 
 /// What each player's outpost scored, made and lost to raids; None when no
 /// player has had one, which is every world bots play alone.
-fn outpost_table(players: &[PlayerSummary], ticks: u64) -> Option<String> {
-    let touched = |p: &&PlayerSummary| {
-        let f = &p.field;
-        p.score.outpost > 0.0 || f.outpost_yield > 0.0 || f.outpost_ticks_breached > 0 || f.outpost_raids_repelled + f.outpost_raids_lost > 0
-    };
+fn outpost_table(players: &[PlayerSummary]) -> Option<String> {
+    let touched = |p: &&PlayerSummary| p.outpost.is_some() || p.field.outpost_ticks > 0 || p.field.outpost_hauled > 0.0;
     let rows: Vec<&PlayerSummary> = players.iter().filter(touched).collect();
     if rows.is_empty() {
         return None;
@@ -321,24 +362,82 @@ fn outpost_table(players: &[PlayerSummary], ticks: u64) -> Option<String> {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<24} {:>7} {:>8} {:>8} {:>8} {:>5} {:>8}",
-        "outposts", "points", "yield", "raided", "repelled", "lost", "breached"
+        "{:<22} {:>9} {:>5} {:>3} {:>6} {:>7} {:>7} {:>6} {:>9} {:>8} {:>8} {:>8} {:>8} {:>7} {:>6} {:>8} {:>4} {:>4} {:>8} {:>7} {:>6}  state",
+        "outposts", "at", "grade", "lvl", "points", "rate/h", "home/h", "share", "potential", "yield", "spilled",
+        "raided", "repairs", "hauled", "kept", "repelled", "lost", "open", "breached", "waiting", "build",
     );
     for p in rows {
         let f = &p.field;
+        let stood = f.outpost_ticks.max(1) as f64;
+        let part = |ticks: u64| 100.0 * ticks as f64 / stood;
+        let site = match &p.outpost {
+            Some(o) => format!(
+                "{:>9} {:>5.1} {:>3} {:>6.2} {:>7.0} {:>7.0} {:>5.1}%",
+                o.sector.to_string(),
+                o.grade,
+                o.level,
+                p.score.outpost,
+                o.rate_per_hour,
+                o.home_per_hour,
+                100.0 * o.rate_per_hour / o.home_per_hour.max(1.0),
+            ),
+            None => format!("{:>9} {:>5} {:>3} {:>6} {:>7} {:>7} {:>6}", "gone", "-", "-", "-", "-", "-", "-"),
+        };
+        let state = match &p.outpost {
+            Some(o) if o.waiting => "breached, waiting for materials",
+            Some(o) if o.breached => "breached",
+            Some(_) => "in service",
+            None => "",
+        };
         let _ = writeln!(
             out,
-            "{:<24} {:>7.2} {:>8.1} {:>8.1} {:>8} {:>5} {:>7.1}%",
+            "{:<22} {site} {:>9.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>7.1} {:>6} {:>8} {:>4} {:>4} {:>7.1}% {:>6.1}% {:>5.1}%  {state}",
             p.name,
-            p.score.outpost,
+            f.outpost_potential,
             f.outpost_yield,
+            f.outpost_spilled,
             f.outpost_raided,
+            f.outpost_repairs,
+            f.outpost_hauled,
+            percent(f.outpost_yield - f.outpost_raided - f.outpost_repairs, Some(f.outpost_potential)),
             f.outpost_raids_repelled,
             f.outpost_raids_lost,
-            100.0 * f.outpost_ticks_breached as f64 / ticks.max(1) as f64,
+            f.outpost_raids_on_breach,
+            part(f.outpost_ticks_breached),
+            part(f.outpost_ticks_waiting),
+            part(f.outpost_ticks_behind_build),
         );
     }
     Some(out)
+}
+
+/// The outposts `--outpost` stood, as they were on that tick: where, and
+/// what level 1 there pays back in against its owner's next Metal Mine level.
+fn stood_table(stood: &[PlayerSummary]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<22} {:>9} {:>4} {:>11} {:>5} {:>9} {:>9} {:>11} {:>12}",
+        "stood", "at", "ring", "ore m/c/d", "grade", "payback h", "next mine", "its payback", "against mine"
+    );
+    for p in stood {
+        let Some(o) = &p.outpost else { continue };
+        let [metal, crystal, deuterium] = o.ore.map(|density| density.harvest_multiplier());
+        let _ = writeln!(
+            out,
+            "{:<22} {:>9} {:>4} {:>11} {:>5.1} {:>9.0} {:>9} {:>11.0} {:>12}",
+            p.name,
+            o.sector.to_string(),
+            o.ring,
+            format!("{metal}/{crystal}/{deuterium}"),
+            o.grade,
+            o.payback_hours,
+            o.next_mine_level,
+            o.mine_payback_hours,
+            percent(o.payback_hours, Some(o.mine_payback_hours)),
+        );
+    }
+    out
 }
 
 /// Final scores by style, with the two comparisons the balance targets ask
@@ -487,20 +586,30 @@ fn main() {
     for &share in &args.meters {
         world.meter(share);
     }
-    if let Err(msg) = seat_all(&mut world, &args) {
+    let bots = seat_all(&mut world, &args).unwrap_or_else(|msg| {
         eprintln!("sim-run: {msg}");
         std::process::exit(2);
-    }
+    });
     let every = args.every.unwrap_or(if args.ticks >= 2 * DAY { DAY } else { (args.ticks / 10).max(1) });
 
     let started = Instant::now();
-    world.run_sampled(args.ticks, every).expect("simulation failed");
+    let mut stood = Vec::new();
+    if let Some(order) = args.outpost {
+        world.run_sampled(OUTPOST_TICK, every).expect("simulation failed");
+        if let Err(msg) = world.install_outposts(&bots, order) {
+            eprintln!("sim-run: --outpost: {msg}");
+            std::process::exit(2);
+        }
+        stood = world.summaries().into_iter().filter(|p| p.outpost.is_some()).collect();
+    }
+    world.run_sampled(args.ticks - world.engine.current_tick(), every).expect("simulation failed");
     let wall = started.elapsed().as_secs_f64();
     let tps = args.ticks as f64 / wall;
 
     let players = world.summaries();
     let hash = format!("{:016x}", world.engine.snapshot().hash());
     if args.json {
+        let stood: Vec<_> = stood.iter().map(|p| json!({ "name": p.name, "outpost": p.outpost })).collect();
         let report = json!({
             "pace": args.pace.value(),
             "seed": args.seed,
@@ -509,6 +618,7 @@ fn main() {
             "sessions_per_day": args.sessions,
             "score_rule": rule_text(args.rule),
             "snapshot_hash": hash,
+            "outposts_stood": stood,
             "players": players,
         });
         println!("{}", serde_json::to_string_pretty(&report).expect("report serializes"));
@@ -529,9 +639,35 @@ fn main() {
         println!("  one more combat or exploration point would not have counted\n");
         println!("{}", sample_table(&players));
         println!("{}", style_table(&players));
-        if let Some(table) = outpost_table(&players, args.ticks) {
-            println!("outposts: core also counts the finished levels of a player's outpost (points); yield and raided are");
-            println!("  what its extractor made and what lost raids took, in the points they buy; breached: share of the run\n");
+        if let Some(order) = args.outpost {
+            println!(
+                "--outpost: at the start of day 3 every bot was given an outpost of level {}{} in ring {}, on the free",
+                order.level,
+                if order.building { format!(" with level {} under construction", order.level + 1) } else { String::new() },
+                order.ring,
+            );
+            println!(
+                "  site nearest grade {}, its store stocked for {} repair{}. Nobody founded, supplied, defended or hauled.",
+                order.grade,
+                order.repairs,
+                if order.repairs == 1 { "" } else { "s" },
+            );
+            println!("  ore m/c/d: what its metal, crystal and deuterium ore count for; they sum to the grade");
+            println!("  payback h: game hours at pace 1 in which level 1 there makes its cost, uninterrupted; next mine and");
+            println!("  its payback: the same for the Metal Mine level its owner's homeworld would build next that day\n");
+            println!("{}", stood_table(&stood));
+        }
+        if let Some(table) = outpost_table(&players) {
+            println!("outposts: core also counts the finished levels of a player's outpost (points)");
+            println!("  rate/h, home/h, share: units an hour its extractor makes in service, its owner's mines make, and the first");
+            println!("    as a share of the second, all as the run ended");
+            println!("  potential, yield, spilled, raided, repairs, hauled: in the points they buy. Potential is the rate of every");
+            println!("    tick it stood; yield what reached the store; spilled what a full store turned away; raided what lost");
+            println!("    raids took; repairs what it paid for them; hauled what load took from the store");
+            println!("  kept: yield less raided and repairs, as a share of potential");
+            println!("  repelled, lost, open: raids on it; open is the part of lost that found it breached already");
+            println!("  breached: share of the time it stood. waiting: the part with no repair running because the store could");
+            println!("    not pay one. build: the part with no repair running because a level was building\n");
             println!("{table}");
         }
         println!("idle: share of the run the slot stood empty (building slots counted one by one)");

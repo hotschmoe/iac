@@ -7,13 +7,17 @@
 
 use std::collections::BTreeMap;
 
-use iac_shared::constants::{ResourceKind, Resources, FUEL_DEUT_PER_UNIT};
+use iac_shared::constants::{
+    Density, ResourceKind, Resources, TerrainType, FUEL_DEUT_PER_UNIT, OUTPOST_MAX_LEVEL, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
+    OUTPOST_SPACING, RAID_ROLL_INTERVAL,
+};
+use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{EventKind, GameEvent, QueueType, WaitReason};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use serde::Serialize;
 
-use crate::engine::{FleetStatus, GameEngine};
+use crate::engine::{FleetStatus, GameEngine, Outpost, OutpostJob, OutpostTask, Player, RaidState};
 use crate::score::{self, ExtraRule, Meter, Score};
 use crate::script::{ScriptedPlayer, Seat, Want};
 use crate::{queue, views};
@@ -72,14 +76,34 @@ pub struct FieldTally {
     /// Raids on the outpost.
     pub outpost_raids_repelled: u32,
     pub outpost_raids_lost: u32,
+    /// The part of `outpost_raids_lost` that found it breached already,
+    /// with no platform to meet them.
+    pub outpost_raids_on_breach: u32,
     /// What lost raids took from the outpost's store and the holds there.
     pub outpost_raided: f32,
     /// What the outpost's extractor put into its store: its rate, as far as
     /// the store had room, counted each tick the outpost stood in service.
     /// The tick a raid breaches it or a repair ends may be off by one.
     pub outpost_yield: f32,
+    /// What the extractor would have made had the outpost never been
+    /// breached and its store never full: its rate at the level it stood
+    /// at, every tick since level 1 was finished.
+    pub outpost_potential: f32,
+    /// What a full store turned away while the outpost was in service.
+    pub outpost_spilled: f32,
+    /// What the outpost paid from its store for repairs.
+    pub outpost_repairs: f32,
+    /// What `load` took from the outpost's store.
+    pub outpost_hauled: f32,
+    /// Ticks the player had an outpost with a finished level.
+    pub outpost_ticks: u64,
     /// Ticks the outpost stood breached.
     pub outpost_ticks_breached: u64,
+    /// The part of `outpost_ticks_breached` in which no repair ran because
+    /// the store could not pay for one.
+    pub outpost_ticks_waiting: u64,
+    /// The part of it in which no repair ran because a level was building.
+    pub outpost_ticks_behind_build: u64,
     /// Hours spent away from home, summed over fleets.
     pub fleet_hours: f32,
     /// The part of `fleet_hours` flown while one more combat or exploration
@@ -243,6 +267,58 @@ struct Mined {
     spilled: f64,
 }
 
+/// An outpost's running sums, in score weight. A tick's yield is far below
+/// what an f32 total resolves, so they are kept wide.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Extracted {
+    made: f64,
+    potential: f64,
+    spilled: f64,
+    /// `Outpost::hauled` as it was last seen, in score weight.
+    hauled_seen: f32,
+    /// A raid arriving this tick finds the outpost breached already.
+    open: bool,
+}
+
+/// An outpost stood up for the report without a founding (`sim-run --outpost`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutpostOrder {
+    pub ring: u16,
+    /// The site grade asked for; the nearest the ring has free is taken.
+    pub grade: f32,
+    pub level: u8,
+    /// The next level is under construction from the first tick, already paid.
+    pub building: bool,
+    /// How many repairs the store is stocked for.
+    pub repairs: u32,
+}
+
+/// A player's outpost as the run left it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OutpostSummary {
+    pub sector: Hex,
+    pub ring: u16,
+    /// The ore the sector was generated with: metal, crystal, deuterium.
+    pub ore: [Density; 3],
+    pub grade: f32,
+    pub level: u8,
+    pub breached: bool,
+    /// Breached, no repair running, and the store cannot pay for one.
+    pub waiting: bool,
+    pub store: Resources,
+    /// Units an hour its extractor makes at this level when in service.
+    pub rate_per_hour: f32,
+    /// Units an hour the homeworld's mines make.
+    pub home_per_hour: f32,
+    /// Game hours of its yield, at pace 1 and uninterrupted, that pay back
+    /// level 1 here.
+    pub payback_hours: f32,
+    /// The Metal Mine level its owner's homeworld would build next, and the
+    /// same payback for it.
+    pub next_mine_level: u8,
+    pub mine_payback_hours: f32,
+}
+
 /// What a daily allowance of `share` of core (`score::Meter`) would have made
 /// of the player's combat and exploration points.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -309,6 +385,8 @@ pub struct PlayerSummary {
     pub orders_paid: Vec<Paid>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub meters: Vec<MeterReading>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outpost: Option<OutpostSummary>,
 }
 
 struct Entry {
@@ -318,6 +396,7 @@ struct Entry {
     slots: SlotTicks,
     why: IdleWhy<u64>,
     mined: Mined,
+    extracted: Extracted,
     paid: Vec<Paid>,
     meters: Vec<Metered>,
     /// Combat plus exploration points and core as the meters last saw them.
@@ -382,6 +461,7 @@ impl Headless {
             slots: SlotTicks::default(),
             why: IdleWhy::default(),
             mined: Mined::default(),
+            extracted: Extracted::default(),
             paid: Vec::new(),
             meters: self.meters.iter().map(|&share| Metered { meter: Meter::new(share), unpaid_hours: 0.0 }).collect(),
             points_seen: 0.0,
@@ -395,6 +475,84 @@ impl Headless {
         self.entries.len()
     }
 
+    /// Stand the outpost `order` asks for, one for each of `players` in
+    /// turn, by one edit of the world's snapshot: nothing is founded,
+    /// carried or paid. Each takes the sector of the ring whose generated
+    /// ore is nearest the grade asked, among those the founding rules leave
+    /// open (no Anomaly, no derelict, the spacing) and nobody stands in. A
+    /// lair there is displaced, as a founding displaces it. The raid clock
+    /// starts as if level 1 had just been finished, and the store holds the
+    /// repair it is stocked for. Returns the sectors, in the order of `players`.
+    pub fn install_outposts(&mut self, players: &[u64], order: OutpostOrder) -> Result<Vec<Hex>, String> {
+        let engine = &self.engine;
+        let top = if order.building { OUTPOST_MAX_LEVEL - 1 } else { OUTPOST_MAX_LEVEL };
+        if !(1..=top).contains(&order.level) {
+            return Err(format!("an outpost stands at level 1 to {top} here, not {}", order.level));
+        }
+        if !(OUTPOST_MIN_RING..=OUTPOST_MAX_RING).contains(&order.ring) {
+            return Err(format!(
+                "an outpost stands in rings {OUTPOST_MIN_RING} to {OUTPOST_MAX_RING}, not ring {}",
+                order.ring
+            ));
+        }
+        let (tick, pace) = (engine.current_tick(), engine.pace());
+        let mut taken: Vec<Hex> = engine.outposts.values().map(|o| o.sector).collect();
+        let mut stood = Vec::new();
+        for &player_id in players {
+            if !engine.players.contains_key(&player_id) || engine.outposts.contains_key(&player_id) {
+                return Err(format!("player {player_id} is not seated, or has an outpost already"));
+            }
+            let off = |at: &Hex| (scaling::site_grade(engine.site_densities(*at)) - order.grade).abs();
+            let open = |at: &Hex| {
+                let ground = engine.world_gen.generate_sector(*at);
+                ground.terrain != TerrainType::Anomaly
+                    && !ground.has_derelict
+                    && taken.iter().all(|other| Hex::distance(at, other) >= OUTPOST_SPACING)
+                    && engine.fleets.values().all(|f| f.location != *at)
+                    && engine.npc_fleets.values().all(|n| n.location != *at)
+            };
+            let sector = hex_ring(Hex::ORIGIN, order.ring)
+                .filter(open)
+                .min_by(|a, b| off(a).total_cmp(&off(b)))
+                .ok_or_else(|| format!("ring {} has no free site left for player {player_id}", order.ring))?;
+            taken.push(sector);
+
+            let job = order.building.then(|| OutpostJob {
+                task: OutpostTask::Build { level: order.level + 1 },
+                start_tick: tick,
+                end_tick: tick + scaling::outpost_build_ticks(order.level + 1, &pace),
+            });
+            let mut outpost = Outpost {
+                sector,
+                level: order.level,
+                store: Resources::default(),
+                job,
+                breached: false,
+                raid: RaidState {
+                    first_seen_tick: tick,
+                    next_roll_tick: tick + pace.attention_ticks(RAID_ROLL_INTERVAL as f64),
+                    last_raid_tick: 0,
+                    suppress_until: 0,
+                    missed_rolls: 0,
+                    incoming: None,
+                },
+                full_marks: [false; 3],
+                repair_warned: false,
+                dry_tanks: Vec::new(),
+                founded_tick: tick,
+                hauled: Resources::default(),
+            };
+            outpost.store =
+                outpost.protected().scale(order.repairs as f32).min(scaling::outpost_store_cap(order.level, &pace));
+            stood.push((player_id, outpost));
+        }
+
+        let mut snapshot = self.engine.snapshot();
+        snapshot.outposts.extend(stood);
+        self.engine = GameEngine::restore(snapshot);
+        Ok(taken.split_off(taken.len() - players.len()))
+    }
+
     /// One tick: every seat takes its turn, the world advances, every seat
     /// sees what happened.
     pub fn step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -403,7 +561,16 @@ impl Headless {
         }
         let tanks: Vec<(u64, f32, bool)> =
             self.engine.fleets.values().map(|f| (f.id, f.fuel, f.state == FleetStatus::Moving)).collect();
-        let stores: Vec<(u64, Resources)> = self.engine.outposts.iter().map(|(owner, o)| (*owner, o.store)).collect();
+        let mending = self.engine.current_tick() + 1;
+        let stores: Vec<(u64, Resources, bool)> = self
+            .engine
+            .outposts
+            .iter()
+            .map(|(owner, o)| {
+                let mended = o.job.is_some_and(|job| job.task == OutpostTask::Repair && job.end_tick <= mending);
+                (*owner, o.store, o.breached && !mended)
+            })
+            .collect();
         self.engine.tick()?;
         self.count_refuelling(&tanks);
         self.count_outposts(&stores);
@@ -603,21 +770,79 @@ impl Headless {
         }
     }
 
-    /// One tick of every outpost: breached, or extracting into the room its
-    /// store had before the tick.
-    fn count_outposts(&mut self, stores: &[(u64, Resources)]) {
+    /// One tick of every outpost: what `load` took since the last look, a
+    /// repair that began, and then either breached, or extracting into the
+    /// room its store had before the tick.
+    fn count_outposts(&mut self, stores: &[(u64, Resources, bool)]) {
         let engine = &self.engine;
-        for &(owner, before) in stores {
+        let (tick, pace) = (engine.current_tick(), engine.pace());
+        let weight = |r: Resources| f64::from(scaling::resource_weight(&r));
+        for &(owner, before, open) in stores {
             let Some(outpost) = engine.outposts.get(&owner) else { continue };
-            let Some(t) = tally_of(&mut self.entries, Some(owner)) else { continue };
-            if outpost.breached {
-                t.outpost_ticks_breached += 1;
+            let Some(entry) = entry_of(&mut self.entries, Some(owner)) else { continue };
+            let (t, sums) = (&mut entry.tally, &mut entry.extracted);
+            sums.open = open;
+
+            let hauled = scaling::resource_weight(&outpost.hauled);
+            t.outpost_hauled += if hauled >= sums.hauled_seen { hauled - sums.hauled_seen } else { hauled };
+            sums.hauled_seen = hauled;
+            if outpost.level == 0 {
                 continue;
             }
-            let cap = scaling::outpost_store_cap(outpost.level, &engine.pace());
-            let made = before.add_capped(engine.outpost_production(outpost), cap).sub(before);
-            t.outpost_yield += scaling::resource_weight(&made);
+
+            t.outpost_ticks += 1;
+            let ring = outpost.sector.dist_from_origin();
+            let rate = scaling::outpost_yield_per_tick(engine.site_densities(outpost.sector), ring, outpost.level, &pace);
+            sums.potential += weight(rate);
+            let repair = scaling::outpost_repair_cost(outpost.level);
+            if outpost.job.is_some_and(|job| job.task == OutpostTask::Repair && job.start_tick == tick) {
+                t.outpost_repairs += scaling::resource_weight(&repair);
+            }
+            if outpost.breached {
+                t.outpost_ticks_breached += 1;
+                let unpaid = outpost.job.is_none() && outpost.store.shortfall(repair).total() > 0.0;
+                t.outpost_ticks_waiting += u64::from(unpaid);
+                let building = outpost.job.is_some_and(|job| job.task != OutpostTask::Repair);
+                t.outpost_ticks_behind_build += u64::from(building);
+            } else {
+                let made = before.add_capped(rate, scaling::outpost_store_cap(outpost.level, &pace)).sub(before);
+                sums.made += weight(made);
+                sums.spilled += weight(rate.sub(made));
+            }
+            t.outpost_yield = sums.made as f32;
+            t.outpost_potential = sums.potential as f32;
+            t.outpost_spilled = sums.spilled as f32;
         }
+    }
+
+    /// The player's outpost as it stands, with the two paybacks the design
+    /// compares: level 1 on this site, and the Metal Mine level its owner
+    /// would buy next. Both in game hours at pace 1, which no pace changes.
+    fn outpost_of(&self, player: &Player) -> Option<OutpostSummary> {
+        let engine = &self.engine;
+        let outpost = engine.outposts.get(&player.id)?;
+        let (ring, ore, pace) = (outpost.sector.dist_from_origin(), engine.site_densities(outpost.sector), engine.pace());
+        let hourly = |per_tick: Resources| per_tick.total() * 3600.0;
+        let slow = Pace::PERSISTENT;
+        let mine = player.buildings.metal_mine;
+        let mine_gain = scaling::production_per_tick(BuildingType::MetalMine, mine + 1, &slow)
+            - scaling::production_per_tick(BuildingType::MetalMine, mine, &slow);
+        let unpaid = outpost.store.shortfall(scaling::outpost_repair_cost(outpost.level)).total() > 0.0;
+        Some(OutpostSummary {
+            sector: outpost.sector,
+            ring,
+            ore,
+            grade: scaling::site_grade(ore),
+            level: outpost.level,
+            breached: outpost.breached,
+            waiting: outpost.breached && outpost.job.is_none() && unpaid,
+            store: outpost.store,
+            rate_per_hour: hourly(scaling::outpost_yield_per_tick(ore, ring, outpost.level, &pace)),
+            home_per_hour: hourly(player.production_per_tick(&pace)),
+            payback_hours: scaling::outpost_cost(1).total() / hourly(scaling::outpost_yield_per_tick(ore, ring, 1, &slow)),
+            next_mine_level: mine + 1,
+            mine_payback_hours: scaling::building_cost(BuildingType::MetalMine, mine + 1).total() / (mine_gain * 3600.0),
+        })
     }
 
     fn count(&mut self, events: &[GameEvent]) {
@@ -669,13 +894,15 @@ impl Headless {
                     }
                 }
                 EventKind::RaidResolved(e) => {
-                    if let Some(t) = tally_of(entries, Some(e.player_id)) {
+                    if let Some(entry) = entry_of(entries, Some(e.player_id)) {
+                        let t = &mut entry.tally;
                         match (e.outpost.is_some(), e.defended) {
                             (false, true) => t.raids_repelled += 1,
                             (false, false) => t.raids_lost += 1,
                             (true, true) => t.outpost_raids_repelled += 1,
                             (true, false) => {
                                 t.outpost_raids_lost += 1;
+                                t.outpost_raids_on_breach += u32::from(entry.extracted.open);
                                 t.outpost_raided += scaling::resource_weight(&e.resources_lost);
                             }
                         }
@@ -729,6 +956,7 @@ impl Headless {
                     orders_refused: entry.seat.refused(),
                     orders_paid: entry.paid.clone(),
                     meters: entry.meters.iter().map(Metered::reading).collect(),
+                    outpost: self.outpost_of(player),
                 })
             })
             .collect()
