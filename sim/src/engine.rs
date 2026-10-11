@@ -492,27 +492,54 @@ struct Reach<'a> {
     /// attacks whoever enters.
     groups: KeyMap<u32, bool>,
     live: KeySet<u32>,
+    /// The sectors a search inside `range` can ask about.
+    window: Window,
     rated: SectorMemo<(ThreatInfo, f32)>,
     fights: SectorMemo<bool>,
     seams: SectorMemo<Option<f32>>,
     boardable: SectorMemo<bool>,
 }
 
-type SectorMemo<T> = RefCell<KeyMap<u32, T>>;
+/// One answer per sector for the length of an evaluation: a table over a
+/// window, a map for the few sectors asked about beyond it.
+struct SectorMemo<T> {
+    near: RefCell<Vec<Option<T>>>,
+    far: RefCell<KeyMap<u32, T>>,
+}
 
-fn recall<T: Copy>(memo: &SectorMemo<T>, coord: Hex, work: impl FnOnce() -> T) -> T {
-    let key = coord.to_key();
-    if let Some(&known) = memo.borrow().get(&key) {
-        return known;
+impl<T> Default for SectorMemo<T> {
+    fn default() -> SectorMemo<T> {
+        SectorMemo { near: RefCell::default(), far: RefCell::default() }
     }
-    let found = work();
-    memo.borrow_mut().insert(key, found);
-    found
+}
+
+impl<T: Copy> SectorMemo<T> {
+    fn recall(&self, window: Window, coord: Hex, work: impl FnOnce() -> T) -> T {
+        let Some(slot) = window.slot(coord) else {
+            let key = coord.to_key();
+            if let Some(&known) = self.far.borrow().get(&key) {
+                return known;
+            }
+            let found = work();
+            self.far.borrow_mut().insert(key, found);
+            return found;
+        };
+        if let Some(known) = self.near.borrow().get(slot).copied().flatten() {
+            return known;
+        }
+        let found = work();
+        let mut near = self.near.borrow_mut();
+        if near.is_empty() {
+            near.resize(window.slots(), None);
+        }
+        near[slot] = Some(found);
+        found
+    }
 }
 
 impl Reach<'_> {
     fn rating(&self, coord: Hex) -> (ThreatInfo, f32) {
-        recall(&self.rated, coord, || {
+        self.rated.recall(self.window, coord, || {
             let (threat, theirs) = self.engine.opposition(self.owner, coord, self.live.contains(&coord.to_key()));
             (threat, self.engine.odds_ratio(&self.ours, &theirs))
         })
@@ -573,7 +600,7 @@ impl Reach<'_> {
     /// Entering `coord` starts a fight: a group there is not passive.
     fn starts_fight(&self, coord: Hex) -> bool {
         let passive = iac_shared::world::NpcBehaviorType::Passive;
-        recall(&self.fights, coord, || {
+        self.fights.recall(self.window, coord, || {
             self.groups.get(&coord.to_key()).copied().unwrap_or(false)
                 || self.engine.pending_template_npc(coord).is_some_and(|t| t.behavior != passive)
         })
@@ -582,7 +609,7 @@ impl Reach<'_> {
     /// Score weight of the seam in `coord` as it would land in the hold;
     /// None where the tiles hold too little to stake.
     fn seam(&self, coord: Hex) -> Option<f32> {
-        recall(&self.seams, coord, || {
+        self.seams.recall(self.window, coord, || {
             (self.engine.seam_units(coord) >= POLICY_MIN_SEAM_UNITS)
                 .then(|| self.engine.seam_worth(self.owner, coord, self.room))
         })
@@ -590,7 +617,7 @@ impl Reach<'_> {
 
     /// Whether the doctrine boards a derelict in `coord`.
     fn boards(&self, coord: Hex) -> bool {
-        recall(&self.boardable, coord, || self.engine.site_is_boardable(self.fleet, &self.params, coord))
+        self.boardable.recall(self.window, coord, || self.engine.site_is_boardable(self.fleet, &self.params, coord))
     }
 
     /// Whether resources worth `weight` (`scaling::resource_weight`) repay
@@ -4173,6 +4200,7 @@ impl GameEngine {
 
     /// What the doctrine of `fleet` lets it do this evaluation.
     fn policy_reach<'a>(&'a self, fleet: &'a Fleet, params: &PolicyParams, home: Hex) -> Reach<'a> {
+        let range = self.policy_effective_range(fleet, params);
         Reach {
             engine: self,
             fleet,
@@ -4181,7 +4209,7 @@ impl GameEngine {
             ours: fleet_force(fleet),
             home,
             need: f32::from(params.engage_ratio_x10) / 10.0,
-            range: self.policy_effective_range(fleet, params),
+            range,
             jump_weight: scaling::resource_weight(&Resources {
                 deuterium: self.hop_fuel_cost(fleet) * FUEL_DEUT_PER_UNIT,
                 ..Resources::default()
@@ -4193,10 +4221,11 @@ impl GameEngine {
                 groups
             }),
             live: crate::intel::live_coords(self, fleet.owner_id).iter().map(|h| h.to_key()).collect(),
-            rated: RefCell::default(),
-            fights: RefCell::default(),
-            seams: RefCell::default(),
-            boardable: RefCell::default(),
+            window: Window { centre: home, radius: range.saturating_add(1) },
+            rated: SectorMemo::default(),
+            fights: SectorMemo::default(),
+            seams: SectorMemo::default(),
+            boardable: SectorMemo::default(),
         }
     }
 
