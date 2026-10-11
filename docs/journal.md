@@ -2556,3 +2556,89 @@ default 4). Neither was tried.
 live server. `play.py` is syntax-checked and its offline tests pass; the harness is
 on hold and was not run. Persistent pace and blitz were not measured. The browser
 run is headless Chromium at 1440 and 390 px; no other browser and no real phone.
+
+## 2026-10-11: the web client after its first played evening
+
+The owner played the single-player bundle over the LAN. This is the pass after it:
+five known faults, then every screen read at 1440 and 390 px in the browser check's
+pictures. Web client only (`clients/web`, `solo/web/worker.js`, two README
+bullets); no rule, constant or wire message. Branch
+`worktree-agent-ab87eca5a1d51d195`, not merged.
+
+**The five.**
+- *Toasts cut off.* Real, and not the frame governor: the slide-in always finishes
+  (350 ms). The key sat on the tile inside an unkeyed `Padding`, so the column
+  matched its children by position, and every time one toast left, or a fifth
+  pushed the first out, every toast after it was built again and slid in again
+  from nothing. Measured in real-time headless Chromium: four restarts in 1.3 s as
+  three toasts expired. The check's picture caught one mid-slide because its wait
+  ended the instant a toast left. The fifth toast had also been pushing out the
+  offer of browser notices, which asks a question and is meant to stay 30 s. Now
+  the key is on the column's child; a toast that asks is the last to make room;
+  its buttons are in the semantics tree; a plain toast goes away on a tap. A toast
+  is at most 340 px wide and, on a phone, the screen less 16 px a side.
+- *Two wordings.* One function, `shortBy`: "short by 1,234 Fe, 56 Cr", in the
+  units the counters carry, for the queue boxes, the cards, the tiles and the log.
+  The estimate beside it is the clock every other timer uses ("starts in about
+  34:17:36", not "2057:36"). An order short of something the homeworld does not
+  produce has no estimate and now says "which home production will not cover": a
+  new empire has 100 deuterium and makes none, and its second order sat there
+  without a word.
+- *A typed order the engine refuses.* Left to the engine: its sentence is exact
+  and Dart would only copy the rule. What was missing was the telling. A refusal
+  went to the log and the alert list, both on the Overview; typed on any other
+  screen it showed nothing. Every refusal is now a red toast for nine seconds with
+  the engine's sentence, the log line is "Refused: ..." instead of "ERR 1019
+  InsufficientResources: ...", and it no longer lights the alert badge for good.
+- *Roboto.* Both renderers fetch it from `fonts.gstatic.com` unless the font
+  manifest has a family of that name. `pubspec.yaml` names the bundled Plex Mono
+  as `Roboto`: nothing added to the bundle, nothing asked of another host. The
+  check now fails on any request elsewhere, at load and over the whole session.
+- *Plain http.* On `http://<lan address>` the page is no secure context: no
+  `navigator.locks`, so the worker locks nothing and a second tab opens the same
+  save. Nothing said so. The worker's status now carries `exclusive`, and the
+  front door says in one sentence to play in one tab. No second lock was built.
+  `navigator.storage` is missing there too, so the save cannot be marked
+  persistent; that is not said (it is best effort on https as well).
+
+**Found reading the pictures, and fixed.**
+- The defence tab added up the power of one structure of each kind, built or not:
+  "STRUCTURES 203" on an empire with none, and "docked fleet and grid 0" beside
+  it. A row's power is now count times unit power.
+- Below about 1400 px wide the HUD drew its three stockpiles smaller the narrower
+  the window, down to a few pixels at 1100 (a spacer took half their room). They
+  now keep their size; the name beside the logo, then the commander's name and
+  rank, then the rate per tick give way. At phone width the three numbers had no
+  labels; they have.
+- The automatic leaderboard refresh printed two log lines every 30 ticks, in a log
+  that holds 14. It prints only when the player types `leaderboard`.
+- States that said the wrong thing on a new empire: "Research lab idle. Queue
+  something" with no lab, "Idle: pick a tech" and "Pick one" likewise, "Upgrade the
+  Shipyard" with none built, "One fleet out, no docked" with the fleet at home.
+  The cards now name the nearest thing that would unlock something ("Scout needs
+  Shipyard level 1"), in the engine's words rather than "Shipyard >= 1".
+- "1S BUILD" read as "15 BUILD"; amounts in the log were "90M 22C 0D"; "1 HOPS
+  HOME"; "asking the server" in a world with no server; the sector note ran under
+  the north-west gate card; the windshield feed ran under the dock below 1400 px;
+  "NO RAID ANNOUNCED" was cut to "NO RAID ..." on a phone; the "Go to" toast
+  outlived the jump; `help` typed away from the Overview showed its first line and
+  nothing else.
+
+**The check.** `solo_e2e.dart` answers the offer from its own button, holds three
+toasts up and fails if one narrows while another leaves, expects the refusal on
+screen, pictures every screen at both widths (and the windshield at 1100), and
+loads the page from `http://iac-lan.test` (mapped to this machine) to see the
+missing lock and the sentence about it. Its old wait for the waiting Shipyard
+raced the tab change and failed once here on master's code; it now waits for the
+line it reads.
+
+**Left for the owner** (layout or taste; pictures in the hand-off). The windshield
+between 980 and 1400 px, where gate cards run under the side columns. Overview
+tiles for buildings and research are off when the stockpile is short, though such
+an order queues. There is no standing-orders panel in the web client: `policy`
+is typed. Toasts cover the order button and, on a phone, the dock. The log keeps
+14 lines and `help` is 13.
+
+**Not verified.** No real phone and no browser but headless Chromium. The
+`ThemeData` assertion an earlier run saw in `order_fit_test` did not come back in
+any run here.
