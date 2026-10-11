@@ -687,44 +687,61 @@ fn standing_orders_end_a_hand_loaded_hold() {
     assert!(e.engine.fleets.values().all(|f| !f.laden));
 }
 
+const RAIDED_STOCK: Resources = Resources { metal: 20_000.0, crystal: 9000.0, deuterium: 6000.0 };
+
+/// Eight Haulers docked under Vault 2 with `RAIDED_STOCK`, loaded as `loads`
+/// say, the stockpile then changed by `restock`, and a raid no defence
+/// stops: the empire after it, the raid's report and the alerts it raised.
+fn raided(
+    loads: &[(ResourceKind, Option<f32>)],
+    restock: impl FnOnce(Resources, Resources) -> Resources,
+) -> (Empire, RaidResolvedEvent, Vec<String>) {
+    let mut e = carrier("season", (6, 5, 4), 8);
+    let (pid, fid) = (e.pid, e.fid);
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.storage_vault = 2);
+    e.set_stockpile(RAIDED_STOCK);
+    for &(kind, amount) in loads {
+        e.order(put_aboard(fid, kind, amount)).expect("room and stock for it");
+    }
+    let cap = scaling::storage_cap(2, &e.engine.pace());
+    let stockpile = restock(e.stockpile(), cap);
+    e.set_stockpile(stockpile);
+    let arrival_tick = e.engine.current_tick() + 1;
+    edit(&mut e.engine, |s| {
+        s.raid_states.insert(pid, RaidState {
+            first_seen_tick: 0,
+            next_roll_tick: u64::MAX,
+            last_raid_tick: 0,
+            suppress_until: 0,
+            missed_rolls: 0,
+            incoming: Some(IncomingRaid { arrival_tick, power: 1e9 }),
+        });
+    });
+    let mark = e.mark();
+    e.run(1);
+    let raid = e.since(mark, |k| match k {
+        EventKind::RaidResolved(r) => Some(r.clone()),
+        _ => None,
+    });
+    let told = alerts(&e, mark);
+    (e, raid.into_iter().next().expect("the raid arrives"), told)
+}
+
+fn owned_pile(e: &Empire) -> Resources {
+    e.engine.fleets.values().filter(|f| f.owner_id == e.pid).fold(e.stockpile(), |sum, f| sum.add(f.cargo))
+}
+
 #[test]
 fn a_lost_raid_counts_cargo_at_home_with_the_stockpile() {
-    let raided = |aboard: Resources| -> (Empire, RaidResolvedEvent) {
-        let mut e = carrier("season", (6, 5, 4), 8);
-        let (pid, fid) = (e.pid, e.fid);
-        edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.storage_vault = 2);
-        e.set_stockpile(stock(20_000.0, 9000.0, 6000.0));
-        for kind in ResourceKind::ALL {
-            if aboard.get(kind) > 0.0 {
-                e.order(put_aboard(fid, kind, Some(aboard.get(kind)))).expect("room and stock for it");
-            }
-        }
-        let arrival_tick = e.engine.current_tick() + 1;
-        edit(&mut e.engine, |s| {
-            s.raid_states.insert(pid, RaidState {
-                first_seen_tick: 0,
-                next_roll_tick: u64::MAX,
-                last_raid_tick: 0,
-                suppress_until: 0,
-                missed_rolls: 0,
-                incoming: Some(IncomingRaid { arrival_tick, power: 1e9 }),
-            });
-        });
-        let mark = e.mark();
-        e.run(1);
-        let raid = e.since(mark, |k| match k {
-            EventKind::RaidResolved(r) => Some(r.clone()),
-            _ => None,
-        });
-        (e, raid.into_iter().next().expect("the raid arrives"))
-    };
-    let pile = |e: &Empire| e.engine.fleets.values().fold(e.stockpile(), |sum, f| sum.add(f.cargo));
+    let pile = owned_pile;
     let near = |a: Resources, b: Resources| ResourceKind::ALL.into_iter().all(|k| (a.get(k) - b.get(k)).abs() < 0.05);
 
-    let aboard = stock(3000.0, 1500.0, 500.0);
-    let start = stock(20_000.0, 9000.0, 6000.0);
-    let (plain, plain_raid) = raided(Resources::default());
-    let (laden, laden_raid) = raided(aboard);
+    let aboard = stock(2000.0, 1000.0, 500.0);
+    let start = RAIDED_STOCK;
+    let (plain, plain_raid, _) = raided(&[], |as_loaded, _| as_loaded);
+    let loads = ResourceKind::ALL.map(|kind| (kind, Some(aboard.get(kind))));
+    let (laden, laden_raid, told) = raided(&loads, |as_loaded, _| as_loaded);
+    assert!(!told.iter().any(|m| m.contains("lost carried")), "the six holds left carry all of it: {told:?}");
     assert!(!plain_raid.defended && !laden_raid.defended);
     assert_eq!((plain_raid.ships_lost, laden_raid.ships_lost), (2, 2), "a quarter of the docked ships");
 
@@ -750,6 +767,38 @@ fn a_lost_raid_counts_cargo_at_home_with_the_stockpile() {
         assert!(lost > 1.0, "the hold paid for its {}: {lost}", kind.label());
         assert!((lost - share).abs() < 0.05, "{}: the hold lost {lost}, its share is {share}", kind.label());
     }
+}
+
+#[test]
+fn ships_lost_to_a_raid_at_the_dock_leave_their_share_of_the_hold_in_the_stockpile_or_nowhere() {
+    let (plain, plain_raid, _) = raided(&[], |as_loaded, _| as_loaded);
+    let (roomy, roomy_raid, roomy_told) = raided(&[(Metal, None)], |as_loaded, _| as_loaded);
+    let (full, full_raid, full_told) = raided(&[(Metal, None)], |as_loaded, cap| Resources { metal: cap.metal, ..as_loaded });
+    assert_eq!((roomy_raid.ships_lost, full_raid.ships_lost), (2, 2), "a quarter of the eight Haulers");
+
+    for e in [&roomy, &full] {
+        let fleet = e.fleet();
+        assert_eq!(fleet.ships.len(), 6);
+        assert!(fleet.cargo.total() <= fleet.cargo_capacity, "{} aboard a hold of {}", fleet.cargo.total(), fleet.cargo_capacity);
+        assert!(fleet.cargo.total() > 0.9 * fleet.cargo_capacity, "the six holds left stay loaded");
+    }
+    let hold = roomy.fleet().cargo_capacity;
+    let shed = hold / 3.0;
+
+    assert!((owned_pile(&roomy).metal - owned_pile(&plain).metal).abs() < 0.5, "with room in the stockpile nothing is lost but the raid's take");
+    assert!((roomy_raid.resources_lost.metal - plain_raid.resources_lost.metal).abs() < 0.5);
+    assert!(roomy_told.iter().any(|m| m.contains("lost carried") && m.ends_with("it went to the stockpile")), "{roomy_told:?}");
+
+    let cap = scaling::storage_cap(2, &full.engine.pace());
+    let had = cap.metal + hold + shed;
+    let kept = owned_pile(&full).metal;
+    assert!(
+        (had - shed - full_raid.resources_lost.metal - kept).abs() < 0.5,
+        "a full stockpile takes none of the {shed} metal two holds carried: {had} before, {kept} after, the raid took {}",
+        full_raid.resources_lost.metal,
+    );
+    assert!(full_told.iter().any(|m| m.contains("lost carried") && m.ends_with("it was lost, the stockpile is full")), "{full_told:?}");
+    assert!(full.stockpile().metal <= cap.metal, "and the stockpile is not pushed over its cap");
 }
 
 #[test]

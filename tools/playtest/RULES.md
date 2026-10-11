@@ -364,7 +364,11 @@ What every doctrine does:
   events for fights your fleets or homeworld are in, or that happen in a
   sector where you have a fleet or your homeworld. Each carries `owner`
   (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
-  `Critical` `Alert`. Hostile ids in a sector view are the ids `attack` and
+  `Critical` `Alert`. A fleet that loses ships keeps only what the holds of
+  the ships it has left carry: the rest, each resource in proportion, drifts
+  as wreckage in that sector, where anyone can `collect_salvage` it for 180
+  ticks, and a destroyed fleet leaves its whole cargo so (an `Alert` says how
+  much and where). Fuel beyond the tanks that are left is lost. Hostile ids in a sector view are the ids `attack` and
   `CombatStarted.enemy_fleet_id` use; messages name a hostile by its `label`
   ("3x corvette pack"), not by id. `ResourceHarvested` is one event per fleet
   every 10 ticks (and when harvesting stops).
@@ -429,7 +433,9 @@ What every doctrine does:
   raid over defence power), 70% of them rebuilt free shortly after. Lost: a
   hard-capped slice of the stockpile above the Vault-protected share (≤8%),
   half the structures gone for good, a quarter of the ships docked at home
-  destroyed (at least one), and a long grace period. Cargo aboard fleets at
+  destroyed (at least one), and a long grace period. What the destroyed
+  ships carried beyond the holds left goes to the stockpile as far as the
+  Vault has room, and the rest is lost. Cargo aboard fleets at
   home counts as stockpile: the raid takes its slice of the two together,
   above one protected share, from stockpile and holds alike, so a hold at the
   dock hides nothing. Never
@@ -479,8 +485,9 @@ What every doctrine does:
     the fleet's first jump, so what it brings home unloads as cargo always
     has. To put a load back without leaving, `unload`: what the caps allow
     goes back at once, the rest as room opens.
-  - A laden fleet is an ordinary fleet: same fuel, same fights, and its
-    cargo is lost with it. Split it and both halves stay laden; merge and
+  - A laden fleet is an ordinary fleet: same fuel, same fights, and what
+    the ships it loses carried is shed like any cargo (see Combat and
+    Raids). Split it and both halves stay laden; merge and
     the fleet that absorbs keeps its own state.
   - `load` is refused for a fleet under standing orders, which unload at the
     dock. Giving a laden fleet standing orders ends the mark and its hold

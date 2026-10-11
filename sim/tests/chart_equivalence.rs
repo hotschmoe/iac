@@ -16,6 +16,11 @@
 // It was recorded once more when sectors gained their chart mark
 // (`SectorState::chart`), after the engine with marks had reproduced the
 // previous recording with the marks left out of the comparison.
+//
+// And again when a fleet that loses ships began to shed the cargo it can no
+// longer carry: the recording held to tick 1010, and at tick 1011 a fleet
+// destroyed at [1,6] with 34.9 units aboard now leaves them there as
+// wreckage, which its owner's chart shows.
 
 use iac_shared::constants::{ShipClass, DEFAULT_WORLD_SEED};
 use iac_shared::pace::Pace;

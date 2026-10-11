@@ -1222,6 +1222,9 @@ impl GameEngine {
                         f.fuel = f.fuel.min(f.fuel_max);
                     }
                     self.dirty_fleets.insert(f.id, ());
+                    if lost_ships {
+                        self.settle_hold(side.fleet_id);
+                    }
                 }
             }
 
@@ -1767,6 +1770,63 @@ impl GameEngine {
         fleet.cargo = fleet.cargo.sub(room);
         self.dirty_fleets.insert(fleet_id, ());
         self.dirty_players.insert(owner, ());
+    }
+
+    /// A fleet that has lost ships keeps what the holds it has left carry.
+    /// The rest leaves, each resource in proportion: at the owner's
+    /// homeworld into the stockpile as far as the Vault allows and the
+    /// remainder is lost; anywhere else into the sector's wreckage. Nothing
+    /// is made, and a fleet with no ships left sheds its whole cargo.
+    fn settle_hold(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
+        let aboard = fleet.cargo.total();
+        if aboard <= capacity { return; }
+        let (owner, sector) = (fleet.owner_id, fleet.location);
+
+        // f32 rounding can leave the scaled sum a unit in the last place over.
+        let mut share = capacity / aboard;
+        let mut kept = fleet.cargo.scale(share);
+        while kept.total() > capacity {
+            share = share.next_down();
+            kept = fleet.cargo.scale(share);
+        }
+        let shed = fleet.cargo.sub(kept);
+
+        let carried = crate::commands::amount_words(shed);
+        let message = match self.players.get_mut(&owner).filter(|p| p.homeworld == sector) {
+            Some(player) => {
+                let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+                let stored = player.resources.shortfall(cap).min(shed);
+                player.resources = player.resources.add(stored);
+                self.dirty_players.insert(owner, ());
+                let lost = shed.sub(stored);
+                match (stored.total() > LOAD_SLACK, lost.total() > LOAD_SLACK) {
+                    (true, true) => format!(
+                        "the ships fleet {fleet_id} lost carried {carried}: {} went to the stockpile and {} was lost, the stockpile is full",
+                        crate::commands::amount_words(stored),
+                        crate::commands::amount_words(lost),
+                    ),
+                    (false, _) => format!(
+                        "the ships fleet {fleet_id} lost carried {carried}: it was lost, the stockpile is full",
+                    ),
+                    (true, false) => format!("the ships fleet {fleet_id} lost carried {carried}: it went to the stockpile"),
+                }
+            }
+            None => {
+                self.drop_salvage(sector, shed);
+                format!(
+                    "the ships fleet {fleet_id} lost carried {carried}: it drifts as wreckage at {sector} and can be collected for {SALVAGE_DESPAWN_TICKS} ticks",
+                )
+            }
+        };
+        if shed.total() > LOAD_SLACK {
+            self.push_alert(AlertLevel::Warning, fleet_id, sector, message);
+        }
+
+        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet.cargo = kept;
+        self.dirty_fleets.insert(fleet_id, ());
     }
 
     /// Fill the tank at the homeworld, paying `FUEL_DEUT_PER_UNIT` deuterium
@@ -2394,7 +2454,8 @@ impl GameEngine {
     }
 
     /// A lost raid reaches the ships docked at home: `fraction` of them (at
-    /// least one) are destroyed, chosen at random. Returns how many.
+    /// least one) are destroyed, chosen at random, and the holds they leave
+    /// are settled. Returns how many.
     fn destroy_docked_ships(&mut self, player_id: u64, fraction: f32, rng: &mut StdRng) -> u32 {
         let Some(home) = self.players.get(&player_id).map(|p| p.homeworld) else { return 0; };
         let mut docked: Vec<(u64, usize)> = Vec::new();
@@ -2414,7 +2475,7 @@ impl GameEngine {
         }
         // Highest index first so removals do not shift the rest.
         doomed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
-        for (fid, i) in doomed {
+        for &(fid, i) in &doomed {
             if let Some(f) = self.fleets.get_mut(&fid) {
                 let n = f.ship_count;
                 f.ships.copy_within(i + 1..n, i);
@@ -2422,6 +2483,9 @@ impl GameEngine {
                 f.ship_count = n - 1;
                 self.dirty_fleets.insert(fid, ());
             }
+        }
+        for &(fid, _) in &doomed {
+            self.settle_hold(fid);
         }
         for fid in fleet_ids {
             if let Some(f) = self.fleets.get(&fid) {
@@ -3455,6 +3519,7 @@ impl GameEngine {
             self.world_gen.world_seed ^ self.current_tick.wrapping_mul(0x9E3779B97F4A7C15) ^ fleet_id.rotate_left(32)
         );
 
+        let ships_before = fleet_mut.ship_count;
         let mut i = 0;
         while i < fleet_mut.ship_count {
             let roll = rng.random_range(0.0..1.0);
@@ -3485,7 +3550,12 @@ impl GameEngine {
             i += 1;
         }
 
-        fleet_mut.location = player.homeworld;
+        let home = player.homeworld;
+        if fleet_mut.ship_count < ships_before {
+            self.settle_hold(fleet_id);
+        }
+        let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet_mut.location = home;
         fleet_mut.state = if fleet_mut.ship_count == 0 { FleetStatus::Docked } else { FleetStatus::Idle };
         fleet_mut.move_target = None;
         fleet_mut.move_cooldown = 0;
@@ -5937,9 +6007,10 @@ pub fn site_risk_label(site: Hex, bumps: u8) -> iac_shared::protocol::SiteRisk {
 /// The hold: each ship's base cargo times the pace's cargo factor (P^0.5,
 /// like the loot it carries).
 pub fn fleet_cargo_capacity(fleet: &Fleet, pace: &Pace) -> f32 {
-    let base: f32 = fleet.ships[0..fleet.ship_count].iter()
-        .map(|s| s.ship_class.base_stats().cargo as f32)
-        .sum();
+    // Folded from 0.0 for the reason given in `fleet_fuel_max`: what is left
+    // in the hold of a fleet with no ships is scaled by this.
+    let base = fleet.ships[0..fleet.ship_count].iter()
+        .fold(0.0, |hold, s| hold + s.ship_class.base_stats().cargo as f32);
     base * pace.cargo_mult()
 }
 

@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use iac_shared::hex::Hex;
-use iac_shared::constants::{Resources, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
+use iac_shared::constants::{Resources, ShipClass, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, Command, ErrorCode, EventKind, PolicyParams, PolicyPreset, ServerMessage, ThreatBasis,
     MAX_ODDS_SECTORS,
@@ -489,4 +489,144 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     let docked = e.fleet();
     assert_eq!(docked.fuel_max, mauled.fuel_max, "docking finds nothing to correct");
     assert!(docked.range_hops >= near.range_hops, "and the range shown in the field was not more than a full tank gives");
+}
+
+fn wreckage(e: &Empire, at: Hex) -> Resources {
+    e.engine.sector_overrides.get(&at.to_key()).and_then(|o| o.salvage).unwrap_or_default()
+}
+
+fn same(a: Resources, b: Resources) -> bool {
+    (a.metal - b.metal).abs() < 0.05 && (a.crystal - b.crystal).abs() < 0.05 && (a.deuterium - b.deuterium).abs() < 0.05
+}
+
+/// The starting fleet at a lone passive scout, unarmed, its hold nine tenths
+/// full, and each ship with the hull given.
+fn laden_and_outgunned(e: &mut Empire, hulls: [f32; 2]) -> (Hex, f32, Resources) {
+    let fid = e.fid;
+    let at = lone_scout_sector(&e.engine, NpcBehaviorType::Passive);
+    deploy(&mut e.engine, fid, at, None);
+    let hold = e.fleet().cargo_capacity;
+    let cargo = Resources { metal: hold * 0.5, crystal: hold * 0.25, deuterium: hold * 0.15 };
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        for (ship, hull) in fleet.ships.iter_mut().zip(hulls) {
+            ship.weapon_power = 0.0;
+            ship.shield = 0.0;
+            ship.hull = hull;
+        }
+        fleet.cargo = cargo;
+    });
+    (at, hold, cargo)
+}
+
+#[test]
+fn a_fleet_that_loses_a_ship_in_a_fight_leaves_what_it_can_no_longer_carry_as_wreckage() {
+    let mut e = Empire::join(world("test"), "Spilled");
+    let fid = e.fid;
+    let (at, hold, cargo) = laden_and_outgunned(&mut e, [0.01, 1e6]);
+
+    let mark = e.mark();
+    e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
+    e.run_until(200, |e| e.engine.fleets[&fid].ship_count == 1);
+
+    let mauled = e.fleet();
+    assert!((mauled.cargo_capacity - hold / 2.0).abs() < 0.01, "one hold of two is left");
+    assert!(
+        mauled.cargo.total() <= mauled.cargo_capacity,
+        "{} aboard a hold of {}",
+        mauled.cargo.total(),
+        mauled.cargo_capacity,
+    );
+    assert!(same(mauled.cargo, cargo.scale(hold / 2.0 / cargo.total())), "each resource gave up its share: {:?}", mauled.cargo);
+    let spilled = wreckage(&e, at);
+    assert!(spilled.total() > hold * 0.39, "{spilled:?}");
+    assert!(same(mauled.cargo.add(spilled), cargo), "nothing was made or lost: {:?} aboard, {spilled:?} adrift", mauled.cargo);
+    let told = alerts_since(&e, mark);
+    assert!(
+        told.iter().any(|a| {
+            matches!(a.level, AlertLevel::Warning) && a.sector == Some(at) && a.message.contains("drifts as wreckage")
+        }),
+        "{told:?}",
+    );
+
+    let mark = e.mark();
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().ships[0].weapon_power = 5000.0);
+    e.run_until(20, |e| e.engine.active_combats.is_empty());
+    let (pile, _) = pile_of(&e.log[mark..]);
+    assert_eq!(pile, wreckage(&e, at), "the victory reports the pile that lies there");
+    assert!(pile.metal >= spilled.metal && pile.crystal >= spilled.crystal && pile.deuterium >= spilled.deuterium);
+
+    let _ = e.order(Command::CollectSalvage { fleet_id: fid });
+    let scooped = e.fleet();
+    assert!(scooped.cargo.total() <= scooped.cargo_capacity + 0.01, "a full hold scoops nothing back");
+    assert!(same(scooped.cargo.add(wreckage(&e, at)), mauled.cargo.add(pile)));
+}
+
+#[test]
+fn a_destroyed_fleet_leaves_its_cargo_where_it_fell_for_whoever_collects() {
+    let (mut e, rival, rival_fleet) = with_rival("Wrecked");
+    let fid = e.fid;
+    let (at, _, cargo) = laden_and_outgunned(&mut e, [0.01, 0.01]);
+
+    let mark = e.mark();
+    e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
+    e.run_until(200, |e| e.engine.fleets.get(&fid).is_none_or(|f| f.ship_count == 0));
+    e.run(2);
+    assert!(!e.engine.fleets.contains_key(&fid));
+
+    assert!(same(wreckage(&e, at), cargo), "the whole cargo lies in the sector: {:?}", wreckage(&e, at));
+    let told: Vec<String> = alerts_since(&e, mark).into_iter().map(|a| a.message).collect();
+    assert!(told.iter().any(|m| m.contains("FLEET LOST")), "{told:?}");
+    assert!(told.iter().any(|m| m.contains("drifts as wreckage") && m.contains(&at.to_string())), "{told:?}");
+
+    deploy(&mut e.engine, rival_fleet, at, None);
+    let collect = e.engine.execute(rival, Command::CollectSalvage { fleet_id: rival_fleet });
+    assert!(collect.error.is_none(), "{:?}", collect.error);
+    assert!(same(e.engine.fleets[&rival_fleet].cargo, cargo), "the finder has it: {:?}", e.engine.fleets[&rival_fleet].cargo);
+    assert!(wreckage(&e, at).total() <= 1.0);
+}
+
+#[test]
+fn a_recall_that_breaks_ships_leaves_their_share_of_the_cargo_where_it_jumped_from() {
+    let mut e = Empire::join(world("persistent"), "Breaker");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let far = Hex { q: home.q + 25, r: home.r };
+    muster(&mut e.engine, fid, &[(ShipClass::Scout, 20)], far);
+    let hold = e.fleet().cargo_capacity;
+    let cargo = Resources { metal: hold * 0.5, crystal: hold * 0.25, deuterium: hold * 0.25 };
+    e.set_stockpile(Resources::default());
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        for ship in &mut fleet.ships[1..20] {
+            ship.hull = 0.001;
+        }
+        fleet.ships[0].hull = 1e6;
+        fleet.ships[0].hull_max = 1e6;
+        fleet.fuel = 1e12;
+        fleet.fuel_max = 1e12;
+        fleet.cargo = cargo;
+    });
+
+    let mark = e.mark();
+    e.order(Command::Recall { fleet_id: fid }).expect("recall");
+    let broke = e
+        .since(mark, |k| match k {
+            EventKind::ShipDestroyed(d) => Some(d.sector),
+            _ => None,
+        })
+        .len();
+    let back = e.fleet();
+    assert!(broke > 0 && back.ships.len() == 20 - broke, "{broke} ships broke up, {} came home", back.ships.len());
+    assert_eq!(back.location, home);
+
+    let left_behind = wreckage(&e, far);
+    assert!(same(left_behind, cargo.scale(broke as f32 / 20.0)), "{broke} holds of 20 stayed behind: {left_behind:?}");
+    assert!(
+        same(e.stockpile().add(back.cargo).add(left_behind), cargo),
+        "what came home is the cargo less the wreckage: {:?} banked, {:?} aboard",
+        e.stockpile(),
+        back.cargo,
+    );
+    assert_eq!(wreckage(&e, home), Resources::default());
 }

@@ -3,6 +3,41 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-11 (a fleet carries no more than the ships it has left can hold)
+
+**Decided by the agent that built it, not by the owner, and open to change.**
+The hold entry below left this as found; since `load` a player could arrange
+it at home.
+
+- **One rule, wherever ships are lost.** After a fleet loses ships it keeps
+  what the holds of the ships left carry, and no more. What no longer fits
+  leaves the fleet, each resource in proportion to what was aboard. A fleet
+  with no ships left sheds its whole cargo. Ships are lost in three places:
+  a fight, a recall that breaks ships, and a lost raid at the dock.
+- **In the field it becomes wreckage in that sector.** It joins the pile a
+  kill leaves there, lasts as long (180 ticks from the last addition) and is
+  taken with `collect_salvage` by whoever comes, the owner included. So the
+  cargo of a destroyed fleet is no longer simply gone: it lies where the
+  fleet fell. Before, a destroyed fleet's cargo vanished and a mauled one
+  kept all of it.
+- **A recall settles where the fleet jumped from.** Ships that break up in
+  the emergency jump leave their share in the sector the fleet left, not at
+  home.
+- **At the home dock it goes to the stockpile, up to the Vault cap; the rest
+  is lost.** A raid that destroys docked ships settles the holds before it
+  takes its slice, so what moved to the stockpile is raided with it.
+- **Nothing is made.** The pile, the stockpile and the hold together never
+  hold more than the hold did, and a kill's score still follows only what
+  the hostile group was worth. Losing ships on purpose to move cargo costs
+  the ships and gains nothing a hold or the stockpile would not have kept.
+- **The owner is told** by a warning `Alert` naming the amount and where it
+  went. No new event kind.
+- **Fuel was already so.** A tank is cut to what the ships left carry in all
+  three places, and the excess is lost; that stands.
+- **Not changed:** a fleet already over its hold in a saved world stays so
+  until it next loses a ship. Split and merge share cargo by hold and cannot
+  put a fleet over.
+
 ## 2026-10-11 (a hold is loaded from the stockpile at home)
 
 Owner: the hub's exchange is a surplus sink, so a player whose stockpile is
@@ -51,8 +86,9 @@ and is open to change.**
   was out of a raid's reach, which did not matter while only a full
   stockpile left any there. This changes the rule for every fleet with
   cargo at home, loaded by hand or not. Loading therefore changes nothing a
-  raid takes. Ships destroyed by the raid still take nothing from the hold
-  they carried (see below).
+  raid takes. Ships destroyed by the raid took nothing from the hold they
+  carried when this was written; since the entry above their share goes to
+  the stockpile before the raid takes its slice.
 - **Holds as storage are allowed and not limited.** A fleet at home holds
   its capacity on top of the Vault. At pace 1 a Hauler holds 200 for 950
   resources of hull, 4.75 a unit stored; Vault level 3 adds 12,375 units
@@ -67,9 +103,10 @@ and is open to change.**
 - **The answer to `load` and `unload` is an info `Alert`**, as for `split`
   and `merge`, and the fleet row (`cargo`, `laden`) in the next update. No
   new event kind and no new error code.
-- **Not decided, left as found:** a fleet that loses ships (in a fight, to
-  a recall, to a lost raid) keeps its whole cargo even beyond the hold that
-  is left. With `load` a player can now put that case together at home.
+- **Left as found here, settled in the entry above:** a fleet that lost
+  ships (in a fight, to a recall, to a lost raid) kept its whole cargo even
+  beyond the hold that was left. With `load` a player could put that case
+  together at home.
 
 ## 2026-10-11 (ship batches pay when they are ordered)
 
