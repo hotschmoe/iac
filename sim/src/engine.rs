@@ -439,6 +439,10 @@ pub struct Outpost {
     /// Fleets standing here that were told the store could not fill their tank.
     pub dry_tanks: Vec<u64>,
     pub founded_tick: u64,
+    /// Everything `load` has taken out of the store. No rule reads it: it is
+    /// what the balance report counts as hauled.
+    #[serde(default)]
+    pub hauled: Resources,
 }
 
 impl Outpost {
@@ -3035,6 +3039,7 @@ impl GameEngine {
             repair_warned: false,
             dry_tanks: Vec::new(),
             founded_tick: tick,
+            hauled: Resources::default(),
         });
         self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
         self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
@@ -4283,6 +4288,7 @@ impl GameEngine {
                 let outpost = self.outposts.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
                 let stock = outpost.store.get_mut(resource);
                 *stock = (*stock - loaded).max(0.0);
+                *outpost.hauled.get_mut(resource) += loaded;
                 self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
             }
         }

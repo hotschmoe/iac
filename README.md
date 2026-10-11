@@ -854,6 +854,24 @@ counting in full under one allowance and by the square root beyond; the bots do 
 play to it, so it goes with `--cap none`. A world has 24 home seats; `sim-run`
 refuses a roster of more.
 
+No bot founds an outpost, so `--outpost <ring>:<grade>:<level>[:<repairs>]` stands
+one for every bot at the start of day 3, by an edit of the world's snapshot: on the
+free sector of that ring whose ore is nearest that grade, three hexes from the next,
+its store stocked for that many repairs (one unless said). `<level>+` has the next
+level under construction. Nobody supplies it, defends it or hauls from it, so the
+report's outpost table measures the extractor, the raids and the store: the site
+and what level 1 there pays back in against its owner's next Metal Mine level, its
+rate against its owner's mines, what it could have made, made, lost to a full store,
+to raids and to repairs, what `load` took, its raids repelled and lost (those that
+found it breached counted apart), and the share of its time it stood breached,
+waiting for materials it could not pay, or waiting for a level to finish building.
+
+```sh
+sim-run --pace season --days 7 --outpost 14:5:3                              # level 3 on a grade-5 site in ring 14
+sim-run --pace season --days 7 --seat turtle:check-in:6 --outpost 20:7:3:0   # ring 20, an empty store
+sim-run --pace season --days 7 --seat turtle:check-in:6 --outpost 16:5:2+    # level 2 with level 3 building
+```
+
 ## Other versions
 
 Earlier implementations are kept on archive branches (each also tagged):
