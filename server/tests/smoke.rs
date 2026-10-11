@@ -13,15 +13,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
 async fn auth_state_and_command_roundtrip() {
-    let port = 17931;
-    let db = std::env::temp_dir().join(format!("iac_smoke_{port}.db"));
-    let _ = std::fs::remove_file(&db);
-
-    let child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
-        .args(["--port", &port.to_string(), "--db", db.to_str().unwrap()])
-        .spawn()
-        .expect("failed to spawn server");
-    let _guard = ServerGuard(child);
+    let db = fresh_db("smoke_roundtrip");
+    let (_guard, port) = start_server(&db);
 
     let mut ws = connect_with_retry(&format!("ws://127.0.0.1:{port}")).await;
 
@@ -99,14 +92,13 @@ async fn auth_state_and_command_roundtrip() {
     };
     assert!(after["tick"].as_u64().unwrap() >= tick["tick"].as_u64().unwrap());
 
-    let _ = std::fs::remove_file(&db);
+    remove_db(&db);
 }
 
 #[tokio::test]
 async fn auth_issues_a_token_and_demands_it_afterwards() {
-    let port = 17932;
-    let db = fresh_db(port);
-    let _guard = start_server(port, &db);
+    let db = fresh_db("smoke_token");
+    let (_guard, port) = start_server(&db);
 
     let (_ws, first) = login(port, "Returning", None).await;
     assert_eq!(first["success"], true, "registration failed: {first}");
@@ -160,9 +152,8 @@ async fn auth_issues_a_token_and_demands_it_afterwards() {
 
 #[tokio::test]
 async fn auth_rejects_bad_names() {
-    let port = 17933;
-    let db = fresh_db(port);
-    let _guard = start_server(port, &db);
+    let db = fresh_db("smoke_names");
+    let (_guard, port) = start_server(&db);
 
     for bad in ["ab", "has space", "-dash", "Admin", &"x".repeat(25)] {
         let (_ws, reply) = login(port, bad, None).await;
@@ -175,12 +166,11 @@ async fn auth_rejects_bad_names() {
 
 #[tokio::test]
 async fn token_survives_restart_and_pre_token_databases_are_claimed() {
-    let port = 17934;
-    let db = fresh_db(port);
+    let db = fresh_db("smoke_restart");
 
     // Run 1: register, let the persist thread commit it.
     let (player_id, token) = {
-        let _guard = start_server(port, &db);
+        let (_guard, port) = start_server(&db);
         let (_ws, reply) = login(port, "OldTimer", None).await;
         assert_eq!(reply["success"], true, "{reply}");
         tokio::time::sleep(Duration::from_millis(2500)).await;
@@ -189,7 +179,7 @@ async fn token_survives_restart_and_pre_token_databases_are_claimed() {
 
     // Run 2: the hash was stored, so the token still works and is still required.
     {
-        let _guard = start_server(port, &db);
+        let (_guard, port) = start_server(&db);
         let (_ws, missing) = login(port, "OldTimer", None).await;
         assert_eq!(missing["code"], "TokenRequired", "{missing}");
         let (_ws, ok) = login(port, "OldTimer", Some(&token)).await;
@@ -204,7 +194,7 @@ async fn token_survives_restart_and_pre_token_databases_are_claimed() {
 
     // Run 3: the column is migrated back in, and the first login claims the account.
     let claimed = {
-        let _guard = start_server(port, &db);
+        let (_guard, port) = start_server(&db);
         let (mut ws, reply) = login(port, "OldTimer", None).await;
         assert_eq!(reply["success"], true, "legacy account not claimable: {reply}");
         assert_eq!(reply["player_id"].as_u64().unwrap(), player_id, "claim must keep the same empire");
@@ -227,7 +217,7 @@ async fn token_survives_restart_and_pre_token_databases_are_claimed() {
 
     // Run 4: the claim itself was persisted.
     {
-        let _guard = start_server(port, &db);
+        let (_guard, port) = start_server(&db);
         let (_ws, stale) = login(port, "OldTimer", Some(&token)).await;
         assert_eq!(stale["code"], "InvalidToken", "old token must not work after a claim: {stale}");
         let (_ws, ok) = login(port, "OldTimer", Some(&claimed)).await;
@@ -239,14 +229,9 @@ async fn token_survives_restart_and_pre_token_databases_are_claimed() {
 
 #[tokio::test]
 async fn a_world_refuses_a_different_pace() {
-    let port = 17935;
-    let db = fresh_db(port);
+    let db = fresh_db("smoke_pace");
     {
-        let child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
-            .args(["--port", &port.to_string(), "--db", db.to_str().unwrap(), "--pace", "blitz"])
-            .spawn()
-            .expect("failed to spawn server");
-        let _guard = ServerGuard(child);
+        let (_guard, port) = start_server_with(&db, &["--pace", "blitz"]);
         let (mut ws, reply) = login(port, "Pacer", None).await;
         assert_eq!(reply["success"], true, "{reply}");
         let state = loop {
@@ -261,7 +246,7 @@ async fn a_world_refuses_a_different_pace() {
     }
 
     let out = Command::new(env!("CARGO_BIN_EXE_iac-server"))
-        .args(["--port", &port.to_string(), "--db", db.to_str().unwrap(), "--pace", "10"])
+        .args(["--port", "0", "--db", db.to_str().unwrap(), "--pace", "10"])
         .output()
         .expect("failed to run server");
     assert!(!out.status.success(), "a different pace must stop the server");
@@ -273,9 +258,8 @@ async fn a_world_refuses_a_different_pace() {
 
 #[tokio::test]
 async fn leaderboard_ranks_humans_and_agents_together() {
-    let port = 17936;
-    let db = fresh_db(port);
-    let _guard = start_server(port, &db);
+    let db = fresh_db("smoke_leaderboard");
+    let (_guard, port) = start_server(&db);
 
     let (_human, reply) = login(port, "Person", None).await;
     assert_eq!(reply["success"], true);
@@ -303,4 +287,27 @@ async fn leaderboard_ranks_humans_and_agents_together() {
     assert!(board.get("you").is_none(), "{board}");
 
     remove_db(&db);
+}
+
+#[tokio::test]
+async fn two_servers_started_at_once_each_listen_on_a_port_of_their_own() {
+    let (slow_db, fast_db) = (fresh_db("smoke_pair_slow"), fresh_db("smoke_pair_fast"));
+    let (_slow, slow_port) = start_server(&slow_db);
+    let (_fast, fast_port) = start_server_with(&fast_db, &["--pace", "blitz"]);
+    assert_ne!(slow_port, fast_port);
+
+    for (port, pace) in [(slow_port, 1.0), (fast_port, 600.0)] {
+        let (mut ws, reply) = login(port, "Twin", None).await;
+        assert_eq!(reply["success"], true, "each world registers the name for itself: {reply}");
+        let state = loop {
+            let msg = next_json(&mut ws).await;
+            if msg["type"] == "full_state" {
+                break msg;
+            }
+        };
+        assert_eq!(state["world"]["pace"], pace, "port {port} is the other world");
+    }
+
+    remove_db(&slow_db);
+    remove_db(&fast_db);
 }
