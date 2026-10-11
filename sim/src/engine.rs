@@ -6761,7 +6761,6 @@ fn fuel_words(fuel: f32) -> String {
     if tenths.fract() == 0.0 { format!("{tenths:.0}") } else { format!("{tenths:.1}") }
 }
 
-/// Stable id of the hostile a sector's template spawns; see `TEMPLATE_NPC_ID_BASE`.
 /// A hold reason without its parenthesised figures (power, ratio), which drift
 /// from tick to tick while the cause stays the same.
 fn hold_key(reason: &str) -> String {
@@ -6801,6 +6800,7 @@ fn first_startable<T>(
     None
 }
 
+/// Stable id of the hostile a sector's template spawns; see `TEMPLATE_NPC_ID_BASE`.
 pub fn template_npc_id(coord: Hex) -> u64 {
     TEMPLATE_NPC_ID_BASE + u64::from(coord.to_key())
 }
