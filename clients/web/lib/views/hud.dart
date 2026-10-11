@@ -157,7 +157,7 @@ class _OutpostField extends StatelessWidget {
               const SizedBox(height: 2),
               Text(
                   [
-                    'L${o.level} STORE ${(storeFill(o) * 100).round()}%',
+                    '${outpostLevelMark(o)} STORE ${(storeFill(o) * 100).round()}%',
                     if (raid != null) 'RAID ${clockFmt(raid - tick)}' else if (o.breached) 'BREACHED',
                   ].join(' '),
                   style: T.mono(size: 13, color: hot ? C.ember : C.a200, spacing: .5)),

@@ -45,4 +45,12 @@ class ToastController extends ChangeNotifier {
     items.removeWhere((t) => t.id == id);
     notifyListeners();
   }
+
+  /// Takes down the toasts that ask nothing, for a panel that opens where
+  /// they stand. What they said is in the log; a question stays.
+  void dismissPlain() {
+    final before = items.length;
+    items.removeWhere((t) => t.actions.isEmpty);
+    if (items.length != before) notifyListeners();
+  }
 }

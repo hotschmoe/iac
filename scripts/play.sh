@@ -67,7 +67,7 @@ if [ "$solo" = 1 ]; then
   exec python3 -m http.server "$port" --bind "$host" --directory "$out"
 fi
 
-if [ "$build" = 1 ]; then flutter_build; fi
+if [ "$build" = 1 ]; then flutter_build --no-web-resources-cdn; fi
 
 ip=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo "Play at: http://${ip:-localhost}:${port}/   (local: http://localhost:${port}/)"

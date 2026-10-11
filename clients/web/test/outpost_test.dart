@@ -278,7 +278,8 @@ void main() {
       expect(_why(tester, 'found-why'), refusal);
       expect(find.descendant(of: find.byKey(const Key('survey-grade')), matching: find.text('3.0 OF 12')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-yield')), matching: find.text('44,444 FE, 44,444 CR, 44,444 DE AN HOUR')), findsOneWidget);
-      expect(find.descendant(of: find.byKey(const Key('survey-raid')), matching: find.text('38 TO 55 AGAINST 40')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('survey-raid')), matching: find.text('38 TO 55')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('survey-platform')), matching: find.text('40')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-time')), matching: find.text('1:30:00')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-cost-metal')), matching: find.text('ABOARD 0 - SHORT 1,000')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-cost-crystal')), matching: find.text('ABOARD 1,234,567')), findsOneWidget);
@@ -321,6 +322,7 @@ void main() {
         contains(startsWith('fleet 101 founded your outpost at [10,0] for 1000 metal, 500 crystal and 200 deuterium: level 1 is finished at tick')));
     expect(_said(tester, 'outpost-standing'), startsWith('NOT YET OPEN - BUILDING LEVEL 1, 0:'));
     expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('NOTHING: NOT YET OPEN')), findsOneWidget);
+    expect(find.descendant(of: _hudLine, matching: find.text('NOT OPEN STORE 0%')), findsOneWidget, reason: 'no level stands yet, so the bar names none');
     expect(_railTile(), findsOneWidget);
 
     await tester.pump(const Duration(seconds: 20));
@@ -398,9 +400,14 @@ void main() {
     c.place(101, _demoHome, _levelOne);
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     expect(find.byKey(const ValueKey('dock-outpost')), findsNothing);
+    c.handleCommand('found');
+    await tester.pump(const Duration(milliseconds: 400));
+    final refused = find.descendant(of: find.byType(ToastLayer), matching: find.text('fleet 101 is at ring 4; an outpost stands in rings 9 to 20'));
+    expect(refused, findsOneWidget);
     await _key(tester, LogicalKeyboardKey.keyO, 'o');
     await tester.pump(const Duration(milliseconds: 250));
     await tester.pump(const Duration(milliseconds: 50));
+    expect(refused, findsNothing, reason: 'a panel opens where the toasts stand, so the toast of the step before makes way');
     expect(_why(tester, 'found-why'), 'fleet 101 is at ring 4; an outpost stands in rings 9 to 20');
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('found-order'))).onPressed, isNull);
 

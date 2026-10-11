@@ -83,11 +83,14 @@ String outpostStanding(proto.OutpostState o, int tick) {
   return '$level - ${o.breached && work?.kind == proto.OutpostWork.build ? 'BREACHED, ' : ''}$doing';
 }
 
+/// "L2", or what stands for a level while the first is being built.
+String outpostLevelMark(proto.OutpostState o) => o.level == 0 ? 'NOT OPEN' : 'L${o.level}';
+
 /// "OUTPOST 12,-3 L2 STORE 41%", with a breach or an announced raid after it.
 String outpostHudLine(proto.OutpostState o, int tick) {
   final raid = o.raidArrivalTick;
   return [
-    'OUTPOST ${o.location.q},${o.location.r} L${o.level} STORE ${(storeFill(o) * 100).round()}%',
+    'OUTPOST ${o.location.q},${o.location.r} ${outpostLevelMark(o)} STORE ${(storeFill(o) * 100).round()}%',
     if (o.breached) 'BREACHED',
     if (raid != null) 'RAID ${clockFmt(raid - tick)}',
   ].join(' ');

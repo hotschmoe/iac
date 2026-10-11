@@ -348,6 +348,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             _outpost = false;
           }
         });
+        if (_trade) con.toasts.dismissPlain();
         con.play('click');
       case 'load':
         if (f.sector == con.state.homeworld) {
@@ -362,7 +363,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   }
 
   /// Open or shut the standing orders of the selected fleet. It is a panel,
-  /// not an act of the fleet: a jump under way does not keep it shut.
+  /// not an act of the fleet: a jump under way does not keep it shut. A
+  /// panel opens where the toasts stand (the top of a phone's sheet, the
+  /// foot of the desktop column), so the toasts that ask nothing make way.
   void _toggleOrders() {
     if (_fleet == null) return;
     setState(() {
@@ -373,6 +376,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _outpost = false;
       }
     });
+    if (_orders) con.toasts.dismissPlain();
     con.play('click');
   }
 
@@ -390,6 +394,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _orders = false;
       }
     });
+    if (_outpost) con.toasts.dismissPlain();
     con.play('click');
   }
 
@@ -667,7 +672,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               top: 8,
               right: 10,
               child: GuideTarget(_sheet ? 'status-sheet' : 'orders',
-                  child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () => setState(() => _sheet = !_sheet)))),
+                  child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () {
+                    setState(() => _sheet = !_sheet);
+                    if (_sheet) con.toasts.dismissPlain();
+                  }))),
         if (!narrow)
           Positioned(
               right: 16,
