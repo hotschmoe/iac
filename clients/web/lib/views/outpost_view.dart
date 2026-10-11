@@ -2,7 +2,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../console/economy_view.dart' show shortfall;
 import '../console/intel.dart';
 import '../console/outpost.dart';
 import '../console/services.dart';
@@ -18,6 +17,12 @@ const _abbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr',
 
 String _whole(double v) => groupDigits(v.floor());
 
+Color _coverColor(RaidCover cover) => switch (cover) {
+      RaidCover.above => C.ok,
+      RaidCover.within => C.a300,
+      RaidCover.below => C.ember,
+    };
+
 /// What a survey says of a site, as rows: the ore and its grade, what level
 /// 1 would make, the raids against the platform, the way home, the time,
 /// and the cost set against what [hold] carries.
@@ -29,24 +34,34 @@ class SurveyReadout extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = survey;
-    final exposed = s.raidPower > s.platformPower;
-    final ore = [(proto.ResourceKind.metal, s.densities.metal), (proto.ResourceKind.crystal, s.densities.crystal), (proto.ResourceKind.deuterium, s.densities.deuterium)];
+    final site = s.site;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
       Kv('Site', v: '${s.sector.q}, ${s.sector.r} - RING ${s.ring}'),
-      Kv('Grade', key: const Key('survey-grade'), v: '${s.grade.toStringAsFixed(1)} OF 12'),
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Text.rich(
-          TextSpan(children: [
-            for (final (k, density) in ore) TextSpan(text: '${_abbr[k]} ${density.label.toUpperCase()}   ', style: TextStyle(color: C.ore(k.name))),
-          ]),
-          style: T.mono(size: 10),
+      if (site == null)
+        const Kv('Grade', key: Key('survey-grade'), v: 'NOT ON YOUR CHART', vc: C.text3)
+      else ...[
+        Kv('Grade', key: const Key('survey-grade'), v: '${site.grade.toStringAsFixed(1)} OF 12'),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: Text.rich(
+            TextSpan(children: [
+              for (final (k, density) in [
+                (proto.ResourceKind.metal, site.densities.metal),
+                (proto.ResourceKind.crystal, site.densities.crystal),
+                (proto.ResourceKind.deuterium, site.densities.deuterium),
+              ])
+                TextSpan(text: '${_abbr[k]} ${density.label.toUpperCase()}   ', style: TextStyle(color: C.ore(k.name))),
+            ]),
+            style: T.mono(size: 10),
+          ),
         ),
-      ),
-      Kv('Level 1 makes', key: const Key('survey-yield'), v: '${yieldAnHour(s.production).toUpperCase()} AN HOUR'),
-      Kv('Raid against platform',
-          key: const Key('survey-raid'), v: '${s.raidPower.round()} AGAINST ${s.platformPower.round()}', vc: exposed ? C.ember : C.ok),
-      Kv('Way home', v: hopsHome(s.hopsHome).toUpperCase()),
+        Kv('Level 1 makes', key: const Key('survey-yield'), v: '${yieldAnHour(site.production).toUpperCase()} AN HOUR'),
+        Kv('Way home', v: hopsHome(site.hopsHome).toUpperCase()),
+      ],
+      Kv('Raids against platform',
+          key: const Key('survey-raid'),
+          v: '${raidRange(s.raidPower).toUpperCase()} AGAINST ${s.platformPower.round()}',
+          vc: _coverColor(RaidCover.of(s.platformPower, s.raidPower))),
       Kv('Level 1 takes', key: const Key('survey-time'), v: clockFmt(s.buildTicks)),
       const SizedBox(height: 6),
       const Lbl('Level 1 costs, from this hold'),
@@ -142,10 +157,10 @@ class _OutpostPanelState extends State<OutpostPanel> {
     }
     final work = o.work;
     final raid = o.raidArrivalTick;
-    final cover = o.defencePower / math.max(1, o.nextRaidEstimatePower);
+    final cover = RaidCover.of(o.defencePower, o.raidPower);
     final ships = math.max(0.0, o.defencePower - o.platformPower);
     final repair = o.repairCost;
-    final repairShort = repair == null ? null : shortfall(o.store, repair);
+    final repairShort = o.repairWaitingFor;
     return ConsolePanel(
       key: const ValueKey('outpost-panel'),
       title: 'Outpost',
@@ -185,19 +200,18 @@ class _OutpostPanelState extends State<OutpostPanel> {
         Kv('Platform and ships here',
             key: const Key('outpost-defence'),
             v: '${groupDigits(o.platformPower.round())} + ${groupDigits(ships.round())} = ${groupDigits(o.defencePower.round())}'),
-        Kv('Raid estimate', key: const Key('outpost-raid-estimate'), v: groupDigits(o.nextRaidEstimatePower.round())),
+        Kv('Raids of this ring', key: const Key('outpost-raid-range'), v: raidRange(o.raidPower).toUpperCase()),
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Wrap(spacing: 10, runSpacing: 2, crossAxisAlignment: WrapCrossAlignment.center, children: [
             Text(raid == null ? 'NO RAID ANNOUNCED' : 'RAID ARRIVES IN ${clockFmt(raid - st.tick)}',
                 key: const Key('outpost-raid'), style: T.cond(size: 13, color: raid == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 1.6)),
-            Text('DEFENCE ${cover.toStringAsFixed(2)}X THE ESTIMATE',
-                key: const Key('outpost-cover'), style: T.cond(size: 11, color: cover >= 1 ? C.ok : C.ember, spacing: 1.3)),
+            Text('DEFENCE ${cover.label.toUpperCase()}', key: const Key('outpost-cover'), style: T.cond(size: 11, color: _coverColor(cover), spacing: 1.3)),
           ]),
         ),
-        const WhyText('The estimate is the middle of the raids this ring sends; one may come nearly a fifth stronger. A raid the outpost '
-            'loses breaches it, takes a quarter of what the store and the holds here carry above the protected floor, and destroys a '
-            'quarter of the ships standing here.'),
+        const WhyText('A raid is decided by the defence, taken up to a tenth higher or lower by chance, against the raid\'s power. A raid '
+            'the outpost loses breaches it, takes a quarter of what the store and the holds here carry above the protected floor, and '
+            'destroys a quarter of the ships standing here.'),
         const SizedBox(height: 10),
         ..._next(o),
         const SizedBox(height: 12),
@@ -208,7 +222,8 @@ class _OutpostPanelState extends State<OutpostPanel> {
 
   Widget _store(proto.OutpostState o, proto.ResourceKind k) {
     final stock = k.of(o.store), cap = k.of(o.storeCap), floor = k.of(o.protected);
-    final full = storeAtCap(o, k);
+    final lost = o.yieldLost.contains(k);
+    final full = lost || storeAtCap(o, k);
     final color = C.ore(k.name);
     return Padding(
       key: Key('outpost-store-${k.name}'),
@@ -217,11 +232,11 @@ class _OutpostPanelState extends State<OutpostPanel> {
         Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
           Text(k.name.toUpperCase(), style: T.cond(size: 10.5, color: color, spacing: 1.4)),
           const SizedBox(width: 8),
-          Expanded(child: Text('${_whole(stock)} / ${_whole(cap)}', textAlign: TextAlign.right, style: T.mono(size: 11.5, color: full ? C.ember : C.text))),
-          if (full) ...[const SizedBox(width: 8), const Lamp('Full', color: C.ember)],
+          Expanded(child: Text('${_whole(stock)} / ${_whole(cap)}', textAlign: TextAlign.right, style: T.mono(size: 11.5, color: lost ? C.ember : C.text))),
+          if (full) ...[const SizedBox(width: 8), Lamp(lost ? 'Full, yield lost' : 'Full', color: lost ? C.ember : C.a300)],
         ]),
         const SizedBox(height: 3),
-        LedBar(cap > 0 ? stock / cap : 0, color: full ? C.ember : color, height: 7, mark: C.text2, markAt: cap > 0 ? (floor / cap).clamp(0.0, 1.0) : null),
+        LedBar(cap > 0 ? stock / cap : 0, color: lost ? C.ember : color, height: 7, mark: C.text2, markAt: cap > 0 ? (floor / cap).clamp(0.0, 1.0) : null),
         const SizedBox(height: 2),
         Wrap(spacing: 10, children: [
           Text('PROTECTED ${groupDigits(floor.round())}', style: T.mono(size: 10, color: C.text3)),
@@ -237,8 +252,7 @@ class _OutpostPanelState extends State<OutpostPanel> {
       return [Text('LEVEL ${o.maxLevel} IS THE HIGHEST.', key: const Key('outpost-max'), style: T.mono(size: 10.5, color: C.text3))];
     }
     final building = o.work?.kind == proto.OutpostWork.build ? o.work!.level : null;
-    final short = shortfall(o.store, next.cost);
-    final ready = short == null && o.work == null && !o.breached;
+    final why = o.upgradeRefusal;
     return [
       Lbl(building == null ? 'Next: level ${next.level}' : 'After level $building: level ${next.level}'),
       Kv('Costs, from the store', key: const Key('outpost-next-cost'), v: amountsOf(next.cost).toUpperCase()),
@@ -246,17 +260,16 @@ class _OutpostPanelState extends State<OutpostPanel> {
       Kv('Makes an hour', v: yieldAnHour(next.production).toUpperCase()),
       Kv('Store takes', v: amountsOf(next.storeCap).toUpperCase()),
       Kv('Platform', v: groupDigits(next.platformPower.round())),
-      if (short != null)
-        Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text('THE STORE IS ${shortBy(short).toUpperCase()}', key: const Key('outpost-short'), style: T.mono(size: 10.5, color: C.ember, height: 1.35)),
-        ),
       const SizedBox(height: 8),
       Align(
         alignment: Alignment.centerLeft,
-        child: ConsoleButton('Upgrade to level ${next.level}', key: const ValueKey('outpost-upgrade'), small: true, primary: ready, onPressed: c.upgradeOutpost),
+        child: ConsoleButton('Upgrade to level ${next.level}',
+            key: const ValueKey('outpost-upgrade'), small: true, primary: why == null, onPressed: why == null ? c.upgradeOutpost : null, reason: why),
       ),
-      const WhyText('A level is paid in full from the outpost\'s own store when it is ordered, and the outpost does one job at a time.'),
+      if (why != null)
+        WhyText(why, key: const Key('outpost-upgrade-why'))
+      else
+        const WhyText('A level is paid in full from the outpost\'s own store when it is ordered, and the outpost does one job at a time.'),
     ];
   }
 

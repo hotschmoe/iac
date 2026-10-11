@@ -6,9 +6,7 @@ import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
 import '../state/state_mapper.dart' show amountsOf, shortBy;
-import 'economy_view.dart' show shortfall;
 import 'intel.dart' show clockFmt;
-import 'outpost.dart' show repairWaits, yieldWasted;
 import 'notifier.dart';
 import 'prefs.dart';
 import 'toasts.dart';
@@ -209,11 +207,8 @@ class Attention extends ChangeNotifier {
     }
 
     final post = s.outpost;
-    final full = {
-      for (final k in proto.ResourceKind.values)
-        if (post != null && yieldWasted(post, k)) k,
-    };
-    final waits = post != null && repairWaits(post);
+    final full = {...?post?.yieldLost};
+    final short = post?.repairWaitingFor;
     if (_outpostWatched && post != null) {
       final at = '${post.location.q}, ${post.location.r}';
       for (final k in full.difference(_storeFull)) {
@@ -221,16 +216,16 @@ class Attention extends ChangeNotifier {
             'Your outpost at $at holds all the ${k.name} its store takes: the extractor makes no more of it until a fleet loads some.'));
       }
       final cost = post.repairCost;
-      if (waits && !_repairWaits && cost != null) {
+      if (short != null && !_repairWaits && cost != null) {
         out.add(Notice('outpost-repair', 'Outpost repair waiting',
-            'Your outpost at $at is breached and cannot repair itself: the repair costs ${amountsOf(cost)} and its store is ${shortBy(shortfall(post.store, cost)!)}. '
+            'Your outpost at $at is breached and cannot repair itself: the repair costs ${amountsOf(cost)} and its store is ${shortBy(short)}. '
                 'It makes nothing, fills no tank and has no platform until a fleet unloads the rest.',
             critical: true));
       }
     }
     _outpostWatched = true;
     _storeFull = full;
-    _repairWaits = waits;
+    _repairWaits = short != null;
 
     final raid = s.raid;
     if (raid != null && _raidWarned != raid.arrivalTick) {

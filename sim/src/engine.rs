@@ -44,7 +44,7 @@ use iac_shared::protocol::{
     MovePreview, OreReserve, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
     StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
-    OutpostCompletedEvent, OutpostSurvey, SectorResources,
+    OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
 };
 
 use crate::auth::{self, TokenHash};
@@ -2884,13 +2884,7 @@ impl GameEngine {
         let refuse = |code: ErrorCode, reason: String| Err(Refusal::new(code, reason));
         let fleet_id = fleet.id;
         let here = fleet.location == sector;
-        let ring = sector.dist_from_origin();
-        if !(OUTPOST_MIN_RING..=OUTPOST_MAX_RING).contains(&ring) {
-            let subject = if here { format!("fleet {fleet_id}") } else { sector.to_string() };
-            return refuse(ErrorCode::InvalidTarget, format!(
-                "{subject} is at ring {ring}; an outpost stands in rings {OUTPOST_MIN_RING} to {OUTPOST_MAX_RING}",
-            ));
-        }
+        Self::outpost_ring(fleet, sector)?;
         let template = self.world_gen.generate_sector(sector);
         if template.terrain == iac_shared::constants::TerrainType::Anomaly {
             return refuse(ErrorCode::InvalidTarget, format!("{sector} is an Anomaly; no outpost stands in one"));
@@ -2972,36 +2966,58 @@ impl GameEngine {
         Ok(())
     }
 
+    /// The founding rule a sector's place on the map alone decides.
+    fn outpost_ring(fleet: &Fleet, sector: Hex) -> Result<(), Refusal> {
+        let ring = sector.dist_from_origin();
+        if (OUTPOST_MIN_RING..=OUTPOST_MAX_RING).contains(&ring) {
+            return Ok(());
+        }
+        let subject = if fleet.location == sector { format!("fleet {}", fleet.id) } else { sector.to_string() };
+        Err(Refusal::new(ErrorCode::InvalidTarget, format!(
+            "{subject} is at ring {ring}; an outpost stands in rings {OUTPOST_MIN_RING} to {OUTPOST_MAX_RING}",
+        )))
+    }
+
     /// Answer to `outpost_survey`: what an outpost in `sector` (the fleet's
-    /// own when None) would be worth, and why it cannot be founded now.
+    /// own when None) would be worth, and why it cannot be founded now. Of
+    /// a sector the player has never seen it tells what its ring decides
+    /// and nothing of what is there.
     pub fn outpost_survey(&self, player_id: u64, fleet_id: u64, sector: Option<Hex>) -> Result<OutpostSurvey, Refusal> {
         let fleet = self.owned_fleet(player_id, fleet_id)
             .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
         let sector = sector.unwrap_or(fleet.location);
-        if sector != fleet.location && self.known.remembered(player_id, sector).is_none() {
-            return Err(Refusal::new(
-                ErrorCode::InvalidTarget,
-                format!("{sector} is not on your chart; a survey reads a sector you have seen"),
-            ));
-        }
         let pace = self.world.pace;
         let ring = sector.dist_from_origin();
-        let densities = self.site_densities(sector);
-        let [metal, crystal, deuterium] = densities;
-        let home = self.players.get(&player_id).map(|p| p.homeworld);
+        let seen = sector == fleet.location || self.known.remembered(player_id, sector).is_some();
+        let site = seen.then(|| {
+            let densities = self.site_densities(sector);
+            let [metal, crystal, deuterium] = densities;
+            SurveySite {
+                densities: SectorResources { metal, crystal, deuterium },
+                grade: scaling::site_grade(densities),
+                production: scaling::outpost_yield_per_tick(densities, ring, 1, &pace),
+                hops_home: self.players.get(&player_id)
+                    .and_then(|player| self.world_gen.lane_hops(sector, player.homeworld, 64)),
+            }
+        });
+        let verdict = if seen {
+            self.outpost_site(player_id, fleet, sector)
+        } else {
+            Self::outpost_ring(fleet, sector).and_then(|()| Err(Refusal::new(
+                ErrorCode::InvalidTarget,
+                format!("{sector} is not on your chart; a survey reads the site of a sector you have seen"),
+            )))
+        };
         Ok(OutpostSurvey {
             fleet_id,
             sector,
             ring,
-            densities: SectorResources { metal, crystal, deuterium },
-            grade: scaling::site_grade(densities),
+            site,
             cost: scaling::outpost_cost(1),
             build_ticks: scaling::outpost_build_ticks(1, &pace),
-            production: scaling::outpost_yield_per_tick(densities, ring, 1, &pace),
-            raid_power: outpost_raid_estimate(ring),
+            raid_power: outpost_raid_range(ring),
             platform_power: scaling::outpost_platform_power(1),
-            hops_home: home.and_then(|home| self.world_gen.lane_hops(sector, home, 64)),
-            refusal: self.outpost_site(player_id, fleet, sector).err().map(|refusal| refusal.reason),
+            refusal: verdict.err().map(|refusal| refusal.reason),
         })
     }
 
@@ -3106,8 +3122,8 @@ impl GameEngine {
         let short = outpost.store.shortfall(cost);
         if short.total() > 0.0 {
             return refuse(ErrorCode::InsufficientResources, format!(
-                "outpost level {next} costs {}; the store at {sector} is short by {}. Nothing was started: \
-                 a level is paid in full from the outpost's own store when it is ordered",
+                "outpost level {next} costs {}; the store at {sector} is short by {}. \
+                 A level is paid in full from the outpost's own store when it is ordered",
                 crate::commands::amount_words(cost),
                 crate::commands::amount_words(short),
             ));
@@ -3806,7 +3822,7 @@ impl GameEngine {
             observed = Some(tmpl.power() * behavior_threat_bonus(tmpl.behavior));
         }
         if observed.is_none() && self.outpost_at(coord).is_some() {
-            observed = Some(0.0);
+            return ThreatInfo { rating: 0, est_power: 0.0, basis: ThreatBasis::Observed };
         }
         match observed {
             Some(est_power) => ThreatInfo { rating: scaling::threat_rating(est_power), est_power, basis: ThreatBasis::Observed },
@@ -6796,9 +6812,10 @@ fn exchange_meter_at(pressure: f64, span: f64, window: u64) -> ExchangeMeter {
     }
 }
 
-/// The middle of the raids an outpost at `ring` faces.
-pub fn outpost_raid_estimate(ring: u16) -> f32 {
-    scaling::outpost_raid_power(ring) * (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0
+/// The bounds of the roll that sizes a raid on an outpost at `ring`.
+pub fn outpost_raid_range(ring: u16) -> PowerRange {
+    let base = scaling::outpost_raid_power(ring);
+    PowerRange { least: base * RAID_POWER_ROLL_MIN, most: base * RAID_POWER_ROLL_MAX }
 }
 
 /// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.

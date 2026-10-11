@@ -428,6 +428,18 @@ fn hops_home(hops: Option<u32>) -> String {
     hops.map_or("more than 64 hops".to_string(), |h| format!("{h} hop{}", if h == 1 { "" } else { "s" }))
 }
 
+/// Green where `defence` is at least the strongest raid, red where it is
+/// below the weakest, amber between.
+fn raid_style(defence: f32, raids: &iac_shared::protocol::PowerRange) -> Style {
+    if defence >= raids.most {
+        GREEN_GOOD
+    } else if defence < raids.least {
+        RED_ALERT
+    } else {
+        AMBER_FULL
+    }
+}
+
 fn render_outpost_panel(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     let block = titled_block(" OUTPOST ", AMBER_DIM);
     let inner = block.inner(area);
@@ -468,28 +480,33 @@ fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState)
         ));
     }
     if let Some(cost) = &post.repair_cost {
-        let short = post.store.shortfall(*cost);
         lines.push(Line::styled(
-            if short.total() > 0.0 {
-                format!(
+            match &post.repair_waiting_for {
+                Some(short) => format!(
                     "The repair costs {} from the store, which is short by {}: it stays breached until a fleet unloads the rest.",
-                    amounts(cost), amounts(&short),
-                )
-            } else {
-                format!("The repair costs {} from the store.", amounts(cost))
+                    amounts(cost), amounts(short),
+                ),
+                None => format!("The repair costs {} from the store.", amounts(cost)),
             },
             RED_ALERT,
         ));
     }
     for kind in ResourceKind::ALL {
         let (stock, cap, floor) = (post.store.get(kind), post.store_cap.get(kind), post.protected.get(kind));
+        let lost = post.yield_lost.contains(&kind);
         lines.push(Line::styled(
             format!(
                 " {:<10} {:>9.0} / {:<9.0} protected {:.0}, raidable {:.0}{}",
                 kind.label(), stock.floor(), cap.floor(), floor, (stock - floor).max(0.0).floor(),
-                if stock >= cap { "  FULL: the extractor makes no more of it" } else { "" },
+                if lost {
+                    "  FULL: the extractor makes no more of it"
+                } else if stock >= cap {
+                    "  FULL"
+                } else {
+                    ""
+                },
             ),
-            if stock >= cap { RED_ALERT } else { AMBER_BRIGHT },
+            if lost { RED_ALERT } else { AMBER_BRIGHT },
         ));
     }
     lines.push(Line::raw(""));
@@ -502,13 +519,12 @@ fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState)
         AMBER,
     ));
     let ships = (post.defence_power - post.platform_power).max(0.0);
-    let cover = post.defence_power / post.next_raid_estimate_power.max(1.0);
     lines.push(Line::styled(
         format!(
-            "Defence: platform {:.0} + ships here {:.0} = {:.0}, {cover:.2}x the raid estimate of {:.0}",
-            post.platform_power, ships, post.defence_power, post.next_raid_estimate_power,
+            "Defence: platform {:.0} + ships here {:.0} = {:.0} against raids of {:.0} to {:.0}",
+            post.platform_power, ships, post.defence_power, post.raid_power.least, post.raid_power.most,
         ),
-        if cover >= 1.0 { GREEN_GOOD } else { RED_ALERT },
+        raid_style(post.defence_power, &post.raid_power),
     ));
     lines.push(match post.raid_arrival_tick {
         Some(arrival) => Line::styled(format!("RAID ARRIVES IN {}", left(arrival)), RED_ALERT),
@@ -522,7 +538,6 @@ fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState)
                 Some(work) if work.kind == OutpostWork::Build => format!("After level {}: level {}", work.level, next.level),
                 _ => format!("Next: level {}", next.level),
             };
-            let short = post.store.shortfall(next.cost);
             lines.push(Line::styled(
                 format!(
                     "{after} costs {} from the store and takes {}; it makes {} an hour, its store takes {}, its platform is {:.0}",
@@ -530,10 +545,9 @@ fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState)
                 ),
                 AMBER_BRIGHT,
             ));
-            lines.push(if short.total() > 0.0 {
-                Line::styled(format!("The store is short by {}.   [U] Upgrade", amounts(&short)), RED_ALERT)
-            } else {
-                Line::styled(" [U] Upgrade", AMBER_FULL)
+            lines.push(match &post.upgrade_refusal {
+                Some(why) => Line::styled(format!("Cannot be ordered now: {why}"), RED_ALERT),
+                None => Line::styled(" [U] Upgrade", AMBER_FULL),
             });
         }
         None => lines.push(Line::styled(format!("Level {} is the highest.", post.max_level), AMBER_DIM)),
@@ -542,7 +556,7 @@ fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState)
     let here: Vec<String> = state
         .fleets
         .iter()
-        .filter(|f| f.location == post.location)
+        .filter(|f| f.at_outpost)
         .map(|f| format!("fleet {} ({} ships, hold {:.0}/{:.0})", f.id, f.ships.len(), f.cargo.total(), f.cargo_capacity))
         .collect();
     lines.push(Line::styled(
@@ -599,21 +613,30 @@ fn founding_lines(state: &ClientState) -> Vec<ratatui::text::Line<'static>> {
         return lines;
     };
     let ore = |density: iac_shared::constants::Density| format!("{density:?}").to_lowercase();
+    match &survey.site {
+        Some(site) => {
+            lines.push(Line::styled(
+                format!(
+                    "Site {} ring {}: grade {:.1} of 12 (metal {}, crystal {}, deuterium {}), {} from home",
+                    survey.sector, survey.ring, site.grade,
+                    ore(site.densities.metal), ore(site.densities.crystal), ore(site.densities.deuterium),
+                    hops_home(site.hops_home),
+                ),
+                AMBER_BRIGHT,
+            ));
+            lines.push(Line::styled(format!("Level 1 makes {} an hour", yield_an_hour(&site.production)), AMBER_BRIGHT));
+        }
+        None => lines.push(Line::styled(
+            format!("Site {} ring {}: not on your chart, so its ore and its yield are not known", survey.sector, survey.ring),
+            AMBER_BRIGHT,
+        )),
+    }
     lines.push(Line::styled(
         format!(
-            "Site {} ring {}: grade {:.1} of 12 (metal {}, crystal {}, deuterium {})",
-            survey.sector, survey.ring, survey.grade,
-            ore(survey.densities.metal), ore(survey.densities.crystal), ore(survey.densities.deuterium),
+            "Raids of {:.0} to {:.0} against a platform of {:.0}",
+            survey.raid_power.least, survey.raid_power.most, survey.platform_power,
         ),
-        AMBER_BRIGHT,
-    ));
-    lines.push(Line::styled(format!("Level 1 makes {} an hour", yield_an_hour(&survey.production)), AMBER_BRIGHT));
-    lines.push(Line::styled(
-        format!(
-            "Raids of about {:.0} against a platform of {:.0}; {} from home",
-            survey.raid_power, survey.platform_power, hops_home(survey.hops_home),
-        ),
-        if survey.raid_power > survey.platform_power { RED_ALERT } else { GREEN_GOOD },
+        raid_style(survey.platform_power, &survey.raid_power),
     ));
     lines.push(Line::styled(
         format!("Level 1 costs {} from this hold and takes {}", amounts(&survey.cost), ticks_label(survey.build_ticks)),

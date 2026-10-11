@@ -73,6 +73,9 @@ class FleetState {
   /// Fuel for the way to the player's outpost, 0 standing at it; null
   /// unless that outpost is in service.
   final int? outpostFuel;
+
+  /// In the sector of the player's outpost, whatever state it is in.
+  final bool atOutpost;
   final int cooldown;
   final double power;
   final int rangeHops;
@@ -106,6 +109,7 @@ class FleetState {
     this.jumpFuel = 0,
     this.homeFuel = 0,
     this.outpostFuel,
+    this.atOutpost = false,
     this.cooldown = 0,
     this.power = 0,
     this.rangeHops = 0,

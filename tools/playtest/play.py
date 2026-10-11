@@ -391,12 +391,20 @@ def quote_line(m):
 
 def survey_line(m):
     """One line for an outpost_survey reply: what the site makes, what raids it, what founding costs."""
-    s, home = m["sector"], m.get("hops_home")
-    return (f"survey {s['q']},{s['r']} ring {m['ring']} grade {m['grade']:g}: makes {res_rate(m['production'])} an hour at level 1; "
-            f"raids of about {m['raid_power']:.0f} against a platform of {m['platform_power']:.0f}; "
+    s, site = m["sector"], m.get("site")
+    home = site.get("hops_home") if site else None
+    seen = (f"grade {site['grade']:g}: makes {res_rate(site['production'])} an hour at level 1" if site
+            else "not on your chart, its ore is not known")
+    return (f"survey {s['q']},{s['r']} ring {m['ring']} {seen}; "
+            f"raids of {raid_range(m['raid_power'])} against a platform of {m['platform_power']:.0f}; "
             f"costs {res(m['cost'])}, built in {age(m['build_ticks'])}"
             + (f"; {home} hops from home" if home is not None else "")
             + (f"  CANNOT FOUND NOW: {m['refusal']}" if m.get("refusal") else "  CAN BE FOUNDED NOW"))
+
+
+def raid_range(r):
+    """The weakest and the strongest raid a ring sends."""
+    return f"{r['least']:.0f} to {r['most']:.0f}"
 
 
 def res_rate(per_tick):
@@ -414,11 +422,13 @@ def outpost_line(o, now):
     work, raid = o.get("work"), o.get("raid_arrival_tick")
     state = "BREACHED" if o["breached"] else "in service" if o["in_service"] else "under construction"
     doing = f", {work['kind']} of level {work['level']} done in {age(work['end_tick'] - now)}" if work else ""
-    owed = f", repair waits for {res(o['repair_cost'])}" if o.get("repair_cost") else ""
+    owed = f", repair waits for {res(o['repair_waiting_for'])} more" if o.get("repair_waiting_for") else ""
+    lost = f", FULL of {'/'.join(o['yield_lost'])} (that yield is lost)" if o.get("yield_lost") else ""
     return (f"Outpost at {o['location']['q']},{o['location']['r']} level {o['level']}/{o['max_level']} {state}{doing}{owed}: "
-            f"store {res(o['store'])} of {res(o['store_cap'])} (raid-protected {res(o['protected'])}), "
-            f"makes {res_rate(o['production'])} an hour, defence {o['defence_power']:.0f} against raids of about "
-            f"{o['next_raid_estimate_power']:.0f}" + (f", RAID ARRIVES in {age(raid - now)}" if raid else ""))
+            f"store {res(o['store'])} of {res(o['store_cap'])} (raid-protected {res(o['protected'])}){lost}, "
+            f"makes {res_rate(o['production'])} an hour, defence {o['defence_power']:.0f} against raids of "
+            f"{raid_range(o['raid_power'])}" + (f", RAID ARRIVES in {age(raid - now)}" if raid else "")
+            + (f"; upgrade refused now: {o['upgrade_refusal']}" if o.get("upgrade_refusal") and o.get("next_level") else ""))
 
 
 def age(ticks):

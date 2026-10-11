@@ -276,9 +276,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       case 'recall':
         return f.sector == con.state.homeworld ? 'Already at the homeworld.' : null;
       case 'load':
-        final post = con.state.outpost?.location;
-        if (f.sector == con.state.homeworld || f.sector == post) return null;
-        return post == null ? 'A hold is loaded from the stockpile at the homeworld only.' : 'A hold is loaded at the homeworld and at your outpost only.';
+        if (f.sector == con.state.homeworld || f.atOutpost) return null;
+        return con.state.outpost == null ? 'A hold is loaded from the stockpile at the homeworld only.' : 'A hold is loaded at the homeworld and at your outpost only.';
     }
     return null;
   }
@@ -539,7 +538,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final exploring = f.status == ui.FleetStatus.exploring;
       final shield = _shieldFrac();
       final mine = st.outpost;
-      final atOutpost = mine != null && f.sector == mine.location;
+      final atOutpost = f.atOutpost;
 
       DockAction da(String id, String label, String key, {bool active = false, bool fire = false}) =>
           DockAction(id, label, key, reason: _reason(id, f, th, s), active: active, fire: fire);
@@ -572,7 +571,6 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           f: f,
           shieldFrac: shield,
           atHome: f.sector == st.homeworld,
-          atOutpost: atOutpost,
           holding: st.holdOf(f),
           footer: Wrap(spacing: 6, runSpacing: 6, children: [
             GuideTarget('orders', child: ConsoleButton(_orders ? 'Hide orders' : 'Orders', key: const ValueKey('orders-toggle'), small: true, keyHint: 'P', active: _orders, onPressed: _toggleOrders)),

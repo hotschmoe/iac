@@ -51,14 +51,22 @@ double storeFill(proto.OutpostState o) {
 /// Whether the store holds all of [k] it takes.
 bool storeAtCap(proto.OutpostState o, proto.ResourceKind k) => k.of(o.storeCap) > 0 && k.of(o.store) >= k.of(o.storeCap);
 
-/// The store holds all of [k] it takes while the extractor makes it: yield
-/// is being lost, which is when the server warns.
-bool yieldWasted(proto.OutpostState o, proto.ResourceKind k) => k.of(o.production) > 0 && storeAtCap(o, k);
+/// "57 to 82": the least and the most a raid can be.
+String raidRange(proto.PowerRange r) => '${groupDigits(r.least.round())} to ${groupDigits(r.most.round())}';
 
-/// The outpost is breached and its store does not cover the repair.
-bool repairWaits(proto.OutpostState o) {
-  final cost = o.repairCost;
-  return cost != null && proto.ResourceKind.values.any((k) => k.of(o.store) < k.of(cost));
+/// Where a defence stands beside the raids it may meet. A raid is decided
+/// by the defence, taken up to a tenth higher or lower by chance, against
+/// the raid's power, so only the two ends say much.
+enum RaidCover {
+  above('above the strongest raid'),
+  within('within the range of the raids'),
+  below('below the weakest raid');
+
+  final String label;
+  const RaidCover(this.label);
+
+  static RaidCover of(double defence, proto.PowerRange raids) =>
+      defence >= raids.most ? above : defence < raids.least ? below : within;
 }
 
 /// "LEVEL 2 OF 3 - BUILDING LEVEL 3, 0:40:00 LEFT": the level it stands at
@@ -86,10 +94,15 @@ String outpostHudLine(proto.OutpostState o, int tick) {
 }
 
 /// A survey in three lines: the site and its yield, the raids against the
-/// platform, the cost and the time.
+/// platform, the cost and the time. Of a sector the player has never seen
+/// the server tells no site, and the first line says so.
 List<String> surveyLines(proto.OutpostSurvey s) => [
-      'Site ${s.sector}, ring ${s.ring}: grade ${s.grade.toStringAsFixed(1)}, level 1 makes ${yieldAnHour(s.production)} an hour',
-      'Raids of about ${s.raidPower.round()} against a platform of ${s.platformPower.round()}; ${hopsHome(s.hopsHome)} from home',
+      switch (s.site) {
+        final site? => 'Site ${s.sector}, ring ${s.ring}: grade ${site.grade.toStringAsFixed(1)}, level 1 makes ${yieldAnHour(site.production)} an hour, '
+            '${hopsHome(site.hopsHome)} from home',
+        null => 'Site ${s.sector}, ring ${s.ring}: not on your chart, so its ore and its yield are not known',
+      },
+      'Raids of ${raidRange(s.raidPower)} against a platform of ${s.platformPower.round()}',
       'Level 1 costs ${amountsOf(s.cost)} from the founding hold and takes ${clockFmt(s.buildTicks)}',
     ];
 

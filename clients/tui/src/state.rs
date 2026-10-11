@@ -466,10 +466,10 @@ impl ClientState {
     /// The dock the active fleet stands at: the homeworld, or the player's
     /// outpost.
     pub fn active_dock(&self) -> Option<Dock> {
-        let at = self.active_fleet()?.location;
-        if self.player.as_ref().is_some_and(|p| p.homeworld == at) {
+        let fleet = self.active_fleet()?;
+        if self.player.as_ref().is_some_and(|p| p.homeworld == fleet.location) {
             Some(Dock::Home)
-        } else if self.outpost.as_ref().is_some_and(|post| post.location == at) {
+        } else if fleet.at_outpost {
             Some(Dock::Outpost)
         } else {
             None
@@ -810,9 +810,10 @@ impl ClientState {
                 self.survey = Some(s.clone());
                 if self.outpost_panel.is_none() {
                     let verdict = s.refusal.clone().unwrap_or_else(|| "can be founded now".to_string());
+                    let grade = s.site.as_ref().map_or_else(String::new, |site| format!(" grade {:.1}", site.grade));
                     self.status_message = format!(
-                        "Outpost site {} ring {} grade {:.1}: raid {:.0} vs platform {:.0}; {verdict}",
-                        s.sector, s.ring, s.grade, s.raid_power, s.platform_power,
+                        "Outpost site {} ring {}{grade}: raids of {:.0} to {:.0} vs platform {:.0}; {verdict}",
+                        s.sector, s.ring, s.raid_power.least, s.raid_power.most, s.platform_power,
                     );
                     self.status_set_tick = self.tick;
                 }

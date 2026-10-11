@@ -433,6 +433,8 @@ enum RatioLabel {
 
 /// How dangerous a sector is: T1 to T9 from the power of what is there.
 class ThreatInfo {
+  /// 1 to 9, or 0 where there is nothing to fight and nothing will come: a
+  /// sector an outpost stands in.
   final int rating;
   final double estPower;
   final ThreatBasis basis;
@@ -1208,6 +1210,10 @@ class OutpostState {
   /// Per tick now; zero while not [inService].
   final Resources production;
 
+  /// The resources the extractor makes and the store holds all it takes
+  /// of: that yield is lost until a fleet loads some.
+  final List<ResourceKind> yieldLost;
+
   /// The site's grade, 0 to 12.
   final double grade;
 
@@ -1216,7 +1222,11 @@ class OutpostState {
 
   /// The platform and the owner's ships standing in the sector.
   final double defencePower;
-  final double nextRaidEstimatePower;
+
+  /// The least and the most a raid on this outpost can be. The outcome is
+  /// [defencePower], taken a tenth higher or lower by chance, against the
+  /// raid's power.
+  final PowerRange raidPower;
 
   /// Tick an announced raid arrives; null when none is on its way.
   final int? raidArrivalTick;
@@ -1224,9 +1234,17 @@ class OutpostState {
   /// What [UpgradeOutpostCommand] would build; null at [maxLevel].
   final OutpostLevel? nextLevel;
 
+  /// Why [UpgradeOutpostCommand] would be refused right now, in the
+  /// server's sentence; null when it would be accepted this tick.
+  final String? upgradeRefusal;
+
   /// What the repair will take from the store once the store covers it;
   /// present while breached with no repair under way.
   final Resources? repairCost;
+
+  /// What the store lacks of [repairCost]: the repair waits for a fleet to
+  /// unload it. Null when no repair is waiting.
+  final Resources? repairWaitingFor;
 
   /// Lane hops to the homeworld; null beyond 64.
   final int? hopsHome;
@@ -1241,13 +1259,16 @@ class OutpostState {
     required this.storeCap,
     required this.protected,
     required this.production,
+    this.yieldLost = const [],
     required this.grade,
     required this.platformPower,
     required this.defencePower,
-    required this.nextRaidEstimatePower,
+    required this.raidPower,
     this.raidArrivalTick,
     this.nextLevel,
+    this.upgradeRefusal,
     this.repairCost,
+    this.repairWaitingFor,
     this.hopsHome,
   });
 
@@ -1264,13 +1285,16 @@ class OutpostState {
       storeCap: Resources.fromJson(m['store_cap']),
       protected: Resources.fromJson(m['protected']),
       production: Resources.fromJson(m['production']),
+      yieldLost: m['yield_lost'] == null ? const [] : _list(m['yield_lost'], ResourceKind.fromJson),
       grade: _f(m['grade']),
       platformPower: _f(m['platform_power']),
       defencePower: _f(m['defence_power']),
-      nextRaidEstimatePower: _f(m['next_raid_estimate_power']),
+      raidPower: PowerRange.fromJson(m['raid_power']),
       raidArrivalTick: m['raid_arrival_tick'] as int?,
       nextLevel: _opt(m['next_level'], OutpostLevel.fromJson),
+      upgradeRefusal: m['upgrade_refusal'] as String?,
       repairCost: _opt(m['repair_cost'], Resources.fromJson),
+      repairWaitingFor: _opt(m['repair_waiting_for'], Resources.fromJson),
       hopsHome: m['hops_home'] as int?,
     );
   }
@@ -1286,18 +1310,36 @@ class OutpostState {
       'store_cap': storeCap.toJson(),
       'protected': protected.toJson(),
       'production': production.toJson(),
+      'yield_lost': yieldLost.map((e) => e.toJson()).toList(),
       'grade': grade,
       'platform_power': platformPower,
       'defence_power': defencePower,
-      'next_raid_estimate_power': nextRaidEstimatePower,
+      'raid_power': raidPower.toJson(),
     };
     _put(m, 'work', work?.toJson());
     _put(m, 'raid_arrival_tick', raidArrivalTick);
     _put(m, 'next_level', nextLevel?.toJson());
+    _put(m, 'upgrade_refusal', upgradeRefusal);
     _put(m, 'repair_cost', repairCost?.toJson());
+    _put(m, 'repair_waiting_for', repairWaitingFor?.toJson());
     _put(m, 'hops_home', hopsHome);
     return m;
   }
+}
+
+/// The bounds of a roll of combat power: no roll is below [least] or above
+/// [most].
+class PowerRange {
+  final double least;
+  final double most;
+  const PowerRange({required this.least, required this.most});
+
+  factory PowerRange.fromJson(Object? json) {
+    final m = _obj(json);
+    return PowerRange(least: _f(m['least']), most: _f(m['most']));
+  }
+
+  Json toJson() => {'least': least, 'most': most};
 }
 
 /// An outpost standing in a sector, as anyone with eyes on the sector sees it.
@@ -1325,33 +1367,59 @@ class OutpostBrief {
   Json toJson() => {'owner': owner, 'level': level, 'breached': breached, 'mine': mine};
 }
 
-/// Answer to [OutpostSurveyCommand]: what an outpost in [sector] would cost,
-/// make and face. The numbers are the site's own; only [refusal] depends on
-/// the asking fleet and on the moment.
-class OutpostSurvey extends ServerMessage {
-  final int fleetId;
-  final Hex sector;
-  final int ring;
-
+/// What a survey reads of a sector the player has seen.
+class SurveySite {
   /// The ore the sector was made with, which is what the extractor reads.
   final SectorResources densities;
 
   /// 0 to 12: Sparse 0.5, Moderate 1, Rich 2, Pristine 4, summed.
   final double grade;
 
+  /// Per tick at level 1.
+  final Resources production;
+
+  /// Lane hops from the sector to the homeworld; null beyond 64.
+  final int? hopsHome;
+  const SurveySite({required this.densities, required this.grade, required this.production, this.hopsHome});
+
+  factory SurveySite.fromJson(Object? json) {
+    final m = _obj(json);
+    return SurveySite(
+      densities: SectorResources.fromJson(m['densities']),
+      grade: _f(m['grade']),
+      production: Resources.fromJson(m['production']),
+      hopsHome: m['hops_home'] as int?,
+    );
+  }
+
+  Json toJson() {
+    final m = <String, dynamic>{'densities': densities.toJson(), 'grade': grade, 'production': production.toJson()};
+    _put(m, 'hops_home', hopsHome);
+    return m;
+  }
+}
+
+/// Answer to [OutpostSurveyCommand]: what an outpost in [sector] would cost,
+/// make and face. [ring], [cost], [buildTicks], [raidPower] and
+/// [platformPower] follow from where the sector lies and are told of any
+/// sector; [site] is what only eyes on the sector tell; [refusal] depends on
+/// the asking fleet and on the moment.
+class OutpostSurvey extends ServerMessage {
+  final int fleetId;
+  final Hex sector;
+  final int ring;
+
+  /// The site itself; null for a sector the player has never seen, and
+  /// [refusal] then says so.
+  final SurveySite? site;
+
   /// What founding takes from the hold: level 1.
   final Resources cost;
   final int buildTicks;
 
-  /// Per tick at level 1.
-  final Resources production;
-
-  /// The middle of the raids this ring sends.
-  final double raidPower;
+  /// The least and the most a raid on an outpost in this ring can be.
+  final PowerRange raidPower;
   final double platformPower;
-
-  /// Lane hops from the sector to the homeworld; null beyond 64.
-  final int? hopsHome;
 
   /// Why [FoundOutpostCommand] would be refused right now; null when the
   /// fleet could found here this tick.
@@ -1360,14 +1428,11 @@ class OutpostSurvey extends ServerMessage {
     required this.fleetId,
     required this.sector,
     required this.ring,
-    required this.densities,
-    required this.grade,
+    this.site,
     required this.cost,
     required this.buildTicks,
-    required this.production,
     required this.raidPower,
     required this.platformPower,
-    this.hopsHome,
     this.refusal,
   });
 
@@ -1375,14 +1440,11 @@ class OutpostSurvey extends ServerMessage {
         fleetId: _i(m['fleet_id']),
         sector: Hex.fromJson(m['sector']),
         ring: _i(m['ring']),
-        densities: SectorResources.fromJson(m['densities']),
-        grade: _f(m['grade']),
+        site: _opt(m['site'], SurveySite.fromJson),
         cost: Resources.fromJson(m['cost']),
         buildTicks: _i(m['build_ticks']),
-        production: Resources.fromJson(m['production']),
-        raidPower: _f(m['raid_power']),
+        raidPower: PowerRange.fromJson(m['raid_power']),
         platformPower: _f(m['platform_power']),
-        hopsHome: m['hops_home'] as int?,
         refusal: m['refusal'] as String?,
       );
 
@@ -1393,15 +1455,12 @@ class OutpostSurvey extends ServerMessage {
       'fleet_id': fleetId,
       'sector': sector.toJson(),
       'ring': ring,
-      'densities': densities.toJson(),
-      'grade': grade,
       'cost': cost.toJson(),
       'build_ticks': buildTicks,
-      'production': production.toJson(),
-      'raid_power': raidPower,
+      'raid_power': raidPower.toJson(),
       'platform_power': platformPower,
     };
-    _put(m, 'hops_home', hopsHome);
+    _put(m, 'site', site?.toJson());
     _put(m, 'refusal', refusal);
     return m;
   }
@@ -1904,6 +1963,11 @@ class FleetState {
   /// Loaded by [LoadCommand] and still at home: the dock leaves the hold alone.
   final bool laden;
 
+  /// In the sector of the owner's outpost, whatever state the outpost is
+  /// in: load and unload use its store here, and a raid on it finds the
+  /// fleet.
+  final bool atOutpost;
+
   /// Fuel the way to the owner's outpost costs, 0 at the outpost; null
   /// unless that outpost is in service.
   final double? outpostFuel;
@@ -1927,6 +1991,7 @@ class FleetState {
     this.rangeHops = 0,
     this.cargoBlocked = false,
     this.laden = false,
+    this.atOutpost = false,
     this.outpostFuel,
     this.policy,
   });
@@ -1949,6 +2014,7 @@ class FleetState {
       rangeHops: (m['range_hops'] as int?) ?? 0,
       cargoBlocked: (m['cargo_blocked'] as bool?) ?? false,
       laden: (m['laden'] as bool?) ?? false,
+      atOutpost: (m['at_outpost'] as bool?) ?? false,
       outpostFuel: _opt(m['outpost_fuel'], _f),
       policy: _opt(m['policy'], StandingOrders.fromJson),
     );
@@ -1971,6 +2037,7 @@ class FleetState {
       'range_hops': rangeHops,
       'cargo_blocked': cargoBlocked,
       'laden': laden,
+      'at_outpost': atOutpost,
     };
     _put(m, 'outpost_fuel', outpostFuel);
     _put(m, 'policy', policy?.toJson());

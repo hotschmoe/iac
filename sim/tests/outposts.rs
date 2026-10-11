@@ -182,9 +182,21 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
     }
     assert_eq!((e.fleet().cargo, e.stockpile()), (COST, Resources::default()), "the cost is aboard and nowhere else");
 
-    let (code, why) = e.refusal(Command::OutpostSurvey { fleet_id: fid, sector: Some(target) });
-    assert_eq!(code, ErrorCode::InvalidTarget);
-    assert_eq!(why, format!("{target} is not on your chart; a survey reads a sector you have seen"));
+    let pack = scaling::npc_group_power(10);
+    let unseen = survey(&mut e, Some(target));
+    assert_eq!(
+        unseen.refusal,
+        Some(format!("{target} is not on your chart; a survey reads the site of a sector you have seen")),
+    );
+    assert_eq!(unseen.site, None, "nothing of a sector the empire has never seen is told");
+    assert_eq!((unseen.ring, unseen.cost, unseen.build_ticks, unseen.platform_power), (10, COST, 5400, 40.0));
+    assert!((unseen.raid_power.least - 1.6 * pack).abs() < 0.01 && (unseen.raid_power.most - 2.3 * pack).abs() < 0.01);
+    let beyond = Hex::new(target.q * 3, target.r * 3);
+    assert_eq!(
+        survey(&mut e, Some(beyond)).refusal,
+        Some(format!("{beyond} is at ring 30; an outpost stands in rings 9 to 20")),
+        "the ring is no secret, so an unseen sector outside the rings is refused for its ring",
+    );
 
     let mark = e.mark();
     e.travel(target);
@@ -200,9 +212,9 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
     let quote = survey(&mut e, None);
     assert_eq!((quote.sector, quote.ring, quote.refusal.clone()), (target, 10, None));
     assert_eq!((quote.cost, quote.build_ticks, quote.platform_power), (COST, 5400, 40.0));
-    let pack = scaling::npc_group_power(10);
-    assert!((quote.raid_power - 2.0 * pack * 0.975).abs() < 0.01, "{}", quote.raid_power);
-    assert_eq!(quote.hops_home, Some(lane_path(&e.engine, target, home, 12).unwrap().len() as u32));
+    assert_eq!(quote.raid_power, unseen.raid_power);
+    let found = quote.site.clone().expect("the fleet stands in the sector");
+    assert_eq!(found.hops_home, Some(lane_path(&e.engine, target, home, 12).unwrap().len() as u32));
 
     let mark = e.mark();
     let founded_at = e.engine.current_tick();
@@ -224,13 +236,14 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
     assert_eq!((work.kind, work.level, work.start_tick, work.end_tick), (OutpostWork::Build, 1, founded_at, founded_at + 5400));
     assert_eq!((post.production, post.platform_power), (Resources::default(), 0.0));
     assert_eq!(e.fleet().outpost_fuel, None, "an outpost under construction fills no tank");
+    assert!(e.fleet().at_outpost, "and the fleet is told to stand at it all the same");
 
     e.run(quote.build_ticks - 1);
     assert_eq!((outpost(&e).level, completed(&e, mark)), (0, vec![]));
     e.run(1);
     let post = outpost(&e);
     assert_eq!((post.level, post.in_service, post.work, completed(&e, mark)), (1, true, None, vec![1]));
-    assert_eq!((post.platform_power, post.production), (40.0, quote.production));
+    assert_eq!((post.platform_power, post.production), (40.0, found.production));
     assert_eq!(e.fleet().outpost_fuel, Some(0.0));
 
     let respawn = e.engine.pace().econ_ticks(f64::from(scaling::npc_respawn_hours(10)) * 3600.0);
@@ -239,7 +252,7 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
     let seen = chart(&e.engine, pid)[&target.to_key()].clone();
     let brief = seen.outpost.clone().expect("the sector shows its outpost");
     assert_eq!((brief.owner.as_str(), brief.level, brief.breached, brief.mine), ("Founder", 1, false, true));
-    assert_eq!((seen.hostiles.clone(), seen.threat.rating, seen.threat.est_power, seen.threat.basis), (None, 1, 0.0, ThreatBasis::Observed));
+    assert_eq!((seen.hostiles.clone(), seen.threat.rating, seen.threat.est_power, seen.threat.basis), (None, 0, 0.0, ThreatBasis::Observed));
     let outcome = e.engine.execute(pid, Command::Odds { fleet_id: fid, sectors: vec![target] });
     let Some(ServerMessage::Odds(odds)) = outcome.reply else { panic!("no odds") };
     assert_eq!((odds.sectors[0].ratio, odds.sectors[0].label), (10.0, RatioLabel::Safe));
@@ -405,15 +418,16 @@ fn a_survey_reads_any_charted_sector_and_says_what_stands_in_the_way() {
 
     let far = survey(&mut e, Some(rich));
     assert_eq!((far.sector, far.ring, far.fleet_id), (rich, 12, fid));
+    let read = far.site.clone().expect("the sector is on the chart");
     assert_eq!(
-        (far.densities.metal, far.densities.crystal, far.densities.deuterium),
+        (read.densities.metal, read.densities.crystal, read.densities.deuterium),
         (template.metal_density, template.crystal_density, template.deut_density),
     );
-    assert_eq!(far.grade, grade_of(&template));
+    assert_eq!(read.grade, grade_of(&template));
     let ring_factor = 1.1f32.powi(9);
     let per_tick = |d: Density| 2.0 / 3600.0 * d.harvest_multiplier() * ring_factor * 10.0;
     let quoted = res(per_tick(template.metal_density), per_tick(template.crystal_density), per_tick(template.deut_density));
-    assert!(near(far.production, quoted, 1e-6), "{:?} against {quoted:?}", far.production);
+    assert!(near(read.production, quoted, 1e-6), "{:?} against {quoted:?}", read.production);
     assert_eq!(
         far.refusal,
         Some(format!("fleet {fid} is at {next}, 1 hex from {rich}; an outpost is founded by a fleet standing in its sector")),
@@ -422,7 +436,7 @@ fn a_survey_reads_any_charted_sector_and_says_what_stands_in_the_way() {
 
     let home = e.engine.players[&e.pid].homeworld;
     let from_home = survey(&mut e, Some(home));
-    assert_eq!(from_home.hops_home, Some(0));
+    assert_eq!(from_home.site.and_then(|s| s.hops_home), Some(0));
     assert_eq!(
         from_home.refusal,
         Some(format!("{home} is at ring {}; an outpost stands in rings 9 to 20", home.dist_from_origin())),
@@ -444,9 +458,10 @@ fn the_extractor_makes_what_the_survey_said_at_every_pace() {
         let template = e.engine.world_gen.generate_sector(at);
         haul(&mut e, at, COST);
         let quote = survey(&mut e, None);
+        let quoted = quote.site.as_ref().expect("the fleet stands in the sector").production;
         let per_tick = |d: Density| 2.0 / 3600.0 * d.harvest_multiplier() * 1.1f32.powi(9) * p;
         let rate = res(per_tick(template.metal_density), per_tick(template.crystal_density), per_tick(template.deut_density));
-        assert!(near(quote.production, rate, rate.total() * 1e-5), "{pace}: {:?} against {rate:?}", quote.production);
+        assert!(near(quoted, rate, rate.total() * 1e-5), "{pace}: {quoted:?} against {rate:?}");
         assert_eq!(quote.build_ticks, ticks, "{pace}");
 
         e.order(Command::FoundOutpost { fleet_id: e.fid }).expect("found");
@@ -457,7 +472,7 @@ fn the_extractor_makes_what_the_survey_said_at_every_pace() {
 
         e.run(1);
         let open = outpost(&e);
-        assert_eq!((open.level, open.production, open.store), (1, quote.production, quote.production), "{pace}: it works from the tick it opens");
+        assert_eq!((open.level, open.production, open.store), (1, quoted, quoted), "{pace}: it works from the tick it opens");
         e.run(999);
         let after = outpost(&e).store;
         assert!(near(after, rate.scale(1000.0), rate.total() * 1000.0 * 1e-3), "{pace}: {after:?} after 1000 ticks at {rate:?}");
@@ -467,8 +482,10 @@ fn the_extractor_makes_what_the_survey_said_at_every_pace() {
         let almost = res(open.store_cap.metal - rate.metal * 1.5, 0.0, 0.0);
         edit(&mut e.engine, |s| s.outposts.get_mut(&pid).unwrap().store = almost);
         let mark = e.mark();
+        assert_eq!(outpost(&e).yield_lost, vec![], "{pace}: the store has room yet");
         e.run(50);
         assert_eq!(outpost(&e).store.metal, open.store_cap.metal, "{pace}: the extractor stops at the cap");
+        assert_eq!(outpost(&e).yield_lost, vec![ResourceKind::Metal], "{pace}: the state names the yield that is lost");
         let warned: Vec<AlertEvent> = alerts_since(&e, mark);
         assert_eq!(warned.len(), 1, "{pace}: one warning a fill: {warned:?}");
         assert!(matches!(warned[0].level, AlertLevel::Warning) && warned[0].sector == Some(at) && warned[0].fleet_id.is_none());
@@ -624,20 +641,23 @@ fn a_level_is_paid_from_the_store_and_the_outpost_works_on_meanwhile() {
     deliver(&mut e, at, res(2000.0, 1250.0, 100.0));
     let held = outpost(&e).store;
     let before = e.engine.snapshot().hash();
+    let foretold = outpost(&e).upgrade_refusal.expect("the state says beforehand why the order would be refused");
     let (code, why) = e.refusal(Command::UpgradeOutpost);
     assert_eq!(code, ErrorCode::InsufficientResources);
     assert_eq!(
         why,
         format!(
             "outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at {at} is short by {} metal \
-             and 400 deuterium. Nothing was started: a level is paid in full from the outpost's own store when it is ordered",
+             and 400 deuterium. A level is paid in full from the outpost's own store when it is ordered",
             (2500.0 - held.metal).ceil(),
         ),
     );
+    assert_eq!(foretold, why, "and in the sentence the refusal carries");
     assert_eq!(e.engine.snapshot().hash(), before, "a refused upgrade changes nothing");
 
     deliver(&mut e, at, res(600.0, 0.0, 400.0));
     let held = outpost(&e).store;
+    assert_eq!(outpost(&e).upgrade_refusal, None, "the store covers it, so nothing stands in the way");
     let (mark, ordered) = (e.mark(), e.engine.current_tick());
     e.order(Command::UpgradeOutpost).expect("the store covers level 2");
     let building = outpost(&e);
@@ -652,12 +672,13 @@ fn a_level_is_paid_from_the_store_and_the_outpost_works_on_meanwhile() {
 
     let (code, why) = e.refusal(Command::UpgradeOutpost);
     assert_eq!(
-        (code, why),
+        (code, why.clone()),
         (
             ErrorCode::InvalidCommand,
             format!("your outpost at {at} is building level 2 until tick {}; it does one job at a time", ordered + 13_500),
         ),
     );
+    assert_eq!(building.upgrade_refusal, Some(why));
 
     let stored = outpost(&e).store.metal;
     e.run(13_499);
@@ -681,6 +702,7 @@ fn a_level_is_paid_from_the_store_and_the_outpost_works_on_meanwhile() {
         e.refusal(Command::UpgradeOutpost),
         (ErrorCode::MaxLevelReached, format!("your outpost at {at} is at level 3, the highest")),
     );
+    assert_eq!(three.upgrade_refusal, Some(format!("your outpost at {at} is at level 3, the highest")));
     assert_eq!(e.engine.fleets[&fid].location, at);
 }
 
@@ -968,6 +990,8 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     assert!(broken.breached && !broken.in_service);
     assert_eq!((broken.production, broken.platform_power, broken.defence_power), (Resources::default(), 0.0, 22.0));
     assert_eq!((broken.repair_cost, broken.work, broken.raid_arrival_tick), (Some(floor), None, None));
+    assert_eq!(broken.repair_waiting_for, None, "the store covers the repair, so it waits for nothing");
+    assert!(e.fleet().at_outpost && e.fleet().outpost_fuel.is_none(), "a fleet stands at a breached outpost that fills no tank");
     let brief = chart(&e.engine, pid)[&at.to_key()].outpost.clone().unwrap();
     assert!(brief.breached && brief.mine);
     assert_eq!(e.refusal(Command::UpgradeOutpost).0, ErrorCode::InvalidCommand, "a breached outpost repairs before it grows");
@@ -1026,6 +1050,11 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     e.run(400);
     let waiting = outpost(&e);
     assert!(waiting.breached && waiting.work.is_none() && waiting.repair_cost == Some(res(250.0, 125.0, 50.0)));
+    assert_eq!(
+        waiting.repair_waiting_for,
+        Some(waiting.store.shortfall(res(250.0, 125.0, 50.0))),
+        "the state says what the repair waits for",
+    );
     let warned = alerts_since(&e, mark);
     assert_eq!(warned.len(), 1, "{warned:?}");
     assert!(matches!(warned[0].level, AlertLevel::Warning));

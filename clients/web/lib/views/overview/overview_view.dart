@@ -356,7 +356,7 @@ class _FleetCard extends StatelessWidget {
             }, size: 24),
           ),
         ),
-        _kvr('Fuel', '${hops == null ? '${f.fuel}' : 'for ${hopCount(hops)}'}${_toOutpost(f.outpostFuel)}', warn: low ? ' LOW' : null),
+        _kvr('Fuel', '${hops == null ? '${f.fuel}' : 'for ${hopCount(hops)}'}${_toOutpost(f)}', warn: low ? ' LOW' : null),
         LedBar(f.fuelMax > 0 ? f.fuel / f.fuelMax : 0, color: low ? C.ember : C.own, height: 6),
         _kvr('Cargo', '${f.cargo.total} / ${f.cargo.capacity}'),
         LedBar(f.cargo.fraction, color: C.a400, height: 6),
@@ -375,12 +375,12 @@ class _FleetCard extends StatelessWidget {
     );
   }
 
-  /// ", 221 to the outpost": what the way to the player's outpost costs this
-  /// fleet, while that outpost is in service.
-  static String _toOutpost(int? fuel) => switch (fuel) {
+  /// ", at the outpost" for a fleet standing there, or ", 221 to the
+  /// outpost": what the way there costs it while the outpost is in service.
+  static String _toOutpost(ui.FleetState f) => switch (f.outpostFuel) {
+        _ when f.atOutpost => ', at the outpost',
         null => '',
-        0 => ', at the outpost',
-        _ => ', $fuel to the outpost',
+        final fuel => ', $fuel to the outpost',
       };
 
   Widget _kvr(String k, String v, {String? warn}) => Padding(

@@ -166,9 +166,8 @@ class _HoldPanelState extends State<HoldPanel> {
     final c = widget.ctrl;
     final outpost = widget.dock == HoldDock.outpost ? st.outpost : null;
     final atHome = outpost == null;
-    final at = outpost?.location ?? st.homeworld;
     final source = atHome ? 'stockpile' : 'store';
-    final docked = [for (final f in st.fleets) if (f.sector == at) f];
+    final docked = [for (final f in st.fleets) if (atHome ? f.sector == st.homeworld : f.atOutpost) f];
     if (docked.isEmpty) {
       return ConsolePanel(
         key: const ValueKey('hold-panel'),

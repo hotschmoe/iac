@@ -29,6 +29,7 @@
   ],
   "fleets": [
     {
+      "at_outpost": true,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,
@@ -47,7 +48,6 @@
         "q": 10,
         "r": -2
       },
-      "outpost_fuel": 0.0,
       "power": 61.5,
       "range_hops": 4,
       "ships": [
@@ -84,7 +84,6 @@
       "r": -2
     },
     "max_level": 3,
-    "next_raid_estimate_power": 37.900001525878906,
     "platform_power": 0.0,
     "production": {
       "crystal": 0.0,
@@ -96,10 +95,19 @@
       "deuterium": 312.5,
       "metal": 1562.5
     },
+    "raid_power": {
+      "least": 38.29999923706055,
+      "most": 55.099998474121094
+    },
     "repair_cost": {
       "crystal": 781.25,
       "deuterium": 312.5,
       "metal": 1562.5
+    },
+    "repair_waiting_for": {
+      "crystal": 0.0,
+      "deuterium": 312.5,
+      "metal": 362.5
     },
     "store": {
       "crystal": 781.25,
@@ -110,7 +118,9 @@
       "crystal": 29646.353515625,
       "deuterium": 14823.1767578125,
       "metal": 59292.70703125
-    }
+    },
+    "upgrade_refusal": "your outpost at [10,-2] is breached; it repairs itself first, once its store holds 1563 metal, 782 crystal and 313 deuterium",
+    "yield_lost": []
   },
   "sector_updates": [
     {
@@ -171,7 +181,7 @@
       "threat": {
         "basis": "observed",
         "est_power": 0.0,
-        "rating": 1
+        "rating": 0
       }
     }
   ],

@@ -1,0 +1,67 @@
+{
+  "fleets": [],
+  "outpost": {
+    "breached": false,
+    "defence_power": 172.0,
+    "grade": 3.0,
+    "hops_home": 7,
+    "in_service": true,
+    "level": 1,
+    "location": {
+      "q": 10,
+      "r": -2
+    },
+    "max_level": 3,
+    "next_level": {
+      "cost": {
+        "crystal": 1250.0,
+        "deuterium": 500.0,
+        "metal": 2500.0
+      },
+      "level": 2,
+      "platform_power": 100.0,
+      "production": {
+        "crystal": 0.0,
+        "deuterium": 0.010793999768793583,
+        "metal": 0.021587999537587166
+      },
+      "store_cap": {
+        "crystal": 11858.541015625,
+        "deuterium": 5929.2705078125,
+        "metal": 23717.08203125
+      },
+      "ticks": 13500
+    },
+    "platform_power": 40.0,
+    "production": {
+      "crystal": 0.0,
+      "deuterium": 0.0053969998843967915,
+      "metal": 0.010793999768793583
+    },
+    "protected": {
+      "crystal": 125.0,
+      "deuterium": 50.0,
+      "metal": 250.0
+    },
+    "raid_power": {
+      "least": 38.29999923706055,
+      "most": 55.099998474121094
+    },
+    "store": {
+      "crystal": 96.0,
+      "deuterium": 180.25,
+      "metal": 9486.8330078125
+    },
+    "store_cap": {
+      "crystal": 4743.41650390625,
+      "deuterium": 2371.708251953125,
+      "metal": 9486.8330078125
+    },
+    "upgrade_refusal": "outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at [10,-2] is short by 1154 crystal and 320 deuterium. A level is paid in full from the outpost's own store when it is ordered",
+    "yield_lost": [
+      "metal"
+    ]
+  },
+  "tick": 20000,
+  "type": "tick_update"
+}

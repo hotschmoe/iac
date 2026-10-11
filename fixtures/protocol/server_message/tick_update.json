@@ -26,6 +26,7 @@
   ],
   "fleets": [
     {
+      "at_outpost": false,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,
@@ -79,6 +80,7 @@
       "state": "Harvesting"
     },
     {
+      "at_outpost": false,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,

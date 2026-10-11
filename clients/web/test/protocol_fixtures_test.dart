@@ -100,17 +100,33 @@ void main() {
       expect((outpost.level, outpost.maxLevel, outpost.inService, outpost.breached), (1, 3, true, false));
       expect((outpost.work!.kind, outpost.work!.level, outpost.nextLevel!.level), (OutpostWork.build, 2, 3));
       expect((outpost.raidArrivalTick, outpost.repairCost, outpost.hopsHome), (4990, null, 7));
-      expect(state.fleets.map((fleet) => fleet.outpostFuel), [0.0, 220.5]);
-      final marks = state.knownSectors.map((s) => (s.outpost!.owner, s.outpost!.level, s.outpost!.mine, s.live));
-      expect(marks, [('Admiral', 1, true, true), ('Rival', 0, false, false)]);
+      expect((outpost.raidPower.least.round(), outpost.raidPower.most.round()), (38, 55));
+      expect(outpost.yieldLost, isEmpty);
+      expect(outpost.repairWaitingFor, isNull);
+      expect(outpost.upgradeRefusal, 'your outpost at [10,-2] is building level 2 until tick 18200; it does one job at a time');
+      expect(state.fleets.map((fleet) => (fleet.atOutpost, fleet.outpostFuel)), [(true, 0.0), (false, 220.5)]);
+      final marks = state.knownSectors.map((s) => (s.outpost!.owner, s.outpost!.level, s.outpost!.mine, s.live, s.threat.rating));
+      expect(marks, [('Admiral', 1, true, true, 0), ('Rival', 0, false, false, 0)]);
 
       final mapped = StateMapper()..apply(state);
       expect(mapped.outpost!.location, outpost.location);
       final t = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update__outpost_breached');
       mapped.apply(ServerMessage.fromJson(readJson(t)));
       expect((mapped.outpost!.breached, mapped.outpost!.repairCost!.metal, mapped.raid), (true, 1562.5, null));
-      mapped.apply(const TickUpdate(tick: 5001, fleets: []));
+      expect((mapped.outpost!.repairWaitingFor!.metal, mapped.outpost!.repairWaitingFor!.deuterium), (362.5, 312.5));
+      expect((mapped.fleets.single.atOutpost, mapped.fleets.single.outpostFuel), (true, null), reason: 'at a breached outpost, which fills no tank');
+      final full = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update__outpost_store_full');
+      mapped.apply(ServerMessage.fromJson(readJson(full)));
+      expect(mapped.outpost!.yieldLost, [ResourceKind.metal]);
+      mapped.apply(const TickUpdate(tick: 20001, fleets: []));
       expect(mapped.outpost, null, reason: 'a tick without an outpost means the player has none');
+    });
+
+    test('a survey of a sector never seen carries no site and says why', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'outpost_survey__unseen');
+      final survey = ServerMessage.fromJson(readJson(f)) as OutpostSurvey;
+      expect((survey.site, survey.ring, survey.raidPower.most.round()), (null, 10, 55));
+      expect(survey.refusal, '[10,-2] is not on your chart; a survey reads the site of a sector you have seen');
     });
 
     test('full_state names the hub and the player meter at its exchange', () {

@@ -440,7 +440,7 @@ fn an_outpost_is_founded_saved_replayed_and_raided_while_the_commander_is_away()
 
     let quote = order(&mut machine, now, json!({"action": "outpost_survey", "fleet_id": fleet}));
     assert_eq!((quote[0]["type"].as_str(), quote[0].get("refusal")), (Some("outpost_survey"), None), "{quote:?}");
-    assert_eq!((hex_of(&quote[0]["sector"]), quote[0]["build_ticks"].as_u64(), quote[0]["hops_home"].as_u64()), (site, Some(7), Some(route.len() as u64)));
+    assert_eq!((hex_of(&quote[0]["sector"]), quote[0]["build_ticks"].as_u64(), quote[0]["site"]["hops_home"].as_u64()), (site, Some(7), Some(route.len() as u64)));
     accepted(order(&mut machine, now, json!({"action": "found_outpost", "fleet_id": fleet})));
     accepted(order(&mut machine, now, json!({"action": "unload", "fleet_id": fleet})));
     accepted(order(&mut machine, now, json!({"action": "move", "fleet_id": fleet, "target": {"q": step_back.q, "r": step_back.r}})));
