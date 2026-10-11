@@ -467,6 +467,29 @@ impl Window {
     }
 }
 
+/// The ships a fight in a sector would meet: the group the ring spawns at
+/// that distance from the hub, or ships that were counted.
+#[derive(Clone, Copy)]
+enum Opposing {
+    Ring(u16),
+    Ships(Force),
+}
+
+impl Opposing {
+    fn force(self) -> Force {
+        match self {
+            Opposing::Ring(dist) => Force::of_ring(dist),
+            Opposing::Ships(force) => force,
+        }
+    }
+}
+
+/// One fleet's ratio against each ring's group. Most sectors a fleet is
+/// rated in hold nothing its owner has counted, so the answer is the ring's
+/// and is worked out once per ring for as long as the fleet is asked about.
+#[derive(Default)]
+struct RingOdds(RefCell<KeyMap<u16, f32>>);
+
 /// Where a doctrine lets one fleet go, worked out once per evaluation: the
 /// fleet's odds in every sector asked about, against what its owner knows.
 /// An evaluation searches the same sectors several times over (a lane
@@ -494,6 +517,7 @@ struct Reach<'a> {
     live: KeySet<u32>,
     /// The sectors a search inside `range` can ask about.
     window: Window,
+    rings: RingOdds,
     rated: SectorMemo<(ThreatInfo, f32)>,
     fights: SectorMemo<bool>,
     seams: SectorMemo<Option<f32>>,
@@ -541,7 +565,7 @@ impl Reach<'_> {
     fn rating(&self, coord: Hex) -> (ThreatInfo, f32) {
         self.rated.recall(self.window, coord, || {
             let (threat, theirs) = self.engine.opposition(self.owner, coord, self.live.contains(&coord.to_key()));
-            (threat, self.engine.odds_ratio(&self.ours, &theirs))
+            (threat, self.engine.ratio_against(&self.ours, theirs, &self.rings))
         })
     }
 
@@ -2727,15 +2751,30 @@ impl GameEngine {
             return Err(ErrorCode::InvalidCommand);
         }
         let ours = fleet_force(fleet);
+        let rings = RingOdds::default();
         let live: KeySet<u32> = crate::intel::live_coords(self, player_id).iter().map(|h| h.to_key()).collect();
         Ok(sectors
             .iter()
             .map(|&coord| {
                 let (threat, theirs) = self.opposition(player_id, coord, live.contains(&coord.to_key()));
-                let ratio = self.odds_ratio(&ours, &theirs);
+                let ratio = self.ratio_against(&ours, theirs, &rings);
                 SectorOdds { sector: coord, threat, ratio, label: scaling::ratio_label(ratio) }
             })
             .collect())
+    }
+
+    /// `odds_ratio` of `ours` against `theirs`. `rings` must be `ours`'s own.
+    fn ratio_against(&self, ours: &Force, theirs: Opposing, rings: &RingOdds) -> f32 {
+        if let Opposing::Ring(dist) = theirs
+            && let Some(&ratio) = rings.0.borrow().get(&dist)
+        {
+            return ratio;
+        }
+        let ratio = self.odds_ratio(ours, &theirs.force());
+        if let Opposing::Ring(dist) = theirs {
+            rings.0.borrow_mut().insert(dist, ratio);
+        }
+        ratio
     }
 
     /// The ratio of `ours` against `theirs` (`odds::outlook`), `ours` firing first.
@@ -2794,16 +2833,18 @@ impl GameEngine {
     /// sight, those remembered at the strength last seen, otherwise the
     /// group the ring spawns.
     pub fn known_opposition(&self, player_id: u64, coord: Hex) -> (ThreatInfo, Force) {
-        self.opposition(player_id, coord, crate::intel::live_coords(self, player_id).contains(&coord))
+        let live = crate::intel::live_coords(self, player_id).contains(&coord);
+        let (threat, theirs) = self.opposition(player_id, coord, live);
+        (threat, theirs.force())
     }
 
-    fn opposition(&self, player_id: u64, coord: Hex, live: bool) -> (ThreatInfo, Force) {
+    fn opposition(&self, player_id: u64, coord: Hex, live: bool) -> (ThreatInfo, Opposing) {
         if live {
-            return (self.sector_threat(coord), self.sector_force(coord));
+            return (self.sector_threat(coord), self.sector_opposing(coord));
         }
         match self.known.remembered(player_id, coord) {
-            Some(seen) => (seen.threat, remembered_force(seen)),
-            None => (ring_threat(coord, ThreatBasis::Estimate), Force::of_ring(coord.dist_from_origin())),
+            Some(seen) => (seen.threat, remembered_opposing(seen)),
+            None => (ring_threat(coord, ThreatBasis::Estimate), Opposing::Ring(coord.dist_from_origin())),
         }
     }
 
@@ -2819,16 +2860,20 @@ impl GameEngine {
     /// The ships a fight in `coord` would meet right now: the groups on the
     /// spot, the lair's group before it materialises, otherwise the ring's.
     pub fn sector_force(&self, coord: Hex) -> Force {
+        self.sector_opposing(coord).force()
+    }
+
+    fn sector_opposing(&self, coord: Hex) -> Opposing {
         let mut force = Force::default();
         for npc in self.npc_fleets.values().filter(|n| n.location == coord) {
             force.join(&Force::of_ships(&npc.ships[..npc.ship_count as usize]));
         }
         if !force.is_empty() {
-            return force;
+            return Opposing::Ships(force);
         }
         match self.pending_template_npc(coord) {
-            Some(tmpl) => Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier),
-            None => Force::of_ring(coord.dist_from_origin()),
+            Some(tmpl) => Opposing::Ships(Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier)),
+            None => Opposing::Ring(coord.dist_from_origin()),
         }
     }
 
@@ -4222,6 +4267,7 @@ impl GameEngine {
             }),
             live: crate::intel::live_coords(self, fleet.owner_id).iter().map(|h| h.to_key()).collect(),
             window: Window { centre: home, radius: range.saturating_add(1) },
+            rings: RingOdds::default(),
             rated: SectorMemo::default(),
             fights: SectorMemo::default(),
             seams: SectorMemo::default(),
@@ -5372,9 +5418,9 @@ fn worth_aboard(load: Resources, room: f32) -> f32 {
 
 /// The ships of a remembered sector: the groups last seen there, scaled to
 /// the power they were rated at, or the ring's group if none was in sight.
-fn remembered_force(seen: &SectorState) -> Force {
+fn remembered_opposing(seen: &SectorState) -> Opposing {
     use iac_shared::protocol::NpcBehavior::{Aggressive, Swarm};
-    let ring = || Force::of_ring(seen.location.dist_from_origin());
+    let ring = || Opposing::Ring(seen.location.dist_from_origin());
     let Some(groups) = seen.hostiles.as_ref().filter(|_| seen.threat.basis == ThreatBasis::Observed) else {
         return ring();
     };
@@ -5393,7 +5439,7 @@ fn remembered_force(seen: &SectorState) -> Force {
     for ship in groups.iter().flat_map(|g| &g.ships) {
         force.add_group(ship.ship_class, f32::from(ship.count), multiplier);
     }
-    force
+    Opposing::Ships(force)
 }
 
 fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
