@@ -3265,6 +3265,11 @@ impl GameEngine {
         self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
     }
 
+    /// End the job that is due. Level 1 opens the outpost with an empty
+    /// store, which is no news to the fleets that stand there: they count as
+    /// told that it fills no tank, so the first thing the founder hears is
+    /// not a warning. A fleet that arrives later, or thirsts there again, is
+    /// warned as ever.
     fn finish_outpost_job(&mut self, owner: u64) {
         let tick = self.current_tick;
         let roll_interval = RaidTimers::new(&self.world.pace).roll_interval;
@@ -3279,6 +3284,10 @@ impl GameEngine {
                 if level == 1 {
                     outpost.raid.first_seen_tick = tick;
                     outpost.raid.next_roll_tick = tick + roll_interval;
+                    outpost.dry_tanks = self.fleets.values()
+                        .filter(|f| f.owner_id == owner && f.location == sector && f.ship_count > 0)
+                        .map(|f| f.id)
+                        .collect();
                 }
                 self.pending_events.push(GameEvent {
                     tick,

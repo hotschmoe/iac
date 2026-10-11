@@ -551,7 +551,9 @@ What every doctrine does:
     does it.
   - **A dock**: a fleet without standing orders that stands at your outpost
     is refuelled from the outpost's deuterium at 0.08 a fuel unit, as far as
-    it has any; a tank it cannot fill is reported once per stay. Any of your
+    it has any; a tank it cannot fill is reported once per stay, but not to
+    the fleets standing there when level 1 opens (a new store is empty; a
+    founder who wants a full tank unloads deuterium). Any of your
     fleets arriving at the finished outpost banks its charts. A fleet
     standing at the finished outpost does not count against your three
     deployed fleets, and needs a free slot to leave. New ships still appear

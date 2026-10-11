@@ -245,6 +245,14 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
     assert_eq!((post.level, post.in_service, post.work, completed(&e, mark)), (1, true, None, vec![1]));
     assert_eq!((post.platform_power, post.production), (40.0, found.production));
     assert_eq!(e.fleet().outpost_fuel, Some(0.0));
+    let founder = e.fleet();
+    assert!(founder.fuel < founder.fuel_max && post.store.deuterium == 0.0, "the convoy's tank is not full and the new store has nothing for it");
+    e.run(3);
+    assert!(
+        alerts_since(&e, mark).iter().all(|a| !matches!(a.level, AlertLevel::Warning)),
+        "a new outpost does not greet its founder with a warning that its store is empty: {:?}",
+        said(&e, mark),
+    );
 
     let respawn = e.engine.pace().econ_ticks(f64::from(scaling::npc_respawn_hours(10)) * 3600.0);
     assert!(quote.build_ticks > respawn, "the lair's return is overdue: it took {respawn} ticks");
