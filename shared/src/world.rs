@@ -9,7 +9,9 @@ use std::sync::Arc;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::constants::{Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
-use crate::scaling::{npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ship_power};
+use crate::scaling::{
+    npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ore_reserve_units, ship_power,
+};
 use crate::hex::{hex_ring, Hex};
 use crate::keymap::{KeyMap, KeySet};
 
@@ -104,6 +106,7 @@ impl WorldGen {
             metal_density: resources.metal,
             crystal_density: resources.crystal,
             deut_density: resources.deut,
+            ore_units: [resources.metal, resources.crystal, resources.deut].map(|d| ore_reserve_units(d, dist)),
             npc_template,
             has_derelict,
         }
@@ -491,6 +494,9 @@ pub struct SectorTemplate {
     pub metal_density: Density,
     pub crystal_density: Density,
     pub deut_density: Density,
+    /// Raw units the full metal, crystal and deuterium tiles hold
+    /// (`scaling::ore_reserve_units`).
+    pub ore_units: [f32; 3],
     pub npc_template: Option<NpcTemplate>,
     pub has_derelict: bool,
 }

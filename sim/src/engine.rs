@@ -634,8 +634,8 @@ impl Reach<'_> {
     /// None where the tiles hold too little to stake.
     fn seam(&self, coord: Hex) -> Option<f32> {
         self.seams.recall(self.window, coord, || {
-            (self.engine.seam_units(coord) >= POLICY_MIN_SEAM_UNITS)
-                .then(|| self.engine.seam_worth(self.owner, coord, self.room))
+            let ore = self.engine.ore_reserve_at(coord)?;
+            (ore_units(&ore) >= POLICY_MIN_SEAM_UNITS).then(|| self.engine.seam_worth(self.owner, &ore, self.room))
         })
     }
 
@@ -2806,8 +2806,7 @@ impl GameEngine {
         ov: Option<&SectorOverride>,
     ) -> Option<OreReserve> {
         let dist = coord.dist_from_origin();
-        let tile = |template_d: Density, current: Option<Density>, harvested: f32| {
-            let max_units = scaling::ore_reserve_units(template_d, dist);
+        let tile = |template_d: Density, max_units: f32, current: Option<Density>, harvested: f32| {
             let gone = scaling::ore_extracted(template_d, current.unwrap_or(template_d), harvested, dist);
             let refills_in_s = (gone > scaling::ORE_EPSILON)
                 .then(|| scaling::ore_regen_per_tick(template_d, dist, &self.world.pace))
@@ -2815,9 +2814,10 @@ impl GameEngine {
                 .map(|rate| (gone / rate).ceil() as u64);
             TileReserve { units: (max_units - gone).max(0.0), max_units, refills_in_s }
         };
-        let metal = tile(template.metal_density, ov.and_then(|o| o.metal_density), ov.map_or(0.0, |o| o.metal_harvested));
-        let crystal = tile(template.crystal_density, ov.and_then(|o| o.crystal_density), ov.map_or(0.0, |o| o.crystal_harvested));
-        let deuterium = tile(template.deut_density, ov.and_then(|o| o.deut_density), ov.map_or(0.0, |o| o.deut_harvested));
+        let [metal, crystal, deuterium] = template.ore_units;
+        let metal = tile(template.metal_density, metal, ov.and_then(|o| o.metal_density), ov.map_or(0.0, |o| o.metal_harvested));
+        let crystal = tile(template.crystal_density, crystal, ov.and_then(|o| o.crystal_density), ov.map_or(0.0, |o| o.crystal_harvested));
+        let deuterium = tile(template.deut_density, deuterium, ov.and_then(|o| o.deut_density), ov.map_or(0.0, |o| o.deut_harvested));
         (metal.max_units + crystal.max_units + deuterium.max_units > 0.0)
             .then_some(OreReserve { metal, crystal, deuterium })
     }
@@ -4367,13 +4367,12 @@ impl GameEngine {
 
     /// Raw ore units the tiles of `coord` hold right now.
     fn seam_units(&self, coord: Hex) -> f32 {
-        self.ore_reserve_at(coord).map_or(0.0, |o| o.metal.units + o.crystal.units + o.deuterium.units)
+        self.ore_reserve_at(coord).map_or(0.0, |ore| ore_units(&ore))
     }
 
-    /// Score weight of the ore in `coord` as it would land in the hold of
-    /// one of `owner`'s fleets with `room` units free.
-    fn seam_worth(&self, owner: u64, coord: Hex, room: f32) -> f32 {
-        let Some(ore) = self.ore_reserve_at(coord) else { return 0.0; };
+    /// Score weight of `ore` as it would land in the hold of one of
+    /// `owner`'s fleets with `room` units free.
+    fn seam_worth(&self, owner: u64, ore: &OreReserve, room: f32) -> f32 {
         let yield_mult = self.players.get(&owner)
             .map_or(1.0, |p| scaling::harvest_yield(p.research.harvesting_efficiency));
         let load = Resources { metal: ore.metal.units, crystal: ore.crystal.units, deuterium: ore.deuterium.units }
@@ -5407,6 +5406,11 @@ fn ring_threat(coord: Hex, basis: ThreatBasis) -> ThreatInfo {
 
 /// Why a hauling doctrine leaves a seam, a wreck or a derelict where it is.
 const NO_FIGHT_FOR_IT: &str = "sits among hostiles that attack on sight; this doctrine picks no fight for it (a patrol can clear them)";
+
+/// Raw ore units the tiles hold between them.
+fn ore_units(ore: &OreReserve) -> f32 {
+    ore.metal.units + ore.crystal.units + ore.deuterium.units
+}
 
 /// Score weight of `load` once it sits in a hold with `room` units free:
 /// all of it, or the share that fits.
