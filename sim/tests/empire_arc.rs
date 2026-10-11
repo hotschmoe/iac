@@ -128,6 +128,48 @@ fn an_empire_grows_fights_charts_and_survives_a_raid() {
     settle_the_score(&mut e);
 }
 
+#[test]
+fn a_batch_larger_than_the_vault_is_refused_though_refunds_would_pay_for_it() {
+    let mut e = Empire::join(world("test"), "Hoard");
+    let pid = e.pid;
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.shipyard = 1);
+    let scouts = |count: u16| Command::BuildShip { ship_class: ShipClass::Scout, count };
+    let cap = e.state().homeworld.storage.cap;
+    let unit = ShipClass::Scout.build_cost();
+    let fits = (cap.metal / unit.metal).floor() as u16;
+    let whole = unit.scale(f32::from(fits));
+
+    e.set_stockpile(cap);
+    let mark = e.mark();
+    e.order(scouts(fits)).expect("the largest batch the Vault holds");
+    let running = e.queue_events(mark)[0].id;
+    e.set_stockpile(cap);
+    e.order(Command::CancelBuild { queue_type: QueueType::Ship, id: running }).expect("cancel it");
+    let hoard = e.stockpile();
+    assert_eq!(hoard, cap.add(whole.scale(HALF)), "the refund is paid past the cap");
+    e.run(3);
+    assert_eq!(e.stockpile(), hoard, "and stays there: the mines add nothing over the cap and take nothing away");
+
+    let over = unit.scale(f32::from(fits + 1));
+    assert!(over.metal > cap.metal && hoard.can_afford(over), "{over:?} against {cap:?} and {hoard:?}");
+    let (code, message) = e.refusal(scouts(fits + 1));
+    assert_eq!(code, ErrorCode::StorageTooSmall);
+    assert_eq!(
+        message,
+        format!(
+            "Scout x{} costs {} metal, more than the {} metal your stockpile holds; needs Storage Vault level 1, or order {fits} or fewer at a time",
+            fits + 1,
+            over.metal.ceil(),
+            cap.metal.floor()
+        )
+    );
+    assert_eq!(e.stockpile(), hoard, "nothing was charged");
+    assert!(yard_idle(&e));
+
+    e.order(scouts(fits)).expect("the batch that fits is still taken from the same stockpile");
+    assert_eq!(e.stockpile(), hoard.sub(whole));
+}
+
 fn mind_the_queue(e: &mut Empire) {
     let pid = e.pid;
     let next_cost = |e: &Empire, b: BuildingType| {

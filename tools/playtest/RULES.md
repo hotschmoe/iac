@@ -326,7 +326,9 @@ What every doctrine does:
   `MaxLevelReached`, `StorageTooSmall` (naming the Vault level it needs),
   `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`. For a batch,
   `StorageTooSmall` means the whole batch costs more than a stockpile cap and
-  says how many units fit.
+  says how many units fit; it is asked before the stockpile is, so a batch
+  larger than a cap is refused even when refunds (below) have left you the
+  resources for it.
   `build_pending` / `research_pending` list each waiting
   order with its `id`, `waiting_for` (the exact shortfall), `waiting_on` (`Slot`,
   `Resources`, `Prerequisite` or `Order`: held behind an earlier `reserve`
@@ -338,6 +340,14 @@ What every doctrine does:
   `Queue` event: `Started`, `Waiting` (shortfall and estimate) or `Cancelled`
   (what was refunded: half for a running building or tech, nothing for a
   waiting one, half of the undelivered units for a batch, waiting or running).
+  A cancel returns half of what the order has paid and no more: a running
+  building or tech level gives back half its cost; a waiting one paid nothing
+  and gives back nothing; a batch, waiting or running, gives back half the
+  price of every unit not yet delivered (the one under way included) and keeps
+  the units already built. The refund is added to the stockpile past the
+  Storage Vault cap: none of it is lost when the stockpile is full, the mines
+  add nothing while a resource stands at or over its cap, and what is over the
+  cap is spent like the rest (a raid counts it too).
   `paid` on the event is what it took from the stockpile: a building or tech
   pays on `Started`; a batch pays on the event that answers the order
   (`Started`, or `Waiting` when the yard is busy) and nothing when it starts

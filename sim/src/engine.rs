@@ -4640,15 +4640,16 @@ impl GameEngine {
         Ok(())
     }
 
-    /// A shipyard batch is paid in full when it is ordered. One the
-    /// stockpile does not cover is refused; a batch larger than a stockpile
-    /// cap cannot be saved up for, and the refusal says that instead.
+    /// A shipyard batch is paid in full when it is ordered. One larger than
+    /// a stockpile cap is refused as a building or research level is, even
+    /// when refunds paid past the cap would cover it; one the stockpile does
+    /// not cover is refused for that.
     fn ensure_batch_paid_for(&self, player: &Player, cost: Resources) -> Result<(), ErrorCode> {
-        if player.resources.can_afford(cost) {
-            return Ok(());
-        }
         self.ensure_fits_storage(player, cost)?;
-        Err(ErrorCode::InsufficientResources)
+        if !player.resources.can_afford(cost) {
+            return Err(ErrorCode::InsufficientResources);
+        }
+        Ok(())
     }
 
     /// What `cmd` would cost, with a label for messages; None for commands
