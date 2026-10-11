@@ -3870,3 +3870,149 @@ Master moved once more before the hand-off (`44a084d`: a fleet's row carries its
 standing orders whole, a jump called off, a recall and a harvest say what they
 cost). Merged again; build, tests, clippy, the constants check and the wasm build
 pass on the result. No week was run on that tree.
+
+## 2026-10-11: outposts, slice 1: the engine
+
+The engine half of `docs/design/outposts.md`, sections 7.1 to 7.5, with the Rust
+tests of 7.7 and the counting part of 7.8. The six questions of its section 8 are
+not answered by the owner; this is built on the design's recommended answer to each,
+and `docs/design/decisions.md` lists them under this date with the code each lives
+in. No screen, panel, map mark or typed command was built in either client: the web
+client mirrors the protocol and keeps the outpost in its state, the TUI prints the
+new events. Branch `worktree-agent-a232ea3aa8c39ee9b`, not merged.
+
+**What an outpost is now.** A player carries 1000 metal, 500 crystal and 200
+deuterium in a hold to a sector of rings 9 to 20, wins the sector if a pack lives
+there, and founds a station (`found_outpost`). `outpost_survey` says beforehand
+what the site makes, what raids it and why it cannot be founded now. The station
+has one level, 1 to 3. Its extractor makes `2 x density x ring factor x level`
+units an hour of each ore the sector was generated with, into a store of its own
+that only a fleet can empty (`load` there) or fill (`unload`). It fills the tanks of
+fleets flown by hand from that store, banks charts, keeps its sector free of groups,
+and a fleet standing there is not one of the three deployed. Pirates of its ring
+raid it on the homeworld's raid clock. A lost raid destroys a quarter of the ships
+there, takes a quarter of the store and the holds above the repair cost, and
+breaches it; it repairs itself from its store, and no raid destroys it.
+
+**Where the build specification was not followed, and why.**
+
+- *A group in the sector refuses the founding.* 5.2 has "the founding fleet stands
+  idle", which a passive pack does not prevent, and its reason is that the site is
+  taken from its pack. `outpost_site` refuses while a group stands there or the
+  lair has not been cleared, with `InvalidTarget`.
+- *`outpost_site` takes the fleet, not an `Option`.* Both callers have one.
+- *The engine's job is `OutpostJob { task: Build { level } | Repair }`*, not
+  `OutpostWork`, which is the wire enum's name; the field is `job`. The `Outpost`
+  also keeps `dry_tanks`, the fleets told the store could not fill them, which
+  "once per stay" needs.
+- *The floor.* 7.1 has the floor at a quarter of the cost of the level it stands
+  at. It is the cost of the next repair: the level being built while one is.
+  Otherwise a breach during an upgrade is followed by a repair the raid was allowed
+  to take the materials of.
+- *A fleet charging a jump is not refuelled at the outpost.* 7.5 fills the fleets
+  "standing there". The homeworld also tops up a fleet that has ordered its jump and
+  not yet left; at an outpost that raised the dry-store warning on every departure.
+- *`unload` at the outpost refuses an empty hold* with `NoResources`. 7.5 says it
+  is never refused for "not loaded by hand", and it is not.
+- *`settle_hold` and `destroy_docked_ships`.* The second takes the dock's sector.
+  The first reads the dock from where the fleet is, as it already did for the
+  homeworld, so `recall` from the outpost sheds a broken-up ship's cargo into the
+  store.
+- *The raid events.* `breached` is always on the wire (false for a homeworld raid),
+  `outpost` only when it names one.
+- *`score_of(engine, player)`.* 7.5 has it take the player's outpost. Every caller
+  had the engine and passed `engine.fleets.values()`; it takes the engine now.
+- *The SQLite restart test* was to have the outpost mixed into its random orders.
+  No random walk reaches ring 9 with 1700 units aboard, so a fifth empire, the
+  settler, plays a fixed part beside the four random ones: it loads at home, flies
+  calm lanes to a site, founds, unloads, goes back for more and raises the outpost a
+  level, shuttling for the whole run. Its restarts are forced inside a build and
+  inside a raid's warning, three of each.
+- *Thirty game days of raids* (test 8) are six raids at season pace, not the dozens
+  the phrase suggests: the grace after a lost raid is 48 hours of raid clock.
+- *7.8.* `outpost_hauled` is not counted and `sim-run --outpost` was not built. The
+  engine answers `load` with an alert a report cannot count, and installing an
+  outpost for every bot seat is a tool of its own. What is counted: the outpost's
+  points, its raids apart from the homeworld's, what they took, what the extractor
+  made, and the ticks it stood breached; the table is printed when a player has
+  one.
+- *7.6 and the web tests of 7.7* are the client agent's.
+
+**What the tests found that the design does not say.** A breached outpost extracts
+nothing, so one whose store does not cover the repair cannot save it up: it waits
+for a delivery, for as long as it takes. The repair costs all three resources and
+most sites make one or two, so on most sites the first lost raid leaves the outpost
+breached until its owner brings crystal and deuterium, unless they were in the
+store already, where the floor keeps them from the raid. The first version of the
+thirty-day test ended with six raids and no repair for that reason. The rules now
+say to keep the repair cost in the store, and the warning names what is missing.
+Whether that is the game the owner wants is a question for the owner: the
+alternative is a breached outpost that still extracts, slowly.
+
+One job at a time has a second consequence. A raid lost while level 3 is being
+built leaves the outpost breached for the rest of the build (93.75 game hours at
+pace 1), since the repair waits for the build.
+
+**Persistence.** `Snapshot::outposts`; a `runtime_state` row of kind `outpost` per
+owner, written every tick the entry changes, which is every tick its extractor
+runs; no new table or column. A row of that kind that does not parse fails the load
+with a sentence. `ECONOMY_VERSION` 3 to 4 and `SAVE_FORMAT` 3 to 4.
+
+**Determinism.** The outpost's raid rolls are seeded from the world seed, the tick
+and the owner with multipliers of their own; the homeworld's rolls are untouched.
+The homeworld's lost branch and the outpost's share `skim_dock`, which does the
+same arithmetic in the same order as before. `chart_golden.txt` and the determinism
+tests pass as recorded: nothing was re-recorded. A sector with an outpost is left
+out of a patrol's choice of where to step, which draws from the same generator
+only when an outpost stands beside a patrol.
+
+**Tests.** `sim/tests/outposts.rs`, seventeen whole-engine scenarios: the founding
+expedition (four Corvettes and three Haulers load at home, fly seven hops, take a
+ring-10 lair, found, and the level is 1 on the quoted tick); every refusal with its
+sentence; a survey from afar; the extractor against the survey at persistent, season
+and blitz pace; a convoy round trip that makes nothing but the yield; the tanks;
+levels 2 and 3 paid from the store; the score; the fleet cap; another empire's
+outpost on the chart; abandoning and the lair's return; a raid repelled; a raid lost
+with the ship, the quarter above the floor, the breach and the repair to the tick; a
+store that cannot pay; a month of raids nobody defends against; the report's
+tallies; and a world replayed and resumed from JSON while level 1 is being built,
+while level 2 is, during a raid's warning and while breached. `server/tests/
+scenarios.rs`: a client over the WebSocket surveys, is refused twice, founds,
+unloads, the server is killed while level 1 is being built, and the outpost, its
+store and its countdown come back and the level is finished on the tick promised.
+`solo/tests/single_player.rs`: founded through `Machine::call`, saved, replayed to
+the same world, and a two-hour absence that reports 24 raids repelled and 13 lost by
+name; a format-3 save is refused.
+
+**A bot week, before and after.** `sim-run --pace season --days 7 --seed 1`
+(sixteen seats, 604,800 ticks) on master's tip and on this branch. The two reports
+are the same byte for byte except `snapshot_hash` (`8d5566e634f3a56d` before,
+`a3c0c71da910a49c` after), and that differs because every snapshot now carries
+economy version 4 and an `outposts` map, which is empty. To be sure of it, the same
+week was run from both trees with those two things taken out of the snapshot: the
+8,378,425 bytes that are left are identical. No bot founds an outpost and the world
+plays as it did. 1286 ticks a second before, 1301 after.
+
+**Played once by hand**, over the headless NDJSON client against a server at pace
+6000: surveyed and refused at home, loaded, scouted four hops out by `scan`, surveyed
+and founded at `[-9,1]` (ring 9, grade 1), unloaded, level 1 on the promised tick 94
+with the tank filled from the store, an upgrade refused with its shortfall, a raid
+announced at tick 286 and repelled at 316 (38.8 against 58), abandoned, the store
+left as wreckage.
+
+**What was run.** `cargo build --workspace --all-targets`, `cargo test --workspace`
+(147 tests, none failed), `cargo clippy --workspace --all-targets` (no warning),
+`tools/check_sim_constants.py` (agrees, outposts included), the wasm build of
+`iac-solo`, `flutter analyze` (no issue), `flutter test`, the single-player bundle
+and `tool/solo_e2e.dart` (OK in 185 s). The tool sandbox this was built in refuses
+`nice` and `taskset` in front of a test command, so the cargo tests ran without
+`nice` and the Flutter tests without the core pin. Without the pin the first
+`flutter test` failed one test (`map_test.dart`, "refresh intel is disabled away
+from the sector and says why", a layout overflow); the file alone passed, and the
+second whole run passed all 388.
+
+**Not verified.** Nobody has played an outpost in a browser or in the TUI: there is
+no screen for one. No bot founds one, so no balance run measures one; the numbers of
+7.8's table are untested and every `OUTPOST_*` constant stands as proposed. No
+convoy has been flown by a person through the lairs of the Outer Ring. PvP does not
+exist.
