@@ -79,9 +79,6 @@ class PanelHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final col = color ?? C.a400;
-    // Title and note split the row three to two. In equal thirds with a
-    // spacer between them "BUILD SLOT A" was cut short in a card with room
-    // to spare.
     return Container(
       padding: const EdgeInsets.fromLTRB(11, 7, 11, 6),
       decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.lineLo))),
