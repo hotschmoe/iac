@@ -1201,7 +1201,8 @@ class OutpostState {
   final Resources store;
   final Resources storeCap;
 
-  /// What a raid cannot take: the repair cost of the level it stands at.
+  /// What a raid cannot take: the repair cost of the level it stands at, or
+  /// of the level it is building.
   final Resources protected;
 
   /// Per tick now; zero while not [inService].

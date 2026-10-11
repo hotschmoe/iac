@@ -30,7 +30,7 @@ use iac_shared::constants::{
     EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_FUEL_PAYBACK, POLICY_FUEL_UNBOUNDED_PCT,
     POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_SHIELDS_READY,
-    OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_MAX_LEVEL, OUTPOST_SPACING,
+    OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_MAX_LEVEL, OUTPOST_RAID_LOSS, OUTPOST_SPACING,
     defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
@@ -445,6 +445,18 @@ impl Outpost {
     /// The extractor runs, tanks are filled and the platform defends.
     pub fn in_service(&self) -> bool {
         self.level >= 1 && !self.breached
+    }
+
+    /// What a raid cannot take from the store: the cost of the repair the
+    /// outpost would next have to pay. That is the repair of the level it
+    /// stands at, or of the level it is building, since a breach suffered
+    /// during a build is repaired once the build is done.
+    pub fn protected(&self) -> Resources {
+        let level = match self.job {
+            Some(OutpostJob { task: OutpostTask::Build { level }, .. }) => level,
+            _ => self.level,
+        };
+        scaling::outpost_repair_cost(level)
     }
 }
 
@@ -1855,7 +1867,8 @@ impl GameEngine {
 
     /// A fleet that has lost ships keeps what the holds it has left carry.
     /// The rest leaves, each resource in proportion: at the owner's
-    /// homeworld into the stockpile as far as the Vault allows and the
+    /// homeworld into the stockpile as far as the Vault allows, at the
+    /// owner's outpost into its store as far as that has room, and the
     /// remainder is lost; anywhere else into the sector's wreckage. Nothing
     /// is made, and a fleet with no ships left sheds its whole cargo.
     fn settle_hold(&mut self, fleet_id: u64) {
@@ -1875,23 +1888,39 @@ impl GameEngine {
         let shed = fleet.cargo.sub(kept);
 
         let carried = crate::commands::amount_words(shed);
-        let message = match self.players.get_mut(&owner).filter(|p| p.homeworld == sector) {
-            Some(player) => {
-                let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+        let pace = self.world.pace;
+        let home = self.players.get_mut(&owner).filter(|p| p.homeworld == sector);
+        let outpost = self.outposts.get_mut(&owner).filter(|o| o.sector == sector);
+        let docked = match (home, outpost) {
+            (Some(player), _) => {
+                let cap = scaling::storage_cap(player.buildings.storage_vault, &pace);
                 let stored = player.resources.shortfall(cap).min(shed);
                 player.resources = player.resources.add(stored);
                 self.dirty_players.insert(owner, ());
+                Some(("the stockpile", stored))
+            }
+            (None, Some(outpost)) => {
+                let cap = scaling::outpost_store_cap(outpost.level, &pace);
+                let stored = outpost.store.shortfall(cap).min(shed);
+                outpost.store = outpost.store.add(stored);
+                self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+                Some(("the outpost's store", stored))
+            }
+            (None, None) => None,
+        };
+        let message = match docked {
+            Some((dock, stored)) => {
                 let lost = shed.sub(stored);
                 match (stored.total() > LOAD_SLACK, lost.total() > LOAD_SLACK) {
                     (true, true) => format!(
-                        "the ships fleet {fleet_id} lost carried {carried}: {} went to the stockpile and {} was lost, the stockpile is full",
+                        "the ships fleet {fleet_id} lost carried {carried}: {} went to {dock} and {} was lost, {dock} is full",
                         crate::commands::amount_words(stored),
                         crate::commands::amount_words(lost),
                     ),
                     (false, _) => format!(
-                        "the ships fleet {fleet_id} lost carried {carried}: it was lost, the stockpile is full",
+                        "the ships fleet {fleet_id} lost carried {carried}: it was lost, {dock} is full",
                     ),
-                    (true, false) => format!("the ships fleet {fleet_id} lost carried {carried}: it went to the stockpile"),
+                    (true, false) => format!("the ships fleet {fleet_id} lost carried {carried}: it went to {dock}"),
                 }
             }
             None => {
@@ -2377,7 +2406,151 @@ impl GameEngine {
             info!("Raid forecast for player {} ({} threat, arrives tick {})", pid, threat, arrival_tick);
         }
 
+        let outposts: Vec<u64> = self.outposts.iter().filter(|(_, o)| o.level >= 1).map(|(owner, _)| *owner).collect();
+        for owner in outposts {
+            self.process_outpost_raid(owner, &timers);
+        }
+
         Ok(())
+    }
+
+    /// The homeworld's raid clock, run for a finished outpost: the same
+    /// rolls, pity, intervals and warning, counted from the tick level 1 was
+    /// finished. The raid is sized by the ring the outpost stands in, not by
+    /// what its owner is worth, and the rolls are the outpost's own.
+    fn process_outpost_raid(&mut self, owner: u64, timers: &RaidTimers) {
+        let tick = self.current_tick;
+        let Some(outpost) = self.outposts.get_mut(&owner) else { return; };
+        let sector = outpost.sector;
+        let state = &mut outpost.raid;
+
+        if let Some(incoming) = state.incoming {
+            if tick >= incoming.arrival_tick {
+                state.incoming = None;
+                self.resolve_outpost_raid(owner, incoming.power);
+            }
+            return;
+        }
+
+        if tick < state.next_roll_tick { return; }
+        state.next_roll_tick = tick + timers.roll_interval;
+        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+
+        if tick.saturating_sub(state.first_seen_tick) < timers.min_player_age { return; }
+        if tick < state.suppress_until { return; }
+        if tick.saturating_sub(state.last_raid_tick) < timers.min_interval { return; }
+
+        let mut rng = StdRng::seed_from_u64(
+            self.world_gen.world_seed
+                ^ tick.wrapping_mul(0x8CB92BA72F3D8DD7)
+                ^ owner.wrapping_mul(0xC2B2AE3D27D4EB4F),
+        );
+        let chance = (RAID_ROLL_CHANCE + RAID_PITY_STEP * state.missed_rolls as f32).min(1.0);
+        if rng.random_range(0.0..1.0) >= chance {
+            state.missed_rolls += 1;
+            return;
+        }
+
+        let power = scaling::outpost_raid_power(sector.dist_from_origin())
+            * rng.random_range(RAID_POWER_ROLL_MIN..RAID_POWER_ROLL_MAX);
+        let arrival_tick = tick + timers.warning;
+        state.incoming = Some(IncomingRaid { arrival_tick, power });
+        state.missed_rolls = 0;
+
+        let defense = self.outpost_defense_power(owner);
+        let threat = if power < defense * 0.5 {
+            "light"
+        } else if power < defense {
+            "moderate"
+        } else {
+            "heavy"
+        };
+        self.pending_events.push(GameEvent {
+            tick,
+            kind: EventKind::RaidIncoming(iac_shared::protocol::RaidIncomingEvent {
+                player_id: owner,
+                arrival_tick,
+                threat: threat.to_string(),
+                est_power: power,
+                outpost: Some(sector),
+            }),
+        });
+        info!("Raid forecast for the outpost of player {} at {} ({} threat, arrives tick {})", owner, sector, threat, arrival_tick);
+    }
+
+    /// A raid reaches `owner`'s outpost. The platform and the owner's ships
+    /// in the sector defend, with the homeworld raid's fog. Repelled, the
+    /// ships' shields are halved and nothing else happens. Lost, a share of
+    /// the ships there is destroyed, a share of the store and of the holds
+    /// there above the repair cost is taken, and the outpost is breached. It
+    /// is never destroyed.
+    fn resolve_outpost_raid(&mut self, owner: u64, raid_power: f32) {
+        let tick = self.current_tick;
+        let Some(outpost) = self.outposts.get(&owner) else { return; };
+        let (sector, protected, store) = (outpost.sector, outpost.protected(), outpost.store);
+        let defense_power = self.outpost_defense_power(owner);
+
+        let mut rng = StdRng::seed_from_u64(
+            self.world_gen.world_seed
+                ^ tick.wrapping_mul(0xE7037ED1A0B428DB)
+                ^ owner.wrapping_mul(0x9FB21C651E98DF25),
+        );
+        let defended = defense_power * rng.random_range(0.9..1.1) >= raid_power;
+
+        let (mut resources_lost, mut protected_kept, mut ships_lost) = (Resources::default(), Resources::default(), 0);
+        if defended {
+            for fleet in self.fleets.values_mut() {
+                if fleet.owner_id != owner || fleet.location != sector { continue; }
+                for ship in &mut fleet.ships[0..fleet.ship_count] {
+                    ship.shield = (ship.shield * 0.5).max(0.0);
+                }
+                fleet.idle_ticks = 0;
+                self.dirty_fleets.insert(fleet.id, ());
+            }
+        } else {
+            ships_lost = self.destroy_docked_ships(owner, sector, RAID_LOST_SHIP_FRACTION, &mut rng);
+            let store = self.outposts.get(&owner).map_or(store, |o| o.store);
+            let rate = Resources { metal: OUTPOST_RAID_LOSS, crystal: OUTPOST_RAID_LOSS, deuterium: OUTPOST_RAID_LOSS };
+            let left;
+            (left, resources_lost, protected_kept) = self.skim_dock(owner, sector, store, protected, rate);
+            if let Some(outpost) = self.outposts.get_mut(&owner) {
+                outpost.store = left;
+                outpost.breached = true;
+                outpost.repair_warned = false;
+            }
+        }
+
+        let suppress = RaidTimers::new(&self.world.pace).suppress_after_loss;
+        if let Some(outpost) = self.outposts.get_mut(&owner) {
+            outpost.raid.last_raid_tick = tick;
+            if !defended {
+                outpost.raid.suppress_until = tick + suppress;
+            }
+        }
+        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+
+        self.pending_events.push(GameEvent {
+            tick,
+            kind: EventKind::RaidResolved(iac_shared::protocol::RaidResolvedEvent {
+                player_id: owner,
+                outpost: Some(sector),
+                defended,
+                breached: !defended,
+                resources_lost,
+                salvage_dropped: None,
+                salvage_despawn_tick: None,
+                raid_power,
+                defense_power,
+                structures_lost: 0,
+                structures_restored: 0,
+                protected_kept,
+                ships_lost,
+            }),
+        });
+        info!(
+            "Raid on the outpost of player {} at {} resolved: {} (raid {:.0} vs defense {:.0})",
+            owner, sector, if defended { "repelled" } else { "lost" }, raid_power, defense_power,
+        );
     }
 
     fn resolve_raid(&mut self, player_id: u64, raid_power: f32) -> Result<(), Box<dyn std::error::Error>> {
@@ -3016,16 +3189,51 @@ impl GameEngine {
     }
 
     /// Each outpost's tick, in owner order: a finished job, the extractor,
-    /// then the tanks of the fleets there, then what the owner is told
-    /// about the store.
+    /// the repair of a breach, then the tanks of the fleets there, then
+    /// what the owner is told about the store.
     fn process_outposts(&mut self) {
         let owners: Vec<u64> = self.outposts.keys().copied().collect();
         for owner in owners {
             self.finish_outpost_job(owner);
             self.run_extractor(owner);
+            self.repair_outpost(owner);
             self.fill_tanks_at_outpost(owner);
             self.note_full_store(owner);
         }
+    }
+
+    /// A breached outpost with no job under way repairs itself as soon as
+    /// its store covers the repair: it pays and is whole when the job ends.
+    /// Until the store covers it the repair waits, and says so once.
+    fn repair_outpost(&mut self, owner: u64) {
+        let tick = self.current_tick;
+        let pace = self.world.pace;
+        let Some(outpost) = self.outposts.get_mut(&owner).filter(|o| o.breached && o.job.is_none()) else { return; };
+        let sector = outpost.sector;
+        let cost = scaling::outpost_repair_cost(outpost.level);
+        let short = outpost.store.shortfall(cost);
+        if short.total() > 0.0 {
+            if outpost.repair_warned { return; }
+            outpost.repair_warned = true;
+            self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+            self.outpost_alert(owner, AlertLevel::Warning, sector, format!(
+                "your outpost at {sector} is breached and cannot repair itself: its store lacks {} of the {} the repair \
+                 costs. It makes nothing, fills no tank and has no platform until a fleet unloads the rest",
+                crate::commands::amount_words(short),
+                crate::commands::amount_words(cost),
+            ));
+            return;
+        }
+        let ticks = scaling::outpost_repair_ticks(outpost.level, &pace);
+        outpost.store = outpost.store.sub(cost);
+        outpost.job = Some(OutpostJob { task: OutpostTask::Repair, start_tick: tick, end_tick: tick + ticks });
+        outpost.repair_warned = false;
+        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
+        self.outpost_alert(owner, AlertLevel::Info, sector, format!(
+            "your outpost at {sector} began its repair, paid {} from its store: it is whole at tick {}, in {ticks} ticks",
+            crate::commands::amount_words(cost),
+            tick + ticks,
+        ));
     }
 
     /// The extractor of an outpost in service adds its yield to the store,

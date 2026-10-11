@@ -353,6 +353,154 @@ fn a_hold_loaded_at_the_dock_is_in_the_save_and_stays_aboard_after_a_reload() {
     assert_eq!(events(&sent, "Alert")[0]["message"], format!("fleet {fleet} unloaded 100 metal and 27 crystal into the stockpile"));
 }
 
+/// Play second by second from `*now` until a frame satisfies `done`.
+fn play_until(machine: &mut Machine, now: &mut u64, limit: u64, done: impl Fn(&Value) -> bool) -> Vec<Value> {
+    let mut sent = Vec::new();
+    for _ in 0..limit {
+        let frames = play(machine, *now, 1);
+        *now += 1000;
+        let arrived = frames.iter().any(&done);
+        sent.extend(frames);
+        if arrived {
+            return sent;
+        }
+    }
+    panic!("nothing of the kind within {limit} ticks: {:?}", sent.last());
+}
+
+fn order(machine: &mut Machine, now: u64, body: Value) -> Vec<Value> {
+    let mut frame = body;
+    frame["type"] = json!("command");
+    send(machine, now, frame)
+}
+
+#[test]
+fn an_outpost_is_founded_saved_replayed_and_raided_while_the_commander_is_away() {
+    use iac_shared::constants::{Density, TerrainType};
+    use iac_shared::hex::Hex;
+    use iac_shared::world::{NpcBehaviorType, WorldGen};
+    let hex_of = |v: &Value| Hex { q: v["q"].as_i64().unwrap() as i16, r: v["r"].as_i64().unwrap() as i16 };
+    let amounts = |v: &Value| ["metal", "crystal", "deuterium"].map(|k| v[k].as_f64().unwrap());
+    let accepted = |frames: Vec<Value>| assert!(frames.iter().all(|f| f["type"] != "error"), "{frames:?}");
+
+    let mut machine = new_game(T0, "test", &[]);
+    let login = log_in(&mut machine, T0);
+    let fleet = login[1]["fleets"][0]["id"].as_u64().unwrap();
+    let home = hex_of(&login[1]["player"]["homeworld"]);
+    assert!(login[1].get("outpost").is_none());
+    let (described, _) = call(&mut machine, T0, json!({"op": "describe"}), &[]);
+    let world = WorldGen::init(u64::from_str_radix(described["world"]["seed"].as_str().unwrap(), 16).unwrap());
+
+    let calm = |at: Hex| world.generate_sector(at).npc_template.is_none_or(|npc| npc.behavior == NpcBehaviorType::Passive);
+    let mut parent = std::collections::HashMap::from([(home, home)]);
+    let mut frontier = std::collections::VecDeque::from([home]);
+    let mut site = None;
+    while let Some(at) = frontier.pop_front() {
+        let t = world.generate_sector(at);
+        let open = t.npc_template.is_none() && !t.has_derelict && t.terrain != TerrainType::Anomaly;
+        if at.dist_from_origin() >= 9 && open && t.metal_density != Density::None && parent[&at] != home {
+            site = Some(at);
+            break;
+        }
+        for &next in world.connected_neighbors(at).slice() {
+            if calm(next) && !parent.contains_key(&next) {
+                parent.insert(next, at);
+                frontier.push_back(next);
+            }
+        }
+    }
+    let site = site.expect("an ore site in the Outer Ring by calm lanes");
+    let mut route = vec![site];
+    while parent[route.last().unwrap()] != home {
+        route.push(parent[route.last().unwrap()]);
+    }
+    route.reverse();
+    let step_back = route[route.len() - 2];
+
+    let mut now = T0;
+    accepted(order(&mut machine, now, json!({"action": "build", "building_type": "DeuteriumSynthesizer"})));
+    play_until(&mut machine, &mut now, 600, |f| {
+        f["type"] == "tick_update" && amounts(&f["player"]["resources"]).iter().zip([1500.0, 900.0, 700.0]).all(|(have, need)| *have >= need)
+    });
+    for (resource, amount) in [("metal", 1500), ("crystal", 900), ("deuterium", 600)] {
+        accepted(order(&mut machine, now, json!({"action": "load", "fleet_id": fleet, "resource": resource, "amount": amount})));
+    }
+    let refused = order(&mut machine, now, json!({"action": "found_outpost", "fleet_id": fleet}));
+    assert_eq!(refused[0]["code"], "InvalidTarget", "{refused:?}");
+    assert_eq!(refused[0]["message"], format!("fleet {fleet} is at ring {}; an outpost stands in rings 9 to 20", home.dist_from_origin()));
+
+    let fly = |machine: &mut Machine, now: &mut u64, hop: Hex| {
+        play_until(machine, now, 30, |f| f["type"] == "tick_update" && f["fleets"][0]["state"] == "Idle" && f["fleets"][0]["cooldown_remaining"] == 0);
+        accepted(order(machine, *now, json!({"action": "move", "fleet_id": fleet, "target": {"q": hop.q, "r": hop.r}})));
+        play_until(machine, now, 30, |f| f["type"] == "tick_update" && hex_of(&f["fleets"][0]["location"]) == hop && f["fleets"][0]["state"] == "Idle");
+    };
+    for hop in route.iter().copied() {
+        fly(&mut machine, &mut now, hop);
+    }
+
+    let quote = order(&mut machine, now, json!({"action": "outpost_survey", "fleet_id": fleet}));
+    assert_eq!((quote[0]["type"].as_str(), quote[0].get("refusal")), (Some("outpost_survey"), None), "{quote:?}");
+    assert_eq!((hex_of(&quote[0]["sector"]), quote[0]["build_ticks"].as_u64(), quote[0]["hops_home"].as_u64()), (site, Some(7), Some(route.len() as u64)));
+    accepted(order(&mut machine, now, json!({"action": "found_outpost", "fleet_id": fleet})));
+    accepted(order(&mut machine, now, json!({"action": "unload", "fleet_id": fleet})));
+    accepted(order(&mut machine, now, json!({"action": "move", "fleet_id": fleet, "target": {"q": step_back.q, "r": step_back.r}})));
+    let founded = play(&mut machine, now, 1);
+    now += 1000;
+    let post = &founded.last().unwrap()["outpost"];
+    assert_eq!((hex_of(&post["location"]), post["level"].as_u64(), post["work"]["kind"].as_str()), (site, Some(0), Some("build")), "{post}");
+    assert_eq!(amounts(&post["store"]), [500.0, 400.0, 400.0], "what the hold carried beyond the cost is in the store");
+    let told = events(&founded, "Alert");
+    assert!(told.iter().any(|a| a["message"].as_str().unwrap().starts_with(&format!("fleet {fleet} founded your outpost at {site}"))), "{told:?}");
+
+    let saved = save(&mut machine, now);
+    let watched = play(&mut machine, now, 150);
+    let finished = events(&watched, "OutpostCompleted");
+    assert_eq!((finished.len(), finished[0]["level"].as_u64()), (1, Some(1)), "{finished:?}");
+    let watched_at = save(&mut machine, now + 150_000);
+    let (mut reloaded, reply) = load(now + 150_000, &saved);
+    assert_eq!((reply["refused"].clone(), reply["world"]["behind"].as_u64()), (Value::Null, Some(150)), "{reply}");
+    let (arrived, body) = call(&mut reloaded, now + 150_000, json!({"op": "advance", "max_ticks": 1000}), &[]);
+    assert!(body.is_empty() && arrived["world"]["catch_up"] == Value::Null, "{arrived}");
+    assert!(
+        snapshot_of(&save(&mut reloaded, now + 150_000)) == snapshot_of(&watched_at),
+        "the outpost's build, its extractor and its raid clock replay from the save to the same world",
+    );
+
+    let back_at = now + 2 * 3_600_000;
+    let (mut away, reply) = load(back_at, &saved);
+    assert_eq!(reply["world"]["behind"], 7200);
+    let arrived = loop {
+        let (reply, body) = call(&mut away, back_at, json!({"op": "advance", "max_ticks": 2000}), &[]);
+        assert!(body.is_empty());
+        if reply["world"]["catch_up"] == Value::Null {
+            break reply;
+        }
+    };
+    let notices: Vec<&str> = arrived["world"]["notices"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    assert_eq!(notices[0], "Away 2h 00m: the world ran on without you for 2h 00m (7200 ticks).");
+    assert_eq!(notices[1], "While away: 1 outpost level finished.");
+    let named = format!("your outpost at {site}");
+    let repelled = notices.iter().find(|n| n.contains("repelled") && n.contains(&named));
+    let broken = notices.iter().find(|n| n.contains(&format!("broke {named} and took")));
+    assert!(repelled.is_some() || broken.is_some(), "two hours of raid clock passed the outpost by: {notices:?}");
+
+    let back = log_in(&mut away, back_at);
+    let post = &back[1]["outpost"];
+    assert_eq!((hex_of(&post["location"]), post["level"].as_u64()), (site, Some(1)), "no raid destroys an outpost: {post}");
+    let alerts: Vec<&str> = events(&back, "Alert").iter().map(|a| a["message"].as_str().unwrap()).collect();
+    assert_eq!(alerts, notices, "the report is what the commander reads on return");
+    let Some(broken) = broken else { panic!("this world's raids were all repelled; the report of a lost one is untested: {notices:?}") };
+    let words: Vec<&str> = broken.split(' ').collect();
+    assert!(words[2].parse::<u32>().unwrap() >= 1 && broken.contains(" Fe, ") && broken.contains(" Cr, ") && broken.ends_with('.'), "{broken}");
+    let standing = match (post["breached"].as_bool().unwrap(), post["work"]["kind"].as_str()) {
+        (false, _) => "It has repaired itself and is whole.".to_string(),
+        (true, Some("repair")) => format!("It is breached and under repair until tick {}.", post["work"]["end_tick"]),
+        (true, _) => "It is breached, and its store does not cover the repair: it makes nothing until a fleet unloads the rest.".to_string(),
+    };
+    assert!(broken.ends_with(&standing), "the report says how the outpost stands now ({standing}): {broken}");
+    assert!(!broken.contains("there"), "the fleet stood a sector away: no ship was at the outpost to lose: {broken}");
+}
+
 #[test]
 fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let mut machine = new_game(T0, "season", &[]);
@@ -367,6 +515,12 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let other_generator = text.replacen("\"worldgen_version\":3", "\"worldgen_version\":2", 1);
     let (_, reply) = load(T0, other_generator.as_bytes());
     assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 3"), "{reply}");
+
+    assert_eq!(SAVE_FORMAT, 4);
+    let before_outposts = text.replacen("\"format\":4", "\"format\":3", 1);
+    let (_, reply) = load(T0, before_outposts.as_bytes());
+    assert_eq!(reply["world"], Value::Null);
+    assert_eq!(reply["refused"], "this save is format 3, this build reads format 4; start a new game");
 
     let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":7", 1);
     let (_, reply) = load(T0, other_format.as_bytes());

@@ -73,7 +73,7 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
         }),
         store: outpost.store,
         store_cap: scaling::outpost_store_cap(outpost.level, &pace),
-        protected: scaling::outpost_repair_cost(outpost.level),
+        protected: outpost.protected(),
         production: engine.outpost_production(outpost),
         grade: scaling::site_grade(densities),
         platform_power: if outpost.breached { 0.0 } else { scaling::outpost_platform_power(outpost.level) },

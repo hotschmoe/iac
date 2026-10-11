@@ -3,8 +3,9 @@
 // as the alerts the player reads on return.
 
 use iac_shared::constants::{Resources, TICK_RATE_HZ};
+use iac_shared::hex::Hex;
 use iac_shared::protocol::{AlertEvent, AlertLevel, EventKind, GameEvent};
-use iac_sim::engine::{GameEngine, Player};
+use iac_sim::engine::{GameEngine, Outpost, OutpostTask, Player};
 use iac_sim::views;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,13 @@ pub struct Tally {
     pub docked_ships_lost: u32,
     pub fleets_lost: u32,
     pub ships_lost: u32,
+    /// Levels the outpost finished.
+    pub outpost_levels: u32,
+    /// Raids on the outpost, counted apart from those on the homeworld.
+    pub outpost_raids_repelled: u32,
+    pub outpost_raids_lost: u32,
+    pub outpost_raided: Resources,
+    pub outpost_ships_lost: u32,
 }
 
 impl Tally {
@@ -34,6 +42,7 @@ impl Tally {
                 | EventKind::RaidResolved(_)
                 | EventKind::FleetDestroyed(_)
                 | EventKind::ShipDestroyed(_)
+                | EventKind::OutpostCompleted(_)
         );
         if !reported {
             return;
@@ -44,6 +53,13 @@ impl Tally {
             EventKind::ResearchCompleted(_) => self.research += 1,
             EventKind::ShipBuilt(e) => self.ships += u32::from(e.count),
             EventKind::DefenceBuilt(e) => self.defences += u32::from(e.count),
+            EventKind::OutpostCompleted(_) => self.outpost_levels += 1,
+            EventKind::RaidResolved(e) if e.outpost.is_some() && e.defended => self.outpost_raids_repelled += 1,
+            EventKind::RaidResolved(e) if e.outpost.is_some() => {
+                self.outpost_raids_lost += 1;
+                self.outpost_raided = self.outpost_raided.add(e.resources_lost);
+                self.outpost_ships_lost += e.ships_lost;
+            }
             EventKind::RaidResolved(e) if e.defended => self.raids_repelled += 1,
             EventKind::RaidResolved(e) => {
                 self.raids_lost += 1;
@@ -60,6 +76,7 @@ impl Tally {
         let finished = list(&[
             count(self.buildings, "building", "buildings"),
             count(self.research, "research level", "research levels"),
+            count(self.outpost_levels, "outpost level", "outpost levels"),
         ]);
         let built = list(&[count(self.ships, "ship", "ships"), count(self.defences, "defence", "defences")]);
         match (finished, built) {
@@ -90,6 +107,48 @@ impl Tally {
             (Some(broke), Some(lost)) => Some(format!("{broke}; {lost}")),
         }
     }
+
+    /// What raids that broke the outpost took, and how it stands now.
+    fn outpost_trouble(&self, post: &Standing) -> Option<String> {
+        let raids = count(self.outpost_raids_lost, "raid", "raids")?;
+        let ships = count(self.outpost_ships_lost, "ship there", "ships there")
+            .map(|ships| format!(" and {ships}"))
+            .unwrap_or_default();
+        let now = match (post.breached, post.repaired_at) {
+            (false, _) => "It has repaired itself and is whole".to_string(),
+            (true, Some(tick)) => format!("It is breached and under repair until tick {tick}"),
+            (true, None) => {
+                "It is breached, and its store does not cover the repair: it makes nothing until a fleet unloads the rest"
+                    .to_string()
+            }
+        };
+        Some(format!(
+            "{raids} broke your outpost at {} and took {} Fe, {} Cr, {} De{ships}. {now}",
+            post.sector,
+            self.outpost_raided.metal.round(),
+            self.outpost_raided.crystal.round(),
+            self.outpost_raided.deuterium.round(),
+        ))
+    }
+}
+
+/// How the commander's outpost stands when they return.
+#[derive(Debug, Clone, Copy)]
+pub struct Standing {
+    pub sector: Hex,
+    pub breached: bool,
+    /// Tick the repair under way ends.
+    pub repaired_at: Option<u64>,
+}
+
+impl Standing {
+    pub fn of(outpost: &Outpost) -> Standing {
+        Standing {
+            sector: outpost.sector,
+            breached: outpost.breached,
+            repaired_at: outpost.job.filter(|job| job.task == OutpostTask::Repair).map(|job| job.end_tick),
+        }
+    }
 }
 
 /// One absence, start to end.
@@ -102,6 +161,8 @@ pub struct Absence {
     /// Ticks left unplayed because the player took command early.
     pub cut_short: u64,
     pub tally: Tally,
+    /// The commander's outpost as it stands at the end, if they have one.
+    pub outpost: Option<Standing>,
 }
 
 impl Absence {
@@ -127,6 +188,15 @@ impl Absence {
         }
         if let Some(trouble) = self.tally.trouble() {
             notices.push((AlertLevel::Warning, format!("While away: {trouble}.")));
+        }
+        if let Some(post) = &self.outpost {
+            if let Some(raids) = count(self.tally.outpost_raids_repelled, "raid", "raids") {
+                let were = if self.tally.outpost_raids_repelled == 1 { "was" } else { "were" };
+                notices.push((AlertLevel::Info, format!("While away: {raids} on your outpost at {} {were} repelled.", post.sector)));
+            }
+            if let Some(trouble) = self.tally.outpost_trouble(post) {
+                notices.push((AlertLevel::Warning, format!("While away: {trouble}.")));
+            }
         }
         notices
             .into_iter()

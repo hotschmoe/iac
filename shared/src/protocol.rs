@@ -770,7 +770,9 @@ pub struct OutpostState {
     /// The most the store holds of each resource. The extractor stops
     /// there, and `unload` leaves aboard what does not fit.
     pub store_cap: Resources,
-    /// What a raid cannot take: the repair cost of the level it stands at.
+    /// What a raid cannot take: the repair cost of the level it stands at,
+    /// or of the level it is building, so the materials of its next repair
+    /// are never raided.
     pub protected: Resources,
     /// What the extractor adds to the store each tick now; zero while not
     /// `in_service`.
