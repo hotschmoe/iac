@@ -527,6 +527,7 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
     let neighbors = engine.world_gen.connected_neighbors(coord);
     let ov = engine.sector_overrides.get(&coord.to_key());
     let (metal_d, crystal_d, deut_d) = SectorOverride::effective_densities(ov, &template);
+    let pending = engine.pending_template_in(coord, &template, ov);
 
     let mut hostile_list: Vec<NpcFleetInfo> = Vec::new();
     for npc in npcs {
@@ -546,9 +547,9 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
     // A template hostile that has not materialised yet carries the id it
     // will have once it does (see `template_npc_id`).
     if hostile_list.is_empty()
-        && let Some(tmpl) = engine.pending_template_npc(coord)
+        && let Some(tmpl) = &pending
     {
-        hostile_list.push(template_hostile(coord, &tmpl));
+        hostile_list.push(template_hostile(coord, tmpl));
     }
 
     let mut player_fleet_list: Vec<FleetBrief> = Vec::new();
@@ -588,12 +589,11 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
         player_fleets: (!player_fleet_list.is_empty()).then_some(player_fleet_list),
         salvage,
         salvage_despawn_tick: salvage.and(ov.and_then(|o| o.salvage_despawn_tick)),
-        site: engine
-            .derelict_site_at(coord)
+        site: GameEngine::derelict_site_in(coord, &template, ov)
             .map(|(tier, bumps)| SiteBrief { tier, risk: site_risk_label(coord, bumps) }),
-        ore_reserve: engine.ore_reserve_at(coord),
+        ore_reserve: engine.ore_reserve_in(coord, &template, ov),
         chart: None,
-        threat: engine.threat_among(coord, npcs.iter().copied()),
+        threat: engine.threat_among(coord, &template, pending.as_ref(), npcs.iter().copied()),
         last_seen: engine.current_tick,
         live: true,
         pins_stale: false,

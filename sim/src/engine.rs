@@ -2732,17 +2732,25 @@ impl GameEngine {
     /// What the ore tiles of `coord` hold now; None when the sector has no ore.
     pub fn ore_reserve_at(&self, coord: Hex) -> Option<OreReserve> {
         let template = self.world_gen.generate_sector(coord);
-        let ov = self.sector_overrides.get(&coord.to_key());
+        self.ore_reserve_in(coord, &template, self.sector_overrides.get(&coord.to_key()))
+    }
+
+    /// `ore_reserve_at` for a caller that holds the sector's template and override.
+    pub(crate) fn ore_reserve_in(
+        &self,
+        coord: Hex,
+        template: &world::SectorTemplate,
+        ov: Option<&SectorOverride>,
+    ) -> Option<OreReserve> {
         let dist = coord.dist_from_origin();
         let tile = |template_d: Density, current: Option<Density>, harvested: f32| {
             let max_units = scaling::ore_reserve_units(template_d, dist);
             let gone = scaling::ore_extracted(template_d, current.unwrap_or(template_d), harvested, dist);
-            let rate = scaling::ore_regen_per_tick(template_d, dist, &self.world.pace);
-            TileReserve {
-                units: (max_units - gone).max(0.0),
-                max_units,
-                refills_in_s: (gone > scaling::ORE_EPSILON && rate > 0.0).then(|| (gone / rate).ceil() as u64),
-            }
+            let refills_in_s = (gone > scaling::ORE_EPSILON)
+                .then(|| scaling::ore_regen_per_tick(template_d, dist, &self.world.pace))
+                .filter(|rate| *rate > 0.0)
+                .map(|rate| (gone / rate).ceil() as u64);
+            TileReserve { units: (max_units - gone).max(0.0), max_units, refills_in_s }
         };
         let metal = tile(template.metal_density, ov.and_then(|o| o.metal_density), ov.map_or(0.0, |o| o.metal_harvested));
         let crystal = tile(template.crystal_density, ov.and_then(|o| o.crystal_density), ov.map_or(0.0, |o| o.crystal_harvested));
@@ -2778,7 +2786,10 @@ impl GameEngine {
     /// The threat of `coord` right now. A group on the spot (or its template
     /// before it materialises) is rated by its own power; otherwise the ring's.
     pub fn sector_threat(&self, coord: Hex) -> ThreatInfo {
-        self.threat_among(coord, self.npc_fleets.values().filter(|n| n.location == coord))
+        let template = self.world_gen.generate_sector(coord);
+        let pending = self.pending_template_in(coord, &template, self.sector_overrides.get(&coord.to_key()));
+        let here = self.npc_fleets.values().filter(|n| n.location == coord);
+        self.threat_among(coord, &template, pending.as_ref(), here)
     }
 
     /// The ships a fight in `coord` would meet right now: the groups on the
@@ -2797,8 +2808,15 @@ impl GameEngine {
         }
     }
 
-    /// `sector_threat` for a caller that already knows which groups stand in `coord`.
-    pub fn threat_among<'a>(&self, coord: Hex, npcs: impl Iterator<Item = &'a NpcFleet>) -> ThreatInfo {
+    /// `sector_threat` for a caller that already knows which groups stand in
+    /// `coord` and holds its template and what `pending_template_npc` says.
+    pub(crate) fn threat_among<'a>(
+        &self,
+        coord: Hex,
+        template: &world::SectorTemplate,
+        pending: Option<&world::NpcTemplate>,
+        npcs: impl Iterator<Item = &'a NpcFleet>,
+    ) -> ThreatInfo {
         let mut observed: Option<f32> = None;
         for npc in npcs.filter(|n| n.ship_count > 0) {
             let power: f32 = npc.ships[..npc.ship_count as usize].iter()
@@ -2808,14 +2826,14 @@ impl GameEngine {
             *observed.get_or_insert(0.0) += power * behavior_threat_bonus(npc.behavior);
         }
         if observed.is_none()
-            && let Some(tmpl) = self.pending_template_npc(coord)
+            && let Some(tmpl) = pending
         {
             observed = Some(tmpl.power() * behavior_threat_bonus(tmpl.behavior));
         }
         match observed {
             Some(est_power) => ThreatInfo { rating: scaling::threat_rating(est_power), est_power, basis: ThreatBasis::Observed },
             None => {
-                let lair = self.world_gen.generate_sector(coord).npc_template.is_some();
+                let lair = template.npc_template.is_some();
                 ring_threat(coord, if lair { ThreatBasis::Template } else { ThreatBasis::Estimate })
             }
         }
@@ -3505,7 +3523,16 @@ impl GameEngine {
     pub fn derelict_site_at(&self, coord: Hex) -> Option<(u8, u8)> {
         let template = self.world_gen.generate_sector(coord);
         if !template.has_derelict { return None; }
-        let ov = self.sector_overrides.get(&coord.to_key());
+        Self::derelict_site_in(coord, &template, self.sector_overrides.get(&coord.to_key()))
+    }
+
+    /// `derelict_site_at` for a caller that holds the sector's template and override.
+    pub(crate) fn derelict_site_in(
+        coord: Hex,
+        template: &world::SectorTemplate,
+        ov: Option<&SectorOverride>,
+    ) -> Option<(u8, u8)> {
+        if !template.has_derelict { return None; }
         if ov.map(|o| o.site_looted_tick.is_some()).unwrap_or(false) { return None; }
         let bumps = ov.map(|o| o.site_ambush_bumps).unwrap_or(0);
         Some((scaling::derelict_tier(coord.dist_from_origin()), bumps))
@@ -4730,13 +4757,23 @@ impl GameEngine {
     /// been cleared or has wandered off as a live fleet): the hostile a sector
     /// view lists under `template_npc_id(coord)`.
     pub fn pending_template_npc(&self, coord: Hex) -> Option<iac_shared::world::NpcTemplate> {
-        let cleared = self.sector_overrides.get(&coord.to_key())
-            .map(|o| o.npc_cleared_tick.is_some())
-            .unwrap_or(false);
-        if cleared || self.npc_fleets.contains_key(&template_npc_id(coord)) {
+        let template = self.world_gen.generate_sector(coord);
+        template.npc_template.as_ref()?;
+        self.pending_template_in(coord, &template, self.sector_overrides.get(&coord.to_key()))
+    }
+
+    /// `pending_template_npc` for a caller that holds the sector's template and override.
+    pub(crate) fn pending_template_in(
+        &self,
+        coord: Hex,
+        template: &world::SectorTemplate,
+        ov: Option<&SectorOverride>,
+    ) -> Option<iac_shared::world::NpcTemplate> {
+        let cleared = ov.is_some_and(|o| o.npc_cleared_tick.is_some());
+        if template.npc_template.is_none() || cleared || self.npc_fleets.contains_key(&template_npc_id(coord)) {
             return None;
         }
-        self.world_gen.generate_sector(coord).npc_template
+        template.npc_template.clone()
     }
 
     fn spawn_npc_fleet(&mut self, location: Hex, npc: iac_shared::world::NpcTemplate, npc_fleet_id: u64) -> Result<NpcFleet, Box<dyn std::error::Error>> {
