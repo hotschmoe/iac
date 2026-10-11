@@ -20,5 +20,8 @@ class _NoPort implements SoloPort {
   void protectStorage() {}
 
   @override
+  bool get canProtectStorage => true;
+
+  @override
   void close() {}
 }

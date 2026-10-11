@@ -158,6 +158,14 @@ class _SoloScreenState extends State<SoloScreen> {
                       color: C.a300,
                       key: const Key('solo-one-tab')),
                 ],
+                if (!widget.engine.canProtectStorage) ...[
+                  const SizedBox(height: 14),
+                  _note(
+                      'This page cannot ask the browser to keep its save, as one served over HTTPS or from this machine can: '
+                      'the browser may clear the save when the device runs short of storage.',
+                      color: C.a300,
+                      key: const Key('solo-save-unkept')),
+                ],
                 if (widget.onMultiplayer != null && (s.phase == SoloPhase.idle || s.phase == SoloPhase.held || s.phase == SoloPhase.failed || s.phase == SoloPhase.locked)) ...[
                   const SizedBox(height: 22),
                   ConsoleButton('Connect to a server instead', onPressed: widget.onMultiplayer, small: true),
