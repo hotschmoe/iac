@@ -724,20 +724,35 @@ and a browser host would do the same.
 
 `sim-run` seats a mix and prints, for every player and sample interval, the score
 split (econ, fleet, defence, raw combat, raw explore, the capped extra, total) and
-what the field paid, then one row per style with ships lost and the deuterium
-paid for refuelling:
+what the field paid, then one row per style with ships lost, the deuterium paid
+for refuelling, the share of production a full store turned away, and the hours
+fleets spent away from home with the part of them flown while one more point
+would not have counted. A last table says why each building slot, the lab and
+the yard stood empty: the engine's reason where an order waited (resources or a
+prerequisite), and where none did, what the bot's own planner would have done
+with the place (`ScriptedPlayer::outlook`). `--json` adds every order that paid
+and when.
 
 ```sh
 sim-run --pace season --days 7                      # every style once and an idle player
 sim-run --seat explorer:all:2 --seat turtle:hands-on --sessions 8 --seed 3
 sim-run --pace blitz --hours 1 --seat all:hands-on --ignore-cap --json
+sim-run --pace season --days 7 --cap soft:0.25      # the week scored, and played, under another cap
 ```
 
 `--seat` is `<personality>:<attention>[:<count>]` or `idle[:<count>]`, `all` standing
 for every personality or attention; `--sessions` sets the look-ins per day;
 `--ignore-cap` lets bots chase combat and exploration points past the score cap
-(by default they stop once it is banked). A world has 24 home seats; `sim-run` refuses
-a roster of more.
+(by default they stop once it is banked). `--cap` measures another rule for those
+points without touching the game's: `<share>` (a hard cap at that share of core),
+`soft:<share>` (in full up to the share, by the square root beyond it) or `none`;
+the report is scored by it and the bots fly to it, while the world and its
+leaderboard keep the 25% cap. `--meter <share>` (repeatable) adds a table of what a
+daily allowance would have counted instead: a meter per player that fills with the
+points earned and drains by one allowance (that share of core) a day, a point
+counting in full under one allowance and by the square root beyond; the bots do not
+play to it, so it goes with `--cap none`. A world has 24 home seats; `sim-run`
+refuses a roster of more.
 
 ## Other versions
 

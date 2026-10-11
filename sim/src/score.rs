@@ -98,6 +98,58 @@ impl ExtraRule {
     }
 }
 
+/// Ticks in which a `Meter` drains by one allowance.
+const METER_WINDOW: f64 = 86_400.0;
+
+/// A daily allowance for combat and exploration points: another alternative
+/// no world plays under, which `sim-run --meter` measures beside the run's
+/// own rule. The meter fills with every point earned and drains by one
+/// allowance (`share` of core) a day. A point counts in full while the
+/// meter stands under one allowance and by the square root beyond it: a
+/// burst of four allowances counts as two. Unlike a cap this needs a memory:
+/// what a point counted is banked when it is earned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Meter {
+    pub share: f32,
+    level: f64,
+    banked: f64,
+}
+
+impl Meter {
+    pub fn new(share: f32) -> Meter {
+        Meter { share, level: 0.0, banked: 0.0 }
+    }
+
+    /// What the points earned so far have added to the score.
+    pub fn banked(&self) -> f32 {
+        self.banked as f32
+    }
+
+    fn allowance(&self, core: f32) -> f64 {
+        f64::from(self.share) * f64::from(core)
+    }
+
+    /// One tick passes for an empire of `core`.
+    pub fn drain(&mut self, core: f32) {
+        self.level = (self.level - self.allowance(core) / METER_WINDOW).max(0.0);
+    }
+
+    /// An empire of `core` earns `points`.
+    pub fn earn(&mut self, points: f32, core: f32) {
+        let allowance = self.allowance(core);
+        let counted_up_to = |level: f64| if level <= allowance { level } else { (allowance * level).sqrt() };
+        let after = self.level + f64::from(points);
+        self.banked += counted_up_to(after) - counted_up_to(self.level);
+        self.level = after;
+    }
+
+    /// What one more point would add now: 1 under the allowance, less beyond it.
+    pub fn next_point(&self, core: f32) -> f32 {
+        let allowance = self.allowance(core);
+        if self.level <= allowance { 1.0 } else { (0.5 * (allowance / self.level).sqrt()) as f32 }
+    }
+}
+
 /// `fleets` are all of the player's fleets, docked or away.
 pub fn score_of<'a>(player: &Player, fleets: impl Iterator<Item = &'a Fleet>) -> Score {
     let fleet: f32 = fleets

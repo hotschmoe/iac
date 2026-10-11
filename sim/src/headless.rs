@@ -14,7 +14,7 @@ use iac_shared::scaling::{self, BuildingType, ResearchType};
 use serde::Serialize;
 
 use crate::engine::{FleetStatus, GameEngine};
-use crate::score::{self, ExtraRule, Score};
+use crate::score::{self, ExtraRule, Meter, Score};
 use crate::script::{ScriptedPlayer, Seat, Want};
 use crate::{queue, views};
 
@@ -228,7 +228,31 @@ struct Mined {
     spilled: f64,
 }
 
+/// What a daily allowance of `share` of core (`score::Meter`) would have made
+/// of the player's combat and exploration points.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct MeterReading {
+    pub share: f32,
+    /// What the points added to the score: `core + bonus` is the total.
+    pub bonus: f32,
+    /// As `FieldTally::unpaid_hours`, by the meter instead of the run's rule.
+    pub unpaid_hours: f32,
+}
+
+/// A meter kept beside a player's run.
+#[derive(Debug, Clone, Copy)]
+struct Metered {
+    meter: Meter,
+    unpaid_hours: f32,
+}
+
+impl Metered {
+    fn reading(&self) -> MeterReading {
+        MeterReading { share: self.meter.share, bonus: self.meter.banked(), unpaid_hours: self.unpaid_hours }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Sample {
     pub tick: u64,
     pub score: ScoreBreakdown,
@@ -242,6 +266,9 @@ pub struct Sample {
     pub mined: f32,
     pub spilled: f32,
     pub ships: usize,
+    /// One reading per `Headless::meter` asked for.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub meters: Vec<MeterReading>,
 }
 
 /// One player's run, for the report.
@@ -265,6 +292,8 @@ pub struct PlayerSummary {
     pub orders_refused: u64,
     /// Every order that paid, in the order they did.
     pub orders_paid: Vec<Paid>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub meters: Vec<MeterReading>,
 }
 
 struct Entry {
@@ -275,6 +304,10 @@ struct Entry {
     why: IdleWhy<u64>,
     mined: Mined,
     paid: Vec<Paid>,
+    meters: Vec<Metered>,
+    /// Combat plus exploration points and core as the meters last saw them.
+    points_seen: f32,
+    core_seen: f32,
     samples: Vec<Sample>,
 }
 
@@ -292,17 +325,30 @@ pub struct Headless {
     entries: Vec<Entry>,
     /// The rule the report scores by. The engine keeps the game's own.
     rule: ExtraRule,
+    /// Shares of core to keep a `score::Meter` at for every player seated.
+    meters: Vec<f32>,
 }
 
 impl Headless {
     pub fn new(world_seed: u64, pace: Pace) -> Headless {
-        Headless { engine: GameEngine::new(world_seed, pace), entries: Vec::new(), rule: ExtraRule::GAME }
+        Headless {
+            engine: GameEngine::new(world_seed, pace),
+            entries: Vec::new(),
+            rule: ExtraRule::GAME,
+            meters: Vec::new(),
+        }
     }
 
     /// Report scores under `rule` instead of the game's. Bots have to be
     /// seated under the same rule (`Bot::under`) to play to it.
     pub fn score_under(&mut self, rule: ExtraRule) {
         self.rule = rule;
+    }
+
+    /// Also report what a daily allowance of `share` of core would count,
+    /// for every player seated after this call.
+    pub fn meter(&mut self, share: f32) {
+        self.meters.push(share);
     }
 
     /// Register the player's account and seat them; returns the player id.
@@ -322,6 +368,9 @@ impl Headless {
             why: IdleWhy::default(),
             mined: Mined::default(),
             paid: Vec::new(),
+            meters: self.meters.iter().map(|&share| Metered { meter: Meter::new(share), unpaid_hours: 0.0 }).collect(),
+            points_seen: 0.0,
+            core_seen: 0.0,
             samples: Vec::new(),
         });
         Ok(player_id)
@@ -342,6 +391,7 @@ impl Headless {
         self.engine.tick()?;
         self.count_refuelling(&tanks);
         self.count_slots();
+        self.run_meters();
         if self.engine.current_tick().is_multiple_of(PROBE_EVERY) {
             self.probe();
         }
@@ -394,11 +444,38 @@ impl Headless {
             mined: entry.mined.made as f32,
             spilled: entry.mined.spilled as f32,
             ships: self.ships_of(player.id),
+            meters: entry.meters.iter().map(Metered::reading).collect(),
         })
     }
 
     fn ships_of(&self, player_id: u64) -> usize {
         self.engine.fleets.values().filter(|f| f.owner_id == player_id).map(|f| f.ship_count).sum()
+    }
+
+    /// A tick of every meter: it drains, and takes in the points its player
+    /// earned this tick. The core is read again when points come in and at
+    /// every look; between two looks an allowance is the one of the last.
+    fn run_meters(&mut self) {
+        if self.meters.is_empty() {
+            return;
+        }
+        let engine = &self.engine;
+        let look = engine.current_tick().is_multiple_of(PROBE_EVERY);
+        for entry in &mut self.entries {
+            let Some(player) = engine.players.get(&entry.seat.player_id()) else { continue };
+            let points = player.combat_points + player.explore_points;
+            let earned = points - entry.points_seen;
+            if earned > 0.0 || look || entry.core_seen == 0.0 {
+                entry.core_seen = score::score_of(player, engine.fleets.values()).core();
+            }
+            for metered in &mut entry.meters {
+                metered.meter.drain(entry.core_seen);
+                if earned > 0.0 {
+                    metered.meter.earn(earned, entry.core_seen);
+                }
+            }
+            entry.points_seen = points;
+        }
     }
 
     fn count_slots(&mut self) {
@@ -443,6 +520,9 @@ impl Headless {
             let hours = out as f32 * PROBE_EVERY as f32 / 3600.0;
             entry.tally.fleet_hours += hours;
             entry.tally.unpaid_hours += hours * (1.0 - rule.next_point(score.combat + score.explore, score.core()));
+            for metered in &mut entry.meters {
+                metered.unpaid_hours += hours * (1.0 - metered.meter.next_point(score.core()));
+            }
 
             let Some(outlook) = views::full_state(engine, id).and_then(|state| entry.seat.player().outlook(&state))
             else {
@@ -606,6 +686,7 @@ impl Headless {
                     orders_accepted: entry.seat.accepted(),
                     orders_refused: entry.seat.refused(),
                     orders_paid: entry.paid.clone(),
+                    meters: entry.meters.iter().map(Metered::reading).collect(),
                 })
             })
             .collect()

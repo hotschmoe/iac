@@ -20,7 +20,8 @@ use iac_sim::script::IdlePlayer;
 use serde_json::json;
 
 const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--seat <spec>]... [--sessions <n>]
-               [--ticks <n> | --hours <n> | --days <n>] [--every <ticks>] [--ignore-cap] [--cap <rule>] [--json]
+               [--ticks <n> | --hours <n> | --days <n>] [--every <ticks>] [--ignore-cap] [--cap <rule>]
+               [--meter <share>]... [--json]
   --pace      world pace (default season)
   --seed      world seed (default: the server's default)
   --seat      who plays; repeatable. <personality>:<attention>[:<count>] or idle[:<count>]
@@ -39,6 +40,10 @@ const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--sea
                 soft:<share>  counted in full up to that share of core, beyond it by the
                               square root (four times the points count double)
                 none          counted in full
+  --meter     also report what a daily allowance of <share> of core would have counted;
+              repeatable. A meter fills with the points earned and drains by one allowance
+              a day; a point counts in full while it stands under one allowance, by the
+              square root beyond. The bots do not play to it: pair it with --cap none
   --json      print the full record as JSON instead of the tables";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -66,17 +71,21 @@ struct Args {
     json: bool,
     ignore_cap: bool,
     rule: ExtraRule,
+    meters: Vec<f32>,
+}
+
+fn parse_share(flag: &str, text: &str) -> Result<f32, String> {
+    match text.parse::<f32>() {
+        Ok(share) if share > 0.0 && share.is_finite() => Ok(share),
+        _ => Err(format!("{flag}: '{text}' is not a share of core above zero")),
+    }
 }
 
 fn parse_rule(text: &str) -> Result<ExtraRule, String> {
-    let share = |text: &str| match text.parse::<f32>() {
-        Ok(share) if share > 0.0 && share.is_finite() => Ok(share),
-        _ => Err(format!("--cap: '{text}' is not a share of core above zero")),
-    };
     match text.split_once(':') {
         None if text == "none" => Ok(ExtraRule::Uncapped),
-        None => share(text).map(ExtraRule::Cap),
-        Some(("soft", knee)) => share(knee).map(ExtraRule::Soft),
+        None => parse_share("--cap", text).map(ExtraRule::Cap),
+        Some(("soft", knee)) => parse_share("--cap", knee).map(ExtraRule::Soft),
         Some(_) => Err(format!("--cap: '{text}' is not <share>, soft:<share> or none")),
     }
 }
@@ -113,6 +122,7 @@ fn parse_args() -> Result<Args, String> {
         json: false,
         ignore_cap: false,
         rule: ExtraRule::GAME,
+        meters: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -136,6 +146,7 @@ fn parse_args() -> Result<Args, String> {
             "--seat" => args.seats.extend(parse_seat(&value)?),
             "--sessions" => args.sessions = number("--sessions")?,
             "--cap" => args.rule = parse_rule(&value)?,
+            "--meter" => args.meters.push(parse_share("--meter", &value)?),
             "--ticks" => args.ticks = number("--ticks")?,
             "--hours" => args.ticks = number("--hours")? * 3600,
             "--days" => args.ticks = number("--days")? * DAY,
@@ -352,6 +363,57 @@ fn why_table(players: &[PlayerSummary]) -> String {
     out
 }
 
+/// The run by style as meter `at` would have scored it.
+fn meter_table(players: &[PlayerSummary], at: usize) -> String {
+    struct Row {
+        style: String,
+        players: f32,
+        core: f32,
+        bonus: f32,
+        fleet_hours: f32,
+        unpaid_hours: f32,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for p in players {
+        let Some(meter) = p.meters.get(at) else { continue };
+        let row = match rows.iter_mut().find(|r| r.style == p.style) {
+            Some(row) => row,
+            None => {
+                rows.push(Row { style: p.style.clone(), players: 0.0, core: 0.0, bonus: 0.0, fleet_hours: 0.0, unpaid_hours: 0.0 });
+                rows.last_mut().expect("a row was pushed")
+            }
+        };
+        row.players += 1.0;
+        row.core += p.score.core;
+        row.bonus += meter.bonus;
+        row.fleet_hours += p.field.fleet_hours;
+        row.unpaid_hours += meter.unpaid_hours;
+    }
+    let total_of = |style: String| rows.iter().find(|r| r.style == style).map(|r| (r.core + r.bonus) / r.players);
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<20} {:>8} {:>8} {:>8} {:>6} {:>9} {:>11}",
+        "style", "core", "bonus", "total", "unpaid", "vs turtle", "vs hands-on"
+    );
+    for row in &rows {
+        let (personality, attention) = row.style.split_once('/').unwrap_or((row.style.as_str(), ""));
+        let total = (row.core + row.bonus) / row.players;
+        let _ = writeln!(
+            out,
+            "{:<20} {:>8.1} {:>8.1} {:>8.1} {:>6} {:>9} {:>11}",
+            row.style,
+            row.core / row.players,
+            row.bonus / row.players,
+            total,
+            percent(row.unpaid_hours, Some(row.fleet_hours)),
+            percent(total, total_of(format!("{}/{attention}", Personality::Turtle.label()))),
+            percent(total, total_of(format!("{personality}/{}", Attention::HandsOn.label()))),
+        );
+    }
+    out
+}
+
 fn sample_table(players: &[PlayerSummary]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{:<22} {:>8} {SCORE_HEADER} {:>7} {:>6} {:>6}", "player", "at", "haul", "charts", "kills");
@@ -387,6 +449,9 @@ fn main() {
 
     let mut world = Headless::new(args.seed, args.pace);
     world.score_under(args.rule);
+    for &share in &args.meters {
+        world.meter(share);
+    }
     if let Err(msg) = seat_all(&mut world, &args) {
         eprintln!("sim-run: {msg}");
         std::process::exit(2);
@@ -440,6 +505,13 @@ fn main() {
         println!("  not yet   nothing ordered: the planner's rule says not yet, and the stockpile covers no level");
         println!("  done      nothing left to order\n");
         println!("{}", why_table(&players));
+        for (at, share) in args.meters.iter().enumerate() {
+            println!(
+                "a daily allowance of {:.0}% of core: bonus is what the points counted, total is core + bonus\n",
+                100.0 * share
+            );
+            println!("{}", meter_table(&players, at));
+        }
     }
     let turns: u64 = players.iter().map(|p| p.turns).sum();
     eprintln!(
