@@ -626,10 +626,11 @@ Future<void> loadHold(Browser browser) async {
 /// one is chosen with the steppers and set: the wire carries what the typed
 /// `policy patrol range=1 engage=10.0` would, the engine confirms the orders
 /// with the settings they fly with, and the fleet reports what it does under
-/// them or why it holds (a fleet with a ship fresh from the yard holds first
-/// for its shields). The panel shows that sentence as the engine sent it, and
-/// for a hold the fleet status does too, at desktop width, in the sheet at
-/// 1100 px and on a phone. Manual clears the orders again.
+/// them or why it holds, which is the world's to decide (it has held for its
+/// shields and it has attacked a scout in the home sector). The panel shows
+/// that sentence as the engine sent it, and for a hold the fleet status does
+/// too, at desktop width, in the sheet at 1100 px and on a phone. Manual
+/// clears the orders again.
 Future<void> standingOrders(Browser browser) async {
   print('standing orders');
   final before = await firstFleet(browser);
