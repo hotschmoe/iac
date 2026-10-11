@@ -433,6 +433,40 @@ pub struct FleetPolicy {
     pub fuel_since: u64,
 }
 
+/// The square of sectors within `radius` hexes of `centre`, one slot each:
+/// a search confined to it indexes a table instead of hashing sector keys.
+#[derive(Clone, Copy)]
+struct Window {
+    centre: Hex,
+    radius: u8,
+}
+
+impl Window {
+    fn side(&self) -> i32 {
+        2 * i32::from(self.radius) + 1
+    }
+
+    fn slots(&self) -> usize {
+        (self.side() * self.side()) as usize
+    }
+
+    fn slot(&self, coord: Hex) -> Option<usize> {
+        let side = self.side();
+        let q = i32::from(coord.q) - i32::from(self.centre.q) + i32::from(self.radius);
+        let r = i32::from(coord.r) - i32::from(self.centre.r) + i32::from(self.radius);
+        ((0..side).contains(&q) && (0..side).contains(&r)).then_some((q * side + r) as usize)
+    }
+
+    fn coord(&self, slot: usize) -> Hex {
+        let side = self.side();
+        let (q, r) = (slot as i32 / side, slot as i32 % side);
+        Hex::new(
+            (i32::from(self.centre.q) + q - i32::from(self.radius)) as i16,
+            (i32::from(self.centre.r) + r - i32::from(self.radius)) as i16,
+        )
+    }
+}
+
 /// Where a doctrine lets one fleet go, worked out once per evaluation: the
 /// fleet's odds in every sector asked about, against what its owner knows.
 /// An evaluation searches the same sectors several times over (a lane
@@ -4077,31 +4111,37 @@ impl GameEngine {
         passable: &dyn Fn(Hex) -> bool,
         goal: &dyn Fn(Hex, u32) -> bool,
     ) -> Option<Vec<Hex>> {
-        let mut prev: KeyMap<u32, u32> = KeyMap::default();
+        // A sector `max_hops` jumps out lies within as many hexes, so the
+        // search cannot leave the window and indexes it: where each sector
+        // was reached from, by slot.
+        const UNSEEN: u32 = u32::MAX;
+        let window = Window { centre: from, radius: max_hops };
+        let start = window.slot(from)?;
+        let mut prev: Vec<u32> = vec![UNSEEN; window.slots()];
         let mut frontier = vec![from];
-        prev.insert(from.to_key(), from.to_key());
-        let mut found: Option<Hex> = None;
+        prev[start] = start as u32;
+        let mut found: Option<usize> = None;
 
         'search: for hops in 1..=u32::from(max_hops) {
             let mut next = Vec::new();
             for coord in &frontier {
+                let Some(at) = window.slot(*coord) else { continue; };
                 for &n in self.world_gen.connected_neighbors(*coord).slice() {
-                    let key = n.to_key();
-                    if prev.contains_key(&key) || !passable(n) { continue; }
-                    prev.insert(key, coord.to_key());
-                    if goal(n, hops) { found = Some(n); break 'search; }
+                    let Some(slot) = window.slot(n) else { continue; };
+                    if prev[slot] != UNSEEN || !passable(n) { continue; }
+                    prev[slot] = at as u32;
+                    if goal(n, hops) { found = Some(slot); break 'search; }
                     next.push(n);
                 }
             }
             frontier = next;
         }
 
-        let from_key = from.to_key();
-        let mut path = vec![found?];
-        let mut cur = found?.to_key();
-        while prev[&cur] != from_key {
-            cur = prev[&cur];
-            path.push(Hex::from_key(cur));
+        let mut cur = found?;
+        let mut path = vec![window.coord(cur)];
+        while prev[cur] as usize != start {
+            cur = prev[cur] as usize;
+            path.push(window.coord(cur));
         }
         path.reverse();
         Some(path)
