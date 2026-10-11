@@ -1596,9 +1596,7 @@ impl GameEngine {
     }
 
     fn process_salvage_despawn(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
-        for key in keys {
-            let Some(ov) = self.sector_overrides.get_mut(&key) else { continue; };
+        for (&key, ov) in self.sector_overrides.iter_mut() {
             if let Some(despawn_tick) = ov.salvage_despawn_tick
                 && self.current_tick >= despawn_tick
             {
@@ -1623,17 +1621,13 @@ impl GameEngine {
 
     fn process_npc_behavior(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Respawn check
-        let keys: Vec<u32> = self.sector_overrides.keys().copied().collect();
-        for key in keys {
-            let Some(ov) = self.sector_overrides.get(&key) else { continue; };
+        for (&key, ov) in self.sector_overrides.iter_mut() {
             let Some(cleared_tick) = ov.npc_cleared_tick else { continue; };
             let coord = Hex::from_key(key);
             let hours = scaling::npc_respawn_hours(coord.dist_from_origin());
             let delay = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
-            if self.current_tick >= cleared_tick + delay
-                && let Some(ov_mut) = self.sector_overrides.get_mut(&key)
-            {
-                ov_mut.npc_cleared_tick = None;
+            if self.current_tick >= cleared_tick + delay {
+                ov.npc_cleared_tick = None;
                 self.dirty_sectors.insert(key, ());
             }
         }
