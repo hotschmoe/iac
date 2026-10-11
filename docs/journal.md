@@ -2556,3 +2556,513 @@ default 4). Neither was tried.
 live server. `play.py` is syntax-checked and its offline tests pass; the harness is
 on hold and was not run. Persistent pace and blitz were not measured. The browser
 run is headless Chromium at 1440 and 390 px; no other browser and no real phone.
+
+## 2026-10-11: why the slots stand empty, and what the 25% cap costs
+
+Two measurements the last entry asked for, and one planner fix found on the way. No
+cost, time, production, pay, point value or cap was changed; the score rule of every
+world is the one it was. Branch `worktree-agent-ac2b2baaefef3f0bb`, not merged.
+
+**The instrument** (`sim/src/headless.rs`, `sim-run`).
+- *Why a slot stood empty.* Every 61 ticks the headless world looks at each empty
+  building slot, lab and yard. Where an order waits, the reason is the engine's
+  (`queue::project`): resources or a prerequisite. Where none waits, the owner's
+  planner is asked what it would do with the place (`ScriptedPlayer::outlook`, which
+  the home planner answers from the same code that plans, ordering nothing). Eight
+  reasons: `short` (an order waits for resources; for the yard, where a batch cannot
+  wait unpaid, the planner wants a unit the stockpile does not cover), `blocked` (a
+  prerequisite), `unbuilt` (no lab or yard yet), `unspent` (nothing ordered, the
+  stockpile covers what the planner wants), `poor` (nothing ordered, it does not),
+  `declined` and `not yet` (the planner's own rule holds back what is left, with and
+  without the stockpile to pay for it), `done` (nothing left to order). Building
+  slots are counted one by one: a waiting order accounts for one empty slot, the
+  planner for the others.
+- *Also counted:* what the mines made and what a full store turned away
+  (`spilled`); every order that paid, with its tick (`orders_paid` in `--json`);
+  hours fleets spent away from home, and the part of them flown while one more
+  combat or exploration point would not have counted (`field h`, `unpaid`).
+- *`--cap <share> | soft:<share> | none`* scores the run, and has the bots play,
+  under another rule for combat and exploration points (`score::ExtraRule`). The
+  engine and its leaderboard keep the game's rule.
+- The additions change no world: with no flag, and with `--cap 0.25`, the 20-seat
+  season week of seed 1 ends on master's snapshot (`64594b86cbc57762`).
+
+All runs below: season, 7 days, seeds 1 to 3, 20 seats (two of each personality as
+check-in and as hands-on), hourly samples. Six seats per style. Ranges are min-max
+over the three per-seed means unless said.
+
+### Why the slots are empty
+
+**Answer.** Because orders cost hours of income and take minutes to build, not
+because nobody orders. A hands-on empire is short of resources in 97 to 98% of its
+empty building-slot time and the planner leaves nothing affordable unordered. A
+check-in empire is short of looks on day 1 (71 to 86% of its empty slot time the
+queue has run dry and the stockpile covers the next order) and short of income by
+day 7 (82 to 94% an order waits for resources). The lab is empty 95% of the week for
+everybody because the whole research tree is 8 to 9 hours of lab time and is bought
+out between day 2.7 and day 5.2; the yard because units build in a small part of the
+time their price takes to earn. A full store turns away 2 to 5% of production.
+
+Week, percent of each slot's idle time:
+
+| style | slot | idle | short | blocked | unbuilt | unspent | poor | declined | not yet | done |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| turtle / check-in | building | 82% | 69 | 8 | 0 | 16 | 7 | 0 | 0 | 0 |
+|  | lab | 95% | 3 | 0 | 5 | 5 | 16 | 15 | 24 | 31 |
+|  | yard | 97% | 0 | 0 | 5 | 58 | 0 | 0 | 37 | 0 |
+| miner / check-in | building | 81% | 59 | 6 | 0 | 26 | 10 | 0 | 0 | 0 |
+|  | lab | 95% | 3 | 4 | 3 | 14 | 8 | 15 | 25 | 28 |
+|  | yard | 97% | 3 | 0 | 0 | 67 | 0 | 0 | 30 | 0 |
+| raider / check-in | building | 83% | 64 | 5 | 0 | 20 | 11 | 0 | 0 | 0 |
+|  | lab | 95% | 10 | 7 | 2 | 15 | 4 | 5 | 3 | 53 |
+|  | yard | 94% | 11 | 0 | 0 | 72 | 0 | 0 | 16 | 0 |
+| explorer / check-in | building | 83% | 60 | 7 | 0 | 22 | 11 | 0 | 0 | 0 |
+|  | lab | 95% | 7 | 4 | 3 | 14 | 6 | 11 | 7 | 49 |
+|  | yard | 96% | 6 | 0 | 0 | 78 | 0 | 0 | 15 | 0 |
+| mixed / check-in | building | 83% | 63 | 6 | 0 | 19 | 11 | 0 | 0 | 0 |
+|  | lab | 95% | 12 | 4 | 1 | 13 | 9 | 9 | 4 | 47 |
+|  | yard | 95% | 10 | 0 | 0 | 79 | 0 | 0 | 11 | 0 |
+| turtle / hands-on | building | 78% | 43 | 3 | 0 | 0 | 54 | 0 | 0 | 0 |
+|  | lab | 95% | 10 | 2 | 1 | 0 | 0 | 0 | 46 | 41 |
+|  | yard | 98% | 1 | 0 | 1 | 0 | 0 | 0 | 98 | 0 |
+| miner / hands-on | building | 73% | 47 | 1 | 0 | 0 | 51 | 0 | 0 | 0 |
+|  | lab | 95% | 14 | 2 | 0 | 0 | 0 | 0 | 41 | 43 |
+|  | yard | 95% | 1 | 0 | 0 | 0 | 0 | 0 | 98 | 0 |
+| raider / hands-on | building | 80% | 45 | 2 | 0 | 0 | 53 | 0 | 0 | 0 |
+|  | lab | 95% | 27 | 3 | 1 | 0 | 0 | 0 | 8 | 61 |
+|  | yard | 92% | 5 | 0 | 0 | 0 | 0 | 0 | 95 | 0 |
+| explorer / hands-on | building | 76% | 46 | 3 | 0 | 0 | 51 | 0 | 0 | 0 |
+|  | lab | 95% | 25 | 3 | 1 | 0 | 0 | 0 | 6 | 65 |
+|  | yard | 94% | 2 | 0 | 0 | 0 | 0 | 0 | 97 | 0 |
+| mixed / hands-on | building | 79% | 46 | 2 | 0 | 0 | 52 | 0 | 0 | 0 |
+|  | lab | 95% | 27 | 3 | 1 | 0 | 0 | 0 | 8 | 62 |
+|  | yard | 93% | 4 | 0 | 0 | 0 | 0 | 1 | 95 | 0 |
+
+Over the seeds the largest reason of a row moves by at most 10 points, except in the
+lab of the check-in turtle (13) and miner (16) and the check-in miner's yard (18).
+
+Building slots by day (short / blocked / unspent / poor):
+
+| style | day 1 | day 3 | day 7 |
+| --- | --- | --- | --- |
+| turtle / check-in | 11 / 0 / 86 / 3 | 70 / 13 / 10 / 7 | 85 / 5 / 3 / 6 |
+| miner / check-in | 10 / 0 / 86 / 5 | 36 / 3 / 45 / 17 | 82 / 14 / 2 / 1 |
+| raider / check-in | 22 / 0 / 71 / 7 | 43 / 1 / 37 / 18 | 94 / 4 / 0 / 2 |
+| explorer / check-in | 14 / 0 / 80 / 5 | 47 / 5 / 31 / 18 | 89 / 8 / 0 / 3 |
+| mixed / check-in | 19 / 0 / 73 / 8 | 47 / 5 / 30 / 18 | 89 / 5 / 2 / 5 |
+| turtle / hands-on | 87 / 1 / 0 / 13 | 40 / 1 / 0 / 59 | 47 / 2 / 0 / 51 |
+| miner / hands-on | 80 / 0 / 0 / 19 | 43 / 1 / 0 / 57 | 50 / 0 / 0 / 50 |
+| raider / hands-on | 100 / 0 / 0 / 0 | 37 / 1 / 0 / 62 | 44 / 5 / 0 / 51 |
+| explorer / hands-on | 100 / 0 / 0 / 0 | 38 / 2 / 0 / 60 | 35 / 10 / 0 / 55 |
+| mixed / hands-on | 100 / 0 / 0 / 0 | 36 / 2 / 0 / 62 | 43 / 6 / 1 / 50 |
+
+Lab and store (six seats; min-max over seats):
+
+| style | research tree bought out, day | lab hours worked | spilled | core |
+| --- | --- | --- | --- | --- |
+| turtle / check-in | 5.0 (4.4-5.6) | 8.4 | 3.8% (1.5-7.0) | 1743 (1466-1931) |
+| miner / check-in | 5.2 (4.5-6.1) | 8.6 | 4.7% (0.0-11.4) | 1829 (1470-2070) |
+| raider / check-in | 3.5 (3.2-3.7) | 9.2 | 2.9% (0.5-4.3) | 1864 (1704-1994) |
+| explorer / check-in | 3.8 (3.5-4.1) | 9.0 | 3.3% (0.5-7.9) | 1716 (1490-1850) |
+| mixed / check-in | 3.9 (3.3-4.7) | 9.0 | 2.4% (0.0-7.0) | 1805 (1671-1984) |
+| turtle / hands-on | 4.3 (4.2-4.3) | 8.3 | 4.5% (3.2-5.8) | 2387 (2373-2400) |
+| miner / hands-on | 4.2 (3.8-4.5) | 8.5 | 2.3% (0.4-3.0) | 2963 (2579-3133) |
+| raider / hands-on | 3.0 (2.8-3.1) | 9.1 | 2.1% (1.2-2.7) | 2360 (2160-2517) |
+| explorer / hands-on | 2.7 (2.6-2.8) | 8.8 | 4.2% (0.9-8.1) | 2626 (2420-2973) |
+| mixed / hands-on | 2.9 (2.7-3.0) | 8.9 | 2.9% (1.4-4.8) | 2420 (2311-2508) |
+
+**What it means, slot by slot.**
+- *Building slots: income.* An empire has 1 to 3 slots (Modular Fabrication) and
+  works them 17 to 27% of the time: half to four fifths of one slot. For a player
+  who stays, one slot holds the order that is saving up (`short`, 43 to 47%) and the
+  others have nothing the stockpile could pay for (`poor`, 51 to 54%); `unspent` is
+  zero. The 72 to 84% of the last report is mostly the second and third slot, which
+  an empire that cannot fill one has no use for.
+- *The lab: there is nothing left.* All 44 research levels are 8.3 to 9.2 hours of
+  lab time at season pace. Every one of the 60 seats bought the tree out, the first
+  hands-on explorer on day 2.6 and the slowest check-in miner on day 6.1. From then
+  on the lab cannot be used (`done`), and before that it waits for resources or for
+  the planner's rule (a tech is bought once it costs no more than an appetite times
+  the next Metal Mine level: `not yet`). 95% idle is the floor at these times: a lab
+  that never waited would stand empty 95% of a season week.
+- *The yard: a unit builds faster than it is earned.* For a player who stays, 95 to
+  98% of the yard's empty time the fleet is at its share and the turrets at their
+  margin (`not yet`). For a check-in player 58 to 79% is `unspent`: the stockpile
+  covers a unit the planner wants and nobody is there to order it, since a batch
+  cannot be queued ahead. Most of that stockpile is the same money a waiting
+  building order is short of, so it is not idle money; it is what the rule "batches
+  pay when ordered" costs a player who is away.
+- *Storage: little.* 2 to 5% of what the mines made was turned away by a full
+  store, hands-on and check-in alike (single seats up to 11%).
+
+**How rarely they look.** Builders alone (eight check-in turtles and two hands-on in
+a world, seeds 1 to 3), by look-ins a day (`--sessions`). Check-in score as a percent
+of hands-on, mean (min-max over seeds), and the building slots' week:
+
+| look-ins a day | day 1 | day 3 | day 7 | day 7 score | short / blocked / unspent / poor |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 6 (6-7) | 12 (11-14) | 14 (13-15) | 340 | 2 / 0 / 96 / 2 |
+| 2 | 11 (10-11) | 26 (24-27) | 45 (42-48) | 1088 | 11 / 3 / 77 / 10 |
+| 4 | 38 (37-40) | 51 (45-54) | 72 (71-74) | 1721 | 68 / 9 / 17 / 7 |
+| 8 | 67 (64-69) | 83 (81-84) | 85 (84-86) | 2043 | 81 / 7 / 7 / 5 |
+| 16 | 72 (67-75) | 85 (83-87) | 86 (85-86) | 2056 | 86 / 6 / 5 / 3 |
+| 24 | 76 (72-80) | 87 (85-88) | 89 (87-91) | 2126 | 87 / 6 / 4 / 3 |
+
+Two looks a day leave the queue dry most of the week; four make the week a matter of
+income except its first days; eight close most of the first-day gap; nothing closes
+the last tenth. The queue holds the running order and three more, and on day 1 four
+orders are minutes of work.
+
+The same worlds with eight waiting places instead of three (`QUEUE_WAITING`, changed
+in a scratch build only, nothing committed; the bots read the depth from the state
+and fill what there is):
+
+| look-ins a day | day 1 | day 3 | day 7 | day 7 score | short / blocked / unspent / poor | spilled |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 17 (17-18) | 21 (20-22) | 45 (45-46) | 1087 | 10 / 2 / 83 / 5 | 7.3% |
+| 2 | 36 (35-37) | 69 (67-74) | 73 (73-74) | 1750 | 75 / 6 / 17 / 3 | 9.2% |
+| 4 | 65 (62-67) | 80 (78-82) | 79 (76-82) | 1895 | 89 / 7 / 3 / 1 | 12.6% |
+| 8 | 70 (65-74) | 77 (72-81) | 79 (78-80) | 1900 | 91 / 6 / 2 / 1 | 12.0% |
+
+Eight places at N looks a day do about what three places do at 2N: at four looks the
+first day goes from 38 to 65% of hands-on and the third from 51 to 80%, and the week
+from 72 to 79%. Past that it stops helping (79% at eight looks against 85% with three
+places): a long line of reserved orders runs in the order it was written hours ago,
+and the store spills 12% instead of 4 to 8. Spilled production with three places:
+3.2, 0.7, 4.4, 7.5, 7.5 and 7.5% at 1, 2, 4, 8, 16 and 24 looks.
+
+**Where the planner leaves money on the table (strategy, not changed).** Check-in
+turtle, seed 1. At its look-in at 10.75 h it queued Shipyard 2, Fabricator 1 and 2,
+Research Lab 2 and Synthesizer 4 (3.4 points together) and put 4.4 points into 13
+Scouts; the last of those orders started at 10.96 h. Until the next look at 23.3 h
+the building slot stood empty with nothing queued, the stockpile grew from 8.5 to
+43.5 points at an income of 2.76 points an hour that did not rise, and Metal Mine
+stayed at level 6 from hour 7 to hour 27. At 23.3 h the bot paid 22.4 points for 67
+Scouts and queued Shipyard 3, Defense Grid 1, Fabricator 3 and Synthesizer 5: again
+no Metal Mine, whose levels 7 and 8 cost 2.35 points together, less than the Scouts
+of the look-in before. The hands-on turtle had Metal Mine 11 and an income of 6.4
+points an hour by then. Two rules of the home planner do this. Before leaving, every
+queue place goes first to whichever support building is due, cheapest first, and
+only then to a mine; the rule that a place should absorb its share of the income to
+come is applied to mines alone. And what no order has claimed goes into hulls or
+turrets, which score and do not grow. Left as it is: it is how these bots play, and
+it is part of the first-day gap (the check-in turtle stands at 37% of the hands-on
+one on day 1 and at 73% on day 7). How much of that gap a planner that queued mines
+first would close was not measured.
+
+**A planner bug, fixed** (`sim/src/bot/home.rs`, own commit). A batch pays in full
+when it is ordered, and the planner still judged the yard by everything queued, as it
+did when a unit paid on starting. So it paid for hulls whose tech was waiting for
+resources. Hands-on raider, seed 1: Cruiser x1 (6.8 points) paid at tick 212396;
+Cruiser Tech Lv.1 (20.5 points) could not start until tick 243095. The price sat in
+the yard for eight and a half hours and came out of the stockpile the tech was
+waiting on. Hands-on mixed, same seed: paid at 235790, tech started at 246079. The
+yard, the turrets' prerequisites and the hull classes are now read from what stands
+once the orders under way have finished, so a batch can still be ordered behind a
+tech that is being researched and never behind one that waits for resources.
+
+The week before and after (the instrument on master's planner, then the fix):
+
+| style | total before | total after | core before | core after | yard hours with a paid batch blocked | seats up / same / down |
+| --- | --- | --- | --- | --- | --- | --- |
+| turtle / check-in | 1743 (1652-1903) | 1743 (1652-1903) | 1743 | 1743 | 0.0 to 0.0 | 0 / 6 / 0 |
+| miner / check-in | 2363 (2007-2722) | 2272 (2084-2413) | 1923 | 1829 | 0.3 to 0.0 | 3 / 1 / 2 |
+| raider / check-in | 2097 (2054-2177) | 2320 (2208-2477) | 1698 | 1864 | 0.4 to 0.3 | 5 / 1 / 0 |
+| explorer / check-in | 2255 (2125-2364) | 2145 (1919-2278) | 1804 | 1716 | 0.3 to 0.0 | 1 / 1 / 4 |
+| mixed / check-in | 2215 (2120-2288) | 2257 (2114-2377) | 1772 | 1805 | 1.1 to 0.0 | 3 / 0 / 3 |
+| turtle / hands-on | 2387 (2387-2387) | 2387 (2387-2387) | 2387 | 2387 | 0.5 to 0.1 | 0 / 6 / 0 |
+| miner / hands-on | 3691 (3601-3783) | 3703 (3570-3815) | 2953 | 2963 | 0.4 to 0.0 | 4 / 1 / 1 |
+| raider / hands-on | 2811 (2711-2975) | 2949 (2903-3022) | 2249 | 2360 | 8.2 to 0.0 | 4 / 1 / 1 |
+| explorer / hands-on | 3365 (3145-3582) | 3282 (3025-3598) | 2692 | 2626 | 0.6 to 0.0 | 3 / 0 / 3 |
+| mixed / hands-on | 3041 (2962-3127) | 3025 (2959-3084) | 2433 | 2420 | 5.6 to 0.0 | 2 / 2 / 2 |
+
+"Same" is within 1% of the seat's total before. What moved: the blocked hours, and
+the raider, the personality that puts the largest share into hulls (check-in
+2097 to 2320 with ranges that do not meet, five seats of six up; hands-on 2811 to
+2949 with ranges that touch). Turtles are the same to the point. Every other row is
+inside its spread, the explorer's fall included (four check-in seats down, one up):
+not findings. Check-in as a percent of hands-on, before to after: turtle 73 to 73,
+miner 64 (53-76) to 61 (58-63), raider 75 (69-80) to 79 (75-85), explorer 67 (63-75)
+to 66 (53-74), mixed 73 (68-77) to 75 (69-78).
+
+### Minutes between things a new player can afford
+
+Hands-on seats, after the fix. A purchase is an order that pays; orders within one
+minute count as one. The builder first, then the range over the five personalities.
+"Typical" is the wait a random minute of the window falls in.
+
+| window | purchases an hour | minutes per purchase | typical wait, min | longest wait, min | minutes per building level |
+| --- | --- | --- | --- | --- | --- |
+| first hour | 5.0 (4.0-9.5) | 12 (6-15) | 21 (15-30) | 44 | 12 (7-15) |
+| hours 2 to 6 | 3.6 (2.4-3.6) | 17 (17-25) | 25 (23-29) | 69 | 22 (22-38) |
+| hours 7 to 24 | 2.8 (2.8-3.6) | 22 (17-22) | 39 (24-39) | 112 | 45 (38-49) |
+| day 3 | 1.3 (1.3-2.5) | 45 (24-45) | 143 (47-143) | 218 | 115 (86-115) |
+| day 7 | 0.8 (0.8-1.2) | 71 (50-79) | 236 (117-236) | 399 | 262 (201-332) |
+
+The first hour is not even: the starting stockpile buys four orders in the first
+three and a half minutes (builder, seed 1: Metal Mine 2 at 0:00, Crystal Mine 2 at
+1:00, Metal Mine 3 at 2:00, Crystal Mine 3 at 3:25) and the next come at 21, 42 and
+73 minutes. From the fifth minute to the end of the first day a new player buys
+something every 12 to 25 minutes on average and is typically inside a wait of 20 to
+40. On day three the builder is inside a wait of
+more than two hours half of the time and gets a building level every two hours; the
+pilots, whose hauls and small yard orders fill the gaps, wait about 50 minutes. On
+day seven a building level comes every three and a half to five and a half hours.
+These are the bots' purchases, which save for the planner's best order; a player who
+buys the cheapest thing in reach waits less often and for less.
+
+### The 25% cap
+
+**The rule.** `score = core + min(combat + explore, 0.25 * core)`: `EXTRA_CAP` in
+`sim/src/score.rs` (not in `shared/src/constants.rs`), mirrored by `SCORE_EXTRA_CAP`
+in `sim.py`. A bot benches the wings that fly for points once its bank is 1.2 times
+the cap.
+
+**What it does today** (the week after the fix, 48 field seats).
+- *It is full from the first hour.* The chart of the home sectors outweighs a new
+  empire's core. For a pilot it stays full: 164 to 168 of the week's 168 hours for
+  every hands-on seat. Under standing orders: 77 to 168 hours.
+- *Points come at a steady rate and the core does not.* A pilot earns some 150 to
+  450 raw points on most days of the week while its core goes from 55 to 110 on day
+  1 to 2400 to 3000 on day 7. Raw points over core: 2.4 to 4.9 on day 1, 0.9 to 1.8 on
+  day 3, 0.5 to 1.0 on day 7. A pilot's bank passes a quarter of what its core will
+  be on day 7 between day 1.9 and day 4.4.
+- *So the cap is a flat quarter on top of the core for anyone who flies at all.*
+  Check-in as a share of hands-on is the same number for total and for core, to the
+  point, for four personalities of five (miner 61 against 62). The cap does not
+  separate the two ways of playing; the core does.
+- *Exploration is the supply.* Hands-on: 119 to 160 combat points and 1440 to 2151
+  exploration points on cores of 2360 to 2963. Check-in: 7 to 10 and 494 to 661.
+- *Fleets are out for few hours.* Summed over fleets a pilot's are away from home 7
+  to 34 hours of the week and a check-in empire's 3 to 4: a sortie is minutes, and
+  the tank is what it waits for.
+
+**Options.** Each on seeds 1 to 3, the same 20 seats, mean (min-max over seeds).
+Hard caps of 50 and 75% and no cap were run with the bots playing to them
+(`--cap 0.5`, `--cap 0.75`, `--cap none`); 50 and 75 bracket the point where the cap
+lets go of a check-in empire: with nobody benched a check-in bank ends the week at
+0.31 to 0.72 of core and a pilot's at 0.52 to 0.88. The soft cap counts points in
+full up to a knee and by the square root beyond it, `sqrt(knee * core * points)`:
+four times the points count double. It is scored twice, since no bot can weigh a
+point that is worth a fifth: on the uncapped runs ("flying on": every wing flies all
+week, which is what `--cap soft:0.125` does) and on the capped runs ("stopping":
+wings bench themselves as they do today).
+
+Check-in total as a percent of the same personality hands-on, day 7:
+
+| option | turtle | miner | raider | explorer | mixed |
+| --- | --- | --- | --- | --- | --- |
+| cap 25% (as it is) | 73 (69-80) | 61 (58-63) | 79 (75-85) | 66 (53-74) | 75 (69-78) |
+| cap 50% | 73 (69-80) | 61 (56-69) | 68 (64-74) | 66 (63-68) | 72 (71-74) |
+| cap 75% | 73 (69-80) | 57 (50-62) | 77 (74-79) | 60 (55-67) | 84 (82-87) |
+| no cap | 73 (69-80) | 55 (43-65) | 79 (78-81) | 57 (54-62) | 84 (83-85) |
+| soft 25%, flying on | 73 (69-80) | 60 (47-71) | 86 (83-89) | 61 (57-65) | 82 (80-87) |
+| soft 12.5%, flying on | 73 (69-80) | 61 (48-72) | 87 (84-90) | 61 (57-66) | 82 (80-87) |
+| soft 12.5%, stopping | 73 (69-80) | 58 (56-60) | 70 (67-75) | 61 (49-68) | 67 (61-69) |
+
+Spread between styles: hands-on total as a percent of the hands-on turtle, day 7,
+and who leads on day 2:
+
+| option | miner | raider | explorer | mixed | highest / lowest | day 2: miner / raider / explorer / mixed |
+| --- | --- | --- | --- | --- | --- | --- |
+| cap 25% | 155 (150-160) | 124 (122-127) | 138 (127-151) | 127 (124-129) | 1.55 | 146 / 84 / 103 / 88 |
+| cap 50% | 180 (175-186) | 147 (140-155) | 171 (169-171) | 155 (152-158) | 1.80 | 171 / 101 / 122 / 106 |
+| cap 75% | 186 (180-192) | 136 (135-138) | 203 (196-211) | 146 (141-150) | 2.03 | 201 / 118 / 142 / 123 |
+| no cap | 183 (175-193) | 137 (135-138) | 219 (213-224) | 149 (148-151) | 2.19 | 280 / 186 / 302 / 213 |
+| soft 25%, flying on | 164 (160-170) | 121 (118-124) | 171 (166-176) | 131 (130-131) | 1.71 | 191 / 113 / 147 / 128 |
+| soft 12.5%, flying on | 152 (148-156) | 111 (108-114) | 155 (151-160) | 120 (120-120) | 1.55 | 170 / 100 / 128 / 113 |
+| soft 12.5%, stopping | 156 (150-160) | 131 (128-135) | 146 (134-159) | 136 (133-139) | 1.56 | 162 / 96 / 132 / 100 |
+
+The same for check-in, against the check-in turtle:
+
+| option | miner | raider | explorer | mixed | highest / lowest | day 2: miner / raider / explorer / mixed |
+| --- | --- | --- | --- | --- | --- | --- |
+| cap 25% | 131 (124-140) | 134 (119-148) | 123 (116-136) | 130 (125-136) | 1.34 | 91 / 100 / 89 / 89 |
+| cap 50% | 149 (143-156) | 138 (121-149) | 153 (146-158) | 154 (136-166) | 1.54 | 105 / 121 / 107 / 107 |
+| cap 75% | 146 (138-161) | 144 (133-153) | 168 (164-173) | 169 (154-178) | 1.69 | 101 / 139 / 124 / 121 |
+| no cap | 137 (118-149) | 149 (134-159) | 172 (148-187) | 171 (158-180) | 1.72 | 100 / 146 / 194 / 156 |
+| soft 25%, flying on | 133 (114-143) | 142 (128-149) | 143 (121-155) | 147 (141-152) | 1.47 | 94 / 118 / 121 / 110 |
+| soft 12.5%, flying on | 125 (106-135) | 132 (119-139) | 130 (110-142) | 135 (130-140) | 1.35 | 88 / 108 / 108 / 99 |
+| soft 12.5%, stopping | 125 (120-134) | 127 (113-141) | 120 (112-135) | 124 (120-131) | 1.27 | 90 / 98 / 98 / 91 |
+
+Field hours that earn nothing, hands-on: percent of the fleet-hours away from home
+flown while one more point would not have counted (under a soft cap an hour in
+which a point counts for a fifth is four fifths of an hour here); the share of the
+week's points that never counted; what the points of day 6 added to the score:
+
+| option | miner | raider | explorer | mixed | points that never counted | raw points / core | day 6's points, % of core |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| cap 25% | 100 | 100 | 100 | 100 | 68 (68-69) | 0.80 | 0.0 |
+| cap 50% | 97 (94-100) | 100 | 100 | 100 | 37 (34-39) | 0.79 | 0.6 (0.0-1.3) |
+| cap 75% | 48 (42-57) | 24 (20-28) | 100 | 59 (55-62) | 14 (11-16) | 0.69 | 9.2 (8.5-10.0) |
+| no cap | 0 | 0 | 0 | 0 | 0 | 0.63 | 12.4 (12.2-12.7) |
+| soft 25%, flying on | 74 (74-75) | 70 (70-71) | 80 (80-81) | 75 (74-75) | 38 (37-39) | 0.63 | 3.7 (3.6-3.8) |
+| soft 12.5%, flying on | 82 (81-82) | 79 (79-80) | 86 (86-86) | 82 (82-82) | 56 (55-57) | 0.63 | 2.6 (2.6-2.7) |
+| soft 12.5%, stopping | 82 (81-83) | 84 (82-85) | 89 (89-89) | 82 (82-83) | 61 (60-61) | 0.80 | 3.7 (3.2-4.2) |
+
+The same for check-in:
+
+| option | miner | raider | explorer | mixed | points that never counted | raw points / core | day 6's points, % of core |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| cap 25% | 88 (77-99) | 96 (93-99) | 100 | 100 (99-100) | 21 (17-29) | 0.32 | 2.2 (1.4-3.7) |
+| cap 50% | 34 (28-37) | 36 (32-39) | 100 (99-100) | 92 (84-99) | 11 (9-12) | 0.46 | 7.4 (5.9-9.4) |
+| cap 75% | 15 (10-19) | 16 (12-18) | 95 (93-98) | 45 (36-53) | 0 | 0.50 | 13.3 (12.6-14.0) |
+| no cap | 0 | 0 | 0 | 0 | 0 | 0.50 | 14.2 (11.8-17.0) |
+| soft 25%, flying on | 57 (52-62) | 68 (68-68) | 78 (77-78) | 73 (73-74) | 30 (29-31) | 0.50 | 5.2 (4.4-6.1) |
+| soft 12.5%, flying on | 72 (71-73) | 77 (77-78) | 84 (84-85) | 81 (81-82) | 51 (50-52) | 0.50 | 3.5 (2.9-4.1) |
+| soft 12.5%, stopping | 72 (72-73) | 71 (70-72) | 78 (77-78) | 73 (70-75) | 37 (35-41) | 0.32 | 2.6 (2.1-3.0) |
+
+Standing orders against piloted: counted points plus haul (ore, wrecks, derelict
+loot), check-in as a percent of hands-on. The target is 50 to 70.
+
+| option | miner | raider | explorer | mixed |
+| --- | --- | --- | --- | --- |
+| cap 25% | 42 (41-44) | 58 (56-63) | 47 (38-59) | 53 (47-57) |
+| cap 50% | 44 (37-50) | 47 (44-53) | 53 (49-57) | 63 (61-66) |
+| cap 75% | 35 (31-43) | 61 (54-67) | 50 (44-57) | 90 (85-98) |
+| no cap | 35 (27-45) | 66 (59-72) | 47 (43-51) | 89 (85-93) |
+| soft 25%, flying on | 41 (32-52) | 78 (77-80) | 49 (44-54) | 88 (86-89) |
+| soft 12.5%, flying on | 40 (30-50) | 79 (78-81) | 47 (41-52) | 89 (87-91) |
+| soft 12.5%, stopping | 35 (33-38) | 39 (37-41) | 35 (28-43) | 36 (32-39) |
+
+Day 7 totals and cores behind the tables (mean of seeds; turtle, miner, raider,
+explorer, mixed):
+
+| run | check-in total | check-in core | hands-on total | hands-on core |
+| --- | --- | --- | --- | --- |
+| cap 25% | 1743 / 2272 / 2320 / 2145 / 2257 | 1743 / 1829 / 1864 / 1716 / 1805 | 2387 / 3703 / 2949 / 3282 / 3025 | 2387 / 2963 / 2360 / 2626 / 2420 |
+| cap 50% | 1743 / 2605 / 2384 / 2666 / 2673 | 1743 / 1939 / 1816 / 1778 / 1782 | 2387 / 4306 / 3498 / 4070 / 3695 | 2387 / 2907 / 2332 / 2713 / 2463 |
+| cap 75% | 1743 / 2533 / 2505 / 2926 / 2938 | 1743 / 1948 / 1861 / 1736 / 1779 | 2387 / 4430 / 3254 / 4852 / 3485 | 2387 / 2902 / 2114 / 2773 / 2161 |
+| no cap | 1747 / 2394 / 2595 / 2990 / 2978 | 1746 / 1830 / 1892 / 1738 / 1848 | 2387 / 4377 / 3267 / 5236 / 3561 | 2387 / 2886 / 2104 / 2782 / 2257 |
+
+**What the options say.**
+- *A higher hard cap does not free a pilot until it hands the board to the
+  explorer.* At 50% every pilot is still capped all week (97 to 100% of field hours)
+  and the pilots stand at 147 to 180% of the builder. At 75% the raider is free
+  three quarters of its hours and the miner half, the explorer none, and the
+  explorer is at 203% of the builder (the miner at 201% on day 2). With no cap the
+  explorer ends at 219% and leads day 2 at 302%.
+- *The soft cap with its knee at 12.5% leaves the board where the 25% cap has it*
+  (pilots 111 to 156% of the builder against 124 to 155%; highest over lowest 1.55
+  to 1.56 against 1.55; day 2 a little warmer, 96 to 170% against 84 to 146%) and no
+  hour earns nothing. What an hour earns is small: a pilot's next point is worth 18
+  to 25% of a point on day 7 and 11 to 21% averaged over its field hours, and its
+  day 6 adds 2.6 to 3.7% of core where it adds 0 now and 12.4% uncapped. With the
+  knee at 25% the pilots gain another 10 to 16 points on the builder.
+- *Under any rule without a hard stop, what the gap between check-in and hands-on
+  does depends on whether delegated fleets keep flying.* Flying on, the check-in
+  raider and mixed close to 87 and 82% of the pilot (from 79 and 75; the mixed's
+  ranges do not meet, the raider's overlap by a point); stopping where they stop
+  today they fall to 70 and 67% (ranges that touch today's), because a bank of 0.32
+  of core counts as 0.20 where a pilot's 0.80 counts as 0.32. Miner and explorer
+  stay inside their spread in every row.
+- *Chasing points all week costs a pilot core.* With nothing benched the hands-on
+  raider's core is 2104 (2022-2175) against 2360 (2323-2418) and the mixed's 2257
+  (2256-2258) against 2420 (2367-2467): half the haul (199 and 207 points against
+  359 and 402) for up to twice the deuterium (162 and 165 thousand against 84 and
+  105). Miner and explorer are inside their spread. The "flying on" rows carry that
+  loss; a pilot who stopped when it paid would do better than they show.
+- *Standing orders against piloted* is in or near the 50 to 70 band only under the
+  hard caps of 25 and 50%. Without a stop the patrols of the check-in raider and
+  mixed hunt all week and reach 61 to 90%; miner and explorer stay at 35 to 53%
+  everywhere.
+
+**Something else: a daily allowance** (`score::Meter`, `sim-run --meter <share>`).
+The cap is full by the first hour because points are absolute and the cap is a
+share of a core that grows some thirtyfold in the week: what a pilot banks on days 1
+to 4 covers a quarter of its day-7 core. A meter values a point against the empire of
+the day it is earned. It fills with every point and drains by one allowance (a share
+of core) a day; a point counts in full while the meter stands under one allowance
+and by the square root beyond it, and what it counted is banked for good. This is
+"diminishing returns over a day" from the play-styles decision, as a rule. Measured
+exactly, tick by tick, beside the uncapped runs (the worlds are the uncapped ones to
+the hash; the bots do not play to a meter):
+
+| allowance a day | hands-on, % of builder: miner / raider / explorer / mixed | highest / lowest | day 2 | check-in % of hands-on | pilot hours unpaid | day 6's points, % of core | standing orders against piloted | bonus, % of core: check-in, hands-on |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 5% of core | 128 / 93 / 125 / 100 | 1.37 | 132 / 74 / 94 / 85 | 64 / 90 / 63 / 84 | 88 / 85 / 91 / 88 | 1.6 | 40 / 95 / 40 / 109 | 6-8, 6-7 |
+| 12% | 132 / 96 / 130 / 104 | 1.37 | 139 / 78 / 101 / 90 | 68 / 92 / 63 / 85 | 78 / 73 / 85 / 79 | 2.8 | 56 / 102 / 45 / 111 | 11-17, 9-11 |
+| 20% | 139 / 100 / 134 / 109 | 1.40 | 144 / 81 / 108 / 94 | 69 / 96 / 64 / 86 | 58 / 42 / 80 / 60 | 4.6 | 63 / 120 / 49 / 110 | 18-26, 13-15 |
+| 30% | 149 / 108 / 141 / 118 | 1.49 | 149 / 84 / 114 / 98 | 66 / 93 / 65 / 93 | 33 / 11 / 68 / 36 | 10.0 | 56 / 105 / 55 / 129 | 26-41, 21-24 |
+
+Columns of four are miner / raider / explorer / mixed; the 25% cap reads 155 / 124 /
+138 / 127, 1.55, 146 / 84 / 103 / 88, 61 / 79 / 66 / 75, 100 each, 0.0, 42 / 58 / 47 /
+53. At 30% a day the board is where the cap has it (pilots 108 to 149% of the
+builder, day 2 as calm as today), the unpaid part of a pilot's field hours falls
+from all of them to 11 to 36% for three styles and 68% for the explorer, and a day
+late in the week is worth 10% of core against 12.4% uncapped. It also pays an empire
+that earns steadily more than
+one that earns early: every allowance gives the check-in empire the larger bonus
+(26 to 41% of core against 21 to 24%), the check-in raider and mixed end at 93% of
+their pilots, and their standing orders bring in as much as piloting or more. An
+hourly emulation from the samples reproduces the exact readings within 1.2 points
+of core at these allowances, so other shares can be scanned from the JSON without
+new runs. A first guess, scored after the fact by calendar days, put the pilots 14
+to 26 points of the builder too high; the first three allowances tried (3, 5 and
+8%) leave 88 to 93% of a pilot's points uncounted.
+
+**Recommendation.** If field points are to move a pilot's score all week: the soft
+cap with its knee at 12.5% of core, `core + sqrt(0.125 * core * points)` past the
+knee. It is the one option measured that ends the dead hours and leaves the rest of
+the board alone: the builder keeps its standing against every pilot, no style gains
+on the others, the first days are not handed to whoever charts fastest. It should be
+taken for what it is. It turns a dead zone into a slow one (a fifth to a quarter of
+a point late in the week), it lowers the bonus of an empire that banks little (a
+check-in bank at 0.32 of core counts as 0.20 where the cap gives 0.25), and what it
+does to the check-in gap for raider and mixed, 8 points either way, hangs on a
+decision no bot makes yet: when a discounted point is worth the deuterium. If the
+dead hours are acceptable, the 25% cap needs no change: it is not what separates
+check-in from hands-on (the core is, to the point), and a pilot's hours past it
+still bring home 359 to 627 points of haul a week, 15 to 21% of its core.
+
+**What the soft cap would cost.** `ExtraRule::Soft` is in `score.rs` already;
+making it the game's rule is `ExtraRule::GAME` and the constant, with the bots'
+`points_wanted` given a real stopping rule (a threshold on `next_point` against
+fuel) and a week on three seeds to set it. The same number and sentence in
+`docs/design/economy/sim.py` (`SCORE_EXTRA_CAP`, line 956) and
+`tools/check_sim_constants.py`, `docs/design/economy/spec.md` section 9, a new
+entry in `decisions.md` (the cap "stays at 25%" there by owner decision), two lines
+of `tools/playtest/RULES.md`, `SCORE_RULE` and `bonus_capped` in `play.py`, the doc
+comment on `LeaderboardEntry` in `shared/src/protocol.rs`, README, and three
+assertions in `sim/tests/empire_arc.rs`. No wire message, fixture, schema or save
+format changes: the board already carries core, combat, explore and the server's
+score, and neither client works the cap out for itself. A running season's board
+would change under its players, so it belongs at the start of one.
+
+**If a slow zone is not enough**, the daily allowance at about 30% of core is the
+option that makes late hours worth nearly what they are worth uncapped while the
+board stays put. It is a design decision, not a step: it rewards steady field work,
+so standing orders stop trailing piloting for raider and mixed (93% of the pilot's
+total), which the 50 to 70 target does not want, and it costs what the exchange
+meter cost: two numbers and the banked bonus per player in `Player`, `Snapshot`,
+`PersistBatch` and SQLite, `ECONOMY_VERSION` and the save format up one, the meter
+on the wire with fixtures and the Dart mirror, both clients showing it, the docs
+above, and bots that play to it, which these runs did not have.
+
+**What is noise.** Six seats a style, two to a world, three worlds. A hands-on
+explorer's total ranges 3025 to 3598 over the seeds under one rule and a check-in
+miner's ratio to its pilot 43 to 65% under another. Read as findings: the
+differences between hard caps in the spread and unpaid-hours tables (ranges far
+apart); the soft cap's position between the 25% cap and no cap; the loss of core by
+raider and mixed pilots who fly all week; the check-in mixed closing on its pilot
+without a stop. Not findings: any miner or explorer difference in the check-in
+table; the check-in raider under the 50% cap (68 against 79, ranges 64-74 and 75-85,
+one point apart); differences of a few points between the two soft knees in the
+check-in table.
+
+**Not measured.** Hybrids, persistent pace and blitz. Any option with more than
+three seeds. A planner that queues mines before support buildings when it leaves, or
+that stops flying when a discounted point no longer pays. Humans: the waits and the
+field hours are bots'. The queue-depth runs are builders only. The meters were not
+played to: the bots flew as if uncapped.
+
+**Speed.** The 20-seat week: 579 s on master, 640 to 696 s with the instrument and
+the 25% cap (the probe builds a full state per player every 61 ticks), 752 to 869 s
+with nothing benched. Eight check-in and two hands-on turtles: 12 to 18 s a week.
+
+**Tests.** `sim/tests/bots.rs`: a hands-on raider alone in a season world for half
+a day never has a paid batch waiting on a tech or building that has not started.
+With the planner reading the yard from everything queued again it fails at tick
+28889 (a Pulse Turret paid for while its Defense Grid waits). Nothing was
+re-recorded: the determinism, chart and scenario tests pass as they were, and the
+report additions and `--cap 0.25` leave the 20-seat week on master's snapshot.
