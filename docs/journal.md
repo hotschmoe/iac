@@ -2756,6 +2756,13 @@ bullets); no rule, constant or wire message. Branch
   "NO RAID ANNOUNCED" was cut to "NO RAID ..." on a phone; the "Go to" toast
   outlived the jump; `help` typed away from the Overview showed its first line and
   nothing else.
+- "DOCKED FLEETS ARE SAFE" on the windshield's homeworld contact was not true: a
+  raid that breaks through destroys a quarter of the docked ships (at least one)
+  and, since holds can be loaded, takes its share of a laden one. The card now
+  says what the dock does and what it does not: "A docked fleet refuels and
+  unloads, and nothing in the field reaches it. A raid that breaks through still
+  destroys some docked ships", and for a laden hold that it stays aboard and that
+  the raid takes its share.
 
 **The check.** `solo_e2e.dart` answers the offer from its own button, holds three
 toasts up and fails if one narrows while another leaves, expects the refusal on
@@ -2763,15 +2770,34 @@ screen, pictures every screen at both widths (and the windshield at 1100), and
 loads the page from `http://iac-lan.test` (mapped to this machine) to see the
 missing lock and the sentence about it. Its old wait for the waiting Shipyard
 raced the tab change and failed once here on master's code; it now waits for the
-line it reads.
+line it reads. After the merge of the hold (the entry above) it also presses the
+windshield's Load hold button and `L` in the real page, which the hold's own
+entry lists as not done, and pictures the laden windshield at both widths.
+
+**Merged master** (`2e9d399`, loading a hold) into the branch: two conflicts, the
+check and this file, both kept whole.
 
 **Left for the owner** (layout or taste; pictures in the hand-off). The windshield
-between 980 and 1400 px, where gate cards run under the side columns. Overview
+between 980 and 1400 px, where gate cards run under the side columns, and at any
+width its feed, which runs over the south-west gate card when its lines wrap. Overview
 tiles for buildings and research are off when the stockpile is short, though such
 an order queues. There is no standing-orders panel in the web client: `policy`
 is typed. Toasts cover the order button and, on a phone, the dock. The log keeps
 14 lines and `help` is 13.
 
-**Not verified.** No real phone and no browser but headless Chromium. The
-`ThemeData` assertion an earlier run saw in `order_fit_test` did not come back in
-any run here.
+**The test flake, found and not ours.** `flutter test` fails now and then with a
+whole file red: 3 of 14 full runs here, none of 30 runs of single files. The
+three failures are three different impossible results on doubles, none in client
+code. `TextStyle.apply` asserting `fontSizeFactor == 1.0` false for its own default
+argument, reached from `ThemeData.dark()` through `Typography.material2021` (this
+is the "assertion inside ThemeData" seen before; it fails every test of the file
+once it has happened in that process). `offset.isFinite` in the semantics sort of
+a frame that is the same in every run. `Infinity or NaN toInt` in the scripted
+world's storage estimate. The machine is a CIX P1 (arm64) and the VM Dart 3.12.1;
+the fault is in that pair under load, not in the tests or the widgets. A failed
+file passes when run again. Output kept in the hand-off.
+
+**Not verified.** No real phone and no browser but headless Chromium. The whole
+check was run on the WebAssembly build; on the JavaScript build (`--software`)
+only the load, a new game and the four screens, to see that no font is fetched
+elsewhere there either.
