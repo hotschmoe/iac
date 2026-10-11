@@ -189,6 +189,7 @@ class HelpOverlay extends StatelessWidget {
                         _row('C', 'Collect salvage'),
                         _row('B', 'Board derelict'),
                         _row('R X', 'Recall home, stop'),
+                        _row('T', 'Exchange: quote and trade cargo'),
                         _rule(),
                         _row('Click', 'Map: plan a route'),
                         _row('Shift Click', 'Map: add waypoint'),

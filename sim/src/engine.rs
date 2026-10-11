@@ -32,7 +32,7 @@ use iac_shared::constants::{
     defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
-use iac_shared::world::{self, WorldGen};
+use iac_shared::world::{self, HubService, WorldGen};
 use iac_shared::scaling::{
     self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION, DefenceKind, RatioLabel, ShipyardItem,
@@ -41,6 +41,7 @@ use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
     MovePreview, OreReserve, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
     StorageFullEvent, StorageNearCapEvent, StorageState,
+    ExchangeMeter, ExchangeTerms, ExchangedEvent,
 };
 
 use crate::auth::{self, TokenHash};
@@ -176,6 +177,10 @@ pub struct Player {
     pub explore_points: f32,
     /// Ancient relics found; reserved for the item system.
     pub relics: u32,
+    /// The exchange meter as it read at `exchange_tick`, in weight units. It
+    /// falls between trades: read it through `GameEngine::exchange_meter`.
+    pub exchange_pressure: f64,
+    pub exchange_tick: u64,
 }
 
 /// A queued item holds no resources: it pays when it starts.
@@ -597,6 +602,22 @@ pub struct HomeRoute {
     pub charted: Option<u32>,
     pub direct: u32,
     pub unexplored: bool,
+}
+
+/// A trade worked out against the exchange; see `GameEngine::exchange_deal`.
+#[derive(Debug)]
+pub struct ExchangeDeal {
+    pub terms: ExchangeTerms,
+    /// The exact meter reading the trade leaves.
+    pub pressure_after: f64,
+    pub refusal: Option<ExchangeRefusal>,
+}
+
+/// Why the exchange turns a trade down.
+#[derive(Debug)]
+pub struct ExchangeRefusal {
+    pub code: ErrorCode,
+    pub reason: String,
 }
 
 pub struct GameEngine {
@@ -1548,7 +1569,9 @@ impl GameEngine {
             }
 
             let connections = self.world_gen.connected_neighbors(npc.location);
-            let conns: Vec<Hex> = connections.slice().iter().copied().filter(|c| !world::is_home_ground(*c)).collect();
+            let conns: Vec<Hex> = connections.slice().iter().copied()
+                .filter(|c| !world::is_home_ground(*c) && !world::is_hub(*c))
+                .collect();
             if conns.is_empty() { continue; }
 
             let idx = rng.random_range(0..conns.len());
@@ -2487,6 +2510,8 @@ impl GameEngine {
             combat_points: 0.0,
             explore_points: 0.0,
             relics: 0,
+            exchange_pressure: 0.0,
+            exchange_tick: 0,
         };
 
         self.players.insert(player_id, player);
@@ -2919,6 +2944,146 @@ impl GameEngine {
         }
 
         Err(ErrorCode::InvalidTarget)
+    }
+
+    /// The exact reading, span and window of `player`'s exchange meter now.
+    fn exchange_standing(&self, player: &Player) -> (f64, f64, u64) {
+        let pace = self.world.pace;
+        let span = scaling::exchange_span(&player.production_per_tick(&pace), &pace);
+        let window = scaling::exchange_window(&pace);
+        let elapsed = self.current_tick.saturating_sub(player.exchange_tick);
+        (scaling::exchange_pressure_after(player.exchange_pressure, elapsed, span, window), span, window)
+    }
+
+    /// Where `player`'s meter at the hub's exchange stands this tick.
+    pub fn exchange_meter(&self, player: &Player) -> ExchangeMeter {
+        let (pressure, span, window) = self.exchange_standing(player);
+        exchange_meter_at(pressure, span, window)
+    }
+
+    /// What the exchange would give `fleet_id` for `amount` of `give` (all it
+    /// carries when None), paid in `want`; nothing changes. `Err` when there
+    /// is no trade to work out; a trade that can be worked out but not made
+    /// right now carries the reason in `refusal`.
+    pub fn exchange_deal(
+        &self,
+        player_id: u64,
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        amount: Option<f32>,
+    ) -> Result<ExchangeDeal, ExchangeRefusal> {
+        let refuse = |code: ErrorCode, reason: String| ExchangeRefusal { code, reason };
+        let fleet = self.owned_fleet(player_id, fleet_id)
+            .map_err(|code| refuse(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
+        let player = self.players.get(&player_id)
+            .ok_or_else(|| refuse(ErrorCode::ServerError, "internal server error".to_string()))?;
+        if give == want {
+            return Err(refuse(
+                ErrorCode::InvalidCommand,
+                format!("the exchange trades one resource for another; give and want are both {}", give.label()),
+            ));
+        }
+        let held = fleet.cargo.get(give);
+        let amount = match amount {
+            Some(asked) if asked.is_finite() && asked > 0.0 => asked,
+            Some(_) => {
+                return Err(refuse(ErrorCode::InvalidCommand, "the amount to trade must be a positive number".to_string()));
+            }
+            None if held > 0.0 => held,
+            None => {
+                return Err(refuse(ErrorCode::NoResources, format!(
+                    "fleet {fleet_id} holds no {} to trade (its hold: {:.0} metal, {:.0} crystal, {:.0} deuterium)",
+                    give.label(), fleet.cargo.metal, fleet.cargo.crystal, fleet.cargo.deuterium,
+                )));
+            }
+        };
+
+        let (pressure, span, window) = self.exchange_standing(player);
+        let value = f64::from(amount) * f64::from(give.weight());
+        let par = value / f64::from(want.weight());
+        let receive = (scaling::exchange_return(pressure, value, span) / f64::from(want.weight())).floor().max(0.0);
+        let terms = ExchangeTerms {
+            fleet_id,
+            give,
+            want,
+            amount,
+            receive: receive as f32,
+            par: par as f32,
+            fee: (1.0 - receive / par) as f32,
+            meter: exchange_meter_at(pressure, span, window),
+            meter_after: exchange_meter_at(pressure + value, span, window),
+        };
+
+        let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
+        let aboard = fleet.cargo.total();
+        let after = aboard - amount + terms.receive;
+        let refusal = if fleet.state == FleetStatus::Moving {
+            Some(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is in transit; it can trade once it has arrived")))
+        } else if !world::hub_services(fleet.location).contains(&HubService::Exchange) {
+            Some(refuse(ErrorCode::NotInSector, match world::nearest_hub(fleet.location, HubService::Exchange) {
+                Some(hub) => {
+                    let hexes = Hex::distance(&fleet.location, &hub);
+                    format!(
+                        "fleet {fleet_id} is at {}, {hexes} hex{} from the exchange at the hub {hub}; \
+                         a fleet trades what is in its hold, on the spot",
+                        fleet.location, if hexes == 1 { "" } else { "es" },
+                    )
+                }
+                None => "this world has no exchange".to_string(),
+            }))
+        } else if !Self::fleet_is_free(fleet) {
+            Some(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is busy; it can trade once it is idle")))
+        } else if amount > held {
+            Some(refuse(ErrorCode::NoResources, format!(
+                "fleet {fleet_id} holds {held:.1} {}; it cannot give {amount:.1}", give.label(),
+            )))
+        } else if receive < 1.0 {
+            Some(refuse(ErrorCode::InvalidCommand, format!(
+                "{amount:.1} {} is too little to trade: at a fee of {:.0}% it returns less than one {}",
+                give.label(), terms.meter.fee * 100.0, want.label(),
+            )))
+        } else if terms.receive > amount && after > capacity + 0.01 {
+            Some(refuse(ErrorCode::CargoFull, format!(
+                "{amount:.0} {} returns {receive:.0} {}, and the hold of fleet {fleet_id} has no room for it: \
+                 it carries {aboard:.0} of {capacity:.0} and would carry {after:.0}; trade a smaller amount",
+                give.label(), want.label(),
+            )))
+        } else {
+            None
+        };
+        Ok(ExchangeDeal { terms, pressure_after: pressure + value, refusal })
+    }
+
+    /// Trade at the hub's exchange: the fleet's hold and its owner's meter
+    /// change, nothing else does.
+    pub fn handle_exchange(
+        &mut self,
+        player_id: u64,
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        amount: Option<f32>,
+    ) -> Result<(), ErrorCode> {
+        let (terms, pressure_after) = match self.exchange_deal(player_id, fleet_id, give, want, amount) {
+            Ok(ExchangeDeal { terms, pressure_after, refusal: None }) => (terms, pressure_after),
+            Ok(ExchangeDeal { refusal: Some(refusal), .. }) | Err(refusal) => return Err(refusal.code),
+        };
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        let left = if amount.is_some() { (fleet.cargo.get(give) - terms.amount).max(0.0) } else { 0.0 };
+        *fleet.cargo.get_mut(give) = left;
+        *fleet.cargo.get_mut(want) += terms.receive;
+        let sector = fleet.location;
+        let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
+        player.exchange_pressure = pressure_after;
+        player.exchange_tick = self.current_tick;
+        self.dirty_fleets.insert(fleet_id, ());
+        self.dirty_players.insert(player_id, ());
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Exchanged(ExchangedEvent { sector, terms }),
+        });
+        Ok(())
     }
 
     /// Fuel an emergency jump home would burn: the per-hop cost over the
@@ -5198,6 +5363,23 @@ fn first_startable<T>(
 
 pub fn template_npc_id(coord: Hex) -> u64 {
     TEMPLATE_NPC_ID_BASE + u64::from(coord.to_key())
+}
+
+fn exchange_meter_at(pressure: f64, span: f64, window: u64) -> ExchangeMeter {
+    let clear_in = if pressure <= 0.0 {
+        Some(0)
+    } else if span > 0.0 {
+        Some((pressure / span * window as f64).ceil() as u64)
+    } else {
+        None
+    };
+    ExchangeMeter {
+        pressure: pressure as f32,
+        span: span as f32,
+        fee: scaling::exchange_fee(pressure, span) as f32,
+        window_ticks: window,
+        clear_in,
+    }
 }
 
 /// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.

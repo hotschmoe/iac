@@ -333,6 +333,185 @@ async fn a_killed_server_comes_back_with_the_scan_live_and_the_boarding_under_wa
     remove_db(&db);
 }
 
+/// The hops from `from` to the nearest sector `goal` accepts, over sectors
+/// with no hostile group of their own.
+fn quiet_route(world: &WorldGen, from: Hex, goal: impl Fn(Hex) -> bool) -> Vec<Hex> {
+    let mut parent = std::collections::HashMap::from([(from, from)]);
+    let mut frontier = std::collections::VecDeque::from([(from, 0u8)]);
+    let mut found = None;
+    while let Some((at, hops)) = frontier.pop_front() {
+        if at != from && goal(at) {
+            found = Some(at);
+            break;
+        }
+        if hops == 10 {
+            continue;
+        }
+        for &next in world.connected_neighbors(at).slice() {
+            if world.generate_sector(next).npc_template.is_none() && !parent.contains_key(&next) {
+                parent.insert(next, at);
+                frontier.push_back((next, hops + 1));
+            }
+        }
+    }
+    let mut route = vec![found.expect("such a sector within ten quiet hops")];
+    while *route.last().unwrap() != from {
+        route.push(parent[route.last().unwrap()]);
+    }
+    route.reverse();
+    route.split_off(1)
+}
+
+async fn fly(ws: &mut Ws, fleet: u64, route: &[Hex]) {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    for hop in route.iter().copied() {
+        'hop: loop {
+            command(ws, json!({"action": "move", "fleet_id": fleet, "target": {"q": hop.q, "r": hop.r}})).await;
+            loop {
+                let msg = next_json(ws).await;
+                if msg["type"] == "error" {
+                    assert!(Instant::now() < deadline, "never allowed to move: {msg}");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue 'hop;
+                }
+                if msg["type"] == "tick_update" && hex_of(&msg["fleets"][0]["location"]) == hop && msg["fleets"][0]["state"] != "Moving" {
+                    break 'hop;
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_fleet_flies_its_ore_to_the_hub_trades_it_and_the_meter_outlives_the_server() {
+    use iac_shared::constants::Density;
+    let port = 7910;
+    let db = fresh_db(port);
+    let world = WorldGen::init(DEFAULT_WORLD_SEED);
+    let weight = |kind: &str| if kind == "metal" { 1.0 } else if kind == "crystal" { 1.5 } else { 2.0 };
+
+    let (token, fleet, hub, give, want, gave, got, pressure) = {
+        let _guard = start_server(port, &db);
+        let (mut ws, reply) = login(port, "Trader", None).await;
+        let token = reply["token"].as_str().unwrap().to_string();
+        let state = full_state(&mut ws).await;
+        let fleet = state["fleets"][0]["id"].as_u64().unwrap();
+        let home = hex_of(&state["player"]["homeworld"]);
+        let site = state["world"]["hub"].as_array().unwrap().iter().find(|s| s["services"] == json!(["exchange"])).expect("the world names its exchange");
+        let hub = hex_of(&site["location"]);
+        assert_eq!(hub, Hex::ORIGIN);
+        assert_eq!(state["player"]["exchange"]["pressure"], 0.0, "{state}");
+
+        let seam = quiet_route(&world, home, |at| {
+            let t = world.generate_sector(at);
+            [t.metal_density, t.crystal_density].iter().any(|d| *d as u8 >= Density::Moderate as u8)
+        });
+        fly(&mut ws, fleet, &seam).await;
+        command(&mut ws, json!({"action": "exchange", "fleet_id": fleet, "give": "metal", "want": "crystal"})).await;
+        let early = loop {
+            let msg = next_json(&mut ws).await;
+            if msg["type"] == "error" {
+                break msg;
+            }
+        };
+        assert_eq!(early["code"], "NoResources", "an empty hold has nothing to trade: {early}");
+
+        command(&mut ws, json!({"action": "harvest", "fleet_id": fleet, "resource": "Auto"})).await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let msg = next_json(&mut ws).await;
+            assert!(Instant::now() < deadline, "the seam gave nothing: {msg}");
+            if msg["type"] == "error" {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                command(&mut ws, json!({"action": "harvest", "fleet_id": fleet, "resource": "Auto"})).await;
+            }
+            if msg["type"] != "tick_update" {
+                continue;
+            }
+            let cargo = &msg["fleets"][0]["cargo"];
+            let total: f64 = ["metal", "crystal", "deuterium"].iter().map(|k| cargo[k].as_f64().unwrap()).sum();
+            if total >= 10.0 || (total >= 6.0 && msg["fleets"][0]["state"] != "Harvesting") {
+                break;
+            }
+        }
+        command(&mut ws, json!({"action": "stop", "fleet_id": fleet})).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let cargo = full_state(&mut ws).await["fleets"][0]["cargo"].clone();
+        let give = if cargo["metal"].as_f64().unwrap() >= cargo["crystal"].as_f64().unwrap() { "metal" } else { "crystal" };
+        let want = if give == "metal" { "crystal" } else { "metal" };
+
+        command(&mut ws, json!({"action": "exchange_quote", "fleet_id": fleet, "give": give, "want": want})).await;
+        let afar = loop {
+            let msg = next_json(&mut ws).await;
+            if msg["type"] == "exchange_quote" {
+                break msg;
+            }
+        };
+        assert!(afar["refusal"].as_str().is_some_and(|why| why.contains("from the exchange at the hub")), "{afar}");
+
+        let here = hex_of(&full_state(&mut ws).await["fleets"][0]["location"]);
+        fly(&mut ws, fleet, &quiet_route(&world, here, |at| at == hub)).await;
+
+        command(&mut ws, json!({"action": "exchange_quote", "fleet_id": fleet, "give": give, "want": want})).await;
+        let quote = loop {
+            let msg = next_json(&mut ws).await;
+            assert!(msg["type"] != "error", "{msg}");
+            if msg["type"] == "exchange_quote" {
+                break msg;
+            }
+        };
+        assert!(quote.get("refusal").is_none(), "{quote}");
+        let (gave, got) = (quote["amount"].as_f64().unwrap(), quote["receive"].as_f64().unwrap());
+        assert_eq!(Some(gave), cargo[give].as_f64(), "with no amount, all of it: {quote}");
+        assert!(got >= 1.0 && got.fract() == 0.0, "{quote}");
+        assert!(got * weight(want) <= 0.75 * gave * weight(give), "the exchange keeps at least a quarter: {quote}");
+        assert!(quote["fee"].as_f64().unwrap() >= 0.25 && quote["meter"]["pressure"] == 0.0, "{quote}");
+
+        command(&mut ws, json!({"action": "exchange", "fleet_id": fleet, "give": give, "want": want})).await;
+        let (traded, update) = loop {
+            let msg = next_json(&mut ws).await;
+            assert!(msg["type"] != "error", "{msg}");
+            if let Some(e) = events_of(&msg).into_iter().find(|e| e["kind"] == "Exchanged") {
+                break (e, msg);
+            }
+        };
+        assert_eq!((traded["amount"].as_f64(), traded["receive"].as_f64()), (Some(gave), Some(got)), "the trade is the quote: {traded}");
+        assert_eq!((traded["fleet_id"].as_u64(), hex_of(&traded["sector"])), (Some(fleet), hub));
+        let hold = &update["fleets"][0]["cargo"];
+        assert_eq!(hold[give], 0.0, "{update}");
+        assert!((hold[want].as_f64().unwrap() - cargo[want].as_f64().unwrap() - got).abs() < 0.001, "{update}");
+        let pressure = update["player"]["exchange"]["pressure"].as_f64().unwrap();
+        assert!((pressure - gave * weight(give)).abs() < 0.1, "the meter rose by the weight sold: {update}");
+        assert!(update["player"]["exchange"]["clear_in"].as_u64().unwrap() > 600, "{update}");
+
+        command(&mut ws, json!({"action": "exchange", "fleet_id": fleet, "give": want, "want": want})).await;
+        let refused = loop {
+            let msg = next_json(&mut ws).await;
+            if msg["type"] == "error" {
+                break msg;
+            }
+        };
+        assert_eq!(refused["code"], "InvalidCommand", "{refused}");
+        assert!(refused["message"].as_str().unwrap().contains("give and want are both"), "{refused}");
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        (token, fleet, hub, give, want, gave, got, pressure)
+    };
+
+    let _guard = start_server(port, &db);
+    let (mut ws, reply) = login(port, "Trader", Some(&token)).await;
+    assert_eq!(reply["success"], true, "{reply}");
+    let state = full_state(&mut ws).await;
+    let trader = state["fleets"].as_array().unwrap().iter().find(|f| f["id"] == fleet).expect("the fleet survived the restart");
+    assert_eq!(hex_of(&trader["location"]), hub);
+    assert_eq!(trader["cargo"][give], 0.0, "{trader}");
+    assert!(trader["cargo"][want].as_f64().unwrap() >= got, "{trader}");
+    let meter = &state["player"]["exchange"];
+    let after = meter["pressure"].as_f64().unwrap();
+    assert!(after > 0.9 * pressure && after < pressure, "the meter came back, a little lower: {after} after {pressure} ({gave} {give} sold)");
+    assert!(meter["fee"].as_f64().unwrap() > 0.25, "{meter}");
+    remove_db(&db);
+}
+
 async fn leaderboard(ws: &mut Ws) -> Value {
     command(ws, json!({"action": "leaderboard", "limit": 20})).await;
     loop {

@@ -23,6 +23,7 @@ use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::*;
 use iac_shared::scaling::{BuildingLevels, BuildingType, DefenceKind, RatioLabel, ResearchLevels, ResearchType, ShipyardItem};
+use iac_shared::world::HubService;
 
 // ── Plumbing ──────────────────────────────────────────────────────
 
@@ -388,7 +389,35 @@ fn idle_homeworld() -> HomeworldState {
 }
 
 fn sample_player() -> PlayerState {
-    PlayerState { id: 42, name: "Admiral".into(), resources: res(1200.5, 600.0, 150.25), homeworld: h(4, -2) }
+    PlayerState {
+        id: 42,
+        name: "Admiral".into(),
+        resources: res(1200.5, 600.0, 150.25),
+        homeworld: h(4, -2),
+        exchange: sold_meter(),
+    }
+}
+
+fn empty_meter() -> ExchangeMeter {
+    ExchangeMeter { pressure: 0.0, span: 4185.0, fee: 0.25, window_ticks: 15_364, clear_in: Some(0) }
+}
+
+fn sold_meter() -> ExchangeMeter {
+    ExchangeMeter { pressure: 632.5, span: 4185.0, fee: 0.325, window_ticks: 15_364, clear_in: Some(2322) }
+}
+
+fn sample_terms() -> ExchangeTerms {
+    ExchangeTerms {
+        fleet_id: 3,
+        give: ResourceKind::Metal,
+        want: ResourceKind::Deuterium,
+        amount: 632.5,
+        receive: 225.0,
+        par: 316.25,
+        fee: 0.2885,
+        meter: empty_meter(),
+        meter_after: sold_meter(),
+    }
 }
 
 // ── Exhaustive naming (adding a variant breaks compilation here) ──
@@ -423,6 +452,8 @@ fn command_name(c: &Command) -> &'static str {
         Command::ExploreSite { .. } => "explore_site",
         Command::Split { .. } => "split",
         Command::Merge { .. } => "merge",
+        Command::Exchange { .. } => "exchange",
+        Command::ExchangeQuote { .. } => "exchange_quote",
     }
 }
 
@@ -436,6 +467,7 @@ fn server_message_name(m: &ServerMessage) -> &'static str {
         ServerMessage::PreviewMove(_) => "preview_move",
         ServerMessage::Odds(_) => "odds",
         ServerMessage::Leaderboard(_) => "leaderboard",
+        ServerMessage::ExchangeQuote(_) => "exchange_quote",
     }
 }
 
@@ -467,6 +499,7 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::StorageFull(_) => "storage_full",
         EventKind::ChartDelivered(_) => "chart_delivered",
         EventKind::Queue(_) => "queue",
+        EventKind::Exchanged(_) => "exchanged",
     }
 }
 
@@ -561,6 +594,10 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::ExploreSite { fleet_id: 8 }),
         ("", Command::Split { fleet_id: 9, ship_ids: vec![101, 102] }),
         ("", Command::Merge { fleet_id: 9, other_fleet_id: 10 }),
+        ("", Command::Exchange { fleet_id: 3, give: ResourceKind::Metal, want: ResourceKind::Deuterium, amount: Some(632.5) }),
+        ("whole_hold", Command::Exchange { fleet_id: 3, give: ResourceKind::Crystal, want: ResourceKind::Metal, amount: None }),
+        ("", Command::ExchangeQuote { fleet_id: 3, give: ResourceKind::Deuterium, want: ResourceKind::Crystal, amount: Some(120.0) }),
+        ("whole_hold", Command::ExchangeQuote { fleet_id: 3, give: ResourceKind::Metal, want: ResourceKind::Deuterium, amount: None }),
     ]
 }
 
@@ -744,7 +781,13 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             "empty".into(),
             ServerMessage::FullState(GameState {
                 tick: 0,
-                player: PlayerState { id: 1, name: "New".into(), resources: res(0.0, 0.0, 0.0), homeworld: h(0, 0) },
+                player: PlayerState {
+                    id: 1,
+                    name: "New".into(),
+                    resources: res(0.0, 0.0, 0.0),
+                    homeworld: h(3, 0),
+                    exchange: ExchangeMeter { pressure: 0.0, span: 0.0, fee: 0.75, window_ticks: 5238, clear_in: Some(0) },
+                },
                 fleets: vec![],
                 homeworld: idle_homeworld(),
                 known_sectors: vec![],
@@ -858,6 +901,27 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 LeaderboardEntry { rank: 1, name: "BOT-explorer-2".into(), agent: false, score: 505.0, core: 404.0, combat: 3.5, explore: 310.0 },
                 LeaderboardEntry { rank: 2, name: "BOT-turtle-1".into(), agent: false, score: 96.25, core: 96.25, combat: 0.0, explore: 0.0 },
             ],
+        }),
+    ));
+    v.push(("".into(), ServerMessage::ExchangeQuote(ExchangeQuote { terms: sample_terms(), refusal: None })));
+    v.push((
+        "refused".into(),
+        ServerMessage::ExchangeQuote(ExchangeQuote {
+            terms: ExchangeTerms {
+                give: ResourceKind::Deuterium,
+                want: ResourceKind::Metal,
+                amount: 120.0,
+                receive: 85.0,
+                par: 240.0,
+                fee: 0.6458,
+                meter: ExchangeMeter { pressure: 9000.0, span: 0.0, fee: 0.75, window_ticks: 15_364, clear_in: None },
+                meter_after: ExchangeMeter { pressure: 9240.0, span: 0.0, fee: 0.75, window_ticks: 15_364, clear_in: None },
+                ..sample_terms()
+            },
+            refusal: Some(
+                "fleet 3 is at [3,-2], 3 hexes from the exchange at the hub [0,0]; a fleet trades what is in its hold, on the spot"
+                    .into(),
+            ),
         }),
     ));
     for code in ALL_ERROR_CODES {
@@ -1056,6 +1120,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             points: 25.2,
         })),
         ("", EventKind::ChartDelivered(ChartDeliveredEvent { fleet_id: 1, sectors: 12, points: 0.4 })),
+        ("", EventKind::Exchanged(ExchangedEvent { sector: h(0, 0), terms: sample_terms() })),
         ("started", EventKind::Queue(QueueEvent {
             player_id: Some(7),
             queue_type: QueueType::Building,
@@ -1195,6 +1260,14 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
         ("leaderboard_default_limit", "Command", json!({"action": "leaderboard"})),
         ("auth_without_token", "ClientMessage", json!({"type": "auth", "player_name": "x"})),
         ("bare_auth_result", "ServerMessage", json!({"type": "auth_result", "success": false})),
+        (
+            "player_without_exchange",
+            "ServerMessage",
+            json!({"type": "tick_update", "tick": 9, "fleets": [], "player": {
+                "id": 1, "name": "x", "resources": {"metal": 1.0, "crystal": 2.0, "deuterium": 3.0},
+                "homeworld": {"q": 3, "r": 0}
+            }}),
+        ),
     ]
 }
 
@@ -1332,6 +1405,7 @@ fn generate() -> Files {
         "PolicyPreset": PolicyPreset::ALL,
         "BuildingType": [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer, BuildingType::Shipyard, BuildingType::ResearchLab, BuildingType::FuelDepot, BuildingType::SensorArray, BuildingType::DefenseGrid, BuildingType::StorageVault, BuildingType::Fabricator],
         "ResourceKind": ResourceKind::ALL,
+        "HubService": [HubService::Exchange],
         "ResearchType": [ResearchType::FuelEfficiency, ResearchType::ExtendedFuelTanks, ResearchType::ReinforcedHulls, ResearchType::AdvancedShields, ResearchType::WeaponsResearch, ResearchType::Navigation, ResearchType::HarvestingEfficiency, ResearchType::CorvetteTech, ResearchType::FrigateTech, ResearchType::CruiserTech, ResearchType::HaulerTech, ResearchType::EmergencyJump, ResearchType::ModularFabrication],
         "ErrorCode": ALL_ERROR_CODES,
     });

@@ -120,6 +120,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
       tick: st.tick,
       moves: _moves,
       headings: heads,
+      hub: st.world?.hub ?? const [],
     );
   }
 

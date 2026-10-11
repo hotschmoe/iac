@@ -142,6 +142,11 @@ fn render_sector_view(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         }
     }
 
+    if state.exchange_at(loc) {
+        let rect = Rect::new(inner.x, inner.y + inner.height.saturating_sub(2), inner.width, 1);
+        frame.render_widget(Paragraph::new(" THE HUB: exchange here. [e] quote and trade what is in the hold").style(AMBER_FULL), rect);
+    }
+
     // Keybinds hint
     let kb_y = inner.y + inner.height.saturating_sub(1);
     let rect = Rect::new(inner.x, kb_y, inner.width, 1);
@@ -193,6 +198,9 @@ fn render_sector_view_compact(
         lines.push(Line::raw(" Sector data pending..."));
     }
 
+    if state.exchange_at(fleet.location) {
+        lines.push(Line::raw(" THE HUB: exchange here, [e] to trade"));
+    }
     lines.push(Line::raw(" [1-6] Move  [h] Harvest  [r] Recall"));
     frame.render_widget(Paragraph::new(lines).style(AMBER), inner);
 }
@@ -242,6 +250,9 @@ fn render_sector_info(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         && player.homeworld == fleet.location {
             lines.push(Line::raw(" ** HOMEWORLD **"));
         }
+    if state.exchange_at(fleet.location) {
+        lines.push(Line::styled(" ** THE HUB: EXCHANGE **   [e] trade", AMBER_FULL));
+    }
 
     // Resources
     lines.push(Line::raw("\n RESOURCES"));

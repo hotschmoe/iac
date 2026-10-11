@@ -57,6 +57,7 @@ pub const TIMER_CLASSES: &[(&str, PaceClass)] = &[
     ("EXPLORE_DURATION_TICKS", PaceClass::RealTime),
     ("DERELICT_RESPAWN_TICKS", PaceClass::Finds),
     ("POLICY_EVAL_INTERVAL", PaceClass::RealTime),
+    ("EXCHANGE_WINDOW_TICKS", PaceClass::Attention),
 ];
 
 pub fn timer_class(name: &str) -> Option<PaceClass> {

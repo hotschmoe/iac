@@ -1,0 +1,45 @@
+{
+  "canonical": {
+    "fleets": [],
+    "player": {
+      "exchange": {
+        "fee": 0.0,
+        "pressure": 0.0,
+        "span": 0.0,
+        "window_ticks": 0
+      },
+      "homeworld": {
+        "q": 3,
+        "r": 0
+      },
+      "id": 1,
+      "name": "x",
+      "resources": {
+        "crystal": 2.0,
+        "deuterium": 3.0,
+        "metal": 1.0
+      }
+    },
+    "tick": 9,
+    "type": "tick_update"
+  },
+  "input": {
+    "fleets": [],
+    "player": {
+      "homeworld": {
+        "q": 3,
+        "r": 0
+      },
+      "id": 1,
+      "name": "x",
+      "resources": {
+        "crystal": 2.0,
+        "deuterium": 3.0,
+        "metal": 1.0
+      }
+    },
+    "tick": 9,
+    "type": "tick_update"
+  },
+  "type": "ServerMessage"
+}

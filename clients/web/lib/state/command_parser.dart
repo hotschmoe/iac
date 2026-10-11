@@ -72,6 +72,8 @@ const helpLines = [
   '        policy settings: range=<hexes from home> engage=<least odds ratio> fuel=<% of deuterium income for its fuel, 100 = no bound>',
   '                         cargo=<% hold that sends it home> reserve=<% tank kept spare>   e.g. policy mine range=8 fuel=40',
   '        split <class> [count]  detach ships into a new fleet   merge <fleet id>  fold a fleet in this sector into the active one',
+  'hub:    trade <give> <want> [amount|all]  sell cargo at the exchange   quote <give> <want> [amount|all]  ask first, from anywhere',
+  '        resources: metal|crystal|deut   no amount = all the hold carries   e.g. quote metal deut 400',
   'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw   TAB cycles fleets',
 ];
 
@@ -124,6 +126,21 @@ const _techs = {
   'modfab': ResearchType.modularFabrication,
   'slots': ResearchType.modularFabrication,
 };
+
+const _resources = {
+  'metal': ResourceKind.metal,
+  'm': ResourceKind.metal,
+  'fe': ResourceKind.metal,
+  'crystal': ResourceKind.crystal,
+  'c': ResourceKind.crystal,
+  'cr': ResourceKind.crystal,
+  'deut': ResourceKind.deuterium,
+  'deuterium': ResourceKind.deuterium,
+  'd': ResourceKind.deuterium,
+  'de': ResourceKind.deuterium,
+};
+
+const _tradeUsage = '<metal|crystal|deut> <metal|crystal|deut> [amount|all]  (give, want; no amount = all the hold carries)';
 
 const _policies = {
   'manual': PolicyPreset.manual,
@@ -318,6 +335,21 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
       }
       final target = other.id;
       return ParsedSend([CommandMessage(MergeCommand(fleetId: fid, otherFleetId: target))]);
+
+    case 'trade' || 'quote':
+      final parts = [for (final a in args) if (a != 'for' && a != 'to') a];
+      final give = _resources[parts.elementAtOrNull(0)];
+      final want = _resources[parts.elementAtOrNull(1)];
+      if (give == null || want == null || parts.length > 3) return ParsedError('$verb: $_tradeUsage');
+      if (give == want) return ParsedError('$verb: give and want are both ${give.name}');
+      double? amount;
+      if (parts.length == 3 && parts[2] != 'all') {
+        amount = double.tryParse(parts[2]);
+        if (amount == null || amount <= 0) return ParsedError('$verb: $_tradeUsage');
+      }
+      return needFleet((id) => verb == 'quote'
+          ? ExchangeQuoteCommand(fleetId: id, give: give, want: want, amount: amount)
+          : ExchangeCommand(fleetId: id, give: give, want: want, amount: amount));
 
     case 'p' || 'policy':
       if (fid == null) return const ParsedError('No fleet selected (you have none)');

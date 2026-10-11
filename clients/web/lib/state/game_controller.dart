@@ -83,10 +83,18 @@ class GameController extends ChangeNotifier {
     switch (m) {
       case proto.TickUpdate(:final events):
         for (final e in events ?? const <proto.GameEvent>[]) {
+          if (e.kind is proto.ExchangedEvent) _quoteAsked.clear();
           _events.add(e);
         }
       case proto.GameEvent():
+        if (m.kind is proto.ExchangedEvent) _quoteAsked.clear();
         _events.add(m);
+      case proto.ExchangeQuote(:final terms):
+        if (_quoteTyped.remove((terms.fleetId, terms.give, terms.want))) {
+          for (final line in quoteLines(m).reversed) {
+            _mapper.pushLog(line, EventLevel.bright);
+          }
+        }
       default:
         break;
     }
@@ -364,6 +372,10 @@ class GameController extends ChangeNotifier {
     }
     _oddsTimers.clear();
     _oddsWanted.clear();
+    for (final t in _quoteTimers.values) {
+      t.cancel();
+    }
+    _quoteTimers.clear();
     _retry?.cancel();
     _msgSub?.cancel();
     _statusSub?.cancel();
@@ -698,6 +710,48 @@ class GameController extends ChangeNotifier {
     });
   }
 
+  final Map<TradeKey, Timer> _quoteTimers = {};
+  final Map<TradeKey, (double?,)> _quoteWanted = {};
+  final Map<TradeKey, (int, double?)> _quoteAsked = {};
+  final Set<TradeKey> _quoteTyped = {};
+
+  /// Ask the server what [amount] of [give] would bring [fleetId] in [want]
+  /// at the hub's exchange (`exchange_quote`); without [amount], all the
+  /// hold carries. Debounced, and skipped while a recent (under 3 ticks)
+  /// answer or request for the same trade stands; the answer lands in
+  /// [GameState.quotes].
+  void requestQuote(int fleetId, proto.ResourceKind give, proto.ResourceKind want, {double? amount}) {
+    if (fleetId == 0 || !hasState || !isLive) return;
+    final key = (fleetId, give, want);
+    if (_quoteTimers.containsKey(key)) {
+      if (_quoteWanted[key] == (amount,)) return;
+      _quoteTimers.remove(key)?.cancel();
+    }
+    final asked = _quoteAsked[key];
+    if (asked != null && asked.$2 == amount) {
+      if (!state.quoteNeedsRefresh(fleetId, give, want) || state.tick - asked.$1 < previewRefreshTicks) return;
+    }
+    _quoteWanted[key] = (amount,);
+    _quoteTimers[key] = Timer(previewDebounce, () {
+      _quoteTimers.remove(key);
+      if (_disposed || !isLive) return;
+      _quoteAsked[key] = (state.tick, amount);
+      sendCommand(proto.ExchangeQuoteCommand(fleetId: fleetId, give: give, want: want, amount: amount));
+    });
+  }
+
+  /// Sell [amount] of [give] from the selected fleet's hold at the exchange
+  /// for [want]; without [amount], all of it.
+  void trade(proto.ResourceKind give, proto.ResourceKind want, {double? amount}) {
+    final id = activeFleetId;
+    if (id == null) {
+      note('No fleet to trade with', level: EventLevel.bright);
+      return;
+    }
+    note('> trade ${amount == null ? 'all' : amount.round()} ${give.name} for ${want.name}', level: EventLevel.full);
+    sendCommand(proto.ExchangeCommand(fleetId: id, give: give, want: want, amount: amount));
+  }
+
   /// Windshield: fly the active fleet one hop in [direction] (0-5, same
   /// order as [proto.HexDirection]) if the server lists that lane.
   void moveFleet(int direction) {
@@ -752,6 +806,9 @@ class GameController extends ChangeNotifier {
     switch (result) {
       case ParsedSend(:final messages):
         for (final m in messages) {
+          if (m case proto.CommandMessage(command: proto.ExchangeQuoteCommand q)) {
+            _quoteTyped.add((q.fleetId, q.give, q.want));
+          }
           send(m);
         }
       case ParsedLocal(:final lines):

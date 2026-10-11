@@ -234,6 +234,21 @@ def check_loot(sim, rust):
     check("derelict respawn pace exponent", rust["misc"]["finds_exponent"], sim.DERELICT_PACE_EXP, 1e-6)
 
 
+def check_exchange(sim, rust):
+    for name, want in (
+        ("EXCHANGE_FEE_MIN", sim.EXCHANGE_FEE_MIN), ("EXCHANGE_FEE_MAX", sim.EXCHANGE_FEE_MAX),
+        ("EXCHANGE_METER_SHARE", sim.EXCHANGE_METER_SHARE), ("EXCHANGE_WINDOW_TICKS", sim.EXCHANGE_WINDOW_S),
+    ):
+        check(name, source_const("shared/src/constants.rs", name), want, 1e-9)
+    for row in rust["exchange"]["spans"]:
+        pace = row["pace"]
+        check(f"exchange window at pace {pace}", row["window"], sim.exchange_window(pace), absolute=1)
+        check(f"exchange span of mines 10/9/8 at pace {pace}", row["span"], sim.exchange_span((10, 9, 8), pace), rel=1e-3)
+    for row in rust["exchange"]["returns"]:
+        check(f"exchange return {row['value']} at {row['pressure']} of {row['span']}", row["back"],
+              sim.exchange_return(row["pressure"], row["value"], row["span"]), rel=1e-9, absolute=1e-9)
+
+
 def main():
     sim = load_sim()
     rust = rust_numbers()
@@ -244,13 +259,14 @@ def main():
     check_npc_gradient(sim, rust)
     check_ore(sim, rust)
     check_loot(sim, rust)
+    check_exchange(sim, rust)
     if problems:
         print(f"{len(problems)} mismatch(es) between shared/ and docs/design/economy/sim.py:")
         for p in problems[:60]:
             print("  " + p)
         sys.exit(1)
     print("economy constants agree with sim.py "
-          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient, ore, loot)")
+          f"({len(BUILDINGS)} buildings, {len(RESEARCH)} techs, {len(SHIPS)} ships, {len(DEFENCES)} defences, storage, raids, presets, npc gradient, ore, loot, exchange)")
 
 
 if __name__ == "__main__":

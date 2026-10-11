@@ -54,6 +54,7 @@ class ArenaPainter extends CustomPainter {
     }
     _arena(t);
     if (sim.atHome) _planet(t);
+    if (sim.atExchange) _exchange(t);
     _terrain(t);
     for (final a in sim.ast) {
       _asteroid(a, t);
@@ -345,6 +346,14 @@ class ArenaPainter extends CustomPainter {
     oct.close();
     c.drawPath(oct, Draw.line(_gold, 1, .25 + .3 * pu));
     if (sim.target == 's' || sim.hoverT == 's') Draw.reticle(c, o.dx, o.dy, g.rh * .1, _gold, label: 'SALVAGE');
+  }
+
+  void _exchange(double t) {
+    final o = wp(.38, -.26), hl = sim.target == 'x' || sim.hoverT == 'x';
+    final s = g.rh * .17;
+    Draw.path(c, Sym.hub.outline, o.dx, o.dy, s, sim.reduced ? 0 : t * .04, _gold, 1.3, alpha: hl ? 1 : .85, bloom: bloom);
+    Draw.text(c, 'EXCHANGE', o.dx, o.dy + s * 1.1, T.cond(size: 10, color: _gold.withValues(alpha: .9), spacing: 2), anchor: .5);
+    if (hl) Draw.reticle(c, o.dx, o.dy, s, _gold);
   }
 
   void _derelict(double t) {

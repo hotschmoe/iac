@@ -1,0 +1,23 @@
+{
+  "amount": 120.0,
+  "fee": 0.645799994468689,
+  "fleet_id": 3,
+  "give": "deuterium",
+  "meter": {
+    "fee": 0.75,
+    "pressure": 9000.0,
+    "span": 0.0,
+    "window_ticks": 15364
+  },
+  "meter_after": {
+    "fee": 0.75,
+    "pressure": 9240.0,
+    "span": 0.0,
+    "window_ticks": 15364
+  },
+  "par": 240.0,
+  "receive": 85.0,
+  "refusal": "fleet 3 is at [3,-2], 3 hexes from the exchange at the hub [0,0]; a fleet trades what is in its hold, on the spot",
+  "type": "exchange_quote",
+  "want": "metal"
+}

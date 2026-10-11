@@ -117,6 +117,9 @@ class MapData {
   final Map<int, MapMove> moves;
   final Map<int, proto.Hex> headings;
 
+  /// The hub's sectors and what each offers, as the world names them.
+  final List<proto.HubSite> hub;
+
   MapData({
     required this.sectors,
     required this.signals,
@@ -126,6 +129,7 @@ class MapData {
     required this.tick,
     required this.moves,
     required this.headings,
+    this.hub = const [],
   }) : liveCount = sectors.values.where((s) => s.live).length;
 
   int get staticKey => Object.hash(sectors.length, tick ~/ 15, liveCount, signals.length);

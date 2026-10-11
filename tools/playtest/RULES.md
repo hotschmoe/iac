@@ -105,6 +105,8 @@ can pick up where you left off if your session is restarted.
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit, plus `bots` (same rows, ranked among themselves) when the world has built-in bots |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
+| `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (0,0). The answer is an `Exchanged` event (what was given and received, the fee, the meter before and after; see The hub and its exchange). Refused with nothing changed and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
+| `exchange_quote` | same as `exchange` | do not trade: reply `exchange_quote` with `amount`, `receive`, `par`, `fee`, `meter` and `meter_after`, exactly what `exchange` with the same fields would do (`./play do` prints it as one `quote ...` line). It answers from anywhere and for an amount the fleet does not carry; `refusal` is then the sentence the trade would be refused with right now |
 
 Standing orders are a separate message type (not a command):
 
@@ -415,6 +417,36 @@ What every doctrine does:
   a fleet docked at home scoops it into storage by itself, up to what the
   Vault holds (`SalvageCollected` says what); with no fleet docked, or the
   Vault full, an `Alert` fires once when 60 s are left.
+- **The hub and its exchange** — the sector at the centre, 0,0, is a neutral
+  post: empty space with no ore, no hostile group and no derelict, and no
+  hostile group wanders in. `status` names it on the World line. A fleet
+  standing there trades what is in its hold, one resource for another
+  (`exchange`; ask first with `exchange_quote`, from anywhere). What comes
+  back goes into the same hold and unloads at home like any cargo. The
+  exchange always keeps a fee, so a trade never raises what you own and never
+  touches score: it turns a surplus into what you are short of, at a loss.
+  - Par values are the score weights: metal 1, crystal 1.5, deuterium 2 a
+    unit. Selling counts in weight (units x par).
+  - You have a meter (`status` prints it; `player.exchange` in the full
+    state): the weight you sold and that has not been forgotten yet
+    (`pressure`). The fee on a unit of weight is 25% of par while the meter
+    is empty and rises in a straight line to 75% when it reads `span`, and
+    stays there beyond. A trade pays the fee of every unit it moves the meter
+    through, so one large order and the same order in pieces return the
+    same; `receive` is rounded down to whole units.
+  - `span` is 15% of what your own mines make in one window, in weight, so
+    it grows with your mines; an empire with no mine output pays 75%.
+  - The meter falls by one `span` every `window_ticks` (86400 ticks at pace
+    1, divided by P^0.75), whether you are connected or not. `clear_in` is
+    the ticks until it is empty.
+  - Example, season pace, mines 10/9/8 (`span` 4185): one Hauler's 632 metal
+    is worth 316 deuterium at par. From an empty meter the fee runs from 25%
+    to 33% across the trade, 29% on the whole: 225 deuterium. The same 632
+    sold with the meter above 4185 would bring 79.
+  - A hold is filled in the field (ore, wreckage, derelict loot): no command
+    loads it from the stockpile. What the exchange takes is field cargo,
+    including cargo a full store would not accept (`cargo_blocked`).
+  - Standing orders do not use the exchange.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
   the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2

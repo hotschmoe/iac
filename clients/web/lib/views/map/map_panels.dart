@@ -259,6 +259,7 @@ class LegendPanel extends StatelessWidget {
           _sym((c, s) => Draw.symbol(c, Sym.salvage, s.width / 2, s.height / 2, 7, color: C.a400, lw: 1.8, bloom: false), 'salvage', C.a400),
           _sym((c, s) => Draw.symbol(c, Sym.derelict, s.width / 2, s.height / 2, 8, color: C.rare, lw: 1.6, bloom: false), 'derelict', C.rare, 16),
           _sym((c, s) => Draw.symbol(c, Sym.ore, s.width / 2, s.height / 2, 7, color: C.metal, lw: 1.6, bloom: false), 'ore', C.metal),
+          _sym((c, s) => Draw.symbol(c, Sym.hub, s.width / 2, s.height / 2, 8, color: C.a200, lw: 1.4, bloom: false), 'hub', C.a200, 16),
         ]),
       ]),
     );
@@ -321,6 +322,16 @@ class Inspector extends StatelessWidget {
           const SizedBox(width: 10),
           Flexible(child: Tag(sec == null ? 'Uncharted' : sec.terrain.label)),
         ]),
+        if (st.exchangeAt(h))
+          KeyedSubtree(
+            key: const Key('inspector-hub'),
+            child: _box(
+                'THE HUB. A FLEET HERE TRADES CARGO FOR CARGO AT THE EXCHANGE. YOUR NEXT UNIT PAYS ${(st.exchange.fee * 100).round()}%; '
+                'METER ${st.exchange.pressure.round()} OF ${st.exchange.span.round()}.',
+                C.gold,
+                C.a700,
+                fill: false),
+          ),
         if (sec == null)
           _box('No data. A scout must visit, or a scan from an adjacent sector will reveal it.', C.rare, C.rareDim, fill: false)
         else if (it.live)

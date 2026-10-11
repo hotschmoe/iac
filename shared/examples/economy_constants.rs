@@ -119,6 +119,25 @@ fn main() {
     out.insert("grid_scout_units".into(), json!((0..=8).map(defense_grid_scout_units).collect::<Vec<_>>()));
     out.insert("resource_weight_unit".into(), json!(resource_weight(&iac_shared::Resources { metal: 1000.0, crystal: 1000.0, deuterium: 1000.0 })));
     out.insert("starting_resources".into(), triple(iac_shared::constants::STARTING_RESOURCES));
+    let exchange_spans: Vec<Value> = [1.0, 10.0, 600.0]
+        .iter()
+        .map(|&p| {
+            let pace = Pace::new(p).unwrap();
+            let mines = iac_shared::Resources {
+                metal: production_per_tick(BuildingType::MetalMine, 10, &pace),
+                crystal: production_per_tick(BuildingType::CrystalMine, 9, &pace),
+                deuterium: production_per_tick(BuildingType::DeuteriumSynthesizer, 8, &pace),
+            };
+            json!({"pace": p, "window": exchange_window(&pace), "span": exchange_span(&mines, &pace)})
+        })
+        .collect();
+    let exchange_returns: Vec<Value> = [(0.0, 632.0, 4185.0), (1000.0, 5000.0, 4185.0), (9000.0, 300.0, 4185.0), (0.0, 80.0, 0.0)]
+        .iter()
+        .map(|&(pressure, value, span)| {
+            json!({"pressure": pressure, "value": value, "span": span, "back": exchange_return(pressure, value, span)})
+        })
+        .collect();
+    out.insert("exchange".into(), json!({"spans": exchange_spans, "returns": exchange_returns}));
     out.insert("misc".into(), json!({
         "fuel_deut_per_unit": FUEL_DEUT_PER_UNIT,
         "fuel_rate_per_mass": FUEL_RATE_PER_MASS,

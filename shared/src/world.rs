@@ -35,6 +35,36 @@ pub fn is_home_ground(coord: Hex) -> bool {
     is_home_seat(coord) || coord.neighbors().into_iter().any(is_home_seat)
 }
 
+/// What a sector of the hub offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HubService {
+    /// The NPC exchange: a fleet here trades one resource in its hold for another.
+    Exchange,
+}
+
+/// The neutral post at the centre: its sectors and what each offers. A hub
+/// sector is empty space with no ore, no hostile group and no derelict, and
+/// no hostile group wanders in.
+pub const HUB: &[(Hex, &[HubService])] = &[(Hex::ORIGIN, &[HubService::Exchange])];
+
+/// What `coord` offers as part of the hub; nothing anywhere else.
+pub fn hub_services(coord: Hex) -> &'static [HubService] {
+    HUB.iter().find(|(at, _)| *at == coord).map_or(&[], |(_, services)| *services)
+}
+
+pub fn is_hub(coord: Hex) -> bool {
+    HUB.iter().any(|(at, _)| *at == coord)
+}
+
+/// The hub sector nearest `from` that offers `service`.
+pub fn nearest_hub(from: Hex, service: HubService) -> Option<Hex> {
+    HUB.iter()
+        .filter(|(_, services)| services.contains(&service))
+        .map(|(at, _)| *at)
+        .min_by_key(|at| Hex::distance(at, &from))
+}
+
 /// Seed-based sector generation. Pure function — same inputs always produce same output.
 /// Results are memoised per generator (the map is only ever read at the same
 /// sectors tick after tick), which changes speed and nothing else.
@@ -87,6 +117,18 @@ impl WorldGen {
     }
 
     fn compute_sector(&self, coord: Hex) -> SectorTemplate {
+        if is_hub(coord) {
+            return SectorTemplate {
+                coord,
+                zone: Zone::from_distance(coord.dist_from_origin()),
+                terrain: TerrainType::Empty,
+                metal_density: Density::None,
+                crystal_density: Density::None,
+                deut_density: Density::None,
+                npc_template: None,
+                has_derelict: false,
+            };
+        }
         let seed = self.sector_seed(coord);
         let mut rng = DeterministicRng::new(seed);
         let dist = coord.dist_from_origin();

@@ -1,0 +1,7 @@
+{
+  "action": "exchange",
+  "amount": 632.5,
+  "fleet_id": 3,
+  "give": "metal",
+  "want": "deuterium"
+}

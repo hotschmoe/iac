@@ -87,7 +87,10 @@ TUI basics: `w` windshield / `m` star map / `b` homeworld / `` ` `` command
 center, `?` for all keybinds. In the windshield: `1-6` move, `v` scan,
 `h` harvest, `a` attack, `s` salvage, `r` recall, `S` stop. `p` cycles the
 active fleet's standing orders; `P` steps the fuel budget they are given with
-(10, 20, 35, 50 percent of deuterium income, then no bound).
+(10, 20, 35, 50 percent of deuterium income, then no bound). `e` opens the
+exchange overlay for the active fleet: `g` and `w` pick what to give and
+want, Left/Right the share of the hold, and it shows the server's quote;
+Enter trades when the fleet is at the hub (marked `X` on the star map).
 
 ## Headless / LLM agent mode
 
@@ -100,7 +103,7 @@ cargo run -p iac-client -- --headless --name MyAgent [--token <token>]
 
 - **stdout** — every server message, one JSON object per line: `auth_result`,
   `full_state`, `tick_update` (with `events`), `error`, plus the replies to
-  `preview_move`, `odds` and `leaderboard`. Every `tick_update`
+  `preview_move`, `odds`, `exchange_quote` and `leaderboard`. Every `tick_update`
   carries the complete `fleets` list: a fleet missing from it is gone, and
   `"fleets":[]` means every fleet was lost. A final
   `{"type":"connection_closed"}` is emitted if the server hangs up.
@@ -171,6 +174,8 @@ Example session:
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit. Built-in bots are never in `entries`: when the world has any, `bots` lists them in the same row shape, ranked among themselves, so a rank in `entries` counts humans and AI agents only |
 | `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
+| `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (`full_state.world.hub`). The answer is an `Exchanged` event with what was given and received, the fee and the meter before and after (see The hub and its exchange). Refused with nothing changed, and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
+| `exchange_quote` | same as `exchange` | do not trade: reply `exchange_quote` with `amount`, `receive`, `par`, `fee`, `meter` and `meter_after`, exactly what `exchange` with the same fields would do. It answers from anywhere and for an amount the fleet does not carry; `refusal` is then the sentence the trade would be refused with right now |
 
 Standing orders are a separate message type (not a command):
 
@@ -269,7 +274,11 @@ hotkeys (`1`/`2`/`3` views, numpad 1-6 to move, Esc leaves the bar). It speaks
 the Rust wire protocol over `/ws` on the page's own host and port. Standing
 orders take their settings on the command bar:
 `policy mine range=8 engage=1.5 fuel=40 cargo=85 reserve=10` (any subset;
-`fuel` is `fuel_budget_pct`, 100 for no bound).
+`fuel` is `fuel_budget_pct`, 100 for no bound). At the hub the windshield
+lists the exchange among its contacts; `T` (or the Trade tile) opens the
+exchange panel, which shows the server's quote for the trade picked and
+sends it. `quote metal deut 400` and `trade metal deut 400` do the same from
+the command bar (no amount: all the hold carries).
 
 - `?name=Admiral` skips the name prompt; `?token=...` supplies the account
   token (see "Accounts and tokens"); `?ws=ws://host:port/ws` points at another
@@ -597,6 +606,39 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   a fleet docked at home scoops it into storage by itself, up to what the
   Vault holds (`SalvageCollected` says what); with no fleet docked, or the
   Vault full, an `Alert` fires once when 60 s are left.
+- **The hub and its exchange** — the sector at the centre, `[0,0]`, is a
+  neutral post: empty space with no ore, no hostile group and no derelict,
+  and no hostile group wanders in. `full_state.world.hub` lists it with what
+  it offers (`"services":["exchange"]`). A fleet standing there trades what
+  is in its hold, one resource for another (`exchange`; ask first with
+  `exchange_quote`, from anywhere). What comes back goes into the same hold
+  and unloads at home like any cargo. The exchange always keeps a fee, so a
+  trade never raises what you own and never touches score: it is a way to
+  turn a surplus into what you are short of, at a loss.
+  - Par values are the score weights: metal 1, crystal 1.5, deuterium 2 a
+    unit. Selling counts in weight (units x par).
+  - You have a meter (`player.exchange`): the weight you sold and that has
+    not been forgotten yet (`pressure`). The fee on a unit of weight is 25%
+    of par while the meter is empty and rises in a straight line to 75% when
+    it reads `span`, and stays there beyond. A trade pays the fee of every
+    unit it moves the meter through, so one large order and the same order
+    in pieces return the same; `receive` is rounded down to whole units.
+  - `span` is 15% of what your own mines make in one window, in weight, so
+    it grows with your mines; an empire with no mine output pays 75%.
+  - The meter falls by one `span` every `window_ticks` (86400 ticks at pace
+    1, divided by P^0.75: about 4.3 h at season, 12 min at blitz), online or
+    not. `clear_in` is the ticks until it is empty.
+  - Example, season pace, mines 10/9/8 (`span` 4185): one Hauler's 632 metal
+    is 632 weight, worth 316 deuterium at par. From an empty meter the fee
+    runs from 25% to 33% across the trade, 29% on the whole: 225 deuterium.
+    The meter then reads 632 and is empty again in 39 minutes. The same 632
+    sold with the meter above 4185 would bring 79.
+  - A hold is filled in the field (ore, wreckage, derelict loot): no command
+    loads it from the stockpile. What the exchange takes is therefore field
+    cargo, including cargo a full store would not accept (`cargo_blocked`).
+  - The four numbers (25%, 75%, 15%, the window) are provisional.
+  - Standing orders do not use the exchange, and the built-in bots do not
+    either.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
   the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2

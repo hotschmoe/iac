@@ -237,6 +237,11 @@ fn classify_hex(state: &ClientState, coord: Hex) -> HexCell {
             return HexCell { symbol: "H", style: AMBER_FULL };
         }
 
+    // The hub: known to every player, charted or not.
+    if state.world.as_ref().is_some_and(|w| w.hub.iter().any(|site| site.location == coord)) {
+        return HexCell { symbol: "X", style: AMBER_FULL };
+    }
+
     // Known sector: live intel renders at full heat, memory fades.
     if let Some(sector) = state.known_sectors.get(&key) {
         let cell = classify_known(sector);
@@ -341,7 +346,7 @@ fn render_map_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
 
     // Line 3: legend.
     frame.render_widget(
-        Paragraph::new(" @You AFleet HHome 1-9 Hostile(threat) $Salvage DDerelict %OrePing ?Anomaly ·Fog  bright=live dim=memory")
+        Paragraph::new(" @You AFleet HHome XHub(exchange) 1-9 Hostile(threat) $Salvage DDerelict %OrePing ?Anomaly ·Fog  bright=live dim=memory")
             .style(AMBER_DIM),
         rows[2],
     );

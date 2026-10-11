@@ -3,7 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{Density, ResourceKind, Resources, ShipClass, ShipStats, Zone};
+use crate::constants::{
+    Density, ResourceKind, Resources, ShipClass, ShipStats, Zone, EXCHANGE_FEE_MAX, EXCHANGE_FEE_MIN,
+    EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS,
+};
 use crate::pace::Pace;
 
 pub const MAX_BUILDING_LEVEL: u8 = 20;
@@ -823,7 +826,59 @@ impl ShipyardItem {
 /// How much a bundle of resources counts toward score and raid sizing:
 /// crystal and deuterium are scarcer than metal.
 pub fn resource_weight(r: &Resources) -> f32 {
-    (r.metal + 1.5 * r.crystal + 2.0 * r.deuterium) / 1000.0
+    (ResourceKind::Metal.weight() * r.metal
+        + ResourceKind::Crystal.weight() * r.crystal
+        + ResourceKind::Deuterium.weight() * r.deuterium)
+        / 1000.0
+}
+
+// ── The hub exchange ─────────────────────────────────────────────
+//
+// The exchange and each player's meter count in weight units: a unit of a
+// resource at its `ResourceKind::weight`. Selling raises the seller's meter
+// by the weight sold; the fee on each unit of weight rises with the meter,
+// from `EXCHANGE_FEE_MIN` when it is empty to `EXCHANGE_FEE_MAX` at one span,
+// and a trade pays the fee of every unit it moves the meter through, so an
+// order split into pieces returns what the whole order would.
+
+/// One exchange window at this pace, in ticks.
+pub fn exchange_window(pace: &Pace) -> u64 {
+    pace.attention_ticks(EXCHANGE_WINDOW_TICKS as f64)
+}
+
+/// The span of a player's meter, in weight units: `EXCHANGE_METER_SHARE` of
+/// what mines making `production` a tick turn out in one window.
+pub fn exchange_span(production: &Resources, pace: &Pace) -> f64 {
+    let per_tick: f64 = ResourceKind::ALL.into_iter().map(|k| f64::from(production.get(k)) * f64::from(k.weight())).sum();
+    EXCHANGE_METER_SHARE * per_tick * exchange_window(pace) as f64
+}
+
+/// The fee on the next unit of weight sold with the meter at `pressure`.
+pub fn exchange_fee(pressure: f64, span: f64) -> f64 {
+    let rise = if span > 0.0 { (pressure / span).clamp(0.0, 1.0) } else { 1.0 };
+    EXCHANGE_FEE_MIN + (EXCHANGE_FEE_MAX - EXCHANGE_FEE_MIN) * rise
+}
+
+/// Weight handed back in all for selling from an empty meter up to `pressure`.
+fn exchange_kept(pressure: f64, span: f64) -> f64 {
+    let ramp = pressure.min(span).max(0.0);
+    let on_ramp = if span > 0.0 {
+        (1.0 - EXCHANGE_FEE_MIN) * ramp - (EXCHANGE_FEE_MAX - EXCHANGE_FEE_MIN) * ramp * ramp / (2.0 * span)
+    } else {
+        0.0
+    };
+    on_ramp + (1.0 - EXCHANGE_FEE_MAX) * (pressure - ramp)
+}
+
+/// Weight the exchange hands back for `value` weight sold with the meter at
+/// `pressure`: never more than `1 - EXCHANGE_FEE_MIN` of it.
+pub fn exchange_return(pressure: f64, value: f64, span: f64) -> f64 {
+    exchange_kept(pressure + value, span) - exchange_kept(pressure, span)
+}
+
+/// The meter `elapsed` ticks after it read `pressure`: it forgets one span per window.
+pub fn exchange_pressure_after(pressure: f64, elapsed: u64, span: f64, window: u64) -> f64 {
+    (pressure - span * elapsed as f64 / window as f64).max(0.0)
 }
 
 /// Points for every completed building and research level, at the cost paid.

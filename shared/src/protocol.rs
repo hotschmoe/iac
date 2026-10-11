@@ -10,6 +10,7 @@ use crate::scaling::{
 };
 use crate::hex::Hex;
 use crate::pace::Pace;
+use crate::world::{HubService, HUB};
 use crate::Resources;
 
 // ── Client → Server Messages ──────────────────────────────────────
@@ -171,6 +172,36 @@ pub enum Command {
     /// This works anywhere, so a fresh fleet can rescue a stranded one.
     #[serde(rename = "merge")]
     Merge { fleet_id: u64, other_fleet_id: u64 },
+    /// Sell `amount` units of `give` from the hold of `fleet_id` to the hub's
+    /// exchange and take `want` into the hold; without `amount`, all of
+    /// `give` the fleet carries. The fleet must stand idle on a hub sector
+    /// that offers the exchange (`WorldInfo.hub`). The answer is an
+    /// `Exchanged` event; see `ExchangeTerms` for the rate. Refused, with
+    /// nothing changed, when the fleet is elsewhere (`NotInSector`) or busy
+    /// (`OnCooldown`), holds less than `amount` or none (`NoResources`),
+    /// would get back less than one unit, names one resource twice or an
+    /// `amount` that is not positive (`InvalidCommand`), or the trade would
+    /// overfill the hold (`CargoFull`).
+    #[serde(rename = "exchange")]
+    Exchange {
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        amount: Option<f32>,
+    },
+    /// Ask what `exchange` with the same fields would give, without trading.
+    /// The reply is an `exchange_quote` message. It answers for a fleet
+    /// anywhere and for an `amount` the fleet does not carry: `refusal` then
+    /// says why the trade itself would be refused right now.
+    #[serde(rename = "exchange_quote")]
+    ExchangeQuote {
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        amount: Option<f32>,
+    },
 }
 
 fn default_ship_count() -> u16 {
@@ -314,6 +345,71 @@ pub enum ServerMessage {
     Odds(FleetOdds),
     #[serde(rename = "leaderboard")]
     Leaderboard(LeaderboardReply),
+    #[serde(rename = "exchange_quote")]
+    ExchangeQuote(ExchangeQuote),
+}
+
+/// One trade at the hub's exchange, quoted or made: `amount` of `give` for
+/// `receive` of `want`.
+///
+/// The exchange trades resource for resource and always keeps a fee, so a
+/// trade never raises what the player owns. Par values are the score
+/// weights: metal 1, crystal 1.5, deuterium 2 a unit. Each player has a
+/// meter that counts the weight they sold (`ExchangeMeter`). The fee on a
+/// unit of weight is 25 percent of par while the meter is empty and rises in
+/// a straight line to 75 percent when it reads `span`, and stays there
+/// beyond. A trade pays the fee of every unit it moves the meter through,
+/// so one large order and the same order in pieces return the same;
+/// `receive` is rounded down to whole units. The meter falls by one `span`
+/// every `window_ticks`, whether or not the player is connected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExchangeTerms {
+    pub fleet_id: u64,
+    pub give: ResourceKind,
+    pub want: ResourceKind,
+    /// Units of `give` handed over.
+    pub amount: f32,
+    /// Units of `want` that come back: whole units, rounded down.
+    pub receive: f32,
+    /// Units of `want` the same `amount` is worth at par, with no fee.
+    pub par: f32,
+    /// The share of par the exchange keeps on this trade, `1 - receive / par`.
+    pub fee: f32,
+    /// The player's meter before the trade.
+    pub meter: ExchangeMeter,
+    /// And after it.
+    pub meter_after: ExchangeMeter,
+}
+
+/// A player's standing at the exchange.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExchangeMeter {
+    /// Weight sold and not yet forgotten.
+    pub pressure: f32,
+    /// The pressure at which the fee stops rising: 15 percent of what the
+    /// player's own mines make in one window, in weight units. It grows
+    /// with the mines; 0 for an empire with no mine output, which pays the
+    /// top fee.
+    pub span: f32,
+    /// The fee on the next unit of weight sold, 0.25 to 0.75.
+    pub fee: f32,
+    /// The meter forgets one `span` every this many ticks.
+    pub window_ticks: u64,
+    /// Ticks until the meter is empty again; 0 when it is, absent when it
+    /// does not fall (`span` is 0).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub clear_in: Option<u64>,
+}
+
+/// Answer to `exchange_quote`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExchangeQuote {
+    #[serde(flatten)]
+    pub terms: ExchangeTerms,
+    /// Why `exchange` with the same fields would be refused right now;
+    /// absent when it would go through.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refusal: Option<String>,
 }
 
 /// The score table: one ranking for every player, human or agent.
@@ -523,6 +619,17 @@ pub struct WorldInfo {
     /// Simulation estimate for a competent player; present for presets.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub estimate: Option<WorldEstimate>,
+    /// The neutral post at the centre of the map: every hub sector and what
+    /// it offers. A hub sector has no ore, no hostile group and no derelict.
+    #[serde(default)]
+    pub hub: Vec<HubSite>,
+}
+
+/// One sector of the hub.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HubSite {
+    pub location: Hex,
+    pub services: Vec<HubService>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -544,6 +651,10 @@ impl WorldInfo {
                 first_cruiser_s: p.first_cruiser_s,
                 endgame_s: p.endgame_s,
             }),
+            hub: HUB
+                .iter()
+                .map(|(location, services)| HubSite { location: *location, services: services.to_vec() })
+                .collect(),
         }
     }
 }
@@ -556,6 +667,9 @@ pub struct PlayerState {
     pub name: String,
     pub resources: Resources,
     pub homeworld: Hex,
+    /// Where the player's meter at the hub's exchange stands this tick.
+    #[serde(default)]
+    pub exchange: ExchangeMeter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1274,6 +1388,16 @@ pub enum EventKind {
     StorageFull(StorageFullEvent),
     ChartDelivered(ChartDeliveredEvent),
     Queue(QueueEvent),
+    Exchanged(ExchangedEvent),
+}
+
+/// A fleet traded at the hub's exchange: what it gave, what it got, the fee
+/// and where the player's meter now stands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangedEvent {
+    pub sector: Hex,
+    #[serde(flatten)]
+    pub terms: ExchangeTerms,
 }
 
 /// What happened to a queue order.

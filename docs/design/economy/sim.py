@@ -235,6 +235,26 @@ LOOT_WEIGHT = 0.55 * W_RES[0] + 0.30 * W_RES[1] + 0.15 * W_RES[2]   # weight per
 def wv(c):
     return (c[0] * W_RES[0] + c[1] * W_RES[1] + c[2] * W_RES[2]) / 1000.0
 
+# hub exchange (provisional: the owner has not signed off on these four numbers)
+EXCHANGE_FEE_MIN = 0.25      # fee on a unit of weight sold with an empty meter, as a share of par (W_RES)
+EXCHANGE_FEE_MAX = 0.75      # fee once the meter reads one span or more
+EXCHANGE_METER_SHARE = 0.15  # span = this share of the player's mine output over one window, in weight
+EXCHANGE_WINDOW_S = 86400.0  # window at pace 1; scaled by P**0.75 (attention class); the meter forgets a span per window
+def exchange_window(P):
+    return EXCHANGE_WINDOW_S / P ** 0.75
+def exchange_span(mine_levels, P):
+    """Span of the meter for mines at (metal, crystal, deut) levels, in weight units."""
+    per_hour = sum(w * PROD_BASE[k] * lv * PROD_GROWTH ** lv
+                   for w, k, lv in zip(W_RES, ('metal', 'crystal', 'deut'), mine_levels))
+    return EXCHANGE_METER_SHARE * per_hour * P / 3600.0 * exchange_window(P)
+def exchange_return(pressure, value, span):
+    """Weight handed back for `value` weight sold with the meter at `pressure`: the fee integrated over the trade."""
+    def kept(x):
+        ramp = min(x, span)
+        on_ramp = (1.0 - EXCHANGE_FEE_MIN) * ramp - (EXCHANGE_FEE_MAX - EXCHANGE_FEE_MIN) * ramp * ramp / (2.0 * span) if span > 0 else 0.0
+        return on_ramp + (1.0 - EXCHANGE_FEE_MAX) * (x - ramp)
+    return kept(pressure + value) - kept(pressure)
+
 # =====================================================================
 # 2. PACING PRESETS
 # =====================================================================

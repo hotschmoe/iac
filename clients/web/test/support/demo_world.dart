@@ -448,10 +448,111 @@ class DemoWorld {
         fleets: [for (final f in _fleets) _norm(f)],
         homeworld: _hw,
         knownSectors: _knownSectors(),
-        world: const WorldInfo(pace: _pace, preset: 'persistent', tickHz: 1, economyVersion: 2, worldgenVersion: 2),
+        world: const WorldInfo(
+          pace: _pace,
+          preset: 'persistent',
+          tickHz: 1,
+          economyVersion: 2,
+          worldgenVersion: 2,
+          hub: [HubSite(location: Hex.origin, services: [HubService.exchange])],
+        ),
       );
 
-  PlayerState _player() => PlayerState(id: _playerId, name: 'Demo', resources: _resources, homeworld: _home);
+  PlayerState _player() =>
+      PlayerState(id: _playerId, name: 'Demo', resources: _resources, homeworld: _home, exchange: _meter(_pressureNow));
+
+  // ── Exchange (shared/src/scaling.rs, at pace 1) ───────────────
+
+  static const _exchangeWindow = 86400;
+  double _pressure = 0;
+  int _pressureTick = 0;
+
+  double get _span {
+    final p = _hw.production;
+    return .15 * _exchangeWindow * (p.metal + 1.5 * p.crystal + 2 * p.deuterium);
+  }
+
+  double get _pressureNow => max(0.0, _pressure - _span * (_tick - _pressureTick) / _exchangeWindow);
+
+  ExchangeMeter _meter(double pressure) {
+    final span = _span;
+    return ExchangeMeter(
+      pressure: pressure,
+      span: span,
+      fee: span > 0 ? .25 + .5 * min(1.0, pressure / span) : .75,
+      windowTicks: _exchangeWindow,
+      clearIn: pressure <= 0 ? 0 : (span > 0 ? (pressure / span * _exchangeWindow).ceil() : null),
+    );
+  }
+
+  double _kept(double pressure) {
+    final span = _span;
+    final ramp = min(pressure, span);
+    final onRamp = span > 0 ? .75 * ramp - .5 * ramp * ramp / (2 * span) : 0.0;
+    return onRamp + .25 * (pressure - ramp);
+  }
+
+  List<ServerMessage> _exchange(int fleetId, ResourceKind give, ResourceKind want, double? amount, {required bool quote}) {
+    final f = _find(fleetId);
+    if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+    if (give == want) {
+      return [_err(ErrorCode.invalidCommand, 'the exchange trades one resource for another; give and want are both ${give.name}')];
+    }
+    final held = give.of(f.cargo);
+    final offered = amount ?? held;
+    if (offered <= 0) return [_err(ErrorCode.noResources, 'fleet $fleetId holds no ${give.name} to trade')];
+    final before = _pressureNow;
+    final value = offered * give.weight;
+    final receive = ((_kept(before + value) - _kept(before)) / want.weight).floorToDouble();
+    final par = value / want.weight;
+    final terms = ExchangeTerms(
+      fleetId: fleetId,
+      give: give,
+      want: want,
+      amount: offered,
+      receive: receive,
+      par: par,
+      fee: 1 - receive / par,
+      meter: _meter(before),
+      meterAfter: _meter(before + value),
+    );
+    final hexes = Hex.distance(f.location, Hex.origin);
+    ErrorMessage? refused;
+    if (hexes > 0) {
+      refused = ErrorMessage(
+          code: ErrorCode.notInSector,
+          message: 'fleet $fleetId is at ${f.location}, $hexes hex${hexes == 1 ? '' : 'es'} from the exchange at the hub ${Hex.origin}; '
+              'a fleet trades what is in its hold, on the spot');
+    } else if (offered > held) {
+      refused = ErrorMessage(
+          code: ErrorCode.noResources,
+          message: 'fleet $fleetId holds ${held.toStringAsFixed(1)} ${give.name}; it cannot give ${offered.toStringAsFixed(1)}');
+    } else if (receive < 1) {
+      refused = ErrorMessage(code: ErrorCode.invalidCommand, message: '${offered.toStringAsFixed(1)} ${give.name} is too little to trade');
+    } else if (receive > offered && f.cargo.total - offered + receive > f.cargoCapacity) {
+      refused = ErrorMessage(
+          code: ErrorCode.cargoFull,
+          message: '${offered.round()} ${give.name} returns ${receive.round()} ${want.name}, and the hold of fleet $fleetId has no room for it');
+    }
+    if (quote) return [ExchangeQuote(terms: terms, refusal: refused?.message)];
+    if (refused != null) return [refused];
+    double after(ResourceKind k) => k.of(f.cargo) - (k == give ? offered : 0) + (k == want ? receive : 0);
+    _setFleet(_copy(f,
+        cargo: Resources(metal: after(ResourceKind.metal), crystal: after(ResourceKind.crystal), deuterium: after(ResourceKind.deuterium))));
+    _pressure = before + value;
+    _pressureTick = _tick;
+    _ev(ExchangedEvent(sector: f.location, terms: terms));
+    return [_tickUpdate()];
+  }
+
+  /// Put [fleetId] at [at] with [cargo] aboard, for a test that needs a
+  /// fleet somewhere the scripted layout does not reach.
+  void place(int fleetId, Hex at, Resources cargo) {
+    final f = _find(fleetId)!;
+    _stopActivities(f);
+    _setFleet(_copy(f, location: at, state: FleetStatus.idle, cargo: cargo, cooldown: 0));
+    _reveal(at, 0);
+  }
 
   void start() {
     _timer?.cancel();
@@ -1898,6 +1999,10 @@ class DemoWorld {
           ),
         ));
         return [_tickUpdate()];
+      case ExchangeCommand(:final fleetId, :final give, :final want, :final amount):
+        return _exchange(fleetId, give, want, amount, quote: false);
+      case ExchangeQuoteCommand(:final fleetId, :final give, :final want, :final amount):
+        return _exchange(fleetId, give, want, amount, quote: true);
       case LeaderboardCommand(:final limit):
         const rows = [
           LeaderboardEntry(rank: 1, name: 'Vega', agent: true, score: 14.2, core: 12.8, combat: 1.4, explore: 0),

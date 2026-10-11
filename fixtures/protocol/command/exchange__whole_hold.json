@@ -1,0 +1,6 @@
+{
+  "action": "exchange",
+  "fleet_id": 3,
+  "give": "crystal",
+  "want": "metal"
+}

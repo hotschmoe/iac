@@ -2056,3 +2056,89 @@ recording is unchanged.
 key are compiled and analysed, not driven; `play.py` is syntax-checked (the harness
 is on hold). Persistent pace and blitz were not measured. The uncapped comparison is
 one seed.
+
+## 2026-10-11: the hub and its exchange
+
+Owner decision (decisions.md, "the hub, PvP by zone, outposts, more worlds"): a
+neutral post at the centre with an NPC exchange that is a surplus sink, never a
+faucet, with a per-player rate that worsens with use and recovers, and no hard cap.
+The numbers are the proposal of `starting-positions-2026-10-10.md` section 6.3, which
+the owner has not signed off: four constants in `shared/src/constants.rs`
+(`EXCHANGE_FEE_MIN` 0.25, `EXCHANGE_FEE_MAX` 0.75, `EXCHANGE_METER_SHARE` 0.15,
+`EXCHANGE_WINDOW_TICKS` 86400, attention class), mirrored in `sim.py` and checked by
+`check_sim_constants.py`. Branch `worktree-agent-aecb404c2c2075d43`, not merged.
+
+**The rule.** A fleet standing idle on the hub sector sells one resource from its hold
+and takes another into the same hold. Par is the score weight (`ResourceKind::weight`,
+which `resource_weight` now reads too). Each player has a meter in weight units: two
+numbers on the `Player` row, the reading and the tick it was read, so it costs nothing
+per tick. The fee on a unit of weight is 25% with the meter empty, rises in a straight
+line to 75% at one span and is flat beyond; a trade pays the integral
+(`scaling::exchange_return`), so an order in pieces returns what the whole order would.
+The span is 15% of one window of the player's own mine output; the meter falls one
+span per window. The receipt is rounded down to whole units, which is the only place
+an order in pieces can differ, and only downward.
+
+**Choices made here, for the owner to confirm.**
+- *The hub is data.* `world::HUB` lists hub sectors with their services (one sector,
+  one service today) and goes out in `WorldInfo.hub`; nothing tests for the origin. A
+  hub sector generates as empty space with no ore, group or derelict, which the origin
+  already was, so no sector changed and `WORLDGEN_VERSION` stands. Patrols no longer
+  jump into a hub sector; with nothing to attack and nothing wandering in, there is no
+  fight there.
+- *A trade that would not fit is refused*, not trimmed, with the numbers. Only
+  deuterium for metal and crystal for metal can grow the load.
+- *Refused too:* a fleet elsewhere or in transit, more than the hold carries, an empty
+  hold, one resource named twice, an amount that is not positive, and a trade that
+  returns less than one unit. Every refusal is a sentence from one place
+  (`GameEngine::exchange_deal`), which the quote, the error and the tests all read.
+- *The quote answers from anywhere* and for an amount the fleet does not carry, with
+  the reason the trade itself would be refused now. A player decides at home whether
+  the trip pays.
+- *The answer to a trade is an event* (`Exchanged`), like the answer to a queue order,
+  carrying the terms and the meter before and after; `PlayerState.exchange` carries
+  the meter every tick.
+- *The meter falls at the rate of the mines the player has now.* A mine finished
+  between two trades speeds up the whole interval. Settling the meter at each mine
+  completion would be exact; it would also put exchange code in the queue handlers.
+- *No standing order trades, and the bots do not either.* A pilot that flies to the
+  hub by the chart, with odds for every hop and cargo the store refused, is not a
+  small addition to `bot/field.rs`.
+
+**What it does not do.** Nothing loads a hold from the stockpile. The exchange
+therefore takes field cargo only: ore, wreckage, derelict loot, and cargo a full store
+would not accept. Mine output lost at the cap still has no way out. A `load` command
+needs a rule for cargo that must stay aboard at the dock, where every hold unloads each
+tick; that is a decision, not a detail. A new empire's span is small (144 weight at
+season pace with two level-1 mines), so its first hold already pays about half.
+A sector in sight with nobody in it is still rated at its ring's group, the hub
+included: previews and doctrines see T1 odds at a place where nothing can fight.
+
+**Clients.** Web: the hub is drawn on the map from `WorldInfo.hub` and the inspector
+says what the next unit would pay; in the windshield the exchange is a contact and a
+station in the scene, `T` or the Trade tile opens a panel that asks the server for a
+quote on every change and sends the trade (it never computes a rate), and `quote` and
+`trade` work from the command bar. TUI: `e` opens an overlay that does the same, the
+hub is `X` on the star map. Headless: the two commands and their replies pass through
+unchanged. `play.py` prints quotes, trades and the meter.
+
+**Tests.** `sim/tests/exchange.rs`: a Hauler flies 632 metal to the hub and gets the
+quoted 225 deuterium; a seeded run of trades with waits between never returns more
+than 75% of the weight given and never moves the score; four orders in pieces against
+the whole order; the meter falls one span per window, is written with the player's
+row, and comes back identical from a JSON snapshot; every refusal with its sentence;
+the hub empty on six seeds and over 200 patrol jumps from its neighbours that never
+enter it (the last one fails with the rule switched off). `server/tests/scenarios.rs`: a
+real client harvests, is quoted from afar, flies to the hub, trades over the
+WebSocket, and after the server is killed and restarted the meter and the hold are as
+they were. Flutter: fixtures for every new shape, the panel at 1440 and 390 with long
+numbers and a long refusal, the trade against the scripted world. `solo_e2e.dart`
+asks the engine in the worker for a quote. No recorded hash changed: `SAVE_FORMAT` is
+2 because the snapshot's player rows grew.
+
+**Not verified.** No trade was made in a browser against a real engine: the web panel
+is driven in widget tests against recorded states and the scripted world, and the
+single-player check only quotes. The TUI overlay was run in a pseudo-terminal against
+a real server and shown a quote; Enter was pressed away from the hub, not at it.
+Persistent and blitz pace were not played, only season, test and pace 1. `play.py`
+was exercised on fixtures, not in a session (the harness is on hold).
