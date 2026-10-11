@@ -19,7 +19,7 @@ const _big = 1234567;
 const _desktop = Size(1440, 900);
 const _phone = Size(390, 844);
 const _shortBy = 'Short by 1,234,567 Fe, 1,234,567 Cr, 1,234,567 De';
-const _waitingShort = 'short 1234567 metal, 1234567 crystal, 1234567 deuterium, starts in about 2057:36';
+const _waitingShort = 'short by 1,234,567 Fe, 1,234,567 Cr, 1,234,567 De, starts in about 34:17:36';
 
 Map<String, dynamic> _cost([int times = 1]) => {'metal': _big * times, 'crystal': _big * times, 'deuterium': _big * times};
 

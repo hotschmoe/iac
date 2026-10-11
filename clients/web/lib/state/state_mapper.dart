@@ -5,25 +5,35 @@ import 'package:clock/clock.dart';
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
-import '../console/intel.dart' show clockFmt, despawnLabel;
+import '../console/intel.dart' show clockFmt, despawnLabel, groupDigits;
 import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
 import 'command_parser.dart' show QueueIds;
 
 /// Holds the latest protocol snapshots (full_state + tick_update deltas) and
 /// maps them to the amber UI presentation models.
-/// "short 35 metal, 4 crystal, starts in 00:40": why a queued order has not
-/// started, the exact shortfall and the estimate.
+/// "1,234 Fe, 56 Cr": the parts of [r] that [whole] does not make zero, in
+/// the units the stockpile counters carry.
+String _amounts(proto.Resources r, int Function(double) whole) => [
+      for (final (amount, unit) in [(whole(r.metal), 'Fe'), (whole(r.crystal), 'Cr'), (whole(r.deuterium), 'De')])
+        if (amount > 0) '${groupDigits(amount)} $unit',
+    ].join(', ');
+
+/// "short by 1,234 Fe, 56 Cr": the parts of [missing] above zero, each
+/// rounded up. Every shortfall the console prints is this phrase; [opening]
+/// starts a caption with it.
+String shortBy(proto.Resources missing, {bool opening = false}) =>
+    '${opening ? 'Short' : 'short'} by ${_amounts(missing, (v) => v.ceil())}';
+
+/// "short by 35 Fe, 4 Cr, starts in about 0:40": why a queued order has not
+/// started, the exact shortfall and the estimate. An order short of
+/// something the homeworld does not produce has no estimate, and waiting
+/// will not start it: the summary says so.
 String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
-  final need = short == null
-      ? ''
-      : [
-          if (short.metal > 0) '${short.metal.ceil()} metal',
-          if (short.crystal > 0) '${short.crystal.ceil()} crystal',
-          if (short.deuterium > 0) '${short.deuterium.ceil()} deuterium',
-        ].join(', ');
+  final named = short != null && (short.metal > 0 || short.crystal > 0 || short.deuterium > 0);
+  if (on == proto.WaitReason.resources && named && startIn == null) return '${shortBy(short)}, which home production will not cover';
   final why = switch (on) {
-    proto.WaitReason.resources => need.isEmpty ? 'waiting for resources' : 'short $need',
+    proto.WaitReason.resources => named ? shortBy(short) : 'waiting for resources',
     proto.WaitReason.slot => 'waiting for a free slot',
     proto.WaitReason.prerequisite => 'waiting for a prerequisite',
     proto.WaitReason.order => 'held by a reserved order',
@@ -31,7 +41,7 @@ String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
   return _withStart(why, startIn);
 }
 
-/// "paid, waiting for the yard, starts in about 00:40": a shipyard batch is
+/// "paid, waiting for the yard, starts in about 0:40": a shipyard batch is
 /// paid for when it is ordered, so it only ever waits its turn.
 String batchWaitSummary(proto.BatchWait on, int? startIn) => _withStart(
     switch (on) {
@@ -40,12 +50,7 @@ String batchWaitSummary(proto.BatchWait on, int? startIn) => _withStart(
     },
     startIn);
 
-String _withStart(String why, int? startIn) {
-  if (startIn == null) return why;
-  final m = (startIn ~/ 60).toString().padLeft(2, '0');
-  final s = (startIn % 60).toString().padLeft(2, '0');
-  return '$why, starts in about $m:$s';
-}
+String _withStart(String why, int? startIn) => startIn == null ? why : '$why, starts in about ${clockFmt(startIn)}';
 
 /// "meter 632 of 4185, next unit at 33%, clear in 38:41": where a player
 /// stands at the exchange.
@@ -69,6 +74,15 @@ List<String> quoteLines(proto.ExchangeQuote q) {
     if (q.refusal != null) 'Cannot trade now: ${q.refusal}',
   ];
 }
+
+/// The board as the log prints it for a player who asked: the first five
+/// ranks, the player's own row, and the best of the unranked bots.
+List<String> boardLines(proto.LeaderboardReply b) => [
+      for (final e in [...b.entries.take(5), if (b.you != null) b.you!])
+        '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)} '
+            '(core ${e.core.toStringAsFixed(1)}, combat ${e.combat.toStringAsFixed(1)}, explore ${e.explore.toStringAsFixed(1)})',
+      if (b.bots.isNotEmpty) '${b.bots.length} built-in bots, unranked; best ${b.bots.first.name} ${b.bots.first.score.toStringAsFixed(1)}',
+    ];
 
 class StateMapper {
   int tick = 0;
@@ -156,17 +170,6 @@ class StateMapper {
         quotes.removeWhere((_, e) => tick - e.tick > 60);
       case proto.LeaderboardReply():
         leaderboard = msg;
-        for (final e in [...msg.entries.take(5), if (msg.you != null) msg.you!]) {
-          pushLog(
-            '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)} '
-            '(core ${e.core.toStringAsFixed(1)}, combat ${e.combat.toStringAsFixed(1)}, explore ${e.explore.toStringAsFixed(1)})',
-            EventLevel.bright,
-          );
-        }
-        if (msg.bots.isNotEmpty) {
-          final best = msg.bots.first;
-          pushLog('${msg.bots.length} built-in bots, unranked; best ${best.name} ${best.score.toStringAsFixed(1)}', EventLevel.dim);
-        }
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }
@@ -213,13 +216,8 @@ class StateMapper {
   }
 
   void _applyError(proto.ErrorMessage err) {
-    pushLog('ERR ${err.code.code} ${err.code.wire}: ${err.message}', EventLevel.bright);
-    _pushAlert(Alert(
-      icon: '!',
-      message: err.message,
-      detail: err.code.wire,
-      level: AlertTone.glow,
-    ));
+    pushLog('Refused: ${err.message}', EventLevel.bright);
+    _pushAlert(Alert(icon: '!', message: err.message, detail: 'Order refused at tick $tick', level: AlertTone.bright));
   }
 
   /// The server just issued this account's token. It is shown once: the
@@ -416,8 +414,11 @@ class StateMapper {
     return '${t ~/ 3600}h';
   }
 
-  static String _res(proto.Resources r) =>
-      '${r.metal.round()}M ${r.crystal.round()}C ${r.deuterium.round()}D';
+  /// "90 Fe, 22 Cr" as the log prints an amount paid, hauled or lost.
+  static String _res(proto.Resources r) {
+    final amounts = _amounts(r, (v) => v.round());
+    return amounts.isEmpty ? 'nothing' : amounts;
+  }
 
   int get clockSec =>
       connectedAt == null ? tick : clock.now().difference(connectedAt!).inSeconds;

@@ -2121,8 +2121,8 @@ class Requirement {
   final bool met;
   const Requirement({required this.name, required this.need, required this.have, required this.met});
 
-  /// Compact form for cards: "Shipyard >= 4".
-  String get label => '$name >= $need';
+  /// As cards and captions print it, in the engine's words: "Shipyard level 4".
+  String get label => '$name level $need';
 
   factory Requirement.fromJson(Object? json) {
     final m = _obj(json);
