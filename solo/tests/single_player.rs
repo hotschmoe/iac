@@ -279,6 +279,63 @@ fn a_ship_batch_the_stockpile_does_not_cover_is_refused_and_costs_nothing() {
 }
 
 #[test]
+fn a_hold_loaded_at_the_dock_is_in_the_save_and_stays_aboard_after_a_reload() {
+    let fleet_of = |frames: &[Value]| frames.iter().rev().find_map(|f| f["fleets"].get(0).cloned()).expect("a frame with the fleet");
+    let hold_of = |fleet: &Value| ["metal", "crystal", "deuterium"].map(|k| fleet["cargo"][k].as_f64().unwrap());
+    let put_aboard = |resource: &str, amount: Value, fleet: u64| {
+        let mut order = json!({"type": "command", "action": "load", "fleet_id": fleet, "resource": resource});
+        if !amount.is_null() {
+            order["amount"] = amount;
+        }
+        order
+    };
+
+    let mut watched = new_game(T0, "season", &[]);
+    let login = log_in(&mut watched, T0);
+    let fleet = login[1]["fleets"][0]["id"].as_u64().unwrap();
+    let hold = login[1]["fleets"][0]["cargo_capacity"].as_f64().unwrap();
+    assert!((hold - 126.49).abs() < 0.01 && login[1]["fleets"][0]["laden"] == false, "{}", login[1]["fleets"][0]);
+
+    let ordered = send(&mut watched, T0, put_aboard("metal", json!(100), fleet));
+    assert!(ordered.iter().all(|f| f["type"] != "error"), "{ordered:?}");
+    let sent = play(&mut watched, T0, 5);
+    let told = events(&sent, "Alert");
+    assert!(
+        told.iter().any(|a| a["message"].as_str().unwrap().starts_with(&format!("fleet {fleet} loaded 100 metal from the stockpile"))),
+        "{told:?}"
+    );
+    let aboard = fleet_of(&sent);
+    assert_eq!((hold_of(&aboard), aboard["laden"].as_bool()), ([100.0, 0.0, 0.0], Some(true)), "five ticks at the dock: {aboard}");
+
+    let saved = save(&mut watched, T0 + 5_000);
+    play(&mut watched, T0 + 5_000, 60);
+    let watched_at_65 = save(&mut watched, T0 + 65_000);
+
+    let (mut reloaded, reply) = load(T0 + 65_000, &saved);
+    assert_eq!((reply["refused"].clone(), reply["world"]["behind"].as_u64()), (Value::Null, Some(60)), "{reply}");
+    let (arrived, _) = call(&mut reloaded, T0 + 65_000, json!({"op": "advance", "max_ticks": 1000}), &[]);
+    assert_eq!(arrived["world"]["tick"], 65);
+    assert!(snapshot_of(&save(&mut reloaded, T0 + 65_000)) == snapshot_of(&watched_at_65), "the two worlds differ at tick 65");
+    let back = log_in(&mut reloaded, T0 + 65_000);
+    let aboard = &back[1]["fleets"][0];
+    assert_eq!((hold_of(aboard), aboard["laden"].as_bool()), ([100.0, 0.0, 0.0], Some(true)), "sixty ticks played from the save: {aboard}");
+
+    let now = T0 + 65_000;
+    assert!(send(&mut reloaded, now, put_aboard("crystal", Value::Null, fleet)).iter().all(|f| f["type"] != "error"));
+    let no_room = send(&mut reloaded, now, put_aboard("deuterium", json!(5), fleet));
+    assert_eq!((no_room[0]["type"].as_str(), no_room[0]["code"].as_str()), (Some("error"), Some("CargoFull")), "{no_room:?}");
+    assert_eq!(no_room[0]["message"], format!("the hold of fleet {fleet} is full: it carries 126 of 126"));
+    let full = fleet_of(&play(&mut reloaded, now, 1));
+    assert!((hold_of(&full)[1] - (hold - 100.0)).abs() < 0.01, "with no amount, all that fits: {full}");
+
+    assert!(send(&mut reloaded, now + 1000, json!({"type": "command", "action": "unload", "fleet_id": fleet})).is_empty());
+    let sent = play(&mut reloaded, now + 1000, 1);
+    let emptied = fleet_of(&sent);
+    assert_eq!((hold_of(&emptied), emptied["laden"].as_bool()), ([0.0, 0.0, 0.0], Some(false)), "{emptied}");
+    assert_eq!(events(&sent, "Alert")[0]["message"], format!("fleet {fleet} unloaded 100 metal and 27 crystal into the stockpile"));
+}
+
+#[test]
 fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let mut machine = new_game(T0, "season", &[]);
     let document = save(&mut machine, T0);

@@ -214,7 +214,7 @@ class StatusPanel extends StatelessWidget {
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             const SizedBox(height: 7),
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              const Lbl('Cargo', size: 10),
+              Lbl(f.laden ? 'Cargo - laden' : 'Cargo', size: 10),
               Row(mainAxisSize: MainAxisSize.min, children: [Register(cargo, width: 3, size: 11, color: C.text), Text('/${f.cargo.capacity}', style: T.mono(size: 11, color: C.text3))]),
             ]),
             const SizedBox(height: 3),
@@ -279,6 +279,9 @@ class ContactsPanel extends StatelessWidget {
   final VoidCallback onHoverEnd;
   final void Function(String act) onAct;
   final VoidCallback onOpenHome;
+
+  /// Open the dock's load control for this fleet.
+  final VoidCallback onLoadHold;
   const ContactsPanel({
     super.key,
     required this.threat,
@@ -301,6 +304,7 @@ class ContactsPanel extends StatelessWidget {
     required this.onHoverEnd,
     required this.onAct,
     required this.onOpenHome,
+    required this.onLoadHold,
   });
 
   Widget _row(String k, Widget icon, Widget body, {Widget? actions}) {
@@ -447,8 +451,16 @@ class ContactsPanel extends StatelessWidget {
         SymIcon((c, sz) => Draw.symbol(c, Sym.home, sz.width / 2, sz.height / 2, 15, color: C.own, lw: 1.2, bloom: false), size: 30),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           _t('Homeworld'),
-          _d(Text('DOCKED FLEETS ARE SAFE.', style: _ds)),
-          Padding(padding: const EdgeInsets.only(top: 7), child: ConsoleButton('Open homeworld', small: true, onPressed: onOpenHome)),
+          _d(Text(
+              fleet.laden ? 'DOCKED FLEETS ARE SAFE.\nHOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.' : 'DOCKED FLEETS ARE SAFE.',
+              key: const Key('contact-dock'),
+              style: _ds)),
+          Padding(
+              padding: const EdgeInsets.only(top: 7),
+              child: Wrap(spacing: 6, runSpacing: 6, children: [
+                ConsoleButton('Open homeworld', small: true, onPressed: onOpenHome),
+                ConsoleButton('Load hold', key: const ValueKey('contact-load'), small: true, keyHint: 'L', onPressed: onLoadHold),
+              ])),
         ]),
       ));
     }

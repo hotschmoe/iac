@@ -317,6 +317,21 @@ async fn run(
                             let _ = cmd_tx.send(ClientMessage::Command(cmd));
                         }
                     }
+                    input::InputAction::FleetPanelLoadStep(step) => {
+                        state.lock().await.fleet_panel_load_step(step);
+                    }
+                    input::InputAction::FleetPanelLoad => {
+                        let cmd = state.lock().await.fleet_panel_load();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
+                    input::InputAction::FleetPanelUnload => {
+                        let cmd = state.lock().await.fleet_panel_unload();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
                     input::InputAction::ToggleExchangePanel => {
                         let cmd = state.lock().await.toggle_exchange_panel();
                         if let Some(cmd) = cmd {

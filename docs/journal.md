@@ -2556,3 +2556,136 @@ default 4). Neither was tried.
 live server. `play.py` is syntax-checked and its offline tests pass; the harness is
 on hold and was not run. Persistent pace and blitz were not measured. The browser
 run is headless Chromium at 1440 and 390 px; no other browser and no real phone.
+
+## 2026-10-11: a hold is loaded from the stockpile at home
+
+Owner decision: the exchange is a surplus sink, so a player whose stockpile is full of
+one resource must be able to carry the surplus to the hub. Until now nothing moved
+stockpile into a hold and the dock emptied every hold each tick, so the exchange took
+field cargo only. The owner set the frame of the rule; the choices inside it are the
+agent's and are listed as such in decisions.md under the same date. Branch
+`worktree-agent-a2b101c4105620314`, not merged.
+
+**The rule.** `load` takes a fleet standing idle at its owner's homeworld, one
+resource and an optional amount. It moves that much from the stockpile into the hold;
+with no amount, all the stockpile holds and the hold has room for. An order that
+cannot be met in full moves nothing and says what is short: the stockpile ("the
+stockpile holds 400.0 metal; fleet 7 cannot load 400.5") or the room ("the hold of
+fleet 7 has room for 632.5 more (it carries 0 of 632); it cannot load 700.0
+deuterium"). The fleet is then laden (`Fleet.laden`, `FleetState.laden`):
+`unload_cargo`, which the dock runs for every fleet at home each tick and on arrival,
+leaves a laden hold alone. The mark ends with the fleet's next jump, so a fleet that
+has been away comes home unmarked and unloads as it always has. `unload` ends it by
+hand: what the caps allow goes back at once and the dock takes the rest as room
+opens. Both answer with an info `Alert`, as `split` and `merge` do.
+
+**Where the frame was not followed.** The owner's frame said `load` takes an amount
+of each resource. It takes one resource an order. "All that fits" has one meaning for
+one resource and none for three; a surplus is nearly always one resource; the refusal
+can then name exactly what is short; and `exchange` already reads `give`, `want`,
+`amount` this way. A mixed load is two or three orders and is not atomic.
+
+**How the mark ends.** The first version cleared it when the fleet docked. That left
+it set in the field, where it means nothing, made recall-at-home a second unload, and
+needed the rule in three places. It is now cleared in one: where a jump completes in
+`process_movement`. A fleet still leaving (state `Moving`, location still home) keeps
+it, or the dock would empty the hold during the jump's countdown.
+
+**Standing orders.** A doctrine that comes home with a hold over `cargo_return_pct`
+waits at the dock until it is off (`policy_unload_wait`); with a hold the dock may not
+take, it would wait for ever. So `load` is refused for a fleet under standing orders,
+with the doctrine named, and giving a laden fleet standing orders ends the mark and
+unloads it at once (the policy event says so). Unloading at once matters: orders are
+evaluated before the dock runs in a tick, and a hold still aboard at the first
+evaluation would announce "waiting to unload" for one round.
+
+**What it must not dodge.**
+- *The Vault cap.* Unload goes through `unload_cargo`, which stops at the cap. A hold
+  at home is storage beyond the cap, which the owner allowed; decisions.md has the
+  numbers (a Hauler stores a unit for 4.75 resources of hull at pace 1, the Vault for
+  0.07 at level 3 and 0.6 at level 20; a full complement of 512 Haulers holds 9.3
+  Vault-0 stockpiles and 0.16 Vault-10 ones).
+- *Raids.* Cargo at the dock was out of a lost raid's reach: `resolve_raid` took its
+  share of the stockpile and never looked at holds. That did not matter while only a
+  full stockpile left cargo there; with `load` it would have been a hiding place.
+  A lost raid now adds the cargo aboard the owner's fleets at home to the stockpile,
+  applies the one protected floor and the same 8/8/5 percent to the sum, and takes
+  each part's share. With no cargo at home the arithmetic is the old one to the bit
+  (the share of the whole is multiplied by exactly 1.0). `resources_lost` and
+  `protected_kept` cover both. This changes the rule for every fleet with cargo at
+  home, laden or blocked.
+- *Score.* Unchanged by construction: `score_of` reads buildings, research, ships and
+  defences. The tests assert the row is equal before and after a load and an unload.
+- *Fuel.* A laden fleet burns what its hull mass burns; cargo has no mass in the fuel
+  rule, for any fleet.
+
+**Persistence.** `laden` is a column of `fleets` (added to an existing database by
+`ensure_column`, as the exchange meter was) and a field of the fleet in `Snapshot`,
+so `SAVE_FORMAT` is 3 and an older single-player save is refused with the usual
+sentence. `ECONOMY_VERSION` stands at 3. The SQLite restart test in
+`server/src/database.rs` now mixes `load` and `unload` into its orders and requires
+that at least one of its kills finds a laden hold in the database.
+
+**Clients.** Web: the homeworld's Storage tab has a "Load a hold" panel under the
+Vault: the fleets docked at home, what is aboard and the size of the hold, the
+stockpile per resource with FULL on a capped one, a share of what fits (25, 50, 75
+percent or all, the last sent with no amount), a button that names the load ("Load
+400 Fe"), and Unload. It works nothing out that the server decides; a disabled Load
+says why. In the windshield the homeworld contact has a "Load hold" button (`L`)
+that opens the panel for the active fleet, the cargo gauge reads "CARGO - LADEN", and
+`load <resource> [amount|all]` and `unload` work from the command bar. Help stays at
+13 lines: the two hub lines were rewritten to carry the two commands. TUI: the fleet
+panel (`f`) shows the hold and the stockpile and loads with `r` (resource),
+Left/Right (share), `l`, and unloads with `u`; the fleet list and the windshield tag
+a laden fleet. `play.py` tags it too. The bots do not load.
+
+**Tests.** `sim/tests/exchange.rs`: a stockpile at its cap, four Haulers loaded with
+all that fits, forty ticks at the dock with the hold untouched and the mines filling
+the room, the flight to the hub, the trade, the flight home and the dock unloading
+what was bought; `unload` against a nearly full store and the dock taking the rest;
+every refusal with its sentence; standing orders ending the mark with no "waiting to
+unload" in 120 ticks; two worlds raided alike, one with 5000 aboard, losing the same
+and keeping the same floor; the mark in the fleet's persisted row and through a JSON
+snapshot; split and merge. `server/tests/scenarios.rs`: a real client loads over the
+WebSocket, is refused twice, the server is killed, and after the restart the fleet is
+still laden and stays so, flies out and back, and the dock unloads it.
+`solo/tests/single_player.rs`: the same through `Machine::call`, with sixty ticks
+replayed from the save and the two worlds equal. Flutter: fixtures for the two
+commands and the field, the panel at 1440 and 390 against the scripted world, the
+typed commands and their refusals, the windshield button and key. `solo_e2e.dart`
+loads 100 deuterium through the panel in the real bundle, checks it is still aboard
+four ticks later, and unloads it by typed command.
+
+**Seen on the way (not changed).**
+- A fleet that loses ships keeps all its cargo, in a fight, on a recall and in a lost
+  raid: nothing trims a hold to the capacity that is left. One survivor of a
+  64-Hauler fleet carries 64 holds. With `load` a player can now arrange that at
+  home (load, lose a quarter of the ships to a raid, keep the cargo less 8%).
+- The server tests take their ports from literals in the test files (17931 to 17956,
+  7910), so two checkouts on one machine cannot run them at once; the temporary
+  databases are named by port as well.
+- The web windshield says "DOCKED FLEETS ARE SAFE" at home. A lost raid destroys a
+  quarter of them.
+- `recall` at home is accepted: it costs nothing, cancels a jump under way (the fuel
+  of that jump is already spent) and runs the dock again.
+
+**Run.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`, 114 tests, all pass; clippy clean with `-D warnings`;
+`check_sim_constants.py` agrees; the wasm release build; `flutter analyze` clean and
+`flutter test` 355 of 355 in four full runs of four on the final tree. One full run
+before that failed in "firing on deadly odds needs a second F" with a layout overflow
+in the HUD; it passed in three runs of its file and did not come back (the profiler
+flag of the 2026-10-10 entry was on). `play.sh --single-player --no-serve` and
+`solo_e2e.dart --port 7932`: OK in 153 s, the hold step included, with pictures of the
+panel at 1440 and 390 read. The TUI fleet panel was driven in a pseudo-terminal
+against a real server (port 7934, pace 1): 30 crystal at 75 percent, all that fits of
+deuterium, the refusal of a third load in the footer, LADEN in the fleet list, unload,
+and the refusal of a second unload.
+
+**Not verified.** The web panel against a multiplayer server (it ran against the
+engine in the tab and the scripted world; the client code is the same). The
+windshield's Load hold button and `L` in a real browser (widget test only). No real
+phone and no browser but headless Chromium. The balance report was not run again:
+the raid now reaches cargo that a full stockpile left aboard a bot's docked fleet, and
+what that does to a bot's week was not measured. `play.py` passes its offline tests;
+the harness was not run.

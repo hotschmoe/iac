@@ -512,6 +512,115 @@ async fn a_fleet_flies_its_ore_to_the_hub_trades_it_and_the_meter_outlives_the_s
     remove_db(&db);
 }
 
+async fn refused(ws: &mut Ws) -> Value {
+    loop {
+        let msg = next_json(ws).await;
+        if msg["type"] == "error" {
+            return msg;
+        }
+    }
+}
+
+async fn update_where(ws: &mut Ws, done: impl Fn(&Value) -> bool) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let msg = next_json(ws).await;
+        assert!(msg["type"] != "error", "{msg}");
+        assert!(Instant::now() < deadline, "never saw the update: {msg}");
+        if msg["type"] == "tick_update" && done(&msg) {
+            return msg;
+        }
+    }
+}
+
+fn alerts_of(msg: &Value) -> Vec<String> {
+    events_of(msg).iter().filter(|e| e["kind"] == "Alert").map(|e| e["message"].as_str().unwrap().to_string()).collect()
+}
+
+#[tokio::test]
+async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_fleet_has_been_away() {
+    let port = 7931;
+    let db = fresh_db(port);
+    let world = WorldGen::init(DEFAULT_WORLD_SEED);
+    let hold_of = |fleet: &Value| ["metal", "crystal", "deuterium"].map(|k| fleet["cargo"][k].as_f64().unwrap());
+
+    let (token, fleet, home, stocked) = {
+        let _guard = start_server(port, &db);
+        let (mut ws, reply) = login(port, "Loader", None).await;
+        let token = reply["token"].as_str().unwrap().to_string();
+        let state = full_state(&mut ws).await;
+        let fleet = state["fleets"][0]["id"].as_u64().unwrap();
+        let home = hex_of(&state["player"]["homeworld"]);
+        assert_eq!((state["fleets"][0]["cargo_capacity"].as_f64(), state["fleets"][0]["laden"].as_bool()), (Some(40.0), Some(false)));
+        let stocked = state["player"]["resources"]["metal"].as_f64().unwrap();
+
+        command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "metal", "amount": 25})).await;
+        let loaded = update_where(&mut ws, |m| m["fleets"][0]["laden"] == true).await;
+        assert_eq!(hold_of(&loaded["fleets"][0]), [25.0, 0.0, 0.0], "{loaded}");
+        assert_eq!(loaded["fleets"][0]["cargo_blocked"], false);
+        assert!(alerts_of(&loaded).iter().any(|a| a.starts_with(&format!("fleet {fleet} loaded 25 metal from the stockpile: it carries 25 of 40"))), "{loaded}");
+        let metal = loaded["player"]["resources"]["metal"].as_f64().unwrap();
+        assert!((stocked - 25.0..stocked - 24.0).contains(&metal), "the stockpile paid for it: {stocked} to {metal}");
+
+        command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "crystal"})).await;
+        let full = update_where(&mut ws, |m| m["fleets"][0]["cargo"]["crystal"] != 0.0).await;
+        assert_eq!(hold_of(&full["fleets"][0]), [25.0, 15.0, 0.0], "with no amount, all that fits: {full}");
+
+        command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "deuterium"})).await;
+        let no_room = refused(&mut ws).await;
+        assert_eq!(no_room["code"], "CargoFull", "{no_room}");
+        assert_eq!(no_room["message"], format!("the hold of fleet {fleet} is full: it carries 40 of 40"));
+        command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "metal", "amount": 9000})).await;
+        let no_stock = refused(&mut ws).await;
+        assert_eq!(no_stock["code"], "NoResources", "{no_stock}");
+        assert!(no_stock["message"].as_str().unwrap().ends_with(&format!("metal; fleet {fleet} cannot load 9000.0")), "{no_stock}");
+
+        for _ in 0..3 {
+            let later = update_where(&mut ws, |_| true).await;
+            assert_eq!(hold_of(&later["fleets"][0]), [25.0, 15.0, 0.0], "the dock leaves a laden hold alone: {later}");
+        }
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        (token, fleet, home, stocked)
+    };
+
+    let _guard = start_server(port, &db);
+    let (mut ws, reply) = login(port, "Loader", Some(&token)).await;
+    assert_eq!(reply["success"], true, "{reply}");
+    let state = full_state(&mut ws).await;
+    assert_eq!(state["fleets"][0]["laden"], true, "the mark came back with the fleet: {}", state["fleets"][0]);
+    for _ in 0..3 {
+        let later = update_where(&mut ws, |_| true).await;
+        assert_eq!(hold_of(&later["fleets"][0]), [25.0, 15.0, 0.0], "and the restarted dock leaves it alone: {later}");
+        assert_eq!(later["fleets"][0]["laden"], true);
+    }
+
+    let out = quiet_route(&world, home, |at| at != home);
+    fly(&mut ws, fleet, &out).await;
+    let away = full_state(&mut ws).await;
+    assert_eq!((hold_of(&away["fleets"][0]), away["fleets"][0]["laden"].as_bool()), ([25.0, 15.0, 0.0], Some(false)), "{away}");
+    command(&mut ws, json!({"action": "unload", "fleet_id": fleet})).await;
+    let afar = refused(&mut ws).await;
+    assert_eq!(afar["code"], "NotInSector", "{afar}");
+    assert!(afar["message"].as_str().unwrap().contains("1 hex from home"), "{afar}");
+
+    fly(&mut ws, fleet, &[home]).await;
+    let docked = update_where(&mut ws, |m| hold_of(&m["fleets"][0]) == [0.0, 0.0, 0.0]).await;
+    assert_eq!(docked["fleets"][0]["laden"], false, "{docked}");
+    assert!(docked["player"]["resources"]["metal"].as_f64().unwrap() >= stocked, "what it brought home is in the stockpile: {docked}");
+
+    command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "metal", "amount": 10})).await;
+    update_where(&mut ws, |m| m["fleets"][0]["laden"] == true).await;
+    command(&mut ws, json!({"action": "unload", "fleet_id": fleet})).await;
+    let emptied = update_where(&mut ws, |m| m["fleets"][0]["laden"] == false).await;
+    assert_eq!(hold_of(&emptied["fleets"][0]), [0.0, 0.0, 0.0], "{emptied}");
+    assert_eq!(alerts_of(&emptied), [format!("fleet {fleet} unloaded 10 metal into the stockpile")]);
+    command(&mut ws, json!({"action": "unload", "fleet_id": fleet})).await;
+    let again = refused(&mut ws).await;
+    assert_eq!(again["code"], "InvalidCommand", "{again}");
+    assert!(again["message"].as_str().unwrap().contains("was not loaded by hand"), "{again}");
+    remove_db(&db);
+}
+
 async fn leaderboard(ws: &mut Ws) -> Value {
     command(ws, json!({"action": "leaderboard", "limit": 20})).await;
     loop {

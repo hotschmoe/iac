@@ -21,6 +21,7 @@ import '../../protocol/protocol.dart' as proto;
 import '../../scenes/windshield/geometry.dart';
 import '../../scenes/windshield/painter.dart';
 import '../../scenes/windshield/sim.dart';
+import '../../state/game_controller.dart' show HomeworldTab;
 import '../onboarding.dart';
 import 'parts.dart';
 
@@ -257,6 +258,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         return null;
       case 'recall':
         return f.sector == con.state.homeworld ? 'Already at the homeworld.' : null;
+      case 'load':
+        return f.sector == con.state.homeworld ? null : 'A hold is loaded from the stockpile at the homeworld only.';
     }
     return null;
   }
@@ -320,6 +323,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           if (_trade) _sheet = true;
         });
         con.play('click');
+      case 'load':
+        con.game.selectHomeworldTab(HomeworldTab.storage);
+        con.go(Screen.homeworld);
+        return;
     }
     if (id != 'harvest') setState(() => _hsub = false);
   }
@@ -366,7 +373,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       jump(di);
       return true;
     }
-    const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop', 't': 'trade'};
+    const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop', 't': 'trade', 'l': 'load'};
     final a = m[ch];
     if (a != null) {
       act(a);
@@ -505,6 +512,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           onHoverEnd: () => sim.hoverT = null,
           onAct: act,
           onOpenHome: () => con.go(Screen.homeworld),
+          onLoadHold: () => act('load'),
         ),
       ]);
 

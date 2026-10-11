@@ -57,6 +57,8 @@ impl GameEngine {
                     reply = Some(ServerMessage::ExchangeQuote(ExchangeQuote { terms: deal.terms, refusal }));
                 })
                 .map_err(|refusal| refusal.code),
+            Command::Load { fleet_id, resource, amount } => self.handle_load(pid, fleet_id, resource, amount),
+            Command::Unload { fleet_id } => self.handle_unload(pid, fleet_id),
         };
         let error = result.err().map(|code| (code, command_error_message(self, pid, &cmd, code)));
         CommandOutcome { reply, error }
@@ -139,6 +141,8 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Odds { fleet_id, .. }
         | Command::Exchange { fleet_id, .. }
         | Command::ExchangeQuote { fleet_id, .. }
+        | Command::Load { fleet_id, .. }
+        | Command::Unload { fleet_id }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
@@ -276,7 +280,7 @@ fn units_covered(stock: Resources, unit: Resources) -> u32 {
 
 /// "759 metal and 190 crystal": the non-zero parts of an amount, each
 /// rounded up to a whole unit.
-fn amount_words(amount: Resources) -> String {
+pub(crate) fn amount_words(amount: Resources) -> String {
     let parts: Vec<String> = ResourceKind::ALL
         .into_iter()
         .filter(|&k| amount.get(k) > 0.0)
@@ -326,6 +330,16 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         ) => match engine.exchange_deal(player_id, *fleet_id, *give, *want, *amount) {
             Err(refusal) | Ok(ExchangeDeal { refusal: Some(refusal), .. }) => refusal.reason,
             Ok(_) => format!("command rejected ({code:?})"),
+        },
+        (_, Command::Load { fleet_id, resource, amount }) => {
+            match engine.load_order(player_id, *fleet_id, *resource, *amount) {
+                Err(refusal) => refusal.reason,
+                Ok(_) => format!("command rejected ({code:?})"),
+            }
+        }
+        (_, Command::Unload { fleet_id }) => match engine.unload_refusal(player_id, *fleet_id) {
+            Some(refusal) => refusal.reason,
+            None => format!("command rejected ({code:?})"),
         },
         (ErrorCode::FleetNotFound, _) => format!("fleet {fid} not found (or it has no ships left)"),
         (ErrorCode::OnCooldown, Command::Attack { target_fleet_id, .. })

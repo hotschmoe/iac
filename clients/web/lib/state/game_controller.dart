@@ -763,6 +763,19 @@ class GameController extends ChangeNotifier {
     sendCommand(proto.ExchangeCommand(fleetId: id, give: give, want: want, amount: amount));
   }
 
+  /// Move [amount] of [resource] from the stockpile into the hold of
+  /// [fleetId], docked at home; without [amount], all that fits.
+  void loadHold(int fleetId, proto.ResourceKind resource, {double? amount}) {
+    note('> load ${amount == null ? 'all' : amount.round()} ${resource.name} into F$fleetId', level: EventLevel.full);
+    sendCommand(proto.LoadCommand(fleetId: fleetId, resource: resource, amount: amount));
+  }
+
+  /// Put the hold [fleetId] was loaded with back into the stockpile.
+  void unloadHold(int fleetId) {
+    note('> unload F$fleetId', level: EventLevel.full);
+    sendCommand(proto.UnloadCommand(fleetId: fleetId));
+  }
+
   /// Windshield: fly the active fleet one hop in [direction] (0-5, same
   /// order as [proto.HexDirection]) if the server lists that lane.
   void moveFleet(int direction) {

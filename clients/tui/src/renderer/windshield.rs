@@ -416,7 +416,10 @@ fn render_fleet_status(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
         Line::styled(format!(" Shield: {:.0}/{:.0}", shield_cur, shield_max), CYAN_INTEL),
         Line::styled(format!(" DPS:    {:.0}", dps), AMBER_BRIGHT),
         Line::raw(""),
-        Line::styled(format!(" Cargo: {:.0}/{:.0}", total_cargo, fleet.cargo_capacity), AMBER_BRIGHT),
+        Line::styled(
+            format!(" Cargo: {:.0}/{:.0}{}", total_cargo, fleet.cargo_capacity, if fleet.laden { " LADEN" } else { "" }),
+            AMBER_BRIGHT,
+        ),
         Line::styled(format!("  Fe {:.0}", fleet.cargo.metal), AMBER),
         Line::styled(format!("  Cr {:.0}", fleet.cargo.crystal), AMBER),
         Line::styled(format!("  De {:.0}", fleet.cargo.deuterium), AMBER),

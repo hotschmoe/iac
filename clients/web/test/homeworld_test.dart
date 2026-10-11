@@ -11,6 +11,7 @@ import 'package:iac_client/console/services.dart';
 import 'package:iac_client/console/prefs.dart';
 import 'package:iac_client/console/sfx.dart';
 import 'package:iac_client/console/toasts.dart';
+import 'package:iac_client/design/panel.dart';
 import 'package:iac_client/design/theme.dart';
 import 'package:iac_client/design/tokens.dart';
 import 'package:iac_client/views/homeworld/homeworld_view.dart';
@@ -175,6 +176,96 @@ void main() {
     await tester.pump();
     expect(find.text('STORAGE VAULT'), findsOneWidget);
     await snap(tester, 'homeworld/storage-1440');
+    await endShell(tester, c);
+  });
+
+  String offer(WidgetTester tester) => tester.widget<ConsoleButton>(find.byKey(const ValueKey('hold-load'))).label;
+  String cargo(WidgetTester tester) => tester.widget<Text>(find.byKey(const Key('hold-cargo'))).textSpan!.toPlainText();
+
+  Future<void> press(WidgetTester tester, String key) async {
+    await tester.ensureVisible(find.byKey(ValueKey(key)));
+    await tester.tap(find.byKey(ValueKey(key)));
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+
+  testWidgets('storage: the hold panel shows what is aboard and what fits, loads a share and all that fits, and unloads', (tester) async {
+    final c = await open(tester);
+    await tester.tap(find.byKey(const ValueKey('hw-tab-storage')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('hold-fleet-102')), findsOneWidget, reason: 'the fleet docked at home');
+    expect(find.byKey(const ValueKey('hold-fleet-101')), findsNothing, reason: 'a fleet away cannot load');
+    expect(tester.widget<Text>(find.byKey(const Key('hold-aboard'))).data, '0 / 400');
+    expect(offer(tester), 'Load 400 Fe', reason: 'all that fits: the hold is smaller than the stockpile');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('hold-unload'))).onPressed, isNull);
+
+    await press(tester, 'hold-share-50');
+    expect(offer(tester), 'Load 200 Fe');
+    final metal = c.state.stock.metal;
+    await press(tester, 'hold-load');
+    expect(c.state.events.map((e) => e.message), contains('> load 200 metal into F102'));
+    expect(c.state.events.map((e) => e.message), contains(startsWith('fleet 102 loaded 200 metal from the stockpile: it carries 200 of 400')));
+    expect((c.state.holds[102]!.metal, c.state.stock.metal), (200, metal - 200));
+    expect(c.state.fleets.firstWhere((f) => f.id == 102).laden, isTrue);
+    expect(tester.widget<Text>(find.byKey(const Key('hold-aboard'))).data, '200 / 400');
+    expect(cargo(tester), 'Fe 200   Cr 0   De 0   KEPT ABOARD UNTIL THE FLEET HAS BEEN AWAY');
+    expect(find.text('LADEN'), findsOneWidget);
+
+    await press(tester, 'hold-res-crystal');
+    await press(tester, 'hold-share-100');
+    expect(offer(tester), 'Load 200 Cr', reason: 'what is left of the hold');
+    await press(tester, 'hold-load');
+    expect(c.state.holds[102]!.crystal, 200);
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('hold-load'))).onPressed, isNull);
+    expect(offer(tester), 'Load');
+    expect(tester.widget<Text>(find.descendant(of: find.byKey(const Key('hold-why')), matching: find.byType(Text))).data, 'The hold of F102 is full.');
+    await tester.pump(const Duration(milliseconds: 600));
+    await snap(tester, 'homeworld/hold-1440');
+
+    await press(tester, 'hold-unload');
+    expect(c.state.events.map((e) => e.message), contains('fleet 102 unloaded 200 metal, 200 crystal into the stockpile'));
+    expect(c.state.holds[102]!.total, 0);
+    expect(c.state.stock.metal, closeTo(metal, 10), reason: 'what was loaded is back, and a tick or two of the mines');
+    expect(find.text('LADEN'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
+
+  testWidgets('load and unload work from the command bar, and a refusal is the server\'s sentence', (tester) async {
+    final c = await open(tester);
+    c.handleCommand('load');
+    expect(c.state.events.first.message, startsWith('load: <metal|crystal|deut> [amount|all]'));
+    c.handleCommand('load metal 50');
+    expect(c.state.events.first.message, contains('fleet 101 is at [6,-4], 2 hexes from home [4,-2]'));
+    expect(c.state.holds[101]!.metal, 34, reason: 'a refused load moves nothing');
+
+    c.selectFleet(1);
+    c.handleCommand('load deut 5000');
+    expect(c.state.events.first.message, endsWith('the stockpile holds 880.0 deuterium; fleet 102 cannot load 5000.0'));
+    c.handleCommand('load crystal 120.5');
+    c.handleCommand('load deut');
+    final hold = c.state.holds[102]!;
+    expect((hold.metal, hold.crystal, hold.deuterium), (0, 120.5, 279.5), reason: 'an amount, then all that fits');
+    c.handleCommand('unload');
+    expect(c.state.holds[102]!.total, 0);
+    c.handleCommand('unload');
+    expect(c.state.events.first.message, contains('fleet 102 was not loaded by hand'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
+
+  testWidgets('390 wide: the hold panel fits with a laden hold and a reason on show', (tester) async {
+    final c = await open(tester, size: const Size(390, 844));
+    c.selectHomeworldTab(HomeworldTab.storage);
+    c.selectFleet(1);
+    c.handleCommand('load metal');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('LADEN'), findsOneWidget);
+    expect(find.byKey(const Key('hold-why')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const ValueKey('hold-load')));
+    await tester.pump(const Duration(milliseconds: 600));
+    await snap(tester, 'homeworld/hold-390');
+    expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
 
