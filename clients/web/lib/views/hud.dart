@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../console/economy_view.dart';
+import '../console/intel.dart' show clockFmt;
+import '../console/outpost.dart';
 import '../models/game_state.dart';
 import '../console/services.dart';
 import '../design/beat.dart';
@@ -10,6 +12,7 @@ import '../design/gauges.dart';
 import '../design/icons.dart';
 import '../design/panel.dart';
 import '../design/tokens.dart';
+import '../protocol/protocol.dart' as proto;
 
 class Hud extends StatelessWidget {
   final bool narrow;
@@ -26,6 +29,10 @@ class Hud extends StatelessWidget {
   static const _brandFrom = 1240.0;
   static const _whoFrom = 980.0;
   static const _chipWithRate = 178.0;
+
+  /// From this width the outpost's line stands in the bar; narrower, the
+  /// shell prints it as a strip of its own under the bar ([OutpostStrip]).
+  static const outpostFrom = 1100.0;
 
   @override
   Widget build(BuildContext context) {
@@ -71,6 +78,7 @@ class Hud extends StatelessWidget {
             ),
             if (!narrow) ...[
               _Field('World', con.game.isLive ? (eco.world?.label ?? con.game.linkLabel) : con.game.linkLabel, alert: !con.game.isLive),
+              if (con.state.outpost case final post? when width >= outpostFrom) _OutpostField(post, con.state.tick),
               _TickField(),
               ...buttons.map((b) => Padding(padding: const EdgeInsets.symmetric(horizontal: 3), child: b)),
               if (width >= _whoFrom) _Who(eco),
@@ -116,6 +124,84 @@ class _Field extends StatelessWidget {
           Text(value, style: T.mono(size: 13, color: alert ? C.ember : C.a200, spacing: .5)),
         ]),
       );
+}
+
+/// The outpost's line in the bar: where it is over its level and how full
+/// its store is, lit red while it is breached or a raid is on its way. It
+/// opens the outpost's screen.
+class _OutpostField extends StatelessWidget {
+  final proto.OutpostState o;
+  final int tick;
+  const _OutpostField(this.o, this.tick);
+  @override
+  Widget build(BuildContext context) {
+    final con = Console.of(context);
+    final raid = o.raidArrivalTick;
+    final hot = o.breached || raid != null;
+    return Semantics(
+      button: true,
+      label: outpostHudLine(o, tick),
+      excludeSemantics: true,
+      onTap: () => con.go(Screen.outpost),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          key: const ValueKey('hud-outpost'),
+          behavior: HitTestBehavior.opaque,
+          onTap: () => con.go(Screen.outpost),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: const BoxDecoration(border: Border(left: BorderSide(color: C.lineLo))),
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Lbl('Outpost ${o.location.q},${o.location.r}', size: 9),
+              const SizedBox(height: 2),
+              Text(
+                  [
+                    '${outpostLevelMark(o)} STORE ${(storeFill(o) * 100).round()}%',
+                    if (raid != null) 'RAID ${clockFmt(raid - tick)}' else if (o.breached) 'BREACHED',
+                  ].join(' '),
+                  style: T.mono(size: 13, color: hot ? C.ember : C.a200, spacing: .5)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The outpost's line where the bar has no room for it: one row under the
+/// bar, which opens the outpost's screen.
+class OutpostStrip extends StatelessWidget {
+  const OutpostStrip({super.key});
+  @override
+  Widget build(BuildContext context) {
+    final con = Console.of(context);
+    return ListenableBuilder(
+      listenable: con.game,
+      builder: (context, _) {
+        final o = con.state.outpost;
+        if (o == null) return const SizedBox.shrink();
+        final hot = o.breached || o.raidArrivalTick != null;
+        return Semantics(
+          button: true,
+          onTap: () => con.go(Screen.outpost),
+          child: GestureDetector(
+            key: const ValueKey('hud-outpost'),
+            behavior: HitTestBehavior.opaque,
+            onTap: () => con.go(Screen.outpost),
+            child: Container(
+              height: 22,
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: const BoxDecoration(color: C.hud, border: Border(bottom: BorderSide(color: C.line))),
+              child: Text(outpostHudLine(o, con.state.tick),
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: T.mono(size: 10.5, color: hot ? C.ember : C.a200, spacing: .4)),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _TickField extends StatelessWidget {

@@ -30,6 +30,10 @@ class DemoController extends GameController {
     receive(world.initial());
   }
 
+  /// Announce a raid of [power] on the scripted world's outpost, arriving
+  /// in [inTicks].
+  void raidOutpost(double power, {int inTicks = 10}) => _world!.raidOutpost(power, inTicks: inTicks);
+
   @override
   String? get account => 'demo';
 

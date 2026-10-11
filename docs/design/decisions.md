@@ -3,7 +3,7 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
-## 2026-10-11 (outposts measured: no constant moved, one rule for the owner)
+## 2026-10-12 (outposts measured: no constant moved, one rule for the owner)
 
 **Not decided by the owner.** The measurement `docs/design/outposts.md` asks
 for in 7.8 was made; its table of results stands there and the journal entry
@@ -47,8 +47,9 @@ still the design's proposal and still provisional.
      so before the founding.
   2. *The repair is paid by weight.* It costs the score weight of a quarter
      of the level (250 metal, 125 crystal and 50 deuterium weigh 537.5 at
-     level 1) in whatever the store holds. Any site that makes anything repairs itself. This is the
-     smallest change that gives the design's numbers.
+     level 1) in whatever the store holds. Any site that makes anything
+     repairs itself. This is the smallest change that gives the design's
+     numbers.
   3. *An unpaid repair takes longer.* A store that cannot pay repairs
      anyway, in four times the time. Nothing is ever stuck, and a delivery
      is a speed-up.
@@ -67,6 +68,112 @@ still the design's proposal and still provisional.
   snapshot. Nothing is founded, carried or paid, the site is the free sector
   of the ring nearest the grade asked, and a lair there is displaced as a
   founding displaces it. No bot supplies, defends or hauls from it.
+
+## 2026-10-11 (outposts: what the engine tells a client beforehand)
+
+**Decided by the agent that built it, not by the owner, and open to change.**
+The clients of slice 1 worked five things out for themselves that the engine
+knew. Each is now the engine's to say, in `shared/src/protocol.rs`, and
+neither client judges it.
+
+- **Why an upgrade would be refused is in the state**
+  (`OutpostState.upgrade_refusal`), in the sentence the refusal carries, as
+  `OutpostSurvey.refusal` is for founding. Upgrade is off while it is
+  present, with the sentence under it. This replaces "Upgrade is never
+  switched off by the console" in the entry below. For it the shortfall
+  sentence lost "Nothing was started", which was only true after an order.
+- **A raid is a range, not an estimate.** `raid_power` in the survey and in
+  the outpost's state is `least` and `most`, the bounds of the roll
+  (0.80 and 1.15 times twice the ring's group power); the one middle figure
+  (`next_raid_estimate_power`, and the survey's old `raid_power`) is gone
+  for outposts. The homeworld keeps its estimate: its raid is sized by the
+  empire's worth, which moves, and nothing asked for it. The clients print
+  the two ends and say whether the defence is above the strongest, below
+  the weakest or between; none prints a chance, because the outcome also
+  moves the defence a tenth either way.
+- **A full store and a waiting repair are state, not event kinds.**
+  `yield_lost` lists the resources the extractor makes and the store is
+  full of; `repair_waiting_for` is what the store lacks of the repair. The
+  state says both fully, every tick, so a client that connects late knows
+  them too, which an event would not tell it. The alerts stay as they were,
+  for the log. A notice is raised when a resource enters the list; the
+  engine's alert waits until the store has dropped below its refill mark
+  before it warns again, so after a small load the notice can come once
+  more than the alert.
+- **A sector an outpost stands in is rated 0**, power 0, `observed`. It was
+  T1 with power 0, which read as a weak group. 0 means nothing to fight and
+  nothing coming; the scale for groups is still 1 to 9 and
+  `scaling::threat_rating` is untouched. Only that one case is rated 0: the
+  hub and home ground, where no group goes either, still carry their ring's
+  estimate, and changing them would change what bots and standing orders
+  read of those sectors.
+- **A fleet says it is at its owner's outpost** (`FleetState.at_outpost`),
+  finished, building or breached. `outpost_fuel` keeps its meaning (the way
+  there, while the outpost fills tanks) and is no longer read as "0 means
+  at".
+- **A survey of a sector never seen is a reply, not an error.** It carries
+  what the ring decides (the cost, the time, the raids, the platform) and a
+  `refusal`; the site (`site`: ore, grade, yield, hops home) is absent, and
+  the refusal is worked out without looking at the sector, so neither its
+  ore nor an Anomaly or a derelict there is told. Its ring is no secret, so
+  a sector outside rings 9 to 20 is refused for its ring. The inspector and
+  the log print it as any survey.
+
+Two more, from watching an outpost in a real browser:
+
+- **A panel that opens on the windshield takes down the toasts that ask
+  nothing.** On a phone they stand where the sheet opens and covered its top
+  rows for nine seconds. Dismissed, not pushed aside: there is no free place
+  on a phone to push them to, what they said is in the log, and a toast with
+  buttons stays. One raised after the panel opened still shows over it.
+- **The browser drive of an outpost's life is not a kept tool.** It takes
+  eleven minutes and its raid is a roll. `tool/solo_e2e.dart` stays the one
+  browser check, and it still founds nothing.
+
+## 2026-10-11 (outposts, slice 1: what the clients show)
+
+**Decided by the agent that built it, not by the owner, and open to change.**
+Where the web console and the TUI depart from section 7.6 of
+`docs/design/outposts.md`, or settle what it left open.
+
+- **`O` opens the founding panel anywhere, not only in rings 9 to 20.** The
+  dock's Found tile stands in those rings only, as 7.6 has it; the key works
+  wherever a fleet is, because the panel is how a player learns the rule: at
+  home it shows the server's sentence about the rings. It is also what the
+  browser check can reach.
+- **Upgrade is never switched off by the console.** (Replaced: the state
+  now carries the sentence; see the entry above.) The server has no
+  sentence for an upgrade it would refuse until the upgrade is ordered
+  (`outpost_survey` carries one for founding; `OutpostState` carries none
+  for the next level). The panel prints the shortfall as a figure and the
+  job under way, leaves the button pressable, and the server's refusal comes
+  back as a toast in its own words. A console that worded the refusal itself
+  would be a second judge.
+- **The outpost has a screen of its own**, on the rail while an outpost
+  stands (`G` then `P`; typed `5`, `op` or `outpost`), beside the panel the
+  windshield opens. 7.6 says "also in the rail"; a tile that only jumped to
+  the windshield would have needed a fleet to be selected.
+- **The HUD line is in the bar from 1100 px and a strip under it below
+  that.** The bar of a phone has no room for a fourth figure.
+- **The percentage in the HUD line is the fullest resource of the store**,
+  not the store as a whole: one resource at its cap is what stops the
+  extractor.
+- **The outpost's dock is the homeworld's hold panel**, given the outpost's
+  store to draw on, not a second panel. On the windshield it stands under
+  the outpost panel for the fleets standing there; `L` there opens it.
+- **A sector with an outpost shows the station in place of the threat
+  digit** on the map. The server rates such a sector as empty.
+- **The map inspector prints the survey as three lines and the verdict**, as
+  7.6 has it; the founding panel prints it as rows with the cost set against
+  the hold. The inspector column is now bounded and scrolls, so a long reply
+  cannot run under the route panel.
+- **"Raid repelled" at the outpost is a background notice too.** 7.6 lists a
+  raid, a breach, a finished level and a full store; the owner's brief added
+  a repair that waits. The outcome of an announced raid is told either way.
+- **TUI keys.** `o`, `F`, `U`, `A` then `y` were all free and are as 7.6
+  names them. `U`, `A` and Enter act inside the `o` overlay only, so that no
+  stray key upgrades or abandons; `F` works from any view and opens the
+  overlay on the survey.
 
 ## 2026-10-11 (outposts, slice 1: built on the design's recommendations, pending the owner's answers)
 

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
+import '../state/state_mapper.dart' show amountsOf, shortBy;
 import 'intel.dart' show clockFmt;
 import 'notifier.dart';
 import 'prefs.dart';
@@ -21,7 +22,9 @@ class Notice {
 }
 
 /// Watches the game for what needs the player: a queue that finished or went
-/// idle, a raid, a lost fleet, full storage. While the page is in the
+/// idle, a raid, a lost fleet, full storage, and at the outpost a raid, a
+/// breach, a finished level, a full store and a repair that waits for its
+/// materials. While the page is in the
 /// background each one is counted for the tab title and, if the player
 /// turned notifications on, raised through the browser; back in the
 /// foreground the missed ones are shown as toasts. In the foreground the log
@@ -46,6 +49,9 @@ class Attention extends ChangeNotifier {
   int _tick = -1;
   Map<proto.QueueType, bool>? _idle;
   int? _raidWarned;
+  bool _outpostWatched = false;
+  Set<proto.ResourceKind> _storeFull = const {};
+  bool _repairWaits = false;
   bool _away = false;
 
   /// Notices raised since the page went to the background.
@@ -155,6 +161,22 @@ class Attention extends ChangeNotifier {
                   'A raid of ${raidPower.round()} beat your defence of ${defensePower.round()}: lost ${resourcesLost.metal.round()} Fe, ${resourcesLost.crystal.round()} Cr, ${resourcesLost.deuterium.round()} De'
                       '${shipsLost > 0 ? ' and $shipsLost docked ship${shipsLost == 1 ? '' : 's'}' : ''}.',
                   critical: true));
+        case proto.RaidIncomingEvent(outpost: final at?, :final arrivalTick, :final estPower):
+          out.add(Notice('outpost-raid', 'Raid on your outpost',
+              'A raid of estimated power ${estPower.round()} reaches your outpost at ${at.q}, ${at.r} in ${clockFmt(arrivalTick - s.tick)}.${_outpostDefence(s)}',
+              critical: true));
+        case proto.RaidResolvedEvent(outpost: final at?, :final defended, :final raidPower, :final defensePower, :final resourcesLost, :final shipsLost):
+          out.add(defended
+              ? Notice('outpost-raid', 'Outpost raid repelled', 'The defence of ${defensePower.round()} at your outpost at ${at.q}, ${at.r} held against a raid of ${raidPower.round()}.')
+              : Notice(
+                  'outpost-raid',
+                  'Outpost breached',
+                  'A raid of ${raidPower.round()} beat the defence of ${defensePower.round()} at your outpost at ${at.q}, ${at.r}: it took ${amountsOf(resourcesLost)}'
+                      '${shipsLost > 0 ? ' and destroyed $shipsLost ship${shipsLost == 1 ? '' : 's'} standing there' : ''}. '
+                      'It makes nothing, fills no tank and has no platform until it has repaired itself from its store.',
+                  critical: true));
+        case proto.OutpostCompletedEvent(:final sector, :final level):
+          out.add(Notice('outpost-level', level == 1 ? 'Outpost open' : 'Outpost level finished', 'Level $level of your outpost at ${sector.q}, ${sector.r} is finished.'));
         case proto.FleetDestroyedEvent(mine: true, :final fleetId, :final sector):
           out.add(Notice('fleet-$fleetId', 'Fleet lost', 'Fleet F$fleetId was destroyed in sector ${sector.q}, ${sector.r}. Every ship is gone.', critical: true));
         case proto.AlertEvent(level: proto.AlertLevel.critical, :final message, :final fleetId) when fleetId == null || !lost.contains(fleetId):
@@ -184,6 +206,27 @@ class Attention extends ChangeNotifier {
       }
     }
 
+    final post = s.outpost;
+    final full = {...?post?.yieldLost};
+    final short = post?.repairWaitingFor;
+    if (_outpostWatched && post != null) {
+      final at = '${post.location.q}, ${post.location.r}';
+      for (final k in full.difference(_storeFull)) {
+        out.add(Notice('outpost-store-${k.name}', 'Outpost store full',
+            'Your outpost at $at holds all the ${k.name} its store takes: the extractor makes no more of it until a fleet loads some.'));
+      }
+      final cost = post.repairCost;
+      if (short != null && !_repairWaits && cost != null) {
+        out.add(Notice('outpost-repair', 'Outpost repair waiting',
+            'Your outpost at $at is breached and cannot repair itself: the repair costs ${amountsOf(cost)} and its store is ${shortBy(short)}. '
+                'It makes nothing, fills no tank and has no platform until a fleet unloads the rest.',
+            critical: true));
+      }
+    }
+    _outpostWatched = true;
+    _storeFull = full;
+    _repairWaits = short != null;
+
     final raid = s.raid;
     if (raid != null && _raidWarned != raid.arrivalTick) {
       final left = raid.arrivalTick - s.tick;
@@ -208,6 +251,11 @@ class Attention extends ChangeNotifier {
   static String _defence(GameState s) {
     final hw = s.hw;
     return hw == null ? '' : ' Home defence is ${hw.homeDefencePower.round()}.';
+  }
+
+  static String _outpostDefence(GameState s) {
+    final post = s.outpost;
+    return post == null ? '' : ' Its platform and the ships standing there come to ${post.defencePower.round()}.';
   }
 
   @override

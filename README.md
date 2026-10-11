@@ -95,7 +95,14 @@ want, Left/Right the share of the hold, and it shows the server's quote;
 Enter trades when the fleet is at the hub (marked `X` on the star map). `f`
 opens the fleet panel (split, merge); with the fleet at home it also loads
 the hold from the stockpile: `r` picks the resource, Left/Right the share of
-what fits, `l` loads and `u` unloads.
+what fits, `l` loads and `u` unloads. With the fleet at your outpost the same
+keys load from the outpost's store and unload into it. `o` opens the outpost
+overlay: your outpost's level and job, store, yield, defence against the raid
+estimate, the raid on its way and the next level, with `U` to upgrade and `A`
+then `y` to abandon; with no outpost it is the founding survey of the sector
+the active fleet stands in, where `F` surveys (also from outside the
+overlay) and Enter founds. The star map marks your outpost `O` and another
+empire's `o`.
 
 ## Headless / LLM agent mode
 
@@ -184,7 +191,7 @@ Example session:
 | `load` | `fleet_id`, `resource` (`metal`, `crystal`, `deuterium`), `amount` (optional) | move `amount` of `resource` from the stockpile into the fleet's hold; without `amount`, all the stockpile holds and the hold has room for. One resource an order. The fleet must stand idle at its homeworld with no standing orders. It is then `laden`: the dock leaves its hold alone until the fleet has been away (see Loading a hold). The answer is an `Alert` (info) saying what went aboard. Refused with nothing moved, and a sentence saying what is short: `NoResources` when the stockpile holds less than `amount` or none, `CargoFull` when the hold lacks the room, `NotInSector` away from home, `OnCooldown` in transit or busy, `InvalidCommand` for an amount that is not positive or a fleet under standing orders. At the player's outpost `load` takes from the outpost's store instead and does not make the fleet `laden`; see Outposts |
 | `unload` | `fleet_id` | put a `laden` hold back: what the caps allow goes into the stockpile now and the dock takes the rest as room opens. The answer is an `Alert` (info). Refused with `InvalidCommand` when the fleet was not loaded by `load`, `NotInSector` away from home. At the player's outpost `unload` puts the whole hold of any fleet into the outpost's store as far as it has room (`NoResources` for an empty hold); see Outposts |
 | `found_outpost` | `fleet_id` | found the player's outpost in the sector the fleet stands in, paying 1000 metal, 500 crystal and 200 deuterium from its hold. The fleet must stand idle with no standing orders; the sector must be in rings 9 to 20, not an Anomaly, without a derelict, without a group in it, and at least 3 hexes from every other outpost; a player has one outpost. The answer is an `Alert` (info) with the tick it will be finished. Refused with nothing changed and a sentence saying why: `InvalidTarget` for a sector that does not qualify, `InvalidCommand` with an outpost already or under standing orders, `NoResources` naming what the hold lacks, `OnCooldown` for a fleet that is moving, fighting or busy |
-| `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, `densities`, `grade`, the `cost` and `build_ticks` of level 1, `production` a tick at level 1, `raid_power`, `platform_power`, `hops_home`, and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector on the player's chart may be asked about; `InvalidTarget` for one never seen |
+| `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, the `cost` and `build_ticks` of level 1, `raid_power` (`least` and `most`), `platform_power`, `site` (`densities`, `grade`, `production` a tick at level 1, `hops_home`) and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector may be asked about; one the player has never seen is answered without `site` and with a `refusal` that says so |
 | `upgrade_outpost` | none | build the next level of the outpost, paid in full from the outpost's own store at that moment. Refused with `InsufficientResources` and the exact shortfall, `MaxLevelReached` at level 3, `InvalidCommand` with no outpost, while it is building or repairing, or while it is breached |
 | `abandon_outpost` | none | give up the outpost. Its store is left as wreckage in the sector for 180 ticks, its score is gone, nothing is refunded, and another may be founded. `InvalidCommand` with no outpost |
 
@@ -307,6 +314,21 @@ stockpile and shows what is aboard and what would fit; `L` in the windshield
 opens it for the active fleet, and `load metal 400`, `load metal` (all that
 fits) and `unload` do the same from the command bar.
 
+Outposts: in rings 9 to 20 the windshield's dock has a Found tile, and `O`
+opens the founding panel anywhere: the server's survey of the sector the
+fleet stands in, the cost of level 1 set against its hold, and a Found
+button that is off, with the server's sentence under it, while the server
+would refuse. Once you have an outpost `O` opens its panel instead (level and
+job with its countdown, the store against cap and protected floor, the yield
+an hour, the defence against the raid estimate and the raid on its way, the
+next level with Upgrade, Abandon behind a second press) with the hold panel
+under it, pointed at the outpost's store for the fleets standing there. The
+outpost also has a screen of its own on the rail (`G` then `P`) and a line in
+the HUD while it stands, a mark on the map (filled for your own) with a note
+in the sector inspector, which has a Survey site button for any charted
+sector. From the command bar: `found`, `survey [q r]`, `outpost upgrade`,
+`outpost abandon`.
+
 - `?name=Admiral` skips the name prompt; `?token=...` supplies the account
   token (see "Accounts and tokens"); `?ws=ws://host:port/ws` points at another
   server. The token the server issues is remembered in the browser's
@@ -325,7 +347,9 @@ fits) and `unload` do the same from the command bar.
   account in the browser.
 - **Notifications.** While the tab is in the background, a finished or idle
   queue, a raid (announced, 60 ticks out, resolved), a lost fleet, a critical
-  alert or full storage is counted in the tab title, `(2) IN AMBER CLAD`, and,
+  alert or full storage, and at the outpost a raid, a breach, a finished
+  level, a full store or a repair that waits for its materials, is counted in
+  the tab title, `(2) IN AMBER CLAD`, and,
   if you turned notifications on, raised as a browser notification. The
   browser is asked for permission only when you press the button for it (the
   one-time offer after your first order starts, or `?` > Notifications).
@@ -403,7 +427,7 @@ and Flutter; no other tool.
 
 ```sh
 scripts/play.sh --single-player --no-serve          # just the bundle
-cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium (about two minutes)
+cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium (about three minutes)
 cargo test -p iac-solo                               # the host natively, through the same door of bytes
 ```
 
@@ -747,8 +771,11 @@ Change the Rust protocol, regenerate, then fix the Dart side until
     the outpost: no extractor, no fuel, no platform until it has repaired
     itself from its store, which it can only do if the store holds the
     repair cost. No raid destroys it.
-  - **State**: `outpost` in `full_state` and every `tick_update`,
-    `outpost_fuel` on each fleet, `outpost` on a sector that holds one, the
+  - **State**: `outpost` in `full_state` and every `tick_update` (with
+    `raid_power`, the weakest and the strongest raid of its ring;
+    `upgrade_refusal`, why an upgrade would be refused now; `yield_lost` and
+    `repair_waiting_for`), `at_outpost` and `outpost_fuel` on each fleet,
+    `outpost` on a sector that holds one (its `threat` is rated 0), the
     `OutpostCompleted` event, and `outpost` on `RaidIncoming` and
     `RaidResolved`. Each finished level adds its cost to `core`.
   - Standing orders, bots and `recall` do not use the outpost yet.

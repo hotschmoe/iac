@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import '../../console/intel.dart';
+import '../../console/outpost.dart' show inOutpostRings;
 import '../../console/route_planner.dart';
 import '../../console/services.dart';
 import '../../console/threat.dart';
@@ -22,7 +23,9 @@ import '../../scenes/windshield/geometry.dart';
 import '../../scenes/windshield/painter.dart';
 import '../../scenes/windshield/sim.dart';
 import '../../state/game_controller.dart' show HomeworldTab;
+import '../homeworld/economy_tabs.dart' show HoldDock, HoldPanel;
 import '../onboarding.dart';
+import '../outpost_view.dart' show FoundingPanel, OutpostPanel;
 import 'parts.dart';
 
 class WindshieldView extends StatefulWidget {
@@ -49,6 +52,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _manage = false;
   bool _trade = false;
   bool _orders = false;
+  bool _outpost = false;
   DateTime? _armedUntil;
   DateTime? _scanAt;
   String? _dockHint;
@@ -148,12 +152,15 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final before = sim.loc;
     sim.sync(f: f, s: f == null ? null : _sec(f.sector), homeHex: con.state.homeworld);
     sim.atExchange = f != null && con.state.exchangeAt(f.sector);
+    sim.outpost = f == null ? null : _sec(f.sector)?.outpost;
     if (f != null && before != null && before != sim.loc && sim.warp != null) {
       final first = _firstVisits.remove(f.sector);
       final s = _sec(f.sector);
       final th = SectorThreat.of(s);
       if (sim.atExchange) {
         _showBanner('THE HUB', 'Exchange open. Trade cargo for cargo.', false);
+      } else if (sim.outpost case final post?) {
+        _showBanner(post.mine ? 'YOUR OUTPOST' : 'OUTPOST', post.mine ? 'Its store and dock are open to this fleet.' : 'A station of ${post.owner}.', false);
       } else {
         _showBanner(first ? 'NEW SECTOR' : 'SECTOR ${f.sector.q}, ${f.sector.r}',
             first ? 'First visit. ${voice[s?.terrain ?? proto.TerrainType.empty]}' : '${s?.terrain.label ?? ''} / ${zoneName(f.sector)}', th.rating >= 5);
@@ -192,6 +199,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         con.play('ok');
       case proto.ExchangedEvent(:final terms):
         _showBanner('TRADED', '${terms.amount.round()} ${terms.give.name} for ${terms.receive.round()} ${terms.want.name}, fee ${(terms.fee * 100).round()}%.', false);
+        con.play('ok');
+      case proto.OutpostCompletedEvent(:final sector, :final level):
+        _showBanner(level == 1 ? 'OUTPOST OPEN' : 'OUTPOST LEVEL $level', 'Level $level finished at ${sector.q}, ${sector.r}.', false);
         con.play('ok');
       case proto.ScanCompletedEvent():
         final f = _fleet;
@@ -266,12 +276,17 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       case 'recall':
         return f.sector == con.state.homeworld ? 'Already at the homeworld.' : null;
       case 'load':
-        return f.sector == con.state.homeworld ? null : 'A hold is loaded from the stockpile at the homeworld only.';
+        if (f.sector == con.state.homeworld || f.atOutpost) return null;
+        return con.state.outpost == null ? 'A hold is loaded from the stockpile at the homeworld only.' : 'A hold is loaded at the homeworld and at your outpost only.';
     }
     return null;
   }
 
   void act(String id, {bool fromSub = false}) {
+    if (id == 'outpost') {
+      _toggleOutpost();
+      return;
+    }
     final f = _fleet;
     if (f == null || sim.warp != null) return;
     final s = _sec(f.sector);
@@ -330,19 +345,27 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           if (_trade) {
             _sheet = true;
             _orders = false;
+            _outpost = false;
           }
         });
+        if (_trade) con.toasts.dismissPlain();
         con.play('click');
       case 'load':
-        con.game.selectHomeworldTab(HomeworldTab.storage);
-        con.go(Screen.homeworld);
+        if (f.sector == con.state.homeworld) {
+          con.game.selectHomeworldTab(HomeworldTab.storage);
+          con.go(Screen.homeworld);
+        } else if (!_outpost) {
+          _toggleOutpost();
+        }
         return;
     }
     if (id != 'harvest') setState(() => _hsub = false);
   }
 
   /// Open or shut the standing orders of the selected fleet. It is a panel,
-  /// not an act of the fleet: a jump under way does not keep it shut.
+  /// not an act of the fleet: a jump under way does not keep it shut. A
+  /// panel opens where the toasts stand (the top of a phone's sheet, the
+  /// foot of the desktop column), so the toasts that ask nothing make way.
   void _toggleOrders() {
     if (_fleet == null) return;
     setState(() {
@@ -350,8 +373,28 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       if (_orders) {
         _sheet = true;
         _trade = false;
+        _outpost = false;
       }
     });
+    if (_orders) con.toasts.dismissPlain();
+    con.play('click');
+  }
+
+  /// Open or shut the outpost: the founding survey of this sector while the
+  /// player has none, the outpost's own panel and its dock once it stands.
+  /// Like the orders it is a panel, and a jump under way does not keep it
+  /// shut.
+  void _toggleOutpost() {
+    if (_fleet == null) return;
+    setState(() {
+      _outpost = !_outpost;
+      if (_outpost) {
+        _sheet = true;
+        _trade = false;
+        _orders = false;
+      }
+    });
+    if (_outpost) con.toasts.dismissPlain();
     con.play('click');
   }
 
@@ -380,13 +423,14 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _onKey(KeyEvent e) {
     final ch = e.character?.toLowerCase();
     if (e.logicalKey == LogicalKeyboardKey.escape) {
-      if (sim.target != null || _hsub || _sheet || _trade || _orders) {
+      if (sim.target != null || _hsub || _sheet || _trade || _orders || _outpost) {
         setState(() {
           sim.target = null;
           _hsub = false;
           _sheet = false;
           _trade = false;
           _orders = false;
+          _outpost = false;
         });
         return true;
       }
@@ -400,6 +444,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     }
     if (ch == 'p') {
       _toggleOrders();
+      return true;
+    }
+    if (ch == 'o') {
+      _toggleOutpost();
       return true;
     }
     const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop', 't': 'trade', 'l': 'load'};
@@ -494,6 +542,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final harvesting = f.status == ui.FleetStatus.harvesting;
       final exploring = f.status == ui.FleetStatus.exploring;
       final shield = _shieldFrac();
+      final mine = st.outpost;
+      final atOutpost = f.atOutpost;
 
       DockAction da(String id, String label, String key, {bool active = false, bool fire = false}) =>
           DockAction(id, label, key, reason: _reason(id, f, th, s), active: active, fire: fire);
@@ -506,6 +556,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         da('recall', 'Recall', 'r'),
         da('stop', 'Stop', 'x'),
         da('trade', 'Trade', 't', active: _trade),
+        if (mine == null ? inOutpostRings(f.sector) : atOutpost) da('outpost', mine == null ? 'Found' : 'Outpost', 'o', active: _outpost),
       ];
       final atExchange = st.exchangeAt(f.sector);
       final feedWidth = math.min(340.0, (size.width - dockActions.length * Dock.tileWidth) / 2 - 30);
@@ -514,6 +565,13 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final rightCol = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
         if (_trade) ...[ExchangePanel(controller: con.game), const SizedBox(height: 8)],
+        if (_outpost && mine == null) ...[FoundingPanel(controller: con.game), const SizedBox(height: 8)],
+        if (_outpost && mine != null) ...[
+          OutpostPanel(controller: con.game),
+          const SizedBox(height: 8),
+          HoldPanel(state: st, ctrl: con.game, dock: HoldDock.outpost),
+          const SizedBox(height: 8),
+        ],
         StatusPanel(
           f: f,
           shieldFrac: shield,
@@ -541,6 +599,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           boarding: exploring,
           exchange: atExchange ? st.exchange : null,
           trading: _trade,
+          outpost: s?.outpost,
+          station: atOutpost ? mine : null,
+          outpostOpen: _outpost,
           target: sim.target,
           onTarget: (k) => setState(() {
             sim.target = sim.target == k ? null : k;
@@ -596,7 +657,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             left: 16,
             top: 14,
             width: narrow ? math.min(SectorHead.phoneWidth, size.width - 96) : math.min(300, g.cardCenter(dirs[5]).dx - GateCard.width / 2 - 26),
-            child: SectorHead(loc: f.sector, home: st.homeworld, sector: s, threat: th, narrow: narrow, exchange: atExchange)),
+            child: SectorHead(loc: f.sector, home: st.homeworld, sector: s, threat: th, narrow: narrow, exchange: atExchange, outpost: s?.outpost)),
         if (!narrow)
           Positioned(
               left: 16,
@@ -611,7 +672,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               top: 8,
               right: 10,
               child: GuideTarget(_sheet ? 'status-sheet' : 'orders',
-                  child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () => setState(() => _sheet = !_sheet)))),
+                  child: ConsoleButton('Status', key: const ValueKey('status-sheet'), small: true, active: _sheet, onPressed: () {
+                    setState(() => _sheet = !_sheet);
+                    if (_sheet) con.toasts.dismissPlain();
+                  }))),
         if (!narrow)
           Positioned(
               right: 16,
@@ -694,6 +758,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       h = 'd';
     } else if (sim.atExchange && near(g.wp(.38, -.26), g.rh * .17)) {
       h = 'x';
+    } else if (sim.outpost != null && near(g.wp(.38, -.26), g.rh * .17)) {
+      h = 'p';
     } else if (sim.ast.any((a) => a.ore != null && near(g.wp(a.x, a.y), a.r * g.rh * 1.3))) {
       h = 'o';
     }

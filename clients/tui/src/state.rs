@@ -6,8 +6,9 @@ use iac_shared::constants::{ResourceKind, ShipClass};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     Command, EventKind, ExchangeQuote, FleetState, GameEvent, HomeworldState,
-    LeaderboardReply, PlayerState, SectorState, ServerMessage, WorldInfo,
+    LeaderboardReply, OutpostState, OutpostSurvey, PlayerState, SectorState, ServerMessage, WorldInfo,
 };
+use iac_shared::Resources;
 use iac_shared::world::HubService;
 use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
 
@@ -64,15 +65,30 @@ impl HomeworldTab {
 }
 
 /// Fleet-management overlay: pick ships of the active fleet to split off,
-/// and what to load into its hold at the home dock.
+/// and what to load into its hold at the dock it stands at.
 #[derive(Debug, Clone)]
 pub struct FleetPanel {
     pub cursor: usize,
     pub marked: Vec<u64>,
-    /// The resource `load` would take from the stockpile.
+    /// The resource `load` would take from the dock's stock.
     pub resource: ResourceKind,
     /// Index into `HOLD_SHARES`: how much of what fits.
     pub share: usize,
+}
+
+/// The two docks a hold is filled and emptied at by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dock {
+    Home,
+    Outpost,
+}
+
+/// Outpost overlay: the player's outpost, or with none the founding survey
+/// of the sector the active fleet stands in.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OutpostPanel {
+    /// [A] was pressed: [y] abandons, any other key keeps the outpost.
+    pub abandon_armed: bool,
 }
 
 /// One change to the load the fleet panel offers.
@@ -87,7 +103,7 @@ pub enum LoadStep {
 pub struct LoadOffer {
     pub fleet_id: u64,
     pub resource: ResourceKind,
-    /// The most the stockpile holds and the hold has room for, as the
+    /// The most the dock's stock holds and the hold has room for, as the
     /// client last saw them.
     pub fits: f32,
     /// What the order asks for; None for all that fits.
@@ -194,6 +210,10 @@ pub struct ClientState {
     pub player: Option<PlayerState>,
     pub fleets: Vec<FleetState>,
     pub homeworld: Option<HomeworldState>,
+    /// The player's outpost as the server last sent it; None with none.
+    pub outpost: Option<OutpostState>,
+    /// The last outpost survey the server answered.
+    pub survey: Option<OutpostSurvey>,
     pub known_sectors: HashMap<u32, SectorState>,
     pub world: Option<WorldInfo>,
     /// The last score table the server sent, shown in an overlay.
@@ -212,6 +232,7 @@ pub struct ClientState {
     pub show_tech_tree: bool,
     pub fleet_panel: Option<FleetPanel>,
     pub exchange_panel: Option<ExchangePanel>,
+    pub outpost_panel: Option<OutpostPanel>,
     pub homeworld_tab: HomeworldTab,
     pub homeworld_cursor: usize,
     pub status_message: String,
@@ -223,7 +244,8 @@ pub struct ClientState {
     pub ship_build_count: u16,
     /// `fuel_budget_pct` of the standing orders this client gives.
     pub orders_fuel_budget: u8,
-    /// Arrival tick of a forecasted raid; drives the header countdown.
+    /// Arrival tick of a raid forecast on the homeworld; drives the header
+    /// countdown. A raid on the outpost is told by `outpost`.
     pub raid_eta: Option<u64>,
 
     // Map intel & navigation
@@ -257,6 +279,8 @@ impl ClientState {
             player: None,
             fleets: Vec::new(),
             homeworld: None,
+            outpost: None,
+            survey: None,
             known_sectors: HashMap::new(),
             world: None,
             leaderboard: None,
@@ -272,6 +296,7 @@ impl ClientState {
             show_tech_tree: false,
             fleet_panel: None,
             exchange_panel: None,
+            outpost_panel: None,
             homeworld_tab: HomeworldTab::Buildings,
             homeworld_cursor: 0,
             status_message: String::new(),
@@ -290,8 +315,8 @@ impl ClientState {
     /// Push an event to the log, updating any state it implies.
     fn note_event(&mut self, event: &GameEvent) {
         match &event.kind {
-            EventKind::RaidIncoming(e) => self.raid_eta = Some(e.arrival_tick),
-            EventKind::RaidResolved(_) => self.raid_eta = None,
+            EventKind::RaidIncoming(e) if e.outpost.is_none() => self.raid_eta = Some(e.arrival_tick),
+            EventKind::RaidResolved(e) if e.outpost.is_none() => self.raid_eta = None,
             EventKind::ScanCompleted(e) => {
                 self.scan_ripples.push((e.sector, event.tick));
                 for contact in &e.signals {
@@ -348,9 +373,15 @@ impl ClientState {
     // ── Fleet management ─────────────────────────────────────────────
 
     /// Open or close the fleet panel. Opening it offers to load a resource
-    /// whose stockpile is at its cap, if one is.
+    /// the dock holds all it can of, if there is one.
     pub fn toggle_fleet_panel(&mut self) {
-        let surplus = self.homeworld.as_ref().and_then(|h| h.storage.capped.first().copied());
+        let surplus = match (self.active_dock(), &self.outpost) {
+            (Some(Dock::Outpost), Some(post)) => {
+                ResourceKind::ALL.into_iter().find(|kind| post.store.get(*kind) >= post.store_cap.get(*kind))
+            }
+            _ => self.homeworld.as_ref().and_then(|h| h.storage.capped.first().copied()),
+        };
+        self.outpost_panel = None;
         self.fleet_panel = match self.fleet_panel {
             Some(_) => None,
             None if self.active_fleet().is_some() => Some(FleetPanel {
@@ -432,11 +463,25 @@ impl ClientState {
 
     // ── Loading at the dock ──────────────────────────────────────────
 
-    /// Whether the active fleet stands on the player's homeworld.
-    pub fn active_fleet_at_home(&self) -> bool {
-        match (self.active_fleet(), &self.player) {
-            (Some(fleet), Some(player)) => fleet.location == player.homeworld,
-            _ => false,
+    /// The dock the active fleet stands at: the homeworld, or the player's
+    /// outpost.
+    pub fn active_dock(&self) -> Option<Dock> {
+        let fleet = self.active_fleet()?;
+        if self.player.as_ref().is_some_and(|p| p.homeworld == fleet.location) {
+            Some(Dock::Home)
+        } else if fleet.at_outpost {
+            Some(Dock::Outpost)
+        } else {
+            None
+        }
+    }
+
+    /// What `load` takes from at the active fleet's dock: the stockpile at
+    /// home, the store at the outpost.
+    pub fn dock_stock(&self) -> Option<Resources> {
+        match self.active_dock()? {
+            Dock::Home => self.player.as_ref().map(|p| p.resources),
+            Dock::Outpost => self.outpost.as_ref().map(|post| post.store),
         }
     }
 
@@ -455,7 +500,7 @@ impl ClientState {
     pub fn load_offer(&self) -> Option<LoadOffer> {
         let panel = self.fleet_panel.as_ref()?;
         let fleet = self.active_fleet()?;
-        let stock = self.player.as_ref()?.resources.get(panel.resource);
+        let stock = self.dock_stock().unwrap_or_default().get(panel.resource);
         let room = fleet.cargo_capacity - fleet.cargo.total();
         let fits = stock.min(room).max(0.0);
         let pct = HOLD_SHARES[panel.share];
@@ -503,6 +548,7 @@ impl ClientState {
             asked: None,
         });
         self.fleet_panel = None;
+        self.outpost_panel = None;
         self.show_keybinds = false;
         self.show_tech_tree = false;
         self.exchange_quote_command()
@@ -568,6 +614,75 @@ impl ClientState {
         }
     }
 
+    // ── Outpost ──────────────────────────────────────────────────────
+
+    fn open_outpost_panel(&mut self) {
+        self.outpost_panel = Some(OutpostPanel::default());
+        self.fleet_panel = None;
+        self.exchange_panel = None;
+        self.show_keybinds = false;
+        self.show_tech_tree = false;
+    }
+
+    /// Open or close the outpost overlay. With no outpost it opens on the
+    /// founding survey, and asks the server for the active fleet's sector.
+    pub fn toggle_outpost_panel(&mut self) -> Option<Command> {
+        if self.outpost_panel.take().is_some() {
+            return None;
+        }
+        self.open_outpost_panel();
+        if self.outpost.is_some() { None } else { self.survey_command() }
+    }
+
+    fn survey_command(&self) -> Option<Command> {
+        Some(Command::OutpostSurvey { fleet_id: self.active_fleet()?.id, sector: None })
+    }
+
+    /// Survey the sector the active fleet stands in, with the overlay open
+    /// to read the answer in.
+    pub fn outpost_survey(&mut self) -> Option<Command> {
+        self.open_outpost_panel();
+        self.survey_command()
+    }
+
+    /// The last survey, if it is of the sector the active fleet stands in
+    /// and was asked for that fleet.
+    pub fn site_survey(&self) -> Option<&OutpostSurvey> {
+        let fleet = self.active_fleet()?;
+        self.survey.as_ref().filter(|s| s.fleet_id == fleet.id && s.sector == fleet.location)
+    }
+
+    /// Found the outpost where the active fleet stands. The server is the
+    /// judge: its refusal comes back as its own sentence.
+    pub fn outpost_found(&self) -> Option<Command> {
+        self.outpost_panel.as_ref()?;
+        if self.outpost.is_some() {
+            return None;
+        }
+        Some(Command::FoundOutpost { fleet_id: self.active_fleet()?.id })
+    }
+
+    pub fn outpost_upgrade(&self) -> Option<Command> {
+        self.outpost_panel.as_ref()?;
+        self.outpost.as_ref().map(|_| Command::UpgradeOutpost)
+    }
+
+    /// [A]: ask before abandoning. Nothing is sent until [y].
+    pub fn outpost_abandon_arm(&mut self, armed: bool) {
+        let has_outpost = self.outpost.is_some();
+        if let Some(panel) = self.outpost_panel.as_mut() {
+            panel.abandon_armed = armed && has_outpost;
+        }
+    }
+
+    pub fn outpost_abandon_confirm(&mut self) -> Option<Command> {
+        let panel = self.outpost_panel.as_mut()?;
+        if !std::mem::take(&mut panel.abandon_armed) {
+            return None;
+        }
+        self.outpost.as_ref().map(|_| Command::AbandonOutpost)
+    }
+
     pub fn adjust_build_count(&mut self, delta: i32) {
         let next = self.ship_build_count as i32 + delta;
         self.ship_build_count = next.clamp(1, MAX_SHIP_BUILD_COUNT as i32) as u16;
@@ -615,6 +730,7 @@ impl ClientState {
                 if let Some(hw) = &update.homeworld_update {
                     self.homeworld = Some(hw.clone());
                 }
+                self.outpost = update.outpost.clone();
 
                 if let Some(sectors) = &update.sector_updates {
                     for sector in sectors {
@@ -636,6 +752,7 @@ impl ClientState {
                 self.tick = state.tick;
                 self.player = Some(state.player.clone());
                 self.homeworld = Some(state.homeworld.clone());
+                self.outpost = state.outpost.clone();
                 self.world = Some(state.world.clone());
                 self.replace_fleets(&state.fleets);
 
@@ -690,12 +807,16 @@ impl ClientState {
                 }
             }
             ServerMessage::OutpostSurvey(s) => {
-                let verdict = s.refusal.clone().unwrap_or_else(|| "can be founded now".to_string());
-                self.status_message = format!(
-                    "Outpost site {} ring {} grade {:.1}: raid {:.0} vs platform {:.0}; {verdict}",
-                    s.sector, s.ring, s.grade, s.raid_power, s.platform_power,
-                );
-                self.status_set_tick = self.tick;
+                self.survey = Some(s.clone());
+                if self.outpost_panel.is_none() {
+                    let verdict = s.refusal.clone().unwrap_or_else(|| "can be founded now".to_string());
+                    let grade = s.site.as_ref().map_or_else(String::new, |site| format!(" grade {:.1}", site.grade));
+                    self.status_message = format!(
+                        "Outpost site {} ring {}{grade}: raids of {:.0} to {:.0} vs platform {:.0}; {verdict}",
+                        s.sector, s.ring, s.raid_power.least, s.raid_power.most, s.platform_power,
+                    );
+                    self.status_set_tick = self.tick;
+                }
             }
             // Login is settled before the TUI starts (connection::login).
             ServerMessage::AuthResult(_) => {}

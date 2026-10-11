@@ -356,7 +356,7 @@ class _FleetCard extends StatelessWidget {
             }, size: 24),
           ),
         ),
-        _kvr('Fuel', hops == null ? '${f.fuel}' : 'for ${hopCount(hops)}', warn: low ? ' LOW' : null),
+        _kvr('Fuel', '${hops == null ? '${f.fuel}' : 'for ${hopCount(hops)}'}${_toOutpost(f)}', warn: low ? ' LOW' : null),
         LedBar(f.fuelMax > 0 ? f.fuel / f.fuelMax : 0, color: low ? C.ember : C.own, height: 6),
         _kvr('Cargo', '${f.cargo.total} / ${f.cargo.capacity}'),
         LedBar(f.cargo.fraction, color: C.a400, height: 6),
@@ -375,14 +375,27 @@ class _FleetCard extends StatelessWidget {
     );
   }
 
+  /// ", at the outpost" for a fleet standing there, or ", 221 to the
+  /// outpost": what the way there costs it while the outpost is in service.
+  static String _toOutpost(ui.FleetState f) => switch (f.outpostFuel) {
+        _ when f.atOutpost => ', at the outpost',
+        null => '',
+        final fuel => ', $fuel to the outpost',
+      };
+
   Widget _kvr(String k, String v, {String? warn}) => Padding(
       padding: const EdgeInsets.only(top: 6, bottom: 3),
-      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      child: Row(children: [
         Lbl(k, size: 10),
-        Text.rich(TextSpan(children: [
-          TextSpan(text: v, style: T.mono(size: 10, color: C.text)),
-          if (warn != null) TextSpan(text: warn, style: T.mono(size: 10, color: C.threat(6), weight: FontWeight.w600)),
-        ])),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text.rich(
+              TextSpan(children: [
+                TextSpan(text: v, style: T.mono(size: 10, color: C.text)),
+                if (warn != null) TextSpan(text: warn, style: T.mono(size: 10, color: C.threat(6), weight: FontWeight.w600)),
+              ]),
+              textAlign: TextAlign.right),
+        ),
       ]));
 }
 

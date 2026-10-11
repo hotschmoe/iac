@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../console/economy_view.dart';
 import '../../console/intel.dart';
+import '../../console/outpost.dart' show storeAtCap;
 import '../../design/gauges.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
@@ -138,13 +139,18 @@ const loadShares = [25, 50, 75, 100];
 
 const _abbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr', proto.ResourceKind.deuterium: 'De'};
 
-/// Load the hold of a fleet docked at home from the stockpile, or put it
-/// back. The server moves the cargo and words every refusal; the panel shows
-/// what is aboard and what would fit.
+/// The two docks a hold is filled and emptied at by hand: the homeworld,
+/// from the stockpile, and the player's outpost, from its store.
+enum HoldDock { home, outpost }
+
+/// Load the hold of a fleet standing at a dock from that dock's stock, or
+/// empty it there. The server moves the cargo and words every refusal; the
+/// panel shows what is aboard and what would fit.
 class HoldPanel extends StatefulWidget {
   final GameState state;
   final GameController ctrl;
-  const HoldPanel({super.key, required this.state, required this.ctrl});
+  final HoldDock dock;
+  const HoldPanel({super.key, required this.state, required this.ctrl, this.dock = HoldDock.home});
   @override
   State<HoldPanel> createState() => _HoldPanelState();
 }
@@ -158,44 +164,57 @@ class _HoldPanelState extends State<HoldPanel> {
   Widget build(BuildContext context) {
     final st = widget.state;
     final c = widget.ctrl;
-    final docked = [for (final f in st.fleets) if (f.sector == st.homeworld) f];
+    final outpost = widget.dock == HoldDock.outpost ? st.outpost : null;
+    final atHome = outpost == null;
+    final source = atHome ? 'stockpile' : 'store';
+    final docked = [for (final f in st.fleets) if (atHome ? f.sector == st.homeworld : f.atOutpost) f];
     if (docked.isEmpty) {
-      return const ConsolePanel(
-        key: ValueKey('hold-panel'),
+      return ConsolePanel(
+        key: const ValueKey('hold-panel'),
         title: 'Load a hold',
-        subText: 'no fleet at the dock',
-        padding: EdgeInsets.all(14),
-        child: WhyText('A hold is loaded from the stockpile at the homeworld only, and no fleet is docked here.', key: Key('hold-why')),
+        subText: atHome ? 'no fleet at the dock' : 'no fleet at the outpost',
+        padding: const EdgeInsets.all(14),
+        child: WhyText(
+            atHome
+                ? 'A hold is loaded from the stockpile at the homeworld only, and no fleet is docked here.'
+                : 'A hold is loaded from the outpost\'s store, and emptied into it, by a fleet standing at the outpost. None of yours stands there.',
+            key: const Key('hold-why')),
       );
     }
     final fleet = docked.where((f) => f.id == _fleet).firstOrNull ?? docked.where((f) => f.id == c.currentFleet.id).firstOrNull ?? docked.first;
-    final capped = st.hw?.storage.capped ?? const <proto.ResourceKind>[];
+    final from = outpost?.store ?? st.stock;
+    final capped = outpost == null
+        ? st.hw?.storage.capped ?? const <proto.ResourceKind>[]
+        : [for (final k in proto.ResourceKind.values) if (storeAtCap(outpost, k)) k];
     final resource = _resource ?? capped.firstOrNull ?? proto.ResourceKind.metal;
     final hold = st.holds[fleet.id] ?? const proto.Resources();
     final room = math.max(0.0, fleet.holdCapacity - hold.total);
-    final stock = resource.of(st.stock);
+    final stock = resource.of(from);
     final fits = math.min(stock, room);
     final amount = _share == 100 ? null : fits * _share / 100;
     final free = fleet.status == FleetStatus.idle || fleet.status == FleetStatus.docked;
     final why = fleet.policy != null
-        ? '${fleet.name} is under standing orders (${fleet.policy}), which unload at the dock. Set it to manual to load it by hand.'
+        ? '${fleet.name} is under standing orders (${fleet.policy}), which ${atHome ? 'unload at the dock' : 'do not use the outpost'}. Set it to manual to load it by hand.'
         : !free
             ? '${fleet.name} is busy.'
             : room < 1
                 ? 'The hold of ${fleet.name} is full.'
                 : stock < 1
-                    ? 'The stockpile holds no ${resource.name}.'
+                    ? 'The $source holds no ${resource.name}.'
                     : null;
-    final note = fleet.laden
-        ? 'KEPT ABOARD UNTIL THE FLEET HAS BEEN AWAY'
-        : fleet.cargoBlocked
-            ? 'WAITING FOR ROOM IN THE STOCKPILE'
-            : null;
+    final note = !atHome
+        ? null
+        : fleet.laden
+            ? 'KEPT ABOARD UNTIL THE FLEET HAS BEEN AWAY'
+            : fleet.cargoBlocked
+                ? 'WAITING FOR ROOM IN THE STOCKPILE'
+                : null;
+    final canUnload = atHome ? fleet.laden : hold.total >= 1;
 
     return ConsolePanel(
       key: const ValueKey('hold-panel'),
       title: 'Load a hold',
-      subText: 'at the home dock',
+      subText: atHome ? 'at the home dock' : 'at the outpost',
       padding: const EdgeInsets.all(14),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
         const Lbl('Fleet'),
@@ -228,15 +247,15 @@ class _HoldPanelState extends State<HoldPanel> {
           style: T.mono(size: 10.5),
         ),
         const SizedBox(height: 10),
-        const Lbl('Take from the stockpile'),
+        Lbl('Take from the $source'),
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 6, children: [
           for (final k in proto.ResourceKind.values)
-            ConsoleButton('${_abbr[k]} ${k.of(st.stock).floor()}${capped.contains(k) ? ' full' : ''}',
+            ConsoleButton('${_abbr[k]} ${k.of(from).floor()}${capped.contains(k) ? ' full' : ''}',
                 key: ValueKey('hold-res-${k.name}'),
                 small: true,
                 primary: k == resource,
-                semanticsLabel: '${k.name} ${k.of(st.stock).floor()} in the stockpile',
+                semanticsLabel: '${k.name} ${k.of(from).floor()} in the $source',
                 onPressed: () => setState(() => _resource = k)),
         ]),
         const SizedBox(height: 8),
@@ -260,12 +279,18 @@ class _HoldPanelState extends State<HoldPanel> {
           ConsoleButton('Unload',
               key: const ValueKey('hold-unload'),
               small: true,
-              onPressed: fleet.laden ? () => c.unloadHold(fleet.id) : null,
-              reason: 'Nothing aboard was loaded by hand'),
+              onPressed: canUnload ? () => c.unloadHold(fleet.id) : null,
+              reason: atHome ? 'Nothing aboard was loaded by hand' : 'The hold is empty'),
         ]),
         if (why != null) WhyText(why, key: const Key('hold-why')),
-        const WhyText('A loaded hold stays aboard while the fleet is docked: fly it to the hub and trade. What the fleet brings home '
-            'unloads as always. A raid counts cargo at home with the stockpile.'),
+        WhyText(
+            atHome
+                ? 'A loaded hold stays aboard while the fleet is docked: fly it to the hub and trade. What the fleet brings home '
+                    'unloads as always. A raid counts cargo at home with the stockpile.'
+                : 'Nothing moves by itself here: Unload puts the whole hold into the store, as far as the store has room. '
+                    'A raid the outpost loses takes its share of the store and of the holds here above the protected floor, '
+                    'and destroys a quarter of the ships standing here.',
+            key: const Key('hold-rule')),
       ]),
     );
   }

@@ -11,6 +11,7 @@ import 'package:iac_client/console/prefs.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/views/overlays.dart';
 
+import 'support/demo_controller.dart';
 import 'support/harness.dart';
 
 class _Browser implements Notifier {
@@ -147,6 +148,61 @@ void main() {
     expect(title.value, isNot('IN AMBER CLAD'));
     await _foreground(tester);
     expect(prefs.notifyAsked, isTrue);
+    await endShell(tester, c);
+  });
+
+  testWidgets('in the background the outpost\'s finished level, a raid on it, the breach, the repair that waits for its materials and a full store reach the browser, each once; back in front they are toasts',
+      (tester) async {
+    _tabTitle(tester);
+    const site = proto.Hex(10, 0);
+    final browser = _Browser(NotifyPermission.granted);
+    final c = DemoController()..startDemo();
+    c.place(101, site, const proto.Resources(metal: 1000, crystal: 500, deuterium: 200));
+    c.handleCommand('found');
+    await pumpShell(tester, controller: c, prefs: ConsolePrefs(MemoryKv())..setNotify(true), notifier: browser);
+    List<({String title, String body, String tag})> outpost() => [
+          for (final n in browser.shown)
+            if (n.tag.startsWith('outpost')) (title: n.title.replaceAll(' - In Amber Clad', ''), body: n.body, tag: n.tag),
+        ];
+
+    await _background(tester, const Duration(seconds: 21));
+    expect(outpost(), [(title: 'Outpost open', body: 'Level 1 of your outpost at 10, 0 is finished.', tag: 'outpost-level')]);
+
+    c.raidOutpost(5000, inTicks: 3);
+    await tester.pump(const Duration(seconds: 1));
+    expect(outpost().last.title, 'Raid on your outpost');
+    expect(outpost().last.body, allOf(startsWith('A raid of estimated power 5000 reaches your outpost at 10, 0 in 0:0'), contains('Its platform and the ships standing there come to ')));
+
+    await tester.pump(const Duration(seconds: 4));
+    expect(outpost().skip(2).map((n) => n.title), ['Outpost breached', 'Outpost repair waiting']);
+    expect(outpost()[2].body, allOf(contains('beat the defence of'), contains('destroyed 1 ship standing there'), contains('until it has repaired itself from its store')));
+    expect(outpost()[3].body,
+        startsWith('Your outpost at 10, 0 is breached and cannot repair itself: the repair costs 250 Fe, 125 Cr, 50 De and its store is short by 250 Fe, 12'));
+
+    await tester.pump(const Duration(seconds: 5));
+    expect(outpost(), hasLength(4), reason: 'a repair that still waits is said once');
+    c.place(101, site, const proto.Resources(metal: 300, crystal: 200, deuterium: 100));
+    c.handleCommand('unload');
+    await tester.pump(const Duration(seconds: 8));
+    expect(c.state.outpost!.inService, isTrue, reason: 'the store covered the repair and the repair ran');
+
+    c.place(101, site, const proto.Resources(crystal: 2000));
+    c.handleCommand('unload');
+    await tester.pump(const Duration(seconds: 1));
+    expect(outpost().skip(4).single, (
+      title: 'Outpost store full',
+      body: 'Your outpost at 10, 0 holds all the crystal its store takes: the extractor makes no more of it until a fleet loads some.',
+      tag: 'outpost-store-crystal',
+    ));
+    await tester.pump(const Duration(seconds: 5));
+    expect(outpost(), hasLength(5), reason: 'a store that stays full is said once');
+
+    await _foreground(tester);
+    final toasts = find.byType(ToastLayer);
+    for (final missed in ['OUTPOST BREACHED', 'OUTPOST REPAIR WAITING', 'OUTPOST STORE FULL']) {
+      expect(find.descendant(of: toasts, matching: find.text(missed)), findsOneWidget);
+    }
+    expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
 }

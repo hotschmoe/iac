@@ -535,7 +535,11 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
           child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             SizedBox(width: math.min(box.maxWidth - 520, 660), child: Align(alignment: Alignment.topRight, child: LayerBar(layers: layers))),
             const SizedBox(height: 8),
-            SizedBox(width: 326, child: insp),
+            SizedBox(
+                width: 326,
+                child: ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: math.max(160, _hasRoutePanel ? math.min(box.maxHeight - 234, 396) : box.maxHeight - 80)),
+                    child: SingleChildScrollView(child: insp))),
           ]),
         ),
         if (_hasRoutePanel)

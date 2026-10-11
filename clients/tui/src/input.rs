@@ -47,6 +47,14 @@ pub enum InputAction {
     ToggleExchangePanel,
     ExchangeStep(ExchangeStep),
     ExchangeTrade,
+    ToggleOutpostPanel,
+    /// Survey the active fleet's sector and open the overlay on the answer.
+    OutpostSurvey,
+    OutpostFound,
+    OutpostUpgrade,
+    /// Ask before abandoning (true), or take the question back.
+    OutpostAbandonArm(bool),
+    OutpostAbandonConfirm,
 }
 
 pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
@@ -72,6 +80,28 @@ pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
             KeyCode::Left | KeyCode::Char('-') => InputAction::ExchangeStep(ExchangeStep::Amount(-1)),
             KeyCode::Right | KeyCode::Char('+') | KeyCode::Char('=') => InputAction::ExchangeStep(ExchangeStep::Amount(1)),
             KeyCode::Enter => InputAction::ExchangeTrade,
+            KeyCode::Tab => InputAction::CycleFleet,
+            KeyCode::Char('q') => InputAction::Quit,
+            _ => InputAction::None,
+        };
+    }
+
+    // The outpost overlay captures the keyboard while it is open. After [A]
+    // only [y] abandons; any other key keeps the outpost.
+    if let Some(panel) = &state.outpost_panel {
+        if panel.abandon_armed {
+            return match key.code {
+                KeyCode::Char('y') => InputAction::OutpostAbandonConfirm,
+                _ => InputAction::OutpostAbandonArm(false),
+            };
+        }
+        return match key.code {
+            KeyCode::Esc | KeyCode::Char('o') => InputAction::ToggleOutpostPanel,
+            KeyCode::Char('F') => InputAction::OutpostSurvey,
+            KeyCode::Enter => InputAction::OutpostFound,
+            KeyCode::Char('U') => InputAction::OutpostUpgrade,
+            KeyCode::Char('A') => InputAction::OutpostAbandonArm(true),
+            KeyCode::Char('f') => InputAction::ToggleFleetPanel,
             KeyCode::Tab => InputAction::CycleFleet,
             KeyCode::Char('q') => InputAction::Quit,
             _ => InputAction::None,
@@ -187,6 +217,8 @@ fn map_char(c: char, state: &ClientState) -> InputAction {
         'P' => InputAction::CycleFuelBudget,
         'f' => InputAction::ToggleFleetPanel,
         'e' => InputAction::ToggleExchangePanel,
+        'o' => InputAction::ToggleOutpostPanel,
+        'F' => InputAction::OutpostSurvey,
 
         _ => InputAction::None,
     }
@@ -214,6 +246,8 @@ fn map_homeworld_char(c: char) -> InputAction {
         't' => InputAction::ToggleTechTree,
         'f' => InputAction::ToggleFleetPanel,
         'e' => InputAction::ToggleExchangePanel,
+        'o' => InputAction::ToggleOutpostPanel,
+        'F' => InputAction::OutpostSurvey,
 
         // Cancel the oldest running item (half refunded) ...
         'x' => InputAction::CancelOldest { queue_type: iac_shared::protocol::QueueType::Building, waiting: false },

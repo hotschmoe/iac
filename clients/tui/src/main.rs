@@ -350,6 +350,39 @@ async fn run(
                             let _ = cmd_tx.send(ClientMessage::Command(cmd));
                         }
                     }
+                    input::InputAction::ToggleOutpostPanel => {
+                        let cmd = state.lock().await.toggle_outpost_panel();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
+                    input::InputAction::OutpostSurvey => {
+                        let cmd = state.lock().await.outpost_survey();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
+                    input::InputAction::OutpostFound => {
+                        let cmd = state.lock().await.outpost_found();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
+                    input::InputAction::OutpostUpgrade => {
+                        let cmd = state.lock().await.outpost_upgrade();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
+                    input::InputAction::OutpostAbandonArm(armed) => {
+                        state.lock().await.outpost_abandon_arm(armed);
+                    }
+                    input::InputAction::OutpostAbandonConfirm => {
+                        let cmd = state.lock().await.outpost_abandon_confirm();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
                     input::InputAction::PlotRoute => {
                         let mut st = state.lock().await;
                         let target = st.map_center;

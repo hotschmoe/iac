@@ -18,6 +18,7 @@ ThemeData consoleTheme() => ThemeData.dark(useMaterial3: true).copyWith(
       tooltipTheme: TooltipThemeData(
         decoration: BoxDecoration(color: const Color(0xFF0B0805), border: Border.all(color: C.lineHi)),
         textStyle: T.mono(size: 10.5, color: C.text),
+        constraints: const BoxConstraints(minHeight: 24, maxWidth: 340),
         waitDuration: const Duration(milliseconds: 400),
       ),
     );

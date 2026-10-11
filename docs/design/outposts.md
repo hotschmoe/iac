@@ -5,7 +5,9 @@ when it was written. Since then the engine half of slice 1 has been built on the
 recommended answers to the six questions of section 8, which the owner has not yet
 given: `decisions.md` (2026-10-11, outposts) says where each lives in the code, and
 the journal entry "outposts, slice 1: the engine" lists where the build departs
-from section 7. The measurement section 7.8 asks for has been made: its results
+from section 7. The client half (7.6) followed: the journal entry "outposts,
+slice 1: the clients" says what the web console and the TUI show and where they
+depart from 7.6. The measurement section 7.8 asks for has been made: its results
 stand under the table there, and no constant moved. The rest of the text below is
 the proposal as it was written.
 
@@ -1137,7 +1139,7 @@ Numbers that would mean a constant is wrong:
 | Day-7 total of check-in against hands-on, same personality, with and without `--outpost` | within 3 points | wider | yield |
 | Ticks per second of the 16-seat week | within 3% | slower | `process_outposts` |
 
-**Measured, 2026-10-11.** Status: every row measured at season pace over 7 days;
+**Measured, 2026-10-12.** Status: every row measured at season pace over 7 days;
 no `OUTPOST_*` constant moved; one row is in its "wrong when" band for a reason
 no constant reaches, and one was and is mended in code. The journal entry
 "outposts measured" has the command lines.
@@ -1204,7 +1206,7 @@ and 23, 24 and 24 of 30 still ended the week waiting, for 48%, 67% and 69% of th
 time. The numbers size the skim and the repair; they do not let a site make the
 resource it lacks. So this is the rule of 5.4 ("the repair waits for a delivery")
 meeting the fact of 5.2 that most sites make one or two resources, and it is the
-owner's to decide: `decisions.md`, 2026-10-11 (outposts measured), lists the
+owner's to decide: `decisions.md`, 2026-10-12 (outposts measured), lists the
 choices.
 
 **A raid lost while a level is building.** Level 2 with level 3 under construction

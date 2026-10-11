@@ -101,4 +101,4 @@ class ConsoleScope extends InheritedWidget {
   bool updateShouldNotify(ConsoleScope old) => old.console != console;
 }
 
-enum Screen { overview, windshield, map, homeworld }
+enum Screen { overview, windshield, map, homeworld, outpost }

@@ -1,6 +1,7 @@
 {
   "fleets": [
     {
+      "at_outpost": true,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,
@@ -45,6 +46,7 @@
       "state": "Idle"
     },
     {
+      "at_outpost": false,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,
@@ -946,7 +948,7 @@
       "threat": {
         "basis": "observed",
         "est_power": 0.0,
-        "rating": 1
+        "rating": 0
       }
     },
     {
@@ -1007,7 +1009,7 @@
       "threat": {
         "basis": "observed",
         "est_power": 0.0,
-        "rating": 1
+        "rating": 0
       }
     }
   ],
@@ -1043,7 +1045,6 @@
       },
       "ticks": 33750
     },
-    "next_raid_estimate_power": 37.900001525878906,
     "platform_power": 40.0,
     "production": {
       "crystal": 0.0,
@@ -1056,6 +1057,10 @@
       "metal": 250.0
     },
     "raid_arrival_tick": 4990,
+    "raid_power": {
+      "least": 38.29999923706055,
+      "most": 55.099998474121094
+    },
     "store": {
       "crystal": 96.0,
       "deuterium": 180.25,
@@ -1066,12 +1071,14 @@
       "deuterium": 2371.708251953125,
       "metal": 9486.8330078125
     },
+    "upgrade_refusal": "your outpost at [10,-2] is building level 2 until tick 18200; it does one job at a time",
     "work": {
       "end_tick": 18200,
       "kind": "build",
       "level": 2,
       "start_tick": 4700
-    }
+    },
+    "yield_lost": []
   },
   "player": {
     "exchange": {
