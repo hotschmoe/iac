@@ -3,6 +3,23 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-11 (orders pay when they are given)
+
+Owner, after playing single player. Supersedes "one queue rule" and the
+`reserve` flag and per-unit ship payment of the mechanics pass, both below.
+
+- **An order is accepted only if the stockpile covers all of it now**, and it
+  pays then: a building level, a research level, a whole ship or defence batch.
+  Otherwise it is refused, with the exact shortfall, until the resources are
+  there.
+- **Nothing waits on resources.** A paid order waits only for a slot or for
+  something queued ahead of it to finish. The `reserve` flag and the shortfall
+  on waiting orders go away with the state they described.
+- **Not decided by the owner (implemented as the simplest rule, open to
+  change):** cancelling any order refunds half of what it paid for work not yet
+  delivered, waiting or running, so the waiting line cannot be used to keep
+  resources out of the store.
+
 ## 2026-10-10 (the hub, PvP by zone, outposts, more worlds)
 
 Context: `starting-positions-2026-10-10.md`. Numbers proposed there (fees,
