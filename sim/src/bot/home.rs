@@ -16,7 +16,8 @@
 //
 // A shipyard batch is paid for whole when it is ordered, so the planner cuts
 // a batch to the units the stockpile covers now and orders the rest at a
-// later look.
+// later look, and orders none until the yard, building or tech it needs is
+// built or under way.
 
 use iac_shared::constants::{ResourceKind, Resources, ShipClass};
 use iac_shared::pace::Pace;
@@ -272,21 +273,23 @@ fn fits(cost: Resources, cap: Resources) -> bool {
     ResourceKind::ALL.into_iter().all(|k| cost.get(k) <= cap.get(k))
 }
 
-/// The empire as it will stand once everything queued has finished.
+/// The empire as it will stand once its orders have finished.
 struct Projection {
     buildings: BuildingLevels,
     research: ResearchLevels,
 }
 
 impl Projection {
-    fn of(home: &HomeworldState) -> Projection {
+    /// Every order counts when `waiting` is set; otherwise only those under
+    /// way, which finish on the clock whatever the stockpile does.
+    fn of(home: &HomeworldState, waiting: bool) -> Projection {
         let mut buildings = BuildingLevels::default();
         for b in &home.buildings {
             buildings.set(b.building_type, b.level);
         }
-        let queued = home.build_queue.iter().map(|q| (q.building_type, q.target_level));
-        let waiting = home.build_pending.iter().map(|q| (q.building_type, q.target_level));
-        for (b, level) in queued.chain(waiting) {
+        let running = home.build_queue.iter().map(|q| (q.building_type, q.target_level));
+        let pending = home.build_pending.iter().filter(|_| waiting).map(|q| (q.building_type, q.target_level));
+        for (b, level) in running.chain(pending) {
             buildings.set(b, buildings.get(b).max(level));
         }
 
@@ -294,9 +297,9 @@ impl Projection {
         for r in &home.research {
             research.set(r.tech, r.level);
         }
-        let active = home.research_active.iter().map(|q| (q.tech, q.target_level));
-        let waiting = home.research_pending.iter().map(|q| (q.tech, q.target_level));
-        for (t, level) in active.chain(waiting) {
+        let running = home.research_active.iter().map(|q| (q.tech, q.target_level));
+        let pending = home.research_pending.iter().filter(|_| waiting).map(|q| (q.tech, q.target_level));
+        for (t, level) in running.chain(pending) {
             research.set(t, research.get(t).max(level));
         }
         Projection { buildings, research }
@@ -318,6 +321,11 @@ struct Planner<'a> {
     pace: Pace,
     built: BuildingLevels,
     plan: Projection,
+    /// What stands once the orders under way have finished. A batch pays
+    /// when it is ordered, so the yard is judged by this and not by `plan`:
+    /// a batch whose yard, building or tech still waits for resources would
+    /// hold its price for nothing, and take it from the order it waits on.
+    started: Projection,
     /// The stockpile less the batches ordered this turn: what a batch can
     /// be paid from.
     stock: Resources,
@@ -378,7 +386,8 @@ impl<'a> Planner<'a> {
             profile: Profile::of(personality),
             pace,
             built,
-            plan: Projection::of(home),
+            plan: Projection::of(home, true),
+            started: Projection::of(home, false),
             stock: state.player.resources,
             spare: state.player.resources.sub(waiting),
             yard_room: 0,
@@ -407,7 +416,7 @@ impl<'a> Planner<'a> {
     /// wants whatever the surplus buys.
     fn shipyard_want(&mut self, leaving: bool) -> Want {
         self.yard_needs();
-        if self.plan.buildings.shipyard == 0 {
+        if self.started.buildings.shipyard == 0 {
             return Want::Prerequisite;
         }
         let turrets = self.turrets_wanted().map(|_| ShipyardItem::Defence(DefenceKind::PulseTurret));
@@ -530,7 +539,7 @@ impl<'a> Planner<'a> {
     fn shipyard(&mut self, orders: &mut Vec<Order>) {
         let held = usize::from(self.home.shipyard_queue.is_some());
         self.yard_needs();
-        if self.plan.buildings.shipyard == 0 {
+        if self.started.buildings.shipyard == 0 {
             return;
         }
         self.yard_room = self.room(held, self.home.shipyard_pending.len(), 1, true);
@@ -594,12 +603,13 @@ impl<'a> Planner<'a> {
     fn surplus_item(&self) -> Option<ShipyardItem> {
         let turret = DefenceKind::PulseTurret;
         let item = if self.profile.fleet_share > 0.0 {
-            scaling::defence_prerequisites_met(turret, &self.plan.buildings, &self.plan.research)
+            scaling::defence_prerequisites_met(turret, &self.started.buildings, &self.started.research)
                 .then_some(ShipyardItem::Defence(turret))?
         } else {
-            ShipyardItem::Ship(Hull::Warship.class(&self.plan.research).or(Hull::Scout.class(&self.plan.research))?)
+            let research = &self.started.research;
+            ShipyardItem::Ship(Hull::Warship.class(research).or(Hull::Scout.class(research))?)
         };
-        (self.plan.buildings.shipyard >= 1 && fits(item.unit_cost(), self.cap())).then_some(item)
+        (self.started.buildings.shipyard >= 1 && fits(item.unit_cost(), self.cap())).then_some(item)
     }
 
     fn ordered(&self) -> impl Iterator<Item = (ShipyardItem, u16)> + '_ {
@@ -611,7 +621,7 @@ impl<'a> Planner<'a> {
     /// Pulse Turrets give the most power for their cost of the three structures.
     fn turrets_wanted(&self) -> Option<u16> {
         let kind = DefenceKind::PulseTurret;
-        if !scaling::defence_prerequisites_met(kind, &self.plan.buildings, &self.plan.research) {
+        if !scaling::defence_prerequisites_met(kind, &self.started.buildings, &self.started.research) {
             return None;
         }
         let raid = scaling::raid_power_base(scaling::econ_points(&self.plan.buildings, &self.plan.research));
@@ -650,7 +660,7 @@ impl<'a> Planner<'a> {
 
         let mut best: Option<(ShipClass, f32)> = None;
         for &(hull, share) in self.profile.hulls {
-            let Some(class) = hull.class(&self.plan.research) else { continue };
+            let Some(class) = hull.class(&self.started.research) else { continue };
             let short = (share * target - have[hull as usize]).min(budget);
             if short >= value(class) && best.is_none_or(|(_, most)| short > most) && fits(class.build_cost(), self.cap()) {
                 best = Some((class, short));
