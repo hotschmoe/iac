@@ -28,6 +28,14 @@ const voice = {
 
 const hubVoice = 'Neutral post. No ore, no hostiles. The exchange is open.';
 
+/// What the dock does for a fleet and what it does not: nothing in the field
+/// reaches a docked fleet, a raid that beats the home defence does.
+const dockVoice = 'A DOCKED FLEET REFUELS AND UNLOADS, AND NOTHING IN THE FIELD REACHES IT.\n'
+    'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS.';
+const dockVoiceLaden = 'A DOCKED FLEET REFUELS, AND NOTHING IN THE FIELD REACHES IT.\n'
+    'HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.\n'
+    'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS AND TAKES ITS SHARE OF THE HOLD.';
+
 String zoneName(proto.Hex h) {
   final d = h.distFromOrigin;
   return d == 0 ? 'Central Hub' : d <= 8 ? 'Inner Ring' : d <= 20 ? 'Outer Ring' : 'The Wandering';
@@ -460,7 +468,7 @@ class ContactsPanel extends StatelessWidget {
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           _t('Homeworld'),
           _d(Text(
-              fleet.laden ? 'DOCKED FLEETS ARE SAFE.\nHOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.' : 'DOCKED FLEETS ARE SAFE.',
+              fleet.laden ? dockVoiceLaden : dockVoice,
               key: const Key('contact-dock'),
               style: _ds)),
           Padding(
