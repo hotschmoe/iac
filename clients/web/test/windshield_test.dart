@@ -944,6 +944,64 @@ void main() {
     }
   });
 
+  testWidgets('a hold that starts or ends moves neither the form of the orders panel nor, with that panel shut, the buttons of the fleet status and the contacts, at 1440 and 390 wide', (tester) async {
+    const orders = proto.StandingOrders(preset: proto.PolicyPreset.prospect, params: proto.PolicyParams(maxRange: 2, fuelBudgetPct: 35));
+    const moved = PolicyAct(tick: 498, since: 498, preset: proto.PolicyPreset.prospect, action: 'move', reason: 'charting [3,0]');
+    const refuelling = PolicyAct(
+        tick: 500,
+        since: 484,
+        preset: proto.PolicyPreset.prospect,
+        action: 'hold',
+        reason: 'refuelling: a fuel budget of 35% of deuterium income earns nothing (tank 18 of 180); raise fuel_budget_pct or wait for the store to fill');
+    const shields = PolicyAct(tick: 501, since: 501, preset: proto.PolicyPreset.prospect, action: 'hold', reason: 'shields recharging (76%)');
+    final under = calm().copyWith(fleets: [fleet(1, [('Scout', 1), ('Corvette', 2)], orders: orders), fleet(2, [('Hauler', 1)], at: home)]);
+    const form = [
+      ValueKey('orders-doctrine-manual'),
+      ValueKey('orders-doctrine-patrolHome'),
+      ValueKey('orders-range-down'),
+      ValueKey('orders-fuel-up'),
+      ValueKey('orders-set'),
+    ];
+    const footer = [ValueKey('orders-toggle'), ValueKey('manage-toggle')];
+
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final c = await pumpFake(tester, under.copyWith(policyActs: {1: const [moved]}), size: size);
+      if (size.width < 1440) {
+        await tester.tap(find.byKey(const ValueKey('status-sheet')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      List<Rect> places(List<ValueKey<String>> keys) => [for (final k in keys) tester.getRect(find.byKey(k))];
+      Future<void> report(List<PolicyAct> acts) async {
+        c.push(c.fake.copyWith(policyActs: {1: acts}));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      final status = [...places(footer), tester.getRect(find.byType(ContactsPanel))];
+      expect(find.byKey(const Key('status-hold')), findsNothing);
+      await report(const [refuelling, moved]);
+      expect(find.descendant(of: find.byKey(const Key('status-hold')), matching: find.text(refuelling.reason)), findsOneWidget);
+      expect([...places(footer), tester.getRect(find.byType(ContactsPanel))], status,
+          reason: 'the fleet status has the room for a hold of four lines at ${size.width.round()} px: its buttons and the contacts stay');
+      await report(const [moved]);
+      expect([...places(footer), tester.getRect(find.byType(ContactsPanel))], status, reason: 'and when the hold ends');
+
+      await tester.tap(find.byKey(const ValueKey('orders-toggle')));
+      await tester.pump(const Duration(milliseconds: 100));
+      final before = places(form);
+      await report(const [refuelling, moved]);
+      expect(tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data, 'HOLDING FOR 0:16');
+      expect(places(form), before, reason: 'a hold of four lines began at ${size.width.round()} px');
+      await shot(tester, 'ws-orders-hold-in-place-${size.width.round()}');
+      await report(const [shields, refuelling, moved]);
+      expect(places(form), before, reason: 'another of one line took its place');
+      await report(const [moved, shields, refuelling, moved]);
+      expect(find.byKey(const Key('status-hold')), findsNothing);
+      expect(places(form), before, reason: 'and the hold ended');
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
   testWidgets('a fleet under orders this console never gave shows their settings, and the steppers start from them (demo)', (tester) async {
     final c = DemoController()..startDemo();
     await pumpShell(tester, screen: Screen.windshield, controller: c);
