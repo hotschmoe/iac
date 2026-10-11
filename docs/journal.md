@@ -2668,3 +2668,24 @@ four ticks later, and unloads it by typed command.
   quarter of them.
 - `recall` at home is accepted: it costs nothing, cancels a jump under way (the fuel
   of that jump is already spent) and runs the dock again.
+
+**Run.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`, 114 tests, all pass; clippy clean with `-D warnings`;
+`check_sim_constants.py` agrees; the wasm release build; `flutter analyze` clean and
+`flutter test` 355 of 355 in four full runs of four on the final tree. One full run
+before that failed in "firing on deadly odds needs a second F" with a layout overflow
+in the HUD; it passed in three runs of its file and did not come back (the profiler
+flag of the 2026-10-10 entry was on). `play.sh --single-player --no-serve` and
+`solo_e2e.dart --port 7932`: OK in 153 s, the hold step included, with pictures of the
+panel at 1440 and 390 read. The TUI fleet panel was driven in a pseudo-terminal
+against a real server (port 7934, pace 1): 30 crystal at 75 percent, all that fits of
+deuterium, the refusal of a third load in the footer, LADEN in the fleet list, unload,
+and the refusal of a second unload.
+
+**Not verified.** The web panel against a multiplayer server (it ran against the
+engine in the tab and the scripted world; the client code is the same). The
+windshield's Load hold button and `L` in a real browser (widget test only). No real
+phone and no browser but headless Chromium. The balance report was not run again:
+the raid now reaches cargo that a full stockpile left aboard a bot's docked fleet, and
+what that does to a bot's week was not measured. `play.py` passes its offline tests;
+the harness was not run.
