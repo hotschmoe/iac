@@ -2,37 +2,27 @@ import 'dart:math' as math;
 
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
-import '../state/state_mapper.dart' show batchWaitSummary, waitSummary;
-
-/// "1,234,567".
-String groupDigits(int v) {
-  final s = v.toString();
-  final b = StringBuffer();
-  for (var i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
-    b.write(s[i]);
-  }
-  return b.toString();
-}
+import '../state/state_mapper.dart' show batchWaitSummary, shortBy, waitSummary;
 
 bool canAfford(proto.Resources stock, proto.Resources cost) =>
     stock.metal >= cost.metal && stock.crystal >= cost.crystal && stock.deuterium >= cost.deuterium;
 
-/// "1,234 Fe, 56 Cr": what [cost] needs beyond [stock], each part rounded up.
-String shortBy(proto.Resources stock, proto.Resources cost) {
-  final o = <String>[];
-  if (stock.metal < cost.metal) o.add('${groupDigits((cost.metal - stock.metal).ceil())} Fe');
-  if (stock.crystal < cost.crystal) o.add('${groupDigits((cost.crystal - stock.crystal).ceil())} Cr');
-  if (stock.deuterium < cost.deuterium) o.add('${groupDigits((cost.deuterium - stock.deuterium).ceil())} De');
-  return o.join(', ');
-}
+/// What [cost] needs beyond [stock], or null when the stockpile covers it.
+proto.Resources? shortfall(proto.Resources stock, proto.Resources cost) => canAfford(stock, cost)
+    ? null
+    : proto.Resources(
+        metal: math.max(0, cost.metal - stock.metal),
+        crystal: math.max(0, cost.crystal - stock.crystal),
+        deuterium: math.max(0, cost.deuterium - stock.deuterium));
 
 /// "Short by 11 De" when [stock] does not cover [cost], else null. A
 /// shipyard batch is paid in full when it is ordered and refused otherwise,
 /// so this is the reason its control is off; the overview's suggestion tiles
 /// use it for every kind of order.
-String? shortReason(proto.Resources stock, proto.Resources cost) =>
-    canAfford(stock, cost) ? null : 'Short by ${shortBy(stock, cost)}';
+String? shortReason(proto.Resources stock, proto.Resources cost) {
+  final missing = shortfall(stock, cost);
+  return missing == null ? null : shortBy(missing, opening: true);
+}
 
 /// Presentation model for the economy side of the protocol: pace, storage
 /// caps, build slots and queues, defences and raids, score. Views read only
@@ -107,9 +97,14 @@ class DefenceRow {
   final proto.DefenceKind kind;
   final int count;
   final int restoring;
-  final double power;
+
+  /// Power of one structure at the current Defense Grid level.
+  final double unitPower;
   final proto.DefenceOption? option;
-  const DefenceRow(this.kind, this.count, this.restoring, this.power, this.option);
+  const DefenceRow(this.kind, this.count, this.restoring, this.unitPower, this.option);
+
+  /// What the structures standing add to the home defence.
+  double get power => count * unitPower;
 }
 
 class DefenceView {

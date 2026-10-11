@@ -2557,6 +2557,577 @@ live server. `play.py` is syntax-checked and its offline tests pass; the harness
 on hold and was not run. Persistent pace and blitz were not measured. The browser
 run is headless Chromium at 1440 and 390 px; no other browser and no real phone.
 
+## 2026-10-11: a hold is loaded from the stockpile at home
+
+Owner decision: the exchange is a surplus sink, so a player whose stockpile is full of
+one resource must be able to carry the surplus to the hub. Until now nothing moved
+stockpile into a hold and the dock emptied every hold each tick, so the exchange took
+field cargo only. The owner set the frame of the rule; the choices inside it are the
+agent's and are listed as such in decisions.md under the same date. Branch
+`worktree-agent-a2b101c4105620314`, not merged.
+
+**The rule.** `load` takes a fleet standing idle at its owner's homeworld, one
+resource and an optional amount. It moves that much from the stockpile into the hold;
+with no amount, all the stockpile holds and the hold has room for. An order that
+cannot be met in full moves nothing and says what is short: the stockpile ("the
+stockpile holds 400.0 metal; fleet 7 cannot load 400.5") or the room ("the hold of
+fleet 7 has room for 632.5 more (it carries 0 of 632); it cannot load 700.0
+deuterium"). The fleet is then laden (`Fleet.laden`, `FleetState.laden`):
+`unload_cargo`, which the dock runs for every fleet at home each tick and on arrival,
+leaves a laden hold alone. The mark ends with the fleet's next jump, so a fleet that
+has been away comes home unmarked and unloads as it always has. `unload` ends it by
+hand: what the caps allow goes back at once and the dock takes the rest as room
+opens. Both answer with an info `Alert`, as `split` and `merge` do.
+
+**Where the frame was not followed.** The owner's frame said `load` takes an amount
+of each resource. It takes one resource an order. "All that fits" has one meaning for
+one resource and none for three; a surplus is nearly always one resource; the refusal
+can then name exactly what is short; and `exchange` already reads `give`, `want`,
+`amount` this way. A mixed load is two or three orders and is not atomic.
+
+**How the mark ends.** The first version cleared it when the fleet docked. That left
+it set in the field, where it means nothing, made recall-at-home a second unload, and
+needed the rule in three places. It is now cleared in one: where a jump completes in
+`process_movement`. A fleet still leaving (state `Moving`, location still home) keeps
+it, or the dock would empty the hold during the jump's countdown.
+
+**Standing orders.** A doctrine that comes home with a hold over `cargo_return_pct`
+waits at the dock until it is off (`policy_unload_wait`); with a hold the dock may not
+take, it would wait for ever. So `load` is refused for a fleet under standing orders,
+with the doctrine named, and giving a laden fleet standing orders ends the mark and
+unloads it at once (the policy event says so). Unloading at once matters: orders are
+evaluated before the dock runs in a tick, and a hold still aboard at the first
+evaluation would announce "waiting to unload" for one round.
+
+**What it must not dodge.**
+- *The Vault cap.* Unload goes through `unload_cargo`, which stops at the cap. A hold
+  at home is storage beyond the cap, which the owner allowed; decisions.md has the
+  numbers (a Hauler stores a unit for 4.75 resources of hull at pace 1, the Vault for
+  0.07 at level 3 and 0.6 at level 20; a full complement of 512 Haulers holds 9.3
+  Vault-0 stockpiles and 0.16 Vault-10 ones).
+- *Raids.* Cargo at the dock was out of a lost raid's reach: `resolve_raid` took its
+  share of the stockpile and never looked at holds. That did not matter while only a
+  full stockpile left cargo there; with `load` it would have been a hiding place.
+  A lost raid now adds the cargo aboard the owner's fleets at home to the stockpile,
+  applies the one protected floor and the same 8/8/5 percent to the sum, and takes
+  each part's share. With no cargo at home the arithmetic is the old one to the bit
+  (the share of the whole is multiplied by exactly 1.0). `resources_lost` and
+  `protected_kept` cover both. This changes the rule for every fleet with cargo at
+  home, laden or blocked.
+- *Score.* Unchanged by construction: `score_of` reads buildings, research, ships and
+  defences. The tests assert the row is equal before and after a load and an unload.
+- *Fuel.* A laden fleet burns what its hull mass burns; cargo has no mass in the fuel
+  rule, for any fleet.
+
+**Persistence.** `laden` is a column of `fleets` (added to an existing database by
+`ensure_column`, as the exchange meter was) and a field of the fleet in `Snapshot`,
+so `SAVE_FORMAT` is 3 and an older single-player save is refused with the usual
+sentence. `ECONOMY_VERSION` stands at 3. The SQLite restart test in
+`server/src/database.rs` now mixes `load` and `unload` into its orders and requires
+that at least one of its kills finds a laden hold in the database.
+
+**Clients.** Web: the homeworld's Storage tab has a "Load a hold" panel under the
+Vault: the fleets docked at home, what is aboard and the size of the hold, the
+stockpile per resource with FULL on a capped one, a share of what fits (25, 50, 75
+percent or all, the last sent with no amount), a button that names the load ("Load
+400 Fe"), and Unload. It works nothing out that the server decides; a disabled Load
+says why. In the windshield the homeworld contact has a "Load hold" button (`L`)
+that opens the panel for the active fleet, the cargo gauge reads "CARGO - LADEN", and
+`load <resource> [amount|all]` and `unload` work from the command bar. Help stays at
+13 lines: the two hub lines were rewritten to carry the two commands. TUI: the fleet
+panel (`f`) shows the hold and the stockpile and loads with `r` (resource),
+Left/Right (share), `l`, and unloads with `u`; the fleet list and the windshield tag
+a laden fleet. `play.py` tags it too. The bots do not load.
+
+**Tests.** `sim/tests/exchange.rs`: a stockpile at its cap, four Haulers loaded with
+all that fits, forty ticks at the dock with the hold untouched and the mines filling
+the room, the flight to the hub, the trade, the flight home and the dock unloading
+what was bought; `unload` against a nearly full store and the dock taking the rest;
+every refusal with its sentence; standing orders ending the mark with no "waiting to
+unload" in 120 ticks; two worlds raided alike, one with 5000 aboard, losing the same
+and keeping the same floor; the mark in the fleet's persisted row and through a JSON
+snapshot; split and merge. `server/tests/scenarios.rs`: a real client loads over the
+WebSocket, is refused twice, the server is killed, and after the restart the fleet is
+still laden and stays so, flies out and back, and the dock unloads it.
+`solo/tests/single_player.rs`: the same through `Machine::call`, with sixty ticks
+replayed from the save and the two worlds equal. Flutter: fixtures for the two
+commands and the field, the panel at 1440 and 390 against the scripted world, the
+typed commands and their refusals, the windshield button and key. `solo_e2e.dart`
+loads 100 deuterium through the panel in the real bundle, checks it is still aboard
+four ticks later, and unloads it by typed command.
+
+**Seen on the way (not changed).**
+- A fleet that loses ships keeps all its cargo, in a fight, on a recall and in a lost
+  raid: nothing trims a hold to the capacity that is left. One survivor of a
+  64-Hauler fleet carries 64 holds. With `load` a player can now arrange that at
+  home (load, lose a quarter of the ships to a raid, keep the cargo less 8%).
+- The server tests take their ports from literals in the test files (17931 to 17956,
+  7910), so two checkouts on one machine cannot run them at once; the temporary
+  databases are named by port as well.
+- The web windshield says "DOCKED FLEETS ARE SAFE" at home. A lost raid destroys a
+  quarter of them.
+- `recall` at home is accepted: it costs nothing, cancels a jump under way (the fuel
+  of that jump is already spent) and runs the dock again.
+
+**Run.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`, 114 tests, all pass; clippy clean with `-D warnings`;
+`check_sim_constants.py` agrees; the wasm release build; `flutter analyze` clean and
+`flutter test` 355 of 355 in four full runs of four on the final tree. One full run
+before that failed in "firing on deadly odds needs a second F" with a layout overflow
+in the HUD; it passed in three runs of its file and did not come back (the profiler
+flag of the 2026-10-10 entry was on). `play.sh --single-player --no-serve` and
+`solo_e2e.dart --port 7932`: OK in 153 s, the hold step included, with pictures of the
+panel at 1440 and 390 read. The TUI fleet panel was driven in a pseudo-terminal
+against a real server (port 7934, pace 1): 30 crystal at 75 percent, all that fits of
+deuterium, the refusal of a third load in the footer, LADEN in the fleet list, unload,
+and the refusal of a second unload.
+
+**Not verified.** The web panel against a multiplayer server (it ran against the
+engine in the tab and the scripted world; the client code is the same). The
+windshield's Load hold button and `L` in a real browser (widget test only). No real
+phone and no browser but headless Chromium. The balance report was not run again:
+the raid now reaches cargo that a full stockpile left aboard a bot's docked fleet, and
+what that does to a bot's week was not measured. `play.py` passes its offline tests;
+the harness was not run.
+
+## 2026-10-11: the web client after its first played evening
+
+The owner played the single-player bundle over the LAN. This is the pass after it:
+five known faults, then every screen read at 1440 and 390 px in the browser check's
+pictures. Web client only (`clients/web`, `solo/web/worker.js`, two README
+bullets); no rule, constant or wire message. Branch
+`worktree-agent-ab87eca5a1d51d195`, not merged.
+
+**The five.**
+- *Toasts cut off.* Real, and not the frame governor: the slide-in always finishes
+  (350 ms). The key sat on the tile inside an unkeyed `Padding`, so the column
+  matched its children by position, and every time one toast left, or a fifth
+  pushed the first out, every toast after it was built again and slid in again
+  from nothing. Measured in real-time headless Chromium: four restarts in 1.3 s as
+  three toasts expired. The check's picture caught one mid-slide because its wait
+  ended the instant a toast left. The fifth toast had also been pushing out the
+  offer of browser notices, which asks a question and is meant to stay 30 s. Now
+  the key is on the column's child; a toast that asks is the last to make room;
+  its buttons are in the semantics tree; a plain toast goes away on a tap. A toast
+  is at most 340 px wide and, on a phone, the screen less 16 px a side.
+- *Two wordings.* One function, `shortBy`: "short by 1,234 Fe, 56 Cr", in the
+  units the counters carry, for the queue boxes, the cards, the tiles and the log.
+  The estimate beside it is the clock every other timer uses ("starts in about
+  34:17:36", not "2057:36"). An order short of something the homeworld does not
+  produce has no estimate and now says "which home production will not cover": a
+  new empire has 100 deuterium and makes none, and its second order sat there
+  without a word.
+- *A typed order the engine refuses.* Left to the engine: its sentence is exact
+  and Dart would only copy the rule. What was missing was the telling. A refusal
+  went to the log and the alert list, both on the Overview; typed on any other
+  screen it showed nothing. Every refusal is now a red toast for nine seconds with
+  the engine's sentence, the log line is "Refused: ..." instead of "ERR 1019
+  InsufficientResources: ...", and it no longer lights the alert badge for good.
+- *Roboto.* Both renderers fetch it from `fonts.gstatic.com` unless the font
+  manifest has a family of that name. `pubspec.yaml` names the bundled Plex Mono
+  as `Roboto`: nothing added to the bundle, nothing asked of another host. The
+  check now fails on any request elsewhere, at load and over the whole session.
+- *Plain http.* On `http://<lan address>` the page is no secure context: no
+  `navigator.locks`, so the worker locks nothing and a second tab opens the same
+  save. Nothing said so. The worker's status now carries `exclusive`, and the
+  front door says in one sentence to play in one tab. No second lock was built.
+  `navigator.storage` is missing there too, so the save cannot be marked
+  persistent; that is not said (it is best effort on https as well).
+
+**Found reading the pictures, and fixed.**
+- The defence tab added up the power of one structure of each kind, built or not:
+  "STRUCTURES 203" on an empire with none, and "docked fleet and grid 0" beside
+  it. A row's power is now count times unit power.
+- Below about 1400 px wide the HUD drew its three stockpiles smaller the narrower
+  the window, down to a few pixels at 1100 (a spacer took half their room). They
+  now keep their size; the name beside the logo, then the commander's name and
+  rank, then the rate per tick give way. At phone width the three numbers had no
+  labels; they have.
+- The automatic leaderboard refresh printed two log lines every 30 ticks, in a log
+  that holds 14. It prints only when the player types `leaderboard`.
+- States that said the wrong thing on a new empire: "Research lab idle. Queue
+  something" with no lab, "Idle: pick a tech" and "Pick one" likewise, "Upgrade the
+  Shipyard" with none built, "One fleet out, no docked" with the fleet at home.
+  The cards now name the nearest thing that would unlock something ("Scout needs
+  Shipyard level 1"), in the engine's words rather than "Shipyard >= 1".
+- "1S BUILD" read as "15 BUILD"; amounts in the log were "90M 22C 0D"; "1 HOPS
+  HOME"; "asking the server" in a world with no server; the sector note ran under
+  the north-west gate card; the windshield feed ran under the dock below 1400 px;
+  "NO RAID ANNOUNCED" was cut to "NO RAID ..." on a phone; the "Go to" toast
+  outlived the jump; `help` typed away from the Overview showed its first line and
+  nothing else.
+- "DOCKED FLEETS ARE SAFE" on the windshield's homeworld contact was not true: a
+  raid that breaks through destroys a quarter of the docked ships (at least one)
+  and, since holds can be loaded, takes its share of a laden one. The card now
+  says what the dock does and what it does not: "A docked fleet refuels and
+  unloads, and nothing in the field reaches it. A raid that breaks through still
+  destroys some docked ships", and for a laden hold that it stays aboard and that
+  the raid takes its share.
+
+**The check.** `solo_e2e.dart` answers the offer from its own button, holds three
+toasts up and fails if one narrows while another leaves, expects the refusal on
+screen, pictures every screen at both widths (and the windshield at 1100), and
+loads the page from `http://iac-lan.test` (mapped to this machine) to see the
+missing lock and the sentence about it. Its old wait for the waiting Shipyard
+raced the tab change and failed once here on master's code; it now waits for the
+line it reads. After the merge of the hold (the entry above) it also presses the
+windshield's Load hold button and `L` in the real page, which the hold's own
+entry lists as not done, and pictures the laden windshield at both widths.
+
+**Merged master** (`2e9d399`, loading a hold) into the branch: two conflicts, the
+check and this file, both kept whole.
+
+**Left for the owner** (layout or taste; pictures in the hand-off). The windshield
+between 980 and 1400 px, where gate cards run under the side columns, and at any
+width its feed, which runs over the south-west gate card when its lines wrap. Overview
+tiles for buildings and research are off when the stockpile is short, though such
+an order queues. There is no standing-orders panel in the web client: `policy`
+is typed. Toasts cover the order button and, on a phone, the dock. The log keeps
+14 lines and `help` is 13.
+
+**The test flake, found and not ours.** `flutter test` fails now and then with a
+whole file red: 3 of 14 full runs here, none of 30 runs of single files. The
+three failures are three different impossible results on doubles, none in client
+code. `TextStyle.apply` asserting `fontSizeFactor == 1.0` false for its own default
+argument, reached from `ThemeData.dark()` through `Typography.material2021` (this
+is the "assertion inside ThemeData" seen before; it fails every test of the file
+once it has happened in that process). `offset.isFinite` in the semantics sort of
+a frame that is the same in every run. `Infinity or NaN toInt` in the scripted
+world's storage estimate. The machine is a CIX P1 (arm64) and the VM Dart 3.12.1;
+the fault is in that pair under load, not in the tests or the widgets. A failed
+file passes when run again. Output kept in the hand-off.
+
+**Not verified.** No real phone and no browser but headless Chromium. The whole
+check was run on the WebAssembly build; on the JavaScript build (`--software`)
+only the load, a new game and the four screens, to see that no font is fetched
+elsewhere there either.
+
+## 2026-10-11: three loose ends: holds after losses, recall at home, test ports
+
+Three things the hold entry above listed under "Seen on the way". Rust only
+(`sim`, `server`, their tests, the rules text); no wire message, constant or save
+format changed. The choices are the agent's and are in decisions.md under the same
+date. Branch `worktree-agent-aead3c1377ff261e8`, not merged.
+
+**A fleet that loses ships.** Ships leave a fleet in three places: a combat round
+(`process_combat`), a recall that breaks ships (`handle_recall`) and a lost raid at
+the dock (`destroy_docked_ships`). In all three the tank was already cut to what the
+ships left carry, and the hold was not: cargo stayed whole. One function,
+`settle_hold`, now runs in all three. The fleet keeps `fleet_cargo_capacity` of the
+ships left, each resource scaled alike, and sheds the rest:
+- *away from home* into the sector's wreckage through `drop_salvage`, the pile a kill
+  leaves, with the same 180 ticks from the last addition. A fleet with no ships left
+  has a hold of nothing and sheds everything, so a destroyed fleet's cargo now lies
+  where it fell instead of vanishing. A won fight reports the whole pile in
+  `CombatEnded.salvage`, the shed cargo included; the kill's score still follows only
+  what the hostile group was worth.
+- *in a recall* before the fleet is moved, so the share of the ships that broke up
+  stays in the sector it jumped from. Settling it at home would have handed the
+  cargo of destroyed ships to the stockpile.
+- *at the home dock* into the stockpile up to the Vault cap, the rest lost. The raid
+  settles holds before it takes its slice, so what moved is raided with the rest.
+
+The owner gets a warning `Alert` with the amount and where it went. Nothing is
+created anywhere: hold, pile and stockpile together never hold more than the hold
+did. Split and merge share cargo by hold and cannot put a fleet over, so they are
+unchanged. A fleet already over its hold in a stored world stays so until it next
+loses a ship. `fleet_cargo_capacity` summed no floats to -0.0 for an empty fleet,
+which scaled the cargo to -0.0; it is folded from 0.0 as `fleet_fuel_max` is.
+
+**Recall at home.** Reproduced on a new empire at pace 1: `recall` for the starting
+fleet docked at home answered Ok and changed nothing. After `move` to a neighbour
+(tank 120 to 114, state Moving) `recall` answered Ok again: state Idle, no target, and
+the dock refilled the 6 fuel for 0.48 deuterium. So it called off a paid jump and
+said nothing. The chart recording showed a third effect: it halted a fleet harvesting
+at its own homeworld. It is now refused with `InvalidCommand` and nothing changed
+(the tests compare the snapshot hash before and after), with one of three sentences:
+already at home; charging a jump to a named sector, which `stop` calls off without
+returning the fuel; at work there, which `stop` halts. A jump ordered at home goes
+on. Away from home nothing changed: recall abandons a jump the fleet was charging
+with its fuel, as `stop` and a fight do, and RULES.md and the README now say that of
+both orders. No refund was added to `stop`.
+
+**The chart recording, twice.** `chart_golden.txt` pins what a scripted blitz world
+sends for 4000 ticks, and both rules change that world. Each was traced with a
+temporary print before recording again.
+- Holds: the old recording held to tick 1010. At 1011 a fleet is destroyed at [1,6]
+  with 34.9 units aboard (23.5 metal, 11.4 crystal); the update of that tick now has
+  `salvage` of exactly that with `salvage_despawn_tick` 1191. 280 lines differ: 1011
+  to 1107, 1150, 1191, and 2892 to 3072, the 180 ticks of a second such pile at
+  [-7,5]. Four other fleets die with cargo (ticks 277, 1579, 1706, 2364) and leave
+  piles that change no line of the recording.
+- Recall: that recording held to tick 111, where the script recalls a fleet
+  harvesting at its homeworld [-5,1]. Refused, it mines on and the ore reads lower
+  from 112. The script does the same at 427 and 1615; 434 lines differ. No recall of
+  a fleet charging a jump at home occurs in the script.
+The determinism tests compare two runs with each other and needed nothing.
+
+**Server tests on ports of their own.** `smoke.rs`, `scenarios.rs` and `web.rs` named
+their ports (17931 to 17956, 7910, 7931) and their databases after them. Now
+`iac-server --port 0` binds a port the system picks and the server prints
+`listening on <address>:<port>` on stdout once it listens, on any port. The helpers
+in `server/tests/common` start every server that way, read the line, and hand the
+port back with the guard; a thread keeps reading the pipe so the server never
+blocks on it. A test connects only after its server listens. Picking a free port in
+the test and passing it on was the smaller change and was not taken: the port is
+free between the two binds, and a client retrying against a port in the dynamic
+range can connect to itself. Databases are in `<temp>/iac_<test>_<pid>/world.db`.
+Cleaning up is as before for the database tests: a passing test removes its
+database files, now also the directory it then leaves empty; a failing one leaves
+them. `web.rs` used to leave its directory behind and clear it at the next start;
+with the process id in the name that would never happen, so a passing web test now
+removes its own directory. `web.rs` uses the shared helpers; its copy of the guard is
+gone.
+
+**One refusal sentence.** A `policy_update` for a fleet that is not the player's was
+refused with "PolicyUpdate failed". It names the fleet now.
+
+**Tests.** `sim/tests/fleet_logistics.rs`: a two-Scout fleet nine tenths full loses
+one ship to a hostile and has half its hold, the rest in the sector to the unit, the
+alert, the victory reporting the pile, and a full hold scooping nothing back; a fleet
+destroyed with cargo, its cargo in the sector, and another player's fleet collecting
+all of it; a recall from 25 hexes that breaks ships of twenty, their share at the
+sector left and the rest home; recall at home refused idle, harvesting and charging
+a jump, the jump arriving, and a recall from one hop out; standing orders for a
+rival's fleet. `sim/tests/exchange.rs`: eight laden Haulers lose two to a raid, with
+room in the stockpile (nothing lost but the raid's take) and with a full one (the
+two holds lost, the stockpile not over its cap); the older raid test now loads what
+six Haulers carry. `server/tests/smoke.rs`: two servers at once, one name registered
+on each, each port answering with its own world's pace. `scenarios.rs`: the recall
+refusal over the WebSocket. `scenarios_world.rs`: the recall that frees a fleet for
+standing orders is given in the field.
+
+**Run.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`, 121 tests (114 before), all pass, while a second `cargo test -p
+iac-server` from another target directory ran its 37 at the same time, all pass;
+clippy clean with `-D warnings`; `check_sim_constants.py` agrees; the wasm release
+build; the 36 offline tests of `play.py`.
+
+**Not verified.** The Flutter tests and `solo_e2e.dart` were not run: `clients/web`
+is untouched and no wire type changed, but a typed `recall` at home now shows a
+refusal there. The TUI was not driven by hand; it shows the server's sentence in
+its status line as for any refusal. The balance report was not run again: bots
+whose fleets die with cargo now leave it as wreckage, which was not measured.
+
+**Seen on the way (not changed).**
+- `stop` on a jump returns Ok and sends no event; the fuel is gone. The rules say so
+  now, the engine still does not (`handle_stop`).
+- A recall damages hulls without an event unless a ship is destroyed; the fleet row
+  shows it.
+- A harvest that ends because the hold is full or the seam is out only changes the
+  fleet's state (`process_harvesting`).
+- A cancelled order's refund is added past the Vault cap (`handle_cancel_build`,
+  `handle_cancel_queued`).
+- The in-process tests of `server/src/database.rs` name their databases
+  `iac_<name>_<pid>.db` in the temporary directory and never remove them: several
+  thousand files on this machine.
+- `solo_e2e.dart` defaults to port 7881 (and the next for its multiplayer check) and
+  the playtest harness to 7777, so two checkouts running either with its defaults
+  collide; both take another port by `--port` or `IAC_PORT`. The browser check's
+  profile and database are in fresh temporary directories, its pictures in one
+  fixed one (`<temp>/iac-solo-e2e-shots`, `--shots`); the harness keeps its run in
+  the checkout.
+
+## 2026-10-11: standing orders in the web client, and the layout the owner decided
+
+The polish pass above left a list for a decision. The owner decided it; this is
+that work, and the one feature on it. Web client only (`clients/web`, two README
+passages); no rule, constant or wire message. Branch
+`worktree-agent-a9b40a8a3122c8e92`, not merged.
+
+**The panel.** In the windshield `P`, or Orders under Fleet status, opens the
+standing orders of the selected fleet; in the phone layout it is in the status
+sheet. From the top:
+- *In force.* The doctrine, from the fleet row. Under it the settings, when
+  this console gave them (see below).
+- *The newest report.* A fleet under orders reports every act and every hold
+  as a `PolicyAction`. The panel keeps the last six per fleet and shows the
+  newest in a box: "HOLDING FOR 2:05" with the engine's reason when it is a
+  hold, "LAST REPORT: MOVE, 0:12 AGO" with its reason otherwise. The sentence
+  is the engine's, unchanged. A hold said again for the same cause (the engine
+  repeats it once a minute with fresh figures) takes the place of the one
+  before it, as it already did in the log. Fleet status says "PATROL HOME -
+  HOLDING" and the reason with the panel shut.
+- *The form.* The five doctrines as tiles, manual among them, each with one
+  line on what it does and when it goes home, taken from RULES.md. Three
+  steppers: range in hexes (1 to 30), least odds as a ratio shown on the odds
+  gauge the contacts use (0.5 to 10.0 in eleven steps), fuel budget in percent
+  of deuterium income (10, 20, 35, 50, 75, no bound). Any other value can
+  still be typed. One line says when any doctrine turns home, with the cargo
+  and reserve percentages in force.
+- *The button.* "Set mine+return", or "Clear orders" for manual. It builds the
+  line a player would type (`policy mine range=8 fuel=35`, a setting at the
+  server's default left unsaid) and hands it to `handleCommand`, so the panel
+  and the command bar go through one parser and cannot send different things;
+  the log shows the line. A doctrine at its defaults goes out with no
+  `params`, as the typed `policy mine` does.
+- *A hold loaded by hand.* With a doctrine chosen for a laden fleet the form
+  says that standing orders unload at the dock and that giving them puts the
+  hold back; the engine's `engage` report, which ends "; the hold loaded by
+  hand goes back to the stockpile", then shows in the box.
+- *A refusal* is the toast every refusal is.
+
+**What the wire does not carry.** `FleetState` has `policy`, the doctrine, and
+nothing of its `PolicyParams`. The engine says the range, the ratio and the
+budget once, in the sentence of its `engage` report. So the panel can show the
+settings in force only for orders given from that console in that session:
+the mapper remembers what was sent and forgets it when the fleet's doctrine no
+longer matches or a second confirmation arrives that this console did not
+ask for. For any other fleet under orders the panel says so in a sentence, the
+steppers start at the server's defaults, and Set gives the orders again. This
+is the one thing in the brief the protocol does not allow. The fix is small
+and not this pass's to make: `params` beside `policy` on `FleetState`. The
+settings are not parsed out of the engine's sentence.
+
+**The TUI has no panel.** The brief said to read it for what a player needs to
+see. It has `p`, which steps to the next doctrine, and `P`, which steps the fuel
+budget through 10, 20, 35, 50 and 100. The web steps include those.
+
+**The typed policy checks its ranges.** `policy mine range=99` was sent and
+clamped to 30 by the engine without a word (and a value over 255 would not
+have fitted the wire's byte at all). It is now refused with the usage line,
+which lists the ranges, so what is sent is what is in force.
+
+**Windshield widths.** The hex was sized by the room between the columns and
+the cards stood outside it, so below about 1400 px they ran under the columns.
+The radius is now also bounded by what leaves the slanted cards between the
+columns, and the sector head is as wide as the north-west card leaves it (by
+the old numbers that card stood on the head's rows on a window 768 px high;
+no picture of it was taken). With that the desktop layout fits down to an arena of 1089 px, a
+window of 1167, where the hex is at its least, 130 px. Looked at from 1000 to
+1440 px wide and 700 to 900 high. Below 1167 the windshield takes the phone
+layout, as decided. Two things were added to it there, because a 1100 px
+window is not a phone: it keeps the full gate cards (threat digit, ore bars,
+fuel) while the arena is at least 704 px wide and 549 high, which is every
+window above a phone held upright, and its status sheet is 380 px wide at the
+right instead of the width of the window. The right column now runs to the
+bottom of the arena where the dock does not reach under it (a window of 1334
+px and up), so the orders form shows down to its button on a 900 px window.
+
+**Feed.** Eight rows of text at most, and never past the south-west gate card.
+An entry is shown whole or not at all, the newest first to be kept, measured
+with the font it is drawn in. The rest is in the Overview's log.
+
+**Overview tiles.** A building or a tech queues from its tile and from the
+next-up card whether or not the stockpile covers it, with "Short by 35 Fe, 4
+Cr: it queues now and starts when that is covered." on it. Ship batches stay
+off when short. Two things followed: a lab with an order waiting was called
+idle and offered the same tech again, which would have queued its next level,
+so waiting counts as busy; and the idle research card now lists what waits, as
+the build card does.
+
+**Toasts on a phone.** At the top of the screen, under the HUD and under the
+guide strip while it shows, at the left, 96 px short of the right edge. Under
+the HUD alone they covered the buttons of the guide strip; across the whole
+width they covered the windshield's Status button, the map's Panel button and
+the Cancel of the homeworld's queue rows, which all sit in that corner. On the
+windshield's phone layout at desktop widths (820 to 1167 px) they are still at
+the bottom right, over the last tiles of the dock.
+
+**Words.** Fleet status reads "FUEL FOR 20 HOPS" and "WAY HOME NEEDS 6 FUEL"
+(or "WAY HOME: AT THE DOCK"); a gate card "-6 FUEL". The exchange panel says
+what its meter is: what you have sold lately, the fuller the higher the fee,
+emptying with time; and for an empire with no mine output that the fee is at
+its highest and the meter does not fall. Not "in a day": the window is a day
+only at pace 1. The log keeps 120 lines (the Overview's panel already
+scrolled; 14 was only the store) and help is 24, with the doctrines, their
+settings, load and unload each on a line of its own. The first log line is
+"Uplink established. Homeworld at [5,-1]." Hop counts go through one function.
+Help no longer says TAB cycles fleets: TAB moves the keyboard focus in a
+browser and was left to do that; the help names 1-9 and P instead, and the
+unused `cycleFleet` is gone. The phone map's layer row has its frame round the
+viewport, so it ends at its own edge short of Panel, and no key hints. The
+guide strip keeps the height of the longest note of its walk, measured at the
+width it has, and its buttons a fixed width on a desktop so that the note
+wraps the same for every lesson.
+
+**The guide.** Its last lesson pointed at the command palette with `policy
+mine` typed in. It now marks the Orders button (on a phone the Status button,
+then Orders in the sheet). The palette no longer takes a text to start with;
+nothing else used it.
+
+**Plain http.** The page tests for `navigator.storage` and, where it is
+missing, the front door says under the one-tab sentence that the browser
+cannot be asked to keep the save and may clear it when the device runs short
+of storage.
+
+**The scripted world** answers `policy_update` as the engine does: `clear`,
+`engage` with the settings, the end of a hand-loaded hold, the refusal for a
+fleet that is not there. It flies no doctrine, so a free fleet given orders
+there holds, in the engine's sentence for an empty board, once a minute.
+
+**Tests.** Widget tests against the scripted world and a recording
+controller: the panel by key and by button at 1440, in the sheet at 1100 and
+390; that Set sends the same JSON as the parser gives for the typed line; the
+hold in the panel and in fleet status; the laden notice and the engine's
+report of the unload; settings unknown for orders not given here; the refusal
+toast clear of a phone's dock and of the Status button; every gate card
+against the columns, the fleet rail, the sector head, the feed and, in the
+phone layout, the dock and the Status button, at 24 window sizes; the feed's
+rows and which line it keeps; the tile that queues short and the batch that
+does not; help whole in the log and the log scrolling to what came before it;
+the layer row inside its frame; the guide strip the same height from the scan
+lesson to the orders lesson; the front door's two sentences.
+
+**The check.** `solo_e2e.dart` opens the panel with P in the real bundle,
+picks patrol home, steps the range to one hex and the odds to 10.0, and sets
+it. The wire carries the doctrine with all five settings; the engine answers
+"doctrine set: patrol home (range 1, engage 10.0x, fuel budget 20% of
+deuterium income)"; the fleet's next report is read off the wire and looked
+for on the page, word for word. Then Manual, and "standing orders cleared".
+What the fleet reports is the world's to decide: in two runs a hold, "shields
+recharging (75%)", in the next an act, "engaging hostiles", with a hostile
+scout in the home sector. The step was first written to wait for
+"no contact within 1 hops", on the guess that nothing rates ten to one. Three
+scouts rate exactly 10.00 against one, the ratio's ceiling, so the patrol
+hunted for three minutes and the wait timed out. The check also pictures the
+windshield at 1180 and 1366 px, reads the first line of help in the log, and
+looks for the save sentence on the plain-http page and for its absence on the
+page from this machine.
+
+**Seen on the way (not changed).**
+- In two runs of the check the fleet at the dock, which had fought nothing,
+  held first for "shields recharging (75%)". A third scout had just joined it
+  from the yard; whether that is where the quarter went was not looked into.
+- In the phone layout the banner (ENGAGED, VICTORY) is drawn over the open
+  status sheet.
+- The compact gate cards of a phone show the key and the terrain only, while
+  the guide's jump lesson speaks of "the T digit" and "the bars".
+- The gate card's odds line still ends "HOME 2H"; there is no room for the
+  word beside a long verdict.
+- With eight fleets the desktop fleet rail runs down into the feed.
+- On a desktop a toast still covers the bottom of the right column, where the
+  orders form has its button.
+
+**Merged master** (`84bf51b`: holds after losses, recall refused at home, the
+refusal of standing orders names the fleet) into the branch with no conflict.
+The scripted world took the engine's new refusal sentence.
+
+**Run.** On the merged tree: `flutter analyze` clean; `flutter test` pinned to
+the big cores (`taskset -c 0,1,6-11`), 364 of 364 in three full runs.
+`play.sh --single-player --no-serve`, `cargo build -p iac-server`, and
+`solo_e2e.dart --port 7970`: OK in 188 s, the orders step and the multiplayer
+step included (OK in 180 s on the tree before the merge). The pictures of the
+windshield at 1440, 1366, 1180, 1100 and 390 px, of the panel at 1440, 1100
+and 390, of the overview, the log with help, the phone map and both front
+doors were read.
+
+Two earlier runs of the check failed in the new step, on my expectation of
+what the fleet would report (above). One earlier full run of `flutter test`,
+pinned, failed in `shell_test` "a toast slides in once" with a column of an
+Overview queue card 142 px too tall for its box. That file passed twice alone
+and the six full runs after it passed; no cause was found. It is the kind the
+last entry describes, a layout result that cannot be, but that entry's cure
+was the pinning, and this run was pinned.
+
+**Not verified.** No real phone and no browser but headless Chromium; the
+JavaScript build (`--software`) was not run. The panel against a multiplayer
+server: the check's server step logs in and stops there, and the client code
+is the same. Orders given to one account from two consoles at once were tried
+only against the scripted world. No Rust was touched and `cargo test` was not
+run on the merged tree. Window sizes between the ones named were not looked
+at.
+
 ## 2026-10-11: why the slots stand empty, and what the 25% cap costs
 
 Two measurements the last entry asked for, and one planner fix found on the way. No

@@ -208,6 +208,33 @@ pub enum Command {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         amount: Option<f32>,
     },
+    /// Move `amount` units of `resource` from the stockpile into the hold of
+    /// `fleet_id`; without `amount`, all the stockpile holds and the hold
+    /// has room for. One resource an order. The fleet must stand idle at
+    /// its owner's homeworld and fly no standing orders. It then keeps
+    /// everything in its hold aboard while it is docked
+    /// (`FleetState.laden`); once it has been away, what it brings home
+    /// unloads as cargo always does. `unload`, or giving the fleet standing
+    /// orders, ends it sooner. The answer is an `Alert` (info) event saying what
+    /// went aboard. Refused, with nothing moved, when the fleet is elsewhere
+    /// (`NotInSector`) or busy (`OnCooldown`), the stockpile holds less than
+    /// `amount` or none (`NoResources`), the hold lacks the room
+    /// (`CargoFull`), `amount` is not positive or the fleet is under
+    /// standing orders (`InvalidCommand`).
+    #[serde(rename = "load")]
+    Load {
+        fleet_id: u64,
+        resource: ResourceKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        amount: Option<f32>,
+    },
+    /// End what `load` began: the hold of `fleet_id`, docked at home, goes
+    /// back to the stockpile as far as the caps allow, and the rest follows
+    /// as room opens, as for any docked fleet. The answer is an `Alert`
+    /// (info) event. Refused when the fleet is elsewhere (`NotInSector`),
+    /// busy (`OnCooldown`) or was not loaded (`InvalidCommand`).
+    #[serde(rename = "unload")]
+    Unload { fleet_id: u64 },
 }
 
 fn default_ship_count() -> u16 {
@@ -714,6 +741,11 @@ pub struct FleetState {
     /// aboard and unloads as space frees up.
     #[serde(default)]
     pub cargo_blocked: bool,
+    /// Loaded by `load` and still at home: the dock leaves this hold alone.
+    /// It ends with `unload`, with standing orders, or with the fleet's
+    /// next jump, so what the fleet brings home unloads as any cargo does.
+    #[serde(default)]
+    pub laden: bool,
     /// Standing orders currently flying this fleet, if any.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub policy: Option<PolicyPreset>,
@@ -1791,6 +1823,8 @@ pub struct RaidIncomingEvent {
 pub struct RaidResolvedEvent {
     pub player_id: u64,
     pub defended: bool,
+    /// What a lost raid took: its share of the stockpile and of the cargo
+    /// aboard fleets at home, counted as one pile above the protected floor.
     pub resources_lost: Resources,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage_dropped: Option<Resources>,
@@ -1807,7 +1841,8 @@ pub struct RaidResolvedEvent {
     /// Of those, how many are rebuilt for free after a short delay.
     #[serde(default)]
     pub structures_restored: u32,
-    /// Stockpile the Storage Vault kept out of reach of a successful raid.
+    /// What the Storage Vault kept out of reach of a successful raid, of
+    /// the stockpile and the cargo aboard fleets at home together.
     #[serde(default)]
     pub protected_kept: Resources,
     /// Ships docked at home that a lost raid destroyed.

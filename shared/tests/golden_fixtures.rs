@@ -112,6 +112,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<PolicyPres
         power: 61.5,
         range_hops: 4,
         cargo_blocked: false,
+        laden: false,
         policy,
     }
 }
@@ -448,6 +449,8 @@ fn command_name(c: &Command) -> &'static str {
         Command::Merge { .. } => "merge",
         Command::Exchange { .. } => "exchange",
         Command::ExchangeQuote { .. } => "exchange_quote",
+        Command::Load { .. } => "load",
+        Command::Unload { .. } => "unload",
     }
 }
 
@@ -594,6 +597,9 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("whole_hold", Command::Exchange { fleet_id: 3, give: ResourceKind::Crystal, want: ResourceKind::Metal, amount: None }),
         ("", Command::ExchangeQuote { fleet_id: 3, give: ResourceKind::Deuterium, want: ResourceKind::Crystal, amount: Some(120.0) }),
         ("whole_hold", Command::ExchangeQuote { fleet_id: 3, give: ResourceKind::Metal, want: ResourceKind::Deuterium, amount: None }),
+        ("", Command::Load { fleet_id: 3, resource: ResourceKind::Metal, amount: Some(1200.5) }),
+        ("all_that_fits", Command::Load { fleet_id: 3, resource: ResourceKind::Deuterium, amount: None }),
+        ("", Command::Unload { fleet_id: 3 }),
     ]
 }
 
@@ -706,7 +712,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 player: Some(sample_player()),
                 fleets: vec![
                     sample_fleet(1, h(3, -2), FleetStatus::Harvesting, Some(PolicyPreset::PatrolHome)),
-                    sample_fleet(2, h(4, -2), FleetStatus::Docked, None),
+                    FleetState { laden: true, ..sample_fleet(2, h(4, -2), FleetStatus::Docked, None) },
                 ],
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
                 homeworld_update: Some(sample_homeworld()),

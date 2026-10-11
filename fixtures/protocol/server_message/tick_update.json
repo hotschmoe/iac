@@ -39,6 +39,7 @@
       "home_fuel": 63.0,
       "id": 1,
       "jump_fuel": 31.5,
+      "laden": false,
       "location": {
         "q": 3,
         "r": -2
@@ -82,6 +83,7 @@
       "home_fuel": 63.0,
       "id": 2,
       "jump_fuel": 31.5,
+      "laden": true,
       "location": {
         "q": 4,
         "r": -2

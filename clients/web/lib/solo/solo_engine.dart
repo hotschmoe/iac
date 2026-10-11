@@ -128,6 +128,10 @@ class SoloStatus {
   /// Saves are not being written, and why.
   final String? warning;
 
+  /// The browser keeps a second tab out of this world. It cannot for a page
+  /// that is not served over HTTPS or from this machine.
+  final bool exclusive;
+
   /// Ticks per second while catching up.
   final double rate;
   const SoloStatus({
@@ -137,6 +141,7 @@ class SoloStatus {
     this.refused,
     this.error,
     this.warning,
+    this.exclusive = true,
     this.rate = 0,
   });
 
@@ -151,6 +156,7 @@ class SoloStatus {
         refused: m['refused'] as String?,
         error: m['error'] as String?,
         warning: m['warning'] as String?,
+        exclusive: m['exclusive'] as bool? ?? true,
         rate: (m['rate'] as num? ?? 0).toDouble(),
       );
 
@@ -167,6 +173,11 @@ abstract interface class SoloPort {
   /// Ask the browser to keep what the worker stores when it runs short of
   /// space. The browser decides, and may ask the player.
   void protectStorage();
+
+  /// Whether the browser can be asked at all. It cannot by a page that is
+  /// not served over HTTPS or from this machine, whose save it may then
+  /// clear when the device runs short of space.
+  bool get canProtectStorage;
   void close();
 }
 
@@ -186,6 +197,9 @@ class SoloEngine {
   StreamController<String>? _session;
 
   ValueListenable<SoloStatus> get status => _status;
+
+  /// Whether the browser can be asked to keep the save.
+  bool get canProtectStorage => _port.canProtectStorage;
 
   void _onMessage(String type, String text) {
     switch (type) {

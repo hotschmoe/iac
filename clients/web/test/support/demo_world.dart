@@ -83,6 +83,10 @@ class DemoWorld {
   final Map<int, HarvestResource> _harvest = {};
   final Map<int, List<Hex>> _recall = {};
   final Set<int> _provoked = {};
+
+  /// Orders given through `policy_update`, by fleet: their settings and the
+  /// tick their hold was last said (0 before the first).
+  final Map<int, (PolicyParams, int)> _orders = {};
   int _nextNpcFleet = 9100;
   int _nextShip = 3000;
   int _raidArrival = 0;
@@ -545,6 +549,149 @@ class DemoWorld {
     return [_tickUpdate()];
   }
 
+  /// The server's `load`, with its refusal sentences.
+  List<ServerMessage> _load(int fleetId, ResourceKind resource, double? amount) {
+    final f = _find(fleetId);
+    if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+    if (f.location != _home) {
+      final hexes = Hex.distance(f.location, _home);
+      return [
+        _err(
+            ErrorCode.notInSector,
+            'fleet $fleetId is at ${f.location}, $hexes hex${hexes == 1 ? '' : 'es'} from home $_home; '
+            'a hold is filled from the stockpile, and emptied into it, at the homeworld only'),
+      ];
+    }
+    if (f.policy != null) {
+      return [
+        _err(
+            ErrorCode.invalidCommand,
+            'fleet $fleetId is under standing orders (${f.policy!.label}), which unload at the dock; '
+            'set it to manual before loading its hold by hand'),
+      ];
+    }
+    final stock = resource.of(_resources);
+    final aboard = f.cargo.total;
+    final room = max(0.0, f.cargoCapacity - aboard);
+    final full = _err(ErrorCode.cargoFull, 'the hold of fleet $fleetId is full: it carries ${aboard.round()} of ${f.cargoCapacity.round()}');
+    if (amount != null && amount > stock) {
+      return [
+        _err(ErrorCode.noResources,
+            'the stockpile holds ${stock.toStringAsFixed(1)} ${resource.name}; fleet $fleetId cannot load ${amount.toStringAsFixed(1)}'),
+      ];
+    }
+    if (amount == null && stock <= 0) return [_err(ErrorCode.noResources, 'the stockpile holds no ${resource.name} to load')];
+    if (room <= 0) return [full];
+    if (amount != null && amount > room) {
+      return [
+        _err(
+            ErrorCode.cargoFull,
+            'the hold of fleet $fleetId has room for ${room.toStringAsFixed(1)} more (it carries ${aboard.round()} of '
+            '${f.cargoCapacity.round()}); it cannot load ${amount.toStringAsFixed(1)} ${resource.name}'),
+      ];
+    }
+    final loaded = amount ?? min(stock, room);
+    double moved(ResourceKind k) => k == resource ? loaded : 0;
+    _resources = Resources(
+      metal: _resources.metal - moved(ResourceKind.metal),
+      crystal: _resources.crystal - moved(ResourceKind.crystal),
+      deuterium: _resources.deuterium - moved(ResourceKind.deuterium),
+    );
+    _setFleet(_copy(f,
+        laden: true,
+        cargo: Resources(
+          metal: f.cargo.metal + moved(ResourceKind.metal),
+          crystal: f.cargo.crystal + moved(ResourceKind.crystal),
+          deuterium: f.cargo.deuterium + moved(ResourceKind.deuterium),
+        )));
+    _ev(AlertEvent(
+        level: AlertLevel.info,
+        message: 'fleet $fleetId loaded ${loaded.round()} ${resource.name} from the stockpile: it carries ${(aboard + loaded).round()} of '
+            '${f.cargoCapacity.round()} and keeps it aboard until it next returns home, or until unload',
+        fleetId: fleetId,
+        sector: f.location));
+    return [_tickUpdate()];
+  }
+
+  /// Empty the laden hold of [f] into the stockpile as far as the caps
+  /// allow and end the mark; returns what went back.
+  Resources _unload(FleetState f) {
+    final before = _resources;
+    _resources = _clampCaps(Resources(
+      metal: before.metal + f.cargo.metal,
+      crystal: before.crystal + f.cargo.crystal,
+      deuterium: before.deuterium + f.cargo.deuterium,
+    ));
+    final back = Resources(
+      metal: _resources.metal - before.metal,
+      crystal: _resources.crystal - before.crystal,
+      deuterium: _resources.deuterium - before.deuterium,
+    );
+    _setFleet(_copy(_find(f.id)!,
+        laden: false,
+        cargo: Resources(
+          metal: f.cargo.metal - back.metal,
+          crystal: f.cargo.crystal - back.crystal,
+          deuterium: f.cargo.deuterium - back.deuterium,
+        )));
+    return back;
+  }
+
+  /// The server's `policy_update`, with the reports it makes: `clear` for
+  /// manual, `engage` naming the settings the orders fly with, and the end
+  /// of a hold loaded by hand.
+  List<ServerMessage> _policy(int fleetId, PolicyPreset preset, PolicyParams params) {
+    final f = _find(fleetId);
+    if (f == null) {
+      return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left); its standing orders were not changed')];
+    }
+    if (preset == PolicyPreset.manual) {
+      _orders.remove(fleetId);
+      _setFleet(_copy(f, clearPolicy: true));
+      _ev(PolicyActionEvent(fleetId: fleetId, preset: PolicyPreset.manual, action: 'clear', reason: 'standing orders cleared'));
+      return [_tickUpdate()];
+    }
+    _orders[fleetId] = (params, 0);
+    _setFleet(_copy(f, policy: preset));
+    if (f.laden) _unload(f);
+    final fuel = params.fuelBudgetPct >= 100 ? 'fuel unbounded' : 'fuel budget ${params.fuelBudgetPct}% of deuterium income';
+    _ev(PolicyActionEvent(
+        fleetId: fleetId,
+        preset: preset,
+        action: 'engage',
+        reason: 'doctrine set: ${preset.label} (range ${params.maxRange}, engage ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x, $fuel)'
+            '${f.laden ? '; the hold loaded by hand goes back to the stockpile' : ''}'));
+    return [_tickUpdate()];
+  }
+
+  /// The scripted world flies no doctrine. A fleet given orders here that
+  /// stands free holds, and says why in the engine's sentence for a board
+  /// with nothing on it: when the orders are first weighed and once a
+  /// minute after.
+  void _stepOrders() {
+    for (final f in _fleets) {
+      final given = _orders[f.id];
+      final preset = f.policy;
+      if (given == null || preset == null) continue;
+      final (params, saidAt) = given;
+      if (f.state != FleetStatus.idle && f.state != FleetStatus.docked) continue;
+      if (saidAt != 0 && _tick < saidAt + 60) continue;
+      _orders[f.id] = (params, _tick);
+      final within = 'within ${params.maxRange} hops of home';
+      _ev(PolicyActionEvent(
+          fleetId: f.id,
+          preset: preset,
+          action: 'hold',
+          reason: switch (preset) {
+            PolicyPreset.prospect => 'every lane within 32 hops of ${f.location} is charted $within',
+            PolicyPreset.mineAndReturn => 'no seam $within repays the fuel to fetch it (stripped tiles refill over hours)',
+            PolicyPreset.salvageAndSites => 'board is clear $within: no derelict, no wreckage that repays the fuel',
+            PolicyPreset.patrolHome => 'no contact $within that the fleet rates ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x against',
+            PolicyPreset.manual => '',
+          }));
+    }
+  }
+
   /// Put [fleetId] at [at] with [cargo] aboard, for a test that needs a
   /// fleet somewhere the scripted layout does not reach.
   void place(int fleetId, Hex at, Resources cargo) {
@@ -592,6 +739,7 @@ class DemoWorld {
     _stepQueues();
     _stepSalvage();
     _stepRaid();
+    _stepOrders();
 
     if (_tick % 120 == 0) {
       _ev(const AlertEvent(level: AlertLevel.info, message: 'Demo mode: no server connected'));
@@ -1027,6 +1175,8 @@ class DemoWorld {
         cooldownRemaining: f.cooldownRemaining,
         power: f.ships.fold<double>(0, (p, s) => p + _power[s.shipClass]!),
         rangeHops: f.fuel ~/ _jump(f.ships),
+        cargoBlocked: f.cargoBlocked,
+        laden: f.laden,
         policy: f.policy,
       );
 
@@ -1040,6 +1190,7 @@ class DemoWorld {
     List<ShipState>? ships,
     double? fuel,
     int? cooldown,
+    bool? laden,
   }) =>
       FleetState(
         id: f.id,
@@ -1055,6 +1206,7 @@ class DemoWorld {
         cooldownRemaining: cooldown ?? f.cooldownRemaining,
         power: f.power,
         rangeHops: f.rangeHops,
+        laden: laden ?? f.laden,
         policy: clearPolicy ? null : (policy ?? f.policy),
       );
 
@@ -1094,6 +1246,7 @@ class DemoWorld {
       state: home ? FleetStatus.docked : (returning ? FleetStatus.returning : FleetStatus.idle),
       fuel: cur.fuel - _jump(cur.ships),
       cooldown: 1,
+      laden: false,
     );
     if (home) {
       _resources = _clampCaps(Resources(
@@ -1607,11 +1760,8 @@ class DemoWorld {
     switch (msg) {
       case CommandMessage(:final command):
         return _command(command);
-      case PolicyUpdate(:final fleetId, :final preset):
-        final f = _find(fleetId);
-        if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
-        _setFleet(_copy(f, policy: preset, clearPolicy: preset == PolicyPreset.manual));
-        return [_tickUpdate()];
+      case PolicyUpdate(:final fleetId, :final preset, :final params):
+        return _policy(fleetId, preset, params ?? const PolicyParams());
       case RequestFullState():
         return [initial()];
       case AuthRequest():
@@ -1999,6 +2149,18 @@ class DemoWorld {
         return _exchange(fleetId, give, want, amount, quote: false);
       case ExchangeQuoteCommand(:final fleetId, :final give, :final want, :final amount):
         return _exchange(fleetId, give, want, amount, quote: true);
+      case LoadCommand(:final fleetId, :final resource, :final amount):
+        return _load(fleetId, resource, amount);
+      case UnloadCommand(:final fleetId):
+        final f = _find(fleetId);
+        if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+        if (!f.laden) {
+          return [_err(ErrorCode.invalidCommand, 'fleet $fleetId was not loaded by hand; a docked fleet unloads by itself as the stockpile has room')];
+        }
+        final back = _unload(f);
+        _ev(AlertEvent(
+            level: AlertLevel.info, message: 'fleet $fleetId unloaded ${_amount(back)} into the stockpile', fleetId: fleetId, sector: f.location));
+        return [_tickUpdate()];
       case LeaderboardCommand(:final limit):
         const rows = [
           LeaderboardEntry(rank: 1, name: 'Vega', agent: true, score: 14.2, core: 12.8, combat: 1.4, explore: 0),

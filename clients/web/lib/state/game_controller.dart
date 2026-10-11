@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../console/economy_view.dart' show shortReason;
+import '../console/economy_view.dart' show shortfall;
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
@@ -80,8 +80,16 @@ class GameController extends ChangeNotifier {
   /// the log drops), for scenes that animate them.
   Stream<proto.GameEvent> get gameEvents => _events.stream;
 
+  final StreamController<proto.ErrorMessage> _refusals = StreamController.broadcast(sync: true);
+
+  /// Every order the world refused, with its own sentence of why. The world
+  /// is the judge of an order; the console shows what it said at once.
+  Stream<proto.ErrorMessage> get refusals => _refusals.stream;
+
   void _tap(proto.ServerMessage m) {
     switch (m) {
+      case proto.ErrorMessage():
+        _refusals.add(m);
       case proto.TickUpdate(:final events):
         for (final e in events ?? const <proto.GameEvent>[]) {
           if (e.kind is proto.ExchangedEvent) _quoteAsked.clear();
@@ -93,6 +101,13 @@ class GameController extends ChangeNotifier {
       case proto.ExchangeQuote(:final terms):
         if (_quoteTyped.remove((terms.fleetId, terms.give, terms.want))) {
           for (final line in quoteLines(m).reversed) {
+            _mapper.pushLog(line, EventLevel.bright);
+          }
+        }
+      case proto.LeaderboardReply():
+        if (_boardTyped) {
+          _boardTyped = false;
+          for (final line in boardLines(m).reversed) {
             _mapper.pushLog(line, EventLevel.bright);
           }
         }
@@ -389,15 +404,11 @@ class GameController extends ChangeNotifier {
     stop();
     connection.dispose();
     _events.close();
+    _refusals.close();
     super.dispose();
   }
 
   // ── Map UI ────────────────────────────────────────────────────
-
-  void cycleFleet() {
-    if (_state.fleets.isEmpty) return;
-    selectFleet((activeFleet + 1) % _state.fleets.length);
-  }
 
   void selectFleet(int index) {
     if (index < 0 || index >= _state.fleets.length) return;
@@ -515,7 +526,7 @@ class GameController extends ChangeNotifier {
     final String echo;
     proto.Resources batch(proto.Resources unit) =>
         proto.Resources(metal: unit.metal * shipBatch, crystal: unit.crystal * shipBatch, deuterium: unit.deuterium * shipBatch);
-    String? short;
+    proto.Resources? missing;
     switch (hwTab) {
       case HomeworldTab.buildings:
         final o = c.buildings[i];
@@ -538,7 +549,7 @@ class GameController extends ChangeNotifier {
         name = o.shipClass.label;
         command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
         echo = 'ship ${o.shipClass.label} x$shipBatch';
-        short = shortReason(_state.stock, batch(o.unitCost));
+        missing = shortfall(_state.stock, batch(o.unitCost));
       case HomeworldTab.defence:
         final o = c.defences[i];
         requires = o.requires;
@@ -546,7 +557,7 @@ class GameController extends ChangeNotifier {
         name = o.kind.label;
         command = proto.BuildDefenceCommand(kind: o.kind, count: shipBatch);
         echo = 'defence ${o.kind.label} x$shipBatch';
-        short = shortReason(_state.stock, batch(o.unitCost));
+        missing = shortfall(_state.stock, batch(o.unitCost));
       case HomeworldTab.storage:
         return;
     }
@@ -556,8 +567,8 @@ class GameController extends ChangeNotifier {
       note('$name is locked: needs ${unmet.join(', ')}', level: EventLevel.bright);
     } else if (maxed) {
       note('$name is already at its maximum level', level: EventLevel.bright);
-    } else if (short != null) {
-      note('$name x$shipBatch not ordered: ${short.replaceFirst('Short', 'short')}. A batch is paid in full when it is ordered.', level: EventLevel.bright);
+    } else if (missing != null) {
+      note('$name x$shipBatch not ordered: ${shortBy(missing)}. A batch is paid in full when it is ordered.', level: EventLevel.bright);
     } else {
       note('> $echo', level: EventLevel.full);
       sendCommand(command);
@@ -726,6 +737,10 @@ class GameController extends ChangeNotifier {
   final Map<TradeKey, (int, double?)> _quoteAsked = {};
   final Set<TradeKey> _quoteTyped = {};
 
+  /// The player typed `leaderboard`: the next board is printed in the log.
+  /// The board the console refreshes by itself only feeds the ranking panel.
+  bool _boardTyped = false;
+
   /// Ask the server what [amount] of [give] would bring [fleetId] in [want]
   /// at the hub's exchange (`exchange_quote`); without [amount], all the
   /// hold carries. Debounced, and skipped while a recent (under 3 ticks)
@@ -762,6 +777,26 @@ class GameController extends ChangeNotifier {
     note('> trade ${amount == null ? 'all' : amount.round()} ${give.name} for ${want.name}', level: EventLevel.full);
     sendCommand(proto.ExchangeCommand(fleetId: id, give: give, want: want, amount: amount));
   }
+
+  /// Move [amount] of [resource] from the stockpile into the hold of
+  /// [fleetId], docked at home; without [amount], all that fits.
+  void loadHold(int fleetId, proto.ResourceKind resource, {double? amount}) {
+    note('> load ${amount == null ? 'all' : amount.round()} ${resource.name} into F$fleetId', level: EventLevel.full);
+    sendCommand(proto.LoadCommand(fleetId: fleetId, resource: resource, amount: amount));
+  }
+
+  /// Put the hold [fleetId] was loaded with back into the stockpile.
+  void unloadHold(int fleetId) {
+    note('> unload F$fleetId', level: EventLevel.full);
+    sendCommand(proto.UnloadCommand(fleetId: fleetId));
+  }
+
+  /// Give the selected fleet standing orders, or clear them with
+  /// [proto.PolicyPreset.manual]. It is the typed `policy` and nothing
+  /// else: the line a player would type goes through the command bar's own
+  /// door, so the two cannot send different things.
+  void setOrders(proto.PolicyPreset preset, [proto.PolicyParams params = const proto.PolicyParams()]) =>
+      handleCommand(policyCommand(preset, params));
 
   /// Windshield: fly the active fleet one hop in [direction] (0-5, same
   /// order as [proto.HexDirection]) if the server lists that lane.
@@ -820,6 +855,8 @@ class GameController extends ChangeNotifier {
           if (m case proto.CommandMessage(command: proto.ExchangeQuoteCommand q)) {
             _quoteTyped.add((q.fleetId, q.give, q.want));
           }
+          if (m case proto.CommandMessage(command: proto.LeaderboardCommand())) _boardTyped = true;
+          if (m case proto.PolicyUpdate(:final fleetId, :final preset, :final params)) _mapper.noteOrders(fleetId, preset, params);
           send(m);
         }
       case ParsedLocal(:final lines):

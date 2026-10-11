@@ -28,6 +28,14 @@ const voice = {
 
 const hubVoice = 'Neutral post. No ore, no hostiles. The exchange is open.';
 
+/// What the dock does for a fleet and what it does not: nothing in the field
+/// reaches a docked fleet, a raid that beats the home defence does.
+const dockVoice = 'A DOCKED FLEET REFUELS AND UNLOADS, AND NOTHING IN THE FIELD REACHES IT.\n'
+    'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS.';
+const dockVoiceLaden = 'A DOCKED FLEET REFUELS, AND NOTHING IN THE FIELD REACHES IT.\n'
+    'HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.\n'
+    'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS AND TAKES ITS SHARE OF THE HOLD.';
+
 String zoneName(proto.Hex h) {
   final d = h.distFromOrigin;
   return d == 0 ? 'Central Hub' : d <= 8 ? 'Inner Ring' : d <= 20 ? 'Outer Ring' : 'The Wandering';
@@ -51,6 +59,10 @@ class SectorHead extends StatelessWidget {
 
   /// The sector is a hub sector with the exchange.
   final bool exchange;
+
+  /// The most the head takes of the phone layout, where it has no rows:
+  /// the coordinates and the threat line.
+  static const phoneWidth = 250.0;
   const SectorHead({super.key, required this.loc, required this.home, required this.sector, required this.threat, required this.narrow, this.exchange = false});
 
   @override
@@ -154,7 +166,7 @@ class FleetRail extends StatelessWidget {
               Padding(
                   padding: const EdgeInsets.only(top: 2),
                   child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text('$hops HOPS', style: T.mono(size: 10, color: C.text3)),
+                    Text(hopCount(hops).toUpperCase(), style: T.mono(size: 10, color: C.text3)),
                     Text(pol.toUpperCase(), style: T.mono(size: 10, color: C.text3)),
                   ])),
           ]),
@@ -182,8 +194,14 @@ class _HoverState extends State<Hover> {
 class StatusPanel extends StatelessWidget {
   final ui.FleetState f;
   final double shieldFrac;
+
+  /// The fleet stands in its homeworld's sector.
+  final bool atHome;
+
+  /// The hold its standing orders last announced, while it still stands.
+  final PolicyAct? holding;
   final Widget? footer;
-  const StatusPanel({super.key, required this.f, required this.shieldFrac, this.footer});
+  const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.holding, this.footer});
 
   @override
   Widget build(BuildContext context) {
@@ -195,6 +213,7 @@ class StatusPanel extends StatelessWidget {
     final hullFrac = hm > 0 ? hull / hm : 0.0;
     final hops = f.jumpFuel > 0 ? f.fuel ~/ f.jumpFuel : f.fuel;
     final need = f.homeFuel;
+    final low = need > 0 && f.fuel < need * 1.2;
     final scanRange = f.ships.any((g) => g.shipClass.toLowerCase() == 'scout') ? 2 : 1;
     final cargo = f.cargo.total;
     final pol = f.policy == null ? 'MANUAL' : f.policy!.toUpperCase();
@@ -214,7 +233,7 @@ class StatusPanel extends StatelessWidget {
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             const SizedBox(height: 7),
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              const Lbl('Cargo', size: 10),
+              Lbl(f.laden ? 'Cargo - laden' : 'Cargo', size: 10),
               Row(mainAxisSize: MainAxisSize.min, children: [Register(cargo, width: 3, size: 11, color: C.text), Text('/${f.cargo.capacity}', style: T.mono(size: 11, color: C.text3))]),
             ]),
             const SizedBox(height: 3),
@@ -235,10 +254,15 @@ class StatusPanel extends StatelessWidget {
             const SizedBox(height: 3),
             LedBar(shieldFrac, color: C.crystal),
             const SizedBox(height: 8),
-            Kv('Hops / home needs', v: '$hops / ${need}F${need > 0 && f.fuel < need * 1.2 ? '  LOW' : ''}', vc: need > 0 && f.fuel < need * 1.2 ? C.threat(6) : null),
+            Kv('Fuel for', v: hopCount(hops).toUpperCase()),
+            if (atHome)
+              const Kv('Way home', v: 'AT THE DOCK')
+            else
+              Kv('Way home needs', key: const Key('status-way-home'), v: '$need FUEL${low ? '  LOW' : ''}', vc: low ? C.threat(6) : null),
             Kv('Fleet power', v: f.power.round().toString()),
             Kv('Scan range', v: '$scanRange'),
-            Kv('Orders', v: pol, vc: C.a300),
+            Kv('Orders', key: const Key('status-orders'), v: holding == null ? pol : '$pol - HOLDING', vc: C.a300),
+            if (holding != null) WhyText(holding!.reason, key: const Key('status-hold')),
             if (footer != null) Padding(padding: const EdgeInsets.only(top: 10), child: Align(alignment: Alignment.centerLeft, child: footer)),
           ]),
         ),
@@ -279,6 +303,9 @@ class ContactsPanel extends StatelessWidget {
   final VoidCallback onHoverEnd;
   final void Function(String act) onAct;
   final VoidCallback onOpenHome;
+
+  /// Open the dock's load control for this fleet.
+  final VoidCallback onLoadHold;
   const ContactsPanel({
     super.key,
     required this.threat,
@@ -301,6 +328,7 @@ class ContactsPanel extends StatelessWidget {
     required this.onHoverEnd,
     required this.onAct,
     required this.onOpenHome,
+    required this.onLoadHold,
   });
 
   Widget _row(String k, Widget icon, Widget body, {Widget? actions}) {
@@ -347,7 +375,7 @@ class ContactsPanel extends StatelessWidget {
           _t(threat.composition.map((e) => '${e.$2}x ${shipAbbr(e.$1)}').join(' + '), trail: ThreatBadge(th, sm: true)),
           _d(Text('${threat.behavior?.wire.toUpperCase() ?? ''} - POWER ${threat.power.round()}${combat ? ' - ENGAGED' : ''}', style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
           if (o == null)
-            _d(Text('ODDS: ASKING THE SERVER', key: const Key('contact-odds-pending'), style: _ds))
+            _d(Text('ODDS: REQUESTED', key: const Key('contact-odds-pending'), style: _ds))
           else ...[
             Padding(padding: const EdgeInsets.only(top: 6), child: Text.rich(key: const Key('contact-odds'), TextSpan(children: [
               TextSpan(text: o.label, style: TextStyle(color: o.color, fontWeight: FontWeight.w600)),
@@ -447,8 +475,16 @@ class ContactsPanel extends StatelessWidget {
         SymIcon((c, sz) => Draw.symbol(c, Sym.home, sz.width / 2, sz.height / 2, 15, color: C.own, lw: 1.2, bloom: false), size: 30),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           _t('Homeworld'),
-          _d(Text('DOCKED FLEETS ARE SAFE.', style: _ds)),
-          Padding(padding: const EdgeInsets.only(top: 7), child: ConsoleButton('Open homeworld', small: true, onPressed: onOpenHome)),
+          _d(Text(
+              fleet.laden ? dockVoiceLaden : dockVoice,
+              key: const Key('contact-dock'),
+              style: _ds)),
+          Padding(
+              padding: const EdgeInsets.only(top: 7),
+              child: Wrap(spacing: 6, runSpacing: 6, children: [
+                ConsoleButton('Open homeworld', small: true, onPressed: onOpenHome),
+                ConsoleButton('Load hold', key: const ValueKey('contact-load'), small: true, keyHint: 'L', onPressed: onLoadHold),
+              ])),
         ]),
       ));
     }
@@ -563,11 +599,247 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
   }
 }
 
+// ── Standing orders ────────────────────────────────────────────
+
+/// Least odds ratios the panel steps through, times ten. Any ratio from 0.1
+/// to 10 can be typed (`policy ... engage=`).
+const engageSteps = [5, 9, 11, 13, 15, 20, 25, 30, 40, 60, 100];
+
+/// Fuel budgets the panel steps through, in percent of deuterium income.
+/// 100 lifts the bound; any percentage can be typed (`policy ... fuel=`).
+const fuelBudgets = [10, 20, 35, 50, 75, 100];
+
+proto.PolicyPreset presetOf(ui.FleetState f) =>
+    proto.PolicyPreset.values.where((p) => p.label == f.policy).firstOrNull ?? proto.PolicyPreset.manual;
+
+/// What a doctrine does and when it goes home, as RULES.md has it.
+String doctrineLine(proto.PolicyPreset p) => switch (p) {
+      proto.PolicyPreset.manual => 'You fly it. Clears the orders.',
+      proto.PolicyPreset.prospect => 'Scans and charts the sectors in range. Home when none is left.',
+      proto.PolicyPreset.mineAndReturn => 'Strips the seams that repay their fuel. Home with the ore when the hold fills.',
+      proto.PolicyPreset.salvageAndSites => 'Scoops wreckage, boards derelicts, nearest first. Home when the board is clear.',
+      proto.PolicyPreset.patrolHome => 'Hunts hostiles in range at its least odds or better. Docks when the beat is clear.',
+    };
+
+String _hexes(int n) => '$n HEX${n == 1 ? '' : 'ES'}';
+
+String _budget(int pct) => pct >= 100 ? 'NO BOUND' : '$pct%';
+
+/// "RANGE 8 HEXES - ENGAGE 1.5X - FUEL 40%".
+String settingsLine(proto.PolicyParams p) =>
+    'RANGE ${_hexes(p.maxRange)} - ENGAGE ${(p.engageRatioX10 / 10).toStringAsFixed(1)}X - FUEL ${_budget(p.fuelBudgetPct)}';
+
+/// The standing orders of the selected fleet: the doctrine in force and what
+/// it last reported, above all why it holds when it holds, and a form that
+/// gives new orders. The reports are the engine's sentences; the form sends
+/// what the typed `policy` sends.
+class OrdersPanel extends StatefulWidget {
+  final GameController controller;
+  const OrdersPanel({super.key, required this.controller});
+  @override
+  State<OrdersPanel> createState() => _OrdersPanelState();
+}
+
+class _OrdersPanelState extends State<OrdersPanel> {
+  proto.PolicyPreset? _preset;
+  int? _range, _engage, _fuel;
+  int? _forFleet;
+  String? _stood;
+  GameController get c => widget.controller;
+
+  void _forget() {
+    _preset = null;
+    _range = null;
+    _engage = null;
+    _fuel = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final st = c.state;
+    final fleet = c.currentFleet;
+    final inForce = presetOf(fleet);
+    final known = st.policyParams[fleet.id];
+    final standing = '${inForce.name} ${known?.toJson()}';
+    if (_forFleet != fleet.id || _stood != standing) {
+      _forFleet = fleet.id;
+      _stood = standing;
+      _forget();
+    }
+    final usual = known ?? const proto.PolicyParams();
+    final preset = _preset ?? inForce;
+    final manual = preset == proto.PolicyPreset.manual;
+    final form = proto.PolicyParams(
+      minFuelPct: usual.minFuelPct,
+      cargoReturnPct: usual.cargoReturnPct,
+      maxRange: _range ?? usual.maxRange,
+      engageRatioX10: _engage ?? usual.engageRatioX10,
+      fuelBudgetPct: _fuel ?? usual.fuelBudgetPct,
+    );
+    final same = preset == inForce &&
+        (manual || (known != null && form.maxRange == known.maxRange && form.engageRatioX10 == known.engageRatioX10 && form.fuelBudgetPct == known.fuelBudgetPct));
+    final why = !same
+        ? null
+        : manual
+            ? '${fleet.name} has no standing orders.'
+            : 'These are the orders in force.';
+    final acts = st.policyActs[fleet.id] ?? const <PolicyAct>[];
+
+    return ConsolePanel(
+      key: const ValueKey('orders-panel'),
+      title: 'Standing orders',
+      subText: fleet.name,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+        Kv('In force', key: const Key('orders-in-force'), v: inForce.label.toUpperCase(), vc: C.a300),
+        if (inForce != proto.PolicyPreset.manual)
+          known != null
+              ? Padding(padding: const EdgeInsets.only(top: 4), child: Text(settingsLine(known), key: const Key('orders-settings'), style: T.mono(size: 10, color: C.text2, height: 1.3)))
+              : const WhyText('Its range, ratio and fuel budget are not shown: the engine says them once, when orders are given, and these were not given from this console in this session.',
+                  key: Key('orders-settings-unknown')),
+        const SizedBox(height: 6),
+        _report(st.tick, fleet, acts.firstOrNull),
+        const SizedBox(height: 8),
+        const Lbl('Doctrine'),
+        for (final p in proto.PolicyPreset.values) _doctrine(p, on: p == preset, standing: p == inForce),
+        if (!manual) ...[
+          const SizedBox(height: 6),
+          _stepper('Range from home', 'range', _hexes(form.maxRange),
+              down: form.maxRange > 1 ? form.maxRange - 1 : null, up: form.maxRange < 30 ? form.maxRange + 1 : null, set: (v) => _range = v),
+          _stepper('Least odds to fight', 'engage', '${(form.engageRatioX10 / 10).toStringAsFixed(1)}X',
+              down: engageSteps.where((s) => s < form.engageRatioX10).lastOrNull,
+              up: engageSteps.where((s) => s > form.engageRatioX10).firstOrNull,
+              set: (v) => _engage = v),
+          RatioGauge(form.engageRatioX10 / 10),
+          const WhyText('No doctrine enters a sector where its odds are below this, hostiles there or not.'),
+          _stepper('Fuel budget, of income', 'fuel', _budget(form.fuelBudgetPct),
+              down: fuelBudgets.where((b) => b < form.fuelBudgetPct).lastOrNull,
+              up: fuelBudgets.where((b) => b > form.fuelBudgetPct).firstOrNull,
+              set: (v) => _fuel = v),
+          WhyText(form.fuelBudgetPct >= 100
+              ? 'No bound: the tank takes what the stockpile holds, ahead of every queue.'
+              : 'It leaves the dock on a full tank only, paid for from this share of your deuterium income.'),
+          WhyText('It turns home at ${form.cargoReturnPct}% hold, or with fuel down to the way back plus ${form.minFuelPct}% of the tank.'),
+        ],
+        if (fleet.laden && !manual)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+                'The hold of ${fleet.name} was loaded by hand. Standing orders unload at the dock: giving them ends that, and the hold goes back to the stockpile.',
+                key: const Key('orders-laden'),
+                style: T.mono(size: 10, color: C.threat(5), height: 1.3)),
+          ),
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: ConsoleButton(manual ? 'Clear orders' : 'Set ${preset.label}',
+              key: const ValueKey('orders-set'), small: true, primary: why == null, onPressed: why == null ? () => c.setOrders(preset, form) : null, reason: why),
+        ),
+        if (why != null) WhyText(why, key: const Key('orders-why')),
+        if (acts.length > 1) ...[
+          const SizedBox(height: 10),
+          const Lbl('Before that'),
+          const SizedBox(height: 2),
+          for (final a in acts.skip(1)) _earlier(a),
+        ],
+      ]),
+    );
+  }
+
+  /// The newest report: the hold the fleet stands in and its reason, or the
+  /// last thing its orders did.
+  Widget _report(int tick, ui.FleetState fleet, PolicyAct? act) {
+    final hold = act != null && act.isHold && fleet.policy != null;
+    final String head, body;
+    if (act == null) {
+      head = 'NO REPORT YET';
+      body = fleet.policy == null
+          ? 'Under orders, every act and every hold shows here with its reason.'
+          : 'Nothing from these orders since this console was opened. A fleet that stands still says why within a minute.';
+    } else {
+      head = hold ? 'HOLDING FOR ${clockFmt(tick - act.since)}' : 'LAST REPORT: ${act.action.toUpperCase()}, ${clockFmt(tick - act.tick)} AGO';
+      body = act.reason;
+    }
+    return Container(
+      key: const Key('orders-report'),
+      padding: const EdgeInsets.fromLTRB(9, 6, 9, 7),
+      decoration: BoxDecoration(
+          color: hold ? C.a(C.a500, .08) : C.inset,
+          border: Border(left: BorderSide(color: hold ? C.a500 : C.a700, width: 3), top: const BorderSide(color: C.lineLo), right: const BorderSide(color: C.lineLo), bottom: const BorderSide(color: C.lineLo))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        Text(head, key: const Key('orders-report-head'), style: T.cond(size: 10.5, color: hold ? C.a200 : C.text2, spacing: 1.4)),
+        const SizedBox(height: 3),
+        Text(body, key: const Key('orders-report-reason'), style: T.mono(size: 10.5, color: act == null ? C.text3 : C.text, height: 1.35)),
+      ]),
+    );
+  }
+
+  Widget _earlier(PolicyAct a) => Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text.rich(
+          TextSpan(children: [
+            TextSpan(text: '${(a.tick % 100000).toString().padLeft(5, '0')}  ', style: const TextStyle(color: C.text4)),
+            TextSpan(text: '${a.action.toUpperCase()}  ', style: const TextStyle(color: C.a600)),
+            TextSpan(text: a.reason),
+          ]),
+          style: T.mono(size: 10, color: C.text2, height: 1.3),
+        ),
+      );
+
+  Widget _doctrine(proto.PolicyPreset p, {required bool on, required bool standing}) => Padding(
+        padding: const EdgeInsets.only(top: 3),
+        child: Semantics(
+          button: true,
+          selected: on,
+          label: 'Doctrine ${p.label}${standing ? ', in force' : ''}. ${doctrineLine(p)}',
+          excludeSemantics: true,
+          onTap: () => setState(() => _preset = p),
+          child: Hover(
+            builder: (hv) => GestureDetector(
+              key: ValueKey('orders-doctrine-${p.name}'),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _preset = p),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(8, 3, 8, 4),
+                decoration: BoxDecoration(color: on ? C.a(C.a500, .14) : (hv ? C.a(C.a500, .06) : null), border: Border.all(color: on ? C.a500 : (hv ? C.lineHi : C.line))),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+                  Row(children: [
+                    Expanded(child: Text(p.label.toUpperCase(), style: T.cond(size: 11, color: on ? C.a100 : C.a300, spacing: 1.4))),
+                    if (standing) const Tag('in force', color: C.own),
+                  ]),
+                  const SizedBox(height: 2),
+                  Text(doctrineLine(p), style: T.mono(size: 10, color: on ? C.text2 : C.text3, height: 1.3)),
+                ]),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  Widget _stepper(String label, String id, String value, {required int? down, required int? up, required void Function(int) set}) => Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Row(children: [
+          Expanded(child: Lbl(label)),
+          ConsoleButton('-', key: ValueKey('orders-$id-down'), small: true, semanticsLabel: '$label down', onPressed: down == null ? null : () => setState(() => set(down)), reason: 'At the least the engine takes'),
+          SizedBox(width: 78, child: Text(value, key: Key('orders-$id'), textAlign: TextAlign.center, style: T.mono(size: 11, color: C.a300))),
+          ConsoleButton('+', key: ValueKey('orders-$id-up'), small: true, semanticsLabel: '$label up', onPressed: up == null ? null : () => setState(() => set(up)), reason: 'At the most the engine takes'),
+        ]),
+      );
+}
+
 // ── Exchange ───────────────────────────────────────────────────
 
 const _resAbbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr', proto.ResourceKind.deuterium: 'De'};
 
 Color _resColor(proto.ResourceKind k) => C.ore(k.name);
+
+/// What the meter is, as RULES.md has it: the weight sold and not yet
+/// forgotten, which sets the fee and falls with time whether or not the
+/// player trades. Its span is a share of the player's own mine output, so
+/// with none the fee is at its top and nothing falls.
+String meterNote(proto.ExchangeMeter m) => m.span > 0
+    ? 'The meter is what you have sold here lately. The fuller it reads the higher the fee on the next unit, and it empties by itself with time.'
+    : 'The meter is what you have sold here lately. With no mine output the fee is at its highest, and the meter does not fall.';
 
 /// Shares of the hold of the chosen resource a trade offers, in percent. The
 /// whole of it is sent with no amount, which the server reads as all aboard.
@@ -686,6 +958,7 @@ class _ExchangePanelState extends State<ExchangePanel> {
         Kv('Fee on the next unit',
             v: after == null ? '${(meter.fee * 100).round()}%' : '${(meter.fee * 100).round()}% TO ${(after.fee * 100).round()}%'),
         Kv('Meter falls', key: const Key('ex-recovery'), v: _recovery(after ?? meter)),
+        WhyText(meterNote(after ?? meter), key: const Key('ex-meter-note')),
         const SizedBox(height: 10),
         Align(
           alignment: Alignment.centerLeft,
@@ -712,9 +985,54 @@ class _ExchangePanelState extends State<ExchangePanel> {
 
 // ── Teleprinter ────────────────────────────────────────────────
 
+/// The newest lines of the log, printed over the arena's lower left. It
+/// takes at most [mostLines] rows of text and never more than [maxHeight],
+/// which the windshield sets so that it ends below the south-west gate card.
+/// An entry is shown whole or not at all, the newest first to be kept; what
+/// does not fit is in the Overview's log.
 class Feed extends StatelessWidget {
   final List<LogEntry> events;
-  const Feed({super.key, required this.events});
+  final double maxHeight;
+  const Feed({super.key, required this.events, required this.maxHeight});
+
+  static const mostLines = 8;
+  static const _size = 10.5, _leading = 1.35;
+  static const _rowHeight = _size * _leading;
+  static const _entryChrome = 3.0;
+  static const _sidePadding = 12.0;
+
+  static TextStyle get _style => T.mono(size: _size, color: C.text2, height: _leading, spacing: .2);
+
+  static List<InlineSpan> _spans(LogEntry e, Color color) => [
+        const TextSpan(text: '> ', style: TextStyle(color: C.a600)),
+        TextSpan(text: '${(e.tick % 100000).toString().padLeft(5, '0')}  ', style: const TextStyle(color: C.text4)),
+        TextSpan(text: e.message.toUpperCase().replaceFirst(RegExp(r'^!+\s*'), ''), style: TextStyle(color: color)),
+      ];
+
+  /// The entries that fit, oldest first, and how many rows the newest may
+  /// take when it is too long to fit whole.
+  (List<(String, LogEntry)>, int) _fitting(BuildContext context, double width) {
+    final rows = math.min(mostLines, ((maxHeight - _entryChrome) / _rowHeight).floor());
+    final scaler = MediaQuery.textScalerOf(context);
+    final shown = <(String, LogEntry)>[];
+    var usedRows = 0, usedHeight = 0.0;
+    for (final (name, e) in namedLog(events)) {
+      final painter = TextPainter(
+          text: TextSpan(children: [..._spans(e, C.text2), if (shown.isEmpty) const TextSpan(text: '   ')], style: _style),
+          textDirection: TextDirection.ltr,
+          textScaler: scaler)
+        ..layout(maxWidth: math.max(1, width - _sidePadding));
+      final need = painter.computeLineMetrics().length;
+      painter.dispose();
+      final height = need * _rowHeight + _entryChrome;
+      if (shown.isNotEmpty && (usedRows + need > rows || usedHeight + height > maxHeight)) break;
+      shown.add((name, e));
+      usedRows += need;
+      usedHeight += height;
+      if (usedRows >= rows) break;
+    }
+    return (shown.reversed.toList(), rows);
+  }
 
   Color _col(String m) {
     if (m.startsWith('!') || m.contains('LOST') || m.contains('destroyed') && m.contains('Your')) return const Color(0xFFFF9A86);
@@ -725,18 +1043,15 @@ class Feed extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final recent = events.take(7).toList().reversed.toList();
-    final seen = <String, int>{};
+    if (maxHeight < _rowHeight + _entryChrome) return const SizedBox.shrink();
     return IgnorePointer(
-      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        for (var i = 0; i < recent.length; i++)
-          () {
-            final e = recent[i];
-            final k = '${e.tick}|${e.message}';
-            final n = seen[k] = (seen[k] ?? 0) + 1;
-            return _TypeLine(key: ValueKey('$k#$n'), entry: e, color: _col(e.message), dim: i < recent.length - 7 + 0 && recent.length > 6 && i == 0 ? true : false, last: i == recent.length - 1);
-          }(),
-      ]),
+      child: LayoutBuilder(builder: (context, box) {
+        final (shown, rows) = _fitting(context, box.maxWidth);
+        return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          for (final (i, (name, e)) in shown.indexed)
+            _TypeLine(key: ValueKey(name), entry: e, color: _col(e.message), rows: rows, last: i == shown.length - 1),
+        ]);
+      }),
     );
   }
 }
@@ -744,8 +1059,11 @@ class Feed extends StatelessWidget {
 class _TypeLine extends StatefulWidget {
   final LogEntry entry;
   final Color color;
-  final bool dim, last;
-  const _TypeLine({super.key, required this.entry, required this.color, required this.dim, required this.last});
+
+  /// The most rows of text the line may take.
+  final int rows;
+  final bool last;
+  const _TypeLine({super.key, required this.entry, required this.color, required this.rows, required this.last});
   @override
   State<_TypeLine> createState() => _TypeLineState();
 }
@@ -767,12 +1085,12 @@ class _TypeLineState extends State<_TypeLine> with SingleTickerProviderStateMixi
       color: const Color(0x8C07050A),
       child: Text.rich(
         TextSpan(children: [
-          const TextSpan(text: '> ', style: TextStyle(color: C.a600)),
-          TextSpan(text: '${(widget.entry.tick % 100000).toString().padLeft(5, '0')}  ', style: const TextStyle(color: C.text4)),
-          TextSpan(text: widget.entry.message.toUpperCase().replaceFirst(RegExp(r'^!+\s*'), ''), style: TextStyle(color: widget.color)),
+          ...Feed._spans(widget.entry, widget.color),
           if (widget.last) WidgetSpan(alignment: PlaceholderAlignment.middle, child: Blink(period: 11, onSteps: 6, builder: (_, on) => Container(width: 6, height: 10, margin: const EdgeInsets.only(left: 6), color: on ? C.a400 : Colors.transparent))),
         ]),
-        style: T.mono(size: 10.5, color: C.text2, height: 1.35, spacing: .2),
+        maxLines: widget.rows,
+        overflow: TextOverflow.ellipsis,
+        style: Feed._style,
       ),
     );
     if (still) return line;
@@ -804,10 +1122,17 @@ class GateCard extends StatelessWidget {
   final void Function(bool) onHover;
   const GateCard({super.key, required this.dir, required this.narrow, required this.known, required this.sector, required this.threat, required this.intel, required this.fuel, required this.isHome, required this.hint, this.tick = 0, this.band, this.preview, required this.hover, required this.onTap, required this.onHover});
 
+  /// Width of a card on a desktop arena.
+  static const width = 150.0;
+
+  /// The most a card on a desktop arena grows to, with its odds line and a
+  /// last line that wraps.
+  static const tallest = 100.0;
+
   @override
   Widget build(BuildContext context) {
     final dashed = !known || intel.aged;
-    final w = narrow ? 92.0 : 150.0;
+    final w = narrow ? 92.0 : width;
     final th = known ? threat.rating : 0;
     final hot = th >= 5;
     final terr = known ? (sector?.terrain.label.split(' ').first ?? '') : 'Uncharted';
@@ -827,7 +1152,7 @@ class GateCard extends StatelessWidget {
       body.add(Container(height: 1, color: C.lineLo));
       if (!known) {
         body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 0), child: Text(hint ? 'FAINT MASS READING${band == null ? '' : ' / BAND $band'}' : 'SCAN TO REVEAL', style: T.mono(size: 9.5, color: hint ? C.threat(6) : C.text3))));
-        body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 4), child: Text('${dir.name} - -${fuel}F', style: T.mono(size: 9.5, color: C.text3))));
+        body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 4), child: Align(alignment: Alignment.centerRight, child: Text('-$fuel FUEL', style: T.mono(size: 9.5, color: C.text3)))));
       } else {
         final dens = [sector?.resources.metal.index ?? 0, sector?.resources.crystal.index ?? 0, sector?.resources.deuterium.index ?? 0];
         body.add(Padding(
@@ -872,7 +1197,7 @@ class GateCard extends StatelessWidget {
                 if (sector?.site != null) Text(' +DRLCT', style: T.mono(size: 9.5, color: C.rare)),
               ]),
             ),
-            Text('-${fuel}F', style: T.mono(size: 9.5, color: C.text3)),
+            Text('-$fuel FUEL', style: T.mono(size: 9.5, color: C.text3)),
           ]),
         ));
       }
@@ -945,6 +1270,9 @@ class Dock extends StatelessWidget {
   final void Function(String?) onHint;
   const Dock({super.key, required this.actions, required this.narrow, required this.scanCooldown, required this.scanSecs, required this.onAct, required this.onHint});
 
+  /// Width of one action on a desktop arena.
+  static const tileWidth = 76.0;
+
   @override
   Widget build(BuildContext context) {
     final tiles = [for (final a in actions) GuideTarget('dock-${a.id}', child: _tile(a))];
@@ -976,7 +1304,7 @@ class Dock extends StatelessWidget {
                 behavior: HitTestBehavior.opaque,
                 onTap: a.ok ? () => onAct(a.id) : () => onHint(a.reason),
                 child: Container(
-                  width: narrow ? null : 76,
+                  width: narrow ? null : tileWidth,
                   height: narrow ? 52 : 60,
                   decoration: BoxDecoration(color: bg, border: Border(right: const BorderSide(color: C.lineLo), bottom: a.active && !on ? const BorderSide(color: C.own, width: 2) : BorderSide.none)),
                   child: Stack(alignment: Alignment.center, children: [

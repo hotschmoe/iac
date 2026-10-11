@@ -90,7 +90,10 @@ active fleet's standing orders; `P` steps the fuel budget they are given with
 (10, 20, 35, 50 percent of deuterium income, then no bound). `e` opens the
 exchange overlay for the active fleet: `g` and `w` pick what to give and
 want, Left/Right the share of the hold, and it shows the server's quote;
-Enter trades when the fleet is at the hub (marked `X` on the star map).
+Enter trades when the fleet is at the hub (marked `X` on the star map). `f`
+opens the fleet panel (split, merge); with the fleet at home it also loads
+the hold from the stockpile: `r` picks the resource, Left/Right the share of
+what fits, `l` loads and `u` unloads.
 
 ## Headless / LLM agent mode
 
@@ -160,8 +163,8 @@ Example session:
 | `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it) |
 | `attack` | `fleet_id`, `target_fleet_id` | engage an NPC fleet |
 | `collect_salvage` | `fleet_id` | scoop wreckage |
-| `recall` | `fleet_id` | emergency-jump home (2× fuel, hull risk) |
-| `stop` | `fleet_id` | abort a move, harvest, or boarding |
+| `recall` | `fleet_id` | emergency-jump home from another sector (2× fuel, hull risk); a jump the fleet was charging is abandoned with its fuel. Refused with `InvalidCommand` and nothing changed for a fleet at your homeworld: there is nothing to come back from, a jump it is charging there goes on, and `stop` is the order that halts it |
+| `stop` | `fleet_id` | abort a move, harvest, or boarding; a jump called off does not return the fuel it burned |
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
 | `build` | `building_type`, `reserve` (default false) | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts). Every order gets a stable `id`, reported in its `Queue` event and in the queue lists. `reserve: true` makes the order hold the line while it is short (see Queues and slots) |
 | `research` | `tech`, `reserve` | research one level, same rules (one lab) |
@@ -176,6 +179,8 @@ Example session:
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
 | `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (`full_state.world.hub`). The answer is an `Exchanged` event with what was given and received, the fee and the meter before and after (see The hub and its exchange). Refused with nothing changed, and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
 | `exchange_quote` | same as `exchange` | do not trade: reply `exchange_quote` with `amount`, `receive`, `par`, `fee`, `meter` and `meter_after`, exactly what `exchange` with the same fields would do. It answers from anywhere and for an amount the fleet does not carry; `refusal` is then the sentence the trade would be refused with right now |
+| `load` | `fleet_id`, `resource` (`metal`, `crystal`, `deuterium`), `amount` (optional) | move `amount` of `resource` from the stockpile into the fleet's hold; without `amount`, all the stockpile holds and the hold has room for. One resource an order. The fleet must stand idle at its homeworld with no standing orders. It is then `laden`: the dock leaves its hold alone until the fleet has been away (see Loading a hold). The answer is an `Alert` (info) saying what went aboard. Refused with nothing moved, and a sentence saying what is short: `NoResources` when the stockpile holds less than `amount` or none, `CargoFull` when the hold lacks the room, `NotInSector` away from home, `OnCooldown` in transit or busy, `InvalidCommand` for an amount that is not positive or a fleet under standing orders |
+| `unload` | `fleet_id` | put a `laden` hold back: what the caps allow goes into the stockpile now and the dock takes the rest as room opens. The answer is an `Alert` (info). Refused with `InvalidCommand` when the fleet was not loaded by `load`, `NotInSector` away from home |
 
 Standing orders are a separate message type (not a command):
 
@@ -271,14 +276,24 @@ What every doctrine does:
 `clients/web/` is a Flutter web app with the amber CRT look: command center,
 windshield and star map, driven by a command bar (`help` lists commands) and
 hotkeys (`1`/`2`/`3` views, numpad 1-6 to move, Esc leaves the bar). It speaks
-the Rust wire protocol over `/ws` on the page's own host and port. Standing
-orders take their settings on the command bar:
+the Rust wire protocol over `/ws` on the page's own host and port. In the
+windshield `P` (or Orders under Fleet status) opens the standing orders of the
+active fleet: the doctrine in force, what it last reported and, when the fleet
+stands still, the engine's reason for the hold; the five doctrines with a line
+each, and steppers for the range, the least odds and the fuel budget. Its
+button sends what the command bar sends for
 `policy mine range=8 engage=1.5 fuel=40 cargo=85 reserve=10` (any subset;
-`fuel` is `fuel_budget_pct`, 100 for no bound). At the hub the windshield
+`fuel` is `fuel_budget_pct`, 100 for no bound; `policy manual` clears). The
+wire carries a fleet's doctrine and not its settings, so the panel shows the
+settings only of orders given from that console in that session. At the hub the windshield
 lists the exchange among its contacts; `T` (or the Trade tile) opens the
 exchange panel, which shows the server's quote for the trade picked and
 sends it. `quote metal deut 400` and `trade metal deut 400` do the same from
-the command bar (no amount: all the hold carries).
+the command bar (no amount: all the hold carries). The homeworld's Storage
+tab has a panel that loads the hold of a fleet docked at home from the
+stockpile and shows what is aboard and what would fit; `L` in the windshield
+opens it for the active fleet, and `load metal 400`, `load metal` (all that
+fits) and `unload` do the same from the command bar.
 
 - `?name=Admiral` skips the name prompt; `?token=...` supplies the account
   token (see "Accounts and tokens"); `?ws=ws://host:port/ws` points at another
@@ -357,17 +372,22 @@ and Flutter; no other tool.
   blitz world with 8 hands-on bots at 350 ticks/s over its first two hours and
   180 in its third. Fewer and less attentive bots catch up faster.
 - **One tab.** A second tab on the same browser is told the world is open
-  elsewhere and does not run it.
+  elsewhere and does not run it. That takes the browser's locks, which a page
+  has only in a secure context: over HTTPS, or from `localhost`. Served over
+  plain http to another machine on the LAN, a second tab is not kept out and
+  the two would overwrite each other's save; the front door says so there.
+  Such a page cannot ask the browser to keep its save either
+  (`navigator.storage` is missing too), so the browser may clear it when the
+  device runs short of storage; the front door says that as well.
 - **A save from another version** (save format, economy or world generation)
   is refused with the reason, as the server refuses such a database; it stays
   stored until a new game replaces it.
 - **Abandon this world** on the front door deletes the save after asking.
 - **Multiplayer from the same bundle.** `?ws=` or `?name=` in the URL, or
   "Connect to a server instead", goes to a server's login as usual.
-- The bundle loads nothing from other hosts except that the Flutter engine
-  asks `fonts.gstatic.com` for its default Roboto, as the multiplayer client
-  always has; unreachable, nothing changes (the console draws in the bundled
-  Plex).
+- The bundle loads nothing from other hosts. The Flutter engine would ask
+  `fonts.gstatic.com` for its default Roboto; `pubspec.yaml` names the bundled
+  Plex Mono as the `Roboto` family, so neither build of the client does.
 
 ```sh
 scripts/play.sh --single-player --no-serve          # just the bundle
@@ -464,6 +484,8 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   cargo unloads only what fits and the rest waits aboard
   (`cargo_blocked: true`). `StorageNearCap` (85%) and `StorageFull` events
   warn you. A Vault also protects 8% of the cap per level (to 60%) from raids.
+  A full stockpile has a way out: `load` the surplus into a hold and sell it
+  at the hub (Loading a hold, below).
 - **Queues and slots** — buildings and research queue ahead of resources;
   ship and defence batches are paid in full when ordered (below). A building
   or research order that can ever start is always accepted, whether or not a
@@ -539,7 +561,8 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   reserve slowly recovers exactly one jump (about 5 minutes from empty,
   announced at each quarter), enough to hop toward home, then the wait starts
   over. `merge` with a fresh fleet from home pools fuel and also rescues it.
-  `recall` costs 2x the jump fuel per hex, all or nothing.
+  `recall` costs 2x the jump fuel per hex, all or nothing; ships that break
+  up in it leave their share of the cargo where the fleet jumped from.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
   chains (corvettes shred scouts…), victors drop salvage (`FleetDestroyed.salvage`
   is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
@@ -548,7 +571,11 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   events for fights your fleets or homeworld are in, or that happen in a
   sector where you have a fleet or your homeworld. Each carries `owner`
   (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
-  `Critical` `Alert`. Hostile ids in a sector view are the ids `attack` and
+  `Critical` `Alert`. A fleet that loses ships keeps only what the holds of
+  the ships it has left carry: the rest, each resource in proportion, drifts
+  as wreckage in that sector, where anyone can `collect_salvage` it for 180
+  ticks, and a destroyed fleet leaves its whole cargo so (an `Alert` says how
+  much and where). Fuel beyond the tanks that are left is lost. Hostile ids in a sector view are the ids `attack` and
   `CombatStarted.enemy_fleet_id` use; messages name a hostile by its `label`
   ("3x corvette pack"), not by id. `ResourceHarvested` is one event per fleet
   every 10 ticks (and when harvesting stops).
@@ -614,7 +641,12 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   raid over defence power), 70% of them rebuilt free shortly after. Lost: a
   hard-capped slice of the stockpile above the Vault-protected share (≤8%),
   half the structures gone for good, a quarter of the ships docked at home
-  destroyed (at least one), and a long grace period. Never
+  destroyed (at least one), and a long grace period. What the destroyed
+  ships carried beyond the holds left goes to the stockpile as far as the
+  Vault has room, and the rest is lost. Cargo aboard fleets at
+  home counts as stockpile: the raid takes its slice of the two together,
+  above one protected share, from stockpile and holds alike, so a hold at the
+  dock hides nothing (`resources_lost` and `protected_kept` cover both). Never
   buildings, never queues. `RaidResolved` reports `structures_lost`,
   `structures_restored`, `protected_kept`, `ships_lost` and, for a repelled
   raid, `salvage_despawn_tick`. The orbital salvage is on your own planet, so
@@ -648,12 +680,35 @@ Change the Rust protocol, regenerate, then fix the Dart side until
     runs from 25% to 33% across the trade, 29% on the whole: 225 deuterium.
     The meter then reads 632 and is empty again in 39 minutes. The same 632
     sold with the meter above 4185 would bring 79.
-  - A hold is filled in the field (ore, wreckage, derelict loot): no command
-    loads it from the stockpile. What the exchange takes is therefore field
-    cargo, including cargo a full store would not accept (`cargo_blocked`).
+  - What the exchange takes is what a hold carries: field cargo (ore,
+    wreckage, derelict loot, cargo a full store would not accept) or a
+    surplus loaded from the stockpile at home.
   - The four numbers (25%, 75%, 15%, the window) are provisional.
   - Standing orders do not use the exchange, and the built-in bots do not
     either.
+- **Loading a hold** — `load` moves stockpile into the hold of a fleet
+  standing idle at your homeworld, one resource an order: an exact `amount`,
+  or with none all that the stockpile holds and the hold has room for. An
+  order that cannot be met in full moves nothing and says what is short, the
+  stockpile or the room.
+  - A loaded fleet is `laden` (`fleets[].laden`): the dock, which empties
+    every other hold each tick, leaves this one alone. The mark ends with
+    the fleet's first jump, so what it brings home unloads as cargo always
+    has. To put a load back without leaving, `unload`: what the caps allow
+    goes back at once, the rest as room opens.
+  - A laden fleet is an ordinary fleet: same fuel, same fights, and what
+    the ships it loses carried is shed like any cargo (see Combat and
+    Raids). Split it and both halves stay laden; merge and
+    the fleet that absorbs keeps its own state.
+  - `load` is refused for a fleet under standing orders, which unload at the
+    dock. Giving a laden fleet standing orders ends the mark and its hold
+    goes back to the stockpile. The built-in bots do not load.
+  - A hold is storage of a kind: a fleet at home holds what it can carry on
+    top of the Vault. It is dear storage (a Hauler costs 950 resources and
+    holds 200 x sqrt(P)), and no hiding place: a lost raid counts cargo at
+    home with the stockpile (see Raids). Loading moves no score.
+  - The trip: `load` the resource that is at its cap, fly to `[0,0]`,
+    `exchange`, fly home; the dock unloads what you bought.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
   the defence structures, each priced at cost x (1 metal, 1.5 crystal, 2

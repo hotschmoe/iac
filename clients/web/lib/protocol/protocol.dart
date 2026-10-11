@@ -639,6 +639,12 @@ sealed class Command {
           want: ResourceKind.fromJson(m['want']),
           amount: _opt(m['amount'], _f),
         ),
+      'load' => LoadCommand(
+          fleetId: _i(m['fleet_id']),
+          resource: ResourceKind.fromJson(m['resource']),
+          amount: _opt(m['amount'], _f),
+        ),
+      'unload' => UnloadCommand(fleetId: _i(m['fleet_id'])),
       final a => throw FormatException('unknown Command action "$a"'),
     };
   }
@@ -842,6 +848,32 @@ class ExchangeQuoteCommand extends Command {
   const ExchangeQuoteCommand({required this.fleetId, required this.give, required this.want, this.amount});
   @override
   Json toJson() => _exchangeJson('exchange_quote', fleetId, give, want, amount);
+}
+
+/// Move [amount] of [resource] from the stockpile into the hold of a fleet
+/// docked at home; without [amount], all the stockpile holds and the hold has
+/// room for. The fleet then keeps its hold aboard ([FleetState.laden]) until
+/// it has been away, or until [UnloadCommand]. The answer is an info alert.
+class LoadCommand extends Command {
+  final int fleetId;
+  final ResourceKind resource;
+  final double? amount;
+  const LoadCommand({required this.fleetId, required this.resource, this.amount});
+  @override
+  Json toJson() {
+    final m = <String, dynamic>{'action': 'load', 'fleet_id': fleetId, 'resource': resource.toJson()};
+    _put(m, 'amount', amount);
+    return m;
+  }
+}
+
+/// Put a hold loaded by [LoadCommand] back into the stockpile, as far as the
+/// caps allow; the dock takes the rest as room opens.
+class UnloadCommand extends Command {
+  final int fleetId;
+  const UnloadCommand({required this.fleetId});
+  @override
+  Json toJson() => {'action': 'unload', 'fleet_id': fleetId};
 }
 
 // ── Server → Client ───────────────────────────────────────────────
@@ -1469,6 +1501,9 @@ class FleetState {
 
   /// At the homeworld with cargo the stockpile has no room for.
   final bool cargoBlocked;
+
+  /// Loaded by [LoadCommand] and still at home: the dock leaves the hold alone.
+  final bool laden;
   final PolicyPreset? policy;
   const FleetState({
     required this.id,
@@ -1485,6 +1520,7 @@ class FleetState {
     this.power = 0,
     this.rangeHops = 0,
     this.cargoBlocked = false,
+    this.laden = false,
     this.policy,
   });
 
@@ -1505,6 +1541,7 @@ class FleetState {
       power: m['power'] == null ? 0 : _f(m['power']),
       rangeHops: (m['range_hops'] as int?) ?? 0,
       cargoBlocked: (m['cargo_blocked'] as bool?) ?? false,
+      laden: (m['laden'] as bool?) ?? false,
       policy: _opt(m['policy'], PolicyPreset.fromJson),
     );
   }
@@ -1525,6 +1562,7 @@ class FleetState {
       'power': power,
       'range_hops': rangeHops,
       'cargo_blocked': cargoBlocked,
+      'laden': laden,
     };
     _put(m, 'policy', policy?.toJson());
     return m;
@@ -2121,8 +2159,8 @@ class Requirement {
   final bool met;
   const Requirement({required this.name, required this.need, required this.have, required this.met});
 
-  /// Compact form for cards: "Shipyard >= 4".
-  String get label => '$name >= $need';
+  /// As cards and captions print it, in the engine's words: "Shipyard level 4".
+  String get label => '$name level $need';
 
   factory Requirement.fromJson(Object? json) {
     final m = _obj(json);

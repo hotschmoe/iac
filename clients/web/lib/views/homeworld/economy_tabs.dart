@@ -7,6 +7,7 @@ import '../../console/intel.dart';
 import '../../design/gauges.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
+import '../../models/fleet.dart';
 import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
@@ -46,12 +47,9 @@ class DefenceTab extends StatelessWidget {
           subText: 'estimate',
           padding: const EdgeInsets.all(14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Flexible(
-                child: Text(raidIn == null ? 'NO RAID ANNOUNCED' : 'RAID IN ${clockFmt(raidIn)}',
-                    overflow: TextOverflow.ellipsis, style: T.cond(size: 26, color: raidIn == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 2)),
-              ),
-              const SizedBox(width: 8),
+            Wrap(crossAxisAlignment: WrapCrossAlignment.end, spacing: 8, runSpacing: 2, children: [
+              Text(raidIn == null ? 'NO RAID ANNOUNCED' : 'RAID IN ${clockFmt(raidIn)}',
+                  style: T.cond(size: 26, color: raidIn == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 2)),
               Text('DEFENCE ${cover.toStringAsFixed(2)}X THE RAID',
                   key: const Key('defence-cover'), style: T.cond(size: 13, color: cover >= 1 ? C.ok : C.ember, spacing: 1.4)),
             ]),
@@ -134,6 +132,145 @@ class DefenceTab extends StatelessWidget {
   }
 }
 
+/// Shares of what fits that a load offers, in percent. The whole of it is
+/// sent with no amount, which the server reads as all that fits.
+const loadShares = [25, 50, 75, 100];
+
+const _abbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr', proto.ResourceKind.deuterium: 'De'};
+
+/// Load the hold of a fleet docked at home from the stockpile, or put it
+/// back. The server moves the cargo and words every refusal; the panel shows
+/// what is aboard and what would fit.
+class HoldPanel extends StatefulWidget {
+  final GameState state;
+  final GameController ctrl;
+  const HoldPanel({super.key, required this.state, required this.ctrl});
+  @override
+  State<HoldPanel> createState() => _HoldPanelState();
+}
+
+class _HoldPanelState extends State<HoldPanel> {
+  int? _fleet;
+  proto.ResourceKind? _resource;
+  int _share = 100;
+
+  @override
+  Widget build(BuildContext context) {
+    final st = widget.state;
+    final c = widget.ctrl;
+    final docked = [for (final f in st.fleets) if (f.sector == st.homeworld) f];
+    if (docked.isEmpty) {
+      return const ConsolePanel(
+        key: ValueKey('hold-panel'),
+        title: 'Load a hold',
+        subText: 'no fleet at the dock',
+        padding: EdgeInsets.all(14),
+        child: WhyText('A hold is loaded from the stockpile at the homeworld only, and no fleet is docked here.', key: Key('hold-why')),
+      );
+    }
+    final fleet = docked.where((f) => f.id == _fleet).firstOrNull ?? docked.where((f) => f.id == c.currentFleet.id).firstOrNull ?? docked.first;
+    final capped = st.hw?.storage.capped ?? const <proto.ResourceKind>[];
+    final resource = _resource ?? capped.firstOrNull ?? proto.ResourceKind.metal;
+    final hold = st.holds[fleet.id] ?? const proto.Resources();
+    final room = math.max(0.0, fleet.holdCapacity - hold.total);
+    final stock = resource.of(st.stock);
+    final fits = math.min(stock, room);
+    final amount = _share == 100 ? null : fits * _share / 100;
+    final free = fleet.status == FleetStatus.idle || fleet.status == FleetStatus.docked;
+    final why = fleet.policy != null
+        ? '${fleet.name} is under standing orders (${fleet.policy}), which unload at the dock. Set it to manual to load it by hand.'
+        : !free
+            ? '${fleet.name} is busy.'
+            : room < 1
+                ? 'The hold of ${fleet.name} is full.'
+                : stock < 1
+                    ? 'The stockpile holds no ${resource.name}.'
+                    : null;
+    final note = fleet.laden
+        ? 'KEPT ABOARD UNTIL THE FLEET HAS BEEN AWAY'
+        : fleet.cargoBlocked
+            ? 'WAITING FOR ROOM IN THE STOCKPILE'
+            : null;
+
+    return ConsolePanel(
+      key: const ValueKey('hold-panel'),
+      title: 'Load a hold',
+      subText: 'at the home dock',
+      padding: const EdgeInsets.all(14),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+        const Lbl('Fleet'),
+        const SizedBox(height: 4),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final f in docked)
+            ConsoleButton('${f.name} ${(st.holds[f.id]?.total ?? 0).floor()}/${f.holdCapacity.floor()}',
+                key: ValueKey('hold-fleet-${f.id}'), small: true, primary: f.id == fleet.id, onPressed: () => setState(() => _fleet = f.id)),
+        ]),
+        const SizedBox(height: 10),
+        Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+          const Lbl('Aboard'),
+          const SizedBox(width: 10),
+          Text('${hold.total.floor()} / ${fleet.holdCapacity.floor()}', key: const Key('hold-aboard'), style: T.mono(size: 13, color: C.text)),
+          const Spacer(),
+          if (fleet.laden) const Lamp('Laden', color: C.ok),
+        ]),
+        const SizedBox(height: 4),
+        LedBar(fleet.holdCapacity > 0 ? hold.total / fleet.holdCapacity : 0, color: C.own),
+        const SizedBox(height: 5),
+        Text.rich(
+          TextSpan(children: [
+            for (final k in proto.ResourceKind.values) ...[
+              TextSpan(text: '${_abbr[k]} ${k.of(hold).floor()}', style: TextStyle(color: C.ore(k.name))),
+              const TextSpan(text: '   '),
+            ],
+            if (note != null) TextSpan(text: note, style: const TextStyle(color: C.text3)),
+          ]),
+          key: const Key('hold-cargo'),
+          style: T.mono(size: 10.5),
+        ),
+        const SizedBox(height: 10),
+        const Lbl('Take from the stockpile'),
+        const SizedBox(height: 4),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final k in proto.ResourceKind.values)
+            ConsoleButton('${_abbr[k]} ${k.of(st.stock).floor()}${capped.contains(k) ? ' full' : ''}',
+                key: ValueKey('hold-res-${k.name}'),
+                small: true,
+                primary: k == resource,
+                semanticsLabel: '${k.name} ${k.of(st.stock).floor()} in the stockpile',
+                onPressed: () => setState(() => _resource = k)),
+        ]),
+        const SizedBox(height: 8),
+        const Lbl('How much'),
+        const SizedBox(height: 4),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final s in loadShares)
+            ConsoleButton(s == 100 ? 'All that fits' : '$s%',
+                key: ValueKey('hold-share-$s'), small: true, primary: s == _share, onPressed: () => setState(() => _share = s)),
+        ]),
+        const SizedBox(height: 8),
+        Kv('Room in the hold', key: const Key('hold-room'), v: '${room.floor()}'),
+        const SizedBox(height: 10),
+        Wrap(spacing: 8, runSpacing: 6, children: [
+          ConsoleButton(why == null ? 'Load ${(amount ?? fits).floor()} ${_abbr[resource]}' : 'Load',
+              key: const ValueKey('hold-load'),
+              small: true,
+              primary: why == null,
+              onPressed: why == null ? () => c.loadHold(fleet.id, resource, amount: amount) : null,
+              reason: why),
+          ConsoleButton('Unload',
+              key: const ValueKey('hold-unload'),
+              small: true,
+              onPressed: fleet.laden ? () => c.unloadHold(fleet.id) : null,
+              reason: 'Nothing aboard was loaded by hand'),
+        ]),
+        if (why != null) WhyText(why, key: const Key('hold-why')),
+        const WhyText('A loaded hold stays aboard while the fleet is docked: fly it to the hub and trade. What the fleet brings home '
+            'unloads as always. A raid counts cargo at home with the stockpile.'),
+      ]),
+    );
+  }
+}
+
 class StorageTab extends StatelessWidget {
   final EconomyView eco;
   final GameState state;
@@ -158,6 +295,8 @@ class StorageTab extends StatelessWidget {
           padding: const EdgeInsets.all(14),
           child: Column(children: [for (final r in rows) _row(st, r.$1, r.$2, r.$3, r.$4, r.$5)]),
         ),
+        const SizedBox(height: 10),
+        HoldPanel(state: state, ctrl: ctrl),
         const SizedBox(height: 10),
         _upgrade(),
       ]),
@@ -208,7 +347,7 @@ class StorageTab extends StatelessWidget {
           Text(name.toUpperCase(), style: T.cond(size: 12, color: c, spacing: 1.6)),
           const SizedBox(width: 10),
           Register(stock, size: 20, glow: true),
-          Text(' / ${cap.round()}', style: T.mono(size: 12, color: C.text3)),
+          Text(' / ${groupDigits(cap.round())}', style: T.mono(size: 12, color: C.text3)),
           const Spacer(),
           if (near) Lamp(stock >= cap * .98 ? 'Full' : 'Near cap', color: C.ember, blink: true),
         ]),
@@ -216,7 +355,7 @@ class StorageTab extends StatelessWidget {
         LedBar(stock / cap, color: near ? C.ember : c, height: 10, mark: C.ember, markAt: .85),
         const SizedBox(height: 6),
         Text(
-            'PROTECTED ${prot.round()}   RAIDABLE ${(stock - prot).clamp(0, cap).round()}   '
+            'PROTECTED ${groupDigits(prot.round())}   RAIDABLE ${groupDigits((stock - prot).clamp(0, cap).round())}   '
             '${full == null ? 'NOT FILLING' : full == 0 ? 'FULL' : 'FULL IN ${clockFmt(full)}'}   +${rate.toStringAsFixed(2)}/T',
             style: T.mono(size: 10, color: C.text3)),
       ]),

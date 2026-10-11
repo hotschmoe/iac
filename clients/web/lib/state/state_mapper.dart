@@ -5,25 +5,35 @@ import 'package:clock/clock.dart';
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
-import '../console/intel.dart' show clockFmt, despawnLabel;
+import '../console/intel.dart' show clockFmt, despawnLabel, groupDigits;
 import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
 import 'command_parser.dart' show QueueIds;
 
 /// Holds the latest protocol snapshots (full_state + tick_update deltas) and
 /// maps them to the amber UI presentation models.
-/// "short 35 metal, 4 crystal, starts in 00:40": why a queued order has not
-/// started, the exact shortfall and the estimate.
+/// "1,234 Fe, 56 Cr": the parts of [r] that [whole] does not make zero, in
+/// the units the stockpile counters carry.
+String _amounts(proto.Resources r, int Function(double) whole) => [
+      for (final (amount, unit) in [(whole(r.metal), 'Fe'), (whole(r.crystal), 'Cr'), (whole(r.deuterium), 'De')])
+        if (amount > 0) '${groupDigits(amount)} $unit',
+    ].join(', ');
+
+/// "short by 1,234 Fe, 56 Cr": the parts of [missing] above zero, each
+/// rounded up. Every shortfall the console prints is this phrase; [opening]
+/// starts a caption with it.
+String shortBy(proto.Resources missing, {bool opening = false}) =>
+    '${opening ? 'Short' : 'short'} by ${_amounts(missing, (v) => v.ceil())}';
+
+/// "short by 35 Fe, 4 Cr, starts in about 0:40": why a queued order has not
+/// started, the exact shortfall and the estimate. An order short of
+/// something the homeworld does not produce has no estimate, and waiting
+/// will not start it: the summary says so.
 String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
-  final need = short == null
-      ? ''
-      : [
-          if (short.metal > 0) '${short.metal.ceil()} metal',
-          if (short.crystal > 0) '${short.crystal.ceil()} crystal',
-          if (short.deuterium > 0) '${short.deuterium.ceil()} deuterium',
-        ].join(', ');
+  final named = short != null && (short.metal > 0 || short.crystal > 0 || short.deuterium > 0);
+  if (on == proto.WaitReason.resources && named && startIn == null) return '${shortBy(short)}, which home production will not cover';
   final why = switch (on) {
-    proto.WaitReason.resources => need.isEmpty ? 'waiting for resources' : 'short $need',
+    proto.WaitReason.resources => named ? shortBy(short) : 'waiting for resources',
     proto.WaitReason.slot => 'waiting for a free slot',
     proto.WaitReason.prerequisite => 'waiting for a prerequisite',
     proto.WaitReason.order => 'held by a reserved order',
@@ -31,7 +41,7 @@ String waitSummary(proto.WaitReason on, proto.Resources? short, int? startIn) {
   return _withStart(why, startIn);
 }
 
-/// "paid, waiting for the yard, starts in about 00:40": a shipyard batch is
+/// "paid, waiting for the yard, starts in about 0:40": a shipyard batch is
 /// paid for when it is ordered, so it only ever waits its turn.
 String batchWaitSummary(proto.BatchWait on, int? startIn) => _withStart(
     switch (on) {
@@ -40,12 +50,7 @@ String batchWaitSummary(proto.BatchWait on, int? startIn) => _withStart(
     },
     startIn);
 
-String _withStart(String why, int? startIn) {
-  if (startIn == null) return why;
-  final m = (startIn ~/ 60).toString().padLeft(2, '0');
-  final s = (startIn % 60).toString().padLeft(2, '0');
-  return '$why, starts in about $m:$s';
-}
+String _withStart(String why, int? startIn) => startIn == null ? why : '$why, starts in about ${clockFmt(startIn)}';
 
 /// "meter 632 of 4185, next unit at 33%, clear in 38:41": where a player
 /// stands at the exchange.
@@ -68,6 +73,27 @@ List<String> quoteLines(proto.ExchangeQuote q) {
     'After it: ${meterSummary(t.meterAfter)}',
     if (q.refusal != null) 'Cannot trade now: ${q.refusal}',
   ];
+}
+
+/// The board as the log prints it for a player who asked: the first five
+/// ranks, the player's own row, and the best of the unranked bots.
+List<String> boardLines(proto.LeaderboardReply b) => [
+      for (final e in [...b.entries.take(5), if (b.you != null) b.you!])
+        '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)} '
+            '(core ${e.core.toStringAsFixed(1)}, combat ${e.combat.toStringAsFixed(1)}, explore ${e.explore.toStringAsFixed(1)})',
+      if (b.bots.isNotEmpty) '${b.bots.length} built-in bots, unranked; best ${b.bots.first.name} ${b.bots.first.score.toStringAsFixed(1)}',
+    ];
+
+/// Orders this console gave a fleet: when, the doctrine and its settings.
+/// The engine confirms every change of orders with one report; [unconfirmed]
+/// counts the ones still owed for what this console sent, so a confirmation
+/// beyond them is someone else's orders, with settings unknown here.
+class _OrdersGiven {
+  _OrdersGiven(this.at, this.preset, this.params, this.unconfirmed);
+  final int at;
+  final proto.PolicyPreset preset;
+  final proto.PolicyParams params;
+  int unconfirmed;
 }
 
 class StateMapper {
@@ -104,10 +130,20 @@ class StateMapper {
   /// `exchange_quote` answers by (fleet id, give, want).
   final Map<TradeKey, QuoteEntry> quotes = {};
 
+  /// Lines the log keeps, newest first. The Overview's log scrolls through
+  /// all of them.
+  static const logLines = 120;
+
   final List<LogEntry> log = [];
 
-  /// Last hold reason shown per fleet; a repeat is not logged again.
-  final Map<int, String> _lastHold = {};
+  /// Reports a fleet's standing orders keep for the orders panel.
+  static const policyActsKept = 6;
+
+  /// What each fleet's standing orders reported lately, newest first.
+  final Map<int, List<PolicyAct>> policyActs = {};
+
+  /// The orders last given from this console, by fleet.
+  final Map<int, _OrdersGiven> _ordersGiven = {};
   final List<Alert> alerts = [];
 
   bool get hasState => player != null;
@@ -124,7 +160,8 @@ class StateMapper {
     sectors.clear();
     signals.clear();
     signalBands.clear();
-    _lastHold.clear();
+    policyActs.clear();
+    _ordersGiven.clear();
     previews.clear();
     odds.clear();
     quotes.clear();
@@ -156,23 +193,13 @@ class StateMapper {
         quotes.removeWhere((_, e) => tick - e.tick > 60);
       case proto.LeaderboardReply():
         leaderboard = msg;
-        for (final e in [...msg.entries.take(5), if (msg.you != null) msg.you!]) {
-          pushLog(
-            '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)} '
-            '(core ${e.core.toStringAsFixed(1)}, combat ${e.combat.toStringAsFixed(1)}, explore ${e.explore.toStringAsFixed(1)})',
-            EventLevel.bright,
-          );
-        }
-        if (msg.bots.isNotEmpty) {
-          final best = msg.bots.first;
-          pushLog('${msg.bots.length} built-in bots, unranked; best ${best.name} ${best.score.toStringAsFixed(1)}', EventLevel.dim);
-        }
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }
   }
 
   void _applyFull(proto.GameState s) {
+    final first = connectedAt == null;
     tick = s.tick;
     connectedAt = clock.now();
     player = s.player;
@@ -188,7 +215,8 @@ class StateMapper {
     previews.clear();
     odds.clear();
     quotes.clear();
-    pushLog('Full state sync: tick $tick, homeworld ${s.player.homeworld}', EventLevel.bright);
+    pushLog(first ? 'Uplink established. Homeworld at ${s.player.homeworld}.' : 'Uplink refreshed: the console is in step with the world again.',
+        EventLevel.bright);
   }
 
   void _applyTick(proto.TickUpdate u) {
@@ -205,6 +233,7 @@ class StateMapper {
     for (final e in u.events ?? const <proto.GameEvent>[]) {
       _ingestEvent(e);
     }
+    policyActs.removeWhere((id, _) => fleets.every((f) => f.id != id));
   }
 
   void _applyPreview(proto.MovePreview p) {
@@ -213,13 +242,8 @@ class StateMapper {
   }
 
   void _applyError(proto.ErrorMessage err) {
-    pushLog('ERR ${err.code.code} ${err.code.wire}: ${err.message}', EventLevel.bright);
-    _pushAlert(Alert(
-      icon: '!',
-      message: err.message,
-      detail: err.code.wire,
-      level: AlertTone.glow,
-    ));
+    pushLog('Refused: ${err.message}', EventLevel.bright);
+    _pushAlert(Alert(icon: '!', message: err.message, detail: 'Order refused at tick $tick', level: AlertTone.bright));
   }
 
   /// The server just issued this account's token. It is shown once: the
@@ -235,9 +259,11 @@ class StateMapper {
     ));
   }
 
-  void pushLog(String msg, [EventLevel level = EventLevel.normal]) {
-    log.insert(0, LogEntry(tick: tick, message: msg, level: level));
-    if (log.length > 14) log.removeRange(14, log.length);
+  void pushLog(String msg, [EventLevel level = EventLevel.normal]) => _log(LogEntry(tick: tick, message: msg, level: level));
+
+  void _log(LogEntry entry) {
+    log.insert(0, entry);
+    if (log.length > logLines) log.removeRange(logLines, log.length);
   }
 
   void _pushAlert(Alert a) {
@@ -378,13 +404,7 @@ class StateMapper {
         msg = '! ${_fleet(k.fleetId)} ambushed aboard derelict in ${k.sector} (hostile ${k.npcFleetId})';
         level = EventLevel.bright;
       case proto.PolicyActionEvent():
-        if (k.action == 'hold') {
-          final key = '${k.preset.name}|${holdKey(k.reason)}';
-          if (_lastHold[k.fleetId] == key) return;
-          _lastHold[k.fleetId] = key;
-        } else {
-          _lastHold.remove(k.fleetId);
-        }
+        if (_notePolicy(e.tick, k)) return;
         msg = '${_fleet(k.fleetId)} [${k.preset.label}] ${k.action}: ${k.reason}';
         level = EventLevel.dim;
       case proto.AlertEvent():
@@ -401,13 +421,48 @@ class StateMapper {
         ));
     }
 
-    log.insert(0, LogEntry(tick: e.tick, message: msg, level: level));
-    if (log.length > 14) log.removeRange(14, log.length);
+    _log(LogEntry(tick: e.tick, message: msg, level: level));
   }
 
   /// A hold reason without its parenthesised figures, which drift while the
   /// cause stays the same.
   static String holdKey(String reason) => reason.replaceAll(RegExp(r'\([^)]*\)'), '');
+
+  /// Keep what a fleet's orders just reported. A hold said again for the
+  /// same cause takes the place of the one before it, with its figures, and
+  /// is not news: true then, and the log does not repeat it.
+  bool _notePolicy(int at, proto.PolicyActionEvent k) {
+    if (k.action == 'engage' || k.action == 'clear') {
+      final given = _ordersGiven[k.fleetId];
+      if (given != null && given.unconfirmed-- == 0) _ordersGiven.remove(k.fleetId);
+    }
+    final acts = policyActs.putIfAbsent(k.fleetId, () => []);
+    final last = acts.firstOrNull;
+    final again = last != null && last.isHold && k.action == 'hold' && last.preset == k.preset && holdKey(last.reason) == holdKey(k.reason);
+    final act = PolicyAct(tick: at, since: again ? last.since : at, preset: k.preset, action: k.action, reason: k.reason);
+    if (again) {
+      acts[0] = act;
+    } else {
+      acts.insert(0, act);
+      if (acts.length > policyActsKept) acts.removeLast();
+    }
+    return again;
+  }
+
+  /// The player gave [fleetId] these orders from this console.
+  void noteOrders(int fleetId, proto.PolicyPreset preset, proto.PolicyParams? params) => _ordersGiven[fleetId] =
+      _OrdersGiven(tick, preset, params ?? const proto.PolicyParams(), (_ordersGiven[fleetId]?.unconfirmed ?? 0) + 1);
+
+  /// The settings this console gave the orders [f] flies under, if it gave
+  /// them. Orders the engine has had two ticks to take and does not show
+  /// were refused or replaced from elsewhere, and are forgotten.
+  proto.PolicyParams? _ordersOf(proto.FleetState f) {
+    final given = _ordersGiven[f.id];
+    if (given == null) return null;
+    if ((f.policy ?? proto.PolicyPreset.manual) == given.preset) return given.preset == proto.PolicyPreset.manual ? null : given.params;
+    if (tick - given.at > 2) _ordersGiven.remove(f.id);
+    return null;
+  }
 
   static String _age(int ticks) {
     final t = math.max(0, ticks);
@@ -416,8 +471,11 @@ class StateMapper {
     return '${t ~/ 3600}h';
   }
 
-  static String _res(proto.Resources r) =>
-      '${r.metal.round()}M ${r.crystal.round()}C ${r.deuterium.round()}D';
+  /// "90 Fe, 22 Cr" as the log prints an amount paid, hauled or lost.
+  static String _res(proto.Resources r) {
+    final amounts = _amounts(r, (v) => v.round());
+    return amounts.isEmpty ? 'nothing' : amounts;
+  }
 
   int get clockSec =>
       connectedAt == null ? tick : clock.now().difference(connectedAt!).inSeconds;
@@ -480,6 +538,8 @@ class StateMapper {
       world: world,
       leaderboard: leaderboard,
       raid: raid,
+      policyActs: {for (final f in fleets) f.id: ?policyActs[f.id]?.toList()},
+      policyParams: {for (final f in fleets) f.id: ?_ordersOf(f)},
     );
   }
 
@@ -541,6 +601,9 @@ class StateMapper {
       power: f.power,
       rangeHops: f.rangeHops,
       policy: f.policy?.label,
+      laden: f.laden,
+      cargoBlocked: f.cargoBlocked,
+      holdCapacity: f.cargoCapacity,
     );
   }
 

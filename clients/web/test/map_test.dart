@@ -5,6 +5,7 @@ import 'package:flutter/material.dart' show Tooltip;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/console/services.dart';
+import 'package:iac_client/design/panel.dart' show KeyCap;
 import 'package:iac_client/hex/hex_math.dart' as hm;
 import 'package:iac_client/models/fleet.dart' as ui;
 import 'package:iac_client/models/game_state.dart';
@@ -14,6 +15,7 @@ import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/scenes/map/map_painter.dart';
 import 'package:iac_client/scenes/map/map_state.dart';
 import 'package:iac_client/state/game_controller.dart';
+import 'package:iac_client/views/map/map_panels.dart' show LayerBar;
 
 import 'support/harness.dart';
 
@@ -442,6 +444,10 @@ void main() {
     const win = Size(390, 844);
     final g = await openMap(tester, size: win);
     await shot(tester, 'default-390');
+    final layers = tester.getRect(find.byType(LayerBar)), panel = tester.getRect(find.byKey(const Key('sheet-toggle')));
+    expect(layers.right < panel.left, isTrue, reason: 'the layer row ends at its own frame, short of the Panel button');
+    expect(tester.getRect(find.byKey(const Key('layer-zones'))).left > layers.right, isTrue, reason: 'the last layers are reached by scrolling the row inside that frame');
+    expect(find.descendant(of: find.byType(LayerBar), matching: find.byType(KeyCap)), findsNothing, reason: 'a phone has no keys to hint at');
     await tester.sendKeyEvent(LogicalKeyboardKey.keyL);
     await tester.pump(const Duration(milliseconds: 100));
     await shot(tester, 'threat-390');

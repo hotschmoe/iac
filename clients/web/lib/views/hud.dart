@@ -19,9 +19,18 @@ class Hud extends StatelessWidget {
   final VoidCallback onAlerts;
   const Hud({super.key, required this.narrow, required this.alertsOpen, required this.onSound, required this.onHelp, required this.onAlerts});
 
+  /// The three stockpiles keep the width they need to be read. On a window
+  /// narrower than these the name beside the logo goes first, then the
+  /// commander's name and rank; a chip narrower than [_chipWithRate] drops
+  /// its rate per tick.
+  static const _brandFrom = 1240.0;
+  static const _whoFrom = 980.0;
+  static const _chipWithRate = 178.0;
+
   @override
   Widget build(BuildContext context) {
     final con = Console.of(context);
+    final width = MediaQuery.sizeOf(context).width;
     return Container(
       height: narrow ? 46 : 56,
       decoration: const BoxDecoration(color: C.hud, border: Border(bottom: BorderSide(color: C.lineHi))),
@@ -42,7 +51,7 @@ class Hud extends StatelessWidget {
               alignment: Alignment.center,
               child: Row(children: [
                 CustomPaint(size: const Size(26, 26), painter: _LogoPainter()),
-                if (!narrow) ...[
+                if (width >= _brandFrom) ...[
                   const SizedBox(width: 10),
                   Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text('IN AMBER CLAD', style: T.cond(size: 14, color: C.a300, weight: FontWeight.w700, spacing: 3.4)),
@@ -53,15 +62,18 @@ class Hud extends StatelessWidget {
               ]),
             ),
             Expanded(
-              child: Row(children: [
-                for (final k in const ['metal', 'crystal', 'deut']) Expanded(child: _ResChip(k, eco, narrow)),
-              ]),
+              child: LayoutBuilder(
+                builder: (context, box) => Row(children: [
+                  for (final k in const ['metal', 'crystal', 'deut'])
+                    Expanded(child: _ResChip(k, eco, narrow, showRate: !narrow && box.maxWidth >= 3 * _chipWithRate)),
+                ]),
+              ),
             ),
             if (!narrow) ...[
               _Field('World', con.game.isLive ? (eco.world?.label ?? con.game.linkLabel) : con.game.linkLabel, alert: !con.game.isLive),
               _TickField(),
               ...buttons.map((b) => Padding(padding: const EdgeInsets.symmetric(horizontal: 3), child: b)),
-              _Who(eco),
+              if (width >= _whoFrom) _Who(eco),
             ] else
               ...buttons.map((b) => Padding(padding: const EdgeInsets.symmetric(horizontal: 1), child: b)),
             if (narrow) const SizedBox(width: 4),
@@ -211,7 +223,11 @@ class _ResChip extends StatelessWidget {
   final String k;
   final EconomyView eco;
   final bool narrow;
-  const _ResChip(this.k, this.eco, this.narrow);
+
+  /// The rate per tick is printed beside the stock where the chip has room
+  /// for both; the stock comes first.
+  final bool showRate;
+  const _ResChip(this.k, this.eco, this.narrow, {required this.showRate});
 
   @override
   Widget build(BuildContext context) {
@@ -226,7 +242,6 @@ class _ResChip extends StatelessWidget {
     return Container(
       padding: EdgeInsets.symmetric(horizontal: narrow ? 6 : 14),
       decoration: const BoxDecoration(border: Border(right: BorderSide(color: C.lineLo))),
-      constraints: BoxConstraints(minWidth: narrow ? 0 : 168),
       child: Blink(
         period: 1,
         onSteps: 1,
@@ -241,18 +256,15 @@ class _ResChip extends StatelessWidget {
             excludeSemantics: true,
             child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
-                if (!narrow) ...[
-                  SizedBox(width: 26, child: Text(label.toUpperCase(), style: T.cond(size: 9.5, color: color, spacing: 1.5))),
-                ],
-                Flexible(
+                SizedBox(
+                    width: narrow ? 16 : 26,
+                    child: Text(label.toUpperCase(), style: T.cond(size: narrow ? 8.5 : 9.5, color: color, spacing: narrow ? .6 : 1.5))),
+                Expanded(
                     child: FittedBox(
                         fit: BoxFit.scaleDown,
                         alignment: Alignment.centerLeft,
                         child: Register(v, size: narrow ? 13 : 16, glow: true, color: full ? C.ember : C.a100))),
-                if (!narrow) ...[
-                  const Spacer(),
-                  Text('+${rate.toStringAsFixed(1)}/T', style: T.mono(size: 10, color: C.text3)),
-                ],
+                if (showRate) Text('+${rate.toStringAsFixed(1)}/T', style: T.mono(size: 10, color: C.text3)),
               ]),
               SizedBox(height: narrow ? 1 : 3),
               if (cap != null)

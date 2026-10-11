@@ -130,6 +130,10 @@ pub struct Fleet {
     pub harvest_target: HarvestResource,
     /// Sectors this fleet has charted and not yet delivered to a dock.
     pub charts: Vec<u32>,
+    /// Loaded by hand at home: the dock leaves this hold alone. It ends with
+    /// the fleet's next jump, so cargo it brings home unloads as any does.
+    /// Never set on a fleet under standing orders.
+    pub laden: bool,
 }
 
 #[allow(dead_code)]
@@ -735,15 +739,25 @@ pub struct ExchangeDeal {
     pub terms: ExchangeTerms,
     /// The exact meter reading the trade leaves.
     pub pressure_after: f64,
-    pub refusal: Option<ExchangeRefusal>,
+    pub refusal: Option<Refusal>,
 }
 
-/// Why the exchange turns a trade down.
+/// Why an order is turned down: the code, and the sentence its sender reads.
 #[derive(Debug)]
-pub struct ExchangeRefusal {
+pub struct Refusal {
     pub code: ErrorCode,
     pub reason: String,
 }
+
+impl Refusal {
+    fn new(code: ErrorCode, reason: String) -> Refusal {
+        Refusal { code, reason }
+    }
+}
+
+/// Slack on a `load` amount, so a client that sends back the room or the
+/// stock it was shown is not refused over a rounding.
+const LOAD_SLACK: f32 = 0.01;
 
 pub struct GameEngine {
     pub world_gen: WorldGen,
@@ -1042,6 +1056,7 @@ impl GameEngine {
                 fleet.location = target;
                 fleet.state = FleetStatus::Idle;
                 fleet.move_target = None;
+                fleet.laden = false;
                 self.dirty_fleets.insert(fleet.id, ());
                 arrived.push((fleet.id, target, fleet.owner_id));
             }
@@ -1207,6 +1222,9 @@ impl GameEngine {
                         f.fuel = f.fuel.min(f.fuel_max);
                     }
                     self.dirty_fleets.insert(f.id, ());
+                    if lost_ships {
+                        self.settle_hold(side.fleet_id);
+                    }
                 }
             }
 
@@ -1738,9 +1756,10 @@ impl GameEngine {
     }
 
     /// Move as much of the fleet's cargo into its owner's stockpile as the
-    /// storage cap allows; the rest stays aboard.
+    /// storage cap allows; the rest stays aboard. A laden hold is left alone.
     fn unload_cargo(&mut self, fleet_id: u64) {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        if fleet.laden { return; }
         let Some(player) = self.players.get_mut(&fleet.owner_id) else { return; };
         let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
         let room = player.resources.shortfall(cap).min(fleet.cargo);
@@ -1751,6 +1770,63 @@ impl GameEngine {
         fleet.cargo = fleet.cargo.sub(room);
         self.dirty_fleets.insert(fleet_id, ());
         self.dirty_players.insert(owner, ());
+    }
+
+    /// A fleet that has lost ships keeps what the holds it has left carry.
+    /// The rest leaves, each resource in proportion: at the owner's
+    /// homeworld into the stockpile as far as the Vault allows and the
+    /// remainder is lost; anywhere else into the sector's wreckage. Nothing
+    /// is made, and a fleet with no ships left sheds its whole cargo.
+    fn settle_hold(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
+        let aboard = fleet.cargo.total();
+        if aboard <= capacity { return; }
+        let (owner, sector) = (fleet.owner_id, fleet.location);
+
+        // f32 rounding can leave the scaled sum a unit in the last place over.
+        let mut share = capacity / aboard;
+        let mut kept = fleet.cargo.scale(share);
+        while kept.total() > capacity {
+            share = share.next_down();
+            kept = fleet.cargo.scale(share);
+        }
+        let shed = fleet.cargo.sub(kept);
+
+        let carried = crate::commands::amount_words(shed);
+        let message = match self.players.get_mut(&owner).filter(|p| p.homeworld == sector) {
+            Some(player) => {
+                let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+                let stored = player.resources.shortfall(cap).min(shed);
+                player.resources = player.resources.add(stored);
+                self.dirty_players.insert(owner, ());
+                let lost = shed.sub(stored);
+                match (stored.total() > LOAD_SLACK, lost.total() > LOAD_SLACK) {
+                    (true, true) => format!(
+                        "the ships fleet {fleet_id} lost carried {carried}: {} went to the stockpile and {} was lost, the stockpile is full",
+                        crate::commands::amount_words(stored),
+                        crate::commands::amount_words(lost),
+                    ),
+                    (false, _) => format!(
+                        "the ships fleet {fleet_id} lost carried {carried}: it was lost, the stockpile is full",
+                    ),
+                    (true, false) => format!("the ships fleet {fleet_id} lost carried {carried}: it went to the stockpile"),
+                }
+            }
+            None => {
+                self.drop_salvage(sector, shed);
+                format!(
+                    "the ships fleet {fleet_id} lost carried {carried}: it drifts as wreckage at {sector} and can be collected for {SALVAGE_DESPAWN_TICKS} ticks",
+                )
+            }
+        };
+        if shed.total() > LOAD_SLACK {
+            self.push_alert(AlertLevel::Warning, fleet_id, sector, message);
+        }
+
+        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet.cargo = kept;
+        self.dirty_fleets.insert(fleet_id, ());
     }
 
     /// Fill the tank at the homeworld, paying `FUEL_DEUT_PER_UNIT` deuterium
@@ -2275,17 +2351,39 @@ impl GameEngine {
             (structures_lost, structures_restored) =
                 self.damage_structures(player_id, RAID_LOST_STRUCTURE_FRACTION, false);
             ships_lost = self.destroy_docked_ships(player_id, RAID_LOST_SHIP_FRACTION, &mut rng);
+            // Cargo aboard fleets at home is raided as stockpile: one pile,
+            // one protected floor, and each part pays its share of the loss.
+            let holds: Vec<u64> = self.fleets.values()
+                .filter(|f| f.owner_id == player_id && f.location == homeworld && f.ship_count > 0 && f.cargo.total() > 0.0)
+                .map(|f| f.id)
+                .collect();
+            let aboard = holds.iter().fold(Resources::default(), |sum, fid| sum.add(self.fleets[fid].cargo));
             let player_mut = self.players.get_mut(&player_id).unwrap();
             let protected = scaling::storage_protected(player_mut.buildings.storage_vault, &self.world.pace);
-            protected_kept = protected.min(player_mut.resources);
-            let exposed = player_mut.resources.sub(protected);
+            let pile = player_mut.resources.add(aboard);
+            protected_kept = protected.min(pile);
+            let exposed = pile.sub(protected);
             resources_lost = Resources {
                 metal: exposed.metal.max(0.0) * RAID_LOSS_CAP_METAL,
                 crystal: exposed.crystal.max(0.0) * RAID_LOSS_CAP_CRYSTAL,
                 deuterium: exposed.deuterium.max(0.0) * RAID_LOSS_CAP_DEUT,
             };
-            player_mut.resources = player_mut.resources.sub(resources_lost);
+            let share_of = |part: Resources| {
+                let mut share = Resources::default();
+                for kind in ResourceKind::ALL {
+                    if pile.get(kind) > 0.0 {
+                        *share.get_mut(kind) = resources_lost.get(kind) * (part.get(kind) / pile.get(kind));
+                    }
+                }
+                share
+            };
+            player_mut.resources = player_mut.resources.sub(share_of(player_mut.resources));
             self.dirty_players.insert(player_id, ());
+            for fid in holds {
+                let fleet = self.fleets.get_mut(&fid).unwrap();
+                fleet.cargo = fleet.cargo.sub(share_of(fleet.cargo));
+                self.dirty_fleets.insert(fid, ());
+            }
         }
 
         let tick = self.current_tick;
@@ -2356,7 +2454,8 @@ impl GameEngine {
     }
 
     /// A lost raid reaches the ships docked at home: `fraction` of them (at
-    /// least one) are destroyed, chosen at random. Returns how many.
+    /// least one) are destroyed, chosen at random, and the holds they leave
+    /// are settled. Returns how many.
     fn destroy_docked_ships(&mut self, player_id: u64, fraction: f32, rng: &mut StdRng) -> u32 {
         let Some(home) = self.players.get(&player_id).map(|p| p.homeworld) else { return 0; };
         let mut docked: Vec<(u64, usize)> = Vec::new();
@@ -2376,7 +2475,7 @@ impl GameEngine {
         }
         // Highest index first so removals do not shift the rest.
         doomed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
-        for (fid, i) in doomed {
+        for &(fid, i) in &doomed {
             if let Some(f) = self.fleets.get_mut(&fid) {
                 let n = f.ship_count;
                 f.ships.copy_within(i + 1..n, i);
@@ -2384,6 +2483,9 @@ impl GameEngine {
                 f.ship_count = n - 1;
                 self.dirty_fleets.insert(fid, ());
             }
+        }
+        for &(fid, _) in &doomed {
+            self.settle_hold(fid);
         }
         for fid in fleet_ids {
             if let Some(f) = self.fleets.get(&fid) {
@@ -2656,6 +2758,7 @@ impl GameEngine {
             idle_ticks: 0,
             harvest_target: HarvestResource::Auto,
             charts: Vec::new(),
+            laden: false,
         };
 
         for i in 0..STARTING_SCOUTS {
@@ -3131,8 +3234,8 @@ impl GameEngine {
         give: ResourceKind,
         want: ResourceKind,
         amount: Option<f32>,
-    ) -> Result<ExchangeDeal, ExchangeRefusal> {
-        let refuse = |code: ErrorCode, reason: String| ExchangeRefusal { code, reason };
+    ) -> Result<ExchangeDeal, Refusal> {
+        let refuse = Refusal::new;
         let fleet = self.owned_fleet(player_id, fleet_id)
             .map_err(|code| refuse(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
         let player = self.players.get(&player_id)
@@ -3245,6 +3348,148 @@ impl GameEngine {
         Ok(())
     }
 
+    /// `fleet_id` standing free at its owner's homeworld, the one place a
+    /// hold is loaded or unloaded by hand; `verb` words the refusal.
+    fn fleet_at_dock(&self, player_id: u64, fleet_id: u64, verb: &str) -> Result<(&Fleet, &Player), Refusal> {
+        let fleet = self.owned_fleet(player_id, fleet_id)
+            .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
+        let player = self.players.get(&player_id)
+            .ok_or_else(|| Refusal::new(ErrorCode::ServerError, "internal server error".to_string()))?;
+        if fleet.state == FleetStatus::Moving {
+            return Err(Refusal::new(
+                ErrorCode::OnCooldown,
+                format!("fleet {fleet_id} is in transit; it can {verb} once it stands idle at home"),
+            ));
+        }
+        if fleet.location != player.homeworld {
+            let hexes = Hex::distance(&fleet.location, &player.homeworld);
+            return Err(Refusal::new(ErrorCode::NotInSector, format!(
+                "fleet {fleet_id} is at {}, {hexes} hex{} from home {}; a hold is filled from the stockpile, \
+                 and emptied into it, at the homeworld only",
+                fleet.location, if hexes == 1 { "" } else { "es" }, player.homeworld,
+            )));
+        }
+        if !Self::fleet_is_free(fleet) {
+            return Err(Refusal::new(
+                ErrorCode::OnCooldown,
+                format!("fleet {fleet_id} is busy; it can {verb} once it is idle"),
+            ));
+        }
+        Ok((fleet, player))
+    }
+
+    /// How much of `resource` a `load` order would put aboard `fleet_id`:
+    /// `amount`, or all the stockpile holds and the hold has room for when
+    /// None. Nothing changes.
+    pub fn load_order(
+        &self,
+        player_id: u64,
+        fleet_id: u64,
+        resource: ResourceKind,
+        amount: Option<f32>,
+    ) -> Result<f32, Refusal> {
+        let (fleet, player) = self.fleet_at_dock(player_id, fleet_id, "load")?;
+        if let Some(policy) = self.policies.get(&fleet_id) {
+            return Err(Refusal::new(ErrorCode::InvalidCommand, format!(
+                "fleet {fleet_id} is under standing orders ({}), which unload at the dock; \
+                 set it to manual before loading its hold by hand",
+                policy.preset.label(),
+            )));
+        }
+        let label = resource.label();
+        let stock = player.resources.get(resource);
+        let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
+        let aboard = fleet.cargo.total();
+        let room = (capacity - aboard).max(0.0);
+        let full = || Refusal::new(ErrorCode::CargoFull, format!(
+            "the hold of fleet {fleet_id} is full: it carries {aboard:.0} of {capacity:.0}",
+        ));
+        match amount {
+            Some(asked) if !(asked.is_finite() && asked > 0.0) => {
+                Err(Refusal::new(ErrorCode::InvalidCommand, "the amount to load must be a positive number".to_string()))
+            }
+            Some(asked) if asked > stock + LOAD_SLACK => Err(Refusal::new(ErrorCode::NoResources, format!(
+                "the stockpile holds {stock:.1} {label}; fleet {fleet_id} cannot load {asked:.1}",
+            ))),
+            Some(_) if room <= LOAD_SLACK => Err(full()),
+            Some(asked) if asked > room + LOAD_SLACK => Err(Refusal::new(ErrorCode::CargoFull, format!(
+                "the hold of fleet {fleet_id} has room for {room:.1} more (it carries {aboard:.0} of {capacity:.0}); \
+                 it cannot load {asked:.1} {label}",
+            ))),
+            Some(asked) => Ok(asked.min(stock).min(room)),
+            None if stock <= LOAD_SLACK => Err(Refusal::new(
+                ErrorCode::NoResources,
+                format!("the stockpile holds no {label} to load"),
+            )),
+            None if room <= LOAD_SLACK => Err(full()),
+            None => Ok(stock.min(room)),
+        }
+    }
+
+    /// Move stockpile into a docked hold and mark the fleet laden, so the
+    /// dock leaves the hold alone.
+    pub fn handle_load(
+        &mut self,
+        player_id: u64,
+        fleet_id: u64,
+        resource: ResourceKind,
+        amount: Option<f32>,
+    ) -> Result<(), ErrorCode> {
+        let loaded = self.load_order(player_id, fleet_id, resource, amount).map_err(|refusal| refusal.code)?;
+        let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
+        let home = player.homeworld;
+        let stock = player.resources.get_mut(resource);
+        *stock = (*stock - loaded).max(0.0);
+        let capacity = self.fleets.get(&fleet_id).map_or(0.0, |f| fleet_cargo_capacity(f, &self.world.pace));
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        *fleet.cargo.get_mut(resource) += loaded;
+        fleet.laden = true;
+        let aboard = fleet.cargo.total();
+        self.dirty_fleets.insert(fleet_id, ());
+        self.dirty_players.insert(player_id, ());
+        self.push_alert(AlertLevel::Info, fleet_id, home, format!(
+            "fleet {fleet_id} loaded {loaded:.0} {} from the stockpile: it carries {aboard:.0} of {capacity:.0} \
+             and keeps it aboard until it next returns home, or until unload",
+            resource.label(),
+        ));
+        Ok(())
+    }
+
+    /// Why `unload` would be refused for `fleet_id` right now, if it would.
+    pub fn unload_refusal(&self, player_id: u64, fleet_id: u64) -> Option<Refusal> {
+        match self.fleet_at_dock(player_id, fleet_id, "unload") {
+            Err(refusal) => Some(refusal),
+            Ok((fleet, _)) if !fleet.laden => Some(Refusal::new(ErrorCode::InvalidCommand, format!(
+                "fleet {fleet_id} was not loaded by hand; a docked fleet unloads by itself as the stockpile has room",
+            ))),
+            Ok(_) => None,
+        }
+    }
+
+    /// End a hand-loaded hold: what fits goes back to the stockpile now and
+    /// the dock takes the rest as room opens.
+    pub fn handle_unload(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        if let Some(refusal) = self.unload_refusal(player_id, fleet_id) {
+            return Err(refusal.code);
+        }
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        let (before, home) = (fleet.cargo, fleet.location);
+        fleet.laden = false;
+        self.dirty_fleets.insert(fleet_id, ());
+        self.unload_cargo(fleet_id);
+        let left = self.fleets.get(&fleet_id).map_or(Resources::default(), |f| f.cargo);
+        let rest = if left.total() > LOAD_SLACK {
+            format!("; {} stays aboard until the stockpile has room", crate::commands::amount_words(left))
+        } else {
+            String::new()
+        };
+        self.push_alert(AlertLevel::Info, fleet_id, home, format!(
+            "fleet {fleet_id} unloaded {} into the stockpile{rest}",
+            crate::commands::amount_words(before.sub(left)),
+        ));
+        Ok(())
+    }
+
     /// Fuel an emergency jump home would burn: the per-hop cost over the
     /// straight distance, doubled. All-or-nothing: a fleet with less than
     /// this does not move at all.
@@ -3255,9 +3500,15 @@ impl GameEngine {
         self.hop_fuel_cost(fleet) * dist * RECALL_FUEL_MULTIPLIER
     }
 
+    /// Emergency jump home from another sector. A jump the fleet was
+    /// charging is abandoned with its fuel, as `stop` would. At the
+    /// homeworld there is nowhere to come back from and the order is
+    /// refused: a fleet charging a jump there keeps the jump it paid for,
+    /// and one harvesting there goes on.
     pub fn handle_recall(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         let player = self.players.get(&fleet.owner_id).ok_or(ErrorCode::ServerError)?;
+        if fleet.location == player.homeworld { return Err(ErrorCode::InvalidCommand); }
 
         let dist = Hex::distance(&fleet.location, &player.homeworld) as f32;
         let fuel_cost = self.recall_fuel_cost(fleet);
@@ -3274,6 +3525,7 @@ impl GameEngine {
             self.world_gen.world_seed ^ self.current_tick.wrapping_mul(0x9E3779B97F4A7C15) ^ fleet_id.rotate_left(32)
         );
 
+        let ships_before = fleet_mut.ship_count;
         let mut i = 0;
         while i < fleet_mut.ship_count {
             let roll = rng.random_range(0.0..1.0);
@@ -3304,7 +3556,12 @@ impl GameEngine {
             i += 1;
         }
 
-        fleet_mut.location = player.homeworld;
+        let home = player.homeworld;
+        if fleet_mut.ship_count < ships_before {
+            self.settle_hold(fleet_id);
+        }
+        let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet_mut.location = home;
         fleet_mut.state = if fleet_mut.ship_count == 0 { FleetStatus::Docked } else { FleetStatus::Idle };
         fleet_mut.move_target = None;
         fleet_mut.move_cooldown = 0;
@@ -3321,7 +3578,7 @@ impl GameEngine {
 
     /// Detach `ship_ids` from a fleet into a new fleet at the same sector and
     /// return its id. Fuel and cargo follow the ships in proportion to the
-    /// tank and hold they take along.
+    /// tank and hold they take along; both halves of a laden fleet stay laden.
     pub fn handle_split(&mut self, player_id: u64, fleet_id: u64, ship_ids: &[u64]) -> Result<u64, ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         if !Self::fleet_is_free(fleet) { return Err(ErrorCode::OnCooldown); }
@@ -3363,6 +3620,7 @@ impl GameEngine {
             idle_ticks: fleet.idle_ticks,
             harvest_target: fleet.harvest_target,
             charts: fleet.charts.clone(),
+            laden: fleet.laden,
         };
         new_fleet.ships[..taken.len()].copy_from_slice(&taken);
         let mut rest = fleet.clone();
@@ -3398,7 +3656,8 @@ impl GameEngine {
     }
 
     /// Fold `other_id` into `fleet_id`: ships, cargo and fuel pool and the
-    /// absorbed fleet and its standing orders cease to exist.
+    /// absorbed fleet and its standing orders cease to exist. The merged
+    /// fleet is laden if `fleet_id` was.
     pub fn handle_merge(&mut self, player_id: u64, fleet_id: u64, other_id: u64) -> Result<(), ErrorCode> {
         if fleet_id == other_id { return Err(ErrorCode::InvalidTarget); }
         let a = self.owned_fleet(player_id, fleet_id)?;
@@ -4158,14 +4417,19 @@ impl GameEngine {
         // Policies persist alongside their fleet, so make sure the fleet
         // row lands in the same transaction (FK).
         self.dirty_fleets.insert(fleet_id, ());
+        let was_laden = self.fleets.get_mut(&fleet_id).is_some_and(|f| std::mem::take(&mut f.laden));
+        if was_laden {
+            self.unload_cargo(fleet_id);
+        }
         let fuel = if params.fuel_budget_pct >= POLICY_FUEL_UNBOUNDED_PCT {
             "fuel unbounded".to_string()
         } else {
             format!("fuel budget {}% of deuterium income", params.fuel_budget_pct)
         };
         let reason = format!(
-            "doctrine set: {} (range {}, engage {:.1}x, {fuel})",
+            "doctrine set: {} (range {}, engage {:.1}x, {fuel}){}",
             preset.label(), params.max_range, f32::from(params.engage_ratio_x10) / 10.0,
+            if was_laden { "; the hold loaded by hand goes back to the stockpile" } else { "" },
         );
         self.push_policy_event(fleet_id, preset, "engage", &reason);
         Ok(())
@@ -5356,6 +5620,7 @@ impl GameEngine {
                 idle_ticks: 0,
                 harvest_target: HarvestResource::Auto,
                 charts: Vec::new(),
+                laden: false,
             };
             self.fleets.insert(new_id, new_fleet);
             new_id
@@ -5748,9 +6013,10 @@ pub fn site_risk_label(site: Hex, bumps: u8) -> iac_shared::protocol::SiteRisk {
 /// The hold: each ship's base cargo times the pace's cargo factor (P^0.5,
 /// like the loot it carries).
 pub fn fleet_cargo_capacity(fleet: &Fleet, pace: &Pace) -> f32 {
-    let base: f32 = fleet.ships[0..fleet.ship_count].iter()
-        .map(|s| s.ship_class.base_stats().cargo as f32)
-        .sum();
+    // Folded from 0.0 for the reason given in `fleet_fuel_max`: what is left
+    // in the hold of a fleet with no ships is scaled by this.
+    let base = fleet.ships[0..fleet.ship_count].iter()
+        .fold(0.0, |hold, s| hold + s.ship_class.base_stats().cargo as f32);
     base * pace.cargo_mult()
 }
 

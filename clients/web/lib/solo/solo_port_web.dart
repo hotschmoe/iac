@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
 import 'package:web/web.dart' as web;
 
@@ -60,6 +61,9 @@ class _WorkerPort implements SoloPort {
       // Not every browser has it; the save works without.
     }
   }
+
+  @override
+  bool get canProtectStorage => web.window.navigator.has('storage');
 
   @override
   void close() {

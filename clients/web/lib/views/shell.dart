@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +13,7 @@ import '../design/beat.dart';
 import '../design/lens.dart';
 import '../design/tokens.dart';
 import '../models/game_state.dart';
+import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
 import 'homeworld/homeworld_view.dart';
 import 'hud.dart';
@@ -45,12 +48,17 @@ class _ShellState extends State<Shell> {
   late final Console _con =
       Console(game: widget.controller, prefs: _prefs, toasts: _toasts, sfx: Sfx(), notifier: widget.notifier ?? Notifier());
   late final FrameGovernor _gov = FrameGovernor(_prefs);
+
+  /// The toasts stand in another place on a phone; the key keeps the ones
+  /// that are up when a window is dragged from one layout to the other.
+  final GlobalKey _toastLayer = GlobalKey();
   late final AppLifecycleListener _lifecycle;
 
   late Screen _screen = widget.initial;
   bool _help = false, _alerts = false, _palette = false;
-  String _paletteText = '';
   DateTime? _gAt;
+  int _gToast = 0;
+  StreamSubscription<proto.ErrorMessage>? _refusals;
   String _lastLogKey = '';
   int _titled = 0;
 
@@ -59,14 +67,11 @@ class _ShellState extends State<Shell> {
     super.initState();
     _con.screen = _screen;
     _con.go = _go;
-    _con.openPalette = ([t = '']) => setState(() {
-          _palette = true;
-          _paletteText = t;
-        });
     _prefs.addListener(_onPrefs);
     _onPrefs();
     HardwareKeyboard.instance.addHandler(_onKey);
     widget.controller.addListener(_onGame);
+    _refusals = widget.controller.refusals.listen(_onRefusal);
     _lastLogKey = _logKey();
     _con.attention.addListener(_onAttention);
     _lifecycle = AppLifecycleListener(onStateChange: _onLifecycle);
@@ -92,6 +97,7 @@ class _ShellState extends State<Shell> {
     _prefs.removeListener(_onPrefs);
     HardwareKeyboard.instance.removeHandler(_onKey);
     widget.controller.removeListener(_onGame);
+    _refusals?.cancel();
     _gov.dispose();
     _con.dispose();
     super.dispose();
@@ -102,6 +108,14 @@ class _ShellState extends State<Shell> {
   String _logKey() {
     final e = widget.controller.state.events;
     return e.isEmpty ? '' : '${e.first.tick}|${e.first.message}';
+  }
+
+  /// A refused order is answered where the player is looking, in the world's
+  /// own sentence, and stays long enough to be read.
+  void _onRefusal(proto.ErrorMessage e) {
+    _toasts.show(e.code == proto.ErrorCode.serverError ? 'Engine error' : 'Refused', e.message,
+        tone: ToastTone.red, life: const Duration(seconds: 9));
+    _con.play('alert');
   }
 
   /// Surface notable log lines as toasts.
@@ -148,7 +162,14 @@ class _ShellState extends State<Shell> {
 
   bool _onKey(KeyEvent e) {
     if (e is! KeyDownEvent) return false;
-    if (!mounted || _palette || _typing()) return false;
+    if (!mounted || _typing()) return false;
+    if (_palette) {
+      // The palette is open and its field has lost the keyboard (a click
+      // elsewhere): Esc still closes it, or the hotkeys would stay off.
+      if (e.logicalKey != LogicalKeyboardKey.escape) return false;
+      setState(() => _palette = false);
+      return true;
+    }
     final hw = HardwareKeyboard.instance;
     if (hw.isControlPressed || hw.isMetaPressed || hw.isAltPressed) return false;
     final ch = e.character;
@@ -170,15 +191,13 @@ class _ShellState extends State<Shell> {
     }
     if (_help || _alerts) return false;
     if (ch == '/') {
-      setState(() {
-        _palette = true;
-        _paletteText = '';
-      });
+      setState(() => _palette = true);
       return true;
     }
     final lc = ch?.toLowerCase();
     if (_gAt != null && clock.now().difference(_gAt!) < const Duration(milliseconds: 1500)) {
       _gAt = null;
+      _toasts.dismiss(_gToast);
       final t = switch (lc) {
         'o' => Screen.overview,
         'w' => Screen.windshield,
@@ -193,7 +212,7 @@ class _ShellState extends State<Shell> {
     }
     if (lc == 'g') {
       _gAt = clock.now();
-      _toasts.show('Go to', 'O overview, W windshield, M map, H homeworld', life: const Duration(milliseconds: 1500));
+      _gToast = _toasts.show('Go to', 'O overview, W windshield, M map, H homeworld', life: const Duration(milliseconds: 1500));
       return true;
     }
     if (_con.dispatchKey(e)) return true;
@@ -209,19 +228,27 @@ class _ShellState extends State<Shell> {
     setState(() => _palette = false);
     if (cmd.isEmpty) return;
     final screen = switch (cmd.toLowerCase()) {
-      'ov' || 'cc' || 'overview' => Screen.overview,
-      'ws' || 'windshield' => Screen.windshield,
-      'map' || 'sm' => Screen.map,
-      'hw' || 'home' || 'homeworld' => Screen.homeworld,
+      '1' || 'ov' || 'cc' || 'overview' => Screen.overview,
+      '2' || 'ws' || 'windshield' => Screen.windshield,
+      '3' || 'map' || 'sm' => Screen.map,
+      '4' || 'hw' || 'home' || 'homeworld' => Screen.homeworld,
       _ => null,
     };
     if (screen != null) {
       _go(screen);
       return;
     }
+    final before = _logKey();
     widget.controller.handleCommand(cmd);
     final log = widget.controller.state.events;
-    if (log.isNotEmpty) _toasts.show('Command', log.first.message);
+    if (log.isEmpty) return;
+    final added = log.indexWhere((e) => '${e.tick}|${e.message}' == before);
+    final answer = (added < 0 ? log.length : added) - 1;
+    _toasts.show(
+        'Command',
+        answer > 1
+            ? 'The answer to "$cmd" is $answer lines: read it in the event log${_screen == Screen.overview ? '' : ' on the Overview (G then O)'}.'
+            : log.first.message);
   }
 
   @override
@@ -249,20 +276,22 @@ class _ShellState extends State<Shell> {
                   ),
                   GuideStrip(screen: _screen, narrow: narrow),
                   Expanded(
-                    child: Row(children: [
-                      if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark),
-                      Expanded(child: _screens()),
+                    child: Stack(fit: StackFit.expand, children: [
+                      Row(children: [
+                        if (!narrow) Rail(active: _screen, bottom: false, onGo: _go, badges: badges, mark: mark),
+                        Expanded(child: _screens()),
+                      ]),
+                      if (narrow) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: true),
                     ]),
                   ),
                   if (narrow) Rail(active: _screen, bottom: true, onGo: _go, badges: badges, mark: mark),
                 ]),
-                ToastLayer(toasts: _toasts, narrow: narrow),
+                if (!narrow) ToastLayer(key: _toastLayer, toasts: _toasts, narrow: false),
                 if (_alerts) AlertsPopover(con: _con, narrow: narrow, onClose: () => setState(() => _alerts = false)),
                 if (_help) HelpOverlay(con: _con, governor: _gov, onClose: () => setState(() => _help = false)),
                 if (_palette)
                   CommandPalette(
                     narrow: narrow,
-                    initial: _paletteText,
                     onSubmit: _runCommand,
                     onClose: () => setState(() => _palette = false),
                   ),

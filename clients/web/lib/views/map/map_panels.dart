@@ -55,7 +55,7 @@ class FleetChips extends StatelessWidget {
             ]),
             if (!narrow) ...[
               const SizedBox(height: 2),
-              Text('${f.status.label} - $hops hops fuel', overflow: TextOverflow.ellipsis, style: T.mono(size: 9.5, color: C.text3)),
+              Text('${f.status.label} - fuel for ${hopCount(hops)}', overflow: TextOverflow.ellipsis, style: T.mono(size: 9.5, color: C.text3)),
             ],
           ]),
         ),
@@ -81,18 +81,22 @@ class LayerBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final chips = [
       for (final it in items)
-        _LayerChip(label: it.$2, hint: it.$3, on: layers.get(it.$1), threat: it.$1 == 'threat', id: it.$1, onTap: () => layers.toggle(it.$1)),
+        _LayerChip(label: it.$2, hint: scroll ? null : it.$3, on: layers.get(it.$1), threat: it.$1 == 'threat', id: it.$1, onTap: () => layers.toggle(it.$1)),
     ];
-    final box = Container(
+    return Container(
       decoration: BoxDecoration(color: const Color(0xE6080604), border: Border.all(color: C.line)),
-      child: scroll ? Row(mainAxisSize: MainAxisSize.min, children: chips) : Wrap(alignment: WrapAlignment.end, children: chips),
+      child: scroll
+          ? SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(mainAxisSize: MainAxisSize.min, children: chips))
+          : Wrap(alignment: WrapAlignment.end, children: chips),
     );
-    return scroll ? SingleChildScrollView(scrollDirection: Axis.horizontal, child: box) : box;
   }
 }
 
 class _LayerChip extends StatefulWidget {
-  final String label, hint, id;
+  final String label, id;
+
+  /// The key that toggles the layer, where there is a keyboard to press it on.
+  final String? hint;
   final bool on, threat;
   final VoidCallback onTap;
   const _LayerChip({required this.label, required this.hint, required this.id, required this.on, required this.threat, required this.onTap});
@@ -131,8 +135,7 @@ class _LayerChipState extends State<_LayerChip> {
               ),
               const SizedBox(width: 6),
               Text(widget.label.toUpperCase(), style: T.cond(size: 10.5, color: col, weight: FontWeight.w500, spacing: 1.4)),
-              const SizedBox(width: 6),
-              KeyCap(widget.hint, size: 14),
+              if (widget.hint case final hint?) ...[const SizedBox(width: 6), KeyCap(hint, size: 14)],
             ]),
           ),
         ),
@@ -275,10 +278,10 @@ String zoneOf(proto.Hex h) {
 String _wayHome(proto.MovePreview p) {
   final charted = p.chartedHopsHome;
   final route = charted == null
-      ? '${p.hopsHome} hops direct, none charted'
+      ? '${hopCount(p.hopsHome)} direct, none charted'
       : charted == p.hopsHome
-          ? '${p.hopsHome} hops'
-          : '${p.hopsHome} hops direct ($charted charted)';
+          ? hopCount(p.hopsHome)
+          : '${hopCount(p.hopsHome)} direct ($charted charted)';
   return '$route${p.routeUnexplored ? ', through unexplored space' : ''}, ${p.fuelToReturn.round()} fuel${p.canReturn ? '' : ' - CANNOT RETURN'}';
 }
 
@@ -397,7 +400,7 @@ class Inspector extends StatelessWidget {
             ConsoleButton('Refresh intel',
                 small: true,
                 onPressed: onFleet && fleet.id != 0 ? () => con.game.sendCommand(proto.ScanCommand(fleetId: fleet.id)) : null,
-                reason: 'Needs a fleet in this sector: ${fleet.name} is ${proto.Hex.distance(fleet.sector, h)} hops away'),
+                reason: 'Needs a fleet in this sector: ${fleet.name} is ${hopCount(proto.Hex.distance(fleet.sector, h))} away'),
         ]),
       ]),
     );
@@ -531,7 +534,7 @@ class RoutePanel extends StatelessWidget {
           RatioGauge(wi.r),
         ],
         if (unrated > 0)
-          Text('$unrated HOSTILE HOP${unrated == 1 ? '' : 'S'} NOT RATED YET: ASKING THE SERVER',
+          Text('$unrated HOSTILE HOP${unrated == 1 ? '' : 'S'} NOT RATED YET: ODDS REQUESTED',
               key: const Key('route-odds-pending'), style: T.mono(size: 10, color: C.text3)),
         Container(
           margin: const EdgeInsets.only(top: 8),
@@ -673,7 +676,7 @@ class HoldPanel extends StatelessWidget {
         Kv('Hostiles', v: th.compLabel, vc: C.threat(th.rating)),
         Kv('Their power', v: '${th.power.round()}'),
         if (o == null)
-          Kv('Ratio', v: 'asking the server')
+          Kv('Ratio', v: 'requested')
         else ...[
           Kv('Ratio', v: '${o.r.toStringAsFixed(2)} ${o.label}', vc: o.color),
           RatioGauge(o.r),
@@ -698,7 +701,7 @@ class ActiveRoutePanel extends StatelessWidget {
     final r = con.runner;
     return ConsolePanel(
       title: 'Route engaged',
-      subText: '${r.done} of ${r.full.length} hops',
+      subText: '${r.done} of ${hopCount(r.full.length)}',
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
         LedBar(r.full.isEmpty ? 0 : r.done / r.full.length, color: C.own, height: 7),

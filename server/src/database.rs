@@ -425,6 +425,7 @@ impl Database {
         Self::ensure_column(&conn, "fleet_policies", "fuel_since", "INTEGER NOT NULL DEFAULT 0")?;
         Self::ensure_column(&conn, "players", "exchange_pressure", "REAL NOT NULL DEFAULT 0")?;
         Self::ensure_column(&conn, "players", "exchange_tick", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "fleets", "laden", "INTEGER NOT NULL DEFAULT 0")?;
 
         info!("Schema verified");
         Ok(())
@@ -691,8 +692,8 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO fleets (id, player_id, q, r, state, fuel, fuel_max,
              cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource, charts,
-             move_cooldown, action_cooldown, idle_ticks, move_q, move_r)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             move_cooldown, action_cooldown, idle_ticks, move_q, move_r, laden)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 fleet.id as i64,
                 fleet.owner_id as i64,
@@ -711,6 +712,7 @@ impl Database {
                 fleet.idle_ticks as i64,
                 fleet.move_target.map(|h| h.q as i64),
                 fleet.move_target.map(|h| h.r as i64),
+                fleet.laden,
             ],
         )?;
         self.save_ships_inner(&conn, fleet)
@@ -768,7 +770,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, player_id, q, r, state, fuel, fuel_max,
                     cargo_metal, cargo_crystal, cargo_deuterium, harvest_resource, charts,
-                    move_cooldown, action_cooldown, idle_ticks, move_q, move_r
+                    move_cooldown, action_cooldown, idle_ticks, move_q, move_r, laden
              FROM fleets",
         )?;
 
@@ -792,13 +794,14 @@ impl Database {
                 row.get::<_, i64>(14)?,
                 row.get::<_, Option<i64>>(15)?,
                 row.get::<_, Option<i64>>(16)?,
+                row.get::<_, bool>(17)?,
             ))
         })?;
 
         for row_result in fleet_rows {
             let (
                 fid, pid, q, r, state_str, fuel, fuel_max, cm, cc, cd, harvest, charts,
-                move_cooldown, action_cooldown, idle_ticks, move_q, move_r,
+                move_cooldown, action_cooldown, idle_ticks, move_q, move_r, laden,
             ) = row_result?;
             let mut fleet = Fleet {
                 id: fid as u64,
@@ -820,6 +823,7 @@ impl Database {
                 idle_ticks: idle_ticks as u16,
                 harvest_target: parse_harvest_resource(harvest.as_deref().unwrap_or("auto")),
                 charts: charts.split(',').filter_map(|k| k.parse().ok()).collect(),
+                laden,
             };
             fleet.ship_count = self.load_ships_into_inner(&conn, fid, &mut fleet.ships)?;
             fleets.push(fleet);
@@ -1678,7 +1682,7 @@ mod tests {
         assert!(text.contains("worldgen version 1"), "{text}");
     }
 
-    use iac_shared::constants::{DEFAULT_WORLD_SEED, ShipClass};
+    use iac_shared::constants::{DEFAULT_WORLD_SEED, ResourceKind, ShipClass};
     use iac_shared::protocol::{Command, EventKind, QueueType};
     use iac_sim::GameEngine;
     use iac_sim::engine::template_npc_id;
@@ -1729,7 +1733,7 @@ mod tests {
                     let _ = engine.handle_policy_update(pid, fleet_id, preset, None);
                     continue;
                 }
-                let cmd = match rng.random_range(0..17) {
+                let cmd = match rng.random_range(0..19) {
                     0..=3 => here.map(|at| {
                         let around = engine.world_gen.connected_neighbors(at);
                         let n = around.slice();
@@ -1752,6 +1756,8 @@ mod tests {
                     13 => Some(Command::ExploreSite { fleet_id }),
                     14 => engine.fleets.get(&fleet_id).map(|f| Command::Split { fleet_id, ship_ids: vec![f.ships[0].id] }),
                     15 => Some(Command::Merge { fleet_id, other_fleet_id: pick(&mut rng) }),
+                    16 => Some(Command::Load { fleet_id, resource: ResourceKind::ALL[rng.random_range(0..3)], amount: None }),
+                    17 => Some(Command::Unload { fleet_id }),
                     _ => Some(Command::CollectSalvage { fleet_id }),
                 };
                 if let Some(cmd) = cmd {
@@ -1827,7 +1833,7 @@ mod tests {
         let mut caught = Caught::default();
         let mut raids_announced = 0u32;
         let mut last_restart = 0u64;
-        let (mut raids, mut doctrine_moves) = (0u32, 0u32);
+        let (mut raids, mut doctrine_moves, mut laden_holds) = (0u32, 0u32, 0u32);
         for _ in 0..TICKS {
             step(&mut straight, &pids);
             for event in step(&mut hosted, &pids) {
@@ -1846,6 +1852,7 @@ mod tests {
             if tick.is_multiple_of(KILL_CHECK_EVERY) {
                 hosted.flush_persistence().unwrap();
                 let stored = Database::init(&path).unwrap().load_snapshot(DEFAULT_WORLD_SEED, None).unwrap();
+                laden_holds += u32::from(stored.fleets.values().any(|f| f.laden && f.cargo.total() > 0.0));
                 assert_same(&committed(hosted.snapshot()), &committed(stored), &format!("killed after tick {tick}"));
             }
 
@@ -1885,6 +1892,7 @@ mod tests {
             "no restart interrupted a fight, an announced raid, a scan and a jump together, or none a boarding: {caught:?}",
         );
         assert!(raids > 0 && doctrine_moves > 0, "{raids} raids resolved, {doctrine_moves} moves by standing orders");
+        assert!(laden_holds > 0, "no kill found a hold loaded at the dock in the database");
     }
 
     #[test]

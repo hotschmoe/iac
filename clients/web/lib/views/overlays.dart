@@ -20,22 +20,31 @@ Color _toneColor(ToastTone t) => switch (t) {
       ToastTone.violet => C.rare,
     };
 
+/// The toasts: bottom right of the console on a desktop. On a phone the
+/// bottom is the dock, the order buttons and the screen bar, so the shell
+/// stands them at the top of the screen instead, under the HUD and the guide
+/// strip, and to the left: the corner on the right is where the phone
+/// layouts keep the button that opens their sheet.
 class ToastLayer extends StatelessWidget {
   final ToastController toasts;
   final bool narrow;
   const ToastLayer({super.key, required this.toasts, required this.narrow});
 
+  /// What a phone's toasts leave free on the right.
+  static const cornerKept = 96.0;
+
   @override
   Widget build(BuildContext context) => Positioned(
-        right: 16,
-        bottom: narrow ? 70 : 16,
+        right: narrow ? cornerKept : 16,
+        top: narrow ? 0 : null,
+        bottom: narrow ? null : 16,
         left: narrow ? 16 : null,
         child: ListenableBuilder(
           listenable: toasts,
           builder: (context, _) => Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [for (final t in toasts.items) Padding(padding: const EdgeInsets.only(top: 6), child: _ToastTile(key: ValueKey(t.id), t: t, toasts: toasts))],
+            crossAxisAlignment: narrow ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+            children: [for (final t in toasts.items) Padding(key: ValueKey(t.id), padding: const EdgeInsets.only(top: 6), child: _ToastTile(t: t, toasts: toasts))],
           ),
         ),
       );
@@ -44,7 +53,7 @@ class ToastLayer extends StatelessWidget {
 class _ToastTile extends StatefulWidget {
   final Toast t;
   final ToastController toasts;
-  const _ToastTile({super.key, required this.t, required this.toasts});
+  const _ToastTile({required this.t, required this.toasts});
   @override
   State<_ToastTile> createState() => _ToastTileState();
 }
@@ -71,23 +80,25 @@ class _ToastTileState extends State<_ToastTile> with SingleTickerProviderStateMi
   @override
   Widget build(BuildContext context) {
     final col = _toneColor(widget.t.tone);
+    final dismiss = widget.t.actions.isEmpty ? () => widget.toasts.dismiss(widget.t.id) : null;
     return Semantics(
+      container: true,
       liveRegion: true,
       label: '${widget.t.title}. ${widget.t.message}',
-      excludeSemantics: true,
+      onDismiss: dismiss,
       child: AnimatedBuilder(
         animation: _c,
         builder: (_, child) => ClipRect(
-            child: Align(alignment: Alignment.centerLeft, widthFactor: reducedMotion(context) ? 1 : (_c.value * 22).floor() / 22, child: child)),
+            child: Align(alignment: Alignment.centerLeft, widthFactor: reducedMotion(context) ? 1 : (_c.value * 22).floor() / 22, child: GestureDetector(onTap: dismiss, child: child))),
         child: Container(
           constraints: const BoxConstraints(maxWidth: 340),
           padding: const EdgeInsets.fromLTRB(12, 7, 12, 7),
           decoration: BoxDecoration(
               color: const Color(0xFF0B0805), border: Border(left: BorderSide(color: col, width: 3), top: const BorderSide(color: C.lineHi), right: const BorderSide(color: C.lineHi), bottom: const BorderSide(color: C.lineHi))),
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(widget.t.title.toUpperCase(), style: T.cond(size: 10, color: C.a300, spacing: 1.6)),
+            ExcludeSemantics(child: Text(widget.t.title.toUpperCase(), style: T.cond(size: 10, color: C.a300, spacing: 1.6))),
             const SizedBox(height: 2),
-            Text(widget.t.message, style: T.mono(size: 11, color: C.text, height: 1.35)),
+            ExcludeSemantics(child: Text(widget.t.message, style: T.mono(size: 11, color: C.text, height: 1.35))),
             if (widget.t.actions.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 7, bottom: 2),
@@ -190,6 +201,8 @@ class HelpOverlay extends StatelessWidget {
                         _row('B', 'Board derelict'),
                         _row('R X', 'Recall home, stop'),
                         _row('T', 'Exchange: quote and trade cargo'),
+                        _row('L', 'At home: load a hold from the stockpile'),
+                        _row('P', 'Standing orders: give the fleet a doctrine, read why it holds'),
                         _rule(),
                         _row('Click', 'Map: plan a route'),
                         _row('Shift Click', 'Map: add waypoint'),
@@ -268,15 +281,14 @@ class _AlertRow extends StatelessWidget {
 class CommandPalette extends StatefulWidget {
   final void Function(String) onSubmit;
   final VoidCallback onClose;
-  final String initial;
   final bool narrow;
-  const CommandPalette({super.key, required this.onSubmit, required this.onClose, this.initial = '', required this.narrow});
+  const CommandPalette({super.key, required this.onSubmit, required this.onClose, required this.narrow});
   @override
   State<CommandPalette> createState() => _CommandPaletteState();
 }
 
 class _CommandPaletteState extends State<CommandPalette> {
-  late final TextEditingController _t = TextEditingController(text: widget.initial);
+  final TextEditingController _t = TextEditingController();
   final FocusNode _f = FocusNode();
 
   @override

@@ -5,7 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use iac_shared::hex::HexDirection;
 use iac_shared::protocol::{Command, HarvestResource};
 
-use crate::state::{ClientState, ExchangeStep, HomeworldNav, ScrollDirection, View, ZoomLevel};
+use crate::state::{ClientState, ExchangeStep, HomeworldNav, LoadStep, ScrollDirection, View, ZoomLevel};
 
 #[derive(Debug, Clone)]
 pub enum InputAction {
@@ -41,6 +41,9 @@ pub enum InputAction {
     FleetPanelMark,
     FleetPanelSplit,
     FleetPanelMerge,
+    FleetPanelLoadStep(LoadStep),
+    FleetPanelLoad,
+    FleetPanelUnload,
     ToggleExchangePanel,
     ExchangeStep(ExchangeStep),
     ExchangeTrade,
@@ -89,6 +92,11 @@ pub fn map_key(key: KeyEvent, state: &ClientState) -> InputAction {
             KeyCode::Char(' ') => InputAction::FleetPanelMark,
             KeyCode::Char('s') | KeyCode::Enter => InputAction::FleetPanelSplit,
             KeyCode::Char('g') => InputAction::FleetPanelMerge,
+            KeyCode::Char('r') => InputAction::FleetPanelLoadStep(LoadStep::Resource),
+            KeyCode::Left | KeyCode::Char('-') => InputAction::FleetPanelLoadStep(LoadStep::Amount(-1)),
+            KeyCode::Right | KeyCode::Char('+') | KeyCode::Char('=') => InputAction::FleetPanelLoadStep(LoadStep::Amount(1)),
+            KeyCode::Char('l') => InputAction::FleetPanelLoad,
+            KeyCode::Char('u') => InputAction::FleetPanelUnload,
             KeyCode::Tab => InputAction::CycleFleet,
             KeyCode::Char('q') => InputAction::Quit,
             _ => InputAction::None,

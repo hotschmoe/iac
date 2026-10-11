@@ -265,14 +265,18 @@ Widget _ringRow(double frac, String center, String clock, String sub) => Row(chi
       ])),
     ]);
 
-/// A queue-able suggestion: name, note and cost; disabled with the reason printed on it.
+/// A queue-able suggestion: name, note and cost. [why] turns it off and is
+/// printed on it: a ship batch the stockpile does not cover is refused.
+/// [short] is printed and turns nothing off: a building or a tech queues
+/// ahead of its resources.
 class _SugTile extends StatefulWidget {
   final String name, note;
   final proto.Resources cost;
   final String? why;
+  final String? short;
   final VoidCallback onTap;
   final Key? tileKey;
-  const _SugTile({this.tileKey, required this.name, required this.note, required this.cost, required this.onTap, this.why});
+  const _SugTile({this.tileKey, required this.name, required this.note, required this.cost, required this.onTap, this.why, this.short});
   @override
   State<_SugTile> createState() => _SugTileState();
 }
@@ -287,7 +291,7 @@ class _SugTileState extends State<_SugTile> {
       child: Semantics(
         button: true,
         enabled: !off,
-        label: '${widget.name}, ${costText(widget.cost)}${off ? ', unavailable: ${widget.why}' : ''}',
+        label: '${widget.name}, ${costText(widget.cost)}${off ? ', unavailable: ${widget.why}' : ''}${widget.short == null ? '' : ', ${widget.short}'}',
         excludeSemantics: true,
         onTap: off ? null : widget.onTap,
         child: FocusableActionDetector(
@@ -313,6 +317,7 @@ class _SugTileState extends State<_SugTile> {
                   const SizedBox(height: 2),
                   costRow(widget.cost, size: 10.5),
                   if (off) Text(widget.why!, style: T.mono(size: 9.5, color: C.threat(5))),
+                  if (widget.short != null) Text(widget.short!, style: T.mono(size: 9.5, color: C.threat(5))),
                 ]),
               ),
             ),
@@ -375,9 +380,9 @@ class _BuildSlotA extends StatelessWidget {
           _SugTile(
             tileKey: Key('sug-build-${o.buildingType.name}'),
             name: '${o.buildingType.label} L${o.next!.level}',
-            note: '${o.next!.ticks ~/ 60 > 0 ? '${o.next!.ticks ~/ 60}m' : '${o.next!.ticks}s'} build',
+            note: '${clockFmt(o.next!.ticks)} build',
             cost: o.next!.cost,
-            why: shortReason(s.stock, o.next!.cost),
+            short: queuesShort(s.stock, o.next!.cost),
             onTap: () => act.build(o.buildingType),
           ),
       ]),
@@ -484,23 +489,31 @@ class _ResearchCard extends StatelessWidget {
       );
     }
     final choices = researchChoices(s.catalog);
+    final waiting = slots?.researchQueued ?? const <QueuedItemView>[];
     return OvPanel(
       key: const Key('card-research'),
       title: 'Research',
+      subText: sub,
       trailing: _idleBadge(),
       border: C.a500,
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _qTitle('Nothing in the lab'),
-        _qSub('Pick one. Grey = cannot afford yet.'),
-        if (choices.isEmpty) const WhyText('No research is available: all maxed or locked.'),
+        _qTitle(waiting.isEmpty ? 'Nothing in the lab' : 'Idle, ${waiting.length} waiting'),
+        _queuedRows(waiting, first: 1),
+        if (choices.isEmpty)
+          WhyText(switch (nearestLocked([for (final o in s.catalog?.research ?? const <proto.ResearchOption>[]) if (o.next != null) (o.tech.label, o.requires)])) {
+            null => 'Every tech is at its maximum level.',
+            final lock => 'Nothing can be researched yet: $lock.',
+          })
+        else
+          _qSub('Pick one. An order waits in line for what it is short of.'),
         for (final o in choices)
           _SugTile(
             tileKey: Key('sug-research-${o.tech.name}'),
             name: '${o.tech.label} L${o.next!.level}',
             note: clockFmt(o.next!.ticks),
             cost: o.next!.cost,
-            why: shortReason(s.stock, o.next!.cost),
+            short: queuesShort(s.stock, o.next!.cost),
             onTap: () => act.research(o.tech),
           ),
       ]),
@@ -566,7 +579,11 @@ class _ShipyardCard extends StatelessWidget {
         _qTitle(slots == null || slots.shipQueued.isEmpty ? 'Yard idle' : 'Yard idle, ${slots.shipQueued.length} waiting'),
         _qSub(slots == null || slots.shipQueued.isEmpty ? 'A batch is paid in full when ordered' : 'Paid batches start once what they need is built.'),
         if (slots != null) _queuedRows(slots.shipQueued, first: 1),
-        if (choices.isEmpty) const WhyText('No ship class is unlocked yet. Upgrade the Shipyard.'),
+        if (choices.isEmpty)
+          WhyText(switch (nearestLocked([for (final o in s.catalog?.ships ?? const <proto.ShipOption>[]) (o.shipClass.label, o.requires)])) {
+            null => 'No ship class is on offer.',
+            final lock => 'No ship can be ordered yet: $lock.',
+          }),
         for (final o in choices)
           _SugTile(
             tileKey: Key('sug-ship-${o.shipClass.name}'),

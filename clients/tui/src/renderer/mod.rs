@@ -120,7 +120,7 @@ fn render_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     }
 
     let text: &str = if state.fleet_panel.is_some() {
-        " FLEETS | [Up/Down] Ship  [Space] Mark  [s] Split marked  [g] Merge in  [Tab] Fleet  [f] Close"
+        " FLEETS | [Up/Down] Ship  [Space] Mark  [s] Split  [g] Merge in  [r] Resource  [Left/Right] Amount  [l] Load  [u] Unload  [Tab] Fleet  [f] Close"
     } else if state.exchange_panel.is_some() {
         " EXCHANGE | [g] Give  [w] Want  [Left/Right] Amount  [Enter] Trade  [Tab] Fleet  [e] Close"
     } else if state.show_tech_tree && state.current_view == crate::state::View::Homeworld {
@@ -174,7 +174,11 @@ FLEET ORDERS
 ─────────────────────────────
 f         Fleet panel: split ships
           off, merge fleets in
-          the same sector
+          the same sector; at
+          home, load the hold
+          from the stockpile
+          (r, arrows, l) or
+          unload it (u)
 p         Cycle standing orders
           (manual > prospect >
            mine+return > salvage
@@ -301,7 +305,65 @@ fn render_fleet_panel(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
             ));
         }
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    lines.push(Line::raw(""));
+    lines.extend(hold_lines(state, fleet));
+    frame.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }), inner);
+}
+
+/// The hold of the fleet panel's fleet and what `load` would put in it.
+fn hold_lines(state: &ClientState, fleet: &iac_shared::protocol::FleetState) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::text::Line;
+    let mut lines = vec![Line::styled(
+        format!(
+            "Hold {:.0}/{:.0}: {:.0} metal, {:.0} crystal, {:.0} deuterium{}",
+            fleet.cargo.total(), fleet.cargo_capacity, fleet.cargo.metal, fleet.cargo.crystal, fleet.cargo.deuterium,
+            if fleet.laden {
+                "  LADEN: the dock leaves it aboard until the fleet has been away, or [u] unloads it"
+            } else if fleet.cargo_blocked {
+                "  the stockpile has no room for it yet"
+            } else {
+                ""
+            },
+        ),
+        if fleet.laden { GREEN_GOOD } else { AMBER_BRIGHT },
+    )];
+    let Some(offer) = state.load_offer() else { return lines; };
+    if !state.active_fleet_at_home() {
+        lines.push(Line::styled(
+            "A hold is loaded from the stockpile, and unloaded into it, at the homeworld dock only.",
+            AMBER_DIM,
+        ));
+        return lines;
+    }
+    if let Some(preset) = fleet.policy {
+        lines.push(Line::styled(
+            format!("Under standing orders ({}), which unload at the dock: set manual with [p] to load by hand.", preset.label()),
+            AMBER_DIM,
+        ));
+        return lines;
+    }
+    if let Some(player) = &state.player {
+        let capped = state.homeworld.as_ref().map(|h| h.storage.capped.as_slice()).unwrap_or_default();
+        let part = |kind: iac_shared::constants::ResourceKind| {
+            format!("{:.0} {}{}", player.resources.get(kind), kind.label(), if capped.contains(&kind) { " (FULL)" } else { "" })
+        };
+        let [metal, crystal, deuterium] = iac_shared::constants::ResourceKind::ALL.map(part);
+        lines.push(Line::styled(format!("Stockpile {metal}, {crystal}, {deuterium}"), AMBER));
+    }
+    let share = crate::state::HOLD_SHARES[state.fleet_panel.as_ref().map_or(0, |p| p.share)];
+    lines.push(Line::styled(
+        format!(
+            " [r] Load     {:<10} [<-/->] {share}% of what fits: {:.0}     [l] Load   [u] Unload",
+            offer.resource.label().to_uppercase(),
+            offer.amount.unwrap_or(offer.fits),
+        ),
+        AMBER_FULL,
+    ));
+    lines.push(Line::styled(
+        "A loaded hold stays aboard while docked, to be flown to the hub's exchange; what the fleet brings home unloads as always.",
+        AMBER_DIM,
+    ));
+    lines
 }
 
 // ── Exchange panel ─────────────────────────────────────────────────
@@ -353,7 +415,7 @@ fn render_exchange_panel(frame: &mut Frame<'_>, state: &ClientState, area: Rect)
         Line::styled(format!(" [g] Give     {:<10} {:.0} aboard", panel.give.label().to_uppercase(), held), AMBER_FULL),
         Line::styled(format!(" [w] Want     {}", panel.want.label().to_uppercase()), AMBER_FULL),
         Line::styled(
-            format!(" [<-/->]      {}% of the {} aboard", crate::state::EXCHANGE_SHARES[panel.share], panel.give.label()),
+            format!(" [<-/->]      {}% of the {} aboard", crate::state::HOLD_SHARES[panel.share], panel.give.label()),
             AMBER_FULL,
         ),
         Line::raw(""),

@@ -1,11 +1,16 @@
-use std::process::{Child, Command};
+#![allow(dead_code)]
+
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
-pub struct ServerGuard(pub Child);
+pub struct ServerGuard(Child);
 
 impl Drop for ServerGuard {
     fn drop(&mut self) {
@@ -47,29 +52,54 @@ where
 
 pub type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-pub fn fresh_db(port: u16) -> std::path::PathBuf {
-    let db = std::env::temp_dir().join(format!("iac_smoke_{port}.db"));
-    remove_db(&db);
-    db
+/// An empty directory of this test's own, named for the test and for this
+/// process, so no other checkout or run of the tests shares it.
+pub fn fresh_dir(test: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("iac_{test}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temporary directory");
+    dir
 }
 
-pub fn remove_db(db: &std::path::Path) {
+pub fn fresh_db(test: &str) -> PathBuf {
+    fresh_dir(test).join("world.db")
+}
+
+pub fn remove_db(db: &Path) {
     for ext in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{ext}", db.display()));
     }
+    if let Some(dir) = db.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
-pub fn start_server(port: u16, db: &std::path::Path) -> ServerGuard {
-    start_server_with(port, db, &[])
+pub fn start_server(db: &Path) -> (ServerGuard, u16) {
+    start_server_with(db, &[])
 }
 
-pub fn start_server_with(port: u16, db: &std::path::Path, more: &[&str]) -> ServerGuard {
-    let child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
-        .args(["--port", &port.to_string(), "--db", db.to_str().unwrap()])
+/// Start the server on a port the system picks and return it with that
+/// port, read from the line the server prints once it listens.
+pub fn start_server_with(db: &Path, more: &[&str]) -> (ServerGuard, u16) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
+        .args(["--port", "0", "--db", db.to_str().unwrap()])
         .args(more)
+        .stdout(Stdio::piped())
         .spawn()
         .expect("failed to spawn server");
-    ServerGuard(child)
+    let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let guard = ServerGuard(child);
+    let (said, hears) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in stdout.lines().map_while(Result::ok) {
+            let port = line.strip_prefix("listening on ").and_then(|addr| addr.rsplit(':').next()?.parse::<u16>().ok());
+            if let Some(port) = port {
+                let _ = said.send(port);
+            }
+        }
+    });
+    let port = hears.recv_timeout(Duration::from_secs(30)).expect("the server did not say where it listens");
+    (guard, port)
 }
 
 /// Connect, send an auth request, and return the connection with the reply.

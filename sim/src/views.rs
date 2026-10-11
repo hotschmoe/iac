@@ -107,8 +107,10 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             cooldown_remaining: fleet.action_cooldown,
             power: crate::engine::fleet_power(fleet),
             range_hops: range_hops(fleet.fuel, home_fuel, jump_fuel),
-            cargo_blocked: fleet.cargo.total() > 0.0
+            cargo_blocked: !fleet.laden
+                && fleet.cargo.total() > 0.0
                 && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
+            laden: fleet.laden,
             policy: engine.policies.get(&fleet.id).map(|p| p.preset),
         });
     }

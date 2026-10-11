@@ -57,6 +57,8 @@ impl GameEngine {
                     reply = Some(ServerMessage::ExchangeQuote(ExchangeQuote { terms: deal.terms, refusal }));
                 })
                 .map_err(|refusal| refusal.code),
+            Command::Load { fleet_id, resource, amount } => self.handle_load(pid, fleet_id, resource, amount),
+            Command::Unload { fleet_id } => self.handle_unload(pid, fleet_id),
         };
         let error = result.err().map(|code| (code, command_error_message(self, pid, &cmd, code)));
         CommandOutcome { reply, error }
@@ -76,7 +78,10 @@ impl GameEngine {
             ClientMessage::PolicyUpdate(update) => self
                 .handle_policy_update(pid, update.fleet_id, update.preset, update.params)
                 .err()
-                .map(|code| refusal(code, "PolicyUpdate failed"))
+                .map(|code| {
+                    let fleet = update.fleet_id;
+                    refusal(code, &format!("fleet {fleet} not found (or it has no ships left); its standing orders were not changed"))
+                })
                 .into_iter()
                 .collect(),
             ClientMessage::RequestFullState => {
@@ -139,6 +144,8 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Odds { fleet_id, .. }
         | Command::Exchange { fleet_id, .. }
         | Command::ExchangeQuote { fleet_id, .. }
+        | Command::Load { fleet_id, .. }
+        | Command::Unload { fleet_id }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
@@ -276,7 +283,7 @@ fn units_covered(stock: Resources, unit: Resources) -> u32 {
 
 /// "759 metal and 190 crystal": the non-zero parts of an amount, each
 /// rounded up to a whole unit.
-fn amount_words(amount: Resources) -> String {
+pub(crate) fn amount_words(amount: Resources) -> String {
     let parts: Vec<String> = ResourceKind::ALL
         .into_iter()
         .filter(|&k| amount.get(k) > 0.0)
@@ -326,6 +333,16 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         ) => match engine.exchange_deal(player_id, *fleet_id, *give, *want, *amount) {
             Err(refusal) | Ok(ExchangeDeal { refusal: Some(refusal), .. }) => refusal.reason,
             Ok(_) => format!("command rejected ({code:?})"),
+        },
+        (_, Command::Load { fleet_id, resource, amount }) => {
+            match engine.load_order(player_id, *fleet_id, *resource, *amount) {
+                Err(refusal) => refusal.reason,
+                Ok(_) => format!("command rejected ({code:?})"),
+            }
+        }
+        (_, Command::Unload { fleet_id }) => match engine.unload_refusal(player_id, *fleet_id) {
+            Some(refusal) => refusal.reason,
+            None => format!("command rejected ({code:?})"),
         },
         (ErrorCode::FleetNotFound, _) => format!("fleet {fid} not found (or it has no ships left)"),
         (ErrorCode::OnCooldown, Command::Attack { target_fleet_id, .. })
@@ -393,6 +410,19 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         }
         (ErrorCode::InvalidTarget, Command::ExploreSite { .. }) => "no derelict to board in this sector".to_string(),
         (ErrorCode::InvalidCommand, Command::Stop { .. }) => format!("fleet {fid} has nothing to stop"),
+        (ErrorCode::InvalidCommand, Command::Recall { .. }) => {
+            let rule = "recall only brings a fleet home from another sector";
+            match fleet.map(|f| (f.state, f.move_target)) {
+                Some((FleetStatus::Moving, Some(target))) => format!(
+                    "fleet {fid} is at its homeworld, charging a jump to {target}; {rule}. \
+                     To call the jump off use stop (the fuel it burned is not returned)"
+                ),
+                Some((FleetStatus::Harvesting | FleetStatus::Exploring, _)) => {
+                    format!("fleet {fid} is at its homeworld and at work there; {rule}. To halt it use stop")
+                }
+                _ => format!("fleet {fid} is already at its homeworld; {rule}"),
+            }
+        }
         (ErrorCode::InvalidCommand, Command::Odds { sectors, .. }) => {
             format!("odds takes at most {MAX_ODDS_SECTORS} sectors a request; {} were named", sectors.len())
         }
