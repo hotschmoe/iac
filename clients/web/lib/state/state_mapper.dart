@@ -176,8 +176,8 @@ class StateMapper {
         _applyFull(msg);
       case proto.TickUpdate():
         _applyTick(msg);
-      case proto.GameEvent():
-        _ingestEvent(msg);
+      case proto.EventMessage(:final event):
+        _ingestEvent(event);
       case proto.ErrorMessage():
         _applyError(msg);
       case proto.MovePreview():

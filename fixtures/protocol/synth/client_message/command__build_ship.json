@@ -1,0 +1,8 @@
+[
+{"canonical":{"action":"build_ship","count":11,"ship_class":"Scout","type":"command"},"input":{"action":"build_ship","count":11,"ship_class":"Scout","type":"command"}},
+{"canonical":{"action":"build_ship","count":11,"ship_class":"Corvette","type":"command"},"input":{"action":"build_ship","count":11,"ship_class":"Corvette","type":"command"}},
+{"canonical":{"action":"build_ship","count":11,"ship_class":"Frigate","type":"command"},"input":{"action":"build_ship","count":11,"ship_class":"Frigate","type":"command"}},
+{"canonical":{"action":"build_ship","count":11,"ship_class":"Cruiser","type":"command"},"input":{"action":"build_ship","count":11,"ship_class":"Cruiser","type":"command"}},
+{"canonical":{"action":"build_ship","count":11,"ship_class":"Hauler","type":"command"},"input":{"action":"build_ship","count":11,"ship_class":"Hauler","type":"command"}},
+{"canonical":{"action":"build_ship","count":1,"ship_class":"Hauler","type":"command"},"input":{"action":"build_ship","ship_class":"Hauler","type":"command"}}
+]

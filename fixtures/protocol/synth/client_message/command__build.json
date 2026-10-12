@@ -1,0 +1,13 @@
+[
+{"canonical":{"action":"build","building_type":"MetalMine","reserve":true,"type":"command"},"input":{"action":"build","building_type":"MetalMine","reserve":true,"type":"command"}},
+{"canonical":{"action":"build","building_type":"CrystalMine","reserve":false,"type":"command"},"input":{"action":"build","building_type":"CrystalMine","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"DeuteriumSynthesizer","reserve":false,"type":"command"},"input":{"action":"build","building_type":"DeuteriumSynthesizer","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"Shipyard","reserve":false,"type":"command"},"input":{"action":"build","building_type":"Shipyard","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"ResearchLab","reserve":false,"type":"command"},"input":{"action":"build","building_type":"ResearchLab","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"FuelDepot","reserve":false,"type":"command"},"input":{"action":"build","building_type":"FuelDepot","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"SensorArray","reserve":false,"type":"command"},"input":{"action":"build","building_type":"SensorArray","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"DefenseGrid","reserve":false,"type":"command"},"input":{"action":"build","building_type":"DefenseGrid","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"StorageVault","reserve":false,"type":"command"},"input":{"action":"build","building_type":"StorageVault","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"Fabricator","reserve":false,"type":"command"},"input":{"action":"build","building_type":"Fabricator","reserve":false,"type":"command"}},
+{"canonical":{"action":"build","building_type":"Fabricator","reserve":false,"type":"command"},"input":{"action":"build","building_type":"Fabricator","type":"command"}}
+]

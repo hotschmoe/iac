@@ -1,0 +1,6 @@
+[
+{"canonical":{"enemy":"s38","enemy_fleet_id":37,"kind":"CombatStarted","mine":true,"owner":"s36","player_fleet_id":35,"sector":{"q":39,"r":-40},"tick":2,"type":"event"},"input":{"enemy":"s38","enemy_fleet_id":37,"kind":"CombatStarted","mine":true,"owner":"s36","player_fleet_id":35,"sector":{"q":39,"r":-40},"tick":2,"type":"event"}},
+{"canonical":{"enemy":"s38","enemy_fleet_id":37,"kind":"CombatStarted","mine":false,"owner":"s36","player_fleet_id":35,"sector":{"q":39,"r":-40},"tick":2,"type":"event"},"input":{"enemy":"s38","enemy_fleet_id":37,"kind":"CombatStarted","mine":false,"owner":"s36","player_fleet_id":35,"sector":{"q":39,"r":-40},"tick":2,"type":"event"}},
+{"canonical":{"enemy_fleet_id":37,"kind":"CombatStarted","mine":false,"owner":"s36","player_fleet_id":35,"sector":{"q":39,"r":-40},"tick":2,"type":"event"},"input":{"enemy_fleet_id":37,"kind":"CombatStarted","owner":"s36","player_fleet_id":35,"sector":{"q":39,"r":-40},"tick":2,"type":"event"}},
+{"canonical":{"enemy_fleet_id":37,"kind":"CombatStarted","mine":false,"owner":"s36","player_fleet_id":35,"sector":{"q":39,"r":-40},"tick":2,"type":"event"},"input":{"enemy":"","enemy_fleet_id":37,"kind":"CombatStarted","mine":false,"owner":"s36","player_fleet_id":35,"sector":{"q":39,"r":-40},"tick":2,"type":"event"}}
+]

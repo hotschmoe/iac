@@ -1,0 +1,4 @@
+[
+{"canonical":{"action":"split","fleet_id":25,"ship_ids":[26],"type":"command"},"input":{"action":"split","fleet_id":25,"ship_ids":[26],"type":"command"}},
+{"canonical":{"action":"split","fleet_id":25,"ship_ids":[],"type":"command"},"input":{"action":"split","fleet_id":25,"ship_ids":[],"type":"command"}}
+]

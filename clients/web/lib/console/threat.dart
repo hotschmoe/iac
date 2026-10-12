@@ -2,24 +2,11 @@ import '../protocol/protocol.dart' as proto;
 
 /// Threat model (economy spec 5.1 and 7.2). A sector's rating and power are
 /// the server's `threat` (observed groups count 25 percent more when they
-/// are Aggressive or Swarm); only the ship table is kept here.
-/// [SectorThreat.of] is the one place that reads it. How a fleet fares
+/// are Aggressive or Swarm). The ship table is the engine's and comes with
+/// the generated [proto.ShipClass]: its hull, shield, weapon, cargo and power.
+/// [SectorThreat.of] is the one place that reads a threat. How a fleet fares
 /// against a sector is never worked out on the client: it is the server's
 /// `preview_move` and `odds` answers, read with [GameState.oddsFor].
-class ShipStats {
-  final double hull, shield, weapon, cargo;
-  const ShipStats(this.hull, this.shield, this.weapon, this.cargo);
-  double get power => weapon + (hull + shield) / 10;
-}
-
-const Map<proto.ShipClass, ShipStats> shipStats = {
-  proto.ShipClass.scout: ShipStats(30, 10, 5, 20),
-  proto.ShipClass.corvette: ShipStats(50, 20, 15, 10),
-  proto.ShipClass.frigate: ShipStats(120, 60, 30, 30),
-  proto.ShipClass.cruiser: ShipStats(200, 100, 80, 50),
-  proto.ShipClass.hauler: ShipStats(80, 20, 5, 200),
-};
-
 String shipAbbr(proto.ShipClass c) => switch (c) {
       proto.ShipClass.scout => 'SCT',
       proto.ShipClass.corvette => 'COR',

@@ -1,0 +1,16 @@
+[
+{"canonical":{"action":"research","reserve":true,"tech":"FuelEfficiency","type":"command"},"input":{"action":"research","reserve":true,"tech":"FuelEfficiency","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"ExtendedFuelTanks","type":"command"},"input":{"action":"research","reserve":false,"tech":"ExtendedFuelTanks","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"ReinforcedHulls","type":"command"},"input":{"action":"research","reserve":false,"tech":"ReinforcedHulls","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"AdvancedShields","type":"command"},"input":{"action":"research","reserve":false,"tech":"AdvancedShields","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"WeaponsResearch","type":"command"},"input":{"action":"research","reserve":false,"tech":"WeaponsResearch","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"Navigation","type":"command"},"input":{"action":"research","reserve":false,"tech":"Navigation","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"HarvestingEfficiency","type":"command"},"input":{"action":"research","reserve":false,"tech":"HarvestingEfficiency","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"CorvetteTech","type":"command"},"input":{"action":"research","reserve":false,"tech":"CorvetteTech","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"FrigateTech","type":"command"},"input":{"action":"research","reserve":false,"tech":"FrigateTech","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"CruiserTech","type":"command"},"input":{"action":"research","reserve":false,"tech":"CruiserTech","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"HaulerTech","type":"command"},"input":{"action":"research","reserve":false,"tech":"HaulerTech","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"EmergencyJump","type":"command"},"input":{"action":"research","reserve":false,"tech":"EmergencyJump","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"ModularFabrication","type":"command"},"input":{"action":"research","reserve":false,"tech":"ModularFabrication","type":"command"}},
+{"canonical":{"action":"research","reserve":false,"tech":"ModularFabrication","type":"command"},"input":{"action":"research","tech":"ModularFabrication","type":"command"}}
+]

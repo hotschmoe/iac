@@ -1,0 +1,7 @@
+[
+{"canonical":{"action":"load","amount":34.25,"fleet_id":33,"resource":"metal","type":"command"},"input":{"action":"load","amount":34.25,"fleet_id":33,"resource":"metal","type":"command"}},
+{"canonical":{"action":"load","amount":34.25,"fleet_id":33,"resource":"crystal","type":"command"},"input":{"action":"load","amount":34.25,"fleet_id":33,"resource":"crystal","type":"command"}},
+{"canonical":{"action":"load","amount":34.25,"fleet_id":33,"resource":"deuterium","type":"command"},"input":{"action":"load","amount":34.25,"fleet_id":33,"resource":"deuterium","type":"command"}},
+{"canonical":{"action":"load","fleet_id":33,"resource":"deuterium","type":"command"},"input":{"action":"load","fleet_id":33,"resource":"deuterium","type":"command"}},
+{"canonical":{"action":"load","fleet_id":33,"resource":"deuterium","type":"command"},"input":{"action":"load","amount":null,"fleet_id":33,"resource":"deuterium","type":"command"}}
+]

@@ -2,7 +2,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../console/threat.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
 import '../../protocol/protocol.dart' as proto;
@@ -34,7 +33,7 @@ class ShipyardTab extends StatelessWidget {
   }
 
   Widget _card(int i, proto.ShipOption o) {
-    final st = shipStats[o.shipClass]!;
+    final st = o.shipClass;
     final locked = o.requires.any((r) => !r.met);
     final sel = ctrl.hwCursor == i;
     final spec = specFor(ctrl, index: i);

@@ -146,9 +146,9 @@ void main() {
       final c = await pumpShell(tester, size: size, screen: Screen.windshield);
       final toasts = find.byType(ToastLayer);
       for (final (i, sentence) in said.indexed) {
-        c.receive(proto.GameEvent(
+        c.receive(proto.EventMessage(proto.GameEvent(
             tick: 4900 + i,
-            kind: proto.AlertEvent(level: proto.AlertLevel.warning, message: sentence, fleetId: 2, sector: const proto.Hex(3, -2))));
+            kind: proto.AlertEvent(level: proto.AlertLevel.warning, message: sentence, fleetId: 2, sector: const proto.Hex(3, -2)))));
         await tester.pump(const Duration(milliseconds: 100));
         await tester.pump(const Duration(milliseconds: 500));
         expect(find.descendant(of: toasts, matching: find.text(sentence)), findsOneWidget, reason: 'the sentence, whole');
@@ -159,9 +159,9 @@ void main() {
         expect(find.descendant(of: toasts, matching: find.text(sentence)), findsOneWidget, reason: 'it stays up long enough to read');
         await tester.pump(const Duration(seconds: 6));
       }
-      c.receive(const proto.GameEvent(
+      c.receive(const proto.EventMessage(proto.GameEvent(
           tick: 4910,
-          kind: proto.AlertEvent(level: proto.AlertLevel.info, message: 'fleet 2 made the emergency jump home from [3,-2] for 12 fuel: no ship was damaged', fleetId: 2)));
+          kind: proto.AlertEvent(level: proto.AlertLevel.info, message: 'fleet 2 made the emergency jump home from [3,-2] for 12 fuel: no ship was damaged', fleetId: 2))));
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.descendant(of: toasts, matching: find.textContaining('no ship was damaged')), findsNothing, reason: 'a jump that harmed nothing is a log line only');
       expect(c.state.events.map((e) => e.message), contains('fleet 2 made the emergency jump home from [3,-2] for 12 fuel: no ship was damaged'));

@@ -192,19 +192,26 @@ class DemoWorld {
       research: research,
       catalog: _catalogFor(buildings, research),
       buildSlots: 1,
+      queueWaitingMax: 3,
       buildQueue: [BuildQueueItem(id: 401, buildingType: BuildingType.crystalMine, targetLevel: 8, startTick: _tick - 420, endTick: _tick + 260)],
+      buildPending: const [],
       shipyardQueue: ShipyardQueueItem(id: 402, item: const ShipyardItem.ship(ShipClass.corvette), count: 3, built: 1, startTick: _tick - 200, endTick: _tick + 170),
+      shipyardPending: const [],
       researchActive: ResearchItem(id: 403, tech: ResearchType.weaponsResearch, targetLevel: 4, startTick: _tick - 300, endTick: _tick + 410),
+      researchPending: const [],
       dockedShips: const [],
       defences: [
-        for (final k in DefenceKind.values) DefenceState(kind: k, count: _defenceCount[k] ?? 0, power: _defencePower[k]! * (1 + 0.04 * (_buildingLevels[BuildingType.defenseGrid] ?? 0))),
+        for (final k in DefenceKind.values)
+          DefenceState(kind: k, count: _defenceCount[k] ?? 0, restoring: 0, power: _defencePower[k]! * (1 + 0.04 * (_buildingLevels[BuildingType.defenseGrid] ?? 0))),
       ],
+      homeDefencePower: 0,
       nextRaidEstimatePower: _raidEstimate,
     );
     final pendingBuilds = <QueuedBuild>[];
     for (final t in const [BuildingType.metalMine, BuildingType.storageVault]) {
       final (cost, ticks) = _buildingStep(t, (_buildingLevels[t] ?? 0) + 1);
-      pendingBuilds.add(QueuedBuild(id: _newQueueId(), buildingType: t, targetLevel: (_buildingLevels[t] ?? 0) + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost)));
+      pendingBuilds.add(QueuedBuild(
+          id: _newQueueId(), buildingType: t, targetLevel: (_buildingLevels[t] ?? 0) + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost), waitingOn: WaitReason.slot));
     }
     _hw = _hwWith(buildPending: pendingBuilds);
 
@@ -1811,7 +1818,7 @@ class DemoWorld {
     } else {
       _hw = _hwWith(shipPending: [
         ..._hw.shipyardPending,
-        QueuedShip(id: id, item: item, count: count, cost: cost, unitCost: unit, ticks: _unitTicksOf(item)),
+        QueuedShip(id: id, item: item, count: count, cost: cost, unitCost: unit, ticks: _unitTicksOf(item), waitingOn: BatchWait.slot),
       ]);
       _ev(QueueEvent(playerId: _playerId, queueType: QueueType.ship, id: id, item: label, action: QueueAction.waiting, paid: cost, waitingOn: WaitReason.slot));
     }
@@ -2209,7 +2216,7 @@ class DemoWorld {
         return _command(command);
       case PolicyUpdate(:final fleetId, :final preset, :final params):
         return _policy(fleetId, preset, params ?? const PolicyParams());
-      case RequestFullState():
+      case RequestFullStateMessage():
         return [initial()];
       case AuthRequest():
         return const [];
@@ -2382,7 +2389,8 @@ class DemoWorld {
         final id = _newQueueId();
         _hw = _hwWith(buildPending: [
           ..._hw.buildPending,
-          QueuedBuild(id: id, buildingType: buildingType, targetLevel: proj + 1, reserve: reserve, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+          QueuedBuild(
+              id: id, buildingType: buildingType, targetLevel: proj + 1, reserve: reserve, cost: cost, ticks: ticks, waitingFor: _missing(cost), waitingOn: WaitReason.slot),
         ]);
         _startWaiting();
         final waiting = _hw.buildPending.where((q) => q.id == id).firstOrNull;
@@ -2403,7 +2411,7 @@ class DemoWorld {
         final id = _newQueueId();
         _hw = _hwWith(researchPending: [
           ..._hw.researchPending,
-          QueuedResearch(id: id, tech: tech, targetLevel: proj + 1, reserve: reserve, cost: cost, ticks: ticks, waitingFor: _missing(cost)),
+          QueuedResearch(id: id, tech: tech, targetLevel: proj + 1, reserve: reserve, cost: cost, ticks: ticks, waitingFor: _missing(cost), waitingOn: WaitReason.slot),
         ]);
         _startWaiting();
         final waiting = _hw.researchPending.where((q) => q.id == id).firstOrNull;
@@ -2440,7 +2448,8 @@ class DemoWorld {
                           reserve: q.reserve,
                           cost: q.cost,
                           ticks: q.ticks,
-                          waitingFor: q.waitingFor)
+                          waitingFor: q.waitingFor,
+                          waitingOn: WaitReason.slot)
                       : q,
               ],
             );
@@ -2459,7 +2468,14 @@ class DemoWorld {
               for (final q in _hw.researchPending)
                 q.tech == gone.tech && q.targetLevel > gone.targetLevel
                     ? QueuedResearch(
-                        id: q.id, tech: q.tech, targetLevel: q.targetLevel - 1, reserve: q.reserve, cost: q.cost, ticks: q.ticks, waitingFor: q.waitingFor)
+                        id: q.id,
+                        tech: q.tech,
+                        targetLevel: q.targetLevel - 1,
+                        reserve: q.reserve,
+                        cost: q.cost,
+                        ticks: q.ticks,
+                        waitingFor: q.waitingFor,
+                        waitingOn: WaitReason.slot)
                     : q,
             ]);
         }
@@ -2667,6 +2683,6 @@ class DemoWorld {
   SectorOdds _demoOdds(FleetState f, Hex sector) {
     final threat = _sector(sector, live: _liveNow.contains(sector.toKey())).threat;
     final ratio = _fleetPower(f) / threat.estPower;
-    return SectorOdds(sector: sector, threat: threat, ratio: ratio, label: RatioLabel.forRatio(ratio));
+    return SectorOdds(sector: sector, threat: threat, ratio: ratio, label: ratioLabelFor(ratio));
   }
 }

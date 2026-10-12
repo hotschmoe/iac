@@ -667,6 +667,7 @@ dependencies = [
  "libm",
  "serde",
  "serde_json",
+ "syn",
  "xxhash-rust",
 ]
 

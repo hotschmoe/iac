@@ -1,0 +1,3 @@
+[
+{"canonical":{"end_tick":11,"fleet_id":7,"kind":"SiteExplorationStarted","sector":{"q":8,"r":-9},"tick":2,"tier":10,"type":"event"},"input":{"end_tick":11,"fleet_id":7,"kind":"SiteExplorationStarted","sector":{"q":8,"r":-9},"tick":2,"tier":10,"type":"event"}}
+]

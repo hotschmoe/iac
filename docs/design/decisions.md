@@ -94,6 +94,103 @@ the same day has what was run.
    4, the middle of the home seats 3 to 5; it makes a player eligible for
    raids at Shipyard 2 where the game also accepts a Defense Grid.
 
+## 2026-10-13 (the Dart wire types are generated from the Rust ones)
+
+Merged into master on 2026-10-13, not pushed. The journal entry of the same day has what was run.
+
+**The owner's words.** "The Dart protocol mirror and sim.py could be generated
+from the Rust source instead of mirrored by hand: seems like a good idea."
+This entry is the Dart half. `sim.py` was another session's work.
+
+**What is decided by building it.**
+
+- **The Rust types are the only place the wire is written.**
+  `clients/web/lib/protocol/protocol.g.dart` is generated from them, checked
+  in, and never edited. `UPDATE_FIXTURES=1 cargo test -p iac-shared`
+  regenerates it with the fixtures; `cargo test -p iac-shared` fails while it
+  is stale. A protocol change is: edit Rust, regenerate, fix what
+  `flutter analyze` points at.
+- **The generator reads the source and is proved against serde.** It reads
+  `shared/src` with `syn` (a dev-dependency of `iac-shared`, already in the
+  lockfile for serde's derive; no engine build compiles it). Reading source
+  means interpreting serde's attributes, which could go wrong silently, so two
+  things stand against that. It refuses, by name, any serde attribute, type or
+  skip test it does not know. And it makes sample messages from its own model
+  for every type, variant and field, has serde parse and re-emit each, and
+  requires the result to match the model. A misread `rename`, `default`,
+  `flatten`, tag or `skip_serializing_if` fails `cargo test` before any Dart
+  runs. The defaults serde fills in are learnt from those round trips.
+- **Why the others lost.** `serde-reflection` cannot describe internally
+  tagged enums or `flatten`, and the protocol is built on both. `typeshare`
+  has no Dart output and reads neither. `schemars` and `specta` need a derive
+  on every wire type, so a dependency of `iac-shared` that the wasm build
+  would compile or a feature gate on some 120 types; both re-read serde's
+  attributes themselves and check nothing against serde; and a JSON Schema
+  has lost what the Dart API is named after: the Rust field name behind a
+  `rename` (`ShipState.shipClass` is `class` on the wire), the name of a
+  flattened field (`GameEvent.kind`, `ExchangeQuote.terms`), and which struct
+  a tagged variant wraps. A declarative description that the Rust types are
+  generated from would have rewritten `protocol.rs` as macro input and put
+  its doc comments out of reach of rustdoc.
+- **The shape of the Dart, by rule and not by table.** A struct is a class
+  with a `const` constructor, `fromJson` and `toJson`. An enum of unit
+  variants is a Dart enum with its `wire` name. A tagged enum is a sealed
+  class. A struct that one tagged variant wraps and nothing else names
+  extends that sealed class (`AuthResult` is a `ServerMessage`); a variant
+  with fields or none is a class named variant plus the enum's last word
+  (`MoveCommand`, `RequestFullStateMessage`); a variant that wraps a type
+  used elsewhere is a wrapper named the same way (`CommandMessage`,
+  `EventMessage`). A constructor parameter is optional exactly where serde
+  fills the field, with serde's value, and for a struct with `Default` in
+  Rust every parameter has that default. A struct with `Eq` in Rust has
+  value equality in Dart. Doc comments are Rust's.
+- **What Rust knows beside the wire is generated too**, where it is a
+  constant or a per-variant value: the labels of eleven enums, `ShipClass` hull,
+  shield, weapon, cargo and power (the client's own table in
+  `lib/console/threat.dart` and a second one in the windshield painter are
+  gone), `ResourceKind.weight`, `ErrorCode.code`, `botNamePrefix`,
+  `maxOddsSectors`, the four ratio bands, the outpost rings. One line in
+  `shared/tests/wire/mod.rs` each, which calls the Rust function or names the
+  constant. An `f32` constant is written as the exact value of that `f32`, so
+  a comparison with a number off the wire falls as it does on the server.
+- **What stays written by hand**, and what guards it:
+  `lib/protocol/protocol.dart` (155 lines) is the client's own: extension
+  getters and `HomeworldState.copyWith`, checked by the Dart compiler against
+  the generated classes. `lib/protocol/hex.dart` is hex math with the two
+  fields of `Hex`, guarded by `fixtures/hex` and by every fixture that
+  carries a coordinate. Formulas and sentences in the views that repeat
+  `scaling.rs` or the engine are not touched; the journal lists them.
+- **Decoding is as strict as it was.** Unknown tags and enum names throw
+  `FormatException`, a missing required field throws, an optional field is
+  nullable and left out when null. What went is a convenience of the hand
+  mirror: its constructors had defaults serde does not have (eight fields of
+  `HomeworldState`, `DefenceState.restoring`, `HomeworldCatalog.defences`,
+  `waitingOn` of the three queued orders, `HarvestCommand.resource`,
+  `StandingOrders.params`). A generated constructor asks for what serde asks
+  for, and the test world that leaned on those defaults now names the values.
+- **Three names changed**, by the rules above, with every caller:
+  `RequestFullState` is `RequestFullStateMessage`; a lone event is
+  `EventMessage(GameEvent)`, because `GameEvent` is also what `TickUpdate`
+  lists and cannot carry a `type` there (`GameEvent.toEventJson` is
+  `toJson`); `RatioLabel.forRatio` is the function `ratioLabelFor`, and
+  `OddsCommand.maxOddsSectors` the constant `maxOddsSectors`.
+
+**For the owner.**
+
+1. Merge or not.
+2. The generated file declares `// dart format width=120`, the width the
+   hand-written file was typed at; the rest of the client is not formatted
+   with `dart format` at all (on master 91 of its 99 files would change). 80
+   is one constant in `wire/dart.rs`.
+3. `fixtures/protocol/synth` adds 67 files and 337 KB of generated messages,
+   one a line. They make the Dart proof complete without anyone writing a
+   fixture. If that is too much to carry, they can be made in memory by a
+   Dart test that shells out to cargo, at the price of the client's tests
+   needing cargo.
+4. The inventory in the journal lists what the client still repeats of the
+   engine by hand, and the places where the two disagree today. None was
+   changed here. Which of them are bugs is the owner's call.
+
 ## 2026-10-13 (one stored world: both hosts store one document, and there is no journal)
 
 The owner's answers to the questions of `docs/design/storage.md`, section 12,

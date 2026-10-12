@@ -136,7 +136,7 @@ class GameConnection {
 
   void sendCommand(Command command) => send(CommandMessage(command));
 
-  void requestFullState() => send(const RequestFullState());
+  void requestFullState() => send(const RequestFullStateMessage());
 
   Future<void> disconnect() async {
     await _sub?.cancel();

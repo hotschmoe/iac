@@ -1,0 +1,6 @@
+[
+{"canonical":{"action":"harvest","fleet_id":6,"resource":"Metal","type":"command"},"input":{"action":"harvest","fleet_id":6,"resource":"Metal","type":"command"}},
+{"canonical":{"action":"harvest","fleet_id":6,"resource":"Crystal","type":"command"},"input":{"action":"harvest","fleet_id":6,"resource":"Crystal","type":"command"}},
+{"canonical":{"action":"harvest","fleet_id":6,"resource":"Deuterium","type":"command"},"input":{"action":"harvest","fleet_id":6,"resource":"Deuterium","type":"command"}},
+{"canonical":{"action":"harvest","fleet_id":6,"resource":"Auto","type":"command"},"input":{"action":"harvest","fleet_id":6,"resource":"Auto","type":"command"}}
+]

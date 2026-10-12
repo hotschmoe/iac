@@ -4,12 +4,10 @@ import '../protocol/protocol.dart' as proto;
 import '../state/state_mapper.dart' show amountsOf;
 import 'intel.dart' show clockFmt, groupDigits, hopCount;
 
-/// The rings an outpost stands in, as RULES.md has them. The server is the
-/// judge of a site; these only decide where the console offers to found.
-const outpostMinRing = 9;
-const outpostMaxRing = 20;
-
-bool inOutpostRings(proto.Hex h) => h.distFromOrigin >= outpostMinRing && h.distFromOrigin <= outpostMaxRing;
+/// Whether [h] lies in the rings an outpost stands in, which are the
+/// engine's. The server is the judge of a site; this only decides where the
+/// console offers to found.
+bool inOutpostRings(proto.Hex h) => h.distFromOrigin >= proto.outpostMinRing && h.distFromOrigin <= proto.outpostMaxRing;
 
 /// What the outpost does and does not do for a fleet standing at it.
 String outpostDockVoice(proto.OutpostState o) =>

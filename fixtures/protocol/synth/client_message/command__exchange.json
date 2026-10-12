@@ -1,0 +1,7 @@
+[
+{"canonical":{"action":"exchange","amount":30.25,"fleet_id":29,"give":"metal","type":"command","want":"metal"},"input":{"action":"exchange","amount":30.25,"fleet_id":29,"give":"metal","type":"command","want":"metal"}},
+{"canonical":{"action":"exchange","amount":30.25,"fleet_id":29,"give":"crystal","type":"command","want":"crystal"},"input":{"action":"exchange","amount":30.25,"fleet_id":29,"give":"crystal","type":"command","want":"crystal"}},
+{"canonical":{"action":"exchange","amount":30.25,"fleet_id":29,"give":"deuterium","type":"command","want":"deuterium"},"input":{"action":"exchange","amount":30.25,"fleet_id":29,"give":"deuterium","type":"command","want":"deuterium"}},
+{"canonical":{"action":"exchange","fleet_id":29,"give":"deuterium","type":"command","want":"deuterium"},"input":{"action":"exchange","fleet_id":29,"give":"deuterium","type":"command","want":"deuterium"}},
+{"canonical":{"action":"exchange","fleet_id":29,"give":"deuterium","type":"command","want":"deuterium"},"input":{"action":"exchange","amount":null,"fleet_id":29,"give":"deuterium","type":"command","want":"deuterium"}}
+]

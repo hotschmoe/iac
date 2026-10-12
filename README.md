@@ -468,15 +468,58 @@ orders on the same ticks. Every frame the two send must be equal, and so must th
 bytes of the worlds they end with (`cargo test -p iac-server --test hosts_agree`,
 about 45 seconds).
 
-### Protocol fixtures
+### The protocol has one source
 
-`fixtures/` holds golden JSON generated from the Rust types in `shared/`:
-every `ClientMessage`, `Command`, `ServerMessage` and `EventKind` variant plus
-hex math results. `shared/tests/golden_fixtures.rs` fails if the Rust types
-drift from them (regenerate with `UPDATE_FIXTURES=1 cargo test -p iac-shared`),
-and the Flutter tests round-trip every fixture and check hex math cell by cell.
-Change the Rust protocol, regenerate, then fix the Dart side until
-`flutter test` passes.
+The wire types are written once, in Rust (`shared/src/protocol.rs` and the
+enums it uses from `constants.rs`, `scaling.rs` and `world.rs`). The Flutter
+client's copy, `clients/web/lib/protocol/protocol.g.dart`, is generated from
+them and checked in, so the client builds without cargo. Nobody edits it.
+
+A protocol change is three steps:
+
+```sh
+# 1. edit the Rust types
+UPDATE_FIXTURES=1 cargo test -p iac-shared   # 2. regenerate the Dart types and the fixtures
+cd clients/web && flutter analyze            # 3. fix what the analyzer points at in the app
+```
+
+`cargo test -p iac-shared` (and so `cargo test --workspace`) fails while the
+checked-in Dart file or a fixture is stale, and names the first line that
+differs.
+
+How it works, all in `shared/tests/` (`golden_fixtures.rs` and `wire/`):
+
+- `wire/model.rs` reads the structs and enums out of `shared/src` with `syn`:
+  everything `ClientMessage` and `ServerMessage` carry, with their serde
+  attributes and doc comments. An attribute or a type it does not know is
+  refused by name, not guessed at.
+- `wire/samples.rs` holds that reading against serde itself. It makes
+  messages from the model alone, for every type, variant and field (all
+  fields present, only the required ones, every optional one empty), has
+  serde parse each into the Rust type and emit it again, and requires the
+  result to be what the model says. The values serde fills in for missing
+  fields are learnt there, not typed.
+- `wire/dart.rs` writes the Dart file, laid out as `dart format` would at the
+  width the file declares.
+- `wire/mod.rs` lists what the client is given beside the wire: the Rust
+  functions that become columns of its enums (`ShipClass.label`, its base
+  stats and power, `ResourceKind.weight`, `ErrorCode.code`) and the constants
+  (`botNamePrefix`, `maxOddsSectors`, the ratio bands, the outpost rings).
+  Adding one is a line there.
+
+`clients/web/lib/protocol/protocol.dart` is written by hand and holds only
+what the client adds to the generated types (extension getters such as
+`WorldInfo.servicesAt`, `HomeworldState.copyWith`). `hex.dart` is written by
+hand too: hex math, pinned by `fixtures/hex`.
+
+`fixtures/` is golden JSON generated from the same Rust types and is the
+end-to-end proof that the generated Dart reads and writes what serde does.
+`fixtures/protocol/` has every `ClientMessage`, `Command`, `ServerMessage`
+and `EventKind` variant with realistic values, written by hand in
+`golden_fixtures.rs`, and under `synth/` the messages `wire/samples.rs` made,
+which cover every field by construction. The Flutter tests decode and
+re-encode each one (`test/protocol_fixtures_test.dart`) and check hex math
+cell by cell.
 
 ### Economy numbers
 

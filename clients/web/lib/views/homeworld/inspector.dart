@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../console/threat.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
 import '../../protocol/protocol.dart' as proto;
@@ -104,8 +103,7 @@ class Inspector extends StatelessWidget {
     );
   }
 
-  List<Widget> _shipStats(proto.ShipClass c) {
-    final st = shipStats[c]!;
+  List<Widget> _shipStats(proto.ShipClass st) {
     return [
       const SizedBox(height: 10),
       const Lbl('Specification'),

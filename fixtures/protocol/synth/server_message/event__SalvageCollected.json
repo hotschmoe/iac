@@ -1,0 +1,5 @@
+[
+{"canonical":{"fleet_id":48,"kind":"SalvageCollected","remaining":{"crystal":55.25,"deuterium":56.25,"metal":54.25},"resources":{"crystal":52.25,"deuterium":53.25,"metal":51.25},"sector":{"q":49,"r":-50},"tick":2,"type":"event"},"input":{"fleet_id":48,"kind":"SalvageCollected","remaining":{"crystal":55.25,"deuterium":56.25,"metal":54.25},"resources":{"crystal":52.25,"deuterium":53.25,"metal":51.25},"sector":{"q":49,"r":-50},"tick":2,"type":"event"}},
+{"canonical":{"fleet_id":48,"kind":"SalvageCollected","resources":{"crystal":52.25,"deuterium":53.25,"metal":51.25},"sector":{"q":49,"r":-50},"tick":2,"type":"event"},"input":{"fleet_id":48,"kind":"SalvageCollected","resources":{"crystal":52.25,"deuterium":53.25,"metal":51.25},"sector":{"q":49,"r":-50},"tick":2,"type":"event"}},
+{"canonical":{"fleet_id":48,"kind":"SalvageCollected","resources":{"crystal":52.25,"deuterium":53.25,"metal":51.25},"sector":{"q":49,"r":-50},"tick":2,"type":"event"},"input":{"fleet_id":48,"kind":"SalvageCollected","remaining":null,"resources":{"crystal":52.25,"deuterium":53.25,"metal":51.25},"sector":{"q":49,"r":-50},"tick":2,"type":"event"}}
+]

@@ -5510,3 +5510,257 @@ branch found between the simulation and the game (the terrain shares, the
 storage table at pace 600, the milestones pasted into `pace::PRESETS`, the
 smaller model differences) are in its entry above and were left as they are:
 they are the owner's.
+
+## 2026-10-13: the Dart wire types are generated from the Rust ones
+
+On the branch `worktree-agent-aa8697ab03af2a23e`, not merged and not pushed.
+The decision and its reasons are in `docs/design/decisions.md`; this is what
+was built and run.
+
+**Before.** `clients/web/lib/protocol/protocol.dart` was 4,128 lines typed by
+hand to mirror `shared/src/protocol.rs` (2,200 lines) and the enums it uses.
+The fixtures caught drift after the fact, for the fields a fixture happened to
+carry.
+
+**After.**
+
+| File | Lines | Written by |
+|---|---|---|
+| `clients/web/lib/protocol/protocol.g.dart` | 4,792 | the generator; checked in |
+| `clients/web/lib/protocol/protocol.dart` | 155 | hand: the client's extensions |
+| `clients/web/lib/protocol/hex.dart` | 106 | hand, unchanged |
+| `shared/tests/wire/model.rs` | 405 | hand: reads the types from source |
+| `shared/tests/wire/samples.rs` | 347 | hand: the proof against serde |
+| `shared/tests/wire/dart.rs` | 698 | hand: writes the Dart |
+| `shared/tests/wire/mod.rs` | 180 | hand: roots, columns, constants |
+
+Hand-written Dart that names the wire went from 4,128 lines to none. The
+generated file is longer than the mirror was because it carries Rust's doc
+comments whole. The old file is in `.archive/protocol.dart.hand-mirror` of the
+branch's worktree (and in git).
+
+**The reading and the proof.** `Model::read` parses every file of `shared/src`
+with `syn`, indexes the structs and enums that derive `Serialize`, and keeps
+what `ClientMessage` and `ServerMessage` reach: 119 Rust types, 149 Dart ones
+once each `Command` variant is a class. It knows `tag`, `untagged`,
+`rename_all = "snake_case"`, `rename`, `default` (bare, with a function, and on
+the container), `flatten` and five `skip_serializing_if` tests, and panics with
+the type and field on anything else. `samples::prove` then makes 342 messages
+from the model, sends each through `serde_json::from_value` and `to_value` of
+the real root type, and walks input and output together by the model: a key
+serde emits that the model lacks, a field the model expects that serde leaves
+out, a skip test that does not skip, a default that changes between two
+messages are each a fault, listed by path. It passed on the first run, which
+proves less than it sounds, so it was broken on purpose (below).
+
+**Fixtures.** The 342 messages are also written to
+`fixtures/protocol/synth/`, 67 files, one message a line with what serde made
+of it, 337 KB. The Flutter test decodes each input and must re-encode serde's
+output. The 167 protocol fixtures written by hand stay as they were, except
+`ratio_labels.json`, which gained the two cases it could not have before: 0.9
+and 1.1 themselves. The client's bands are now the server's `f32` constants
+and `ratioLabelFor` rounds its argument to `f32` first, so the edges fall
+where the server's do.
+
+**Formatting.** `dart format` leaves the generated file unchanged (checked on
+a copy, 0 lines differ). The generator lays lists out as the formatter does:
+on one line when they fit the 120 columns the file declares, otherwise one
+item a line with a trailing comma; it refuses to write a line that would
+still be too long. The formatter was asked what it does where that was not
+obvious: a list comprehension inside a map forces the map apart, so lists are
+encoded with `map(...).toList()`.
+
+**The app.** Of the files that import the protocol, 16 were edited by hand:
+11 under `lib/`, four tests and `tool/smoke.dart`, a few lines each. They are
+the renames (`RequestFullStateMessage`, `EventMessage`, `ratioLabelFor`,
+`maxOddsSectors`, `GameEvent.toJson`), the constructor arguments the test
+world had left to Dart-only defaults, and the ship table (`shipStats` and
+`ShipStats` of `lib/console/threat.dart`, `_pw` of the windshield painter),
+which is now `ShipClass.hull`, `.shield`, `.weapon`, `.cargo` and `.power`,
+with the same numbers. No string a player reads changed.
+
+**Inventory: what the client still repeats of the engine.** A read-only
+subagent swept `clients/web/lib` outside `lib/protocol`; the entries marked
+(checked) were read again by hand. Nothing in this list was changed unless it
+says generated.
+
+Generated now, the hand copy gone:
+
+- Ship base stats, `lib/console/threat.dart` (`ShipClass::base_stats`), and
+  per-class power, `scenes/windshield/painter.dart` (`scaling::ship_power`).
+  (checked)
+- Outpost rings 9 and 20, `lib/console/outpost.dart` (`OUTPOST_MIN_RING`,
+  `OUTPOST_MAX_RING`). (checked) The same two numbers also stand in three
+  sentences (`command_parser.dart:90`, `outpost_view.dart:118,151`), which
+  were left as prose.
+- Inside the old mirror: the labels of ten enums, the `PolicyParams`
+  defaults, `ResourceKind.weight`, `ErrorCode.code`, `BOT_NAME_PREFIX`,
+  `MAX_ODDS_SECTORS`, the ratio bands of `RatioLabel.forRatio`.
+
+Constants and tables not generated, with the reason:
+
+- Zone radii 8 and 20, six copies of one ternary (`hex/hex_math.dart:11`,
+  `views/hud.dart:235`, `views/windshield/parts.dart:42`,
+  `views/map/map_panels.dart:275`, `views/windshield/windshield_view.dart:751`,
+  `scenes/map/map_painter.dart:264`). They are associated constants of `Zone`,
+  and the cure is one zone helper in the client before a constant, which is a
+  client refactor. `map_painter.dart:273` prints `R22+ THE WANDERING`; Rust
+  starts the Wandering at ring 21. (checked)
+- Storage near-cap 0.85 in four views (`STORAGE_NEAR_CAP_RATIO`). The `f32`
+  is 0.8500000238; putting it in place of `.85` moves a threshold a player
+  can sit on, and nothing a player sees was to change.
+- Ratio bands drawn as a gauge, `design/gauges.dart:249,261`: geometry and
+  labels typed from 0.9, 1.1, 1.5, 2.5. The constants are generated now
+  (`ratioSafe` and the others); the gauge was not rewired.
+- Highest threat 9 (`MAX_THREAT`) in `design/gauges.dart:147,153`,
+  `map_panels.dart:230`, `design/tokens.dart:49`; scan ranges 1 and 2
+  (`parts.dart:271`); scan cooldown 5 (`windshield_view.dart:64`); fuel
+  budget 100 as "no bound" (`parts.dart:707,722`); grade "of 12"
+  (`outpost_view.dart:43,199`); four density steps; 64 hops; default port
+  7777. Each is a literal inside drawing or wording code; none was moved.
+- One tick is one second, assumed everywhere (`_hour = 3600`, every
+  `clockFmt`). The server sends `WorldInfo.tick_hz`, and nothing reads it.
+- `views/homeworld/research_tab.dart:11`: the lanes list 12 techs by hand and
+  `ModularFabrication` is not among them, so it has no node. The catalog the
+  server sends has all 13. (checked)
+- Build slots: the views know slots A and B. `building_slots` is 1 plus
+  Modular Fabrication, which goes to 2, so three. (checked on the Rust side)
+- Doctrine clamp ranges (`command_parser.dart:475`, `parts.dart:703,813`):
+  Rust has them as literals in `engine.rs`, not as constants, so there is
+  nothing to generate from until they are named.
+- Name length 24 (`login_screen.dart:79`, `solo_screen.dart:220`) is
+  `sim/src/auth.rs`, outside `shared`; the generator reads `shared/src` only.
+
+Labels:
+
+- `Fe`, `Cr`, `De` in more than a dozen places. Rust's `ResourceKind::label`
+  is the long name; the short ones exist in Rust only inside format strings
+  of `solo/src/away.rs` and the TUI. There is no function to generate from.
+- Zone names, four copies; in Rust only the TUI spells them.
+- Direction names in `scenes/windshield/geometry.dart` differ from
+  `HexDirection::label` on purpose (named by screen position), and the
+  command bar uses Rust's, so the bar's `se` is the windshield's `S`.
+- Building, tech and ship names typed into sentences (`Storage Vault`,
+  `Modular Fabrication`, `Metal Mine to level 3`): the labels are generated
+  now and could be read from the enums.
+- Refusal and alert sentences repeated from `sim/src/commands.rs` and
+  `engine.rs` so that the console can say them before sending.
+- The band captions of `design/gauges.dart:200` follow the comments on the
+  `RATIO_*` constants, which disagree with `RATIO_MARGINS` and with the doc
+  comment of `SectorOdds` (98 percent against 99).
+
+Formulas and rules, inventoried only, as briefed:
+
+- Ship power `weapon + (hull + shield) / 10`: gone from the client with the
+  table.
+- `painter.dart:172` rates a sector from the hostiles in view with the
+  server's formula but without the NPC multiplier and the 25 percent for
+  aggressive groups, though `SectorState.threat.rating` is on hand.
+- `console/route_planner.dart:165` takes two ticks a hop; the engine's
+  cooldown depends on the slowest ship and on Navigation. Line 164 prices the
+  way back by hex distance; the engine counts lane hops. (Dart side checked)
+- `map_panels.dart:384` prints a loot tier of `1 + min(3, d ~/ 6)`;
+  `derelict_tier` follows the threat band. (checked)
+- `scenes/windshield/sim.dart:372` boards for 8 seconds;
+  `EXPLORE_DURATION_TICKS` is 20, and the event carries `end_tick`. (checked)
+- `views/homeworld/spec.dart:64` says the Fabricator speeds up shipyard
+  builds and `buildings_tab.dart:33` calls it slot B; in Rust it shortens
+  building time and slots come from research. (checked)
+- `overview_cards.dart:473,534` size the research and shipyard queues by the
+  building queue's capacity.
+- `windshield_view.dart:280` refuses to board while hostiles are in the
+  sector; `handle_explore_site` has no such rule.
+- Range and hops home are worked out from fuel and hex distance in four
+  views; `FleetState.range_hops` is mapped and shown nowhere.
+- Storage "full in" and "full" are recomputed; `StorageState.full_in_s` and
+  `capped` are mapped and all but unread.
+- Queue rows are parsed back out of their own display strings
+  (`overview_cards.dart:331,536`) where typed fields exist.
+- Affordability and shortfall (`console/economy_view.dart:7`), stranded
+  (`models/fleet.dart:126`), raid held or breached without the roll
+  (`overview_view.dart:262`), the pre-checks before move, harvest, load,
+  split, merge and exchange: mirrors of engine rules, kept so the console can
+  answer before the server does.
+- `test/support/demo_world.dart` re-types much of `constants.rs` and
+  `scaling.rs` for the widget tests. It is not shipped.
+
+**That the guards bite.** Each change made by hand and taken back by hand.
+
+- `#[serde(rename = "fuel_price")]` on `MovePreview.fuel_cost`: both tests of
+  `golden_fixtures` fail. `dart_protocol_matches` says
+  `clients/web/lib/protocol/protocol.g.dart is out of date with shared/src,
+  first at line 1326`, with `generated: fuelCost: _double(m['fuel_price'])`,
+  `checked in: fuelCost: _double(m['fuel_cost'])` and the command to run;
+  `golden_fixtures_match` lists the changed fixtures. A field renamed in Rust
+  outright stops sooner: `golden_fixtures.rs` builds every message by field
+  name and no longer compiles.
+- `snake_case` in `wire/model.rs` made to drop its underscores (the model
+  misreading `rename_all`): `prove` fails before anything is written, with
+  `serde refuses {..."preset":"mineandreturn"...}: unknown variant` for each
+  message that carries such a name.
+- `"std::ops::Not::not"` read as the empty-string test: `prove` fails with
+  `SiteExplored.kind.relic: sent false, serde leaves it out`, and with serde
+  refusing the messages where a flag was sent as an empty string.
+
+**Run on the branch.**
+
+After merging master (the 300 second save period) into it; all with
+`nice -n 10` and `-j 4`.
+
+- `cargo build --workspace --all-targets`: no warning.
+- `cargo test --workspace --no-fail-fast`: 153 passed, 0 failed. Master has
+  152; the one more is `dart_protocol_matches`.
+- `cargo clippy --workspace --all-targets`: silent.
+- `cargo build -p iac-solo --target wasm32-unknown-unknown --release`:
+  `iac_solo.wasm` is 2,381,965 bytes before and after, the same SHA-256
+  (`e25018e1...`). `syn` is a dev-dependency of `iac-shared` and `Cargo.lock`
+  gained one line, its name under that package; no crate was added.
+- `flutter analyze`: no issues. `dart format` on a copy of
+  `protocol.g.dart`: 0 files changed.
+- `flutter test`, pinned to the big cores: 476 passed. Master has 409; the 67
+  more are the files of `fixtures/protocol/synth`, one test each.
+- `scripts/play.sh --single-player --no-serve`, then
+  `dart run tool/solo_e2e.dart --port 8090`: `SOLO E2E OK in 194 s`, 62
+  screenshots.
+
+**Not verified.** No person or agent played. The multiplayer client was not
+driven by hand in a browser against a server; `solo_e2e` drives the
+single-player bundle and logs in to one real server. `tool/smoke.dart` was
+edited (one rename) and analysed, not run. The generator has only ever read
+this protocol: a tuple struct, a map, an externally tagged enum or a
+`rename_all` on a struct is refused, not handled. `dart format` stability is
+checked by hand, not by a test: a future name long enough to push a line past
+120 columns is refused by the generator, but a formatter rule not met yet
+would show only when someone formats the file. A `u64` above 2^53 loses
+precision in a browser, as before.
+
+## 2026-10-13: the generated Dart wire types are merged
+
+Merged into master with `--no-ff`, not pushed, after the economy's numbers. The
+old hand mirror is in the repository's `.archive/` (copied from the branch's
+worktree and compared byte for byte with master's). Added at the merge:
+`CLAUDE.md` carries the rule (the branch's `claude-md.patch`, applied three-way
+because the `sim.py` wording had landed first: five lines, the `shared/`,
+`clients/web/` and `fixtures/` rows, the `UPDATE_FIXTURES` line and the bullet
+on the wire types); the entry of `decisions.md` says it is merged.
+
+**The guard bit at the merge.** `dart_protocol_matches` failed on the merged
+tree: the generator copies the Rust doc comment of the outpost rings into the
+Dart file, and the `sim.py` branch had reworded that comment. `UPDATE_FIXTURES=1
+cargo test -p iac-shared` rewrote two comment lines of `protocol.g.dart` and
+nothing else; no fixture moved.
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo test
+--workspace --no-fail-fast`: 153 passed and that one failed, which passes after
+the regeneration (run again with `economy_numbers`), so 154; `cargo clippy
+--workspace --all-targets` silent; `tools/check_sim_constants.py` agrees on
+2,390 values; `flutter analyze` clean, before and after the regeneration;
+`flutter test` pinned: 476 passed (409 and the 67 files of
+`fixtures/protocol/synth`); `scripts/play.sh --single-player --no-serve`;
+`tool/solo_e2e.dart`: `SOLO E2E OK in 194 s`. The bundle and the browser check
+were run before the two comment lines changed and not again.
+
+**Not verified.** No person or agent played. The multiplayer client was not
+driven in a browser beyond the browser check's own multiplayer step. The places
+where the client's own rules disagree with the engine (the branch's entry lists
+them) were not touched and are the owner's.
