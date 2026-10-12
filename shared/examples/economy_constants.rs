@@ -9,6 +9,7 @@ use iac_shared::constants::{
     defense_grid_scout_units, Density, ShipClass, FUEL_DEUT_PER_UNIT, FUEL_RATE_PER_MASS, OUTPOST_COST,
     OUTPOST_MAX_LEVEL, OUTPOST_MAX_RING, OUTPOST_MIN_RING, OUTPOST_STORE_BASE,
 };
+use iac_shared::maths;
 use iac_shared::pace::{Pace, PRESETS};
 use iac_shared::scaling::*;
 
@@ -183,7 +184,7 @@ fn main() {
         "fuel_deut_per_unit": FUEL_DEUT_PER_UNIT,
         "fuel_rate_per_mass": FUEL_RATE_PER_MASS,
         "fuel_depot_per_level": fuel_depot_modifier(1) - 1.0,
-        "cargo_exponent": Pace::new(10000.0).unwrap().cargo_mult().ln() / 10000.0f32.ln(),
+        "cargo_exponent": maths::ln(Pace::new(10000.0).unwrap().cargo_mult()) / maths::ln(10000.0f32),
         "vault_growth": STORAGE_GROWTH,
         "build_rate": BUILD_RATE,
         "research_rate": RESEARCH_RATE,
@@ -193,7 +194,7 @@ fn main() {
         "shipyard_speed": SHIPYARD_SPEED,
         "production_growth": PRODUCTION_GROWTH,
         "queue_waiting": QUEUE_WAITING,
-        "finds_exponent": Pace::new(10000.0).unwrap().finds_mult().ln() / 10000.0f32.ln(),
+        "finds_exponent": maths::ln(Pace::new(10000.0).unwrap().finds_mult()) / maths::ln(10000.0f32),
     }));
     println!("{}", serde_json::to_string(&Value::Object(out)).unwrap());
 }

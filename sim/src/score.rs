@@ -9,6 +9,7 @@
 // for more than metal.
 
 use iac_shared::constants::Resources;
+use iac_shared::maths;
 use iac_shared::protocol::{LeaderboardEntry, LeaderboardReply};
 use iac_shared::scaling::{self, DefenceKind};
 
@@ -195,12 +196,12 @@ pub fn kill_points(pile: Resources, engaged_power: f32, npc_power: f32) -> f32 {
 /// Points for the first boarding of a derelict that rolled `loot` (finds
 /// factor included) at threat `rating`.
 pub fn board_points(loot: Resources, rating: u8) -> f32 {
-    BOARD_VALUE_SHARE * scaling::resource_weight(&loot) + DISCOVERY_POINTS * f32::from(rating).powf(1.5)
+    BOARD_VALUE_SHARE * scaling::resource_weight(&loot) + DISCOVERY_POINTS * maths::powf(f32::from(rating), 1.5)
 }
 
 /// Points for delivering the chart of one new sector at threat `rating`.
 pub fn chart_points(rating: u8) -> f32 {
-    CHART_BASE_POINTS + CHART_THREAT_POINTS * f32::from(rating).powf(1.5)
+    CHART_BASE_POINTS + CHART_THREAT_POINTS * maths::powf(f32::from(rating), 1.5)
 }
 
 /// The table, best first, for `viewer`. Built-in bots are ranked apart from

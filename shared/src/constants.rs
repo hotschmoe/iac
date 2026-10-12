@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::maths;
+
 /// Bumped when costs, times, production formulas or the moment an order pays
 /// change; a database from another economy version is refused (start a new
 /// world).
@@ -514,7 +516,7 @@ pub fn defense_grid_scout_units(level: u8) -> f32 {
         1 => 1.0,
         2 => 2.5,
         3 => 4.0,
-        n => 4.0 * 1.3f32.powi(n as i32 - 3),
+        n => 4.0 * maths::powi(1.3, i32::from(n) - 3),
     }
 }
 

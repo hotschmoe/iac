@@ -16,6 +16,7 @@ use iac_shared::constants::{
     SALVAGE_DESPAWN_TICKS,
 };
 use iac_shared::hex::{hex_ring, Hex};
+use iac_shared::maths;
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, ErrorCode, EventKind, OutpostState, OutpostSurvey, OutpostWork,
@@ -433,7 +434,7 @@ fn a_survey_reads_any_charted_sector_and_says_what_stands_in_the_way() {
         (template.metal_density, template.crystal_density, template.deut_density),
     );
     assert_eq!(read.grade, grade_of(&template));
-    let ring_factor = 1.1f32.powi(9);
+    let ring_factor = maths::powi(1.1f32, 9);
     let per_tick = |d: Density| 2.0 / 3600.0 * d.harvest_multiplier() * ring_factor * 10.0;
     let quoted = res(per_tick(template.metal_density), per_tick(template.crystal_density), per_tick(template.deut_density));
     assert!(near(read.production, quoted, 1e-6), "{:?} against {quoted:?}", read.production);
@@ -468,7 +469,7 @@ fn the_extractor_makes_what_the_survey_said_at_every_pace() {
         haul(&mut e, at, COST);
         let quote = survey(&mut e, None);
         let quoted = quote.site.as_ref().expect("the fleet stands in the sector").production;
-        let per_tick = |d: Density| 2.0 / 3600.0 * d.harvest_multiplier() * 1.1f32.powi(9) * p;
+        let per_tick = |d: Density| 2.0 / 3600.0 * d.harvest_multiplier() * maths::powi(1.1f32, 9) * p;
         let rate = res(per_tick(template.metal_density), per_tick(template.crystal_density), per_tick(template.deut_density));
         assert!(near(quoted, rate, rate.total() * 1e-5), "{pace}: {quoted:?} against {rate:?}");
         assert_eq!(quote.build_ticks, ticks, "{pace}");
