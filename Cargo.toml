@@ -9,6 +9,36 @@ opt-level = 2
 [profile.dev.package.iac-shared]
 opt-level = 2
 
+[profile.dev.package.libm]
+opt-level = 2
+
+# The interpreter that runs iac_solo.wasm beside the native engine
+# (solo/tests/both_targets.rs). Its loop is a chain of tail calls, which the
+# compiler makes only when optimising and with these two checks off;
+# without them the interpreter overflows its stack.
+[profile.dev.package.wasmi]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.wasmi_core]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.wasmi_ir]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.wasmi_collections]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.wasmparser]
+opt-level = 3
+
 # The restart test writes thousands of ticks through SQLite.
 [profile.dev.package.libsqlite3-sys]
 opt-level = 2
