@@ -5607,7 +5607,24 @@ Formulas and rules, inventoried only, as briefed:
 
 **Run on the branch.**
 
-@@RUN@@
+After merging master (the 300 second save period) into it; all with
+`nice -n 10` and `-j 4`.
+
+- `cargo build --workspace --all-targets`: no warning.
+- `cargo test --workspace --no-fail-fast`: 153 passed, 0 failed. Master has
+  152; the one more is `dart_protocol_matches`.
+- `cargo clippy --workspace --all-targets`: silent.
+- `cargo build -p iac-solo --target wasm32-unknown-unknown --release`:
+  `iac_solo.wasm` is 2,381,965 bytes before and after, the same SHA-256
+  (`e25018e1...`). `syn` is a dev-dependency of `iac-shared` and `Cargo.lock`
+  gained one line, its name under that package; no crate was added.
+- `flutter analyze`: no issues. `dart format` on a copy of
+  `protocol.g.dart`: 0 files changed.
+- `flutter test`, pinned to the big cores: 476 passed. Master has 409; the 67
+  more are the files of `fixtures/protocol/synth`, one test each.
+- `scripts/play.sh --single-player --no-serve`, then
+  `dart run tool/solo_e2e.dart --port 8090`: `SOLO E2E OK in 194 s`, 62
+  screenshots.
 
 **Not verified.** No person or agent played. The multiplayer client was not
 driven by hand in a browser against a server; `solo_e2e` drives the
