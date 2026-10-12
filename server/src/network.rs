@@ -90,8 +90,11 @@ impl Network {
 
     /// Hand `host` everything that arrived since the last tick, in the order
     /// it arrived, and send each session what it is answered. A message
-    /// whose session has gone meanwhile is dropped.
-    pub fn deliver<D: Door>(&self, host: &mut Host<D>) {
+    /// whose session has gone meanwhile is dropped. Returns whether an
+    /// account was issued a token: from then on someone outside holds a
+    /// password to this world.
+    pub fn deliver<D: Door>(&self, host: &mut Host<D>) -> bool {
+        let mut issued = false;
         let mut batch = Vec::new();
         {
             let mut rx = self.incoming_rx.lock().unwrap();
@@ -114,11 +117,13 @@ impl Network {
                     }
                     host.receive(session, msg, &mut replies);
                     for reply in replies.drain(..) {
+                        issued |= matches!(&reply, ServerMessage::AuthResult(result) if result.token.is_some());
                         self.send(session, &reply);
                     }
                 }
             }
         }
+        issued
     }
 
     pub fn send(&self, session: SessionId, msg: &ServerMessage) {

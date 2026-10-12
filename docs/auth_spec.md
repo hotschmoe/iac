@@ -20,11 +20,17 @@ matters for a LAN game, with these differences:
   its original casing. An exact-case match wins, so any case-variant accounts
   from before this rule stay reachable. Clients key saved tokens by the
   lowercased name.
-- **Tokens and hashing as specified**: 32 random bytes, hex, SHA-256 stored in
-  `players.token_hash`, constant-time compare (`sim/src/auth.rs`; token issuing in `server/src/auth.rs`).
-- **Accounts from before tokens** (NULL `token_hash`): the next login for the
-  name claims the account and is issued a token. The column is added to old
-  databases on startup; no data is touched.
+- **Tokens and hashing as specified**: 32 random bytes, hex, SHA-256 kept on
+  the account (`Player::token_hash`, stored with the world in its file),
+  constant-time compare (`sim/src/auth.rs`; token issuing in `server/src/auth.rs`).
+- **A token outlives a killed server.** The world file is written once a
+  minute, but an issued token hurries it: the file is written within about
+  three seconds of a registration or a claim, so nobody is left holding a
+  token for an account the world forgot (`REGISTRATION_SAVE`, `server/src/main.rs`).
+- **An account without a token hash**: the next login for the name claims the
+  account and is issued a token. No server creates such an account; it is
+  what the commander of a single-player world would be once that world is
+  played on a server.
 - **Failed logins keep the connection open** (the client may retry); a failed
   session cannot send commands or request state.
 - **Not implemented**: the anti-griefing layers (player cap, per-IP

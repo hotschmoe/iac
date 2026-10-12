@@ -1,18 +1,47 @@
 // A complete, canonical copy of the world: what `GameEngine::snapshot` writes
 // and `GameEngine::restore` reads. Every map is ordered, so equal worlds
 // serialize to identical bytes and `hash` can stand in for "same state".
+//
+// It is also everything a host stores (`store`): whatever must survive a
+// restart is a field here, and is nowhere else.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use iac_shared::constants::{ECONOMY_VERSION, WORLDGEN_VERSION};
+use iac_shared::hex::Hex;
 use iac_shared::pace::Pace;
-use iac_shared::protocol::GameEvent;
+use iac_shared::protocol::{GameEvent, SectorState};
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::bot::BotRecord;
 use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Outpost, Player, RaidState, SectorOverride};
-use crate::persist::{ExploreCredit, KnownRow, RuntimeEntry, WorldMeta};
+
+/// Settings fixed when a world is created.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WorldMeta {
+    pub pace: Pace,
+    pub economy_version: u32,
+    pub worldgen_version: u32,
+}
+
+/// What an explore credit was paid for: it is paid once per player and sector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ExploreCredit {
+    /// First successful boarding of the derelict here.
+    Boarded = 0,
+    /// The sector's chart was delivered to a dock.
+    Charted = 1,
+}
+
+/// One sector of one player's chart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownRow {
+    pub player_id: u64,
+    pub sector: Hex,
+    pub last_seen: u64,
+    pub state: SectorState,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -32,10 +61,8 @@ pub struct Snapshot {
     pub home_salvage_warned: BTreeMap<u64, u64>,
     pub harvest_reports: BTreeMap<u64, HarvestReport>,
     /// Built-in bots by account: what each is and remembers.
-    #[serde(default)]
     pub bots: BTreeMap<u64, BotRecord>,
     /// Outposts by owner.
-    #[serde(default)]
     pub outposts: BTreeMap<u64, Outpost>,
     pub pending_events: Vec<GameEvent>,
     pub explored: BTreeSet<(u64, u32)>,
@@ -68,39 +95,6 @@ impl Snapshot {
             explored: BTreeSet::new(),
             credited: BTreeSet::new(),
             known: Vec::new(),
-        }
-    }
-
-    /// File one stored entry under the map it belongs to.
-    pub fn insert_runtime(&mut self, id: u64, entry: RuntimeEntry) {
-        match entry {
-            RuntimeEntry::NpcFleet(npc) => {
-                self.npc_fleets.insert(id, *npc);
-            }
-            RuntimeEntry::Combat(combat) => {
-                self.combats.insert(id, combat);
-            }
-            RuntimeEntry::Raid(state) => {
-                self.raid_states.insert(id, state);
-            }
-            RuntimeEntry::Scans(reveals) => {
-                self.scan_reveals.insert(id, reveals);
-            }
-            RuntimeEntry::StorageMarks(marks) => {
-                self.storage_marks.insert(id, marks);
-            }
-            RuntimeEntry::HomeSalvageWarned(despawn) => {
-                self.home_salvage_warned.insert(id, despawn);
-            }
-            RuntimeEntry::HarvestReport(report) => {
-                self.harvest_reports.insert(id, report);
-            }
-            RuntimeEntry::Bot(record) => {
-                self.bots.insert(id, *record);
-            }
-            RuntimeEntry::Outpost(outpost) => {
-                self.outposts.insert(id, *outpost);
-            }
         }
     }
 

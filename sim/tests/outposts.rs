@@ -1300,7 +1300,7 @@ fn a_season_week_of_raids_takes_nothing_from_an_outpost_defended_as_its_ring_ask
 }
 
 /// A world with an outpost, a convoy shuttling out and back, levels and raids, played for
-/// `ticks`. `stops` are ticks at which the world is written to JSON and read back.
+/// `ticks`. `stops` are ticks at which the world is stored as its document and read back.
 fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
     let mut e = Empire::join(world("blitz"), "Teller");
     let fid = e.fid;
@@ -1333,8 +1333,7 @@ fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
     for _ in 0..ticks {
         let tick = e.engine.current_tick();
         if stops.contains(&tick) {
-            let json = serde_json::to_string(&e.engine.snapshot()).unwrap();
-            e.engine = GameEngine::restore(serde_json::from_str(&json).unwrap());
+            e.engine = GameEngine::restore(stored(&e.engine));
         }
         let post = e.engine.outposts[&e.pid].clone();
         if post.level == 0 {
@@ -1367,7 +1366,6 @@ fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
             _ => {}
         }
         e.run(1);
-        e.engine.persist_dirty_state();
     }
     let raids = outcomes(&e, 0);
     let lost = raids.iter().filter(|(_, raid)| !raid.defended).count();

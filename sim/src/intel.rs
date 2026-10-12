@@ -31,11 +31,7 @@ use iac_shared::scaling;
 use iac_shared::world::{NpcBehaviorType, NpcTemplate};
 
 use crate::engine::{site_risk_label, template_npc_id, Fleet, GameEngine, NpcFleet, SectorOverride};
-use crate::persist::KnownRow;
-
-/// Live sectors are rewritten to disk this often even if nothing about them
-/// changed, so a restart reports an honest `last_seen`.
-const LIVE_TOUCH_TICKS: u64 = 60;
+use crate::snapshot::KnownRow;
 
 #[derive(Debug, Clone)]
 struct Remembered {
@@ -87,7 +83,6 @@ pub struct KnownSectors {
     expired: KeyMap<u64, Vec<u32>>,
     /// Sectors whose chart mark may have moved since the refresh before.
     marked: KeyMap<u64, Vec<u32>>,
-    dirty: KeySet<(u64, u32)>,
     /// Sectors an NPC group stood in or was homed to at the last refresh.
     npc_sectors: Vec<u32>,
     /// Sectors an outpost stood in at the last refresh.
@@ -139,7 +134,7 @@ impl KnownSectors {
         let observed = observe(engine, &wanted);
 
         for &(pid, key) in &entered {
-            Self::record(&mut self.by_player, &mut self.dirty, pid, key, &observed[&key], tick);
+            Self::record(&mut self.by_player, pid, key, &observed[&key], tick);
         }
         for key in dynamic {
             let Some(pids) = self.watchers.get(&key) else { continue };
@@ -154,15 +149,12 @@ impl KnownSectors {
                 }
             }
             for &pid in pids {
-                Self::record(&mut self.by_player, &mut self.dirty, pid, key, seen, tick);
+                Self::record(&mut self.by_player, pid, key, seen, tick);
             }
             self.shown.insert(key, seen.clone());
         }
 
         self.expire_pins(tick);
-        if tick.is_multiple_of(LIVE_TOUCH_TICKS) {
-            self.touch_live();
-        }
         self.refreshed = tick;
     }
 
@@ -241,7 +233,6 @@ impl KnownSectors {
             }
         }
         self.lapsed.entry(pid).or_default().push(key);
-        self.dirty.insert((pid, key));
     }
 
     /// Watched sectors whose content may differ from what the players hold:
@@ -276,7 +267,6 @@ impl KnownSectors {
     /// Write what the player sees of a live sector into their memory.
     fn record(
         by_player: &mut KeyMap<u64, KeyMap<u32, Remembered>>,
-        dirty: &mut KeySet<(u64, u32)>,
         pid: u64,
         key: u32,
         observed: &SectorState,
@@ -285,11 +275,9 @@ impl KnownSectors {
         let memory = by_player.entry(pid).or_default();
         match memory.get_mut(&key) {
             Some(r) => {
-                // Refilling ore moves every tick; it is written with the periodic touch.
                 let ore = std::mem::replace(&mut r.state.ore_reserve, observed.ore_reserve);
                 if r.state != *observed {
                     r.state = observed.clone();
-                    dirty.insert((pid, key));
                 } else if ore == observed.ore_reserve {
                     r.state.ore_reserve = ore;
                     return;
@@ -303,7 +291,6 @@ impl KnownSectors {
             }
             None => {
                 memory.insert(key, Remembered { last_seen: tick, state: observed.clone() });
-                dirty.insert((pid, key));
             }
         }
     }
@@ -321,7 +308,6 @@ impl KnownSectors {
                     r.state.salvage = None;
                     r.state.salvage_despawn_tick = None;
                 }
-                self.dirty.insert((pid, key));
                 expired.push(key);
             }
             if !expired.is_empty() {
@@ -335,24 +321,6 @@ impl KnownSectors {
     /// player its ore may lag behind (`shown`); everything else is current.
     pub fn remembered(&self, player_id: u64, coord: Hex) -> Option<&SectorState> {
         self.by_player.get(&player_id)?.get(&coord.to_key()).map(|r| &r.state)
-    }
-
-    /// Queue every live sector for the next persist (clean shutdown).
-    pub fn touch_live(&mut self) {
-        for (&pid, cover) in &self.coverage {
-            self.dirty.extend(cover.keys().map(|key| (pid, key)));
-        }
-    }
-
-    /// The remembered rows changed since the last `clear_dirty`.
-    pub fn dirty_rows(&self) -> Vec<KnownRow> {
-        let mut dirty: Vec<(u64, u32)> = self.dirty.iter().copied().collect();
-        dirty.sort_unstable();
-        dirty.into_iter().filter_map(|(pid, key)| self.row(pid, key)).collect()
-    }
-
-    pub fn clear_dirty(&mut self) {
-        self.dirty.clear();
     }
 
     /// Every remembered sector, ordered by player and sector.

@@ -2,7 +2,8 @@
 // clock. Time enters only as ticks; every random draw is seeded from the world
 // seed, the tick or ids. Hosts (the server, a headless runner, a WebAssembly
 // page) feed commands in and read state out through `host`, which is the
-// one place a tick is placed among bots, sessions and storage.
+// one place a tick is placed among bots and sessions, and keep the world
+// between runs as `store` says.
 
 pub mod auth;
 pub mod bot;
@@ -13,14 +14,13 @@ pub mod headless;
 pub mod host;
 pub mod intel;
 pub mod odds;
-pub mod persist;
 pub mod queue;
 pub mod score;
 pub mod script;
 pub mod snapshot;
+pub mod store;
 pub mod views;
 
 pub use engine::GameEngine;
 pub use host::Host;
-pub use persist::{Persist, PersistBatch};
 pub use snapshot::Snapshot;

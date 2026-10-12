@@ -5226,3 +5226,149 @@ bots'. Season day 28 and persistent day 60 were started and stopped for time.
 Nothing was built into `iac-server`, no browser was run, and the tick digest the
 design proposes for catching a journal replayed by another binary is not
 prototyped.
+
+## 2026-10-13: one stored world: the document is built, the journal is not
+
+Branch `worktree-agent-abdf8e01f9cf1ab1e`, from master at `e7767ba`. Not merged,
+not pushed. The owner answered the study's questions (`decisions.md`, same date,
+top entry): a killed server may lose more than a tick, so no journal; SQL is
+given up; files on the server; no compression. Built: steps 1 to 4 and 8 of
+`docs/design/storage.md`, section 10. `docs/data_architecture.md` is what is
+true now.
+
+**What a stored world is.** One document for both hosts, `sim/src/store.rs`: a
+header line (`format` 5, the economy and worldgen versions, an `xxh3` of the
+body, and `host`, the host's own part) and the `Snapshot` as JSON. The server
+keeps it in a file (`--world`, default `world.iac`; `--db` is gone, and so is
+the old `--world <preset>`, a second spelling of `--pace` nothing used). The
+browser keeps it in IndexedDB as before. `SAVE_FORMAT` went from 4 to 5 because
+the header changed shape; nothing is migrated.
+
+**What went and what came, in lines.**
+
+| file | removed | added | |
+|---|---|---|---|
+| `server/src/database.rs` | 2,117 | | to `.archive/`: 1,630 of schema, row mapping and writer, 487 of tests |
+| `sim/src/persist.rs` | 138 | | to `.archive/`; `WorldMeta`, `ExploreCredit`, `KnownRow` moved to `snapshot.rs` |
+| `solo/src/save.rs` | 90 | | became `sim/src/store.rs` |
+| `sim/src/engine.rs` | 382 | 35 | ten dirty sets, the lines that marked them (the study counted 149), `persist_dirty_state`, `runtime_entry`, `checkpoint`, `flush_persistence`, `attach_persist`, `REGEN_PERSIST_TICKS`, `record_explored`, four repairs in `restore` |
+| `sim/src/intel.rs` | 35 | 3 | its dirty set, `dirty_rows`, `clear_dirty`, `touch_live`, `LIVE_TOUCH_TICKS` |
+| `sim/src/snapshot.rs` | 37 | 31 | `insert_runtime` out, the three types in |
+| `sim/src/host.rs` | 10 | 17 | `Phase::Persisted` out; `Stale::Format` in |
+| `sim/src/store.rs` | | 157 | the document, `Store`, `Due` |
+| `server/src/store.rs` | | 181 | `Files` (the file, its lock, the atomic replace) and `Writer` (the thread) |
+| `server/src/main.rs` | 61 | 132 | opening a world and its refusals, when the file is written |
+| `solo/src/world.rs` | 24 | 45 | the `Bookmark` moved in from `save.rs`; `Due` in place of two fields |
+| `Cargo.lock` | 105 | | `rusqlite`, `libsqlite3-sys` and what only they pulled in; `sha2` and `subtle` were listed by the server and used by nothing in it |
+
+The marking lines were taken out by hand, one edit a site, and the diff read.
+Beside the plain marks, eleven guards existed only to decide whether to mark
+(a compare before a write, an `is_some()` on a remove, a length taken before
+a `retain`) and went with them; none changes what the engine holds.
+
+**The engine plays as it did.** `sim-run --pace season --days 7` prints the same
+201 lines before and after (604,800 ticks, 16 players, 323,876 bot turns,
+snapshot `46568e4f24b6d664`), at 1201 and 1214 ticks a second.
+`sim/tests/chart_golden.txt` and `fixtures/` are untouched and pass;
+`both_targets.rs` passes. `ECONOMY_VERSION` and the wire protocol are as they
+were.
+
+**Four repairs left `GameEngine::restore`.** It dropped bot records and
+outposts whose account was gone and standing orders whose fleet was gone, and
+gave an id to queue entries stored with none. They mended rows read back out of
+step and databases older than queue ids. A document is one snapshot behind a
+checksum, so they had nothing left to mend; no test moved when they went. Three
+`#[serde(default)]` that let an older save lack a field went the same way.
+
+**What a stop costs, as tested.** A stopped server loses nothing; a killed one
+comes back as its last file says. The server writes at every start once the
+bots are seated (and will not start if that write fails), every `--save-every`
+seconds (60), within 2 s of its last write once a token was issued, and at
+SIGINT or SIGTERM.
+
+- `smoke.rs::a_killed_server_comes_back_as_its_last_document_says_and_a_stopped_one_as_it_stopped`:
+  at `--save-every 3`, an order, three periods of ticks, SIGKILL. The file
+  holds a tick no more than the period (and three ticks of slack) behind the
+  kill, the order is in it, and the world plays on. Then an order and SIGTERM
+  right behind it: the order is in the file.
+- `smoke.rs::a_token_outlives_a_killed_server_and_an_account_without_one_is_claimed`
+  and `scenarios.rs::a_full_world_..._after_it_is_killed`: at the default
+  minute, a registration (and a burst of 24) followed 4.5 s later by SIGKILL is
+  in the file.
+- That they bite: with the hurry taken out of `run_tick` the first fails
+  (the name registers again instead of asking for its token); with the kill
+  test's server writing every 60 s it fails ("killed about tick 14 writing
+  every 3 s, the file holds tick 0"). Both put back.
+- The five scenarios that killed their servers to prove one tick was lost at
+  most (a boarding, the exchange meter, a laden hold, an outpost mid-build,
+  the bots) now stop them, which is the guarantee they can still hold: what
+  the player sees after a restart is what they saw before it.
+
+**Refusals, each a sentence and exit code 2, the file left as it was**
+(`smoke.rs`): another `--pace`, another `--seed`, a second server on the same
+world, another format, economy or generator, a file cut short, a file that is
+not a document.
+
+**The restart guarantee of the two SQLite tests is kept through the
+document.** `sim/tests/stored_world.rs` is the busy world of the old test (four
+scripted pilots, a settler who founds and raises an outpost) played straight
+and played with a stop and a start through its document every 250 ticks and at
+the rare moments (a fight, an announced raid, a live scan and a jump at once; a
+boarding; an outpost's build; the warning of a raid on it), 2,000 ticks, the two
+compared at every stop. `bots.rs` restarts a world of nine bots six times the
+same way.
+
+**The hosts store the same bytes.** `hosts_agree.rs` no longer reads a database
+into a `Snapshot` and re-encodes it: the single-player host loads the file the
+server wrote, body and checksum untouched, under a header whose `host` part the
+test fills from a single-player save. At the end the two worlds are compared as
+bytes. A second test goes the other way: a single-player save put where a
+server keeps its world is played by that server, bots and all; the commander's
+account is there and asks for a token nobody has.
+
+**Measured on a real server.** `iac-server`, release, pinned to one A720 core,
+loopback, no client. (a) A new season world, `--bot all:all` (15 bots), port
+8082, 320 s at the default period: seven documents of 0.26 to 0.33 MB; copied
+out on the tick in 0.30 to 0.42 ms, encoded in 0.9 to 1.1 ms, written with both
+syncs in 4 to 14 ms; ticks of 0.63 ms on average and 1.16 ms at worst; 1,500,819
+bytes passed to `write` between its 20th and its 320th second, 5.0 KB a tick.
+The study measured the rows at 136 KB a tick in this setup. (b) The study's
+24-seat season world (same seed, same seats), written at days 1, 2, 4 and 7 by
+a throwaway headless runner in the scratch directory and then hosted by the
+server at `--save-every 5` for 65 s each, port 8083, twelve documents each:
+
+| day | document | copied, on the tick | encoded | written | study: clone, encode, write |
+|---|---|---|---|---|---|
+| 1 | 3,215,759 | 7 ms | 25 ms | 17 ms | 2.7, 7.7 |
+| 2 | 5,335,012 | 13 ms | 33 ms | 21 ms | 3.6, 11.1 |
+| 4 | 8,854,551 | 17 ms | 36 ms | 27 ms | 6.4, 17.0 |
+| 7 | 13,149,739 | 33 ms | 46 ms | 34 ms | 13.5, 25.9, 27.7 |
+
+Sizes are the study's to a percent. Writing is what it predicted. Copying and
+encoding cost two to three times its figures on a live server: the first
+document of each run, taken while the process was still warm from loading,
+matches them (2.4, 4.4, 7.4 and 11.9 ms to copy; 9, 15, 23 and 33 ms to
+encode), and every later one, taken after a second asleep with the last copy
+freed on the writer's thread, is the slower figure. Which of the two it is was
+not separated. At 60 s the day-7 world writes 18.9 GB a day; the study's 1.9 GB
+was at ten minutes.
+
+**Verified.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`: 152 passed, 0 failed (154 on master: the six in-file tests of
+`database.rs` left, four arrived: `stored_world.rs`, the two new ones of
+`smoke.rs`, the second of `hosts_agree.rs`); `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees; the wasm build;
+`flutter analyze` clean and `flutter test` 409 passed, first run, pinned;
+`scripts/play.sh --single-player --no-serve` and `tool/solo_e2e.dart --port
+8080`: `SOLO E2E OK in 193 s`, its multiplayer check on a real server started
+with `--world`; `scripts/play.sh` on port 8081 with its world in the scratch
+directory: the build, `listening on 0.0.0.0:8081`, `GET /` 200, SIGTERM by
+PID, "Server shutdown complete".
+
+**Not verified.** No person or agent played. The playtest harness was edited
+(`start.sh`, `stop.sh`, its README) and not run. A power cut was not staged:
+the replace is write, `fsync`, rename, `fsync` of the directory, and only
+`kill -9` was tried against it. A disk that fills or fails mid-write was not
+tried; the code keeps the document before and says so in the log. A world past
+a season week, and the copy on a machine other than this one, were not
+measured.

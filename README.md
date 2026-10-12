@@ -11,9 +11,9 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling, hex math, world generation |
-| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, built-in bots, headless runner `sim-run`), and the host core (`host.rs`): the one tick, the one session gate and the one way to seat a world that every host runs; no I/O, builds for WebAssembly |
-| `server/` | `iac-server`: what a network and a disk add to the host core: the WebSocket transport, tokens, SQLite persistence, the 1 Hz tick timer |
-| `solo/` | `iac-solo`: what one player and a browser tab add to it: a commander with no password, a clock it is told and the catch-up after an absence, the save document; compiled to WebAssembly and run in a browser worker (`solo/web/worker.js`) with the save in IndexedDB |
+| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, built-in bots, headless runner `sim-run`), the host core (`host.rs`): the one tick, the one session gate and the one way to seat a world that every host runs, and what a stored world is (`store.rs`): one document, the same for every host; no I/O, builds for WebAssembly |
+| `server/` | `iac-server`: what a network and a disk add to the host core: the WebSocket transport, tokens, the world's file and the thread that writes it, the 1 Hz tick timer |
+| `solo/` | `iac-solo`: what one player and a browser tab add to it: a commander with no password, a clock it is told and the catch-up after an absence; compiled to WebAssembly and run in a browser worker (`solo/web/worker.js`) with the save, the same document a server keeps, in IndexedDB |
 | `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
 | `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server`, or bundled with `iac-solo` as a static single-player build |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
@@ -39,10 +39,10 @@ scripts/play.sh --single-player   # builds clients/web/build/single-player and s
 Or manually:
 
 ```sh
-# Terminal 1: the server (1 Hz tick loop, SQLite persistence)
-cargo run -p iac-server                  # 127.0.0.1:7777, iac_world.db, pace x1 (persistent)
-cargo run -p iac-server -- --pace blitz --db blitz.db   # a one-hour world (x600)
-cargo run -p iac-server -- --pace season --db season.db --bot all:check-in --bot mixed:hands-on:2   # with built-in bots
+# Terminal 1: the server (1 Hz tick loop, the world in one file)
+cargo run -p iac-server                  # 127.0.0.1:7777, world.iac, pace x1 (persistent)
+cargo run -p iac-server -- --pace blitz --world blitz.iac   # a one-hour world (x600)
+cargo run -p iac-server -- --pace season --world season.iac --bot all:check-in --bot mixed:hands-on:2   # with built-in bots
 # serve the web client too (after `flutter build web --release` in clients/web):
 cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web
 
@@ -50,11 +50,30 @@ cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web
 cargo run -p iac-client -- --name Admiral
 ```
 
+**The world file** (`--world <path>`, default `world.iac`) is the whole world
+and the only thing the server keeps: one document, a header line and the
+world as JSON, the same document a single-player save is
+(`tail -n +2 world.iac | jq .players` reads it). A path that does not exist
+yet is a new world. The server writes the file when it starts, every
+`--save-every <seconds>` (default 60) and when it is stopped, and holds
+`<path>.lock` while it runs: a second server on the same world refuses to
+start.
+
+- **Stopped** (ctrl-c, SIGTERM): the file is the world as it stopped. Nothing
+  is lost, so a deploy is a stop and a start.
+- **Killed** (SIGKILL, a crash, a power cut): the world comes back as the
+  last file written says, so up to `--save-every` seconds of play are gone,
+  orders included. The file itself is never half written: a new one is
+  written beside it, synced and renamed over it.
+- **A new account** is the exception: its token is shown once, so the file is
+  written within about three seconds of a registration, whatever the period.
+
 The world pace (`--pace <number|preset>`; presets persistent, fortnight, season,
-sprint, dev, blitz, test) is fixed when the database is created and stored in
-it. An existing database keeps its pace and the server refuses a different
-`--pace`; a database from before the economy rework is refused too (start a new
-world with a new `--db`).
+sprint, dev, blitz, test) and the seed (`--seed <number>`) are fixed when the
+world is created and stored in its file. An existing world keeps both, and the
+server refuses a different `--pace` or `--seed`; a file from another save
+format, economy or world generator is refused too (start a new world with a
+new `--world`). Nothing is migrated.
 
 The server serves `clients/web/build/web` automatically if it exists
 (override with `--web-dir`). WebSockets are accepted on any path (`/ws` for
@@ -66,7 +85,7 @@ personality `turtle`, `miner`, `raider`, `explorer`, `mixed`, attention
 the server runs beside the engine. `--bot` says which bots the world should
 have: missing ones are added at start, in the order listed, and the ones a
 world already has keep playing on every later start whether listed or not
-(they are accounts of the world, stored in its database with what they
+(they are accounts of the world, stored in its file with what they
 remember). A bot takes one of the 24 home seats. `--player-seats <N>`
 (default 4) keeps seats for people: a bot is added only while more than N
 seats are free, a roster that asks for more is seated as far as that allows
@@ -416,7 +435,7 @@ and Flutter; no other tool.
   (`navigator.storage` is missing too), so the browser may clear it when the
   device runs short of storage; the front door says that as well.
 - **A save from another version** (save format, economy or world generation)
-  is refused with the reason, as the server refuses such a database; it stays
+  is refused with the reason, as the server refuses such a world file; it stays
   stored until a new game replaces it.
 - **Abandon this world** on the front door deletes the save after asking.
 - **Multiplayer from the same bundle.** `?ws=` or `?name=` in the URL, or
@@ -442,10 +461,12 @@ differs.
 And it is the same world whichever host runs it. The server and the single-player
 host share their hosting (`iac_sim::host`) and keep only what a network or a tab
 adds, and `server/tests/hosts_agree.rs` holds them to it: a world made by a real
-server is stopped, its database is handed to the single-player host as a save, the
+server is stopped, its file is loaded by the single-player host as a save (the
+same bytes, with a commander and a clock named in the header's own part), the
 server is started again, and one commander plays both for 40 ticks with the same
-orders on the same ticks. Every frame the two send and the worlds they end with
-must be equal (`cargo test -p iac-server --test hosts_agree`, about 45 seconds).
+orders on the same ticks. Every frame the two send must be equal, and so must the
+bytes of the worlds they end with (`cargo test -p iac-server --test hosts_agree`,
+about 45 seconds).
 
 ### Protocol fixtures
 
@@ -841,17 +862,21 @@ cargo build -p iac-solo --target wasm32-unknown-unknown --release
 
 Crates: `iac-shared` (`shared/`) (protocol, constants, scaling, hex math, worldgen) ·
 `iac-sim` (`sim/`) (every game rule and all world state: no I/O, no async, no clock; time is ticks, every random draw is seeded) ·
-`iac-server` (network, SQLite, tick timer around `iac-sim`) · `iac-solo` (`solo/`) (the
-single-player host: a session, a clock fed by its caller, the catch-up after an absence
-and the save document, behind one function of bytes; three exports as WebAssembly, no
+`iac-server` (network, the world's file, tick timer around `iac-sim`) · `iac-solo` (`solo/`) (the
+single-player host: a session, a clock fed by its caller and the catch-up after an
+absence, behind one function of bytes; three exports as WebAssembly, no
 bindings generator) · `iac-client` (ratatui TUI + headless mode).
 
 `iac-sim` talks to its host through three seams: `GameEngine::execute` (a protocol
 `Command` in, reply or refusal out), `views::{full_state, tick_update}` (what a player
-sees), and persistence. The engine hands `PersistBatch` deltas to a `Persist` trait the
-host implements (the server's SQLite writer); `snapshot()` / `GameEngine::restore()`
-save and rebuild the whole world as serde data, and `Snapshot::hash()` is a digest of
-it. Same seed, pace and command script give the same hash, on a server and in a
+sees), and the snapshot. `snapshot()` / `GameEngine::restore()` copy out and rebuild
+the whole world as serde data, and `Snapshot::hash()` is a digest of it. The engine
+knows nothing of storage: a host stores the snapshot whole, as the one document
+`iac_sim::store` defines (a header line with the versions and the host's own part,
+then the snapshot as JSON), in a place that holds bytes (`Store`: a file for the
+server, IndexedDB behind the worker in the browser), when `store::Due` says one is
+owed. What must survive a restart is a field of `Snapshot` and is written nowhere
+else. Same seed, pace and command script give the same hash, on a server and in a
 browser alike: powers, logarithms and exponentials come from `iac_shared::maths`
 (the `libm` crate, one implementation for every target) and never from the
 platform's maths library, which clippy refuses in the engine crates.

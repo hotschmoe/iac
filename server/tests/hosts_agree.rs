@@ -1,14 +1,15 @@
 // The two hosts of `iac-sim` play one world alike: the real server, over a
-// WebSocket and SQLite, and the single-player host, through `Machine::call`
-// and its save document. One stored world is resumed by both, one commander
-// gives both the same orders on the same ticks, and they must send that
-// commander the same frames, one for one, and end with the same world.
+// WebSocket and its world file, and the single-player host, through
+// `Machine::call`. One stored world is resumed by both, one commander gives
+// both the same orders on the same ticks, and they must send that commander
+// the same frames, one for one, and end with the same world.
 //
 // How one world reaches both. A world is made by the server (built-in bots
 // seated at tick 0, then an account registered over the wire) and stopped.
-// What its database holds is read as a `Snapshot`, and that snapshot is put
-// before the single-player host as a save document. The server is then
-// started again on the database. From there both resume the same bytes.
+// The file it leaves is the document both hosts store: the single-player
+// host loads those bytes, its world and its checksum as the server wrote
+// them, once the header's own part names a commander and a clock, which is
+// all a server's file lacks. The server is then started again on the file.
 //
 // How the orders land on known ticks although the server ticks by the wall
 // clock. Nothing is assumed about when the server takes a message: it is
@@ -28,17 +29,14 @@ use std::path::Path;
 
 use common::*;
 use futures_util::SinkExt;
-use iac_server::database::Database;
 use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{ClientMessage, Command, HarvestResource, QueueType};
 use iac_shared::scaling::{BuildingType, ResearchType};
 use iac_shared::world::WorldGen;
-use iac_sim::Snapshot;
 use iac_solo::Machine;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
-use xxhash_rust::xxh3::xxh3_64;
 
 const SEED: u64 = 20_261_013;
 const NAME: &str = "Admiral";
@@ -52,11 +50,6 @@ const SETTLE_TICKS: u64 = 4;
 const PLAY_TICKS: u64 = 40;
 const T0: u64 = 1_800_000_000_000;
 const ENTROPY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
-fn stored_world(db: &Path) -> Snapshot {
-    let database = Database::init(db.to_str().unwrap()).expect("the server's database opens");
-    database.load_snapshot(SEED, None).expect("the server's database holds a world")
-}
 
 fn call(machine: &mut Machine, now_ms: u64, mut head: Value, body: &[u8]) -> (Value, Vec<u8>) {
     head["now_ms"] = json!(now_ms);
@@ -76,31 +69,36 @@ fn frames(body: &[u8]) -> Vec<Value> {
     body.split(|&b| b == b'\n').filter(|line| !line.is_empty()).map(|line| serde_json::from_slice(line).unwrap()).collect()
 }
 
-/// The single-player host's save document for `world`, played by
-/// `commander` and standing at `T0`. Its header is the one the host itself
-/// writes for a new game, with what names the world replaced.
-fn save_document(world: &Snapshot, commander: u64) -> Vec<u8> {
+fn header_of(document: &[u8]) -> (Value, &[u8]) {
+    let split = document.iter().position(|&b| b == b'\n').expect("a header line");
+    (serde_json::from_slice(&document[..split]).expect("a header of JSON"), &document[split..])
+}
+
+/// The server's file as the single-player host's save: the same world and
+/// checksum, byte for byte, under the server's header, to which is added
+/// what the single-player host keeps beside a world. That part is the one
+/// the host itself writes for a new game, naming `commander` and a clock
+/// that stands at `T0` at the world's tick.
+fn as_a_save(file: &Path, commander: u64, tick: u64) -> Vec<u8> {
     let mut scratch = Machine::default();
     let new_game = json!({"op": "new_game", "name": NAME, "pace": "test", "bots": [], "entropy": ENTROPY});
     call(&mut scratch, T0, new_game, &[]);
-    let written = call(&mut scratch, T0, json!({"op": "save"}), &[]).1;
-    let split = written.iter().position(|&b| b == b'\n').expect("a header line");
-    let mut header: Value = serde_json::from_slice(&written[..split]).expect("a header of JSON");
-
-    let body = serde_json::to_vec(world).unwrap();
+    let (mut own, _) = header_of(&call(&mut scratch, T0, json!({"op": "save"}), &[]).1);
+    let host = &mut own["host"];
     for (field, value) in [
-        ("digest", json!(xxh3_64(&body))),
         ("commander", json!(commander)),
-        ("clock", json!({"anchor_ms": T0, "anchor_tick": world.tick})),
+        ("clock", json!({"anchor_ms": T0, "anchor_tick": tick})),
         ("saved_at_ms", json!(T0)),
     ] {
-        assert!(header.get(field).is_some(), "the save header has no `{field}` any more: {header}");
-        header[field] = value;
+        assert!(host.get(field).is_some(), "the single-player host keeps no `{field}` beside its world any more: {host}");
+        host[field] = value;
     }
-    let mut document = serde_json::to_vec(&header).unwrap();
-    document.push(b'\n');
-    document.extend(body);
-    document
+
+    let written = std::fs::read(file).expect("the server's world file");
+    let (mut header, world) = header_of(&written);
+    assert_eq!(header["host"], json!({}), "the server keeps nothing beside its world: {header}");
+    header["host"] = host.take();
+    [header.to_string().as_bytes(), world].concat()
 }
 
 /// The single-player host and the wall clock it is told.
@@ -111,13 +109,13 @@ struct Solo {
 }
 
 impl Solo {
-    fn load(world: &Snapshot, commander: u64) -> Solo {
+    fn load(file: &Path, commander: u64, tick: u64) -> Solo {
         let mut machine = Machine::default();
-        let (reply, _) = call(&mut machine, T0, json!({"op": "load"}), &save_document(world, commander));
+        let (reply, _) = call(&mut machine, T0, json!({"op": "load"}), &as_a_save(file, commander, tick));
         assert_eq!(reply["refused"], Value::Null, "the single-player host refused the server's world: {reply}");
-        assert_eq!(reply["world"]["tick"], world.tick, "{reply}");
+        assert_eq!(reply["world"]["tick"], tick, "{reply}");
         assert_eq!(reply["world"]["commander"], NAME, "{reply}");
-        Solo { machine, loaded_at: world.tick }
+        Solo { machine, loaded_at: tick }
     }
 
     /// One request, made when the wall clock says the world is at `tick`.
@@ -141,10 +139,10 @@ impl Solo {
         frames(&self.call(at_tick, json!({"op": "frame"}), message.to_string().as_bytes()).1)
     }
 
-    fn world(&mut self, at_tick: u64) -> Snapshot {
+    /// The world's part of the host's save: the snapshot's bytes.
+    fn world(&mut self, at_tick: u64) -> Vec<u8> {
         let document = self.call(at_tick, json!({"op": "save"}), &[]).1;
-        let split = document.iter().position(|&b| b == b'\n').expect("a header line");
-        serde_json::from_slice(&document[split + 1..]).expect("a save document holds a snapshot")
+        header_of(&document).1[1..].to_vec()
     }
 }
 
@@ -302,10 +300,10 @@ fn tick_of(frames: &[Value], upto: usize) -> u64 {
 
 #[tokio::test]
 async fn the_server_and_the_single_player_host_play_one_world_alike() {
-    let db = fresh_db("hosts_agree");
+    let file = fresh_world("hosts_agree");
 
     let (token, commander) = {
-        let (server, port) = start_server_with(&db, &WORLD);
+        let (server, port) = start_server_with(&file, &WORLD);
         let (mut ws, auth) = login(port, NAME, None).await;
         let token = auth["token"].as_str().expect("a new account is given its token").to_string();
         let mut seen = 0;
@@ -316,12 +314,12 @@ async fn the_server_and_the_single_player_host_play_one_world_alike() {
         (token, auth["player_id"].as_u64().unwrap())
     };
 
-    let stored = stored_world(&db);
+    let stored = stored_world(&file);
     assert!(stored.tick >= SETTLE_TICKS && stored.players.contains_key(&commander), "tick {}", stored.tick);
-    assert_eq!(stored.bots.len(), 7, "five hands-on bots, a check-in explorer and a hybrid turtle");
-    let mut solo = Solo::load(&stored, commander);
+    assert_eq!((stored.world_seed, stored.bots.len()), (SEED, 7), "five hands-on bots, a check-in explorer and a hybrid turtle");
+    let mut solo = Solo::load(&file, commander, stored.tick);
 
-    let (server, port) = start_server_with(&db, &WORLD);
+    let (server, port) = start_server_with(&file, &WORLD);
     let played = play_on_the_server(port, &token).await;
     let on_solo = play_solo(&mut solo, &played);
 
@@ -351,16 +349,63 @@ async fn the_server_and_the_single_player_host_play_one_world_alike() {
     assert!(events >= 5, "the commander's orders had consequences: {events} updates carried events");
 
     server.stop();
-    let ended = stored_world(&db);
-    assert!(ended.tick >= played.end);
-    for tick in solo.tick() + 1..=ended.tick {
+    let ended = stored_world(&file).tick;
+    assert!(ended >= played.end);
+    for tick in solo.tick() + 1..=ended {
         solo.advance_to(tick);
     }
-    let on_solo = solo.world(ended.tick);
-    let (a, b) = (serde_json::to_value(&ended).unwrap(), serde_json::to_value(&on_solo).unwrap());
-    if let Some(difference) = first_difference("world", &a, &b) {
-        panic!("the worlds part by tick {}: {difference}", ended.tick);
+    let written = std::fs::read(&file).unwrap();
+    let (on_server, on_solo) = (header_of(&written).1[1..].to_vec(), solo.world(ended));
+    if on_server != on_solo {
+        let (a, b): (Value, Value) = (serde_json::from_slice(&on_server).unwrap(), serde_json::from_slice(&on_solo).unwrap());
+        let difference = first_difference("world", &a, &b);
+        panic!("the worlds part by tick {ended}: {}", difference.unwrap_or_else(|| "in their bytes, not in their JSON".to_string()));
     }
-    assert_eq!(ended.hash(), on_solo.hash());
-    remove_db(&db);
+    remove_world(&file);
+}
+
+/// The other way round: a save of the single-player host, put where a
+/// server keeps its world, is a world that server plays. Nothing is
+/// converted. What does not come across is the commander's password: nobody
+/// has it, so the account is there and cannot be logged in to.
+#[tokio::test]
+async fn a_server_plays_on_a_world_the_single_player_host_saved() {
+    const PLAYED: u64 = 30;
+    let mut machine = Machine::default();
+    let bots = ["miner:hands-on", "turtle:check-in"];
+    let new_game = json!({"op": "new_game", "name": NAME, "pace": "test", "bots": bots, "entropy": ENTROPY});
+    call(&mut machine, T0, new_game, &[]);
+    for second in 1..=PLAYED {
+        call(&mut machine, T0 + second * 1000, json!({"op": "advance", "max_ticks": 1}), &[]);
+    }
+    let (saved, save) = call(&mut machine, T0 + PLAYED * 1000, json!({"op": "save"}), &[]);
+    assert_eq!(saved["world"]["tick"], PLAYED, "{saved}");
+    assert!(header_of(&save).0["host"]["commander"].is_u64(), "a single-player save names its commander");
+
+    let file = fresh_world("hosts_agree_solo_save");
+    std::fs::write(&file, &save).unwrap();
+    let (server, port) = start_server(&file);
+    let (_ws, commander) = login(port, NAME, None).await;
+    assert_eq!(commander["code"], "TokenRequired", "the commander's account came with the world, its token did not: {commander}");
+    let (mut ws, visitor) = login(port, "Visitor", None).await;
+    assert_eq!(visitor["success"], true, "{visitor}");
+    ws.send(Message::text(command(Command::Leaderboard { limit: 50 }).to_string())).await.unwrap();
+    let board = loop {
+        let frame = next_json(&mut ws).await;
+        if frame["type"] == "leaderboard" {
+            break frame;
+        }
+    };
+    let names = |rows: &str| -> Vec<String> {
+        board[rows].as_array().unwrap().iter().map(|row| row["name"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(names("bots").len(), bots.len(), "the bots of the save play on: {board}");
+    assert!(names("entries").contains(&NAME.to_string()) && names("entries").contains(&"Visitor".to_string()), "{board}");
+    assert!(board["tick"].as_u64().unwrap() > PLAYED, "the world went on from the save's tick: {board}");
+    server.stop();
+
+    let kept = stored_world(&file);
+    assert!(kept.tick > PLAYED && kept.bots.len() == bots.len() && kept.meta.pace.preset().is_some_and(|p| p.name == "test"));
+    assert_eq!(header_of(&std::fs::read(&file).unwrap()).0["host"], json!({}), "and the file is a server's now");
+    remove_world(&file);
 }

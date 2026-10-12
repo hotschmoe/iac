@@ -26,7 +26,7 @@ export IAC_RUN="$RUN" IAC_PORT="$PORT"
 web="$REPO/clients/web/build/web"
 [ -f "$web/index.html" ] || echo "no web build at $web (scripts/play.sh builds it); serving WS only" >&2
 pace_args=(); [ -n "$PACE" ] && pace_args=(--pace "$PACE")
-nohup "$REPO/target/release/iac-server" --host 0.0.0.0 --port "$PORT" --db "$RUN/world.db" \
+nohup "$REPO/target/release/iac-server" --host 0.0.0.0 --port "$PORT" --world "$RUN/world.iac" \
   ${pace_args[@]+"${pace_args[@]}"} --web-dir "$web" >"$RUN/logs/server.log" 2>&1 &
 echo $! >"$RUN/state/server.pid"
 until ss -ltn | grep -q ":$PORT "; do

@@ -1,13 +1,17 @@
 // Built-in bots through the same seam a host uses: a headless world seats
 // them, they see `GameState` and send orders, the engine does the rest.
 
+#[allow(dead_code)]
+mod common;
+
+use common::{stored_in, Memory};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{is_bot_name, Command, ServerMessage};
 use iac_sim::bot::{Attention, Bot, Personality, Roster, Style, DAY};
 use iac_sim::engine::AuthError;
 use iac_sim::headless::{Headless, PlayerSummary};
 use iac_sim::script::IdlePlayer;
-use iac_sim::{host, views, GameEngine, Snapshot};
+use iac_sim::{host, views, GameEngine};
 
 const TICKS: u64 = 3_000;
 
@@ -210,36 +214,39 @@ fn the_view_a_bot_folds_from_tick_updates_is_the_full_state() {
 }
 
 #[test]
-fn a_world_of_bots_resumed_from_a_snapshot_plays_on_as_if_never_stopped() {
+fn a_world_of_bots_restarted_through_its_document_plays_on_as_if_never_stopped() {
     let (mut straight, mut roster, _) = hosted(7);
-    let (mut paused, mut paused_roster, _) = hosted(7);
-    for _ in 0..TICKS / 2 {
-        host_tick(&mut straight, &mut roster);
-        host_tick(&mut paused, &mut paused_roster);
-    }
-    let json = serde_json::to_string(&paused.snapshot()).unwrap();
-    let snapshot: Snapshot = serde_json::from_str(&json).unwrap();
-    assert_eq!(snapshot.bots.len(), styles().len(), "bot accounts and what they remember are part of the world");
-    let mut resumed = GameEngine::restore(snapshot);
-    let mut resumed_roster = Roster::resume(&resumed);
-    assert_eq!(resumed_roster.seats().len(), styles().len());
-    let (added, refusal) = resumed_roster.enlist(&mut resumed, &styles(), 0, || "b".repeat(64));
-    assert_eq!((added, refusal), (0, None), "the bots the world already has are the ones asked for");
+    let (mut stopped, mut stopped_roster, _) = hosted(7);
+    let mut place = Memory::default();
+    let mut turns = 0;
 
-    for leg in 0..3 {
+    for leg in 0..6 {
         for _ in 0..TICKS / 6 {
             host_tick(&mut straight, &mut roster);
-            host_tick(&mut resumed, &mut resumed_roster);
+            host_tick(&mut stopped, &mut stopped_roster);
         }
+        turns += stopped_roster.seats().iter().map(|s| s.turns()).sum::<u64>();
+
+        let world = stored_in(&mut place, &stopped);
+        assert_eq!(world.bots.len(), styles().len(), "bot accounts and what they remember are part of the world");
         assert_eq!(
+            world.hash(),
             straight.snapshot().hash(),
-            resumed.snapshot().hash(),
-            "the resumed world diverged by tick {} (leg {leg})",
+            "the restarted world diverged by tick {} (leg {leg})",
             straight.current_tick(),
         );
+        stopped = GameEngine::restore(world);
+        stopped_roster = Roster::resume(&stopped);
+        assert_eq!(stopped_roster.seats().len(), styles().len());
+        let (added, refusal) = stopped_roster.enlist(&mut stopped, &styles(), 0, || "b".repeat(64));
+        assert_eq!((added, refusal), (0, None), "the bots the world already has are the ones asked for");
     }
-    let turns = |roster: &Roster| roster.seats().iter().map(|s| s.turns()).sum::<u64>();
-    assert!(turns(&resumed_roster) > 1_000, "the resumed bots kept playing");
+    assert!(turns > 2_000, "the bots kept playing after every restart: {turns} turns in all");
+    let score = |engine: &GameEngine| -> f32 {
+        engine.bots().keys().map(|id| iac_sim::score::score_of(engine, &engine.players[id]).total()).sum()
+    };
+    assert!(score(&stopped) > 50.0 * styles().len() as f32, "the bots played: {} points between them", score(&stopped));
+    assert!(stopped.players.values().any(|p| p.explore_points > 0.0), "a bot's fleet flew out and came home");
 }
 
 #[test]

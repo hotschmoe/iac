@@ -44,8 +44,8 @@ fn hex_of(v: &Value) -> Hex {
 
 #[tokio::test]
 async fn names_are_one_account_whatever_the_case() {
-    let db = fresh_db("scenario_names");
-    let (_guard, port) = start_server(&db);
+    let file = fresh_world("scenario_names");
+    let (_guard, port) = start_server(&file);
 
     let (_ws, first) = login(port, "Casey", None).await;
     let token = first["token"].as_str().unwrap().to_string();
@@ -67,13 +67,13 @@ async fn names_are_one_account_whatever_the_case() {
         }
     };
     assert_eq!(table["entries"].as_array().unwrap().len(), 2, "{table}");
-    remove_db(&db);
+    remove_world(&file);
 }
 
 #[tokio::test]
 async fn a_fight_is_reported_to_the_player_in_it_and_not_to_anyone_else() {
-    let db = fresh_db("scenario_fight");
-    let (_guard, port) = start_server_with(&db, &["--pace", "test"]);
+    let file = fresh_world("scenario_fight");
+    let (_guard, port) = start_server_with(&file, &["--pace", "test"]);
 
     let (mut hunter, _) = login(port, "Hunter", None).await;
     let (mut bystander, _) = login(port, "Bystander", None).await;
@@ -158,13 +158,13 @@ async fn a_fight_is_reported_to_the_player_in_it_and_not_to_anyone_else() {
     let combat_kinds = ["CombatStarted", "CombatRound", "CombatEnded", "ShipDestroyed", "FleetDestroyed", "SalvageDespawned"];
     let leaked: Vec<_> = watched.lock().unwrap().iter().filter(|e| combat_kinds.iter().any(|k| e["kind"] == *k)).cloned().collect();
     assert!(leaked.is_empty(), "the bystander was told about a fight they were not in: {leaked:?}");
-    remove_db(&db);
+    remove_world(&file);
 }
 
 #[tokio::test]
 async fn a_cancel_aimed_at_an_order_that_started_meanwhile_is_refused_and_leaves_it_running() {
-    let db = fresh_db("scenario_cancel");
-    let (_guard, port) = start_server_with(&db, &["--pace", "test"]);
+    let file = fresh_world("scenario_cancel");
+    let (_guard, port) = start_server_with(&file, &["--pace", "test"]);
     let (mut ws, _) = login(port, "Racer", None).await;
     full_state(&mut ws).await;
 
@@ -204,12 +204,12 @@ async fn a_cancel_aimed_at_an_order_that_started_meanwhile_is_refused_and_leaves
         seen.extend(events_of(&next_json(&mut ws).await));
     }
     assert!(!seen.iter().any(|e| e["kind"] == "Queue" && e["action"] == "Cancelled"), "{seen:?}");
-    remove_db(&db);
+    remove_world(&file);
 }
 
 #[tokio::test]
-async fn a_killed_server_comes_back_with_the_scan_live_the_boarding_under_way_and_the_orders_as_set() {
-    let db = fresh_db("scenario_boarding");
+async fn a_stopped_server_comes_back_with_the_scan_live_the_boarding_under_way_and_the_orders_as_set() {
+    let file = fresh_world("scenario_boarding");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
     let quiet = |at: Hex| world.generate_sector(at).npc_template.is_none();
     let orders = json!({
@@ -218,7 +218,7 @@ async fn a_killed_server_comes_back_with_the_scan_live_the_boarding_under_way_an
     });
 
     let (token, fleet, site, scanned, end_tick) = {
-        let (_guard, port) = start_server(&db);
+        let (server, port) = start_server(&file);
         let (mut ws, reply) = login(port, "Boarder", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
         let state = full_state(&mut ws).await;
@@ -278,8 +278,8 @@ async fn a_killed_server_comes_back_with_the_scan_live_the_boarding_under_way_an
         let mut scanned = Vec::<Hex>::new();
         let mut end_tick = None;
         let mut ask = true;
-        let mut ticks_saved = 0;
-        while ticks_saved < 3 {
+        let mut ticks_under_orders = 0;
+        while ticks_under_orders < 3 {
             assert!(Instant::now() < deadline, "the boarding never started");
             if ask && end_tick.is_none() {
                 command(&mut ws, order(if scanned.is_empty() { "scan" } else { "explore_site" }, None)).await;
@@ -291,7 +291,7 @@ async fn a_killed_server_comes_back_with_the_scan_live_the_boarding_under_way_an
                 ask = true;
             }
             if msg["type"] == "tick_update" && msg["fleets"][0]["policy"] == orders {
-                ticks_saved += 1;
+                ticks_under_orders += 1;
             }
             for e in events_of(&msg) {
                 if e["kind"] == "ScanCompleted" {
@@ -308,10 +308,11 @@ async fn a_killed_server_comes_back_with_the_scan_live_the_boarding_under_way_an
                 }
             }
         }
+        server.stop();
         (token, fleet, site, scanned, end_tick.unwrap())
     };
 
-    let (_guard, port) = start_server(&db);
+    let (_guard, port) = start_server(&file);
     let (mut ws, reply) = login(port, "Boarder", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let state = full_state(&mut ws).await;
@@ -331,7 +332,7 @@ async fn a_killed_server_comes_back_with_the_scan_live_the_boarding_under_way_an
         let known = chart.iter().find(|s| hex_of(&s["location"]) == sector).expect("a scanned sector is charted");
         assert_eq!(known["live"], true, "{sector} went stale with the restart");
     }
-    remove_db(&db);
+    remove_world(&file);
 }
 
 /// The hops from `from` to the nearest sector `goal` accepts, over sectors
@@ -386,12 +387,12 @@ async fn fly(ws: &mut Ws, fleet: u64, route: &[Hex]) {
 #[tokio::test]
 async fn a_fleet_flies_its_ore_to_the_hub_trades_it_and_the_meter_outlives_the_server() {
     use iac_shared::constants::Density;
-    let db = fresh_db("scenario_exchange");
+    let file = fresh_world("scenario_exchange");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
     let weight = |kind: &str| if kind == "metal" { 1.0 } else if kind == "crystal" { 1.5 } else { 2.0 };
 
     let (token, fleet, hub, give, want, gave, got, pressure) = {
-        let (_guard, port) = start_server(&db);
+        let (server, port) = start_server(&file);
         let (mut ws, reply) = login(port, "Trader", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
         let state = full_state(&mut ws).await;
@@ -493,11 +494,11 @@ async fn a_fleet_flies_its_ore_to_the_hub_trades_it_and_the_meter_outlives_the_s
         };
         assert_eq!(refused["code"], "InvalidCommand", "{refused}");
         assert!(refused["message"].as_str().unwrap().contains("give and want are both"), "{refused}");
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        server.stop();
         (token, fleet, hub, give, want, gave, got, pressure)
     };
 
-    let (_guard, port) = start_server(&db);
+    let (_guard, port) = start_server(&file);
     let (mut ws, reply) = login(port, "Trader", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let state = full_state(&mut ws).await;
@@ -509,7 +510,7 @@ async fn a_fleet_flies_its_ore_to_the_hub_trades_it_and_the_meter_outlives_the_s
     let after = meter["pressure"].as_f64().unwrap();
     assert!(after > 0.9 * pressure && after < pressure, "the meter came back, a little lower: {after} after {pressure} ({gave} {give} sold)");
     assert!(meter["fee"].as_f64().unwrap() > 0.25, "{meter}");
-    remove_db(&db);
+    remove_world(&file);
 }
 
 async fn refused(ws: &mut Ws) -> Value {
@@ -539,12 +540,12 @@ fn alerts_of(msg: &Value) -> Vec<String> {
 
 #[tokio::test]
 async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_fleet_has_been_away() {
-    let db = fresh_db("scenario_hold");
+    let file = fresh_world("scenario_hold");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
     let hold_of = |fleet: &Value| ["metal", "crystal", "deuterium"].map(|k| fleet["cargo"][k].as_f64().unwrap());
 
     let (token, fleet, home, stocked) = {
-        let (_guard, port) = start_server(&db);
+        let (server, port) = start_server(&file);
         let (mut ws, reply) = login(port, "Loader", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
         let state = full_state(&mut ws).await;
@@ -585,11 +586,11 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
             let later = update_where(&mut ws, |_| true).await;
             assert_eq!(hold_of(&later["fleets"][0]), [25.0, 15.0, 0.0], "the dock leaves a laden hold alone: {later}");
         }
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        server.stop();
         (token, fleet, home, stocked)
     };
 
-    let (_guard, port) = start_server(&db);
+    let (_guard, port) = start_server(&file);
     let (mut ws, reply) = login(port, "Loader", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let state = full_state(&mut ws).await;
@@ -624,7 +625,7 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
     let again = refused(&mut ws).await;
     assert_eq!(again["code"], "InvalidCommand", "{again}");
     assert!(again["message"].as_str().unwrap().contains("was not loaded by hand"), "{again}");
-    remove_db(&db);
+    remove_world(&file);
 }
 
 /// The hops from `from` to the nearest sector `goal` accepts, over sectors
@@ -669,9 +670,9 @@ async fn reply_of(ws: &mut Ws, kind: &str) -> Value {
 }
 
 #[tokio::test]
-async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_it_is_being_built_and_is_abandoned_through_the_headless_client() {
+async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_stopped_while_it_is_being_built_and_is_abandoned_through_the_headless_client() {
     use iac_shared::constants::{Density, TerrainType};
-    let db = fresh_db("scenario_outpost");
+    let file = fresh_world("scenario_outpost");
     let world = WorldGen::init(DEFAULT_WORLD_SEED);
     let site_for_an_outpost = |at: Hex| {
         let t = world.generate_sector(at);
@@ -684,7 +685,7 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_i
     let amounts = |v: &Value| ["metal", "crystal", "deuterium"].map(|k| v[k].as_f64().unwrap());
 
     let (token, fleet, site, end_tick, store) = {
-        let (_guard, port) = start_server_with(&db, &["--pace", "6000"]);
+        let (server, port) = start_server_with(&file, &["--pace", "6000"]);
         let (mut ws, reply) = login(port, "Settler", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
         let state = full_state(&mut ws).await;
@@ -751,12 +752,12 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_i
         assert_eq!(charted["outpost"], json!({"owner": "Settler", "level": 0, "breached": false, "mine": true}));
         assert_eq!(charted["threat"], json!({"rating": 0, "est_power": 0.0, "basis": "observed"}), "nothing to fight where an outpost stands");
 
-        let saved = update_where(&mut ws, |_| true).await;
-        assert!(saved["tick"].as_u64().unwrap() < end_tick, "the build must still be under way when the server dies: {saved}");
+        server.stop();
         (token, fleet, site, end_tick, store)
     };
+    assert!(stored_world(&file).tick < end_tick, "the build must still be under way when the server stops");
 
-    let (_guard, port) = start_server(&db);
+    let (_guard, port) = start_server(&file);
     let (mut ws, reply) = login(port, "Settler", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let state = full_state(&mut ws).await;
@@ -779,7 +780,7 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_i
     assert!(made > store[0] && later["outpost"]["store"]["metal"].as_f64().unwrap() > made, "the yield goes on: {later}");
     drop(ws);
 
-    let mut pipe = HeadlessClient::start(port, "Settler", &token, db.parent().unwrap());
+    let mut pipe = HeadlessClient::start(port, "Settler", &token, file.parent().unwrap());
     let auth = pipe.next();
     assert_eq!((auth["type"].as_str(), auth["success"].as_bool()), (Some("auth_result"), Some(true)), "{auth}");
     let seen = pipe.until(|m| m["type"] == "full_state");
@@ -808,7 +809,7 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_killed_while_i
     assert!(alerts_of(&gone).iter().any(|a| a.starts_with(&format!("your outpost at {site} is abandoned: "))), "{gone}");
     assert!(gone["fleets"][0].get("outpost_fuel").is_none(), "{gone}");
     drop(pipe);
-    remove_db(&db);
+    remove_world(&file);
 }
 
 async fn leaderboard(ws: &mut Ws) -> Value {
@@ -827,8 +828,8 @@ fn rows(board: &Value, list: &str) -> Vec<(String, f64)> {
 }
 
 #[tokio::test]
-async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is_killed() {
-    let db = fresh_db("scenario_bots");
+async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is_restarted() {
+    let file = fresh_world("scenario_bots");
     let roster = [
         "--pace", "test", "--player-seats", "20",
         "--bot", "turtle:hands-on:2", "--bot", "explorer:hands-on", "--bot", "miner:hands-on", "--bot", "raider:hands-on:5",
@@ -836,7 +837,7 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
     let deadline = Instant::now() + Duration::from_secs(90);
 
     let (token, names, scores, tick) = {
-        let (_guard, port) = start_server_with(&db, &roster);
+        let (server, port) = start_server_with(&file, &roster);
         let (mut ws, reply) = login(port, "Watcher", None).await;
         let token = reply["token"].as_str().unwrap().to_string();
 
@@ -866,10 +867,11 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
 
         let mut names: Vec<String> = bots.iter().map(|(name, _)| name.clone()).collect();
         names.sort();
+        server.stop();
         (token, names, bots, board["tick"].as_u64().unwrap())
     };
 
-    let (_guard, port) = start_server_with(&db, &["--player-seats", "20", "--bot", "raider:hands-on:5"]);
+    let (_guard, port) = start_server_with(&file, &["--player-seats", "20", "--bot", "raider:hands-on:5"]);
     let (mut ws, reply) = login(port, "Watcher", Some(&token)).await;
     assert_eq!(reply["success"], true, "{reply}");
     let board = loop {
@@ -888,16 +890,16 @@ async fn built_in_bots_play_tagged_and_unranked_and_carry_on_after_the_server_is
     after.sort();
     assert_eq!(after, names, "the same bots though --bot no longer lists them, and no raider: the seats left are the players'");
     assert_eq!(rows(&board, "entries").len(), 1);
-    remove_db(&db);
+    remove_world(&file);
 }
 
 #[tokio::test]
-async fn a_full_world_turns_a_new_name_away_and_still_admits_its_settlers_after_a_restart() {
-    let db = fresh_db("scenario_full_world");
+async fn a_full_world_turns_a_new_name_away_and_still_admits_its_settlers_after_it_is_killed() {
+    let file = fresh_world("scenario_full_world");
     let seats = home_seats().count();
 
     let token = {
-        let (_guard, port) = start_server(&db);
+        let (server, port) = start_server(&file);
         let mut homes = Vec::new();
         let mut first_token = None;
         for i in 0..seats {
@@ -914,14 +916,16 @@ async fn a_full_world_turns_a_new_name_away_and_still_admits_its_settlers_after_
         assert_eq!((refused["success"].clone(), refused["code"].clone()), (json!(false), json!("WorldFull")), "{refused}");
         assert!(refused["message"].as_str().unwrap().contains("world is full"), "{refused}");
         assert!(refused.get("token").is_none() && refused.get("player_id").is_none(), "{refused}");
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        tokio::time::sleep(REGISTRATION_IS_STORED).await;
+        server.kill();
         first_token.unwrap()
     };
+    assert_eq!(stored_world(&file).players.len(), seats, "every registration of the burst is in the file a few seconds on");
 
-    let (_guard, port) = start_server(&db);
+    let (_guard, port) = start_server(&file);
     let (_ws, refused) = login(port, "Latecomer", None).await;
     assert_eq!(refused["code"], "WorldFull", "the world is still full after a restart: {refused}");
     let (_ws, back) = login(port, "Settler0", Some(&token)).await;
     assert_eq!(back["success"], true, "{back}");
-    remove_db(&db);
+    remove_world(&file);
 }

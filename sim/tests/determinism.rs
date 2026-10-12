@@ -1,16 +1,16 @@
 // The engine is a pure function of (world seed, pace, command script).
 // These tests play a busy scripted world twice and compare whole-state
-// hashes, then stop one run midway, round-trip it through JSON and compare
-// again.
+// hashes, then stop one run midway, store it as a host would and read it
+// back, and compare again.
 
 #[allow(dead_code)]
 mod common;
 
-use common::Pilots;
+use common::{stored, Pilots};
 use iac_shared::constants::DEFAULT_WORLD_SEED;
 use iac_shared::pace::Pace;
 use iac_shared::protocol::EventKind;
-use iac_sim::{host, GameEngine, Snapshot};
+use iac_sim::{host, GameEngine};
 
 const TICKS: u64 = 10_000;
 const PLAYERS: usize = 4;
@@ -72,10 +72,9 @@ fn snapshot_and_restore_midway_continues_identically() {
     let (mut straight, mut paused) = (Run::new(DEFAULT_WORLD_SEED), Run::new(DEFAULT_WORLD_SEED));
 
     paused.advance(TICKS / 2);
-    let json = serde_json::to_string(&paused.engine.snapshot()).unwrap();
     let before = paused.hash();
-    let snapshot: Snapshot = serde_json::from_str(&json).unwrap();
-    assert_eq!(snapshot.hash(), before, "a snapshot survives its JSON round trip");
+    let snapshot = stored(&paused.engine);
+    assert_eq!(snapshot.hash(), before, "a snapshot survives being stored as a document and read back");
     let mut resumed = Run { engine: GameEngine::restore(snapshot), ..paused };
     assert_eq!(resumed.hash(), before, "restore rebuilds the same state");
 

@@ -20,7 +20,7 @@ use iac_shared::world::NpcBehaviorType::Passive;
 use iac_shared::world::{home_seats, is_home_seat};
 use iac_sim::commands::auth_failure;
 use iac_sim::engine::{template_npc_id, AuthError, FleetStatus, SectorOverride};
-use iac_sim::persist::ExploreCredit;
+use iac_sim::snapshot::ExploreCredit;
 
 fn salvage_events(events: &[iac_shared::protocol::GameEvent]) -> Vec<iac_shared::protocol::SalvageDespawnedEvent> {
     events

@@ -3,6 +3,106 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (one stored world: both hosts store one document, and there is no journal)
+
+The owner's answers to the questions of `docs/design/storage.md`, section 12,
+given on 2026-10-13, and what was built on them the same day: steps 1 to 4 and
+8 of that study's section 10, on branch `worktree-agent-abdf8e01f9cf1ab1e`,
+not merged, not pushed. `docs/data_architecture.md` describes the result; the
+journal entry of the same day has what was run.
+
+**The five answers.**
+
+1. **A killed server may lose more than one tick.** The owner: "this is not
+   mission critical infrastructure, we want to be professional but we don't
+   need to be perfect". So there is **no journal** of inputs. None was built
+   and nothing was left in the code for one; the study stays as the record of
+   how to add it.
+2. **Reading a world with SQL is given up.** A world file is a header line and
+   JSON, read with `jq`.
+3. **The server's place is files.** The owner has no preference between files
+   and SQLite; files were chosen by the session that briefed the build, for
+   about 100 lines and because `rusqlite`, with the SQLite it compiles, leaves
+   the workspace. The browser's place stays IndexedDB behind the worker.
+4. **The save format number is the builder's to judge by what is cleanest**:
+   no additive compatibility, no importer for old databases or saves. All
+   current worlds are disposable. Built: `SAVE_FORMAT` 4 to 5, because the
+   header changed shape (what a host keeps beside its world moved into one
+   `host` field). A browser save and a server database from before are
+   refused or ignored; nothing is migrated.
+5. **No compression on the server.**
+
+**What follows from them, as built.**
+
+- **A stored world is one document**, the same for both hosts
+  (`iac_sim::store`): a header line (format, economy and worldgen versions, a
+  checksum of the body, the host's own part) and the `Snapshot` as JSON. The
+  server stores it in a file (`--world`, which `--db` became), the browser in
+  IndexedDB. The single-player host loads the bytes a server wrote once the
+  header's own part names a commander and a clock, and a server plays a
+  single-player save as it is; `server/tests/hosts_agree.rs` holds both.
+- **A new persistent field is written once, in `Snapshot`.** The engine knows
+  nothing of storage. `server/src/database.rs` (1,630 lines and 487 of
+  tests), `sim/src/persist.rs` (`Persist`, `PersistBatch`, `RuntimeKind`), the
+  engine's ten dirty sets and the lines that marked them, the one in
+  `intel.rs`, the `Persisted` phase of the host core's step (the entry below
+  still names it) and the repairs `restore` made to rows read back out of
+  step are gone. Rule for what comes next: nothing may
+  go into the engine that exists for storage.
+- **What a stop costs, and this is the decision's price.** A server that is
+  stopped (SIGINT, SIGTERM) writes its world and loses nothing, so a deploy
+  loses nothing. A server that is killed comes back as its last file says:
+  it loses up to the period, orders included, where it lost one tick before.
+- **The period is 60 seconds** (`--save-every`), not the study's ten minutes,
+  because without a journal the period is the loss. It was set by the
+  session that briefed the build, and it is the owner's dial:
+
+  | `--save-every` | a kill loses at most | written a day by the largest world measured (24 seats at the end of a season week, 13.2 MB a document) |
+  |---|---|---|
+  | 60 s (built) | a minute | 18.9 GB |
+  | 300 s | five minutes | 3.8 GB |
+  | 600 s (the study) | ten minutes | 1.9 GB |
+
+  The rows this replaces were measured at 7 to 10 GB a day in a world's first
+  three days. A young world writes far less either way (0.4 GB a day in its
+  first minutes with 15 bots).
+- **A registration does not wait for the period.** A token is shown once, so
+  an account the world forgot would leave a player holding a password to
+  nothing. Once a token is issued the file is written within two seconds of
+  the last write (about three seconds in all, since the tick that does it
+  comes once a second). A world has 24 home seats, so this can happen at most
+  24 times in a world's life, and claims.
+- **A world keeps the seed and the pace it was created with.** Both are in
+  its file; a server started on an existing world with another `--seed` or
+  `--pace` refuses with a sentence. Before, another seed regenerated the
+  galaxy under its players with a line in the log (the study, 9.3). The old
+  `--world <preset>` flag, a second spelling of `--pace <preset>` that nothing
+  used, gave its name to the file.
+- **One server per world.** The file's lock (`<file>.lock`, `flock`) is held
+  while a server runs; a second one refuses to start. SQLite's own lock did
+  this by accident before.
+- **"When is a document owed" is said once**, in `store::Due`, for both
+  hosts: a period after the last one, or sooner once hurried, never sooner
+  than a short gap after the last. The times stay each host's, because what
+  a lost document costs differs: the single-player host replays the ticks
+  since its save, so it hurries for an order and saves every four minutes;
+  the server replays nothing, so its period is its loss and it hurries only
+  for a token.
+
+**Not decided here, and the owner's.**
+
+- **The period** (above), and whether five minutes of a world is too much to
+  lose when its server is killed. The journal of the study is what would buy
+  a short loss without the bytes.
+- **Moving a world between browser and server** (the study's question 7). It
+  is not built. What is left to build is small and is listed in
+  `docs/data_architecture.md`: an import and an export on the page, and
+  clearing the commander's token so that the first login claims the account.
+- **A server's world still pauses while its server is down** (question 8).
+  Nothing changed there.
+- **Editing a world by hand** needs the checksum restamped, and there is no
+  tool for it.
+
 ## 2026-10-13 (one host core: hosting is written once)
 
 Asked for by the owner: "Remove ALL duplications so we only have one source of
@@ -116,27 +216,13 @@ work. The journal entry of the same day has what was run.
   three crates, the guard's command line, and the architecture bullet that
   says a host writes no tick loop, session map or login of its own.
 
-## 2026-10-13 (proposal, not a decision: one stored world for both hosts)
+## 2026-10-13 (the question that led to one stored world)
 
-A pointer, so that the question is found here. Nothing is decided and no code
-changed.
-
-- **Asked by the owner:** can the browser's save and the server's database be
-  one source of truth?
-- **Proposed in `docs/design/storage.md`:** both hosts store the `Snapshot` as
-  one document, and beside it a journal of what entered the world since (a
-  registration with its token's hash, or a session's message, each with the tick
-  it landed on). Recovery is the document, then the journal replayed through
-  the host core. `database.rs`, `PersistBatch`, `RuntimeKind` and the engine's
-  dirty tracking go, and a new persistent field is written once.
-- **Measured there:** the largest world of the built-in bots is 13.1 MB of JSON
-  (23.8 MB if all 24 are explorers flown by hand); it replays at 382 ticks a
-  second natively; a journal of 9,309 inputs over 21,600 ticks replays to the
-  same hash; and the database as it is writes 7 to 10 GB a day in a world's
-  first days, where a document every ten minutes would write 0.1 to 0.7.
-- **The owner's, before any of it is built:** the eleven questions of its
-  section 12. The first decides the size of the work: whether a killed server
-  may lose more than the tick in flight.
+The owner asked whether the browser's save and the server's database can be
+one source of truth. `docs/design/storage.md` studied it, proposed one
+document and a journal of inputs beside it, and put eleven questions. The
+owner answered the same day; the decision is the entry at the top of this
+file.
 
 ## 2026-10-12 (one world on every target: where the engine's maths comes from)
 

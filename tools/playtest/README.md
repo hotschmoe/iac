@@ -5,7 +5,7 @@ then write feedback. Results from past runs live in `docs/playtests/`.
 
 ```sh
 IAC_PACE=blitz tools/playtest/start.sh 60 Grok-1:grok Grok-2:grok Pi-1:pi Pi-2:pi Sonnet-1:manual
-tools/playtest/stop.sh            # add --keep-world to keep the database
+tools/playtest/stop.sh            # add --keep-world to keep the world file (run/world.iac)
 python3 -m unittest discover -s tools/playtest/tests    # tests for the CLI's parsers and formatters
 ```
 
@@ -14,7 +14,7 @@ python3 -m unittest discover -s tools/playtest/tests    # tests for the CLI's pa
   wants `blitz` (x600: the whole tech arc in about 3 hours of play, the first
   Cruiser in about 42 minutes); `test` (x8000) plays the arc in 12 minutes.
   Unset means `persistent` (x1), where nothing finishes within an hour. The
-  pace is fixed for the life of the world's database.
+  pace is fixed for the life of the world.
 - Players are declared agents (`agent: true` at login), so the leaderboard
   marks them; `./play score` shows it.
 - Kinds: `grok`, `pi` (supervised CLI agents), `manual` (you drive it, e.g. Claude subagents told to

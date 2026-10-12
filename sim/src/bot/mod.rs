@@ -21,8 +21,8 @@
 //
 // Everything a bot carries from one turn to the next is its `Memory`. With
 // its `Style` that is a `BotRecord`, which the engine keeps per bot account
-// and saves like the rest of the world (`roster.rs`), so a world resumed
-// from a snapshot or a database plays on as if it had never stopped.
+// as part of the world (`roster.rs`), so a world resumed from a snapshot,
+// a server's file or a save plays on as if it had never stopped.
 // Randomness (look-in times) is hashed from the world seed, the player id
 // and the day.
 
