@@ -3,6 +3,97 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the economy's numbers are written once, in Rust; `sim.py` reads a file Rust renders)
+
+On branch `worktree-agent-af9f1d220cade49de`. Not merged, not pushed.
+
+The owner: "The Dart protocol mirror and sim.py could be generated from the
+Rust source instead of mirrored by hand: seems like a good idea." This is the
+`sim.py` half. No number of the game moved: `ECONOMY_VERSION` is still 5, the
+fixtures are untouched, and `sim.py` prints what it printed, byte for byte, in
+ten runs (`--tables`, the full report and eight more). The journal entry of
+the same day has what was run.
+
+**As built.**
+
+- **A number of the economy is written in Rust and nowhere else.**
+  `sim/tests/economy_numbers.rs` renders `docs/design/economy/numbers.json`
+  from `shared/src` and `sim/src/score.rs`; `sim.py` loads it and declares no
+  number of the game. The test runs in `cargo test --workspace` and fails when
+  the file in the repository is not what it renders, naming the first line that
+  changed. `UPDATE_FIXTURES=1 cargo test -p iac-sim --test economy_numbers`
+  renders it again: the switch of the protocol fixtures.
+- **The generator is a test of `iac-sim`**, not the example of `iac-shared` it
+  replaces (`shared/examples/economy_constants.rs`, archived). The score
+  constants are in `sim/src/score.rs`, which `iac-shared` cannot see, and the
+  old check read them out of the source with a regular expression. A test is
+  also the one place `cargo test` can render and compare.
+- **JSON, not a Python module.** Nothing is imported, so nothing is compiled
+  into `docs/`.
+- **What is generated, by this rule.** Where Rust names every coefficient of a
+  formula, `sim.py` keeps the formula and reads the coefficients, so it
+  computes what it computed, to the bit, and `--set` reaches them. Where Rust
+  writes the coefficients inside a function and the simulation only asks at
+  whole rings, threat ratings or levels, the file carries the function's
+  values and `sim.py` looks them up: a group's class, presence, passive share,
+  respawn and base multiplier, the ore odds, a derelict's ambush chance and
+  tier, the relic chance, the Defense Grid's units, what a research level
+  multiplies, the building slots. Where the simulation needs such a formula at
+  any pace or any score, its coefficients got names in Rust: six of them,
+  `RAID_POWER_FLOOR`, `RAID_POWER_PER_POINT`, `RAID_POWER_EXPONENT`,
+  `DERELICT_VALUE_RING`, `CAP_EXPONENT_PAST_KNEE` and
+  `THREAT_POINTS_EXPONENT`. Naming them changed no value: the rendered file was
+  the same bytes before and after.
+- **The tables are the game's own `f32` values**, each written as the shortest
+  decimal that reads back as it (0.08, not 0.07999999821186066). Four of the
+  looked-up curves carry `f32` rounding the Python formulas did not have
+  (the ore odds, the passive share at rings 9, 13 and 14, the grid's units
+  from level 5, the base multiplier). The simulation's state moved by at most
+  5 parts in 100 million over 40 runs, no level, ship or milestone moved, and
+  nothing printed changed.
+- **`tools/check_sim_constants.py` compares formulas only**, 2,390 values,
+  against the `tables` half of the same file, with the tolerances it had: a
+  cost within half a unit (the game rounds, the simulation does not), a time
+  within 1 percent or 2 ticks (the game counts whole ticks), `f32` against
+  `f64` elsewhere. It covers costs and times by level, production, storage
+  caps at three paces, raid power, the ring gradient, chart, discovery and
+  kill points, the exchange and the outposts. It is 172 lines where it was
+  315, and no longer holds a mapping of constants.
+- **`--set NAME=value` works as it did**, on the same names. More names can be
+  set now, because inline figures became names (`NPC_POWER_GROWTH`,
+  `RAID_POWER_EXPONENT`, `DERELICT_VALUE_BASE` and others).
+- **One copy of the game is still kept by hand in `sim.py`**: the terrain
+  shares and ore chances of `zone_terrain` and `ore_prob`. Rust rolls them
+  inside `shared/src/world.rs`, with no table to render, and nothing compares
+  them. See the first question below.
+
+**Found on the way, and left as found. The owner's to decide.**
+
+1. **The terrain copy is slightly off, and unguarded.** Worldgen rolls a
+   number from 0 to 100, which is 101 outcomes, so its shares are 55, 15, 10
+   and 21 in 101 where `sim.py` has .55, .15, .10 and .20, and an ore chance
+   of 90 is 90 in 101. About 1 percent. Rendering these from Rust needs the
+   rolls of `roll_terrain` and `roll_resources` as a table; giving the
+   simulation the true shares would move its reports.
+2. **`sim.py --tables` prints the wrong storage caps at pace 600.** Its table
+   uses P^0.75 at every pace (606,154 metal with no Vault); the game, and the
+   simulation's own runs, use the knee at pace 10 (78,254). The same column is
+   in `spec.md`, section 3. One line to fix; it changes the table.
+3. **Rust holds numbers that come from `sim.py`, pasted by hand**: the
+   `first_cruiser_s` and `endgame_s` of `pace::PRESETS`. They have drifted
+   from what the simulation prints today (persistent: 15.8 and 73.9 days in
+   Rust, 19.3 and 77.0 printed; dev: 13 hours to the endgame in Rust, 19.2
+   printed). Nothing compares them.
+4. **The simulation's exchange and outpost functions feed no report.** They
+   exist to be compared with Rust. They were kept, on generated constants, and
+   stay compared; removing them and their rows is cleaner if nobody calls them
+   by hand.
+5. **Smaller differences the model has always had**: its queue depth of 3
+   counts running and waiting orders together where the game lets 3 wait
+   behind the running ones (it now reads `QUEUE_WAITING`); it plays from ring
+   4, the middle of the home seats 3 to 5; it makes a player eligible for
+   raids at Shipyard 2 where the game also accepts a Defense Grid.
+
 ## 2026-10-13 (one stored world: both hosts store one document, and there is no journal)
 
 The owner's answers to the questions of `docs/design/storage.md`, section 12,

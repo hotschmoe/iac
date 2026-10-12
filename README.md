@@ -17,7 +17,7 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
 | `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server`, or bundled with `iac-solo` as a static single-player build |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
-| `tools/` | `playtest/` (live multi-agent sessions) and `check_sim_constants.py` (Rust economy numbers vs `docs/design/economy/sim.py`) |
+| `tools/` | `playtest/` (live multi-agent sessions) and `check_sim_constants.py` (the formulas of the planning simulation, `docs/design/economy/sim.py`, against the game's; its numbers are not compared, they are generated from Rust) |
 | `SPEC.md` | Original technical specification (world model, combat, economy, networking) |
 
 ## Quick start
@@ -477,6 +477,32 @@ drift from them (regenerate with `UPDATE_FIXTURES=1 cargo test -p iac-shared`),
 and the Flutter tests round-trip every fixture and check hex math cell by cell.
 Change the Rust protocol, regenerate, then fix the Dart side until
 `flutter test` passes.
+
+### Economy numbers
+
+A number of the economy is written once, in Rust (`shared/src/constants.rs`,
+`scaling.rs`, `pace.rs` and `sim/src/score.rs`). The planning simulation,
+`docs/design/economy/sim.py` (Python standard library, the source of the
+tables in `docs/design/economy/spec.md`), declares none of them: it reads
+`docs/design/economy/numbers.json`, which `sim/tests/economy_numbers.rs`
+renders. That test runs in `cargo test --workspace` and fails when the file is
+stale, naming the first line that changed.
+
+```sh
+UPDATE_FIXTURES=1 cargo test -p iac-sim --test economy_numbers   # after changing a number: render the file again
+python3 tools/check_sim_constants.py                             # the formulas sim.py keeps still agree with Rust
+python3 docs/design/economy/sim.py --set BETA=0.4                # try a number in the simulation before changing the game
+```
+
+The file has two halves. `game` is what the simulation reads: the constants
+under their Rust names, the cost curves, the ships and defences, and the
+curves it looks up at whole rings, threat ratings and levels (a group's class
+and presence, ore odds, what a research level multiplies). `tables` is what the
+Rust formulas give where the simulation computes for itself, because it needs
+a formula at any pace or any score: `check_sim_constants.py` compares those,
+about 2,400 values. One copy of the game is still kept by hand in `sim.py`:
+the terrain shares and ore chances of `zone_terrain` and `ore_prob`, which
+worldgen rolls inside `shared/src/world.rs`.
 
 ## The game
 

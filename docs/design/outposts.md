@@ -889,8 +889,9 @@ pub struct Outpost {
 
 ### 7.4 Constants and formulas
 
-In `shared/src/constants.rs`, mirrored in `docs/design/economy/sim.py` and checked
-by `tools/check_sim_constants.py`:
+In `shared/src/constants.rs` and nowhere else: `docs/design/economy/sim.py` reads
+them from `numbers.json`, which Rust renders, and `tools/check_sim_constants.py`
+holds its formulas to Rust's:
 
 | Constant | Value | Pace class |
 |---|---|---|

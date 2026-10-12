@@ -33,6 +33,8 @@ pub const DISCOVERY_POINTS: f32 = 1.5;
 /// `CHART_BASE_POINTS + CHART_THREAT_POINTS * T^1.5`.
 pub const CHART_BASE_POINTS: f32 = 0.15;
 pub const CHART_THREAT_POINTS: f32 = 0.10;
+/// The exponent of the threat rating T in both.
+pub const THREAT_POINTS_EXPONENT: f32 = 1.5;
 /// Defence structures count at half value, so farming defenceless-looking
 /// players with a wall of cheap turrets does not pay.
 pub const DEFENCE_SHARE: f32 = 0.5;
@@ -196,12 +198,13 @@ pub fn kill_points(pile: Resources, engaged_power: f32, npc_power: f32) -> f32 {
 /// Points for the first boarding of a derelict that rolled `loot` (finds
 /// factor included) at threat `rating`.
 pub fn board_points(loot: Resources, rating: u8) -> f32 {
-    BOARD_VALUE_SHARE * scaling::resource_weight(&loot) + DISCOVERY_POINTS * maths::powf(f32::from(rating), 1.5)
+    BOARD_VALUE_SHARE * scaling::resource_weight(&loot)
+        + DISCOVERY_POINTS * maths::powf(f32::from(rating), THREAT_POINTS_EXPONENT)
 }
 
 /// Points for delivering the chart of one new sector at threat `rating`.
 pub fn chart_points(rating: u8) -> f32 {
-    CHART_BASE_POINTS + CHART_THREAT_POINTS * maths::powf(f32::from(rating), 1.5)
+    CHART_BASE_POINTS + CHART_THREAT_POINTS * maths::powf(f32::from(rating), THREAT_POINTS_EXPONENT)
 }
 
 /// The table, best first, for `viewer`. Built-in bots are ranked apart from

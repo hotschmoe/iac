@@ -3,8 +3,11 @@
 IAC economy / pacing / exploration simulation (Python stdlib only).
 
 Simulates one scripted "competent player" per pacing preset using the formulas
-proposed in spec.md.  Every constant below is a constant in the spec (Appendix A);
-if you change one, change the other.
+proposed in spec.md.  The game's numbers are not written here: they are read from
+numbers.json beside this file, which the Rust side renders
+(`UPDATE_FIXTURES=1 cargo test -p iac-sim --test economy_numbers`) and
+`cargo test` refuses when it is stale.  To change a number of the game, change it
+in Rust and render the file again; to try one first, use --set.
 
     python3 sim.py                    # full markdown report (about 25 s)
     python3 sim.py --preset season-7d # one preset
@@ -22,105 +25,116 @@ median of three session-schedule offsets.  Piloting is modelled as expected valu
 (ore refill supply, respawn supply, active-time caps, attrition, refuel cost), not
 as individual fights.  The planner is heuristic: expect about +-15% run-to-run noise.
 """
-import math, sys, argparse
+import math, sys, argparse, json, pathlib
 from collections import defaultdict
 
 # =====================================================================
-# 1. PROPOSED CONSTANTS (pace-1 baseline: the "persistent world")
+# 1. THE GAME'S NUMBERS (pace-1 baseline: the "persistent world")
 #    Times below are GAME hours at pace 1.  Real time = game time / P.
+#
+#    A name bound to GAME or to G below follows the Rust source by itself.
+#    A number written out in this file is the simulation's own: a planner
+#    heuristic, a session schedule, an assumption about players.  The one
+#    copy of the game kept by hand is zone_terrain and ore_prob, whose
+#    figures Rust keeps inside worldgen.
 # =====================================================================
-PROD_BASE = {'metal': 10.0, 'crystal': 7.0, 'deut': 5.0}   # per game-hour * L * 1.1^L
-PROD_GROWTH = 1.10
+GAME = json.loads(pathlib.Path(__file__).with_name('numbers.json').read_text())['game']
+G = GAME['constants']
 
-# (L1 cost m,c,d), cost growth per level, max level
-BUILD = {
-    'metal':    ((60, 15, 0),   1.50),
-    'crystal':  ((48, 24, 0),   1.60),
-    'deut':     ((150, 50, 0),  1.50),
-    'shipyard': ((200, 100, 50), 1.80),
-    'lab':      ((100, 200, 50), 1.80),
-    'depot':    ((150, 50, 100), 1.70),
-    'sensor':   ((100, 150, 75), 1.70),
-    'grid':     ((300, 200, 100), 1.80),
-    'vault':    ((200, 100, 0),  1.70),
-    'fab':      ((120, 80, 40),  1.90),
-}
-BUILD_PREREQ = {
-    'shipyard': [('metal', 2)], 'lab': [('crystal', 2)], 'depot': [('deut', 2)],
-    'sensor': [('lab', 1)], 'grid': [('shipyard', 3)], 'vault': [('metal', 2)],
-    'fab': [('shipyard', 2)],
-}
-BUILD_RATE = 700.0     # (metal+crystal) of build cost per game-hour of build time
-FAB_SPEED = 0.15       # build time divisor 1 + 0.15 * fab
-RES_RATE = 500.0       # research: (m+c) per game-hour
-LAB_SPEED = 0.10       # research time divisor 1 + 0.10 * lab
-SHIP_RATE = 1200.0     # ships: (m+c) per game-hour per ship
-SY_SPEED = 0.10        # ship time divisor 1 + 0.10 * shipyard
+# the simulation's short names for what the game calls by its Rust name
+B_NAME = {'metal': 'MetalMine', 'crystal': 'CrystalMine', 'deut': 'DeuteriumSynthesizer', 'shipyard': 'Shipyard',
+          'lab': 'ResearchLab', 'depot': 'FuelDepot', 'sensor': 'SensorArray', 'grid': 'DefenseGrid',
+          'vault': 'StorageVault', 'fab': 'Fabricator'}
+R_NAME = {'corvette': 'CorvetteTech', 'hauler': 'HaulerTech', 'frigate': 'FrigateTech', 'cruiser': 'CruiserTech',
+          'fuel_eff': 'FuelEfficiency', 'tanks': 'ExtendedFuelTanks', 'hulls': 'ReinforcedHulls',
+          'shields': 'AdvancedShields', 'weapons': 'WeaponsResearch', 'nav': 'Navigation',
+          'harvest': 'HarvestingEfficiency', 'modfab': 'ModularFabrication',
+          'jump': 'EmergencyJump'}     # in the game; the planner never researches it
+S_NAME = {'scout': 'Scout', 'corvette': 'Corvette', 'frigate': 'Frigate', 'cruiser': 'Cruiser', 'hauler': 'Hauler'}
+D_NAME = {'turret': 'PulseTurret', 'lancer': 'LancerBattery', 'bastion': 'IonBastion'}
+for names, kind in ((B_NAME, 'buildings'), (R_NAME, 'research'), (S_NAME, 'ships'), (D_NAME, 'defences')):
+    if set(names.values()) != set(GAME[kind]):
+        sys.exit(f'sim.py names {sorted(names.values())} as {kind}; numbers.json has {sorted(GAME[kind])}')
+SHORT = {rust: short for names in (B_NAME, R_NAME) for short, rust in names.items()}
+def requires(entry):         # [('b' or 'r', short name, level)]: buildings and research needed first
+    return [(kind[0], SHORT[name], level) for kind, name, level in entry['requires']]
+LEVEL = GAME['by_level']                                 # what a level multiplies, from level 0
+RING = {row['ring']: row for row in GAME['rings']}       # the curves read at whole rings, 1 to 60
+RATING = {row['rating']: row for row in GAME['ratings']} # ... and at threat ratings, T1 to T9
+PACE = GAME['presets']
+ATTENTION_EXP = GAME['pace_exponent']['Attention']       # caps, raid cadence and the exchange window: P ** 0.75
+FINDS_EXP = GAME['pace_exponent']['Finds']               # loot, holds and derelict respawn: P ** 0.5
+INNER_RING, OUTER_RING = GAME['zone_radius']['InnerRing'], GAME['zone_radius']['OuterRing']
+MAX_LEVEL = G['MAX_BUILDING_LEVEL']
 
-RESEARCH = {   # L1 cost, growth, max, prereqs (b=building, r=research)
-    'corvette': ((400, 200, 100),  1.0, 1, [('b', 'shipyard', 1)]),   # decisions.md: Corvettes unlock at Shipyard 1
-    'hauler':   ((600, 300, 200),  1.0, 1, [('b', 'shipyard', 3)]),
-    'frigate':  ((2000, 1200, 600), 1.0, 1, [('r', 'corvette', 1), ('b', 'shipyard', 4)]),
-    'cruiser':  ((8000, 5000, 2500), 1.0, 1, [('r', 'frigate', 1), ('b', 'shipyard', 6)]),
-    'fuel_eff': ((200, 100, 100),  1.6, 5, [('b', 'deut', 3)]),
-    'tanks':    ((150, 75, 150),   1.6, 5, [('b', 'depot', 2)]),
-    'hulls':    ((300, 100, 0),    1.6, 5, [('b', 'shipyard', 2)]),
-    'shields':  ((100, 300, 50),   1.6, 5, [('b', 'lab', 3)]),
-    'weapons':  ((200, 200, 100),  1.6, 5, [('b', 'lab', 3)]),
-    'nav':      ((100, 150, 50),   1.6, 5, [('b', 'lab', 2)]),
-    'harvest':  ((150, 100, 75),   1.6, 5, [('b', 'lab', 2)]),
-    'modfab':   ((1500, 1200, 500), 2.0, 2, [('b', 'lab', 4)]),     # NEW: build slots
-}
+PROD_BASE = {'metal': G['PRODUCTION_PER_HOUR_METAL'], 'crystal': G['PRODUCTION_PER_HOUR_CRYSTAL'],
+             'deut': G['PRODUCTION_PER_HOUR_DEUTERIUM']}   # per game-hour * L * 1.1^L
+PROD_GROWTH = G['PRODUCTION_GROWTH']
 
-SHIPS = {  # cost, hull, shield, weapon, cargo, fuel
-    'scout':    ((200, 50, 30),    30, 10, 5, 20, 60),
-    'corvette': ((400, 100, 60),   50, 20, 15, 10, 50),
-    'frigate':  ((1000, 400, 200), 120, 60, 30, 30, 80),
-    'cruiser':  ((3000, 1500, 800), 200, 100, 80, 50, 120),
-    'hauler':   ((600, 200, 150),  80, 20, 5, 200, 100),
-}
-SHIP_TECH = {'corvette': 'corvette', 'frigate': 'frigate', 'cruiser': 'cruiser', 'hauler': 'hauler'}
+# (L1 cost m,c,d), cost growth per level
+BUILD = {k: (tuple(GAME['buildings'][n]['cost']), GAME['buildings'][n]['growth']) for k, n in B_NAME.items()}
+BUILD_PREREQ = {k: [(name, lv) for _, name, lv in requires(GAME['buildings'][n])] for k, n in B_NAME.items()}
+START_LEVELS = {k: GAME['buildings'][n]['starts_at'] for k, n in B_NAME.items() if GAME['buildings'][n]['starts_at']}
+BUILD_RATE = G['BUILD_RATE']       # (metal+crystal) of build cost per game-hour of build time
+FAB_SPEED = G['FABRICATOR_SPEED']  # build time divisor 1 + 0.15 * fab
+RES_RATE = G['RESEARCH_RATE']      # research: (m+c) per game-hour
+LAB_SPEED = G['LAB_SPEED']         # research time divisor 1 + 0.10 * lab
+SHIP_RATE = G['SHIP_RATE']         # ships: (m+c) per game-hour per ship
+SY_SPEED = G['SHIPYARD_SPEED']     # ship time divisor 1 + 0.10 * shipyard
+QUEUE_DEPTH = G['QUEUE_WAITING']   # the planner keeps this many orders running or waiting in a queue
 
-DEFS = {   # NEW defence structures: cost, power(weapon+(hull+shield)/10), prereq
-    'turret':  ((120, 20, 0),    12 + (40 + 10) / 10,   {'grid': 1}),
-    'lancer':  ((400, 120, 20),  35 + (120 + 40) / 10,  {'grid': 2, 'weapons': 2}),
-    'bastion': ((1200, 500, 100), 90 + (300 + 150) / 10, {'grid': 4, 'weapons': 4, 'shields': 3}),
-}
-GRID_VIRTUAL_UNITS = {0: 0, 1: 1.0, 2: 2.5, 3: 4.0}   # x scout power (9); halved vs today
+# L1 cost, growth, max, prereqs (b=building, r=research)
+RESEARCH = {k: (tuple(t['cost']), t['growth'], t['max_level'], requires(t))
+            for k, t in ((k, GAME['research'][n]) for k, n in R_NAME.items())}
 
-START_RES = (500.0, 300.0, 100.0)
+# cost, hull, shield, weapon, cargo, fuel
+SHIPS = {k: (tuple(s['cost']), s['hull'], s['shield'], s['weapon'], s['cargo'], s['fuel'])
+         for k, s in ((k, GAME['ships'][n]) for k, n in S_NAME.items())}
+START_SCOUTS = G['STARTING_SCOUTS']
+
+# defence structures: cost, power(weapon+(hull+shield)/10), prereq
+DEFS = {k: (tuple(d['cost']), d['power'], {name: lv for _, name, lv in requires(d)})
+        for k, d in ((k, GAME['defences'][n]) for k, n in D_NAME.items())}
+GRID_VIRTUAL_UNITS = dict(enumerate(LEVEL['defense_grid_scout_units']))   # x scout power (9), by Defense Grid level
+GRID_BONUS = G['DEFENCE_GRID_BONUS']       # each grid level strengthens every structure by this much
+BUILDING_SLOTS = LEVEL['building_slots']   # by Modular Fabrication level
+
+START_RES = tuple(G['STARTING_RESOURCES'])
 DAILY_EVERY_S = 86400.0
 # the "endgame kit" used as the end of the arc in the simulation
 KIT_B = dict(metal=19, crystal=16, deut=13, shipyard=11, lab=11, fab=8, grid=5)
 KIT_R = dict(modfab=2, cruiser=1, fuel_eff=3, tanks=3, weapons=4, shields=4, hulls=3)
 KIT_CRUISERS = 12
 # storage
-VAULT_BASE_CAP = {'metal': 5000.0, 'crystal': 3500.0, 'deut': 2500.0}
-VAULT_GROWTH = 1.5
-CAP_PACE_EXP = 0.75          # cap multiplier = P ** this up to CAP_KNEE ...
-CAP_KNEE = 10.0              # ... and 10**0.75 * (P / 10) ** CAP_EXP_HIGH above it
-CAP_EXP_HIGH = 0.25
+VAULT_BASE_CAP = dict(zip(('metal', 'crystal', 'deut'), G['STORAGE_BASE']))
+VAULT_GROWTH = G['STORAGE_GROWTH']
+CAP_PACE_EXP = ATTENTION_EXP                   # cap multiplier = P ** this up to CAP_KNEE ...
+CAP_KNEE = G['CAP_KNEE']                       # ... and 10**0.75 * (P / 10) ** CAP_EXP_HIGH above it
+CAP_EXP_HIGH = G['CAP_EXPONENT_PAST_KNEE']
 def cap_mult(P):
     if P <= CAP_KNEE:
         return P ** CAP_PACE_EXP
     return CAP_KNEE ** CAP_PACE_EXP * (P / CAP_KNEE) ** CAP_EXP_HIGH
 
 # pilot-economy scale: ore/loot/salvage values and fuel price scale with P ** BETA
-BETA = 0.5
+BETA = FINDS_EXP
 
 # NPC / threat
+NPC_POWER_BASE, NPC_POWER_GROWTH = G['NPC_POWER_BASE'], G['NPC_POWER_GROWTH']
+MAX_THREAT = G['MAX_THREAT']
 def npc_power(d):            # smooth: ~1.22x per ring step
-    return 4.0 * 1.22 ** (d - 1)
+    return NPC_POWER_BASE * NPC_POWER_GROWTH ** (d - 1)
 def threat(d):
-    return max(1, min(9, 1 + int(math.floor(math.log2(npc_power(d) / 4.0)))))
+    return max(1, min(MAX_THREAT, 1 + int(math.floor(math.log2(npc_power(d) / NPC_POWER_BASE)))))
+SHIP_SHORT = {rust: short for short, rust in S_NAME.items()}
 def npc_class(d):            # scouts through the inner ring (d <= 8)
-    return 'scout' if d <= 8 else 'corvette' if d <= 12 else 'frigate' if d <= 20 else 'cruiser'
+    return SHIP_SHORT[RING[d]['npc_class']]
 def ship_power(c):
     s = SHIPS[c]
     return s[3] + (s[1] + s[2]) / 10.0
-NPC_MAX_SHIPS, NPC_MULT_MAX = 32, 1.3
+NPC_MAX_SHIPS, NPC_MULT_MAX = G['NPC_MAX_SHIPS'], G['NPC_STAT_MULT_MAX']
 def npc_base_mult(d):        # the stat multiplier a group is sized around
-    return min(NPC_MULT_MAX, 0.6 + 0.02 * d)
+    return min(NPC_MULT_MAX, RING[d]['npc_base_multiplier'])
 def npc_group(d, power=None):
     # (class, count, stat multiplier): the count from the base multiplier (more if the ships
     # would need over NPC_MULT_MAX), the multiplier fitted so the ships add up to the power
@@ -136,32 +150,34 @@ def npc_cost(d):             # build-cost value (units) of the NPC group at ring
     c = npc_class(d)
     return ship_cost_tot(c) / ship_power(c) * npc_power(d)
 def npc_presence(d):
-    return max(0.25, min(0.85, 0.25 + 0.025 * d))
+    return RING[d]['npc_presence_pct'] / 100.0
 def npc_passive_frac(d):
-    return max(0.0, 0.5 - 0.08 * max(0, d - 8))
+    return RING[d]['npc_passive_share']
 def npc_respawn_h(d):        # game hours
-    return 2.0 + 0.25 * d
-KILL_LOOT_K, KILL_LOOT_EXP = 1.2, 0.80
+    return RING[d]['npc_respawn_hours']
+KILL_LOOT_K, KILL_LOOT_EXP = G['WRECK_VALUE_K'], G['WRECK_VALUE_EXPONENT']
 def kill_loot_value(d):      # total resource value of one kill's wreck (units)
     return KILL_LOOT_K * npc_power(d) ** KILL_LOOT_EXP
 
 # ore
-DENS_RESERVE = {'S': 3.0, 'M': 10.0, 'R': 22.0, 'P': 42.0}   # total reserve per density
-ORE_RING_MULT = lambda d: 1.10 ** (min(d, 20) - 3) if d >= 3 else 1.0
-ORE_REGEN_BASE_H, ORE_REGEN_PER_RING_H = 120.0, 24.0
-def ore_regen_h(d):
+DENSITY = {'S': GAME['densities']['Sparse'], 'M': GAME['densities']['Moderate'],
+           'R': GAME['densities']['Rich'], 'P': GAME['densities']['Pristine']}
+DENS_RESERVE = {k: v['reserve_units'] for k, v in DENSITY.items()}   # total reserve per density
+ORE_RING_GROWTH, ORE_RING_FIRST, ORE_RING_LAST = G['ORE_RING_GROWTH'], G['ORE_RING_FIRST'], G['ORE_RING_LAST']
+ORE_RING_MULT = lambda d: ORE_RING_GROWTH ** (min(d, ORE_RING_LAST) - ORE_RING_FIRST) if d >= ORE_RING_FIRST else 1.0
+ORE_REGEN_BASE_H, ORE_REGEN_PER_RING_H = G['ORE_REGEN_BASE_HOURS'], G['ORE_REGEN_HOURS_PER_RING']
+def ore_regen_h(d):          # game hours for a stripped tile to refill completely
     return ORE_REGEN_BASE_H + ORE_REGEN_PER_RING_H * d
 def ring_coverage(d):         # share of a ring's sectors that are connected and inside a fleet's reach
-    return 0.5 if d <= 8 else 0.4 if d <= 20 else 0.25      # game hours for a stripped tile to refill completely
+    return 0.5 if d <= INNER_RING else 0.4 if d <= OUTER_RING else 0.25
 def density_mix(d):
-    dl = min(0.30, 0.012 * d)
-    return {'S': 0.40 - dl, 'M': 0.30 - 0.2 * dl, 'R': 0.20 + 0.6 * dl, 'P': 0.10 + 0.6 * dl}
+    return dict(zip('SMRP', RING[d]['ore_density_odds']))
 def mean_reserve(d):
     mix = density_mix(d)
     return sum(mix[k] * DENS_RESERVE[k] for k in mix)
-def zone_terrain(d):
-    if d <= 8:   return dict(ast=.55, neb=.15, deb=.10, emp=.20, ano=0.0), 30
-    if d <= 20:  return dict(ast=.35, neb=.15, deb=.20, emp=.25, ano=.05), 40
+def zone_terrain(d):         # kept by hand: worldgen rolls these inside shared/src/world.rs (roll_terrain, roll_resources)
+    if d <= INNER_RING:  return dict(ast=.55, neb=.15, deb=.10, emp=.20, ano=0.0), 30
+    if d <= OUTER_RING:  return dict(ast=.35, neb=.15, deb=.20, emp=.25, ano=.05), 40
     return dict(ast=.30, neb=.15, deb=.20, emp=.20, ano=.15), 50
 def ore_prob(d):             # P(ore) per resource at a random sector
     t, boost = zone_terrain(d)
@@ -175,22 +191,27 @@ def tile_reserve(d):         # expected reserve units per sector per resource, i
     return {k: pr[k] * r for k in pr}
 
 # derelicts
-DERELICT_PCT = 0.08
-DERELICT_RESPAWN_H = 120.0
-DERELICT_PACE_EXP = 0.5      # derelict respawn scales with P**0.5 (finds are not an economy timer)
+DERELICT_PCT = G['DERELICT_SPAWN_PCT'] / 100.0
+DERELICT_RESPAWN_H = G['DERELICT_RESPAWN_TICKS'] / 3600.0
+DERELICT_PACE_EXP = FINDS_EXP   # derelict respawn scales with P**0.5 (finds are not an economy timer)
+DERELICT_VALUE_BASE, DERELICT_VALUE_GROWTH, DERELICT_VALUE_RING = G['DERELICT_VALUE_BASE'], G['DERELICT_VALUE_GROWTH'], G['DERELICT_VALUE_RING']
 def derelict_value(d):       # total loot value of one site (metal+crystal+deut units)
-    return 240.0 * 1.14 ** (d - 4)
+    return DERELICT_VALUE_BASE * DERELICT_VALUE_GROWTH ** (d - DERELICT_VALUE_RING)
 def derelict_tier(d):        # tier follows threat: T1-3 -> 1, T4-6 -> 2, T7-9 -> 3
-    return (threat(d) + 2) // 3
+    return RATING[threat(d)]['threat_band']
 def derelict_ambush(d):
-    return min(0.35, 0.10 + 0.03 * (threat(d) - 1))
+    return RATING[threat(d)]['derelict_ambush']
+AMBUSH_GUARD_SHARE = G['AMBUSH_GUARD_SHARE']   # share of the ring's group power a derelict's guard fields
 def derelict_sites_per_ring(d):
     t, _ = zone_terrain(d)
     return 6 * d * (t['deb'] + t['emp']) * DERELICT_PCT
 
-FUEL_RATE = 0.1
-FUEL_PRICE_DEUT = 0.08       # deuterium per fuel unit refuelled (x pilot scale)
-HOME_DIST = 4
+FUEL_RATE = G['FUEL_RATE_PER_MASS']
+FUEL_PRICE_DEUT = G['FUEL_DEUT_PER_UNIT']   # deuterium per fuel unit refuelled (x pilot scale)
+HOME_DIST = (G['HOMEWORLD_MIN_DIST'] + G['HOMEWORLD_MAX_DIST']) // 2   # the middle ring of the home seats
+FUEL_RATE_MOD, FUEL_CAP_MOD, FUEL_DEPOT_MOD = LEVEL['fuel_rate_modifier'], LEVEL['fuel_capacity_modifier'], LEVEL['fuel_depot_modifier']
+HARVEST_YIELD = LEVEL['harvest_yield']
+WEAPON_MOD, HULL_MOD, SHIELD_MOD = LEVEL['weapon_modifier'], LEVEL['hull_modifier'], LEVEL['shield_modifier']
 
 # combat expectation
 def win_prob(r):
@@ -199,23 +220,27 @@ def attrition(r):            # expected ship-loss value per unit of loot taken, 
     return min(10.0, 0.1 * (3.0 / max(r, 0.3)) ** 3)
 
 # raids / defence
-RAID_MIN_AGE_S = 86400.0     # 24 h at pace 1; scaled by P**0.75
+RAID_MIN_AGE_S = G['RAID_MIN_PLAYER_AGE']   # 24 h at pace 1; scaled by P**0.75
+RAID_POWER_FLOOR, RAID_POWER_PER_POINT, RAID_POWER_EXPONENT = G['RAID_POWER_FLOOR'], G['RAID_POWER_PER_POINT'], G['RAID_POWER_EXPONENT']
+RAID_POWER_ROLL_MAX = G['RAID_POWER_ROLL_MAX']   # the strongest a raid is rolled, as a multiple of raid_power
 def raid_power(econ_pts):
-    return 5.0 + 11.0 * econ_pts ** 0.75
+    return RAID_POWER_FLOOR + RAID_POWER_PER_POINT * econ_pts ** RAID_POWER_EXPONENT
 
 # score
-W_RES = (1.0, 1.5, 2.0)
-SCORE_EXTRA_CAP = 0.25     # combat+exploration points may add at most 25% of core points
-KILL_SHARE = 1.0           # a kill pays this share of the weight of the pile it leaves
-FULL_PAY_RATIO, MIN_PAY = 4.0, 0.05   # full pay up to 4x the NPC power, then 4/ratio down to 5%
-BOARD_VALUE_SHARE = 0.5    # first boarding: share of the loot weight ...
-DISCOVERY_POINTS = 1.5     # ... plus this * T^1.5
-CHART_BASE_POINTS, CHART_THREAT_POINTS = 0.15, 0.10   # per delivered new sector: base + threat * T^1.5
-RELIC_POINTS = 30.0
+W_RES = tuple(GAME['resource_weight'][k] for k in ('metal', 'crystal', 'deuterium'))
+SCORE_EXTRA_CAP = G['EXTRA_CAP']   # combat+exploration points may add at most 25% of core points
+KILL_SHARE = G['KILL_SHARE']       # a kill pays this share of the weight of the pile it leaves
+FULL_PAY_RATIO, MIN_PAY = G['FULL_PAY_RATIO'], G['MIN_PAY']   # full pay up to 4x the NPC power, then 4/ratio down to 5%
+BOARD_VALUE_SHARE = G['BOARD_VALUE_SHARE']   # first boarding: share of the loot weight ...
+DISCOVERY_POINTS = G['DISCOVERY_POINTS']     # ... plus this * T^1.5
+CHART_BASE_POINTS, CHART_THREAT_POINTS = G['CHART_BASE_POINTS'], G['CHART_THREAT_POINTS']   # per delivered new sector: base + threat * T^1.5
+THREAT_POINTS_EXPONENT = G['THREAT_POINTS_EXPONENT']
+DEFENCE_SHARE = G['DEFENCE_SHARE']           # a defence structure scores this share of its cost
+RELIC_POINTS = G['RELIC_POINTS']
 def relic_chance(t):
-    return min(0.08, max(0.0, 0.02 * (t - 5)))
-FARM_DECAY = 0.75          # each recent kill in a sector multiplies the next kill's loot and score by this
-FARM_HALF_LIFE_RESPAWNS = 4.0
+    return RATING[t]['relic_chance']
+FARM_DECAY = G['FARM_DECAY']   # each recent kill in a sector multiplies the next kill's loot and score by this
+FARM_HALF_LIFE_RESPAWNS = G['FARM_HALF_LIFE_RESPAWNS']
 def farm_steady(u):
     """Mean loot/score share of a sector worked at utilisation u (kills taken / respawns offered)."""
     if u <= 0: return 1.0
@@ -225,23 +250,26 @@ def farm_steady(u):
 def kill_pay(r):
     return max(MIN_PAY, min(1.0, FULL_PAY_RATIO / max(r, 1e-3)))
 def chart_points(t):
-    return CHART_BASE_POINTS + CHART_THREAT_POINTS * t ** 1.5
+    return CHART_BASE_POINTS + CHART_THREAT_POINTS * t ** THREAT_POINTS_EXPONENT
+def discovery_points(t):
+    return DISCOVERY_POINTS * t ** THREAT_POINTS_EXPONENT
 PILOT_SKILL = 0.5     # share of the ideal piloting tempo a skilled human or agent reaches (assumption; the live test checks it)
 ATTENTION_PENALTY = 0.20   # building income lost by a player who spends all his attention in the field (scaled by his pilot share)
 PILOT_SHARE = {'none': 0.0, 'near': 0.4, 'explore': 0.85, 'raid': 0.85, 'far': 0.85}   # share of attention spent piloting
 CHART_RATE_PER_FLEET_H = 60.0   # new sectors a scouting fleet charts and delivers per active hour (assumption; live test checks it)
-LOOT_WEIGHT = 0.55 * W_RES[0] + 0.30 * W_RES[1] + 0.15 * W_RES[2]   # weight per unit of loot
+LOOT_SPLIT = tuple(G['LOOT_SPLIT'])   # metal, crystal and deuterium shares of any loot value
+LOOT_WEIGHT = LOOT_SPLIT[0] * W_RES[0] + LOOT_SPLIT[1] * W_RES[1] + LOOT_SPLIT[2] * W_RES[2]   # weight per unit of loot
 
 def wv(c):
     return (c[0] * W_RES[0] + c[1] * W_RES[1] + c[2] * W_RES[2]) / 1000.0
 
 # hub exchange (provisional: the owner has not signed off on these four numbers)
-EXCHANGE_FEE_MIN = 0.25      # fee on a unit of weight sold with an empty meter, as a share of par (W_RES)
-EXCHANGE_FEE_MAX = 0.75      # fee once the meter reads one span or more
-EXCHANGE_METER_SHARE = 0.15  # span = this share of the player's mine output over one window, in weight
-EXCHANGE_WINDOW_S = 86400.0  # window at pace 1; scaled by P**0.75 (attention class); the meter forgets a span per window
+EXCHANGE_FEE_MIN = G['EXCHANGE_FEE_MIN']           # fee on a unit of weight sold with an empty meter, as a share of par (W_RES)
+EXCHANGE_FEE_MAX = G['EXCHANGE_FEE_MAX']           # fee once the meter reads one span or more
+EXCHANGE_METER_SHARE = G['EXCHANGE_METER_SHARE']   # span = this share of the player's mine output over one window, in weight
+EXCHANGE_WINDOW_S = G['EXCHANGE_WINDOW_TICKS']     # window at pace 1; scaled by P**0.75 (attention class); the meter forgets a span per window
 def exchange_window(P):
-    return EXCHANGE_WINDOW_S / P ** 0.75
+    return EXCHANGE_WINDOW_S / P ** ATTENTION_EXP
 def exchange_span(mine_levels, P):
     """Span of the meter for mines at (metal, crystal, deut) levels, in weight units."""
     per_hour = sum(w * PROD_BASE[k] * lv * PROD_GROWTH ** lv
@@ -256,26 +284,26 @@ def exchange_return(pressure, value, span):
     return kept(pressure + value) - kept(pressure)
 
 # outposts (provisional: the owner has not signed off on these numbers; docs/design/outposts.md)
-OUTPOST_MIN_RING, OUTPOST_MAX_RING = 9, 20
-OUTPOST_SPACING = 3          # fewest hexes between two outposts
-OUTPOST_MAX_LEVEL = 3
-OUTPOST_COST = (1000.0, 500.0, 200.0)        # level 1; costs never scale with pace
-OUTPOST_GROWTH = 2.5         # cost, store and platform per level
-OUTPOST_BUILD_RATE = 100.0   # (metal+crystal) of a level's cost per game-hour of build time
-OUTPOST_STORE_BASE = (3000.0, 1500.0, 750.0)  # level 1 at pace 1; x P**0.5, like the holds that fill it
-OUTPOST_YIELD_PER_HOUR = 2.0  # per grade point, per level, x ring multiplier, x P
-OUTPOST_PLATFORM_POWER = 40.0
-OUTPOST_RAID_FACTOR = 2.0    # a raid is this many times the ring's group, x the home raid's 0.80..1.15 roll
-OUTPOST_RAID_LOSS = 0.25     # share of every resource above the floor that a lost raid takes
-OUTPOST_REPAIR_SHARE = 0.25  # a repair costs the par value of this share of the level's cost, and this share of its build time
-DENS_YIELD = {'S': 0.5, 'M': 1.0, 'R': 2.0, 'P': 4.0}   # grade points per density (the harvest multiplier)
+OUTPOST_MIN_RING, OUTPOST_MAX_RING = G['OUTPOST_MIN_RING'], G['OUTPOST_MAX_RING']
+OUTPOST_SPACING = G['OUTPOST_SPACING']       # fewest hexes between two outposts
+OUTPOST_MAX_LEVEL = G['OUTPOST_MAX_LEVEL']
+OUTPOST_COST = tuple(G['OUTPOST_COST'])      # level 1; costs never scale with pace
+OUTPOST_GROWTH = G['OUTPOST_GROWTH']         # cost, store and platform per level
+OUTPOST_BUILD_RATE = G['OUTPOST_BUILD_RATE'] # (metal+crystal) of a level's cost per game-hour of build time
+OUTPOST_STORE_BASE = tuple(G['OUTPOST_STORE_BASE'])   # level 1 at pace 1; x P**0.5, like the holds that fill it
+OUTPOST_YIELD_PER_HOUR = G['OUTPOST_YIELD_PER_HOUR']  # per grade point, per level, x ring multiplier, x P
+OUTPOST_PLATFORM_POWER = G['OUTPOST_PLATFORM_POWER']
+OUTPOST_RAID_FACTOR = G['OUTPOST_RAID_FACTOR']    # a raid is this many times the ring's group, x the home raid's 0.80..1.15 roll
+OUTPOST_RAID_LOSS = G['OUTPOST_RAID_LOSS']        # share of every resource above the floor that a lost raid takes
+OUTPOST_REPAIR_SHARE = G['OUTPOST_REPAIR_SHARE']  # a repair costs the par value of this share of the level's cost, and this share of its build time
+DENS_YIELD = {k: v['harvest_multiplier'] for k, v in DENSITY.items()}   # grade points per density (the harvest multiplier)
 def outpost_cost(level):
     return tuple(x * OUTPOST_GROWTH ** (level - 1) for x in OUTPOST_COST)
 def outpost_build_s(level, P=1.0):
     c = outpost_cost(level)
     return (c[0] + c[1]) / OUTPOST_BUILD_RATE * 3600.0 / P
 def outpost_store_cap(level, P=1.0):
-    return tuple(x * OUTPOST_GROWTH ** (max(level, 1) - 1) * P ** 0.5 for x in OUTPOST_STORE_BASE)
+    return tuple(x * OUTPOST_GROWTH ** (max(level, 1) - 1) * P ** FINDS_EXP for x in OUTPOST_STORE_BASE)
 def outpost_platform(level):
     return OUTPOST_PLATFORM_POWER * OUTPOST_GROWTH ** (level - 1) if level > 0 else 0.0
 def outpost_yield_h(density, d, level, P=1.0):
@@ -302,32 +330,32 @@ class Preset:
 
 PRESETS = [
     #       name         P       dt     horizon(h)  sessions/day  min  continuous
-    Preset('persistent',  1.0,    300.0, 24 * 220,  4, 12),
-    Preset('season-7d',   10.0,   30.0,  24 * 14,   8, 15),
-    Preset('dev-100x',    100.0,  5.0,   24 * 3,    0, 0, continuous=True, latency=5.0),
-    Preset('blitz-1h',    600.0,  1.0,   5.0,       0, 0, continuous=True, latency=5.0),
-    Preset('test-8000x',  8000.0, 0.25,  0.6,       0, 0, continuous=True, latency=1.0),
+    Preset('persistent',  PACE['persistent'], 300.0, 24 * 220,  4, 12),
+    Preset('season-7d',   PACE['season'],     30.0,  24 * 14,   8, 15),
+    Preset('dev-100x',    PACE['dev'],        5.0,   24 * 3,    0, 0, continuous=True, latency=5.0),
+    Preset('blitz-1h',    PACE['blitz'],      1.0,   5.0,       0, 0, continuous=True, latency=5.0),
+    Preset('test-8000x',  PACE['test'],       0.25,  0.6,       0, 0, continuous=True, latency=1.0),
 ]
 
 # =====================================================================
 # 3. SIMULATION
 # =====================================================================
 class Sim:
-    def __init__(self, preset, mode='near', max_depth=3, pilot=True, phase_h=0.0):
+    def __init__(self, preset, mode='near', max_depth=None, pilot=True, phase_h=0.0):
         self.phase = phase_h * 3600.0
         self.p = preset
         self.P = preset.P
         self.mode = mode           # 'none' builder | 'near' mixed | 'explore' explorer | 'raid' raider | 'far' greedy far-miner
         self.t = 0.0               # real seconds
         self.res = list(START_RES)
-        self.b = defaultdict(int); self.b['metal'] = 1; self.b['crystal'] = 1
+        self.b = defaultdict(int, START_LEVELS)
         self.r = defaultdict(int)
-        self.ships = defaultdict(int); self.ships['scout'] = 2
+        self.ships = defaultdict(int); self.ships['scout'] = START_SCOUTS
         self.defs = defaultdict(int)
         self.bact, self.bplan = [], []
         self.ract, self.rplan = None, []
         self.sact, self.splan = None, []
-        self.depth = max_depth
+        self.depth = QUEUE_DEPTH if max_depth is None else max_depth
         self.spent = {'b': 1.0, 'r': 1.0, 's': 1.0}
         self.share = {'b': 0.55, 'r': 0.15, 's': 0.30}
         if mode in ('explore', 'raid', 'far'):
@@ -358,7 +386,7 @@ class Sim:
 
     # ------------------------------------------------------------------ helpers
     def slots(self):
-        return 1 + self.r['modfab']
+        return BUILDING_SLOTS[self.r['modfab']]
     def cap(self):
         s = cap_mult(self.P)
         g = VAULT_GROWTH ** self.b['vault']
@@ -400,11 +428,10 @@ class Sim:
     def build_script(self):
         prof = dict(crystal=0.80, deut=0.66, shipyard=0.65, lab=0.55, fab=0.40, depot=0.25, sensor=0.20, grid=0.30)
         mins = dict(crystal=2, deut=1, shipyard=1, lab=1, fab=1, depot=1, sensor=1, grid=1)
-        start = dict(metal=1, crystal=1)
-        cur = defaultdict(int, start)
+        cur = defaultdict(int, START_LEVELS)
         out = []
         def ensure(name, target):
-            target = min(target, 20)
+            target = min(target, MAX_LEVEL)
             while cur[name] < target:
                 cur[name] += 1
                 out.append((name, cur[name]))
@@ -476,7 +503,7 @@ class Sim:
         names = ('metal', 'crystal', 'deut')
         hrs = [self.res[i] / max(ph[i], 5.0) for i in range(3)]
         lo = min(range(3), key=lambda i: hrs[i]); hi = max(range(3), key=lambda i: hrs[i])
-        if hrs[lo] < 0.35 * hrs[hi] and pb.get(names[lo], 0) < 20 and pb.get(names[lo], 0) <= pb.get('metal', 0):
+        if hrs[lo] < 0.35 * hrs[hi] and pb.get(names[lo], 0) < MAX_LEVEL and pb.get(names[lo], 0) <= pb.get('metal', 0):
             n = names[lo]
             if not any(x[0] == n for x in self.bplan) and not any(x[0] == n for x in self.bact):
                 return (n, pb.get(n, 0) + 1)
@@ -522,7 +549,7 @@ class Sim:
             self.rplan.append((n, l)); pr[n] = l
 
     def combat_power(self, count=None):
-        wm, hm, sm = 1 + 0.1 * self.r['weapons'], 1 + 0.1 * self.r['hulls'], 1 + 0.1 * self.r['shields']
+        wm, hm, sm = WEAPON_MOD[self.r['weapons']], HULL_MOD[self.r['hulls']], SHIELD_MOD[self.r['shields']]
         tot = 0.0
         for c in ('corvette', 'frigate', 'cruiser'):
             n = self.ships[c] if count is None else count.get(c, 0)
@@ -532,12 +559,12 @@ class Sim:
 
     def def_power(self):
         grid = self.b['grid']
-        v = GRID_VIRTUAL_UNITS.get(grid, 4.0 * 1.3 ** max(0, grid - 3)) * ship_power('scout')
-        st = sum(DEFS[k][1] * n for k, n in self.defs.items()) * (1 + 0.04 * grid)
+        v = GRID_VIRTUAL_UNITS[grid] * ship_power('scout')
+        st = sum(DEFS[k][1] * n for k, n in self.defs.items()) * (1 + GRID_BONUS * grid)
         return v + st
 
     def raid_eligible(self):
-        return self.b['shipyard'] >= 2 and self.t >= RAID_MIN_AGE_S / self.P ** 0.75
+        return self.b['shipyard'] >= 2 and self.t >= RAID_MIN_AGE_S / self.P ** ATTENTION_EXP
 
     def plan_ships(self):
         if not self.b['shipyard']:
@@ -548,7 +575,7 @@ class Sim:
         item = None
         # defence first when a raid would beat us
         if self.raid_eligible() and self.b['grid'] >= 1:
-            need = 1.15 * raid_power(self.econ_pts)
+            need = RAID_POWER_ROLL_MAX * raid_power(self.econ_pts)
             if self.def_power() < need:
                 for k in ('bastion', 'lancer', 'turret'):
                     pre = DEFS[k][2]
@@ -690,7 +717,7 @@ class Sim:
                 self.fleet_pts += wv(SHIPS[cls][0])
             else:
                 self.defs[cls] += 1
-                self.def_pts += 0.5 * wv(DEFS[cls][0])
+                self.def_pts += DEFENCE_SHARE * wv(DEFS[cls][0])
             self.pilot_dirty = True
             self.sact[2] -= 1
             if self.sact[2] <= 0:
@@ -722,8 +749,8 @@ class Sim:
 
     # ------------------------------------------------------------------ pilot economy
     def fuel_params(self):
-        eff = 1 - 0.1 * self.r['fuel_eff']
-        cap = (1 + 0.15 * self.r['tanks']) * (1 + 0.25 * self.b['depot'])
+        eff = FUEL_RATE_MOD[self.r['fuel_eff']]
+        cap = FUEL_CAP_MOD[self.r['tanks']] * FUEL_DEPOT_MOD[self.b['depot']]
         return eff, cap
     def pilot_scale(self):
         return self.P ** BETA
@@ -741,15 +768,15 @@ class Sim:
         far = self.mode == 'far'
         ratio_req = 1.5 if far else 3.0
         hunt_ring_cap = 40 if far else 20
-        harvest_mod = 1 + 0.2 * self.r['harvest']
+        harvest_mod = HARVEST_YIELD[self.r['harvest']]
         price = FUEL_PRICE_DEUT
         active = self.active_frac()
-        # mining fleet: up to 3 haulers, else scouts
+        # mining fleet: up to 3 haulers, else scouts (a ship's mass is its hull)
         nh = min(sh['hauler'], 3); ns = sh['scout'] if nh < 3 else 0
-        cargo = 200 * nh + 20 * ns
-        mass = 80 * nh + 30 * ns
+        cargo = SHIPS['hauler'][4] * nh + SHIPS['scout'][4] * ns
+        mass = SHIPS['hauler'][1] * nh + SHIPS['scout'][1] * ns
         mp = nh * ship_power('hauler') + ns * ship_power('scout')
-        fuel_tank = (100 * nh + 60 * ns) * capm
+        fuel_tank = (SHIPS['hauler'][5] * nh + SHIPS['scout'][5] * ns) * capm
         # combat fleet
         cps = self.combat_power()
         cval = sum(sh[c] * ship_cost_tot(c) for c in ('corvette', 'frigate', 'cruiser'))
@@ -840,7 +867,7 @@ class Sim:
                 out['loss'] += val * attrition(r)
                 squad_mass = min(cm, 2.0 * ratio_req * npc_power(d))
                 out['fuel'] += k / 4.0 * (2 * hops + 4) * FUEL_RATE * squad_mass * eff * price
-            out['salv'] = [salv * 0.55, salv * 0.30, salv * 0.15]
+            out['salv'] = [salv * share for share in LOOT_SPLIT]
             out['hunt_d'] = best_d
             # ---- derelicts: boarded by the combat fleet (hauler in company doubles loot -> ignored)
             der_cap = 3600.0 / 48.0 * active
@@ -857,12 +884,12 @@ class Sim:
                 der += val
                 out['der_ring'][d] = val
                 out['sites_ring'][d] = k
-                r = cps / (npc_power(d) * 0.6)
+                r = cps / (npc_power(d) * AMBUSH_GUARD_SHARE)
                 out['loss'] += val * derelict_ambush(d) * attrition(r)
                 hops = max(1, abs(d - HOME_DIST) + 1)
                 squad_mass = min(cm, 2.0 * ratio_req * npc_power(d))
                 out['fuel'] += k / 2.0 * (2 * hops + 2) * FUEL_RATE * squad_mass * eff * price
-            out['der'] = [der * 0.55, der * 0.30, der * 0.15]
+            out['der'] = [der * share for share in LOOT_SPLIT]
         return out
 
     def active_frac(self):
@@ -908,7 +935,7 @@ class Sim:
         tot = self.res[0] + self.res[1] + self.res[2] + 1e-9
         self.loss_value += loss
         for i in range(3):
-            self.res[i] -= loss * (0.55, 0.3, 0.15)[i]
+            self.res[i] -= loss * LOOT_SPLIT[i]
         cps = self.combat_power()
         for d, k in r['kills_ring'].items():
             ratio = cps / npc_power(d)
@@ -923,7 +950,7 @@ class Sim:
             new = max(0.0, min(n, total - self.boarded[d]))
             self.boarded[d] += new
             v = derelict_value(d) * self.pilot_scale()
-            self.explore_raw += new * (BOARD_VALUE_SHARE * v * LOOT_WEIGHT / 1000.0 + DISCOVERY_POINTS * t ** 1.5)
+            self.explore_raw += new * (BOARD_VALUE_SHARE * v * LOOT_WEIGHT / 1000.0 + discovery_points(t))
         fleets = {'explore': 2.0, 'near': 1.0}.get(self.mode, 0.0)
         if fleets and self.charted < 3 * (r['reach'] + 2) * (r['reach'] + 3):
             n = PILOT_SKILL * fleets * CHART_RATE_PER_FLEET_H * self.active_frac() * dt / 3600.0 * (0.5 if self.mode == 'near' else 1.0)
@@ -1075,7 +1102,7 @@ def static_tables():
         if d <= 25: return 10 * ship_power('frigate')
         return 20 * 1.2 * ship_power('cruiser')
     for d in (1, 2, 4, 6, 8, 9, 10, 12, 15, 18, 20, 21, 25, 30, 35):
-        z = 'inner' if d <= 8 else 'outer' if d <= 20 else 'wander'
+        z = 'inner' if d <= INNER_RING else 'outer' if d <= OUTER_RING else 'wander'
         c, cnt, m = npc_group(d)
         tr = tile_reserve(d)
         L.append(f'| {d} | {z} | T{threat(d)} | {c} x{cnt} (x{m:.2f} stats) | {npc_power(d):.0f} | {old_power(d):.0f} | {kill_loot_value(d):.0f} | '
@@ -1086,13 +1113,14 @@ def static_tables():
 def storage_cap_table():
     L = ['### Storage caps (metal / crystal / deut) by Vault level and pace', '',
          '| Vault level | cost (m/c) | pace 1 | pace 10 | pace 600 |', '|---|---|---|---|---|']
+    base, growth = BUILD['vault']
     for lv in (0, 1, 2, 3, 4, 5, 6, 8, 10, 14):
         g = VAULT_GROWTH ** lv
-        cost = '-' if lv == 0 else '%d/%d' % (200 * 1.7 ** (lv - 1), 100 * 1.7 ** (lv - 1))
+        cost = '-' if lv == 0 else '%d/%d' % (base[0] * growth ** (lv - 1), base[1] * growth ** (lv - 1))
         row = [f'{lv}', cost]
         for P in (1, 10, 600):
             f = g * P ** CAP_PACE_EXP
-            row.append('%d / %d / %d' % (5000 * f, 3500 * f, 2500 * f))
+            row.append('%d / %d / %d' % tuple(VAULT_BASE_CAP[k] * f for k in ('metal', 'crystal', 'deut')))
         L.append('| ' + ' | '.join(row) + ' |')
     L.append('')
     return '\n'.join(L)
@@ -1116,9 +1144,9 @@ def time_table():
 def defence_table():
     L = ['### Defence structures', '', '| structure | cost (m/c/d) | power | res per power | requires |', '|---|---|---|---|---|']
     for k, (c, pw, pre) in DEFS.items():
-        L.append(f'| {k} | {c[0]}/{c[1]}/{c[2]} | {pw:.0f} | {sum(c)/pw:.1f} | ' + ', '.join(f'{a} {b}' for a, b in pre.items()) + ' |')
+        L.append(f'| {k} | {c[0]:.0f}/{c[1]:.0f}/{c[2]:.0f} | {pw:.0f} | {sum(c)/pw:.1f} | ' + ', '.join(f'{a} {b}' for a, b in pre.items()) + ' |')
     for c in ('scout', 'corvette', 'frigate', 'cruiser'):
-        L.append(f'| (ship) {c} | {SHIPS[c][0][0]}/{SHIPS[c][0][1]}/{SHIPS[c][0][2]} | {ship_power(c):.0f} | {sum(SHIPS[c][0])/ship_power(c):.1f} | |')
+        L.append(f'| (ship) {c} | {SHIPS[c][0][0]:.0f}/{SHIPS[c][0][1]:.0f}/{SHIPS[c][0][2]:.0f} | {ship_power(c):.0f} | {sum(SHIPS[c][0])/ship_power(c):.1f} | |')
     L.append('')
     L.append('Raid power by econ points S: ' + ', '.join(f'S={x}: {raid_power(x):.0f}' for x in (1, 10, 100, 500, 1000, 2000)))
     L.append('')
@@ -1332,7 +1360,7 @@ def full_report(results, presets):
 
 def long_run():
     """Persistent world for a year with the same competent player, not stopping at the endgame kit."""
-    p = Preset('persistent', 1.0, 600.0, 24 * 365, 4, 12)
+    p = Preset('persistent', PACE['persistent'], 600.0, 24 * 365, 4, 12)
     s = Sim(p, mode='near')
     end = p.horizon_h * 3600.0
     marks = [d * 86400.0 for d in (30, 60, 74, 90, 120, 150, 180, 240, 300, 365)]
@@ -1348,8 +1376,8 @@ def long_run():
 
 def sensitivity():
     L = ['| world | sessions/day x minutes | first Corvette | Shipyard 4 | slot 2 | first Cruiser | endgame | wasted production |', '|---|---|---|---|---|---|---|---|']
-    cases = [('persistent', 1.0, 300.0, 24 * 220, [(1, 15), (2, 15), (4, 12), (8, 12)]),
-             ('season-7d', 10.0, 30.0, 24 * 21, [(2, 15), (4, 15), (8, 15), (16, 15)])]
+    cases = [('persistent', PACE['persistent'], 300.0, 24 * 220, [(1, 15), (2, 15), (4, 12), (8, 12)]),
+             ('season-7d', PACE['season'], 30.0, 24 * 21, [(2, 15), (4, 15), (8, 15), (16, 15)])]
     for name, P, dt, hz, ss in cases:
         for ns, ml in ss:
             p = Preset(name, P, dt, hz, ns, ml)

@@ -9,6 +9,8 @@ use crate::maths;
 pub const PACE_MIN: f64 = 0.05;
 /// Pace above which the storage cap grows with P^0.25 instead of P^0.75.
 pub const CAP_KNEE: f64 = 10.0;
+/// The storage cap's exponent above the knee; below it the cap is attention class.
+pub const CAP_EXPONENT_PAST_KNEE: f64 = 0.25;
 pub const PACE_MAX: f64 = 20_000.0;
 
 /// How a timer or quantity reacts to the world pace. The exponent is the
@@ -152,7 +154,7 @@ impl Pace {
     }
 
     pub fn attention_ticks(&self, base: f64) -> u64 {
-        ((base / maths::powf(self.0, 0.75)).ceil() as u64).max(1)
+        ((base / maths::powf(self.0, PaceClass::Attention.exponent())).ceil() as u64).max(1)
     }
 
     /// Storage cap multiplier: P^0.75 up to the season pace, then P^0.25.
@@ -161,11 +163,11 @@ impl Pace {
     /// within a few windows of production; at a blitz P^0.75 (121x) held four
     /// hours of mine output and the Storage Vault never mattered.
     pub fn cap_mult(&self) -> f32 {
-        let p = self.0;
+        let (p, attention) = (self.0, PaceClass::Attention.exponent());
         if p <= CAP_KNEE {
-            maths::powf(p, 0.75) as f32
+            maths::powf(p, attention) as f32
         } else {
-            (maths::powf(CAP_KNEE, 0.75) * maths::powf(p / CAP_KNEE, 0.25)) as f32
+            (maths::powf(CAP_KNEE, attention) * maths::powf(p / CAP_KNEE, CAP_EXPONENT_PAST_KNEE)) as f32
         }
     }
 
