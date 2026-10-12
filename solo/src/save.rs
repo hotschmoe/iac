@@ -2,12 +2,13 @@
 // `Snapshot` as JSON. A host stores the bytes whole and never reads them.
 //
 // The header names what wrote it, so a save from another format, economy
-// or world generator is refused before its snapshot is parsed, the way the
-// server refuses a database from another version. The digest catches a
-// document that was cut short or altered.
+// or world generator is refused before its snapshot is parsed, by the check
+// that makes the server refuse a database from another version
+// (`iac_sim::host::Stale`). The digest catches a document that was cut short
+// or altered.
 
-use iac_shared::constants::{ECONOMY_VERSION, WORLDGEN_VERSION};
 use iac_shared::protocol::GameEvent;
+use iac_sim::host::Stale;
 use iac_sim::Snapshot;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
@@ -74,19 +75,8 @@ pub fn decode(document: &[u8]) -> Result<(Bookmark, Snapshot), String> {
             stamp.format
         ));
     }
-    if stamp.economy_version != ECONOMY_VERSION {
-        return Err(format!(
-            "this save is economy version {}, this build runs version {ECONOMY_VERSION}; start a new game",
-            stamp.economy_version
-        ));
-    }
-    if stamp.worldgen_version != WORLDGEN_VERSION {
-        return Err(format!(
-            "this world was generated with worldgen version {}, this build runs version {WORLDGEN_VERSION}; \
-             start a new game",
-            stamp.worldgen_version
-        ));
-    }
+    Stale::check(stamp.economy_version, stamp.worldgen_version)
+        .map_err(|stale| format!("{}; start a new game", stale.sentence("save")))?;
     let header: Header = serde_json::from_slice(head).map_err(|e| format!("this save has a damaged header ({e})"))?;
     if xxh3_64(body) != header.digest {
         return Err("this save is damaged: its contents do not match its checksum".to_string());

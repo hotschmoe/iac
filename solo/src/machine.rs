@@ -23,7 +23,7 @@
 use iac_shared::pace::{Pace, PRESETS};
 use iac_shared::protocol::ServerMessage;
 use iac_shared::world::home_seats;
-use iac_sim::auth::hash_token;
+use iac_sim::auth::{hash_token, token_text};
 use iac_sim::bot::{Attention, Personality, Style};
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
@@ -195,7 +195,7 @@ fn new_game(config: &NewGame, now_ms: u64) -> Result<World, String> {
     let mut minted = 0u32;
     let mint = || {
         minted += 1;
-        hash_token(&format!("{}/{minted}", config.entropy)).iter().map(|b| format!("{b:02x}")).collect()
+        token_text(&hash_token(&format!("{}/{minted}", config.entropy)))
     };
     World::create(seed, pace, config.name.trim(), &bots, now_ms, mint)
 }

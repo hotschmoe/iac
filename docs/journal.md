@@ -5018,3 +5018,78 @@ Run on the merged tree: the workspace builds; `cargo test --workspace` 153 passe
 0 failed, `both_targets` taking 131 s of it; clippy silent; `check_sim_constants.py`
 agrees; `flutter analyze` clean; pinned `flutter test` 409 passed; the single-player
 bundle rebuilt; `solo_e2e.dart` OK in 192 s.
+
+## 2026-10-13: one host core
+
+Branch `worktree-agent-a7d2495b1f2a34311`, from master at `a21b6ca`. Not merged, not
+pushed. The owner asked that everything shared be written once and that hosts
+differ only as solo against multiplayer and as native against web
+(`decisions.md`, same date, has the design and what was left). Storage was not
+touched beyond the version check: another study has it.
+
+**What was written more than once, and where it is now.**
+
+| what | was in | is in |
+|---|---|---|
+| the order of a tick | `server/main.rs::run_tick` with `Network::broadcast_updates`, `solo/world.rs::step` with `advance`, `sim/headless.rs::step`, and by hand in `sim/tests/bots.rs`, `determinism.rs`, `chart_equivalence.rs` and a test of `server/database.rs` | `iac_sim::host::step` |
+| the session gate and the session-to-account map | `server/network.rs` (`handle_message`, `log_in`, `answer`, `ClientSession`), `solo/world.rs` (`receive`, `log_in`, `logged_in`) | `Host::receive`, behind a `Door` (`Tokens`, `Commander`) |
+| a session's `tick_update` after a tick | `Network::broadcast_updates`, `World::advance` | `Host::step` |
+| seating and resuming a world's bots | `server/main.rs::seat_bots`, `solo::World::create` and `load` | `Host::new`, `Host::enlist` |
+| refusing a stored world of another version | `solo/save.rs::decode`, `server/database.rs` (`WorldError::OldWorld`, `OldWorldgen`) | `host::Stale` |
+| a token's text (64 hex characters) | `server/auth.rs`, `solo/machine.rs` | `iac_sim::auth::token_text` |
+| the script of the two scripted-world tests, 48 lines twice | `determinism.rs`, `chart_equivalence.rs` | `sim/tests/common` (`Pilots`) |
+
+**What each host still holds.** Lines before and after:
+
+| file | before | after | what is left in it |
+|---|---|---|---|
+| `server/src/main.rs` | 314 | 315 | clap, the tokio tick loop, tick timing (now a `Watch`), the wording of `--bot` |
+| `server/src/network.rs` without its tests | 336 | 243 | sockets, the queue, static files |
+| `solo/src/world.rs` | 357 | 315 | the told clock, catch-up, the absence, when to save |
+| `solo/src/save.rs` | 100 | 90 | the document and its format number |
+| `sim/src/headless.rs` | 965 | 993 | the report's counting, as the step's `Watch`; its seats and counters are two lists now |
+| `sim/src/host.rs` | none | 298 | the core |
+
+`main.rs` did not shrink: the six lines of the sequence left and the timing that
+used to sit between them became a small type. The engine is out of its
+`Arc<Mutex<..>>`; `Network` no longer holds a world.
+
+**Nothing moved.** The three hosts had the tick in three orders (the server sent
+frames before the bots observed, the single-player host after the persist, the
+headless runner drained events last). The differences touch nothing a frame or
+a bot reads, and that was read in the code and then measured:
+`sim-run --pace season --days 7` (604,800 ticks, 16 players, 323,876 bot turns)
+prints the same 201 lines before and after, snapshot `46568e4f24b6d664`, at 1177
+and 1172 ticks a second. `fixtures/` and `chart_golden.txt` are untouched and
+pass; `both_targets.rs` passes. `ECONOMY_VERSION`, `SAVE_FORMAT` and the wire
+protocol are as they were.
+
+**Two things a reader of logs or of stderr will see differently.** A server that
+refuses a database of another economy or generator says "this build runs
+version" where it said "this server runs version". The log line for a client
+that left is written when the next tick takes it from the queue, not the moment
+the socket closes.
+
+**The cross-host guard**, `server/tests/hosts_agree.rs`: see `decisions.md` for
+how it gets one world into both hosts and how it knows which tick an order
+landed in. It plays world seed 20261013 at pace `test` with seven bots (the five
+personalities hands-on, a check-in explorer, a hybrid turtle), 40 ticks, nine
+batches of orders. It ran in 44.8 s the first time and passed.
+
+That it bites, each change made by hand in `host::step` and taken back by hand:
+
+| change | guard | other suites |
+|---|---|---|
+| turns after the tick, in the server only (the step asked for the name of its program) | failed at frame 5: `/homeworld/build_pending/0/id: the server has 77, the single-player host 72` | not run |
+| turns after the tick, in every host | passed, as it must: both hosts moved together | `chart_equivalence` failed at tick 7, `bots.rs` 1 of 8 failed, `determinism` passed |
+
+So the guard holds a host to the core, and the recordings hold the core to
+itself. Neither alone would do.
+
+**The in-process tests of `network.rs`** kept their thirteen cases. They used to
+plant a logged-in session in the map and call `broadcast_updates`; there is no
+such map in the transport now and no broadcast outside a tick. They log in
+through the queue and the `Tokens` door, send through the queue, and take an
+update from a real `Host::step` where the old test ticked first; where a test
+looks between two ticks it builds that one view by hand and sends it through
+`Network::send`. None was archived.

@@ -1,8 +1,10 @@
 // HTTP/WebSocket server (axum). WebSocket upgrades are accepted on any path
 // (the TUI connects to `/`, the web client to `/ws`); plain GETs are served
 // from the optional static web dir with SPA fallback.
-// Session management, message routing, state broadcasting.
-// Ported from Zig network.zig.
+//
+// This is the transport and nothing above it: a session is a socket with a
+// number. Who is logged in and what a message is answered with is the host
+// core's (`iac_sim::host`); messages wait here until the tick hands them over.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -23,42 +25,35 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use log::{info, warn};
 
-use iac_shared::protocol::{AuthRequest, AuthResult, ClientMessage, ServerMessage};
-use iac_sim::{commands, views, GameEngine};
+use iac_shared::protocol::{ClientMessage, ServerMessage};
+use iac_sim::host::{Door, SessionId};
+use iac_sim::Host;
+
+type Sockets = Arc<Mutex<HashMap<SessionId, mpsc::UnboundedSender<Message>>>>;
 
 pub struct Network {
     port: u16,
-    engine: Arc<Mutex<GameEngine>>,
-    sessions: Arc<Mutex<HashMap<u64, ClientSession>>>,
-    next_session_id: Arc<Mutex<u64>>,
-    incoming_tx: mpsc::UnboundedSender<QueuedMessage>,
-    incoming_rx: Arc<Mutex<mpsc::UnboundedReceiver<QueuedMessage>>>,
+    sockets: Sockets,
+    next_session_id: Arc<Mutex<SessionId>>,
+    incoming_tx: mpsc::UnboundedSender<Incoming>,
+    incoming_rx: Mutex<mpsc::UnboundedReceiver<Incoming>>,
 }
 
-#[derive(Debug, Clone)]
-struct QueuedMessage {
-    session_id: u64,
-    msg: ClientMessage,
-}
-
-#[derive(Debug, Clone)]
-pub struct ClientSession {
-    pub id: u64,
-    pub sender: Option<mpsc::UnboundedSender<Message>>,
-    pub player_id: Option<u64>,
-    pub authenticated: bool,
+#[derive(Debug)]
+enum Incoming {
+    Message(SessionId, ClientMessage),
+    Closed(SessionId),
 }
 
 impl Network {
-    pub fn init(port: u16, engine: Arc<Mutex<GameEngine>>) -> Network {
+    pub fn init(port: u16) -> Network {
         let (tx, rx) = mpsc::unbounded_channel();
         Network {
             port,
-            engine,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sockets: Arc::new(Mutex::new(HashMap::new())),
             next_session_id: Arc::new(Mutex::new(1)),
             incoming_tx: tx,
-            incoming_rx: Arc::new(Mutex::new(rx)),
+            incoming_rx: Mutex::new(rx),
         }
     }
 
@@ -74,7 +69,7 @@ impl Network {
         info!("HTTP/WebSocket server listening on {} (ws://{}/ws)", addr, addr);
 
         let state = HttpState {
-            sessions: Arc::clone(&self.sessions),
+            sockets: Arc::clone(&self.sockets),
             next_session_id: Arc::clone(&self.next_session_id),
             incoming_tx: self.incoming_tx.clone(),
             static_dir: web_dir.map(|dir| {
@@ -93,126 +88,51 @@ impl Network {
         Ok(addr)
     }
 
-    pub fn process_incoming(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // Drain the entire queue each tick, matching the Zig server.
+    /// Hand `host` everything that arrived since the last tick, in the order
+    /// it arrived, and send each session what it is answered. A message
+    /// whose session has gone meanwhile is dropped.
+    pub fn deliver<D: Door>(&self, host: &mut Host<D>) {
         let mut batch = Vec::new();
         {
             let mut rx = self.incoming_rx.lock().unwrap();
-            while let Ok(msg) = rx.try_recv() {
-                batch.push(msg);
+            while let Ok(incoming) = rx.try_recv() {
+                batch.push(incoming);
             }
         }
 
-        for queued in batch {
-            self.handle_message(queued.session_id, queued.msg).unwrap_or_else(|e| {
-                warn!("Error handling message from session {}: {}", queued.session_id, e);
-            });
-        }
-
-        Ok(())
-    }
-
-    fn handle_message(&self, session_id: u64, msg: ClientMessage) -> Result<(), Box<dyn std::error::Error>> {
-        let session = {
-            let sessions = self.sessions.lock().unwrap();
-            sessions.get(&session_id).cloned()
-        };
-
-        let sess = session.ok_or("Session not found")?;
-
-        match (sess.player_id.filter(|_| sess.authenticated), msg) {
-            (Some(pid), msg) => self.answer(&sess, pid, msg),
-            (None, ClientMessage::Auth(auth)) => self.log_in(&sess, auth),
-            (None, msg) => match commands::not_logged_in(&msg) {
-                Some(refusal) => self.send_to_session(&sess, refusal),
-                None => Ok(()),
-            },
-        }
-    }
-
-    fn log_in(&self, sess: &ClientSession, auth: AuthRequest) -> Result<(), Box<dyn std::error::Error>> {
-        let outcome = {
-            let mut engine = self.engine.lock().unwrap();
-            engine.authenticate(&auth.player_name, auth.token.as_deref(), auth.agent, crate::auth::generate_token)
-        };
-        let granted = match outcome {
-            Ok(granted) => granted,
-            Err(err) => {
-                let (code, message) = commands::auth_failure(&auth.player_name, err);
-                return self.send_to_session(sess, ServerMessage::AuthResult(AuthResult {
-                    success: false,
-                    player_id: None,
-                    token: None,
-                    code: Some(code),
-                    message: Some(message),
-                }));
+        let mut replies = Vec::new();
+        for incoming in batch {
+            match incoming {
+                Incoming::Closed(session) => {
+                    info!("Client disconnected (session {}, player {:?})", session, host.player_of(session));
+                    host.close(session);
+                }
+                Incoming::Message(session, msg) => {
+                    if !self.sockets.lock().unwrap().contains_key(&session) {
+                        warn!("Error handling message from session {}: Session not found", session);
+                        continue;
+                    }
+                    host.receive(session, msg, &mut replies);
+                    for reply in replies.drain(..) {
+                        self.send(session, &reply);
+                    }
+                }
             }
-        };
+        }
+    }
 
+    pub fn send(&self, session: SessionId, msg: &ServerMessage) {
+        let json = match serde_json::to_string(msg) {
+            Ok(json) => json,
+            Err(e) => return warn!("Failed to encode a message for session {}: {}", session, e),
+        };
+        let sockets = self.sockets.lock().unwrap();
+        if let Some(sender) = sockets.get(&session)
+            && let Err(e) = sender.send(Message::Text(json.into()))
         {
-            let mut sessions = self.sessions.lock().unwrap();
-            if let Some(s) = sessions.get_mut(&sess.id) {
-                s.player_id = Some(granted.player_id);
-                s.authenticated = true;
-            }
+            warn!("Failed to send to session {}: {}", session, e);
         }
-
-        let message = match (&granted.new_token, granted.registered) {
-            (Some(_), true) => Some("account created; keep this token, it is your password".to_string()),
-            (Some(_), false) => Some("account claimed; keep this token, it is your password".to_string()),
-            (None, _) => None,
-        };
-        self.send_to_session(sess, ServerMessage::AuthResult(AuthResult {
-            success: true,
-            player_id: Some(granted.player_id),
-            token: granted.new_token,
-            code: None,
-            message,
-        }))?;
-
-        self.answer(sess, granted.player_id, ClientMessage::RequestFullState)
     }
-
-    /// One message of a logged-in session: the engine words every reply.
-    fn answer(&self, session: &ClientSession, pid: u64, msg: ClientMessage) -> Result<(), Box<dyn std::error::Error>> {
-        let replies = self.engine.lock().unwrap().answer(pid, msg);
-        for reply in replies {
-            self.send_to_session(session, reply)?;
-        }
-        Ok(())
-    }
-
-    pub fn broadcast_updates(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let events = {
-            let mut engine = self.engine.lock().unwrap();
-            engine.drain_events()
-        };
-
-        let sessions = self.sessions.lock().unwrap();
-        let engine = self.engine.lock().unwrap();
-
-        for (_, session) in sessions.iter() {
-            if !session.authenticated { continue; }
-            let Some(player_id) = session.player_id else { continue; };
-
-            let update = ServerMessage::TickUpdate(views::tick_update(&engine, player_id, &events));
-
-            self.send_to_session(session, update).unwrap_or_else(|e| {
-                warn!("Failed to send update to session {}: {}", session.id, e);
-            });
-        }
-
-        Ok(())
-    }
-
-    fn send_to_session(&self, session: &ClientSession, msg: ServerMessage) -> Result<(), Box<dyn std::error::Error>> {
-        let json = serde_json::to_string(&msg)?;
-        if let Some(ref sender) = session.sender {
-            sender.send(Message::Text(json.into()))?;
-        }
-        Ok(())
-    }
-
 }
 
 // ── WebSocket I/O Tasks ───────────────────────────────────────────
@@ -230,10 +150,10 @@ async fn writer_task(
 }
 
 async fn reader_task(
-    session_id: u64,
+    session_id: SessionId,
     mut ws: SplitStream<WebSocket>,
-    sessions: Arc<Mutex<HashMap<u64, ClientSession>>>,
-    incoming_tx: mpsc::UnboundedSender<QueuedMessage>,
+    sockets: Sockets,
+    incoming_tx: mpsc::UnboundedSender<Incoming>,
 ) {
     while let Some(msg) = ws.next().await {
         match msg {
@@ -241,10 +161,7 @@ async fn reader_task(
                 let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
                 match parsed {
                     Ok(client_msg) => {
-                        if let Err(e) = incoming_tx.send(QueuedMessage {
-                            session_id,
-                            msg: client_msg,
-                        }) {
+                        if let Err(e) = incoming_tx.send(Incoming::Message(session_id, client_msg)) {
                             warn!("Failed to queue message: {}", e);
                         }
                     }
@@ -262,22 +179,17 @@ async fn reader_task(
         }
     }
 
-    // Clean up session on disconnect
-    {
-        let mut sessions = sessions.lock().unwrap();
-        if let Some(session) = sessions.remove(&session_id) {
-            info!("Client disconnected (session {}, player {:?})", session_id, session.player_id);
-        }
-    }
+    sockets.lock().unwrap().remove(&session_id);
+    let _ = incoming_tx.send(Incoming::Closed(session_id));
 }
 
 // ── HTTP transport ────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct HttpState {
-    sessions: Arc<Mutex<HashMap<u64, ClientSession>>>,
-    next_session_id: Arc<Mutex<u64>>,
-    incoming_tx: mpsc::UnboundedSender<QueuedMessage>,
+    sockets: Sockets,
+    next_session_id: Arc<Mutex<SessionId>>,
+    incoming_tx: mpsc::UnboundedSender<Incoming>,
     static_dir: Option<ServeDir<ServeFile>>,
 }
 
@@ -323,15 +235,10 @@ async fn run_session(socket: WebSocket, state: HttpState) {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(writer_task(ws_write, rx));
 
-    state.sessions.lock().unwrap().insert(session_id, ClientSession {
-        id: session_id,
-        sender: Some(tx),
-        player_id: None,
-        authenticated: false,
-    });
+    state.sockets.lock().unwrap().insert(session_id, tx);
     info!("Client connected (session {})", session_id);
 
-    reader_task(session_id, ws_read, state.sessions, state.incoming_tx).await;
+    reader_task(session_id, ws_read, state.sockets, state.incoming_tx).await;
 }
 
 #[cfg(test)]
@@ -340,30 +247,67 @@ mod tests {
     use iac_shared::constants::ShipClass;
     use iac_shared::hex::Hex;
     use iac_shared::pace::Pace;
-    use iac_shared::protocol::{Command, ErrorCode, GameEvent, HarvestResource};
+    use iac_shared::protocol::{AuthRequest, Command, ErrorCode, GameEvent, HarvestResource};
     use iac_shared::scaling::{BuildingType, ResearchType};
     use iac_sim::commands::command_error_message;
-    use iac_sim::views::event_for;
+    use iac_sim::host::Tokens;
+    use iac_sim::views::{self, event_for};
+    use iac_sim::GameEngine;
     use serde_json::Value;
 
-    fn network_with_player() -> (Network, Arc<Mutex<GameEngine>>, u64, u64, mpsc::UnboundedReceiver<Message>) {
-        let engine = GameEngine::new(42, Pace::default());
-        let engine = Arc::new(Mutex::new(engine));
-        let (pid, fid) = {
-            let mut e = engine.lock().unwrap();
-            let pid = e.register_player("Watcher".to_string()).unwrap();
-            let fid = e.fleets.values().find(|f| f.owner_id == pid).unwrap().id;
-            (pid, fid)
-        };
-        let net = Network::init(0, Arc::clone(&engine));
-        let (tx, rx) = mpsc::unbounded_channel();
-        net.sessions.lock().unwrap().insert(1, ClientSession {
-            id: 1,
-            sender: Some(tx),
-            player_id: Some(pid),
-            authenticated: true,
-        });
-        (net, engine, pid, fid, rx)
+    type Mint = fn() -> String;
+
+    /// A world hosted as the server hosts it, and one player logged in over
+    /// session 1 of a network whose socket is a channel.
+    struct Table {
+        net: Network,
+        host: Host<Tokens<Mint>>,
+        pid: u64,
+        fid: u64,
+        rx: mpsc::UnboundedReceiver<Message>,
+    }
+
+    fn table() -> Table {
+        let mut host = Host::new(GameEngine::new(42, Pace::default()), Tokens(crate::auth::generate_token as Mint));
+        let net = Network::init(0);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        net.sockets.lock().unwrap().insert(1, tx);
+        let auth = AuthRequest { player_name: "Watcher".to_string(), token: None, agent: false };
+        net.incoming_tx.send(Incoming::Message(1, ClientMessage::Auth(auth))).unwrap();
+        net.deliver(&mut host);
+        let pid = next_message(&mut rx)["player_id"].as_u64().expect("logged in");
+        assert_eq!(next_message(&mut rx)["type"], "full_state");
+        let fid = host.engine().fleets.values().find(|f| f.owner_id == pid).unwrap().id;
+        Table { net, host, pid, fid, rx }
+    }
+
+    impl Table {
+        fn engine(&mut self) -> &mut GameEngine {
+            self.host.engine_mut()
+        }
+
+        /// One message from the session, through the queue, and its first answer.
+        fn say(&mut self, msg: ClientMessage) -> Value {
+            self.net.incoming_tx.send(Incoming::Message(1, msg)).unwrap();
+            self.net.deliver(&mut self.host);
+            next_message(&mut self.rx)
+        }
+
+        /// One tick of the host, and the update the session is sent for it.
+        fn tick(&mut self) -> Value {
+            let net = &self.net;
+            self.host.step(&mut (), |session, frame| net.send(session, &frame)).unwrap();
+            next_message(&mut self.rx)
+        }
+
+        /// The update the session would be sent for the world as it stands,
+        /// where a test looks between two ticks.
+        fn update(&mut self) -> Value {
+            let events = self.host.engine_mut().drain_events();
+            let update = views::tick_update(self.host.engine(), self.pid, &events);
+            self.net.send(1, &ServerMessage::TickUpdate(update));
+            next_message(&mut self.rx)
+        }
     }
 
     fn next_message(rx: &mut mpsc::UnboundedReceiver<Message>) -> Value {
@@ -375,32 +319,30 @@ mod tests {
 
     #[test]
     fn losing_every_fleet_is_signalled_with_an_empty_list() {
-        let (net, engine, _pid, fid, mut rx) = network_with_player();
+        let mut t = table();
+        let fid = t.fid;
 
-        net.broadcast_updates().unwrap();
-        let before = next_message(&mut rx);
+        let before = t.update();
         assert_eq!(before["fleets"].as_array().unwrap().len(), 1);
         assert_eq!(before["fleets"][0]["id"], fid);
 
         // Combat leaves a wiped-out fleet with no ships.
-        engine.lock().unwrap().fleets.get_mut(&fid).unwrap().ship_count = 0;
-        net.broadcast_updates().unwrap();
-        let during = next_message(&mut rx);
+        t.engine().fleets.get_mut(&fid).unwrap().ship_count = 0;
+        let during = t.update();
         assert_eq!(during["fleets"], serde_json::json!([]), "dead fleet must not be listed: {during}");
 
         // Once reaped, the list stays an explicit empty array, never absent.
-        engine.lock().unwrap().tick().unwrap();
-        assert!(!engine.lock().unwrap().fleets.contains_key(&fid));
-        net.broadcast_updates().unwrap();
-        let after = next_message(&mut rx);
+        let after = t.tick();
+        assert!(!t.engine().fleets.contains_key(&fid));
         assert_eq!(after["fleets"], serde_json::json!([]));
     }
 
     #[test]
     fn fleet_list_is_ordered_by_id() {
-        let (net, engine, pid, fid, mut rx) = network_with_player();
+        let mut t = table();
+        let (pid, fid) = (t.pid, t.fid);
         {
-            let mut e = engine.lock().unwrap();
+            let e = t.engine();
             let mut clone = e.fleets[&fid].clone();
             for id in [fid + 900, fid + 100, fid + 500] {
                 clone.id = id;
@@ -408,8 +350,7 @@ mod tests {
             }
             assert_eq!(e.fleets.values().filter(|f| f.owner_id == pid).count(), 4);
         }
-        net.broadcast_updates().unwrap();
-        let ids: Vec<u64> = next_message(&mut rx)["fleets"]
+        let ids: Vec<u64> = t.update()["fleets"]
             .as_array().unwrap().iter().map(|f| f["id"].as_u64().unwrap()).collect();
         let mut sorted = ids.clone();
         sorted.sort();
@@ -419,9 +360,10 @@ mod tests {
     #[test]
     fn wrong_resource_harvest_gets_a_specific_error() {
         use iac_shared::constants::Density;
-        let (net, engine, _pid, fid, mut rx) = network_with_player();
+        let mut t = table();
+        let fid = t.fid;
         let site = {
-            let mut e = engine.lock().unwrap();
+            let e = t.engine();
             let site = (-30i16..30)
                 .flat_map(|q| (-30i16..30).map(move |r| Hex { q, r }))
                 .find(|&h| {
@@ -434,9 +376,7 @@ mod tests {
         };
 
         let harvest = Command::Harvest { fleet_id: fid, resource: HarvestResource::Deuterium };
-        net.handle_message(1, ClientMessage::Command(harvest)).unwrap();
-
-        let reply = next_message(&mut rx);
+        let reply = t.say(ClientMessage::Command(harvest));
         assert_eq!(reply["type"], "error");
         assert_eq!(reply["code"], "ResourceNotPresent");
         let msg = reply["message"].as_str().unwrap();
@@ -445,9 +385,10 @@ mod tests {
 
     #[test]
     fn state_carries_cargo_capacity_and_real_production() {
-        let (net, engine, pid, fid, mut rx) = network_with_player();
+        let mut t = table();
+        let (pid, fid) = (t.pid, t.fid);
         {
-            let mut e = engine.lock().unwrap();
+            let e = t.engine();
             e.players.get_mut(&pid).unwrap().buildings.metal_mine = 3;
             e.players.get_mut(&pid).unwrap().buildings.deuterium_synthesizer = 2;
             // Starting scouts plus one hauler.
@@ -456,17 +397,15 @@ mod tests {
             fleet.ship_count += 1;
         }
         let expected_cap: f32 = {
-            let e = engine.lock().unwrap();
+            let e = t.engine();
             e.fleets[&fid].ships[..e.fleets[&fid].ship_count].iter()
                 .map(|s| s.ship_class.base_stats().cargo as f32).sum()
         };
         assert!(expected_cap > 200.0, "hauler must be counted: {expected_cap}");
 
-        let before = engine.lock().unwrap().players[&pid].resources;
-        engine.lock().unwrap().tick().unwrap();
-        let grown = engine.lock().unwrap().players[&pid].resources;
-        net.broadcast_updates().unwrap();
-        let update = next_message(&mut rx);
+        let before = t.engine().players[&pid].resources;
+        let update = t.tick();
+        let grown = t.engine().players[&pid].resources;
 
         assert_eq!(update["fleets"][0]["cargo_capacity"].as_f64().unwrap() as f32, expected_cap);
         let prod = &update["homeworld_update"]["production"];
@@ -479,9 +418,9 @@ mod tests {
 
     #[test]
     fn homeworld_catalog_tracks_levels() {
-        let (net, engine, pid, _fid, mut rx) = network_with_player();
-        net.broadcast_updates().unwrap();
-        let update = next_message(&mut rx);
+        let mut t = table();
+        let pid = t.pid;
+        let update = t.update();
         let mine = &update["homeworld_update"]["catalog"]["buildings"][0];
         assert_eq!(mine["building_type"], "MetalMine");
         assert_eq!(mine["level"], 1);
@@ -489,9 +428,8 @@ mod tests {
         let yard = &update["homeworld_update"]["catalog"]["buildings"][3];
         assert_eq!(yard["requires"][0]["met"], false);
 
-        engine.lock().unwrap().players.get_mut(&pid).unwrap().buildings.metal_mine = 2;
-        net.broadcast_updates().unwrap();
-        let update = next_message(&mut rx);
+        t.engine().players.get_mut(&pid).unwrap().buildings.metal_mine = 2;
+        let update = t.update();
         let catalog = &update["homeworld_update"]["catalog"];
         assert_eq!(catalog["buildings"][0]["level"], 2);
         assert_eq!(catalog["buildings"][3]["requires"][0]["met"], true);
@@ -499,23 +437,24 @@ mod tests {
 
     #[test]
     fn prerequisite_errors_name_what_is_missing() {
-        let (_net, engine, pid, _fid, _rx) = network_with_player();
-        let mut e = engine.lock().unwrap();
-        e.players.get_mut(&pid).unwrap().buildings.shipyard = 2;
+        let mut t = table();
+        let pid = t.pid;
+        t.engine().players.get_mut(&pid).unwrap().buildings.shipyard = 2;
+        let e = t.host.engine();
 
         let cmd = Command::BuildShip { ship_class: ShipClass::Frigate, count: 1 };
         assert_eq!(
-            command_error_message(&e, pid, &cmd, ErrorCode::ShipLocked),
+            command_error_message(e, pid, &cmd, ErrorCode::ShipLocked),
             "Frigate needs Frigate Tech level 1 (you have 0)"
         );
         let cmd = Command::Build { building_type: BuildingType::DefenseGrid, reserve: false };
         assert_eq!(
-            command_error_message(&e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
+            command_error_message(e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
             "Defense Grid needs Shipyard level 3 (you have 2)"
         );
         let cmd = Command::Research { tech: ResearchType::FrigateTech, reserve: false };
         assert_eq!(
-            command_error_message(&e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
+            command_error_message(e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
             "Frigate Tech needs Research Lab level 1 (you have 0), Corvette Tech level 1 (you have 0) and Shipyard level 4 (you have 2)"
         );
     }
@@ -523,23 +462,25 @@ mod tests {
     #[test]
     fn cancel_refusals_say_where_the_order_actually_is() {
         use iac_shared::protocol::QueueType;
-        let (_net, engine, pid, _fid, _rx) = network_with_player();
-        let mut e = engine.lock().unwrap();
+        let mut t = table();
+        let pid = t.pid;
+        let e = t.engine();
         e.players.get_mut(&pid).unwrap().resources = iac_shared::constants::Resources { metal: 9e3, crystal: 9e3, deuterium: 9e3 };
         e.handle_build(pid, BuildingType::MetalMine, false).unwrap();
         e.handle_build(pid, BuildingType::CrystalMine, false).unwrap();
         let running = e.players[&pid].building_queue[0].id;
         let waiting = e.players[&pid].building_pending[0].id;
+        let e = t.host.engine();
 
-        let msg = |e: &GameEngine, cmd: Command| command_error_message(e, pid, &cmd, ErrorCode::InvalidTarget);
+        let msg = |cmd: Command| command_error_message(e, pid, &cmd, ErrorCode::InvalidTarget);
         let cmd = Command::CancelQueued { queue_type: QueueType::Ship, id: waiting };
-        assert_eq!(msg(&e, cmd), format!("order {waiting} is in the building queue, not the shipyard queue; nothing was cancelled"));
+        assert_eq!(msg(cmd), format!("order {waiting} is in the building queue, not the shipyard queue; nothing was cancelled"));
         let cmd = Command::CancelQueued { queue_type: QueueType::Building, id: running };
-        assert_eq!(msg(&e, cmd), format!("order {running} is not waiting in the building queue; use cancel_build for it"));
+        assert_eq!(msg(cmd), format!("order {running} is not waiting in the building queue; use cancel_build for it"));
         let cmd = Command::CancelBuild { queue_type: QueueType::Building, id: waiting };
-        assert_eq!(msg(&e, cmd), format!("order {waiting} is not under way in the building queue; use cancel_queued for it"));
+        assert_eq!(msg(cmd), format!("order {waiting} is not under way in the building queue; use cancel_queued for it"));
         let cmd = Command::CancelQueued { queue_type: QueueType::Building, id: 999_999 };
-        assert!(msg(&e, cmd).starts_with("no order 999999 in any queue"));
+        assert!(msg(cmd).starts_with("no order 999999 in any queue"));
     }
 
     fn fight_events(engine: &mut GameEngine, pid: u64, fid: u64, at: Hex) -> Vec<GameEvent> {
@@ -679,22 +620,17 @@ mod tests {
 
     #[test]
     fn full_state_carries_stale_sectors_and_the_tick_only_new_ones() {
-        let (net, engine, pid, fid, mut rx) = network_with_player();
-        {
-            let mut e = engine.lock().unwrap();
-            e.handle_scan(pid, fid).unwrap();
-            e.tick().unwrap();
-        }
-        net.broadcast_updates().unwrap();
-        let live = next_message(&mut rx);
+        let mut t = table();
+        let (pid, fid) = (t.pid, t.fid);
+        t.engine().handle_scan(pid, fid).unwrap();
+        let live = t.tick();
         assert!(live["sector_updates"].as_array().unwrap().iter().all(|s| s["live"] == true));
         let learned = live["sector_updates"].as_array().unwrap().len();
 
         for _ in 0..(iac_shared::constants::SCAN_REVEAL_TICKS + 2) {
-            engine.lock().unwrap().tick().unwrap();
+            t.engine().tick().unwrap();
         }
-        net.handle_message(1, ClientMessage::RequestFullState).unwrap();
-        let full = next_message(&mut rx);
+        let full = t.say(ClientMessage::RequestFullState);
         let known = full["known_sectors"].as_array().unwrap();
         assert_eq!(known.len(), learned.max(known.len()));
         let stale: Vec<_> = known.iter().filter(|s| s["live"] == false).collect();
@@ -702,36 +638,36 @@ mod tests {
         assert!(stale.iter().all(|s| s["last_seen"].as_u64().unwrap() < full["tick"].as_u64().unwrap()));
         assert!(known.len() >= learned, "nothing forgotten: {} < {learned}", known.len());
 
-        net.broadcast_updates().unwrap();
-        let tick = next_message(&mut rx);
+        let tick = t.update();
         let updates = tick["sector_updates"].as_array().unwrap();
         assert!(updates.iter().all(|s| s["live"] == true), "settled stale sectors are not repeated");
     }
 
     #[test]
     fn storage_errors_name_the_vault_level_needed() {
-        let (_net, engine, pid, _fid, _rx) = network_with_player();
-        let mut e = engine.lock().unwrap();
+        let mut t = table();
+        let pid = t.pid;
+        let e = t.engine();
         e.players.get_mut(&pid).unwrap().resources = iac_shared::Resources { metal: 100.0, crystal: 40.0, deuterium: 0.0 };
 
         e.players.get_mut(&pid).unwrap().buildings.research_lab = 4;
         let cmd = Command::Research { tech: ResearchType::CruiserTech, reserve: false };
         assert_eq!(
-            command_error_message(&e, pid, &cmd, ErrorCode::StorageTooSmall),
+            command_error_message(e, pid, &cmd, ErrorCode::StorageTooSmall),
             "Cruiser Tech Lv.1 costs 8000 metal, more than the 5000 metal your stockpile holds; needs Storage Vault level 2"
         );
     }
 
     #[test]
     fn preview_move_answers_with_fuel_numbers_and_fleets_carry_range() {
-        let (net, engine, pid, fid, mut rx) = network_with_player();
+        let mut t = table();
+        let (pid, fid) = (t.pid, t.fid);
         let (home, neighbour) = {
-            let e = engine.lock().unwrap();
+            let e = t.host.engine();
             let home = e.players[&pid].homeworld;
             (home, e.world_gen.connected_neighbors(home).slice()[0])
         };
-        net.handle_message(1, ClientMessage::Command(Command::PreviewMove { fleet_id: fid, target: neighbour })).unwrap();
-        let msg = next_message(&mut rx);
+        let msg = t.say(ClientMessage::Command(Command::PreviewMove { fleet_id: fid, target: neighbour }));
         assert_eq!(msg["type"], "preview_move", "{msg}");
         assert_eq!(msg["fleet_id"], fid);
         assert_eq!(msg["can_jump"], true);
@@ -740,8 +676,7 @@ mod tests {
         assert!(msg["fuel_cost"].as_f64().unwrap() > 0.0);
         let _ = home;
 
-        net.broadcast_updates().unwrap();
-        let tick = next_message(&mut rx);
+        let tick = t.update();
         let fleet = &tick["fleets"][0];
         // 2 Scouts: 120 fuel, 6 per jump -> 10 round trips out and back.
         assert_eq!(fleet["range_hops"], 10, "{fleet}");
@@ -750,23 +685,22 @@ mod tests {
 
     #[test]
     fn the_homeworld_reports_defences_and_the_expected_raid() {
-        let (net, engine, pid, _fid, mut rx) = network_with_player();
+        let mut t = table();
+        let pid = t.pid;
         {
-            let mut e = engine.lock().unwrap();
-            let p = e.players.get_mut(&pid).unwrap();
+            let p = t.engine().players.get_mut(&pid).unwrap();
             p.buildings.defense_grid = 2;
             p.defences.count[0] = 5;
             p.defences.restoring[0] = 1;
         }
-        net.broadcast_updates().unwrap();
-        let tick = next_message(&mut rx);
+        let tick = t.update();
         let hw = &tick["homeworld_update"];
         assert_eq!(hw["defences"][0]["kind"], "PulseTurret");
         assert_eq!(hw["defences"][0]["count"], 5);
         assert_eq!(hw["defences"][0]["restoring"], 1);
         assert!((hw["defences"][0]["power"].as_f64().unwrap() - 17.0 * 1.08).abs() < 1e-3);
         let defence = hw["home_defence_power"].as_f64().unwrap();
-        let ships_and_grid = engine.lock().unwrap().home_defense_power(pid) as f64;
+        let ships_and_grid = t.host.engine().home_defense_power(pid) as f64;
         assert!((defence - ships_and_grid).abs() < 1e-3);
         assert!(defence > 5.0 * 17.0 * 1.08, "structures count toward home defence: {defence}");
         assert!(hw["next_raid_estimate_power"].as_f64().unwrap() > 5.0);

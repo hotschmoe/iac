@@ -318,7 +318,7 @@ Planned evolution (not in scope for current milestone):
 
 Allow multiple simultaneous connections for the same player account. Each
 connection shares the same player state. The server already tracks sessions
-independently of players (`ClientSession.player_id`), so the data model supports
+independently of players (`iac_sim::host::Host` maps each session to its account), so the data model supports
 this -- the work is in handling concurrent command conflicts (last-write-wins,
 command queuing, etc.).
 
