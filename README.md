@@ -429,7 +429,15 @@ and Flutter; no other tool.
 scripts/play.sh --single-player --no-serve          # just the bundle
 cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium (about three minutes)
 cargo test -p iac-solo                               # the host natively, through the same door of bytes
+cargo test -p iac-solo --test both_targets           # the same worlds natively and as iac_solo.wasm: every reply the same bytes (about two minutes)
 ```
+
+A world is the same world wherever the engine runs. `solo/tests/both_targets.rs`
+builds `iac_solo.wasm`, runs it in an interpreter beside the native host and sends
+both the same requests: a blitz of bots, a season day, and a commander who trades at
+the hub, founds an outpost and stays away while it is raided. Every reply and every
+save must be the same bytes; a failure names the tick and the first value that
+differs.
 
 ### Protocol fixtures
 
@@ -835,7 +843,10 @@ bindings generator) · `iac-client` (ratatui TUI + headless mode).
 sees), and persistence. The engine hands `PersistBatch` deltas to a `Persist` trait the
 host implements (the server's SQLite writer); `snapshot()` / `GameEngine::restore()`
 save and rebuild the whole world as serde data, and `Snapshot::hash()` is a digest of
-it. Same seed, pace and command script give the same hash.
+it. Same seed, pace and command script give the same hash, on a server and in a
+browser alike: powers, logarithms and exponentials come from `iac_shared::maths`
+(the `libm` crate, one implementation for every target) and never from the
+platform's maths library, which clippy refuses in the engine crates.
 
 ### Built-in bots and balance runs
 

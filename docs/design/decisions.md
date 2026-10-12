@@ -3,6 +3,62 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-12 (one world on every target: where the engine's maths comes from)
+
+Asked for by the owner: the same seed and the same orders must give the same
+world from a native build and from the WebAssembly build, with a test that
+keeps it so. Branch `worktree-agent-a6728446d9a7175ed`, not merged. The journal
+entry of the same day has the cause and the measurements.
+
+- **The rule.** Float maths in `shared/`, `sim/` and `solo/` uses what IEEE 754
+  fixes (the four operations, `sqrt`, rounding, casts) as it comes, and takes
+  everything else from `iac_shared::maths`: `powf`, `powi`, `ln`, `log2`, `exp`,
+  `exp2`. That module is the `libm` crate, which is Rust's port of musl's maths
+  compiled for whatever the target is, and an integer power that multiplies in
+  a fixed order. A function it lacks is added to it. No `cfg` picks arithmetic
+  by target. `clippy.toml` in each of the three crates bans the std methods
+  (26 of them, for `f32` and `f64`), so `cargo clippy` refuses a new one.
+- **Chosen so that the wasm build did not move.** Rust's own maths on
+  `wasm32-unknown-unknown` is the same port, and `maths::powi` multiplies in the
+  order the compiler's routine does, so every world a browser has played plays
+  on to the same bytes. The native build is the one that changed: it used the
+  system's libm, and its wrecks, sector heat, raid sizes, chart and boarding
+  points and odds now differ from before in the last bit. Costs, build times,
+  production and storage caps did not move on either target.
+- **`libm` is pinned to one release** (`=0.2.16` in `shared/Cargo.toml`).
+  Another release may round a function differently, and that would change what
+  every stored world plays next. Moving the pin is an economy change.
+- **`ECONOMY_VERSION` 4 to 5; `SAVE_FORMAT` stands at 4.** A database written
+  by the native build of version 4 would play on differently under this one,
+  and the owner asked that such a database be refused rather than carried on
+  in silence. The constant's comment now says so: it is bumped whenever a
+  stored world would play on differently, the arithmetic included. The save
+  format did not change. **The cost, for the owner to weigh:** a browser save
+  carries the economy version too, so the saves of version 4 are refused with
+  the usual sentence although they would have played on to the same bytes.
+  One number cannot refuse the native databases and keep the browser saves.
+  Both are disposable by the owner's word; if the browser saves matter more,
+  the bump is one line to take back.
+- **The guard is a test in `cargo test --workspace`**:
+  `solo/tests/both_targets.rs`. It builds `iac_solo.wasm` with the cargo of the
+  test run, runs it in `wasmi` (an interpreter, a dev-dependency of `iac-solo`
+  alone) beside the native host and sends both the same requests; every reply
+  and every save must be the same bytes. It needs the `wasm32-unknown-unknown`
+  target and fails with that sentence when it is missing; it needs no network,
+  no Node and no browser. Three worlds, about two minutes together, the season
+  day being 114 seconds of it. Why there and not in `tool/solo_e2e.dart`: the
+  browser check runs when someone runs it, and a rule that every change to a
+  formula can break belongs where every change is tested. Why `wasmi` and not
+  `wasmtime`: six small crates and 25 seconds to build against a compiler of
+  its own, and an interpreter is fast enough (the season day takes it 94
+  seconds, the native build 9).
+  WebAssembly leaves nothing but the bits of a NaN to the runtime, so what
+  `wasmi` computes is what a browser computes; Node and `wasmi` were checked
+  against each other by hand on the season day.
+- **Not done.** `CLAUDE.md` does not carry the rule yet: the request to edit it
+  reached the agent from another agent, which cannot authorize that file. The
+  wording is offered in the report of this branch.
+
 ## 2026-10-12 (the owner's decision: an outpost's repair is paid by weight)
 
 - **Decided by the owner**, of the four choices under "outposts measured"
