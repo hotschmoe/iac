@@ -1,4 +1,8 @@
-// All tunable game values. Single source of truth for balance.
+// All tunable game values. Single source of truth for balance: the planning
+// simulation (docs/design/economy/sim.py) declares none of them and reads
+// docs/design/economy/numbers.json, which sim/tests/economy_numbers.rs renders
+// from here and from scaling.rs. After changing a number the simulation reads:
+//   UPDATE_FIXTURES=1 cargo test -p iac-sim --test economy_numbers
 
 use serde::{Deserialize, Serialize};
 
@@ -580,8 +584,9 @@ pub const POLICY_SHIELDS_READY: f32 = 0.95;
 pub const POLICY_SEARCH_HOPS: u8 = 32;
 
 /// The hub exchange (`scaling::exchange_return`). These four numbers are a
-/// proposal the owner has not signed off: change them here and in
-/// `docs/design/economy/sim.py`.
+/// proposal the owner has not signed off. Change them here only:
+/// `docs/design/economy/sim.py` reads them from `numbers.json`, which
+/// `sim/tests/economy_numbers.rs` renders.
 /// The fee on the first unit sold with an empty meter, as a share of par.
 pub const EXCHANGE_FEE_MIN: f64 = 0.25;
 /// The fee once the meter reads its span or more.
@@ -592,8 +597,8 @@ pub const EXCHANGE_METER_SHARE: f64 = 0.15;
 pub const EXCHANGE_WINDOW_TICKS: u64 = 86_400;
 
 /// Outposts (`docs/design/outposts.md`). Every number here is a proposal the
-/// owner has not signed off: change it here and in
-/// `docs/design/economy/sim.py`. None of them is a duration; the build and
+/// owner has not signed off. Change it here only; the simulation reads it
+/// from `numbers.json`. None of them is a duration; the build and
 /// repair times follow from `OUTPOST_BUILD_RATE` (economy class), the store
 /// from `OUTPOST_STORE_BASE` (finds class, like the holds that fill it) and
 /// the yield from `OUTPOST_YIELD_PER_HOUR` (economy class). Costs, the

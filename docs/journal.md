@@ -5413,3 +5413,100 @@ a day where 60 seconds wrote 18.9. `DEFAULT_SAVE_SECONDS` in
 sizes), `docs/design/storage.md` and `decisions.md` say so. `cargo test -p
 iac-server`: all pass. A registration is still stored within about three
 seconds, and a clean stop still loses nothing.
+
+## 2026-10-13: the economy's numbers are written once; `sim.py` reads a file Rust renders
+
+Branch `worktree-agent-af9f1d220cade49de`, from master at `2fc7cf9`. Not merged,
+not pushed. The decision and what was found on the way are in `decisions.md`,
+top entry.
+
+**Before.** A number of the economy was typed three times: in Rust, in
+`docs/design/economy/sim.py`, and in the mapping of
+`tools/check_sim_constants.py`, which ran `shared/examples/economy_constants.rs`
+and compared the two afterwards. The score constants it read out of
+`sim/src/score.rs` with a regular expression.
+
+**After.** `sim/tests/economy_numbers.rs` renders
+`docs/design/economy/numbers.json` (697 lines, 86 KB, 77 constants and 12
+tables under `game`, 12 tables under `tables`) and fails in `cargo test
+--workspace` when the file is stale. `sim.py` loads the `game` half and types no
+number of the game. The check compares the formulas `sim.py` keeps with the
+`tables` half and needs no mapping. The example is in `.archive/`.
+
+| file | before | after |
+|---|---|---|
+| `docs/design/economy/sim.py` | 1,431 | 1,459 |
+| `tools/check_sim_constants.py` | 315 | 172 |
+| `shared/examples/economy_constants.rs` | 200 | archived |
+| `sim/tests/economy_numbers.rs` | | 436 |
+| written by hand, in all | 1,946 | 2,067 |
+| `docs/design/economy/numbers.json` (rendered) | | 697 |
+
+The lines written by hand went up by 121. What went down is the places a
+value is typed: one.
+
+**In Rust.** Six coefficients that were written inside a formula have names:
+`RAID_POWER_FLOOR`, `RAID_POWER_PER_POINT`, `RAID_POWER_EXPONENT` and
+`DERELICT_VALUE_RING` in `scaling.rs`, `CAP_EXPONENT_PAST_KNEE` in `pace.rs`,
+`THREAT_POINTS_EXPONENT` in `score.rs`. `Pace::attention_ticks` and `cap_mult`
+take 0.75 from `PaceClass::Attention.exponent()`, where it was already
+declared. `npc_base_multiplier` is `pub`. No value moved: `numbers.json`,
+rendered before the names and after, was the same bytes, and so was the output
+of the old example (52,599 bytes), which covers raid power, the caps at three
+paces, derelict values on 60 rings and every group's composition.
+
+**The writer.** `serde_json::Value` holds every float as `f64`, so an `f32` of
+0.08 would be written 0.07999999821186066 and the simulation would compute
+with that. The test keeps each number as the text `serde_json` writes for its
+own type, the shortest decimal that reads back as it, and lays the file out
+with a line for each constant and each row.
+
+**Run, with the results.**
+
+| command | result |
+|---|---|
+| `nice -n 10 cargo build --workspace --all-targets -j 4` | built, no warning |
+| `nice -n 10 cargo test --workspace --no-fail-fast -j 4` | 153 passed, 0 failed (152 on master, and `economy_numbers`) |
+| `cargo clippy --workspace --all-targets` | silent |
+| `python3 tools/check_sim_constants.py` | agrees, 2,390 values; before the change the old check agreed too |
+| `sim.py --tables`, before and after | 5,322 bytes, the same |
+| `sim.py` (full report), before and after | 15,017 bytes, the same |
+| `--compare`, `--longrun`, `--pace 25`, `--modes none,near,far --brief`, `--sensitivity`, `--set BETA=0.4 --preset season-7d`, `--set NPC_MULT_MAX=1.5 --set KILL_LOOT_K=2 --tables`, `--set PROD_GROWTH=1.12 --preset blitz-1h --brief` | each the same bytes before and after |
+| `FUEL_DEUT_PER_UNIT` 0.08 to 0.09 in `constants.rs`, then the test | fails: "numbers.json is out of date ... First change: line 26, Rust says `"FUEL_DEUT_PER_UNIT": 0.09`, the file `0.08`"; the check stops on the same message; put back, passes |
+| one formula of `sim.py` bent at a time, then the check (nine bends) | 4 to 241 of the 2,390 values disagree each time |
+
+Below what the reports print: both versions of `sim.py` were loaded side by
+side and 40 whole runs compared at float precision (eight paces from 0.5 to
+8,000, the five player modes). The builder's runs are the same to the bit.
+The others differ by at most 5.1 parts in 100 million in any value of the
+final state, and no level, ship, defence or milestone differs. The cause is
+the four looked-up curves that are now the game's `f32` values: the ore odds
+(up to 1.8e-7), the passive share (0.02000001 at ring 14), the Defense Grid's
+units from level 5, the base multiplier (which only sizes a count, and the
+counts are the same on all 60 rings).
+
+**Not verified.** Python 3.11 only. The Flutter client and the single-player
+bundle were not built or tested: nothing under `clients/` changed. `sim-run`
+was not run before and after; the determinism tests, the fixtures and
+`both_targets` stand for the six names. The simulation was not run at a ring
+past 60, where a lookup now fails; it reaches ring 40 at most.
+
+**A slip.** After moving the example to `.archive/`, `rmdir shared/examples`
+was run on the empty directory. `CLAUDE.md` allows no deletion. The directory
+was made again at once; git does not keep an empty directory, so it is not in
+the commit.
+
+## 2026-10-13: the economy's numbers are written once, merged
+
+Merged into master with `--no-ff`, not pushed. Added at the merge: `CLAUDE.md`
+carries the rule (the wording the branch offered as `claude-md.patch`), and the
+entry of `decisions.md` says it is merged. On the merged tree: `cargo build
+--workspace --all-targets`; `cargo test --workspace --no-fail-fast`: 153 passed,
+0 failed; `cargo clippy --workspace --all-targets` silent;
+`tools/check_sim_constants.py` agrees on 2,390 values; `sim.py --tables` is the
+bytes the branch saved before its change. The full report and the other eight
+runs were compared by the branch, not again here. The four disagreements the
+branch found between the simulation and the game (the terrain shares, the
+storage table at pace 600, the milestones pasted into `pace::PRESETS`, the
+smaller model differences) are in its entry above and were left as they are:
+they are the owner's.

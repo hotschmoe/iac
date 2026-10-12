@@ -909,10 +909,15 @@ pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32
     points
 }
 
+/// A raid's mean power is `RAID_POWER_FLOOR + RAID_POWER_PER_POINT * econ^RAID_POWER_EXPONENT`.
+pub const RAID_POWER_FLOOR: f32 = 5.0;
+pub const RAID_POWER_PER_POINT: f32 = 11.0;
+pub const RAID_POWER_EXPONENT: f32 = 0.75;
+
 /// Mean power of the next raid on a player with `econ` points; the actual
 /// raid is rolled between 0.80 and 1.15 times this.
 pub fn raid_power_base(econ: f32) -> f32 {
-    5.0 + 11.0 * maths::powf(econ, 0.75)
+    RAID_POWER_FLOOR + RAID_POWER_PER_POINT * maths::powf(econ, RAID_POWER_EXPONENT)
 }
 
 // ── Outposts ─────────────────────────────────────────────────────
@@ -1092,8 +1097,11 @@ pub const WRECK_VALUE_K: f32 = 1.2;
 pub const WRECK_VALUE_EXPONENT: f32 = 0.8;
 /// Metal, crystal and deuterium shares of any loot value.
 pub const LOOT_SPLIT: [f32; 3] = [0.55, 0.30, 0.15];
+/// A derelict in ring `DERELICT_VALUE_RING` is worth `DERELICT_VALUE_BASE`;
+/// each ring further out multiplies that by `DERELICT_VALUE_GROWTH`.
 pub const DERELICT_VALUE_BASE: f32 = 240.0;
 pub const DERELICT_VALUE_GROWTH: f32 = 1.14;
+pub const DERELICT_VALUE_RING: u16 = 4;
 /// A site pays between these shares of its value, uniformly.
 pub const DERELICT_ROLL_MIN: f32 = 0.6;
 pub const DERELICT_ROLL_MAX: f32 = 1.4;
@@ -1134,7 +1142,7 @@ pub fn split_loot(value: f32) -> Resources {
 
 /// Mean loot value (units, before the finds factor) of a derelict `dist` rings out.
 pub fn derelict_value(dist: u16) -> f32 {
-    DERELICT_VALUE_BASE * maths::powi(DERELICT_VALUE_GROWTH, i32::from(dist) - 4)
+    DERELICT_VALUE_BASE * maths::powi(DERELICT_VALUE_GROWTH, i32::from(dist) - i32::from(DERELICT_VALUE_RING))
 }
 
 /// Tier follows the threat band of the ring: 1 for T1 to T3, 2 for T4 to T6, 3 above.
@@ -1208,7 +1216,7 @@ pub fn npc_class(dist: u16) -> ShipClass {
 }
 
 /// The stat multiplier a group at `dist` is sized around.
-fn npc_base_multiplier(dist: u16) -> f32 {
+pub fn npc_base_multiplier(dist: u16) -> f32 {
     (0.6 + 0.02 * dist as f32).min(NPC_STAT_MULT_MAX)
 }
 
