@@ -8,6 +8,7 @@ use crate::constants::{
     EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS, OUTPOST_BUILD_RATE, OUTPOST_COST, OUTPOST_GROWTH,
     OUTPOST_PLATFORM_POWER, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR,
 };
+use crate::maths;
 use crate::pace::Pace;
 
 pub const MAX_BUILDING_LEVEL: u8 = 20;
@@ -181,7 +182,7 @@ pub const STORAGE_NEAR_CAP_RATIO: f32 = 0.85;
 
 /// Stockpile cap per resource: `base * 1.5^vault * P^0.75`.
 pub fn storage_cap(vault_level: u8, pace: &Pace) -> Resources {
-    STORAGE_BASE.scale(STORAGE_GROWTH.powi(vault_level as i32) * pace.cap_mult())
+    STORAGE_BASE.scale(maths::powi(STORAGE_GROWTH, i32::from(vault_level)) * pace.cap_mult())
 }
 
 /// Per resource, the stock a raid cannot take.
@@ -208,7 +209,7 @@ pub fn production_per_tick(building: BuildingType, level: u8, pace: &Pace) -> f3
         _ => return 0.0,
     };
     let level = level as f64;
-    pace.rate((per_hour / 3600.0 * level * PRODUCTION_GROWTH.powf(level)) as f32)
+    pace.rate((per_hour / 3600.0 * level * maths::powf(PRODUCTION_GROWTH, level)) as f32)
 }
 
 /// Level-1 cost and the per-level growth factor of a building.
@@ -229,7 +230,7 @@ pub fn building_cost_curve(building: BuildingType) -> ([f64; 3], f64) {
 
 /// `base * growth^(level - 1)`, rounded to whole units.
 fn grown_cost(base: [f64; 3], growth: f64, level: u8) -> Resources {
-    let factor = growth.powi(level.max(1) as i32 - 1);
+    let factor = maths::powi(growth, i32::from(level.max(1)) - 1);
     let unit = |x: f64| (x * factor).round_ties_even() as f32;
     Resources { metal: unit(base[0]), crystal: unit(base[1]), deuterium: unit(base[2]) }
 }
@@ -911,7 +912,7 @@ pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32
 /// Mean power of the next raid on a player with `econ` points; the actual
 /// raid is rolled between 0.80 and 1.15 times this.
 pub fn raid_power_base(econ: f32) -> f32 {
-    5.0 + 11.0 * econ.powf(0.75)
+    5.0 + 11.0 * maths::powf(econ, 0.75)
 }
 
 // ── Outposts ─────────────────────────────────────────────────────
@@ -936,7 +937,7 @@ pub fn outpost_build_ticks(level: u8, pace: &Pace) -> u64 {
 }
 
 fn outpost_growth(level: u8) -> f32 {
-    OUTPOST_GROWTH.powi(i32::from(level.max(1)) - 1) as f32
+    maths::powi(OUTPOST_GROWTH, i32::from(level.max(1)) - 1) as f32
 }
 
 /// What the store holds per resource. An outpost under construction has the store of level 1.
@@ -1027,7 +1028,7 @@ pub fn ring_mult(dist: u16) -> f32 {
     if dist < ORE_RING_FIRST {
         1.0
     } else {
-        ORE_RING_GROWTH.powi(i32::from(dist.min(ORE_RING_LAST)) - i32::from(ORE_RING_FIRST))
+        maths::powi(ORE_RING_GROWTH, i32::from(dist.min(ORE_RING_LAST)) - i32::from(ORE_RING_FIRST))
     }
 }
 
@@ -1109,7 +1110,7 @@ pub const FARM_HALF_LIFE_RESPAWNS: f32 = 4.0;
 
 /// Share of a fresh kill's loot and score a sector with `heat` pays.
 pub fn farm_factor(heat: f32) -> f32 {
-    FARM_DECAY.powf(heat.max(0.0))
+    maths::powf(FARM_DECAY, heat.max(0.0))
 }
 
 /// `heat` after `elapsed` ticks with the given half-life.
@@ -1117,13 +1118,13 @@ pub fn farm_heat_after(heat: f32, elapsed: u64, half_life_ticks: u64) -> f32 {
     if heat <= 0.0 || half_life_ticks == 0 {
         return 0.0;
     }
-    heat * 0.5f32.powf(elapsed as f32 / half_life_ticks as f32)
+    heat * maths::exp2(-(elapsed as f32 / half_life_ticks as f32))
 }
 
 /// Units of loot (before the pace's finds factor) a destroyed group leaves:
 /// it grows slower than the danger, so far hunting stays a gamble.
 pub fn wreck_value(group_power: f32) -> f32 {
-    WRECK_VALUE_K * group_power.max(0.0).powf(WRECK_VALUE_EXPONENT)
+    WRECK_VALUE_K * maths::powf(group_power.max(0.0), WRECK_VALUE_EXPONENT)
 }
 
 /// `value` units as metal, crystal and deuterium.
@@ -1133,7 +1134,7 @@ pub fn split_loot(value: f32) -> Resources {
 
 /// Mean loot value (units, before the finds factor) of a derelict `dist` rings out.
 pub fn derelict_value(dist: u16) -> f32 {
-    DERELICT_VALUE_BASE * DERELICT_VALUE_GROWTH.powi(i32::from(dist) - 4)
+    DERELICT_VALUE_BASE * maths::powi(DERELICT_VALUE_GROWTH, i32::from(dist) - 4)
 }
 
 /// Tier follows the threat band of the ring: 1 for T1 to T3, 2 for T4 to T6, 3 above.
@@ -1190,7 +1191,7 @@ pub fn ship_power(class: ShipClass) -> f32 {
 
 /// Target combat power of the NPC group guarding a sector `dist` rings out.
 pub fn npc_power(dist: u16) -> f32 {
-    NPC_POWER_BASE * NPC_POWER_GROWTH.powi(dist.max(1) as i32 - 1)
+    NPC_POWER_BASE * maths::powi(NPC_POWER_GROWTH, i32::from(dist.max(1)) - 1)
 }
 
 /// Scouts through the Inner Ring: the first heavier class waits past it.
@@ -1257,7 +1258,7 @@ pub fn threat_rating(power: f32) -> u8 {
     if power.is_nan() || power <= NPC_POWER_BASE {
         return 1;
     }
-    (1.0 + (power / NPC_POWER_BASE).log2().floor()).clamp(1.0, MAX_THREAT as f32) as u8
+    (1.0 + maths::log2(power / NPC_POWER_BASE).floor()).clamp(1.0, MAX_THREAT as f32) as u8
 }
 
 /// Coarse band of a rating: 1 for T1 to T3, 2 for T4 to T6, 3 for T7 to T9.
@@ -1306,7 +1307,7 @@ const MARGIN_MAX: f32 = 0.99999;
 /// runs close to straight.
 fn margin_depth(margin: f32) -> f32 {
     let m = margin.clamp(-MARGIN_MAX, MARGIN_MAX);
-    if m >= 0.0 { -(1.0 - m).ln() } else { (1.0 + m).ln() }
+    if m >= 0.0 { -maths::ln(1.0 - m) } else { maths::ln(1.0 + m) }
 }
 
 /// The ratio of a fight in which the fleet is expected to keep `ours_kept`

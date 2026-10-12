@@ -507,10 +507,10 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let document = save(&mut machine, T0);
     let text = String::from_utf8(document.clone()).unwrap();
 
-    let other_economy = text.replacen("\"economy_version\":4", "\"economy_version\":3", 1);
+    let other_economy = text.replacen("\"economy_version\":5", "\"economy_version\":4", 1);
     let (_, reply) = load(T0, other_economy.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert_eq!(reply["refused"], "this save is economy version 3, this build runs version 4; start a new game");
+    assert_eq!(reply["refused"], "this save is economy version 4, this build runs version 5; start a new game");
 
     let other_generator = text.replacen("\"worldgen_version\":3", "\"worldgen_version\":2", 1);
     let (_, reply) = load(T0, other_generator.as_bytes());

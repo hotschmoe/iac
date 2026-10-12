@@ -4766,3 +4766,255 @@ keeping the waiting repair, on the comparison recorded in `decisions.md`
 (2026-10-12, the owner's decision). The branch is merged into master; the slow
 branch is kept, unmerged. The entry above describes the rule. The design's 5.4
 carries a note of it, and `CLAUDE.md` says how the repair is paid.
+
+## 2026-10-12: native and wasm play one world
+
+The entry of 2026-10-11 on engine speed left this open: the same seed and orders
+gave the same hashes natively and in WebAssembly for a while and then different
+ones. The owner asked for one source of truth and a test that keeps it. Branch
+`worktree-agent-a6728446d9a7175ed`, from master at `3e6d35a`, not merged. The rule
+that came of it is in `decisions.md` under the same date.
+
+**How it was looked for.** Two drivers that read one script of requests and pass
+each to `Machine::call`: a native binary, and `iac_solo.wasm` under Node 22 through
+its three exports. A script is `new_game`, then `advance` and `save` in turns; the
+save's header carries a digest of the snapshot, so a line of output is a tick and
+a hash. Both kept in the scratchpad, not in the repository.
+
+**The cause, as seen.** Blitz, the commander and 8 hands-on bots (`all:hands-on`,
+`miner:hands-on:3`), the entropy the solo tests use. The saves agree up to tick 1575
+and differ from 1576. At tick 1576 fleet 26 finishes a fight in sector (-3, 6) with a
+"2x scout patrol" of power 10.810835, and the wreck it leaves is
+
+| | native | wasm |
+|---|---|---|
+| metal | 101.268875 | 101.26887 |
+| crystal | 55.23757 | 55.237568 |
+| deuterium | 27.618786 | 27.618784 |
+
+The sector had been farmed: its heat stood at 0.24196671, so the wreck was
+multiplied by `scaling::farm_factor`, which is `0.75f32.powf(heat)`. That one call
+gives 0.93275803 natively (bits `3f6ec93b`) and 0.932758 in wasm (`3f6ec93a`).
+Everything else in the product is the same on both: `powf(10.810835, 0.8)` is
+6.71564, the finds factor 24.494898. The wreck is scooped, so the difference
+vanishes from the snapshot when the fleet docks and comes back with the next kill
+(the saves agree again at ticks 1602 to 1632 and at 3300). At tick 1800 six values
+differ: two holds, one empire's metal and combat points, and the score a bot
+remembers of itself, 34.57834 against 34.578335.
+
+Std hands `powf`, `ln`, `exp` and `log2` to whatever the platform has. The native
+binary imported `exp`, `exp2f`, `log`, `log2f`, `logf`, `pow` and `powf` from glibc;
+on `wasm32-unknown-unknown` they are Rust's port of musl's, linked into the module.
+A probe evaluated each function on both targets over the inputs the engine gives it:
+
+| function, as the engine calls it | inputs | differ |
+|---|---|---|
+| `f32::powf(p, 0.8)`, a wreck's value | 2000 | 174 |
+| `f32::powf(0.75, heat)`, the farm factor | 640 | 46 |
+| `f32::powf(econ, 0.75)`, a raid's size | 2000 | 194 |
+| `f32::powf(rating, 1.5)`, chart and boarding points | 9 | 1 |
+| `f32::log2`, the threat rating (hidden by its `floor`) | 2000 | 76 |
+| `f32::ln`, the margin table | 2000 | 0 |
+| `f64::powf`, the pace's cap and the mines (hidden by the cast to `f32`) | 72 | 9 |
+| `f64::ln` and `f64::exp`, the odds | 1999 each | 153 and 188 to 307 |
+| `powi`, `f32` and `f64` | 573 | 0 |
+| `sqrt` | 2016 | 0 |
+
+**What was not the cause.** `powi` agrees on both targets: it is the same routine of
+compiler-builtins on each. Nothing sized by `usize`, no hash order, no cast and no
+`cfg` showed: with the float functions fixed and nothing else touched, every case
+below agrees to its last tick. The four `random_range` calls over a `usize` range
+(`engine.rs`) are sampled alike on 32 and 64 bits by rand 0.9. The one `cfg` by
+target in the three crates is the panic hook of `solo/src/lib.rs`.
+
+**The fix.** `shared/src/maths.rs`: `powf`, `ln`, `log2`, `exp`, `exp2` from the
+`libm` crate, generic over `f32` and `f64`, and `powi` by squaring. 24 calls in
+`pace.rs`, `scaling.rs`, `constants.rs`, `score.rs` and `odds.rs` go through it, and
+6 more in `sim/tests/outposts.rs` and `shared/examples/economy_constants.rs`. The
+eight `sqrt` calls stay: IEEE 754 fixes their result and both targets have the
+instruction. `clippy.toml` in `shared/`, `sim/` and `solo/` bans the std methods;
+the ban was seen to fire (21 warnings on the probe, which calls them on purpose).
+After it the native `sim-run` imports none of the seven glibc functions.
+
+Two things were arranged so that the wasm build computes what it did:
+- The `libm` crate, natively, gives bit for bit what std gives in wasm on every
+  input of the table above (13 comparisons, 17,718 values, none differ).
+- `maths::powi` multiplies in the order compiler-builtins does (the low bit of the
+  exponent first) and gives what std's `powi` gives on all 573 inputs. Multiplying
+  from the left differs from it on 158 of the 328 `f64` inputs, and `pow` with a
+  whole exponent on 182.
+
+**What the source said and what ran.** `farm_heat_after` was written
+`heat * 0.5f32.powf(elapsed / half_life)`. Moved to `maths::powf` it changed the
+wasm build's heat on 285 of 3000 inputs. LLVM had rewritten the call: a power of a
+constant power of two becomes `exp2`, which is why the native binary imported
+`exp2f` though no source line asks for it. The function is now written
+`heat * maths::exp2(-(elapsed / half_life))`, which is what both targets ran, and
+the 3000 inputs give what they gave. A call with constant arguments, such as
+`CAP_KNEE.powf(0.75)`, was folded by the compiler with the build machine's libm even
+in the wasm build; through `libm` it is plain arithmetic and no longer depends on
+where the build runs.
+
+**What moved.** In the wasm build, nothing: the probe's 10,809 engine-function values
+are the same before and after, and so is every hash of every case (see the table).
+Natively, in the last bit: `wreck_value` (161 of 2000 inputs), `farm_factor`
+(46 of 640), `raid_power_base` (155 of 2000), `farm_heat_after` (1 of 3000), and by
+the table above the points for a chart or a boarding at one rating in nine and the
+odds. Costs, build times, production, storage caps, the ring multipliers, group
+power, derelict value and the defence grid are the same values as before on both.
+
+**Re-recorded.** Nothing. `sim/tests/chart_golden.txt`, the fixtures and every
+expectation in the tests stood as they were and pass; `check_sim_constants.py`
+agrees. Two tests carry the economy version as a number and follow it
+(`server/tests/smoke.rs`, `solo/tests/single_player.rs`).
+
+**Versions.** `ECONOMY_VERSION` 4 to 5, `SAVE_FORMAT` stays 4; the reasoning and
+its cost to browser saves are in `decisions.md`. `libm` is pinned to `=0.2.16`.
+
+**The cases, after the fix.** Native against wasm under Node, the save of every
+checkpoint compared. "Before" is master's two builds against each other. "Wasm
+moved" compares the fixed wasm with master's wasm, on the commit before the version
+bump, since the snapshot carries the economy version. The hash is the digest of the
+last save on the final commit, the same from both targets.
+
+| case | world | ticks | saves | before: first save that differs | after: saves that differ | wasm moved | last hash |
+|---|---|---|---|---|---|---|---|
+| B | blitz, 8 hands-on bots | 10,800 | 36 | 1800 (30 of 36 differ) | 0 | 0 of 36 | 9315934771596153309 |
+| C | blitz, 23 hands-on bots, a full world | 3,600 | 12 | 1200 (9 of 12) | 0 | 0 of 12 | 4601355485932073548 |
+| D | season, 23 bots: every style and 8 more turtles | 172,800 | 8 | 86400 (5 of 8) | 0 | 0 of 8 | 16416289233982941052 |
+| E | persistent, 8 check-in bots | 604,800 | 14 | none: too quiet to part | 0 | 0 of 14 | 5738048851299404282 |
+| A | season, 15 bots: every style once | 604,800 | 28 | 64800 (of the first day's 8) | 0 | 0 of 28 | 5138711251271423048 |
+
+Every case seats the commander too and gives him no orders; the orders are in the
+guard's third world.
+
+**The guard.** `solo/tests/both_targets.rs`, in `cargo test --workspace`. It builds
+`iac_solo.wasm` as `scripts/play.sh --single-player` does, with the cargo of the
+test run, runs it in `wasmi` and holds a native `Machine` beside it; `Twin::call`
+sends both the same bytes and requires the same bytes back, so every frame of a
+logged-in session is compared and not only the saves.
+- A blitz of 8 hands-on bots to tick 3000, a save every 300 ticks. 38 s alone.
+- A season day of 16 seats (`all:all`), a save every 10,800 ticks. 114 s alone.
+- A commander at the test pace with three bots: `leaderboard`, a hold loaded at
+  home, the lanes to the hub with `odds` asked at every hop, `exchange_quote` and
+  `exchange`, home again, a second hold, the lanes to an ore site in ring 9,
+  `outpost_survey`, `found_outpost`, `unload`, the level built, then two hours
+  away in which the outpost is raided, and the report. 38 s alone.
+The three together take 120 s. Each also asserts that its world was busy (empires
+with combat and exploration points, homes raided, sectors heated by a kill; the
+`Exchanged` event; the raid on the outpost), so a world that goes quiet cannot pass
+for one that agrees. With std's `powf` put back in `maths.rs` for `f32` alone, all
+three fail and say where: the blitz at the save of tick 1800
+(`/bots/29/memory/standing/extra: native 34.57834, wasm 34.578335`), the season day
+at 64800 (`/players/53/combat_points`), the commander's world after the absence
+(`/fleets/6/cargo/metal`).
+
+`wasmi` 2.0 without its text-format parser builds six crates in 25 s. Its
+interpreter loop is a chain of tail calls that the compiler makes only when
+optimising and without debug assertions: built as the dev profile builds
+dependencies it overflows its stack on the first call, so the workspace profile
+gives its four crates `opt-level = 3` and both checks off. Its other dispatch,
+which needs neither, took 2 min 28 s to build and ran the blitz in 45 s instead of
+12. `wasmi`, Node and the native build give the same eight hashes for the season
+day.
+
+**The season week, natively, before and after.** `sim-run --pace season --days 7
+--seed 1` (sixteen seats, 604,800 ticks), master's binary and this branch's, each
+also with `--outpost 12:5:3`, as JSON. The last bit of a wreck is enough to send a
+fleet home a tick sooner, so these are two rolls of the same world, not the same
+world. Sums over the fifteen bots:
+
+| | plain, before | plain, after | outposts, before | outposts, after |
+|---|---|---|---|---|
+| score | 38,671 | 38,465 | 38,934 | 39,344 |
+| core | 32,185 | 32,020 | 32,458 | 32,737 |
+| combat points, raw | 740 | 711 | 657 | 809 |
+| exploration points, raw | 13,815 | 13,702 | 12,947 | 14,287 |
+| best and worst score | 3925, 1874 | 3916, 1874 | 3938, 1895 | 4069, 1895 |
+| home raids repelled, lost | 401, 12 | 401, 12 | 401, 12 | 401, 12 |
+| kills | 10,249 | 10,200 | 10,068 | 10,821 |
+| ships lost | 89 | 98 | 104 | 71 |
+| sectors charted | 11,586 | 11,638 | 11,159 | 11,758 |
+| refuel deuterium | 760,761 | 701,108 | 693,126 | 795,235 |
+| orders refused | 74 | 95 | 129 | 114 |
+| outpost raids repelled, lost | | | 315, 0 | 315, 0 |
+| outpost potential, yield, spilled | | | 1587.4, 1003.9, 583.5 | 1587.4, 1005.4, 582.0 |
+
+The score moves by 0.5% down in one pair and 1.1% up in the other. What does not
+pass through a fight did not move at all: the three turtles score the same to the
+tenth in all four runs (1874.4, 1968.3 and 2399.8 plain), every home raid ends as it
+did, and the fifteen outposts stand on the same sites, repel the same 315 raids and
+keep the same share of their potential to the percent, row for row (three yields
+differ, by 0.1, 0.1 and 1.5 points). A single style moves by more: the check-in
+raider 1885 to 2237, the hands-on explorer 3925 to 3575.
+
+For a yardstick the plain week was also run on seed 2, both binaries. There the two
+rolls never part enough to show: every figure of the report is the same before and
+after, scores to the tenth, but for 2 orders of 273,525, and the snapshot hashes
+differ. And seed 2 against seed 1, same binary, is a wider gap than before against
+after on seed 1: 38,049 against 38,671 in total, the check-in turtle 1508 against
+1874. Nothing moved beyond what another seed moves.
+
+**Speed, for the owner to weigh the server's engine as wasm.** The fixed native
+build against the fixed `iac_solo.wasm` under Node 22, the same script through
+`Machine::call`, one process at a time pinned to one A720 core, three runs each, one
+save at the end. Both give the same hash.
+
+| world | ticks | native | wasm under Node | wasm of native |
+|---|---|---|---|---|
+| season, 16 seats (every style once and the idle commander), two days | 172,800 | 34.36 to 34.49 s: 5020 ticks/s | 47.36 to 47.67 s: 3640 ticks/s | 72% |
+| blitz, 9 seats (8 hands-on bots), two hours | 7,200 | 8.61 to 8.64 s: 834 ticks/s | 11.60 to 11.65 s: 620 ticks/s | 74% |
+
+The whole season week of case A, unpinned and beside another job: 461 s native,
+564 s wasm (1311 and 1072 ticks/s). Linear memory at the end of that week 43.2 MiB.
+The solo host seats all 24, so this is the server's world but for its SQLite and
+its sockets, which were not measured. Nothing was built on it.
+
+**Found on the way.**
+- The compiler rewrote one call into another function and folded others with the
+  build machine's libm (above). Neither shows in the source, and both are gone.
+- Chromium refuses to start with a temp directory as deep as an agent's scratchpad
+  (`Socket path too long`), so `tool/solo_e2e.dart` cannot be pointed away from
+  `/tmp` with `TMPDIR` on this machine.
+- `tool/solo_e2e.dart` printed `SOLO E2E OK` and then failed to delete its Chromium
+  profile (`Directory not empty`), exiting 255 after a green run. Not looked into.
+
+**Checked**, on the last commit of the code (`51f4664`), master not having moved:
+
+| what | result |
+|---|---|
+| `cargo build --workspace --all-targets -j 4` | built, no warning |
+| `cargo test --workspace --no-fail-fast -j 4` | 17 result lines, 153 passed, 0 failed (150 before, and the guard's 3) |
+| `cargo clippy --workspace --all-targets` | no warning |
+| `python3 tools/check_sim_constants.py` | agrees |
+| `cargo build -p iac-solo --target wasm32-unknown-unknown --release` | built |
+| cases A to E, native against wasm under Node | 98 saves, none differ |
+| `flutter analyze` | no issues |
+| pinned `flutter test`, twice | 395 passed and the 14 of `map_test.dart` failed inside Flutter's semantics code; then 403 passed and the 6 of `order_fit_test.dart` did not complete (`Shell subprocess crashed with segmentation fault`). Each file passes alone, and each passed in the other run: the machine's known fault, a different file each time |
+| `scripts/play.sh --single-player --no-serve` | bundle built, 48 MB; its engine is byte for byte the one the guard test ran |
+| `dart run tool/solo_e2e.dart --port 8050` | `SOLO E2E OK in 194 s`, 93 checks, the multiplayer check included; then the cleanup failure above |
+
+**Not verified.** A native build on another architecture or libc: everything here
+ran on aarch64 Linux with glibc. That an x86-64 or a macOS server computes the same
+was read and not run: in `libm` 0.2.16 the functions used are plain arithmetic but
+for `sqrt` and the rounding functions, which IEEE 754 fixes, and an x87 `exp` and
+`exp2` that only 32-bit x86 without SSE gets. A browser beyond the bundle's own check: the cases ran under Node and `wasmi`,
+and nothing compares a hash from Chromium with a native one. A server database
+across a restart beyond the tests' own. Other seeds than the ones named. Whether the
+bump of `ECONOMY_VERSION` is what the owner wants for browser saves (see
+`decisions.md`). `CLAUDE.md` was not edited (see `decisions.md`).
+
+## 2026-10-12: native and wasm play one world, merged
+
+Merged into master with `--no-ff`, not pushed. Two things were added at the merge:
+`CLAUDE.md` now carries the rule (the wording the branch offered: the layout rows
+of `maths.rs` and `both_targets.rs`, two command lines, one architecture bullet),
+and the entry in `decisions.md` no longer says the owner asked for the bump of
+`ECONOMY_VERSION`; nobody did, the constant's own rule did, and the owner has not
+ruled on it. The bump stands until then: saves of version 4 in a browser are
+refused although they would have played on to the same bytes.
+
+Run on the merged tree: the workspace builds; `cargo test --workspace` 153 passed,
+0 failed, `both_targets` taking 131 s of it; clippy silent; `check_sim_constants.py`
+agrees; `flutter analyze` clean; pinned `flutter test` 409 passed; the single-player
+bundle rebuilt; `solo_e2e.dart` OK in 192 s.

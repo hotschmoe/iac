@@ -13,7 +13,7 @@
 use std::hash::{Hash, Hasher};
 
 use iac_shared::constants::{ShipClass, DAMAGE_VARIANCE_MAX, DAMAGE_VARIANCE_MIN};
-use iac_shared::scaling;
+use iac_shared::{maths, scaling};
 
 use crate::engine::Ship;
 
@@ -264,7 +264,7 @@ fn settle(unit: &mut Unit) {
         let p = 1.0 - dispersion;
         let trials = unit.hits / p;
         let odds = p / dispersion;
-        let mut chance = (trials * dispersion.ln()).exp();
+        let mut chance = maths::exp(trials * maths::ln(dispersion));
         let mut sum = 0.0;
         let mut k = 0.0;
         let mut counting = true;
@@ -289,7 +289,7 @@ fn settle(unit: &mut Unit) {
         let clump = dispersion.max(1.0).max(reach / (MAX_TERMS - 4) as f64);
         let mean = dispersion * unit.hits / (clump * clump);
         let fixed = unit.hits - clump * mean;
-        let mut chance = (-mean).exp();
+        let mut chance = maths::exp(-mean);
         for k in 0..MAX_TERMS + 8 {
             if !tally(fixed + k as f64 * clump, chance) {
                 break;

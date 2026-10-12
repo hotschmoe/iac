@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::maths;
+
 pub const PACE_MIN: f64 = 0.05;
 /// Pace above which the storage cap grows with P^0.25 instead of P^0.75.
 pub const CAP_KNEE: f64 = 10.0;
@@ -150,7 +152,7 @@ impl Pace {
     }
 
     pub fn attention_ticks(&self, base: f64) -> u64 {
-        ((base / self.0.powf(0.75)).ceil() as u64).max(1)
+        ((base / maths::powf(self.0, 0.75)).ceil() as u64).max(1)
     }
 
     /// Storage cap multiplier: P^0.75 up to the season pace, then P^0.25.
@@ -161,9 +163,9 @@ impl Pace {
     pub fn cap_mult(&self) -> f32 {
         let p = self.0;
         if p <= CAP_KNEE {
-            p.powf(0.75) as f32
+            maths::powf(p, 0.75) as f32
         } else {
-            (CAP_KNEE.powf(0.75) * (p / CAP_KNEE).powf(0.25)) as f32
+            (maths::powf(CAP_KNEE, 0.75) * maths::powf(p / CAP_KNEE, 0.25)) as f32
         }
     }
 
