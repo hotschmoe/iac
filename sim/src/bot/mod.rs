@@ -160,7 +160,7 @@ impl Style {
 }
 
 /// What a bot carries from one turn to the next.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Memory {
     /// End of the look-in a bot holds when it first sees its empire.
     intro_until: Option<u64>,
@@ -175,7 +175,7 @@ pub struct Memory {
     routes: BTreeMap<u64, field::Route>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Standing {
     core: f32,
     /// Combat plus exploration points, before the cap.
@@ -183,7 +183,7 @@ struct Standing {
 }
 
 /// A bot account as the world stores it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotRecord {
     pub style: Style,
     memory: Memory,

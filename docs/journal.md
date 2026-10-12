@@ -5278,7 +5278,9 @@ outposts whose account was gone and standing orders whose fleet was gone, and
 gave an id to queue entries stored with none. They mended rows read back out of
 step and databases older than queue ids. A document is one snapshot behind a
 checksum, so they had nothing left to mend; no test moved when they went. Three
-`#[serde(default)]` that let an older save lack a field went the same way.
+`#[serde(default)]` that let an older save lack a field went the same way, and
+so did `PartialEq` on `BotRecord`, `Memory`, `Standing` and `Route`, which only
+the compare before a bot's record was marked had used.
 
 **What a stop costs, as tested.** A stopped server loses nothing; a killed one
 comes back as its last file says. The server writes at every start once the
