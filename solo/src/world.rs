@@ -20,11 +20,11 @@ use iac_shared::protocol::{ClientMessage, EventKind, GameEvent, ServerMessage};
 use iac_sim::bot::Style;
 use iac_sim::engine::AuthError;
 use iac_sim::host::{Commander, Heard, SessionId};
+use iac_sim::store::{self, Due, Unread};
 use iac_sim::{commands, GameEngine, Host};
 use serde::{Deserialize, Serialize};
 
 use crate::away::{Absence, Standing, Tally};
-use crate::save::{self, Bookmark};
 
 pub const TICK_MS: u64 = 1000 / TICK_RATE_HZ;
 /// Ticks the world may be behind and still be played one frame each.
@@ -33,15 +33,18 @@ const LIVE_BURST: u64 = 5;
 pub const CATCH_UP_LIMIT: u64 = 7 * 86_400 * TICK_RATE_HZ;
 /// A shorter catch-up is a stalled page, not an absence: nothing is said.
 const REPORT_MIN_TICKS: u64 = 300 * TICK_RATE_HZ;
-/// A world nobody gives orders to is saved this often. What a lost save
-/// costs is only time: the ticks since the last one are played again on
-/// reload and come out the same, since nothing but orders enters the world.
-/// Kept under `REPORT_MIN_TICKS` so a reload is never taken for an absence.
+/// A world nobody gives orders to is saved this often (`store::Due` says
+/// when a save is owed; these are this host's three times). What a lost
+/// save costs is only time: the ticks since the last one are played again
+/// on reload and come out the same, since nothing but orders enters the
+/// world. Kept under `REPORT_MIN_TICKS` so a reload is never taken for an
+/// absence.
 const SAVE_PERIOD_MS: u64 = 240_000;
 /// While catching up a lost save costs real work, so it is saved this often.
 const CATCH_UP_SAVE_MS: u64 = 20_000;
-/// An order is the one thing a reload cannot recompute: it is saved no
-/// later than this after it was given.
+/// An order is the one thing a reload cannot recompute. Once one is given
+/// the next save does not wait for its period, only this long after the
+/// last save.
 const ORDER_SAVE_MS: u64 = 2_000;
 /// The page: the one session a single-player world has.
 const SESSION: SessionId = 0;
@@ -70,6 +73,20 @@ pub struct CatchUp {
     from_tick: u64,
     over_limit: u64,
     tally: Tally,
+}
+
+/// What this host keeps of a world beside its snapshot: the `host` part of
+/// the save document (`iac_sim::store`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Bookmark {
+    /// The player's account.
+    commander: u64,
+    clock: Clock,
+    saved_at_ms: u64,
+    /// The absence being caught up when the save was written.
+    catch_up: Option<CatchUp>,
+    /// What the player has yet to be told about the last absence.
+    notices: Vec<GameEvent>,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,9 +120,9 @@ pub struct World {
     clock: Clock,
     catch_up: Option<CatchUp>,
     notices: Vec<GameEvent>,
-    saved_at_ms: u64,
-    /// Something happened that should not wait for the next periodic save.
-    save_soon: bool,
+    /// When the next save is owed; hurried by what should not wait for the
+    /// periodic one.
+    save: Due,
 }
 
 impl World {
@@ -142,28 +159,31 @@ impl World {
             clock: Clock { anchor_ms: now_ms, anchor_tick: 0 },
             catch_up: None,
             notices: Vec::new(),
-            saved_at_ms: 0,
-            save_soon: true,
+            save: Due::never(),
         })
     }
 
     /// The world a save document holds, or why this build refuses it.
     pub fn load(document: &[u8]) -> Result<World, String> {
-        let (bookmark, snapshot) = save::decode(document)?;
+        let (bookmark, snapshot): (Bookmark, _) = store::decode(document).map_err(|unread| match unread {
+            Unread::Stale(_) => format!("{}; start a new game", unread.sentence("save")),
+            Unread::Damaged(_) => unread.sentence("save"),
+        })?;
+        if !snapshot.players.contains_key(&bookmark.commander) {
+            return Err("this save cannot be read: its world does not hold its commander".to_string());
+        }
         Ok(World {
             host: Host::new(GameEngine::restore(snapshot), Commander(bookmark.commander)),
             commander: bookmark.commander,
             clock: bookmark.clock,
             catch_up: bookmark.catch_up,
             notices: bookmark.notices,
-            saved_at_ms: bookmark.saved_at_ms,
-            save_soon: false,
+            save: Due::since(bookmark.saved_at_ms),
         })
     }
 
     pub fn save(&mut self, now_ms: u64) -> Vec<u8> {
-        self.saved_at_ms = now_ms;
-        self.save_soon = false;
+        self.save.stored(now_ms);
         let bookmark = Bookmark {
             commander: self.commander,
             clock: self.clock,
@@ -171,14 +191,13 @@ impl World {
             catch_up: self.catch_up,
             notices: self.notices.clone(),
         };
-        save::encode(bookmark, &self.host.engine().snapshot())
+        store::encode(&bookmark, &self.host.engine().snapshot())
     }
 
     pub fn status(&self, now_ms: u64) -> Status {
         let engine = self.host.engine();
         let tick = engine.current_tick();
         let behind = self.clock.due(now_ms).saturating_sub(tick);
-        let since_save = now_ms.saturating_sub(self.saved_at_ms);
         let period = if self.catch_up.is_some() { CATCH_UP_SAVE_MS } else { SAVE_PERIOD_MS };
         Status {
             commander: engine.players[&self.commander].name.clone(),
@@ -190,7 +209,7 @@ impl World {
             behind,
             catch_up: self.catch_up.map(|c| Progress { played: tick - c.from_tick, remaining: behind }),
             notices: self.notices.iter().filter_map(alert_text).collect(),
-            save_due: since_save >= period || (self.save_soon && since_save >= ORDER_SAVE_MS),
+            save_due: self.save.is_due(now_ms, period, ORDER_SAVE_MS),
         }
     }
 
@@ -212,16 +231,18 @@ impl World {
             ClientMessage::Auth(_) | ClientMessage::RequestFullState => false,
         };
         match self.host.receive(SESSION, msg, out) {
-            Heard::Answered(_) => self.save_soon |= order,
+            Heard::Answered(_) if order => self.save.hurry(),
             Heard::LoggedIn(_) if self.catch_up.is_none() => self.tell(out),
-            Heard::LoggedIn(_) | Heard::Outside => {}
+            Heard::Answered(_) | Heard::LoggedIn(_) | Heard::Outside => {}
         }
         Ok(())
     }
 
     /// Hand the session what it has not been told about the last absence.
     fn tell(&mut self, out: &mut Vec<ServerMessage>) {
-        self.save_soon |= !self.notices.is_empty();
+        if !self.notices.is_empty() {
+            self.save.hurry();
+        }
         out.extend(self.notices.drain(..).map(ServerMessage::Event));
     }
 
@@ -295,7 +316,7 @@ impl World {
             };
             self.notices.extend(absence.notices(self.commander, tick));
         }
-        self.save_soon = true;
+        self.save.hurry();
         if self.host.player_of(SESSION).is_some() {
             self.host.receive(SESSION, ClientMessage::RequestFullState, out);
             self.tell(out);

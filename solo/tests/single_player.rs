@@ -2,7 +2,8 @@
 // it: bytes in, bytes out, the wire protocol inside. The real engine and
 // the real bots run behind it; time is whatever the test says it is.
 
-use iac_solo::{Machine, CATCH_UP_LIMIT, SAVE_FORMAT};
+use iac_sim::store::SAVE_FORMAT;
+use iac_solo::{Machine, CATCH_UP_LIMIT};
 use serde_json::{json, Value};
 
 const T0: u64 = 1_800_000_000_000;
@@ -516,11 +517,11 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let (_, reply) = load(T0, other_generator.as_bytes());
     assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 3"), "{reply}");
 
-    assert_eq!(SAVE_FORMAT, 4);
-    let before_outposts = text.replacen("\"format\":4", "\"format\":3", 1);
-    let (_, reply) = load(T0, before_outposts.as_bytes());
+    assert_eq!(SAVE_FORMAT, 5);
+    let before_one_document = text.replacen("\"format\":5", "\"format\":4", 1);
+    let (_, reply) = load(T0, before_one_document.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert_eq!(reply["refused"], "this save is format 3, this build reads format 4; start a new game");
+    assert_eq!(reply["refused"], "this save is format 4, this build reads format 5; start a new game");
 
     let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":7", 1);
     let (_, reply) = load(T0, other_format.as_bytes());
@@ -528,9 +529,19 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     assert!(reply["refused"].as_str().unwrap().contains(&format!("format 7, this build reads format {SAVE_FORMAT}")), "{reply}");
 
     let (_, reply) = load(T0, &document[..document.len() - 40]);
-    assert!(reply["refused"].as_str().unwrap().contains("damaged"), "{reply}");
+    assert_eq!(reply["refused"], "this save cannot be read: its contents do not match its checksum");
     let (_, reply) = load(T0, b"not a save");
-    assert!(reply["refused"].as_str().unwrap().contains("not a save document"), "{reply}");
+    assert_eq!(reply["refused"], "this save cannot be read: it is not a world document");
+
+    let split = document.iter().position(|&b| b == b'\n').unwrap();
+    let mut header: Value = serde_json::from_slice(&document[..split]).unwrap();
+    assert_eq!(header["host"]["commander"], 1, "the header's own part names the commander: {header}");
+    header["host"] = json!({});
+    let of_a_server = [header.to_string().as_bytes(), &document[split..]].concat();
+    let (_, reply) = load(T0, &of_a_server);
+    assert_eq!(reply["world"], Value::Null);
+    let refused = reply["refused"].as_str().unwrap();
+    assert!(refused.contains("does not hold what this host keeps beside a world") && refused.contains("commander"), "{reply}");
 
     let (mut machine, reply) = load(T0, &document);
     assert_eq!(reply["refused"], Value::Null);

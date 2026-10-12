@@ -11,6 +11,7 @@ use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::template_npc_id;
 use iac_sim::engine::{FleetStatus, Ship};
 use iac_sim::host::Cast;
+use iac_sim::store::{self, Store};
 use iac_sim::{views, GameEngine, Snapshot};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -36,6 +37,34 @@ pub fn edit(engine: &mut GameEngine, change: impl FnOnce(&mut Snapshot)) {
     let mut snapshot = engine.snapshot();
     change(&mut snapshot);
     *engine = GameEngine::restore(snapshot);
+}
+
+/// A place that keeps a world's document in memory.
+#[derive(Default)]
+pub struct Memory(Option<Vec<u8>>);
+
+impl Store for Memory {
+    fn read(&mut self) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.0.clone())
+    }
+
+    fn replace(&mut self, document: &[u8]) -> Result<(), String> {
+        self.0 = Some(document.to_vec());
+        Ok(())
+    }
+}
+
+/// What a host that stopped now would find when it started again: the
+/// world's document, put in `place` and read back from it.
+pub fn stored_in(place: &mut impl Store, engine: &GameEngine) -> Snapshot {
+    place.replace(&store::encode(&(), &engine.snapshot())).expect("the place takes the document");
+    let document = place.read().expect("the place is read").expect("the place holds a world");
+    let ((), world) = store::decode(&document).unwrap_or_else(|unread| panic!("{}", unread.sentence("document")));
+    world
+}
+
+pub fn stored(engine: &GameEngine) -> Snapshot {
+    stored_in(&mut Memory::default(), engine)
 }
 
 pub fn run(engine: &mut GameEngine, ticks: u64) -> Vec<GameEvent> {

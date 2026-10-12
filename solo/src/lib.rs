@@ -5,7 +5,10 @@
 // the page talks to it in the server's wire protocol with no server.
 //
 // No rules live here. The crate adds what a host adds: a session, a clock
-// fed by the caller, the catch-up after an absence, and the save document.
+// fed by the caller and the catch-up after an absence. Its save is the
+// document every host stores (`iac_sim::store`), with its commander and its
+// clock as the host's part; the bytes go out and come in through the door,
+// and whoever calls it keeps them.
 //
 // The WebAssembly boundary is three exports and one import, no bindings
 // generator: the caller sizes the request buffer and writes into it, calls,
@@ -19,13 +22,11 @@
 
 mod away;
 mod machine;
-mod save;
 mod world;
 
 use std::cell::RefCell;
 
 pub use machine::Machine;
-pub use save::SAVE_FORMAT;
 pub use world::CATCH_UP_LIMIT;
 
 #[derive(Default)]

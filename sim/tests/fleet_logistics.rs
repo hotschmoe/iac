@@ -16,7 +16,7 @@ use iac_shared::scaling::{ratio_label, RatioLabel};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus};
 use iac_sim::odds::{self, Force};
-use iac_sim::persist::ExploreCredit;
+use iac_sim::snapshot::ExploreCredit;
 use iac_sim::GameEngine;
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {

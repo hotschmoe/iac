@@ -1,6 +1,6 @@
 // Deterministic procedural world generation.
 // Sectors are generated from their coordinates + world seed.
-// Only modified sectors need database storage.
+// Only modified sectors are held and stored.
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::hash::Hasher;

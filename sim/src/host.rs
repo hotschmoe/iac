@@ -6,8 +6,8 @@
 // One tick, in the only order there is (`step`):
 //   the cast takes its turns -> `GameEngine::tick` -> its events are drained
 //   -> every logged-in session's `tick_update` -> the cast observes
-//   -> what changed goes to storage
-// A host that needs to look between two of those gives a `Watch`.
+// A host that needs to look between two of those gives a `Watch`. Between
+// two ticks the world is whole, and that is when a host stores it (`store`).
 //
 // One gate (`Host::receive`): a logged-in session's message is answered by
 // `GameEngine::answer`; `auth` is put to the `Door`, and a session it admits
@@ -16,7 +16,8 @@
 //
 // What differs between hosts is the `Door` and nothing else here: `Tokens`
 // for a world behind a network, `Commander` for a world with one player and
-// no password. Transport, clocks and storage are the host's own.
+// no password. Transport and clocks are the host's own; so is the place its
+// world is stored in, but not what is stored there (`store`).
 
 use std::collections::BTreeMap;
 
@@ -26,6 +27,7 @@ use iac_shared::protocol::{AuthRequest, AuthResult, ClientMessage, ErrorCode, Ga
 use crate::bot::{Roster, Style};
 use crate::engine::{AuthError, GameEngine};
 use crate::script::{ScriptedPlayer, Seat};
+use crate::store::SAVE_FORMAT;
 use crate::{commands, views};
 
 pub type SessionId = u64;
@@ -62,7 +64,6 @@ pub enum Phase {
     Tick,
     Frames,
     Observed,
-    Persisted,
 }
 
 /// A host's look at each phase of a tick. `events` are the tick's own, empty
@@ -92,8 +93,6 @@ pub fn step<C: Cast>(
     watch.at(Phase::Frames, engine, cast, &events);
     cast.observe(engine);
     watch.at(Phase::Observed, engine, cast, &events);
-    engine.persist_dirty_state();
-    watch.at(Phase::Persisted, engine, cast, &events);
     Ok(events)
 }
 
@@ -267,13 +266,18 @@ impl<D: Door> Host<D> {
 /// Why this build does not play a stored world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stale {
+    Format { found: u32 },
     Economy { found: u32 },
     Worldgen { found: u32 },
 }
 
 impl Stale {
-    /// Whether a world stored under these versions is one this build plays.
-    pub fn check(economy_version: u32, worldgen_version: u32) -> Result<(), Stale> {
+    /// Whether a world stored in this format, under these versions, is one
+    /// this build plays.
+    pub fn check(format: u32, economy_version: u32, worldgen_version: u32) -> Result<(), Stale> {
+        if format != SAVE_FORMAT {
+            return Err(Stale::Format { found: format });
+        }
         if economy_version != ECONOMY_VERSION {
             return Err(Stale::Economy { found: economy_version });
         }
@@ -283,10 +287,13 @@ impl Stale {
         Ok(())
     }
 
-    /// The refusal, for a world kept as a `stored` ("save", "database"). The
-    /// host adds what its player or operator can do about it.
+    /// The refusal, for a world kept as a `stored` ("save", "world file").
+    /// The host adds what its player or operator can do about it.
     pub fn sentence(&self, stored: &str) -> String {
         match self {
+            Stale::Format { found } => {
+                format!("this {stored} is format {found}, this build reads format {SAVE_FORMAT}")
+            }
             Stale::Economy { found } => {
                 format!("this {stored} is economy version {found}, this build runs version {ECONOMY_VERSION}")
             }

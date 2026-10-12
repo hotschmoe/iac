@@ -2,7 +2,7 @@
 // Ported from Zig engine.zig.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -53,17 +53,12 @@ use crate::combat;
 use crate::score;
 use crate::intel::KnownSectors;
 use crate::odds::{self, Force};
-use crate::persist::{
-    ExploreCredit, ExploredEdge, FleetClocks, Persist, PersistBatch, RuntimeEntry, RuntimeKind, RuntimeRow, WorldMeta,
-};
-use crate::snapshot::Snapshot;
+use crate::snapshot::{ExploreCredit, Snapshot, WorldMeta};
 
 // ── Constants ─────────────────────────────────────────────────────
 
 pub const MAX_SHIPS_PER_FLEET: usize = 64;
 pub const MAX_NPC_SHIPS: usize = scaling::NPC_MAX_SHIPS;
-/// Part-refilled tiles are written to disk this often (ticks).
-const REGEN_PERSIST_TICKS: u64 = 60;
 
 // ── Core Data Types ───────────────────────────────────────────────
 
@@ -441,7 +436,6 @@ pub struct Outpost {
     pub founded_tick: u64,
     /// Everything `load` has taken out of the store. No rule reads it: it is
     /// what the balance report counts as hauled.
-    #[serde(default)]
     pub hauled: Resources,
 }
 
@@ -834,7 +828,6 @@ const STORE_REFILL_RATIO: f32 = 0.95;
 pub struct GameEngine {
     pub world_gen: WorldGen,
     pub world: WorldMeta,
-    persister: Option<Box<dyn Persist>>,
     pub current_tick: u64,
 
     pub players: BTreeMap<u64, Player>,
@@ -871,26 +864,10 @@ pub struct GameEngine {
 
     next_id: u64,
 
-    dirty_players: HashMap<u64, ()>,
-    dirty_fleets: HashMap<u64, ()>,
-    dirty_sectors: HashMap<u32, ()>,
-    deleted_fleet_ids: HashMap<u64, ()>,
-    dirty_policies: HashMap<u64, ()>,
-    deleted_policy_ids: HashMap<u64, ()>,
-    /// Fleets whose counters ran this tick; a fleet also in `dirty_fleets`
-    /// is written whole.
-    dirty_clocks: HashSet<u64>,
-    /// Entries of the `RuntimeKind` maps that were written or removed.
-    dirty_runtime: HashSet<(RuntimeKind, u64)>,
-
-    /// (player, sector key) pairs the player has entered; answers
-    /// "first visit?" without touching the database.
+    /// (player, sector key) pairs the player has entered.
     explored: KeySet<(u64, u32)>,
-    /// Explored edges not yet handed to the persister.
-    new_edges: Vec<ExploredEdge>,
     /// Explore credits already paid: once per player and sector.
     credited: KeySet<(u64, u32, ExploreCredit)>,
-    new_credits: Vec<(u64, Hex, ExploreCredit)>,
     /// (player, sector key) whose chart mark may have changed since the
     /// last chart refresh: delivered, or lost with the fleet that held it.
     pub(crate) chart_news: Vec<(u64, u32)>,
@@ -909,27 +886,18 @@ impl GameEngine {
         GameEngine::restore(Snapshot::new(world_seed, pace))
     }
 
-    /// Rebuild an engine from saved state: a `snapshot()` of a running one,
-    /// or the same thing a host assembled from its own storage. No
-    /// persistence is attached; see `attach_persist`.
+    /// Rebuild an engine from a `snapshot()` of a running one, as taken or
+    /// as a host read it back from where it stores its world (`store`).
     pub fn restore(snapshot: Snapshot) -> GameEngine {
         let Snapshot {
-            world_seed, meta, tick, mut next_id, mut players, fleets, npc_fleets, combats,
-            sector_overrides, mut policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
-            harvest_reports, mut bots, mut outposts, pending_events, explored, credited, known,
+            world_seed, meta, tick, next_id, players, fleets, npc_fleets, combats,
+            sector_overrides, policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
+            harvest_reports, bots, outposts, pending_events, explored, credited, known,
         } = snapshot;
-        bots.retain(|player_id, _| players.contains_key(player_id));
-        outposts.retain(|player_id, _| players.contains_key(player_id));
-
-        for player in players.values_mut() {
-            assign_missing_queue_ids(player, &mut next_id);
-        }
-        policies.retain(|fleet_id, _| fleets.contains_key(fleet_id));
 
         GameEngine {
             world_gen: WorldGen::init(world_seed),
             world: meta,
-            persister: None,
             current_tick: tick,
             players,
             fleets,
@@ -948,18 +916,8 @@ impl GameEngine {
             pending_events,
             pending_arrivals: Vec::new(),
             next_id,
-            dirty_players: HashMap::new(),
-            dirty_fleets: HashMap::new(),
-            dirty_sectors: HashMap::new(),
-            deleted_fleet_ids: HashMap::new(),
-            dirty_policies: HashMap::new(),
-            deleted_policy_ids: HashMap::new(),
-            dirty_clocks: HashSet::new(),
-            dirty_runtime: HashSet::new(),
             explored: explored.into_iter().collect(),
-            new_edges: Vec::new(),
             credited: credited.into_iter().collect(),
-            new_credits: Vec::new(),
             chart_news: Vec::new(),
             known: KnownSectors::load(known),
             odds_memo: RefCell::default(),
@@ -992,12 +950,6 @@ impl GameEngine {
             credited: self.credited.iter().copied().collect(),
             known: self.known.rows(),
         }
-    }
-
-    /// Send every later `persist_dirty_state` to `persist`. Without one the
-    /// engine just forgets what changed.
-    pub fn attach_persist(&mut self, persist: Box<dyn Persist>) {
-        self.persister = Some(persist);
     }
 
     pub fn current_tick(&self) -> u64 {
@@ -1086,24 +1038,18 @@ impl GameEngine {
             };
             if let Some((level, message)) = note { notes.push((level, fid, location, message)); }
             if let Some(f) = self.fleets.get_mut(&fid) { f.fuel = new; }
-            self.dirty_fleets.insert(fid, ());
         }
         for (level, fid, sector, message) in notes {
             self.push_alert(level, fid, sector, message);
         }
     }
 
-    /// Drop a fleet and its standing orders, and queue both for deletion.
+    /// Drop a fleet and its standing orders.
     fn remove_fleet(&mut self, fleet_id: u64) {
         if let Some(fleet) = self.fleets.remove(&fleet_id) {
             self.chart_news.extend(fleet.charts.iter().map(|&key| (fleet.owner_id, key)));
         }
-        self.dirty_fleets.remove(&fleet_id);
-        self.deleted_fleet_ids.insert(fleet_id, ());
-        if self.policies.remove(&fleet_id).is_some() {
-            self.dirty_policies.remove(&fleet_id);
-            self.deleted_policy_ids.insert(fleet_id, ());
-        }
+        self.policies.remove(&fleet_id);
     }
 
     /// Fleets that lost every ship in combat. They linger until the next
@@ -1130,7 +1076,6 @@ impl GameEngine {
 
             if fleet.move_cooldown > 0 {
                 fleet.move_cooldown -= 1;
-                self.dirty_clocks.insert(fleet.id);
                 continue;
             }
 
@@ -1139,7 +1084,6 @@ impl GameEngine {
                 fleet.state = FleetStatus::Idle;
                 fleet.move_target = None;
                 fleet.laden = false;
-                self.dirty_fleets.insert(fleet.id, ());
                 arrived.push((fleet.id, target, fleet.owner_id));
             }
         }
@@ -1147,7 +1091,7 @@ impl GameEngine {
         // Phase 2: Process arrivals (exploration, docking, NPC encounters)
         for (fleet_id, target, owner_id) in arrived {
             let first_visit = !self.explored.contains(&(owner_id, target.to_key()));
-            self.record_explored(owner_id, target)?;
+            self.explored.insert((owner_id, target.to_key()));
             self.note_chart(fleet_id, owner_id, target);
 
             self.pending_events.push(GameEvent {
@@ -1270,7 +1214,6 @@ impl GameEngine {
             if let Some(combat_mut) = self.active_combats.get_mut(&combat_id) {
                 combat_mut.round = combat_round + 1;
             }
-            self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
 
             for e in &result.events {
                 if let EventKind::FleetDestroyed(d) = &e.kind
@@ -1304,7 +1247,6 @@ impl GameEngine {
                         f.fuel_max = fleet_fuel_max(f, player);
                         f.fuel = f.fuel.min(f.fuel_max);
                     }
-                    self.dirty_fleets.insert(f.id, ());
                     if lost_ships {
                         self.settle_hold(side.fleet_id);
                     }
@@ -1332,7 +1274,6 @@ impl GameEngine {
                         n.ships[j] = Ship::default();
                     }
                     n.ship_count = count as u8;
-                    self.dirty_runtime.insert((RuntimeKind::NpcFleet, n.id));
                 }
             }
 
@@ -1373,20 +1314,17 @@ impl GameEngine {
                     self.heat_sector(combat_sector);
                     self.ensure_override(cleared_key)
                         .npc_cleared_tick = Some(self.current_tick);
-                    self.dirty_sectors.insert(cleared_key, ());
                 }
 
                 // Remove destroyed NPCs
                 for &nid in &npc_ids {
                     self.npc_fleets.remove(&nid);
-                    self.dirty_runtime.insert((RuntimeKind::NpcFleet, nid));
                 }
             }
         }
 
         for id in to_remove {
             self.active_combats.remove(&id);
-            self.dirty_runtime.insert((RuntimeKind::Combat, id));
         }
 
         Ok(())
@@ -1410,7 +1348,6 @@ impl GameEngine {
         for pid in owners {
             if let Some(p) = self.players.get_mut(&pid) {
                 p.combat_points += points;
-                self.dirty_players.insert(pid, ());
             }
         }
     }
@@ -1441,7 +1378,6 @@ impl GameEngine {
         let ov = self.ensure_override(key);
         ov.kill_heat = heat;
         ov.kill_heat_tick = tick;
-        self.dirty_sectors.insert(key, ());
     }
 
     /// Turn the per-tick harvest tallies into events: one per fleet every
@@ -1459,7 +1395,6 @@ impl GameEngine {
             .collect();
         for fid in due {
             let Some(r) = self.harvest_reports.remove(&fid) else { continue; };
-            self.dirty_runtime.insert((RuntimeKind::HarvestReport, fid));
             if self.fleets.contains_key(&fid) {
                 self.pending_events.push(GameEvent {
                     tick,
@@ -1471,14 +1406,8 @@ impl GameEngine {
                 });
             }
         }
-        let (fleets, dirty) = (&self.fleets, &mut self.dirty_runtime);
-        self.harvest_reports.retain(|fid, _| {
-            let kept = fleets.contains_key(fid);
-            if !kept {
-                dirty.insert((RuntimeKind::HarvestReport, *fid));
-            }
-            kept
-        });
+        let fleets = &self.fleets;
+        self.harvest_reports.retain(|fid, _| fleets.contains_key(fid));
     }
 
     /// Tell a fleet's owner, loudly, that the fleet is gone.
@@ -1534,7 +1463,6 @@ impl GameEngine {
                 if let Some(f) = self.fleets.get_mut(&fid) {
                     f.state = FleetStatus::Idle;
                 }
-                self.dirty_fleets.insert(fid, ());
                 self.alert_harvest_ended(fid, "its hold is full");
                 continue;
             }
@@ -1579,7 +1507,6 @@ impl GameEngine {
                     .or_insert_with(|| HarvestReport { since: tick, ..Default::default() });
                 report.resources = report.resources.add(took);
                 report.ticks += 1;
-                self.dirty_runtime.insert((RuntimeKind::HarvestReport, fid));
             } else if let Some(f) = self.fleets.get_mut(&fid) {
                 // Nothing harvestable here — stop instead of spinning forever.
                 f.state = FleetStatus::Idle;
@@ -1590,7 +1517,6 @@ impl GameEngine {
                     HarvestResource::Deuterium => "no deuterium is left to mine there",
                 });
             }
-            self.dirty_fleets.insert(fid, ());
         }
 
         self.flush_harvest_reports();
@@ -1636,7 +1562,6 @@ impl GameEngine {
                 _ => {}
             }
         }
-        self.dirty_sectors.insert(sector_key, ());
         Ok(())
     }
 
@@ -1647,19 +1572,15 @@ impl GameEngine {
     fn process_sector_regen(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let occupied: KeySet<u32> = self.fleets.values().map(|f| f.location.to_key()).collect();
         let pace = self.world.pace;
-        let persist = self.current_tick.is_multiple_of(REGEN_PERSIST_TICKS);
         for (&sector_key, ov) in self.sector_overrides.iter_mut() {
             if !ov.has_ore_damage() || occupied.contains(&sector_key) { continue; }
 
             let coord = Hex::from_key(sector_key);
             let dist = coord.dist_from_origin();
             let template = self.world_gen.generate_sector(coord);
-            let mut moved = regen_resource(&mut ov.metal_harvested, &mut ov.metal_density, template.metal_density, dist, &pace);
-            moved |= regen_resource(&mut ov.crystal_harvested, &mut ov.crystal_density, template.crystal_density, dist, &pace);
-            moved |= regen_resource(&mut ov.deut_harvested, &mut ov.deut_density, template.deut_density, dist, &pace);
-            if moved || !ov.has_ore_damage() || persist {
-                self.dirty_sectors.insert(sector_key, ());
-            }
+            regen_resource(&mut ov.metal_harvested, &mut ov.metal_density, template.metal_density, dist, &pace);
+            regen_resource(&mut ov.crystal_harvested, &mut ov.crystal_density, template.crystal_density, dist, &pace);
+            regen_resource(&mut ov.deut_harvested, &mut ov.deut_density, template.deut_density, dist, &pace);
         }
         Ok(())
     }
@@ -1680,9 +1601,7 @@ impl GameEngine {
             let Some((pile, despawn)) = self.sector_overrides.get(&key)
                 .and_then(|o| o.salvage.zip(o.salvage_despawn_tick))
             else {
-                if self.home_salvage_warned.remove(&pid).is_some() {
-                    self.dirty_runtime.insert((RuntimeKind::HomeSalvageWarned, pid));
-                }
+                self.home_salvage_warned.remove(&pid);
                 continue;
             };
             let docked = self.fleets.values()
@@ -1700,13 +1619,11 @@ impl GameEngine {
                 let taken = player.resources.shortfall(cap).min(pile);
                 if taken.total() > 0.0 {
                     player.resources = player.resources.add(taken);
-                    self.dirty_players.insert(pid, ());
                     let rest = pile.sub(taken);
                     let remaining = (rest.total() > 1.0).then_some(rest);
                     let ov = self.sector_overrides.get_mut(&key).unwrap();
                     ov.salvage = remaining;
                     if remaining.is_none() { ov.salvage_despawn_tick = None; }
-                    self.dirty_sectors.insert(key, ());
                     self.pending_events.push(GameEvent {
                         tick,
                         kind: EventKind::SalvageCollected(iac_shared::protocol::SalvageCollectedEvent {
@@ -1726,7 +1643,6 @@ impl GameEngine {
                 && self.home_salvage_warned.get(&pid) != Some(&despawn)
             {
                 self.home_salvage_warned.insert(pid, despawn);
-                self.dirty_runtime.insert((RuntimeKind::HomeSalvageWarned, pid));
                 let why = if docked.is_some() { "storage is full" } else { "no fleet is docked to scoop it" };
                 self.pending_events.push(GameEvent {
                     tick,
@@ -1752,7 +1668,6 @@ impl GameEngine {
             {
                 let lost = ov.salvage.take();
                 ov.salvage_despawn_tick = None;
-                self.dirty_sectors.insert(key, ());
                 if let Some(resources) = lost {
                     self.pending_events.push(GameEvent {
                         tick: self.current_tick,
@@ -1778,7 +1693,6 @@ impl GameEngine {
             let delay = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
             if self.current_tick >= cleared_tick + delay {
                 ov.npc_cleared_tick = None;
-                self.dirty_sectors.insert(key, ());
             }
         }
 
@@ -1803,7 +1717,6 @@ impl GameEngine {
                 if let Some(npc_m) = self.npc_fleets.get_mut(&npc_id) {
                     npc_m.patrol_timer -= 1;
                 }
-                self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
                 continue;
             }
 
@@ -1820,7 +1733,6 @@ impl GameEngine {
                 npc_m.location = new_location;
                 npc_m.patrol_timer = NPC_PATROL_INTERVAL;
             }
-            self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
 
             // Check if player fleet at new location -> trigger combat
             for fleet in self.fleets.values() {
@@ -1840,7 +1752,6 @@ impl GameEngine {
         for (_, player) in self.players.iter_mut() {
             let cap = scaling::storage_cap(player.buildings.storage_vault, &pace);
             player.resources = player.resources.add_capped(player.production_per_tick(&pace), cap);
-            self.dirty_players.insert(player.id, ());
         }
         let docked: Vec<u64> = self.fleets.values()
             .filter(|f| f.cargo.total() > 0.0 && self.players.get(&f.owner_id).is_some_and(|p| p.homeworld == f.location))
@@ -1870,11 +1781,8 @@ impl GameEngine {
         let room = player.resources.shortfall(cap).min(fleet.cargo);
         if room.total() <= 0.0 { return; }
         player.resources = player.resources.add(room);
-        let owner = player.id;
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.cargo = fleet.cargo.sub(room);
-        self.dirty_fleets.insert(fleet_id, ());
-        self.dirty_players.insert(owner, ());
     }
 
     /// A fleet that has lost ships keeps what the holds it has left carry.
@@ -1908,14 +1816,12 @@ impl GameEngine {
                 let cap = scaling::storage_cap(player.buildings.storage_vault, &pace);
                 let stored = player.resources.shortfall(cap).min(shed);
                 player.resources = player.resources.add(stored);
-                self.dirty_players.insert(owner, ());
                 Some(("the stockpile", stored))
             }
             (None, Some(outpost)) => {
                 let cap = scaling::outpost_store_cap(outpost.level, &pace);
                 let stored = outpost.store.shortfall(cap).min(shed);
                 outpost.store = outpost.store.add(stored);
-                self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
                 Some(("the outpost's store", stored))
             }
             (None, None) => None,
@@ -1948,7 +1854,6 @@ impl GameEngine {
 
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.cargo = kept;
-        self.dirty_fleets.insert(fleet_id, ());
     }
 
     /// Fill the tank at the homeworld, paying `FUEL_DEUT_PER_UNIT` deuterium
@@ -1985,10 +1890,7 @@ impl GameEngine {
         {
             policy.fuel_credit = credit;
             policy.fuel_since = self.current_tick;
-            self.dirty_policies.insert(fleet_id, ());
         }
-        self.dirty_fleets.insert(fleet_id, ());
-        self.dirty_players.insert(owner, ());
     }
 
     pub fn storage_state(&self, player: &Player) -> StorageState {
@@ -2023,7 +1925,6 @@ impl GameEngine {
         for pid in ids {
             let player = &self.players[&pid];
             let state = self.storage_state(player);
-            let before = self.storage_marks.get(&pid).copied();
             let marks = self.storage_marks.entry(pid).or_insert([0; 3]);
             for (i, kind) in ResourceKind::ALL.into_iter().enumerate() {
                 let ratio = player.resources.get(kind) / state.cap.get(kind);
@@ -2049,9 +1950,6 @@ impl GameEngine {
                     }));
                 }
                 marks[i] = mark;
-            }
-            if before != Some(*marks) {
-                self.dirty_runtime.insert((RuntimeKind::StorageMarks, pid));
             }
         }
         for kind in events {
@@ -2079,7 +1977,6 @@ impl GameEngine {
                 if q.building_type == BuildingType::FuelDepot {
                     fuel_recalc_players.push(pid);
                 }
-                self.dirty_players.insert(pid, ());
                 self.pending_events.push(GameEvent {
                     tick,
                     kind: EventKind::BuildingCompleted(iac_shared::protocol::BuildingCompletedEvent {
@@ -2098,7 +1995,6 @@ impl GameEngine {
                 if q.tech == ResearchType::ExtendedFuelTanks {
                     fuel_recalc_players.push(pid);
                 }
-                self.dirty_players.insert(pid, ());
                 self.pending_events.push(GameEvent {
                     tick,
                     kind: EventKind::ResearchCompleted(iac_shared::protocol::ResearchCompletedEvent {
@@ -2119,7 +2015,6 @@ impl GameEngine {
                 } else {
                     player.ship_queue = None;
                 }
-                self.dirty_players.insert(pid, ());
             }
         }
 
@@ -2281,7 +2176,6 @@ impl GameEngine {
         p.resources = p.resources.sub(cost);
         let ticks = scaling::building_time(b, target, p.buildings.fabricator, &pace);
         p.building_queue.push(BuildQueueEntry { id: order.id, building_type: b, target_level: target, start_tick: tick, end_tick: tick + ticks });
-        self.dirty_players.insert(pid, ());
         let mut event = self.queue_event(pid, QueueType::Building, order.id, format!("{} Lv.{target}", b.label()), QueueAction::Started);
         event.paid = cost;
         self.push_queue_event(event);
@@ -2297,7 +2191,6 @@ impl GameEngine {
         p.resources = p.resources.sub(cost);
         let ticks = scaling::research_time(tech, target, p.buildings.research_lab, &pace);
         p.research_queue = Some(ResearchQueueEntry { id: order.id, tech, target_level: target, start_tick: tick, end_tick: tick + ticks });
-        self.dirty_players.insert(pid, ());
         let mut event = self.queue_event(pid, QueueType::Research, order.id, format!("{} Lv.{target}", tech.label()), QueueAction::Started);
         event.paid = cost;
         self.push_queue_event(event);
@@ -2320,7 +2213,6 @@ impl GameEngine {
             id: order.id, item, count: order.count, built: 0,
             start_tick: tick, end_tick: tick + per_unit,
         });
-        self.dirty_players.insert(pid, ());
         let mut event = self.queue_event(pid, QueueType::Ship, order.id, format!("{} x{}", item.label(), order.count), QueueAction::Started);
         event.paid = paid;
         self.push_queue_event(event);
@@ -2339,16 +2231,13 @@ impl GameEngine {
         let player_ids: Vec<u64> = self.players.keys().copied().collect();
 
         for pid in player_ids {
-            let state = self.raid_states.entry(pid).or_insert_with(|| {
-                self.dirty_runtime.insert((RuntimeKind::Raid, pid));
-                RaidState {
-                    first_seen_tick: tick,
-                    next_roll_tick: tick + timers.roll_interval,
-                    last_raid_tick: 0,
-                    suppress_until: 0,
-                    missed_rolls: 0,
-                    incoming: None,
-                }
+            let state = self.raid_states.entry(pid).or_insert_with(|| RaidState {
+                first_seen_tick: tick,
+                next_roll_tick: tick + timers.roll_interval,
+                last_raid_tick: 0,
+                suppress_until: 0,
+                missed_rolls: 0,
+                incoming: None,
             });
 
             if let Some(incoming) = state.incoming {
@@ -2361,7 +2250,6 @@ impl GameEngine {
 
             if tick < state.next_roll_tick { continue; }
             state.next_roll_tick = tick + timers.roll_interval;
-            self.dirty_runtime.insert((RuntimeKind::Raid, pid));
 
             let age = tick.saturating_sub(state.first_seen_tick);
             if age < timers.min_player_age { continue; }
@@ -2446,7 +2334,6 @@ impl GameEngine {
 
         if tick < state.next_roll_tick { return; }
         state.next_roll_tick = tick + timers.roll_interval;
-        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
 
         if tick.saturating_sub(state.first_seen_tick) < timers.min_player_age { return; }
         if tick < state.suppress_until { return; }
@@ -2517,7 +2404,6 @@ impl GameEngine {
                     ship.shield = (ship.shield * 0.5).max(0.0);
                 }
                 fleet.idle_ticks = 0;
-                self.dirty_fleets.insert(fleet.id, ());
             }
         } else {
             ships_lost = self.destroy_docked_ships(owner, sector, RAID_LOST_SHIP_FRACTION, &mut rng);
@@ -2540,7 +2426,6 @@ impl GameEngine {
                 outpost.raid.suppress_until = tick + suppress;
             }
         }
-        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
 
         self.pending_events.push(GameEvent {
             tick,
@@ -2604,7 +2489,6 @@ impl GameEngine {
             ov.salvage = Some(ov.salvage.unwrap_or_default().add(salvage));
             salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
             ov.salvage_despawn_tick = salvage_despawn_tick;
-            self.dirty_sectors.insert(key, ());
             salvage_dropped = Some(salvage);
             // Defenders take shield damage but the grid keeps hulls intact.
             for fleet in self.fleets.values_mut() {
@@ -2613,7 +2497,6 @@ impl GameEngine {
                     ship.shield = (ship.shield * 0.5).max(0.0);
                 }
                 fleet.idle_ticks = 0;
-                self.dirty_fleets.insert(fleet.id, ());
             }
         } else {
             (structures_lost, structures_restored) =
@@ -2625,7 +2508,6 @@ impl GameEngine {
             let left;
             (left, resources_lost, protected_kept) = self.skim_dock(player_id, homeworld, player.resources, |_| protected, rate);
             self.players.get_mut(&player_id).unwrap().resources = left;
-            self.dirty_players.insert(player_id, ());
         }
 
         let tick = self.current_tick;
@@ -2642,7 +2524,6 @@ impl GameEngine {
         if !defended {
             state.suppress_until = tick + timers.suppress_after_loss;
         }
-        self.dirty_runtime.insert((RuntimeKind::Raid, player_id));
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -2711,7 +2592,6 @@ impl GameEngine {
         for fid in holds {
             let fleet = self.fleets.get_mut(&fid).unwrap();
             fleet.cargo = fleet.cargo.sub(share_of(fleet.cargo));
-            self.dirty_fleets.insert(fid, ());
         }
         (stock.sub(share_of(stock)), lost, kept)
     }
@@ -2735,9 +2615,6 @@ impl GameEngine {
                 player.defences.restore_tick[i] = due;
                 coming += back;
             }
-        }
-        if lost > 0 {
-            self.dirty_players.insert(player_id, ());
         }
         (lost, coming)
     }
@@ -2770,7 +2647,6 @@ impl GameEngine {
                 f.ships.copy_within(i + 1..n, i);
                 f.ships[n - 1] = Ship::default();
                 f.ship_count = n - 1;
-                self.dirty_fleets.insert(fid, ());
             }
         }
         for &(fid, _) in &doomed {
@@ -2785,7 +2661,6 @@ impl GameEngine {
                     let f = self.fleets.get_mut(&fid).unwrap();
                     f.fuel_max = fuel_max;
                     f.fuel = f.fuel.min(fuel_max);
-                    self.dirty_fleets.insert(fid, ());
                 }
             }
         }
@@ -2811,7 +2686,6 @@ impl GameEngine {
             }
         }
         for (pid, back, home) in notes {
-            self.dirty_players.insert(pid, ());
             self.pending_events.push(GameEvent {
                 tick,
                 kind: EventKind::Alert(AlertEvent {
@@ -3048,7 +2922,6 @@ impl GameEngine {
         let ticks = scaling::outpost_build_ticks(1, &self.world.pace);
         let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
         fleet.cargo = fleet.cargo.sub(cost);
-        self.dirty_fleets.insert(fleet_id, ());
         self.outposts.insert(player_id, Outpost {
             sector,
             level: 0,
@@ -3070,7 +2943,6 @@ impl GameEngine {
             hauled: Resources::default(),
         });
         self.outpost_sites.insert(sector.to_key(), player_id);
-        self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
         self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
             "fleet {fleet_id} founded your outpost at {sector} for {}: level 1 is finished at tick {}, in {ticks} ticks. \
              Until then it has a store and nothing else",
@@ -3085,7 +2957,6 @@ impl GameEngine {
     pub fn handle_abandon_outpost(&mut self, player_id: u64) -> Result<(), ErrorCode> {
         let outpost = self.outposts.remove(&player_id).ok_or(ErrorCode::InvalidCommand)?;
         self.outpost_sites.remove(&outpost.sector.to_key());
-        self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
         let sector = outpost.sector;
         let left = if outpost.store.total() > 0.0 {
             self.drop_salvage(sector, outpost.store);
@@ -3099,7 +2970,6 @@ impl GameEngine {
         if self.world_gen.generate_sector(sector).npc_template.is_some() {
             let tick = self.current_tick;
             self.ensure_override(sector.to_key()).npc_cleared_tick = Some(tick);
-            self.dirty_sectors.insert(sector.to_key(), ());
         }
         self.outpost_alert(player_id, AlertLevel::Info, sector, format!(
             "your outpost at {sector} is abandoned: {left}. Nothing is refunded, and you may found another",
@@ -3159,7 +3029,6 @@ impl GameEngine {
         outpost.store = outpost.store.sub(cost);
         outpost.job = Some(OutpostJob { task: OutpostTask::Build { level }, start_tick: tick, end_tick: tick + ticks });
         let sector = outpost.sector;
-        self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
         self.outpost_alert(player_id, AlertLevel::Info, sector, format!(
             "your outpost at {sector} began level {level}, paid {} from its store: finished at tick {}, in {ticks} ticks. \
              It works at level {} until then",
@@ -3181,7 +3050,6 @@ impl GameEngine {
         if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
             fleet.fuel_max = fuel_max;
             fleet.fuel = fleet.fuel.min(fuel_max);
-            self.dirty_fleets.insert(fleet_id, ());
         }
         self.refuel_at_outpost(fleet_id);
     }
@@ -3205,12 +3073,9 @@ impl GameEngine {
         if units > 0.0 {
             outpost.store.deuterium = (outpost.store.deuterium - units * FUEL_DEUT_PER_UNIT).max(0.0);
             fleet.fuel = if units >= missing { fleet.fuel_max } else { fleet.fuel + units };
-            self.dirty_fleets.insert(fleet_id, ());
-            self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
         }
         if units >= missing || outpost.dry_tanks.contains(&fleet_id) { return; }
         outpost.dry_tanks.push(fleet_id);
-        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
         let (sector, fuel, fuel_max) = (outpost.sector, fleet.fuel, fleet.fuel_max);
         let why = if outpost.breached {
             "is breached and fills no tank until it is repaired".to_string()
@@ -3251,7 +3116,6 @@ impl GameEngine {
             if outpost.repair_warned { return; }
             outpost.repair_warned = true;
             let price = repair_price_words(outpost.level);
-            self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
             self.outpost_alert(owner, AlertLevel::Warning, sector, format!(
                 "your outpost at {sector} is breached and cannot repair itself: the repair costs {price}, and its store \
                  is short by {} metal. It makes nothing, fills no tank and has no platform until a fleet unloads the rest",
@@ -3263,7 +3127,6 @@ impl GameEngine {
         outpost.store = outpost.store.sub(cost);
         outpost.job = Some(OutpostJob { task: OutpostTask::Repair, start_tick: tick, end_tick: tick + ticks });
         outpost.repair_warned = false;
-        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
         self.outpost_alert(owner, AlertLevel::Info, sector, format!(
             "your outpost at {sector} began its repair, paid {} from its store: it is whole at tick {}, in {ticks} ticks",
             crate::commands::amount_words(cost),
@@ -3279,9 +3142,7 @@ impl GameEngine {
         if made.total() <= 0.0 { return; }
         let cap = scaling::outpost_store_cap(outpost.level, &self.world.pace);
         let store = outpost.store.add_capped(made, cap);
-        if store == outpost.store { return; }
         self.outposts.get_mut(&owner).unwrap().store = store;
-        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
     }
 
     /// End the job that is due. Level 1 opens the outpost with an empty
@@ -3296,7 +3157,6 @@ impl GameEngine {
         let Some(job) = outpost.job.filter(|job| tick >= job.end_tick) else { return; };
         outpost.job = None;
         let sector = outpost.sector;
-        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
         match job.task {
             OutpostTask::Build { level } => {
                 outpost.level = level;
@@ -3330,11 +3190,7 @@ impl GameEngine {
             f.owner_id == owner && f.location == sector && f.ship_count > 0 && f.state != FleetStatus::Moving
         };
         let thirsty: Vec<u64> = self.fleets.values().filter(|f| stands(f) && f.fuel < f.fuel_max).map(|f| f.id).collect();
-        if !outpost.dry_tanks.iter().all(|id| thirsty.contains(id)) {
-            let outpost = self.outposts.get_mut(&owner).unwrap();
-            outpost.dry_tanks.retain(|id| thirsty.contains(id));
-            self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
-        }
+        self.outposts.get_mut(&owner).unwrap().dry_tanks.retain(|id| thirsty.contains(id));
         for fleet_id in thirsty {
             self.refuel_at_outpost(fleet_id);
         }
@@ -3362,7 +3218,6 @@ impl GameEngine {
         }
         if marks == outpost.full_marks { return; }
         self.outposts.get_mut(&owner).unwrap().full_marks = marks;
-        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
         for (kind, cap) in filled {
             self.outpost_alert(owner, AlertLevel::Warning, sector, format!(
                 "your outpost at {sector} holds all the {} its store takes ({cap:.0}): the extractor makes no more \
@@ -3378,18 +3233,15 @@ impl GameEngine {
         for (_, fleet) in self.fleets.iter_mut() {
             if fleet.action_cooldown > 0 {
                 fleet.action_cooldown -= 1;
-                self.dirty_clocks.insert(fleet.id);
             }
             if fleet.state == FleetStatus::Idle {
                 if fleet.idle_ticks < SHIELD_REGEN_IDLE_TICKS {
                     fleet.idle_ticks += 1;
-                    self.dirty_clocks.insert(fleet.id);
                 }
                 if fleet.idle_ticks >= SHIELD_REGEN_IDLE_TICKS {
                     for ship in &mut fleet.ships[0..fleet.ship_count] {
                         if ship.shield < ship.shield_max {
                             ship.shield = (ship.shield + ship.shield_max * 0.1).min(ship.shield_max);
-                            self.dirty_fleets.insert(fleet.id, ());
                         }
                     }
                 }
@@ -3439,7 +3291,6 @@ impl GameEngine {
     fn issue_token(&mut self, player_id: u64, token: String) -> String {
         if let Some(p) = self.players.get_mut(&player_id) {
             p.token_hash = Some(auth::hash_token(&token));
-            self.dirty_players.insert(player_id, ());
         }
         token
     }
@@ -3474,12 +3325,9 @@ impl GameEngine {
         self.bots.contains_key(&player_id)
     }
 
-    /// Store what a bot is and remembers, to be saved with the world.
+    /// Keep what a bot is and remembers: it is part of the world.
     pub fn set_bot(&mut self, player_id: u64, record: BotRecord) {
-        if self.bots.get(&player_id) != Some(&record) {
-            self.bots.insert(player_id, record);
-            self.dirty_runtime.insert((RuntimeKind::Bot, player_id));
-        }
+        self.bots.insert(player_id, record);
     }
 
     // ── Chart Marks ───────────────────────────────────────────────
@@ -3599,8 +3447,6 @@ impl GameEngine {
         }
 
         self.fleets.insert(fleet_id, fleet);
-        self.dirty_players.insert(player_id, ());
-        self.dirty_fleets.insert(fleet_id, ());
 
         info!("Player '{}' registered (id={}) at homeworld {}", name, player_id, homeworld);
         Ok(player_id)
@@ -3648,7 +3494,6 @@ impl GameEngine {
         fleet_mut.move_target = Some(target);
         fleet_mut.move_cooldown = cooldown;
         fleet_mut.action_cooldown = cooldown;
-        self.dirty_fleets.insert(fleet_id, ());
 
         self.warn_if_cannot_return(fleet_id, target, fuel_cost);
         Ok(())
@@ -4001,7 +3846,6 @@ impl GameEngine {
         fleet_mut.state = FleetStatus::Harvesting;
         fleet_mut.harvest_target = resource;
         fleet_mut.action_cooldown = HARVEST_COOLDOWN;
-        self.dirty_fleets.insert(fleet_id, ());
 
         Ok(())
     }
@@ -4178,8 +4022,6 @@ impl GameEngine {
         let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
         player.exchange_pressure = pressure_after;
         player.exchange_tick = self.current_tick;
-        self.dirty_fleets.insert(fleet_id, ());
-        self.dirty_players.insert(player_id, ());
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
             kind: EventKind::Exchanged(ExchangedEvent { sector, terms }),
@@ -4321,14 +4163,12 @@ impl GameEngine {
                 let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
                 let stock = player.resources.get_mut(resource);
                 *stock = (*stock - loaded).max(0.0);
-                self.dirty_players.insert(player_id, ());
             }
             Dock::Outpost => {
                 let outpost = self.outposts.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
                 let stock = outpost.store.get_mut(resource);
                 *stock = (*stock - loaded).max(0.0);
                 *outpost.hauled.get_mut(resource) += loaded;
-                self.dirty_runtime.insert((RuntimeKind::Outpost, player_id));
             }
         }
         let capacity = self.fleets.get(&fleet_id).map_or(0.0, |f| fleet_cargo_capacity(f, &self.world.pace));
@@ -4336,7 +4176,6 @@ impl GameEngine {
         *fleet.cargo.get_mut(resource) += loaded;
         fleet.laden = dock == Dock::Home;
         let (aboard, sector) = (fleet.cargo.total(), fleet.location);
-        self.dirty_fleets.insert(fleet_id, ());
         let label = resource.label();
         self.push_alert(AlertLevel::Info, fleet_id, sector, match dock {
             Dock::Home => format!(
@@ -4376,7 +4215,6 @@ impl GameEngine {
         let (before, sector) = (fleet.cargo, fleet.location);
         let at_home = self.players.get(&player_id).is_some_and(|p| p.homeworld == sector);
         fleet.laden = false;
-        self.dirty_fleets.insert(fleet_id, ());
         if at_home {
             self.unload_cargo(fleet_id);
         } else {
@@ -4411,8 +4249,6 @@ impl GameEngine {
         if moved.total() <= 0.0 { return; }
         outpost.store = outpost.store.add(moved);
         fleet.cargo = fleet.cargo.sub(moved);
-        self.dirty_fleets.insert(fleet_id, ());
-        self.dirty_runtime.insert((RuntimeKind::Outpost, owner));
     }
 
     /// Fuel an emergency jump home would burn: the per-hop cost over the
@@ -4608,8 +4444,6 @@ impl GameEngine {
         let count = new_fleet.ship_count;
         self.fleets.insert(fleet_id, rest);
         self.fleets.insert(new_id, new_fleet);
-        self.dirty_fleets.insert(fleet_id, ());
-        self.dirty_fleets.insert(new_id, ());
         self.push_alert(
             AlertLevel::Info, new_id, location,
             format!("fleet {fleet_id} split: {count} ship(s) now fly as fleet {new_id}"),
@@ -4648,7 +4482,6 @@ impl GameEngine {
         let orders_ended = self.policies.contains_key(&other_id);
         self.remove_fleet(other_id);
         self.fleets.insert(fleet_id, merged);
-        self.dirty_fleets.insert(fleet_id, ());
         self.push_alert(
             AlertLevel::Info, fleet_id, location,
             format!(
@@ -4727,7 +4560,6 @@ impl GameEngine {
         let id = self.next_id();
         let player_mut = self.players.get_mut(&player_id).unwrap();
         player_mut.building_pending.push(PendingBuilding { id, building_type, target_level, reserve });
-        self.dirty_players.insert(player_id, ());
         self.advance_queues(player_id);
         self.announce_waiting(player_id, QueueType::Building, id, format!("{} Lv.{target_level}", building_type.label()), Resources::default());
         Ok(())
@@ -4754,7 +4586,6 @@ impl GameEngine {
         let id = self.next_id();
         let player_mut = self.players.get_mut(&player_id).unwrap();
         player_mut.research_pending.push(PendingResearch { id, tech, target_level, reserve });
-        self.dirty_players.insert(player_id, ());
         self.advance_queues(player_id);
         self.announce_waiting(player_id, QueueType::Research, id, format!("{} Lv.{target_level}", tech.label()), Resources::default());
         Ok(())
@@ -4793,7 +4624,6 @@ impl GameEngine {
         let id = self.next_id();
         let player_mut = self.players.get_mut(&player_id).unwrap();
         player_mut.resources = player_mut.resources.sub(cost);
-        self.dirty_players.insert(player_id, ());
         let order = PendingShip { id, item, count };
         if starts_now {
             self.start_ship_batch(player_id, order, cost);
@@ -4844,7 +4674,6 @@ impl GameEngine {
             }
         };
         player.resources = player.resources.add(refund);
-        self.dirty_players.insert(player_id, ());
         let mut event = self.queue_event(player_id, queue_type, id, item, QueueAction::Cancelled);
         event.refunded = refund;
         self.push_queue_event(event);
@@ -4886,7 +4715,6 @@ impl GameEngine {
             }
         };
         player.resources = player.resources.add(refund);
-        self.dirty_players.insert(player_id, ());
         let mut event = self.queue_event(player_id, queue_type, id, item, QueueAction::Cancelled);
         event.refunded = refund;
         self.push_queue_event(event);
@@ -4941,13 +4769,11 @@ impl GameEngine {
         for coord in &revealed {
             player_reveals.insert(coord.to_key(), expiry);
         }
-        self.dirty_runtime.insert((RuntimeKind::Scans, player_id));
 
         let sectors_revealed = revealed.len() as u16;
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.action_cooldown = SCAN_COOLDOWN;
         fleet_mut.idle_ticks = 0;
-        self.dirty_clocks.insert(fleet_id);
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -4984,10 +4810,8 @@ impl GameEngine {
                     _ => None,
                 };
                 if was_exploring {
-                    let key = location.to_key();
-                    let ov = self.ensure_override(key);
+                    let ov = self.ensure_override(location.to_key());
                     ov.site_ambush_bumps = ov.site_ambush_bumps.saturating_add(1);
-                    self.dirty_sectors.insert(key, ());
                 }
                 if let Some(message) = cost {
                     self.push_alert(AlertLevel::Warning, fleet_id, location, message);
@@ -5001,7 +4825,6 @@ impl GameEngine {
                     fleet_mut.action_cooldown = 0;
                 }
                 fleet_mut.idle_ticks = 0;
-                self.dirty_fleets.insert(fleet_id, ());
                 Ok(())
             }
             FleetStatus::InCombat => Err(ErrorCode::OnCooldown),
@@ -5052,7 +4875,6 @@ impl GameEngine {
             if let Some(ov) = self.sector_overrides.get_mut(&key) {
                 ov.site_looted_tick = None;
                 ov.site_ambush_bumps = 0;
-                self.dirty_sectors.insert(key, ());
             }
         }
     }
@@ -5067,7 +4889,6 @@ impl GameEngine {
             && !fleet.charts.contains(&key)
         {
             fleet.charts.push(key);
-            self.dirty_fleets.insert(fleet_id, ());
         }
     }
 
@@ -5077,22 +4898,18 @@ impl GameEngine {
         if fleet.charts.is_empty() { return; }
         let owner = fleet.owner_id;
         let charts = std::mem::take(&mut fleet.charts);
-        self.dirty_fleets.insert(fleet_id, ());
 
         let (mut sectors, mut points) = (0u32, 0.0f32);
         for key in charts {
             self.chart_news.push((owner, key));
             if self.credited.insert((owner, key, ExploreCredit::Charted)) {
-                let sector = Hex::from_key(key);
-                self.new_credits.push((owner, sector, ExploreCredit::Charted));
-                points += score::chart_points(ring_rating(sector));
+                points += score::chart_points(ring_rating(Hex::from_key(key)));
                 sectors += 1;
             }
         }
         if sectors == 0 { return; }
         if let Some(p) = self.players.get_mut(&owner) {
             p.explore_points += points;
-            self.dirty_players.insert(owner, ());
         }
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -5116,7 +4933,6 @@ impl GameEngine {
         fleet_mut.state = FleetStatus::Exploring;
         fleet_mut.action_cooldown = EXPLORE_DURATION_TICKS;
         fleet_mut.idle_ticks = 0;
-        self.dirty_fleets.insert(fleet_id, ());
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -5153,7 +4969,6 @@ impl GameEngine {
             if let Some(f) = self.fleets.get_mut(&fleet_id) {
                 f.state = FleetStatus::Idle;
             }
-            self.dirty_fleets.insert(fleet_id, ());
             return Ok(());
         };
 
@@ -5173,7 +4988,6 @@ impl GameEngine {
             // The wreck was bait. Site survives, gets hotter.
             let ov = self.ensure_override(key);
             ov.site_ambush_bumps = ov.site_ambush_bumps.saturating_add(1);
-            self.dirty_sectors.insert(key, ());
 
             let guardian = ambush_guardian_template(location, &mut rng);
             let guardian_id = self.next_id();
@@ -5233,7 +5047,6 @@ impl GameEngine {
             f.cargo = f.cargo.add(taken);
             f.state = FleetStatus::Idle;
         }
-        self.dirty_fleets.insert(fleet_id, ());
 
         let tick = self.current_tick;
         let ov = self.ensure_override(key);
@@ -5242,7 +5055,6 @@ impl GameEngine {
             ov.salvage = Some(ov.salvage.unwrap_or_default().add(overflow));
             ov.salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
         }
-        self.dirty_sectors.insert(key, ());
 
         if let Some(class) = recovered_ship {
             self.add_recovered_ship(fleet_id, class, &mut rng);
@@ -5253,7 +5065,6 @@ impl GameEngine {
 
         let mut points = 0.0;
         if self.credited.insert((owner_id, key, ExploreCredit::Boarded)) {
-            self.new_credits.push((owner_id, location, ExploreCredit::Boarded));
             points += score::board_points(scaling::split_loot(base_value).scale(self.world.pace.finds_mult()), rating);
         }
         if relic {
@@ -5262,7 +5073,6 @@ impl GameEngine {
         if let Some(p) = self.players.get_mut(&owner_id) {
             p.explore_points += points;
             p.relics += u32::from(relic);
-            self.dirty_players.insert(owner_id, ());
         }
 
         self.pending_events.push(GameEvent {
@@ -5311,7 +5121,6 @@ impl GameEngine {
                 speed: stats.speed,
             };
             f.ship_count += 1;
-            self.dirty_fleets.insert(fleet_id, ());
         }
     }
 
@@ -5332,7 +5141,6 @@ impl GameEngine {
         let Some(player) = self.players.get_mut(&player_id) else { return; };
         let new_level = player.research.get(tech) + 1;
         player.research.set(tech, new_level);
-        self.dirty_players.insert(player_id, ());
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
             kind: EventKind::ResearchCompleted(iac_shared::protocol::ResearchCompletedEvent {
@@ -5358,8 +5166,6 @@ impl GameEngine {
 
         if preset == PolicyPreset::Manual {
             self.policies.remove(&fleet_id);
-            self.dirty_policies.remove(&fleet_id);
-            self.deleted_policy_ids.insert(fleet_id, ());
             self.push_policy_event(fleet_id, PolicyPreset::Manual, "clear", "standing orders cleared");
             return Ok(());
         }
@@ -5389,11 +5195,6 @@ impl GameEngine {
             fuel_since,
         };
         self.policies.insert(fleet_id, policy);
-        self.deleted_policy_ids.remove(&fleet_id);
-        self.dirty_policies.insert(fleet_id, ());
-        // Policies persist alongside their fleet, so make sure the fleet
-        // row lands in the same transaction (FK).
-        self.dirty_fleets.insert(fleet_id, ());
         let was_laden = self.fleets.get_mut(&fleet_id).is_some_and(|f| std::mem::take(&mut f.laden));
         if was_laden {
             self.unload_cargo(fleet_id);
@@ -5437,8 +5238,6 @@ impl GameEngine {
             let Some(fleet) = self.fleets.get(&fid) else {
                 // Fleet merged or died; orders die with it.
                 self.policies.remove(&fid);
-                self.dirty_policies.remove(&fid);
-                self.deleted_policy_ids.insert(fid, ());
                 continue;
             };
             if fleet.ship_count == 0 { continue; }
@@ -5459,7 +5258,6 @@ impl GameEngine {
                 match preset {
                     PolicyPreset::Manual => {
                         self.policies.remove(&fid);
-                        self.deleted_policy_ids.insert(fid, ());
                         true
                     }
                     PolicyPreset::Prospect => self.policy_prospect(fid)?,
@@ -5472,9 +5270,6 @@ impl GameEngine {
             // Nothing to do — check back later instead of spinning.
             if !acted && let Some(p) = self.policies.get_mut(&fid) {
                 p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64 * 5;
-            }
-            if self.policies.contains_key(&fid) {
-                self.dirty_policies.insert(fid, ());
             }
         }
         Ok(())
@@ -5967,11 +5762,10 @@ impl GameEngine {
         };
 
         let claim = plan.as_ref().ok().and_then(|path| path.last().copied());
-        if claim != staked {
-            if let Some(p) = self.policies.get_mut(&fleet_id) {
-                p.work_sector = claim;
-            }
-            self.dirty_policies.insert(fleet_id, ());
+        if claim != staked
+            && let Some(p) = self.policies.get_mut(&fleet_id)
+        {
+            p.work_sector = claim;
         }
         Ok(match plan {
             Ok(path) => {
@@ -6167,12 +5961,8 @@ impl GameEngine {
 
     fn prune_scan_reveals(&mut self) {
         let tick = self.current_tick;
-        for (pid, reveals) in self.scan_reveals.iter_mut() {
-            let before = reveals.len();
+        for reveals in self.scan_reveals.values_mut() {
             reveals.retain(|_, &mut expiry| expiry > tick);
-            if reveals.len() != before {
-                self.dirty_runtime.insert((RuntimeKind::Scans, *pid));
-            }
         }
         self.scan_reveals.retain(|_, m| !m.is_empty());
     }
@@ -6225,9 +6015,6 @@ impl GameEngine {
         fleet.fuel_max = fleet_fuel_max(fleet, player);
         fleet.fuel = fleet.fuel.min(fleet.fuel_max);
         self.refuel_fleet(fleet_id);
-
-        self.dirty_players.insert(player_id, ());
-        self.dirty_fleets.insert(fleet_id, ());
 
         Ok(())
     }
@@ -6315,7 +6102,6 @@ impl GameEngine {
         };
 
         self.npc_fleets.insert(npc_fleet_id, npc_fleet.clone());
-        self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_fleet_id));
         Ok(npc_fleet)
     }
 
@@ -6346,9 +6132,6 @@ impl GameEngine {
                         n.in_combat = true;
                     }
                 }
-                self.dirty_fleets.insert(fleet_id, ());
-                self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
-                self.dirty_runtime.insert((RuntimeKind::Combat, existing_id));
 
                 self.pending_events.push(GameEvent {
                     tick: self.current_tick,
@@ -6384,8 +6167,6 @@ impl GameEngine {
         if let Some(n) = self.npc_fleets.get_mut(&npc_id) {
             n.in_combat = true;
         }
-        self.dirty_runtime.insert((RuntimeKind::NpcFleet, npc_id));
-        self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -6421,7 +6202,6 @@ impl GameEngine {
                 combat_mut.add_player_fleet(fid);
             }
             self.engage_fleet(fid);
-            self.dirty_runtime.insert((RuntimeKind::Combat, *combat_id));
         }
         Ok(())
     }
@@ -6432,7 +6212,6 @@ impl GameEngine {
         let Some(combat) = self.active_combats.values_mut().find(|c| c.has_player_fleet(fleet_id)) else { return; };
         let combat_id = combat.id;
         combat.player_fleet_ids.retain(|id| *id != fleet_id);
-        self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
         let fleets = &self.fleets;
         if !combat.player_fleet_ids.iter().any(|id| fleets.get(id).is_some_and(|f| f.ship_count > 0)) {
             let withdrew = fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
@@ -6445,10 +6224,8 @@ impl GameEngine {
     /// free. `withdrew` names the owner of a fleet whose leaving ended it.
     fn break_off_combat(&mut self, combat_id: u64, withdrew: Option<String>) {
         let Some(combat) = self.active_combats.remove(&combat_id) else { return; };
-        self.dirty_runtime.insert((RuntimeKind::Combat, combat_id));
         for nid in &combat.npc_fleet_ids {
             self.npc_fleets.remove(nid);
-            self.dirty_runtime.insert((RuntimeKind::NpcFleet, *nid));
         }
         let mut owners: std::collections::BTreeSet<String> = withdrew.into_iter().collect();
         for fid in &combat.player_fleet_ids {
@@ -6456,7 +6233,6 @@ impl GameEngine {
             if fleet.state == FleetStatus::InCombat {
                 fleet.state = FleetStatus::Idle;
                 fleet.idle_ticks = 0;
-                self.dirty_fleets.insert(*fid, ());
             }
             owners.extend(self.players.get(&fleet.owner_id).map(|p| p.name.clone()));
         }
@@ -6494,7 +6270,6 @@ impl GameEngine {
             fleet.move_target = None;
             fleet.move_cooldown = 0;
         }
-        self.dirty_fleets.insert(fleet_id, ());
     }
 
     fn collect_salvage(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
@@ -6535,8 +6310,6 @@ impl GameEngine {
             ov.salvage = None;
             ov.salvage_despawn_tick = None;
         }
-        self.dirty_fleets.insert(fleet_id, ());
-        self.dirty_sectors.insert(key, ());
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -6560,22 +6333,7 @@ impl GameEngine {
         let total = ov.salvage.unwrap_or_default().add(pile);
         ov.salvage = Some(total);
         ov.salvage_despawn_tick = Some(despawn);
-        self.dirty_sectors.insert(key, ());
         (total, despawn)
-    }
-
-    fn record_explored(&mut self, player_id: u64, coord: Hex) -> Result<(), Box<dyn std::error::Error>> {
-        self.explored.insert((player_id, coord.to_key()));
-        let connections = self.world_gen.connected_neighbors(coord);
-        for neighbor in connections.slice() {
-            self.new_edges.push(ExploredEdge {
-                player_id,
-                from: coord,
-                to: *neighbor,
-                tick: self.current_tick,
-            });
-        }
-        Ok(())
     }
 
     fn add_ship_to_homeworld(&mut self, player_id: u64, ship_class: ShipClass) -> Result<(), Box<dyn std::error::Error>> {
@@ -6647,7 +6405,6 @@ impl GameEngine {
         fleet.fuel_max = fleet_fuel_max(fleet, player);
         fleet.fuel = (fleet.fuel + (fleet.fuel_max - old_max)).min(fleet.fuel_max);
 
-        self.dirty_fleets.insert(fleet.id, ());
         Ok(())
     }
 
@@ -6665,7 +6422,6 @@ impl GameEngine {
                 let bonus = new_max - fleet_mut.fuel_max;
                 fleet_mut.fuel += bonus;
                 fleet_mut.fuel_max = new_max;
-                self.dirty_fleets.insert(fid, ());
             }
         }
         Ok(())
@@ -6682,108 +6438,6 @@ impl GameEngine {
     pub fn drain_events(&mut self) -> Vec<GameEvent> {
         std::mem::take(&mut self.pending_events)
     }
-
-    // ── Persistence ───────────────────────────────────────────────
-
-    /// Hand everything dirty since the last call to the attached `Persist`.
-    /// Cheap (clones the dirty rows); the write itself happens elsewhere.
-    pub fn persist_dirty_state(&mut self) {
-        let batch = self.persister.is_some().then(|| PersistBatch {
-            tick: self.current_tick,
-            next_id: self.next_id,
-            players: self.dirty_players.keys().filter_map(|id| self.players.get(id).cloned()).collect(),
-            fleets: self.dirty_fleets.keys().filter_map(|id| self.fleets.get(id).cloned()).collect(),
-            fleet_clocks: self.dirty_clocks.iter()
-                .filter(|id| !self.dirty_fleets.contains_key(id))
-                .filter_map(|id| self.fleets.get(id))
-                .map(|f| FleetClocks {
-                    fleet_id: f.id,
-                    move_cooldown: f.move_cooldown,
-                    action_cooldown: f.action_cooldown,
-                    idle_ticks: f.idle_ticks,
-                })
-                .collect(),
-            deleted_fleets: self.deleted_fleet_ids.keys().copied().collect(),
-            policies: self.dirty_policies.keys()
-                .filter_map(|id| self.policies.get(id).map(|p| (*id, p.clone())))
-                .collect(),
-            deleted_policies: self.deleted_policy_ids.keys().copied().collect(),
-            sectors: self.dirty_sectors.keys()
-                .filter_map(|key| self.sector_overrides.get(key).map(|ov| (Hex::from_key(*key), ov.clone())))
-                .collect(),
-            runtime: self.dirty_runtime.iter()
-                .map(|&(kind, id)| RuntimeRow { kind, id, entry: self.runtime_entry(kind, id) })
-                .collect(),
-            explored_edges: self.new_edges.clone(),
-            known_sectors: self.known.dirty_rows(),
-            explore_credits: self.new_credits.clone(),
-        });
-        self.dirty_players.clear();
-        self.dirty_fleets.clear();
-        self.dirty_sectors.clear();
-        self.deleted_fleet_ids.clear();
-        self.dirty_policies.clear();
-        self.deleted_policy_ids.clear();
-        self.dirty_clocks.clear();
-        self.dirty_runtime.clear();
-        self.new_edges.clear();
-        self.new_credits.clear();
-        self.known.clear_dirty();
-        if let (Some(persist), Some(batch)) = (&self.persister, batch) {
-            persist.submit(batch);
-        }
-    }
-
-    fn runtime_entry(&self, kind: RuntimeKind, id: u64) -> Option<RuntimeEntry> {
-        match kind {
-            RuntimeKind::NpcFleet => self.npc_fleets.get(&id).cloned().map(Box::new).map(RuntimeEntry::NpcFleet),
-            RuntimeKind::Combat => self.active_combats.get(&id).cloned().map(RuntimeEntry::Combat),
-            RuntimeKind::Raid => self.raid_states.get(&id).cloned().map(RuntimeEntry::Raid),
-            RuntimeKind::Scans => self.scan_reveals.get(&id).cloned().map(RuntimeEntry::Scans),
-            RuntimeKind::StorageMarks => self.storage_marks.get(&id).copied().map(RuntimeEntry::StorageMarks),
-            RuntimeKind::HomeSalvageWarned => {
-                self.home_salvage_warned.get(&id).copied().map(RuntimeEntry::HomeSalvageWarned)
-            }
-            RuntimeKind::HarvestReport => self.harvest_reports.get(&id).cloned().map(RuntimeEntry::HarvestReport),
-            RuntimeKind::Bot => self.bots.get(&id).cloned().map(Box::new).map(RuntimeEntry::Bot),
-            RuntimeKind::Outpost => self.outposts.get(&id).cloned().map(Box::new).map(RuntimeEntry::Outpost),
-        }
-    }
-
-    /// Queue what is otherwise written only now and then (the stamps of live
-    /// chart sectors, refilling ore) for the next persist. Call before the
-    /// final persist of a clean shutdown: the stored world then equals
-    /// `snapshot()`.
-    pub fn checkpoint(&mut self) {
-        self.known.touch_live();
-        for (key, ov) in &self.sector_overrides {
-            if ov.has_ore_damage() {
-                self.dirty_sectors.insert(*key, ());
-            }
-        }
-    }
-
-    /// Block until every submitted batch is committed (shutdown, tests).
-    pub fn flush_persistence(&self) -> Result<(), String> {
-        self.persister.as_ref().map_or(Ok(()), |p| p.flush())
-    }
-}
-
-/// Orders saved before queue ids existed come back with id 0; give each a
-/// fresh id from the world's counter.
-fn assign_missing_queue_ids(player: &mut Player, next_id: &mut u64) {
-    let mut fresh = |id: &mut u64| {
-        if *id == 0 {
-            *id = *next_id;
-            *next_id += 1;
-        }
-    };
-    player.building_queue.iter_mut().for_each(|q| fresh(&mut q.id));
-    player.building_pending.iter_mut().for_each(|q| fresh(&mut q.id));
-    player.research_queue.iter_mut().for_each(|q| fresh(&mut q.id));
-    player.research_pending.iter_mut().for_each(|q| fresh(&mut q.id));
-    player.ship_queue.iter_mut().for_each(|q| fresh(&mut q.id));
-    player.ship_pending.iter_mut().for_each(|q| fresh(&mut q.id));
 }
 
 // ── Helper Functions ──────────────────────────────────────────────
@@ -7047,11 +6701,10 @@ fn regen_resource(
     template_density: Density,
     dist: u16,
     pace: &Pace,
-) -> bool {
+) {
     let current = override_density.unwrap_or(template_density);
     let rate = scaling::ore_regen_per_tick(template_density, dist, pace);
     let (density, gone) = scaling::ore_regen_step(template_density, current, *harvested, rate, dist);
     *override_density = (density != template_density).then_some(density);
     *harvested = gone;
-    density != current
 }

@@ -515,7 +515,7 @@ Future<void> main(List<String> args) async {
 Future<void> multiplayer(Browser browser, Directory bundle, String server, int port) async {
   final data = Directory.systemTemp.createTempSync('iac-solo-e2e-server');
   final process = await Process.start(server,
-      ['--host', '127.0.0.1', '--port', '$port', '--db', '${data.path}/world.db', '--web-dir', bundle.path, '--pace', 'blitz']);
+      ['--host', '127.0.0.1', '--port', '$port', '--world', '${data.path}/world.iac', '--web-dir', bundle.path, '--pace', 'blitz']);
   unawaited(process.stdout.drain<void>());
   unawaited(process.stderr.drain<void>());
   try {

@@ -733,7 +733,7 @@ impl Watch<Seats> for Counting<'_> {
                 }
                 self.count(engine, events);
             }
-            Phase::Frames | Phase::Observed | Phase::Persisted => {}
+            Phase::Frames | Phase::Observed => {}
         }
     }
 }

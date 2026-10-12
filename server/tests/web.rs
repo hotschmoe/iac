@@ -22,7 +22,7 @@ fn start(test: &str, with_web: bool) -> (ServerGuard, u16, std::path::PathBuf) {
     std::fs::write(web.join("assets/AssetManifest.json"), "{}").unwrap();
 
     let web_dir = ["--web-dir", web.to_str().unwrap()];
-    let (guard, port) = start_server_with(&base.join("w.db"), if with_web { &web_dir } else { &[] });
+    let (guard, port) = start_server_with(&base.join("world.iac"), if with_web { &web_dir } else { &[] });
     (guard, port, base)
 }
 

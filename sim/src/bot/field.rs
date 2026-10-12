@@ -146,7 +146,7 @@ impl Wing {
 }
 
 /// The lanes a fleet set out on and how far along it is.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Route {
     path: Vec<Hex>,
     next: usize,

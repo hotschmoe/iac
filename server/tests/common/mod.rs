@@ -7,14 +7,26 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use iac_server::store::Beside;
+use iac_sim::{Snapshot, store};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
+
+/// A token is issued once and its account must not be lost with it: once
+/// the server has issued one it stores the world within two seconds of its
+/// last document (`REGISTRATION_SAVE`), and the tick that does it comes up
+/// to a second later. Waited this long, a registration outlives a kill.
+pub const REGISTRATION_IS_STORED: Duration = Duration::from_millis(4500);
 
 pub struct ServerGuard(Child);
 
 impl ServerGuard {
+    /// Kill the server where it stands, as dropping the guard does. What it
+    /// comes back as is the last document it wrote.
+    pub fn kill(self) {}
+
     /// Ask the server to shut down as an operator would and wait until it
-    /// has: its database then holds the world it stopped with.
+    /// has: its file then holds the world it stopped with.
     pub fn stop(mut self) {
         let pid = self.0.id().to_string();
         let asked = Command::new("kill").args(["-TERM", &pid]).status().expect("kill did not run");
@@ -80,28 +92,37 @@ pub fn fresh_dir(test: &str) -> PathBuf {
     dir
 }
 
-pub fn fresh_db(test: &str) -> PathBuf {
-    fresh_dir(test).join("world.db")
+/// Where a server of this test keeps its world: a file that does not exist
+/// yet, in a directory of the test's own.
+pub fn fresh_world(test: &str) -> PathBuf {
+    fresh_dir(test).join("world.iac")
 }
 
-pub fn remove_db(db: &Path) {
-    for ext in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{ext}", db.display()));
+pub fn remove_world(file: &Path) {
+    for beside in ["", ".lock", ".tmp"] {
+        let _ = std::fs::remove_file(format!("{}{beside}", file.display()));
     }
-    if let Some(dir) = db.parent() {
+    if let Some(dir) = file.parent() {
         let _ = std::fs::remove_dir(dir);
     }
 }
 
-pub fn start_server(db: &Path) -> (ServerGuard, u16) {
-    start_server_with(db, &[])
+/// The world a server's file holds.
+pub fn stored_world(file: &Path) -> Snapshot {
+    let document = std::fs::read(file).expect("the server wrote its world file");
+    let (Beside {}, world) = store::decode(&document).unwrap_or_else(|unread| panic!("{}", unread.sentence("world file")));
+    world
+}
+
+pub fn start_server(file: &Path) -> (ServerGuard, u16) {
+    start_server_with(file, &[])
 }
 
 /// Start the server on a port the system picks and return it with that
 /// port, read from the line the server prints once it listens.
-pub fn start_server_with(db: &Path, more: &[&str]) -> (ServerGuard, u16) {
+pub fn start_server_with(file: &Path, more: &[&str]) -> (ServerGuard, u16) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_iac-server"))
-        .args(["--port", "0", "--db", db.to_str().unwrap()])
+        .args(["--port", "0", "--world", file.to_str().unwrap()])
         .args(more)
         .stdout(Stdio::piped())
         .spawn()

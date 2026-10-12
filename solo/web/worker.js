@@ -30,6 +30,12 @@
 //
 // Everything else is in the wasm (solo/src): this file decides nothing about
 // the game. Requests and replies cross as bytes, a line of JSON and a body.
+//
+// The save is the document every host stores (sim/src/store.rs), kept whole
+// and gzipped under one key. This file is the browser's place for it: it
+// reads the document once at start and replaces it when the engine says a
+// save is due, the two verbs of the `Store` a server has over its file. The
+// engine cannot do them itself, since WebAssembly cannot wait on IndexedDB.
 
 const SAVE_DB = 'iac-solo';
 const SAVE_STORE = 'saves';

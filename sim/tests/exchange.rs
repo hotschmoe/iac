@@ -6,12 +6,10 @@
 // And the way surplus gets there: a hold loaded from a full stockpile at the
 // home dock, kept aboard until the fleet has been away, put back by hand,
 // refused when it cannot be met, ended by standing orders, counted with the
-// stockpile by a raid, and written with the fleet.
+// stockpile by a raid, and stored with the fleet.
 
 #[allow(dead_code)]
 mod common;
-
-use std::sync::{Arc, Mutex};
 
 use common::*;
 use iac_shared::constants::{
@@ -26,7 +24,7 @@ use iac_shared::protocol::{
 use iac_shared::scaling;
 use iac_shared::world::{HubService, NpcBehaviorType, WorldGen};
 use iac_sim::engine::{FleetStatus, IncomingRaid, NpcFleet, RaidState, Ship, MAX_NPC_SHIPS};
-use iac_sim::{GameEngine, Persist, PersistBatch, Snapshot};
+use iac_sim::{GameEngine, Snapshot};
 
 use ResourceKind::{Crystal, Deuterium, Metal};
 
@@ -258,26 +256,10 @@ fn an_order_in_pieces_returns_what_the_whole_order_would() {
     }
 }
 
-struct Capture(Arc<Mutex<Vec<PersistBatch>>>);
-
-impl Persist for Capture {
-    fn submit(&self, batch: PersistBatch) {
-        self.0.lock().unwrap().push(batch);
-    }
-
-    fn flush(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 #[test]
 fn the_meter_falls_one_span_per_window_and_survives_a_restart() {
     let mut e = trader("season", (4, 4, 4), 12, Resources { metal: 6000.0, ..Resources::default() });
     let pid = e.pid;
-    let batches = Arc::new(Mutex::new(Vec::new()));
-    e.engine.attach_persist(Box::new(Capture(batches.clone())));
-    e.engine.persist_dirty_state();
-    batches.lock().unwrap().clear();
 
     let sold = trade(&mut e, Metal, Deuterium, Some(3000.0)).expect("a sale past the span");
     let (span, window) = (f64::from(sold.meter.span), sold.meter.window_ticks);
@@ -285,22 +267,14 @@ fn the_meter_falls_one_span_per_window_and_survives_a_restart() {
     assert_eq!(sold.meter_after.fee, 0.75, "the fee is flat beyond the span");
     let sold_at = e.engine.current_tick();
 
-    e.engine.persist_dirty_state();
-    let stored: Vec<(f64, u64)> = batches
-        .lock()
-        .unwrap()
-        .iter()
-        .flat_map(|batch| &batch.players)
-        .filter(|p| p.id == pid)
-        .map(|p| (p.exchange_pressure, p.exchange_tick))
-        .collect();
-    assert_eq!(stored, [(3000.0, sold_at)], "the trade writes the meter with the player's row");
+    let kept = &stored(&e.engine).players[&pid];
+    assert_eq!((kept.exchange_pressure, kept.exchange_tick), (3000.0, sold_at), "the meter is stored as the trade left it");
 
     e.run(window);
     assert!(close(meter(&e).pressure, 3000.0 - span, 0.01), "one window forgets one span: {:?}", meter(&e));
     assert_eq!(meter(&e).fee, 0.75);
 
-    let saved: Snapshot = serde_json::from_slice(&serde_json::to_vec(&e.engine.snapshot()).unwrap()).unwrap();
+    let saved = stored(&e.engine);
     assert_eq!(saved.hash(), e.engine.snapshot().hash());
     let mut restored = Empire { engine: GameEngine::restore(saved), pid, fid: e.fid, log: Vec::new() };
     assert_eq!(meter(&restored), meter(&e), "the meter comes back as it was");
@@ -802,35 +776,17 @@ fn ships_lost_to_a_raid_at_the_dock_leave_their_share_of_the_hold_in_the_stockpi
 }
 
 #[test]
-fn a_laden_hold_is_written_with_the_fleet_and_survives_a_restart() {
+fn a_laden_hold_is_stored_with_the_fleet_and_survives_a_restart() {
     let mut e = carrier("season", (4, 4, 4), 2);
     let (pid, fid) = (e.pid, e.fid);
     e.set_stockpile(stock(3000.0, 2000.0, 1000.0));
-    let batches = Arc::new(Mutex::new(Vec::new()));
-    e.engine.attach_persist(Box::new(Capture(batches.clone())));
-    e.engine.persist_dirty_state();
-    batches.lock().unwrap().clear();
-    let written = |batches: &Mutex<Vec<PersistBatch>>| -> Vec<(f32, bool)> {
-        let mut batches = batches.lock().unwrap();
-        let rows = batches.iter().flat_map(|b| &b.fleets).filter(|f| f.id == fid).map(|f| (f.cargo.metal, f.laden)).collect();
-        batches.clear();
-        rows
-    };
+    let hold = |world: &Snapshot| (world.fleets[&fid].cargo.metal, world.fleets[&fid].laden);
 
     e.order(put_aboard(fid, Metal, Some(500.0))).expect("load");
-    e.engine.persist_dirty_state();
-    let stockpiles: Vec<f32> = batches
-        .lock()
-        .unwrap()
-        .iter()
-        .flat_map(|b| &b.players)
-        .filter(|p| p.id == pid)
-        .map(|p| p.resources.metal)
-        .collect();
-    assert_eq!(stockpiles, [2500.0], "the load writes the stockpile");
-    assert_eq!(written(&batches), [(500.0, true)], "and the hold with its mark, in the fleet's row");
+    let saved = stored(&e.engine);
+    assert_eq!(saved.players[&pid].resources.metal, 2500.0, "the load is stored in the stockpile");
+    assert_eq!(hold(&saved), (500.0, true), "and in the hold, with its mark");
 
-    let saved: Snapshot = serde_json::from_slice(&serde_json::to_vec(&e.engine.snapshot()).unwrap()).unwrap();
     assert_eq!(saved.hash(), e.engine.snapshot().hash());
     let mut restored = Empire { engine: GameEngine::restore(saved), pid, fid, log: Vec::new() };
     e.run(50);
@@ -839,11 +795,8 @@ fn a_laden_hold_is_written_with_the_fleet_and_survives_a_restart() {
     assert_eq!((fleet.cargo.metal, fleet.laden), (500.0, true), "a restart does not unload a laden hold");
     assert_eq!(restored.engine.snapshot().hash(), e.engine.snapshot().hash());
 
-    e.engine.persist_dirty_state();
-    batches.lock().unwrap().clear();
     e.order(Command::Unload { fleet_id: fid }).expect("unload");
-    e.engine.persist_dirty_state();
-    assert_eq!(written(&batches), [(0.0, false)]);
+    assert_eq!(hold(&stored(&e.engine)), (0.0, false));
 }
 
 #[test]

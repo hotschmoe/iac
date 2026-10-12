@@ -10,6 +10,56 @@ core" it means that, whatever it ends up being called.
 machine on 2026-10-13; section 3.1 says how. *Read* means read from the code, with
 the file named. *Proposed* is everything else, every constant included.
 
+## As built (2026-10-13)
+
+The owner answered the questions of section 12 the same day
+(`docs/design/decisions.md`), and the first answer was that a killed server
+may lose more than a tick. So **the document was built and the journal was
+not**. The rest of this text stands as written, as the record of the study
+and as the way to add a journal later; what is true of the code now is in
+`docs/data_architecture.md`.
+
+| section 10 | |
+|---|---|
+| 1. the document beside the host core | built: `sim/src/store.rs`. `SAVE_FORMAT` 4 to 5. The header has `host` and no `journal` field |
+| 2. `Store`, a file place and a memory place | built, without `append`: `read` and `replace`. The file place is `server/src/store.rs`; the memory place is the tests' |
+| 3. the server stores documents | built: `--world`, the refusal of another `--seed`, `<file>.lock`, a writer thread; `database.rs` is archived and `rusqlite` has left the workspace |
+| 4. the engine forgets rows | built, in the same change as step 3 |
+| 5 to 7. the journal | **not built**, and nothing was left in the code for it: no `n`, no `pulse`, no `GameEngine::seat`, no `Host::recover` |
+| 8. docs | done |
+
+Where the code departs from this text, or adds to it:
+
+- **Option (b), at a shorter period than the ten minutes costed here.** With
+  no journal the period is what a kill costs, so the server writes every 60
+  seconds (`--save-every`), at every start and at every clean stop, and
+  within about three seconds of issuing a token. Section 5 warns that a short
+  period is expensive, and it is: measured on a real server, the 24-seat
+  world of section 3.2 at day 7 is 13.2 MB a document, 18.9 GB a day at 60 s
+  where this text counted 1.9 GB at ten minutes.
+- **The copy on the tick's thread costs more on a live server than section
+  3.2 measured.** 13.5 ms there, in a tight loop; 33 ms on a server that
+  sleeps a second between ticks and frees each copy on another thread. The
+  one copy a server takes while still warm from loading took 12 ms.
+  Encoding: 26 ms there, 46 ms live. Writing with both syncs: 28 ms there,
+  34 ms live.
+- **Section 8.4 said the kill-and-restart scenarios would need a period of
+  one tick to pass.** They were not kept alive that way. They stop their
+  servers cleanly now, which loses nothing, and two tests hold the new line
+  for a kill: at most the period, and a registration at most a few seconds.
+- **Section 8.4 called the two SQLite restart tests redundant.** They were
+  kept, through the document: `sim/tests/stored_world.rs` and the restart
+  test of `sim/tests/bots.rs`.
+- **Section 9.7, 9.8, 9.9** (explored edges, seating bots, hex of a hash)
+  were already gone or went with the rows. **9.3** (`--seed`) is refused now.
+- **`GameEngine::restore` lost four repairs** that existed for rows read
+  back out of step: orphaned bot records, outposts and standing orders were
+  dropped, and queue entries without an id were given one. A document is one
+  consistent snapshot behind a checksum, so there is nothing to repair.
+- **Section 7.7** (moving a world between hosts) is as described and not
+  built; one half of it is tested as it stands
+  (`a_server_plays_on_a_world_the_single_player_host_saved`).
+
 ---
 
 ## 1. The answer on one page

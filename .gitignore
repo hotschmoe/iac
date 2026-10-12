@@ -1,9 +1,9 @@
 # Rust
 target/
-# Runtime
-*.db
-*.db-shm
-*.db-wal
+# Runtime: a server's world file, its lock and its half-written successor
+*.iac
+*.iac.lock
+*.iac.tmp
 server.pid
 # Flutter web client
 clients/web/build/
