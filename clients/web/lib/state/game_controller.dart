@@ -96,9 +96,9 @@ class GameController extends ChangeNotifier {
           if (e.kind is proto.ExchangedEvent) _quoteAsked.clear();
           _events.add(e);
         }
-      case proto.GameEvent():
-        if (m.kind is proto.ExchangedEvent) _quoteAsked.clear();
-        _events.add(m);
+      case proto.EventMessage(:final event):
+        if (event.kind is proto.ExchangedEvent) _quoteAsked.clear();
+        _events.add(event);
       case proto.ExchangeQuote(:final terms):
         if (_quoteTyped.remove((terms.fleetId, terms.give, terms.want))) {
           for (final line in quoteLines(m).reversed) {
@@ -733,7 +733,7 @@ class GameController extends ChangeNotifier {
     if (wanted.isEmpty || _oddsTimers.containsKey(fleetId)) return;
     _oddsTimers[fleetId] = Timer(previewDebounce, () {
       _oddsTimers.remove(fleetId);
-      final ask = (_oddsWanted.remove(fleetId) ?? {}).take(proto.OddsCommand.maxOddsSectors).toList();
+      final ask = (_oddsWanted.remove(fleetId) ?? {}).take(proto.maxOddsSectors).toList();
       if (_disposed || ask.isEmpty || !isLive) return;
       _oddsAsked.removeWhere((_, tick) => state.tick - tick > 60);
       for (final s in ask) {

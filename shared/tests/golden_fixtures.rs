@@ -6,8 +6,12 @@
 // files (clients/web/test/), so a change on either side that breaks the
 // contract fails a test.
 //
+// The Dart client's wire types are generated here too (`wire/`), into
+// clients/web/lib/protocol/protocol.g.dart, and held to the same rule: the
+// checked-in file must be what the Rust types generate today.
+//
 //   cargo test -p iac-shared --test golden_fixtures                 # verify
-//   UPDATE_FIXTURES=1 cargo test -p iac-shared --test golden_fixtures   # regenerate
+//   UPDATE_FIXTURES=1 cargo test -p iac-shared --test golden_fixtures   # regenerate both
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -24,6 +28,10 @@ use iac_shared::pace::Pace;
 use iac_shared::protocol::*;
 use iac_shared::scaling::{BuildingLevels, BuildingType, DefenceKind, RatioLabel, ResearchLevels, ResearchType, ShipyardItem};
 use iac_shared::world::HubService;
+
+mod wire;
+
+use wire::model::Model;
 
 // ── Plumbing ──────────────────────────────────────────────────────
 
@@ -1760,23 +1768,80 @@ fn generate() -> Files {
         );
     }
 
-    // Edges 0.9 and 1.1 are not exact in f32, so the cases sit just beside them.
-    let ratios = [0.0, 0.5, 0.89, 0.91, 1.0, 1.09, 1.11, 1.3, 1.49, 1.5, 2.0, 2.49, 2.5, 4.0, 40.0];
+    // Edges 0.9 and 1.1 are not exact in f32. The client's thresholds are the
+    // same f32 values and it rounds a ratio to f32 first, so the edges
+    // themselves are cases too.
+    let ratios = [0.0, 0.5, 0.89, 0.9, 0.91, 1.0, 1.09, 1.1, 1.11, 1.3, 1.49, 1.5, 2.0, 2.49, 2.5, 4.0, 40.0];
     let labels: Vec<Value> = ratios
         .iter()
         .map(|&r| json!({"ratio": r, "label": serde_json::to_value(iac_shared::scaling::ratio_label(r)).unwrap()}))
         .collect();
     put(&mut f, "protocol/ratio_labels.json".into(), &Value::Array(labels));
 
+    synth_fixtures(&mut f);
     hex_fixtures(&mut f);
     f
+}
+
+fn wire_model() -> Model {
+    Model::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &wire::ROOTS)
+}
+
+/// The messages `wire::samples` makes from the model, one file for each
+/// variant, one message a line: every type, variant and field of the wire,
+/// which the fixtures written by hand above do not promise to cover.
+fn synth_fixtures(files: &mut Files) {
+    let mut by_file: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for case in wire::samples::prove(&wire_model()).cases {
+        let dir = if case.root == "ClientMessage" { "client_message" } else { "server_message" };
+        by_file
+            .entry(format!("protocol/synth/{dir}/{}.json", case.tags.join("__")))
+            .or_default()
+            .push(json!({"input": case.input, "canonical": case.canonical}).to_string());
+    }
+    for (rel, cases) in by_file {
+        files.insert(rel, format!("[\n{}\n]\n", cases.join(",\n")));
+    }
+}
+
+fn updating() -> bool {
+    std::env::var("UPDATE_FIXTURES").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The Dart client's wire types are written from the Rust ones and checked
+/// in, so the client builds without cargo. This fails while they are stale.
+#[test]
+fn dart_protocol_matches() {
+    let model = wire_model();
+    let proven = wire::samples::prove(&model);
+    let expected = wire::dart::render(&model, &proven.defaults, &wire::extras(&model));
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(wire::dart::PATH);
+
+    if updating() {
+        fs::write(&path, &expected).unwrap();
+        eprintln!("wrote {}", path.display());
+        return;
+    }
+
+    let actual = fs::read_to_string(&path).unwrap_or_default();
+    let differs = expected.lines().zip(actual.lines()).position(|(want, have)| want != have);
+    let line = differs.unwrap_or(expected.lines().count().min(actual.lines().count()));
+    assert!(
+        actual == expected,
+        "{} is out of date with shared/src, first at line {}:\n  generated: {}\n  checked in: {}\n\
+         run `UPDATE_FIXTURES=1 cargo test -p iac-shared`, then fix what `flutter analyze` points at in clients/web",
+        wire::dart::PATH,
+        line + 1,
+        expected.lines().nth(line).unwrap_or("(end of file)"),
+        actual.lines().nth(line).unwrap_or("(end of file)"),
+    );
 }
 
 #[test]
 fn golden_fixtures_match() {
     let files = generate();
     let root = fixtures_root();
-    let update = std::env::var("UPDATE_FIXTURES").is_ok_and(|v| !v.is_empty() && v != "0");
+    let update = updating();
 
     if update {
         for sub in ["protocol", "hex"] {

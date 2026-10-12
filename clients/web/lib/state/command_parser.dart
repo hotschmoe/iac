@@ -204,7 +204,7 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
       return ParsedSend([CommandMessage(LeaderboardCommand(limit: n))]);
 
     case 'refresh' || 'sync':
-      return const ParsedSend([RequestFullState()]);
+      return const ParsedSend([RequestFullStateMessage()]);
 
     case 'f' || 'fleet' || 'fleets':
       if (args.isEmpty) {

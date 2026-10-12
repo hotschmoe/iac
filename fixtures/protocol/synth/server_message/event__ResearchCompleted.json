@@ -1,0 +1,17 @@
+[
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"FuelEfficiency","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"FuelEfficiency","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"ExtendedFuelTanks","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"ExtendedFuelTanks","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"ReinforcedHulls","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"ReinforcedHulls","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"AdvancedShields","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"AdvancedShields","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"WeaponsResearch","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"WeaponsResearch","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"Navigation","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"Navigation","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"HarvestingEfficiency","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"HarvestingEfficiency","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"CorvetteTech","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"CorvetteTech","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"FrigateTech","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"FrigateTech","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"CruiserTech","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"CruiserTech","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"HaulerTech","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"HaulerTech","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"EmergencyJump","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"EmergencyJump","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"ModularFabrication","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":63,"tech":"ModularFabrication","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"tech":"ModularFabrication","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"tech":"ModularFabrication","tick":2,"type":"event"}},
+{"canonical":{"kind":"ResearchCompleted","new_level":62,"tech":"ModularFabrication","tick":2,"type":"event"},"input":{"kind":"ResearchCompleted","new_level":62,"player_id":null,"tech":"ModularFabrication","tick":2,"type":"event"}}
+]

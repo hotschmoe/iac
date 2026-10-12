@@ -1,0 +1,5 @@
+[
+{"canonical":{"arrival_tick":81,"est_power":83.25,"kind":"RaidIncoming","outpost":{"q":84,"r":-85},"player_id":80,"threat":"s82","tick":2,"type":"event"},"input":{"arrival_tick":81,"est_power":83.25,"kind":"RaidIncoming","outpost":{"q":84,"r":-85},"player_id":80,"threat":"s82","tick":2,"type":"event"}},
+{"canonical":{"arrival_tick":81,"est_power":0.0,"kind":"RaidIncoming","player_id":80,"threat":"s82","tick":2,"type":"event"},"input":{"arrival_tick":81,"kind":"RaidIncoming","player_id":80,"threat":"s82","tick":2,"type":"event"}},
+{"canonical":{"arrival_tick":81,"est_power":83.25,"kind":"RaidIncoming","player_id":80,"threat":"s82","tick":2,"type":"event"},"input":{"arrival_tick":81,"est_power":83.25,"kind":"RaidIncoming","outpost":null,"player_id":80,"threat":"s82","tick":2,"type":"event"}}
+]

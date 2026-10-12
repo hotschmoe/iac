@@ -1,6 +1,5 @@
 import '../../console/economy_view.dart';
 import '../../console/intel.dart';
-import '../../console/threat.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
 
@@ -156,4 +155,4 @@ ItemSpec? specFor(GameController c, {int? index}) {
 
 String fmtTicks(int t) => clockFmt(t);
 
-double powerOf(proto.ShipClass c) => shipStats[c]!.power;
+double powerOf(proto.ShipClass c) => c.power;

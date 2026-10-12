@@ -1,0 +1,5 @@
+[
+{"canonical":{"action":"cancel_queued","id":14,"queue_type":"Building","type":"command"},"input":{"action":"cancel_queued","id":14,"queue_type":"Building","type":"command"}},
+{"canonical":{"action":"cancel_queued","id":14,"queue_type":"Ship","type":"command"},"input":{"action":"cancel_queued","id":14,"queue_type":"Ship","type":"command"}},
+{"canonical":{"action":"cancel_queued","id":14,"queue_type":"Research","type":"command"},"input":{"action":"cancel_queued","id":14,"queue_type":"Research","type":"command"}}
+]

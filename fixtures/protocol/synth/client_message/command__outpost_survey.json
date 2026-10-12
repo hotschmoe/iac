@@ -1,0 +1,5 @@
+[
+{"canonical":{"action":"outpost_survey","fleet_id":37,"sector":{"q":38,"r":-39},"type":"command"},"input":{"action":"outpost_survey","fleet_id":37,"sector":{"q":38,"r":-39},"type":"command"}},
+{"canonical":{"action":"outpost_survey","fleet_id":37,"type":"command"},"input":{"action":"outpost_survey","fleet_id":37,"type":"command"}},
+{"canonical":{"action":"outpost_survey","fleet_id":37,"type":"command"},"input":{"action":"outpost_survey","fleet_id":37,"sector":null,"type":"command"}}
+]

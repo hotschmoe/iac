@@ -10,3 +10,8 @@ libm = "=0.2.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[dev-dependencies]
+# Reads the wire types out of src/ for the Dart generator (tests/wire). A test
+# dependency only: no build of the engine, native or wasm, compiles it.
+syn = { version = "2", default-features = false, features = ["full", "parsing"] }

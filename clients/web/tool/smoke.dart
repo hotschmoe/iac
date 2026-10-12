@@ -125,7 +125,7 @@ Future<void> main(List<String> args) async {
   if (lastLoc != home.connections.first) fail('fleet did not arrive at ${home.connections.first} (at $lastLoc)');
   print('ticks=$ticks scan_seen=$scanSeen moved_to=$lastLoc decoded=$decoded decode_errors=$decodeErrors max_tick_gap_ms=$maxGapMs');
 
-  send(const RequestFullState());
+  send(const RequestFullStateMessage());
   final again = await next<GameState>();
   print('re-sync full_state tick=${again.tick} sectors=${again.knownSectors.length}');
 

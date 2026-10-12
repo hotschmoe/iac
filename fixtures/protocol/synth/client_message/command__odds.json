@@ -1,0 +1,4 @@
+[
+{"canonical":{"action":"odds","fleet_id":19,"sectors":[{"q":20,"r":-21}],"type":"command"},"input":{"action":"odds","fleet_id":19,"sectors":[{"q":20,"r":-21}],"type":"command"}},
+{"canonical":{"action":"odds","fleet_id":19,"sectors":[],"type":"command"},"input":{"action":"odds","fleet_id":19,"sectors":[],"type":"command"}}
+]

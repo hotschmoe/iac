@@ -1,0 +1,6 @@
+[
+{"canonical":{"action":"build_defence","count":12,"kind":"PulseTurret","type":"command"},"input":{"action":"build_defence","count":12,"kind":"PulseTurret","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"LancerBattery","type":"command"},"input":{"action":"build_defence","count":12,"kind":"LancerBattery","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"IonBastion","type":"command"},"input":{"action":"build_defence","count":12,"kind":"IonBastion","type":"command"}},
+{"canonical":{"action":"build_defence","count":1,"kind":"IonBastion","type":"command"},"input":{"action":"build_defence","kind":"IonBastion","type":"command"}}
+]

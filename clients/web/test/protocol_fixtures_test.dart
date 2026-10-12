@@ -1,6 +1,7 @@
-// Decode -> encode round trips over the Rust-generated golden fixtures.
-// If these fail, the Dart protocol drifted from shared/src/protocol.rs
-// (or the Rust types changed: regenerate with UPDATE_FIXTURES=1).
+// Decode -> encode round trips over the Rust-generated golden fixtures: the
+// proof that the generated wire types (lib/protocol/protocol.g.dart) read
+// and write what serde does. If these fail after a change to the Rust types,
+// regenerate both with `UPDATE_FIXTURES=1 cargo test -p iac-shared`.
 
 import 'dart:convert';
 import 'dart:io';
@@ -52,7 +53,25 @@ void main() {
   roundTrip('client_message', (j) => ClientMessage.fromJson(j).toJson());
   roundTrip('command', (j) => Command.fromJson(j).toJson());
   roundTrip('server_message', (j) => ServerMessage.fromJson(j).toJson());
-  roundTrip('event_kind', (j) => GameEvent.fromJson(j).toEventJson());
+  roundTrip('event_kind', (j) => GameEvent.fromJson(j).toJson());
+
+  group('synthesised messages (every type, variant and field; each input must come back as serde re-emits it)', () {
+    for (final (dir, decodeEncode) in <(String, Object? Function(Object?))>[
+      ('client_message', (j) => ClientMessage.fromJson(j).toJson()),
+      ('server_message', (j) => ServerMessage.fromJson(j).toJson()),
+    ]) {
+      for (final f in fixtureFiles('protocol/synth/$dir')) {
+        test('$dir ${baseName(f)}', () {
+          final cases = readJson(f) as List;
+          expect(cases, isNotEmpty);
+          for (final c in cases) {
+            final out = wire(decodeEncode(c['input']));
+            expect(jsonEq(out, c['canonical']), isTrue, reason: 'in ${jsonEncode(c['input'])}\n  out ${jsonEncode(out)}\n  want ${jsonEncode(c['canonical'])}');
+          }
+        });
+      }
+    }
+  });
 
   group('decoded types', () {
     test('every fixture decodes to the sealed variant its name says', () {
@@ -60,11 +79,11 @@ void main() {
         'client_message/auth': AuthRequest,
         'client_message/command': CommandMessage,
         'client_message/policy_update': PolicyUpdate,
-        'client_message/request_full_state': RequestFullState,
+        'client_message/request_full_state': RequestFullStateMessage,
         'server_message/auth_result': AuthResult,
         'server_message/tick_update': TickUpdate,
         'server_message/full_state': GameState,
-        'server_message/event': GameEvent,
+        'server_message/event': EventMessage,
         'server_message/error__server_error': ErrorMessage,
         'server_message/preview_move': MovePreview,
         'server_message/leaderboard': LeaderboardReply,
@@ -187,7 +206,7 @@ void main() {
       expect(cases, isNotEmpty);
       for (final c in cases) {
         final r = (c['ratio'] as num).toDouble();
-        expect(RatioLabel.forRatio(r).wire, c['label'], reason: 'ratio $r');
+        expect(ratioLabelFor(r).wire, c['label'], reason: 'ratio $r');
       }
     });
 

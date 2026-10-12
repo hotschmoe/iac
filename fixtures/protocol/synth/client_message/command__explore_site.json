@@ -1,0 +1,4 @@
+[
+{"canonical":{"action":"explore_site","fleet_id":24,"type":"command"},"input":{"action":"explore_site","fleet_id":24,"type":"command"}},
+{"canonical":{"action":"explore_site","fleet_id":0,"type":"command"},"input":{"action":"explore_site","type":"command"}}
+]

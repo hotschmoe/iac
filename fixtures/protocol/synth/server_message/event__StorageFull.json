@@ -1,0 +1,7 @@
+[
+{"canonical":{"kind":"StorageFull","player_id":40,"resource":"metal","tick":2,"type":"event"},"input":{"kind":"StorageFull","player_id":40,"resource":"metal","tick":2,"type":"event"}},
+{"canonical":{"kind":"StorageFull","player_id":40,"resource":"crystal","tick":2,"type":"event"},"input":{"kind":"StorageFull","player_id":40,"resource":"crystal","tick":2,"type":"event"}},
+{"canonical":{"kind":"StorageFull","player_id":40,"resource":"deuterium","tick":2,"type":"event"},"input":{"kind":"StorageFull","player_id":40,"resource":"deuterium","tick":2,"type":"event"}},
+{"canonical":{"kind":"StorageFull","resource":"deuterium","tick":2,"type":"event"},"input":{"kind":"StorageFull","resource":"deuterium","tick":2,"type":"event"}},
+{"canonical":{"kind":"StorageFull","resource":"deuterium","tick":2,"type":"event"},"input":{"kind":"StorageFull","player_id":null,"resource":"deuterium","tick":2,"type":"event"}}
+]

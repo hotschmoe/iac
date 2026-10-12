@@ -172,12 +172,10 @@ class ArenaPainter extends CustomPainter {
   int _rating() {
     var p = 0.0;
     for (final h in sim.hostiles) {
-      if (!h.dead) p += _pw(h.cls);
+      if (!h.dead) p += h.cls.power;
     }
     return p <= 0 ? 0 : (1 + (math.log(math.max(1, p) / 4) / math.ln2).floor()).clamp(1, 9);
   }
-
-  double _pw(proto.ShipClass c) => const {proto.ShipClass.scout: 9.0, proto.ShipClass.corvette: 22.0, proto.ShipClass.frigate: 48.0, proto.ShipClass.cruiser: 110.0, proto.ShipClass.hauler: 15.0}[c]!;
 
   void _gate(GateInfo gi, int i, double t) {
     final hv = sim.hover == i;

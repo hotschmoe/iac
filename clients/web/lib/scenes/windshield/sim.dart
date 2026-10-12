@@ -2,7 +2,6 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import '../../console/prefs.dart';
-import '../../console/threat.dart';
 import '../../models/fleet.dart' as ui;
 import '../../protocol/protocol.dart' as proto;
 import '../../design/symbols.dart';
@@ -295,12 +294,11 @@ class WindshieldSim {
     var synth = 1;
     for (final g in f.ships) {
       final cls = proto.ShipClass.values.firstWhere((c) => c.label.toLowerCase() == g.shipClass.toLowerCase(), orElse: () => proto.ShipClass.scout);
-      final st = shipStats[cls]!;
       for (var i = 0; i < g.count; i++) {
         final id = i < g.ids.length ? g.ids[i] : f.id * 1000 + synth++;
         final prev = old[id];
         final hull = g.hull / g.count, hm = g.hullMax / g.count;
-        final u = prev ?? Unit(id, cls, false, hull, hm, st.shield, st.shield);
+        final u = prev ?? Unit(id, cls, false, hull, hm, cls.shield, cls.shield);
         u.hull = hull;
         u.hullMax = hm;
         out.add(u);
@@ -345,8 +343,8 @@ class WindshieldSim {
       final list = <Unit>[];
       for (final e in want) {
         for (var k = 0; k < e.$2; k++) {
-          final st = shipStats[e.$1]!;
-          final u = Unit(900 + i++, e.$1, true, st.hull, st.hull, st.shield, st.shield)
+          final cls = e.$1;
+          final u = Unit(900 + i++, cls, true, cls.hull, cls.hull, cls.shield, cls.shield)
             ..x = (r.nextDouble() - .5) * .5
             ..y = -.5 + r.nextDouble() * .18
             ..ang = math.pi
