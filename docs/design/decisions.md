@@ -3,6 +3,119 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (one host core: hosting is written once)
+
+Asked for by the owner: "Remove ALL duplications so we only have one source of
+truth for shared pieces. Standalone code that differs should be strictly
+solo<->multi (like ws and tokens) and native<->web (like storage); anything we
+can move to a shared crate we should." Merged into master on 2026-10-13, not
+pushed. Storage was left to the study running beside this
+work. The journal entry of the same day has what was run.
+
+- **The rule.** The rules were already written once, in `iac-sim`. Now the
+  hosting around them is too, in `iac_sim::host`, and every host runs it: the
+  server, `iac-solo`, the headless runner and the tests that play a world with
+  bots. A host may differ from another only in who may log in and how bytes
+  reach it (solo against multiplayer), and in its clock and its storage
+  (native against web).
+- **One tick: `host::step`.** The cast takes its turns, `GameEngine::tick`,
+  its events are drained, every logged-in session's `tick_update`, the cast
+  observes, `persist_dirty_state`. That order was written three times
+  (`server/main.rs`, `solo/world.rs`, `sim/headless.rs`) and four more times
+  in tests. The three hosts did not agree on it to the letter: the server
+  drained and sent before the bots observed, the single-player host sent after
+  the bots had observed and after the persist, the headless runner drained
+  after its seats had observed. **Nothing moved by choosing one**, and this was
+  checked, not assumed: observing takes the engine by shared reference,
+  `views::tick_update` reads what the tick's refresh left (`lapsed`,
+  `expired`, `marked`) and never the dirty sets a persist clears, and the
+  events are handed to the views as an argument. The season report of
+  `sim-run` is the same bytes before and after, and the chart recording passes
+  untouched.
+- **A host that must look inside a tick gives the step a `Watch`**, called at
+  each of the five phase boundaries with the engine, the cast and the tick's
+  events. The headless runner's counting is one (it notes tanks and stores once
+  the seats have played, and counts when the tick is simulated), and so are
+  the server's tick timings. This is the alternative to a host copying the
+  sequence to get between two of its lines.
+- **One gate: `Host::receive`.** A logged-in session's message goes to
+  `GameEngine::answer`; `auth` goes to the `Door` and a session it admits is
+  sent the result and then its full state; anything else from outside is
+  `commands::not_logged_in`. The session-to-account map is the host core's.
+- **The seam is the `Door`,** one method, with both sides next to each other
+  in `host.rs`: `Tokens` (a new name registers, a known one presents its
+  token; the host gives it a mint) and `Commander` (one name, no token). The
+  server contributes only the mint, from OS entropy. They live in the core and
+  not in the hosts so that the whole of the difference can be read in one
+  place; a host chooses one.
+- **Seating a world is `Host::new` and `Host::enlist`**, for a world just
+  made and for one resumed alike. What a host says when the seats run out
+  stays its own: an operator reads about `--player-seats`, a player about the
+  seats beside theirs.
+- **One check of a stored world's versions: `host::Stale`.** It decides and it
+  words the refusal; a host names what it stores ("save", "database") and adds
+  what its reader can do about it. The server's sentence now says "this build
+  runs" where it said "this server runs"; the single-player sentences are
+  unchanged to the letter. The save's format number and the database's pace
+  and missing `world_meta` stay with their hosts, which alone have them.
+- **`iac-server` is a library and a binary.** The cross-host guard has to
+  read a server's database as a `Snapshot`, and only the server can
+  (`Database::load_snapshot`); a crate with nothing but a binary lends
+  nothing to its tests. `lib.rs` is three `pub mod` lines. The engine is no
+  longer behind `Arc<Mutex<..>>`: only the tick ever touched it, and the
+  transport now holds sockets and a queue and no world.
+- **What the transport still decides, as before:** a message whose session
+  has gone by the time the tick drains the queue is dropped unprocessed. The
+  socket map is the transport's, so this stayed there. A session's leaving
+  reaches the host core as an entry in the same queue.
+- **The cross-host guard is `server/tests/hosts_agree.rs`**, in
+  `cargo test --workspace`. A real server makes a world (seven bots at tick 0,
+  then an account over the wire) and is stopped; what its database holds is
+  read as a `Snapshot` and handed to `iac-solo` as a save document; the server
+  is started again. One commander then plays 40 ticks on both: nine batches of
+  orders, accepted and refused, with questions about the whole world. Every
+  frame of the two sessions, from the answer to the login on, and the final
+  worlds (`Snapshot::hash` after a clean stop) must be equal. About 45 seconds.
+  - *Why a stored world and not two new games.* The front doors cannot make
+    the same world: the single-player host seats its commander first and the
+    bots after, all at tick 0; a server seats its bots at tick 0 and can admit
+    a player no earlier than tick 1. That difference is real and was left
+    alone. Resuming one stored world in both also puts SQLite and the save
+    document side by side.
+  - *How orders land on known ticks.* Nothing is assumed about the server's
+    clock. Each batch travels between two `request_full_state`; the server
+    answers a session when it takes its messages in, before that tick's
+    update, so the update after the two full states names the tick, and the
+    single-player host is given the batch before the same tick. A batch the
+    server took in two ticks cannot be placed, and fails the test saying so
+    instead of guessing; it needs a stall of about a second in the middle of
+    three small frames.
+  - *What it catches and what it cannot.* It catches a host that departs from
+    the core: with the step's order broken for the server alone it failed at
+    the fifth frame, naming the field. It cannot catch a change to the shared
+    order, which moves both hosts together (run so, it passed);
+    `chart_equivalence.rs` and `bots.rs` catch that (run so, both failed).
+- **Left as they are, for the owner to rule on:**
+  - The headless runner seats its players as ordinary accounts
+    (`Seat::join`), the hosts seat bots as bot accounts with a record
+    (`Roster`). Making the runner use the roster would list its bots apart on
+    the leaderboard they read, and move every report.
+  - `sim/tests/common` and `scenarios_world.rs` tick a bare engine
+    (`tick`, then read the events). That is the engine's own interface under
+    test, with no cast, session or storage, and some of those tests call
+    `persist_dirty_state` at chosen moments to read one batch; they were not
+    put on the step.
+  - Three test files carry the same 12-line `first_difference` over JSON
+    (`database.rs`, `both_targets.rs`, `hosts_agree.rs`), and the two solo
+    test files the same `call`/`frames`/`send`. One copy needs a
+    test-support crate, and the bar for new crates is the owner's.
+  - What a client does with a `tick_update` is written in `script.rs` (for a
+    seat), in the TUI's `state.rs` and in Dart. The TUI keeps its own shape of
+    state; the Dart side is native against web by nature.
+- **`CLAUDE.md` carries the rule**, added at the merge: the layout rows of the
+  three crates, the guard's command line, and the architecture bullet that
+  says a host writes no tick loop, session map or login of its own.
+
 ## 2026-10-12 (one world on every target: where the engine's maths comes from)
 
 Asked for by the owner: the same seed and the same orders must give the same

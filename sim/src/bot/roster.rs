@@ -4,20 +4,17 @@
 // of the world, so it is in every snapshot and goes to storage with the
 // rest. The roster is what a host holds beside the engine: it rebuilds the
 // bots from those records, gives each its turn, and writes a record back
-// whenever its bot's memory moved.
+// whenever its bot's memory moved. It is the `Cast` of a hosted world
+// (`host.rs`), which is where its turns are placed around the tick.
 //
 //   let mut roster = Roster::resume(&engine);          // bots the world has
 //   roster.enlist(&mut engine, &wanted, keep_free, new_token);   // bots it should have
-//   loop {
-//       roster.take_turns(&mut engine);
-//       engine.tick()?;
-//       roster.observe(&engine);
-//   }
 
 use iac_shared::protocol::BOT_NAME_PREFIX;
 
 use super::{Bot, BotRecord, Style};
 use crate::engine::{AuthError, GameEngine};
+use crate::host::Cast;
 use crate::script::Seat;
 
 /// A name is tried under the next number this many times before giving up.
@@ -94,9 +91,10 @@ impl Roster {
             }
         }
     }
+}
 
-    /// Every bot that wants one takes its turn. Call before `GameEngine::tick`.
-    pub fn take_turns(&mut self, engine: &mut GameEngine) {
+impl Cast for Roster {
+    fn take_turns(&mut self, engine: &mut GameEngine) {
         for seat in &mut self.seats {
             if seat.take_turn(engine) {
                 engine.set_bot(seat.player_id(), seat.player().record());
@@ -104,9 +102,7 @@ impl Roster {
         }
     }
 
-    /// Every bot that is following the world sees the tick just simulated.
-    /// Call after `GameEngine::tick`.
-    pub fn observe(&mut self, engine: &GameEngine) {
+    fn observe(&mut self, engine: &GameEngine) {
         for seat in &mut self.seats {
             seat.observe(engine);
         }

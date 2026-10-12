@@ -708,6 +708,7 @@ dependencies = [
  "futures-util",
  "iac-shared",
  "iac-sim",
+ "iac-solo",
  "log",
  "rand",
  "rusqlite",
@@ -718,6 +719,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tower-http",
+ "xxhash-rust",
 ]
 
 [[package]]

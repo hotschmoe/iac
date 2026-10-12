@@ -1,13 +1,13 @@
 // Token issuing, the one part of authentication that needs OS entropy and so
-// stays out of iac-sim. Hashing and checking live in `iac_sim::auth`.
+// stays out of iac-sim. Hashing, checking and the token's text live in
+// `iac_sim::auth`.
 
+use iac_sim::auth::token_text;
 use rand::RngCore;
 
-const TOKEN_BYTES: usize = 32;
-
-/// 256 random bits from the OS-seeded CSPRNG, hex encoded (64 characters).
+/// 256 random bits from the OS-seeded CSPRNG.
 pub fn generate_token() -> String {
-    let mut bytes = [0u8; TOKEN_BYTES];
-    rand::rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut bits = [0u8; 32];
+    rand::rng().fill_bytes(&mut bits);
+    token_text(&bits)
 }

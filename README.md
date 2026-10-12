@@ -11,9 +11,9 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | Path | What |
 |---|---|
 | `shared/` | `iac-shared`: protocol, constants, scaling, hex math, world generation |
-| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, built-in bots, headless runner `sim-run`); no I/O, builds for WebAssembly |
-| `server/` | `iac-server`: a thin host around `iac-sim`: WebSocket network, SQLite persistence, the 1 Hz tick timer |
-| `solo/` | `iac-solo`: the single-player host around `iac-sim`: one world, its bots and one commander, compiled to WebAssembly and run in a browser worker (`solo/web/worker.js`) with the save in IndexedDB |
+| `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, built-in bots, headless runner `sim-run`), and the host core (`host.rs`): the one tick, the one session gate and the one way to seat a world that every host runs; no I/O, builds for WebAssembly |
+| `server/` | `iac-server`: what a network and a disk add to the host core: the WebSocket transport, tokens, SQLite persistence, the 1 Hz tick timer |
+| `solo/` | `iac-solo`: what one player and a browser tab add to it: a commander with no password, a clock it is told and the catch-up after an absence, the save document; compiled to WebAssembly and run in a browser worker (`solo/web/worker.js`) with the save in IndexedDB |
 | `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
 | `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server`, or bundled with `iac-solo` as a static single-player build |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
@@ -438,6 +438,14 @@ both the same requests: a blitz of bots, a season day, and a commander who trade
 the hub, founds an outpost and stays away while it is raided. Every reply and every
 save must be the same bytes; a failure names the tick and the first value that
 differs.
+
+And it is the same world whichever host runs it. The server and the single-player
+host share their hosting (`iac_sim::host`) and keep only what a network or a tab
+adds, and `server/tests/hosts_agree.rs` holds them to it: a world made by a real
+server is stopped, its database is handed to the single-player host as a save, the
+server is started again, and one commander plays both for 40 ticks with the same
+orders on the same ticks. Every frame the two send and the worlds they end with
+must be equal (`cargo test -p iac-server --test hosts_agree`, about 45 seconds).
 
 ### Protocol fixtures
 

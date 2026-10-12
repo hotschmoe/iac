@@ -13,7 +13,8 @@
 // is not `watching` keeps no view; its next turn starts from a full state.
 //
 // A host (the headless runner, the server, a WebAssembly page) keeps one
-// seat per bot and calls, in a fixed seat order:
+// seat per bot, and the host core's step (`host.rs`) calls, in a fixed seat
+// order:
 //   before `GameEngine::tick`   `take_turn`  act on the state, if it wants to
 //   after it                    `observe`    fold the tick in
 // Per turn:

@@ -7,7 +7,7 @@ use iac_sim::bot::{Attention, Bot, Personality, Roster, Style, DAY};
 use iac_sim::engine::AuthError;
 use iac_sim::headless::{Headless, PlayerSummary};
 use iac_sim::script::IdlePlayer;
-use iac_sim::{views, GameEngine, Snapshot};
+use iac_sim::{host, views, GameEngine, Snapshot};
 
 const TICKS: u64 = 3_000;
 
@@ -46,11 +46,7 @@ fn hosted(seed: u64) -> (GameEngine, Roster, u64) {
 }
 
 fn host_tick(engine: &mut GameEngine, roster: &mut Roster) {
-    roster.take_turns(engine);
-    engine.tick().unwrap();
-    roster.observe(engine);
-    engine.drain_events();
-    engine.persist_dirty_state();
+    host::step(engine, roster, &mut (), |_, _| {}).unwrap();
 }
 
 fn hash(world: &Headless) -> u64 {

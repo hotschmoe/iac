@@ -12,6 +12,25 @@ use tokio_tungstenite::tungstenite::Message;
 
 pub struct ServerGuard(Child);
 
+impl ServerGuard {
+    /// Ask the server to shut down as an operator would and wait until it
+    /// has: its database then holds the world it stopped with.
+    pub fn stop(mut self) {
+        let pid = self.0.id().to_string();
+        let asked = Command::new("kill").args(["-TERM", &pid]).status().expect("kill did not run");
+        assert!(asked.success(), "the server could not be asked to stop");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = self.0.try_wait().expect("the server could not be waited for") {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "the server did not stop within 30 seconds of SIGTERM");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success(), "the server did not shut down cleanly: {status}");
+    }
+}
+
 impl Drop for ServerGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();

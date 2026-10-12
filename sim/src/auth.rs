@@ -21,6 +21,12 @@ pub fn hash_token(token: &str) -> TokenHash {
     Sha256::digest(token.as_bytes()).into()
 }
 
+/// A token as an account is handed it: 256 bits the host drew, hex encoded
+/// (64 characters).
+pub fn token_text(bits: &[u8; 32]) -> String {
+    bits.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn token_matches(stored: &TokenHash, presented: &str) -> bool {
     stored.ct_eq(&hash_token(presented)).into()
 }

@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -8,17 +7,19 @@ use tokio::time::MissedTickBehavior;
 
 use iac_shared::constants::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_WORLD_SEED};
 use iac_shared::pace::Pace;
+use iac_shared::protocol::GameEvent;
 
 use iac_sim::bot::{Roster, Style, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
 use iac_sim::engine::AuthError;
-use iac_sim::GameEngine;
+use iac_sim::host::{Phase, Tokens, Watch};
+use iac_sim::{GameEngine, Host};
 
-use crate::database::{Database, Persister};
-use crate::network::Network;
+use iac_server::auth;
+use iac_server::database::{self, Database, Persister};
+use iac_server::network::Network;
 
-mod auth;
-mod database;
-mod network;
+/// The world as this server hosts it: accounts log in with tokens minted here.
+type World = Host<Tokens<fn() -> String>>;
 
 const TICK_PERIOD: Duration = Duration::from_secs(1);
 /// A tick over this is slow enough to be worth a warning (budget is 1000 ms).
@@ -127,8 +128,8 @@ async fn main() {
     let mut engine = GameEngine::restore(snapshot);
     engine.attach_persist(Box::new(Persister::spawn(db)));
     info!("World pace: {}", database::describe_pace(engine.pace()));
-    let mut roster = seat_bots(&mut engine, &args);
-    let engine = Arc::new(Mutex::new(engine));
+    let mut host: World = Host::new(engine, Tokens(auth::generate_token));
+    seat_bots(&mut host, &args);
 
     let web_dir = match args.web_dir.clone() {
         Some(d) if d.join("index.html").is_file() => Some(d),
@@ -146,7 +147,7 @@ async fn main() {
             }
         }
     };
-    let network = Network::init(args.port, Arc::clone(&engine));
+    let network = Network::init(args.port);
     let bound = network
         .start_listening(&args.host, web_dir.clone())
         .await
@@ -183,7 +184,7 @@ async fn main() {
         tokio::select! {
             _ = &mut shutdown => {
                 info!("Shutdown signal received, persisting final state...");
-                let mut engine = engine.lock().unwrap();
+                let engine = host.engine_mut();
                 engine.checkpoint();
                 engine.persist_dirty_state();
                 let saved = engine.flush_persistence();
@@ -199,7 +200,7 @@ async fn main() {
                     log::debug!("inter-tick interval {:?}", started - prev);
                 }
                 last_start = Some(started);
-                if let Err(e) = run_tick(&network, &engine, &mut roster, &mut load) {
+                if let Err(e) = run_tick(&network, &mut host, &mut load) {
                     warn!("Tick error: {}", e);
                 }
             }
@@ -207,33 +208,30 @@ async fn main() {
     }
 }
 
-/// The world's bots: those it already has, and those `--bot` asks for
-/// beyond them, as far as the seats kept for players allow.
-fn seat_bots(engine: &mut GameEngine, args: &Args) -> Roster {
-    let mut roster = Roster::resume(engine);
-    let resumed = roster.seats().len();
+/// The bots `--bot` asks for beyond those the world already has, as far as
+/// the seats kept for players allow.
+fn seat_bots(host: &mut World, args: &Args) {
+    let resumed = host.roster().seats().len();
     let wanted: Vec<Style> = args
         .bots
         .iter()
         .flat_map(|seats| seats.0.iter())
         .map(|&style| Style { sessions_per_day: args.bot_sessions, ..style })
         .collect();
-    let (added, refusal) = roster.enlist(engine, &wanted, args.player_seats, auth::generate_token);
-    let free = engine.free_home_seats();
+    let (added, refusal) = host.enlist(&wanted, args.player_seats, auth::generate_token);
+    let (seated, free) = (host.roster().seats().len(), host.engine().free_home_seats());
     match refusal {
         Some(AuthError::WorldFull) => warn!(
-            "--bot asks for {} bots; the world has {} and {free} free home seats, of which --player-seats keeps {} for players. Seated {added} new ones and left the rest out",
+            "--bot asks for {} bots; the world has {seated} and {free} free home seats, of which --player-seats keeps {} for players. Seated {added} new ones and left the rest out",
             wanted.len(),
-            roster.seats().len(),
             args.player_seats,
         ),
         Some(refusal) => warn!("Seated {added} new bots and stopped: {refusal:?}"),
         None => {}
     }
-    if !roster.seats().is_empty() {
-        info!("Bots:       {} ({resumed} resumed, {added} new), {free} home seats free", roster.seats().len());
+    if seated > 0 {
+        info!("Bots:       {seated} ({resumed} resumed, {added} new), {free} home seats free");
     }
-    roster
 }
 
 /// Tick times since the last report.
@@ -245,33 +243,36 @@ struct Load {
     worst: Duration,
 }
 
-/// One simulation step. Everything here is memory-only; the database write
-/// is queued to the persist thread, so the tick never waits on the disk.
-fn run_tick(
-    network: &Network,
-    engine: &Arc<Mutex<GameEngine>>,
-    roster: &mut Roster,
-    load: &mut Load,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let start = Instant::now();
+/// When each phase of one tick was done, counted from its start.
+struct Laps {
+    start: Instant,
+    done: [Duration; 5],
+}
 
-    network.process_incoming()?;
-    let t_incoming = start.elapsed();
+impl Laps {
+    fn of(&self, phase: Phase) -> Duration {
+        self.done[phase as usize]
+    }
+}
 
-    roster.take_turns(&mut engine.lock().unwrap());
-    let t_turns = start.elapsed();
+impl Watch<Roster> for Laps {
+    fn at(&mut self, phase: Phase, _engine: &GameEngine, _cast: &Roster, _events: &[GameEvent]) {
+        self.done[phase as usize] = self.start.elapsed();
+    }
+}
 
-    engine.lock().unwrap().tick()?;
-    let t_sim = start.elapsed();
+/// One tick: what the sockets brought in, then the host core's step.
+/// Everything here is memory-only; the database write is queued to the
+/// persist thread, so the tick never waits on the disk.
+fn run_tick(network: &Network, host: &mut World, load: &mut Load) -> Result<(), Box<dyn std::error::Error>> {
+    let mut laps = Laps { start: Instant::now(), done: [Duration::ZERO; 5] };
 
-    network.broadcast_updates()?;
-    let t_broadcast = start.elapsed();
+    network.deliver(host);
+    let t_incoming = laps.start.elapsed();
 
-    roster.observe(&engine.lock().unwrap());
-    let t_observe = start.elapsed();
-
-    engine.lock().unwrap().persist_dirty_state();
-    let t_persist = start.elapsed();
+    host.step(&mut laps, |session, frame| network.send(session, &frame))?;
+    let (t_turns, t_sim, t_broadcast) = (laps.of(Phase::Turns), laps.of(Phase::Tick), laps.of(Phase::Frames));
+    let (t_observe, t_persist) = (laps.of(Phase::Observed), laps.of(Phase::Persisted));
 
     let t_bots = (t_turns - t_incoming) + (t_observe - t_broadcast);
     log::debug!(
@@ -285,7 +286,7 @@ fn run_tick(
     if t_persist > TICK_BUDGET_WARN {
         warn!(
             "Tick {} took {:?} (incoming {:?}, bots {:?}, sim {:?}, broadcast {:?})",
-            engine.lock().unwrap().current_tick(),
+            host.engine().current_tick(),
             t_persist,
             t_incoming,
             t_bots,
@@ -301,11 +302,11 @@ fn run_tick(
     if load.ticks == LOAD_REPORT_TICKS {
         info!(
             "Tick {}: last {} ticks took {:?} each on average ({:?} of it the {} bots), {:?} at worst",
-            engine.lock().unwrap().current_tick(),
+            host.engine().current_tick(),
             load.ticks,
             load.total / load.ticks,
             load.bots / load.ticks,
-            roster.seats().len(),
+            host.roster().seats().len(),
             load.worst
         );
         *load = Load::default();

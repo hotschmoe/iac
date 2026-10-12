@@ -18,6 +18,7 @@ use iac_shared::scaling::{self, BuildingType, ResearchType};
 use serde::Serialize;
 
 use crate::engine::{FleetStatus, GameEngine, Outpost, OutpostJob, OutpostTask, Player, RaidState};
+use crate::host::{self, Phase, TickError, Watch};
 use crate::score::{self, ExtraRule, Meter, Score};
 use crate::script::{ScriptedPlayer, Seat, Want};
 use crate::{queue, views};
@@ -389,8 +390,10 @@ pub struct PlayerSummary {
     pub outpost: Option<OutpostSummary>,
 }
 
+/// What the run keeps of one player. `Headless::seats` holds the player
+/// itself, at the same place.
 struct Entry {
-    seat: Seat<Box<dyn ScriptedPlayer>>,
+    player_id: u64,
     style: String,
     tally: FieldTally,
     slots: SlotTicks,
@@ -407,15 +410,18 @@ struct Entry {
 
 fn entry_of(entries: &mut [Entry], player_id: Option<u64>) -> Option<&mut Entry> {
     let player_id = player_id?;
-    entries.iter_mut().find(|e| e.seat.player_id() == player_id)
+    entries.iter_mut().find(|e| e.player_id == player_id)
 }
 
 fn tally_of(entries: &mut [Entry], player_id: Option<u64>) -> Option<&mut FieldTally> {
     entry_of(entries, player_id).map(|e| &mut e.tally)
 }
 
+type Seats = Vec<Seat<Box<dyn ScriptedPlayer>>>;
+
 pub struct Headless {
     pub engine: GameEngine,
+    seats: Seats,
     entries: Vec<Entry>,
     /// The rule the report scores by. The engine keeps the game's own.
     rule: ExtraRule,
@@ -427,6 +433,7 @@ impl Headless {
     pub fn new(world_seed: u64, pace: Pace) -> Headless {
         Headless {
             engine: GameEngine::new(world_seed, pace),
+            seats: Vec::new(),
             entries: Vec::new(),
             rule: ExtraRule::GAME,
             meters: Vec::new(),
@@ -454,8 +461,9 @@ impl Headless {
         let seat = Seat::join(&mut self.engine, player, None, || format!("{number:064x}"))
             .map_err(|e| format!("cannot add player '{name}': {e:?}"))?;
         let player_id = seat.player_id();
+        self.seats.push(seat);
         self.entries.push(Entry {
-            seat,
+            player_id,
             style: style.into(),
             tally: FieldTally::default(),
             slots: SlotTicks::default(),
@@ -554,42 +562,21 @@ impl Headless {
         Ok(taken.split_off(taken.len() - players.len()))
     }
 
-    /// One tick: every seat takes its turn, the world advances, every seat
-    /// sees what happened.
-    pub fn step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        for entry in &mut self.entries {
-            entry.seat.take_turn(&mut self.engine);
-        }
-        let tanks: Vec<(u64, f32, bool)> =
-            self.engine.fleets.values().map(|f| (f.id, f.fuel, f.state == FleetStatus::Moving)).collect();
-        let mending = self.engine.current_tick() + 1;
-        let stores: Vec<(u64, Resources, bool)> = self
-            .engine
-            .outposts
-            .iter()
-            .map(|(owner, o)| {
-                let mended = o.job.is_some_and(|job| job.task == OutpostTask::Repair && job.end_tick <= mending);
-                (*owner, o.store, o.breached && !mended)
-            })
-            .collect();
-        self.engine.tick()?;
-        self.count_refuelling(&tanks);
-        self.count_outposts(&stores);
-        self.count_slots();
-        self.run_meters();
-        if self.engine.current_tick().is_multiple_of(PROBE_EVERY) {
-            self.probe();
-        }
-        for entry in &mut self.entries {
-            entry.seat.observe(&self.engine);
-        }
-        let events = self.engine.drain_events();
-        self.count(&events);
-        self.engine.persist_dirty_state();
+    /// One tick of the host core, with the seats as its cast and the
+    /// report's counting watching it.
+    pub fn step(&mut self) -> Result<(), TickError> {
+        let mut counting = Counting {
+            entries: &mut self.entries,
+            rule: self.rule,
+            metered: !self.meters.is_empty(),
+            tanks: Vec::new(),
+            stores: Vec::new(),
+        };
+        host::step(&mut self.engine, &mut self.seats, &mut counting, |_, _| {})?;
         Ok(())
     }
 
-    pub fn run(&mut self, ticks: u64) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run(&mut self, ticks: u64) -> Result<(), TickError> {
         for _ in 0..ticks {
             self.step()?;
         }
@@ -597,7 +584,7 @@ impl Headless {
     }
 
     /// Run `ticks`, taking a sample every `every` ticks and at the end.
-    pub fn run_sampled(&mut self, ticks: u64, every: u64) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run_sampled(&mut self, ticks: u64, every: u64) -> Result<(), TickError> {
         let end = self.engine.current_tick() + ticks;
         while self.engine.current_tick() < end {
             let leg = every.max(1).min(end - self.engine.current_tick());
@@ -618,7 +605,7 @@ impl Headless {
 
     fn sample_of(&self, index: usize, tick: u64) -> Option<Sample> {
         let entry = &self.entries[index];
-        let player = self.engine.players.get(&entry.seat.player_id())?;
+        let player = self.engine.players.get(&entry.player_id)?;
         Some(Sample {
             tick,
             score: ScoreBreakdown::under(score::score_of(&self.engine, player), self.rule),
@@ -637,17 +624,131 @@ impl Headless {
         self.engine.fleets.values().filter(|f| f.owner_id == player_id).map(|f| f.ship_count).sum()
     }
 
+    /// The player's outpost as it stands, with the two paybacks the design
+    /// compares: level 1 on this site, and the Metal Mine level its owner
+    /// would buy next. Both in game hours at pace 1, which no pace changes.
+    fn outpost_of(&self, player: &Player) -> Option<OutpostSummary> {
+        let engine = &self.engine;
+        let outpost = engine.outposts.get(&player.id)?;
+        let (ring, ore, pace) = (outpost.sector.dist_from_origin(), engine.site_densities(outpost.sector), engine.pace());
+        let hourly = |per_tick: Resources| per_tick.total() * 3600.0;
+        let slow = Pace::PERSISTENT;
+        let mine = player.buildings.metal_mine;
+        let mine_gain = scaling::production_per_tick(BuildingType::MetalMine, mine + 1, &slow)
+            - scaling::production_per_tick(BuildingType::MetalMine, mine, &slow);
+        let unpaid = scaling::outpost_repair_payment(outpost.level, outpost.store).1 > 0.0;
+        Some(OutpostSummary {
+            sector: outpost.sector,
+            ring,
+            ore,
+            grade: scaling::site_grade(ore),
+            level: outpost.level,
+            breached: outpost.breached,
+            waiting: outpost.breached && outpost.job.is_none() && unpaid,
+            store: outpost.store,
+            rate_per_hour: hourly(scaling::outpost_yield_per_tick(ore, ring, outpost.level, &pace)),
+            home_per_hour: hourly(player.production_per_tick(&pace)),
+            payback_hours: scaling::outpost_cost(1).total() / hourly(scaling::outpost_yield_per_tick(ore, ring, 1, &slow)),
+            next_mine_level: mine + 1,
+            mine_payback_hours: scaling::building_cost(BuildingType::MetalMine, mine + 1).total() / (mine_gain * 3600.0),
+        })
+    }
+
+    pub fn summaries(&self) -> Vec<PlayerSummary> {
+        self.entries
+            .iter()
+            .zip(&self.seats)
+            .filter_map(|(entry, seat)| {
+                let player = self.engine.players.get(&entry.player_id)?;
+                let buildings = (0..BuildingType::COUNT)
+                    .filter_map(BuildingType::from_usize)
+                    .map(|b| (b.label().to_string(), player.buildings.get(b)))
+                    .collect();
+                let research = (0..ResearchType::COUNT)
+                    .filter_map(ResearchType::from_usize)
+                    .map(|r| (r.label().to_string(), player.research.get(r)))
+                    .collect();
+                Some(PlayerSummary {
+                    name: player.name.clone(),
+                    style: entry.style.clone(),
+                    player_id: player.id,
+                    score: ScoreBreakdown::under(score::score_of(&self.engine, player), self.rule),
+                    field: entry.tally,
+                    idle: entry.slots.into(),
+                    idle_why: entry.why,
+                    mined: entry.mined.made as f32,
+                    spilled: entry.mined.spilled as f32,
+                    samples: entry.samples.clone(),
+                    buildings,
+                    research,
+                    ships: self.ships_of(player.id),
+                    turns: seat.turns(),
+                    orders_accepted: seat.accepted(),
+                    orders_refused: seat.refused(),
+                    orders_paid: entry.paid.clone(),
+                    meters: entry.meters.iter().map(Metered::reading).collect(),
+                    outpost: self.outpost_of(player),
+                })
+            })
+            .collect()
+    }
+}
+
+/// The report's counting of one tick: it looks at the world once the seats
+/// have had their turns, and again when the tick is simulated.
+struct Counting<'a> {
+    entries: &'a mut [Entry],
+    rule: ExtraRule,
+    /// Whether any meter is kept.
+    metered: bool,
+    /// Every fleet before the tick: its fuel, and whether it was moving.
+    tanks: Vec<(u64, f32, bool)>,
+    /// Every outpost before the tick: its store, and whether a raid arriving
+    /// in the tick finds it breached.
+    stores: Vec<(u64, Resources, bool)>,
+}
+
+impl Watch<Seats> for Counting<'_> {
+    fn at(&mut self, phase: Phase, engine: &GameEngine, seats: &Seats, events: &[GameEvent]) {
+        match phase {
+            Phase::Turns => {
+                self.tanks = engine.fleets.values().map(|f| (f.id, f.fuel, f.state == FleetStatus::Moving)).collect();
+                let mending = engine.current_tick() + 1;
+                self.stores = engine
+                    .outposts
+                    .iter()
+                    .map(|(owner, o)| {
+                        let mended = o.job.is_some_and(|job| job.task == OutpostTask::Repair && job.end_tick <= mending);
+                        (*owner, o.store, o.breached && !mended)
+                    })
+                    .collect();
+            }
+            Phase::Tick => {
+                self.count_refuelling(engine);
+                self.count_outposts(engine);
+                self.count_slots(engine);
+                self.run_meters(engine);
+                if engine.current_tick().is_multiple_of(PROBE_EVERY) {
+                    self.probe(engine, seats);
+                }
+                self.count(engine, events);
+            }
+            Phase::Frames | Phase::Observed | Phase::Persisted => {}
+        }
+    }
+}
+
+impl Counting<'_> {
     /// A tick of every meter: it drains, and takes in the points its player
     /// earned this tick. The core is read again when points come in and at
     /// every look; between two looks an allowance is the one of the last.
-    fn run_meters(&mut self) {
-        if self.meters.is_empty() {
+    fn run_meters(&mut self, engine: &GameEngine) {
+        if !self.metered {
             return;
         }
-        let engine = &self.engine;
         let look = engine.current_tick().is_multiple_of(PROBE_EVERY);
-        for entry in &mut self.entries {
-            let Some(player) = engine.players.get(&entry.seat.player_id()) else { continue };
+        for entry in self.entries.iter_mut() {
+            let Some(player) = engine.players.get(&entry.player_id) else { continue };
             let points = player.combat_points + player.explore_points;
             let earned = points - entry.points_seen;
             if earned > 0.0 || look || entry.core_seen == 0.0 {
@@ -663,10 +764,10 @@ impl Headless {
         }
     }
 
-    fn count_slots(&mut self) {
-        let pace = self.engine.pace();
-        for entry in &mut self.entries {
-            let Some(player) = self.engine.players.get(&entry.seat.player_id()) else { continue };
+    fn count_slots(&mut self, engine: &GameEngine) {
+        let pace = engine.pace();
+        for entry in self.entries.iter_mut() {
+            let Some(player) = engine.players.get(&entry.player_id) else { continue };
             let slots = &mut entry.slots;
             let building = player.building_slots() as u64;
             slots.building += building;
@@ -691,13 +792,12 @@ impl Headless {
     /// One look at every player: how many fleets are out and whether a
     /// point they earn would count; then every empty slot, which order it is
     /// waiting for and why, or what its owner's planner would do with it.
-    fn probe(&mut self) {
-        let engine = &self.engine;
+    fn probe(&mut self, engine: &GameEngine, seats: &Seats) {
         let rule = self.rule;
         let tick = engine.current_tick();
         let pace = engine.pace();
-        for entry in &mut self.entries {
-            let id = entry.seat.player_id();
+        for (entry, seat) in self.entries.iter_mut().zip(seats) {
+            let id = entry.player_id;
             let Some(player) = engine.players.get(&id) else { continue };
 
             let out = engine.fleets.values().filter(|f| f.owner_id == id && f.location != player.homeworld).count();
@@ -709,8 +809,7 @@ impl Headless {
                 metered.unpaid_hours += hours * (1.0 - metered.meter.next_point(score.core()));
             }
 
-            let Some(outlook) = views::full_state(engine, id).and_then(|state| entry.seat.player().outlook(&state))
-            else {
+            let Some(outlook) = views::full_state(engine, id).and_then(|state| seat.player().outlook(&state)) else {
                 continue;
             };
             let waits = queue::project(player, tick, &pace);
@@ -752,9 +851,8 @@ impl Headless {
 
     /// Fuel only rises at the homeworld, where it is bought; a fleet that
     /// jumped out during the tick is filled again before it leaves the sector.
-    fn count_refuelling(&mut self, tanks: &[(u64, f32, bool)]) {
-        let engine = &self.engine;
-        for &(fleet_id, fuel, was_moving) in tanks {
+    fn count_refuelling(&mut self, engine: &GameEngine) {
+        for &(fleet_id, fuel, was_moving) in &self.tanks {
             let Some(fleet) = engine.fleets.get(&fleet_id) else { continue };
             let at_home = engine.players.get(&fleet.owner_id).is_some_and(|p| p.homeworld == fleet.location);
             if !at_home {
@@ -764,7 +862,7 @@ impl Headless {
             let burned = if jumped { engine.hop_fuel_cost(fleet) } else { 0.0 };
             let bought = fleet.fuel - fuel + burned;
             if bought > 0.0
-                && let Some(t) = tally_of(&mut self.entries, Some(fleet.owner_id))
+                && let Some(t) = tally_of(self.entries, Some(fleet.owner_id))
             {
                 t.refuel_deuterium += bought * FUEL_DEUT_PER_UNIT;
             }
@@ -774,13 +872,12 @@ impl Headless {
     /// One tick of every outpost: what `load` took since the last look, a
     /// repair that began, and then either breached, or extracting into the
     /// room its store had before the tick.
-    fn count_outposts(&mut self, stores: &[(u64, Resources, bool)]) {
-        let engine = &self.engine;
+    fn count_outposts(&mut self, engine: &GameEngine) {
         let (tick, pace) = (engine.current_tick(), engine.pace());
         let weight = |r: Resources| f64::from(scaling::resource_weight(&r));
-        for &(owner, before, open) in stores {
+        for &(owner, before, open) in &self.stores {
             let Some(outpost) = engine.outposts.get(&owner) else { continue };
-            let Some(entry) = entry_of(&mut self.entries, Some(owner)) else { continue };
+            let Some(entry) = entry_of(self.entries, Some(owner)) else { continue };
             let (t, sums) = (&mut entry.tally, &mut entry.extracted);
             sums.open = open;
 
@@ -816,42 +913,11 @@ impl Headless {
         }
     }
 
-    /// The player's outpost as it stands, with the two paybacks the design
-    /// compares: level 1 on this site, and the Metal Mine level its owner
-    /// would buy next. Both in game hours at pace 1, which no pace changes.
-    fn outpost_of(&self, player: &Player) -> Option<OutpostSummary> {
-        let engine = &self.engine;
-        let outpost = engine.outposts.get(&player.id)?;
-        let (ring, ore, pace) = (outpost.sector.dist_from_origin(), engine.site_densities(outpost.sector), engine.pace());
-        let hourly = |per_tick: Resources| per_tick.total() * 3600.0;
-        let slow = Pace::PERSISTENT;
-        let mine = player.buildings.metal_mine;
-        let mine_gain = scaling::production_per_tick(BuildingType::MetalMine, mine + 1, &slow)
-            - scaling::production_per_tick(BuildingType::MetalMine, mine, &slow);
-        let unpaid = scaling::outpost_repair_payment(outpost.level, outpost.store).1 > 0.0;
-        Some(OutpostSummary {
-            sector: outpost.sector,
-            ring,
-            ore,
-            grade: scaling::site_grade(ore),
-            level: outpost.level,
-            breached: outpost.breached,
-            waiting: outpost.breached && outpost.job.is_none() && unpaid,
-            store: outpost.store,
-            rate_per_hour: hourly(scaling::outpost_yield_per_tick(ore, ring, outpost.level, &pace)),
-            home_per_hour: hourly(player.production_per_tick(&pace)),
-            payback_hours: scaling::outpost_cost(1).total() / hourly(scaling::outpost_yield_per_tick(ore, ring, 1, &slow)),
-            next_mine_level: mine + 1,
-            mine_payback_hours: scaling::building_cost(BuildingType::MetalMine, mine + 1).total() / (mine_gain * 3600.0),
-        })
-    }
-
-    fn count(&mut self, events: &[GameEvent]) {
+    fn count(&mut self, engine: &GameEngine, events: &[GameEvent]) {
         if events.is_empty() {
             return;
         }
-        let engine = &self.engine;
-        let entries = &mut self.entries;
+        let entries = &mut *self.entries;
         let flying = |fleet_id: u64| engine.fleets.get(&fleet_id).map(|f| f.owner_id);
         let named = |name: &str| engine.players.values().find(|p| p.name == name).map(|p| p.id);
         let home_of = |player_id: u64| engine.players.get(&player_id).map(|p| p.homeworld);
@@ -923,43 +989,5 @@ impl Headless {
                 _ => {}
             }
         }
-    }
-
-    pub fn summaries(&self) -> Vec<PlayerSummary> {
-        self.entries
-            .iter()
-            .filter_map(|entry| {
-                let player = self.engine.players.get(&entry.seat.player_id())?;
-                let buildings = (0..BuildingType::COUNT)
-                    .filter_map(BuildingType::from_usize)
-                    .map(|b| (b.label().to_string(), player.buildings.get(b)))
-                    .collect();
-                let research = (0..ResearchType::COUNT)
-                    .filter_map(ResearchType::from_usize)
-                    .map(|r| (r.label().to_string(), player.research.get(r)))
-                    .collect();
-                Some(PlayerSummary {
-                    name: player.name.clone(),
-                    style: entry.style.clone(),
-                    player_id: player.id,
-                    score: ScoreBreakdown::under(score::score_of(&self.engine, player), self.rule),
-                    field: entry.tally,
-                    idle: entry.slots.into(),
-                    idle_why: entry.why,
-                    mined: entry.mined.made as f32,
-                    spilled: entry.mined.spilled as f32,
-                    samples: entry.samples.clone(),
-                    buildings,
-                    research,
-                    ships: self.ships_of(player.id),
-                    turns: entry.seat.turns(),
-                    orders_accepted: entry.seat.accepted(),
-                    orders_refused: entry.seat.refused(),
-                    orders_paid: entry.paid.clone(),
-                    meters: entry.meters.iter().map(Metered::reading).collect(),
-                    outpost: self.outpost_of(player),
-                })
-            })
-            .collect()
     }
 }

@@ -1018,9 +1018,8 @@ impl GameEngine {
 
     pub fn tick(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // NOTE: pending_events must NOT be cleared here — command handlers
-        // push events between ticks (commands are processed before tick()
-        // in the server loop) and broadcast_updates() drains the queue
-        // after every tick.
+        // push events between ticks (a host answers its sessions before it
+        // steps) and `host::step` drains the queue after every tick.
         self.current_tick += 1;
 
         self.reap_empty_fleets();
