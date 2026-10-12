@@ -31,12 +31,13 @@ and as the way to add a journal later; what is true of the code now is in
 Where the code departs from this text, or adds to it:
 
 - **Option (b), at a shorter period than the ten minutes costed here.** With
-  no journal the period is what a kill costs, so the server writes every 60
+  no journal the period is what a kill costs, so the server writes every 300
   seconds (`--save-every`), at every start and at every clean stop, and
   within about three seconds of issuing a token. Section 5 warns that a short
   period is expensive, and it is: measured on a real server, the 24-seat
   world of section 3.2 at day 7 is 13.2 MB a document, 18.9 GB a day at 60 s
-  where this text counted 1.9 GB at ten minutes.
+  and 3.8 GB at 300 s, where this text counted 1.9 GB at ten minutes. It was
+  built at 60 s; the owner chose 300 s the same day.
 - **The copy on the tick's thread costs more on a live server than section
   3.2 measured.** 13.5 ms there, in a tight loop; 33 ms on a server that
   sleeps a second between ticks and frees each copy on another thread. The

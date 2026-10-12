@@ -55,7 +55,7 @@ and the only thing the server keeps: one document, a header line and the
 world as JSON, the same document a single-player save is
 (`tail -n +2 world.iac | jq .players` reads it). A path that does not exist
 yet is a new world. The server writes the file when it starts, every
-`--save-every <seconds>` (default 60) and when it is stopped, and holds
+`--save-every <seconds>` (default 300) and when it is stopped, and holds
 `<path>.lock` while it runs: a second server on the same world refuses to
 start.
 

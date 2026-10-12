@@ -151,14 +151,14 @@ journal entry of the same day has what was run.
   stopped (SIGINT, SIGTERM) writes its world and loses nothing, so a deploy
   loses nothing. A server that is killed comes back as its last file says:
   it loses up to the period, orders included, where it lost one tick before.
-- **The period is 60 seconds** (`--save-every`), not the study's ten minutes,
-  because without a journal the period is the loss. It was set by the
-  session that briefed the build, and it is the owner's dial:
+- **The period is 300 seconds** (`--save-every`): the owner's choice of
+  2026-10-13 ("300s is fine"), from this table. It was built at 60 seconds,
+  set by the session that briefed the build without weighing the bytes:
 
   | `--save-every` | a kill loses at most | written a day by the largest world measured (24 seats at the end of a season week, 13.2 MB a document) |
   |---|---|---|
-  | 60 s (built) | a minute | 18.9 GB |
-  | 300 s | five minutes | 3.8 GB |
+  | 60 s (as built) | a minute | 18.9 GB |
+  | 300 s (the default) | five minutes | 3.8 GB |
   | 600 s (the study) | ten minutes | 1.9 GB |
 
   The rows this replaces were measured at 7 to 10 GB a day in a world's first
@@ -189,9 +189,6 @@ journal entry of the same day has what was run.
 
 **Not decided here, and the owner's.**
 
-- **The period** (above), and whether five minutes of a world is too much to
-  lose when its server is killed. The journal of the study is what would buy
-  a short loss without the bytes.
 - **Moving a world between browser and server** (the study's question 7). It
   is not built. What is left to build is small and is listed in
   `docs/data_architecture.md`: an import and an export on the page, and

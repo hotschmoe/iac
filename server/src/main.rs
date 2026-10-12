@@ -31,7 +31,7 @@ const DEFAULT_PLAYER_SEATS: usize = 4;
 /// A killed server comes back as its last document says, so this is the most
 /// it loses (`--save-every`). It is nothing a player cannot give again,
 /// with one exception, below.
-const DEFAULT_SAVE_SECONDS: u64 = 60;
+const DEFAULT_SAVE_SECONDS: u64 = 300;
 /// A token is shown once and kept by whoever got it: an account the world
 /// forgot would leave them holding a password to nothing. So once one is
 /// issued the next document does not wait for its period, only this long
