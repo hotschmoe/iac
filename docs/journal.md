@@ -5093,3 +5093,35 @@ through the queue and the `Tokens` door, send through the queue, and take an
 update from a real `Host::step` where the old test ticked first; where a test
 looks between two ticks it builds that one view by hand and sends it through
 `Network::send`. None was archived.
+
+**Checked**, on the commit of the code (`b3f7639`), master not having moved:
+
+| what | result |
+|---|---|
+| `cargo build --workspace --all-targets -j 4` | built, no warning |
+| `cargo test --workspace --no-fail-fast -j 4` | 154 passed, 0 failed (153 before, and the guard); `hosts_agree` 44.8 s, `both_targets` 108.9 s |
+| `cargo clippy --workspace --all-targets` | no warning |
+| `python3 tools/check_sim_constants.py` | agrees |
+| `cargo build -p iac-solo --target wasm32-unknown-unknown --release` | built |
+| `sim-run --pace season --days 7`, before and after | the same 201 lines (`cmp`), md5 `16a9e381ea0f676d6c7495031cdd395b` |
+| `flutter analyze` | no issues |
+| pinned `flutter test` | 409 passed, first run |
+| `scripts/play.sh --single-player --no-serve` | bundle built, 48 MB |
+| `dart run tool/solo_e2e.dart --port 8060` | three runs. The first failed at check 40 of 93: after the scan on the windshield it clicked `Load hold` and the hold panel did not open within the wait (`timed out waiting for "load a hold" on screen`). The second and the third, on the same bundle, were `SOLO E2E OK` in 194 s and 195 s, 93 checks, the multiplayer check included. All three logs are kept |
+
+**Not verified.** Why the first run of `solo_e2e.dart` failed. The step is a
+click in the page and a wait for a panel; the engine's frames are what
+`both_targets.rs`, `single_player.rs` and the guard compare, and they agree, so
+the engine is an unlikely cause, but nothing here shows what the cause was. The
+guard on a machine slow enough to split a batch: it would fail and say so, and
+that was not provoked. A server under real sockets beyond the tests: the
+transport was rewritten around a queue of messages and departures, and only the
+tests and the bundle's multiplayer check have used it. The timing lines of the
+server's log were read in the code, not looked at under load.
+
+**`CLAUDE.md` was not edited.** The agent's rules forbid it to take another
+agent's word for that. The wording is ready as a patch that applies to the tree
+as it stands: the rows of `sim/`, `server/` and `solo/`, one command line, and
+the architecture bullet about the two hosts rewritten as the rule of one host
+core. It is `claude-md.patch` in the scratch directory of this work
+(`.../scratchpad/host-core/`), for whoever merges.
