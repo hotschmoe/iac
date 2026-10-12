@@ -3,6 +3,28 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (proposal, not a decision: one stored world for both hosts)
+
+A pointer, so that the question is found here. Nothing is decided and no code
+changed.
+
+- **Asked by the owner:** can the browser's save and the server's database be
+  one source of truth?
+- **Proposed in `docs/design/storage.md`:** both hosts store the `Snapshot` as
+  one document, and beside it a journal of what entered the world since (a
+  registration with its token's hash, or a session's message, each with the tick
+  it landed on). Recovery is the document, then the journal replayed through
+  the host core. `database.rs`, `PersistBatch`, `RuntimeKind` and the engine's
+  dirty tracking go, and a new persistent field is written once.
+- **Measured there:** the largest world of the built-in bots is 13.1 MB of JSON
+  (23.8 MB if all 24 are explorers flown by hand); it replays at 382 ticks a
+  second natively; a journal of 9,309 inputs over 21,600 ticks replays to the
+  same hash; and the database as it is writes 7 to 10 GB a day in a world's
+  first days, where a document every ten minutes would write 0.1 to 0.7.
+- **The owner's, before any of it is built:** the eleven questions of its
+  section 12. The first decides the size of the work: whether a killed server
+  may lose more than the tick in flight.
+
 ## 2026-10-12 (one world on every target: where the engine's maths comes from)
 
 Asked for by the owner: the same seed and the same orders must give the same
