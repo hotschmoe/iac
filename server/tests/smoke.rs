@@ -171,7 +171,7 @@ async fn a_token_outlives_a_killed_server_and_an_account_without_one_is_claimed(
     let file = fresh_world("smoke_restart");
 
     // Run 1: register, and kill the server a few seconds later. It writes
-    // its world once a minute; the registration did not wait for that.
+    // its world every five minutes; the registration did not wait for that.
     let (player_id, token) = {
         let (server, port) = start_server(&file);
         let (_ws, reply) = login(port, "OldTimer", None).await;

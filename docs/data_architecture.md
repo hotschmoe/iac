@@ -83,7 +83,7 @@ because what a lost document costs differs.
 
 | | period | hurried by | gap | also |
 |---|---|---|---|---|
-| server | `--save-every`, 60 s | a token issued (a registration or a claim) | 2 s | at every start, once the bots are seated; at SIGINT and SIGTERM |
+| server | `--save-every`, 300 s | a token issued (a registration or a claim) | 2 s | at every start, once the bots are seated; at SIGINT and SIGTERM |
 | single player | 240 s; 20 s while catching up | an order; an absence ending; notices read | 2 s | when the page is hidden |
 
 Why they differ. The single-player host replays the ticks since its save
@@ -135,17 +135,17 @@ small, and not built:
 
 A real `iac-server`, release build, on the dev machine, loopback, no client;
 the journal entry of 2026-10-13 has the runs. The first row is a new season
-world with 15 bots over five minutes at the default period. The others are
+world with 15 bots over five minutes, written every 60 s. The others are
 the 24-seat season world of the study at four ages, written by a headless
 run and then hosted by the server, a dozen documents each.
 
-| world | document | copied out, on the tick | encoded | written (sync, rename, sync) | a day of documents at 60 s |
+| world | document | copied out, on the tick | encoded | written (sync, rename, sync) | a day of documents at 300 s |
 |---|---|---|---|---|---|
-| 15 bots, first five minutes | 0.26 to 0.33 MB | 0.3 to 0.4 ms | 0.9 to 1.1 ms | 6 to 14 ms | 0.4 GB |
-| 24 seats, day 1 | 3.2 MB | 7 ms | 25 ms | 17 ms | 4.6 GB |
-| 24 seats, day 2 | 5.3 MB | 13 ms | 33 ms | 21 ms | 7.7 GB |
-| 24 seats, day 4 | 8.9 MB | 17 ms | 36 ms | 27 ms | 12.8 GB |
-| 24 seats, day 7 | 13.2 MB | 33 ms | 46 ms | 34 ms | 18.9 GB |
+| 15 bots, first five minutes | 0.26 to 0.33 MB | 0.3 to 0.4 ms | 0.9 to 1.1 ms | 6 to 14 ms | 0.09 GB |
+| 24 seats, day 1 | 3.2 MB | 7 ms | 25 ms | 17 ms | 0.9 GB |
+| 24 seats, day 2 | 5.3 MB | 13 ms | 33 ms | 21 ms | 1.5 GB |
+| 24 seats, day 4 | 8.9 MB | 17 ms | 36 ms | 27 ms | 2.6 GB |
+| 24 seats, day 7 | 13.2 MB | 33 ms | 46 ms | 34 ms | 3.8 GB |
 
 - **The tick pays the copy and nothing else**: 33 ms once a period for the
   largest world these bots make, of a budget of 1000. The tick itself took
@@ -158,7 +158,7 @@ run and then hosted by the server, a dozen documents each.
 - **Bytes written are the documents and nothing else.** The new world wrote
   5 KB a tick, where the rows it replaced wrote 136 KB a tick in the same
   setup. But a document is the whole world, so the bytes follow its size
-  times how often: at the default period the day-7 world writes about 19 GB a
-  day, more than the rows were measured to write in a world's first three
-  days (7 to 10 GB). `--save-every 600` makes it 1.9 GB and the loss after a
-  kill ten minutes.
+  times how often: at the default period the day-7 world writes 3.8 GB a
+  day, under what the rows were measured to write in a world's first three
+  days (7 to 10 GB). `--save-every 60` makes it 18.9 GB and the loss after a
+  kill a minute; `--save-every 600`, 1.9 GB and ten minutes.

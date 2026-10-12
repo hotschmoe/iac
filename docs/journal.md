@@ -5402,3 +5402,14 @@ after reports were compared and are the same 201 lines.
 **Not verified.** What the branch's entry lists: no play by a person or an
 agent, the playtest harness edited and not run, no power cut, no full disk, no
 world past a season week.
+
+## 2026-10-13: the server's save period is 300 seconds
+
+The owner chose it from the table in `decisions.md` ("300s is fine"): a killed
+server loses at most five minutes, and the largest world measured writes 3.8 GB
+a day where 60 seconds wrote 18.9. `DEFAULT_SAVE_SECONDS` in
+`server/src/main.rs`; `README.md`, `CLAUDE.md`, `docs/data_architecture.md`
+(its table of a day's documents is recomputed for 300 s from the measured
+sizes), `docs/design/storage.md` and `decisions.md` say so. `cargo test -p
+iac-server`: all pass. A registration is still stored within about three
+seconds, and a clean stop still loses nothing.
