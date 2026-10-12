@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::maths;
 
-/// Bumped when costs, times, production formulas or the moment an order pays
-/// change; a database from another economy version is refused (start a new
-/// world).
-pub const ECONOMY_VERSION: u32 = 4;
+/// Bumped when costs, times, production formulas, the moment an order pays
+/// or the arithmetic a formula is computed with change: whenever a stored
+/// world would play on differently. A database or a save from another
+/// economy version is refused (start a new world).
+pub const ECONOMY_VERSION: u32 = 5;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 3;
 
