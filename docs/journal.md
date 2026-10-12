@@ -5138,3 +5138,91 @@ Run on the merged tree: the workspace builds; `cargo test --workspace` 154 passe
 first run. The branch's own first run of the browser check had failed at the
 windshield's `Load hold` click and passed twice after; that failure was not seen
 again here and its cause is not known.
+
+## 2026-10-13: storage studied: one document and one journal for both hosts
+
+The owner asked whether the two hosts could share their storage: the browser keeps
+a whole `Snapshot` as a JSON document, the server keeps the same state row by row
+in SQLite through `PersistBatch` and dirty tracking, and every persistent field is
+written three times. This was a study, not the change. Branch
+`worktree-agent-a3b54d0f3355fe2cf`, from master at `a21b6ca`; it adds
+`docs/design/storage.md`, this entry and a pointer in `decisions.md`, and touches
+no code. The design, the options compared, the migration and eleven questions for
+the owner are in that document; this entry says what was measured and how.
+
+**The tool.** A throwaway binary, `storage-probe`, in the scratch directory
+(`storage-study/probe`), not in the repository. It takes `iac-shared`, `iac-sim` and
+`iac-solo` by path and includes `server/src/database.rs` as it stands with
+`#[path]`, so the SQLite figures are the real code's. It hosts the engine in the
+server's order (incoming, bots' turns, `tick`, drain, bots observe). Release builds,
+one Cortex-A720 core a process at `nice 10`, two processes at a time. A second
+driver sends the same requests to `iac_solo.wasm` under Node 22.23.1. Worlds are
+built-in bots, seed `0x1AC05EED20261013`, in a cycle of hands-on, check-in and
+hybrid over the five personalities.
+
+**The whole world as a document** (JSON bytes; clone, encode, decode in ms, native):
+
+| world | seats | day | bytes | gzip -6 | clone | encode | decode |
+|---|---|---|---|---|---|---|---|
+| season | 9 | 7 | 5,373,153 | 442,217 | 4.0 | 10.4 | 21.6 |
+| season | 16 | 7 | 8,587,824 | 708,886 | 9.2 | 17.9 | 34.8 |
+| season | 24 | 1 | 3,502,511 | 292,502 | 2.7 | 7.7 | 14.8 |
+| season | 24 | 7 | 13,127,453 | 1,098,450 | 13.5 | 25.9 | 53.7 |
+| season, 24 hands-on explorers | 24 | 7 | 23,811,193 | 1,726,442 | 29.5 | 54.9 | 99.3 |
+| persistent | 24 | 30 | 7,505,141 | 653,116 | 5.6 | 15.3 | 30.8 |
+
+83 to 91 percent of every document is `Snapshot::known`, the charts, at 508 bytes
+a row; a homeworld is 1.4 KB, a ship 136 bytes. After a season week a document is
+0.54 to 0.60 MB a seat. As WebAssembly the 13.1 MB world saves in 79 ms and loads in
+278 ms (native 50 and 98, through `Machine::call`).
+
+**Encodings.** `postcard` and `bincode` write an eighth of the JSON and cannot read
+it back: the wire types use `skip_serializing_if` and tagged enums. MessagePack with
+field names is 31 percent smaller than JSON; gzip or zstd is 92 percent smaller,
+and after compression the two are 0.4 MB apart. JSON stays.
+
+**Replay.** After a load, 1,800 ticks with nothing to apply: 382 ticks a second
+natively and 269 as WebAssembly on the 24-seat week, 2,847 and 1,103 on its day 1,
+824 and 491 on the persistent day 30. The figure of 5,000 from 2026-10-12 was a
+young world. Every document ended on the same digest in three hosts: the probe's
+loop, `iac_solo::Machine` natively, and the wasm under Node.
+
+**The journal prototype.** Season, 24 seats, of which 8 hands-on players sit outside
+the engine and are driven through `GameEngine::answer`, four of them registering
+after the document is taken at day 1. 21,600 ticks, 9,309 lines of 107 bytes on
+average (982,511 bytes, 33,305 gzipped): `restore`, `Roster::resume`, and the lines
+applied at their ticks give the hash the live run ended on. So do 24 remote players
+with no bots (25,464 lines) and a 16-seat world with check-in players among the
+remote ones. With the queries left out or put in: the same. With no journal, or
+every order one tick late: a different world. One order dropped: a different world
+in 2 of 20 tries, because these bots re-issue what the engine refuses. A hands-on
+player writes 0.6 MB a day, a check-in player 12 KB.
+
+**SQLite as it is.** The same worlds with `Database` and `Persister` attached as
+`main.rs` attaches them. Every player is in every tick's batch, and by the end of
+a 16-seat week 32 chart rows a tick besides. Waiting for the writer after every
+tick, which is one transaction a tick as on a live server, the process wrote
+(`wchar`) 6.78, 8.44 and 10.15 GB on the first three days at 16 seats, and 7.81
+and 10.12 GB on the first two at 24: about 80 KB a tick, a changed row costing a
+whole page. A document every ten minutes would be 0.13, 0.39 and 0.61 GB on
+those three days. Waiting only every 200 ticks, so that the writer folds up to
+200 ticks into a transaction, the 16-seat world wrote 11.67 GB in its whole
+week, against about 5.2 GB of documents. The writer thread takes 2 to 6 ms of
+CPU a tick; the database file is 1.7 times the document (14.5 MB against 8.6);
+`load_snapshot` takes 53 ms where decoding and restoring the document takes 37.
+What `load_snapshot` reads back after `checkpoint()` hashes equal to the engine's
+snapshot in every row. Checked on the server itself: `iac-server`, release,
+season, `--bot all:all`, no client, port 8071, wrote 13,560,059 bytes between
+its 20th and 120th second, 136 KB a tick, into a database of 479 KB.
+
+**Found on the way.** A database created under one seed and loaded with another
+`--seed` comes back as a world of the other seed, with a warning in the log:
+measured, the sector beside the homeworld changed its terrain. A restart without
+its `--seed` regenerates the galaxy under its players. Not fixed here; it is
+question 10 of the design.
+
+**Not done.** No human or agent played, so chart sizes and order rates are the
+bots'. Season day 28 and persistent day 60 were started and stopped for time.
+Nothing was built into `iac-server`, no browser was run, and the tick digest the
+design proposes for catching a journal replayed by another binary is not
+prototyped.
