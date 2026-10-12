@@ -267,7 +267,7 @@ OUTPOST_YIELD_PER_HOUR = 2.0  # per grade point, per level, x ring multiplier, x
 OUTPOST_PLATFORM_POWER = 40.0
 OUTPOST_RAID_FACTOR = 2.0    # a raid is this many times the ring's group, x the home raid's 0.80..1.15 roll
 OUTPOST_RAID_LOSS = 0.25     # share of every resource above the floor that a lost raid takes
-OUTPOST_REPAIR_SHARE = 0.25  # a repair costs this share of the level's cost and of its build time
+OUTPOST_REPAIR_SHARE = 0.25  # a repair costs the par value of this share of the level's cost, and this share of its build time
 DENS_YIELD = {'S': 0.5, 'M': 1.0, 'R': 2.0, 'P': 4.0}   # grade points per density (the harvest multiplier)
 def outpost_cost(level):
     return tuple(x * OUTPOST_GROWTH ** (level - 1) for x in OUTPOST_COST)
@@ -284,8 +284,8 @@ def outpost_yield_h(density, d, level, P=1.0):
 def outpost_raid_power(d):   # before the 0.80..1.15 roll
     cls, count, mult = npc_group(d)
     return OUTPOST_RAID_FACTOR * count * mult * ship_power(cls)
-def outpost_repair_cost(level):
-    return tuple(x * OUTPOST_REPAIR_SHARE for x in outpost_cost(level))
+def outpost_repair_price(level):   # in metal; crystal and deuterium pay it at W_RES when the metal runs out
+    return sum(x * w * OUTPOST_REPAIR_SHARE for x, w in zip(outpost_cost(level), W_RES))
 def outpost_points(level):
     return sum(wv(outpost_cost(l)) for l in range(1, level + 1))
 

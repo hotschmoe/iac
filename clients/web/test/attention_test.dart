@@ -177,7 +177,8 @@ void main() {
     expect(outpost().skip(2).map((n) => n.title), ['Outpost breached', 'Outpost repair waiting']);
     expect(outpost()[2].body, allOf(contains('beat the defence of'), contains('destroyed 1 ship standing there'), contains('until it has repaired itself from its store')));
     expect(outpost()[3].body,
-        startsWith('Your outpost at 10, 0 is breached and cannot repair itself: the repair costs 250 Fe, 125 Cr, 50 De and its store is short by 250 Fe, 12'));
+        allOf(startsWith('Your outpost at 10, 0 is breached and cannot repair itself: the repair costs 537 Fe and its store is short by 538 Fe.'),
+            endsWith('until a fleet unloads that, or crystal or deuterium in its place.')));
 
     await tester.pump(const Duration(seconds: 5));
     expect(outpost(), hasLength(4), reason: 'a repair that still waits is said once');

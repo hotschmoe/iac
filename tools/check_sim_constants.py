@@ -271,7 +271,7 @@ def check_outposts(sim, rust):
         level = row["level"]
         for i in range(3):
             check(f"outpost L{level} cost[{i}]", row["cost"][i], sim.outpost_cost(level)[i], absolute=0.51)
-            check(f"outpost L{level} repair cost[{i}]", row["repair_cost"][i], sim.outpost_repair_cost(level)[i], absolute=0.26)
+        check(f"outpost L{level} repair price", row["repair_price"], sim.outpost_repair_price(level), 1e-6)
         for pace, ticks, repair, cap in zip(post["paces"], row["ticks"], row["repair_ticks"], row["store_cap"]):
             secs = sim.outpost_build_s(level, pace)
             check(f"outpost L{level} ticks at pace {pace}", ticks, secs, rel=0.01, absolute=1)

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use iac_shared::constants::{
     Density, ResourceKind, Resources, TerrainType, FUEL_DEUT_PER_UNIT, OUTPOST_MAX_LEVEL, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
-    OUTPOST_SPACING, RAID_ROLL_INTERVAL,
+    OUTPOST_REPAIR_SHARE, OUTPOST_SPACING, RAID_ROLL_INTERVAL,
 };
 use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::pace::Pace;
@@ -542,8 +542,9 @@ impl Headless {
                 founded_tick: tick,
                 hauled: Resources::default(),
             };
-            outpost.store =
-                outpost.protected().scale(order.repairs as f32).min(scaling::outpost_store_cap(order.level, &pace));
+            outpost.store = scaling::outpost_cost(outpost.repair_level())
+                .scale(OUTPOST_REPAIR_SHARE * order.repairs as f32)
+                .min(scaling::outpost_store_cap(order.level, &pace));
             stood.push((player_id, outpost));
         }
 
@@ -794,13 +795,13 @@ impl Headless {
             let ring = outpost.sector.dist_from_origin();
             let rate = scaling::outpost_yield_per_tick(engine.site_densities(outpost.sector), ring, outpost.level, &pace);
             sums.potential += weight(rate);
-            let repair = scaling::outpost_repair_cost(outpost.level);
             if outpost.job.is_some_and(|job| job.task == OutpostTask::Repair && job.start_tick == tick) {
-                t.outpost_repairs += scaling::resource_weight(&repair);
+                let price = Resources { metal: scaling::outpost_repair_price(outpost.level), ..Resources::default() };
+                t.outpost_repairs += scaling::resource_weight(&price);
             }
             if outpost.breached {
                 t.outpost_ticks_breached += 1;
-                let unpaid = outpost.job.is_none() && outpost.store.shortfall(repair).total() > 0.0;
+                let unpaid = outpost.job.is_none() && scaling::outpost_repair_payment(outpost.level, outpost.store).1 > 0.0;
                 t.outpost_ticks_waiting += u64::from(unpaid);
                 let building = outpost.job.is_some_and(|job| job.task != OutpostTask::Repair);
                 t.outpost_ticks_behind_build += u64::from(building);
@@ -827,7 +828,7 @@ impl Headless {
         let mine = player.buildings.metal_mine;
         let mine_gain = scaling::production_per_tick(BuildingType::MetalMine, mine + 1, &slow)
             - scaling::production_per_tick(BuildingType::MetalMine, mine, &slow);
-        let unpaid = outpost.store.shortfall(scaling::outpost_repair_cost(outpost.level)).total() > 0.0;
+        let unpaid = scaling::outpost_repair_payment(outpost.level, outpost.store).1 > 0.0;
         Some(OutpostSummary {
             sector: outpost.sector,
             ring,

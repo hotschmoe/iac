@@ -482,7 +482,10 @@ still reach its working outpost.
   - It repairs itself: as soon as the store covers a quarter of its level's cost
     it pays that and is whole after a quarter of the level's build time (3.75 h,
     9.4 h, 23.4 h at pace 1). If the owner had emptied the store below the floor,
-    the repair waits for a delivery.
+    the repair waits for a delivery. *As built since 2026-10-12, by the owner's
+    decision:* the repair is priced in metal (the par value of that quarter) and
+    paid in whatever the store holds, metal first, then crystal at 1.5 and
+    deuterium at 2, and the floor is that payment (`docs/design/decisions.md`).
   - No raid for 48 hours (pace 1; 8.5 hours at season).
 - *Destroyed?* Never by an NPC raid. Question 3.
 - *What an undefended outpost comes to.* A level-3 outpost beyond ring 17 with

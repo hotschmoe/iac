@@ -3,6 +3,29 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-12 (the owner's decision: an outpost's repair is paid by weight)
+
+- **Decided by the owner**, of the four choices under "outposts measured"
+  below: choice 2. A repair is priced in metal, the par value of a quarter of
+  the level's cost (537.5, 1343.75 and 3359.375), and the store pays it in
+  metal, then crystal at 1.5 a unit, then deuterium at 2
+  (`scaling::outpost_repair_payment`). The protected floor is that payment
+  read off the store as it stands, and in a raid off the store and the holds
+  docked there as one pile.
+- **What it was chosen on.** Season pace, 7 days, 30 unattended outposts a
+  row. A level-3 outpost alone at rings 18, 19 and 20, emptied before every
+  raid, keeps 56, 58 and 54 percent of what its extractor could have made
+  (35, 21 and 18 before; 40 to 60 expected). None of 30 ends the week
+  breached and waiting where 23 to 29 did. The rows the design calls safe did
+  not move, and a world without outposts plays as before. The other branch
+  built, an unpaid repair at four times the time (`outpost-repair-slow`, not
+  merged), left rings 19 and 20 at 36 and 29 percent and made paying for a
+  repair a loss at low levels.
+- **What still waits.** An outpost breached before its store has saved up the
+  price: 3 of 30 at level 1, ring 9, from an empty store.
+- **Not measured.** Persistent and blitz pace, and nobody has played it.
+- **Still the owner's.** Whether a repair should interrupt a build.
+
 ## 2026-10-12 (seven loose ends: the Vault and a batch, a fight's forfeit, Stop, and where status text stands)
 
 **Decided by the agent that built it, not by the owner, and open to change.**

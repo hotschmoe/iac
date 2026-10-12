@@ -576,19 +576,24 @@ What every doctrine does:
     (at least one), and what they carried goes into the store; a quarter of
     the store, and of the cargo aboard fleets there, above the protected
     floor is taken; and the outpost is breached: no extractor, no
-    refuelling, no platform. The floor is what the next repair costs: a
-    quarter of the cost of the level it stands at, or of the level it is
-    building. After a lost raid none comes for 48 game hours divided by
-    P^0.75. No raid destroys an outpost.
-  - **Repair**: a breached outpost repairs itself. When its store covers
-    the repair it pays (250/125/50 at level 1, 625/312.5/125 at level 2,
-    1562.5/781.25/312.5 at level 3) and is whole after a quarter of that
-    level's build time; an `Alert` says when it starts and when it ends. A
-    breached outpost extracts nothing, so a store that does not cover the
-    repair never will by itself: the repair waits for a delivery and one
-    `Alert` (warning) says what is missing. Keep the repair cost of every
-    resource your site does not make in the store; a raid cannot take it. A
-    breach suffered during an upgrade is repaired once the upgrade is done.
+    refuelling, no platform. The floor is what the next repair would take
+    from what is there (`protected`), for the level it stands at or the
+    level it is building. After a lost raid none comes for 48 game hours
+    divided by P^0.75. No raid destroys an outpost.
+  - **Repair**: a breached outpost repairs itself. A repair is priced in
+    metal: 537.5 at level 1, 1343.75 at level 2, 3359.375 at level 3 (a
+    quarter of the level's cost at par). The store pays it in metal; where
+    the metal runs out a unit of crystal pays for 1.5 and then a unit of
+    deuterium for 2, so any store that holds the price in anything pays.
+    It is whole after a quarter of that level's build time; an `Alert` says
+    when it starts, with what it took, and when it ends. A breached outpost
+    extracts nothing, so a store that holds less than the price never will
+    by itself: the repair waits for a delivery of any resource and one
+    `Alert` (warning) says how much metal is missing. A raid cannot take
+    what the next repair needs, so a site that makes anything keeps
+    repairing itself; only one breached before it has saved up its first
+    repair waits. A breach suffered during an upgrade is repaired once the
+    upgrade is done.
   - **Score**: each finished level adds its cost at score weight to `core`
     (2.15, 5.375, 13.44) while the outpost stands. It does not raise the
     raids on your homeworld.
@@ -600,8 +605,10 @@ What every doctrine does:
     `grade`, `platform_power`, `defence_power`, `raid_power` (`least`,
     `most`), `raid_arrival_tick`, `next_level` (what `upgrade_outpost` would
     cost and give), `upgrade_refusal` (why it would be refused now),
-    `repair_cost`, `repair_waiting_for` (what the store lacks of it, while a
-    repair waits), `hops_home`. Each fleet reports `at_outpost` (it is in
+    `repair_cost` (what the repair takes from the store, what the store
+    lacks counted as metal), `repair_waiting_for` (the metal the store lacks
+    of it while a repair waits; crystal or deuterium to the same par value
+    does as well), `hops_home`. Each fleet reports `at_outpost` (it is in
     your outpost's sector, finished, building or breached: `load` and
     `unload` use the store there) and `outpost_fuel`, the fuel the way there
     costs, while the outpost is in service. A sector view carries `outpost`
@@ -612,8 +619,8 @@ What every doctrine does:
     and keeps its hold there; only its charts are banked if it arrives.
     `recall` still jumps to the homeworld, never to the outpost.
   - The trip: `load` at home what the outpost needs (deuterium for tanks,
-    the next level's cost, the repair cost), fly out, `unload`, `load` what
-    it has made, fly home.
+    the next level's cost), fly out, `unload`, `load` what it has made, fly
+    home.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
   `core` = completed building and research levels + living ships + half of
   the defence structures + the finished levels of your outpost, each priced

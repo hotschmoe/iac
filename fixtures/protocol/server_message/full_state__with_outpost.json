@@ -1052,9 +1052,9 @@
       "metal": 0.010793999768793583
     },
     "protected": {
-      "crystal": 125.0,
-      "deuterium": 50.0,
-      "metal": 250.0
+      "crystal": 96.0,
+      "deuterium": 180.25,
+      "metal": 412.5
     },
     "raid_arrival_tick": 4990,
     "raid_power": {

@@ -9,13 +9,13 @@
   },
   "player_id": 42,
   "protected_kept": {
-    "crystal": 96.0,
-    "deuterium": 50.0,
-    "metal": 250.0
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 537.5
   },
   "raid_power": 82.5,
   "resources_lost": {
-    "crystal": 0.0,
+    "crystal": 24.0,
     "deuterium": 32.5,
     "metal": 40.625
   },

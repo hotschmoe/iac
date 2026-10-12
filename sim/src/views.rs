@@ -1,7 +1,7 @@
 // What a player is allowed to see: the protocol's full-state and per-tick
 // views of the engine, and which events reach whom.
 
-use iac_shared::constants::{ResourceKind, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
+use iac_shared::constants::{ResourceKind, Resources, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BuildQueueItem, BuildingState, DefenceState, FleetState, GameEvent, GameState, HomeworldState, OutpostLevel,
@@ -60,7 +60,8 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
     });
     let production = engine.outpost_production(outpost);
     let store_cap = scaling::outpost_store_cap(outpost.level, &pace);
-    let repair_cost = (outpost.breached && outpost.job.is_none()).then(|| scaling::outpost_repair_cost(outpost.level));
+    let repair = (outpost.breached && outpost.job.is_none())
+        .then(|| scaling::outpost_repair_payment(outpost.level, outpost.store));
     Some(OutpostState {
         location: outpost.sector,
         level: outpost.level,
@@ -96,8 +97,10 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
             production: scaling::outpost_yield_per_tick(densities, ring, next, &pace),
         }),
         upgrade_refusal: engine.outpost_upgrade(player.id).err().map(|refusal| refusal.reason),
-        repair_cost,
-        repair_waiting_for: repair_cost.map(|cost| outpost.store.shortfall(cost)).filter(|short| short.total() > 0.0),
+        repair_cost: repair.map(|(payment, short)| Resources { metal: payment.metal + short, ..payment }),
+        repair_waiting_for: repair
+            .filter(|&(_, short)| short > 0.0)
+            .map(|(_, short)| Resources { metal: short, ..Resources::default() }),
         hops_home: engine.world_gen.lane_hops(outpost.sector, player.homeworld, 64),
     })
 }

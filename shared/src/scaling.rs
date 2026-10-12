@@ -831,10 +831,15 @@ impl ShipyardItem {
 /// How much a bundle of resources counts toward score and raid sizing:
 /// crystal and deuterium are scarcer than metal.
 pub fn resource_weight(r: &Resources) -> f32 {
-    (ResourceKind::Metal.weight() * r.metal
+    par_value(r) / 1000.0
+}
+
+/// A bundle of resources at par, in units of metal: each unit counts its
+/// `ResourceKind::weight`.
+pub fn par_value(r: &Resources) -> f32 {
+    ResourceKind::Metal.weight() * r.metal
         + ResourceKind::Crystal.weight() * r.crystal
-        + ResourceKind::Deuterium.weight() * r.deuterium)
-        / 1000.0
+        + ResourceKind::Deuterium.weight() * r.deuterium
 }
 
 // ── The hub exchange ─────────────────────────────────────────────
@@ -966,10 +971,31 @@ pub fn outpost_raid_power(ring: u16) -> f32 {
     OUTPOST_RAID_FACTOR * npc_group_power(ring)
 }
 
-/// What repairing a breached outpost of `level` costs. It is also the floor
-/// of the store that a raid cannot take.
-pub fn outpost_repair_cost(level: u8) -> Resources {
-    if level == 0 { Resources::default() } else { outpost_cost(level).scale(OUTPOST_REPAIR_SHARE) }
+/// What repairing a breached outpost of `level` costs, in metal: the par
+/// value of `OUTPOST_REPAIR_SHARE` of the level's cost.
+pub fn outpost_repair_price(level: u8) -> f32 {
+    if level == 0 { 0.0 } else { par_value(&outpost_cost(level).scale(OUTPOST_REPAIR_SHARE)) }
+}
+
+/// What a repair of `level` takes from `store`, and how much metal the
+/// store is short of paying it. The price is paid in metal; where the metal
+/// runs out crystal pays at its par value, and then deuterium, so the store
+/// keeps what is scarcest. The payment is also the floor of the store that
+/// a raid cannot take.
+pub fn outpost_repair_payment(level: u8, store: Resources) -> (Resources, f32) {
+    let mut owed = outpost_repair_price(level);
+    let mut payment = Resources::default();
+    for kind in ResourceKind::ALL {
+        let (stock, covers) = (store.get(kind).max(0.0), owed / kind.weight());
+        if stock >= covers {
+            *payment.get_mut(kind) = covers;
+            owed = 0.0;
+        } else {
+            *payment.get_mut(kind) = stock;
+            owed -= stock * kind.weight();
+        }
+    }
+    (payment, owed)
 }
 
 pub fn outpost_repair_ticks(level: u8, pace: &Pace) -> u64 {

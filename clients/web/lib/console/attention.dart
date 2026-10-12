@@ -219,7 +219,7 @@ class Attention extends ChangeNotifier {
       if (short != null && !_repairWaits && cost != null) {
         out.add(Notice('outpost-repair', 'Outpost repair waiting',
             'Your outpost at $at is breached and cannot repair itself: the repair costs ${amountsOf(cost)} and its store is ${shortBy(short)}. '
-                'It makes nothing, fills no tank and has no platform until a fleet unloads the rest.',
+                'It makes nothing, fills no tank and has no platform until a fleet unloads that, or crystal or deuterium in its place.',
             critical: true));
       }
     }

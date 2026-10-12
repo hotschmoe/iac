@@ -483,7 +483,8 @@ fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState)
         lines.push(Line::styled(
             match &post.repair_waiting_for {
                 Some(short) => format!(
-                    "The repair costs {} from the store, which is short by {}: it stays breached until a fleet unloads the rest.",
+                    "The repair costs {} from the store, which is short by {}: it stays breached until a fleet unloads that, \
+                     or crystal or deuterium in its place, a unit for 1.5 and for 2 of metal.",
                     amounts(cost), amounts(short),
                 ),
                 None => format!("The repair costs {} from the store.", amounts(cost)),
@@ -497,7 +498,7 @@ fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState)
         lines.push(Line::styled(
             format!(
                 " {:<10} {:>9.0} / {:<9.0} protected {:.0}, raidable {:.0}{}",
-                kind.label(), stock.floor(), cap.floor(), floor, (stock - floor).max(0.0).floor(),
+                kind.label(), stock.floor(), cap.floor(), floor.floor(), (stock - floor).max(0.0).floor(),
                 if lost {
                     "  FULL: the extractor makes no more of it"
                 } else if stock >= cap {
@@ -509,6 +510,11 @@ fn outpost_lines(state: &ClientState, post: &iac_shared::protocol::OutpostState)
             if lost { RED_ALERT } else { AMBER_BRIGHT },
         ));
     }
+    lines.push(Line::styled(
+        " Protected is what the next repair would take: metal, and where the metal runs out crystal, then deuterium, a unit for \
+         1.5 and for 2 of metal.",
+        AMBER_DIM,
+    ));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
         if post.in_service {

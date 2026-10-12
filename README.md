@@ -777,10 +777,12 @@ Change the Rust protocol, regenerate, then fix the Dart side until
   - **Raids**: pirates of its ring raid it on the homeworld's raid clock, at
     `2 x` the ring's group power. The platform (40, 100, 250) and the ships
     there defend. A lost raid destroys a quarter of the ships there, takes a
-    quarter of the store and the holds above the repair cost, and breaches
-    the outpost: no extractor, no fuel, no platform until it has repaired
-    itself from its store, which it can only do if the store holds the
-    repair cost. No raid destroys it.
+    quarter of the store and the holds above what the next repair would
+    take, and breaches the outpost: no extractor, no fuel, no platform
+    until it has repaired itself from its store. A repair is priced in
+    metal (537.5, 1343.75, 3359.375 by level) and paid in metal, then
+    crystal at 1.5 a unit, then deuterium at 2, so a store that holds the
+    price in anything pays. No raid destroys it.
   - **State**: `outpost` in `full_state` and every `tick_update` (with
     `raid_power`, the weakest and the strongest raid of its ring;
     `upgrade_refusal`, why an upgrade would be refused now; `yield_lost` and

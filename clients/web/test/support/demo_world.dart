@@ -700,7 +700,34 @@ class DemoWorld {
   static double _outpostGrowth(int level) => pow(2.5, max(1, level) - 1).toDouble();
   static Resources _levelCost(int level) => _times(_outpostCost, _outpostGrowth(level));
   static int _levelTicks(int level) => (_outpostLevelTicks * _outpostGrowth(level)).round();
-  static Resources _repairCost(int level) => level == 0 ? const Resources() : _times(_levelCost(level), .25);
+  /// What a repair of [level] costs in metal: a quarter of the level's cost at par.
+  static double _repairPrice(int level) {
+    if (level == 0) return 0;
+    final quarter = _times(_levelCost(level), .25);
+    return quarter.metal + quarter.crystal * 1.5 + quarter.deuterium * 2;
+  }
+
+  static String _repairWords(int level) => '${_repairPrice(level).ceil()} metal, or crystal at 1.5 and deuterium at 2 a unit in its place';
+
+  /// What a repair of [level] takes from [store], metal first, then crystal
+  /// and deuterium at par, and the metal the store is short of paying it.
+  static (Resources, double) _repairPayment(int level, Resources store) {
+    var owed = _repairPrice(level);
+    double take(double stock, double par) {
+      if (stock >= owed / par) {
+        final paid = owed / par;
+        owed = 0;
+        return paid;
+      }
+      owed -= stock * par;
+      return stock;
+    }
+
+    final metal = take(store.metal, 1);
+    final crystal = take(store.crystal, 1.5);
+    final deuterium = take(store.deuterium, 2);
+    return (Resources(metal: metal, crystal: crystal, deuterium: deuterium), owed);
+  }
   static Resources _storeCap(int level) => _times(_outpostStoreBase, _outpostGrowth(level));
   static double _platform(int level) => level == 0 ? 0 : 40 * _outpostGrowth(level);
   static PowerRange _outpostRaids(Hex at) {
@@ -731,8 +758,7 @@ class DemoWorld {
     final ships = [for (final f in _fleets) if (f.location == o.at) ...f.ships].fold(0.0, (p, s) => p + _power[s.shipClass]!);
     final cap = _storeCap(o.level);
     final makes = _inService ? _siteYield(o.at, o.level) : const Resources();
-    final repair = o.breached && o.work == null ? _repairCost(o.level) : null;
-    final repairShort = repair == null ? null : _less(repair, o.store);
+    final repair = o.breached && o.work == null ? _repairPayment(o.level, o.store) : null;
     return OutpostState(
       location: o.at,
       level: o.level,
@@ -742,7 +768,7 @@ class DemoWorld {
       work: o.work,
       store: o.store,
       storeCap: cap,
-      protected: _repairCost(building ?? o.level),
+      protected: _repairPayment(building ?? o.level, o.store).$1,
       production: makes,
       yieldLost: [for (final k in ResourceKind.values) if (k.of(makes) > 0 && k.of(o.store) >= k.of(cap)) k],
       grade: _siteGrade(o.at),
@@ -760,8 +786,8 @@ class DemoWorld {
               platformPower: _platform(next),
               production: _siteYield(o.at, next)),
       upgradeRefusal: _upgradeRefusal()?.$2,
-      repairCost: repair,
-      repairWaitingFor: repairShort != null && repairShort.total > 0 ? repairShort : null,
+      repairCost: repair == null ? null : _plus(repair.$1, Resources(metal: repair.$2)),
+      repairWaitingFor: repair != null && repair.$2 > 0 ? Resources(metal: repair.$2) : null,
       hopsHome: Hex.distance(o.at, _home),
     );
   }
@@ -878,7 +904,7 @@ class DemoWorld {
     if (o.breached) {
       return (
         ErrorCode.invalidCommand,
-        'your outpost at ${o.at} is breached; it repairs itself first, once its store holds ${_amount(_repairCost(o.level))}',
+        'your outpost at ${o.at} is breached; it repairs itself first, once its store covers the repair: ${_repairWords(o.level)}',
       );
     }
     if (o.level >= _outpostMaxLevel) {
@@ -975,9 +1001,8 @@ class DemoWorld {
     final cap = _storeCap(o.level);
     if (_inService) o.store = _least(_plus(o.store, _siteYield(o.at, o.level)), cap);
     if (o.breached && o.work == null) {
-      final cost = _repairCost(o.level);
-      final short = _less(cost, o.store);
-      if (short.total <= 0) {
+      final (cost, short) = _repairPayment(o.level, o.store);
+      if (short <= 0) {
         final ticks = (_levelTicks(o.level) * .25).round();
         o.store = _less(o.store, cost);
         o.work = OutpostWorkState(kind: OutpostWork.repair, level: o.level, startTick: _tick, endTick: _tick + ticks);
@@ -989,8 +1014,8 @@ class DemoWorld {
         _outpostAlert(
             AlertLevel.warning,
             o.at,
-            'your outpost at ${o.at} is breached and cannot repair itself: its store lacks ${_amount(short)} of the ${_amount(cost)} the repair '
-            'costs. It makes nothing, fills no tank and has no platform until a fleet unloads the rest');
+            'your outpost at ${o.at} is breached and cannot repair itself: the repair costs ${_repairWords(o.level)}, and its store '
+            'is short by ${short.ceil()} metal. It makes nothing, fills no tank and has no platform until a fleet unloads the rest');
       }
     }
     final makes = _inService ? _siteYield(o.at, o.level) : const Resources();

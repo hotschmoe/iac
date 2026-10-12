@@ -485,7 +485,7 @@ fn the_extractor_makes_what_the_survey_said_at_every_pace() {
         e.run(999);
         let after = outpost(&e).store;
         assert!(near(after, rate.scale(1000.0), rate.total() * 1000.0 * 1e-3), "{pace}: {after:?} after 1000 ticks at {rate:?}");
-        assert!(near(open.store_cap, cap, 0.05) && near(open.protected, res(250.0, 125.0, 50.0), 0.0), "{pace}");
+        assert!(near(open.store_cap, cap, 0.05) && open.protected == open.store, "{pace}: a store that pays no repair yet is all floor");
 
         let pid = e.pid;
         let almost = res(open.store_cap.metal - rate.metal * 1.5, 0.0, 0.0);
@@ -697,7 +697,8 @@ fn a_level_is_paid_from_the_store_and_the_outpost_works_on_meanwhile() {
     let two = outpost(&e);
     assert_eq!((two.level, two.work, two.platform_power, completed(&e, mark)), (2, None, 100.0, vec![2]));
     assert_eq!((two.store_cap, two.production), (next.store_cap, next.production));
-    assert_eq!(two.protected, res(625.0, 312.5, 125.0), "the floor is the repair cost of the level it stands at");
+    assert!(scaling::par_value(&two.store) < scaling::outpost_repair_price(2), "{:?}", two.store);
+    assert_eq!(two.protected, two.store, "the floor is the repair of the level it stands at: all of a store that holds less");
 
     let last = two.next_level.expect("level 3 is on offer");
     assert_eq!((last.level, last.cost, last.ticks, last.platform_power), (3, res(6250.0, 3125.0, 1250.0), 33_750, 250.0));
@@ -967,8 +968,8 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     assert!((hold - 489.9).abs() < 0.1, "two Corvettes hold 20 x sqrt(600): {hold}");
     let post = outpost(&e);
     assert_eq!((post.platform_power, post.defence_power), (40.0, 40.0 + 2.0 * 22.0));
-    let floor = res(250.0, 125.0, 50.0);
-    assert_eq!(post.protected, floor);
+    let floor = res(537.5, 0.0, 0.0);
+    assert_eq!(post.protected, floor, "250 metal, 125 crystal and 50 deuterium at par, in metal while the store has it");
 
     let mark = e.mark();
     e.run_until(20_000, |e| !forecasts(e, mark).is_empty());
@@ -987,7 +988,7 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     assert_eq!(outcome.raid_power, forecast.est_power);
     let after = everything(&e);
     let pile = before.add(rate);
-    let taken = res((pile.metal - 250.0) * 0.25, (pile.crystal - 125.0) * 0.25, (pile.deuterium - 50.0) * 0.25);
+    let taken = res((pile.metal - 537.5) * 0.25, pile.crystal * 0.25, pile.deuterium * 0.25);
     assert!(near(outcome.resources_lost, taken, 0.01), "a quarter above the floor: {:?} against {taken:?}", outcome.resources_lost);
     assert!(near(after, pile.sub(taken), 0.01), "and no more: {after:?} left of {pile:?}");
     assert_eq!(outcome.protected_kept, floor);
@@ -1016,8 +1017,7 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     assert_eq!(
         said(&e, mark),
         vec![format!(
-            "your outpost at {at} began its repair, paid 250 metal, 125 crystal and 50 deuterium from its store: \
-             it is whole at tick {}, in 23 ticks",
+            "your outpost at {at} began its repair, paid 538 metal from its store: it is whole at tick {}, in 23 ticks",
             work.end_tick,
         )],
     );
@@ -1039,7 +1039,7 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
 
 #[test]
 fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_once() {
-    let (mut e, at) = settle("blitz", 18, |t| t.metal_density != Density::None);
+    let (mut e, at) = settle("blitz", 18, |t| t.metal_density != Density::None && t.deut_density == Density::None);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
     let mark = e.mark();
@@ -1058,31 +1058,43 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     let mark = e.mark();
     e.run(400);
     let waiting = outpost(&e);
-    assert!(waiting.breached && waiting.work.is_none() && waiting.repair_cost == Some(res(250.0, 125.0, 50.0)));
-    assert_eq!(
-        waiting.repair_waiting_for,
-        Some(waiting.store.shortfall(res(250.0, 125.0, 50.0))),
-        "the state says what the repair waits for",
-    );
+    let held = scaling::par_value(&waiting.store);
+    let short = 537.5 - held;
+    assert!(waiting.breached && waiting.work.is_none() && short > 0.0, "the store holds {held} at par");
+    assert_eq!(waiting.protected, waiting.store, "all of a store that cannot pay is floor");
+    let lacks = waiting.repair_waiting_for.expect("the state says what the repair waits for");
+    assert!((lacks.metal - short).abs() < 1e-3 && lacks.crystal == 0.0 && lacks.deuterium == 0.0, "the shortfall, in metal: {lacks:?}");
+    assert_eq!(waiting.repair_cost, Some(waiting.store.add(lacks)), "the store and the metal it lacks");
     let warned = alerts_since(&e, mark);
     assert_eq!(warned.len(), 1, "{warned:?}");
     assert!(matches!(warned[0].level, AlertLevel::Warning));
-    assert!(
-        warned[0].message.starts_with(&format!("your outpost at {at} is breached and cannot repair itself: its store lacks"))
-            && warned[0].message.contains("125 crystal")
-            && warned[0].message.ends_with("until a fleet unloads the rest"),
-        "{}",
+    assert_eq!(
         warned[0].message,
+        format!(
+            "your outpost at {at} is breached and cannot repair itself: the repair costs 538 metal, or crystal at 1.5 and \
+             deuterium at 2 a unit in its place, and its store is short by {} metal. It makes nothing, fills no tank and \
+             has no platform until a fleet unloads the rest",
+            lacks.metal.ceil(),
+        ),
     );
     assert_eq!(e.engine.outposts[&pid].store, waiting.store, "a breached outpost extracts nothing, so it cannot save up the repair");
     assert_eq!(e.engine.current_tick(), resolved + 400);
+    assert_eq!(
+        e.refusal(Command::UpgradeOutpost).1,
+        format!(
+            "your outpost at {at} is breached; it repairs itself first, once its store covers the repair: 538 metal, or \
+             crystal at 1.5 and deuterium at 2 a unit in its place"
+        ),
+    );
 
-    deliver(&mut e, at, res(250.0, 125.0, 50.0));
+    deliver(&mut e, at, res(0.0, (short / 1.5).ceil(), 40.0));
     let stocked = outpost(&e).store;
     e.run(1);
     let repairing = outpost(&e);
-    assert_eq!(repairing.work.map(|w| w.kind), Some(OutpostWork::Repair), "the repair starts on the delivery");
-    assert!(near(repairing.store, stocked.sub(res(250.0, 125.0, 50.0)), 1e-3));
+    assert_eq!(repairing.work.map(|w| w.kind), Some(OutpostWork::Repair), "the repair starts on the delivery, whatever it brought");
+    let paid = stocked.sub(repairing.store);
+    assert!((scaling::par_value(&paid) - 537.5).abs() < 1e-2, "537.5 at par: {paid:?}");
+    assert!(paid.metal == stocked.metal && paid.crystal > 0.0 && paid.deuterium == 0.0, "metal first, then crystal, and no deuterium: {paid:?}");
     e.run(scaling::outpost_repair_ticks(1, &e.engine.pace()));
     assert!(outpost(&e).in_service);
 }
@@ -1123,6 +1135,33 @@ fn thirty_days_of_raids_never_destroy_an_undefended_outpost() {
 
     assert_eq!(e.state().homeworld.next_raid_estimate_power, estimate, "the outpost never sized a raid on the homeworld");
     assert_eq!(e.score_row().core, core, "and its level still counts");
+}
+
+#[test]
+fn a_site_that_lacks_an_ore_pays_every_repair_in_what_it_makes() {
+    let (mut e, at) = settle("season", 18, |t| t.deut_density == Density::None && grade_of(t) >= 4.0);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    muster(&mut e.engine, fid, &[(ShipClass::Scout, 1)], home);
+    stow(&mut e, fid, Resources::default());
+    assert_eq!(outpost(&e).production.deuterium, 0.0, "the site makes no deuterium, and nobody brings any");
+
+    let mark = e.mark();
+    let mut waited = 0u64;
+    for _ in 0..30 * 24 {
+        e.run(360);
+        let post = outpost(&e);
+        waited += u64::from(post.repair_waiting_for.is_some());
+        assert_eq!(post.store.deuterium, 0.0);
+    }
+    let raids = outcomes(&e, mark);
+    assert!(raids.len() >= 5 && raids.iter().all(|(_, raid)| raid.outpost == Some(at) && raid.breached), "{} raids, all lost", raids.len());
+    let told = said(&e, mark);
+    let repairs = told.iter().filter(|line| line.contains("is repaired")).count();
+    assert!(repairs + 1 >= raids.len(), "it repaired itself after each: {repairs} repairs for {} raids", raids.len());
+    assert!(told.iter().all(|line| !line.contains("cannot repair itself")) && waited == 0, "no repair ever waited: {told:?}");
+    let paid: Vec<&String> = told.iter().filter(|line| line.contains("began its repair")).collect();
+    assert!(paid.len() >= repairs && paid.iter().all(|line| !line.contains("deuterium")), "each was paid in metal and crystal: {paid:?}");
 }
 
 #[test]

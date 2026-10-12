@@ -179,13 +179,18 @@ class _OutpostPanelState extends State<OutpostPanel> {
             padding: const EdgeInsets.only(top: 4),
             child: Text(
                 'THE REPAIR COSTS ${amountsOf(repair).toUpperCase()} FROM THE STORE'
-                '${repairShort == null ? '' : ', WHICH IS ${shortBy(repairShort).toUpperCase()}: IT STAYS BREACHED UNTIL A FLEET UNLOADS THE REST'}',
+                '${repairShort == null ? '' : ', WHICH IS ${shortBy(repairShort).toUpperCase()}: IT STAYS BREACHED UNTIL A FLEET UNLOADS THAT, '
+                    'OR CRYSTAL OR DEUTERIUM IN ITS PLACE, A UNIT FOR 1.5 AND FOR 2 OF METAL'}',
                 key: const Key('outpost-repair'),
                 style: T.mono(size: 10.5, color: repairShort == null ? C.text2 : C.ember, height: 1.35)),
           ),
         const SizedBox(height: 10),
         const Lbl('Store'),
         for (final k in proto.ResourceKind.values) _store(o, k),
+        const WhyText(
+            'Protected is what the next repair would take: metal, and where the metal runs out crystal, then deuterium, a unit for '
+            '1.5 and for 2 of metal.',
+            key: Key('outpost-floor')),
         const SizedBox(height: 4),
         Kv('Yield an hour',
             key: const Key('outpost-yield'),
@@ -237,7 +242,7 @@ class _OutpostPanelState extends State<OutpostPanel> {
         LedBar(cap > 0 ? stock / cap : 0, color: lost ? C.ember : color, height: 7, mark: C.text2, markAt: cap > 0 ? (floor / cap).clamp(0.0, 1.0) : null),
         const SizedBox(height: 2),
         Wrap(spacing: 10, children: [
-          Text('PROTECTED ${groupDigits(floor.round())}', style: T.mono(size: 10, color: C.text3)),
+          Text('PROTECTED ${_whole(floor)}', style: T.mono(size: 10, color: C.text3)),
           Text('RAIDABLE ${_whole(math.max(0, stock - floor))}', style: T.mono(size: 10, color: C.text3)),
         ]),
       ]),

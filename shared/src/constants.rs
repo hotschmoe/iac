@@ -616,7 +616,7 @@ pub const OUTPOST_PLATFORM_POWER: f32 = 40.0;
 pub const OUTPOST_RAID_FACTOR: f32 = 2.0;
 /// Share of every resource above the protected floor that a lost raid takes.
 pub const OUTPOST_RAID_LOSS: f32 = 0.25;
-/// A repair costs this share of the level's cost and takes this share of its build time.
+/// A repair costs the par value of this share of the level's cost and takes this share of its build time.
 pub const OUTPOST_REPAIR_SHARE: f32 = 0.25;
 
 /// WebSocket server defaults.
