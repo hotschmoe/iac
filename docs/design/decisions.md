@@ -49,6 +49,27 @@ nothing from research) is not patched on its own: it falls to the OGame work.
 **Standing instruction.** A worktree whose work is merged is removed as the
 work comes back ("be sure to clean stale worktrees as work comes back").
 
+**Answered the same day**, before the study was written:
+
+> ogames original/classic is what im after. and they use generic names so we
+> can copy them. if we can do per round would be more fun imo while at
+> windshield as we do now (ogames instant battles are less fun watch bcuz
+> theyre instant). and if we do per round firing, can we have the ability to
+> run to next hex as a fleet to flee (more dangerous enemies will chase a hex
+> or two?) this also give penalties to slower ships (users may make large,
+> fast ship fleets for guerilla warfare type battling).
+
+1. **Which OGame: the original, classic rules.**
+2. **Names: OGame's own.** The owner's judgment is that they are generic.
+3. **A battle is fought a round at a time**, watched from the windshield as
+   fights are now, and not resolved at once as OGame does.
+4. **A fleet may flee a fight to the next hex**, and a more dangerous enemy
+   may chase it a hex or two. Speed is to matter: a slow ship is a liability
+   in a fleet that means to run, and a fleet of many fast ships that strikes
+   and leaves is a way to play the owner wants. This is asked for, and its
+   rules are the study's to propose: what leaving costs, who chases, how far,
+   and what becomes of damage when a fight breaks off.
+
 ## 2026-10-13 (the web client stops working the rules out for itself)
 
 Merged into master and pushed on 2026-10-13.
