@@ -7613,21 +7613,30 @@ once.
   economy_numbers`, then `python3 tools/check_sim_constants.py`: agrees on
   4,410 values.
 - `scripts/play.sh --single-player --no-serve`: built, 47 MB.
-- `dart run tool/solo_e2e.dart --port 7961`, seven runs. Five failed on the
-  way: the catalogue's first check read the page before the tab had drawn
+- `dart run tool/solo_e2e.dart --port 7961`, eleven runs. Five failed on
+  the way: the catalogue's first check read the page before the tab had drawn
   (the tool's; it passed on master by timing); my fight counted `ShipBuilt`
   events across a four-minute catch-up, which sends none; the picks of the
   picker are lost when a phone's sheet is shut, and the check had shut it;
   a world whose home sector held a passive group pushed the dock's Load
   hold button under the window, where the check's click missed it; and the
   dock refits the fleet that stayed a tick after the research ends, not in
-  the same one. The sixth passed in 270 s, and the seventh, on the bundle
-  as it is committed, in 250 s (exit 0; master took about 200 s without the
-  fight). The world's seed is drawn anew each run, so each run fought a
-  different group: two Light Fighters in each of the three that reached the
-  fight, two convoys that were read on the map first and a patrol that
-  attacked on arrival; the fights took 2, 3 and 2 rounds and left 3, 3 and
-  2 of the six damaged.
+  the same one. The sixth passed in 270 s and the seventh in 250 s (master
+  took about 200 s without the fight). The eighth, on the bundle as it is
+  committed, printed `SOLO E2E OK` and then exited 255: the tool's own
+  clearing of its browser profile threw while Chromium's helpers were still
+  writing, as it had after the fourth run's failure. It now tries for five
+  seconds and says where it left the profile if it cannot; three profiles of
+  earlier runs stand in `/tmp` (`iac-solo-e2e-profile*`), not removed. The
+  ninth, tenth and eleventh passed with exit 0 in 249, 250 and 248 s. The
+  world's seed is drawn anew each run, so each run fought a different group
+  of Light Fighters: a pair in runs 5, 6, 7 and 11 (2, 3, 2 and 2 rounds,
+  two or three of the six damaged; a patrol in run 6 that attacked on
+  arrival, convoys in the others, read on the map first), and a single one
+  in runs 8, 9 and 10, which fell in one round before the round panel could
+  be read under way. So the hunt now looks for a group of two or more for
+  its first three scans, further out, and takes a single ship only after
+  them; run 11 is the one run with that rule.
 
 **Looked at** (the check's shots and the widget tests' `IAC_SHOTS`, at 1440
 and 390): the windshield with 2, 8 and 512 ships; the picker; the round
@@ -7652,7 +7661,10 @@ toasts for one fight led to the shell's new way of telling a new log line.
   screens with hundreds and with twelve classes are widget tests on states
   written for them.
 - The round under way was pictured at 1440 only; at 390 the pictures are of
-  the fight's end and its last round, and of a test's round.
+  the fight's end and its last round, and of a test's round. In three of
+  the seven runs that fought, the fight was over before the panel was read
+  and the check said so and went on; the rule that avoids a single ship was
+  run once.
 - The outpost dock's quote and refusal are shown from the fixture's state
   and the scripted world; no outpost was founded in a browser.
 - A fight with another empire's fleet on the player's side, a stand-off and

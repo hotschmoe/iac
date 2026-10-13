@@ -526,7 +526,20 @@ Future<void> main(List<String> args) async {
     process.kill();
     await process.exitCode;
     await host.stop();
-    profile.deleteSync(recursive: true);
+    // Chromium's helpers may still be writing their last files when the
+    // browser itself has gone: the profile is cleared once they have, and
+    // left where it is, with a word, if they never do.
+    for (var tries = 0; profile.existsSync(); tries++) {
+      try {
+        profile.deleteSync(recursive: true);
+      } on FileSystemException {
+        if (tries == 5) {
+          stderr.writeln('the browser profile was left at ${profile.path}');
+          break;
+        }
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+    }
   }
   exit(code);
 }
@@ -1345,7 +1358,8 @@ int research(Map<String, dynamic> homeworld, String tech) =>
 ///   `split` with a class and a count and no ship id, and the engine names
 ///   the new fleet.
 /// - The six fly out by the gate keys to the nearest group the chart shows
-///   that they outweigh about two to one, a passive one before another. A
+///   that they outweigh about two to one, one of two ships or more before a
+///   single ship (which falls in one round) and a passive one before another. A
 ///   group that does not attack is read on the map's panel for its sector
 ///   and on the windshield, listed by class, before F fires on it.
 /// - The fight is a round a tick. The round panel is read while it lasts
@@ -1446,22 +1460,33 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
     final ways = [
       for (final s in sectors.values)
         if (((s['hostiles'] as List?) ?? const []).isNotEmpty && ((s['threat'] as Map)['est_power'] as num) * 1.9 <= (fleet['power'] as num))
-          (calmWay(sectors, here, spot(s['location'])), (s['hostiles'] as List).first['behavior'] == 'Passive' ? 0 : 1),
+          (
+            calmWay(sectors, here, spot(s['location'])),
+            ((s['hostiles'] as List).first['ship_count'] as int >= 2 ? 0 : 2) + ((s['hostiles'] as List).first['behavior'] == 'Passive' ? 0 : 1),
+          ),
     ].where((w) => w.$1 != null && w.$1!.isNotEmpty).toList()
       ..sort((a, b) => a.$2 != b.$2 ? a.$2.compareTo(b.$2) : a.$1!.length.compareTo(b.$1!.length));
-    if (ways.isNotEmpty && ways.first.$1!.length <= 4) {
-      final way = ways.first.$1!;
+    // A single ship falls in one round, before the round panel can be read:
+    // the first three scans look for a group of two or more, further out.
+    final near = ways.where((w) => w.$1!.length <= 4 && (w.$2 < 2 || step >= 3)).firstOrNull;
+    if (near != null) {
+      final way = near.$1!;
       for (final hop in way.take(way.length - 1)) {
         await jumpTo(browser, main, hop);
         flown.add(hop);
       }
       prey = way.last;
     } else {
+      int ring(String at) {
+        final [q, r] = at.split(',').map(int.parse).toList();
+        return (q.abs() + r.abs() + (q + r).abs()) ~/ 2;
+      }
+
       final calm = [
         for (final lane in sectors[here]!['connections'] as List)
           if (sectors.containsKey(spot(lane)) && ((sectors[spot(lane)]!['hostiles'] as List?) ?? const []).isEmpty && !flown.contains(spot(lane)) && spot(lane) != home)
             spot(lane),
-      ];
+      ]..sort((a, b) => ring(b).compareTo(ring(a)));
       if (calm.isEmpty) fail('no calm way on from [$here]');
       await jumpTo(browser, main, calm.first);
       flown.add(calm.first);
@@ -1529,7 +1554,7 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   await browser.untilText('hostiles destroyed');
   final told = (await browser.text()).toUpperCase();
   check(told.contains('ENDED - ${ended['rounds']} ROUND') && told.contains(' LOST ${group['ship_count']}X '),
-      'the panel says how it ended, after how many rounds, and that the group lost its ${group['ship_count']} ships');
+      'the panel says how it ended, after how many rounds, and that the group lost all ${group['ship_count']} of its ships');
   await browser.shot('31-fight-end-1440');
   await browser.click('show last round');
   await browser.untilText('hostiles fired');
