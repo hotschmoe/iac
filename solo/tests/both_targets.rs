@@ -370,6 +370,59 @@ fn a_commanders_fight_is_the_same_rounds_on_both_targets() {
 }
 
 #[test]
+fn a_commanders_jump_out_of_a_fight_and_the_group_it_left_are_the_same_on_both_targets() {
+    let mut twin = Twin::new_game("test", &[]);
+    let login = twin.log_in();
+    let fleet = login[1]["fleets"][0]["id"].as_u64().unwrap();
+    let home = hex_of(&login[1]["player"]["homeworld"]);
+    let (described, _) = twin.call(json!({"op": "describe"}), &[]);
+    let world = WorldGen::init(u64::from_str_radix(described["world"]["seed"].as_str().unwrap(), 16).unwrap());
+    let shoots = |at: Hex| world.generate_sector(at).npc_template.is_some_and(|npc| npc.behavior != NpcBehaviorType::Passive);
+    let beside = |at: Hex| world.connected_neighbors(at).slice().iter().copied().find(|&next| shoots(next));
+    let approach = calm_route(&world, home, |at, _| beside(at).is_some());
+    let back = *approach.last().unwrap();
+    let lair = beside(back).unwrap();
+
+    for hop in approach {
+        twin.fly(fleet, hop);
+    }
+    twin.play_until(30, |f| f["type"] == "tick_update" && f["fleets"][0]["state"] == "Idle" && f["fleets"][0]["cooldown_remaining"] == 0);
+    twin.accepted(json!({"action": "move", "fleet_id": fleet, "target": {"q": lair.q, "r": lair.r}}));
+    let met = twin.play_until(60, |f| !events(std::slice::from_ref(f), "BattleRound").is_empty());
+    let quote = &met.last().unwrap()["fleets"][0]["flight"];
+    assert!(quote["rounds"].as_u64() == Some(1) && quote["refusal"].is_null(), "a fleet in a fight is quoted its flight: {quote}");
+
+    twin.accepted(json!({"action": "move", "fleet_id": fleet, "target": {"q": back.q, "r": back.r}}));
+    let left = twin.play_until(60, |f| !events(std::slice::from_ref(f), "CombatEnded").is_empty());
+    let ended = events(&left, "CombatEnded");
+    assert_eq!(ended[0]["outcome"], "fled", "{}", ended[0]);
+    let parting: Vec<&Value> = events(&left, "BattleRound").into_iter().filter(|round| round["fleets"]["groups"][0]["fleeing"] == true).collect();
+    assert_eq!(parting.len(), 1, "one round under fire: {left:?}");
+    assert_eq!(parting[0]["fleets"]["shots"], 0, "in which the fleet did not fire");
+
+    let snapshot = twin.checkpoint();
+    let groups = rows(&snapshot["npc_fleets"]);
+    assert_eq!(groups.len(), 1, "the group the fleet left is kept as the fight left it: {}", snapshot["npc_fleets"]);
+    assert!(
+        !rows(&groups[0]["ships"]).is_empty() && groups[0]["ships"] != groups[0]["muster"],
+        "with its losses or its damage: {}",
+        groups[0],
+    );
+
+    let mut after = Vec::new();
+    for _ in 0..12 {
+        after.extend(twin.tick());
+    }
+    assert!(events(&after, "BattleRound").is_empty(), "nothing fires on a fleet that got away: {after:?}");
+    let snapshot = twin.checkpoint();
+    assert!(
+        rows(&snapshot["npc_fleets"]).is_empty(),
+        "at this pace a group mends in ten ticks, and whole again it is its lair's template: {}",
+        snapshot["npc_fleets"],
+    );
+}
+
+#[test]
 fn a_commander_who_trades_at_the_hub_and_founds_an_outpost_plays_one_world() {
     let amounts = |v: &Value| ["metal", "crystal", "deuterium"].map(|k| v[k].as_f64().unwrap());
     let stocked = |need: [f64; 3]| move |f: &Value| f["type"] == "tick_update" && amounts(&f["player"]["resources"]).iter().zip(need).all(|(have, need)| *have >= need);

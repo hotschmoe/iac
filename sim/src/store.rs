@@ -32,7 +32,7 @@ use crate::host::Stale;
 use crate::snapshot::Snapshot;
 
 /// Bumped when the header or what the snapshot must hold changes.
-pub const SAVE_FORMAT: u32 = 9;
+pub const SAVE_FORMAT: u32 = 10;
 
 #[derive(Debug, Deserialize)]
 struct Stamp {

@@ -1,0 +1,38 @@
+{
+  "can_jump": true,
+  "can_return": false,
+  "charted_hops_home": 9,
+  "fleet_id": 4,
+  "fleet_power": 2100.0,
+  "flight": {
+    "chase": {
+      "group_id": 4294967555,
+      "hexes": 2,
+      "jump_ticks": 2,
+      "label": "2x battlecruiser pack",
+      "rounds_per_hex": 2
+    },
+    "fuel": 480.0,
+    "label": "deadly",
+    "ratio": 0.10000000149011612,
+    "rounds": 3,
+    "ticks": 4
+  },
+  "fuel_after": 2400.0,
+  "fuel_cost": 480.0,
+  "fuel_to_return": 4320.0,
+  "hops_home": 9,
+  "label": "deadly",
+  "ratio": 0.14000000059604645,
+  "route_unexplored": false,
+  "target": {
+    "q": 8,
+    "r": -11
+  },
+  "threat": {
+    "basis": "estimate",
+    "est_power": 910.0,
+    "rating": 5
+  },
+  "type": "preview_move"
+}

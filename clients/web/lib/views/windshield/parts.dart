@@ -184,14 +184,15 @@ class _FleetRailState extends State<FleetRail> {
     final on = i == ctrl.activeFleet;
     final hops = f.fuelForHops ?? f.fuel;
     final pol = f.policy == null || f.policy == 'manual' ? 'manual' : f.policy!;
+    final pressed = f.pursuedBy != null || f.fleeing != null;
     return Hover(
       builder: (hv) => GestureDetector(
         key: ValueKey('fleet-card-${f.id}'),
         behavior: HitTestBehavior.opaque,
         onTap: () => ctrl.selectFleet(i),
         child: ConsolePanel(
-          mark: on ? C.own : null,
-          border: on ? C.own : (hv ? C.lineHi : null),
+          mark: pressed ? C.ember : on ? C.own : null,
+          border: pressed ? C.ember : on ? C.own : (hv ? C.lineHi : null),
           fill: on ? const Color(0xF20D1816) : (hv ? const Color(0xF2191208) : null),
           padding: EdgeInsets.fromLTRB(narrow ? 6 : 10, narrow ? 5 : 7, narrow ? 6 : 10, narrow ? 5 : 6),
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
@@ -200,15 +201,25 @@ class _FleetRailState extends State<FleetRail> {
                 SymIcon((c, s) => Draw.symbol(c, Sym.fleet, s.width / 2, s.height / 2, 6, color: on ? C.own : C.a200, lw: 1.6, bloom: false), size: 12),
                 const SizedBox(width: 7),
               ],
-              Expanded(child: Text(f.name.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: narrow ? 10.5 : 12.5, color: on ? C.own : C.a200, spacing: narrow ? .5 : 1.5))),
+              Expanded(
+                  child: Text(f.name.toUpperCase(),
+                      overflow: TextOverflow.ellipsis,
+                      style: T.cond(size: narrow ? 10.5 : 12.5, color: pressed ? C.ember : on ? C.own : C.a200, spacing: narrow ? .5 : 1.5))),
               if (!narrow) KeyCap('${i + 1}', size: 15),
             ]),
             if (!narrow) ...[
               const SizedBox(height: 3),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text('${f.status.label}${on && combat && f.status != ui.FleetStatus.combat ? ' / COMBAT' : ''}', style: T.mono(size: 10, color: C.text2, spacing: .4)),
+                Text('${f.statusLabel}${on && combat && !f.underFire ? ' / COMBAT' : ''}',
+                    key: Key('fleet-card-status-${f.id}'), style: T.mono(size: 10, color: f.fleeing != null ? damagedColor : C.text2, spacing: .4)),
                 Text('${f.sector.q},${f.sector.r}', style: T.mono(size: 10, color: C.text3)),
               ]),
+              if (f.fleeing case final leaving?)
+                Text('TO ${leaving.to.q},${leaving.to.r} IN ${leaving.ticks} - ${roundsOf(leaving.rounds).toUpperCase()} MORE',
+                    key: Key('fleet-card-fleeing-${f.id}'), overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: damagedColor)),
+              if (f.pursuedBy case final hunter?)
+                Text('PURSUED - LANDS IN ${hunter.arrivesIn}',
+                    key: Key('fleet-card-pursued-${f.id}'), overflow: TextOverflow.ellipsis, style: T.mono(size: 10, color: atRiskColor, weight: FontWeight.w600)),
               const SizedBox(height: 5),
             ] else
               const SizedBox(height: 3),
@@ -358,6 +369,9 @@ class ContactsPanel extends StatelessWidget {
   /// Current tick, for despawn countdowns.
   final int tick;
   final ui.FleetState fleet;
+
+  /// The ids of the player's fleets, for a group that is after one of them.
+  final Iterable<int> own;
   final bool hasOre;
   final bool hasSalvage;
   final bool hasDerelict;
@@ -397,6 +411,7 @@ class ContactsPanel extends StatelessWidget {
     required this.sector,
     this.tick = 0,
     required this.fleet,
+    this.own = const [],
     required this.hasOre,
     required this.hasSalvage,
     required this.hasDerelict,
@@ -461,8 +476,8 @@ class ContactsPanel extends StatelessWidget {
           _d(Text('POWER ${shortCount(threat.power.round())}${combat ? ' - ENGAGED' : ''}',
               key: const Key('contact-hostile-power'), style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
           for (final g in threat.groups) ...[
-            Text('${g.behavior.wire.toUpperCase()} - ${shipsOf(g.shipCount).toUpperCase()}', key: Key('contact-hostile-${g.id}'), style: _ds.copyWith(color: C.text2)),
-            ShipRows(g.ships, color: C.ember, tag: 'contact-hostile-${g.id}'),
+            Text(groupHeading(g), key: Key('contact-hostile-${g.id}'), style: _ds.copyWith(color: g.shipCount < g.muster ? damagedColor : C.text2)),
+            GroupBrief(g, tick: tick, live: sector?.live ?? true, own: own, beside: fleet, tag: 'contact-hostile-${g.id}'),
           ],
           if (o == null)
             _d(Text('ODDS: REQUESTED', key: const Key('contact-odds-pending'), style: _ds))
@@ -628,6 +643,182 @@ class _Diamond extends StatelessWidget {
   }
 }
 
+// ── Flight and pursuit ─────────────────────────────────────────
+
+/// One lane out of a fight: the gate, where it leads, whether it is the way
+/// home, and the server's quote for that jump once it has answered.
+class FlightWay {
+  final Dir dir;
+  final proto.Hex to;
+  final bool home;
+  final proto.FlightQuote? quote;
+  const FlightWay(this.dir, this.to, {this.home = false, this.quote});
+}
+
+TextStyle get _flightText => T.mono(size: 10.5, color: C.text2, height: 1.35);
+
+/// The way out of a fight for a fleet that stands in one and fires: the
+/// odds of the fight as it stands, what a jump out costs, who would follow,
+/// and a button for every lane. All of it is the state's `flight`; a lane
+/// the server has quoted says whether the group follows there. Greyed with
+/// the engine's sentence when it would refuse the order.
+class FlightPanel extends StatelessWidget {
+  final ui.FleetState fleet;
+  final proto.FlightQuote quote;
+  final List<FlightWay> ways;
+  final void Function(Dir) onLeave;
+  const FlightPanel({super.key, required this.fleet, required this.quote, required this.ways, required this.onLeave});
+
+  @override
+  Widget build(BuildContext context) {
+    final o = RatioInfo.ofLabel(quote.ratio, quote.label);
+    final refuges = [for (final w in ways) if (quote.chase != null && w.quote != null && w.quote!.chase == null) w];
+    return ConsolePanel(
+      key: const Key('flight-panel'),
+      title: 'Leave the fight',
+      titleColor: C.a300,
+      mark: C.a300,
+      subText: fleet.name,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+        Text.rich(
+            key: const Key('flight-odds'),
+            TextSpan(children: [
+              const TextSpan(text: 'AS IT STANDS  ', style: TextStyle(color: C.text3)),
+              TextSpan(text: o.label, style: TextStyle(color: o.color, fontWeight: FontWeight.w600)),
+              TextSpan(text: '  ratio ${o.r.toStringAsFixed(2)} - ${o.outcome}', style: const TextStyle(color: C.text3)),
+            ]),
+            style: T.mono(size: 10.5, height: 1.35)),
+        RatioGauge(o.r),
+        const SizedBox(height: 6),
+        const Lbl('A jump out costs'),
+        Text(flightPrice(quote).toUpperCase(), key: const Key('flight-price'), style: _flightText.copyWith(color: C.text)),
+        Text('THE FLEET STOPS FIRING WHEN IT IS ORDERED OUT, AND IS FIRED ON UNTIL IT IS GONE.', style: _flightText.copyWith(color: C.text3, fontSize: 10)),
+        const SizedBox(height: 5),
+        Text(chaseLine(quote.chase).toUpperCase(),
+            key: const Key('flight-chase'), style: _flightText.copyWith(color: quote.chase == null ? C.ok : atRiskColor)),
+        if (refuges.isNotEmpty)
+          Text('NOTHING FOLLOWS TO ${[for (final w in refuges) '${w.to.q}, ${w.to.r} (${w.dir.key.toUpperCase()})'].join(' OR ')}.',
+              key: const Key('flight-refuge'), style: _flightText.copyWith(color: C.ok)),
+        const SizedBox(height: 7),
+        const Lbl('Leave by'),
+        const SizedBox(height: 4),
+        if (ways.isEmpty)
+          Text('NO LANE LEADS OUT OF THIS SECTOR.', style: _flightText)
+        else
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            for (final w in ways)
+              ConsoleButton('${w.to.q}, ${w.to.r}${w.home ? ' HOME' : ''}',
+                  key: ValueKey('flee-${w.dir.key}'),
+                  small: true,
+                  keyHint: w.dir.key.toUpperCase(),
+                  semanticsLabel: 'Leave the fight ${w.dir.name}',
+                  onPressed: quote.refusal == null ? () => onLeave(w.dir) : null,
+                  reason: quote.refusal),
+          ]),
+        if (quote.refusal case final why?)
+          Padding(
+              padding: const EdgeInsets.only(top: 5),
+              child: Text(why, key: const Key('flight-refusal'), style: T.mono(size: 10.5, color: C.ember, height: 1.3))),
+        const WhyText('Recall (R) is the other way out: home at once, for more fuel and at a risk to every ship.'),
+      ]),
+    );
+  }
+}
+
+/// A fleet charging its jump out of a fight: where to, how long, how many
+/// more rounds it is fired on, and what calling it off costs. The state's
+/// `fleeing`.
+class LeavingPanel extends StatelessWidget {
+  final ui.FleetState fleet;
+  final proto.Fleeing leaving;
+  final VoidCallback onStop;
+  const LeavingPanel({super.key, required this.fleet, required this.leaving, required this.onStop});
+
+  @override
+  Widget build(BuildContext context) => ConsolePanel(
+        key: const Key('leaving-panel'),
+        title: 'Leaving the fight',
+        titleColor: C.a300,
+        border: C.a300,
+        mark: C.a300,
+        subText: fleet.name,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+          Text('JUMP IN ${leaving.ticks}',
+              key: const Key('leaving-count'), style: T.cond(size: 22, color: C.a100, weight: FontWeight.w700, spacing: 2.4, height: 1.1)),
+          Text('${fleeingLine(leaving).toUpperCase()}.', key: const Key('leaving-line'), style: _flightText.copyWith(color: C.text)),
+          Text('GUNS SILENT: IT IS FIRED ON AND DOES NOT ANSWER.', style: _flightText.copyWith(color: atRiskColor)),
+          const SizedBox(height: 7),
+          Align(
+              alignment: Alignment.centerLeft,
+              child: ConsoleButton('Stop and fight on', key: const ValueKey('leaving-stop'), small: true, danger: true, keyHint: 'X', onPressed: onStop)),
+          const WhyText(stopFlightRule, key: Key('leaving-stop-rule')),
+        ]),
+      );
+}
+
+/// The group on the fleet's trail: what it is, when it lands and from
+/// where, whether it lands before the fleet can be gone and how much
+/// further it follows. The state's `pursued_by`.
+class PursuitPanel extends StatelessWidget {
+  final ui.FleetState fleet;
+  final proto.Pursuit pursuit;
+  const PursuitPanel({super.key, required this.fleet, required this.pursuit});
+
+  @override
+  Widget build(BuildContext context) => ConsolePanel(
+        key: const Key('pursuit-panel'),
+        title: 'Pursuit',
+        titleColor: C.ember,
+        border: C.ember,
+        mark: C.ember,
+        subText: fleet.name,
+        trailing: const Lamp('INBOUND', color: C.ember, blink: true),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+          Text('ARRIVES IN ${pursuit.arrivesIn}',
+              key: const Key('pursuit-count'),
+              style: T.cond(size: 22, color: const Color(0xFFFFD6CC), weight: FontWeight.w700, spacing: 2.4, height: 1.1)),
+          Text('${pursuitLine(pursuit).toUpperCase()}.', key: const Key('pursuit-line'), style: _flightText.copyWith(color: C.text)),
+          Text(pursuitVerdict(pursuit, charging: fleet.status == ui.FleetStatus.enRoute).toUpperCase(),
+              key: const Key('pursuit-verdict'), style: _flightText.copyWith(color: pursuit.catches ? atRiskColor : C.ok)),
+        ]),
+      );
+}
+
+/// One line over the fleets of the phone layout, which keeps its panels in
+/// a sheet: a fleet that may leave a fight, one that is leaving, one that is
+/// followed. A tap opens the sheet.
+class NoticeStrip extends StatelessWidget {
+  final String id;
+  final String head;
+  final String text;
+  final Color color;
+  final VoidCallback onTap;
+  const NoticeStrip({super.key, required this.id, required this.head, required this.text, required this.color, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        key: ValueKey(id),
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: ConsolePanel(
+          flat: true,
+          border: color,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Text.rich(
+            TextSpan(children: [
+              TextSpan(text: '$head  ', style: TextStyle(color: color, fontWeight: FontWeight.w600)),
+              TextSpan(text: text),
+            ]),
+            overflow: TextOverflow.ellipsis,
+            style: T.mono(size: 11, color: C.text),
+          ),
+        ),
+      );
+}
+
 // ── Fleet management ───────────────────────────────────────────
 
 class FleetManagePanel extends StatefulWidget {
@@ -787,9 +978,19 @@ String _hexes(int n) => '$n HEX${n == 1 ? '' : 'ES'}';
 
 String _budget(int pct) => pct >= proto.policyFuelUnboundedPct ? 'NO BOUND' : '$pct%';
 
-/// "RANGE 8 HEXES - ENGAGE 1.5X - FUEL 40%".
+/// Odds below which a doctrine leaves a fight that the panel steps
+/// through, times ten, between the least and the most the server takes. Any
+/// ratio it takes can be typed (`policy ... disengage=`).
+const disengageSteps = [proto.policyDisengageRatioX10Min, 3, 5, 7, 9, 11, 13, 15, 20, 30, proto.policyDisengageRatioX10Max];
+
+String _ratio(int x10) => '${(x10 / 10).toStringAsFixed(1)}X';
+
+/// "RANGE 8 HEXES - ENGAGE 1.5X - FUEL 40%" and, on a line of its own,
+/// "LEAVES A FIGHT BELOW 0.9X": the settings in force, as the server holds
+/// them.
 String settingsLine(proto.PolicyParams p) =>
-    'RANGE ${_hexes(p.maxRange)} - ENGAGE ${(p.engageRatioX10 / 10).toStringAsFixed(1)}X - FUEL ${_budget(p.fuelBudgetPct)}';
+    'RANGE ${_hexes(p.maxRange)} - ENGAGE ${_ratio(p.engageRatioX10)} - FUEL ${_budget(p.fuelBudgetPct)}\n'
+    'LEAVES A FIGHT BELOW ${_ratio(p.disengageRatioX10)}';
 
 /// The standing orders of the selected fleet: the doctrine in force and what
 /// it last reported, above all why it holds when it holds, and a form that
@@ -809,11 +1010,11 @@ class _OrdersPanelState extends State<OrdersPanel> {
   static const _reportLines = 5;
   static const _reportSize = 10.5, _reportLeading = 1.35;
 
-  /// The settings line has its row whether or not orders stand.
-  static const _settingsHeight = 17.0;
+  /// The settings have their two rows whether or not orders stand.
+  static const _settingsHeight = 30.0;
 
   proto.PolicyPreset? _preset;
-  int? _range, _engage, _fuel;
+  int? _range, _engage, _disengage, _fuel;
   bool? _refine;
   int? _forFleet;
   proto.StandingOrders? _stood;
@@ -823,6 +1024,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
     _preset = null;
     _range = null;
     _engage = null;
+    _disengage = null;
     _fuel = null;
     _refine = null;
   }
@@ -848,6 +1050,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
       engageRatioX10: _engage ?? usual.engageRatioX10,
       fuelBudgetPct: _fuel ?? usual.fuelBudgetPct,
       refine: _refine ?? usual.refine,
+      disengageRatioX10: _disengage ?? usual.disengageRatioX10,
     );
     final same =preset == inForce && (manual || form == usual);
     final why = !same
@@ -870,7 +1073,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
                 ? null
                 : Align(
                     alignment: Alignment.bottomLeft,
-                    child: Text(settingsLine(standing.params), key: const Key('orders-settings'), maxLines: 1, style: T.mono(size: 10, color: C.text2, height: 1.3)))),
+                    child: Text(settingsLine(standing.params), key: const Key('orders-settings'), maxLines: 2, style: T.mono(size: 10, color: C.text2, height: 1.3)))),
         const SizedBox(height: 6),
         _report(st.tick, fleet, acts.firstOrNull),
         const SizedBox(height: 8),
@@ -882,12 +1085,19 @@ class _OrdersPanelState extends State<OrdersPanel> {
               down: form.maxRange > proto.policyRangeMin ? form.maxRange - 1 : null,
               up: form.maxRange < proto.policyRangeMax ? form.maxRange + 1 : null,
               set: (v) => _range = v),
-          _stepper('Least odds to fight', 'engage', '${(form.engageRatioX10 / 10).toStringAsFixed(1)}X',
+          _stepper('Least odds to fight', 'engage', _ratio(form.engageRatioX10),
               down: engageSteps.where((s) => s < form.engageRatioX10).lastOrNull,
               up: engageSteps.where((s) => s > form.engageRatioX10).firstOrNull,
               set: (v) => _engage = v),
+          _stepper('Leave a fight below', 'disengage', _ratio(form.disengageRatioX10),
+              down: disengageSteps.where((s) => s < form.disengageRatioX10).lastOrNull,
+              up: disengageSteps.where((s) => s > form.disengageRatioX10).firstOrNull,
+              set: (v) => _disengage = v),
           RatioGauge(form.engageRatioX10 / 10),
-          const WhyText('No doctrine enters a sector where its odds are below this, hostiles there or not.'),
+          const WhyText(
+              'Below the first no doctrine enters a sector, hostiles there or not. Below the second, in a fight, it jumps out for home. '
+              'The engine never holds the second above the first.',
+              key: Key('orders-disengage-note')),
           _stepper('Fuel budget, of income', 'fuel', _budget(form.fuelBudgetPct),
               down: fuelBudgets.where((b) => b < form.fuelBudgetPct).lastOrNull,
               up: fuelBudgets.where((b) => b > form.fuelBudgetPct).firstOrNull,
@@ -945,7 +1155,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
           ? 'Under orders, every act and every hold shows here with its reason.'
           : 'Nothing from these orders since this console was opened. A fleet that stands still says why within a minute.';
     } else {
-      head = hold ? 'HOLDING FOR ${clockFmt(tick - act.since)}' : 'LAST REPORT: ${act.action.toUpperCase()}, ${clockFmt(tick - act.tick)} AGO';
+      head = hold ? 'HOLDING FOR ${clockFmt(tick - act.since)}' : 'LAST REPORT: ${act.heading.toUpperCase()}, ${clockFmt(tick - act.tick)} AGO';
       body = act.reason;
     }
     return Container(
@@ -969,7 +1179,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
         child: Text.rich(
           TextSpan(children: [
             TextSpan(text: '${(a.tick % 100000).toString().padLeft(5, '0')}  ', style: const TextStyle(color: C.text4)),
-            TextSpan(text: '${a.action.toUpperCase()}  ', style: const TextStyle(color: C.a600)),
+            TextSpan(text: '${a.heading.toUpperCase()}  ', style: TextStyle(color: a.isFlight ? damagedColor : C.a600)),
             TextSpan(text: a.reason),
           ]),
           style: T.mono(size: 10, color: C.text2, height: 1.3),
@@ -1307,10 +1517,31 @@ class GateCard extends StatelessWidget {
 
   /// The server's `preview_move` for this jump, once asked for (on hover).
   final proto.MovePreview? preview;
+
+  /// What a jump out of the fight the fleet stands in costs, while it
+  /// stands in one: the gate is then a way out under fire. The quote of the
+  /// preview for this gate once the server has answered, the fleet's own
+  /// until then.
+  final proto.FlightQuote? flight;
   final bool hover;
   final VoidCallback onTap;
   final void Function(bool) onHover;
-  const GateCard({super.key, required this.dir, required this.narrow, required this.known, required this.sector, required this.threat, required this.intel, required this.fuel, required this.isHome, required this.hint, this.tick = 0, this.band, this.preview, required this.hover, required this.onTap, required this.onHover});
+  const GateCard({super.key, required this.dir, required this.narrow, required this.known, required this.sector, required this.threat, required this.intel, required this.fuel, required this.isHome, required this.hint, this.tick = 0, this.band, this.preview, this.flight, required this.hover, required this.onTap, required this.onHover});
+
+  /// "FLEE 1 RND", then whether a group follows through this gate once the
+  /// server has quoted the jump, or that the order would be refused.
+  Widget _flightLine(proto.FlightQuote q) {
+    final style = T.mono(size: 9.5, color: C.text3);
+    return Wrap(key: ValueKey('gate-flight-${dir.key}'), spacing: 5, children: [
+      if (q.refusal != null)
+        Text('CANNOT LEAVE', style: style.copyWith(color: C.ember))
+      else ...[
+        Text('FLEE ${q.rounds} RND', style: style.copyWith(color: C.a300, fontWeight: FontWeight.w600)),
+        if (preview?.flight != null)
+          Text(q.chase == null ? 'NO CHASE' : 'CHASED ${q.chase!.hexes}H', style: style.copyWith(color: q.chase == null ? C.ok : C.ember)),
+      ],
+    ]);
+  }
 
   /// Width of a card on a desktop arena.
   static const width = 150.0;
@@ -1325,6 +1556,7 @@ class GateCard extends StatelessWidget {
     final w = narrow ? 92.0 : width;
     final th = known ? threat.rating : 0;
     final hot = th >= 5;
+    final burn = flight?.fuel.round() ?? fuel;
     final terr = known ? (sector?.terrain.label.split(' ').first ?? '') : 'Uncharted';
     final top = Row(children: [
       KeyCap(dir.key, size: 15),
@@ -1342,7 +1574,12 @@ class GateCard extends StatelessWidget {
       body.add(Container(height: 1, color: C.lineLo));
       if (!known) {
         body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 0), child: Text(hint ? 'FAINT MASS READING${band == null ? '' : ' / BAND $band'}' : 'SCAN TO REVEAL', style: T.mono(size: 9.5, color: hint ? C.threat(6) : C.text3))));
-        body.add(Padding(padding: const EdgeInsets.fromLTRB(6, 3, 6, 4), child: Align(alignment: Alignment.centerRight, child: Text('-$fuel FUEL', style: T.mono(size: 9.5, color: C.text3)))));
+        body.add(Padding(
+            padding: const EdgeInsets.fromLTRB(6, 3, 6, 4),
+            child: Row(children: [
+              Expanded(child: flight == null ? const SizedBox.shrink() : _flightLine(flight!)),
+              Text('-$burn FUEL', style: T.mono(size: 9.5, color: C.text3)),
+            ])));
       } else {
         final dens = [sector?.resources.metal.index ?? 0, sector?.resources.crystal.index ?? 0, sector?.resources.deuterium.index ?? 0];
         body.add(Padding(
@@ -1377,7 +1614,12 @@ class GateCard extends StatelessWidget {
           child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Expanded(
               child: Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
-                if (intel.live) const Lamp('LIVE', color: C.own, blink: true) else Text('SEEN ${ago(intel.ticksOld).toUpperCase()} AGO', style: T.mono(size: 9.5, color: intel.aged ? C.fossil : C.text3)),
+                if (flight case final q?)
+                  _flightLine(q)
+                else if (intel.live)
+                  const Lamp('LIVE', color: C.own, blink: true)
+                else
+                  Text('SEEN ${ago(intel.ticksOld).toUpperCase()} AGO', style: T.mono(size: 9.5, color: intel.aged ? C.fossil : C.text3)),
                 if (salvagePinVisible(sector, tick))
                   Text(
                       despawnLabel(sector, tick) == null
@@ -1387,7 +1629,7 @@ class GateCard extends StatelessWidget {
                 if (sector?.site != null) Text(' +DRLCT', style: T.mono(size: 9.5, color: C.rare)),
               ]),
             ),
-            Text('-$fuel FUEL', style: T.mono(size: 9.5, color: C.text3)),
+            Text('-$burn FUEL', style: T.mono(size: 9.5, color: C.text3)),
           ]),
         ));
       }
@@ -1401,7 +1643,7 @@ class GateCard extends StatelessWidget {
         );
     return Semantics(
       button: true,
-      label: 'Jump ${dir.name}, ${known ? terr : 'uncharted'}${th > 0 ? ', threat $th' : ''}',
+      label: '${flight == null ? 'Jump' : 'Leave the fight by'} ${dir.name}, ${known ? terr : 'uncharted'}${th > 0 ? ', threat $th' : ''}',
       excludeSemantics: true,
       onTap: onTap,
       child: MouseRegion(
@@ -1445,10 +1687,15 @@ class _BoxBorder extends CustomPainter {
 class DockAction {
   final String id, label, key;
   final String? reason;
+
+  /// What the action costs or does that its name does not say, shown with
+  /// it while it is on offer.
+  final String? note;
   final bool active;
   final bool fire;
-  const DockAction(this.id, this.label, this.key, {this.reason, this.active = false, this.fire = false});
+  const DockAction(this.id, this.label, this.key, {this.reason, this.note, this.active = false, this.fire = false});
   bool get ok => reason == null;
+  String? get hint => reason ?? note;
 }
 
 class Dock extends StatelessWidget {
@@ -1481,13 +1728,13 @@ class Dock extends StatelessWidget {
           button: true,
           enabled: a.ok,
           label: a.label,
-          hint: a.reason,
+          hint: a.hint,
           excludeSemantics: true,
           onTap: a.ok ? () => onAct(a.id) : null,
           child: Tooltip(
-            message: a.reason ?? a.label,
+            message: a.hint ?? a.label,
             child: MouseRegion(
-              onEnter: (_) => onHint(a.reason),
+              onEnter: (_) => onHint(a.hint),
               onExit: (_) => onHint(null),
               child: GestureDetector(
                 key: ValueKey('dock-${a.id}'),

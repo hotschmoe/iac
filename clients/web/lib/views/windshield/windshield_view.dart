@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
-import '../../console/battle.dart' show outcomeSentence, outcomeTitle, roundsOf;
+import '../../console/battle.dart' show fleeingLine, flightPrice, outcomeTitle, roundsOf, stopFlightRule, ticksOf;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show inOutpostRings;
 import '../../console/route_planner.dart';
@@ -171,7 +171,13 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final first = _firstVisits.remove(f.sector);
       final s = _sec(f.sector);
       final th = SectorThreat.of(s);
-      if (sim.atExchange) {
+      final left = con.state.battleOf(f);
+      final outOfAFight = left != null && left.sector != f.sector && left.endedTick == con.state.tick;
+      if (f.pursuedBy case final hunter?) {
+        _showBanner('PURSUED', _landing(hunter), true);
+      } else if (outOfAFight) {
+        _showBanner(outcomeTitle(left.ended!.outcome), 'Out of the fight at ${left.sector.q}, ${left.sector.r}.', true);
+      } else if (sim.atExchange) {
         _showBanner('THE HUB', 'Exchange open. Trade cargo for cargo.', false);
       } else if (sim.outpost case final post?) {
         _showBanner(post.mine ? 'YOUR OUTPOST' : 'OUTPOST', post.mine ? 'Its store and dock are open to this fleet.' : 'A station of ${post.owner}.', false);
@@ -181,6 +187,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       }
     }
   }
+
+  /// A pursuit in the few words a banner has room for on a phone; the
+  /// panel has the rest.
+  static String _landing(proto.Pursuit hunter) => 'Lands in ${ticksOf(hunter.arrivesIn)}, from ${hunter.from.q}, ${hunter.from.r}.';
 
   void _onGame() {
     if (!mounted) return;
@@ -201,8 +211,17 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         }
       case proto.CombatEndedEvent():
         if (k.mine) {
-          _showBanner(outcomeTitle(k.outcome), 'After ${roundsOf(k.rounds)}: ${outcomeSentence(k.outcome)}.', !k.playerVictory);
+          _showBanner(outcomeTitle(k.outcome), 'After ${roundsOf(k.rounds)} at ${k.sector.q}, ${k.sector.r}.', !k.playerVictory);
           con.play(k.playerVictory ? 'ok' : 'alert');
+        }
+      case proto.PursuitEvent(mine: true, :final phase, :final label, :final fleetId):
+        if (fleetId != _fleet?.id) break;
+        if (phase == proto.PursuitPhase.abandoned) {
+          _showBanner('PURSUIT OVER', 'The $label turned back.', false);
+          con.play('ok');
+        } else {
+          _showBanner('PURSUED', switch (_fleet?.pursuedBy) { final hunter? => _landing(hunter), null => 'The $label follows.' }, true);
+          con.play('alert');
         }
       case proto.SiteExploredEvent():
         _showBanner('BOARDING COMPLETE', k.recoveredShip != null ? 'Recovered a ${k.recoveredShip!.label} hull.' : 'Hulk stripped.', false);
@@ -252,16 +271,20 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       _toast('No lane', 'No lane ${d.name} from ${f.sector.q}, ${f.sector.r}.', tone: ToastTone.red);
       return;
     }
-    if (f.cooldown > 0) {
+    if (f.fleeing case final leaving?) {
+      _toast('Leaving already', '${fleeingLine(leaving)}. $stopFlightRule');
+      return;
+    }
+    if (f.flight case final quote?) {
+      if (quote.refusal case final why?) {
+        _toast('Cannot leave the fight', why, tone: ToastTone.red);
+        return;
+      }
+    } else if (f.cooldown > 0) {
       _toast('Drive recharging', 'Jump drive ready in ${f.cooldown} tick${f.cooldown > 1 ? 's' : ''}.');
       return;
-    }
-    if (f.jumpFuel > 0 && f.fuel < f.jumpFuel) {
+    } else if (f.jumpFuel > 0 && f.fuel < f.jumpFuel) {
       _toast('Out of fuel', 'Fleet cannot jump. ${f.fuel} fuel, ${f.jumpFuel} needed.', tone: ToastTone.red);
-      return;
-    }
-    if (f.status == ui.FleetStatus.combat) {
-      _toast('Engaged', 'Cannot jump while in combat.', tone: ToastTone.red);
       return;
     }
     sim.startWarp(d);
@@ -510,6 +533,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final homeNext = homePath?.path.firstOrNull;
       final gateInfos = <GateInfo?>[];
       final cards = <Widget>[];
+      final quote = f.flight;
+      final ways = <FlightWay>[];
       for (final d in dirs) {
         if (!lanes[d.i]) {
           gateInfos.add(null);
@@ -517,6 +542,11 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         }
         final nh = f.sector + d.v;
         final ns = st.sectors[nh];
+        final wayOut = quote == null ? null : st.previewFor(f.id, nh)?.flight;
+        if (quote != null) {
+          con.game.requestPreview(f.id, nh);
+          ways.add(FlightWay(d, nh, home: homeNext == nh, quote: wayOut));
+        }
         final intel = Intel.of(ns, st.tick);
         final nt = SectorThreat.of(ns);
         final known = ns != null;
@@ -541,6 +571,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               tick: st.tick,
               band: known ? null : st.signalBands[nh],
               preview: st.previewFor(f.id, nh),
+              flight: wayOut ?? quote,
               hover: sim.hover == d.i,
               onTap: () => jump(d),
               onHover: (v) {
@@ -548,7 +579,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
                 if (v) {
                   con.play('click');
                   con.game.requestPreview(f.id, nh);
-                } else {
+                } else if (quote == null) {
                   con.game.cancelPreview(f.id, nh);
                 }
               },
@@ -560,15 +591,18 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final hasSalv = s?.salvage != null && s!.salvage!.total > 0;
       final hasDer = s?.site != null;
       final combat = f.status == ui.FleetStatus.combat;
+      final underFire = f.underFire;
+      final leaving = f.fleeing;
+      final hunter = f.pursuedBy;
       final harvesting = f.status == ui.FleetStatus.harvesting;
       final exploring = f.status == ui.FleetStatus.exploring;
-      final fight = st.battleAt(f.sector);
+      final fight = st.battleOf(f);
       final battle = fight != null && fight.over && fight.endedTick == _dismissed ? null : fight;
       final mine = st.outpost;
       final atOutpost = f.atOutpost;
 
-      DockAction da(String id, String label, String key, {bool active = false, bool fire = false}) =>
-          DockAction(id, label, key, reason: _reason(id, f, th, s), active: active, fire: fire);
+      DockAction da(String id, String label, String key, {bool active = false, bool fire = false, String? note}) =>
+          DockAction(id, label, key, reason: _reason(id, f, th, s), note: note, active: active, fire: fire);
       final dockActions = [
         da('scan', 'Scan', 'v'),
         da('harvest', 'Harvest', 'h', active: harvesting),
@@ -576,7 +610,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         da('collect', 'Collect', 'c'),
         da('board', 'Board', 'b', active: exploring),
         da('recall', 'Recall', 'r'),
-        da('stop', 'Stop', 'x'),
+        da('stop', 'Stop', 'x', active: leaving != null, note: leaving == null ? null : stopFlightRule),
         da('trade', 'Trade', 't', active: _trade),
         if (mine == null ? inOutpostRings(f.sector) : atOutpost) da('outpost', mine == null ? 'Found' : 'Outpost', 'o', active: _outpost),
       ];
@@ -584,7 +618,22 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final feedWidth = math.min(340.0, (size.width - dockActions.length * Dock.tileWidth) / 2 - 30);
       final feedCeiling = g.cardCenter(dirs[4]).dy + GateCard.tallest / 2;
 
+      void openSheet() {
+        setState(() => _sheet = true);
+        _clearForSheet();
+      }
+
+      Widget panels(Widget scrolled, {Color? ground}) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (hunter != null)
+              ColoredBox(
+                  color: ground ?? Colors.transparent,
+                  child: Padding(padding: const EdgeInsets.only(bottom: 8), child: PursuitPanel(fleet: f, pursuit: hunter))),
+            Expanded(child: scrolled),
+          ]);
+
       final rightCol = Column(key: _panels, mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (leaving != null) ...[LeavingPanel(fleet: f, leaving: leaving, onStop: () => act('stop')), const SizedBox(height: 8)],
+        if (quote != null) ...[FlightPanel(fleet: f, quote: quote, ways: ways, onLeave: jump), const SizedBox(height: 8)],
         if (battle != null) ...[
           BattlePanel(key: ValueKey(battle.sector), battle: battle, onDismiss: () => setState(() => _dismissed = battle.endedTick)),
           const SizedBox(height: 8),
@@ -613,11 +662,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         ContactsPanel(
           threat: th,
           odds: st.oddsFor(f.id, f.sector),
-          combat: combat,
+          combat: underFire,
           atHome: f.sector == st.homeworld,
           sector: s,
           tick: st.tick,
           fleet: f,
+          own: [for (final own in st.fleets) own.id],
           hasOre: hasOre,
           hasSalvage: hasSalv,
           hasDerelict: hasDer,
@@ -677,7 +727,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           ),
         ),
         Positioned.fill(child: ScanOverlay(prefs: con.prefs)),
-        if (combat) Positioned.fill(child: IgnorePointer(child: Blink(period: 13, onSteps: 7, builder: (_, on) => _Alarm(on: on)))),
+        if (underFire || hunter != null) Positioned.fill(child: IgnorePointer(child: Blink(period: 13, onSteps: 7, builder: (_, on) => _Alarm(on: on)))),
         ...cards,
         Positioned(
             left: 16,
@@ -691,20 +741,37 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               width: 208,
               child: ConstrainedBox(
                   constraints: BoxConstraints(maxHeight: math.max(FleetRail.cardHeight, feedCeiling - _railTop)),
-                  child: FleetRail(ctrl: con.game, narrow: false, combat: combat))),
-        if (narrow) Positioned(left: 8, right: 8, bottom: 70, child: FleetRail(ctrl: con.game, narrow: true, combat: combat)),
-        if (narrow && battle != null && !_sheet)
+                  child: FleetRail(ctrl: con.game, narrow: false, combat: underFire))),
+        if (narrow) Positioned(left: 8, right: 8, bottom: 70, child: FleetRail(ctrl: con.game, narrow: true, combat: underFire)),
+        if (narrow && !_sheet && (battle != null || quote != null || leaving != null || hunter != null))
           Positioned(
               left: 8,
               right: 8,
               bottom: _stripBottom,
-              child: Center(
-                  child: BattleStrip(
-                      battle: battle,
-                      onTap: () {
-                        setState(() => _sheet = true);
-                        _clearForSheet();
-                      }))),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (hunter != null)
+                  NoticeStrip(
+                      id: 'pursuit-strip',
+                      head: 'PURSUIT',
+                      text: '${hunter.label.toUpperCase()} LANDS IN ${hunter.arrivesIn}${hunter.catches ? ' - CATCHES' : ''}',
+                      color: C.ember,
+                      onTap: openSheet),
+                if (leaving != null)
+                  NoticeStrip(
+                      id: 'leaving-strip',
+                      head: 'LEAVING',
+                      text: 'JUMP IN ${leaving.ticks} - ${roundsOf(leaving.rounds).toUpperCase()} MORE UNDER FIRE',
+                      color: C.a300,
+                      onTap: openSheet),
+                if (quote != null)
+                  NoticeStrip(
+                      id: 'flight-strip',
+                      head: quote.refusal == null ? 'LEAVE' : 'CANNOT LEAVE',
+                      text: quote.refusal == null ? flightPrice(quote).toUpperCase() : 'TAP FOR WHY',
+                      color: quote.refusal == null ? C.a300 : C.ember,
+                      onTap: openSheet),
+                if (battle != null) BattleStrip(battle: battle, onTap: openSheet),
+              ])),
         if (narrow)
           Positioned(
               top: 8,
@@ -720,7 +787,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               top: 14,
               width: 300,
               bottom: (size.width + dockActions.length * Dock.tileWidth) / 2 + 8 <= size.width - 316 ? 14 : 100,
-              child: SingleChildScrollView(child: rightCol)),
+              child: panels(SingleChildScrollView(child: rightCol))),
         Positioned(
             key: const ValueKey('banner'),
             left: 0,
@@ -735,7 +802,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               width: size.width > _sheetWidth + 16 ? _sheetWidth : null,
               top: 40,
               bottom: 130,
-              child: SingleChildScrollView(child: ColoredBox(color: C.deep, child: rightCol))),
+              child: panels(SingleChildScrollView(child: ColoredBox(color: C.deep, child: rightCol)), ground: C.deep)),
         if (!narrow && feedWidth >= 200)
           Positioned(left: 16, bottom: 14, width: feedWidth, child: Feed(events: st.events, maxHeight: size.height - 14 - 8 - feedCeiling)),
         if (_hsub)

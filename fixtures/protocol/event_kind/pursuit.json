@@ -1,0 +1,20 @@
+{
+  "arrives_in": 2,
+  "fleet_id": 4,
+  "group_id": 4294967555,
+  "hexes_left": 1,
+  "kind": "Pursuit",
+  "label": "2x battlecruiser pack",
+  "mine": true,
+  "owner": "Admiral",
+  "phase": "began",
+  "sector": {
+    "q": 9,
+    "r": -11
+  },
+  "tick": 1234,
+  "to": {
+    "q": 8,
+    "r": -11
+  }
+}

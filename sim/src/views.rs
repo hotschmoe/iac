@@ -188,6 +188,9 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             refit: fleet.refit,
             refit_due: current.is_some_and(|current| fleet.refit.behind(current)),
             repair: engine.repair_quote(fleet),
+            flight: engine.flight_quote(fleet, None),
+            fleeing: engine.fleeing(fleet),
+            pursued_by: engine.pursuit_of(fleet),
             cargo: fleet.cargo,
             cargo_capacity: fleet_cargo_capacity(fleet, &engine.pace()),
             fuel: fleet.fuel,
@@ -420,6 +423,10 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
             for losses in &mut e.losses {
                 losses.mine = losses.owner.as_deref() == Some(player.name.as_str());
             }
+            e.mine || in_sector(e.sector)
+        }
+        K::Pursuit(e) => {
+            e.mine = e.owner == player.name;
             e.mine || in_sector(e.sector)
         }
         K::SalvageDespawned(e) => in_sector(e.sector),

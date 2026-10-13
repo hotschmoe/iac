@@ -13,7 +13,7 @@ use iac_shared::constants::{
 };
 use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{BattleOutcome, EventKind, GameEvent, QueueType, WaitReason};
+use iac_shared::protocol::{BattleOutcome, EventKind, GameEvent, PursuitPhase, QueueType, WaitReason};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use serde::Serialize;
 
@@ -74,6 +74,16 @@ pub struct FieldTally {
     pub ships_lost_with_fleets: u32,
     /// Fights that ended because nobody could hurt anybody.
     pub standoffs: u32,
+    /// Fights the last fleet jumped out of under fire, and fights it left
+    /// by the emergency jump.
+    pub fights_fled: u32,
+    pub fights_recalled: u32,
+    /// Times a group set out after one of the player's fleets, and times
+    /// one gave it up.
+    pub pursuits: u32,
+    pub pursuits_abandoned: u32,
+    /// Rounds a fleet of the player's stood in without firing.
+    pub rounds_fleeing: u32,
     /// Rounds fought, and the most ships one fleet took into a round.
     pub rounds: u32,
     pub largest_fleet: u32,
@@ -962,6 +972,8 @@ impl Counting<'_> {
                         if let Some(t) = tally_of(entries, named(owner)) {
                             t.kills += u32::from(e.player_victory);
                             t.standoffs += u32::from(e.outcome == BattleOutcome::Standoff);
+                            t.fights_fled += u32::from(e.outcome == BattleOutcome::Fled);
+                            t.fights_recalled += u32::from(e.outcome == BattleOutcome::Withdrawn);
                         }
                     }
                     for loss in e.losses.iter().filter(|loss| loss.destroyed) {
@@ -978,8 +990,15 @@ impl Counting<'_> {
                             let left = group.units.iter().map(|u| u.count).sum::<u32>();
                             t.ships_lost += lost;
                             t.rounds += 1;
+                            t.rounds_fleeing += u32::from(group.fleeing);
                             t.largest_fleet = t.largest_fleet.max(left + lost);
                         }
+                    }
+                }
+                EventKind::Pursuit(e) => {
+                    if let Some(t) = tally_of(entries, named(&e.owner)) {
+                        t.pursuits += u32::from(e.phase == PursuitPhase::Began);
+                        t.pursuits_abandoned += u32::from(e.phase == PursuitPhase::Abandoned);
                     }
                 }
                 EventKind::ShipsLost(e) => {

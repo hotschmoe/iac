@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/battle.dart' show flightPrice;
 import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/console/kv_store.dart';
@@ -216,6 +217,39 @@ void main() {
     await tester.tap(find.descendant(of: otherCard, matching: find.text('PILOT')));
     await tester.pump(const Duration(milliseconds: 100));
     expect(c.activeFleet, other);
+    await endShell(tester, c);
+  });
+
+  testWidgets('a fleet card says a fleet is in a fight and what leaving costs, that it is leaving, and that it is pursued; the alerts say so too', (tester) async {
+    const lair = proto.Hex(6, -5);
+    final c = await _boot(tester);
+    c.place(101, lair, const proto.Resources());
+    c.handleCommand('split sc 1 lf 2 probe 1');
+    c.sendCommand(proto.AttackCommand(fleetId: 101, targetFleetId: c.state.sectors[lair]!.hostiles!.single.id));
+    await tester.pump(const Duration(seconds: 1));
+    final card = find.byKey(const Key('fleet-card-101'));
+    await _scrollTo(tester, card);
+    String line(String key) => tester.widget<Text>(find.byKey(Key(key))).data!;
+    final quote = c.state.fleets.firstWhere((f) => f.id == 101).flight!;
+    expect(line('fleet-flight-101'), 'IN A FIGHT, ${quote.label.label}: A JUMP OUT COSTS ${flightPrice(quote).toUpperCase()}.');
+    expect(find.descendant(of: find.byKey(const Key('fleet-status-101')), matching: find.text('COMBAT')), findsOneWidget);
+
+    c.sendCommand(const proto.MoveCommand(fleetId: 101, target: proto.Hex(6, -4)));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.descendant(of: find.byKey(const Key('fleet-status-101')), matching: find.text('FLEEING')), findsOneWidget);
+    expect(line('fleet-fleeing-101'), startsWith('LEAVING FOR 6, -4: JUMP IN '));
+    expect(find.text('F101 IS LEAVING A FIGHT'), findsOneWidget, reason: 'the alerts name a fleet that is leaving a fight');
+    await shot(tester, 'ov-fleeing-1440');
+
+    for (var tick = 0; tick < 6 && c.state.fleets.firstWhere((f) => f.id == 101).pursuedBy == null; tick++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    expect(find.byKey(const Key('fleet-pursued-tag-101')), findsOneWidget);
+    expect(line('fleet-pursued-101'), startsWith('THE 2X LIGHT FIGHTER PATROL LANDS IN '));
+    expect(find.text('F101 IS PURSUED'), findsOneWidget, reason: 'and one with a group on its trail, while it is');
+    expect(find.text('THE 2X LIGHT FIGHTER PATROL IS AFTER F101'), findsNothing, reason: 'the alert of the event is not said twice');
+    await shot(tester, 'ov-pursued-1440');
+    expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
 

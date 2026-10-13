@@ -5,7 +5,7 @@ import 'package:clock/clock.dart';
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
-import '../console/battle.dart' show endedLine, roundLine, shipsList;
+import '../console/battle.dart' show endedLine, pursuitEventLine, roundLine, shipsList, ticksOf;
 import '../console/intel.dart' show clockFmt, groupDigits;
 import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
@@ -153,6 +153,10 @@ class StateMapper {
   /// The log's line for the last round of each fight under way, by sector
   /// key: a fight keeps one such line, which each round replaces.
   final Map<int, LogEntry> _roundLines = {};
+
+  /// Where each fleet last stood in a fight, by fleet id: a fleet that
+  /// jumped out of one is shown that fight's end where it lands.
+  final Map<int, proto.Hex> _foughtAt = {};
   final List<Alert> alerts = [];
 
   bool get hasState => player != null;
@@ -174,6 +178,7 @@ class StateMapper {
     policyActs.clear();
     battles.clear();
     _roundLines.clear();
+    _foughtAt.clear();
     previews.clear();
     odds.clear();
     quotes.clear();
@@ -238,6 +243,7 @@ class StateMapper {
     odds.clear();
     quotes.clear();
     surveys.clear();
+    _noteFights();
     pushLog(first ? 'Uplink established. Homeworld at ${s.player.homeworld}.' : 'Uplink refreshed: the console is in step with the world again.',
         EventLevel.bright);
   }
@@ -265,6 +271,14 @@ class StateMapper {
           Battle(sector: b.sector, rounds: b.rounds, round: known == null || known.over ? null : known.round, losses: b.losses);
     }
     policyActs.removeWhere((id, _) => fleets.every((f) => f.id != id));
+    _noteFights();
+  }
+
+  void _noteFights() {
+    _foughtAt.removeWhere((id, at) => fleets.every((f) => f.id != id) || !battles.containsKey(at.toKey()));
+    for (final f in fleets) {
+      if (f.state == proto.FleetStatus.inCombat || f.fleeing != null) _foughtAt[f.id] = f.location;
+    }
   }
 
   void _applyPreview(proto.MovePreview p) {
@@ -469,8 +483,25 @@ class StateMapper {
         level = EventLevel.bright;
       case proto.PolicyActionEvent():
         if (_notePolicy(e.tick, k)) return;
-        msg = '${_fleet(k.fleetId)} [${k.preset.label}] ${k.action}: ${k.reason}';
-        level = EventLevel.dim;
+        final fled = k.action == policyFlee;
+        msg = '${fled ? '! ' : ''}${_fleet(k.fleetId)} [${k.preset.label}] ${k.action}: ${k.reason}';
+        level = fled ? EventLevel.bright : EventLevel.dim;
+      case proto.PursuitEvent():
+        final given = k.phase == proto.PursuitPhase.abandoned;
+        msg = '${k.mine && !given ? '! ' : ''}${pursuitEventLine(k)}';
+        level = !k.mine ? EventLevel.dim : given ? EventLevel.normal : EventLevel.bright;
+        if (k.mine) {
+          _pushAlert(Alert(
+            icon: given ? '.' : '!',
+            message: given ? 'The ${k.label} gave up on ${_fleet(k.fleetId)}' : 'The ${k.label} is after ${_fleet(k.fleetId)}',
+            detail: switch ((given, k.to, k.arrivesIn)) {
+              (true, _, _) => k.why ?? '',
+              (false, final to?, final ticks?) => 'Lands at $to in ${ticksOf(ticks)}',
+              _ => '',
+            },
+            level: given ? AlertTone.dim : AlertTone.glow,
+          ));
+        }
       case proto.AlertEvent():
         msg = '${k.level == proto.AlertLevel.info ? '' : '! '}${k.message}';
         level = k.level == proto.AlertLevel.info ? EventLevel.normal : EventLevel.bright;
@@ -630,6 +661,10 @@ class StateMapper {
       cargoBlocked: f.cargoBlocked,
       holdCapacity: f.cargoCapacity,
       refine: f.refine,
+      flight: f.flight,
+      fleeing: f.fleeing,
+      pursuedBy: f.pursuedBy,
+      foughtAt: _foughtAt[f.id],
     );
   }
 

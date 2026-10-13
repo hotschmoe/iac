@@ -15,10 +15,12 @@ use iac_shared::constants::{
 use iac_shared::hex::{hex_spiral, Hex};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
-    AlertLevel, BattleOutcome, BattleRoundEvent, BattleSide, CombatEndedEvent, Command, ErrorCode, EventKind,
-    HarvestResource, PolicyParams, PolicyPreset, ThreatBasis, Volley,
+    AlertLevel, BattleOutcome, BattleRoundEvent, BattleSide, ChaseForecast, CombatEndedEvent, Command, ErrorCode,
+    EventKind, Fleeing, HarvestResource, PolicyParams, PolicyPreset, Pursuit, PursuitEvent, PursuitPhase, ThreatBasis,
+    Volley,
 };
 use iac_shared::scaling::{self, RatioLabel, ShipyardItem};
+use iac_shared::world::NpcBehaviorType;
 use iac_shared::world::NpcBehaviorType::Passive;
 use iac_shared::world::{home_seats, is_home_seat};
 use iac_sim::commands::auth_failure;
@@ -704,14 +706,16 @@ fn orders_flown(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64) -> Vec<(St
 }
 
 #[test]
-fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_orders() {
+fn a_jump_a_fight_catches_goes_on_under_fire_and_a_recall_leaves_the_fleet_free_for_standing_orders() {
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Jumper");
     let at = lone_fighter_sector(&engine, Passive);
     let escort = engine.handle_split(pid, fid, &counts(&[(ShipClass::LightFighter, 1)]), false).unwrap();
     deploy(&mut engine, fid, at, None);
     deploy(&mut engine, escort, at, Some(MIGHTY));
-    let onward = engine.world_gen.connected_neighbors(at).slice()[0];
+    let onward = engine.world_gen.connected_neighbors(at).slice().iter().copied()
+        .find(|n| engine.world_gen.generate_sector(*n).npc_template.is_none_or(|t| t.behavior == Passive))
+        .expect("a sector next door that starts no fight");
 
     let tank = engine.fleets[&fid].fuel;
     assert!(engine.execute(pid, Command::Move { fleet_id: fid, target: onward }).error.is_none());
@@ -719,14 +723,33 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     assert_eq!(tank - engine.fleets[&fid].fuel, 20.0, "one Light Fighter burns 20 fuel a jump, paid when it is ordered");
     let attack = engine.execute(pid, Command::Attack { fleet_id: escort, target_fleet_id: template_npc_id(at) });
     assert!(attack.error.is_none(), "{:?}", attack.error);
-    assert_eq!(engine.fleets[&fid].state, FleetStatus::InCombat, "a fleet still charging its jump is in the sector's fight");
-    let fought = run_until(&mut engine, 10, |e| e.active_combats.is_empty());
-    assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (at, FleetStatus::Idle), "the jump is lost");
-    assert_eq!(engine.fleets[&fid].fuel, tank - 20.0, "and so is the fuel it burned");
+    let charging = &engine.fleets[&fid];
+    assert_eq!((charging.state, charging.move_target), (FleetStatus::Moving, Some(onward)), "a fleet charging its jump keeps it");
+    assert!(engine.combat_of(fid).is_some(), "and stands in the sector's fight until it is gone");
+    let shown = iac_sim::views::full_state(&engine, pid).unwrap().fleets.into_iter().find(|f| f.id == fid).unwrap();
+    assert_eq!(shown.fleeing, Some(Fleeing { to: onward, ticks: 2, rounds: 1 }), "which its owner is shown");
+    assert_eq!(shown.flight, None, "a fleet that is leaving is quoted no second flight");
+    let (code, why) = engine.execute(pid, Command::Move { fleet_id: fid, target: onward }).error.expect("it takes no other jump");
+    assert_eq!(code, ErrorCode::OnCooldown);
+    assert_eq!(why, format!("fleet {fid} is already leaving the fight at {at} for {onward}; stop calls the jump off, and its fuel is forfeit"));
+
+    let fought = run_until(&mut engine, 10, |e| e.fleets[&fid].location == onward);
+    let silent: Vec<(bool, u64)> = fought
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::BattleRound(r) => r.fleets.groups.iter().find(|g| g.fleet_id == fid).map(|g| (g.fleeing, r.fleets.shots)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(silent.len(), 1, "it stood in the one round fought before its jump landed");
+    assert!(silent[0].0, "marked as leaving");
+    assert_eq!(silent[0].1, 1, "and of the two fleets only the escort fired");
+    assert_eq!(engine.fleets[&fid].state, FleetStatus::Idle, "the jump landed");
+    assert_eq!(engine.fleets[&fid].fuel, tank - 20.0, "on the fuel it had paid");
     let caught: Vec<_> = fought
         .iter()
         .filter_map(|e| match &e.kind {
-            EventKind::Alert(a) if a.message.contains("was caught in a fight") => Some(a),
+            EventKind::Alert(a) if a.message.contains("was caught") => Some(a),
             _ => None,
         })
         .collect();
@@ -734,8 +757,8 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     assert_eq!(
         caught[0].message,
         format!(
-            "fleet {fid} was caught in a fight at {at} while charging its jump to {onward}: \
-             the jump is abandoned, and the 20 fuel it burned for the jump is forfeit"
+            "fleet {fid} was caught at {at} while charging its jump to {onward}: \
+             it is fired on and does not answer until the jump lands in 2 ticks"
         ),
     );
     assert!(
@@ -1025,7 +1048,7 @@ fn cruisers_fire_six_times_a_round_among_light_fighters_and_heavy_fighters_once(
 
 #[test]
 fn a_shot_too_weak_for_a_shield_bounces_and_a_fight_nobody_can_hurt_anybody_in_is_a_standoff() {
-    use ShipClass::{Battleship, EspionageProbe, Recycler};
+    use ShipClass::{Battleship, EspionageProbe, LightFighter, Recycler};
     let (_, _, rounds, ended) = pitched("Scrap", &[(Recycler, 5)], &[(Battleship, 2)]);
     for round in &rounds {
         let volley = fire(&round.fleets, Recycler, Battleship).expect("the Recyclers fired");
@@ -1047,6 +1070,448 @@ fn a_shot_too_weak_for_a_shield_bounces_and_a_fight_nobody_can_hurt_anybody_in_i
     assert!(ended.losses.iter().all(|l| l.lost.is_empty() && !l.destroyed), "{:?}", ended.losses);
     let fleet = &engine.fleets[&fid];
     assert_eq!((fleet.state, fleet.ships.total()), (FleetStatus::Idle, 5), "the fleet stays where it is, with what it had");
+
+    let (mut e, lane) = skirmish("persistent", &[(LightFighter, 4)], &[(EspionageProbe, 30)], Passive);
+    let hurt = e.engine.npc_fleets[&PACK].ships.clone();
+    assert!(hurt.total() < 30 || hurt.has_damage(), "four Light Fighters fired a round among the Probes");
+    let mark = jump(&mut e, lane[1]);
+    assert_eq!(
+        fights_ended(&e, mark).iter().map(|c| c.outcome).collect::<Vec<_>>(),
+        vec![BattleOutcome::Standoff],
+        "a fleet that is leaving fires nothing and Probes have nothing to fire: a round nobody is hurt in",
+    );
+    assert_eq!(e.engine.npc_fleets[&PACK].ships, hurt, "a stand-off leaves a group as the fight had left it, not whole again");
+}
+
+const PACK: u64 = 900_002;
+
+/// An empire whose fleet of `ours` has fought one round against a group of
+/// `theirs` with `behavior`, in the first sector of an open lane, which is
+/// the group's own.
+fn skirmish(
+    pace: &str,
+    ours: &[(ShipClass, u32)],
+    theirs: &[(ShipClass, u32)],
+    behavior: NpcBehaviorType,
+) -> (Empire, Vec<Hex>) {
+    let mut e = Empire::join(world(pace), "Raider");
+    let home = e.engine.players[&e.pid].homeworld;
+    let lane = open_lane(&e.engine, home, 5);
+    muster(&mut e.engine, e.fid, ours, lane[0]);
+    horde(&mut e.engine, PACK, lane[0], theirs, 1.0);
+    edit(&mut e.engine, |s| s.npc_fleets.get_mut(&PACK).unwrap().behavior = behavior);
+    e.order(Command::Attack { fleet_id: e.fid, target_fleet_id: PACK }).expect("the fleet opens fire");
+    e.run(1);
+    (e, lane)
+}
+
+/// Order the jump to `to` and wait for it to land. A jump out of a fight
+/// burns what the fleet was quoted. Returns where the log stood when the
+/// order was given.
+fn jump(e: &mut Empire, to: Hex) -> usize {
+    let (mark, fid) = (e.mark(), e.fid);
+    let quoted = e.fleet().flight.map(|quote| quote.fuel);
+    let tank = e.engine.fleets[&fid].fuel;
+    e.order(Command::Move { fleet_id: fid, target: to }).expect("the jump is taken");
+    if let Some(fuel) = quoted {
+        assert_eq!(tank - e.engine.fleets[&fid].fuel, fuel, "a flight burns the fuel it was quoted");
+    }
+    e.run_until(60, |e| e.engine.fleets[&fid].location == to);
+    mark
+}
+
+/// The rounds the empire's fleet stood in since `mark`: where, whether it
+/// was leaving, and the shots its side fired.
+fn rounds_stood(e: &Empire, mark: usize) -> Vec<(Hex, bool, u64)> {
+    let fid = e.fid;
+    e.since(mark, |k| match k {
+        EventKind::BattleRound(r) => r.fleets.groups.iter().find(|g| g.fleet_id == fid).map(|g| (r.sector, g.fleeing, r.fleets.shots)),
+        _ => None,
+    })
+}
+
+fn pursuits(e: &Empire, mark: usize) -> Vec<PursuitEvent> {
+    e.since(mark, |k| match k {
+        EventKind::Pursuit(p) => Some(p.clone()),
+        _ => None,
+    })
+}
+
+fn fights_ended(e: &Empire, mark: usize) -> Vec<CombatEndedEvent> {
+    e.since(mark, |k| match k {
+        EventKind::CombatEnded(c) => Some(c.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_fleet_as_fast_as_the_pack_it_leaves_is_followed_two_hexes_and_never_caught() {
+    use ShipClass::Cruiser;
+    let (mut e, lane) = skirmish("persistent", &[(Cruiser, 20)], &[(Cruiser, 24)], NpcBehaviorType::Aggressive);
+    let fid = e.fid;
+    let burn = 300.0 * f64::from(e.engine.fleets[&fid].ships.total());
+    let quote = e.fleet().flight.expect("a fleet in a fight is quoted its flight");
+    assert_eq!(
+        (quote.fuel, quote.ticks, quote.rounds, quote.refusal.clone()),
+        (burn, 2, 1, None),
+        "a Cruiser burns 300 fuel a jump; a jump of two ticks is one round under fire",
+    );
+    assert!(quote.label < RatioLabel::Even, "twenty against twenty-four of a kind: {}", quote.ratio);
+    assert_eq!(
+        quote.chase,
+        Some(ChaseForecast { group_id: PACK, label: "horde".into(), hexes: 2, jump_ticks: 2, rounds_per_hex: 0 }),
+        "the pack would follow two hexes and, as fast as the fleet, never fire on it",
+    );
+
+    let mark = jump(&mut e, lane[1]);
+    assert_eq!(rounds_stood(&e, mark), vec![(lane[0], true, 0)], "one parting round, taken without a shot fired");
+    let ended = fights_ended(&e, mark);
+    assert_eq!(ended.len(), 1);
+    assert_eq!((ended[0].outcome, ended[0].player_victory, ended[0].salvage), (BattleOutcome::Fled, false, None));
+    let began = pursuits(&e, mark);
+    assert_eq!(began.len(), 1, "{began:?}");
+    assert_eq!(
+        (began[0].phase, began[0].group_id, began[0].fleet_id, began[0].mine, began[0].sector),
+        (PursuitPhase::Began, PACK, fid, true, lane[0]),
+    );
+    assert_eq!((began[0].to, began[0].arrives_in, began[0].hexes_left), (Some(lane[1]), Some(2), 1));
+    assert_eq!(
+        e.fleet().pursued_by,
+        Some(Pursuit { group_id: PACK, label: "horde".into(), from: lane[0], arrives_in: 2, catches: false, hexes_left: 1 }),
+        "the fleet's owner is shown the pack two ticks behind, too late to catch a jump ordered now",
+    );
+    let got_away_with = e.engine.fleets[&fid].ships.clone();
+
+    let mark = jump(&mut e, lane[2]);
+    let went_on = pursuits(&e, mark);
+    assert_eq!(went_on.len(), 1, "{went_on:?}");
+    assert_eq!(
+        (went_on[0].phase, went_on[0].sector, went_on[0].to, went_on[0].arrives_in, went_on[0].hexes_left),
+        (PursuitPhase::Continued, lane[1], Some(lane[2]), Some(2), 0),
+        "it lands where the fleet was and jumps on",
+    );
+
+    let mark = jump(&mut e, lane[3]);
+    let gave_up = pursuits(&e, mark);
+    assert_eq!(gave_up.len(), 1, "{gave_up:?}");
+    assert_eq!((gave_up[0].phase, gave_up[0].sector, gave_up[0].to), (PursuitPhase::Abandoned, lane[2], Some(lane[1])));
+    assert_eq!(
+        gave_up[0].why.as_deref(),
+        Some(format!("it has followed 2 jumps from its own sector at {} and goes no further", lane[0]).as_str()),
+    );
+    assert_eq!(e.fleet().pursued_by, None);
+    assert_eq!(e.engine.fleets[&fid].ships, got_away_with, "nothing fired on the fleet after it left");
+    assert!(e.engine.active_combats.is_empty());
+
+    e.run(4);
+    let pack = &e.engine.npc_fleets[&PACK];
+    assert_eq!((pack.location, pack.errand, pack.strayed), (lane[0], None, 0), "two jumps later the pack is back in its own sector");
+    assert!(!pack.whole(), "with the damage the fleet's one round did it");
+}
+
+#[test]
+fn a_fleet_two_ticks_slower_than_the_pack_is_fired_on_for_two_rounds_at_every_hex_it_is_followed() {
+    use ShipClass::{LightFighter, SmallCargo};
+    let (mut e, lane) = skirmish("persistent", &[(SmallCargo, 300)], &[(LightFighter, 160)], NpcBehaviorType::Aggressive);
+    let fid = e.fid;
+    let quote = e.fleet().flight.expect("a quote");
+    assert_eq!((quote.ticks, quote.rounds), (4, 3), "a Small Cargo jumps in four ticks: three rounds under fire");
+    assert_eq!(
+        quote.chase.as_ref().map(|c| (c.hexes, c.jump_ticks, c.rounds_per_hex)),
+        Some((2, 2, 2)),
+        "and Light Fighters jump in two: two rounds at each of two hexes",
+    );
+    let set_out_with = e.engine.fleets[&fid].ships.total();
+
+    let mark = jump(&mut e, lane[1]);
+    assert_eq!(rounds_stood(&e, mark), vec![(lane[0], true, 0); 3], "the parting rounds");
+    let trail = e.fleet().pursued_by.expect("the pack follows");
+    assert_eq!((trail.from, trail.arrives_in, trail.catches, trail.hexes_left), (lane[0], 2, true, 1));
+
+    for (hex, last) in [(1, false), (2, true)] {
+        let before = e.engine.fleets[&fid].ships.total();
+        let mark = jump(&mut e, lane[hex + 1]);
+        assert_eq!(
+            rounds_stood(&e, mark),
+            vec![(lane[hex], true, 0); 2],
+            "caught at {} while it charged, for the two ticks it is the slower",
+            lane[hex],
+        );
+        let joined = e.since(mark, |k| match k {
+            EventKind::CombatStarted(c) => Some((c.enemy_fleet_id, c.player_fleet_id, c.sector)),
+            _ => None,
+        });
+        assert_eq!(joined, vec![(PACK, fid, lane[hex])]);
+        let told = e.since(mark, |k| match k {
+            EventKind::Alert(a) if a.message.contains("was caught") => Some(a.message.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            told,
+            vec![format!(
+                "fleet {fid} was caught at {} while charging its jump to {}: \
+                 it is fired on and does not answer until the jump lands in 2 ticks",
+                lane[hex],
+                lane[hex + 1],
+            )],
+        );
+        assert!(e.engine.fleets[&fid].ships.total() < before, "and it lost ships there");
+        assert_eq!(e.fleet().pursued_by.is_some(), !last, "the pack follows two hexes and no further");
+    }
+    let lost = set_out_with - e.engine.fleets[&fid].ships.total();
+    assert!(lost > 0 && e.engine.fleets[&fid].ships.total() > 0, "{lost} of {set_out_with} lost on the run");
+    let fleet = e.fleet();
+    assert!(fleet.hull < fleet.hull_max && fleet.repair.is_some(), "and what is left carries its damage until a dock");
+    e.run(4);
+    assert_eq!(e.engine.npc_fleets[&PACK].location, lane[0], "the pack is home again");
+}
+
+#[test]
+fn how_far_a_group_follows_goes_by_its_behaviour_and_it_follows_only_what_it_was_beating() {
+    use NpcBehaviorType::{Aggressive, Patrol, Swarm};
+    use ShipClass::Cruiser;
+    for (behavior, hexes) in [(Passive, 0), (Patrol, 1), (Aggressive, 2), (Swarm, 2)] {
+        let (mut e, lane) = skirmish("persistent", &[(Cruiser, 20)], &[(Cruiser, 24)], behavior);
+        let listed = iac_sim::intel::build_sector_state(&e.engine, lane[0], Some(e.pid)).hostiles.expect("the group is in sight");
+        assert_eq!((listed[0].chase_hexes, listed[0].jump_ticks), (hexes, 2), "{behavior:?}");
+        assert_eq!(e.fleet().flight.expect("a quote").chase.map_or(0, |c| c.hexes), hexes, "{behavior:?}");
+        let mut followed = 0;
+        for &next in &lane[1..] {
+            jump(&mut e, next);
+            followed += u8::from(e.fleet().pursued_by.is_some());
+        }
+        assert_eq!(followed, hexes, "{behavior:?}");
+        assert!(e.engine.active_combats.is_empty(), "{behavior:?}");
+    }
+
+    let (mut e, lane) = skirmish("persistent", &[(Cruiser, 60)], &[(Cruiser, 40)], Aggressive);
+    assert_eq!(e.fleet().flight.expect("a quote").chase, None, "forty Cruisers do not follow sixty that leave them");
+    let mark = jump(&mut e, lane[1]);
+    assert_eq!(fights_ended(&e, mark).iter().map(|c| c.outcome).collect::<Vec<_>>(), vec![BattleOutcome::Fled]);
+    assert!(pursuits(&e, mark).is_empty() && e.fleet().pursued_by.is_none());
+    let pack = &e.engine.npc_fleets[&PACK];
+    assert_eq!((pack.location, pack.errand), (lane[0], None), "the pack stays and mends");
+}
+
+#[test]
+fn flight_costs_its_fuel_and_its_parting_rounds_and_earns_nothing_from_a_group_left_standing() {
+    use ShipClass::{Cruiser, EspionageProbe, HeavyFighter, LightFighter};
+    let (mut e, lane) = skirmish("persistent", &[(Cruiser, 60)], &[(HeavyFighter, 200)], Passive);
+    let (pid, fid) = (e.pid, e.fid);
+    let at = lane[0];
+    assert!(e.engine.npc_fleets[&PACK].ships.total() < 200, "the first round took Heavy Fighters");
+
+    let burn = |e: &Empire| 300.0 * f64::from(e.engine.fleets[&fid].ships.total());
+    let fuel = |e: &Empire| e.engine.fleets[&fid].fuel;
+    let tank = fuel(&e);
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().fuel = 100.0);
+    let dry = format!(
+        "fleet {fid} has 100 fuel and the jump out of the fight at {at} burns {}: it cannot leave, \
+         except by recall if it holds the fuel for that",
+        burn(&e),
+    );
+    assert_eq!(e.fleet().flight.expect("a quote").refusal.as_deref(), Some(dry.as_str()));
+    assert_eq!(e.refusal(Command::Move { fleet_id: fid, target: lane[1] }), (ErrorCode::InsufficientFuel, dry));
+    assert_eq!(e.engine.fleets[&fid].state, FleetStatus::InCombat);
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().fuel = tank);
+
+    let cost = burn(&e);
+    e.order(Command::Move { fleet_id: fid, target: lane[1] }).expect("the jump out");
+    assert_eq!(e.fleet().fleeing, Some(Fleeing { to: lane[1], ticks: 2, rounds: 1 }));
+    for order in [Command::Scan { fleet_id: fid }, Command::Attack { fleet_id: fid, target_fleet_id: PACK }] {
+        assert_eq!(e.order(order), Err(ErrorCode::OnCooldown), "a fleet that is leaving does nothing else");
+    }
+    let mark = e.mark();
+    e.order(Command::Stop { fleet_id: fid }).expect("stop calls the jump off");
+    let told = e.since(mark, |k| match k {
+        EventKind::Alert(a) => Some(a.message.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        told,
+        vec![format!("fleet {fid} called off its jump to {}: the {cost} fuel it burned for the jump is forfeit, and it fights on at {at}", lane[1])],
+    );
+    assert_eq!((e.engine.fleets[&fid].state, fuel(&e)), (FleetStatus::InCombat, tank - cost));
+    e.run(1);
+    let fought_on = rounds_stood(&e, mark);
+    assert!(fought_on.len() == 1 && !fought_on[0].1 && fought_on[0].2 > 0, "and it fires again: {fought_on:?}");
+
+    let points = e.engine.players[&pid].combat_points;
+    assert_eq!(e.fleet().flight.expect("a quote").fuel, burn(&e), "a second flight is paid for again");
+    let mark = jump(&mut e, lane[1]);
+    assert_eq!(rounds_stood(&e, mark), vec![(at, true, 0)]);
+    let ended = fights_ended(&e, mark);
+    assert_eq!(ended.len(), 1);
+    assert_eq!((ended[0].outcome, ended[0].salvage, ended[0].player_victory), (BattleOutcome::Fled, None, false));
+    let fallen: u32 = ended[0].losses.iter().filter(|l| l.fleet_id == PACK).flat_map(|l| &l.lost).map(|u| u.count).sum();
+    assert!(fallen > 0, "the fight had destroyed Heavy Fighters: {:?}", ended[0].losses);
+    assert_eq!(e.engine.npc_fleets[&PACK].ships.total(), 200 - fallen, "which the group stays short of");
+    assert_eq!(e.engine.players[&pid].combat_points, points, "a group pays its score when it is destroyed and not before");
+    assert!(e.engine.sector_overrides.get(&at.to_key()).is_none_or(|o| o.salvage.is_none()), "and leaves no wreckage until then");
+    assert!(pursuits(&e, mark).is_empty(), "a convoy follows nobody");
+    let fleet = e.fleet();
+    assert!(fleet.hull < fleet.hull_max && fleet.repair.is_some(), "the damage stays until a dock mends it");
+
+    let (mut e, lane) = skirmish("persistent", &[(EspionageProbe, 40)], &[(LightFighter, 3)], Passive);
+    let quote = e.fleet().flight.expect("a quote");
+    assert_eq!((e.fleet().jump_ticks, quote.ticks, quote.rounds), (1, 2, 1), "the fastest fleet still takes one round");
+    let mark = jump(&mut e, lane[1]);
+    assert_eq!(rounds_stood(&e, mark).len(), 1);
+}
+
+#[test]
+fn a_group_left_alive_keeps_its_losses_mends_a_step_at_a_time_and_pays_in_full_when_it_falls() {
+    use ShipClass::{Cruiser, LightFighter};
+    let (mut e, lane) = skirmish("season", &[(Cruiser, 3)], &[(LightFighter, 30)], Passive);
+    let (pid, fid) = (e.pid, e.fid);
+    let at = lane[0];
+    jump(&mut e, lane[1]);
+    let left = e.engine.npc_fleets[&PACK].ships.clone();
+    let short = 30 - left.total();
+    assert!((4..=27).contains(&short), "three Cruisers fire about six times each among Light Fighters: {short} fell");
+
+    let pace = e.engine.pace();
+    let step = scaling::npc_heal_step_ticks(at.dist_from_origin(), &pace);
+    let now = e.engine.current_tick();
+    let seen = |e: &Empire| iac_sim::intel::build_sector_state(&e.engine, at, Some(pid)).hostiles.map(|mut list| list.remove(0));
+    let listed = seen(&e).expect("the group stands in its sector");
+    assert_eq!((listed.id, listed.ship_count, listed.muster), (PACK, left.total(), 30), "it is listed as it stands");
+    assert!(
+        listed.whole_at.is_some_and(|tick| tick > now + step && tick <= now + 10 * step),
+        "it is whole in ten steps of {step} ticks at most: {listed:?} at tick {now}",
+    );
+    assert_eq!(scaling::npc_heal_ships(30), 3, "a tenth of thirty ships come back at a step");
+
+    e.run(step - 2);
+    assert_eq!(e.engine.npc_fleets[&PACK].ships.total(), left.total(), "nothing comes back before the first step");
+    e.run(1);
+    assert_eq!(e.engine.npc_fleets[&PACK].ships.total(), left.total() + 3.min(short), "three ships at the first step");
+    assert_eq!(seen(&e).expect("still there").whole_at, listed.whole_at, "and the tick it will be whole by has not moved");
+
+    e.run(5);
+    deploy(&mut e.engine, fid, at, None);
+    empower(&mut e.engine, pid, fid);
+    let found = e.engine.npc_fleets[&PACK].ships.total();
+    let resting = seen(&e).expect("still there").whole_at.expect("it is wounded");
+    let points = e.engine.players[&pid].combat_points;
+    let mark = e.mark();
+    e.order(Command::Attack { fleet_id: fid, target_fleet_id: PACK }).expect("the fleet comes back for it");
+    assert_eq!(
+        seen(&e).expect("in the fight").whole_at,
+        Some(resting + 5),
+        "a fight stops the clock of its mending, and the five ticks it had rested toward the next step are lost",
+    );
+    e.run_until(40, |e| e.engine.active_combats.is_empty());
+    let met: Vec<u32> = e.since(mark, |k| match k {
+        EventKind::BattleRound(r) => Some(r.hostiles.groups[0].units.iter().map(|u| u.count + u.lost).sum()),
+        _ => None,
+    });
+    assert_eq!(met.first(), Some(&found), "it is found with the losses it has not yet made good");
+    let ended = fights_ended(&e, mark);
+    assert_eq!(ended.last().map(|c| c.outcome), Some(BattleOutcome::HostilesDestroyed));
+    let whole = Ships::of(&[(LightFighter, 30)]).power(scaling::Arms::of_grade(1.0));
+    let pile = scaling::split_loot(scaling::wreck_value(whole)).scale(pace.finds_mult());
+    assert_eq!(ended.last().and_then(|c| c.salvage), Some(pile), "the wreckage of the thirty it was generated with");
+    assert!(e.engine.players[&pid].combat_points > points, "and its score, at the kill");
+    assert!(!e.engine.npc_fleets.contains_key(&PACK));
+}
+
+#[test]
+fn a_lair_whose_group_has_mended_is_its_template_again_and_the_odds_count_it_whole_from_that_tick() {
+    let mut e = Empire::join(world("season"), "Visitor");
+    let (pid, fid) = (e.pid, e.fid);
+    let at = lair(&e.engine, 7, |behavior| behavior == Passive);
+    let id = template_npc_id(at);
+    let template = e.engine.pending_template_npc(at).expect("the lair stands");
+    let away = e.engine.world_gen.connected_neighbors(at).slice().iter().copied()
+        .find(|n| e.engine.world_gen.generate_sector(*n).npc_template.is_none())
+        .expect("a quiet sector beside the lair");
+    deploy(&mut e.engine, fid, at, None);
+    e.order(Command::Attack { fleet_id: fid, target_fleet_id: id }).expect("the fleet opens fire");
+    e.run(1);
+    jump(&mut e, away);
+
+    let group = e.engine.npc_fleets.get(&id).expect("the lair's group keeps what the fight did to it");
+    assert!(!group.whole() && group.location == at && group.errand.is_none());
+    assert!(e.engine.pending_template_npc(at).is_none(), "the lair is that group, not a fresh one");
+    let whole_at = e.engine.group_whole_at(group).expect("it mends");
+    let remembered = chart(&e.engine, pid).remove(&at.to_key()).expect("the sector is charted");
+    assert!(!remembered.live, "the fleet has left it");
+    let seen = &remembered.hostiles.as_ref().expect("the group was seen")[0];
+    assert_eq!((seen.id, seen.muster, seen.whole_at), (id, u32::from(template.count), Some(whole_at)));
+
+    let odds = |e: &mut Empire| match e.engine.execute(pid, Command::Odds { fleet_id: fid, sectors: vec![at] }).reply {
+        Some(iac_shared::protocol::ServerMessage::Odds(reply)) => reply.sectors[0].ratio,
+        other => panic!("no odds: {other:?}"),
+    };
+    let against_wounded = odds(&mut e);
+    e.run_until(100_000, |e| e.engine.current_tick() + 1 >= whole_at);
+    assert!(e.engine.npc_fleets.contains_key(&id), "a tick before, it is still mending");
+    assert_eq!(odds(&mut e), against_wounded, "and the odds are against what was seen");
+    e.run(1);
+    assert!(!e.engine.npc_fleets.contains_key(&id), "whole again, the group stands down");
+    assert!(e.engine.pending_template_npc(at).is_some(), "and the lair is its template");
+    assert!(odds(&mut e) <= against_wounded, "from that tick the odds count the remembered group whole");
+    let fresh = iac_sim::intel::build_sector_state(&e.engine, at, Some(pid)).hostiles.expect("the lair is listed")[0].clone();
+    assert_eq!((fresh.id, fresh.ship_count, fresh.muster, fresh.whole_at), (id, u32::from(template.count), u32::from(template.count), None));
+}
+
+#[test]
+fn a_fleet_under_orders_leaves_a_fight_its_odds_have_turned_against_and_runs_home_saying_why() {
+    use ShipClass::Cruiser;
+    let stage = |disengage_ratio_x10: u8| {
+        let mut e = Empire::join(world("persistent"), "Delegate");
+        let (pid, fid) = (e.pid, e.fid);
+        let home = e.engine.players[&pid].homeworld;
+        let at = open_lane(&e.engine, home, 1)[0];
+        muster(&mut e.engine, fid, &[(Cruiser, 20)], at);
+        horde(&mut e.engine, PACK, at, &[(Cruiser, 30)], 1.0);
+        edit(&mut e.engine, |s| s.npc_fleets.get_mut(&PACK).unwrap().behavior = NpcBehaviorType::Aggressive);
+        let params = PolicyParams { max_range: 12, disengage_ratio_x10, ..PolicyParams::default() };
+        e.engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, Some(params)).expect("orders");
+        e.order(Command::Attack { fleet_id: fid, target_fleet_id: PACK }).expect("its owner sends it in");
+        (e, at, home)
+    };
+
+    let (mut e, at, home) = stage(9);
+    let fid = e.fid;
+    e.run_until(400, |e| e.engine.fleets.get(&fid).is_none_or(|f| f.location == home));
+    let actions = e.since(0, |k| match k {
+        EventKind::PolicyAction(p) => Some((p.action.clone(), p.reason.clone())),
+        _ => None,
+    });
+    let fled: Vec<&str> = actions.iter().filter(|(action, _)| action == "flee").map(|(_, why)| why.as_str()).collect();
+    assert_eq!(fled.len(), 1, "{actions:?}");
+    assert!(
+        fled[0].starts_with(&format!("left the fight at {at}: odds fell to 0."))
+            && fled[0].contains("x, DEADLY, below the doctrine's 0.9x; jumping to ")
+            && fled[0].ends_with(", under fire for 1 round"),
+        "{}",
+        fled[0],
+    );
+    assert!(
+        actions.iter().any(|(action, why)| action == "move" && why.starts_with("running for home: the horde is on its trail and lands here in")),
+        "{actions:?}",
+    );
+    let trail = pursuits(&e, 0);
+    assert_eq!(trail.first().map(|p| (p.phase, p.sector, p.fleet_id)), Some((PursuitPhase::Began, at, fid)), "{trail:?}");
+    assert!(trail.iter().any(|p| p.phase == PursuitPhase::Abandoned && p.why.is_some()), "the pack gives up, and says why: {trail:?}");
+    let fleet = e.engine.fleets.get(&fid).expect("the fleet lives");
+    assert!(fleet.location == home && !fleet.ships.is_empty() && !fleet.ships.has_damage(), "home, and mended at the dock");
+    assert_eq!(rounds_stood(&e, 0).iter().filter(|round| !round.1).count(), 0, "it left before it had fired a round");
+
+    let (mut e, _, _) = stage(1);
+    let fid = e.fid;
+    e.run_until(200, |e| e.engine.active_combats.is_empty());
+    assert!(e.engine.fleets.get(&fid).is_none_or(|f| f.ships.is_empty()), "a doctrine told to stay at any odds stays");
+    assert!(e.since(0, |k| matches!(k, EventKind::PolicyAction(p) if p.action == "flee").then_some(())).is_empty());
+
+    let (e, _, _) = stage(80);
+    assert_eq!(
+        e.fleet().policy.map(|orders| (orders.params.engage_ratio_x10, orders.params.disengage_ratio_x10)),
+        Some((15, 15)),
+        "the disengage ratio is never above the engage ratio",
+    );
 }
 
 fn settle(engine: &mut iac_sim::GameEngine, name: &str) -> Hex {

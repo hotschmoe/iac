@@ -333,8 +333,8 @@ async fn a_server_refuses_a_world_another_holds_or_this_build_does_not_play() {
     );
     write(text.replacen("\"worldgen_version\":4", "\"worldgen_version\":1", 1).as_bytes());
     assert!(refusal(&file, &[]).contains("worldgen version 1, this build runs version 4"));
-    write(text.replacen("\"format\":9", "\"format\":8", 1).as_bytes());
-    assert!(refusal(&file, &[]).contains("this world file is format 8, this build reads format 9"));
+    write(text.replacen("\"format\":10", "\"format\":9", 1).as_bytes());
+    assert!(refusal(&file, &[]).contains("this world file is format 9, this build reads format 10"));
 
     write(&document[..document.len() - 40]);
     let cut_short = refusal(&file, &[]);

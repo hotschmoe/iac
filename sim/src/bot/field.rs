@@ -21,7 +21,11 @@
 // and it reads off each sector's chart mark whether a visit still pays.
 // Hull lost stays lost until the home dock mends it, so it fights only at
 // odds that cost it little, and takes a fleet whose hull has fallen below
-// `HULL_READY` home before it does anything else. The odds are the
+// `HULL_READY` home before it does anything else. A wing with no warship
+// in it picks no fight at any odds. In a fight it reads the server's odds
+// of that fight as it stands (`FleetState::flight`) and jumps out toward
+// home once they are under `LEAVE_ODDS`; with a group on its trail it
+// runs for home. The odds are the
 // server's, and they count the damage a fleet carries: before its orders
 // the admiral asks (`odds`) how each fleet it may move would fare in every
 // sector where that decides something, and it stays out of any sector it
@@ -56,9 +60,15 @@ use crate::script::Order;
 /// costs no ship takes a fleet many times its enemy, and a pilot who waited
 /// for one would not fight.
 const SAFE_ODDS: f32 = 2.0;
+/// Odds of a fight under way (`FlightQuote::ratio`) below which a pilot
+/// leaves it: the edge of RISKY, where the doctrines leave too.
+const LEAVE_ODDS: f32 = scaling::RATIO_RISKY;
 /// How far around a fleet its pilot asks the server for odds. A guarded
 /// sector farther off stays closed to it until it is nearer.
 const ODDS_HORIZON: u16 = 12;
+/// The same for a fleet in a fight, which only has to choose the lane it
+/// leaves by.
+const FLIGHT_HORIZON: u16 = 2;
 /// The ratio the prospect, mining and salvage doctrines are sent out with
 /// (the game's default).
 const DOCTRINE_RATIO_X10: u8 = 15;
@@ -129,8 +139,7 @@ impl Wing {
     /// bring resources home earn their fuel back and get the larger budget;
     /// the ones that fly for points get the game's default.
     fn orders(preset: PolicyPreset, fleet: &FleetState) -> PolicyUpdate {
-        let armed = fleet.ships.iter().any(|s| Hull::of(s.ship_class) == Hull::Warship);
-        let fights = armed || preset == PolicyPreset::Prospect;
+        let fights = armed(fleet) || preset == PolicyPreset::Prospect;
         let careful = if fights && fleet.ship_count >= CAREFUL_WING_SHIPS { CAREFUL_RATIO_X10 } else { DOCTRINE_RATIO_X10 };
         let (engage_ratio_x10, fuel_budget_pct) = match preset {
             PolicyPreset::PatrolHome => ((SAFE_ODDS * 10.0) as u8, POLICY_DEFAULT_FUEL_BUDGET_PCT),
@@ -271,10 +280,15 @@ pub(super) fn questions(state: &GameState, brief: Brief, questions: &mut Vec<Com
     let home = state.player.homeworld;
     for unit in units(state, brief.personality) {
         let fleet = unit.fleet;
-        let manual = unit.free() && fleet.policy.is_none();
+        let fighting = fleet.flight.is_some();
+        let manual = (unit.free() || fighting) && fleet.policy.is_none();
         let held = fleet.location == home && held_at_home(state, brief, unit).is_some();
         let flying = manual && fleet.fuel >= fleet.jump_fuel && !held;
-        let reach = if flying { ODDS_HORIZON } else { 0 };
+        let reach = match (flying, fighting) {
+            (false, _) => 0,
+            (true, true) => FLIGHT_HORIZON,
+            (true, false) => ODDS_HORIZON,
+        };
         let sectors: Vec<Hex> = state
             .known_sectors
             .iter()
@@ -493,7 +507,8 @@ impl<'a> Admiral<'a> {
             // A jump lands the tick after the view shows its timer at 0.
             FleetStatus::Moving => return cooldown + 1,
             FleetStatus::Exploring => return cooldown,
-            FleetStatus::InCombat | FleetStatus::Returning => return 2,
+            FleetStatus::InCombat => return self.fight(unit),
+            FleetStatus::Returning => return 2,
             FleetStatus::Harvesting => return REST,
             FleetStatus::Idle | FleetStatus::Docked if cooldown > 0 => return cooldown,
             FleetStatus::Idle | FleetStatus::Docked => {}
@@ -522,7 +537,7 @@ impl<'a> Admiral<'a> {
             if !self.can_return(unit) {
                 return WAIT;
             }
-        } else if !has_work(self.brief, unit.wing) || unit.mauled() {
+        } else if !has_work(self.brief, unit.wing) || unit.mauled() || fleet.pursued_by.is_some() {
             return self.head_home(unit);
         } else {
             let hold_full = fleet.cargo_capacity > 0.0 && load >= RETURN_LOAD * fleet.cargo_capacity;
@@ -536,6 +551,14 @@ impl<'a> Admiral<'a> {
             Wing::Mining => self.mine(unit, here),
             Wing::Garrison | Wing::Survey | Wing::Recovery => self.survey(unit),
         }
+    }
+
+    /// In a fight: stay while the server's odds of it, as it stands, are
+    /// `LEAVE_ODDS` or better, and otherwise jump out toward home under
+    /// fire. A fleet that cannot leave fights on.
+    fn fight(&mut self, unit: Unit) -> u64 {
+        let leaves = unit.fleet.flight.as_ref().is_some_and(|flight| flight.ratio < LEAVE_ODDS && flight.refusal.is_none());
+        if leaves { self.head_home(unit) } else { 1 }
     }
 
     /// After `hops` more jumps to `sector` the fleet still has the way home in the tank.
@@ -721,10 +744,17 @@ fn ratio(odds: &Odds, fleet: &FleetState, sector: &SectorState) -> Option<f32> {
     odds.get(&(fleet.id, sector.location.to_key())).copied()
 }
 
-/// Whether the server gives the fleet a fight in `sector` without lasting
-/// damage. No answer is a no.
+/// The fleet has a ship built to fight. One without picks no fight, whatever
+/// its odds: a hundred cargo ships beat a Battlecruiser every time the odds
+/// play it and lose twenty of themselves doing it.
+fn armed(fleet: &FleetState) -> bool {
+    fleet.ships.iter().any(|ships| Hull::of(ships.ship_class) == Hull::Warship)
+}
+
+/// Whether the server gives an armed fleet a fight in `sector` at the
+/// pilot's odds. No answer is a no.
 fn beats(odds: &Odds, fleet: &FleetState, sector: &SectorState) -> bool {
-    ratio(odds, fleet, sector).is_some_and(|ratio| ratio >= SAFE_ODDS)
+    armed(fleet) && ratio(odds, fleet, sector).is_some_and(|ratio| ratio >= SAFE_ODDS)
 }
 
 fn enterable(odds: &Odds, sector: &SectorState, fleet: &FleetState) -> bool {
@@ -732,8 +762,9 @@ fn enterable(odds: &Odds, sector: &SectorState, fleet: &FleetState) -> bool {
 }
 
 /// A site is boarded when it reads quiet, or when the sector it lies in
-/// reads favourable for the fleet: the guard an ambush wakes is a share of
-/// the group the sector is rated by.
+/// reads favourable for an armed fleet: the guard an ambush wakes is a
+/// share of the group the sector is rated by.
 fn boardable(odds: &Odds, fleet: &FleetState, sector: &SectorState, site: SiteBrief) -> bool {
-    site.risk == SiteRisk::Quiet || ratio(odds, fleet, sector).is_some_and(|ratio| ratio >= scaling::RATIO_FAVOURABLE)
+    site.risk == SiteRisk::Quiet
+        || (armed(fleet) && ratio(odds, fleet, sector).is_some_and(|ratio| ratio >= scaling::RATIO_FAVOURABLE))
 }

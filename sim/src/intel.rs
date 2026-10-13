@@ -23,7 +23,8 @@ use std::collections::BTreeSet;
 use iac_shared::hex::Hex;
 use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::protocol::{
-    FleetBrief, NpcBehavior, NpcFleetInfo, OutpostBrief, SectorResources, SectorState, ShipCount, SiteBrief,
+    FleetBrief, GroupErrand, NpcBehavior, NpcFleetInfo, OutpostBrief, SectorResources, SectorState, ShipCount,
+    SiteBrief,
 };
 use iac_shared::scaling::{self, Arms};
 use iac_shared::world::{NpcBehaviorType, NpcTemplate};
@@ -469,6 +470,38 @@ fn template_hostile(coord: Hex, tmpl: &NpcTemplate) -> NpcFleetInfo {
         ships: Ships::of(&[(tmpl.ship_class, count)]).states(Arms::of_grade(tmpl.stat_multiplier)),
         ship_count: count,
         behavior: behavior(tmpl.behavior),
+        muster: count,
+        whole_at: None,
+        jump_ticks: scaling::npc_jump_ticks(tmpl.ship_class, coord.dist_from_origin()),
+        chase_hexes: tmpl.behavior.chase_hexes(),
+        errand: None,
+    }
+}
+
+/// A group that stands somewhere, as a sector view lists it.
+fn live_hostile(engine: &GameEngine, npc: &NpcFleet) -> NpcFleetInfo {
+    let away = npc.location != npc.home_sector || npc.errand.is_some();
+    let quarry = npc.errand.and_then(|errand| errand.quarry);
+    NpcFleetInfo {
+        id: npc.id,
+        ships: npc.ships.states(npc.arms),
+        ship_count: npc.ships.total(),
+        behavior: behavior(npc.behavior),
+        muster: npc.muster.total(),
+        whole_at: engine.group_whole_at(npc),
+        jump_ticks: npc.jump_ticks(),
+        chase_hexes: npc.behavior.chase_hexes(),
+        errand: away.then(|| GroupErrand {
+            home: npc.home_sector,
+            quarry,
+            quarry_owner: quarry
+                .and_then(|id| engine.fleets.get(&id))
+                .and_then(|fleet| engine.players.get(&fleet.owner_id))
+                .map(|owner| owner.name.clone()),
+            to: npc.errand.map(|errand| errand.to),
+            arrives_at: npc.errand.map(|errand| errand.arrives),
+            hexes_left: npc.leash(),
+        }),
     }
 }
 
@@ -542,15 +575,8 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
     let (metal_d, crystal_d, deut_d) = SectorOverride::effective_densities(ov, &template);
     let pending = engine.pending_template_in(coord, &template, ov);
 
-    let mut hostile_list: Vec<NpcFleetInfo> = Vec::new();
-    for npc in npcs {
-        hostile_list.push(NpcFleetInfo {
-            id: npc.id,
-            ships: npc.ships.states(npc.arms),
-            ship_count: npc.ships.total(),
-            behavior: behavior(npc.behavior),
-        });
-    }
+    let mut hostile_list: Vec<NpcFleetInfo> =
+        npcs.iter().filter(|npc| !npc.ships.is_empty()).map(|npc| live_hostile(engine, npc)).collect();
     hostile_list.sort_by_key(|h| h.id);
 
     // A template hostile that has not materialised yet carries the id it

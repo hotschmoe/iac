@@ -159,6 +159,16 @@ sealed class Command {
   Json toJson();
 }
 
+/// Jump to the connected sector `target`. The fuel is paid at once and
+/// the jump charges for the fleet's `jump_ticks`, set by its slowest
+/// ship.
+///
+/// From inside a fight it is flight (`FleetState.flight` quotes it): the
+/// fleet stops firing and is fired on every round until it is gone, one
+/// round fewer than its jump takes ticks and never fewer than
+/// `FLEE_MIN_ROUNDS`. `stop` calls the jump off, the fuel is forfeit and
+/// the fleet fights on. When the last fleet has left, a group that was
+/// beating it may follow (`FleetState.pursued_by`).
 class MoveCommand extends Command {
   final int fleetId;
   final Hex target;
@@ -827,6 +837,15 @@ class PolicyParams {
   /// Clamped to 1..=100. Default 15 (1.5x, FAVOURABLE).
   final int engageRatioX10;
 
+  /// Leave a fight once the fleet's odds in it fall below this / 10. Every
+  /// `POLICY_EVAL_INTERVAL` ticks of a fight the odds are read again from
+  /// the two sides as they then stand, and below the ratio the fleet jumps
+  /// out toward home under fire, as a `move` out of a fight does, and
+  /// reports it as a `PolicyAction` `flee` with the odds. Whatever doctrine
+  /// it flies, and however it came into the fight. Clamped to 1..=100 and
+  /// never above `engage_ratio_x10`. Default 9 (0.9x, the edge of RISKY).
+  final int disengageRatioX10;
+
   /// The share of the homeworld's deuterium income, in percent, that this
   /// fleet may spend on fuel while it flies under these orders. The fleet
   /// earns an allowance at that share of the current deuterium production
@@ -855,6 +874,7 @@ class PolicyParams {
     this.cargoReturnPct = 85,
     this.maxRange = 4,
     this.engageRatioX10 = 15,
+    this.disengageRatioX10 = 9,
     this.fuelBudgetPct = 20,
     this.refine = false,
   });
@@ -866,6 +886,7 @@ class PolicyParams {
       cargoReturnPct: _opt(m['cargo_return_pct'], _int) ?? 85,
       maxRange: _opt(m['max_range'], _int) ?? 4,
       engageRatioX10: _opt(m['engage_ratio_x10'], _int) ?? 15,
+      disengageRatioX10: _opt(m['disengage_ratio_x10'], _int) ?? 9,
       fuelBudgetPct: _opt(m['fuel_budget_pct'], _int) ?? 20,
       refine: _opt(m['refine'], _bool) ?? false,
     );
@@ -876,11 +897,20 @@ class PolicyParams {
     'cargo_return_pct': cargoReturnPct,
     'max_range': maxRange,
     'engage_ratio_x10': engageRatioX10,
+    'disengage_ratio_x10': disengageRatioX10,
     'fuel_budget_pct': fuelBudgetPct,
     'refine': refine,
   };
 
-  List<Object?> get _props => [minFuelPct, cargoReturnPct, maxRange, engageRatioX10, fuelBudgetPct, refine];
+  List<Object?> get _props => [
+    minFuelPct,
+    cargoReturnPct,
+    maxRange,
+    engageRatioX10,
+    disengageRatioX10,
+    fuelBudgetPct,
+    refine,
+  ];
 
   @override
   bool operator ==(Object other) => other is PolicyParams && _same(_props, other._props);
@@ -1357,6 +1387,10 @@ class MovePreview extends ServerMessage {
   final double ratio;
   final RatioLabel label;
 
+  /// The fleet is in a fight, so this jump is flight: what it costs, and
+  /// whether a group would follow it to `target`. Absent outside a fight.
+  final FlightQuote? flight;
+
   const MovePreview({
     required this.fleetId,
     required this.target,
@@ -1372,6 +1406,7 @@ class MovePreview extends ServerMessage {
     required this.fleetPower,
     required this.ratio,
     required this.label,
+    this.flight,
   });
 
   factory MovePreview.fromJson(Object? json) {
@@ -1391,6 +1426,7 @@ class MovePreview extends ServerMessage {
       fleetPower: _double(m['fleet_power']),
       ratio: _double(m['ratio']),
       label: RatioLabel.fromJson(m['label']),
+      flight: _opt(m['flight'], FlightQuote.fromJson),
     );
   }
 
@@ -1411,6 +1447,7 @@ class MovePreview extends ServerMessage {
     'fleet_power': fleetPower,
     'ratio': ratio,
     'label': label.toJson(),
+    'flight': ?flight?.toJson(),
   };
 }
 
@@ -2191,6 +2228,18 @@ class FleetState {
 
   /// What mending its damaged ships would take; absent when none is damaged.
   final RepairQuote? repair;
+
+  /// The fleet is in a fight and firing: what a `move` out of it would
+  /// cost right now, and why it would be refused if it would. Absent
+  /// outside a fight and once the fleet is leaving one.
+  final FlightQuote? flight;
+
+  /// The fleet is charging a jump while hostiles fire on it: it does not
+  /// answer, and stays a target until it is gone. Its `state` is `Moving`.
+  final Fleeing? fleeing;
+
+  /// A hostile group is following the fleet and jumping to where it stands.
+  final Pursuit? pursuedBy;
   final Resources cargo;
 
   /// Hold size: the most `cargo` can total, as the server enforces it.
@@ -2282,6 +2331,9 @@ class FleetState {
     required this.refit,
     this.refitDue = false,
     this.repair,
+    this.flight,
+    this.fleeing,
+    this.pursuedBy,
     required this.cargo,
     required this.cargoCapacity,
     required this.fuel,
@@ -2317,6 +2369,9 @@ class FleetState {
       refit: Refit.fromJson(m['refit']),
       refitDue: _opt(m['refit_due'], _bool) ?? false,
       repair: _opt(m['repair'], RepairQuote.fromJson),
+      flight: _opt(m['flight'], FlightQuote.fromJson),
+      fleeing: _opt(m['fleeing'], Fleeing.fromJson),
+      pursuedBy: _opt(m['pursued_by'], Pursuit.fromJson),
       cargo: Resources.fromJson(m['cargo']),
       cargoCapacity: _double(m['cargo_capacity']),
       fuel: _double(m['fuel']),
@@ -2351,6 +2406,9 @@ class FleetState {
     'refit': refit.toJson(),
     'refit_due': refitDue,
     'repair': ?repair?.toJson(),
+    'flight': ?flight?.toJson(),
+    'fleeing': ?fleeing?.toJson(),
+    'pursued_by': ?pursuedBy?.toJson(),
     'cargo': cargo.toJson(),
     'cargo_capacity': cargoCapacity,
     'fuel': fuel,
@@ -2369,6 +2427,189 @@ class FleetState {
     'outpost_fuel': ?outpostFuel,
     'refine': ?refine?.toJson(),
     'policy': ?policy?.toJson(),
+  };
+}
+
+/// What leaving a fight costs a fleet, as things stand this tick. The price
+/// of flight is the rounds it takes without firing back, the damage, which
+/// stays until a dock mends it, the fuel, nothing earned from a group that
+/// was not destroyed, and pursuit if the fleet is the slower.
+class FlightQuote {
+  /// Fuel the jump out burns: `jump_fuel` times `FLEE_FUEL_MULTIPLIER`.
+  final double fuel;
+
+  /// Ticks from the order until the fleet is gone.
+  final int ticks;
+
+  /// Rounds of fire it takes in that time without answering.
+  final int rounds;
+
+  /// The odds of the fight as it stands now, both sides with the losses
+  /// and the damage they have taken: what `SectorOdds` would say of it,
+  /// and what a standing order's `disengage_ratio_x10` is held against.
+  final double ratio;
+  final RatioLabel label;
+
+  /// Why a `move` out would be refused now, in the engine's words; absent
+  /// when it would be taken.
+  final String? refusal;
+
+  /// The group that would follow the fleet if it left now and the others
+  /// with it; absent when none would. In a `MovePreview` it is for the
+  /// jump to `target`: no group follows into home ground, the hub or a
+  /// sector an outpost stands in.
+  final ChaseForecast? chase;
+
+  const FlightQuote({
+    required this.fuel,
+    required this.ticks,
+    required this.rounds,
+    required this.ratio,
+    required this.label,
+    this.refusal,
+    this.chase,
+  });
+
+  factory FlightQuote.fromJson(Object? json) {
+    final m = _obj(json);
+    return FlightQuote(
+      fuel: _double(m['fuel']),
+      ticks: _int(m['ticks']),
+      rounds: _int(m['rounds']),
+      ratio: _double(m['ratio']),
+      label: RatioLabel.fromJson(m['label']),
+      refusal: _opt(m['refusal'], _string),
+      chase: _opt(m['chase'], ChaseForecast.fromJson),
+    );
+  }
+
+  Json toJson() => {
+    'fuel': fuel,
+    'ticks': ticks,
+    'rounds': rounds,
+    'ratio': ratio,
+    'label': label.toJson(),
+    'refusal': ?refusal,
+    'chase': ?chase?.toJson(),
+  };
+}
+
+/// How a group would follow a fleet that left it now.
+class ChaseForecast {
+  final int groupId;
+
+  /// What the group is ("3x cruiser pack").
+  final String label;
+
+  /// Jumps it would make after the fleet before it turns back.
+  final int hexes;
+
+  /// Ticks one jump takes it.
+  final int jumpTicks;
+
+  /// Rounds it would fire on the fleet at each of those hexes, if the
+  /// fleet orders its next jump the moment it lands: the difference of the
+  /// two jump times, 0 for a fleet as fast as the group. A fleet that
+  /// stops is caught and the fight is joined again.
+  final int roundsPerHex;
+
+  const ChaseForecast({
+    required this.groupId,
+    required this.label,
+    required this.hexes,
+    required this.jumpTicks,
+    required this.roundsPerHex,
+  });
+
+  factory ChaseForecast.fromJson(Object? json) {
+    final m = _obj(json);
+    return ChaseForecast(
+      groupId: _int(m['group_id']),
+      label: _string(m['label']),
+      hexes: _int(m['hexes']),
+      jumpTicks: _int(m['jump_ticks']),
+      roundsPerHex: _int(m['rounds_per_hex']),
+    );
+  }
+
+  Json toJson() => {
+    'group_id': groupId,
+    'label': label,
+    'hexes': hexes,
+    'jump_ticks': jumpTicks,
+    'rounds_per_hex': roundsPerHex,
+  };
+}
+
+/// A jump out of a fight under way.
+class Fleeing {
+  final Hex to;
+
+  /// Ticks until the fleet is gone.
+  final int ticks;
+
+  /// Rounds of fire it still takes.
+  final int rounds;
+
+  const Fleeing({required this.to, required this.ticks, required this.rounds});
+
+  factory Fleeing.fromJson(Object? json) {
+    final m = _obj(json);
+    return Fleeing(to: Hex.fromJson(m['to']), ticks: _int(m['ticks']), rounds: _int(m['rounds']));
+  }
+
+  Json toJson() => {'to': to.toJson(), 'ticks': ticks, 'rounds': rounds};
+}
+
+/// A group on a fleet's trail, as the fleet's owner is told of it.
+class Pursuit {
+  final int groupId;
+
+  /// What the group is ("3x cruiser pack").
+  final String label;
+
+  /// The sector it is jumping from.
+  final Hex from;
+
+  /// Ticks until it lands where the fleet stands.
+  final int arrivesIn;
+
+  /// It lands before the fleet can be gone: before the jump the fleet is
+  /// charging lands or, for a fleet that is not charging one, before a
+  /// jump ordered now would. It then fires on the fleet.
+  final bool catches;
+
+  /// Jumps it will still make after this one before it turns back.
+  final int hexesLeft;
+
+  const Pursuit({
+    required this.groupId,
+    required this.label,
+    required this.from,
+    required this.arrivesIn,
+    required this.catches,
+    required this.hexesLeft,
+  });
+
+  factory Pursuit.fromJson(Object? json) {
+    final m = _obj(json);
+    return Pursuit(
+      groupId: _int(m['group_id']),
+      label: _string(m['label']),
+      from: Hex.fromJson(m['from']),
+      arrivesIn: _int(m['arrives_in']),
+      catches: _bool(m['catches']),
+      hexesLeft: _int(m['hexes_left']),
+    );
+  }
+
+  Json toJson() => {
+    'group_id': groupId,
+    'label': label,
+    'from': from.toJson(),
+    'arrives_in': arrivesIn,
+    'catches': catches,
+    'hexes_left': hexesLeft,
   };
 }
 
@@ -2775,8 +3016,9 @@ class SectorResources {
   Json toJson() => {'metal': metal.toJson(), 'crystal': crystal.toJson(), 'deuterium': deuterium.toJson()};
 }
 
-/// A hostile group. `ships` is by class as a fleet's is; a group that has
-/// not fought, or was only remembered, is listed whole.
+/// A hostile group. `ships` is by class as a fleet's is. A group keeps the
+/// losses and the damage of its fights: it is listed as it stands, and
+/// mends only at rest in its own sector.
 class NpcFleetInfo {
   final int id;
   final List<ShipGroupState> ships;
@@ -2785,7 +3027,37 @@ class NpcFleetInfo {
   final int shipCount;
   final NpcBehavior behavior;
 
-  const NpcFleetInfo({required this.id, required this.ships, required this.shipCount, required this.behavior});
+  /// Ships it has when whole: `muster - ship_count` are lost.
+  final int muster;
+
+  /// The tick it will be whole again, ships and hull, if nothing disturbs
+  /// it; absent for a group that is whole. It mends in steps and only at
+  /// rest in its own sector: a fight or a pursuit stops the clock and the
+  /// tick moves. On a sector that is not `live` it is what was true at
+  /// `last_seen`; the odds count such a group whole once the tick is past.
+  final int? wholeAt;
+
+  /// Ticks one jump takes it.
+  final int jumpTicks;
+
+  /// The most jumps it makes after a fleet that leaves a fight with it:
+  /// 0 for a group that never follows.
+  final int chaseHexes;
+
+  /// It is following a fleet or on its way back to its own sector.
+  final GroupErrand? errand;
+
+  const NpcFleetInfo({
+    required this.id,
+    required this.ships,
+    required this.shipCount,
+    required this.behavior,
+    required this.muster,
+    this.wholeAt,
+    required this.jumpTicks,
+    required this.chaseHexes,
+    this.errand,
+  });
 
   factory NpcFleetInfo.fromJson(Object? json) {
     final m = _obj(json);
@@ -2794,6 +3066,11 @@ class NpcFleetInfo {
       ships: _list(m['ships'], ShipGroupState.fromJson),
       shipCount: _int(m['ship_count']),
       behavior: NpcBehavior.fromJson(m['behavior']),
+      muster: _int(m['muster']),
+      wholeAt: _opt(m['whole_at'], _int),
+      jumpTicks: _int(m['jump_ticks']),
+      chaseHexes: _int(m['chase_hexes']),
+      errand: _opt(m['errand'], GroupErrand.fromJson),
     );
   }
 
@@ -2802,6 +3079,60 @@ class NpcFleetInfo {
     'ships': ships.map((e) => e.toJson()).toList(),
     'ship_count': shipCount,
     'behavior': behavior.toJson(),
+    'muster': muster,
+    'whole_at': ?wholeAt,
+    'jump_ticks': jumpTicks,
+    'chase_hexes': chaseHexes,
+    'errand': ?errand?.toJson(),
+  };
+}
+
+/// What takes a group out of its own sector. Its sector is empty meanwhile.
+class GroupErrand {
+  /// The sector it lairs in and goes back to.
+  final Hex home;
+
+  /// The fleet it follows and the empire that owns it; absent when it has
+  /// turned back.
+  final int? quarry;
+  final String? quarryOwner;
+
+  /// The sector it is jumping to and the tick it lands there; absent while
+  /// it fights.
+  final Hex? to;
+  final int? arrivesAt;
+
+  /// Jumps it will still make after a fleet before it turns back.
+  final int hexesLeft;
+
+  const GroupErrand({
+    required this.home,
+    this.quarry,
+    this.quarryOwner,
+    this.to,
+    this.arrivesAt,
+    required this.hexesLeft,
+  });
+
+  factory GroupErrand.fromJson(Object? json) {
+    final m = _obj(json);
+    return GroupErrand(
+      home: Hex.fromJson(m['home']),
+      quarry: _opt(m['quarry'], _int),
+      quarryOwner: _opt(m['quarry_owner'], _string),
+      to: _opt(m['to'], Hex.fromJson),
+      arrivesAt: _opt(m['arrives_at'], _int),
+      hexesLeft: _int(m['hexes_left']),
+    );
+  }
+
+  Json toJson() => {
+    'home': home.toJson(),
+    'quarry': ?quarry,
+    'quarry_owner': ?quarryOwner,
+    'to': ?to?.toJson(),
+    'arrives_at': ?arrivesAt,
+    'hexes_left': hexesLeft,
   };
 }
 
@@ -3988,6 +4319,7 @@ sealed class EventKind {
       'SectorEntered' => SectorEnteredEvent.fromJson(json),
       'CombatStarted' => CombatStartedEvent.fromJson(json),
       'CombatEnded' => CombatEndedEvent.fromJson(json),
+      'Pursuit' => PursuitEvent.fromJson(json),
       'SalvageCollected' => SalvageCollectedEvent.fromJson(json),
       'FleetArrived' => FleetArrivedEvent.fromJson(json),
       'BuildingCompleted' => BuildingCompletedEvent.fromJson(json),
@@ -4504,11 +4836,21 @@ class BattleGroup {
   /// The fleet is the receiver's.
   final bool mine;
 
+  /// The fleet is leaving: it was fired on this round and did not fire.
+  final bool fleeing;
+
   /// By unit, in catalogue order. A unit wiped out this round is listed
   /// once more with a count of 0.
   final List<BattleUnits> units;
 
-  const BattleGroup({required this.fleetId, this.owner, this.label = '', this.mine = false, required this.units});
+  const BattleGroup({
+    required this.fleetId,
+    this.owner,
+    this.label = '',
+    this.mine = false,
+    this.fleeing = false,
+    required this.units,
+  });
 
   factory BattleGroup.fromJson(Object? json) {
     final m = _obj(json);
@@ -4517,6 +4859,7 @@ class BattleGroup {
       owner: _opt(m['owner'], _string),
       label: _opt(m['label'], _string) ?? '',
       mine: _opt(m['mine'], _bool) ?? false,
+      fleeing: _opt(m['fleeing'], _bool) ?? false,
       units: _list(m['units'], BattleUnits.fromJson),
     );
   }
@@ -4526,6 +4869,7 @@ class BattleGroup {
     'owner': ?owner,
     if (label.isNotEmpty) 'label': label,
     'mine': mine,
+    'fleeing': fleeing,
     'units': units.map((e) => e.toJson()).toList(),
   };
 }
@@ -4644,12 +4988,19 @@ enum BattleOutcome {
   /// The last units of both sides fell in the same round.
   bothDestroyed('both_destroyed'),
 
-  /// Every fleet left the sector; the hostiles are whole again.
+  /// The last fleet made the emergency jump home. The hostiles keep the
+  /// losses and the damage they took, and mend in time.
   withdrawn('withdrawn'),
 
   /// `STANDOFF_ROUNDS` rounds took no hull from either side: nobody can
-  /// hurt anybody. The fleets stay; the hostiles are whole again.
-  standoff('standoff');
+  /// hurt anybody. Both sides stay where they are, as they are, and
+  /// nothing starts the fight again but an arrival or an `attack`.
+  standoff('standoff'),
+
+  /// The last fleet jumped out of the sector under fire. The hostiles keep
+  /// the losses and the damage they took; a group that was beating the
+  /// fleet may follow it (`Pursuit`).
+  fled('fled');
 
   const BattleOutcome(this.wire);
 
@@ -4725,6 +5076,105 @@ class UnitCount {
 
   @override
   int get hashCode => Object.hashAll(_props);
+}
+
+/// A group took up a fleet's trail, went on along it, or gave it up. A group
+/// that catches its fleet says so with `CombatStarted`. It reaches the
+/// fleet's owner and anyone present in `sector`.
+class PursuitEvent extends EventKind {
+  final int groupId;
+
+  /// What the group is ("3x cruiser pack").
+  final String label;
+
+  /// The fleet followed and the empire owning it.
+  final int fleetId;
+  final String owner;
+
+  /// The fleet is the receiver's.
+  final bool mine;
+
+  /// Where the group stands.
+  final Hex sector;
+  final PursuitPhase phase;
+
+  /// The sector it jumps to and the ticks until it lands there: where the
+  /// fleet stands for a pursuit begun or continued, the way back to its
+  /// own sector for one given up. Absent when it gave up at home.
+  final Hex? to;
+  final int? arrivesIn;
+
+  /// Jumps it will still make after this one before it turns back.
+  final int hexesLeft;
+
+  /// Why it gave up, in the engine's words; absent otherwise.
+  final String? why;
+
+  const PursuitEvent({
+    required this.groupId,
+    required this.label,
+    required this.fleetId,
+    required this.owner,
+    this.mine = false,
+    required this.sector,
+    required this.phase,
+    this.to,
+    this.arrivesIn,
+    required this.hexesLeft,
+    this.why,
+  });
+
+  factory PursuitEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return PursuitEvent(
+      groupId: _int(m['group_id']),
+      label: _string(m['label']),
+      fleetId: _int(m['fleet_id']),
+      owner: _string(m['owner']),
+      mine: _opt(m['mine'], _bool) ?? false,
+      sector: Hex.fromJson(m['sector']),
+      phase: PursuitPhase.fromJson(m['phase']),
+      to: _opt(m['to'], Hex.fromJson),
+      arrivesIn: _opt(m['arrives_in'], _int),
+      hexesLeft: _int(m['hexes_left']),
+      why: _opt(m['why'], _string),
+    );
+  }
+
+  @override
+  Json toJson() => {
+    'kind': 'Pursuit',
+    'group_id': groupId,
+    'label': label,
+    'fleet_id': fleetId,
+    'owner': owner,
+    'mine': mine,
+    'sector': sector.toJson(),
+    'phase': phase.toJson(),
+    'to': ?to?.toJson(),
+    'arrives_in': ?arrivesIn,
+    'hexes_left': hexesLeft,
+    'why': ?why,
+  };
+}
+
+enum PursuitPhase {
+  /// The fight broke off and the group set out after the fleet.
+  began('began'),
+
+  /// It landed where the fleet had been and jumped on after it.
+  continued('continued'),
+
+  /// It turned back.
+  abandoned('abandoned');
+
+  const PursuitPhase(this.wire);
+
+  final String wire;
+
+  static PursuitPhase fromJson(Object? json) => _named(values, (v) => v.wire, json);
+
+  String toJson() => wire;
 }
 
 /// Ships a fleet lost outside a fight: those that broke up in an emergency
@@ -5939,8 +6389,8 @@ class ShipyardItem {
 /// quadratic in fleet size, so the bands sit close together around 1.0 and
 /// a fight is decided long before the ratio reaches 2.
 enum RatioLabel {
-  deadly('deadly', label: 'DEADLY', outcome: 'the fleet is lost'),
-  risky('risky', label: 'RISKY', outcome: 'as likely lost as won'),
+  deadly('deadly', label: 'DEADLY', outcome: 'the fleet is lost unless it leaves'),
+  risky('risky', label: 'RISKY', outcome: 'as likely lost as won, fought to the end'),
   even(
     'even',
     label: 'EVEN',
@@ -6094,3 +6544,21 @@ const explodeBelowPct = 70;
 /// A fleet under orders whose hull has fallen below this share of full goes
 /// home to be mended before it does anything else. Provisional.
 const double policyHullReady = 0.8500000238418579;
+
+const policyDisengageRatioX10Min = 1;
+
+const policyDisengageRatioX10Max = 100;
+
+/// Flight (`docs/design/ogame.md`, section 7.4). A fleet that orders a jump
+/// out of a fight stops firing and is fired on until it is gone: for one
+/// round fewer than its jump takes ticks, and never fewer than this.
+/// Provisional: the least any flight costs.
+const fleeMinRounds = 1;
+
+/// The jump out of a fight burns this many times a jump's fuel. Provisional;
+/// the emergency recall's is `RECALL_FUEL_MULTIPLIER`.
+const double fleeFuelMultiplier = 1;
+
+/// A group follows only what it was beating: its power when the fight broke
+/// off must be at least this many times the fleet's. Provisional.
+const double chaseMinRatio = 1;

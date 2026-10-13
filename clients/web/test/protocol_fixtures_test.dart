@@ -100,11 +100,11 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 28 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 29 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 28);
+      expect(kinds.length, 29);
     });
 
     test('command fixtures cover all 28 commands', () {

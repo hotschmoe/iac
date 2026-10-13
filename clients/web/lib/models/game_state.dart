@@ -44,7 +44,16 @@ class PolicyAct {
   const PolicyAct({required this.tick, required this.since, required this.preset, required this.action, required this.reason});
 
   bool get isHold => action == 'hold';
+
+  /// The fleet left a fight because its odds fell below the doctrine's.
+  bool get isFlight => action == policyFlee;
+
+  /// The verb as a report's heading says it.
+  String get heading => isFlight ? 'left a fight' : action;
 }
+
+/// The engine's verb for a fleet under orders that jumps out of a fight.
+const policyFlee = 'flee';
 
 enum EventLevel {
   full(Color(0xFFFFB000)),
@@ -268,6 +277,15 @@ class GameState {
 
   /// The fight in [sector], under way or just ended.
   Battle? battleAt(proto.Hex sector) => battles[sector];
+
+  /// The fight [fleet] has to be told of: the one where it stands, or else
+  /// the one it has left, once that has ended.
+  Battle? battleOf(FleetState fleet) {
+    final here = battles[fleet.sector];
+    final left = battles[fleet.foughtAt];
+    if (left == null || !left.over || (here != null && (!here.over || here.endedTick >= left.endedTick))) return here;
+    return left;
+  }
 
   /// The survey of [sector] for [fleetId] as the server last answered it.
   SurveyEntry? surveyOf(int fleetId, proto.Hex sector) => surveys[(fleetId, sector)];

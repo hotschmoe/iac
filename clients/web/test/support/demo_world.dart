@@ -62,6 +62,17 @@ class _Book {
   double derelictValue(int ring) => (_ring(ring)['derelict_value'] as num).toDouble();
   int derelictTier(int ring) => _ring(ring)['derelict_tier'] as int;
 
+  /// Ticks one jump takes the group a ring spawns.
+  int npcJumpTicks(int ring) => _ring(ring)['npc_jump_ticks'] as int;
+
+  /// The most jumps a group of [behavior] makes after a fleet that left it.
+  int chaseHexes(NpcBehavior behavior) => constants('CHASE_HEXES')[behavior.index].round();
+
+  /// The steps a wounded group mends in, and the ticks between two of them
+  /// for a group whose lair is at [ring], at this pace.
+  late final int healSteps = constant('NPC_HEAL_STEPS').round();
+  int healStepTicks(int ring) => _row('group_healing', (r) => r['ring'] == max(1, ring) && r['pace'] == pace)['step_ticks'] as int;
+
   Map<String, dynamic> _ringRule(int ring) => (_game['rings'] as List<dynamic>).cast<Map<String, dynamic>>().firstWhere((r) => r['ring'] == max(1, ring));
 
   ShipClass npcClass(int ring) => ShipClass.fromJson(_ringRule(ring)['npc_class']);
@@ -140,7 +151,40 @@ class _Combat {
 
   /// What the fleet and the group have lost so far, by class.
   final Map<ShipClass, int> fleetLost = {}, groupLost = {};
+
+  /// The sector the fleet is jumping out to and the rounds it is still
+  /// fired on before it is gone; null while it fights.
+  Hex? fleeTo;
+  int fleeRounds = 0;
   _Combat(this.fleetId, this.sector, this.npc, this.label);
+}
+
+/// A jump a hostile group is making: after the fleet [quarry], or back to
+/// its lair when that is null.
+class _Errand {
+  final int? quarry;
+  final Hex to;
+  final int arrives;
+  const _Errand(this.quarry, this.to, this.arrives);
+}
+
+/// What the scripted world keeps of a hostile group beside its ships: the
+/// sector it lairs in and the one it stands in, what it musters when whole,
+/// how long it has rested since its last step of mending, how many jumps it
+/// has made after a fleet since it was last home, and the jump it is making.
+class _Group {
+  final Hex lair;
+  final NpcBehavior behavior;
+  final List<_Squad> muster;
+
+  /// What it is called, from what it musters: the name does not change
+  /// with its losses.
+  final String label;
+  Hex at;
+  int rested = 0;
+  int strayed = 0;
+  _Errand? errand;
+  _Group(this.lair, this.behavior, this.muster, this.label) : at = lair;
 }
 
 class _Explore {
@@ -202,6 +246,22 @@ class _Outpost {
 /// its hull explodes. Pirates fight on their class's base figures, without
 /// their ring's multiplier. The docks mend as the engine's do.
 ///
+/// A fleet in a fight may be given a `move`: it pays the jump at once, stops
+/// firing, is fired on for the engine's count of rounds and lands a tick
+/// after the last, and the fight ends `fled`. `stop` calls the jump off and
+/// the engine's alert says what it cost. A group that is not destroyed
+/// keeps its losses and its damage and mends in the engine's steps, at rest
+/// in its lair. One that was beating the fleet follows it as far as its
+/// behaviour's leash, never into home ground, the hub or the outpost's
+/// sector, fires on a fleet it finds, and goes home when it finds none.
+/// Every group of a ring jumps in the ticks the ring's own class takes.
+/// A jump out of a fight is charged before it is made, as the engine's
+/// jumps are; every other jump here is made at once and its time is a
+/// cooldown after it. So a fleet that jumps on the moment it lands is gone
+/// before its pursuer lands, whatever the two speeds, and one that stays,
+/// or whose cooldown has not run out, is caught. The odds of a fight as it
+/// stands are power against power, as every odds figure of this world is.
+///
 /// Layout (home H=(4,-2); fleet 101 starts at S0=(6,-4)):
 ///   N (6,-5) T3 fighter patrol     NE (7,-5) nebula, derelict tier 1
 ///   SE (7,-4) debris, salvage      SW (5,-3) toward home
@@ -259,6 +319,9 @@ class DemoWorld {
   /// levels each of the player's fleets fights with.
   final Map<int, List<_Squad>> _squads = {};
   final Map<int, Refit> _refits = {};
+
+  /// Every hostile group, by its id.
+  final Map<int, _Group> _groups = {};
 
   /// The fleets the home dock has already seen to since they came in.
   final Set<int> _tended = {};
@@ -597,7 +660,7 @@ class DemoWorld {
 
   void _seedWorld() {
     _authored.forEach((k, au) {
-      if (au.npc != null) _hostiles[k] = [_npcGroup(au.npc!, au.b!)];
+      if (au.npc != null) _hostiles[k] = [_npcGroup(au.npc!, au.b!, Hex.fromKey(k))];
       if (au.salv != null) _salvage[k] = (au.salv!, _tick + 2400);
       if (au.risk != null) _sites[k] = SiteBrief(tier: au.tier, risk: au.risk!);
     });
@@ -612,7 +675,7 @@ class DemoWorld {
       // authored ones come at a fleet.
       if (Hex.distance(h, _home) > 2 && _h01(h.q, h.r, 5) < _book.npcPresence(d)) {
         final beh = _h01(h.q, h.r, 6) < _book.npcPassiveShare(d) ? NpcBehavior.passive : NpcBehavior.patrol;
-        _hostiles[k] = [_npcGroup([(_book.npcClass(d), _book.npcCount(d))], beh)];
+        _hostiles[k] = [_npcGroup([(_book.npcClass(d), _book.npcCount(d))], beh, h)];
       }
       if (_h01(h.q, h.r, 8) < .08) {
         _salvage[k] = (
@@ -654,15 +717,79 @@ class DemoWorld {
     }
   }
 
-  NpcFleetInfo _npcGroup(List<(ShipClass, int)> comp, NpcBehavior b) {
+  NpcFleetInfo _npcGroup(List<(ShipClass, int)> comp, NpcBehavior b, Hex lair) {
     final id = _nextNpcFleet++;
     _squads[id] = [for (final c in comp) _Squad(c.$1, c.$2)];
-    return _npcInfo(id, b);
+    _groups[id] = _Group(lair, b, [for (final c in comp) _Squad(c.$1, c.$2)], _groupLabel(comp, b));
+    return _npcInfo(id);
+  }
+
+  /// Jumps group [g] may still make after a fleet before it turns back.
+  int _leash(_Group g) => max(0, _book.chaseHexes(g.behavior) - g.strayed);
+
+  int _groupJumpTicks(_Group g) => _book.npcJumpTicks(g.lair.distFromOrigin);
+
+  /// The engine's `heal_steps`: steps of mending until group [id] is its
+  /// muster again, 0 for one that is whole.
+  int _healSteps(int id) {
+    final g = _groups[id]!;
+    var steps = 0;
+    for (final theirs in g.muster) {
+      final full = _npcArms(theirs.cls).hull;
+      final here = _squads[id]!.where((s) => s.cls == theirs.cls).firstOrNull;
+      final short = theirs.count - (here?.count ?? 0);
+      final lowest = here == null || here.wounds.isEmpty ? full : here.wounds.first;
+      final ships = (short / _healShips(theirs.count)).ceil();
+      final hull = ((full - lowest) / _healHull(full)).ceil();
+      steps = max(steps, max(ships, hull));
+    }
+    return steps;
+  }
+
+  int _healShips(int muster) => max(1, (muster / _book.healSteps).ceil());
+  int _healHull(int full) => max(1, (full / _book.healSteps).ceil());
+
+  /// The engine's `group_whole_at`: the tick group [id] is whole again if
+  /// it mends undisturbed from now; null for one that is whole.
+  int? _wholeAt(int id) {
+    final steps = _healSteps(id);
+    if (steps == 0) return null;
+    final g = _groups[id]!;
+    final resting = g.errand == null && g.at == g.lair && !_combats.values.any((c) => c.npc.id == id);
+    return _tick + max(0, steps * _book.healStepTicks(g.lair.distFromOrigin) - (resting ? g.rested : 0));
   }
 
   /// A hostile group as a sector lists it, from the ships it has now.
-  NpcFleetInfo _npcInfo(int id, NpcBehavior b) =>
-      NpcFleetInfo(id: id, ships: _rows(_squads[id]!, _npcArms), shipCount: _shipsIn(_squads[id]!), behavior: b);
+  NpcFleetInfo _npcInfo(int id) {
+    final g = _groups[id]!;
+    final errand = g.errand;
+    return NpcFleetInfo(
+      id: id,
+      ships: _rows(_squads[id]!, _npcArms),
+      shipCount: _shipsIn(_squads[id]!),
+      behavior: g.behavior,
+      muster: _shipsIn(g.muster),
+      wholeAt: _wholeAt(id),
+      jumpTicks: _groupJumpTicks(g),
+      chaseHexes: _book.chaseHexes(g.behavior),
+      errand: errand == null && g.at == g.lair
+          ? null
+          : GroupErrand(
+              home: g.lair,
+              quarry: errand?.quarry,
+              quarryOwner: errand?.quarry == null ? null : 'Demo',
+              to: errand?.to,
+              arrivesAt: errand?.arrives,
+              hexesLeft: _leash(g)),
+    );
+  }
+
+  /// List group [id] again where it stands, as it now is.
+  void _relist(int id) {
+    final k = _groups[id]!.at.toKey();
+    _hostiles[k] = [for (final h in _hostiles[k] ?? const <NpcFleetInfo>[]) h.id == id ? _npcInfo(id) : h];
+    _dirty.add(k);
+  }
 
   Set<int> _computeLive() {
     final out = <int>{};
@@ -1336,7 +1463,16 @@ class DemoWorld {
   /// The server's `policy_update`, with the reports it makes: `clear` for
   /// manual, `engage` naming the settings the orders fly with, and the end
   /// of a hold loaded by hand.
-  List<ServerMessage> _policy(int fleetId, PolicyPreset preset, PolicyParams params) {
+  List<ServerMessage> _policy(int fleetId, PolicyPreset preset, PolicyParams asked) {
+    final params = PolicyParams(
+      minFuelPct: asked.minFuelPct,
+      cargoReturnPct: asked.cargoReturnPct,
+      maxRange: asked.maxRange,
+      engageRatioX10: asked.engageRatioX10,
+      fuelBudgetPct: asked.fuelBudgetPct,
+      refine: asked.refine,
+      disengageRatioX10: min(asked.disengageRatioX10, asked.engageRatioX10),
+    );
     final f = _find(fleetId);
     if (f == null) {
       return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left); its standing orders were not changed')];
@@ -1355,7 +1491,8 @@ class DemoWorld {
         fleetId: fleetId,
         preset: preset,
         action: 'engage',
-        reason: 'doctrine set: ${preset.label} (range ${params.maxRange}, engage ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x, $fuel'
+        reason: 'doctrine set: ${preset.label} (range ${params.maxRange}, engage ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x, '
+            'disengage ${(params.disengageRatioX10 / 10).toStringAsFixed(1)}x, $fuel'
             '${params.refine ? ', refining from the hold when short of fuel' : ''})'
             '${f.laden ? '; the hold loaded by hand goes back to the stockpile' : ''}'));
     return [_tickUpdate()];
@@ -1449,6 +1586,7 @@ class DemoWorld {
     _stepHarvest();
     _stepRecall();
     _stepExplore();
+    _stepGroups();
     _stepCombat();
     _stepQueues();
     _stepDocks();
@@ -1533,15 +1671,16 @@ class DemoWorld {
   /// What a hostile group is called, in the words of the engine's
   /// `hostile_label`: "light fighter patrol", "3x cruiser pack". A group of
   /// several classes is named by its first.
-  static String _groupLabel(NpcFleetInfo npc) {
-    final noun = switch (npc.behavior) {
+  static String _groupLabel(List<(ShipClass, int)> comp, NpcBehavior behavior) {
+    final noun = switch (behavior) {
       NpcBehavior.passive => 'convoy',
       NpcBehavior.patrol => 'patrol',
       NpcBehavior.aggressive => 'pack',
       NpcBehavior.swarm => 'swarm',
     };
-    final cls = npc.ships.first.shipClass.label.toLowerCase();
-    return npc.shipCount > 1 ? '${npc.shipCount}x $cls $noun' : '$cls $noun';
+    final cls = comp.first.$1.label.toLowerCase();
+    final count = comp.fold(0, (n, c) => n + c.$2);
+    return count > 1 ? '${count}x $cls $noun' : '$cls $noun';
   }
 
   // ── Per-tick systems ──────────────────────────────────────────
@@ -1627,7 +1766,7 @@ class DemoWorld {
       _sites.remove(k);
       _dirty.add(k);
       if (site.risk == SiteRisk.hot && _rng.nextDouble() < .6) {
-        final g = _npcGroup([(_book.npcClass(x.sector.distFromOrigin), 2)], NpcBehavior.aggressive);
+        final g = _npcGroup([(_book.npcClass(x.sector.distFromOrigin), 2)], NpcBehavior.aggressive, x.sector);
         _hostiles[k] = [...?_hostiles[k], g];
         _ev(SiteAmbushEvent(fleetId: id, sector: x.sector, npcFleetId: g.id));
         _setFleet(_copy(f, state: FleetStatus.idle));
@@ -1791,7 +1930,7 @@ class DemoWorld {
   // ── Combat ────────────────────────────────────────────────────
 
   void _startCombat(FleetState f, NpcFleetInfo npc) {
-    final label = _groupLabel(npc);
+    final label = _groups[npc.id]!.label;
     _combats[f.id] = _Combat(f.id, f.location, npc, label);
     _recall.remove(f.id);
     _explores.remove(f.id);
@@ -1799,13 +1938,221 @@ class DemoWorld {
     _ev(CombatStartedEvent(playerFleetId: f.id, owner: 'Demo', enemyFleetId: npc.id, enemy: label, sector: f.location, mine: true));
   }
 
-  /// A group a fight has ended without destroying is whole again, as the
-  /// engine leaves one.
-  void _restoreGroup(_Combat c) {
-    _squads[c.npc.id] = [for (final g in c.npc.ships) _Squad(g.shipClass, g.count)];
-    final k = c.sector.toKey();
-    _hostiles[k] = [for (final h in _hostiles[k] ?? const <NpcFleetInfo>[]) h.id == c.npc.id ? _npcInfo(h.id, h.behavior) : h];
-    _dirty.add(k);
+  // ── Flight, pursuit and mending ───────────────────────────────
+
+  /// The engine's `is_refuge`: no group enters home ground, the hub or the
+  /// sector an outpost stands in.
+  bool _isRefuge(Hex h) => Hex.distance(h, _home) <= 1 || h == Hex.origin || _outpost?.at == h;
+
+  double _groupPowerNow(int id) => _power(_rows(_squads[id]!, _npcArms));
+
+  /// The engine's `flight_quote` for the fleet of fight [c]: what a jump
+  /// out costs a fleet that burns [jump] a jump, takes [jumpTicks] over one,
+  /// holds [fuel] and has [power], and the group that would follow it, to
+  /// [to] if a sector is named.
+  FlightQuote _flightQuote(_Combat c, {required double fuel, required double jump, required int jumpTicks, required double power, Hex? to}) {
+    final g = _groups[c.npc.id]!;
+    final rounds = max(jumpTicks - 1, fleeMinRounds);
+    final burn = jump * fleeFuelMultiplier;
+    final ratio = power / _observedThreat([_npcInfo(c.npc.id)]).estPower;
+    final follows = (to == null || !_isRefuge(to)) && _leash(g) > 0 && _groupPowerNow(c.npc.id) >= chaseMinRatio * power;
+    return FlightQuote(
+      fuel: burn,
+      ticks: rounds + 1,
+      rounds: rounds,
+      ratio: ratio,
+      label: ratioLabelFor(ratio),
+      refusal: fuel >= burn
+          ? null
+          : 'fleet ${c.fleetId} has ${_tenths(fuel)} fuel and the jump out of the fight at ${c.sector} burns ${_tenths(burn)}: it cannot leave, '
+              'except by recall if it holds the fuel for that',
+      chase: follows
+          ? ChaseForecast(
+              groupId: c.npc.id, label: g.label, hexes: _leash(g), jumpTicks: _groupJumpTicks(g), roundsPerHex: max(0, jumpTicks - _groupJumpTicks(g)))
+          : null,
+    );
+  }
+
+  /// The engine's `pursuit_of`: the first group to land of those on the
+  /// trail of the fleet [id], which stands at [at] with [cooldown] ticks
+  /// before it can jump.
+  Pursuit? _pursuitOf(int id, Hex at, int cooldown) {
+    final hunters = [
+      for (final e in _groups.entries)
+        if (e.value.errand?.quarry == id) e,
+    ]..sort((a, b) => a.value.errand!.arrives.compareTo(b.value.errand!.arrives));
+    final first = hunters.firstOrNull;
+    if (first == null) return null;
+    final errand = first.value.errand!;
+    final arrivesIn = max(0, errand.arrives - _tick);
+    return Pursuit(
+        groupId: first.key,
+        label: first.value.label,
+        from: first.value.at,
+        arrivesIn: arrivesIn,
+        catches: errand.to == at && arrivesIn <= cooldown,
+        hexesLeft: _leash(first.value));
+  }
+
+  /// The engine's `trail`: why group [g] does not go after the fleet [id],
+  /// in its sentence; null when it does.
+  String? _trail(_Group g, int id) {
+    final f = _find(id);
+    if (f == null) return 'fleet $id is gone';
+    if (_isRefuge(f.location)) return 'fleet $id has reached ${f.location}, where no group follows';
+    if (_leash(g) == 0) return 'it has followed ${g.strayed} jump${g.strayed == 1 ? '' : 's'} from its own sector at ${g.lair} and goes no further';
+    if (!_lanes(g.at).contains(f.location)) return 'fleet $id is out of its reach at ${f.location}';
+    return null;
+  }
+
+  void _pursuitEvent(int id, int quarry, PursuitPhase phase, {String? why}) {
+    final g = _groups[id]!;
+    _ev(PursuitEvent(
+        groupId: id,
+        label: g.label,
+        fleetId: quarry,
+        owner: 'Demo',
+        mine: true,
+        sector: g.at,
+        phase: phase,
+        to: g.errand?.to,
+        arrivesIn: g.errand == null ? null : g.errand!.arrives - _tick,
+        hexesLeft: _leash(g),
+        why: why));
+  }
+
+  /// The engine's `chase`: group [id] starts its jump to where the fleet
+  /// [quarry] stands.
+  void _chase(int id, int quarry, PursuitPhase phase) {
+    final g = _groups[id]!;
+    g.errand = _Errand(quarry, _find(quarry)!.location, _tick + _groupJumpTicks(g));
+    g.strayed++;
+    g.rested = 0;
+    _pursuitEvent(id, quarry, phase);
+    _relist(id);
+  }
+
+  /// The engine's `settle_group`: a group with no fight and no fleet to
+  /// follow starts the next jump of its way home, or is home.
+  void _settle(int id) {
+    final g = _groups[id]!;
+    if (g.at == g.lair) {
+      g.strayed = 0;
+    } else {
+      final lanes = _lanes(g.at);
+      final step = lanes.contains(g.lair) ? g.lair : lanes.where((n) => !_isRefuge(n) && _lanes(n).contains(g.lair)).firstOrNull;
+      if (step == null) {
+        _stand(id, g.lair);
+        g.strayed = 0;
+      } else {
+        g.errand = _Errand(null, step, _tick + _groupJumpTicks(g));
+      }
+    }
+    _relist(id);
+  }
+
+  /// Take group [id] out of the sector it is listed in and list it in [at].
+  void _stand(int id, Hex at) {
+    final g = _groups[id]!;
+    final from = g.at.toKey();
+    _hostiles[from] = [for (final h in _hostiles[from] ?? const <NpcFleetInfo>[]) if (h.id != id) h];
+    g.at = at;
+    _hostiles[at.toKey()] = [...?_hostiles[at.toKey()], _npcInfo(id)];
+    _dirty
+      ..add(from)
+      ..add(at.toKey());
+  }
+
+  /// The engine's `Ships::heal`: one step of group [id]'s mending.
+  void _heal(int id) {
+    final g = _groups[id]!;
+    final squads = _squads[id]!;
+    for (final theirs in g.muster) {
+      final full = _npcArms(theirs.cls).hull;
+      var here = squads.where((s) => s.cls == theirs.cls).firstOrNull;
+      if (here == null) {
+        here = _Squad(theirs.cls, 0);
+        squads.add(here);
+      }
+      for (var i = 0; i < here.wounds.length; i++) {
+        here.wounds[i] += _healHull(full);
+      }
+      here.wounds.removeWhere((hull) => hull >= full);
+      here.count += min(theirs.count - here.count, _healShips(theirs.count));
+    }
+    squads.sort((a, b) => a.cls.index.compareTo(b.cls.index));
+  }
+
+  /// The groups' jumps and their mending. One that lands where a fleet
+  /// stands fires on it; one that lands on an empty sector goes on after
+  /// its fleet or turns back; one at rest in its lair mends a step when its
+  /// time has come.
+  void _stepGroups() {
+    for (final id in _groups.keys.toList()) {
+      final g = _groups[id]!;
+      final errand = g.errand;
+      final fighting = _combats.values.any((c) => c.npc.id == id);
+      if (errand == null) {
+        if (fighting || g.at != g.lair || _healSteps(id) == 0) continue;
+        g.rested++;
+        if (g.rested < _book.healStepTicks(g.lair.distFromOrigin)) continue;
+        g.rested = 0;
+        _heal(id);
+        _relist(id);
+        continue;
+      }
+      if (errand.arrives > _tick) {
+        if (_healSteps(id) > 0) _relist(id);
+        continue;
+      }
+      g.errand = null;
+      _stand(id, errand.to);
+      final met = g.behavior == NpcBehavior.passive || _isRefuge(g.at)
+          ? null
+          : ([for (final f in _fleets) if (f.location == g.at && f.state != FleetStatus.docked && !_combats.containsKey(f.id)) f]
+                ..sort((a, b) => a.id == errand.quarry ? -1 : b.id == errand.quarry ? 1 : a.id.compareTo(b.id)))
+              .firstOrNull;
+      if (met != null) {
+        _startCombat(met, _npcInfo(id));
+        _relist(id);
+        continue;
+      }
+      final quarry = errand.quarry;
+      if (quarry == null) {
+        _settle(id);
+        continue;
+      }
+      final why = _trail(g, quarry);
+      if (why == null) {
+        _chase(id, quarry, PursuitPhase.continued);
+      } else {
+        _settle(id);
+        _pursuitEvent(id, quarry, PursuitPhase.abandoned, why: why);
+      }
+    }
+  }
+
+  /// The fleet of fight [c] lands in [to]: it is out of the fight, which
+  /// ends `fled`, and the group goes after it if it was beating it.
+  void _landOutOfFight(_Combat c, FleetState f, Hex to) {
+    _combats.remove(c.fleetId);
+    _hop(f, to, paid: true);
+    _ev(CombatEndedEvent(
+        sector: c.sector,
+        playerVictory: false,
+        outcome: BattleOutcome.fled,
+        rounds: c.round,
+        losses: _losses(c, fleetGone: false, groupGone: false),
+        owners: const ['Demo'],
+        mine: true));
+    final g = _groups[c.npc.id]!;
+    g.rested = 0;
+    final landed = _find(c.fleetId)!;
+    if (_trail(g, c.fleetId) == null && _groupPowerNow(c.npc.id) >= chaseMinRatio * landed.power) {
+      _chase(c.npc.id, c.fleetId, PursuitPhase.began);
+    } else {
+      _settle(c.npc.id);
+    }
   }
 
   /// What [from] fires at [at] in one round, class at class, and what it
@@ -1904,6 +2251,7 @@ class DemoWorld {
       final hs = _hostiles[f.location.toKey()];
       if (hs == null || hs.isEmpty) continue;
       final npc = hs.first;
+      if (_groups[npc.id]!.errand != null) continue;
       final provoked = _provoked.remove(f.id);
       final engage = npc.behavior == NpcBehavior.aggressive ||
           npc.behavior == NpcBehavior.swarm ||
@@ -1916,18 +2264,25 @@ class DemoWorld {
         _combats.remove(c.fleetId);
         continue;
       }
+      final leaving = c.fleeTo;
+      if (leaving != null && c.fleeRounds == 0) {
+        _landOutOfFight(c, f, leaving);
+        continue;
+      }
       c.round++;
       final refit = _refits[f.id]!;
       _Arms arms(ShipClass cls) => _arms(cls, refit);
       List<_Squad> ordered(List<_Squad> squads) => [for (final s in squads) s.copy()]..sort((a, b) => a.cls.index.compareTo(b.cls.index));
       final fleetBefore = ordered(_squads[f.id]!), groupBefore = ordered(_squads[c.npc.id]!);
       final fleet = ordered(fleetBefore), group = ordered(groupBefore);
-      final ours = _volleys(fleetBefore, arms, group, _npcArms);
+      final ours = leaving == null ? _volleys(fleetBefore, arms, group, _npcArms) : const <Volley>[];
       final theirs = _volleys(groupBefore, _npcArms, fleet, arms);
+      if (leaving != null) c.fleeRounds--;
       final round = BattleRoundEvent(
         sector: c.sector,
         round: c.round,
-        fleets: _side((units) => BattleGroup(fleetId: c.fleetId, owner: 'Demo', mine: true, units: units), fleetBefore, fleet, arms, ours),
+        fleets: _side((units) => BattleGroup(fleetId: c.fleetId, owner: 'Demo', mine: true, fleeing: leaving != null, units: units), fleetBefore, fleet, arms,
+            ours),
         hostiles: _side((units) => BattleGroup(fleetId: c.npc.id, label: c.label, units: units), groupBefore, group, _npcArms, theirs),
         mine: true,
       );
@@ -1943,11 +2298,8 @@ class DemoWorld {
       _squads[c.npc.id] = [for (final s in group) if (s.count > 0) s];
       final k = c.sector.toKey();
       final fleetGone = _squads[f.id]!.isEmpty, groupGone = _squads[c.npc.id]!.isEmpty;
-      final quiet = round.fleets.hullDamage + round.hostiles.hullDamage == 0;
-      if (!groupGone) {
-        _hostiles[k] = [for (final h in _hostiles[k] ?? const <NpcFleetInfo>[]) h.id == c.npc.id ? _npcInfo(h.id, h.behavior) : h];
-        _dirty.add(k);
-      }
+      final quiet = leaving == null && round.fleets.hullDamage + round.hostiles.hullDamage == 0;
+      if (!groupGone) _relist(c.npc.id);
       if (!fleetGone && !groupGone && !quiet) {
         _setFleet(_copy(f));
         continue;
@@ -1963,18 +2315,21 @@ class DemoWorld {
         _ev(FleetDestroyedEvent(fleetId: f.id, isNpc: false, sector: c.sector, owner: 'Demo', mine: true, salvage: const Resources()));
       }
       if (groupGone) {
-        final worth = _book.constant('WRECK_VALUE_K') * pow(_groupPower(c.npc), _book.constant('WRECK_VALUE_EXPONENT'));
+        final muster = _power(_rows(_groups[c.npc.id]!.muster, _npcArms));
+        final worth = _book.constant('WRECK_VALUE_K') * pow(muster, _book.constant('WRECK_VALUE_EXPONENT'));
         final split = _book.constants('LOOT_SPLIT');
         final loot = Resources(metal: worth * split[0], crystal: worth * split[1], deuterium: worth * split[2]);
         _hostiles[k] = [for (final h in _hostiles[k] ?? const <NpcFleetInfo>[]) if (h.id != c.npc.id) h];
         _squads.remove(c.npc.id);
+        _groups.remove(c.npc.id);
         pile = _plus(loot, _salvage[k]?.$1 ?? const Resources());
         despawn = _tick + 600;
         _salvage[k] = (pile, despawn);
         _dirty.add(k);
         _ev(FleetDestroyedEvent(fleetId: c.npc.id, isNpc: true, sector: c.sector, owner: null, mine: false, salvage: loot, label: c.label));
       } else {
-        _restoreGroup(c);
+        _groups[c.npc.id]!.rested = 0;
+        _settle(c.npc.id);
       }
       _ev(CombatEndedEvent(
           sector: c.sector,
@@ -2147,7 +2502,15 @@ class DemoWorld {
     final homeHops = _pathHome(f.location)?.length ?? Hex.distance(f.location, _home);
     final homeFuel = homeHops * jump;
     final levels = _levels;
+    final fight = _combats[f.id];
+    final leaving = fight?.fleeTo;
+    final fuel = min(f.fuel, tank);
     return FleetState(
+        flight: fight == null || leaving != null
+            ? null
+            : _flightQuote(fight, fuel: fuel, jump: jump, jumpTicks: _jumpTicks(ships), power: _power(rows)),
+        fleeing: leaving == null ? null : Fleeing(to: leaving, ticks: fight!.fleeRounds + 1, rounds: fight.fleeRounds),
+        pursuedBy: _pursuitOf(f.id, f.location, f.cooldownRemaining),
         id: f.id,
         location: f.location,
         state: f.state,
@@ -2288,7 +2651,9 @@ class DemoWorld {
     return fresh;
   }
 
-  void _hop(FleetState f, Hex target, {bool returning = false}) {
+  /// The fleet stands in [target]; [paid] when its jump's fuel was burned
+  /// as it was ordered, as a jump out of a fight is.
+  void _hop(FleetState f, Hex target, {bool returning = false, bool paid = false}) {
     final first = !_seen.containsKey(target.toKey());
     final home = target == _home;
     final cur = _find(f.id) ?? f;
@@ -2296,8 +2661,8 @@ class DemoWorld {
       cur,
       location: target,
       state: home ? FleetStatus.docked : (returning ? FleetStatus.returning : FleetStatus.idle),
-      fuel: cur.fuel - cur.jumpFuel,
-      cooldown: cur.jumpTicks,
+      fuel: paid ? cur.fuel : cur.fuel - cur.jumpFuel,
+      cooldown: paid ? 0 : cur.jumpTicks,
       laden: false,
     );
     if (home) {
@@ -2901,7 +3266,6 @@ class DemoWorld {
     _harvest.remove(f.id);
     final c = _combats.remove(f.id);
     if (c != null) {
-      _restoreGroup(c);
       _ev(CombatEndedEvent(
           sector: c.sector,
           playerVictory: false,
@@ -2910,6 +3274,8 @@ class DemoWorld {
           losses: _losses(c, fleetGone: false, groupGone: false),
           owners: const ['Demo'],
           mine: true));
+      _groups[c.npc.id]!.rested = 0;
+      _settle(c.npc.id);
     }
   }
 
@@ -2922,7 +3288,21 @@ class DemoWorld {
         if (!here.connections.contains(target)) {
           return [_err(ErrorCode.noConnection, 'No lane from ${f.location} to $target')];
         }
-        if (_combats.containsKey(fleetId)) return [_err(ErrorCode.onCooldown, 'fleet $fleetId is in combat')];
+        if (_combats[fleetId] case final fight?) {
+          if (fight.fleeTo case final to?) {
+            return [
+              _err(ErrorCode.onCooldown,
+                  'fleet $fleetId is already leaving the fight at ${f.location} for $to; stop calls the jump off, and its fuel is forfeit'),
+            ];
+          }
+          final quote = f.flight!;
+          if (quote.refusal case final why?) return [_err(ErrorCode.insufficientFuel, why)];
+          fight
+            ..fleeTo = target
+            ..fleeRounds = quote.rounds;
+          _setFleet(_copy(f, state: FleetStatus.moving, fuel: f.fuel - quote.fuel));
+          return [_tickUpdate()];
+        }
         if (f.cooldownRemaining > 0) return [_err(ErrorCode.onCooldown, 'Drive recharging: ${f.cooldownRemaining} tick(s)')];
         if (f.fuel < f.jumpFuel) return [_err(ErrorCode.insufficientFuel, 'Not enough fuel for a jump')];
         _stopActivities(f);
@@ -2938,6 +3318,7 @@ class DemoWorld {
                 _density(sec, k) != Density.none)
               k
         ];
+        if (_combats.containsKey(fleetId)) return [_err(ErrorCode.onCooldown, 'fleet $fleetId is in combat')];
         if (f.location == _home || keys.isEmpty) return [_err(ErrorCode.resourceNotPresent, 'No ${resource == HarvestResource.auto ? 'ore' : resource.name} to harvest here')];
         if (f.cargo.total >= f.cargoCapacity) return [_err(ErrorCode.cargoFull, 'Cargo hold is full')];
         _stopActivities(f);
@@ -2960,6 +3341,21 @@ class DemoWorld {
       case StopCommand(:final fleetId):
         final f = _find(fleetId);
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
+        if (_combats[fleetId] case final fight?) {
+          final to = fight.fleeTo;
+          if (to == null) return [_err(ErrorCode.onCooldown, 'fleet $fleetId is in combat')];
+          fight
+            ..fleeTo = null
+            ..fleeRounds = 0;
+          _setFleet(_copy(f, state: FleetStatus.inCombat));
+          _ev(AlertEvent(
+              level: AlertLevel.warning,
+              message: 'fleet $fleetId called off its jump to $to: the ${_tenths(f.jumpFuel * fleeFuelMultiplier)} fuel it burned for the jump is forfeit, '
+                  'and it fights on at ${f.location}',
+              fleetId: fleetId,
+              sector: f.location));
+          return [_tickUpdate()];
+        }
         _stopActivities(f);
         _setFleet(_copy(f, state: f.location == _home ? FleetStatus.docked : FleetStatus.idle));
         return [_tickUpdate()];
@@ -3337,6 +3733,11 @@ class DemoWorld {
             fleetPower: f.power,
             ratio: odds.ratio,
             label: odds.label,
+            flight: switch (_combats[fleetId]) {
+              final fight? when fight.fleeTo == null =>
+                _flightQuote(fight, fuel: f.fuel, jump: f.jumpFuel, jumpTicks: f.jumpTicks, power: f.power, to: target),
+              _ => null,
+            },
           ),
         ];
       case OddsCommand(:final fleetId, :final sectors):

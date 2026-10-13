@@ -1,0 +1,21 @@
+{
+  "arrives_in": 2,
+  "fleet_id": 4,
+  "group_id": 4294967555,
+  "hexes_left": 0,
+  "kind": "Pursuit",
+  "label": "2x battlecruiser pack",
+  "mine": true,
+  "owner": "Admiral",
+  "phase": "abandoned",
+  "sector": {
+    "q": 7,
+    "r": -10
+  },
+  "tick": 1234,
+  "to": {
+    "q": 8,
+    "r": -11
+  },
+  "why": "it has followed 2 jumps from its own sector at (9, -11) and goes no further"
+}

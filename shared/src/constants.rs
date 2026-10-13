@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 10;
+pub const ECONOMY_VERSION: u32 = 11;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 4;
 
@@ -577,6 +577,39 @@ pub const ODDS_RUNS_MOST: u32 = 64;
 pub const ODDS_UNITS: u32 = 200;
 pub const ODDS_ROUNDS: u32 = 64;
 
+/// Flight (`docs/design/ogame.md`, section 7.4). A fleet that orders a jump
+/// out of a fight stops firing and is fired on until it is gone: for one
+/// round fewer than its jump takes ticks, and never fewer than this.
+/// Provisional: the least any flight costs.
+pub const FLEE_MIN_ROUNDS: u16 = 1;
+/// The jump out of a fight burns this many times a jump's fuel. Provisional;
+/// the emergency recall's is `RECALL_FUEL_MULTIPLIER`.
+pub const FLEE_FUEL_MULTIPLIER: f64 = 1.0;
+/// Pursuit. The most jumps a group makes after a fleet that left it before
+/// it has been home again, by its behaviour: Passive, Patrol, Aggressive,
+/// Swarm. Provisional: how far the outer rings follow.
+pub const CHASE_HEXES: [u8; 4] = [0, 1, 2, 2];
+/// A group follows only what it was beating: its power when the fight broke
+/// off must be at least this many times the fleet's. Provisional.
+pub const CHASE_MIN_RATIO: f32 = 1.0;
+/// A group's ships jump on a drive this many levels up for every
+/// `NPC_DRIVE_RINGS_PER_LEVEL` rings past `NPC_DRIVE_FREE_RINGS`, and on a
+/// bare one up to there. Provisional: how fast a fleet must be to outrun a
+/// ring.
+pub const NPC_DRIVE_FREE_RINGS: u16 = 8;
+pub const NPC_DRIVE_RINGS_PER_LEVEL: u16 = 4;
+
+/// Pirates heal (section 7.5). A group that has fought keeps its losses and
+/// its damage; at rest in its own sector it is whole again after this share
+/// of the time a destroyed group takes to return
+/// (`scaling::npc_respawn_hours`, an economy timer), in `NPC_HEAL_STEPS`
+/// steps: at each, that part of the ships it was generated with return, as
+/// far as it is short, and every damaged ship regains that part of its full
+/// hull. Provisional, and the owner's range: "an hour" to "a few hours" at
+/// pace 1.
+pub const NPC_HEAL_SHARE: f64 = 0.5;
+pub const NPC_HEAL_STEPS: u32 = 10;
+
 /// Repair. The home dock makes every ship of a fleet whole for this share of
 /// the ship's cost times the share of hull restored; the outpost's dock for
 /// its own share, paid from its store. Provisional: they trade the cost of
@@ -606,8 +639,6 @@ pub const FUEL_DEUT_PER_UNIT: f64 = 0.08;
 /// Provisional, and the owner's ("like 15%"): it trades the reach of a fleet
 /// with cargo ships against the worth of the docks as places to fill up.
 pub const REFINE_LOSS: f64 = 0.15;
-
-pub const NPC_PATROL_INTERVAL: u16 = 15;
 
 /// Active scan: hops revealed from the scanning fleet's position.
 /// Fleets carrying an Espionage Probe get the extended range; signals are
@@ -713,6 +744,13 @@ pub const POLICY_RANGE_MIN: u8 = 1;
 pub const POLICY_RANGE_MAX: u8 = 30;
 pub const POLICY_ENGAGE_RATIO_X10_MIN: u8 = 1;
 pub const POLICY_ENGAGE_RATIO_X10_MAX: u8 = 100;
+/// A fleet under orders leaves a fight once its odds in it, as the fight
+/// stands, fall below this / 10: the edge of RISKY. Held to the same bounds
+/// as the engage ratio and never above it. Provisional: how long a fleet
+/// under orders stays in a losing fight.
+pub const POLICY_DEFAULT_DISENGAGE_RATIO_X10: u8 = 9;
+pub const POLICY_DISENGAGE_RATIO_X10_MIN: u8 = 1;
+pub const POLICY_DISENGAGE_RATIO_X10_MAX: u8 = 100;
 /// MineAndReturn treats a sector holding fewer raw units than this as
 /// stripped: a tile that has only begun to refill is not worth a jump.
 pub const POLICY_MIN_SEAM_UNITS: f64 = 3.0 * MAP_PAYS;

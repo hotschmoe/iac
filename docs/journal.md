@@ -7731,3 +7731,515 @@ in cargo wings caught by patrols they could neither hurt nor leave; that is
 slice 3's to mend (flight) and is not mended on master yet. Three Chromium
 profile directories from end-to-end runs are left in `/tmp`
 (`iac-solo-e2e-profile*`), not removed.
+
+## 2026-10-14: a fleet may leave a fight, a pack follows it, and pirates keep their losses and mend (slice 3 of the OGame work, stage 1)
+
+Slice 3 of `docs/design/ogame.md`, section 12, as far as it goes without
+hand-written Dart: the engine, the wire, the bots, the runner, the headless
+tools and the documents. The web client is stage 2 and is not touched. The
+branch (`worktree-agent-a141f0985d77b6790`) starts from `8e21928`, the
+engine half of slice 2, which is not on master either; nothing is merged.
+`SAVE_FORMAT` is 10 and `ECONOMY_VERSION` 11; `WORLDGEN_VERSION` stays 4.
+Nothing is migrated.
+
+**Built.**
+
+- *Flight.* A `move` from inside a fight is taken. The fleet pays the
+  jump's fuel, stops firing, and is fired on for a round fewer than its
+  jump takes ticks and never fewer than one; it is out of the fight when
+  the jump lands. `stop` calls the jump off, the fuel is forfeit and the
+  fleet fights on. A fleet that any fight catches while it charges a jump
+  keeps the jump and is fired on the same way. There is no fleet status
+  for it: the fleet is `Moving` and still in its fight, and a round stands
+  it as a silent troop.
+- *Pursuit.* When the last fleet has left, a group goes after the strongest
+  of those that jumped out, if it was beating it and it is next door:
+  convoys never, patrols one jump, packs and swarms two, never into home
+  ground, the hub or an outpost's sector. It jumps at its own speed, from
+  its class and a drive that rises with the ring, and starts on the tick
+  the fleet lands; it lands before the round of its tick. So a fleet as
+  fast is never caught and a slower one is fired on for the difference at
+  every hex, with nothing written for either case but the order of three
+  passes of a tick. A fleet that stops is caught and the fight is joined
+  again. Its leash spent or its fleet out of reach, the group jumps back.
+- *Pirates keep their losses and mend.* A group that is not destroyed stays
+  in the world as the fight left it. At rest in its own sector it mends in
+  ten steps over half its lair's respawn delay, divided by the pace: a
+  tenth of its ships, as far as it is short, and a tenth of every damaged
+  hull at a step. A fight or a pursuit stops the clock. Whole again it is
+  removed and the lair is its template. A stand-off leaves both sides
+  where they are, as they are. Killed after any number of visits a group
+  pays in full.
+- *The disengage ratio.* `disengage_ratio_x10` in a fleet's standing
+  orders, default 9, never above the engage ratio: at its first turn in a
+  fight and every three ticks after, a fleet under orders whose odds in the
+  fight as it stands are below it jumps out toward home and says so
+  (`PolicyAction` `flee`). With a group on its trail it runs for home
+  before anything else.
+- *The state says it.* On a fleet: `flight` (what leaving costs now, the
+  odds of the fight as it stands, the refusal, the group that would
+  follow), `fleeing`, `pursued_by`. On a hostile: `muster`, `whole_at`,
+  `jump_ticks`, `chase_hexes`, `errand`. `MovePreview.flight` for one
+  target, `BattleGroup.fleeing` in a round, `CombatEnded.outcome` `fled`,
+  and a `Pursuit` event that began, continued or was abandoned with the
+  engine's reason.
+- *The odds.* A fleet in a fight is given the odds of that fight as it
+  stands. A remembered group seen wounded is rated whole from the tick it
+  was to be whole by. The sentences of RISKY and DEADLY say that the odds
+  are of a fight fought to its end.
+- *The bots.* The pilot leaves a fight whose odds as it stands are under
+  RISKY, and runs for home when pursued. A wing without a warship picks no
+  fight (below).
+- *The rest the old rules touched.* The refusal of `move` in a fight and
+  the reset of a group when a fight breaks off are gone, and with them the
+  jump a fight used to abandon, the wandering of groups, and a second
+  `move` for a fleet already charging one. An outpost is not founded on a
+  lair whose group is away. The away report counts fights left under fire;
+  `sim-run` counts fights fled, pursuits and rounds stood without firing,
+  and prints a `fled` column.
+- `README.md`, `tools/playtest/RULES.md`, `play.py` and its fixture.
+
+**Not built, as the slice says.** Raids fought as battles, defences in a
+round, the windshield's picture and the battle view.
+
+**Departures and decisions** are in `docs/design/decisions.md` under today's
+date, each with what undoes it. The ones a player meets: one disengage rule
+for every doctrine, where the study has mining and salvage flee any fight;
+groups do not wander; the leash counts a group's jumps and not its distance
+from its lair; a fleet charging a jump takes no second `move`.
+
+**Knobs**, all at the study's starting value: `FLEE_MIN_ROUNDS` 1,
+`FLEE_FUEL_MULTIPLIER` 1.0, `CHASE_HEXES` 0, 1, 2, 2, `CHASE_MIN_RATIO`
+1.0, `NPC_DRIVE_FREE_RINGS` 8 and `NPC_DRIVE_RINGS_PER_LEVEL` 4,
+`NPC_HEAL_SHARE` 0.5, `NPC_HEAL_STEPS` 10,
+`POLICY_DEFAULT_DISENGAGE_RATIO_X10` 9. This slice's own: the pilots'
+`LEAVE_ODDS`, the edge of RISKY. None was tuned.
+
+**What the speeds come to.** A fleet's jump is set by its slowest ship:
+Light Fighters and Cruisers two ticks, Heavy Fighters, Battleships and
+Large Cargos three, Small Cargos four, Recyclers five, before any drive
+research. A group's: Light Fighters (to ring 8), Cruisers (to 12) and
+Battlecruisers (to 20) two ticks, Destroyers three at rings 21 to 24. So
+warships with their drives are never caught, a cargo wing is fired on for
+one to three rounds at each hex it is followed, and the parting rounds are
+one for warships and three for Small Cargos. What a wounded group's mending
+comes to at each pace is in the decisions entry: two hours at ring 8 at
+pace 1, twelve minutes in a season, twenty seconds in a blitz.
+
+**The bots, before and after** (`sim-run --pace blitz --days 1`, sixteen
+seats, every style once; the hands-on raider is the one slice 2 found
+losing 18,279 ships).
+
+| | slice 2 (`8e21928`) | flight and pursuit | and no fight for an unarmed wing |
+|---|---|---|---|
+| snapshot | `89c4be639628a747` | `58244625513ca45c` | `7ebe659f95692630` |
+| hands-on raider: ships lost | 18,279 | 4,667 | 0 |
+| its fleets destroyed, ships with them | 146, 9,212 | 3, 7 | 0 |
+| its fights fled | none could be | 48 | 0 |
+| its kills | 3,152 | 1,618 | 10,106 |
+| its total | 19,837 | 26,673 | 23,752 |
+| the world: ships lost | 19,905 | 5,663 | 374 |
+| fleets destroyed, ships with them | 165, 9,669 | 9, 14 | 7, 14 |
+| fights fled, pursuits begun | 0, 0 | 75, 10 | 36, 4 |
+| rounds stood without firing | 0 | 338 | 512 |
+| totals, least to most | 6,935 to 24,551 | 6,974 to 26,673 | 7,270 to 23,752 |
+| ticks a second | 786 | 844 | 918 |
+
+Flight ended the losses slice 2 reported as fleets that could neither hurt
+nor leave: 146 fleets destroyed became 3. It did not end the rest. Every
+fight of the hands-on raider was printed (a probe that is not in the tree):
+of the 4,667 ships it still lost, 4,313 fell in 1,618 fights it won, all
+but one of them Small Cargos, most of them at rings 13 to 19 and up to 29
+in one fight against a single Battlecruiser. The odds call that fight a win that keeps five sixths of the
+fleet, which it is, and the pilot's bar (`SAFE_ODDS` 2.0) is that outcome.
+So the pilot was choosing those fights; no rule of flight touches a fight
+that is won. The cheap rule is the third column: a wing with no warship in
+it picks no fight at any odds and boards only a derelict that reads quiet.
+The doctrines were not changed: the check-in and hybrid styles, which fly
+under them, lost at most 41 ships each in all three runs.
+
+What the third column also shows and was not tuned: the hands-on raider's
+strike wing, no longer waiting on anything, kills 10,106 groups in a day,
+one every eight seconds, for 352 combat points where slice 2's 3,152 kills
+earned 3,779: it farms the nearest lairs it beats at 2.0, whose pay the
+heat has taken, and burns 20 million deuterium doing it (818,878 in slice
+2). It still ends above the turtle. That is the pilot's hunting rule and
+the farm heat, not flight, and is left as found.
+
+A season week (`--pace season --days 7`, snapshot `5c31e0e840825370`, 3,471
+ticks a second; slice 2 `661c56beabadd9f2`, 3,372), final code only:
+totals from 6,078 (mixed, check-in) to 10,596 (turtle, hands-on), slice 2
+7,094 to 10,595. 2,122 fights won (3,034), 3,150 rounds (6,723), 137 ships
+lost (435), no fleet destroyed (7 with 74 ships), one fight fled, no
+pursuit, the largest fleet in a fight 51 ships. The hands-on raider ends
+at 9,509 for 8,279 and wins 12 fights for 290: in a season week its strike
+wing is five ships and its hauling wings, which did its fighting, no longer
+fight. Fleets flee once in a season week because they enter only fights
+the odds give them and those last two or three rounds; in the blitz day
+the fights fled are ambushes at derelicts and fights another fleet began.
+
+**Measured, and not.** `iac_solo.wasm`, release: 2,752,469 bytes (slice 2
+2,671,089; 81,380 more, 3.0 percent). `both_targets`: five tests in 99 s
+with the engine built, 125 s building it (four in 95 s). `hosts_agree`:
+64 s, as before. The
+single-player host's catch-up after a day and a week away was not timed
+again; nor was a round, which did not change but for the troops that do
+not fire.
+
+**Tests.** `cargo test --workspace`: 182 passed, 0 failed (slice 2: 173).
+New scenarios, all end to end: a fleet as fast as the pack it leaves is
+followed two hexes and never caught, with every event and figure of the
+way; a convoy two ticks slower is fired on for two rounds at each of two
+hexes; the leash for each of the four behaviours and a pack that does not
+follow a fleet it was not beating; what flight costs (the quote, the
+refusal with an empty tank, `stop`, nothing earned from a group left
+standing, the one round a fleet of Probes still takes); a group left alive
+that is listed with its losses, gets three ships back at its first step,
+loses the ticks it had rested when a fight starts, and pays in full when
+it falls; a lair whose group has mended is its template again and the odds
+count it whole from that tick; a fleet under orders that leaves a fight at
+0.13x with its reason, runs home with the pack behind it, and one told to
+stay at any odds that stays; a flight and its pursuit stopped and started
+through the document after every tick; a commander's jump out of a fight
+compared between the server and the single-player host, and between the
+native engine and WebAssembly; an outpost refused on a lair whose group is
+away. The tests that moved are in the decisions entry with the reason for
+each.
+
+**Run**, on the branch:
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 182 passed, 0 failed. The
+  first full run failed three: two tests that compare a fleet's standing
+  orders whole and did not name the seventh setting, and one that used
+  format 10 as a format from the future.
+- `cargo clippy --workspace --all-targets`: silent, after one warning in a
+  new test was mended.
+- `cargo build -p iac-solo --target wasm32-unknown-unknown --release`: built.
+- `UPDATE_FIXTURES=1 cargo test -p iac-shared`, then `python3
+  tools/check_sim_constants.py`: agrees on 4,410 values. `python3
+  docs/design/economy/sim.py --tables`: clean, and the same tables as slice
+  2's to the byte. `numbers.json` did not move: no number it names changed.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 passed, on the
+  first full state of the session below as its fixture.
+- A real server (`--port 0 --pace season`, its world file in the scratch
+  directory) and `iac-headless`, 53 ticks, the two Light Fighters an empire
+  starts with. A patrol of two Light Fighters at ring 7 rates 1.49x EVEN
+  for both and 0.66x DEADLY for one. One is split off and sent in alone:
+  one round (875 bytes), then `flight` on its row: 20 fuel, gone in 2
+  ticks, 1 round under fire, the fight at 0.54x DEADLY, and `chase`: the
+  patrol would follow 1 hex and not catch it. Two previews and the order
+  sent together: the jump to the sector beside home has no `chase`, the
+  jump to the one two hexes out has. It jumps there: a round in which it
+  is `fleeing` and fires nothing, `CombatEnded` `fled`, `Pursuit` `began`
+  ("arrives_in 2, hexes_left 0"), `pursued_by` with `catches` false, and
+  the patrol listed in its own sector with its `errand`. It jumps on at
+  once to the sector beside home: the patrol lands on an empty sector and
+  gives up ("fleet 3 has reached [-5,6], where no group follows"). Home:
+  "fleet 3 was mended at the home dock: 1 ship(s) made whole, 124 hull
+  restored, for nothing". The patrol is still listed with 537 of 580 hull
+  and `whole_at` 162, which had been 157 before the pursuit. Both ships go
+  back: 1.67x FAVOURABLE against it as it stands, four rounds, one Light
+  Fighter lost, the patrol destroyed and its wreckage collected. Standing
+  orders set with `disengage_ratio_x10` 12 come back in the fleet's row
+  with all seven settings. The server was stopped by its PID and wrote its
+  file (format 10, economy 11). A first attempt asked its previews one at
+  a time, a tick each, and the lone Light Fighter was destroyed while it
+  asked: the server takes a session's messages in at the next tick.
+
+**Not verified.**
+
+- No person or agent played, and nothing in `tools/playtest` was run but
+  its offline tests. `play.py`'s new lines were read off the session's
+  frames by a script.
+- The web client does not compile against the new `protocol.g.dart`:
+  `flutter analyze`, `flutter test`, the bundle and `tool/solo_e2e.dart`
+  are stage 2's.
+- No fleet was caught by its pursuer over a real socket: the session's
+  fleet was as fast as the patrol. A slower fleet fired on at every hex is
+  `iac-sim`'s tests.
+- The wearing down of a group over several visits was played once, in a
+  season, against the weakest patrol there is. At a blitz a group is whole
+  in twenty seconds and no trip home fits in that.
+- No knob was tuned, and the pilots' hunting was not: see the 10,106 kills
+  above.
+- This branch and the web client's half of slice 2
+  (`worktree-agent-ace3232f861723403`) both stand on `8e21928` and both
+  rendered `protocol.g.dart` and the fixtures; they have not been brought
+  together.
+
+## 2026-10-14: the web client on flight, pursuit and pirates that mend (slice 3 of the OGame work, stage 2)
+
+Stage 2 of slice 3, on the branch stage 1 left
+(`worktree-agent-a141f0985d77b6790`): first master was merged into it, then
+the hand-written Dart of `clients/web` was brought onto what the engine now
+sends. `SAVE_FORMAT` and `ECONOMY_VERSION` are as stage 1 left them, 10 and
+11, and no wire type changed. The windshield as a picture of class marks
+with a flight and a pursuer drawn on it is slice 5 and was not built.
+
+**The merge.** `git merge master` (`4172c67`, slice 2 with its web client)
+into the branch (`cea4528`), a merge commit, `f928a72`. Git merged every
+Rust file, `README.md`, `tools/playtest/RULES.md`, `protocol.g.dart` and
+`numbers.json` by itself. It stopped on three things.
+
+- `docs/journal.md` and `docs/design/decisions.md`, where both sides had
+  added at the same place. Both keep every entry: the journal has master's
+  two entries first and stage 1's after them, the decisions have stage 1's
+  on top. They were put together with `git merge-file --union` on the three
+  stages of each file, and a blank line was added by hand where the two
+  sides meet.
+- Thirty-seven generated fixtures: thirty-six of `synth/` and
+  `server_message/tick_update.json`. One side was taken for each and
+  `UPDATE_FIXTURES=1 cargo test -p iac-shared` rendered them again; it
+  rewrote those and `synth/server_message/event__Pursuit.json` and removed
+  none. `protocol.g.dart`,
+  `numbers.json` and `chart_golden.txt` came out of the merge as the
+  generators and the recording make them, and were not touched.
+
+Nothing in Rust had to be settled by judgment: master's later view fields
+(`PlayerState.ship_count`, `BattleSide.standing`, a tick update's `battles`
+without `last_round`, `views::battles_of`) and stage 1's rules did not meet
+in a line. On the merged tree: `cargo build --workspace --all-targets`
+without a warning, `cargo test --workspace --no-fail-fast` 182 passed and 0
+failed (stage 1 had 182, master 173, and master added no test of its own
+since the fork), clippy silent, `tools/check_sim_constants.py` agreeing on
+4,410 values. The web client did not compile then (eight analyzer errors,
+all from the new `NpcFleetInfo` fields, the new event and the new outcome).
+
+**Built, screen by screen.** Every figure is a field of the state stage 1
+sends; the phrases are in `lib/console/battle.dart`.
+
+- The windshield, a fleet in a fight (`FleetState.flight`): a Leave the
+  fight panel over the round panel, with the odds of the fight as it stands
+  (`ratio`, `label`, the generated sentence of the label and the gauge),
+  the price (`fuel`, `ticks`, `rounds`), who would follow (`chase`: the
+  group, its hexes, the rounds at each) or that nothing follows, and a
+  button a lane. Each gate card says `FLEE n RND` and what the jump burns,
+  and once the server has previewed that lane (`MovePreview.flight`),
+  `NO CHASE` or `CHASED nH`; the panel names the lanes nothing follows to.
+  A gate key, a card and a button send the same `move`. With `refusal` set
+  the buttons are greyed, the sentence is printed, a gate says `CANNOT
+  LEAVE` and a key toasts the sentence and sends nothing. The refusal of
+  `move` in a fight that the client used to state by itself is gone.
+- A fleet that is leaving (`fleeing`): a Leaving the fight panel with the
+  count to the jump, where to, the rounds still to take, that its guns are
+  silent, and Stop with the sentence that the fleet fights on and the fuel
+  is forfeit (the dock's Stop tile carries it as its hint too). The fleet
+  rail says FLEEING with the sector and the count; the Overview's card and
+  its alerts and the map's chip and sector panel say it; the map draws the
+  lane. In the round panel the fleet's side is headed "LEAVING: FIRED ON,
+  NOT FIRING" (`BattleGroup.fleeing`).
+- The end (`CombatEnded.outcome`): `fled` is "FLED UNDER FIRE" with its
+  sentence, in the panel, the banner and the log, and the report of a fight
+  is now shown to a fleet that has left it, where it lands. `withdrawn` is
+  "RECALLED"; a stand-off's sentence no longer says the group is whole.
+- A pursuit (`pursued_by`): a Pursuit panel pinned over the other panels
+  with "ARRIVES IN n", what follows and from where, whether it lands before
+  the fleet can be gone (`catches`, worded for a fleet that is charging a
+  jump and for one that is not) and how much further it follows
+  (`hexes_left`). The screen's edges pulse, the fleet's card turns ember,
+  a banner is shown, the Overview has a tag, the sentence and an alert, the
+  map a ring round the fleet and the lane from `from`. The `Pursuit`
+  event's three phases are lines of the log, the last with the engine's
+  `why`, and a pursuit begun raises an alert and, in a background tab, a
+  notice.
+- A group (`NpcFleetInfo`): under its ships, in the contacts, the map's
+  sector panel and the route's hold panel: its ships against `muster` in
+  the heading, `whole_at` as a time from now (and as last seen, for a
+  sector out of sensor range), `chase_hexes`, `jump_ticks` with the
+  selected fleet's beside it, and its `errand` (whom it is after, where it
+  is jumping and when it lands, or that it is on its way back). The map
+  draws an errand's lane.
+- Standing orders: "Leave a fight below" as the seventh setting, the
+  settings in force on two lines, `disengage=` in the typed `policy`, and a
+  `flee` report headed "LEFT A FIGHT".
+- The command bar: `status` prints the quote, the flight and the pursuit of
+  the active fleet, `fleets` marks a fleet that is leaving or pursued, and
+  `help` has three lines on flight, Stop and recall.
+- The map, for a fleet in a fight: a jump the server previews is shown as
+  flight with that lane's quote, in the sector panel and the route.
+
+**Added to Rust.** No wire field, no column, no constant. For the scripted
+world of the widget tests, `sim/tests/economy_numbers.rs` names
+`CHASE_HEXES` and `NPC_HEAL_STEPS`, adds `npc_jump_ticks` to a ring's row
+and renders a `group_healing` table; `numbers.json` was rendered again.
+
+**The scripted world** (`test/support/demo_world.dart`) now takes a `move`
+from a fleet in a fight, charges the jump, fires the parting rounds at a
+silent fleet, ends the fight `fled`, sends the group after a fleet it was
+beating as far as its behaviour's leash and never into home ground, the hub
+or the outpost's sector, lets it fire on a fleet it finds and turn back
+when it finds none, keeps a group's losses and damage and mends them in
+the engine's steps at rest in its lair, and answers a second order and
+Stop in the engine's sentences. The leash, the steps, their ticks and a
+group's jump are read from `numbers.json`. It differs from the engine in
+one thing, which its header says: only a jump out of a fight is charged
+before it is made, so a fleet that jumps on the moment it lands is never
+caught there.
+
+**Tests.** Moved: the four orders tests, for the settings' second line and
+the engine's "disengage 0.9x" in its confirmation; the count of event
+kinds, 28 to 29; and the test that kept 66 px free under the orders form
+for the guide strip, which now asks only that the form's button shows on
+a 900 px window. Added, in the files that were there: the flee control
+with its quote, a lane nothing follows to and its refusal, at 1440 and 390;
+a fleet leaving, its silent side of the round, Stop, the fled ending where
+it lands and the pursuit panel; a wounded group's panel and its three
+errands; a lone fighter of the scripted world that leaves a patrol it
+cannot beat, is refused a second order, calls the jump off, leaves again,
+is fired on, lands with the patrol on its trail, jumps on, and finds the
+patrol given up, home, hurt and then whole at the tick it named; the map's
+lanes and sector panel for a pursuit and for a group last seen wounded; a
+previewed flight on the map; the Overview's card and alerts.
+
+**The end-to-end check** (`tool/solo_e2e.dart`) has a flight. The two Light
+Fighters it splits off now do the scouting, jump into the group, read the
+quote off the state and off the page, leave by a gate key, and the check
+holds the wire to it: an ordinary `move`, the fleet `Moving` with
+`fleeing`, a parting round that names the fleet as fleeing and carries no
+shot of its own, `fled` with no wreckage, the group's hull as the chart
+keeps it with the tick it is whole at, the map's panel for it, the damage
+carried home and the dock's word on mending it. Then the six fly the same
+way and fight the group as before. Master's entry of this date found that
+a destroyed patrol's lair stands again in about 24 ticks at a blitz and
+attacks whoever stayed; that is unchanged, and the check still takes the
+first ending at the group's sector after the six set out. What is new is
+that a group the two hurt is not whole when they leave and is seconds
+later: in the runs it was to be whole 3 to 7 ticks after the two landed,
+and was when the six arrived. So the six wait a jump away for a scan that
+shows it in its sector and whole, and what the check counts the six
+destroying is the group's full muster. It also sets the seventh setting in
+the orders panel and reads it back off the wire and the page.
+
+**Run.**
+
+- `cargo test --workspace --no-fail-fast` on the merged tree: 182 passed, 0
+  failed. Again at the end, with the two names and the table added to
+  `economy_numbers.rs`: 182 passed, 0 failed; `cargo build --workspace
+  --all-targets` without a warning, clippy silent,
+  `tools/check_sim_constants.py` agreeing on 4,410 values.
+- `flutter analyze`: no issues.
+- `flutter test` under `timeout -k 20 300`, six full runs. The first, with
+  the tests not yet moved: 489 passed, 8 failed (four orders tests and the
+  count of event kinds, which the new rules falsified, and three of
+  `onboarding_test.dart` on an assertion inside Flutter's text code, which
+  did not come again). The second: 503 passed. The third: 501 passed, 3
+  failed, all in `order_fit_test.dart` on "Offset argument contained a NaN
+  value" in paint. The fourth, with one case more: 504 passed. The fifth:
+  487 passed, 17 failed, every case of `map_test.dart`, on the same NaN,
+  thrown from `MapPainter._drawBrackets`, which this stage did not touch.
+  The sixth: 504 passed. No case failed twice the same way once the tests
+  were moved; the two NaN runs are read as the machine's flake
+  (`docs/design/flutter_test_flake.md`).
+- `scripts/play.sh --single-player --no-serve`: built, `iac_solo.wasm`
+  2,754,773 bytes.
+- `tool/solo_e2e.dart`, eight runs, each a new world. Two failed, both on
+  the check's own new lines and not on the client. The first (259 s)
+  waited for the two to be `Docked` at home, which the engine does not call
+  a fleet that flies there. The fifth (178 s) met a patrol that had lost a
+  ship, read "1 of 2" off the chart, and found the map's panel, in sensor
+  range, saying 2 again a second later; the check now reads the group's
+  heading off the page as it stands. The other six passed with exit 0:
+  295, 287 and 282 s on bundles built before the last changes to the
+  client, and 303, 285 and 321 s on the final bundle. Every run's group was
+  two Light Fighters at 108 or 132 power against the two's 182, a convoy in
+  five runs and a patrol in three; the fight stood at EVEN in five,
+  FAVOURABLE in two and SAFE in one when the two left it; nothing
+  followed. The group had lost hull in every run and a ship in two, was to
+  be whole 3 to 7 ticks after the two read it off the chart, and was when
+  the six arrived. A ninth run, after the check was made to wait for the
+  alert toasts to leave before its phone picture of the ending (a change to
+  the check's file only), passed in 327 s against a convoy, the same way.
+
+**Looked at** (the check's shots and the widget tests' `IAC_SHOTS`, at 1440
+and 390): the flee control from a test's state and from the engine in a
+browser; a fleet leaving; the fled ending on the windshield and in a
+phone's sheet; the pursuit panel and its strip on a phone; the map with a
+pursuit; a wounded group in the contacts and in the map's panel; the orders
+form with seven settings; the Overview with a pursued fleet. Changed for
+what was seen: the pursuit panel stood first in the scrolled column and
+was scrolled out of sight in the shot of the fled ending, so it is pinned
+over the column now; a gate's "FLEE 1 RND NO CHASE" broke after "NO", so
+the two are two words of a wrap; the map's lane of a pursuit between two
+neighbouring sectors was a few pixels of dashes and is a heavier stroke
+with an arrowhead and a plate with its name; an ended fight in which
+nobody lost a ship read "LOSSES: NOTHING YET"; the pinned panel left a gap
+through which a banner showed in a phone's sheet; the orders form with a
+second gauge and a note of its own for the seventh setting had its Set
+button end 959 px down a 900 px window, so the two ratios share one gauge
+and one note and the button shows again.
+
+**Not verified.**
+
+- No person played.
+- In every run of the end-to-end check the group was one the two could
+  have beaten (a convoy or a patrol of two Light Fighters at 108 or 132
+  power against their 182, odds EVEN or better), so the browser has not
+  shown a flight from
+  a fight that was being lost, a quote with a `chase`, a pursuit or its
+  banner. Those are the scripted world's and a test's own states. The check
+  takes a group that outweighs the two when the chart offers one within
+  four hops, and no run's chart did. A group that had lost a ship was on
+  the wire in two runs ("1 of 2 ships"), and had it back before its panel
+  was read, so "1 OF 2 SHIPS" on a page is a test's too.
+- A `refusal` of flight, a fleet caught by its pursuer, a pursuit continued
+  to a second hex and a doctrine's `flee` were not played against the
+  engine in a browser. The client words them from the same fields: the
+  refusal, a pursuer that `catches` and the `flee` report are widget tests
+  on states written for them; the scripted world has code for a fleet
+  caught and for a pursuit that goes on to a second hex, and no test
+  drives either, nor the log's line for a pursuit continued.
+- A phone's map has the route in its sheet and not the sector, so a
+  wounded group's panel at 390 px is the windshield's contacts, from a
+  widget test.
+- The leaving panel and the round under way last a tick or two; the check
+  pictures them when it catches them and says so when it does not.
+- `tools/playtest` was not run.
+
+**Kept out of the tree.** Nothing was moved to `.archive/` in this stage:
+the fixture generator removed no file.
+
+## 2026-10-14: flight, pursuit and pirates that mend, engine and web client, merged
+
+Slice 3 of `docs/design/ogame.md`, both stages, merged into master with
+`--no-ff` and pushed. `SAVE_FORMAT` is 10 and `ECONOMY_VERSION` 11. The
+engine stage was built on slice 2's engine before slice 2's web client was
+done; the web stage merged master into the branch first (the two documents
+and 37 generated fixtures conflicted, no Rust). Added at this merge:
+`CLAUDE.md` (the web stage's patch against master's, applied clean and
+compared with the copy it left), and a correction to
+`clients/web/tool/solo_e2e.dart` (below).
+
+**Read before the merge.** The two stages' reports and decisions entries, and
+the browser's picture of the flee control at 1440: the odds as the fight
+stands, the price of the jump out, who follows, a button a lane, and every
+gate card with its rounds under fire and whether it is chased.
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo test
+--workspace --no-fail-fast`: 182 passed, 0 failed; `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees on 4,410 values;
+`flutter analyze` clean; `flutter test` under `timeout -k 20 300`, three
+runs: 504 passed each time; `scripts/play.sh --single-player --no-serve`
+(`iac_solo.wasm` 2,754,773 bytes).
+
+`tool/solo_e2e.dart`, six runs. The second failed in the new flight step:
+"the fight at [3,-6] ended fled after 3 rounds, with no wreckage (outcome
+hostiles_destroyed)". The two scouting Light Fighters stood at 5.92, SAFE,
+and destroyed the group in the round before their order to leave was taken;
+the check assumed a flight always ends `fled`. It now says so when that
+happens, skips what it would have read of the flight's ending, and lets the
+six wait for the lair to stand again rather than for the group the two
+left. The four runs after that all passed (266 to 320 s), each with a real
+flight ending `fled`; none of them met the case the correction is for, so
+the corrected branch has not been run.
+
+**Not verified.** No person or agent played. The engine stage's balance runs
+and its real session were read in its report and not run again. In a
+browser nobody fled a fight they were losing, no group followed, and no
+fleet was caught: every group the end-to-end world offered was two Light
+Fighters, weaker than the two sent at it. Those screens (a chase forecast,
+the pursuit panel and its lane on the map, a refusal to leave, a doctrine's
+`flee`) are widget tests on written states. The bots' rule that a wing
+without a warship picks no fight ended their losses (18,279 ships in a blitz
+day before, 0 after) and also most of the hands-on raider's fighting in a
+season week (12 fights won where it won 290); nothing was done about that.

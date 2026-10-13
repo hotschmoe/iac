@@ -1,4 +1,5 @@
-import '../console/battle.dart' show damageLine, dockRepairLine, groupsList, hullOf, refitLevels, shipsOf;
+import '../console/battle.dart'
+    show chaseLine, damageLine, dockRepairLine, fleeingLine, flightPrice, groupsList, hullOf, pursuitLine, pursuitVerdict, refitLevels, shipsOf, stopFlightRule;
 import '../protocol/protocol.dart';
 
 /// Stable queue ids of one queue: the running items, then the waiting ones.
@@ -66,6 +67,7 @@ class ParsedError extends ParsedCommand {
 /// What the server takes for each doctrine setting, as the help prints it.
 const _rangeBounds = '$policyRangeMin-$policyRangeMax';
 const _engageBounds = '${policyEngageRatioX10Min / 10}-${policyEngageRatioX10Max ~/ 10}';
+const _disengageBounds = '${policyDisengageRatioX10Min / 10}-${policyDisengageRatioX10Max ~/ 10}';
 const _cargoBounds = '$policyCargoReturnPctMin-$policyCargoReturnPctMax';
 const _reserveBounds = '0-$policyMinFuelPctMax';
 
@@ -153,6 +155,10 @@ final _defenceWords = _words(DefenceKind.values, (k) => k.label);
 final helpLines = [
   'fleet:  h[arvest] [metal|crystal|deut]  a[ttack] [n]  r[ecall]  s[alvage]  v|scan  x|explore  stop',
   'move:   m[ove] <e|ne|nw|w|sw|se | 1-6 | q r>      (one hop along a known lane)',
+  'flight: a move from inside a fight is flight: the fleet stops firing and is fired on until its jump lands, and a group that was',
+  '                  beating it may follow, as far as its kind does and never into home ground, the hub or an outpost\'s sector. status says what',
+  '                  leaving costs now and who would follow. stop calls the jump off: the fleet fights on and the fuel is forfeit.',
+  '                  recall is the other way out: home at once, for more fuel and at a risk to every ship',
   'base:   b[uild] <$_buildingWords>',
   '        research <$_techWords>',
   '        ship <$_shipWords> [count]',
@@ -174,6 +180,7 @@ final helpLines = [
   '                  fuel=<% of deuterium income it may burn, $policyFuelUnboundedPct = no bound>  cargo=<% of the hold that sends it home, $_cargoBounds>',
   '                  reserve=<% of the tank kept spare, $_reserveBounds>     e.g. policy mine range=8 fuel=40',
   '                  refine=<on|off: before it would turn home for fuel, refine the deuterium in its hold first>',
+  '                  disengage=<odds ratio below which it leaves a fight for home, $_disengageBounds, never held above engage>',
   'hub:    quote <give> <want> [amount|all]  ask the exchange what a trade would return, from anywhere   e.g. quote metal deut 400',
   '        trade <give> <want> [amount|all]  sell cargo from the hold, standing on the hub; no amount = all of it aboard',
   'hold:   load <metal|crystal|deut> [amount|all]  stockpile into the hold of the active fleet, idle at home with no standing orders;',
@@ -262,6 +269,12 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
           '${damageLine(q)}; the home dock ${dockRepairLine(q, q.home)}',
           if (q.outpost case final post?) 'your outpost ${dockRepairLine(q, post)}',
         ],
+        if (f?.flight case final q?) ...[
+          'In a fight, ${q.label.label} (ratio ${q.ratio.toStringAsFixed(2)}): a move out costs ${flightPrice(q)}. ${chaseLine(q.chase)}',
+          if (q.refusal case final why?) 'It cannot leave now: $why',
+        ],
+        if (f?.fleeing case final leaving?) '${fleeingLine(leaving)}. $stopFlightRule',
+        if (f?.pursuedBy case final hunter?) 'Pursued: ${pursuitLine(hunter)}. ${pursuitVerdict(hunter, charging: f?.state == FleetStatus.moving)}',
       ]);
 
     case 'leaderboard' || 'lb' || 'rank' || 'score':
@@ -279,7 +292,8 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
           for (var i = 0; i < ctx.fleets.length; i++)
             '${ctx.fleets[i].id == fid ? '>' : ' '}${i + 1}: F${ctx.fleets[i].id} ${ctx.fleets[i].state.wire} '
                 '${ctx.fleets[i].location} ${groupsList(ctx.fleets[i].ships)}'
-                '${ctx.fleets[i].policy == null ? '' : ' [${ctx.fleets[i].policy!.preset.label}]'}',
+                '${ctx.fleets[i].policy == null ? '' : ' [${ctx.fleets[i].policy!.preset.label}]'}'
+                '${ctx.fleets[i].fleeing == null ? '' : ' leaving a fight'}${ctx.fleets[i].pursuedBy == null ? '' : ' PURSUED'}',
         ]);
       }
       final n = int.tryParse(args.first);
@@ -515,11 +529,13 @@ String policyCommand(PolicyPreset preset, [PolicyParams params = const PolicyPar
     if (params.cargoReturnPct != usual.cargoReturnPct) 'cargo=${params.cargoReturnPct}',
     if (params.minFuelPct != usual.minFuelPct) 'reserve=${params.minFuelPct}',
     if (params.refine != usual.refine) 'refine=${params.refine ? 'on' : 'off'}',
+    if (params.disengageRatioX10 != usual.disengageRatioX10) 'disengage=${params.disengageRatioX10 / 10}',
   ].join(' ');
 }
 
 const _policyUsage =
-    'policy: manual|prospect|mine|salvage|patrol  [range=$_rangeBounds] [engage=$_engageBounds] [fuel=0-$policyFuelUnboundedPct] [cargo=$_cargoBounds] [reserve=$_reserveBounds] [refine=on|off]';
+    'policy: manual|prospect|mine|salvage|patrol  [range=$_rangeBounds] [engage=$_engageBounds] [disengage=$_disengageBounds] [fuel=0-$policyFuelUnboundedPct] '
+    '[cargo=$_cargoBounds] [reserve=$_reserveBounds] [refine=on|off]';
 
 /// Doctrine settings typed as `key=value` over [over], the settings the
 /// fleet's orders have when the line names no doctrine, or else over the
@@ -528,7 +544,7 @@ const _policyUsage =
 PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
   final preset = over ?? const PolicyParams();
   var (reserve, cargo, range) = (preset.minFuelPct, preset.cargoReturnPct, preset.maxRange);
-  var (engage, fuel) = (preset.engageRatioX10, preset.fuelBudgetPct);
+  var (engage, disengage, fuel) = (preset.engageRatioX10, preset.disengageRatioX10, preset.fuelBudgetPct);
   var refine = preset.refine;
   for (final setting in settings) {
     final cut = setting.indexOf('=');
@@ -549,6 +565,8 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
         range = value.round();
       case 'engage':
         engage = (value * 10).round();
+      case 'disengage':
+        disengage = (value * 10).round();
       case 'fuel':
         fuel = value.round();
       default:
@@ -560,6 +578,7 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
       !within(cargo, policyCargoReturnPctMin, policyCargoReturnPctMax) ||
       !within(range, policyRangeMin, policyRangeMax) ||
       !within(engage, policyEngageRatioX10Min, policyEngageRatioX10Max) ||
+      !within(disengage, policyDisengageRatioX10Min, policyDisengageRatioX10Max) ||
       !within(fuel, 0, policyFuelUnboundedPct)) {
     return null;
   }
@@ -570,5 +589,6 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
     engageRatioX10: engage,
     fuelBudgetPct: fuel,
     refine: refine,
+    disengageRatioX10: disengage,
   );
 }

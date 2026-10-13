@@ -6,7 +6,8 @@
 // scan and a jump at once; a boarding; an outpost being built, or warned of
 // a raid). The two must be the same world at every stop and at the end.
 // A second world does the same to a fight of large fleets, stopped between
-// every two rounds.
+// every two rounds, and a third to a flight and the pursuit that follows it,
+// stopped after every tick.
 
 #[allow(dead_code)]
 mod common;
@@ -396,4 +397,84 @@ fn a_fight_of_large_fleets_stopped_between_every_two_rounds_is_fought_as_if_it_h
     assert!(rounds >= 4, "a fight of thousands lasts: {rounds} rounds");
     assert!(damaged_most > 200, "the documents held the hull of hundreds of damaged ships: {damaged_most}");
     assert!(largest < 64 * 1024, "and a world with four thousand ships in a fight is {largest} bytes");
+}
+
+/// A convoy slower than the pack it leaves runs four hexes down a lane and
+/// is caught at two of them, and the host stops after every tick: in the
+/// middle of the jump out, with the pack on its trail, with the pack firing
+/// on a fleet that is charging, with the pack on its way back, and while it
+/// mends. Who is leaving is the fleet's own state, and the trail, the
+/// leash and the mending are the group's, so the document holds them all.
+#[test]
+fn a_flight_and_a_pursuit_stopped_after_every_tick_are_flown_as_if_the_host_had_never_stopped() {
+    use ShipClass::{LightFighter, SmallCargo};
+    const PACK: u64 = 900_002;
+    let stage = || {
+        let mut engine = GameEngine::new(DEFAULT_WORLD_SEED, Pace::parse("season").unwrap());
+        let (pid, fid) = common::join(&mut engine, "Convoy");
+        let home = engine.players[&pid].homeworld;
+        let lane = common::open_lane(&engine, home, 5);
+        common::muster(&mut engine, fid, &[(SmallCargo, 300)], lane[0]);
+        common::horde(&mut engine, PACK, lane[0], &[(LightFighter, 160)], 1.0);
+        common::edit(&mut engine, |s| s.npc_fleets.get_mut(&PACK).unwrap().behavior = NpcBehaviorType::Aggressive);
+        let attack = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: PACK });
+        assert!(attack.error.is_none(), "{:?}", attack.error);
+        (engine, pid, fid, lane)
+    };
+    let run_on = |engine: &mut GameEngine, pid: u64, fid: u64, lane: &[Hex]| {
+        let fleet = &engine.fleets[&fid];
+        let next = lane.iter().position(|at| *at == fleet.location).and_then(|here| lane.get(here + 1)).copied();
+        if let (Some(target), true) = (next, fleet.state != FleetStatus::Moving) {
+            let order = engine.execute(pid, Command::Move { fleet_id: fid, target });
+            assert!(order.error.is_none(), "{:?}", order.error);
+        }
+    };
+    let (mut straight, pid, fid, lane) = stage();
+    let (mut stopped, ..) = stage();
+    let mut place = Memory::default();
+
+    let (mut fleeing, mut hunted, mut caught, mut returning, mut mending) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    let mut whole_at = None;
+    for tick in 1..=400u64 {
+        if tick > 1 {
+            run_on(&mut straight, pid, fid, &lane);
+            run_on(&mut stopped, pid, fid, &lane);
+        }
+        straight.tick().unwrap();
+        stopped.tick().unwrap();
+        assert_eq!(
+            serde_json::to_value(straight.drain_events()).unwrap(),
+            serde_json::to_value(stopped.drain_events()).unwrap(),
+            "tick {tick}: the restarted world told another story",
+        );
+
+        let world = stored_in(&mut place, &stopped);
+        assert_same(&stopped.snapshot(), &world, &format!("stored after tick {tick}"));
+        assert_eq!(world.hash(), straight.snapshot().hash(), "the restarted world left the other by tick {tick}");
+        let fleet = &world.fleets[&fid];
+        let leaving = fleet.state == FleetStatus::Moving && world.combats.values().any(|fight| fight.player_fleet_ids.contains(&fid));
+        let pack = world.npc_fleets.get(&PACK);
+        let errand = pack.and_then(|pack| pack.errand);
+        fleeing += u32::from(leaving && pack.is_some_and(|pack| pack.strayed == 0));
+        caught += u32::from(leaving && pack.is_some_and(|pack| pack.strayed > 0));
+        hunted += u32::from(errand.is_some_and(|errand| errand.quarry == Some(fid)));
+        returning += u32::from(errand.is_some_and(|errand| errand.quarry.is_none()));
+        let resting = pack.is_some_and(|pack| !pack.in_combat && pack.errand.is_none() && pack.location == lane[0] && !pack.whole());
+        mending += u32::from(resting && pack.is_some_and(|pack| pack.rested > 0));
+        stopped = GameEngine::restore(world);
+        if resting {
+            whole_at = whole_at.or(stopped.npc_fleets.get(&PACK).and_then(|pack| stopped.group_whole_at(pack)));
+        }
+    }
+
+    assert_eq!(stopped.snapshot().hash(), straight.snapshot().hash(), "restarts changed the course of the flight");
+    assert_eq!(stopped.fleets[&fid].location, lane[4], "the convoy ran the lane");
+    assert!(
+        fleeing >= 3 && hunted >= 4 && caught >= 4 && returning >= 4 && mending >= 10,
+        "the host was to stop in the jump out ({fleeing}), with the pack on the trail ({hunted}), with it firing on a \
+         charging fleet ({caught}), on its way back ({returning}) and while it mended ({mending})",
+    );
+    let whole_at = whole_at.expect("the pack came back wounded");
+    assert!(whole_at <= 400, "in a season a pack a convoy scratched is whole within the run: tick {whole_at}");
+    assert!(!stopped.npc_fleets.contains_key(&PACK), "and whole again it has stood down");
 }

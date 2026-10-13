@@ -84,9 +84,24 @@ proto.ShipGroupState shipRow(proto.ShipClass cls, int count, {int damaged = 0, i
       unitHull: cls.hull.round(),
     );
 
-/// A hostile group of [rows], counted as the server counts it.
-proto.NpcFleetInfo hostileGroup(int id, List<proto.ShipGroupState> rows, proto.NpcBehavior behavior) =>
-    proto.NpcFleetInfo(id: id, ships: rows, shipCount: rows.fold(0, (n, g) => n + g.count), behavior: behavior);
+/// A hostile group of [rows], counted as the server counts it: whole unless
+/// [muster] says how many ships it has when it is, with the tick it is
+/// whole again at, the hexes it follows a fleet, the ticks of its jump and
+/// the errand it is on, as a test sets them.
+proto.NpcFleetInfo hostileGroup(int id, List<proto.ShipGroupState> rows, proto.NpcBehavior behavior,
+    {int? muster, int? wholeAt, int chaseHexes = 0, int jumpTicks = 1, proto.GroupErrand? errand}) {
+  final count = rows.fold(0, (n, g) => n + g.count);
+  return proto.NpcFleetInfo(
+      id: id,
+      ships: rows,
+      shipCount: count,
+      behavior: behavior,
+      muster: muster ?? count,
+      wholeAt: wholeAt,
+      jumpTicks: jumpTicks,
+      chaseHexes: chaseHexes,
+      errand: errand);
+}
 
 /// Everything printed under [box], a line a piece of text.
 String textUnder(WidgetTester tester, Finder box) => [

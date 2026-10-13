@@ -295,14 +295,16 @@ class Wait(unittest.TestCase):
         self.assertTrue(any("fleet" in w for w in play.wait_reasons(base, self.snap(arrived), [], "any")))
         self.assertEqual(play.wait_reasons(base, self.snap(arrived), [], "idle"), [])
         orders = {"preset": "prospect",
-                  "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 6, "engage_ratio_x10": 20, "fuel_budget_pct": 35}}
+                  "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 6, "engage_ratio_x10": 20,
+                             "disengage_ratio_x10": 9, "fuel_budget_pct": 35}}
         auto = copy.deepcopy(fs)
         auto["fleets"][0]["policy"] = orders
         auto_arrived = copy.deepcopy(arrived)
         auto_arrived["fleets"][0]["policy"] = orders
         self.assertEqual(play.wait_reasons(self.snap(auto), self.snap(auto_arrived), [], "any"), [])
         self.assertEqual(play.fleet_rows(fs)[0]["policy"], "manual")
-        self.assertIn(" prospect (range 6, engage 2.0x, fuel 35%, home at cargo 85%, reserve 10%) ", play.fleet_line(play.fleet_rows(auto)[0]))
+        self.assertIn(" prospect (range 6, engage 2.0x, disengage 0.9x, fuel 35%, home at cargo 85%, reserve 10%) ",
+                      play.fleet_line(play.fleet_rows(auto)[0]))
 
     def test_lost_fleet_returns(self):
         base = self.snap()

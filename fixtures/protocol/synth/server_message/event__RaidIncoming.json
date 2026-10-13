@@ -1,5 +1,5 @@
 [
-{"canonical":{"arrival_tick":20,"est_power":22.25,"kind":"RaidIncoming","outpost":{"q":23,"r":-24},"player_id":19,"threat":"s21","tick":96,"type":"event"},"input":{"arrival_tick":20,"est_power":22.25,"kind":"RaidIncoming","outpost":{"q":23,"r":-24},"player_id":19,"threat":"s21","tick":96,"type":"event"}},
-{"canonical":{"arrival_tick":20,"est_power":0.0,"kind":"RaidIncoming","player_id":19,"threat":"s21","tick":96,"type":"event"},"input":{"arrival_tick":20,"kind":"RaidIncoming","player_id":19,"threat":"s21","tick":96,"type":"event"}},
-{"canonical":{"arrival_tick":20,"est_power":22.25,"kind":"RaidIncoming","player_id":19,"threat":"s21","tick":96,"type":"event"},"input":{"arrival_tick":20,"est_power":22.25,"kind":"RaidIncoming","outpost":null,"player_id":19,"threat":"s21","tick":96,"type":"event"}}
+{"canonical":{"arrival_tick":12,"est_power":14.25,"kind":"RaidIncoming","outpost":{"q":15,"r":-16},"player_id":11,"threat":"s13","tick":77,"type":"event"},"input":{"arrival_tick":12,"est_power":14.25,"kind":"RaidIncoming","outpost":{"q":15,"r":-16},"player_id":11,"threat":"s13","tick":77,"type":"event"}},
+{"canonical":{"arrival_tick":12,"est_power":0.0,"kind":"RaidIncoming","player_id":11,"threat":"s13","tick":77,"type":"event"},"input":{"arrival_tick":12,"kind":"RaidIncoming","player_id":11,"threat":"s13","tick":77,"type":"event"}},
+{"canonical":{"arrival_tick":12,"est_power":14.25,"kind":"RaidIncoming","player_id":11,"threat":"s13","tick":77,"type":"event"},"input":{"arrival_tick":12,"est_power":14.25,"kind":"RaidIncoming","outpost":null,"player_id":11,"threat":"s13","tick":77,"type":"event"}}
 ]

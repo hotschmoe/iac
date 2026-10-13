@@ -88,6 +88,7 @@
       "policy": {
         "params": {
           "cargo_return_pct": 85,
+          "disengage_ratio_x10": 9,
           "engage_ratio_x10": 15,
           "fuel_budget_pct": 20,
           "max_range": 4,
@@ -2275,7 +2276,24 @@
       "hostiles": [
         {
           "behavior": "Aggressive",
+          "chase_hexes": 2,
+          "errand": {
+            "arrives_at": 4822,
+            "hexes_left": 1,
+            "home": {
+              "q": 5,
+              "r": -3
+            },
+            "quarry": 3,
+            "quarry_owner": "Admiral",
+            "to": {
+              "q": 2,
+              "r": -2
+            }
+          },
           "id": 9001,
+          "jump_ticks": 2,
+          "muster": 7,
           "ship_count": 4,
           "ships": [
             {
@@ -2300,11 +2318,15 @@
               "unit_hull": 7000,
               "unit_shield": 400
             }
-          ]
+          ],
+          "whole_at": 5260
         },
         {
           "behavior": "Passive",
+          "chase_hexes": 0,
           "id": 9002,
+          "jump_ticks": 2,
+          "muster": 2,
           "ship_count": 2,
           "ships": [
             {

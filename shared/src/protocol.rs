@@ -57,6 +57,16 @@ pub struct AuthRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum Command {
+    /// Jump to the connected sector `target`. The fuel is paid at once and
+    /// the jump charges for the fleet's `jump_ticks`, set by its slowest
+    /// ship.
+    ///
+    /// From inside a fight it is flight (`FleetState.flight` quotes it): the
+    /// fleet stops firing and is fired on every round until it is gone, one
+    /// round fewer than its jump takes ticks and never fewer than
+    /// `FLEE_MIN_ROUNDS`. `stop` calls the jump off, the fuel is forfeit and
+    /// the fleet fights on. When the last fleet has left, a group that was
+    /// beating it may follow (`FleetState.pursued_by`).
     #[serde(rename = "move")]
     Move { fleet_id: u64, target: Hex },
     #[serde(rename = "harvest")]
@@ -393,6 +403,14 @@ pub struct PolicyParams {
     /// repeated at most once a minute and again only if its cause changes.
     /// Clamped to 1..=100. Default 15 (1.5x, FAVOURABLE).
     pub engage_ratio_x10: u8,
+    /// Leave a fight once the fleet's odds in it fall below this / 10. Every
+    /// `POLICY_EVAL_INTERVAL` ticks of a fight the odds are read again from
+    /// the two sides as they then stand, and below the ratio the fleet jumps
+    /// out toward home under fire, as a `move` out of a fight does, and
+    /// reports it as a `PolicyAction` `flee` with the odds. Whatever doctrine
+    /// it flies, and however it came into the fight. Clamped to 1..=100 and
+    /// never above `engage_ratio_x10`. Default 9 (0.9x, the edge of RISKY).
+    pub disengage_ratio_x10: u8,
     /// The share of the homeworld's deuterium income, in percent, that this
     /// fleet may spend on fuel while it flies under these orders. The fleet
     /// earns an allowance at that share of the current deuterium production
@@ -423,6 +441,7 @@ impl Default for PolicyParams {
             cargo_return_pct: crate::constants::POLICY_DEFAULT_CARGO_RETURN_PCT,
             max_range: crate::constants::POLICY_DEFAULT_MAX_RANGE,
             engage_ratio_x10: crate::constants::POLICY_DEFAULT_ENGAGE_RATIO_X10,
+            disengage_ratio_x10: crate::constants::POLICY_DEFAULT_DISENGAGE_RATIO_X10,
             fuel_budget_pct: crate::constants::POLICY_DEFAULT_FUEL_BUDGET_PCT,
             refine: false,
         }
@@ -676,6 +695,10 @@ pub struct MovePreview {
     pub fleet_power: f32,
     pub ratio: f32,
     pub label: RatioLabel,
+    /// The fleet is in a fight, so this jump is flight: what it costs, and
+    /// whether a group would follow it to `target`. Absent outside a fight.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub flight: Option<FlightQuote>,
 }
 
 /// Most sectors one `odds` request may name.
@@ -1072,6 +1095,18 @@ pub struct FleetState {
     /// What mending its damaged ships would take; absent when none is damaged.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub repair: Option<RepairQuote>,
+    /// The fleet is in a fight and firing: what a `move` out of it would
+    /// cost right now, and why it would be refused if it would. Absent
+    /// outside a fight and once the fleet is leaving one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub flight: Option<FlightQuote>,
+    /// The fleet is charging a jump while hostiles fire on it: it does not
+    /// answer, and stays a target until it is gone. Its `state` is `Moving`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fleeing: Option<Fleeing>,
+    /// A hostile group is following the fleet and jumping to where it stands.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pursued_by: Option<Pursuit>,
     pub cargo: Resources,
     /// Hold size: the most `cargo` can total, as the server enforces it.
     pub cargo_capacity: f64,
@@ -1145,6 +1180,80 @@ pub struct FleetState {
     /// with its settings, so the two cannot be told apart or disagree.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub policy: Option<StandingOrders>,
+}
+
+/// What leaving a fight costs a fleet, as things stand this tick. The price
+/// of flight is the rounds it takes without firing back, the damage, which
+/// stays until a dock mends it, the fuel, nothing earned from a group that
+/// was not destroyed, and pursuit if the fleet is the slower.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightQuote {
+    /// Fuel the jump out burns: `jump_fuel` times `FLEE_FUEL_MULTIPLIER`.
+    pub fuel: f64,
+    /// Ticks from the order until the fleet is gone.
+    pub ticks: u16,
+    /// Rounds of fire it takes in that time without answering.
+    pub rounds: u16,
+    /// The odds of the fight as it stands now, both sides with the losses
+    /// and the damage they have taken: what `SectorOdds` would say of it,
+    /// and what a standing order's `disengage_ratio_x10` is held against.
+    pub ratio: f32,
+    pub label: RatioLabel,
+    /// Why a `move` out would be refused now, in the engine's words; absent
+    /// when it would be taken.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refusal: Option<String>,
+    /// The group that would follow the fleet if it left now and the others
+    /// with it; absent when none would. In a `MovePreview` it is for the
+    /// jump to `target`: no group follows into home ground, the hub or a
+    /// sector an outpost stands in.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub chase: Option<ChaseForecast>,
+}
+
+/// How a group would follow a fleet that left it now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChaseForecast {
+    pub group_id: u64,
+    /// What the group is ("3x cruiser pack").
+    pub label: String,
+    /// Jumps it would make after the fleet before it turns back.
+    pub hexes: u8,
+    /// Ticks one jump takes it.
+    pub jump_ticks: u16,
+    /// Rounds it would fire on the fleet at each of those hexes, if the
+    /// fleet orders its next jump the moment it lands: the difference of the
+    /// two jump times, 0 for a fleet as fast as the group. A fleet that
+    /// stops is caught and the fight is joined again.
+    pub rounds_per_hex: u16,
+}
+
+/// A jump out of a fight under way.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Fleeing {
+    pub to: Hex,
+    /// Ticks until the fleet is gone.
+    pub ticks: u16,
+    /// Rounds of fire it still takes.
+    pub rounds: u16,
+}
+
+/// A group on a fleet's trail, as the fleet's owner is told of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pursuit {
+    pub group_id: u64,
+    /// What the group is ("3x cruiser pack").
+    pub label: String,
+    /// The sector it is jumping from.
+    pub from: Hex,
+    /// Ticks until it lands where the fleet stands.
+    pub arrives_in: u16,
+    /// It lands before the fleet can be gone: before the jump the fleet is
+    /// charging lands or, for a fleet that is not charging one, before a
+    /// jump ordered now would. It then fires on the fleet.
+    pub catches: bool,
+    /// Jumps it will still make after this one before it turns back.
+    pub hexes_left: u8,
 }
 
 /// One `refine` order: the deuterium that leaves the hold and the fuel the
@@ -1353,8 +1462,9 @@ pub struct SectorResources {
     pub deuterium: Density,
 }
 
-/// A hostile group. `ships` is by class as a fleet's is; a group that has
-/// not fought, or was only remembered, is listed whole.
+/// A hostile group. `ships` is by class as a fleet's is. A group keeps the
+/// losses and the damage of its fights: it is listed as it stands, and
+/// mends only at rest in its own sector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NpcFleetInfo {
     pub id: u64,
@@ -1362,6 +1472,44 @@ pub struct NpcFleetInfo {
     /// Every ship of every class.
     pub ship_count: u32,
     pub behavior: NpcBehavior,
+    /// Ships it has when whole: `muster - ship_count` are lost.
+    pub muster: u32,
+    /// The tick it will be whole again, ships and hull, if nothing disturbs
+    /// it; absent for a group that is whole. It mends in steps and only at
+    /// rest in its own sector: a fight or a pursuit stops the clock and the
+    /// tick moves. On a sector that is not `live` it is what was true at
+    /// `last_seen`; the odds count such a group whole once the tick is past.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub whole_at: Option<u64>,
+    /// Ticks one jump takes it.
+    pub jump_ticks: u16,
+    /// The most jumps it makes after a fleet that leaves a fight with it:
+    /// 0 for a group that never follows.
+    pub chase_hexes: u8,
+    /// It is following a fleet or on its way back to its own sector.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub errand: Option<GroupErrand>,
+}
+
+/// What takes a group out of its own sector. Its sector is empty meanwhile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupErrand {
+    /// The sector it lairs in and goes back to.
+    pub home: Hex,
+    /// The fleet it follows and the empire that owns it; absent when it has
+    /// turned back.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub quarry: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub quarry_owner: Option<String>,
+    /// The sector it is jumping to and the tick it lands there; absent while
+    /// it fights.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub to: Option<Hex>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub arrives_at: Option<u64>,
+    /// Jumps it will still make after a fleet before it turns back.
+    pub hexes_left: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2157,6 +2305,7 @@ pub enum EventKind {
     SectorEntered(SectorEnteredEvent),
     CombatStarted(CombatStartedEvent),
     CombatEnded(CombatEndedEvent),
+    Pursuit(PursuitEvent),
     SalvageCollected(SalvageCollectedEvent),
     FleetArrived(FleetArrivedEvent),
     BuildingCompleted(BuildingCompletedEvent),
@@ -2386,6 +2535,9 @@ pub struct BattleGroup {
     /// The fleet is the receiver's.
     #[serde(default)]
     pub mine: bool,
+    /// The fleet is leaving: it was fired on this round and did not fire.
+    #[serde(default)]
+    pub fleeing: bool,
     /// By unit, in catalogue order. A unit wiped out this round is listed
     /// once more with a count of 0.
     pub units: Vec<BattleUnits>,
@@ -2433,11 +2585,17 @@ pub enum BattleOutcome {
     FleetsDestroyed,
     /// The last units of both sides fell in the same round.
     BothDestroyed,
-    /// Every fleet left the sector; the hostiles are whole again.
+    /// The last fleet made the emergency jump home. The hostiles keep the
+    /// losses and the damage they took, and mend in time.
     Withdrawn,
     /// `STANDOFF_ROUNDS` rounds took no hull from either side: nobody can
-    /// hurt anybody. The fleets stay; the hostiles are whole again.
+    /// hurt anybody. Both sides stay where they are, as they are, and
+    /// nothing starts the fight again but an arrival or an `attack`.
     Standoff,
+    /// The last fleet jumped out of the sector under fire. The hostiles keep
+    /// the losses and the damage they took; a group that was beating the
+    /// fleet may follow it (`Pursuit`).
+    Fled,
 }
 
 /// What one fleet or group lost over a whole fight.
@@ -2461,6 +2619,48 @@ pub struct BattleLosses {
 pub struct UnitCount {
     pub unit: ShipyardItem,
     pub count: u32,
+}
+
+/// A group took up a fleet's trail, went on along it, or gave it up. A group
+/// that catches its fleet says so with `CombatStarted`. It reaches the
+/// fleet's owner and anyone present in `sector`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PursuitEvent {
+    pub group_id: u64,
+    /// What the group is ("3x cruiser pack").
+    pub label: String,
+    /// The fleet followed and the empire owning it.
+    pub fleet_id: u64,
+    pub owner: String,
+    /// The fleet is the receiver's.
+    #[serde(default)]
+    pub mine: bool,
+    /// Where the group stands.
+    pub sector: Hex,
+    pub phase: PursuitPhase,
+    /// The sector it jumps to and the ticks until it lands there: where the
+    /// fleet stands for a pursuit begun or continued, the way back to its
+    /// own sector for one given up. Absent when it gave up at home.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub to: Option<Hex>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub arrives_in: Option<u16>,
+    /// Jumps it will still make after this one before it turns back.
+    pub hexes_left: u8,
+    /// Why it gave up, in the engine's words; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub why: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PursuitPhase {
+    /// The fight broke off and the group set out after the fleet.
+    Began,
+    /// It landed where the fleet had been and jumped on after it.
+    Continued,
+    /// It turned back.
+    Abandoned,
 }
 
 /// Ships a fleet lost outside a fight: those that broke up in an emergency

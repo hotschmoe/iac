@@ -437,6 +437,10 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         }
         (ErrorCode::OnCooldown, _) => match fleet {
             Some(f) if f.state == FleetStatus::InCombat => format!("fleet {fid} is in combat"),
+            Some(f) if f.state == FleetStatus::Moving && engine.combat_of(fid).is_some() => match engine.flight_order(f) {
+                Err(refusal) => refusal.reason,
+                Ok(_) => format!("fleet {fid} is leaving a fight"),
+            },
             Some(f) if f.state == FleetStatus::Moving => format!("fleet {fid} is in transit"),
             Some(f) if f.state == FleetStatus::Exploring => format!("fleet {fid} is busy boarding a derelict"),
             Some(f) if f.action_cooldown > 0 => {
@@ -456,6 +460,12 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
             ),
             None => format!("fleet {fid} lacks the fuel for an emergency jump home"),
         },
+        (ErrorCode::InsufficientFuel, Command::Move { .. }) if fleet.is_some_and(|f| f.state == FleetStatus::InCombat) => {
+            match fleet.map(|f| engine.flight_order(f)) {
+                Some(Err(refusal)) => refusal.reason,
+                _ => format!("fleet {fid} lacks the fuel to leave the fight"),
+            }
+        }
         (ErrorCode::InsufficientFuel, _) => match fleet {
             Some(f) => format!(
                 "fleet {fid} has {:.0} fuel; this jump costs {:.0}. A stranded fleet regains one jump of fuel every few minutes",
