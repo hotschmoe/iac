@@ -67,12 +67,12 @@ const DOCTRINE_RANGE: u8 = 30;
 /// Fuel budget of the wings that haul, as a percent of deuterium income.
 const HAUL_FUEL_BUDGET_PCT: u8 = 50;
 const SHIELDS_UP: f32 = 0.95;
-const RETURN_LOAD: f32 = 0.85;
+const RETURN_LOAD: f64 = 0.85;
 /// Share of the tank kept spare on top of the way home.
-const FUEL_MARGIN: f32 = 0.10;
-const READY_FUEL: f32 = 0.90;
+const FUEL_MARGIN: f64 = 0.10;
+const READY_FUEL: f64 = 0.90;
 const REACH: u32 = 48;
-const MIN_ORE: f32 = 3.0;
+const MIN_ORE: f64 = 3.0;
 const WAIT: u64 = 30;
 const REST: u64 = 3;
 
@@ -288,7 +288,7 @@ pub(super) fn questions(state: &GameState, brief: Brief, questions: &mut Vec<Com
 /// waiting building or research order shows its cost; a shipyard batch can
 /// only be ordered once it is covered, so the home planner says what the
 /// yard is saving for.
-fn fuel_money(state: &GameState, brief: Brief) -> f32 {
+fn fuel_money(state: &GameState, brief: Brief) -> f64 {
     let home = &state.homeworld;
     let building = home.build_pending.first().map_or(0.0, |q| q.cost.deuterium);
     let research = home.research_pending.first().map_or(0.0, |q| q.cost.deuterium);
@@ -327,7 +327,7 @@ pub(super) struct Brief {
     /// More combat or exploration points would still raise the score.
     pub points_wanted: bool,
     /// Deuterium of the unit the shipyard wants next and cannot pay for yet.
-    pub yard_deuterium: f32,
+    pub yard_deuterium: f64,
 }
 
 /// One turn's worth of fleet orders for one empire.
@@ -537,7 +537,7 @@ impl<'a> Admiral<'a> {
     /// After `hops` more jumps to `sector` the fleet still has the way home in the tank.
     fn in_range(&self, fleet: &FleetState, sector: &SectorState, hops: u32) -> bool {
         let home_hops = u32::from(Hex::distance(&sector.location, &self.home));
-        fleet.fuel >= (hops + home_hops + 1) as f32 * fleet.jump_fuel + FUEL_MARGIN * fleet.fuel_max
+        fleet.fuel >= f64::from(hops + home_hops + 1) * fleet.jump_fuel + FUEL_MARGIN * fleet.fuel_max
     }
 
     /// Jump to `target`, unless a fight waits there and the shields are not
@@ -704,7 +704,7 @@ impl<'a> Admiral<'a> {
     }
 }
 
-fn ore(sector: &SectorState) -> f32 {
+fn ore(sector: &SectorState) -> f64 {
     sector.ore_reserve.map_or(0.0, |o| o.metal.units + o.crystal.units + o.deuterium.units)
 }
 

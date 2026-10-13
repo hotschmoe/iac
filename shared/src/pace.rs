@@ -149,8 +149,8 @@ impl Pace {
     }
 
     /// Per-tick production or regeneration rate at this pace.
-    pub fn rate(&self, per_tick: f32) -> f32 {
-        per_tick * self.0 as f32
+    pub fn rate(&self, per_tick: f64) -> f64 {
+        per_tick * self.0
     }
 
     pub fn attention_ticks(&self, base: f64) -> u64 {
@@ -162,23 +162,23 @@ impl Pace {
     /// beyond a season the cap must grow much slower than P^0.75 to stay
     /// within a few windows of production; at a blitz P^0.75 (121x) held four
     /// hours of mine output and the Storage Vault never mattered.
-    pub fn cap_mult(&self) -> f32 {
+    pub fn cap_mult(&self) -> f64 {
         let (p, attention) = (self.0, PaceClass::Attention.exponent());
         if p <= CAP_KNEE {
-            maths::powf(p, attention) as f32
+            maths::powf(p, attention)
         } else {
-            (maths::powf(CAP_KNEE, attention) * maths::powf(p / CAP_KNEE, CAP_EXPONENT_PAST_KNEE)) as f32
+            maths::powf(CAP_KNEE, attention) * maths::powf(p / CAP_KNEE, CAP_EXPONENT_PAST_KNEE)
         }
     }
 
     /// Ship holds scale like finds (P^0.5): loot per find grows with the
     /// pace, so the hold that carries it must too.
-    pub fn cargo_mult(&self) -> f32 {
+    pub fn cargo_mult(&self) -> f64 {
         self.finds_mult()
     }
 
-    pub fn finds_mult(&self) -> f32 {
-        self.0.sqrt() as f32
+    pub fn finds_mult(&self) -> f64 {
+        self.0.sqrt()
     }
 
     pub fn finds_ticks(&self, base: f64) -> u64 {

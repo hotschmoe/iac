@@ -6701,3 +6701,185 @@ each time; `scripts/play.sh --single-player --no-serve`; `tool/solo_e2e.dart`:
 
 **Not verified.** No person or agent played; nothing presses Refine or sets
 the switch in a browser; no long run with the switch on.
+
+## 2026-10-13: amounts are 64-bit (slice 0b of the OGame work)
+
+`Resources` is three `f64`. `ECONOMY_VERSION` is 8 and `SAVE_FORMAT` is 7
+(master's `refine` took 6 while this was being built); nothing is migrated.
+No rule and no constant's figure changed. Branch
+`worktree-agent-a71db3f9c1a5ab67e`, with master merged up to `cc01bdb`, not
+merged into master and not pushed.
+
+**Read.** `docs/design/ogame.md` 8.1, 8.4, 8.5 and 12; `shared/src/maths.rs`
+and the three `clippy.toml`; `constants.rs`, `scaling.rs`, `pace.rs` and
+`engine.rs` whole; `serde_json` 1.0.150's `de.rs`.
+
+**The line** is in `docs/design/decisions.md` ("amounts are 64-bit"). In
+short: an amount of a resource, ore in the ground, fuel and the tank, and
+every constant or curve that only scales one, are `f64`. Hull, shield,
+weapon, power, odds, score, chances and rolls stay `f32`.
+`scaling::resource_weight` is the one place an amount is narrowed, to
+points. No random draw changed type: a roll that scales loot is drawn as the
+`f32` it was and widened after.
+
+**Deuterium and fuel.** Three places turn one into the other, all in
+`sim/src/engine.rs`: `refuel_fleet` (the stockpile), `refuel_at_outpost`
+(the outpost's store) and `refining`, applied by `refine_hold` (the hold).
+Deuterium, fuel, the tank, `FUEL_DEUT_PER_UNIT`, `REFINE_LOSS` and
+`scaling::refined_fuel_per_deuterium` are all `f64`, so no width is crossed
+in any of them, and the wire's `Refining` carries both figures in 64 bits.
+`refining` and `refine_hold` needed no edit at the merge: they name no
+float type. A jump's cost is where 32 bits enter: `fleet_fuel_cost` sums
+the hulls as `f32`, widens the sum with `f64::from` and multiplies by
+`FUEL_RATE_PER_MASS` and `fuel_rate_modifier`, both `f64`.
+
+**What nobody asked for and the change needed: `float_roundtrip`.**
+`serde_json` without that feature reads a float as `digits as f64` divided
+by a power of ten, which is right for the nine digits an `f32` prints and
+wrong for a seventeen-digit `f64`. Measured in a scratch program: 200,843 of
+2,000,000 values between 0 and five million came back one unit in the last
+place away; with the feature, none. With the feature taken out of a scratch
+copy of this branch, `stored_world.rs`, the restart test of `bots.rs` and
+the new scenario fail. `shared/Cargo.toml` and `sim/Cargo.toml` turn it on.
+`Cargo.lock` does not change for it.
+
+**Changed.** `shared/src`: `constants.rs` (`Resources`, the fuel and raid
+shares, `REFINE_LOSS`, `ResourceKind::weight`), `scaling.rs` (caps,
+production, costs, fuel modifiers, ore, loot, the outpost's repair),
+`pace.rs` (`rate` and the three multipliers no longer narrow what they
+computed in 64 bits), `world.rs` (`ore_units`), `protocol.rs` (the amounts
+on the wire: order amounts, `ExchangeTerms` and `ExchangeMeter` with their
+fees, a fleet's hold, fuel, tank, `jump_fuel`, `home_fuel`, `outpost_fuel`,
+`Refining`, the three figures of `MovePreview`, `TileReserve`,
+`StorageNearCapEvent.ratio`). `sim/src`: `engine.rs`, `views.rs`,
+`queue.rs`, `bot/` (a bot's thresholds on amounts; its budgets in points
+are as they were), `headless.rs` and `sim-run` (the deuterium the report
+counts as refuel is an `f64`). `shared/tests/wire/mod.rs` learned
+`From<f64> for Cell`; the generator needed nothing else. In
+`protocol.g.dart` three constants read as their figures and no longer as
+the nearest floats: `storageNearCapRatio` 0.85, `fuelDeutPerUnit` 0.08,
+`refineLoss` 0.15. `clients/web/lib/protocol/protocol.dart`:
+`storageNearCap` is the server's division and no longer rounds to `f32`.
+
+**One test added**, at the end of `sim/tests/scenarios_world.rs`: five
+million metal under level 10 mines at pace 1 grows in an hour by what the
+mines make to within 0.00001 (a tick adds 0.072, which an `f32` at five
+million cannot hold), and the document gives back 2950448.3359709606 to the
+bit, one of the values the default parser gets wrong.
+
+**The chart recording** changed on every line, because an ore figure is
+written as 42.9 and no longer as 42.900001525878906. So the two engines
+(master at `d87f440` and the branch before any merge) were played side by
+side from scratch copies, with what the test hashes written out for all
+4,000 ticks, the events, and every player's whole state every 50 ticks.
+
+- Events: 3,747 of 4,000 ticks identical to the byte. The rest differ in the
+  last digits of floats (at most 5.9e-5 relative, a shortfall of 3,785
+  metal against a stockpile of 30,000) and in one sentence, fifteen times:
+  "about 226 ticks to one jump" is now 225, which is the right count at 25
+  percent of 300. The pilots had 2,283 orders accepted in both.
+- States, 320 of them: the economy version, `refills_in_s`, `full_in_s` and
+  `start_in` by one second, and `range_hops` twice, 51 where it was 50.
+  That fleet's tank was 4289.9995 in 32 bits and is 4290; the floor of
+  (fuel less the way home) over two jumps fell one short.
+- Chart: no float differs by more than 0.0001 relative and 0.001 absolute;
+  `refills_in_s` differs by one second; and six times a refilling tile
+  reaches its next level one tick apart, each at the exact boundary (3.0 of
+  42 units, 22.0, 3.993).
+
+Recorded again after `refine` was merged: the file did not change.
+
+**`numbers.json`.** 523 of 4,094 numbers moved, all under `tables`, by
+4.7e-7 relative at most: production an hour, storage caps, the ring's ore
+factor, wreck and derelict values, the exchange spans, the outpost's store
+caps and yields. Nothing under `game` moved. `check_sim_constants.py`
+agrees on 2,390 values.
+
+**The seven-day balance report** (`sim-run --pace season --days 7`), master
+against the branch. The three turtles and the idle player end on the same
+score to the tenth (1619.3, 1833.1, 2399.8, 0.8); raids are 388 repelled
+and 17 lost in both. Every player that flies ends elsewhere: the sum of
+scores is 38,631 and 38,394 (0.6 percent lower), one player 18 percent
+lower, one 8 percent higher. The two worlds part at tick 58 of 604,800: a
+mining fleet's harvest report closes after 5 ticks where it took 6, for
+the same ore to seven digits, the fleet turns for home a tick sooner, and
+every roll seeded by the tick differs from there. Under a second seed
+(20261013) the branch is 1.8 percent lower. For scale, master against
+itself under the two seeds differs by 0.7 percent in the sum and 6.2
+percent a style on average; the branch against master differs by 4.1 and
+4.4 percent a style. Two seeds do not show whether the lower sum is chance.
+Run again on the final trees: master at `cc01bdb` prints the table of
+`d87f440` and the merged branch prints the table of the branch before the
+merges, line for line below the snapshot's hash, so the comparison stands
+with `refine` in both.
+
+**Faults the wider type showed, left as they fall.**
+
+- A hold, a tank or a tile that 32 bits left a hair short of a round figure
+  now reaches it: a harvest one tick shorter, a range one hop longer, a
+  wait one tick shorter in a sentence. Each is the figure the decimal
+  arithmetic gives.
+- `scaling::apply_research_to_stats` truncates a per-ship tank that nothing
+  reads (the tank is `fleet_fuel_max`). In 64 bits 100 x 1.15 truncates to
+  114 where 32 bits gave 115. Left: the field has no reader and slice 1
+  replaces the tank.
+
+**Run**, on the branch with master merged up to `cc01bdb`:
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 164 passed, 0 failed
+  (master's 163 and the new scenario). `both_targets` 3 in 126 s,
+  `hosts_agree` 2 in 45 s.
+- `cargo clippy --workspace --all-targets`: silent.
+- `iac_solo.wasm`, release: 2,395,652 bytes on master at `cc01bdb`,
+  2,446,176 on the branch, 50,524 more (2.1 percent). Before `refine`:
+  2,384,202 and 2,434,909. Not split between the wider floats and the exact
+  parser.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `flutter analyze`: no issues. `timeout -k 20 300 nice -n 10 flutter
+  test`, two runs: 485 passed each.
+- `scripts/play.sh --single-player --no-serve`, then `tool/solo_e2e.dart
+  --port 8102`: `SOLO E2E OK in 196 s`.
+
+**Slips on the way, both caught by a test.** The first commit gave the
+fixture's sample player 2.5 million metal so that a 64-bit figure crossed
+the wire in a fixture. The web client's onboarding test builds a first
+login from that player, and failed (479 passed, 1 failed, the only Flutter
+failure in seven runs). The figure now rides in
+`event_kind/raid_resolved.json`. And `server/tests/smoke.rs` names the
+format number in a literal, which the first full run found.
+
+**The TUI.** Three of its files were changed so that it compiled. Master
+then removed it; the merge takes master's side and the edits are dropped.
+
+**Not verified.** No person or agent played, and `tools/playtest` was not
+run. No browser beyond the headless end-to-end run. The tick that master
+spends at tick 58 on less than 0.00001 units of ore was inferred from the
+two harvest reports and not singled out. Whether the exact parser or the
+wider floats account for the 50 KB was not measured. Speed was not
+measured under equal load: the seven-day run took 491 s on master and 538 s
+on the branch while other work ran beside each, and `serde_json` documents
+about twice the cost of parsing a float with the feature on. `refine` in
+64 bits is covered by master's scenario in `fleet_logistics.rs` and by
+nothing written for this change.
+
+## 2026-10-13: amounts in 64 bits, merged
+
+Merged into master with `--no-ff` and pushed. `SAVE_FORMAT` is 7 and
+`ECONOMY_VERSION` 8. Added at the merge: `CLAUDE.md` (the branch's
+`claude-md.patch`, applied clean: that an amount is 64-bit and where the line
+is, that `serde_json` needs `float_roundtrip`, and the client bullet's
+sentence on `storageNearCap`). The branch's three edits to the TUI, dropped
+when master lost the TUI, are in the repository's `.archive/tui-64bit-edits/`
+(copied from the branch's worktree).
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo test
+--workspace --no-fail-fast`: 164 passed, 0 failed; `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees on 2,390 values;
+`flutter analyze` clean; `flutter test` under `timeout -k 20 300`, two runs:
+485 passed each time; `scripts/play.sh --single-player --no-serve`;
+`tool/solo_e2e.dart`: `SOLO E2E OK in 195 s`.
+
+**Not verified.** No person or agent played. The branch's comparisons of the
+recorded chart, of `numbers.json` and of the seven-day balance report were
+read in its report and not run again.

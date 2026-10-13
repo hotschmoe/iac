@@ -13,7 +13,7 @@ use crate::maths;
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 7;
+pub const ECONOMY_VERSION: u32 = 8;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 3;
 
@@ -85,7 +85,7 @@ impl Density {
 
     /// Raw units harvested at this density before it drops one level, at
     /// ring 1 (`scaling::ore_step_units` applies the ring factor).
-    pub fn step_units(self) -> f32 {
+    pub fn step_units(self) -> f64 {
         match self {
             Density::None => 0.0,
             Density::Sparse => 3.0,
@@ -96,7 +96,7 @@ impl Density {
     }
 
     /// Everything a tile of this density holds, at ring 1: 0 / 3 / 10 / 22 / 42.
-    pub fn reserve_units(self) -> f32 {
+    pub fn reserve_units(self) -> f64 {
         let mut level = self;
         let mut total = 0.0;
         while level != Density::None {
@@ -298,11 +298,14 @@ pub struct ShipStats {
     pub fuel: u16,
 }
 
+/// Amounts of the three resources. An amount is 64-bit wherever it is held,
+/// carried, priced or sent, and so is a fleet's fuel: a 32-bit float steps by
+/// a quarter at two and a half million, and a mine adds less than that a tick.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Resources {
-    pub metal: f32,
-    pub crystal: f32,
-    pub deuterium: f32,
+    pub metal: f64,
+    pub crystal: f64,
+    pub deuterium: f64,
 }
 
 impl Resources {
@@ -326,7 +329,7 @@ impl Resources {
         }
     }
 
-    pub fn scale(self, factor: f32) -> Resources {
+    pub fn scale(self, factor: f64) -> Resources {
         Resources {
             metal: self.metal * factor,
             crystal: self.crystal * factor,
@@ -362,7 +365,7 @@ impl ResourceKind {
     }
 
     /// What one unit counts toward score, and its par value at the exchange.
-    pub fn weight(self) -> f32 {
+    pub fn weight(self) -> f64 {
         match self {
             ResourceKind::Metal => 1.0,
             ResourceKind::Crystal => 1.5,
@@ -372,7 +375,7 @@ impl ResourceKind {
 }
 
 impl Resources {
-    pub fn get(&self, kind: ResourceKind) -> f32 {
+    pub fn get(&self, kind: ResourceKind) -> f64 {
         match kind {
             ResourceKind::Metal => self.metal,
             ResourceKind::Crystal => self.crystal,
@@ -380,7 +383,7 @@ impl Resources {
         }
     }
 
-    pub fn get_mut(&mut self, kind: ResourceKind) -> &mut f32 {
+    pub fn get_mut(&mut self, kind: ResourceKind) -> &mut f64 {
         match kind {
             ResourceKind::Metal => &mut self.metal,
             ResourceKind::Crystal => &mut self.crystal,
@@ -391,7 +394,7 @@ impl Resources {
     /// Add `gain` without pushing any component past `cap`; a component
     /// already above its cap stays where it is.
     pub fn add_capped(self, gain: Resources, cap: Resources) -> Resources {
-        let one = |stock: f32, gain: f32, cap: f32| if stock >= cap { stock } else { (stock + gain).min(cap) };
+        let one = |stock: f64, gain: f64, cap: f64| if stock >= cap { stock } else { (stock + gain).min(cap) };
         Resources {
             metal: one(self.metal, gain.metal, cap.metal),
             crystal: one(self.crystal, gain.crystal, cap.crystal),
@@ -417,7 +420,7 @@ impl Resources {
         }
     }
 
-    pub fn total(&self) -> f32 {
+    pub fn total(&self) -> f64 {
         self.metal + self.crystal + self.deuterium
     }
 }
@@ -451,7 +454,7 @@ pub const DAMAGE_VARIANCE_MAX: f32 = 1.2;
 pub const SHIELD_REGEN_IDLE_TICKS: u16 = 10;
 
 /// Emergency recall.
-pub const RECALL_FUEL_MULTIPLIER: f32 = 2.0;
+pub const RECALL_FUEL_MULTIPLIER: f64 = 2.0;
 pub const RECALL_DAMAGE_CHANCE_PER_HEX: f32 = 0.02;
 pub const RECALL_DAMAGE_CHANCE_CAP: f32 = 0.60;
 pub const RECALL_HULL_DAMAGE_MIN: f32 = 0.20;
@@ -462,17 +465,17 @@ pub const RECALL_HULL_DAMAGE_MAX: f32 = 0.80;
 pub const STRANDED_RECOVERY_TICKS: u64 = 300;
 
 /// Fuel consumption per hex: fleet_mass * this value.
-pub const FUEL_RATE_PER_MASS: f32 = 0.1;
+pub const FUEL_RATE_PER_MASS: f64 = 0.1;
 
 /// Deuterium paid per fuel unit topped up at the homeworld. Not scaled by
 /// pace: fuel is the price of range, not an economy timer.
-pub const FUEL_DEUT_PER_UNIT: f32 = 0.08;
+pub const FUEL_DEUT_PER_UNIT: f64 = 0.08;
 
 /// The share of the dock's rate that `refine` loses: deuterium turned into
 /// fuel from a fleet's hold yields `scaling::refined_fuel_per_deuterium`.
 /// Provisional, and the owner's ("like 15%"): it trades the reach of a fleet
 /// with cargo ships against the worth of the docks as places to fill up.
-pub const REFINE_LOSS: f32 = 0.15;
+pub const REFINE_LOSS: f64 = 0.15;
 
 pub const NPC_PATROL_INTERVAL: u16 = 15;
 
@@ -502,11 +505,11 @@ pub const RAID_POWER_ROLL_MIN: f32 = 0.80;
 pub const RAID_POWER_ROLL_MAX: f32 = 1.15;
 /// Loss caps when a raid succeeds (fraction of stockpile above the
 /// protected share).
-pub const RAID_LOSS_CAP_METAL: f32 = 0.08;
-pub const RAID_LOSS_CAP_CRYSTAL: f32 = 0.08;
-pub const RAID_LOSS_CAP_DEUT: f32 = 0.05;
+pub const RAID_LOSS_CAP_METAL: f64 = 0.08;
+pub const RAID_LOSS_CAP_CRYSTAL: f64 = 0.08;
+pub const RAID_LOSS_CAP_DEUT: f64 = 0.05;
 /// Salvage reward for repelling a raid (fraction of raid fleet value).
-pub const RAID_DEFENSE_SALVAGE_FRACTION: f32 = 0.30;
+pub const RAID_DEFENSE_SALVAGE_FRACTION: f64 = 0.30;
 /// After losing a raid, no raids for this long (no death spiral).
 pub const RAID_SUPPRESS_AFTER_LOSS: u64 = 172_800;
 /// A repelled raid wears down structures: this fraction of them, scaled by
@@ -563,7 +566,7 @@ pub const EXPLORE_DURATION_TICKS: u16 = 20;
 /// A Scout aboard reads the hulk before breaching (ambush chance down);
 /// a Hauler's rigging doubles what the boarding party can strip.
 pub const EXPLORE_SCOUT_AMBUSH_REDUCTION: f32 = 0.10;
-pub const EXPLORE_HAULER_LOOT_MULTIPLIER: f32 = 2.0;
+pub const EXPLORE_HAULER_LOOT_MULTIPLIER: f64 = 2.0;
 /// Each failed/aborted boarding leaves the site angrier.
 pub const EXPLORE_RETRY_AMBUSH_BUMP: f32 = 0.10;
 /// A stripped derelict is replaced after 120 game hours, finds class.
@@ -592,7 +595,7 @@ pub const POLICY_ENGAGE_RATIO_X10_MIN: u8 = 1;
 pub const POLICY_ENGAGE_RATIO_X10_MAX: u8 = 100;
 /// MineAndReturn treats a sector holding fewer raw units than this as
 /// stripped: a tile that has only begun to refill is not worth a jump.
-pub const POLICY_MIN_SEAM_UNITS: f32 = 3.0;
+pub const POLICY_MIN_SEAM_UNITS: f64 = 3.0;
 /// A doctrine flies out for ore or wreckage only if what it can load is
 /// worth this many times the deuterium the jumps there and back burn, both
 /// at their score weights.
@@ -649,9 +652,9 @@ pub const OUTPOST_PLATFORM_POWER: f32 = 40.0;
 /// A raid on an outpost is this many times the group its ring spawns.
 pub const OUTPOST_RAID_FACTOR: f32 = 2.0;
 /// Share of every resource above the protected floor that a lost raid takes.
-pub const OUTPOST_RAID_LOSS: f32 = 0.25;
+pub const OUTPOST_RAID_LOSS: f64 = 0.25;
 /// A repair costs the par value of this share of the level's cost and takes this share of its build time.
-pub const OUTPOST_REPAIR_SHARE: f32 = 0.25;
+pub const OUTPOST_REPAIR_SHARE: f64 = 0.25;
 
 /// WebSocket server defaults.
 pub const DEFAULT_PORT: u16 = 7777;

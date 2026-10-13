@@ -933,8 +933,8 @@
           "units": 19.5
         },
         "metal": {
-          "max_units": 42.900001525878906,
-          "units": 42.900001525878906
+          "max_units": 42.9,
+          "units": 42.9
         }
       },
       "outpost": {
@@ -994,8 +994,8 @@
           "units": 19.5
         },
         "metal": {
-          "max_units": 42.900001525878906,
-          "units": 42.900001525878906
+          "max_units": 42.9,
+          "units": 42.9
         }
       },
       "outpost": {
@@ -1039,21 +1039,21 @@
       "platform_power": 250.0,
       "production": {
         "crystal": 0.0,
-        "deuterium": 0.01619100011885166,
-        "metal": 0.03238200023770332
+        "deuterium": 0.016191,
+        "metal": 0.032382
       },
       "store_cap": {
-        "crystal": 29646.353515625,
-        "deuterium": 14823.1767578125,
-        "metal": 59292.70703125
+        "crystal": 29646.354,
+        "deuterium": 14823.177,
+        "metal": 59292.707
       },
       "ticks": 33750
     },
     "platform_power": 40.0,
     "production": {
       "crystal": 0.0,
-      "deuterium": 0.0053969998843967915,
-      "metal": 0.010793999768793583
+      "deuterium": 0.005397,
+      "metal": 0.010794
     },
     "protected": {
       "crystal": 96.0,
@@ -1071,9 +1071,9 @@
       "metal": 412.5
     },
     "store_cap": {
-      "crystal": 4743.41650390625,
-      "deuterium": 2371.708251953125,
-      "metal": 9486.8330078125
+      "crystal": 4743.4165,
+      "deuterium": 2371.7083,
+      "metal": 9486.833
     },
     "upgrade_refusal": "your outpost at [10,-2] is building level 2 until tick 18200; it does one job at a time",
     "work": {
@@ -1087,7 +1087,7 @@
   "player": {
     "exchange": {
       "clear_in": 2322,
-      "fee": 0.32499998807907104,
+      "fee": 0.325,
       "pressure": 632.5,
       "span": 4185.0,
       "window_ticks": 15364

@@ -32,11 +32,11 @@ RatioLabel ratioLabelFor(double ratio) {
 double _f32(double x) => (Float32List(1)..[0] = x)[0];
 
 /// Whether a stockpile holding [stock] of [cap] is at the fill where the
-/// server's `StorageNearCap` fires. The server divides one `f32` by the
-/// other and compares the `f32` quotient with [storageNearCapRatio]; this
-/// does the same, so the edge falls where the server's does.
-bool storageNearCap(num stock, num cap) =>
-    cap > 0 && _f32(_f32(stock.toDouble()) / _f32(cap.toDouble())) >= storageNearCapRatio;
+/// server's `StorageNearCap` fires. The server divides one amount by the
+/// other, both `f64` as they are here, and compares the quotient with
+/// [storageNearCapRatio]; this is the same division, so the edge falls where
+/// the server's does.
+bool storageNearCap(num stock, num cap) => cap > 0 && stock.toDouble() / cap.toDouble() >= storageNearCapRatio;
 
 /// What a `refine` order loses against a dock, as a whole percent.
 const refineLossPct = (refineLoss * 100 + 0.5) ~/ 1;

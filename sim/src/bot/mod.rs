@@ -168,7 +168,7 @@ pub struct Memory {
     next_plan: u64,
     /// Deuterium of the unit the shipyard wanted at the last plan and could
     /// not pay for; the pilot does not fly it away.
-    yard_deuterium: f32,
+    yard_deuterium: f64,
     /// The bot's own row of the leaderboard, as last asked.
     standing: Option<Standing>,
     /// The lanes each fleet is following, by fleet id.

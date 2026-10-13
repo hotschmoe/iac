@@ -980,7 +980,7 @@
     "next_raid_estimate_power": 300.25,
     "production": {
       "crystal": 1.25,
-      "deuterium": 0.4000000059604645,
+      "deuterium": 0.4,
       "metal": 2.75
     },
     "queue_waiting_max": 3,
@@ -1428,7 +1428,7 @@
   "player": {
     "exchange": {
       "clear_in": 2322,
-      "fee": 0.32499998807907104,
+      "fee": 0.325,
       "pressure": 632.5,
       "span": 4185.0,
       "window_ticks": 15364

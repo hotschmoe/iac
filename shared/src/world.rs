@@ -540,7 +540,7 @@ pub struct SectorTemplate {
     pub deut_density: Density,
     /// Raw units the full metal, crystal and deuterium tiles hold
     /// (`scaling::ore_reserve_units`).
-    pub ore_units: [f32; 3],
+    pub ore_units: [f64; 3],
     pub npc_template: Option<NpcTemplate>,
     pub has_derelict: bool,
 }

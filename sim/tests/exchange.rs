@@ -57,7 +57,7 @@ fn trader(pace: &str, mines: (u8, u8, u8), haulers: usize, cargo: Resources) -> 
     e
 }
 
-fn trade(e: &mut Empire, give: ResourceKind, want: ResourceKind, amount: Option<f32>) -> Result<ExchangeTerms, (ErrorCode, String)> {
+fn trade(e: &mut Empire, give: ResourceKind, want: ResourceKind, amount: Option<f64>) -> Result<ExchangeTerms, (ErrorCode, String)> {
     let mark = e.mark();
     let outcome = e.engine.execute(e.pid, Command::Exchange { fleet_id: e.fid, give, want, amount });
     e.absorb();
@@ -74,7 +74,7 @@ fn trade(e: &mut Empire, give: ResourceKind, want: ResourceKind, amount: Option<
     }
 }
 
-fn quote(e: &mut Empire, give: ResourceKind, want: ResourceKind, amount: Option<f32>) -> ExchangeQuote {
+fn quote(e: &mut Empire, give: ResourceKind, want: ResourceKind, amount: Option<f64>) -> ExchangeQuote {
     let outcome = e.engine.execute(e.pid, Command::ExchangeQuote { fleet_id: e.fid, give, want, amount });
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     let Some(ServerMessage::ExchangeQuote(q)) = outcome.reply else { panic!("no quote") };
@@ -86,7 +86,7 @@ fn meter(e: &Empire) -> ExchangeMeter {
 }
 
 fn weight(r: Resources) -> f64 {
-    ResourceKind::ALL.into_iter().map(|k| f64::from(r.get(k)) * f64::from(k.weight())).sum()
+    ResourceKind::ALL.into_iter().map(|k| r.get(k) * k.weight()).sum()
 }
 
 /// Weight of everything the player owns: the stockpile and every hold.
@@ -95,8 +95,8 @@ fn owned(e: &Empire) -> f64 {
     weight(e.engine.players[&e.pid].resources) + holds
 }
 
-fn close(a: f32, b: f64, tolerance: f64) -> bool {
-    (f64::from(a) - b).abs() <= tolerance
+fn close(a: f64, b: f64, tolerance: f64) -> bool {
+    (a - b).abs() <= tolerance
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn a_hauler_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
     let asked = quote(&mut e, Metal, Deuterium, None);
     assert_eq!(asked.refusal, None);
     assert_eq!((asked.terms.amount, asked.terms.receive), (hold, 225.0), "632 metal gives 225 deuterium");
-    assert!(close(asked.terms.par, f64::from(hold) / 2.0, 0.01));
+    assert!(close(asked.terms.par, hold / 2.0, 0.01));
     assert!((0.28..0.30).contains(&asked.terms.fee), "about 29 percent: {}", asked.terms.fee);
     assert_eq!(e.fleet().cargo.metal, hold, "a quote changes nothing");
     assert_eq!(meter(&e), empty);
@@ -146,14 +146,14 @@ fn a_hauler_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
     assert_eq!(made, asked.terms, "the trade is the quote");
     let cargo = e.fleet().cargo;
     assert_eq!((cargo.metal, cargo.crystal, cargo.deuterium), (0.0, 0.0, 225.0));
-    assert!(owned(&e) < before - 0.25 * f64::from(hold));
+    assert!(owned(&e) < before - 0.25 * hold);
     assert_eq!(e.score_row(), score, "a trade moves no score");
 
     let after = meter(&e);
     assert_eq!(after, made.meter_after);
-    assert!(close(after.pressure, f64::from(hold), 0.01), "the meter rose by the weight sold");
-    assert!(close(after.fee, 0.25 + 0.5 * f64::from(hold) / span, 1e-4));
-    let clear = (f64::from(hold) / span * window as f64).ceil() as u64;
+    assert!(close(after.pressure, hold, 0.01), "the meter rose by the weight sold");
+    assert!(close(after.fee, 0.25 + 0.5 * hold / span, 1e-4));
+    let clear = (hold / span * window as f64).ceil() as u64;
     assert_eq!(after.clear_in, Some(clear));
 }
 
@@ -179,21 +179,21 @@ fn no_run_of_trades_leaves_a_player_with_more_than_they_brought() {
         let want = ResourceKind::ALL[(give as usize + 1 + draw(2) as usize) % 3];
         let amount = match draw(16) {
             0 => None,
-            share => Some(cargo.get(give) * share as f32 / 64.0),
+            share => Some(cargo.get(give) * f64::from(share) / 64.0),
         };
         let (owned_before, hold_before, meter_before) = (owned(&e), weight(cargo), meter(&e));
         match trade(&mut e, give, want, amount) {
             Ok(terms) => {
                 made += 1;
-                let gave = f64::from(terms.amount) * f64::from(give.weight());
-                let got = f64::from(terms.receive) * f64::from(want.weight());
+                let gave = terms.amount * give.weight();
+                let got = terms.receive * want.weight();
                 assert!(got <= (1.0 - EXCHANGE_FEE_MIN) * gave + 1e-6, "step {step}: {got} back for {gave}");
-                assert!(got >= (1.0 - EXCHANGE_FEE_MAX) * gave - f64::from(want.weight()), "step {step}: {got} back for {gave}");
-                assert!(terms.fee >= EXCHANGE_FEE_MIN as f32 - 1e-6);
+                assert!(got >= (1.0 - EXCHANGE_FEE_MAX) * gave - want.weight(), "step {step}: {got} back for {gave}");
+                assert!(terms.fee >= EXCHANGE_FEE_MIN - 1e-6);
                 let lost = gave - got;
                 assert!((owned_before - owned(&e) - lost).abs() < 0.01, "step {step}: only the hold changed");
                 assert!((hold_before - weight(e.engine.fleets[&fid].cargo) - lost).abs() < 0.01);
-                assert!(close(meter(&e).pressure, f64::from(meter_before.pressure) + gave, 0.05), "step {step}");
+                assert!(close(meter(&e).pressure, meter_before.pressure + gave, 0.05), "step {step}");
             }
             Err((code, why)) => {
                 refused += 1;
@@ -233,7 +233,7 @@ fn an_order_in_pieces_returns_what_the_whole_order_would() {
         ("above the span", (1, 1, 1), 4000.0, vec![333.0, 333.0, 334.0]),
     ];
     for (name, mines, sold_before, pieces) in cases {
-        let total: f32 = pieces.iter().sum();
+        let total: f64 = pieces.iter().sum();
         let mut whole = trader("season", mines, 12, Resources { metal: 6000.0, ..Resources::default() });
         if sold_before > 0.0 {
             trade(&mut whole, Metal, Crystal, Some(sold_before)).expect("the earlier sale");
@@ -249,7 +249,7 @@ fn an_order_in_pieces_returns_what_the_whole_order_would() {
             received += trade(&mut split, Metal, Deuterium, Some(piece)).expect("one piece").receive;
         }
         assert!(received <= one.receive, "{name}: pieces gave {received}, the whole order {}", one.receive);
-        assert!(one.receive - received < pieces.len() as f32, "{name}: each piece loses less than one unit to rounding");
+        assert!(one.receive - received < pieces.len() as f64, "{name}: each piece loses less than one unit to rounding");
         let (a, b) = (whole.engine.players[&whole.pid].exchange_pressure, split.engine.players[&split.pid].exchange_pressure);
         assert!((a - b).abs() < 1e-6, "{name}: the meter reads {a} and {b}");
         assert_eq!(whole.engine.fleets[&whole.fid].cargo.metal, split.engine.fleets[&split.fid].cargo.metal, "{name}");
@@ -262,7 +262,7 @@ fn the_meter_falls_one_span_per_window_and_survives_a_restart() {
     let pid = e.pid;
 
     let sold = trade(&mut e, Metal, Deuterium, Some(3000.0)).expect("a sale past the span");
-    let (span, window) = (f64::from(sold.meter.span), sold.meter.window_ticks);
+    let (span, window) = (sold.meter.span, sold.meter.window_ticks);
     assert!(3000.0 > 2.0 * span, "the sale fills the meter more than twice over: span {span}");
     assert_eq!(sold.meter_after.fee, 0.75, "the fee is flat beyond the span");
     let sold_at = e.engine.current_tick();
@@ -293,7 +293,7 @@ fn the_meter_falls_one_span_per_window_and_survives_a_restart() {
     let again = quote(&mut e, Metal, Deuterium, Some(100.0)).terms;
     let fresh = quote(&mut restored, Metal, Deuterium, Some(100.0)).terms;
     assert_eq!(again, fresh);
-    assert_eq!(again.receive, (scaling::exchange_return(0.0, 100.0, span) / 2.0).floor() as f32);
+    assert_eq!(again.receive, (scaling::exchange_return(0.0, 100.0, span) / 2.0).floor());
 
     let mut idle = trader("season", (0, 0, 0), 2, Resources { metal: 1000.0, ..Resources::default() });
     let flat = trade(&mut idle, Metal, Crystal, Some(600.0)).expect("an empire with no mines still trades");
@@ -322,7 +322,7 @@ fn a_trade_that_cannot_be_made_is_refused_with_the_reason() {
     assert_eq!(code, ErrorCode::InvalidCommand);
     assert!(why.contains("give and want are both metal"), "{why}");
 
-    for bad in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+    for bad in [0.0, -5.0, f64::NAN, f64::INFINITY] {
         let (code, why) = trade(&mut e, Metal, Crystal, Some(bad)).unwrap_err();
         assert_eq!(code, ErrorCode::InvalidCommand);
         assert!(why.contains("must be a positive number"), "{why}");
@@ -447,11 +447,11 @@ fn carrier(pace: &str, mines: (u8, u8, u8), haulers: usize) -> Empire {
     e
 }
 
-fn stock(metal: f32, crystal: f32, deuterium: f32) -> Resources {
+fn stock(metal: f64, crystal: f64, deuterium: f64) -> Resources {
     Resources { metal, crystal, deuterium }
 }
 
-fn put_aboard(fleet_id: u64, resource: ResourceKind, amount: Option<f32>) -> Command {
+fn put_aboard(fleet_id: u64, resource: ResourceKind, amount: Option<f64>) -> Command {
     Command::Load { fleet_id, resource, amount }
 }
 
@@ -583,7 +583,7 @@ fn a_load_that_cannot_be_met_is_refused_with_what_is_short() {
         format!("the hold of fleet {fid} has room for 632.5 more (it carries 0 of 632); it cannot load 700.0 deuterium")
     );
 
-    for bad in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+    for bad in [0.0, -5.0, f64::NAN, f64::INFINITY] {
         let (code, why) = e.refusal(put_aboard(fid, Metal, Some(bad)));
         assert_eq!(code, ErrorCode::InvalidCommand);
         assert!(why.contains("must be a positive number"), "{why}");
@@ -667,7 +667,7 @@ const RAIDED_STOCK: Resources = Resources { metal: 20_000.0, crystal: 9000.0, de
 /// say, the stockpile then changed by `restock`, and a raid no defence
 /// stops: the empire after it, the raid's report and the alerts it raised.
 fn raided(
-    loads: &[(ResourceKind, Option<f32>)],
+    loads: &[(ResourceKind, Option<f64>)],
     restock: impl FnOnce(Resources, Resources) -> Resources,
 ) -> (Empire, RaidResolvedEvent, Vec<String>) {
     let mut e = carrier("season", (6, 5, 4), 8);

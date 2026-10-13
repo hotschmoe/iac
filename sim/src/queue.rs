@@ -219,7 +219,7 @@ fn batches(player: &Player, tick: u64, pace: &Pace, finishes: &[(u64, Done)]) ->
 
 /// Ticks until `stock` covers `cost` at `rate` per tick, None if never.
 fn afford_in(stock: Resources, cost: Resources, rate: Resources) -> Option<u64> {
-    let mut worst = 0.0f32;
+    let mut worst = 0.0f64;
     for (have, need, per_tick) in [
         (stock.metal, cost.metal, rate.metal),
         (stock.crystal, cost.crystal, rate.crystal),

@@ -22,21 +22,21 @@
       "platform_power": 100.0,
       "production": {
         "crystal": 0.0,
-        "deuterium": 0.010793999768793583,
-        "metal": 0.021587999537587166
+        "deuterium": 0.010794,
+        "metal": 0.021588
       },
       "store_cap": {
-        "crystal": 11858.541015625,
-        "deuterium": 5929.2705078125,
-        "metal": 23717.08203125
+        "crystal": 11858.541,
+        "deuterium": 5929.2705,
+        "metal": 23717.082
       },
       "ticks": 13500
     },
     "platform_power": 40.0,
     "production": {
       "crystal": 0.0,
-      "deuterium": 0.0053969998843967915,
-      "metal": 0.010793999768793583
+      "deuterium": 0.005397,
+      "metal": 0.010794
     },
     "protected": {
       "crystal": 96.0,
@@ -50,12 +50,12 @@
     "store": {
       "crystal": 96.0,
       "deuterium": 180.25,
-      "metal": 9486.8330078125
+      "metal": 9486.833
     },
     "store_cap": {
-      "crystal": 4743.41650390625,
-      "deuterium": 2371.708251953125,
-      "metal": 9486.8330078125
+      "crystal": 4743.4165,
+      "deuterium": 2371.7083,
+      "metal": 9486.833
     },
     "upgrade_refusal": "outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at [10,-2] is short by 1154 crystal and 320 deuterium. A level is paid in full from the outpost's own store when it is ordered",
     "yield_lost": [

@@ -70,7 +70,7 @@ pub struct FieldTally {
     pub sectors_charted: u32,
     pub ships_lost: u32,
     /// Deuterium paid at the homeworld to fill fleet tanks.
-    pub refuel_deuterium: f32,
+    pub refuel_deuterium: f64,
     /// Raids on the homeworld.
     pub raids_repelled: u32,
     pub raids_lost: u32,
@@ -308,9 +308,9 @@ pub struct OutpostSummary {
     pub waiting: bool,
     pub store: Resources,
     /// Units an hour its extractor makes at this level when in service.
-    pub rate_per_hour: f32,
+    pub rate_per_hour: f64,
     /// Units an hour the homeworld's mines make.
-    pub home_per_hour: f32,
+    pub home_per_hour: f64,
     /// Game hours of its yield, at pace 1 and uninterrupted, that pay back
     /// level 1 here.
     pub payback_hours: f32,
@@ -551,7 +551,7 @@ impl Headless {
                 hauled: Resources::default(),
             };
             outpost.store = scaling::outpost_cost(outpost.repair_level())
-                .scale(OUTPOST_REPAIR_SHARE * order.repairs as f32)
+                .scale(OUTPOST_REPAIR_SHARE * f64::from(order.repairs))
                 .min(scaling::outpost_store_cap(order.level, &pace));
             stood.push((player_id, outpost));
         }
@@ -648,9 +648,11 @@ impl Headless {
             store: outpost.store,
             rate_per_hour: hourly(scaling::outpost_yield_per_tick(ore, ring, outpost.level, &pace)),
             home_per_hour: hourly(player.production_per_tick(&pace)),
-            payback_hours: scaling::outpost_cost(1).total() / hourly(scaling::outpost_yield_per_tick(ore, ring, 1, &slow)),
+            payback_hours: (scaling::outpost_cost(1).total() / hourly(scaling::outpost_yield_per_tick(ore, ring, 1, &slow)))
+                as f32,
             next_mine_level: mine + 1,
-            mine_payback_hours: scaling::building_cost(BuildingType::MetalMine, mine + 1).total() / (mine_gain * 3600.0),
+            mine_payback_hours: (scaling::building_cost(BuildingType::MetalMine, mine + 1).total() / (mine_gain * 3600.0))
+                as f32,
         })
     }
 
@@ -702,7 +704,7 @@ struct Counting<'a> {
     /// Whether any meter is kept.
     metered: bool,
     /// Every fleet before the tick: its fuel, and whether it was moving.
-    tanks: Vec<(u64, f32, bool)>,
+    tanks: Vec<(u64, f64, bool)>,
     /// Every outpost before the tick: its store, and whether a raid arriving
     /// in the tick finds it breached.
     stores: Vec<(u64, Resources, bool)>,

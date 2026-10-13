@@ -85,7 +85,7 @@ fn h(q: i16, r: i16) -> Hex {
     Hex::new(q, r)
 }
 
-fn res(metal: f32, crystal: f32, deuterium: f32) -> Resources {
+fn res(metal: f64, crystal: f64, deuterium: f64) -> Resources {
     Resources { metal, crystal, deuterium }
 }
 
@@ -1408,7 +1408,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             outpost: None,
             defended: false,
             breached: false,
-            resources_lost: res(100.0, 50.0, 25.0),
+            resources_lost: res(2_500_000.216, 50.0, 25.0),
             salvage_dropped: Some(res(10.0, 5.0, 0.0)),
             salvage_despawn_tick: Some(4940),
             raid_power: 120.0,

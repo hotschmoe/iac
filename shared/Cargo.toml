@@ -8,7 +8,10 @@ edition = "2024"
 # what every stored world plays next (see ECONOMY_VERSION).
 libm = "=0.2.16"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: amounts are f64, and without it one f64 in ten is read back
+# a bit away from what was written. A stored world and an order must be read
+# as they were written, on every target, so every crate takes it from here.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]

@@ -264,7 +264,7 @@ struct StyleRow {
     haul: f32,
     raid_salvage: f32,
     ships_lost: f32,
-    refuel_deuterium: f32,
+    refuel_deuterium: f64,
     idle: SlotIdle,
     why: IdleWhy<f32>,
     /// Share of what the mines made that a full store turned away.
@@ -331,12 +331,13 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
         let s = &mut row.score;
         for value in [
             &mut s.econ, &mut s.fleet, &mut s.defence, &mut s.outpost, &mut s.core, &mut s.combat, &mut s.explore,
-            &mut s.extra, &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost, &mut row.refuel_deuterium,
+            &mut s.extra, &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost,
             &mut row.idle.building, &mut row.idle.research, &mut row.idle.shipyard, &mut row.spilled,
             &mut row.fleet_hours, &mut row.unpaid_hours,
         ] {
             *value /= n;
         }
+        row.refuel_deuterium /= f64::from(n);
         for share in whys(&mut row.why) {
             *share /= n;
         }

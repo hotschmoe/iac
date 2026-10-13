@@ -31,11 +31,11 @@ fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
     })
 }
 
-fn fuel_of(e: &Empire, fid: u64) -> f32 {
+fn fuel_of(e: &Empire, fid: u64) -> f64 {
     e.engine.fleets[&fid].fuel
 }
 
-fn hop_fuel(e: &Empire) -> f32 {
+fn hop_fuel(e: &Empire) -> f64 {
     e.fleet().jump_fuel
 }
 
@@ -129,7 +129,7 @@ fn a_stranded_fleet_regains_one_jump_slowly_and_a_refused_recall_burns_nothing()
 
 #[test]
 fn moves_that_cannot_get_home_warn_by_how_bad_it_is_and_safe_moves_stay_quiet() {
-    let case = |at: usize, fuel_hops: f32, to: usize| {
+    let case = |at: usize, fuel_hops: f64, to: usize| {
         let (mut e, chain) = outpost("Reckless", 3);
         let (home, fid) = (e.engine.players[&e.pid].homeworld, e.fid);
         let from = if at == 0 { home } else { chain[at - 1] };
@@ -195,10 +195,10 @@ fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
     assert!(route.charted.is_none() && route.unexplored, "the chart joins this fleet to home by no lane: {route:?}");
     assert!(route.direct >= 2, "the lane home is more than one hop: {}", route.direct);
     let hop = e.fleet().jump_fuel;
-    let need = hop * route.direct as f32;
+    let need = hop * f64::from(route.direct);
     assert_eq!(e.fleet().hops_home, route.direct, "hops_home counts the lanes home_fuel is priced from");
     assert_eq!(e.fleet().home_fuel, need, "home_fuel is those lanes, chart or none");
-    let straight = f32::from(Hex::distance(&at, &home));
+    let straight = f64::from(Hex::distance(&at, &home));
     let bent = (-12..12)
         .flat_map(|q| (-12..12).map(move |r| Hex::new(q, r)))
         .find(|hex| *hex != home && e.engine.home_route(pid, *hex).direct != Hex::distance(hex, &home) as u32)
@@ -212,7 +212,7 @@ fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
     let bent_route = e.engine.home_route(pid, bent);
     assert_eq!(e.fleet().hops_home, bent_route.direct);
     assert_ne!(e.fleet().hops_home, Hex::distance(&bent, &home) as u32, "not the straight line, at {bent}");
-    assert_eq!(e.fleet().home_fuel, hop * bent_route.direct as f32);
+    assert_eq!(e.fleet().home_fuel, hop * f64::from(bent_route.direct));
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
         fleet.location = home;
@@ -273,7 +273,7 @@ fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
     let step_hops = e.engine.home_route(pid, step).direct;
     assert!(step_hops < route.direct, "the jump is along the lanes toward home, to {step}");
     assert_eq!(e.fleet().hops_home, step_hops, "while the jump is in progress the count is from where it is bound");
-    assert_eq!(e.fleet().home_fuel, hop * step_hops as f32);
+    assert_eq!(e.fleet().home_fuel, hop * f64::from(step_hops));
 }
 
 #[test]
@@ -400,7 +400,7 @@ fn policy_reasons(e: &Empire, mark: usize, action: &str) -> Vec<String> {
 /// of `budget` percent, the stockpile holding `deuterium` (given the cap).
 /// Returns the empire, the deuterium the fill costs and the deuterium income
 /// per tick.
-fn docked_with_half_a_tank(budget: u8, deuterium: impl Fn(f32) -> f32) -> (Empire, f32, f32) {
+fn docked_with_half_a_tank(budget: u8, deuterium: impl Fn(f64) -> f64) -> (Empire, f64, f64) {
     let mut e = Empire::join(world("season"), "Thrifty");
     let (pid, fid) = (e.pid, e.fid);
     let pace = e.engine.world.pace;
@@ -457,7 +457,7 @@ fn a_fleet_on_a_fuel_budget_waits_for_its_share_of_the_deuterium_income_and_then
     e.run(wait - 10);
     assert_eq!(fuel_of(&e, fid), half, "no part fills");
     assert_eq!(e.engine.fleets[&fid].location, home, "and it does not leave on half a tank");
-    assert!(deuterium(&e) >= start + (wait - 11) as f32 * income, "the stockpile kept all it produced");
+    assert!(deuterium(&e) >= start + (wait - 11) as f64 * income, "the stockpile kept all it produced");
     let waiting = policy_reasons(&e, mark, "hold");
     assert!(waiting[0].starts_with("refuelling on a fuel budget of 20% of deuterium income"), "{waiting:?}");
     assert!(policy_reasons(&e, mark, "move").is_empty());
@@ -465,7 +465,7 @@ fn a_fleet_on_a_fuel_budget_waits_for_its_share_of_the_deuterium_income_and_then
     let (before, tick) = (deuterium(&e), e.engine.current_tick());
     e.run_until(20, |e| fuel_of(e, fid) > half);
     assert_eq!(fuel_of(&e, fid), e.engine.fleets[&fid].fuel_max, "the whole fill at once");
-    let earned = (e.engine.current_tick() - tick) as f32 * income;
+    let earned = (e.engine.current_tick() - tick) as f64 * income;
     let paid = before + earned - deuterium(&e);
     assert!((paid - cost).abs() < 0.02 * cost, "paid {paid:.2} for a fill of {cost:.2}");
     e.run_until(60, |e| e.engine.fleets[&fid].location != home);
@@ -559,7 +559,7 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     assert_eq!(whole.ships.len(), 2);
     assert_eq!(whole.fuel, whole.fuel_max, "it set out with a full tank");
     let hops_home = whole.home_fuel / whole.jump_fuel;
-    assert!((whole.hops_home as f32 - hops_home).abs() < 1e-3, "hops_home is that count");
+    assert!((f64::from(whole.hops_home) - hops_home).abs() < 1e-3, "hops_home is that count");
 
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
     e.run_until(200, |e| e.engine.fleets[&fid].ship_count == 1);
@@ -654,7 +654,7 @@ fn same(a: Resources, b: Resources) -> bool {
 
 /// The starting fleet at a lone passive scout, unarmed, its hold nine tenths
 /// full, and each ship with the hull given.
-fn laden_and_outgunned(e: &mut Empire, hulls: [f32; 2]) -> (Hex, f32, Resources) {
+fn laden_and_outgunned(e: &mut Empire, hulls: [f32; 2]) -> (Hex, f64, Resources) {
     let fid = e.fid;
     let at = lone_scout_sector(&e.engine, NpcBehaviorType::Passive);
     deploy(&mut e.engine, fid, at, None);
@@ -774,7 +774,7 @@ fn a_recall_that_breaks_ships_leaves_their_share_of_the_cargo_where_it_jumped_fr
     assert_eq!(back.location, home);
 
     let left_behind = wreckage(&e, far);
-    assert!(same(left_behind, cargo.scale(broke as f32 / 20.0)), "{broke} holds of 20 stayed behind: {left_behind:?}");
+    assert!(same(left_behind, cargo.scale(broke as f64 / 20.0)), "{broke} holds of 20 stayed behind: {left_behind:?}");
     assert!(
         same(e.stockpile().add(back.cargo).add(left_behind), cargo),
         "what came home is the cargo less the wreckage: {:?} banked, {:?} aboard",
@@ -1197,7 +1197,7 @@ fn a_jump_takes_the_ticks_the_fleet_reports() {
     }
 }
 
-fn adrift(e: &mut Empire, at: Hex, fuel: f32, deuterium: f32) {
+fn adrift(e: &mut Empire, at: Hex, fuel: f64, deuterium: f64) {
     let fid = e.fid;
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
@@ -1301,7 +1301,7 @@ fn deuterium_loaded_at_the_dock_is_refined_like_any_other_once_the_tank_has_room
 
 /// A prospector `hops` out with `fuel` in its tank and `deuterium` in its
 /// hold, given orders with no reserve; the mark is taken before the orders.
-fn dry_prospector(hops: usize, fuel: f32, deuterium: f32, refine: bool) -> (Empire, usize) {
+fn dry_prospector(hops: usize, fuel: f64, deuterium: f64, refine: bool) -> (Empire, usize) {
     let (mut e, chain) = outpost("Thirsty", hops);
     let (pid, fid) = (e.pid, e.fid);
     adrift(&mut e, chain[hops - 1], fuel, deuterium);

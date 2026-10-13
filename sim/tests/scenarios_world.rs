@@ -9,8 +9,8 @@ mod common;
 
 use common::*;
 use iac_shared::constants::{
-    Density, Resources, ShipClass, Zone, DEFAULT_WORLD_SEED, HOME_SALVAGE_WARN_TICKS, SALVAGE_DESPAWN_TICKS,
-    SCAN_REVEAL_TICKS,
+    Density, ResourceKind, Resources, ShipClass, Zone, DEFAULT_WORLD_SEED, HOME_SALVAGE_WARN_TICKS,
+    SALVAGE_DESPAWN_TICKS, SCAN_REVEAL_TICKS,
 };
 use iac_shared::hex::{hex_ring, hex_spiral, Hex};
 use iac_shared::pace::Pace;
@@ -455,14 +455,14 @@ fn holds(actions: &[(String, String)]) -> Vec<&str> {
 #[test]
 fn a_mining_fleet_brings_the_ore_in_reach_home_and_then_waits_for_the_seams_to_refill() {
     let (mut engine, pid, fid, home) = delegate("Stripper", PolicyPreset::MineAndReturn, 3);
-    let in_reach: f32 = ring_around(home, 3)
+    let in_reach: f64 = ring_around(home, 3)
         .into_iter()
         .filter_map(|h| engine.ore_reserve_at(h))
         .map(|o| o.metal.units + o.crystal.units + o.deuterium.units)
         .sum();
     assert!(in_reach > 100.0, "the seed puts ore within three hexes of home: {in_reach}");
     let events = run(&mut engine, 6000);
-    let mined: f32 = events
+    let mined: f64 = events
         .iter()
         .filter_map(|e| match &e.kind {
             EventKind::ResourceHarvested(h) if h.fleet_id == fid => Some(h.resources.total()),
@@ -1033,4 +1033,37 @@ fn a_default_patrol_holds_where_power_alone_said_engage_and_fights_what_it_beats
     engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
     let orders = policy_actions(&run(&mut engine, 30));
     assert!(orders.iter().any(|(action, _)| action == "attack"), "{orders:?}");
+}
+
+#[test]
+fn a_stockpile_of_millions_grows_by_what_its_mines_make_and_is_stored_to_the_last_digit() {
+    let mut engine = world("persistent");
+    let (pid, _) = join(&mut engine, "Hoarder");
+    let stock = Resources { metal: 5_000_000.0, crystal: 2_500_000.0, deuterium: 1_250_000.0 };
+    edit(&mut engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        player.buildings.storage_vault = 20;
+        (player.buildings.metal_mine, player.buildings.crystal_mine, player.buildings.deuterium_synthesizer) = (10, 10, 10);
+        player.resources = stock;
+    });
+    let pace = engine.pace();
+    let made = engine.players[&pid].production_per_tick(&pace);
+    let cap = scaling::storage_cap(20, &pace);
+    for kind in ResourceKind::ALL {
+        assert!(made.get(kind) > 0.0 && made.get(kind) < 0.1, "a tick of {} is less than a 32-bit float holds here", kind.label());
+        assert!(stock.get(kind) + 3600.0 * made.get(kind) < cap.get(kind), "the Vault has room for the hour");
+    }
+
+    run(&mut engine, 3600);
+    let grown = engine.players[&pid].resources.sub(stock);
+    for kind in ResourceKind::ALL {
+        let hour = 3600.0 * made.get(kind);
+        assert!((grown.get(kind) - hour).abs() < 1e-5, "{}: an hour of mining is {hour}, the stockpile grew by {}", kind.label(), grown.get(kind));
+    }
+
+    let odd = 2_950_448.335_970_960_6;
+    edit(&mut engine, |s| s.players.get_mut(&pid).unwrap().resources.metal = odd);
+    let kept = stored(&engine);
+    assert_eq!(kept.players[&pid].resources.metal.to_bits(), odd.to_bits(), "a document gives back the amount it was written with");
+    assert_eq!(kept.hash(), engine.snapshot().hash());
 }

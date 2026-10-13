@@ -120,8 +120,8 @@ pub struct Fleet {
     pub ships: [Ship; MAX_SHIPS_PER_FLEET],
     pub ship_count: usize,
     pub cargo: Resources,
-    pub fuel: f32,
-    pub fuel_max: f32,
+    pub fuel: f64,
+    pub fuel_max: f64,
     pub move_cooldown: u16,
     pub action_cooldown: u16,
     pub move_target: Option<Hex>,
@@ -351,9 +351,9 @@ pub struct SectorOverride {
     pub metal_density: Option<Density>,
     pub crystal_density: Option<Density>,
     pub deut_density: Option<Density>,
-    pub metal_harvested: f32,
-    pub crystal_harvested: f32,
-    pub deut_harvested: f32,
+    pub metal_harvested: f64,
+    pub crystal_harvested: f64,
+    pub deut_harvested: f64,
     pub salvage: Option<Resources>,
     pub salvage_despawn_tick: Option<u64>,
     pub npc_cleared_tick: Option<u64>,
@@ -515,7 +515,7 @@ pub struct FleetPolicy {
     pub last_hold: Option<(String, u64)>,
     /// Fuel budget: deuterium the fleet could still put into its tank as of
     /// `fuel_since`, the tick of its last budgeted fill (or of its orders).
-    pub fuel_credit: f32,
+    pub fuel_credit: f64,
     pub fuel_since: u64,
 }
 
@@ -596,7 +596,7 @@ struct Reach<'a> {
     /// Score weight of the deuterium one jump burns.
     jump_weight: f32,
     /// Cargo units the hold can still take.
-    room: f32,
+    room: f64,
     /// Sectors where a hostile group stands, and whether one of them
     /// attacks whoever enters.
     groups: KeyMap<u32, bool>,
@@ -828,11 +828,11 @@ impl Refusal {
 
 /// Slack on a `load` amount, so a client that sends back the room or the
 /// stock it was shown is not refused over a rounding.
-const LOAD_SLACK: f32 = 0.01;
+const LOAD_SLACK: f64 = 0.01;
 
 /// An outpost's store that was reported full is reported again only after
 /// it has fallen below this share of its cap.
-const STORE_REFILL_RATIO: f32 = 0.95;
+const STORE_REFILL_RATIO: f64 = 0.95;
 
 pub struct GameEngine {
     pub world_gen: WorldGen,
@@ -1028,16 +1028,16 @@ impl GameEngine {
             if hop <= 0.0 || fleet.fuel >= hop { continue; }
 
             let old = fleet.fuel;
-            let mut new = old + hop / STRANDED_RECOVERY_TICKS as f32;
+            let mut new = old + hop / STRANDED_RECOVERY_TICKS as f64;
             if new >= hop * 0.9999 { new = hop; }
-            let quarters = |f: f32| (f / hop * 4.0 + 0.0001).floor() as u32;
+            let quarters = |f: f64| (f / hop * 4.0 + 0.0001).floor() as u32;
             let location = fleet.location;
             let note = if new >= hop {
                 Some((AlertLevel::Info, format!(
                     "fleet {fid} at {location}: emergency reserve ready, enough fuel for one jump toward home",
                 )))
             } else if quarters(new) > quarters(old) {
-                let left = ((hop - new) / (hop / STRANDED_RECOVERY_TICKS as f32)).ceil() as u64;
+                let left = ((hop - new) / (hop / STRANDED_RECOVERY_TICKS as f64)).ceil() as u64;
                 Some((AlertLevel::Warning, format!(
                     "fleet {fid} stranded at {location}: emergency reserve {}% charged, about {left} ticks to one jump",
                     quarters(new) * 25,
@@ -1190,7 +1190,7 @@ impl GameEngine {
                         fleet_id: nid,
                         is_npc: true,
                         owner: None,
-                        salvage: npc_salvage(n, &self.world.pace).scale(farm),
+                        salvage: npc_salvage(n, &self.world.pace).scale(f64::from(farm)),
                         label: n.label.clone(),
                         ships,
                     });
@@ -1488,7 +1488,7 @@ impl GameEngine {
             for (density, res_type, accum_key, gone_in_level) in targets {
                 if target != HarvestResource::Auto && target != res_type { continue; }
                 let in_level = (scaling::ore_step_units(density, dist) - gone_in_level).max(0.0);
-                let raw = (density.harvest_multiplier() * harvest_power).min(in_level).min(remaining / yield_mult);
+                let raw = (f64::from(density.harvest_multiplier()) * harvest_power).min(in_level).min(remaining / yield_mult);
                 if raw > 0.0 {
                     let cargo = raw * yield_mult;
                     remaining -= cargo;
@@ -1547,7 +1547,7 @@ impl GameEngine {
         self.push_alert(AlertLevel::Warning, fleet_id, at, message);
     }
 
-    fn accumulate_harvest(&mut self, sector_key: u32, resource: &str, amount: f32, current_density: Density) -> Result<(), Box<dyn std::error::Error>> {
+    fn accumulate_harvest(&mut self, sector_key: u32, resource: &str, amount: f64, current_density: Density) -> Result<(), Box<dyn std::error::Error>> {
         if current_density == Density::None { return Ok(()); }
 
         let step = scaling::ore_step_units(current_density, Hex::from_key(sector_key).dist_from_origin());
@@ -1807,7 +1807,7 @@ impl GameEngine {
         if aboard <= capacity { return; }
         let (owner, sector) = (fleet.owner_id, fleet.location);
 
-        // f32 rounding can leave the scaled sum a unit in the last place over.
+        // Rounding can leave the scaled sum a unit in the last place over.
         let mut share = capacity / aboard;
         let mut kept = fleet.cargo.scale(share);
         while kept.total() > capacity {
@@ -2479,7 +2479,7 @@ impl GameEngine {
         // Raid fleet value, for salvage: treat it as corvette-equivalents.
         let corvette_power = scaling::ship_power(ShipClass::Corvette);
         let corvettes = (raid_power / corvette_power).ceil().max(1.0);
-        let raid_value = ShipClass::Corvette.build_cost().scale(corvettes);
+        let raid_value = ShipClass::Corvette.build_cost().scale(f64::from(corvettes));
 
         let mut resources_lost = Resources::default();
         let mut ships_lost = 0;
@@ -3519,7 +3519,7 @@ impl GameEngine {
         let fuel_after = if can_jump { fleet.fuel - fuel_cost } else { 0.0 };
         let route = self.home_route(player_id, target);
         let hops_home = route.direct;
-        let fuel_to_return = hops_home as f32 * fuel_cost;
+        let fuel_to_return = f64::from(hops_home) * fuel_cost;
         let odds = self.fleet_odds(fleet, target);
         Ok(MovePreview {
             fleet_id,
@@ -3610,7 +3610,7 @@ impl GameEngine {
         ov: Option<&SectorOverride>,
     ) -> Option<OreReserve> {
         let dist = coord.dist_from_origin();
-        let tile = |template_d: Density, max_units: f32, current: Option<Density>, harvested: f32| {
+        let tile = |template_d: Density, max_units: f64, current: Option<Density>, harvested: f64| {
             let gone = scaling::ore_extracted(template_d, current.unwrap_or(template_d), harvested, dist);
             let refills_in_s = (gone > scaling::ORE_EPSILON)
                 .then(|| scaling::ore_regen_per_tick(template_d, dist, &self.world.pace))
@@ -3716,7 +3716,7 @@ impl GameEngine {
     }
 
     /// Fuel for one jump of this fleet.
-    pub fn hop_fuel_cost(&self, fleet: &Fleet) -> f32 {
+    pub fn hop_fuel_cost(&self, fleet: &Fleet) -> f64 {
         let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
         fleet_fuel_cost(fleet, research)
     }
@@ -3776,14 +3776,14 @@ impl GameEngine {
 
     /// Fuel the way from `from` to the fleet's owner's outpost costs, while
     /// that outpost is in service.
-    pub fn outpost_route_cost(&self, fleet: &Fleet, from: Hex) -> Option<f32> {
+    pub fn outpost_route_cost(&self, fleet: &Fleet, from: Hex) -> Option<f64> {
         let outpost = self.outposts.get(&fleet.owner_id).filter(|o| o.in_service())?;
-        Some(self.lane_hops(from, outpost.sector) as f32 * self.hop_fuel_cost(fleet))
+        Some(f64::from(self.lane_hops(from, outpost.sector)) * self.hop_fuel_cost(fleet))
     }
 
     /// Fuel the fleet would burn getting home from `from`, one jump per hop.
-    pub fn route_home_cost(&self, fleet: &Fleet, from: Hex) -> f32 {
-        self.direct_hops_home(fleet.owner_id, from) as f32 * self.hop_fuel_cost(fleet)
+    pub fn route_home_cost(&self, fleet: &Fleet, from: Hex) -> f64 {
+        f64::from(self.direct_hops_home(fleet.owner_id, from)) * self.hop_fuel_cost(fleet)
     }
 
     fn push_alert(&mut self, level: AlertLevel, fleet_id: u64, sector: Hex, message: String) {
@@ -3803,19 +3803,19 @@ impl GameEngine {
     /// A jump that leaves the fleet unable to afford the way home is
     /// allowed, but never silent. "The way home" is the shortest real route,
     /// charted or not; a longer charted route is quoted alongside.
-    fn warn_if_cannot_return(&mut self, fleet_id: u64, target: Hex, hop_cost: f32) {
+    fn warn_if_cannot_return(&mut self, fleet_id: u64, target: Hex, hop_cost: f64) {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
         let Some(player) = self.players.get(&fleet.owner_id) else { return; };
         if target == player.homeworld { return; }
         let have = fleet.fuel;
-        if have + 0.001 >= self.direct_hops_home(fleet.owner_id, target) as f32 * hop_cost { return; }
+        if have + 0.001 >= f64::from(self.direct_hops_home(fleet.owner_id, target)) * hop_cost { return; }
         if self.outposts.get(&fleet.owner_id)
-            .is_some_and(|o| o.in_service() && have + 0.001 >= self.lane_hops(target, o.sector) as f32 * hop_cost)
+            .is_some_and(|o| o.in_service() && have + 0.001 >= f64::from(self.lane_hops(target, o.sector)) * hop_cost)
         {
             return;
         }
         let route = self.home_route(fleet.owner_id, target);
-        let need = route.direct as f32 * hop_cost;
+        let need = f64::from(route.direct) * hop_cost;
         let (level, outcome) = if have + 0.001 < hop_cost {
             (AlertLevel::Critical, "it will be stranded on arrival; the emergency reserve recovers one hop in about 5 minutes")
         } else {
@@ -3825,7 +3825,7 @@ impl GameEngine {
         let way = match route.charted {
             Some(c) if c != route.direct => format!(
                 "the charted route home is {c} hops, {:.0} fuel; the direct route is {} hops, {need:.0} fuel{across}",
-                c as f32 * hop_cost, route.direct,
+                f64::from(c) * hop_cost, route.direct,
             ),
             None => format!("no charted route home; the direct route is {} hops, {need:.0} fuel{across}", route.direct),
             _ => format!("the way home is {} hops, {need:.0} fuel{across}", route.direct),
@@ -3932,7 +3932,7 @@ impl GameEngine {
         fleet_id: u64,
         give: ResourceKind,
         want: ResourceKind,
-        amount: Option<f32>,
+        amount: Option<f64>,
     ) -> Result<ExchangeDeal, Refusal> {
         let refuse = Refusal::new;
         let fleet = self.owned_fleet(player_id, fleet_id)
@@ -3961,17 +3961,17 @@ impl GameEngine {
         };
 
         let (pressure, span, window) = self.exchange_standing(player);
-        let value = f64::from(amount) * f64::from(give.weight());
-        let par = value / f64::from(want.weight());
-        let receive = (scaling::exchange_return(pressure, value, span) / f64::from(want.weight())).floor().max(0.0);
+        let value = amount * give.weight();
+        let par = value / want.weight();
+        let receive = (scaling::exchange_return(pressure, value, span) / want.weight()).floor().max(0.0);
         let terms = ExchangeTerms {
             fleet_id,
             give,
             want,
             amount,
-            receive: receive as f32,
-            par: par as f32,
-            fee: (1.0 - receive / par) as f32,
+            receive,
+            par,
+            fee: 1.0 - receive / par,
             meter: exchange_meter_at(pressure, span, window),
             meter_after: exchange_meter_at(pressure + value, span, window),
         };
@@ -4024,7 +4024,7 @@ impl GameEngine {
         fleet_id: u64,
         give: ResourceKind,
         want: ResourceKind,
-        amount: Option<f32>,
+        amount: Option<f64>,
     ) -> Result<(), ErrorCode> {
         let (terms, pressure_after) = match self.exchange_deal(player_id, fleet_id, give, want, amount) {
             Ok(ExchangeDeal { terms, pressure_after, refusal: None }) => (terms, pressure_after),
@@ -4102,8 +4102,8 @@ impl GameEngine {
         player_id: u64,
         fleet_id: u64,
         resource: ResourceKind,
-        amount: Option<f32>,
-    ) -> Result<f32, Refusal> {
+        amount: Option<f64>,
+    ) -> Result<f64, Refusal> {
         self.load_at_dock(player_id, fleet_id, resource, amount).map(|(loaded, _)| loaded)
     }
 
@@ -4112,8 +4112,8 @@ impl GameEngine {
         player_id: u64,
         fleet_id: u64,
         resource: ResourceKind,
-        amount: Option<f32>,
-    ) -> Result<(f32, Dock), Refusal> {
+        amount: Option<f64>,
+    ) -> Result<(f64, Dock), Refusal> {
         let (fleet, player, dock) = self.fleet_at_dock(player_id, fleet_id, "load")?;
         if let Some(policy) = self.policies.get(&fleet_id) {
             let rule = match dock {
@@ -4171,7 +4171,7 @@ impl GameEngine {
         player_id: u64,
         fleet_id: u64,
         resource: ResourceKind,
-        amount: Option<f32>,
+        amount: Option<f64>,
     ) -> Result<(), ErrorCode> {
         let (loaded, dock) = self.load_at_dock(player_id, fleet_id, resource, amount).map_err(|refusal| refusal.code)?;
         match dock {
@@ -4332,9 +4332,9 @@ impl GameEngine {
     /// Fuel an emergency jump home would burn: the per-hop cost over the
     /// straight distance, doubled. All-or-nothing: a fleet with less than
     /// this does not move at all.
-    pub fn recall_fuel_cost(&self, fleet: &Fleet) -> f32 {
+    pub fn recall_fuel_cost(&self, fleet: &Fleet) -> f64 {
         let dist = self.players.get(&fleet.owner_id)
-            .map(|p| Hex::distance(&fleet.location, &p.homeworld) as f32)
+            .map(|p| f64::from(Hex::distance(&fleet.location, &p.homeworld)))
             .unwrap_or(0.0);
         self.hop_fuel_cost(fleet) * dist * RECALL_FUEL_MULTIPLIER
     }
@@ -5094,7 +5094,7 @@ impl GameEngine {
         let dist = location.dist_from_origin();
         let rating = ring_rating(location);
         let base_value = scaling::derelict_value(dist)
-            * rng.random_range(scaling::DERELICT_ROLL_MIN..=scaling::DERELICT_ROLL_MAX);
+            * f64::from(rng.random_range(scaling::DERELICT_ROLL_MIN..=scaling::DERELICT_ROLL_MAX));
         let loot_mult = self.world.pace.finds_mult() * if has_hauler { EXPLORE_HAULER_LOOT_MULTIPLIER } else { 1.0 };
         let rolled = scaling::split_loot(base_value).scale(loot_mult);
 
@@ -5362,16 +5362,16 @@ impl GameEngine {
     /// Deuterium a fleet under a bounded doctrine may put into its tank now:
     /// what was left after the last fill plus its share of the current
     /// deuterium production since, at most the price of a full tank.
-    fn fuel_allowance(&self, fleet: &Fleet, policy: &FleetPolicy) -> f32 {
+    fn fuel_allowance(&self, fleet: &Fleet, policy: &FleetPolicy) -> f64 {
         let earned = self.fuel_income(fleet.owner_id, &policy.params)
-            * self.current_tick.saturating_sub(policy.fuel_since) as f32;
+            * self.current_tick.saturating_sub(policy.fuel_since) as f64;
         (policy.fuel_credit + earned).min(fleet.fuel_max * FUEL_DEUT_PER_UNIT)
     }
 
     /// Deuterium per tick a doctrine's fuel budget grows by.
-    fn fuel_income(&self, owner: u64, params: &PolicyParams) -> f32 {
+    fn fuel_income(&self, owner: u64, params: &PolicyParams) -> f64 {
         let Some(player) = self.players.get(&owner) else { return 0.0; };
-        player.production_per_tick(&self.world.pace).deuterium * f32::from(params.fuel_budget_pct) / 100.0
+        player.production_per_tick(&self.world.pace).deuterium * f64::from(params.fuel_budget_pct) / 100.0
     }
 
     /// Shields come back while a fleet idles and hull never does, so a fleet
@@ -5393,7 +5393,7 @@ impl GameEngine {
         if fleet.location != self.players.get(&fleet.owner_id)?.homeworld { return None; }
         let hold = fleet_cargo_capacity(fleet, &self.world.pace);
         let aboard = fleet.cargo.total();
-        (hold > 0.0 && aboard / hold * 100.0 >= f32::from(policy.params.cargo_return_pct)).then(|| {
+        (hold > 0.0 && aboard / hold * 100.0 >= f64::from(policy.params.cargo_return_pct)).then(|| {
             format!("the stockpile has no room for the cargo aboard ({:.0}% of the hold); waiting to unload", aboard / hold * 100.0)
         })
     }
@@ -5431,7 +5431,7 @@ impl GameEngine {
     fn policy_effective_range(&self, fleet: &Fleet, params: &PolicyParams) -> u8 {
         let hop = self.hop_fuel_cost(fleet);
         if hop <= 0.0 { return params.max_range; }
-        let reserve = fleet.fuel_max * params.min_fuel_pct as f32 / 100.0;
+        let reserve = fleet.fuel_max * f64::from(params.min_fuel_pct) / 100.0;
         let hops = ((fleet.fuel_max - reserve) / (2.0 * hop)).floor().clamp(0.0, 255.0) as u8;
         params.max_range.min(hops)
     }
@@ -5452,7 +5452,7 @@ impl GameEngine {
     /// It is not a fraction of the tank.
     fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<Homeward> {
         let need = self.route_home_cost(fleet, fleet.location);
-        let reserve = fleet.fuel_max * params.min_fuel_pct as f32 / 100.0;
+        let reserve = fleet.fuel_max * f64::from(params.min_fuel_pct) / 100.0;
         if fleet.fuel < need + reserve {
             return Some(Homeward::Fuel(format!(
                 "fuel {:.0} is below the route home {:.0} plus reserve {:.0}",
@@ -5463,7 +5463,7 @@ impl GameEngine {
         if max_cargo > 0.0 {
             let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
             let cargo_pct = used / max_cargo * 100.0;
-            if cargo_pct >= params.cargo_return_pct as f32 {
+            if cargo_pct >= f64::from(params.cargo_return_pct) {
                 return Some(Homeward::Cargo(format!("cargo {:.0}%", cargo_pct)));
             }
         }
@@ -5657,8 +5657,8 @@ impl GameEngine {
 
         if !homeward {
             let min_pct = self.policies.get(&fleet_id).map(|p| p.params.min_fuel_pct).unwrap_or_default();
-            let reserve = fleet.fuel_max * min_pct as f32 / 100.0;
-            let need = self.direct_hops_home(owner, step) as f32 * hop + reserve;
+            let reserve = fleet.fuel_max * f64::from(min_pct) / 100.0;
+            let need = f64::from(self.direct_hops_home(owner, step)) * hop + reserve;
             if fuel - hop < need {
                 let why = format!(
                     "a jump to {step} would leave {:.0} fuel against {:.0} needed to return home",
@@ -5706,13 +5706,13 @@ impl GameEngine {
     }
 
     /// Raw ore units the tiles of `coord` hold right now.
-    fn seam_units(&self, coord: Hex) -> f32 {
+    fn seam_units(&self, coord: Hex) -> f64 {
         self.ore_reserve_at(coord).map_or(0.0, |ore| ore_units(&ore))
     }
 
     /// Score weight of `ore` as it would land in the hold of one of
     /// `owner`'s fleets with `room` units free.
-    fn seam_worth(&self, owner: u64, ore: &OreReserve, room: f32) -> f32 {
+    fn seam_worth(&self, owner: u64, ore: &OreReserve, room: f64) -> f32 {
         let yield_mult = self.players.get(&owner)
             .map_or(1.0, |p| scaling::harvest_yield(p.research.harvesting_efficiency));
         let load = Resources { metal: ore.metal.units, crystal: ore.crystal.units, deuterium: ore.deuterium.units }
@@ -5721,7 +5721,7 @@ impl GameEngine {
     }
 
     /// Score weight of the wreckage in `coord` that fits `room` units of hold.
-    fn wreck_worth(&self, coord: Hex, room: f32) -> f32 {
+    fn wreck_worth(&self, coord: Hex, room: f64) -> f32 {
         self.sector_overrides.get(&coord.to_key())
             .and_then(|o| o.salvage)
             .map_or(0.0, |pile| worth_aboard(pile, room))
@@ -6213,7 +6213,7 @@ impl GameEngine {
             patrol_timer: 0,
             in_combat: false,
             label: npc.label(),
-            bounty: npc.ship_class.build_cost().scale(count as f32),
+            bounty: npc.ship_class.build_cost().scale(count as f64),
             power: ships[..count].iter().map(|s| s.weapon_power + (s.hull + s.shield) / 10.0).sum(),
         };
 
@@ -6571,7 +6571,7 @@ impl GameEngine {
 // ── Helper Functions ──────────────────────────────────────────────
 
 /// A fuel amount in a sentence: whole when it is whole, else to a tenth.
-fn fuel_words(fuel: f32) -> String {
+fn fuel_words(fuel: f64) -> String {
     let tenths = (fuel * 10.0).round() / 10.0;
     if tenths.fract() == 0.0 { format!("{tenths:.0}") } else { format!("{tenths:.1}") }
 }
@@ -6629,9 +6629,9 @@ fn exchange_meter_at(pressure: f64, span: f64, window: u64) -> ExchangeMeter {
         None
     };
     ExchangeMeter {
-        pressure: pressure as f32,
-        span: span as f32,
-        fee: scaling::exchange_fee(pressure, span) as f32,
+        pressure,
+        span,
+        fee: scaling::exchange_fee(pressure, span),
         window_ticks: window,
         clear_in,
     }
@@ -6678,16 +6678,16 @@ fn ring_threat(coord: Hex, basis: ThreatBasis) -> ThreatInfo {
 const NO_FIGHT_FOR_IT: &str = "sits among hostiles that attack on sight; this doctrine picks no fight for it (a patrol can clear them)";
 
 /// Raw ore units the tiles hold between them.
-fn ore_units(ore: &OreReserve) -> f32 {
+fn ore_units(ore: &OreReserve) -> f64 {
     ore.metal.units + ore.crystal.units + ore.deuterium.units
 }
 
 /// Score weight of `load` once it sits in a hold with `room` units free:
 /// all of it, or the share that fits.
-fn worth_aboard(load: Resources, room: f32) -> f32 {
+fn worth_aboard(load: Resources, room: f64) -> f32 {
     let units = load.total();
     if units <= 0.0 { return 0.0; }
-    scaling::resource_weight(&load) * (room / units).min(1.0)
+    scaling::resource_weight(&load.scale((room / units).min(1.0)))
 }
 
 /// The ships of a remembered sector: the groups last seen there, scaled to
@@ -6734,9 +6734,9 @@ fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 
     }
 }
 
-fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>) -> f32 {
+fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>) -> f64 {
     let total_mass: f32 = fleet.ships[0..fleet.ship_count].iter().map(|s| s.hull_max).sum();
-    let base = total_mass * FUEL_RATE_PER_MASS;
+    let base = f64::from(total_mass) * FUEL_RATE_PER_MASS;
     if let Some(r) = research {
         base * scaling::fuel_rate_modifier(r.fuel_efficiency)
     } else {
@@ -6745,7 +6745,7 @@ fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>) -> f32 {
 }
 
 /// Raw units per tick the fleet can extract at density multiplier 1.
-fn fleet_harvest_power(fleet: &Fleet) -> f32 {
+fn fleet_harvest_power(fleet: &Fleet) -> f64 {
     fleet.ships[0..fleet.ship_count].iter()
         .map(|s| match s.ship_class {
             ShipClass::Hauler => 5.0,
@@ -6755,11 +6755,11 @@ fn fleet_harvest_power(fleet: &Fleet) -> f32 {
         .sum()
 }
 
-fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f32 {
+fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f64 {
     // Folded from 0.0: the `sum()` of no floats is -0.0, and a fleet with no
     // ships left must not carry a zero whose sign a store may not keep.
     let total_fuel = fleet.ships[0..fleet.ship_count].iter()
-        .fold(0.0, |tank, s| tank + s.ship_class.base_stats().fuel as f32);
+        .fold(0.0, |tank, s| tank + f64::from(s.ship_class.base_stats().fuel));
     total_fuel
         * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
         * scaling::fuel_depot_modifier(player.buildings.fuel_depot)
@@ -6834,16 +6834,16 @@ pub fn site_risk_label(site: Hex, bumps: u8) -> iac_shared::protocol::SiteRisk {
 
 /// The hold: each ship's base cargo times the pace's cargo factor (P^0.5,
 /// like the loot it carries).
-pub fn fleet_cargo_capacity(fleet: &Fleet, pace: &Pace) -> f32 {
+pub fn fleet_cargo_capacity(fleet: &Fleet, pace: &Pace) -> f64 {
     // Folded from 0.0 for the reason given in `fleet_fuel_max`: what is left
     // in the hold of a fleet with no ships is scaled by this.
     let base = fleet.ships[0..fleet.ship_count].iter()
-        .fold(0.0, |hold, s| hold + s.ship_class.base_stats().cargo as f32);
+        .fold(0.0, |hold, s| hold + f64::from(s.ship_class.base_stats().cargo));
     base * pace.cargo_mult()
 }
 
 fn regen_resource(
-    harvested: &mut f32,
+    harvested: &mut f64,
     override_density: &mut Option<Density>,
     template_density: Density,
     dist: u16,

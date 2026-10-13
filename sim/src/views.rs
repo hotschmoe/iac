@@ -119,7 +119,7 @@ fn player_state(engine: &GameEngine, player: &Player) -> PlayerState {
 
 /// Outward hops that still leave the fuel to come back: each costs a jump
 /// out and a jump home.
-fn range_hops(fuel: f32, home_fuel: f32, jump_fuel: f32) -> u32 {
+fn range_hops(fuel: f64, home_fuel: f64, jump_fuel: f64) -> u32 {
     if jump_fuel <= 0.0 { return 0; }
     ((fuel - home_fuel) / (2.0 * jump_fuel)).floor().max(0.0) as u32
 }

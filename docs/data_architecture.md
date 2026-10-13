@@ -33,7 +33,7 @@ document, the same document for every host.**
 A header line of JSON, a newline, the `Snapshot` as JSON:
 
 ```
-{"format":6,"economy_version":7,"worldgen_version":3,"digest":<xxh3 of the body>,"host":{...}}
+{"format":7,"economy_version":8,"worldgen_version":3,"digest":<xxh3 of the body>,"host":{...}}
 {"world_seed":...,"meta":{"pace":...},"tick":...,"next_id":...,"players":{...},"fleets":{...},...}
 ```
 
@@ -56,6 +56,14 @@ replaced SQL:
 ```sh
 tail -n +2 world.iac | jq '.tick, (.players | length)'
 ```
+
+An amount of a resource, and a fleet's fuel, is an `f64` (format 7), written
+as the shortest decimal that names it. Reading one back to the same bits
+needs `serde_json`'s `float_roundtrip` feature, which `shared/Cargo.toml`
+and `sim/Cargo.toml` turn on: without it about one `f64` in ten comes back
+one unit in the last place away, and a restarted world plays on differently
+(`sim/tests/stored_world.rs`, `bots.rs` and the last test of
+`scenarios_world.rs` fail).
 
 ## The place (`Store`)
 

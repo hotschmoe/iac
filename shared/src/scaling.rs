@@ -174,12 +174,12 @@ pub const QUEUE_WAITING: usize = 3;
 /// Stockpile cap with no Vault, before the pace multiplier.
 pub const STORAGE_BASE: Resources = Resources { metal: 5000.0, crystal: 3500.0, deuterium: 2500.0 };
 /// Each Vault level multiplies the caps by this.
-pub const STORAGE_GROWTH: f32 = 1.5;
+pub const STORAGE_GROWTH: f64 = 1.5;
 /// Share of the cap per Vault level that a raid cannot skim, up to the max.
-pub const STORAGE_PROTECT_PER_LEVEL: f32 = 0.08;
-pub const STORAGE_PROTECT_MAX: f32 = 0.60;
+pub const STORAGE_PROTECT_PER_LEVEL: f64 = 0.08;
+pub const STORAGE_PROTECT_MAX: f64 = 0.60;
 /// `StorageNearCap` fires at this fill ratio.
-pub const STORAGE_NEAR_CAP_RATIO: f32 = 0.85;
+pub const STORAGE_NEAR_CAP_RATIO: f64 = 0.85;
 
 /// Stockpile cap per resource: `base * 1.5^vault * P^0.75`.
 pub fn storage_cap(vault_level: u8, pace: &Pace) -> Resources {
@@ -188,18 +188,18 @@ pub fn storage_cap(vault_level: u8, pace: &Pace) -> Resources {
 
 /// Per resource, the stock a raid cannot take.
 pub fn storage_protected(vault_level: u8, pace: &Pace) -> Resources {
-    let share = (STORAGE_PROTECT_PER_LEVEL * vault_level as f32).min(STORAGE_PROTECT_MAX);
+    let share = (STORAGE_PROTECT_PER_LEVEL * f64::from(vault_level)).min(STORAGE_PROTECT_MAX);
     storage_cap(vault_level, pace).scale(share)
 }
 
 /// Smallest Vault level whose cap holds `amount` of `kind`; None when even
 /// level 20 cannot.
-pub fn vault_level_for(amount: f32, kind: ResourceKind, pace: &Pace) -> Option<u8> {
+pub fn vault_level_for(amount: f64, kind: ResourceKind, pace: &Pace) -> Option<u8> {
     (0..=MAX_BUILDING_LEVEL).find(|&level| storage_cap(level, pace).get(kind) >= amount)
 }
 
 /// Mine output per tick at the world's pace.
-pub fn production_per_tick(building: BuildingType, level: u8, pace: &Pace) -> f32 {
+pub fn production_per_tick(building: BuildingType, level: u8, pace: &Pace) -> f64 {
     if level == 0 {
         return 0.0;
     }
@@ -210,7 +210,7 @@ pub fn production_per_tick(building: BuildingType, level: u8, pace: &Pace) -> f3
         _ => return 0.0,
     };
     let level = level as f64;
-    pace.rate((per_hour / 3600.0 * level * maths::powf(PRODUCTION_GROWTH, level)) as f32)
+    pace.rate(per_hour / 3600.0 * level * maths::powf(PRODUCTION_GROWTH, level))
 }
 
 /// Level-1 cost and the per-level growth factor of a building.
@@ -232,7 +232,7 @@ pub fn building_cost_curve(building: BuildingType) -> ([f64; 3], f64) {
 /// `base * growth^(level - 1)`, rounded to whole units.
 fn grown_cost(base: [f64; 3], growth: f64, level: u8) -> Resources {
     let factor = maths::powi(growth, i32::from(level.max(1)) - 1);
-    let unit = |x: f64| (x * factor).round_ties_even() as f32;
+    let unit = |x: f64| (x * factor).round_ties_even();
     Resources { metal: unit(base[0]), crystal: unit(base[1]), deuterium: unit(base[2]) }
 }
 
@@ -244,7 +244,7 @@ pub fn building_cost(building: BuildingType, level: u8) -> Resources {
 
 /// Seconds (= ticks at pace 1) that `cost` takes at `rate` cost-units per hour.
 fn cost_seconds(cost: Resources, rate: f64, speed_divisor: f64) -> f64 {
-    (cost.metal as f64 + cost.crystal as f64) / rate * 3600.0 / speed_divisor
+    (cost.metal + cost.crystal) / rate * 3600.0 / speed_divisor
 }
 
 /// Ticks to build level N: derived from the cost, so time and cost share an
@@ -633,7 +633,7 @@ pub fn apply_research_to_stats(base: ShipStats, research: &ResearchLevels) -> Sh
         weapon: base.weapon * weapon_bonus,
         speed: base.speed,
         cargo: base.cargo,
-        fuel: (base.fuel as f32 * fuel_cap) as u16,
+        fuel: (f64::from(base.fuel) * fuel_cap) as u16,
     }
 }
 
@@ -643,21 +643,21 @@ pub fn building_slots(research: &ResearchLevels) -> u8 {
     1 + research.modular_fabrication
 }
 
-pub fn fuel_rate_modifier(fuel_eff_level: u8) -> f32 {
-    1.0 - 0.10 * fuel_eff_level as f32
+pub fn fuel_rate_modifier(fuel_eff_level: u8) -> f64 {
+    1.0 - 0.10 * f64::from(fuel_eff_level)
 }
 
-pub fn fuel_capacity_modifier(tanks_level: u8) -> f32 {
-    1.0 + 0.15 * tanks_level as f32
+pub fn fuel_capacity_modifier(tanks_level: u8) -> f64 {
+    1.0 + 0.15 * f64::from(tanks_level)
 }
 
-pub fn fuel_depot_modifier(depot_level: u8) -> f32 {
-    1.0 + 0.25 * depot_level as f32
+pub fn fuel_depot_modifier(depot_level: u8) -> f64 {
+    1.0 + 0.25 * f64::from(depot_level)
 }
 
 /// Fuel one unit of deuterium becomes when a fleet refines it from its hold:
 /// the home dock's rate less `REFINE_LOSS`.
-pub fn refined_fuel_per_deuterium() -> f32 {
+pub fn refined_fuel_per_deuterium() -> f64 {
     (1.0 - REFINE_LOSS) / FUEL_DEUT_PER_UNIT
 }
 
@@ -671,8 +671,8 @@ pub fn navigation_cooldown_reduction(nav_level: u8) -> u16 {
 
 /// Cargo gained per raw unit extracted. Research raises the yield, not the
 /// extraction speed, so it does not strip small tiles faster.
-pub fn harvest_yield(harvest_eff_level: u8) -> f32 {
-    1.0 + 0.20 * harvest_eff_level as f32
+pub fn harvest_yield(harvest_eff_level: u8) -> f64 {
+    1.0 + 0.20 * f64::from(harvest_eff_level)
 }
 
 pub fn recall_damage_reduction(ej_level: u8) -> f32 {
@@ -700,7 +700,7 @@ pub fn ship_build_time(class: ShipClass, shipyard_level: u8, pace: &Pace) -> u64
     pace.econ_ticks(cost_seconds(class.build_cost(), SHIP_RATE, divisor))
 }
 
-pub const CANCEL_REFUND_FRACTION: f32 = 0.50;
+pub const CANCEL_REFUND_FRACTION: f64 = 0.50;
 
 // ── Defence structures ───────────────────────────────────────────
 
@@ -823,7 +823,7 @@ impl ShipyardItem {
     }
 
     pub fn batch_cost(self, count: u16) -> Resources {
-        self.unit_cost().scale(f32::from(count))
+        self.unit_cost().scale(f64::from(count))
     }
 
     pub fn unit_ticks(self, shipyard_level: u8, pace: &Pace) -> u64 {
@@ -837,14 +837,15 @@ impl ShipyardItem {
 // ── Raids and score points ───────────────────────────────────────
 
 /// How much a bundle of resources counts toward score and raid sizing:
-/// crystal and deuterium are scarcer than metal.
+/// crystal and deuterium are scarcer than metal. Points are 32-bit, as
+/// power and ratios are: this is where an amount stops being one.
 pub fn resource_weight(r: &Resources) -> f32 {
-    par_value(r) / 1000.0
+    (par_value(r) / 1000.0) as f32
 }
 
 /// A bundle of resources at par, in units of metal: each unit counts its
 /// `ResourceKind::weight`.
-pub fn par_value(r: &Resources) -> f32 {
+pub fn par_value(r: &Resources) -> f64 {
     ResourceKind::Metal.weight() * r.metal
         + ResourceKind::Crystal.weight() * r.crystal
         + ResourceKind::Deuterium.weight() * r.deuterium
@@ -867,7 +868,7 @@ pub fn exchange_window(pace: &Pace) -> u64 {
 /// The span of a player's meter, in weight units: `EXCHANGE_METER_SHARE` of
 /// what mines making `production` a tick turn out in one window.
 pub fn exchange_span(production: &Resources, pace: &Pace) -> f64 {
-    let per_tick: f64 = ResourceKind::ALL.into_iter().map(|k| f64::from(production.get(k)) * f64::from(k.weight())).sum();
+    let per_tick: f64 = ResourceKind::ALL.into_iter().map(|k| production.get(k) * k.weight()).sum();
     EXCHANGE_METER_SHARE * per_tick * exchange_window(pace) as f64
 }
 
@@ -936,11 +937,7 @@ pub fn raid_power_base(econ: f32) -> f32 {
 
 /// What level `level` costs: `OUTPOST_COST * 2.5^(level - 1)`.
 pub fn outpost_cost(level: u8) -> Resources {
-    grown_cost(
-        [OUTPOST_COST.metal.into(), OUTPOST_COST.crystal.into(), OUTPOST_COST.deuterium.into()],
-        OUTPOST_GROWTH,
-        level,
-    )
+    grown_cost([OUTPOST_COST.metal, OUTPOST_COST.crystal, OUTPOST_COST.deuterium], OUTPOST_GROWTH, level)
 }
 
 /// Ticks to build level `level`, from its cost like every other build time.
@@ -948,8 +945,8 @@ pub fn outpost_build_ticks(level: u8, pace: &Pace) -> u64 {
     pace.econ_ticks(cost_seconds(outpost_cost(level), OUTPOST_BUILD_RATE, 1.0))
 }
 
-fn outpost_growth(level: u8) -> f32 {
-    maths::powi(OUTPOST_GROWTH, i32::from(level.max(1)) - 1) as f32
+fn outpost_growth(level: u8) -> f64 {
+    maths::powi(OUTPOST_GROWTH, i32::from(level.max(1)) - 1)
 }
 
 /// What the store holds per resource. An outpost under construction has the store of level 1.
@@ -959,7 +956,7 @@ pub fn outpost_store_cap(level: u8, pace: &Pace) -> Resources {
 
 /// Defence power of the platform; none before level 1 is finished.
 pub fn outpost_platform_power(level: u8) -> f32 {
-    if level == 0 { 0.0 } else { OUTPOST_PLATFORM_POWER * outpost_growth(level) }
+    if level == 0 { 0.0 } else { OUTPOST_PLATFORM_POWER * outpost_growth(level) as f32 }
 }
 
 /// The grade of a site whose three ores are all Pristine: the most a grade can be.
@@ -974,8 +971,8 @@ pub fn site_grade(densities: [Density; 3]) -> f32 {
 /// from the densities the sector was generated with.
 pub fn outpost_yield_per_tick(densities: [Density; 3], ring: u16, level: u8, pace: &Pace) -> Resources {
     let per_tick = |density: Density| {
-        let per_hour = OUTPOST_YIELD_PER_HOUR * f64::from(density.harvest_multiplier()) * f64::from(ring_mult(ring));
-        pace.rate((per_hour / 3600.0 * f64::from(level)) as f32)
+        let per_hour = OUTPOST_YIELD_PER_HOUR * f64::from(density.harvest_multiplier()) * ring_mult(ring);
+        pace.rate(per_hour / 3600.0 * f64::from(level))
     };
     let [metal, crystal, deuterium] = densities;
     Resources { metal: per_tick(metal), crystal: per_tick(crystal), deuterium: per_tick(deuterium) }
@@ -989,7 +986,7 @@ pub fn outpost_raid_power(ring: u16) -> f32 {
 
 /// What repairing a breached outpost of `level` costs, in metal: the par
 /// value of `OUTPOST_REPAIR_SHARE` of the level's cost.
-pub fn outpost_repair_price(level: u8) -> f32 {
+pub fn outpost_repair_price(level: u8) -> f64 {
     if level == 0 { 0.0 } else { par_value(&outpost_cost(level).scale(OUTPOST_REPAIR_SHARE)) }
 }
 
@@ -998,7 +995,7 @@ pub fn outpost_repair_price(level: u8) -> f32 {
 /// runs out crystal pays at its par value, and then deuterium, so the store
 /// keeps what is scarcest. The payment is also the floor of the store that
 /// a raid cannot take.
-pub fn outpost_repair_payment(level: u8, store: Resources) -> (Resources, f32) {
+pub fn outpost_repair_payment(level: u8, store: Resources) -> (Resources, f64) {
     let mut owed = outpost_repair_price(level);
     let mut payment = Resources::default();
     for kind in ResourceKind::ALL {
@@ -1015,7 +1012,7 @@ pub fn outpost_repair_payment(level: u8, store: Resources) -> (Resources, f32) {
 }
 
 pub fn outpost_repair_ticks(level: u8, pace: &Pace) -> u64 {
-    pace.econ_ticks(cost_seconds(outpost_cost(level), OUTPOST_BUILD_RATE, 1.0) * f64::from(OUTPOST_REPAIR_SHARE))
+    pace.econ_ticks(cost_seconds(outpost_cost(level), OUTPOST_BUILD_RATE, 1.0) * OUTPOST_REPAIR_SHARE)
 }
 
 /// Score points of an outpost standing at `level`: every finished level at the weight of its cost.
@@ -1025,7 +1022,7 @@ pub fn outpost_points(level: u8) -> f32 {
 
 // ── Ore ──────────────────────────────────────────────────────────
 
-pub const ORE_RING_GROWTH: f32 = 1.10;
+pub const ORE_RING_GROWTH: f64 = 1.10;
 pub const ORE_RING_FIRST: u16 = 3;
 pub const ORE_RING_LAST: u16 = 20;
 /// A stripped tile refills completely in this many game hours plus
@@ -1039,7 +1036,7 @@ pub const ORE_DRIFT_MAX: f32 = 0.30;
 
 /// Reserve multiplier of a ring: 1.0 inside ring 3, then 1.10 per ring up to
 /// ring 20 (5.05 beyond).
-pub fn ring_mult(dist: u16) -> f32 {
+pub fn ring_mult(dist: u16) -> f64 {
     if dist < ORE_RING_FIRST {
         1.0
     } else {
@@ -1048,12 +1045,12 @@ pub fn ring_mult(dist: u16) -> f32 {
 }
 
 /// Raw units to harvest at `density` before it drops a level.
-pub fn ore_step_units(density: Density, dist: u16) -> f32 {
+pub fn ore_step_units(density: Density, dist: u16) -> f64 {
     density.step_units() * ring_mult(dist)
 }
 
 /// Raw units a full tile of `density` holds.
-pub fn ore_reserve_units(density: Density, dist: u16) -> f32 {
+pub fn ore_reserve_units(density: Density, dist: u16) -> f64 {
     density.reserve_units() * ring_mult(dist)
 }
 
@@ -1063,13 +1060,13 @@ pub fn ore_regen_hours(dist: u16) -> f32 {
 
 /// Raw units a stripped tile with template `density` regains per tick: its
 /// whole reserve over `ore_regen_hours`, faster at higher pace.
-pub fn ore_regen_per_tick(density: Density, dist: u16, pace: &Pace) -> f32 {
-    pace.rate(ore_reserve_units(density, dist) / (ore_regen_hours(dist) * 3600.0))
+pub fn ore_regen_per_tick(density: Density, dist: u16, pace: &Pace) -> f64 {
+    pace.rate(ore_reserve_units(density, dist) / (f64::from(ore_regen_hours(dist)) * 3600.0))
 }
 
 /// Raw units already taken from a tile generated at `template` that now
 /// stands at `current` with `harvested` units gone from the current level.
-pub fn ore_extracted(template: Density, current: Density, harvested: f32, dist: u16) -> f32 {
+pub fn ore_extracted(template: Density, current: Density, harvested: f64, dist: u16) -> f64 {
     let mut level = template;
     let mut gone = harvested;
     while level != current && level != Density::None {
@@ -1082,7 +1079,7 @@ pub fn ore_extracted(template: Density, current: Density, harvested: f32, dist: 
 /// A tile stands at `current` with `harvested` units gone from that level;
 /// give back `amount` units. Refilling a level upgrades the tile and carries
 /// the rest into the next one; a tile never rises above `template`.
-pub fn ore_regen_step(template: Density, current: Density, harvested: f32, amount: f32, dist: u16) -> (Density, f32) {
+pub fn ore_regen_step(template: Density, current: Density, harvested: f64, amount: f64, dist: u16) -> (Density, f64) {
     let mut level = current;
     let mut gone = harvested - amount;
     while gone < 0.0 && level != template {
@@ -1093,7 +1090,7 @@ pub fn ore_regen_step(template: Density, current: Density, harvested: f32, amoun
 }
 
 /// Slack for float drift when harvesting empties a level exactly.
-pub const ORE_EPSILON: f32 = 1e-3;
+pub const ORE_EPSILON: f64 = 1e-3;
 
 /// Chances of (Sparse, Moderate, Rich, Pristine) for an ore tile at `dist`.
 pub fn ore_density_odds(dist: u16) -> [f32; 4] {
@@ -1103,14 +1100,14 @@ pub fn ore_density_odds(dist: u16) -> [f32; 4] {
 
 // ── Loot ─────────────────────────────────────────────────────────
 
-pub const WRECK_VALUE_K: f32 = 1.2;
-pub const WRECK_VALUE_EXPONENT: f32 = 0.8;
+pub const WRECK_VALUE_K: f64 = 1.2;
+pub const WRECK_VALUE_EXPONENT: f64 = 0.8;
 /// Metal, crystal and deuterium shares of any loot value.
-pub const LOOT_SPLIT: [f32; 3] = [0.55, 0.30, 0.15];
+pub const LOOT_SPLIT: [f64; 3] = [0.55, 0.30, 0.15];
 /// A derelict in ring `DERELICT_VALUE_RING` is worth `DERELICT_VALUE_BASE`;
 /// each ring further out multiplies that by `DERELICT_VALUE_GROWTH`.
-pub const DERELICT_VALUE_BASE: f32 = 240.0;
-pub const DERELICT_VALUE_GROWTH: f32 = 1.14;
+pub const DERELICT_VALUE_BASE: f64 = 240.0;
+pub const DERELICT_VALUE_GROWTH: f64 = 1.14;
 pub const DERELICT_VALUE_RING: u16 = 4;
 /// A site pays between these shares of its value, uniformly.
 pub const DERELICT_ROLL_MIN: f32 = 0.6;
@@ -1141,17 +1138,17 @@ pub fn farm_heat_after(heat: f32, elapsed: u64, half_life_ticks: u64) -> f32 {
 
 /// Units of loot (before the pace's finds factor) a destroyed group leaves:
 /// it grows slower than the danger, so far hunting stays a gamble.
-pub fn wreck_value(group_power: f32) -> f32 {
-    WRECK_VALUE_K * maths::powf(group_power.max(0.0), WRECK_VALUE_EXPONENT)
+pub fn wreck_value(group_power: f32) -> f64 {
+    WRECK_VALUE_K * maths::powf(f64::from(group_power.max(0.0)), WRECK_VALUE_EXPONENT)
 }
 
 /// `value` units as metal, crystal and deuterium.
-pub fn split_loot(value: f32) -> Resources {
+pub fn split_loot(value: f64) -> Resources {
     Resources { metal: value * LOOT_SPLIT[0], crystal: value * LOOT_SPLIT[1], deuterium: value * LOOT_SPLIT[2] }
 }
 
 /// Mean loot value (units, before the finds factor) of a derelict `dist` rings out.
-pub fn derelict_value(dist: u16) -> f32 {
+pub fn derelict_value(dist: u16) -> f64 {
     DERELICT_VALUE_BASE * maths::powi(DERELICT_VALUE_GROWTH, i32::from(dist) - i32::from(DERELICT_VALUE_RING))
 }
 

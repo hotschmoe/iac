@@ -73,11 +73,11 @@ struct Profile {
 const MODULAR_FABRICATION_APPETITE: f32 = 2.0;
 /// Techs outside the personality's plan, bought as the economy outgrows them.
 const SPARE_TECH_APPETITE: f32 = 0.25;
-const VAULT_PRESSURE: f32 = 0.75;
+const VAULT_PRESSURE: f64 = 0.75;
 /// Share of the income expected while away that the building queue should hold.
 const ABSORB: f32 = 0.6;
 /// How strongly a lopsided stockpile tilts the choice of mine.
-const SCARCITY_PULL: f32 = 4.0;
+const SCARCITY_PULL: f64 = 4.0;
 const MAX_SHIP_BATCH: f32 = 12.0;
 const MAX_DEFENCE_BATCH: f32 = 100.0;
 const MAX_SURPLUS_BATCH: u16 = 500;
@@ -262,12 +262,6 @@ const SUPPORT: [BuildingType; 6] = [
     BuildingType::SensorArray,
     BuildingType::DefenseGrid,
 ];
-
-fn weight_of(kind: ResourceKind) -> f32 {
-    let mut one = Resources::default();
-    *one.get_mut(kind) = 1000.0;
-    scaling::resource_weight(&one)
-}
 
 fn fits(cost: Resources, cap: Resources) -> bool {
     ResourceKind::ALL.into_iter().all(|k| cost.get(k) <= cap.get(k))
@@ -574,7 +568,7 @@ impl<'a> Planner<'a> {
             .into_iter()
             .filter(|&k| unit.get(k) > 0.0)
             .map(|k| (purse.get(k) / unit.get(k)).floor().max(0.0))
-            .fold(f32::from(count), f32::min) as u16;
+            .fold(f64::from(count), f64::min) as u16;
         if self.yard_room == 0 || covered == 0 {
             return false;
         }
@@ -733,14 +727,14 @@ impl<'a> Planner<'a> {
     }
 
     /// Ticks until the planned mines have produced what `cost` lacks, per resource.
-    fn wait(&self, cost: Resources, kind: ResourceKind) -> f32 {
+    fn wait(&self, cost: Resources, kind: ResourceKind) -> f64 {
         let short = cost.get(kind) - self.spare.get(kind);
         let mine = MINES.iter().find(|m| m.1 == kind).map_or(BuildingType::MetalMine, |m| m.0);
         let rate = scaling::production_per_tick(mine, self.plan.buildings.get(mine), &self.pace);
         if cost.get(kind) <= 0.0 || short <= 0.0 {
             0.0
         } else if rate <= 0.0 {
-            f32::INFINITY
+            f64::INFINITY
         } else {
             short / rate
         }
@@ -753,7 +747,7 @@ impl<'a> Planner<'a> {
         let (mine, kind) = MINES.into_iter().max_by(|a, b| self.wait(cost, a.1).total_cmp(&self.wait(cost, b.1)))?;
         let level = self.plan.buildings.get(mine) + 1;
         let mine_cost = scaling::building_cost(mine, level);
-        let mine_wait = ResourceKind::ALL.into_iter().map(|k| self.wait(mine_cost, k)).fold(0.0, f32::max);
+        let mine_wait = ResourceKind::ALL.into_iter().map(|k| self.wait(mine_cost, k)).fold(0.0, f64::max);
         let worth_it = level <= scaling::MAX_BUILDING_LEVEL && fits(mine_cost, self.cap()) && 2.0 * mine_wait < self.wait(cost, kind);
         worth_it.then_some(mine)
     }
@@ -788,9 +782,9 @@ impl<'a> Planner<'a> {
     fn mines(&self, place_worth: f32) -> Vec<BuildingType> {
         let cap = self.cap();
         let fill = |k: ResourceKind| self.spare.get(k) / cap.get(k);
-        let mean_fill = ResourceKind::ALL.into_iter().map(fill).sum::<f32>() / 3.0;
+        let mean_fill = ResourceKind::ALL.into_iter().map(fill).sum::<f64>() / 3.0;
 
-        let mut ranked: Vec<(f32, BuildingType)> = MINES
+        let mut ranked: Vec<(f64, BuildingType)> = MINES
             .into_iter()
             .map(|(mine, kind)| {
                 let level = self.plan.buildings.get(mine);
@@ -798,7 +792,7 @@ impl<'a> Planner<'a> {
                     - scaling::production_per_tick(mine, level, &self.pace);
                 let scarcity = (1.0 + SCARCITY_PULL * (mean_fill - fill(kind))).clamp(0.25, 3.0);
                 let cost = scaling::resource_weight(&scaling::building_cost(mine, level + 1));
-                (gain * weight_of(kind) * scarcity / cost.max(place_worth), mine)
+                (gain * kind.weight() * scarcity / f64::from(cost.max(place_worth)), mine)
             })
             .collect();
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0));

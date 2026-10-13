@@ -4681,6 +4681,9 @@ enum ShipClass {
   String toJson() => wire;
 }
 
+/// Amounts of the three resources. An amount is 64-bit wherever it is held,
+/// carried, priced or sent, and so is a fleet's fuel: a 32-bit float steps by
+/// a quarter at two and a half million, and a mine adds less than that a tick.
 class Resources {
   final double metal;
   final double crystal;
@@ -4897,7 +4900,7 @@ const double siteGradeMax = 12;
 const laneSearchHops = 64;
 
 /// `StorageNearCap` fires at this fill ratio.
-const double storageNearCapRatio = 0.8500000238418579;
+const double storageNearCapRatio = 0.85;
 
 /// Active scan: hops revealed from the scanning fleet's position.
 /// Fleets carrying a Scout get the extended range; signals are faint
@@ -4934,10 +4937,10 @@ const policyFuelUnboundedPct = 100;
 
 /// Deuterium paid per fuel unit topped up at the homeworld. Not scaled by
 /// pace: fuel is the price of range, not an economy timer.
-const double fuelDeutPerUnit = 0.07999999821186066;
+const double fuelDeutPerUnit = 0.08;
 
 /// The share of the dock's rate that `refine` loses: deuterium turned into
 /// fuel from a fleet's hold yields `scaling::refined_fuel_per_deuterium`.
 /// Provisional, and the owner's ("like 15%"): it trades the reach of a fleet
 /// with cargo ships against the worth of the docks as places to fill up.
-const double refineLoss = 0.15000000596046448;
+const double refineLoss = 0.15;
