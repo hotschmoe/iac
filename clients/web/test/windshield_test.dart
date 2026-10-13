@@ -138,8 +138,8 @@ GameState calm() => world([
       home: sector(home, lanes: [const proto.Hex(1, 0)]),
     });
 
-GameState hostileHere({ui.FleetStatus status = ui.FleetStatus.idle, int scouts = 1}) => world([
-      fleet(1, [('Light Fighter', scouts)], status: status),
+GameState hostileHere({ui.FleetStatus status = ui.FleetStatus.idle, int fighters = 1}) => world([
+      fleet(1, [('Light Fighter', fighters)], status: status),
     ], {
       here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: const [
         proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.cruiser, count: 1), proto.NpcShipInfo(shipClass: proto.ShipClass.heavyFighter, count: 2)], behavior: proto.NpcBehavior.aggressive)
@@ -180,7 +180,7 @@ proto.ExchangeQuote quoteOf({
   );
 }
 
-/// One Hauler of fleet 1 at [at] in a world whose hub, with its exchange, is the origin.
+/// One Small Cargo of fleet 1 at [at] in a world whose hub, with its exchange, is the origin.
 GameState atHub({
   proto.Hex at = proto.Hex.origin,
   proto.Resources hold = const proto.Resources(metal: 632, crystal: 0.4),
@@ -487,8 +487,8 @@ void main() {
   });
 
   testWidgets('combat events draw and the scene survives a kill', (tester) async {
-    final c = await pumpFake(tester, hostileHere(scouts: 3));
-    c.push(hostileHere(status: ui.FleetStatus.combat, scouts: 3));
+    final c = await pumpFake(tester, hostileHere(fighters: 3));
+    c.push(hostileHere(status: ui.FleetStatus.combat, fighters: 3));
     c.ev.add(const proto.GameEvent(tick: 501, kind: proto.CombatStartedEvent(playerFleetId: 1, owner: 'Pilot', enemyFleetId: 77, sector: here, mine: true)));
     for (var i = 0; i < 6; i++) {
       c.ev.add(proto.GameEvent(

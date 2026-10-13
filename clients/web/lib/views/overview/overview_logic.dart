@@ -62,7 +62,7 @@ List<proto.BuildingOption> buildingChoices(proto.HomeworldCatalog? c, {int limit
   return l.take(limit).toList();
 }
 
-/// "Scout needs Shipyard level 1": of [options], each a name and what it
+/// "Light Fighter needs Shipyard level 1": of [options], each a name and what it
 /// requires, the locked one with the fewest levels still to build or
 /// research. Null when none of them is locked.
 String? nearestLocked(Iterable<(String, List<proto.Requirement>)> options) {
@@ -127,13 +127,24 @@ NextUp nextUp(GameState s, EconomyView eco) {
   }
   final energy = s.hw?.energy;
   if (energy != null && energy.short) {
-    return NextUp(
-        'ENERGY',
-        'The mines run at ${energy.sharePct}%',
-        'The homeworld makes ${energy.made} energy and its mines need ${energy.needed}, so every mine makes that share of its output. '
-            '${energy.fusionStarved ? 'The Fusion Reactor has no deuterium to burn. ' : ''}Make more energy.',
-        'Open homeworld',
-        NextAction.openHomeworld);
+    final why = 'The homeworld makes ${energy.made} energy and its mines need ${energy.needed}, so every mine makes that share of its output.'
+        '${energy.fusionStarved ? ' The Fusion Reactor has no deuterium to burn.' : ''}';
+    final plant = s.catalog?.buildings.where((o) => o.buildingType == proto.BuildingType.solarPlant).firstOrNull;
+    final next = plant?.next;
+    final hw = s.hw!;
+    final ordered = plant != null &&
+        (hw.buildQueue.any((q) => q.buildingType == plant.buildingType) || hw.buildPending.any((q) => q.buildingType == plant.buildingType));
+    if (ordered) {
+      return NextUp('ENERGY', 'The mines run at ${energy.sharePct}%', '$why A level of the ${plant.buildingType.label} is on order.', 'Open homeworld',
+          NextAction.openHomeworld);
+    }
+    if (plant != null && next != null && plant.requires.every((r) => r.met)) {
+      final short = queuesShort(s.stock, next.cost);
+      return NextUp('ENERGY', 'The mines run at ${energy.sharePct}%', '$why Raise the ${plant.buildingType.label}.${short == null ? '' : ' $short'}', 'Queue it',
+          NextAction.queueBuild,
+          cost: next.cost, building: plant.buildingType);
+    }
+    return NextUp('ENERGY', 'The mines run at ${energy.sharePct}%', '$why Make more energy.', 'Open homeworld', NextAction.openHomeworld);
   }
   final st = eco.storage;
   if (st != null) {

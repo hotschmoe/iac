@@ -252,8 +252,6 @@ void main() {
       expect(find.descendant(of: row, matching: find.textContaining('RAISE ${kind.storage.toUpperCase()} TO L')), findsOneWidget,
           reason: '${kind.name} is held by its own building, which is raised from its row');
     }
-    expect(find.descendant(of: find.byKey(const Key('energy-readout')), matching: find.text('MINES AT 100%')), findsOneWidget);
-    expect(find.byKey(const Key('energy-warning')), findsNothing);
     await snap(tester, 'homeworld/storage-1440');
     await tester.tap(find.byKey(const ValueKey('hw-upgrade-crystal')));
     await tester.pump();
@@ -263,6 +261,8 @@ void main() {
 
   testWidgets('short of energy the readout warns, with what is made and needed, and says when the reactor has nothing to burn', (tester) async {
     final c = await open(tester) as DemoController;
+    expect(find.descendant(of: find.byKey(const Key('energy-readout')), matching: find.text('MINES AT 100%')), findsOneWidget);
+    expect(find.byKey(const Key('energy-warning')), findsNothing, reason: 'the script opens on mines with all the energy they need');
     c.raise(proto.BuildingType.solarPlant, 8);
     await tester.pump(const Duration(milliseconds: 100));
     final energy = c.state.hw!.energy;

@@ -51,13 +51,6 @@ String _tenths(double v) {
 /// "20 DE MAKES 212.5 FUEL": what the server says a refine order would do.
 String refineLine(proto.Refining r) => '${_tenths(r.deuterium)} DE MAKES ${_tenths(r.fuel)} FUEL';
 
-ui.ShipState? groupOf(ui.FleetState f, proto.ShipClass c) {
-  for (final g in f.ships) {
-    if (g.shipClass.toLowerCase() == c.label.toLowerCase()) return g;
-  }
-  return null;
-}
-
 // ── Sector head ────────────────────────────────────────────────
 
 class SectorHead extends StatelessWidget {

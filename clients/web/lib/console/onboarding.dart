@@ -78,7 +78,7 @@ class Onboarding extends ChangeNotifier {
   final Set<Lesson> _done = {};
 
   /// The fleet that harvested, which [Lesson.unload] waits to see at home.
-  int? _hauler;
+  int? _miner;
 
   /// Whether the windshield shows its small gate cards, which name a lane's
   /// key and terrain and nothing more. The notes that read a gate card
@@ -118,7 +118,7 @@ class Onboarding extends ChangeNotifier {
     _active = on;
     if (on) {
       _done.clear();
-      _hauler = null;
+      _miner = null;
       _observe(game.state, quiet: true);
     }
     _save();
@@ -164,8 +164,8 @@ class Onboarding extends ChangeNotifier {
             ? 'No ore in this sector. Jump on: the Ore layer of the Map shows which sectors have it.'
             : 'No ore in this sector. Jump on: ore shows as Fe, Cr and De bars on the gate cards.';
       case Lesson.unload:
-        final hauler = s.fleets.where((f) => f.id == _hauler).firstOrNull ?? fleet;
-        return '${hauler.cargo.fraction >= .8 ? 'Hold nearly full. ' : ''}'
+        final miner = s.fleets.where((f) => f.id == _miner).firstOrNull ?? fleet;
+        return '${miner.cargo.fraction >= .8 ? 'Hold nearly full. ' : ''}'
             'RECALL flies the fleet home, and docking empties the hold into storage.';
       case Lesson.orders:
         return 'Tired of flying? A fleet with standing orders flies itself. '
@@ -221,7 +221,7 @@ class Onboarding extends ChangeNotifier {
   void _load(String account) {
     _account = account;
     _done.clear();
-    _hauler = null;
+    _miner = null;
     final record = prefs.guide(account)?.split('|');
     if (record == null) {
       _active = game.newAccount;
@@ -230,7 +230,7 @@ class Onboarding extends ChangeNotifier {
       _active = record.first == 'on';
       final names = record.elementAtOrNull(1)?.split(',') ?? const <String>[];
       _done.addAll(Lesson.values.where((l) => names.contains(l.name)));
-      _hauler = int.tryParse(record.elementAtOrNull(2) ?? '');
+      _miner = int.tryParse(record.elementAtOrNull(2) ?? '');
     }
     notifyListeners();
   }
@@ -238,7 +238,7 @@ class Onboarding extends ChangeNotifier {
   void _save() {
     final account = _account;
     if (account == null) return;
-    prefs.setGuide(account, '${_active ? 'on' : 'off'}|${_done.map((l) => l.name).join(',')}|${_hauler ?? ''}');
+    prefs.setGuide(account, '${_active ? 'on' : 'off'}|${_done.map((l) => l.name).join(',')}|${_miner ?? ''}');
   }
 
   void _learn(Lesson l, {bool quiet = false}) {
@@ -260,7 +260,7 @@ class Onboarding extends ChangeNotifier {
     for (final f in s.fleets) {
       if (f.sector != home) learn(Lesson.jump);
       if (f.status == FleetStatus.harvesting) {
-        _hauler ??= f.id;
+        _miner ??= f.id;
         learn(Lesson.harvest);
       }
       if (f.policy != null && f.policy != proto.PolicyPreset.manual.label) learn(Lesson.orders);
@@ -268,8 +268,8 @@ class Onboarding extends ChangeNotifier {
       if (f.ships.any((g) => g.shipClass == proto.ShipClass.smallCargo.label)) learn(Lesson.cargo);
     }
     if (done(Lesson.harvest) && !done(Lesson.unload)) {
-      final hauler = s.fleets.where((f) => f.id == _hauler).firstOrNull;
-      if (hauler == null || hauler.sector == home) learn(Lesson.unload);
+      final miner = s.fleets.where((f) => f.id == _miner).firstOrNull;
+      if (miner == null || miner.sector == home) learn(Lesson.unload);
     }
   }
 
@@ -279,7 +279,7 @@ class Onboarding extends ChangeNotifier {
       case proto.ScanCompletedEvent():
         _learn(Lesson.scan);
       case proto.ResourceHarvestedEvent(:final fleetId):
-        _hauler ??= fleetId;
+        _miner ??= fleetId;
         _learn(Lesson.harvest);
       case proto.BuildingCompletedEvent(:final buildingType):
         _learn(Lesson.build);

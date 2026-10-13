@@ -379,22 +379,29 @@ class StorageTab extends StatelessWidget {
     final st = eco.storage;
     final hw = state.hw;
     if (st == null || hw == null) return _notReported('Storage');
+    final stores = ConsolePanel(
+      title: 'Storage',
+      subText: 'one building a resource',
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 2),
+      child: Column(children: [for (final s in stockpiles) _row(st, hw, s.kind, s.name)]),
+    );
+    final hold = HoldPanel(state: state, ctrl: ctrl);
     return Padding(
       padding: const EdgeInsets.all(12),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        EnergyReadout(hw: hw),
-        const SizedBox(height: 10),
-        ConsolePanel(
-          title: 'Storage',
-          subText: 'one building a resource',
-          padding: const EdgeInsets.fromLTRB(14, 14, 14, 2),
-          child: Column(children: [for (final s in stockpiles) _row(st, hw, s.kind, s.name)]),
-        ),
-        const SizedBox(height: 10),
-        HoldPanel(state: state, ctrl: ctrl),
-      ]),
+      child: LayoutBuilder(
+        builder: (context, box) => box.maxWidth >= _sideBySide
+            ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(flex: 3, child: stores),
+                const SizedBox(width: 10),
+                Expanded(flex: 2, child: hold),
+              ])
+            : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [stores, const SizedBox(height: 10), hold]),
+      ),
     );
   }
+
+  /// From this width the stockpiles and the hold panel stand side by side.
+  static const _sideBySide = 980.0;
 
   /// The building that holds [k]: its level, its next and the order for it.
   Widget _upgrade(proto.HomeworldState hw, proto.ResourceKind k, proto.BuildingOption? o) {

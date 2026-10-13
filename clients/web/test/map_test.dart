@@ -59,7 +59,7 @@ ui.FleetState _fleet(proto.Hex at, {int fuel = 100, double? jumpFuelExact}) => u
       sector: at,
       status: ui.FleetStatus.idle,
       shipCount: 3,
-      ships: const [ui.ShipState(shipClass: 'Corvette', count: 3, hull: 150, hullMax: 150, ids: [1, 2, 3])],
+      ships: const [ui.ShipState(shipClass: 'Light Fighter', count: 3, hull: 1200, hullMax: 1200, ids: [1, 2, 3])],
       fuel: fuel,
       fuelMax: 120,
       jumpFuel: 5,

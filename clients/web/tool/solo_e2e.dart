@@ -26,10 +26,13 @@
 // the founding panel of an outpost opened where the starter fleet stands,
 // with the engine's survey and its reason why none can be founded there
 // (founding itself takes a convoy in rings 9 to 20 and is not played),
-// a ship batch the stockpile does not cover refused with
-// nothing charged and its order button off, the engine's refusal of a typed
-// order shown on screen, a building queued ahead of its resources shown
-// with its shortfall at desktop and phone width, every screen pictured at
+// the first steps of an empire on OGame's catalogue (a building queued ahead
+// of its resources shown with its shortfall, mines short of energy and the
+// warning of it, a Solar Satellite built in the yard and counted at home, a
+// batch the stockpile does not cover with its order button off, the
+// engine's refusal of a typed order shown on screen with nothing charged, a
+// defence ordered by typed command), the catalogue in the homeworld's tabs
+// and their inspector, every screen pictured at
 // both widths, the bots on the board and acting, a reload that restores the
 // world, a two-hour absence caught up and reported with the page staying
 // responsive, a stall of the running page, a second tab kept out,
@@ -578,10 +581,14 @@ Future<void> toastsStayWhole(Browser browser) async {
 Future<Map<String, dynamic>> firstFleet(Browser browser) async =>
     ((await browser.last('tick_update'))!['fleets'] as List).first as Map<String, dynamic>;
 
-/// A new empire's two scouts stand at the home dock with an empty hold and
-/// the stockpile holds 100 deuterium, which no mine adds to yet. The Storage
-/// tab's hold panel loads it, the dock leaves it aboard, the panel says so
-/// at desktop width and at a phone's, and a typed `unload` puts it back.
+/// "1,234,567": a whole number as the page prints an amount.
+String grouped(int n) => '$n'.replaceAllMapped(RegExp(r'\B(?=(\d{3})+$)'), (_) => ',');
+
+/// A new empire's two Light Fighters stand at the home dock with an empty
+/// hold and the stockpile holds 100 deuterium, which nothing adds to yet.
+/// The Storage tab's hold panel loads it, the dock leaves it aboard, the
+/// panel says so at desktop width and at a phone's, and a typed `unload`
+/// puts it back.
 Future<void> loadHold(Browser browser) async {
   print('loading a hold');
   await browser.click('homeworld');
@@ -589,8 +596,11 @@ Future<void> loadHold(Browser browser) async {
   await browser.press('5', 'Digit5', 53, text: '5');
   await browser.untilText('load a hold');
   final empty = await firstFleet(browser);
-  final hold = (empty['cargo_capacity'] as num).floor();
-  check(empty['laden'] == false && (empty['cargo']['deuterium'] as num) == 0 && hold > 100, 'the fleet is docked with an empty hold of $hold');
+  final hold = grouped((empty['cargo_capacity'] as num).floor());
+  check(empty['laden'] == false && (empty['cargo']['deuterium'] as num) == 0 && (empty['cargo_capacity'] as num) > 100,
+      'the fleet is docked with an empty hold of $hold');
+  final ships = [for (final s in empty['ships'] as List) (s as Map<String, dynamic>)['class']];
+  check('$ships' == '[LightFighter, LightFighter]', 'a new empire\'s fleet is two Light Fighters');
   check((await browser.text()).contains('0 / $hold'), 'the panel shows what is aboard and the size of the hold');
   await browser.shot('03a-hold-empty-1440');
 
@@ -636,7 +646,7 @@ Future<void> loadHold(Browser browser) async {
 /// `policy patrol range=1 engage=10.0` would, the engine confirms the orders
 /// with the settings they fly with, and the fleet reports what it does under
 /// them or why it holds, which is the world's to decide (it has held for its
-/// shields and it has attacked a scout in the home sector). The panel shows
+/// shields and it has attacked a group in the home sector). The panel shows
 /// that sentence as the engine sent it, and for a hold the fleet status does
 /// too, at desktop width, in the sheet at 1100 px and on a phone. Manual
 /// clears the orders again.
@@ -720,7 +730,7 @@ Future<void> standingOrders(Browser browser) async {
 const gates = {'w': (0, -1), 'e': (1, -1), 'd': (1, 0), 's': (0, 1), 'a': (-1, 1), 'q': (-1, 0)};
 
 /// A jump called off from the windshield while the windshield still plays
-/// it. A scout's jump charges for one tick, and the engine takes a stop for
+/// it. A jump charges for a tick or two, and the engine takes a stop for
 /// that long and no longer: so the gate key and the Stop tile are pressed
 /// one after the other just after a tick, with most of a second before the
 /// next. The engine gets the move and then the stop, abandons the jump and
@@ -764,9 +774,6 @@ Future<void> callOffAJump(Browser browser) async {
   await Future<void>.delayed(const Duration(seconds: 2));
 }
 
-const scoutCost = {'metal': 200, 'crystal': 50, 'deuterium': 30};
-
-/// The stockpile in the newest tick update that carries one.
 /// The founding panel, against the engine itself. An outpost is founded by a
 /// loaded convoy standing in rings 9 to 20, which is further than this check
 /// has the time to fly: it founds nothing. O opens the panel for the starter
@@ -792,10 +799,14 @@ Future<void> founding(Browser browser) async {
       survey['fleet_id'] == id &&
           '${(await firstFleet(browser))['location']}' == '$at' &&
           survey['ring'] == ring &&
-          cost['metal'] == 1000 &&
-          cost['crystal'] == 500 &&
-          cost['deuterium'] == 200,
-      'the engine in the worker surveys the sector the fleet stands in: ring $ring, level 1 for 1000 metal, 500 crystal and 200 deuterium');
+          ['metal', 'crystal', 'deuterium'].every((k) => (cost[k] as num) > 0),
+      'the engine in the worker surveys the sector the fleet stands in: ring $ring, level 1 for ${cost['metal']} metal, '
+      '${cost['crystal']} crystal and ${cost['deuterium']} deuterium');
+  await browser.until('the founding panel to print that price', () async {
+    final text = await browser.text();
+    return ['metal', 'crystal', 'deuterium'].every((k) => text.contains(grouped((cost[k] as num).round())));
+  });
+  check(true, 'and the founding panel prints that price');
   final refusal = survey['refusal'] as String?;
   check(refusal != null && (ring >= 9 || refusal == 'fleet $id is at ring $ring; an outpost stands in rings 9 to 20'),
       'and says why no outpost can be founded there now: $refusal');
@@ -830,113 +841,304 @@ Future<Map<String, dynamic>> stockpile(Browser browser) async {
   return ((player as Map<String, dynamic>)['resources'] as Map<String, dynamic>);
 }
 
-/// A ship batch is paid in full when it is ordered. A new empire has 100
-/// deuterium and makes none, a Shipyard takes 50 and a scout 30: so with a
-/// new Shipyard the order button for a batch of five is off and says what is
-/// missing, one scout is ordered and paid for at once, a second is refused
-/// by the engine and costs nothing, and a building the stockpile cannot pay
-/// for queues and shows its shortfall in its box, at desktop width and at a
-/// phone's.
-Future<void> shipBatches(Browser browser) async {
-  print('ship batches');
-  await browser.command('build shipyard');
-  await browser.until('the Shipyard to finish',
-      () => browser.tap('t.events.some((e) => e.kind === "BuildingCompleted" && e.building_type === "Shipyard")'),
-      timeout: const Duration(minutes: 3));
-  final young = await stockpile(browser);
-  check((young['deuterium'] as num) == 50 && (young['metal'] as num) >= 200 && (young['crystal'] as num) >= 50,
-      'the stockpile covers one scout and not two: $young');
+/// The homeworld in the newest tick update.
+Future<Map<String, dynamic>> homeworld(Browser browser) async =>
+    (await browser.last('tick_update'))!['homeworld_update'] as Map<String, dynamic>;
 
+/// Four minutes of the world at once: the worker's clock is moved on and the
+/// engine plays the ticks it owes. So short a gap is a stalled page to the
+/// engine, not an absence, and nothing is said of it.
+Future<void> passFourMinutes(Browser browser) async {
+  final states = await browser.tap('t.counts.full_state') as int;
+  await browser.jumpClock(240 * 1000);
+  await browser.until('the world brought up to date', () async => (await browser.tap('t.counts.full_state') as int) > states,
+      timeout: const Duration(minutes: 3));
+  final tick = (await browser.last('full_state'))!['tick'] as int;
+  await browser.until('a tick after it', () async => ((await browser.last('tick_update'))!['tick'] as int) >= tick);
+}
+
+/// Let the world run on, four minutes at a time, until [done] holds.
+Future<void> passUntil(Browser browser, String what, Future<bool> Function() done) async {
+  for (var passes = 0; passes < 15; passes++) {
+    if (await done()) return;
+    await passFourMinutes(browser);
+  }
+  if (!await done()) fail('$what did not come about in an hour of the world');
+}
+
+Map<String, dynamic> option(Map<String, dynamic> homeworld, String list, String key, String name) =>
+    (((homeworld['catalog'] as Map<String, dynamic>)[list] as List).firstWhere((o) => o[key] == name) as Map<String, dynamic>);
+
+/// The first steps of an empire on this catalogue, against the engine
+/// itself. A new empire has Metal Mine 1, Crystal Mine 1 and a Solar Plant
+/// that just powers them, 100 deuterium and nothing that makes any. So:
+///
+/// - a Robotics Factory, which costs deuterium the stockpile lacks, queues
+///   ahead of its resources and shows its shortfall in its box, at desktop
+///   width and at a phone's;
+/// - the Metal Mine raised earlier needs more energy than is made: the
+///   state says the share the mines run at, and the homeworld and the top
+///   bar print it as a warning, until Solar Plant levels cover it;
+/// - with a Deuterium Synthesizer, the Robotics Factory at 2 and a Shipyard
+///   the yard builds what needs nothing more: a Solar Satellite. A batch of
+///   ten the stockpile does not cover has its order button off and says
+///   what is missing; one is ordered and paid for at once, is counted at
+///   home when built and adds its energy; a batch of a hundred typed is
+///   refused by the engine and costs nothing;
+/// - a Rocket Launcher is ordered with the typed `defence` command and
+///   stands in the home defence.
+///
+/// The hour or so of the world this takes is passed four minutes at a time.
+Future<void> firstSteps(Browser browser) async {
+  print('first steps: a waiting building, energy, the yard');
   await browser.click('homeworld');
   await browser.untilText('build slot a');
+  await browser.command('build robotics');
+  final box = await browser.until('the waiting Robotics Factory in the building box', () async {
+    for (final line in (await browser.text()).split('\n')) {
+      if (line.contains('ROBOTICS FACTORY LV.1') && line.contains('short by')) return line;
+    }
+    return null;
+  });
+  check(box.contains(' De'), 'the building box shows the waiting Robotics Factory and what it is short of: $box');
+  await browser.shot('03c-waiting-short-1440');
+  await browser.resize(390, 844);
+  await browser.shot('03d-waiting-short-390');
+  await browser.resize(1440, 900);
+
+  await browser.press('1', 'Digit1', 49, text: '1');
+  final short = (await homeworld(browser))['energy'] as Map<String, dynamic>;
+  final share = ((short['fraction'] as num) * 100).floor();
+  check((short['made'] as int) < (short['needed'] as int) && share < 100,
+      'the Metal Mine at level 2 needs more energy than is made: ${short['made']} of ${short['needed']}, so the mines run at $share%');
+  await browser.until('the warning on the homeworld', () async {
+    final text = (await browser.text()).toUpperCase();
+    return text.contains('MINES AT $share%') && text.contains('SHORT OF ENERGY') && text.contains('EVERY MINE MAKES $share% OF ITS OUTPUT');
+  });
+  check(true, 'the homeworld prints that share and warns that every mine makes only that much');
+  await browser.shotBoth('03g-energy-short');
+
+  for (final order in ['build solar', 'build deut', 'build solar']) {
+    await browser.command(order);
+  }
+  await passUntil(browser, 'a Solar Plant at 3, a Deuterium Synthesizer and a Robotics Factory', () async {
+    final hw = await homeworld(browser);
+    return level(hw, 'SolarPlant') >= 3 && level(hw, 'DeuteriumSynthesizer') >= 1 && level(hw, 'RoboticsFactory') >= 1;
+  });
+  final covered = (await homeworld(browser))['energy'] as Map<String, dynamic>;
+  check((covered['fraction'] as num) == 1 && (covered['made'] as int) >= (covered['needed'] as int),
+      'two levels of the Solar Plant cover the mines and the synthesizer: ${covered['made']} made, ${covered['needed']} needed');
+  await browser.until('the warning to leave', () async {
+    final text = (await browser.text()).toUpperCase();
+    return text.contains('MINES AT 100%') && !text.contains('SHORT OF ENERGY');
+  });
+  check(((await homeworld(browser))['production']['deuterium'] as num) > 0, 'and the synthesizer makes deuterium');
+
+  for (final order in ['build robotics', 'build shipyard']) {
+    await browser.command(order);
+  }
+  await passUntil(browser, 'a Shipyard, and a stockpile that covers a Solar Satellite and a Rocket Launcher', () async {
+    final hw = await homeworld(browser);
+    if (level(hw, 'Shipyard') < 1) return false;
+    final stock = await stockpile(browser);
+    final satellite = option(hw, 'ships', 'ship_class', 'SolarSatellite')['unit_cost'] as Map<String, dynamic>;
+    final launcher = option(hw, 'defences', 'kind', 'RocketLauncher')['unit_cost'] as Map<String, dynamic>;
+    return ['metal', 'crystal', 'deuterium'].every((k) => (stock[k] as num) >= (satellite[k] as num) + (launcher[k] as num));
+  });
+  final yard = await homeworld(browser);
+  final satellite = option(yard, 'ships', 'ship_class', 'SolarSatellite');
+  check(satellite['flies'] == false && (satellite['requires'] as List).every((r) => r['met'] == true),
+      'with a Shipyard the yard offers the Solar Satellite, which does not fly');
+  final unit = satellite['unit_cost'] as Map<String, dynamic>;
+  final perSatellite = (yard['energy'] as Map<String, dynamic>)['per_satellite'] as int;
+  final madeBefore = (yard['energy'] as Map<String, dynamic>)['made'] as int;
+
   await browser.press('3', 'Digit3', 51, text: '3');
-  await browser.untilText('scout');
+  await browser.untilText('solar satellite');
+  final cards = ((yard['catalog'] as Map<String, dynamic>)['ships'] as List).cast<Map<String, dynamic>>();
+  for (var i = 0; i < cards.indexWhere((o) => o['ship_class'] == 'SolarSatellite'); i++) {
+    await browser.press('ArrowRight', 'ArrowRight', 39);
+  }
+  await browser.untilText('stays at home');
+  check(RegExp('ENERGY EACH\\s+\\+$perSatellite\\b').hasMatch((await browser.text()).toUpperCase()),
+      'the inspector says it stays at home and what each gives: $perSatellite energy');
+  await browser.press('=', 'Equal', 187, text: '=');
   await browser.press('=', 'Equal', 187, text: '=');
   await browser.untilText('short by');
   final wanted = (await browser.text()).toLowerCase();
-  check(wanted.contains('build x5') && wanted.contains('short by') && wanted.contains(' de'), 'a batch of five shows as unavailable, with what is missing');
+  check(wanted.contains('build x10') && wanted.contains('short by'), 'a batch of ten shows as unavailable, with what is missing');
   await browser.shot('03b-batch-short-1440');
-  await browser.click('build x5');
   await browser.press('Enter', 'Enter', 13, text: '\r');
   await browser.untilText('cannot queue');
   await Future<void>.delayed(const Duration(milliseconds: 1200));
-  check((await browser.tap('t.sent.some((m) => m.action === "build_ship")')) == false,
-      'neither its order button nor Enter sends a batch the stockpile does not cover');
+  check((await browser.tap('t.sent.some((m) => m.action === "build_ship")')) == false, 'Enter does not send a batch the stockpile does not cover');
+  await browser.resize(390, 844);
+  await browser.shot('03e-batch-short-390');
+  await browser.resize(1440, 900);
 
   await browser.press('-', 'Minus', 189, text: '-');
-  await browser.until('the button for one scout', () async => (await browser.text()).toLowerCase().contains('build x1'));
+  await browser.press('-', 'Minus', 189, text: '-');
+  await browser.until('the button for one satellite', () async => RegExp(r'build x1(?!0)').hasMatch((await browser.text()).toLowerCase()));
   await browser.press('Enter', 'Enter', 13, text: '\r');
-  await browser.until('one scout ordered on the wire',
-      () => browser.tap('t.sent.some((m) => m.action === "build_ship" && m.ship_class === "Scout" && m.count === 1)'));
+  await browser.until('one satellite ordered on the wire',
+      () => browser.tap('t.sent.some((m) => m.action === "build_ship" && m.ship_class === "SolarSatellite" && m.count === 1)'));
   final started = jsonDecode(await browser.until('the batch to start',
       () => browser.tap('JSON.stringify(t.events.find((e) => e.kind === "Queue" && e.queue_type === "Ship" && e.action === "Started") ?? null)')
           .then((found) => found == 'null' ? null : found)) as String) as Map<String, dynamic>;
-  check(scoutCost.entries.every((e) => (started['paid'][e.key] as num) == e.value), 'one scout was paid for in full when it was ordered: ${started['paid']}');
+  check(unit.entries.every((e) => (started['paid'][e.key] as num) == (e.value as num)), 'one satellite was paid for in full when it was ordered: ${started['paid']}');
 
-  await browser.until('the scout to be delivered', () => browser.tap('t.events.some((e) => e.kind === "ShipBuilt" && e.ship_class === "Scout")'));
+  await browser.until('the satellite to be delivered',
+      () => browser.tap('t.events.some((e) => e.kind === "ShipBuilt" && e.ship_class === "SolarSatellite")'), timeout: const Duration(minutes: 2));
+  await browser.until('it counted at home', () async => (await homeworld(browser))['satellites'] == 1);
+  final withOne = await homeworld(browser);
+  check(((withOne['energy'] as Map<String, dynamic>)['made'] as int) == madeBefore + perSatellite && (withOne['satellite_power'] as num) > 0,
+      'it is counted at the homeworld, adds $perSatellite energy and stands in the home defence');
+  check(((await browser.last('tick_update'))!['fleets'] as List).every((f) => (f['ships'] as List).every((s) => s['class'] != 'SolarSatellite')),
+      'and it joined no fleet');
+  await browser.until('the inspector to count it', () async => RegExp(r'AT HOME\s+1\b').hasMatch((await browser.text()).toUpperCase()));
+  await browser.shot('03h-satellite-built-1440');
+
   await Future<void>.delayed(const Duration(milliseconds: 2500));
   final before = await stockpile(browser);
-  check((before['deuterium'] as num) < 30, 'which left less deuterium than a scout costs: $before');
-  await browser.command('ship scout');
+  await browser.command('ship sat 100');
   final refusal = await browser.until('the refusal on the wire', () => browser.last('error'));
   final message = refusal['message'] as String;
   check(
       refusal['code'] == 'InsufficientResources' &&
-          message.startsWith('Scout x1 costs 200 metal, 50 crystal and 30 deuterium; the stockpile is short by ') &&
-          message.endsWith(' deuterium. Nothing was ordered: a batch is paid in full when it is ordered.'),
-      'the engine refuses a scout the stockpile does not cover and says what is missing: $message');
+          message.startsWith('Solar Satellite x100 costs ') &&
+          message.contains('; the stockpile is short by ') &&
+          message.endsWith('. Nothing was ordered: a batch is paid in full when it is ordered.'),
+      'the engine refuses a batch the stockpile does not cover and says what is missing: $message');
   await browser.until('the refusal on screen', () async => (await browser.toasts()).any((t) => t['text'] == 'Refused. $message'));
   check(true, 'and the page shows the engine\'s sentence where the player is looking');
   await Future<void>.delayed(const Duration(milliseconds: 600));
   await browser.shot('03f-typed-order-refused');
   await Future<void>.delayed(const Duration(milliseconds: 1900));
   final after = await stockpile(browser);
-  check(
-      (before['deuterium'] as num) - (after['deuterium'] as num) < 30 &&
-          (after['metal'] as num) >= (before['metal'] as num) &&
-          (after['crystal'] as num) >= (before['crystal'] as num),
-      'nothing was charged for it: $before then $after');
+  check(['metal', 'crystal', 'deuterium'].every((k) => (after[k] as num) >= (before[k] as num)), 'nothing was charged for it: $before then $after');
   check((await browser.tap('t.events.filter((e) => e.kind === "Queue" && e.queue_type === "Ship").length')) == 1, 'and nothing was ordered');
 
-  await browser.command('build shipyard');
-  await browser.press('1', 'Digit1', 49, text: '1');
-  final box = await browser.until('the waiting Shipyard in the building box', () async {
-    for (final line in (await browser.text()).split('\n')) {
-      if (line.contains('SHIPYARD LV.2') && line.contains('short by')) return line;
-    }
-    return null;
+  await browser.command('defence rl');
+  await browser.until('the typed defence order on the wire',
+      () => browser.tap('t.sent.some((m) => m.action === "build_defence" && m.kind === "RocketLauncher" && m.count === 1)'));
+  await browser.until('the Rocket Launcher to stand',
+      () => browser.tap('t.events.some((e) => e.kind === "DefenceBuilt" && e.defence === "RocketLauncher")'), timeout: const Duration(minutes: 2));
+  final defended = await homeworld(browser);
+  final launcher = (defended['defences'] as List).firstWhere((d) => d['kind'] == 'RocketLauncher') as Map<String, dynamic>;
+  check(launcher['count'] == 1 && (defended['structure_power'] as num) == (launcher['power'] as num),
+      'a typed defence order builds a Rocket Launcher, which stands in the home defence at ${launcher['power']}');
+  await browser.press('4', 'Digit4', 52, text: '4');
+  await browser.until('the defence tab with its three parts', () async {
+    final text = (await browser.text()).toUpperCase();
+    return text.contains('DOCKED SHIPS ${grouped((defended['docked_power'] as num).round())}') &&
+        text.contains('SOLAR SATELLITES ${grouped((defended['satellite_power'] as num).round())}') &&
+        text.contains('DEFENCES ${grouped((defended['structure_power'] as num).round())}');
   });
-  check(box.contains(' De'), 'the building box shows the waiting Shipyard and what it is short of: $box');
-  await browser.shot('03c-waiting-short-1440');
-  await browser.resize(390, 844);
-  await browser.shot('03d-waiting-short-390');
-  await browser.press('3', 'Digit3', 51, text: '3');
-  await browser.untilText('scout');
-  await browser.press('=', 'Equal', 187, text: '=');
-  await browser.untilText('short by');
-  await browser.shot('03e-batch-short-390');
-  await browser.resize(1440, 900);
-  await browser.press('-', 'Minus', 189, text: '-');
+  check(true, 'and the defence tab prints the three parts of it as the engine counts them');
+  final kinds = ((defended['catalog'] as Map<String, dynamic>)['defences'] as List).length;
+  check(kinds == 8 && RegExp(r'ONE OF A KIND').allMatches((await browser.text()).toUpperCase()).length == 2,
+      'it lists the eight defences, the two domes as one of a kind');
+
+  await browser.press('1', 'Digit1', 49, text: '1');
   await browser.click('overview');
   await browser.untilText('admiral');
   check((await browser.tap('t.errors.length === 1 && t.errors[0].code === "InsufficientResources"')) == true,
-      'the refused scout is the only error frame so far');
+      'the refused batch is the only error frame so far');
 }
 
-/// The research tab draws a node for each tech of the catalog the engine in
-/// the worker sent, Modular Fabrication among them, and the fleet says what
-/// a jump takes it.
+/// The research tab draws a node for each research of the catalog the engine
+/// in the worker sent, Computer Technology among them, and the fleet says
+/// what a jump takes it.
 Future<void> everyTechHasANode(Browser browser) async {
-  final state = (await browser.last('full_state'))!;
-  final techs = (((state['homeworld'] as Map<String, dynamic>)['catalog'] as Map<String, dynamic>)['research'] as List)
-      .cast<Map<String, dynamic>>();
+  final techs = (((await homeworld(browser))['catalog'] as Map<String, dynamic>)['research'] as List).cast<Map<String, dynamic>>();
   final page = (await browser.text()).toLowerCase();
   final nodes = RegExp(r' level \d+ of \d+, ').allMatches(page).length;
-  check(nodes == techs.length, 'the research tab has a node for each of the engine\'s ${techs.length} techs (it draws $nodes)');
-  final fab = techs.firstWhere((o) => o['tech'] == 'ModularFabrication');
-  check(page.contains('modular fabrication level ${fab['level']} of ${fab['max_level']}'), 'Modular Fabrication is one of them');
+  check(nodes == techs.length, 'the research tab has a node for each of the engine\'s ${techs.length} researches (it draws $nodes)');
+  final computer = techs.firstWhere((o) => o['tech'] == 'ComputerTechnology');
+  check(page.contains('computer technology level ${computer['level']} of ${computer['max_level']}'), 'Computer Technology is one of them');
   final ticks = (await firstFleet(browser))['jump_ticks'];
-  check(ticks == 2, 'the engine says a jump takes the two scouts 2 ticks (it says $ticks)');
+  check(ticks == 2, 'the engine says a jump takes the two Light Fighters 2 ticks (it says $ticks)');
+}
+
+/// "Light Fighter" for the wire's "LightFighter": the engine's labels are
+/// its wire names with the words apart.
+String words(Object? wire) => '$wire'.replaceAllMapped(RegExp(r'(?<=[a-z])(?=[A-Z])'), (_) => ' ');
+
+/// The catalogue as the homeworld's tabs and their inspector show it, with
+/// what can be checked off the page against the engine's state: a tile for
+/// each of the twelve buildings, the largest prices printed whole, a
+/// requirement that asks for energy worded as one, a class's rapid fire in
+/// both directions as the world's table has it, and a dome that is one of a
+/// kind. The card to inspect is reached with the arrow keys.
+Future<void> catalogue(Browser browser) async {
+  print('the catalogue');
+  final hw = await homeworld(browser);
+  final catalog = hw['catalog'] as Map<String, dynamic>;
+  final rapid = ((await browser.last('full_state'))!['world']['rapid_fire'] as List).cast<Map<String, dynamic>>();
+  List<Map<String, dynamic>> list(String name) => (catalog[name] as List).cast<Map<String, dynamic>>();
+  Future<void> select(String tab, int index) async {
+    await browser.type(tab);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    for (var i = 0; i < index; i++) {
+      await browser.press('ArrowRight', 'ArrowRight', 39);
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+  }
+
+  String price(Map<String, dynamic> cost, String kind) => grouped((cost[kind] as num).round());
+  Future<bool> prices(Map<String, dynamic> cost) async {
+    final text = await browser.text();
+    return ['metal', 'crystal', 'deuterium'].every((k) => text.contains('/ ${price(cost, k)}'));
+  }
+
+  await browser.type('1');
+  final tiles = (await browser.text()).toLowerCase();
+  final buildings = list('buildings');
+  check(buildings.length == 12 && buildings.every((o) => tiles.contains('${words(o['building_type']).toLowerCase()} level ${o['level']}')),
+      'the plan has a tile for each of the twelve buildings, at the level the engine gives it');
+  final nanite = buildings.indexWhere((o) => o['building_type'] == 'NaniteFactory');
+  await select('1', nanite);
+  final million = buildings[nanite]['next']['cost'] as Map<String, dynamic>;
+  await browser.until('the Nanite Factory\'s price in the inspector', () => prices(million));
+  check((million['metal'] as num) >= 1000000, 'a price in the millions is printed whole: ${price(million, 'metal')} metal for the Nanite Factory');
+  await browser.shot('25b-building-nanite-1440');
+
+  final research = list('research');
+  final graviton = research.indexWhere((o) => o['tech'] == 'GravitonTechnology');
+  await select('2', graviton);
+  final asks = (research[graviton]['requires'] as List).cast<Map<String, dynamic>>().firstWhere((r) => r['energy'] == true);
+  final worded = RegExp('${grouped(asks['need'] as int)} ENERGY MADE\\s+\\(YOU MAKE ${grouped(asks['have'] as int)}\\)');
+  await browser.until('the energy Graviton Technology asks for', () async => worded.hasMatch((await browser.text()).toUpperCase()));
+  check(true, 'Graviton Technology asks for ${asks['need']} energy made, and the inspector words it so');
+  await browser.shot('25c-research-graviton-1440');
+
+  final ships = list('ships');
+  final cruiser = ships.indexWhere((o) => o['ship_class'] == 'Cruiser');
+  await select('3', cruiser);
+  await browser.untilText('rapid fire at');
+  final shown = (await browser.text()).toUpperCase();
+  final at = [for (final r in rapid) if (r['class'] == 'Cruiser') '${words(r['against']).toUpperCase()} ${r['shots']}'];
+  final from = [for (final r in rapid) if (r['against'] == 'Cruiser') '${words(r['class']).toUpperCase()} ${r['shots']}'];
+  check(at.isNotEmpty && from.isNotEmpty && shown.contains(at.join(', ')) && shown.contains(from.join(', ')),
+      'the Cruiser\'s inspector lists its rapid fire as the world has it: at ${at.join(', ')}; from ${from.join(', ')}');
+  final figures = ships[cruiser];
+  check(RegExp('HULL\\s+${grouped((figures['hull'] as num).round())}\\b').hasMatch(shown) && RegExp('A JUMP TAKES\\s+${figures['jump_ticks']} TICK').hasMatch(shown),
+      'and its figures are the catalogue\'s, with this empire\'s research: hull ${figures['hull']}, a jump in ${figures['jump_ticks']} ticks');
+  await browser.shot('25d-shipyard-cruiser-1440');
+
+  final deathstar = ships.indexWhere((o) => o['ship_class'] == 'Deathstar');
+  await select('3', deathstar - cruiser);
+  final dear = ships[deathstar]['unit_cost'] as Map<String, dynamic>;
+  await browser.until('the Deathstar\'s price in the inspector', () => prices(dear));
+  check(true, 'the Deathstar\'s price is printed whole: ${price(dear, 'metal')} metal, ${price(dear, 'crystal')} crystal, ${price(dear, 'deuterium')} deuterium');
+  await browser.shot('25e-shipyard-deathstar-1440');
+
+  final defences = list('defences');
+  final dome = defences.indexWhere((o) => o['kind'] == 'SmallShieldDome');
+  await select('4', dome);
+  await browser.until('the dome\'s limit in the inspector', () async => RegExp(r'ONE OF A KIND').allMatches((await browser.text()).toUpperCase()).length == 3);
+  check(defences[dome]['max'] == 1 && defences[dome]['room'] == 1, 'a dome is one of a kind, and none stands yet');
+  await browser.shot('25f-defence-dome-1440');
 }
 
 /// Every screen and panel a new commander meets, pictured at desktop and at
@@ -1012,6 +1214,7 @@ Future<void> screens(Browser browser) async {
     if (tab == 'research') await everyTechHasANode(browser);
     await browser.shotBoth('25-homeworld-$tab');
   }
+  await catalogue(browser);
   await browser.type('1');
 
   await browser.press('?', 'Slash', 191, text: '?');
@@ -1127,7 +1330,15 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
       'the world is Admiral\'s, at blitz pace, with 8 bots');
   final first = await browser.until('the first full_state', () => browser.last('full_state'));
   check(first['player']['name'] == 'Admiral' && (first['fleets'] as List).isNotEmpty, 'full_state carries the commander and a fleet');
-  check(level(first['homeworld'] as Map<String, dynamic>, 'MetalMine') == 1, 'the homeworld starts with a level 1 Metal Mine');
+  final start = first['homeworld'] as Map<String, dynamic>;
+  check(['MetalMine', 'CrystalMine', 'SolarPlant'].every((b) => level(start, b) == 1), 'the homeworld starts with a Metal Mine, a Crystal Mine and a Solar Plant at level 1');
+  final power = start['energy'] as Map<String, dynamic>;
+  check(power['made'] == power['needed'] && power['fraction'] == 1, 'which makes just the energy the two mines need (${power['made']})');
+  final catalog = start['catalog'] as Map<String, dynamic>;
+  check(
+      '${[for (final list in ['buildings', 'research', 'ships', 'defences']) (catalog[list] as List).length]}' == '[12, 14, 13, 8]' &&
+          (first['world']['rapid_fire'] as List).isNotEmpty,
+      'the catalogue is twelve buildings, fourteen researches, thirteen ship classes and eight defences, and the world carries the rapid-fire table');
   final home = first['player']['homeworld'];
   await browser.untilText('admiral');
   await browser.untilText('metal');
@@ -1170,7 +1381,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   check((await browser.tap('t.errors.length')) == 0, 'a quote is an answer, not an error');
 
   await loadHold(browser);
-  await shipBatches(browser);
+  await firstSteps(browser);
   await screens(browser);
 
   print('bots');
