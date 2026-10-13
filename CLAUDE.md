@@ -185,7 +185,7 @@ cd clients/web && dart run tool/solo_e2e.dart   # that bundle end to end in head
 
 The server serves static files (SPA fallback, COOP/COEP headers) and WebSockets (any path; `/ws` for web, `/` for TUI) on one port.
 
-Flutter lives at `~/development/flutter/bin` on the dev machine. That machine mixes Cortex-A720 and A520 cores, and the Dart VM misbehaves when a test run wanders onto the A520s (CPUs 2-5): unpinned, `flutter test` fails about two full runs in three, one different test each time, on assertions inside Flutter's own layout and text code. Pin it to the big cores: `taskset -c 0,1,6-11 flutter test`. Pinning is not a cure: pinned runs still fail now and then in the same way (a NaN out of arithmetic on constants, an assertion inside `ThemeData`, an overflow of thousands of pixels), and one has hung. Give the run a `timeout`, keep its log, and run it again before reading a failure as the client's.
+Flutter lives at `~/development/flutter/bin` on the dev machine. `flutter test` fails a fraction of full runs here, a different test each time, on values the client cannot compute (a NaN out of arithmetic on constants, an assertion inside Flutter's own layout or text code, an overflow of thousands of pixels), and one run has hung. The machine mixes Cortex-A720 cores (CPUs 0, 1 and 6-11) and Cortex-A520 cores (CPUs 2-5). A pin does not make the run reliable: CPU 0 failed 3 of 8 full runs, and `taskset -c 0,1,6-11` failed 9 of 25. `DART_VM_OPTIONS` does not reach `flutter_tester`, so a `--profile_period` set that way does nothing and the profiler stays on. Give the run `timeout -k 20 300`, keep its log, and run it again before reading a failure as the client's. The measurements are in `docs/design/flutter_test_flake.md`.
 
 ### Architecture
 
