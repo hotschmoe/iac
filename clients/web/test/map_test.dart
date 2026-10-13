@@ -53,7 +53,7 @@ class FakeGame extends GameController {
   }
 }
 
-ui.FleetState _fleet(proto.Hex at, {int fuel = 100}) => ui.FleetState(
+ui.FleetState _fleet(proto.Hex at, {int fuel = 100, double? jumpFuelExact}) => ui.FleetState(
       id: 7,
       name: 'F7',
       sector: at,
@@ -63,6 +63,7 @@ ui.FleetState _fleet(proto.Hex at, {int fuel = 100}) => ui.FleetState(
       fuel: fuel,
       fuelMax: 120,
       jumpFuel: 5,
+      jumpFuelExact: jumpFuelExact,
       homeFuel: 5,
       jumpTicks: 3,
     );
@@ -312,6 +313,19 @@ void main() {
     expect(_text(tester, 'route-eta'), '0:09', reason: 'three jumps of three ticks each');
     expect(find.byKey(const Key('route-preview-text')), findsOneWidget);
     expect(painterOf(tester).route!.path.length, 3);
+    await endShell(tester, g);
+  });
+
+  testWidgets('a route prices its fuel from the unrounded jump cost and rounds the total', (tester) async {
+    final g = await openMap(tester);
+    g.fake = _state(1000, [_fleet(const proto.Hex(1, 0), jumpFuelExact: 5.1)]);
+    g.notifyListeners();
+    await tester.pump(const Duration(milliseconds: 50));
+    await clickHex(tester, const proto.Hex(4, -1));
+    expect(_text(tester, 'route-hops'), '3');
+    expect(_text(tester, 'route-fuel'), '15 of 100', reason: '3 * 5.1 rounds to 15, which 5 * 3 also does');
+    expect(_text(tester, 'route-return'), 'OK BY THE CHART, 4 hops, margin 64 fuel', reason: 'the return is 4 * 5.1, and the margin is rounded once');
+    expect(_text(tester, 'route-preview-text'), contains('FUEL 15 OF 100 (16 HOPS LEFT TO RETURN)'));
     await endShell(tester, g);
   });
 
