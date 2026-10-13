@@ -536,8 +536,10 @@ What every doctrine does:
   and Armour Technology raise every structure standing, at once.
   `homeworld.defences` lists them,
   `home_defence_power` is what a raid meets (docked ships + Solar
-  Satellites + structures). The domes are a shield and a hull and no more
-  until raids are fought as battles.
+  Satellites + structures, each stated beside it: `docked_power`,
+  `satellite_power`, `structure_power`). A catalogue entry with a limit
+  (`max`) says how many more may be ordered now (`room`). The domes are a
+  shield and a hull and no more until raids are fought as battles.
 - **Raids** — once your empire is worth raiding (Shipyard ≥ 2 or any
   defence built), pirates occasionally vector at your homeworld: a roll every 6 hours
   at pace 1 (30%), at most one per 18 hours, never in your first day, all

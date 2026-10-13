@@ -7069,3 +7069,138 @@ tree in `c3499da`.
   with other work on the machine.
 - `docs/design/economy/__pycache__/sim.cpython-311.pyc` is tracked in git and
   changes whenever `sim.py` does; it was committed as Python rewrote it.
+
+## 2026-10-13: the web client on OGame's catalogue (slice 1 of the OGame work, stage 2)
+
+Stage 2 of slice 1: the hand-written Dart of `clients/web`, which stage 1
+left not compiling against the new `protocol.g.dart`. The branch is still
+`worktree-agent-a8b235984a4cae32d` and is not merged. `ECONOMY_VERSION`,
+`WORLDGEN_VERSION` and `SAVE_FORMAT` are as stage 1 left them: what was
+added to Rust is three fields of the view and nothing a world plays by.
+
+**Built, screen by screen.**
+
+- The homeworld's buildings: a plan of twelve tiles round the homeworld
+  (`planSlot`), each with its icon, its level and the first of its
+  `effects` as it stands; the energy readout above the plan. The inspector
+  prints every effect now and at the next level (`BuildingOption.effects`,
+  with `effectValue` giving a figure its unit), the cost against the
+  stockpile, the time, each `Requirement` with what the player has, and
+  what else in the catalogue asks for the building (read off the other
+  entries' `requires`).
+- Research: fourteen nodes in four lanes, the edges those of `requires`, the
+  ones of the selected node bright; a requirement on energy is worded as
+  energy made (`Requirement.energy`), which is how Graviton Technology
+  shows what it wants.
+- Shipyard: thirteen cards from `ShipOption` (hull, shield, weapon, power,
+  cargo, drive, speed, jump ticks, fuel a jump, tank, harvest). The Solar
+  Satellite's card says it stays at home, what one adds in energy and how
+  many stand. The inspector prints rapid fire in both directions from
+  `WorldInfo.rapid_fire`.
+- Defence: the home's defence in its three parts against the next raid's
+  estimate, the satellites with what a lost raid takes, and the eight
+  defences as orders, the two domes one of a kind with `DefenceOption.room`
+  deciding whether one may still be ordered.
+- Storage: a row a resource with its cap, what is safe from a raid, the
+  engine's time until full and the order for its own building, beside the
+  hold panel.
+- Overview: the resource tiles (rates by the game hour, a falling stockpile
+  said so), the energy readout, the hero's tags for the mines' share and the
+  satellites, an alert and a next step when energy is short, the shipyard
+  card from `shipyard_queue`, the raid card in the three parts.
+- The top bar: three stockpiles with their rates and an energy chip.
+- The windshield and the map: thirteen glyphs for the player's classes and
+  thirteen for hostiles, three letters a class, a size a class on the scope;
+  the scan ring from `FleetState.scan_range`; the threat of a sector from
+  the state's rating.
+- The console: `defence <kind> [count]`, short words for every item, `help`
+  and the refusals of a wrong word made from the enums.
+- The guide: the first hour on the new start (a mine, the Solar Plant, a
+  Shipyard, a Small Cargo), named by the generated labels.
+
+**Added to Rust**, each for a view that would otherwise have worked it out:
+`HomeworldState.docked_power` and `structure_power` (with
+`GameEngine::docked_power`; `home_defense_power` is now written as the sum
+of the three parts), `DefenceOption.room` (with a `committed` parameter of
+`HomeworldCatalog::new`), and `fixtures/protocol/catalog_by_level.json`,
+rendered by `shared/tests/golden_fixtures.rs` for the scripted world of the
+widget tests. No column and no constant was added to `wire/mod.rs`.
+
+**Taken out of the client**, because they were the client's arithmetic: the
+resources-to-power ratio on a ship card, the amount a raid could take on the
+storage tab, the building notes typed in `spec.dart`, the hull clamp of the
+state mapper, the regular expression that read the shipyard's queue from its
+label.
+
+**The design choices** are in `docs/design/decisions.md` under today's date
+("the web client on OGame's catalogue"), each with what undoes it.
+
+**The scripted world of the widget tests** (`test/support/demo_world.dart`)
+was rewritten. It reads its catalogue rows from the new fixture and its
+rings, outposts, raids and constants from `numbers.json`, and is a world at
+season pace. No test file was added or archived. One case was added to
+`test/homeworld_test.dart` (the energy readout short and starved), and
+`protocol_fixtures_test.dart` gained assertions on energy, rapid fire,
+`room` and the two new powers. Where a test's expectation moved it moved to
+what the engine's numbers give: the outpost's founding at 3000 / 1500 / 600
+and its raids at 383 to 551, the solo front door's estimates at the presets'
+figures, the attention test's order of toasts (the third Light Fighter now
+finishes after the raid).
+
+**`tool/solo_e2e.dart`** plays the first steps of a new empire in the real
+bundle: a Robotics Factory that waits for deuterium, energy short at 22 of
+36 with the warning on the page, the Solar Plant raised twice, a Shipyard
+reached by moving the worker's clock four minutes at a time, a Solar
+Satellite ordered, built and counted in the energy and in the defence, a
+batch of a hundred refused in the engine's words, a Rocket Launcher by
+`defence rl`, then every screen at 1440 and 390 and one card of each table
+in the inspector.
+
+**Run**, on the branch:
+
+- `flutter analyze`: no issues.
+- `flutter test`, each under `timeout -k 20 300`, logs kept: run 1, 469
+  passed and 17 failed, every one a test not yet moved onto the catalogue;
+  runs 2, 3 and 4, 486 passed and 0 failed. No run showed the flake of
+  `docs/design/flutter_test_flake.md`. Single files were run alone while
+  the tests were moved; what failed there was a test or a view and was
+  mended.
+- `cargo test --workspace --no-fail-fast -j 4`: the first run failed three
+  tests in two targets (`dart_protocol_matches`, `golden_fixtures_match`,
+  and one of `both_targets`) while `protocol.rs` and `views.rs` were being
+  edited under it; the run after the last change to Rust passed 164 of 164.
+- `python3 tools/check_sim_constants.py`: agrees on 4,410 values.
+- `scripts/play.sh --single-player --no-serve`: builds; 48 MB,
+  `iac_solo.wasm` 2,521,326 bytes (stage 1: 2,518,679).
+- `dart run tool/solo_e2e.dart`: run 1 failed (the hold panel's Load button
+  stood below the fold of the storage tab; the tab was laid out again), run
+  2 failed (the check asked for a thousand satellites and the engine
+  refused that for the store's cap, not for the stockpile; it asks for a
+  hundred), runs 3 and 4 passed in 199 s and 198 s. On the last bundle: run
+  5 passed its 116 checks and printed `SOLO E2E OK in 199 s`, then exited
+  255, because the tool's last line could not delete Chromium's profile
+  directory (`Directory not empty`), a race in a teardown this work did not
+  touch; `/tmp/iac-solo-e2e-profileJNWIYU` is left there. Run 6, the same
+  bundle, passed in 200 s and exited 0.
+- `cargo clippy --workspace --all-targets`: silent.
+
+**Looked at**, from the end-to-end run's screenshots and the widget tests':
+the five tabs of the homeworld at 1440 and 390, the inspector on the Nanite
+Factory, Graviton Technology, the Cruiser, the Deathstar and a dome, the
+overview at both widths, the windshield, energy short. Mended from them: tile
+captions that ran past the hex, tags and counts pushed to the middle of a
+row, the storage tab's length, batch buttons on a dome.
+
+**Not verified.**
+
+- No person played it. Every screen was read from a screenshot of a blitz
+  world a few minutes old or of the scripted world; none was seen with the
+  Fusion Reactor running, a Nanite Factory built, or a deep research tree.
+- Of the twenty-six glyphs only those of the classes in the starting fleet
+  and in the scripted world's fleets (Light Fighter, Small Cargo, Probe)
+  were on any screenshot. No hostile glyph was seen in a fight; pirates fly
+  four of the thirteen classes.
+- The scripted world carries a time between two catalogue rows by a ratio
+  of speeds; a time in a widget test may be a tick off the engine's.
+- Nothing in `tools/playtest` was run; the one sentence of `RULES.md` on the
+  three parts of the home defence was changed by reading.

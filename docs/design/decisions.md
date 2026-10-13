@@ -3,6 +3,145 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the web client on OGame's catalogue: what the agent decided)
+
+Slice 1 of `docs/design/ogame.md`, section 12, stage 2: the hand-written Dart
+of `clients/web` on the catalogue stage 1 built. What follows is what the
+agent that built it chose for the screens. None of it was put to the owner.
+Each line ends with what undoes it.
+
+**What the state now says, for the views.**
+
+- A home's defence is sent in its three parts: `HomeworldState.docked_power`
+  (the ships standing at home), `satellite_power` (stage 1's) and
+  `structure_power` (the defences). `home_defence_power` is their sum, and
+  `GameEngine::home_defense_power` is written as that sum. The defence tab's
+  bar and the overview's raid card draw the parts and add nothing. Undo: the
+  two fields in `shared/src/protocol.rs`, `GameEngine::docked_power`, the
+  two lines of `sim/src/views.rs`.
+- `DefenceOption.room`: how many more of a limited defence may be ordered
+  now, `max` less those standing, being rebuilt and on order; absent where
+  there is no limit. The client clamps a batch to it and greys the order at
+  0. `HomeworldCatalog::new` takes the committed counts for it. Undo: the
+  field and the parameter; the client would then send the order and print
+  the engine's refusal.
+- No column and no constant was added to `shared/tests/wire/mod.rs`.
+
+**The plan of the homeworld.**
+
+- Twelve buildings around the homeworld hex: the ring of six is the Metal
+  Mine, the Crystal Mine, the Deuterium Synthesizer, the Fusion Reactor, the
+  Solar Plant and the Research Lab, clockwise from the top; a column to the
+  west holds the Robotics Factory, the Nanite Factory and the Shipyard, a
+  column to the east the Metal Storage, the Crystal Storage and the
+  Deuterium Tank. Undo: `planSlot` in
+  `clients/web/lib/scenes/homeworld/plan.dart`.
+- Each tile prints one figure under its level, the first of the building's
+  `effects` as it stands now (`METAL 43,200/H`, `ENERGY MADE 79`, `STORAGE
+  1,565,085`). A building at level 0 prints what that effect is at 0, which
+  for the Nanite Factory is the speed the Robotics Factory already gives.
+  Undo: `effectCaption` in `lib/views/homeworld/spec.dart`.
+- Icons for the six buildings that had none are drawn in
+  `_buildingIcon` of the same `plan.dart`: a sun for the Solar Plant, an atom
+  for the Fusion Reactor, an arm for the Robotics Factory, three cells for
+  the Nanite Factory, a crate with a crystal and a barrel for the two new
+  stores.
+
+**Thirteen classes on the scope.**
+
+- Three letters a class, written in Dart (`shipAbbr`,
+  `lib/console/threat.dart`): SCG LCG LFT HFT CRU BSH REC PRB BMB SAT DES DTH
+  BCR. A glyph a class for the player's ships and another for hostiles
+  (`Sym.own`, `Sym.hostile`, `lib/design/symbols.dart`), and a sprite size a
+  class in the windshield (`_pxOf`, `lib/scenes/windshield/sim.dart`). These
+  are drawing; if the abbreviations should be the engine's, they are one
+  column in `shared/tests/wire/mod.rs`.
+
+**Research.**
+
+- Four lanes: energy and beams (Energy, Laser, Ion, Plasma, Graviton), drives
+  (Combustion, Impulse, Hyperspace Technology, Hyperspace Drive), combat
+  (Weapons, Shielding, Armour), systems (Espionage, Computer). The lane a
+  technology stands in is the client's; every edge drawn is a `requires` of
+  the catalogue between two researches, and a requirement on a building or
+  on energy is printed in the inspector and not drawn. Undo: `_Lane.of` in
+  `lib/views/homeworld/research_tab.dart`.
+
+**Energy.**
+
+- One readout (`EnergyReadout`, `lib/views/homeworld/economy_tabs.dart`),
+  from `HomeworldState.energy`: made, needed, the share the mines run at,
+  the satellites and what each adds, the Fusion Reactor's burn and whether
+  it is starved. It stands above the plan on the buildings tab and under the
+  resource tiles on the overview. The header carries a chip with the share
+  when energy is short, and at any time where the header has the width.
+- Short of energy is an alert on the overview and what NEXT UP says after a
+  raid warning and a stranded fleet, ahead of a full store and an idle slot.
+  Its button orders a level of the Solar Plant
+  when the catalogue says one can be ordered and none is on order. That it
+  is the Solar Plant and not a satellite or the reactor is the client's
+  advice, not a rule. Undo: `nextUp` in
+  `lib/views/overview/overview_logic.dart`.
+- The share is printed as a whole percent rounded down, so it reads 100 only
+  when the mines have all they need.
+
+**Solar Satellites and defences.**
+
+- A satellite is a card of the shipyard like any class, with `STAYS AT HOME`
+  where the others print a drive, what one adds in energy
+  (`EnergyState.per_satellite`) and how many stand. They are counted again
+  on the defence tab, with their share of the home defence and the quarter a
+  lost raid takes (`RAID_LOST_SHIP_FRACTION`), in the overview's hero and in
+  the energy readout.
+- The defence tab lists all eight defences as orders. A batch is the
+  shipyard's (x1, x5, x10), clamped to `room`; a defence with a limit shows
+  no batch buttons, a tag `ONE OF A KIND`, and the limit's sentence when no
+  more may be ordered. Undo: `defenceBatch`, `limitReason` in
+  `lib/console/economy_view.dart`; `ItemSpec.batched`.
+- The console takes `defence <kind> [count]` (also `defense`, `def`), and
+  every item of the four tables by its label without spaces or by a short
+  word (`metal`, `solar`, `yard`, `tank`, `lab`; `lf`, `sc`, `probe`, `sat`;
+  `rl`, `ll`, `gauss`). `help` and the refusals of a wrong word are made
+  from the generated enums. Undo: the four maps of
+  `lib/state/command_parser.dart`.
+
+**Figures and words.**
+
+- A rate is printed by the game hour, signed, in the header, the overview
+  and the storage tab; a stockpile that falls (deuterium under a Fusion
+  Reactor) prints `FALLING` in the alarm colour where the others print when
+  they are full. Undo: `signedAnHour` in `lib/console/intel.dart`.
+- A time of a day or more prints its days (`3d 4:10:22`); OGame's prices
+  make such times ordinary.
+- Two figures the client used to work out are gone and nothing replaces
+  them: the resources-to-power ratio on a ship card, and the amount a raid
+  could take on the storage tab. The tab prints what the state says is safe
+  (`StorageState.protected`) and the engine's `full_in_s`.
+- The storage tab is one row a resource, each with the order for its own
+  building, and stands beside the hold panel from 980 pixels of width.
+- The sentences of the outpost that say "a quarter" are as they were, typed.
+- The first-hour list of the guide is: raise a mine, raise the Solar Plant,
+  build a Shipyard, build a Small Cargo, fly 6 sectors, board a derelict,
+  win a fight. The names are the generated labels. Undo: `Lesson` in
+  `lib/console/onboarding.dart`.
+
+**The scripted world of the widget tests.**
+
+- `test/support/demo_world.dart` types no number of the game. Its catalogue
+  rows are the engine's, read from `fixtures/protocol/catalog_by_level.json`,
+  which `shared/tests/golden_fixtures.rs` renders: twenty-one catalogues at
+  season pace, every building and research at one level, the Nanite Factory
+  held at 0. Its rings, outposts, raids and constants are read from
+  `docs/design/economy/numbers.json`. The demo is therefore a season world.
+  Where its levels are mixed it takes each row from the catalogue of that
+  item's level and carries a time by the ratio of the two speeds the
+  catalogue states; a time may be a tick off the engine's. Undo: the fixture
+  and `catalog_levels` in `golden_fixtures.rs`; the demo would need another
+  source.
+- Its home raid destroys satellites and docked ships and takes no resources,
+  and its pirates outside the homeworld are passive or on patrol only. No
+  view is tested on a plundered stockpile.
+
 ## 2026-10-13 (the catalogue is OGame's: what the agent decided)
 
 Slice 1 of `docs/design/ogame.md`, section 12, stage 1: the engine, the wire,

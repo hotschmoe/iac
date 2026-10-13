@@ -317,6 +317,33 @@ status has a Refine button under the hold, lit while the server says what
 refining would make and showing that figure; `refine` does the same from
 the command bar.
 
+The homeworld (`G` then `H`) has five tabs, each drawn from the catalogue the
+server sends. Buildings is a plan of the twelve buildings around the core
+(the mines, the two power plants and the lab in the ring, the factories and
+the yard to the west, the three stores to the east); a tile carries its level
+and the first thing the building does. Over the plan stands the energy
+readout: what is made and what the mines need, the share of their output the
+mines run at, a warning while that is short of all of it, what each Solar
+Satellite gives, and what the Fusion Reactor burns or that it has stopped for
+want of deuterium. The same share is in the top bar and on the Overview.
+Research draws the fourteen researches in four lanes with a line from each
+research to those that require it, the lines of the selected one brightest.
+Shipyard has a card a class with what a ship built now would be, the Solar
+Satellite among them, which stays at home. Defence sets the raid forecast
+against the home's defence in the three parts the server counts (docked
+ships, Solar Satellites, defences), and has a row to order each of the eight
+defences from; a dome is marked as one of a kind and its order is off once
+one stands or is on order. Storage lists the three stockpiles, each with the
+building that holds it and the order that raises it, beside the hold panel.
+The inspector beside a tab says what a level does now and at the next, what
+the item costs and requires (an amount of energy made, for Graviton
+Technology), what else in the catalogue needs it, a class's figures in a
+fight and in flight with the empire's research counted, and its rapid fire
+in both directions. From the command bar an item is typed as its name
+without the spaces, and the short names work too: `build solarplant` or
+`build solar`, `research energy`, `ship lightfighter 5` or `ship lf 5`,
+`defence rocketlauncher 10` or `defence rl 10`.
+
 Outposts: in rings 9 to 20 the windshield's dock has a Found tile, and `O`
 opens the founding panel anywhere: the server's survey of the sector the
 fleet stands in, the cost of level 1 set against its hold, and a Found
@@ -344,7 +371,9 @@ sector. From the command bar: `found`, `survey [q r]`, `outpost upgrade`,
   engine.
 - **Operator guide.** A new account gets a one-line guide under the HUD that
   walks the first steps (save the token, queue a building, scan, jump,
-  harvest, unload, standing orders) and a "First hour" list on the Overview.
+  harvest, unload, standing orders) and a "First hour" list on the Overview
+  (raise a mine, raise the Solar Plant, build a Shipyard, build a Small
+  Cargo, fly six sectors out, board a derelict, win a fight).
   Each step is ticked by what happens in the game, in any order. `Skip guide`
   turns it off; `?` (Keys and settings) turns it back on. Progress is kept per
   account in the browser.
@@ -856,8 +885,10 @@ worldgen rolls inside `shared/src/world.rs`.
   and Armour Technology raise every structure standing, at once.
   `homeworld.defences` lists them,
   `home_defence_power` is what a raid meets (docked ships + Solar
-  Satellites + structures). The domes are a shield and a hull and no more
-  until raids are fought as battles.
+  Satellites + structures, each stated beside it: `docked_power`,
+  `satellite_power`, `structure_power`). A catalogue entry with a limit
+  (`max`) says how many more may be ordered now (`room`). The domes are a
+  shield and a hull and no more until raids are fought as battles.
 - **Raids** — once your empire is worth raiding (Shipyard ≥ 2 or any
   defence built), pirates occasionally vector at your homeworld: a roll every 6 hours
   at pace 1 (30%), at most one per 18 hours, never in your first day, all
