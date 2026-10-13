@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../console/battle.dart' show hullOf, shipsOf, shortCount;
+import '../../console/battle.dart' show fleeingLine, hullOf, pursuitLine, pursuitVerdict, shipsOf, shortCount;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show surveyClear, surveyLines;
 import '../../console/route_planner.dart';
@@ -17,7 +17,7 @@ import '../../models/fleet.dart' as ui;
 import '../../models/game_state.dart' show SurveyEntry, previewFreshTicks;
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/map/map_state.dart';
-import '../battle_view.dart' show BattleStrip, ClassMarks, ShipRows, damagedColor;
+import '../battle_view.dart' show BattleStrip, ClassMarks, GroupBrief, damagedColor, groupHeading;
 
 class FleetChips extends StatelessWidget {
   final Console con;
@@ -59,7 +59,10 @@ class FleetChips extends StatelessWidget {
             ]),
             if (!narrow) ...[
               const SizedBox(height: 2),
-              Text('${f.status.label} - fuel for ${hopCount(hops)}', overflow: TextOverflow.ellipsis, style: T.mono(size: 9.5, color: C.text3)),
+              Text(f.pursuedBy != null ? 'PURSUED - ${f.statusLabel}' : '${f.statusLabel} - fuel for ${hopCount(hops)}',
+                  key: Key('fleet-chip-status-${f.id}'),
+                  overflow: TextOverflow.ellipsis,
+                  style: T.mono(size: 9.5, color: f.pursuedBy != null ? C.ember : f.fleeing != null ? damagedColor : C.text3)),
             ],
           ]),
         ),
@@ -268,6 +271,8 @@ class LegendPanel extends StatelessWidget {
           _sym((c, s) => Draw.symbol(c, Sym.ore, s.width / 2, s.height / 2, 7, color: C.metal, lw: 1.6, bloom: false), 'ore', C.metal),
           _sym((c, s) => Draw.symbol(c, Sym.hub, s.width / 2, s.height / 2, 8, color: C.a200, lw: 1.4, bloom: false), 'hub', C.a200, 16),
           _sym((c, s) => Draw.symbol(c, Sym.outpost, s.width / 2, s.height / 2, 8, color: C.a200, lw: 1.4, bloom: false), 'outpost, yours filled', C.a200, 16),
+          _sym((c, s) => Draw.dashedLine(c, Offset(0, s.height / 2), Offset(s.width, s.height / 2), Draw.line(C.ember, 2.2), 4, 3), 'pursuit', C.ember, 16),
+          _sym((c, s) => Draw.dashedLine(c, Offset(0, s.height / 2), Offset(s.width, s.height / 2), Draw.line(C.a300, 2.2), 4, 3), 'flight', C.a300, 16),
         ]),
       ]),
     );
@@ -359,8 +364,9 @@ class Inspector extends StatelessWidget {
                 Text(th.basisLabel, key: const Key('inspector-basis'), style: T.mono(size: 9.5, color: C.text3, spacing: .6)),
               ])),
           for (final g in th.groups) ...[
-            Kv('Hostile group', key: Key('inspector-hostile-${g.id}'), vc: C.threat(th.rating), v: '${g.behavior.wire.toUpperCase()} - ${shipsOf(g.shipCount).toUpperCase()}'),
-            ShipRows(g.ships, color: C.ember, tag: 'inspector-hostile-${g.id}'),
+            Kv('Hostile group', key: Key('inspector-hostile-${g.id}'), vc: g.shipCount < g.muster ? damagedColor : C.threat(th.rating), v: groupHeading(g)),
+            GroupBrief(g,
+                tick: st.tick, live: it.live, own: [for (final f in st.fleets) f.id], beside: fleet.id == 0 ? null : fleet, tag: 'inspector-hostile-${g.id}'),
             const SizedBox(height: 3),
           ],
           if (st.battleAt(h) case final battle?)
@@ -374,6 +380,11 @@ class Inspector extends StatelessWidget {
                   v: '${shipsOf(f.shipCount).toUpperCase()} - HULL ${hullOf(f.hull, f.hullMax)}',
                   vc: f.repair == null ? C.own : damagedColor),
               Padding(padding: const EdgeInsets.symmetric(vertical: 3), child: ClassMarks(f.ships)),
+              if (f.fleeing case final leaving?)
+                Text('${fleeingLine(leaving).toUpperCase()}.', key: Key('inspector-fleeing-${f.id}'), style: T.mono(size: 10, color: damagedColor, height: 1.35)),
+              if (f.pursuedBy case final hunter?)
+                Text('PURSUED: ${pursuitLine(hunter)}. ${pursuitVerdict(hunter, charging: f.status == ui.FleetStatus.enRoute)}'.toUpperCase(),
+                    key: Key('inspector-pursued-${f.id}'), style: T.mono(size: 10, color: C.ember, height: 1.35)),
             ],
           if (odds != null) ...[
             Kv('Ratio',
@@ -727,8 +738,13 @@ class HoldPanel extends StatelessWidget {
         ]),
         const SizedBox(height: 8),
         for (final g in th.groups) ...[
-          Kv('Hostiles', v: '${g.behavior.wire.toUpperCase()} - ${shipsOf(g.shipCount).toUpperCase()}', vc: C.threat(th.rating)),
-          ShipRows(g.ships, color: C.ember, tag: 'hold-hostile-${g.id}'),
+          Kv('Hostiles', v: groupHeading(g), vc: g.shipCount < g.muster ? damagedColor : C.threat(th.rating)),
+          GroupBrief(g,
+              tick: con.state.tick,
+              live: con.state.sectors[ahead]?.live ?? false,
+              own: [for (final f in con.state.fleets) f.id],
+              beside: fleet,
+              tag: 'hold-hostile-${g.id}'),
         ],
         Kv('Their power', v: shortCount(th.power.round())),
         if (o == null)

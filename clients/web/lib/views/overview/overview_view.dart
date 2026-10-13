@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../console/economy_view.dart';
-import '../../console/battle.dart' show hullOf;
+import '../../console/battle.dart' show fleeingLine, flightPrice, hullOf, pursuitLine, pursuitVerdict;
 import '../../console/intel.dart' show groupDigits, hopCount;
 import '../../console/prefs.dart';
 import '../../console/services.dart';
@@ -328,10 +328,19 @@ class _FleetCard extends StatelessWidget {
           SymIcon((c, s) => Draw.symbol(c, Sym.fleet, s.width / 2, s.height / 2, 6, color: C.a200, lw: 1.8, bloom: false), size: 14),
           const SizedBox(width: 8),
           Expanded(child: Text(f.name.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: 14, color: C.a200, spacing: 1.7))),
-          Tag(status.label, on: status == ui.FleetStatus.harvesting, color: chipCol),
+          if (f.pursuedBy != null) ...[Tag('Pursued', key: Key('fleet-pursued-tag-${f.id}'), color: C.ember), const SizedBox(width: 5)],
+          Tag(f.statusLabel, key: Key('fleet-status-${f.id}'), on: status == ui.FleetStatus.harvesting, color: f.underFire ? C.ember : chipCol),
         ]),
         const SizedBox(height: 4),
         Text('${f.sector.q},${f.sector.r} - ${f.sector.zone.label.toUpperCase()} -${home == 0 ? 'AT HOME' : '$home HOP${home == 1 ? '' : 'S'} HOME'}', style: T.mono(size: 10, color: C.text3)),
+        if (f.flight case final quote?)
+          Text('IN A FIGHT, ${quote.label.label}: A JUMP OUT COSTS ${flightPrice(quote).toUpperCase()}.',
+              key: Key('fleet-flight-${f.id}'), style: T.mono(size: 10, color: C.threat(6), height: 1.3)),
+        if (f.fleeing case final leaving?)
+          Text('${fleeingLine(leaving).toUpperCase()}.', key: Key('fleet-fleeing-${f.id}'), style: T.mono(size: 10, color: damagedColor, height: 1.3)),
+        if (f.pursuedBy case final hunter?)
+          Text('${pursuitLine(hunter)}. ${pursuitVerdict(hunter, charging: status == ui.FleetStatus.enRoute)}'.toUpperCase(),
+              key: Key('fleet-pursued-${f.id}'), style: T.mono(size: 10, color: C.ember, height: 1.3)),
         Padding(padding: const EdgeInsets.only(top: 8, bottom: 5), child: ClassMarks(f.ships, key: Key('fleet-marks-${f.id}'))),
         _kvr('Ships', '${groupDigits(f.shipCount)}, hull ${hullOf(f.hull, f.hullMax)}',
             warn: switch (f.repair) { null => null, final q => '  ${groupDigits(q.ships)} DAMAGED' }),

@@ -449,10 +449,7 @@ class WindshieldSim {
     } else if (boarding?.left != f.cooldown) {
       boarding = (left: f.cooldown, at: now);
     }
-    final nowCombat = f.status == ui.FleetStatus.combat;
-    if (nowCombat != combat) {
-      combat = nowCombat;
-    }
+    combat = f.underFire;
   }
 
   /// How far the boarding has come, 0 to 1, of the engine's boarding time:
@@ -639,7 +636,7 @@ class WindshieldSim {
       var p = (now - w.t0) / 1.1;
       if (w.waiting && p >= .5) {
         p = .5;
-        if (now - w.t0 > 2.6) cancelWarp();
+        if (now - w.t0 > 2.6 && fleet?.fleeing == null) cancelWarp();
       }
       if (p >= 1) {
         warp = null;

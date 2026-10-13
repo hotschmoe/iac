@@ -63,8 +63,9 @@ String outcomeTitle(proto.BattleOutcome o) => switch (o) {
       proto.BattleOutcome.hostilesDestroyed => 'HOSTILES DESTROYED',
       proto.BattleOutcome.fleetsDestroyed => 'FLEETS DESTROYED',
       proto.BattleOutcome.bothDestroyed => 'BOTH SIDES DESTROYED',
-      proto.BattleOutcome.withdrawn => 'FLEETS WITHDREW',
+      proto.BattleOutcome.withdrawn => 'RECALLED',
       proto.BattleOutcome.standoff => 'STAND-OFF',
+      proto.BattleOutcome.fled => 'FLED UNDER FIRE',
     };
 
 /// The same as a sentence of the log.
@@ -72,11 +73,97 @@ String outcomeSentence(proto.BattleOutcome o) => switch (o) {
       proto.BattleOutcome.hostilesDestroyed => 'the hostiles are destroyed',
       proto.BattleOutcome.fleetsDestroyed => 'every fleet is destroyed',
       proto.BattleOutcome.bothDestroyed => 'both sides fell in the same round',
-      proto.BattleOutcome.withdrawn => 'the fleets left; the hostiles are whole again',
-      proto.BattleOutcome.standoff => 'a stand-off: neither side could hurt the other, and the hostiles are whole again',
+      proto.BattleOutcome.withdrawn => 'the last fleet made the emergency jump home; the hostiles keep what they lost and mend in time',
+      proto.BattleOutcome.standoff => 'a stand-off: neither side could hurt the other, and both stay as they are',
+      proto.BattleOutcome.fled => 'the last fleet jumped out under fire; the hostiles keep what they lost and mend in time',
     };
 
 String roundsOf(int n) => '$n round${n == 1 ? '' : 's'}';
+
+String ticksOf(int n) => '$n tick${n == 1 ? '' : 's'}';
+
+String hexesOf(int n) => '$n hex${n == 1 ? '' : 'es'}';
+
+String _fuelOf(double fuel) {
+  final tenths = (fuel * 10).round() / 10;
+  return tenths == tenths.roundToDouble() ? groupDigits(tenths.round()) : tenths.toStringAsFixed(1);
+}
+
+/// "5 fuel, gone in 2 ticks, 1 round under fire": what a jump out of a
+/// fight costs, in the quote's own figures.
+String flightPrice(proto.FlightQuote q) => '${_fuelOf(q.fuel)} fuel, gone in ${ticksOf(q.ticks)}, ${roundsOf(q.rounds)} under fire';
+
+/// Who would follow a fleet that left now, and how far: the quote's `chase`.
+/// A group that fires no round at a hex still catches a fleet that stops.
+String chaseLine(proto.ChaseForecast? c) {
+  if (c == null) return 'Nothing follows.';
+  final far = 'The ${c.label} follows ${hexesOf(c.hexes)}';
+  return c.roundsPerHex > 0
+      ? '$far and fires ${roundsOf(c.roundsPerHex)} at each on a fleet that jumps on at once; one that stops is caught.'
+      : '$far and lands too late to fire on a fleet that jumps on at once; one that stops is caught.';
+}
+
+/// "Leaving for 3, -1: jump in 2 ticks, 1 more round under fire": a fleet
+/// charging its jump out of a fight.
+String fleeingLine(proto.Fleeing f) =>
+    'Leaving for ${f.to.q}, ${f.to.r}: jump in ${ticksOf(f.ticks)}, ${f.rounds == 0 ? 'no more rounds' : '${roundsOf(f.rounds)} more'} under fire';
+
+/// What calling off a jump out of a fight does, for every place Stop is offered.
+const stopFlightRule = 'Stop calls the jump off: the fleet fights on and the fuel it burned is forfeit.';
+
+/// "The 3x cruiser pack lands in 1 tick, from 4, -2": the group on a
+/// fleet's trail.
+String pursuitLine(proto.Pursuit p) => 'The ${p.label} lands in ${ticksOf(p.arrivesIn)}, from ${p.from.q}, ${p.from.r}';
+
+/// Whether the pursuer lands before the fleet can be gone, for a fleet that
+/// is [charging] a jump and for one that is not, and how much further it
+/// follows: `catches` and `hexes_left`, worded.
+String pursuitVerdict(proto.Pursuit p, {required bool charging}) {
+  final lands = p.catches
+      ? (charging ? 'It lands before the jump under way does and fires on the fleet.' : 'It lands before a jump ordered now would, and fires on the fleet.')
+      : (charging ? 'The jump under way is gone before it lands.' : 'A jump ordered now is gone before it lands; a fleet that stays is caught.');
+  final leash = p.hexesLeft == 0 ? 'It turns back after this jump.' : 'It follows ${hexesOf(p.hexesLeft)} more after this one.';
+  return '$lands $leash';
+}
+
+/// A `Pursuit` event as the log prints it.
+String pursuitEventLine(proto.PursuitEvent e) {
+  final whom = e.mine ? 'F${e.fleetId}' : "${e.owner}'s F${e.fleetId}";
+  final landing = switch ((e.to, e.arrivesIn)) {
+    (final to?, final ticks?) => ': it jumps to ${to.q}, ${to.r} and lands in ${ticksOf(ticks)}',
+    _ => '',
+  };
+  return switch (e.phase) {
+    proto.PursuitPhase.began =>
+      'Pursuit: the ${e.label} leaves ${e.sector.q}, ${e.sector.r} after $whom$landing${e.hexesLeft == 0 ? ', its last' : ', and follows ${hexesOf(e.hexesLeft)} more'}',
+    proto.PursuitPhase.continued =>
+      'Pursuit: the ${e.label} found ${e.sector.q}, ${e.sector.r} empty and goes on after $whom$landing${e.hexesLeft == 0 ? ', its last' : ', and follows ${hexesOf(e.hexesLeft)} more'}',
+    proto.PursuitPhase.abandoned => 'The ${e.label} gave up on $whom at ${e.sector.q}, ${e.sector.r}${e.why == null ? '' : ': ${e.why}'}'
+        '${e.to == null ? '' : '. It goes back by ${e.to!.q}, ${e.to!.r}'}',
+  };
+}
+
+/// "3 of 5 ships" for a group with losses, "5 ships" for one with none.
+String musterOf(proto.NpcFleetInfo g) => g.shipCount < g.muster ? '${groupDigits(g.shipCount)} of ${shipsOf(g.muster)}' : shipsOf(g.shipCount);
+
+/// How far a group follows a fleet that leaves a fight with it, and the
+/// ticks one jump takes it.
+String chaseHabit(proto.NpcFleetInfo g) =>
+    '${g.chaseHexes == 0 ? 'Follows nobody' : 'Follows ${hexesOf(g.chaseHexes)}'}, a jump takes it ${ticksOf(g.jumpTicks)}';
+
+/// What a group that is out of its own sector is doing: its `errand`, as of
+/// [tick]. [mine] says the fleet it follows is the player's.
+String errandLine(proto.GroupErrand e, int tick, {required bool mine}) {
+  final landing = switch ((e.to, e.arrivesAt)) {
+    (final to?, final at?) => ', jumping to ${to.q}, ${to.r}, lands in ${ticksOf(at > tick ? at - tick : 0)}',
+    _ => '',
+  };
+  if (e.quarry == null) {
+    return e.to == null ? 'Away from its own sector at ${e.home.q}, ${e.home.r}' : 'On its way back to ${e.home.q}, ${e.home.r}$landing';
+  }
+  final whom = mine ? 'your F${e.quarry}' : 'F${e.quarry}${e.quarryOwner == null ? '' : ' of ${e.quarryOwner}'}';
+  return 'After $whom$landing${e.hexesLeft == 0 ? ', then turns back' : ', and ${hexesOf(e.hexesLeft)} more'}';
+}
 
 /// A fight's end as the log prints it: the outcome, the rounds, what the
 /// player's fleets lost and what was left behind.

@@ -53,10 +53,11 @@ class FakeGame extends GameController {
   }
 }
 
-ui.FleetState _fleet(proto.Hex at, {int fuel = 100, double? jumpFuelExact}) => ui.FleetState(
+ui.FleetState _fleet(proto.Hex at, {int fuel = 100, double? jumpFuelExact, proto.Pursuit? pursuedBy}) => ui.FleetState(
       id: 7,
       name: 'F7',
       sector: at,
+      pursuedBy: pursuedBy,
       status: ui.FleetStatus.idle,
       shipCount: 3,
       ships: [shipRow(proto.ShipClass.lightFighter, 3)],
@@ -252,6 +253,64 @@ void main() {
     await m.moveTo(at(const proto.Hex(1, 0), _win));
     await tester.pump(const Duration(milliseconds: 50));
     expect(tester.widget<Kv>(find.byKey(const Key('inspector-fleet-7'))).v, '3 SHIPS - HULL 1,200 / 1,200');
+    await m.removePointer();
+    await endShell(tester, g);
+  });
+
+  testWidgets('a pursuit is drawn on the map and told in the sector panel: the lane the group jumps down, the fleet it is after, what it musters and when it is whole',
+      (tester) async {
+    const lair = proto.Hex(3, 0), landed = proto.Hex(2, 0), old = proto.Hex(0, 3);
+    final g = await openMap(tester);
+    final was = _state(1000, [
+      _fleet(landed, pursuedBy: const proto.Pursuit(groupId: 9, label: 'cruiser pack', from: lair, arrivesIn: 2, catches: false, hexesLeft: 1)),
+    ]);
+    proto.SectorState holding(proto.Hex h, proto.NpcFleetInfo group, {required bool live}) => proto.SectorState(
+        location: h,
+        terrain: proto.TerrainType.empty,
+        resources: was.sectors[h]!.resources,
+        connections: was.sectors[h]!.connections,
+        hostiles: [group],
+        threat: was.sectors[h]!.threat,
+        lastSeen: live ? 1000 : 400,
+        live: live);
+    g.fake = was.copyWith(sectors: {
+      ...was.sectors,
+      lair: holding(
+          lair,
+          hostileGroup(9, [shipRow(proto.ShipClass.cruiser, 1, damaged: 1, hullLost: 900)], proto.NpcBehavior.aggressive,
+              muster: 2,
+              wholeAt: 1300,
+              chaseHexes: 2,
+              jumpTicks: 2,
+              errand: const proto.GroupErrand(home: lair, quarry: 7, quarryOwner: 'Pilot', to: landed, arrivesAt: 1002, hexesLeft: 1)),
+          live: true),
+      old: holding(old, hostileGroup(10, [shipRow(proto.ShipClass.lightFighter, 1)], proto.NpcBehavior.patrol, muster: 3, wholeAt: 900, chaseHexes: 1), live: false),
+    });
+    g.notifyListeners();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final m = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await m.addPointer(location: Offset.zero);
+    await m.moveTo(at(lair, _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<Kv>(find.byKey(const Key('inspector-hostile-9'))).v, 'AGGRESSIVE - 1 OF 2 SHIPS');
+    expect(textUnder(tester, find.byKey(const Key('inspector-hostile-9-whole'))), startsWith('WHOLE AGAIN IN 5:00  '));
+    expect(_text(tester, 'inspector-hostile-9-chase'), 'FOLLOWS 2 HEXES, A JUMP TAKES IT 2 TICKS, F7 3 TICKS.');
+    expect(_text(tester, 'inspector-hostile-9-errand'), 'AFTER YOUR F7, JUMPING TO 2, 0, LANDS IN 2 TICKS, AND 1 HEX MORE.');
+    await shot(tester, 'map-pursuit-1440');
+
+    await m.moveTo(at(landed, _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(_text(tester, 'inspector-pursued-7'),
+        'PURSUED: THE CRUISER PACK LANDS IN 2 TICKS, FROM 3, 0. A JUMP ORDERED NOW IS GONE BEFORE IT LANDS; A FLEET THAT STAYS IS CAUGHT. IT FOLLOWS 1 HEX MORE AFTER THIS ONE.');
+    expect(_text(tester, 'fleet-chip-status-7'), 'PURSUED - IDLE');
+
+    await m.moveTo(at(old, _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<Kv>(find.byKey(const Key('inspector-hostile-10'))).v, 'PATROL - 1 OF 3 SHIPS');
+    expect(textUnder(tester, find.byKey(const Key('inspector-hostile-10-whole'))), startsWith('WHOLE AGAIN BY NOW, IF NOTHING DISTURBED IT  '),
+        reason: 'a group last seen wounded, whose time to mend has passed since');
+    expect(tester.takeException(), isNull, reason: 'the lanes of the pursuit are drawn');
     await m.removePointer();
     await endShell(tester, g);
   });

@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../console/battle.dart';
-import '../console/intel.dart' show groupDigits;
+import '../console/intel.dart' show clockFmt, groupDigits;
 import '../design/draw.dart';
 import '../design/gauges.dart';
 import '../design/panel.dart';
 import '../design/symbols.dart';
 import '../design/tokens.dart';
+import '../models/fleet.dart' as ui;
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/state_mapper.dart' show amountsOf;
@@ -155,8 +156,75 @@ class FleetCondition extends StatelessWidget {
 Color _outcomeColor(proto.BattleOutcome o) => switch (o) {
       proto.BattleOutcome.hostilesDestroyed => C.own,
       proto.BattleOutcome.fleetsDestroyed || proto.BattleOutcome.bothDestroyed => C.ember,
-      proto.BattleOutcome.withdrawn || proto.BattleOutcome.standoff => C.a300,
+      proto.BattleOutcome.withdrawn || proto.BattleOutcome.standoff || proto.BattleOutcome.fled => C.a300,
     };
+
+/// "PATROL - 3 OF 5 SHIPS": a hostile group's behaviour and its ships
+/// against what it musters when whole.
+String groupHeading(proto.NpcFleetInfo g) => '${g.behavior.wire} - ${musterOf(g)}'.toUpperCase();
+
+/// A hostile group as every screen lists it under its heading: its ships by
+/// class, when it will be whole again if it is not, how far it follows a
+/// fleet that leaves it, and what it is out of its own sector for. Every
+/// figure is the state's; [tick] turns the tick it is whole at into a time
+/// from now.
+class GroupBrief extends StatelessWidget {
+  final proto.NpcFleetInfo group;
+  final int tick;
+
+  /// The sector it was seen in is in sensor range now. When it is not, what
+  /// is said of the group is as it was last seen.
+  final bool live;
+
+  /// The player's fleet ids, so that a group after one of them says so.
+  final Iterable<int> own;
+
+  /// The fleet the screen is read for: its own jump time is printed beside
+  /// the group's. Which of the two is caught is the state's to say, in a
+  /// fleet's `flight`.
+  final ui.FleetState? beside;
+
+  /// A name for the rows' keys, where a screen lists more than one group.
+  final String tag;
+  const GroupBrief(this.group, {super.key, required this.tick, required this.live, this.own = const [], this.beside, required this.tag});
+
+  String _mending(int wholeAt) {
+    if (wholeAt > tick) return 'WHOLE AGAIN IN ${clockFmt(wholeAt - tick)}${live ? '' : ', AS LAST SEEN'}';
+    return live ? 'WHOLE AGAIN ANY MOMENT' : 'WHOLE AGAIN BY NOW, IF NOTHING DISTURBED IT';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final g = group;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      ShipRows(g.ships, color: C.ember, tag: tag),
+      if (g.wholeAt case final at?)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text.rich(
+            key: Key('$tag-whole'),
+            TextSpan(children: [
+              TextSpan(text: _mending(at), style: const TextStyle(color: damagedColor, fontWeight: FontWeight.w600)),
+              const TextSpan(text: '  IT MENDS AT REST IN ITS OWN SECTOR; A FIGHT OR A PURSUIT STOPS THE CLOCK.'),
+            ]),
+            style: _small,
+          ),
+        ),
+      Padding(
+          padding: const EdgeInsets.only(top: 3),
+          child: Text(
+              '${chaseHabit(g)}${switch (beside) { final f? when f.jumpTicks > 0 => ', ${f.name} ${ticksOf(f.jumpTicks)}', _ => '' }}.'.toUpperCase(),
+              key: Key('$tag-chase'),
+              style: _small)),
+      if (g.errand case final errand?)
+        Padding(
+          padding: const EdgeInsets.only(top: 3),
+          child: Text('${errandLine(errand, tick, mine: own.contains(errand.quarry)).toUpperCase()}.',
+              key: Key('$tag-errand'), style: _small.copyWith(color: errand.quarry == null ? C.text2 : atRiskColor)),
+        ),
+    ]);
+  }
+}
 
 /// How many volleys of a side the round panel shows before the rest are
 /// asked for.
@@ -267,8 +335,18 @@ class _BattlePanelState extends State<BattlePanel> {
           ]),
           _cells('', 'LEFT', 'LOST', 'DMG', 'RISK', head: true),
           for (final g in side.groups) ...[
-            if (side.groups.length > 1 || !g.mine)
-              Padding(padding: const EdgeInsets.only(top: 3), child: Text(groupName(g).toUpperCase(), overflow: TextOverflow.ellipsis, style: _small)),
+            if (side.groups.length > 1 || !g.mine || g.fleeing)
+              Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: Text.rich(
+                    key: Key('$tag-group-${g.fleetId}'),
+                    TextSpan(children: [
+                      TextSpan(text: groupName(g).toUpperCase()),
+                      if (g.fleeing) const TextSpan(text: '  LEAVING: FIRED ON, NOT FIRING', style: TextStyle(color: damagedColor)),
+                    ]),
+                    overflow: TextOverflow.ellipsis,
+                    style: _small,
+                  )),
             for (final u in g.units)
               _cells(u.unit.label.toUpperCase(), shortCount(u.count), u.lost > 0 ? '-${shortCount(u.lost)}' : '',
                   u.damaged > 0 ? shortCount(u.damaged) : '', u.atRisk > 0 ? shortCount(u.atRisk) : '',

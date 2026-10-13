@@ -1,5 +1,6 @@
 import '../protocol/hex.dart';
-import '../protocol/protocol.dart' as proto show Refining, Refit, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
+import '../protocol/protocol.dart' as proto
+    show Fleeing, FlightQuote, Pursuit, Refining, Refit, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
 
 enum FleetStatus {
   docked('DOCKED'),
@@ -116,6 +117,21 @@ class FleetState {
   /// server would refuse it.
   final proto.Refining? refine;
 
+  /// What a jump out of the fight it is in would cost now, and who would
+  /// follow; null unless it stands in a fight and fires.
+  final proto.FlightQuote? flight;
+
+  /// The jump out of a fight it is charging; null otherwise. Its [status]
+  /// is [FleetStatus.enRoute] meanwhile.
+  final proto.Fleeing? fleeing;
+
+  /// The group on its trail; null with none.
+  final proto.Pursuit? pursuedBy;
+
+  /// Where it last stood in a fight, for the report of a fight it has left;
+  /// null when it has been in none this console saw.
+  final Hex? foughtAt;
+
   const FleetState({
     required this.id,
     required this.name,
@@ -152,10 +168,21 @@ class FleetState {
     this.cargoBlocked = false,
     this.holdCapacity = 0,
     this.refine,
+    this.flight,
+    this.fleeing,
+    this.pursuedBy,
+    this.foughtAt,
   });
 
   /// The doctrine's label, as the server names it; null when flown by hand.
   String? get policy => orders?.preset.label;
+
+  /// What the fleet is doing in a word: the state's, but for a fleet that
+  /// is leaving a fight, which the state calls moving.
+  String get statusLabel => fleeing == null ? status.label : 'FLEEING';
+
+  /// In a fight, firing or leaving it under fire.
+  bool get underFire => status == FleetStatus.combat || fleeing != null;
 
   int? get fuelForHops {
     final jf = jumpFuelExact ?? jumpFuel.toDouble();
