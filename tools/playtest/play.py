@@ -403,7 +403,7 @@ def flight_words(q):
     chase = q.get("chase")
     follows = (f"the {chase['label']} would follow {chase['hexes']} hex(es), jumping in {chase['jump_ticks']} tick(s)"
                + (f" and firing on you for {chase['rounds_per_hex']} round(s) at each" if chase["rounds_per_hex"]
-                  else ", too slow to catch you if you keep jumping")
+                  else ", which never catches a fleet as fast as yours that jumps on at once")
                if chase else "nothing would follow")
     cost = f"{q['fuel']:.0f} fuel, gone in {q['ticks']} tick(s) after {q['rounds']} round(s) under fire without firing back"
     refused = f"  CANNOT LEAVE: {q['refusal']}" if q.get("refusal") else ""

@@ -303,7 +303,8 @@ class Wait(unittest.TestCase):
         auto_arrived["fleets"][0]["policy"] = orders
         self.assertEqual(play.wait_reasons(self.snap(auto), self.snap(auto_arrived), [], "any"), [])
         self.assertEqual(play.fleet_rows(fs)[0]["policy"], "manual")
-        self.assertIn(" prospect (range 6, engage 2.0x, fuel 35%, home at cargo 85%, reserve 10%) ", play.fleet_line(play.fleet_rows(auto)[0]))
+        self.assertIn(" prospect (range 6, engage 2.0x, disengage 0.9x, fuel 35%, home at cargo 85%, reserve 10%) ",
+                      play.fleet_line(play.fleet_rows(auto)[0]))
 
     def test_lost_fleet_returns(self):
         base = self.snap()
