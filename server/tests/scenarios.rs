@@ -96,7 +96,7 @@ async fn a_fight_is_reported_to_the_player_in_it_and_not_to_anyone_else() {
     let mut frontier = std::collections::VecDeque::from([(home, 0u8)]);
     let mut lair = None;
     while let Some((at, hops)) = frontier.pop_front() {
-        if at != home && world.generate_sector(at).npc_template.is_some_and(|t| t.power() < 8.0) {
+        if at != home && world.generate_sector(at).npc_template.is_some_and(|t| t.power() < 80.0) {
             lair = Some(at);
             break;
         }
@@ -551,25 +551,25 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
         let state = full_state(&mut ws).await;
         let fleet = state["fleets"][0]["id"].as_u64().unwrap();
         let home = hex_of(&state["player"]["homeworld"]);
-        assert_eq!((state["fleets"][0]["cargo_capacity"].as_f64(), state["fleets"][0]["laden"].as_bool()), (Some(40.0), Some(false)));
+        assert_eq!((state["fleets"][0]["cargo_capacity"].as_f64(), state["fleets"][0]["laden"].as_bool()), (Some(100.0), Some(false)));
         let stocked = state["player"]["resources"]["metal"].as_f64().unwrap();
 
         command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "metal", "amount": 25})).await;
         let loaded = update_where(&mut ws, |m| m["fleets"][0]["laden"] == true).await;
         assert_eq!(hold_of(&loaded["fleets"][0]), [25.0, 0.0, 0.0], "{loaded}");
         assert_eq!(loaded["fleets"][0]["cargo_blocked"], false);
-        assert!(alerts_of(&loaded).iter().any(|a| a.starts_with(&format!("fleet {fleet} loaded 25 metal from the stockpile: it carries 25 of 40"))), "{loaded}");
+        assert!(alerts_of(&loaded).iter().any(|a| a.starts_with(&format!("fleet {fleet} loaded 25 metal from the stockpile: it carries 25 of 100"))), "{loaded}");
         let metal = loaded["player"]["resources"]["metal"].as_f64().unwrap();
         assert!((stocked - 25.0..stocked - 24.0).contains(&metal), "the stockpile paid for it: {stocked} to {metal}");
 
         command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "crystal"})).await;
         let full = update_where(&mut ws, |m| m["fleets"][0]["cargo"]["crystal"] != 0.0).await;
-        assert_eq!(hold_of(&full["fleets"][0]), [25.0, 15.0, 0.0], "with no amount, all that fits: {full}");
+        assert_eq!(hold_of(&full["fleets"][0]), [25.0, 75.0, 0.0], "with no amount, all that fits: {full}");
 
         command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "deuterium"})).await;
         let no_room = refused(&mut ws).await;
         assert_eq!(no_room["code"], "CargoFull", "{no_room}");
-        assert_eq!(no_room["message"], format!("the hold of fleet {fleet} is full: it carries 40 of 40"));
+        assert_eq!(no_room["message"], format!("the hold of fleet {fleet} is full: it carries 100 of 100"));
         command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": "metal", "amount": 9000})).await;
         let no_stock = refused(&mut ws).await;
         assert_eq!(no_stock["code"], "NoResources", "{no_stock}");
@@ -584,7 +584,7 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
 
         for _ in 0..3 {
             let later = update_where(&mut ws, |_| true).await;
-            assert_eq!(hold_of(&later["fleets"][0]), [25.0, 15.0, 0.0], "the dock leaves a laden hold alone: {later}");
+            assert_eq!(hold_of(&later["fleets"][0]), [25.0, 75.0, 0.0], "the dock leaves a laden hold alone: {later}");
         }
         server.stop();
         (token, fleet, home, stocked)
@@ -597,14 +597,14 @@ async fn a_hold_loaded_at_the_dock_outlives_the_server_and_unloads_once_the_flee
     assert_eq!(state["fleets"][0]["laden"], true, "the mark came back with the fleet: {}", state["fleets"][0]);
     for _ in 0..3 {
         let later = update_where(&mut ws, |_| true).await;
-        assert_eq!(hold_of(&later["fleets"][0]), [25.0, 15.0, 0.0], "and the restarted dock leaves it alone: {later}");
+        assert_eq!(hold_of(&later["fleets"][0]), [25.0, 75.0, 0.0], "and the restarted dock leaves it alone: {later}");
         assert_eq!(later["fleets"][0]["laden"], true);
     }
 
     let out = quiet_route(&world, home, |at| at != home);
     fly(&mut ws, fleet, &out).await;
     let away = full_state(&mut ws).await;
-    assert_eq!((hold_of(&away["fleets"][0]), away["fleets"][0]["laden"].as_bool()), ([25.0, 15.0, 0.0], Some(false)), "{away}");
+    assert_eq!((hold_of(&away["fleets"][0]), away["fleets"][0]["laden"].as_bool()), ([25.0, 75.0, 0.0], Some(false)), "{away}");
     command(&mut ws, json!({"action": "unload", "fleet_id": fleet})).await;
     let afar = refused(&mut ws).await;
     assert_eq!(afar["code"], "NotInSector", "{afar}");
@@ -697,7 +697,7 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_stopped_while_
         command(&mut ws, json!({"action": "outpost_survey", "fleet_id": fleet})).await;
         let at_home = reply_of(&mut ws, "outpost_survey").await;
         assert_eq!((hex_of(&at_home["sector"]), at_home["refusal"].as_str()), (home, Some(not_here.as_str())), "{at_home}");
-        assert_eq!((amounts(&at_home["cost"]), at_home["build_ticks"].as_u64(), at_home["site"]["hops_home"].as_u64()), ([1000.0, 500.0, 200.0], Some(9), Some(0)));
+        assert_eq!((amounts(&at_home["cost"]), at_home["build_ticks"].as_u64(), at_home["site"]["hops_home"].as_u64()), ([3000.0, 1500.0, 600.0], Some(9), Some(0)));
         command(&mut ws, json!({"action": "found_outpost", "fleet_id": fleet})).await;
         let first = refused(&mut ws).await;
         assert_eq!((first["code"].as_str(), first["message"].as_str()), (Some("InvalidTarget"), Some(not_here.as_str())), "{first}");
@@ -710,11 +710,11 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_stopped_while_
         loop {
             let msg = next_json(&mut ws).await;
             assert!(Instant::now() < deadline, "the stockpile never covered an outpost: {msg}");
-            if msg["type"] == "tick_update" && amounts(&msg["player"]["resources"]).iter().zip([1100.0, 600.0, 400.0]).all(|(have, need)| *have >= need) {
+            if msg["type"] == "tick_update" && amounts(&msg["player"]["resources"]).iter().zip([3100.0, 1600.0, 800.0]).all(|(have, need)| *have >= need) {
                 break;
             }
         }
-        for (resource, amount) in [("metal", 1100), ("crystal", 600), ("deuterium", 300)] {
+        for (resource, amount) in [("metal", 3100), ("crystal", 1600), ("deuterium", 700)] {
             command(&mut ws, json!({"action": "load", "fleet_id": fleet, "resource": resource, "amount": amount})).await;
             update_where(&mut ws, |m| m["fleets"][0]["cargo"][resource] == f64::from(amount)).await;
         }
@@ -796,7 +796,7 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_stopped_while_
     pipe.say(&json!({"type": "command", "action": "upgrade_outpost"}).to_string());
     let short = pipe.until(|m| m["type"] == "error");
     assert_eq!(short["code"].as_str(), Some("InsufficientResources"), "{short}");
-    let costs = format!("outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at {site} is short by ");
+    let costs = format!("outpost level 2 costs 7500 metal, 3750 crystal and 1500 deuterium; the store at {site} is short by ");
     assert!(short["message"].as_str().unwrap().starts_with(&costs), "the refusal passes through word for word: {short}");
     assert!(seen["outpost"]["upgrade_refusal"].as_str().unwrap().starts_with(&costs), "and the state had said it beforehand: {seen}");
     pipe.say(r#"{"action": "found_outpost"}"#);
