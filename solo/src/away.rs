@@ -41,7 +41,8 @@ impl Tally {
                 | EventKind::DefenceBuilt(_)
                 | EventKind::RaidResolved(_)
                 | EventKind::FleetDestroyed(_)
-                | EventKind::ShipDestroyed(_)
+                | EventKind::BattleRound(_)
+                | EventKind::ShipsLost(_)
                 | EventKind::OutpostCompleted(_)
         );
         if !reported {
@@ -67,7 +68,11 @@ impl Tally {
                 self.docked_ships_lost += e.ships_lost;
             }
             EventKind::FleetDestroyed(e) if e.mine => self.fleets_lost += 1,
-            EventKind::ShipDestroyed(e) if e.mine => self.ships_lost += 1,
+            EventKind::BattleRound(e) => {
+                let mine = e.fleets.groups.iter().filter(|group| group.mine);
+                self.ships_lost += mine.flat_map(|group| &group.units).map(|units| units.lost).sum::<u32>();
+            }
+            EventKind::ShipsLost(e) if e.mine => self.ships_lost += e.ships.iter().map(|s| s.count).sum::<u32>(),
             _ => {}
         }
     }

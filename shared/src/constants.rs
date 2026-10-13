@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 9;
+pub const ECONOMY_VERSION: u32 = 10;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 4;
 
@@ -199,7 +199,7 @@ impl Drive {
 
 /// OGame's ships, in OGame's order, without the Colony Ship
 /// (`docs/design/ogame.md`, sections 5.3 and 6.1).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ShipClass {
     SmallCargo,
@@ -498,7 +498,7 @@ pub const STARTING_RESOURCES: Resources = Resources {
 
 /// What a new empire flies. OGame starts with no ships; this is this game's
 /// and provisional. It sets what an empire can do on its first day.
-pub const STARTING_SHIPS: &[(ShipClass, usize)] = &[(ShipClass::LightFighter, 2)];
+pub const STARTING_SHIPS: &[(ShipClass, u32)] = &[(ShipClass::LightFighter, 2)];
 
 /// What the map pays, against the game as it was before OGame's catalogue:
 /// ore in a tile, a derelict's hold, a group's wreckage and the outpost's
@@ -544,6 +544,8 @@ pub const SENSOR_HOPS_PER_LEVEL: u8 = 1;
 pub const MAX_FLEETS_PER_PLAYER: usize = 3;
 /// All fleets a player may own, docked or deployed; splits stop here.
 pub const MAX_FLEETS_TOTAL: usize = 8;
+/// The most ships one fleet holds. It bounds the worst round of a fight.
+pub const MAX_FLEET_SHIPS: u32 = 5_000;
 
 /// Rings that hold the home seats (cube distance from origin); see `world::is_home_seat`.
 pub const HOMEWORLD_MIN_DIST: u16 = 3;
@@ -555,10 +557,30 @@ pub const HARVEST_COOLDOWN: u16 = 1;
 /// Ticks a fleet takes no order after a scan.
 pub const SCAN_COOLDOWN: u16 = 5;
 
-/// Combat.
-pub const DAMAGE_VARIANCE_MIN: f32 = 0.8;
-pub const DAMAGE_VARIANCE_MAX: f32 = 1.2;
-pub const SHIELD_REGEN_IDLE_TICKS: u16 = 10;
+/// The fight (`docs/design/ogame.md`, section 7.1). A unit whose shield a
+/// shot has left at zero and whose hull stands at or under this many
+/// hundredths of full explodes with probability one minus its hull's share.
+/// OGame's.
+pub const EXPLODE_BELOW_PCT: u32 = 70;
+/// A fight in open space ends when this many rounds in a row took no hull
+/// from either side. OGame's.
+pub const STANDOFF_ROUNDS: u16 = 1;
+/// The odds of a fight are the real round played this many times with fixed
+/// dice, on forces scaled down together until the larger has at most
+/// `ODDS_UNITS` units, for at most `ODDS_ROUNDS` rounds each. They trade how
+/// steady the odds are against what they cost.
+pub const ODDS_RUNS: u32 = 8;
+pub const ODDS_UNITS: u32 = 200;
+pub const ODDS_ROUNDS: u32 = 64;
+
+/// Repair. The home dock makes every ship of a fleet whole for this share of
+/// the ship's cost times the share of hull restored; the outpost's dock for
+/// its own share, paid from its store. Provisional: they trade the cost of
+/// a lost fight against how often a fleet goes out.
+pub const REPAIR_COST_SHARE_HOME: f64 = 0.0;
+pub const REPAIR_COST_SHARE_OUTPOST: f64 = 0.10;
+/// Ticks a fleet takes no order after a dock has mended it. Provisional.
+pub const REPAIR_TICKS: u16 = 0;
 
 /// Emergency recall.
 pub const RECALL_FUEL_MULTIPLIER: f64 = 2.0;
@@ -694,9 +716,9 @@ pub const POLICY_MIN_SEAM_UNITS: f64 = 3.0 * MAP_PAYS;
 /// worth this many times the deuterium the jumps there and back burn, both
 /// at their score weights.
 pub const POLICY_FUEL_PAYBACK: f32 = 1.5;
-/// A fleet under orders waits until its shields are back to this share of
-/// full before it acts again: hull is not repaired, shields are.
-pub const POLICY_SHIELDS_READY: f32 = 0.95;
+/// A fleet under orders whose hull has fallen below this share of full goes
+/// home to be mended before it does anything else. Provisional.
+pub const POLICY_HULL_READY: f32 = 0.85;
 /// How far along the lanes a doctrine looks for its next sector.
 pub const POLICY_SEARCH_HOPS: u8 = 32;
 

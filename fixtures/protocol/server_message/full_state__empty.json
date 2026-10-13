@@ -1,4 +1,5 @@
 {
+  "battles": [],
   "fleets": [],
   "homeworld": {
     "build_pending": [],
@@ -1665,6 +1666,7 @@
     },
     "defences": [],
     "docked_power": 0.0,
+    "docked_ship_count": 0,
     "docked_ships": [],
     "energy": {
       "fraction": 1.0,

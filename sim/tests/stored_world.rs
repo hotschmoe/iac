@@ -15,7 +15,7 @@ use common::{stored_in, Memory};
 use iac_shared::constants::{ResourceKind, ShipClass, TerrainType, DEFAULT_WORLD_SEED};
 use iac_shared::hex::Hex;
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{Command, EventKind, HarvestResource, PolicyPreset, QueueType};
+use iac_shared::protocol::{Command, EventKind, HarvestResource, PolicyPreset, QueueType, ShipCount};
 use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{template_npc_id, FleetStatus};
@@ -174,7 +174,11 @@ impl Cast for Crew {
                 11 => here.map(|at| Command::Attack { fleet_id, target_fleet_id: template_npc_id(at) }),
                 12 => Some(Command::Recall { fleet_id }),
                 13 => Some(Command::ExploreSite { fleet_id }),
-                14 => engine.fleets.get(&fleet_id).map(|f| Command::Split { fleet_id, ship_ids: vec![f.ships[0].id] }),
+                14 => engine.fleets.get(&fleet_id).and_then(|f| f.ships.groups().first()).map(|group| Command::Split {
+                    fleet_id,
+                    ships: vec![ShipCount { ship_class: group.ship_class, count: 1 }],
+                    damaged_first: tick.is_multiple_of(8),
+                }),
                 15 => Some(Command::Merge { fleet_id, other_fleet_id: pick(&mut rng) }),
                 16 => Some(Command::Load { fleet_id, resource: ResourceKind::ALL[rng.random_range(0..3)], amount: None }),
                 17 => Some(Command::Unload { fleet_id }),

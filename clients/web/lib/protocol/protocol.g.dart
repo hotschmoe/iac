@@ -454,34 +454,53 @@ class ExploreSiteCommand extends Command {
   Json toJson() => {'action': 'explore_site', 'fleet_id': fleetId};
 }
 
-/// Detach the listed ships from `fleet_id` into a new fleet at the same
-/// sector. The new fleet starts with no standing orders and takes a share
-/// of fuel and cargo proportional to the tank and hold it carries off.
-/// At least one ship must stay behind. Both fleets must be idle. Rejected
-/// with `FleetLimitReached` at the fleet cap, `InvalidTarget` for ship ids
-/// not in the fleet or an attempt to take every ship. At the homeworld
-/// this is also how docked ships are launched as their own fleet. The
-/// reply is an `Alert` (info) event naming the new fleet id.
+/// Detach `ships`, so many of each class named, from `fleet_id` into a
+/// new fleet at the same sector. Whole ships of a class go first and
+/// damaged ones only when the whole run out; with `damaged_first` the
+/// most damaged go first, which is how the wounded are sent home. The
+/// new fleet starts with no standing orders, fights with the levels of
+/// the fleet it left (`FleetState.refit`) and takes a share of fuel and
+/// cargo proportional to the tank and hold it carries off. At least one
+/// ship must stay behind. The fleet must be idle. Rejected with
+/// `FleetLimitReached` at the fleet cap, `InvalidTarget` for a class
+/// named twice, a count of zero, more ships of a class than the fleet
+/// has, or an attempt to take every ship. At the homeworld this is also
+/// how docked ships are launched as their own fleet. The reply is an
+/// `Alert` (info) event naming the new fleet id.
 class SplitCommand extends Command {
   final int fleetId;
-  final List<int> shipIds;
+  final List<ShipCount> ships;
+  final bool damagedFirst;
 
-  const SplitCommand({required this.fleetId, required this.shipIds});
+  const SplitCommand({required this.fleetId, required this.ships, this.damagedFirst = false});
 
   factory SplitCommand.fromJson(Object? json) {
     final m = _obj(json);
-    return SplitCommand(fleetId: _int(m['fleet_id']), shipIds: _list(m['ship_ids'], _int));
+    return SplitCommand(
+      fleetId: _int(m['fleet_id']),
+      ships: _list(m['ships'], ShipCount.fromJson),
+      damagedFirst: _opt(m['damaged_first'], _bool) ?? false,
+    );
   }
 
   @override
-  Json toJson() => {'action': 'split', 'fleet_id': fleetId, 'ship_ids': shipIds};
+  Json toJson() => {
+    'action': 'split',
+    'fleet_id': fleetId,
+    'ships': ships.map((e) => e.toJson()).toList(),
+    'damaged_first': damagedFirst,
+  };
 }
 
 /// Fold `other_fleet_id` into `fleet_id`. Both must be yours, idle, and in
 /// the same sector (`NotInSector` otherwise). Ships, cargo and fuel are
 /// pooled (fuel up to the combined tank), the merged fleet keeps the
 /// standing orders of `fleet_id`, and `other_fleet_id` ceases to exist.
-/// This works anywhere, so a fresh fleet can rescue a stranded one.
+/// Away from home it fights with the lower of the two fleets' Weapons,
+/// Shielding and Armour levels until it docks at home. Refused with
+/// `InvalidCommand` when the two hold more than `MAX_FLEET_SHIPS` ships
+/// between them. This works anywhere, so a fresh fleet can rescue a
+/// stranded one.
 class MergeCommand extends Command {
   final int fleetId;
   final int otherFleetId;
@@ -1413,15 +1432,15 @@ class FleetOdds extends ServerMessage {
 
 /// How a fleet would fare against what the player knows of a sector.
 ///
-/// The server plays the fight on averages, with the ships on each side:
-/// rapid fire between classes, each shot against hull and shield, the fleet
-/// firing first. `ratio` puts the expected result on the scale of a power
-/// ratio between equal ship classes (1.0 is an even match, 0.1 to 10), and
-/// `label` is its band: at least 2.5 is safe (99 percent of the hull kept or
-/// more), 1.5 favourable (86 to 99), 1.1 even (a win that keeps 53 to 86),
-/// 0.9 risky (anything from a loss to a win with half the hull), below that
-/// deadly. A sector with nothing in sight is rated against the group its
-/// ring spawns. Standing orders use the same number (`engage_ratio_x10`).
+/// The server plays the fight itself, the round a fight is fought by, a few
+/// times over with fixed dice and the two sides as they stand, damage and
+/// refit included, both scaled down together when they are large. `ratio`
+/// puts the share of its worth each side kept on the scale of a power ratio
+/// between equal ship classes (1.0 is an even match, 0.1 to 10), and `label`
+/// is its band (`RatioLabel`): safe from 2.5, favourable from 1.5, even
+/// from 1.1, risky from 0.9, below that deadly. A sector with nothing in
+/// sight is rated against the group its ring spawns. Standing orders use
+/// the same number (`engage_ratio_x10`).
 class SectorOdds {
   final Hex sector;
   final ThreatInfo threat;
@@ -1596,6 +1615,11 @@ class GameState extends ServerMessage {
   /// The player's outpost; absent when they have none.
   final OutpostState? outpost;
   final List<SectorState> knownSectors;
+
+  /// The fights under way that the player has a fleet in or is present
+  /// at, each with its last round: what a client that arrives in the
+  /// middle of one has missed. The rounds before that are not kept.
+  final List<BattleState> battles;
   final WorldInfo world;
 
   const GameState({
@@ -1605,6 +1629,7 @@ class GameState extends ServerMessage {
     required this.homeworld,
     this.outpost,
     required this.knownSectors,
+    this.battles = const [],
     required this.world,
   });
 
@@ -1617,6 +1642,7 @@ class GameState extends ServerMessage {
       homeworld: HomeworldState.fromJson(m['homeworld']),
       outpost: _opt(m['outpost'], OutpostState.fromJson),
       knownSectors: _list(m['known_sectors'], SectorState.fromJson),
+      battles: _opt(m['battles'], (v) => _list(v, BattleState.fromJson)) ?? const [],
       world: WorldInfo.fromJson(m['world']),
     );
   }
@@ -1630,7 +1656,41 @@ class GameState extends ServerMessage {
     'homeworld': homeworld.toJson(),
     'outpost': ?outpost?.toJson(),
     'known_sectors': knownSectors.map((e) => e.toJson()).toList(),
+    'battles': battles.map((e) => e.toJson()).toList(),
     'world': world.toJson(),
+  };
+}
+
+/// A fight under way, as `GameState.battles` carries it.
+class BattleState {
+  final Hex sector;
+
+  /// Rounds fought so far.
+  final int rounds;
+
+  /// The last of them; absent before the first is fought.
+  final BattleRoundEvent? lastRound;
+
+  /// What each fleet and group has lost so far, as `CombatEnded` will say.
+  final List<BattleLosses> losses;
+
+  const BattleState({required this.sector, required this.rounds, this.lastRound, required this.losses});
+
+  factory BattleState.fromJson(Object? json) {
+    final m = _obj(json);
+    return BattleState(
+      sector: Hex.fromJson(m['sector']),
+      rounds: _int(m['rounds']),
+      lastRound: _opt(m['last_round'], BattleRoundEvent.fromJson),
+      losses: _list(m['losses'], BattleLosses.fromJson),
+    );
+  }
+
+  Json toJson() => {
+    'sector': sector.toJson(),
+    'rounds': rounds,
+    'last_round': ?lastRound?.toJson(),
+    'losses': losses.map((e) => e.toJson()).toList(),
   };
 }
 
@@ -1696,6 +1756,9 @@ class OutpostState {
   /// What the platform defends with; 0 while breached or unfinished.
   final double platformPower;
 
+  /// What the owner's ships standing in the sector add.
+  final double shipsPower;
+
   /// The platform and the owner's ships standing in the sector: what the
   /// next raid meets.
   final double defencePower;
@@ -1742,6 +1805,7 @@ class OutpostState {
     this.yieldLost = const [],
     required this.grade,
     required this.platformPower,
+    required this.shipsPower,
     required this.defencePower,
     required this.raidPower,
     this.raidArrivalTick,
@@ -1768,6 +1832,7 @@ class OutpostState {
       yieldLost: _opt(m['yield_lost'], (v) => _list(v, ResourceKind.fromJson)) ?? const [],
       grade: _double(m['grade']),
       platformPower: _double(m['platform_power']),
+      shipsPower: _double(m['ships_power']),
       defencePower: _double(m['defence_power']),
       raidPower: PowerRange.fromJson(m['raid_power']),
       raidArrivalTick: _opt(m['raid_arrival_tick'], _int),
@@ -1793,6 +1858,7 @@ class OutpostState {
     'yield_lost': yieldLost.map((e) => e.toJson()).toList(),
     'grade': grade,
     'platform_power': platformPower,
+    'ships_power': shipsPower,
     'defence_power': defencePower,
     'raid_power': raidPower.toJson(),
     'raid_arrival_tick': ?raidArrivalTick,
@@ -2078,7 +2144,35 @@ class FleetState {
   final int id;
   final Hex location;
   final FleetStatus state;
-  final List<ShipState> ships;
+
+  /// Its ships by class, in catalogue order; a class it has none of is
+  /// left out. A fleet is a count for each class and the hull of its
+  /// damaged ships: no ship has an id.
+  final List<ShipGroupState> ships;
+
+  /// Every ship of every class.
+  final int shipCount;
+
+  /// Hull the whole fleet holds, and at full. Hull lost stays lost until a
+  /// dock mends it (`repair`).
+  final int hull;
+  final int hullMax;
+
+  /// What the fleet fires in one round, and the shield it raises at the
+  /// start of each, with `refit` counted.
+  final int attack;
+  final int shield;
+
+  /// The Weapons, Shielding and Armour Technology the fleet fights with:
+  /// the levels it last docked at home with. Research that finishes while
+  /// it is away reaches it when it next docks there, not at the outpost.
+  final Refit refit;
+
+  /// The owner's levels are above `refit`: docking at home would raise it.
+  final bool refitDue;
+
+  /// What mending its damaged ships would take; absent when none is damaged.
+  final RepairQuote? repair;
   final Resources cargo;
 
   /// Hold size: the most `cargo` can total, as the server enforces it.
@@ -2121,7 +2215,8 @@ class FleetState {
   final int cooldownRemaining;
 
   /// Combat power of the whole fleet on the scale raids and threat ratings
-  /// share: each ship counts `weapon + (hull + shield) / 10`.
+  /// share: each ship counts its attack and a tenth of its shield and of
+  /// the hull it holds, with `refit` counted.
   final double power;
 
   /// How many more hops outward the fleet can fly and still get home:
@@ -2161,6 +2256,14 @@ class FleetState {
     required this.location,
     required this.state,
     required this.ships,
+    required this.shipCount,
+    required this.hull,
+    required this.hullMax,
+    required this.attack,
+    required this.shield,
+    required this.refit,
+    this.refitDue = false,
+    this.repair,
     required this.cargo,
     required this.cargoCapacity,
     required this.fuel,
@@ -2187,7 +2290,15 @@ class FleetState {
       id: _int(m['id']),
       location: Hex.fromJson(m['location']),
       state: FleetStatus.fromJson(m['state']),
-      ships: _list(m['ships'], ShipState.fromJson),
+      ships: _list(m['ships'], ShipGroupState.fromJson),
+      shipCount: _int(m['ship_count']),
+      hull: _int(m['hull']),
+      hullMax: _int(m['hull_max']),
+      attack: _int(m['attack']),
+      shield: _int(m['shield']),
+      refit: Refit.fromJson(m['refit']),
+      refitDue: _opt(m['refit_due'], _bool) ?? false,
+      repair: _opt(m['repair'], RepairQuote.fromJson),
       cargo: Resources.fromJson(m['cargo']),
       cargoCapacity: _double(m['cargo_capacity']),
       fuel: _double(m['fuel']),
@@ -2214,6 +2325,14 @@ class FleetState {
     'location': location.toJson(),
     'state': state.toJson(),
     'ships': ships.map((e) => e.toJson()).toList(),
+    'ship_count': shipCount,
+    'hull': hull,
+    'hull_max': hullMax,
+    'attack': attack,
+    'shield': shield,
+    'refit': refit.toJson(),
+    'refit_due': refitDue,
+    'repair': ?repair?.toJson(),
     'cargo': cargo.toJson(),
     'cargo_capacity': cargoCapacity,
     'fuel': fuel,
@@ -2269,47 +2388,132 @@ enum FleetStatus {
   String toJson() => wire;
 }
 
-class ShipState {
-  final int id;
+/// The ships of one class in a fleet or a hostile group. Shields are not a
+/// state: every unit's is full at the start of every round.
+class ShipGroupState {
   final ShipClass shipClass;
-  final double hull;
-  final double hullMax;
-  final double shield;
-  final double shieldMax;
-  final double weaponPower;
+  final int count;
 
-  const ShipState({
-    required this.id,
+  /// How many are not whole.
+  final int damaged;
+
+  /// How many of those stand at or under `EXPLODE_BELOW_PCT` hundredths of
+  /// their hull: each may explode the next time a shot breaks its shield.
+  final int atRisk;
+
+  /// Hull they hold between them, and at full.
+  final int hull;
+  final int hullMax;
+
+  /// One ship's attack, shield and full hull in a round, with what its
+  /// fleet or group fights with counted.
+  final int unitAttack;
+  final int unitShield;
+  final int unitHull;
+
+  const ShipGroupState({
     required this.shipClass,
+    required this.count,
+    required this.damaged,
+    required this.atRisk,
     required this.hull,
     required this.hullMax,
-    required this.shield,
-    required this.shieldMax,
-    required this.weaponPower,
+    required this.unitAttack,
+    required this.unitShield,
+    required this.unitHull,
   });
 
-  factory ShipState.fromJson(Object? json) {
+  factory ShipGroupState.fromJson(Object? json) {
     final m = _obj(json);
-    return ShipState(
-      id: _int(m['id']),
+    return ShipGroupState(
       shipClass: ShipClass.fromJson(m['class']),
-      hull: _double(m['hull']),
-      hullMax: _double(m['hull_max']),
-      shield: _double(m['shield']),
-      shieldMax: _double(m['shield_max']),
-      weaponPower: _double(m['weapon_power']),
+      count: _int(m['count']),
+      damaged: _int(m['damaged']),
+      atRisk: _int(m['at_risk']),
+      hull: _int(m['hull']),
+      hullMax: _int(m['hull_max']),
+      unitAttack: _int(m['unit_attack']),
+      unitShield: _int(m['unit_shield']),
+      unitHull: _int(m['unit_hull']),
     );
   }
 
   Json toJson() => {
-    'id': id,
     'class': shipClass.toJson(),
+    'count': count,
+    'damaged': damaged,
+    'at_risk': atRisk,
     'hull': hull,
     'hull_max': hullMax,
-    'shield': shield,
-    'shield_max': shieldMax,
-    'weapon_power': weaponPower,
+    'unit_attack': unitAttack,
+    'unit_shield': unitShield,
+    'unit_hull': unitHull,
   };
+}
+
+/// What mending a fleet's damaged ships takes at each dock.
+class RepairQuote {
+  /// Damaged ships, and the hull they lack between them.
+  final int ships;
+  final int hull;
+
+  /// The home dock: it mends a fleet the tick it docks, and every tick it
+  /// stands there.
+  final DockRepair home;
+
+  /// The owner's outpost; absent when they have none.
+  final DockRepair? outpost;
+
+  const RepairQuote({required this.ships, required this.hull, required this.home, this.outpost});
+
+  factory RepairQuote.fromJson(Object? json) {
+    final m = _obj(json);
+    return RepairQuote(
+      ships: _int(m['ships']),
+      hull: _int(m['hull']),
+      home: DockRepair.fromJson(m['home']),
+      outpost: _opt(m['outpost'], DockRepair.fromJson),
+    );
+  }
+
+  Json toJson() => {'ships': ships, 'hull': hull, 'home': home.toJson(), 'outpost': ?outpost?.toJson()};
+}
+
+/// One dock's answer to a fleet's damage, as things stand this tick.
+class DockRepair {
+  /// The whole repair priced in metal: for each ship the dock's share of
+  /// its cost at par, times the share of its hull that is gone. 0 at a
+  /// dock that mends for nothing.
+  final double price;
+
+  /// What the dock's stock would pay now: metal first, crystal and
+  /// deuterium at their weights where the metal runs out.
+  final Resources payment;
+
+  /// Ships that payment makes whole, the most damaged first, and the hull
+  /// it restores in all. A ship the stock does not cover is left as it
+  /// is, and so is every ship after it.
+  final int ships;
+  final int hull;
+
+  /// Why this dock would mend nothing, in the engine's words; absent when
+  /// it would mend.
+  final String? refusal;
+
+  const DockRepair({required this.price, required this.payment, required this.ships, required this.hull, this.refusal});
+
+  factory DockRepair.fromJson(Object? json) {
+    final m = _obj(json);
+    return DockRepair(
+      price: _double(m['price']),
+      payment: Resources.fromJson(m['payment']),
+      ships: _int(m['ships']),
+      hull: _int(m['hull']),
+      refusal: _opt(m['refusal'], _string),
+    );
+  }
+
+  Json toJson() => {'price': price, 'payment': payment.toJson(), 'ships': ships, 'hull': hull, 'refusal': ?refusal};
 }
 
 /// One sector as the player knows it.
@@ -2553,37 +2757,34 @@ class SectorResources {
   Json toJson() => {'metal': metal.toJson(), 'crystal': crystal.toJson(), 'deuterium': deuterium.toJson()};
 }
 
+/// A hostile group. `ships` is by class as a fleet's is; a group that has
+/// not fought, or was only remembered, is listed whole.
 class NpcFleetInfo {
   final int id;
-  final List<NpcShipInfo> ships;
+  final List<ShipGroupState> ships;
+
+  /// Every ship of every class.
+  final int shipCount;
   final NpcBehavior behavior;
 
-  const NpcFleetInfo({required this.id, required this.ships, required this.behavior});
+  const NpcFleetInfo({required this.id, required this.ships, required this.shipCount, required this.behavior});
 
   factory NpcFleetInfo.fromJson(Object? json) {
     final m = _obj(json);
     return NpcFleetInfo(
       id: _int(m['id']),
-      ships: _list(m['ships'], NpcShipInfo.fromJson),
+      ships: _list(m['ships'], ShipGroupState.fromJson),
+      shipCount: _int(m['ship_count']),
       behavior: NpcBehavior.fromJson(m['behavior']),
     );
   }
 
-  Json toJson() => {'id': id, 'ships': ships.map((e) => e.toJson()).toList(), 'behavior': behavior.toJson()};
-}
-
-class NpcShipInfo {
-  final ShipClass shipClass;
-  final int count;
-
-  const NpcShipInfo({required this.shipClass, required this.count});
-
-  factory NpcShipInfo.fromJson(Object? json) {
-    final m = _obj(json);
-    return NpcShipInfo(shipClass: ShipClass.fromJson(m['class']), count: _int(m['count']));
-  }
-
-  Json toJson() => {'class': shipClass.toJson(), 'count': count};
+  Json toJson() => {
+    'id': id,
+    'ships': ships.map((e) => e.toJson()).toList(),
+    'ship_count': shipCount,
+    'behavior': behavior.toJson(),
+  };
 }
 
 enum NpcBehavior {
@@ -2629,6 +2830,7 @@ class FleetBrief {
   };
 }
 
+/// So many ships of one class.
 class ShipCount {
   final ShipClass shipClass;
   final int count;
@@ -2641,6 +2843,14 @@ class ShipCount {
   }
 
   Json toJson() => {'class': shipClass.toJson(), 'count': count};
+
+  List<Object?> get _props => [shipClass, count];
+
+  @override
+  bool operator ==(Object other) => other is ShipCount && _same(_props, other._props);
+
+  @override
+  int get hashCode => Object.hashAll(_props);
 }
 
 class HomeworldState {
@@ -2681,7 +2891,11 @@ class HomeworldState {
   final List<QueuedShip> shipyardPending;
   final ResearchItem? researchActive;
   final List<QueuedResearch> researchPending;
-  final List<ShipState> dockedShips;
+
+  /// The ships of every fleet standing at home, summed by class, in
+  /// catalogue order, and how many they are in all.
+  final List<ShipGroupState> dockedShips;
+  final int dockedShipCount;
 
   /// Defences standing at home (those being rebuilt after a raid are
   /// counted in `restoring`, not `count`).
@@ -2725,6 +2939,7 @@ class HomeworldState {
     this.researchActive,
     required this.researchPending,
     required this.dockedShips,
+    required this.dockedShipCount,
     required this.defences,
     required this.homeDefencePower,
     required this.dockedPower,
@@ -2753,7 +2968,8 @@ class HomeworldState {
       shipyardPending: _list(m['shipyard_pending'], QueuedShip.fromJson),
       researchActive: _opt(m['research_active'], ResearchItem.fromJson),
       researchPending: _list(m['research_pending'], QueuedResearch.fromJson),
-      dockedShips: _list(m['docked_ships'], ShipState.fromJson),
+      dockedShips: _list(m['docked_ships'], ShipGroupState.fromJson),
+      dockedShipCount: _int(m['docked_ship_count']),
       defences: _list(m['defences'], DefenceState.fromJson),
       homeDefencePower: _double(m['home_defence_power']),
       dockedPower: _double(m['docked_power']),
@@ -2782,6 +2998,7 @@ class HomeworldState {
     'research_active': ?researchActive?.toJson(),
     'research_pending': researchPending.map((e) => e.toJson()).toList(),
     'docked_ships': dockedShips.map((e) => e.toJson()).toList(),
+    'docked_ship_count': dockedShipCount,
     'defences': defences.map((e) => e.toJson()).toList(),
     'home_defence_power': homeDefencePower,
     'docked_power': dockedPower,
@@ -3036,8 +3253,9 @@ enum EffectKind {
   /// What every fleet's tank is multiplied by.
   tankFactor('tank_factor', label: 'fleet tanks'),
 
-  /// What attack, shield or hull is multiplied by, for ships built from
-  /// now on and for defences.
+  /// What attack, shield or hull is multiplied by: for defences and
+  /// Solar Satellites at once, for a fleet from when it next docks at
+  /// home (`FleetState.refit`).
   attack('attack', label: 'attack'),
 
   shield('shield', label: 'shield'),
@@ -3204,9 +3422,10 @@ class ShipOption {
   final int ticksPerShip;
   final List<Requirement> requires;
 
-  /// What a ship built now fights with: the class's figures with the
-  /// owner's Armour, Shielding and Weapons Technology. A ship keeps what
-  /// it was built with.
+  /// What a ship in a fleet docked at home fights with: the class's
+  /// figures with the owner's Armour, Shielding and Weapons Technology,
+  /// cut off to whole numbers as a round counts them. A fleet away from
+  /// home fights with `FleetState.refit`.
   final double hull;
   final double shield;
   final double weapon;
@@ -3744,8 +3963,8 @@ sealed class EventKind {
 
   static EventKind fromJson(Object? json) {
     return switch (_obj(json)['kind']) {
-      'CombatRound' => CombatRoundEvent.fromJson(json),
-      'ShipDestroyed' => ShipDestroyedEvent.fromJson(json),
+      'BattleRound' => BattleRoundKind.fromJson(json),
+      'ShipsLost' => ShipsLostEvent.fromJson(json),
       'FleetDestroyed' => FleetDestroyedEvent.fromJson(json),
       'ResourceHarvested' => ResourceHarvestedEvent.fromJson(json),
       'SectorEntered' => SectorEnteredEvent.fromJson(json),
@@ -3777,6 +3996,17 @@ sealed class EventKind {
   }
 
   Json toJson();
+}
+
+class BattleRoundKind extends EventKind {
+  final BattleRoundEvent battleRound;
+
+  const BattleRoundKind(this.battleRound);
+
+  factory BattleRoundKind.fromJson(Object? json) => BattleRoundKind(BattleRoundEvent.fromJson(json));
+
+  @override
+  Json toJson() => {'kind': 'BattleRound', ...battleRound.toJson()};
 }
 
 /// A level of the player's outpost is finished. Level 1 opens it: the
@@ -4133,124 +4363,387 @@ class PolicyActionEvent extends EventKind {
   };
 }
 
-/// One shot in a fight.
-class CombatRoundEvent extends EventKind {
+/// One round of a fight, one a tick while it lasts. It is OGame's round:
+/// every unit's shield is full at its start; every unit of both sides then
+/// fires, at once, each at one unit of the other side picked at random,
+/// and again while its rapid fire against what it hit holds. A shot weaker
+/// than a hundredth of the target's full shield bounces; one that breaks
+/// the shield takes the rest from the hull; a unit left with no shield and
+/// at or under `EXPLODE_BELOW_PCT` hundredths of its hull may explode. The
+/// report is by class, never by ship, so it is the same size for five ships
+/// and for five thousand.
+class BattleRoundEvent {
   final Hex sector;
-  final int attackerFleetId;
 
-  /// Empire owning the attacking fleet; `None` for an NPC.
-  final String? attackerOwner;
-  final int attackerShipId;
-  final int targetFleetId;
+  /// 1 for the first round of the fight.
+  final int round;
 
-  /// Empire owning the target fleet; `None` for an NPC.
-  final String? targetOwner;
-  final int targetShipId;
-  final double damage;
-  final double shieldAbsorbed;
-  final double hullDamage;
-  final bool rapidFire;
+  /// The players' fleets, with what they fired this round.
+  final BattleSide fleets;
 
-  /// One of the two fleets is the receiver's.
+  /// The hostile groups, with what they fired.
+  final BattleSide hostiles;
+
+  /// A fleet of the receiver's is in the fight.
   final bool mine;
 
-  const CombatRoundEvent({
+  const BattleRoundEvent({
     required this.sector,
-    required this.attackerFleetId,
-    this.attackerOwner,
-    required this.attackerShipId,
-    required this.targetFleetId,
-    this.targetOwner,
-    required this.targetShipId,
-    required this.damage,
-    required this.shieldAbsorbed,
-    required this.hullDamage,
-    required this.rapidFire,
+    required this.round,
+    required this.fleets,
+    required this.hostiles,
     this.mine = false,
   });
 
-  factory CombatRoundEvent.fromJson(Object? json) {
+  factory BattleRoundEvent.fromJson(Object? json) {
     final m = _obj(json);
-    return CombatRoundEvent(
+    return BattleRoundEvent(
       sector: Hex.fromJson(m['sector']),
-      attackerFleetId: _int(m['attacker_fleet_id']),
-      attackerOwner: _opt(m['attacker_owner'], _string),
-      attackerShipId: _int(m['attacker_ship_id']),
-      targetFleetId: _int(m['target_fleet_id']),
-      targetOwner: _opt(m['target_owner'], _string),
-      targetShipId: _int(m['target_ship_id']),
-      damage: _double(m['damage']),
-      shieldAbsorbed: _double(m['shield_absorbed']),
-      hullDamage: _double(m['hull_damage']),
-      rapidFire: _bool(m['rapid_fire']),
+      round: _int(m['round']),
+      fleets: BattleSide.fromJson(m['fleets']),
+      hostiles: BattleSide.fromJson(m['hostiles']),
       mine: _opt(m['mine'], _bool) ?? false,
     );
   }
 
-  @override
   Json toJson() => {
-    'kind': 'CombatRound',
     'sector': sector.toJson(),
-    'attacker_fleet_id': attackerFleetId,
-    'attacker_owner': attackerOwner,
-    'attacker_ship_id': attackerShipId,
-    'target_fleet_id': targetFleetId,
-    'target_owner': targetOwner,
-    'target_ship_id': targetShipId,
-    'damage': damage,
-    'shield_absorbed': shieldAbsorbed,
-    'hull_damage': hullDamage,
-    'rapid_fire': rapidFire,
+    'round': round,
+    'fleets': fleets.toJson(),
+    'hostiles': hostiles.toJson(),
     'mine': mine,
   };
 }
 
-class ShipDestroyedEvent extends EventKind {
-  final int shipId;
-  final ShipClass shipClass;
-  final int ownerFleetId;
-  final bool isNpc;
-  final Hex sector;
+/// One side of a round: who stands after it, and what the side fired.
+class BattleSide {
+  /// Every fleet or group of the side that entered the round, by id, as
+  /// it stands after it.
+  final List<BattleGroup> groups;
 
-  /// Empire that owned the ship; `None` for an NPC.
-  final String? owner;
+  /// The side's fire, one line for each pair of firing and target unit
+  /// that exchanged a shot, in catalogue order.
+  final List<Volley> volleys;
 
-  /// The ship was the receiver's.
-  final bool mine;
+  /// Shots the side fired, their attack summed, what the other side's
+  /// shields took of it, what reached its hulls, and the units of the
+  /// other side it destroyed.
+  final int shots;
+  final int power;
+  final int absorbed;
+  final int hullDamage;
+  final int destroyed;
 
-  const ShipDestroyedEvent({
-    required this.shipId,
-    required this.shipClass,
-    required this.ownerFleetId,
-    required this.isNpc,
-    required this.sector,
-    this.owner,
-    this.mine = false,
+  const BattleSide({
+    required this.groups,
+    required this.volleys,
+    required this.shots,
+    required this.power,
+    required this.absorbed,
+    required this.hullDamage,
+    required this.destroyed,
   });
 
-  factory ShipDestroyedEvent.fromJson(Object? json) {
+  factory BattleSide.fromJson(Object? json) {
     final m = _obj(json);
-    return ShipDestroyedEvent(
-      shipId: _int(m['ship_id']),
-      shipClass: ShipClass.fromJson(m['ship_class']),
-      ownerFleetId: _int(m['owner_fleet_id']),
-      isNpc: _bool(m['is_npc']),
-      sector: Hex.fromJson(m['sector']),
+    return BattleSide(
+      groups: _list(m['groups'], BattleGroup.fromJson),
+      volleys: _list(m['volleys'], Volley.fromJson),
+      shots: _int(m['shots']),
+      power: _int(m['power']),
+      absorbed: _int(m['absorbed']),
+      hullDamage: _int(m['hull_damage']),
+      destroyed: _int(m['destroyed']),
+    );
+  }
+
+  Json toJson() => {
+    'groups': groups.map((e) => e.toJson()).toList(),
+    'volleys': volleys.map((e) => e.toJson()).toList(),
+    'shots': shots,
+    'power': power,
+    'absorbed': absorbed,
+    'hull_damage': hullDamage,
+    'destroyed': destroyed,
+  };
+}
+
+class BattleGroup {
+  final int fleetId;
+
+  /// Empire owning the fleet; `None` for a hostile group.
+  final String? owner;
+
+  /// What a hostile group is ("3x cruiser pack"); empty for a player's fleet.
+  final String label;
+
+  /// The fleet is the receiver's.
+  final bool mine;
+
+  /// By unit, in catalogue order. A unit wiped out this round is listed
+  /// once more with a count of 0.
+  final List<BattleUnits> units;
+
+  const BattleGroup({required this.fleetId, this.owner, this.label = '', this.mine = false, required this.units});
+
+  factory BattleGroup.fromJson(Object? json) {
+    final m = _obj(json);
+    return BattleGroup(
+      fleetId: _int(m['fleet_id']),
       owner: _opt(m['owner'], _string),
+      label: _opt(m['label'], _string) ?? '',
       mine: _opt(m['mine'], _bool) ?? false,
+      units: _list(m['units'], BattleUnits.fromJson),
+    );
+  }
+
+  Json toJson() => {
+    'fleet_id': fleetId,
+    'owner': ?owner,
+    if (label.isNotEmpty) 'label': label,
+    'mine': mine,
+    'units': units.map((e) => e.toJson()).toList(),
+  };
+}
+
+/// The units of one kind in a fleet or group after a round.
+class BattleUnits {
+  /// A ship class or a defence: the wire carries just its name.
+  final ShipyardItem unit;
+  final int count;
+  final int damaged;
+  final int atRisk;
+  final int hull;
+  final int hullMax;
+
+  /// Destroyed this round.
+  final int lost;
+
+  const BattleUnits({
+    required this.unit,
+    required this.count,
+    required this.damaged,
+    required this.atRisk,
+    required this.hull,
+    required this.hullMax,
+    required this.lost,
+  });
+
+  factory BattleUnits.fromJson(Object? json) {
+    final m = _obj(json);
+    return BattleUnits(
+      unit: ShipyardItem.fromJson(m['unit']),
+      count: _int(m['count']),
+      damaged: _int(m['damaged']),
+      atRisk: _int(m['at_risk']),
+      hull: _int(m['hull']),
+      hullMax: _int(m['hull_max']),
+      lost: _int(m['lost']),
+    );
+  }
+
+  Json toJson() => {
+    'unit': unit.toJson(),
+    'count': count,
+    'damaged': damaged,
+    'at_risk': atRisk,
+    'hull': hull,
+    'hull_max': hullMax,
+    'lost': lost,
+  };
+}
+
+/// What the units of one kind fired at the units of another in a round.
+class Volley {
+  final ShipyardItem from;
+  final ShipyardItem at;
+
+  /// Every shot, rapid fire included. Of them `bounced` did nothing to a
+  /// shield they were too weak for, and `wasted` went at a unit already
+  /// destroyed in this round.
+  final int shots;
+  final int bounced;
+  final int wasted;
+
+  /// Attack the targets' shields took, and what reached their hulls.
+  final int absorbed;
+  final int hullDamage;
+
+  /// Targets destroyed.
+  final int destroyed;
+
+  const Volley({
+    required this.from,
+    required this.at,
+    required this.shots,
+    required this.bounced,
+    required this.wasted,
+    required this.absorbed,
+    required this.hullDamage,
+    required this.destroyed,
+  });
+
+  factory Volley.fromJson(Object? json) {
+    final m = _obj(json);
+    return Volley(
+      from: ShipyardItem.fromJson(m['from']),
+      at: ShipyardItem.fromJson(m['at']),
+      shots: _int(m['shots']),
+      bounced: _int(m['bounced']),
+      wasted: _int(m['wasted']),
+      absorbed: _int(m['absorbed']),
+      hullDamage: _int(m['hull_damage']),
+      destroyed: _int(m['destroyed']),
+    );
+  }
+
+  Json toJson() => {
+    'from': from.toJson(),
+    'at': at.toJson(),
+    'shots': shots,
+    'bounced': bounced,
+    'wasted': wasted,
+    'absorbed': absorbed,
+    'hull_damage': hullDamage,
+    'destroyed': destroyed,
+  };
+}
+
+/// How a fight ended.
+enum BattleOutcome {
+  /// No hostile unit is left and a fleet still stands.
+  hostilesDestroyed('hostiles_destroyed'),
+
+  /// No ship of any fleet is left and a hostile still stands.
+  fleetsDestroyed('fleets_destroyed'),
+
+  /// The last units of both sides fell in the same round.
+  bothDestroyed('both_destroyed'),
+
+  /// Every fleet left the sector; the hostiles are whole again.
+  withdrawn('withdrawn'),
+
+  /// `STANDOFF_ROUNDS` rounds took no hull from either side: nobody can
+  /// hurt anybody. The fleets stay; the hostiles are whole again.
+  standoff('standoff');
+
+  const BattleOutcome(this.wire);
+
+  final String wire;
+
+  static BattleOutcome fromJson(Object? json) => _named(values, (v) => v.wire, json);
+
+  String toJson() => wire;
+}
+
+/// What one fleet or group lost over a whole fight.
+class BattleLosses {
+  final int fleetId;
+  final String? owner;
+  final String label;
+  final bool mine;
+
+  /// Units destroyed, by kind, in catalogue order; empty when it lost none.
+  final List<UnitCount> lost;
+
+  /// Nothing of it is left.
+  final bool destroyed;
+
+  const BattleLosses({
+    required this.fleetId,
+    this.owner,
+    this.label = '',
+    this.mine = false,
+    required this.lost,
+    required this.destroyed,
+  });
+
+  factory BattleLosses.fromJson(Object? json) {
+    final m = _obj(json);
+    return BattleLosses(
+      fleetId: _int(m['fleet_id']),
+      owner: _opt(m['owner'], _string),
+      label: _opt(m['label'], _string) ?? '',
+      mine: _opt(m['mine'], _bool) ?? false,
+      lost: _list(m['lost'], UnitCount.fromJson),
+      destroyed: _bool(m['destroyed']),
+    );
+  }
+
+  Json toJson() => {
+    'fleet_id': fleetId,
+    'owner': ?owner,
+    if (label.isNotEmpty) 'label': label,
+    'mine': mine,
+    'lost': lost.map((e) => e.toJson()).toList(),
+    'destroyed': destroyed,
+  };
+}
+
+/// So many units of one kind, ship or defence.
+class UnitCount {
+  final ShipyardItem unit;
+  final int count;
+
+  const UnitCount({required this.unit, required this.count});
+
+  factory UnitCount.fromJson(Object? json) {
+    final m = _obj(json);
+    return UnitCount(unit: ShipyardItem.fromJson(m['unit']), count: _int(m['count']));
+  }
+
+  Json toJson() => {'unit': unit.toJson(), 'count': count};
+
+  List<Object?> get _props => [unit, count];
+
+  @override
+  bool operator ==(Object other) => other is UnitCount && _same(_props, other._props);
+
+  @override
+  int get hashCode => Object.hashAll(_props);
+}
+
+/// Ships a fleet lost outside a fight: those that broke up in an emergency
+/// jump. A fight's losses are in `BattleRound` and `CombatEnded`, a raid's
+/// in `RaidResolved`.
+class ShipsLostEvent extends EventKind {
+  final int fleetId;
+  final Hex sector;
+
+  /// Empire that owned the ships.
+  final String owner;
+
+  /// The ships were the receiver's.
+  final bool mine;
+  final List<ShipCount> ships;
+
+  const ShipsLostEvent({
+    required this.fleetId,
+    required this.sector,
+    required this.owner,
+    this.mine = false,
+    required this.ships,
+  });
+
+  factory ShipsLostEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return ShipsLostEvent(
+      fleetId: _int(m['fleet_id']),
+      sector: Hex.fromJson(m['sector']),
+      owner: _string(m['owner']),
+      mine: _opt(m['mine'], _bool) ?? false,
+      ships: _list(m['ships'], ShipCount.fromJson),
     );
   }
 
   @override
   Json toJson() => {
-    'kind': 'ShipDestroyed',
-    'ship_id': shipId,
-    'ship_class': shipClass.toJson(),
-    'owner_fleet_id': ownerFleetId,
-    'is_npc': isNpc,
+    'kind': 'ShipsLost',
+    'fleet_id': fleetId,
     'sector': sector.toJson(),
     'owner': owner,
     'mine': mine,
+    'ships': ships.map((e) => e.toJson()).toList(),
   };
 }
 
@@ -4402,11 +4895,21 @@ class CombatStartedEvent extends EventKind {
   };
 }
 
-/// `owners` lists the empires that fought. `salvage` is the pile the victory
-/// left in the sector (absent on defeat); it despawns at `salvage_despawn_tick`.
+/// A fight is over. `owners` lists the empires that fought. `salvage` is the
+/// pile the hostiles' destruction left in the sector (absent when they were
+/// not destroyed); it despawns at `salvage_despawn_tick`.
 class CombatEndedEvent extends EventKind {
   final Hex sector;
+
+  /// `outcome` is `HostilesDestroyed`.
   final bool playerVictory;
+  final BattleOutcome outcome;
+
+  /// Rounds fought.
+  final int rounds;
+
+  /// What every fleet and group that fought lost, fleets first.
+  final List<BattleLosses> losses;
   final List<String> owners;
   final bool mine;
   final Resources? salvage;
@@ -4415,6 +4918,9 @@ class CombatEndedEvent extends EventKind {
   const CombatEndedEvent({
     required this.sector,
     required this.playerVictory,
+    required this.outcome,
+    required this.rounds,
+    required this.losses,
     required this.owners,
     this.mine = false,
     this.salvage,
@@ -4426,6 +4932,9 @@ class CombatEndedEvent extends EventKind {
     return CombatEndedEvent(
       sector: Hex.fromJson(m['sector']),
       playerVictory: _bool(m['player_victory']),
+      outcome: BattleOutcome.fromJson(m['outcome']),
+      rounds: _int(m['rounds']),
+      losses: _list(m['losses'], BattleLosses.fromJson),
       owners: _list(m['owners'], _string),
       mine: _opt(m['mine'], _bool) ?? false,
       salvage: _opt(m['salvage'], Resources.fromJson),
@@ -4438,6 +4947,9 @@ class CombatEndedEvent extends EventKind {
     'kind': 'CombatEnded',
     'sector': sector.toJson(),
     'player_victory': playerVictory,
+    'outcome': outcome.toJson(),
+    'rounds': rounds,
+    'losses': losses.map((e) => e.toJson()).toList(),
     'owners': owners,
     'mine': mine,
     'salvage': ?salvage?.toJson(),
@@ -5306,6 +5818,32 @@ enum ResearchType {
   String toJson() => wire;
 }
 
+/// The Weapons, Shielding and Armour Technology a force fights with. A fleet
+/// carries the levels it last docked at home with; a defence and a Solar
+/// Satellite stand at home and are always at their owner's.
+class Refit {
+  final int weapons;
+  final int shielding;
+  final int armour;
+
+  const Refit({required this.weapons, required this.shielding, required this.armour});
+
+  factory Refit.fromJson(Object? json) {
+    final m = _obj(json);
+    return Refit(weapons: _int(m['weapons']), shielding: _int(m['shielding']), armour: _int(m['armour']));
+  }
+
+  Json toJson() => {'weapons': weapons, 'shielding': shielding, 'armour': armour};
+
+  List<Object?> get _props => [weapons, shielding, armour];
+
+  @override
+  bool operator ==(Object other) => other is Refit && _same(_props, other._props);
+
+  @override
+  int get hashCode => Object.hashAll(_props);
+}
+
 /// OGame's defences, without the two missiles, built from the shipyard
 /// queue. They never move, burn no fuel, and a raid can wear them down.
 enum DefenceKind {
@@ -5370,22 +5908,24 @@ class ShipyardItem {
 }
 
 /// How a fleet is expected to fare against what waits in a sector. The ratio
-/// is `outcome_ratio` of the fight played on averages (`iac_sim::odds`), so it
-/// counts rapid fire, shot size against hull and shield, and who fires first;
-/// between equal ship classes it is close to power against power. Damage
-/// exchange is quadratic in fleet size, so the bands sit close together
-/// around 1.0 and a fight is decided long before the ratio reaches 2.
+/// is `outcome_ratio` of the fight itself played forward (`iac_sim::odds`),
+/// so it counts rapid fire, the bounce, a shield that is full again every
+/// round, the damage a fleet carries and what each side fights with; between
+/// equal ship classes it is numbers against numbers. Damage exchange is
+/// quadratic in fleet size, so the bands sit close together around 1.0 and
+/// a fight is decided long before the ratio reaches 2.
 enum RatioLabel {
-  deadly('deadly', label: 'DEADLY'),
-  risky('risky', label: 'RISKY'),
-  even('even', label: 'EVEN'),
-  favourable('favourable', label: 'FAVOURABLE'),
-  safe('safe', label: 'SAFE');
+  deadly('deadly', label: 'DEADLY', outcome: 'the fleet is lost'),
+  risky('risky', label: 'RISKY', outcome: 'anything from a lost fleet to a win that keeps a third of it'),
+  even('even', label: 'EVEN', outcome: 'a win in practice that keeps 30 to 70 percent of the fleet'),
+  favourable('favourable', label: 'FAVOURABLE', outcome: 'a sure win that keeps 70 to 90 percent of the fleet'),
+  safe('safe', label: 'SAFE', outcome: 'a sure win that keeps nine tenths of the fleet or more');
 
-  const RatioLabel(this.wire, {required this.label});
+  const RatioLabel(this.wire, {required this.label, required this.outcome});
 
   final String wire;
   final String label;
+  final String outcome;
 
   static RatioLabel fromJson(Object? json) => _named(values, (v) => v.wire, json);
 
@@ -5413,17 +5953,20 @@ const botNamePrefix = 'BOT-';
 /// Most sectors one `odds` request may name.
 const maxOddsSectors = 256;
 
-/// Ratio at and above which a fight is SAFE: the fleet keeps 98 percent of its hull or more.
+/// Ratio at and above which a fight is SAFE: a sure win that keeps nine
+/// tenths of the fleet's worth or more. Both sides fire at once, so no
+/// fight against armed ships is free.
 const double ratioSafe = 2.5;
 
-/// FAVOURABLE from here: a sure win that costs about 1 to 15 percent of the hull.
+/// FAVOURABLE from here: a sure win that keeps about 70 to 90 percent.
 const double ratioFavourable = 1.5;
 
-/// EVEN from here: a win in practice, but 15 to 50 percent of the hull is lost.
+/// EVEN from here: a win in practice, nine fights in ten between a handful
+/// of ships and every one between many, that keeps about 30 to 70 percent.
 const double ratioEven = 1.100000023841858;
 
-/// RISKY from here: anything from a lost fleet to a win that keeps half the hull.
-/// Below it (DEADLY) the fleet is lost, or wins one fight in six at best.
+/// RISKY from here: anything from a lost fleet to a win that keeps a third.
+/// Below it (DEADLY) the fleet is lost, or wins one fight in fifteen at best.
 const double ratioRisky = 0.8999999761581421;
 
 /// Outposts (`docs/design/outposts.md`). Every number here is a proposal the
@@ -5508,3 +6051,16 @@ const double refineLoss = 0.15;
 /// (at least one) and of the Solar Satellites: ships parked at home defend,
 /// and when the defence fails they are what the raiders reach.
 const double raidLostShipFraction = 0.25;
+
+/// The most ships one fleet holds. It bounds the worst round of a fight.
+const maxFleetShips = 5000;
+
+/// The fight (`docs/design/ogame.md`, section 7.1). A unit whose shield a
+/// shot has left at zero and whose hull stands at or under this many
+/// hundredths of full explodes with probability one minus its hull's share.
+/// OGame's.
+const explodeBelowPct = 70;
+
+/// A fleet under orders whose hull has fallen below this share of full goes
+/// home to be mended before it does anything else. Provisional.
+const double policyHullReady = 0.8500000238418579;

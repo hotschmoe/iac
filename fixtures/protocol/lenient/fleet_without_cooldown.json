@@ -3,6 +3,7 @@
     "fleets": [
       {
         "at_outpost": false,
+        "attack": 0,
         "cargo": {
           "crystal": 0.0,
           "deuterium": 0.0,
@@ -15,6 +16,8 @@
         "fuel_max": 2.0,
         "home_fuel": 0.0,
         "hops_home": 0,
+        "hull": 0,
+        "hull_max": 0,
         "id": 1,
         "jump_fuel": 0.0,
         "jump_ticks": 2,
@@ -25,7 +28,15 @@
         },
         "power": 0.0,
         "range_hops": 0,
+        "refit": {
+          "armour": 0,
+          "shielding": 0,
+          "weapons": 0
+        },
+        "refit_due": false,
         "scan_range": 1,
+        "shield": 0,
+        "ship_count": 0,
         "ships": [],
         "state": "Idle"
       }
@@ -36,6 +47,7 @@
   "input": {
     "fleets": [
       {
+        "attack": 0,
         "cargo": {
           "crystal": 0.0,
           "deuterium": 0.0,
@@ -45,13 +57,22 @@
         "fuel": 1.0,
         "fuel_max": 2.0,
         "hops_home": 0,
+        "hull": 0,
+        "hull_max": 0,
         "id": 1,
         "jump_ticks": 2,
         "location": {
           "q": 0,
           "r": 0
         },
+        "refit": {
+          "armour": 0,
+          "shielding": 0,
+          "weapons": 0
+        },
         "scan_range": 1,
+        "shield": 0,
+        "ship_count": 0,
         "ships": [],
         "state": "Idle"
       }

@@ -13,8 +13,9 @@ use iac_shared::hex::Hex;
 use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::constants::{
     Resources, ResourceKind, ShipClass, Density,
-    STARTING_RESOURCES, STARTING_SHIPS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, STRANDED_RECOVERY_TICKS,
-    HARVEST_COOLDOWN, SHIELD_REGEN_IDLE_TICKS,
+    STARTING_RESOURCES, STARTING_SHIPS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, MAX_FLEET_SHIPS,
+    STRANDED_RECOVERY_TICKS, HARVEST_COOLDOWN, EXPLODE_BELOW_PCT, STANDOFF_ROUNDS,
+    REPAIR_COST_SHARE_HOME, REPAIR_COST_SHARE_OUTPOST, REPAIR_TICKS,
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
     FUEL_DEUT_PER_UNIT,
@@ -29,7 +30,7 @@ use iac_shared::constants::{
     RAID_DEFENSE_SALVAGE_FRACTION, RAID_SUPPRESS_AFTER_LOSS,
     EXPLORE_DURATION_TICKS, EXPLORE_PROBE_AMBUSH_REDUCTION, EXPLORE_RECYCLER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_FUEL_PAYBACK, POLICY_FUEL_UNBOUNDED_PCT,
-    POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_SHIELDS_READY,
+    POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_HULL_READY,
     POLICY_MIN_FUEL_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_CARGO_RETURN_PCT_MAX,
     POLICY_RANGE_MIN, POLICY_RANGE_MAX, POLICY_ENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
     LANE_SEARCH_HOPS,
@@ -38,7 +39,7 @@ use iac_shared::constants::{
 use iac_shared::pace::Pace;
 use iac_shared::world::{self, HubService, WorldGen};
 use iac_shared::scaling::{
-    self, BuildingType, ResearchType, BuildingLevels, ResearchLevels,
+    self, Arms, BuildingType, ResearchType, BuildingLevels, ResearchLevels, Refit,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION, DefenceKind, RatioLabel, ShipyardItem,
 };
 use iac_shared::protocol::{
@@ -47,44 +48,19 @@ use iac_shared::protocol::{
     StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
+    BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState,
+    DockRepair, RepairQuote, ShipCount, ShipGroupState, ShipsLostEvent, UnitCount,
 };
 
 use crate::auth::{self, TokenHash};
 use crate::bot::BotRecord;
-use crate::combat;
+use crate::combat::{self, Squad, Troop};
 use crate::score;
 use crate::intel::KnownSectors;
 use crate::odds::{self, Force};
 use crate::snapshot::{ExploreCredit, Snapshot, WorldMeta};
 
-// ── Constants ─────────────────────────────────────────────────────
-
-pub const MAX_SHIPS_PER_FLEET: usize = 64;
-pub const MAX_NPC_SHIPS: usize = scaling::NPC_MAX_SHIPS;
-
 // ── Core Data Types ───────────────────────────────────────────────
-
-/// Serde for a fixed ship array: written up to the last non-default slot,
-/// padded back with defaults on read, so a snapshot stays small and exact.
-mod ship_slots {
-    use super::Ship;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer, const N: usize>(ships: &[Ship; N], out: S) -> Result<S::Ok, S::Error> {
-        let used = ships.iter().rposition(|s| *s != Ship::default()).map_or(0, |i| i + 1);
-        ships[..used].serialize(out)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(input: D) -> Result<[Ship; N], D::Error> {
-        let list = Vec::<Ship>::deserialize(input)?;
-        if list.len() > N {
-            return Err(serde::de::Error::invalid_length(list.len(), &"at most the fleet's ship capacity"));
-        }
-        let mut ships = [Ship::default(); N];
-        ships[..list.len()].copy_from_slice(&list);
-        Ok(ships)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FleetStatus {
@@ -97,15 +73,251 @@ pub enum FleetStatus {
     Exploring,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct Ship {
-    pub id: u64,
+/// The ships of one class in a fleet or a group: how many, and the hull of
+/// each that is not whole, ascending. The whole ones are not written down,
+/// and no ship has an id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShipGroup {
+    #[serde(rename = "class")]
     pub ship_class: ShipClass,
-    pub hull: f32,
-    pub hull_max: f32,
-    pub shield: f32,
-    pub shield_max: f32,
-    pub weapon_power: f32,
+    pub count: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub damaged: Vec<u32>,
+}
+
+impl ShipGroup {
+    pub fn whole(&self) -> u32 {
+        self.count - self.damaged.len() as u32
+    }
+}
+
+/// What a fleet or a pirate group is: its ships by class, in catalogue
+/// order, with no class it has none of. This is all a fight needs between
+/// two ticks, so it is what a stored world holds of one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Ships(Vec<ShipGroup>);
+
+impl Ships {
+    pub fn of(counts: &[(ShipClass, u32)]) -> Ships {
+        let mut ships = Ships::default();
+        for &(class, count) in counts {
+            ships.add(class, count);
+        }
+        ships
+    }
+
+    pub fn groups(&self) -> &[ShipGroup] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn total(&self) -> u32 {
+        self.0.iter().map(|g| g.count).sum()
+    }
+
+    pub fn count(&self, class: ShipClass) -> u32 {
+        self.0.iter().find(|g| g.ship_class == class).map_or(0, |g| g.count)
+    }
+
+    pub fn has(&self, class: ShipClass) -> bool {
+        self.count(class) > 0
+    }
+
+    pub fn has_damage(&self) -> bool {
+        self.0.iter().any(|g| !g.damaged.is_empty())
+    }
+
+    pub fn damaged(&self) -> u32 {
+        self.0.iter().map(|g| g.damaged.len() as u32).sum()
+    }
+
+    pub fn counts(&self) -> impl Iterator<Item = (ShipClass, u32)> + '_ {
+        self.0.iter().map(|g| (g.ship_class, g.count))
+    }
+
+    fn group_mut(&mut self, class: ShipClass) -> &mut ShipGroup {
+        let at = match self.0.binary_search_by_key(&class, |g| g.ship_class) {
+            Ok(at) => at,
+            Err(at) => {
+                self.0.insert(at, ShipGroup { ship_class: class, count: 0, damaged: Vec::new() });
+                at
+            }
+        };
+        &mut self.0[at]
+    }
+
+    fn settle(&mut self) {
+        self.0.retain(|g| g.count > 0);
+    }
+
+    /// `count` whole ships of `class` join.
+    pub fn add(&mut self, class: ShipClass, count: u32) {
+        if count > 0 {
+            self.group_mut(class).count += count;
+        }
+    }
+
+    /// One ship of `class` holding `hull` joins: whole at `full` or more.
+    pub fn add_holding(&mut self, class: ShipClass, hull: u32, full: u32) {
+        let group = self.group_mut(class);
+        group.count += 1;
+        if hull < full {
+            let at = group.damaged.partition_point(|&h| h <= hull);
+            group.damaged.insert(at, hull.max(1));
+        }
+    }
+
+    /// Every ship of `other` joins, each with the hull it holds.
+    pub fn absorb(&mut self, other: Ships) {
+        for theirs in other.0 {
+            let group = self.group_mut(theirs.ship_class);
+            group.count += theirs.count;
+            group.damaged.extend(theirs.damaged);
+            group.damaged.sort_unstable();
+        }
+    }
+
+    /// Take `count` ships of `class` out, or None if there are not so many.
+    /// The whole go first and then the least damaged; with `damaged_first`
+    /// the most damaged go first.
+    pub fn take(&mut self, class: ShipClass, count: u32, damaged_first: bool) -> Option<ShipGroup> {
+        let group = self.0.iter_mut().find(|g| g.ship_class == class)?;
+        if count > group.count {
+            return None;
+        }
+        let listed = group.damaged.len() as u32;
+        let damaged: Vec<u32> = if damaged_first {
+            group.damaged.drain(..count.min(listed) as usize).collect()
+        } else {
+            let wounded = count.saturating_sub(group.whole());
+            group.damaged.split_off((listed - wounded) as usize)
+        };
+        group.count -= count;
+        self.settle();
+        Some(ShipGroup { ship_class: class, count, damaged })
+    }
+
+    /// Remove the ship at `index` of the fleet's ships as a round lists
+    /// them: classes in catalogue order, the whole and then the damaged.
+    pub fn remove_at(&mut self, mut index: u32) -> Option<ShipClass> {
+        for group in &mut self.0 {
+            if index >= group.count {
+                index -= group.count;
+                continue;
+            }
+            let class = group.ship_class;
+            if index >= group.whole() {
+                group.damaged.remove((index - group.whole()) as usize);
+            }
+            group.count -= 1;
+            self.settle();
+            return Some(class);
+        }
+        None
+    }
+
+    /// The hull every damaged ship holds, carried from one full hull to
+    /// another: each keeps the share it had. What a change of Armour
+    /// Technology does to a fleet.
+    pub fn rearm(&mut self, from: Arms, to: Arms) {
+        if from.hull == to.hull {
+            return;
+        }
+        for group in &mut self.0 {
+            let was = u64::from(scaling::ship_figures(group.ship_class, from).hull.max(1));
+            let full = scaling::ship_figures(group.ship_class, to).hull;
+            for hull in &mut group.damaged {
+                *hull = ((u64::from(*hull) * u64::from(full) / was) as u32).max(1);
+            }
+            group.damaged.retain(|&hull| hull < full);
+            group.damaged.sort_unstable();
+        }
+    }
+
+    /// Make one ship of `class` that holds `hull` whole.
+    fn mend_one(&mut self, class: ShipClass, hull: u32) {
+        if let Some(group) = self.0.iter_mut().find(|g| g.ship_class == class)
+            && let Ok(at) = group.damaged.binary_search(&hull)
+        {
+            group.damaged.remove(at);
+        }
+    }
+
+    /// Hull the ships hold between them, and at full, fighting with `arms`.
+    pub fn hull(&self, arms: Arms) -> (u64, u64) {
+        self.0.iter().fold((0, 0), |(held, full), group| {
+            let each = u64::from(scaling::ship_figures(group.ship_class, arms).hull);
+            let damaged: u64 = group.damaged.iter().map(|&h| u64::from(h)).sum();
+            (held + each * u64::from(group.whole()) + damaged, full + each * u64::from(group.count))
+        })
+    }
+
+    /// `weapon + (hull + shield) / 10` of every ship, each at the hull it holds.
+    pub fn power(&self, arms: Arms) -> f32 {
+        self.0
+            .iter()
+            .map(|group| {
+                let figures = scaling::ship_figures(group.ship_class, arms);
+                group.whole() as f32 * figures.power()
+                    + group.damaged.iter().map(|&hull| figures.power_at(hull)).sum::<f32>()
+            })
+            .sum()
+    }
+
+    /// The ships as a round of a fight takes them.
+    pub fn squads(&self) -> Vec<Squad> {
+        self.0
+            .iter()
+            .map(|g| Squad { unit: ShipyardItem::Ship(g.ship_class), count: g.count, damaged: g.damaged.clone() })
+            .collect()
+    }
+
+    /// The ships a round of a fight hands back.
+    pub fn of_squads(squads: &[Squad]) -> Ships {
+        let mut ships = Ships::default();
+        for squad in squads {
+            if let ShipyardItem::Ship(class) = squad.unit
+                && squad.count > 0
+            {
+                let group = ships.group_mut(class);
+                group.count = squad.count;
+                group.damaged = squad.damaged.clone();
+            }
+        }
+        ships
+    }
+
+    /// The ships by class as a client is told of them.
+    pub fn states(&self, arms: Arms) -> Vec<ShipGroupState> {
+        self.0
+            .iter()
+            .map(|group| {
+                let figures = scaling::ship_figures(group.ship_class, arms);
+                let full = u64::from(figures.hull);
+                let held: u64 = group.damaged.iter().map(|&h| u64::from(h)).sum();
+                ShipGroupState {
+                    ship_class: group.ship_class,
+                    count: group.count,
+                    damaged: group.damaged.len() as u32,
+                    at_risk: group.damaged.iter().filter(|&&hull| at_risk(hull, figures.hull)).count() as u32,
+                    hull: full * u64::from(group.whole()) + held,
+                    hull_max: full * u64::from(group.count),
+                    unit_attack: figures.attack,
+                    unit_shield: figures.shield,
+                    unit_hull: figures.hull,
+                }
+            })
+            .collect()
+    }
+}
+
+/// A unit holding `hull` of `full` may explode when a shot next breaks its shield.
+fn at_risk(hull: u32, full: u32) -> bool {
+    u64::from(hull) * 100 <= u64::from(full) * u64::from(EXPLODE_BELOW_PCT)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,16 +326,16 @@ pub struct Fleet {
     pub owner_id: u64,
     pub location: Hex,
     pub state: FleetStatus,
-    #[serde(with = "ship_slots")]
-    pub ships: [Ship; MAX_SHIPS_PER_FLEET],
-    pub ship_count: usize,
+    pub ships: Ships,
+    /// The Weapons, Shielding and Armour Technology the fleet fights with:
+    /// what its owner had when it last docked at home.
+    pub refit: Refit,
     pub cargo: Resources,
     pub fuel: f64,
     pub fuel_max: f64,
     pub move_cooldown: u16,
     pub action_cooldown: u16,
     pub move_target: Option<Hex>,
-    pub idle_ticks: u16,
     /// What the current (or last) harvest order mines.
     pub harvest_target: HarvestResource,
     /// Sectors this fleet has charted and not yet delivered to a dock.
@@ -134,14 +346,24 @@ pub struct Fleet {
     pub laden: bool,
 }
 
-#[allow(dead_code)]
+impl Fleet {
+    pub fn arms(&self) -> Arms {
+        self.refit.arms()
+    }
+
+    pub fn troop(&self) -> Troop {
+        Troop { arms: self.arms(), squads: self.ships.squads() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NpcFleet {
     pub id: u64,
     pub location: Hex,
-    #[serde(with = "ship_slots")]
-    pub ships: [Ship; MAX_NPC_SHIPS],
-    pub ship_count: u8,
+    pub ships: Ships,
+    /// What the group fights with: every figure of its class at the
+    /// multiplier it was generated with.
+    pub arms: Arms,
     pub behavior: iac_shared::world::NpcBehaviorType,
     pub home_sector: Hex,
     pub patrol_timer: u16,
@@ -151,6 +373,12 @@ pub struct NpcFleet {
     pub power: f32,
     /// "3x cruiser pack": how messages name the group.
     pub label: String,
+}
+
+impl NpcFleet {
+    pub fn troop(&self) -> Troop {
+        Troop { arms: self.arms, squads: self.ships.squads() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,9 +559,18 @@ pub struct Combat {
     pub sector: Hex,
     pub player_fleet_ids: Vec<u64>,
     pub npc_fleet_ids: Vec<u64>,
-    pub round: u16,
+    /// Rounds fought.
+    pub round: u32,
     /// The most power the players' side has brought to bear, for scoring.
     pub peak_power: f32,
+    /// Rounds in a row that took no hull from either side.
+    pub quiet_rounds: u16,
+    /// What every fleet and group that has fought here lost so far, fleets
+    /// first, each side in the order it joined.
+    pub losses: Vec<BattleLosses>,
+    /// The last round as it was reported, for a client that arrives in the
+    /// middle of the fight.
+    pub last_round: Option<BattleRoundEvent>,
 }
 
 impl Combat {
@@ -497,6 +734,54 @@ enum Dock {
     Outpost,
 }
 
+/// What a dock does for a fleet's damaged ships with what it has in stock.
+struct Mending {
+    /// The whole repair priced in metal.
+    price: f64,
+    /// What the stock pays for the ships it makes whole.
+    payment: Resources,
+    ships: u32,
+    hull: u64,
+    /// The fleet's ships once that is done.
+    mended: Ships,
+}
+
+/// A dock that charges `share` of a ship's cost for a whole hull mends the
+/// damaged ships of `fleet` from `stock`: each ship costs the par value of
+/// that share times the share of its hull that is gone, the most damaged is
+/// mended first, and a ship the stock does not cover is left as it is with
+/// every ship after it.
+fn mending(fleet: &Fleet, share: f64, stock: Resources) -> Mending {
+    let arms = fleet.arms();
+    let mut worn: Vec<(ShipClass, u32, u32)> = Vec::new();
+    for group in fleet.ships.groups() {
+        let full = scaling::ship_figures(group.ship_class, arms).hull;
+        worn.extend(group.damaged.iter().map(|&hull| (group.ship_class, hull, full)));
+    }
+    worn.sort_by_key(|&(_, hull, full)| u64::from(hull) * 1_000_000 / u64::from(full.max(1)));
+    let cost = |&(class, hull, full): &(ShipClass, u32, u32)| {
+        scaling::par_value(&class.build_cost()) * share * f64::from(full - hull) / f64::from(full.max(1))
+    };
+    let price: f64 = worn.iter().map(cost).sum();
+    let short = scaling::pay_by_weight(price, stock).1;
+    let mut budget = price - short;
+    let mut mended = fleet.ships.clone();
+    let (mut ships, mut hull, mut spent) = (0u32, 0u64, 0.0f64);
+    for ship in &worn {
+        let due = cost(ship);
+        if short > 0.0 && due > budget {
+            break;
+        }
+        budget -= due;
+        spent += due;
+        ships += 1;
+        hull += u64::from(ship.2 - ship.1);
+        mended.mend_one(ship.0, ship.1);
+    }
+    let paid = if short > 0.0 { spent } else { price };
+    Mending { price, payment: scaling::pay_by_weight(paid, stock).0, ships, hull, mended }
+}
+
 /// Harvest yield not yet reported to the owner.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HarvestReport {
@@ -569,14 +854,14 @@ impl Window {
 /// that distance from the hub, or ships that were counted.
 enum Opposing {
     Ring(u16),
-    Ships(Box<Force>),
+    Ships(Force),
 }
 
 impl Opposing {
     fn force(self) -> Force {
         match self {
             Opposing::Ring(dist) => Force::of_ring(dist),
-            Opposing::Ships(force) => *force,
+            Opposing::Ships(force) => force,
         }
     }
 
@@ -1039,7 +1324,7 @@ impl GameEngine {
         let ids: Vec<u64> = self.fleets.keys().copied().collect();
         for fid in ids {
             let fleet = &self.fleets[&fid];
-            if fleet.ship_count == 0 || fleet.state != FleetStatus::Idle { continue; }
+            if fleet.ships.is_empty() || fleet.state != FleetStatus::Idle { continue; }
             let Some(player) = self.players.get(&fleet.owner_id) else { continue; };
             if fleet.location == player.homeworld { continue; }
             let hop = fleet_fuel_cost(fleet, Some(&player.research)).min(fleet.fuel_max);
@@ -1084,7 +1369,7 @@ impl GameEngine {
     /// routing looks the fleet up), but are never listed to clients.
     fn reap_empty_fleets(&mut self) {
         let empty: Vec<u64> = self.fleets.values()
-            .filter(|f| f.ship_count == 0)
+            .filter(|f| f.ships.is_empty())
             .map(|f| f.id)
             .collect();
         for fid in empty {
@@ -1149,7 +1434,7 @@ impl GameEngine {
     fn announce_if_stranded(&mut self, fleet_id: u64) {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
         let Some(player) = self.players.get(&fleet.owner_id) else { return; };
-        if fleet.ship_count == 0 || fleet.location == player.homeworld { return; }
+        if fleet.ships.is_empty() || fleet.location == player.homeworld { return; }
         let hop = fleet_fuel_cost(fleet, Some(&player.research));
         if fleet.fuel >= hop { return; }
         let (location, fuel) = (fleet.location, fleet.fuel);
@@ -1162,208 +1447,233 @@ impl GameEngine {
 
     // ── Combat ────────────────────────────────────────────────────
 
+    /// One round of every fight, in fight order: every unit of both sides
+    /// fires at once (`combat::round`), what is left is written back to the
+    /// fleets and the groups, and everyone present is sent one report. A
+    /// fleet stands in a round as its id orders it, a group likewise, so a
+    /// world resumed from its document picks the same targets with the same
+    /// dice. A fight in open space has no limit of rounds: it ends when a
+    /// side has no unit left, when the last fleet has gone, or when
+    /// `STANDOFF_ROUNDS` rounds in a row took no hull from anybody.
     fn process_combat(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let combat_ids: Vec<u64> = self.active_combats.keys().copied().collect();
-        let mut to_remove: Vec<u64> = Vec::new();
 
         for combat_id in combat_ids {
-            let Some(active_combat) = self.active_combats.get(&combat_id) else { continue; };
+            let Some(active) = self.active_combats.get(&combat_id) else { continue; };
+            let sector = active.sector;
+            let round = active.round + 1;
+            let mut fleet_ids: Vec<u64> = active.player_fleet_ids.iter().copied()
+                .filter(|id| self.fleets.get(id).is_some_and(|f| !f.ships.is_empty()))
+                .collect();
+            fleet_ids.sort_unstable();
+            let mut group_ids: Vec<u64> = active.npc_fleet_ids.iter().copied()
+                .filter(|id| self.npc_fleets.get(id).is_some_and(|n| !n.ships.is_empty()))
+                .collect();
+            group_ids.sort_unstable();
 
-            // Copy needed data before mutable borrows
-            let combat_sector = active_combat.sector;
-            let combat_round = active_combat.round;
-            let pf_ids = active_combat.player_fleet_ids.clone();
-            let npc_ids = active_combat.npc_fleet_ids.clone();
-            let _ = active_combat;  // suppress unused warning
-
-            // Collect player fleet ship data (read-only)
-            let mut player_sides: Vec<combat::CombatSide> = Vec::new();
-            for &fid in &pf_ids {
-                if let Some(f) = self.fleets.get(&fid) {
-                    let ships: Vec<combat::CombatShip> = f.ships[0..f.ship_count].iter()
-                        .filter(|s| s.hull > 0.0)
-                        .map(combat::CombatShip::from)
-                        .collect();
-                    player_sides.push(combat::CombatSide {
-                        fleet_id: fid,
-                        is_npc: false,
-                        owner: self.players.get(&f.owner_id).map(|p| p.name.clone()),
-                        salvage: Resources::default(),
-                        label: String::new(),
-                        ships,
-                    });
-                }
-            }
-
-            // Collect NPC fleet ship data (read-only)
-            let farm = self.sector_farm_factor(combat_sector);
-            let mut npc_sides: Vec<combat::CombatSide> = Vec::new();
-            for &nid in &npc_ids {
-                if let Some(n) = self.npc_fleets.get(&nid) {
-                    let ships: Vec<combat::CombatShip> = n.ships[0..n.ship_count as usize].iter()
-                        .filter(|s| s.hull > 0.0)
-                        .map(combat::CombatShip::from)
-                        .collect();
-                    npc_sides.push(combat::CombatSide {
-                        fleet_id: nid,
-                        is_npc: true,
-                        owner: None,
-                        salvage: npc_salvage(n, &self.world.pace).scale(f64::from(farm)),
-                        label: n.label.clone(),
-                        ships,
-                    });
-                }
-            }
-
-            if player_sides.is_empty() || npc_sides.is_empty() {
-                self.break_off_combat(combat_id, None);
+            if fleet_ids.is_empty() || group_ids.is_empty() {
+                self.end_combat(combat_id, BattleOutcome::Withdrawn, None);
                 continue;
             }
 
-            let engaged: f32 = player_sides.iter()
-                .flat_map(|s| s.ships.iter())
-                .map(|s| s.weapon_power + (s.hull + s.shield) / 10.0)
-                .sum();
-            if let Some(c) = self.active_combats.get_mut(&combat_id) {
-                c.peak_power = c.peak_power.max(engaged);
-            }
+            let fleets: Vec<Troop> = fleet_ids.iter().map(|id| self.fleets[id].troop()).collect();
+            let groups: Vec<Troop> = group_ids.iter().map(|id| self.npc_fleets[id].troop()).collect();
+            let engaged: f32 = fleet_ids.iter().map(|id| fleet_power(&self.fleets[id])).sum();
 
-            // Resolve combat with copied data
-            let result = combat::resolve_combat_round(
-                &player_sides, &npc_sides,
-                self.world_gen.world_seed,
-                combat_sector,
-                self.current_tick,
-                combat_round as u32,
-            );
+            let mut dice = combat::Dice::of_round(self.world_gen.world_seed, sector, self.current_tick, round);
+            let fought = combat::round(&fleets, &groups, &mut dice);
+            let quiet = !fought.hull_lost();
 
-            // Increment round counter
-            if let Some(combat_mut) = self.active_combats.get_mut(&combat_id) {
-                combat_mut.round = combat_round + 1;
-            }
-
-            for e in &result.events {
-                if let EventKind::FleetDestroyed(d) = &e.kind
-                    && !d.is_npc
-                {
-                    self.alert_fleet_lost(d.fleet_id, combat_sector, &npc_ids);
+            let mut wiped: Vec<u64> = Vec::new();
+            for (&fid, squads) in fleet_ids.iter().zip(&fought.fleets.troops) {
+                let Some(fleet) = self.fleets.get_mut(&fid) else { continue; };
+                let before = fleet.ships.total();
+                fleet.ships = Ships::of_squads(squads);
+                if fleet.ships.total() == before { continue; }
+                if let Some(player) = self.players.get(&fleet.owner_id) {
+                    fleet.fuel_max = fleet_fuel_max(fleet, player);
+                    fleet.fuel = fleet.fuel.min(fleet.fuel_max);
                 }
+                if fleet.ships.is_empty() {
+                    wiped.push(fid);
+                }
+                self.settle_hold(fid);
             }
-            self.pending_events.extend(result.events);
-
-            // Write updated ship data back to player fleets
-            for (i, side) in player_sides.iter().enumerate() {
-                if let Some(f) = self.fleets.get_mut(&side.fleet_id) {
-                    let new_ships: Vec<Ship> = result.player_ships[i].iter().map(|cs| Ship {
-                        id: cs.id,
-                        ship_class: cs.ship_class,
-                        hull: cs.hull,
-                        hull_max: cs.hull_max,
-                        shield: cs.shield,
-                        shield_max: cs.shield_max,
-                        weapon_power: cs.weapon_power,
-                    }).collect();
-                    f.ships[..new_ships.len()].copy_from_slice(&new_ships);
-                    for j in new_ships.len()..f.ships.len() {
-                        f.ships[j] = Ship::default();
-                    }
-                    let lost_ships = new_ships.len() < f.ship_count;
-                    f.ship_count = new_ships.len();
-                    if lost_ships && let Some(player) = self.players.get(&f.owner_id) {
-                        f.fuel_max = fleet_fuel_max(f, player);
-                        f.fuel = f.fuel.min(f.fuel_max);
-                    }
-                    if lost_ships {
-                        self.settle_hold(side.fleet_id);
-                    }
+            for (nid, squads) in group_ids.iter().zip(&fought.hostiles.troops) {
+                if let Some(group) = self.npc_fleets.get_mut(nid) {
+                    group.ships = Ships::of_squads(squads);
                 }
             }
 
-            // Write updated ship data back to NPC fleets
-            for (i, side) in npc_sides.iter().enumerate() {
-                if let Some(n) = self.npc_fleets.get_mut(&side.fleet_id) {
-                    let new_ships = &result.npc_ships[i];
-                    let count = new_ships.len().min(n.ships.len());
-                    for (j, ns) in new_ships.iter().enumerate().take(count) {
-                        n.ships[j] = Ship {
-                            id: ns.id,
-                            ship_class: ns.ship_class,
-                            hull: ns.hull,
-                            hull_max: ns.hull_max,
-                            shield: ns.shield,
-                            shield_max: ns.shield_max,
-                            weapon_power: ns.weapon_power,
-                        };
-                    }
-                    for j in count..n.ships.len() {
-                        n.ships[j] = Ship::default();
-                    }
-                    n.ship_count = count as u8;
+            let fleet_side = BattleSide {
+                groups: fleet_ids.iter().zip(&fought.fleets.standing).map(|(&fleet_id, units)| BattleGroup {
+                    fleet_id,
+                    owner: self.fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone()),
+                    label: String::new(),
+                    mine: false,
+                    units: units.clone(),
+                }).collect(),
+                ..battle_side(&fought.fleets)
+            };
+            let hostile_side = BattleSide {
+                groups: group_ids.iter().zip(&fought.hostiles.standing).map(|(&fleet_id, units)| BattleGroup {
+                    fleet_id,
+                    owner: None,
+                    label: self.npc_fleets.get(&fleet_id).map(|n| n.label.clone()).unwrap_or_default(),
+                    mine: false,
+                    units: units.clone(),
+                }).collect(),
+                ..battle_side(&fought.hostiles)
+            };
+            let report = BattleRoundEvent { sector, round, fleets: fleet_side, hostiles: hostile_side, mine: false };
+
+            let quiet_rounds = {
+                let Some(active) = self.active_combats.get_mut(&combat_id) else { continue; };
+                active.round = round;
+                active.peak_power = active.peak_power.max(engaged);
+                active.quiet_rounds = if quiet { active.quiet_rounds + 1 } else { 0 };
+                for group in report.fleets.groups.iter().chain(&report.hostiles.groups) {
+                    tally_losses(&mut active.losses, group);
                 }
-            }
+                active.last_round = Some(report.clone());
+                active.quiet_rounds
+            };
+            self.pending_events.push(GameEvent { tick: self.current_tick, kind: EventKind::BattleRound(report) });
 
-            if result.concluded {
-                to_remove.push(combat_id);
-
-                // Update state for each player fleet
-                for side in &player_sides {
-                    if let Some(f) = self.fleets.get_mut(&side.fleet_id) {
-                        f.state = if result.player_ships[player_sides.iter().position(|s| s.fleet_id == side.fleet_id).unwrap()].is_empty()
-                            { FleetStatus::Docked } else { FleetStatus::Idle };
-                        f.idle_ticks = 0;
-                    }
-                }
-
-                let pile = if result.player_won {
-                    let total = npc_sides.iter().fold(Resources::default(), |acc, s| acc.add(s.salvage));
-                    Some(self.drop_salvage(combat_sector, total))
-                } else {
-                    None
-                };
+            for fid in wiped {
+                let owner = self.fleets.get(&fid).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
                 self.pending_events.push(GameEvent {
                     tick: self.current_tick,
-                    kind: EventKind::CombatEnded(iac_shared::protocol::CombatEndedEvent {
-                        sector: combat_sector,
-                        player_victory: result.player_won,
-                        owners: player_sides.iter().filter_map(|s| s.owner.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
+                    kind: EventKind::FleetDestroyed(iac_shared::protocol::FleetDestroyedEvent {
+                        fleet_id: fid,
+                        is_npc: false,
+                        sector,
+                        owner,
                         mine: false,
-                        salvage: pile.map(|(r, _)| r),
-                        salvage_despawn_tick: pile.map(|(_, t)| t),
+                        salvage: Resources::default(),
+                        label: String::new(),
                     }),
                 });
-
-                if result.player_won {
-                    let cleared_key = combat_sector.to_key();
-                    let pile = npc_sides.iter().fold(Resources::default(), |acc, s| acc.add(s.salvage));
-                    self.credit_kill(combat_id, &pf_ids, &npc_ids, cleared_key, pile);
-                    self.heat_sector(combat_sector);
-                    self.ensure_override(cleared_key)
-                        .npc_cleared_tick = Some(self.current_tick);
-                }
-
-                // Remove destroyed NPCs
-                for &nid in &npc_ids {
-                    self.npc_fleets.remove(&nid);
-                }
+                self.alert_fleet_lost(fid, sector, &group_ids);
             }
-        }
 
-        for id in to_remove {
-            self.active_combats.remove(&id);
+            let fleets_left = fought.fleets.units() > 0;
+            let groups_left = fought.hostiles.units() > 0;
+            let outcome = match (fleets_left, groups_left) {
+                (true, false) => Some(BattleOutcome::HostilesDestroyed),
+                (false, true) => Some(BattleOutcome::FleetsDestroyed),
+                (false, false) => Some(BattleOutcome::BothDestroyed),
+                (true, true) => (quiet_rounds >= STANDOFF_ROUNDS).then_some(BattleOutcome::Standoff),
+            };
+            if let Some(outcome) = outcome {
+                self.end_combat(combat_id, outcome, None);
+            }
         }
 
         Ok(())
     }
 
+    /// End a fight. Fleets still in it are free. Hostiles that were
+    /// destroyed leave their wreckage and pay their score; hostiles that
+    /// were not are gone all the same and their sectors' templates stand
+    /// again, whole: a group keeps no losses from one fight to the next.
+    /// `withdrew` names the owner of a fleet whose leaving ended the fight.
+    fn end_combat(&mut self, combat_id: u64, outcome: BattleOutcome, withdrew: Option<String>) {
+        let Some(combat) = self.active_combats.remove(&combat_id) else { return; };
+        let sector = combat.sector;
+        let killed = matches!(outcome, BattleOutcome::HostilesDestroyed | BattleOutcome::BothDestroyed);
+
+        let mut owners: std::collections::BTreeSet<String> = withdrew.into_iter().collect();
+        owners.extend(combat.losses.iter().filter_map(|l| l.owner.clone()));
+        for fid in &combat.player_fleet_ids {
+            let Some(fleet) = self.fleets.get_mut(fid) else { continue; };
+            if fleet.state == FleetStatus::InCombat {
+                fleet.state = if fleet.ships.is_empty() { FleetStatus::Docked } else { FleetStatus::Idle };
+            }
+            owners.extend(self.players.get(&fleet.owner_id).map(|p| p.name.clone()));
+        }
+
+        let mut pile = None;
+        if killed {
+            let farm = f64::from(self.sector_farm_factor(sector));
+            let mut total = Resources::default();
+            for nid in &combat.npc_fleet_ids {
+                let Some(group) = self.npc_fleets.get(nid) else { continue; };
+                let salvage = npc_salvage(group, &self.world.pace).scale(farm);
+                total = total.add(salvage);
+                self.pending_events.push(GameEvent {
+                    tick: self.current_tick,
+                    kind: EventKind::FleetDestroyed(iac_shared::protocol::FleetDestroyedEvent {
+                        fleet_id: *nid,
+                        is_npc: true,
+                        sector,
+                        owner: None,
+                        mine: false,
+                        salvage,
+                        label: group.label.clone(),
+                    }),
+                });
+            }
+            pile = Some((total, self.drop_salvage(sector, total)));
+        }
+
+        let (fleets, hostiles): (Vec<BattleLosses>, Vec<BattleLosses>) =
+            combat.losses.iter().cloned().partition(|l| l.owner.is_some());
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::CombatEnded(iac_shared::protocol::CombatEndedEvent {
+                sector,
+                player_victory: outcome == BattleOutcome::HostilesDestroyed,
+                outcome,
+                rounds: combat.round,
+                losses: fleets.into_iter().chain(hostiles).collect(),
+                owners: owners.into_iter().collect(),
+                mine: false,
+                salvage: pile.map(|(_, (heap, _))| heap),
+                salvage_despawn_tick: pile.map(|(_, (_, tick))| tick),
+            }),
+        });
+
+        if let Some((total, _)) = pile {
+            let key = sector.to_key();
+            self.credit_kill(combat.peak_power, &combat.player_fleet_ids, &combat.npc_fleet_ids, key, total);
+            self.heat_sector(sector);
+            self.ensure_override(key).npc_cleared_tick = Some(self.current_tick);
+        }
+        for nid in &combat.npc_fleet_ids {
+            self.npc_fleets.remove(nid);
+        }
+    }
+
+    /// The fights `player_id` has a fleet in or is present at, each with
+    /// its last round.
+    pub fn battles_of(&self, player_id: u64) -> Vec<BattleState> {
+        self.active_combats
+            .values()
+            .filter(|combat| {
+                combat.player_fleet_ids.iter().any(|id| self.fleets.get(id).is_some_and(|f| f.owner_id == player_id))
+                    || self.fleets.values().any(|f| f.owner_id == player_id && f.location == combat.sector && !f.ships.is_empty())
+                    || self.players.get(&player_id).is_some_and(|p| p.homeworld == combat.sector)
+                    || self.outposts.get(&player_id).is_some_and(|o| o.sector == combat.sector)
+            })
+            .map(|combat| BattleState {
+                sector: combat.sector,
+                rounds: combat.round,
+                last_round: combat.last_round.clone(),
+                losses: combat.losses.clone(),
+            })
+            .collect()
+    }
+
     /// Score for destroying the NPC group, once per respawn of the sector and
     /// to every player who fought (cooperation costs nothing). It follows the
     /// pile the kill left (finds factor and anti-farming heat included), so
-    /// points and resources rise and fall together.
-    fn credit_kill(&mut self, combat_id: u64, player_fleets: &[u64], npcs: &[u64], sector_key: u32, pile: Resources) {
+    /// points and resources rise and fall together. `engaged` is the most
+    /// power the players' side brought to bear.
+    fn credit_kill(&mut self, engaged: f32, player_fleets: &[u64], npcs: &[u64], sector_key: u32, pile: Resources) {
         let fresh = self.sector_overrides.get(&sector_key).is_none_or(|o| o.npc_cleared_tick.is_none());
         if !fresh { return; }
         let power: f32 = npcs.iter().filter_map(|id| self.npc_fleets.get(id)).map(|n| n.power).sum();
-        let engaged = self.active_combats.get(&combat_id).map_or(0.0, |c| c.peak_power);
         let points = score::kill_points(pile, engaged, power);
         if points <= 0.0 { return; }
         let owners: HashSet<u64> = player_fleets.iter()
@@ -1631,7 +1941,7 @@ impl GameEngine {
             };
             let docked = self.fleets.values()
                 .filter(|f| {
-                    f.owner_id == pid && f.location == home && f.ship_count > 0
+                    f.owner_id == pid && f.location == home && !f.ships.is_empty()
                         && matches!(f.state, FleetStatus::Idle | FleetStatus::Docked)
                 })
                 .map(|f| f.id)
@@ -1761,7 +2071,7 @@ impl GameEngine {
 
             // Check if player fleet at new location -> trigger combat
             for fleet in self.fleets.values() {
-                if fleet.location == new_location && fleet.state != FleetStatus::InCombat && fleet.ship_count > 0 {
+                if fleet.location == new_location && fleet.state != FleetStatus::InCombat && !fleet.ships.is_empty() {
                     self.start_combat(fleet.id, npc_id)?;
                     break;
                 }
@@ -1794,8 +2104,127 @@ impl GameEngine {
         for fid in thirsty {
             self.refuel_fleet(fid);
         }
+        let worn: Vec<u64> = self.fleets.values()
+            .filter(|f| self.players.get(&f.owner_id).is_some_and(|p| {
+                p.homeworld == f.location && (f.ships.has_damage() || f.refit != Refit::of(&p.research))
+            }))
+            .map(|f| f.id)
+            .collect();
+        for fid in worn {
+            self.tend_at_home(fid, false);
+        }
         self.process_storage_alerts();
         Ok(())
+    }
+
+    /// The home dock's work on a fleet standing there: it is refitted to its
+    /// owner's Weapons, Shielding and Armour Technology as they stand, and
+    /// its damaged ships are mended. Not in a fight, and not while it is
+    /// charging a jump out: it has left. `arriving` tells the owner of the
+    /// refit; research that finishes over a docked fleet has said so itself.
+    fn tend_at_home(&mut self, fleet_id: u64, arriving: bool) {
+        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
+        let Some(player) = self.players.get(&fleet.owner_id) else { return; };
+        if fleet.location != player.homeworld || fleet.ships.is_empty() { return; }
+        if matches!(fleet.state, FleetStatus::InCombat | FleetStatus::Moving) { return; }
+        let (was, now) = (fleet.refit, Refit::of(&player.research));
+        if was != now {
+            fleet.ships.rearm(was.arms(), now.arms());
+            fleet.refit = now;
+            if arriving {
+                let message = format!(
+                    "fleet {fleet_id} was refitted at the home dock: Weapons {}, Shielding {}, Armour {} (it flew with {}, {}, {})",
+                    now.weapons, now.shielding, now.armour, was.weapons, was.shielding, was.armour,
+                );
+                let at = fleet.location;
+                self.push_alert(AlertLevel::Info, fleet_id, at, message);
+            }
+        }
+        self.mend_fleet(fleet_id, Dock::Home);
+    }
+
+    /// What the dock of `fleet`'s owner would do for its damaged ships with
+    /// what it has in stock now, and why it would do nothing, if it would
+    /// not. None when the owner has no such dock.
+    fn dock_mending(&self, fleet: &Fleet, dock: Dock) -> Option<(Mending, Option<String>)> {
+        let player = self.players.get(&fleet.owner_id)?;
+        match dock {
+            Dock::Home => Some((mending(fleet, REPAIR_COST_SHARE_HOME, player.resources), None)),
+            Dock::Outpost => {
+                let outpost = self.outposts.get(&fleet.owner_id)?;
+                let refusal = if outpost.level == 0 {
+                    Some(format!("the outpost at {} is not finished", outpost.sector))
+                } else if outpost.breached {
+                    Some(format!("the outpost at {} is breached and mends nothing until it is repaired", outpost.sector))
+                } else if self.policies.contains_key(&fleet.id) {
+                    Some("a fleet under standing orders does not use the outpost".to_string())
+                } else {
+                    None
+                };
+                Some((mending(fleet, REPAIR_COST_SHARE_OUTPOST, outpost.store), refusal))
+            }
+        }
+    }
+
+    /// What mending `fleet`'s damaged ships would take at each dock; None
+    /// when none is damaged.
+    pub fn repair_quote(&self, fleet: &Fleet) -> Option<RepairQuote> {
+        if !fleet.ships.has_damage() { return None; }
+        let (held, full) = fleet.ships.hull(fleet.arms());
+        let quote = |(mending, refusal): (Mending, Option<String>)| DockRepair {
+            price: mending.price,
+            payment: if refusal.is_some() { Resources::default() } else { mending.payment },
+            ships: if refusal.is_some() { 0 } else { mending.ships },
+            hull: if refusal.is_some() { 0 } else { mending.hull },
+            refusal,
+        };
+        Some(RepairQuote {
+            ships: fleet.ships.damaged(),
+            hull: full - held,
+            home: quote(self.dock_mending(fleet, Dock::Home)?),
+            outpost: self.dock_mending(fleet, Dock::Outpost).map(quote),
+        })
+    }
+
+    /// Mend the damaged ships of a fleet standing at `dock`, as far as the
+    /// dock's stock pays for whole ships, the most damaged first, and tell
+    /// the owner what was done and what it took.
+    fn mend_fleet(&mut self, fleet_id: u64, dock: Dock) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        if !fleet.ships.has_damage() { return; }
+        let Some((mending, None)) = self.dock_mending(fleet, dock) else { return; };
+        if mending.ships == 0 { return; }
+        let (owner, at) = (fleet.owner_id, fleet.location);
+        let left = fleet.ships.damaged() - mending.ships;
+        let Mending { payment, ships, hull, mended, .. } = mending;
+        match dock {
+            Dock::Home => {
+                if let Some(player) = self.players.get_mut(&owner) {
+                    player.resources = player.resources.sub(payment);
+                }
+            }
+            Dock::Outpost => {
+                if let Some(outpost) = self.outposts.get_mut(&owner) {
+                    outpost.store = outpost.store.sub(payment);
+                }
+            }
+        }
+        let fleet = self.fleets.get_mut(&fleet_id).unwrap();
+        fleet.ships = mended;
+        fleet.action_cooldown = fleet.action_cooldown.max(REPAIR_TICKS);
+        let place = match dock {
+            Dock::Home => "the home dock",
+            Dock::Outpost => "your outpost",
+        };
+        let price = if payment.total() > 0.0 {
+            format!("for {}", crate::commands::amount_words(payment))
+        } else {
+            "for nothing".to_string()
+        };
+        let rest = if left > 0 { format!("; {left} more wait for the dock's stock to cover them") } else { String::new() };
+        self.push_alert(AlertLevel::Info, fleet_id, at, format!(
+            "fleet {fleet_id} was mended at {place}: {ships} ship(s) made whole, {hull} hull restored, {price}{rest}",
+        ));
     }
 
     /// Move as much of the fleet's cargo into its owner's stockpile as the
@@ -2407,11 +2836,11 @@ impl GameEngine {
     }
 
     /// A raid reaches `owner`'s outpost. The platform and the owner's ships
-    /// in the sector defend, with the homeworld raid's fog. Repelled, the
-    /// ships' shields are halved and nothing else happens. Lost, a share of
-    /// the ships there is destroyed, a share of the store and of the holds
-    /// there above what the next repair would take of them is taken, and the
-    /// outpost is breached. It is never destroyed.
+    /// in the sector defend, with the homeworld raid's fog. Repelled,
+    /// nothing happens. Lost, a share of the ships there is destroyed, a
+    /// share of the store and of the holds there above what the next repair
+    /// would take of them is taken, and the outpost is breached. It is
+    /// never destroyed.
     fn resolve_outpost_raid(&mut self, owner: u64, raid_power: f32) {
         let tick = self.current_tick;
         let Some(outpost) = self.outposts.get(&owner) else { return; };
@@ -2426,15 +2855,7 @@ impl GameEngine {
         let defended = defense_power * rng.random_range(0.9..1.1) >= raid_power;
 
         let (mut resources_lost, mut protected_kept, mut ships_lost) = (Resources::default(), Resources::default(), 0);
-        if defended {
-            for fleet in self.fleets.values_mut() {
-                if fleet.owner_id != owner || fleet.location != sector { continue; }
-                for ship in &mut fleet.ships[0..fleet.ship_count] {
-                    ship.shield = (ship.shield * 0.5).max(0.0);
-                }
-                fleet.idle_ticks = 0;
-            }
-        } else {
+        if !defended {
             ships_lost = self.destroy_docked_ships(owner, sector, RAID_LOST_SHIP_FRACTION, &mut rng);
             let store = self.outposts.get(&owner).map_or(store, |o| o.store);
             let rate = Resources { metal: OUTPOST_RAID_LOSS, crystal: OUTPOST_RAID_LOSS, deuterium: OUTPOST_RAID_LOSS };
@@ -2519,14 +2940,6 @@ impl GameEngine {
             salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
             ov.salvage_despawn_tick = salvage_despawn_tick;
             salvage_dropped = Some(salvage);
-            // Defenders take shield damage but hulls stay intact.
-            for fleet in self.fleets.values_mut() {
-                if fleet.owner_id != player_id || fleet.location != homeworld { continue; }
-                for ship in &mut fleet.ships[0..fleet.ship_count] {
-                    ship.shield = (ship.shield * 0.5).max(0.0);
-                }
-                fleet.idle_ticks = 0;
-            }
         } else {
             (structures_lost, structures_restored) =
                 self.damage_structures(player_id, RAID_LOST_STRUCTURE_FRACTION, false);
@@ -2600,7 +3013,7 @@ impl GameEngine {
         rate: Resources,
     ) -> (Resources, Resources, Resources) {
         let holds: Vec<u64> = self.fleets.values()
-            .filter(|f| f.owner_id == owner && f.location == sector && f.ship_count > 0 && f.cargo.total() > 0.0)
+            .filter(|f| f.owner_id == owner && f.location == sector && !f.ships.is_empty() && f.cargo.total() > 0.0)
             .map(|f| f.id)
             .collect();
         let aboard = holds.iter().fold(Resources::default(), |sum, fid| sum.add(self.fleets[fid].cargo));
@@ -2657,37 +3070,32 @@ impl GameEngine {
     /// destroyed, chosen at random, and the holds they leave are settled.
     /// Returns how many.
     fn destroy_docked_ships(&mut self, player_id: u64, dock: Hex, fraction: f32, rng: &mut StdRng) -> u32 {
-        let mut docked: Vec<(u64, usize)> = Vec::new();
-        let mut fleet_ids: Vec<u64> = self.fleets.values()
-            .filter(|f| f.owner_id == player_id && f.location == dock && f.ship_count > 0)
+        let fleet_ids: Vec<u64> = self.fleets.values()
+            .filter(|f| f.owner_id == player_id && f.location == dock && !f.ships.is_empty())
             .map(|f| f.id)
             .collect();
-        fleet_ids.sort_unstable();
-        for fid in &fleet_ids {
-            docked.extend((0..self.fleets[fid].ship_count).map(|i| (*fid, i)));
-        }
-        if docked.is_empty() { return 0; }
-        let lose = ((docked.len() as f32 * fraction).ceil() as usize).clamp(1, docked.len());
-        let mut doomed: Vec<(u64, usize)> = Vec::with_capacity(lose);
+        let mut docked: u32 = fleet_ids.iter().map(|fid| self.fleets[fid].ships.total()).sum();
+        if docked == 0 { return 0; }
+        let lose = ((docked as f32 * fraction).ceil() as u32).clamp(1, docked);
         for _ in 0..lose {
-            doomed.push(docked.swap_remove(rng.random_range(0..docked.len())));
-        }
-        // Highest index first so removals do not shift the rest.
-        doomed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
-        for &(fid, i) in &doomed {
-            if let Some(f) = self.fleets.get_mut(&fid) {
-                let n = f.ship_count;
-                f.ships.copy_within(i + 1..n, i);
-                f.ships[n - 1] = Ship::default();
-                f.ship_count = n - 1;
+            let mut pick = rng.random_range(0..docked);
+            for fid in &fleet_ids {
+                let Some(fleet) = self.fleets.get_mut(fid) else { continue; };
+                let here = fleet.ships.total();
+                if pick < here {
+                    fleet.ships.remove_at(pick);
+                    break;
+                }
+                pick -= here;
             }
+            docked -= 1;
         }
-        for &(fid, _) in &doomed {
-            self.settle_hold(fid);
+        for fid in &fleet_ids {
+            self.settle_hold(*fid);
         }
         for fid in fleet_ids {
             if let Some(f) = self.fleets.get(&fid) {
-                if f.ship_count == 0 {
+                if f.ships.is_empty() {
                     self.remove_fleet(fid);
                 } else {
                     let fuel_max = fleet_fuel_max(f, &self.players[&player_id]);
@@ -2697,7 +3105,7 @@ impl GameEngine {
                 }
             }
         }
-        lose as u32
+        lose
     }
 
     /// Structures a repelled raid knocked out return when their time is up.
@@ -2741,15 +3149,10 @@ impl GameEngine {
 
     /// What the ships standing at the homeworld add to its defence.
     pub fn docked_power(&self, player: &Player) -> f32 {
-        let mut power = 0.0;
-        for fleet in self.fleets.values() {
-            if fleet.owner_id != player.id || fleet.location != player.homeworld { continue; }
-            for ship in &fleet.ships[0..fleet.ship_count] {
-                if ship.hull <= 0.0 { continue; }
-                power += ship.weapon_power + (ship.hull + ship.shield) / 10.0;
-            }
-        }
-        power
+        self.fleets.values()
+            .filter(|fleet| fleet.owner_id == player.id && fleet.location == player.homeworld)
+            .map(fleet_power)
+            .sum()
     }
 
     /// What the Solar Satellites at home add to its defence.
@@ -2792,11 +3195,16 @@ impl GameEngine {
     pub fn outpost_defense_power(&self, owner: u64) -> f32 {
         let Some(outpost) = self.outposts.get(&owner) else { return 0.0; };
         let platform = if outpost.breached { 0.0 } else { scaling::outpost_platform_power(outpost.level) };
-        let ships: f32 = self.fleets.values()
+        platform + self.outpost_ships_power(owner)
+    }
+
+    /// What `owner`'s ships standing at their outpost add to its defence.
+    pub fn outpost_ships_power(&self, owner: u64) -> f32 {
+        let Some(outpost) = self.outposts.get(&owner) else { return 0.0; };
+        self.fleets.values()
             .filter(|f| f.owner_id == owner && f.location == outpost.sector)
             .map(fleet_power)
-            .sum();
-        platform + ships
+            .sum()
     }
 
     fn outpost_alert(&mut self, owner: u64, level: AlertLevel, sector: Hex, message: String) {
@@ -2870,7 +3278,7 @@ impl GameEngine {
             _ => {}
         }
         let group = self.npc_fleets.values()
-            .find(|n| n.location == sector && n.ship_count > 0)
+            .find(|n| n.location == sector && !n.ships.is_empty())
             .map(|n| n.label.clone())
             .or_else(|| self.pending_template_npc(sector).map(|t| t.label()));
         if let Some(group) = group {
@@ -3130,8 +3538,8 @@ impl GameEngine {
     }
 
     /// Each outpost's tick, in owner order: a finished job, the extractor,
-    /// the repair of a breach, then the tanks of the fleets there, then
-    /// what the owner is told about the store.
+    /// the repair of a breach, then the tanks and the hulls of the fleets
+    /// there, then what the owner is told about the store.
     fn process_outposts(&mut self) {
         let owners: Vec<u64> = self.outposts.keys().copied().collect();
         for owner in owners {
@@ -3139,6 +3547,7 @@ impl GameEngine {
             self.run_extractor(owner);
             self.repair_outpost(owner);
             self.fill_tanks_at_outpost(owner);
+            self.mend_at_outpost(owner);
             self.note_full_store(owner);
         }
     }
@@ -3205,7 +3614,7 @@ impl GameEngine {
                     outpost.raid.first_seen_tick = tick;
                     outpost.raid.next_roll_tick = tick + roll_interval;
                     outpost.dry_tanks = self.fleets.values()
-                        .filter(|f| f.owner_id == owner && f.location == sector && f.ship_count > 0)
+                        .filter(|f| f.owner_id == owner && f.location == sector && !f.ships.is_empty())
                         .map(|f| f.id)
                         .collect();
                 }
@@ -3228,12 +3637,31 @@ impl GameEngine {
         let Some(outpost) = self.outposts.get(&owner).filter(|o| o.level >= 1) else { return; };
         let sector = outpost.sector;
         let stands = |f: &Fleet| {
-            f.owner_id == owner && f.location == sector && f.ship_count > 0 && f.state != FleetStatus::Moving
+            f.owner_id == owner && f.location == sector && !f.ships.is_empty() && f.state != FleetStatus::Moving
         };
         let thirsty: Vec<u64> = self.fleets.values().filter(|f| stands(f) && f.fuel < f.fuel_max).map(|f| f.id).collect();
         self.outposts.get_mut(&owner).unwrap().dry_tanks.retain(|id| thirsty.contains(id));
         for fleet_id in thirsty {
             self.refuel_at_outpost(fleet_id);
+        }
+    }
+
+    /// The outpost's dock mends the fleets that stand at it, in fleet
+    /// order, each as far as the store then pays. It does not refit: that
+    /// is the home dock's. A fleet in a fight or charging a jump is left
+    /// alone, and so is one under standing orders.
+    fn mend_at_outpost(&mut self, owner: u64) {
+        let Some(outpost) = self.outposts.get(&owner).filter(|o| o.in_service()) else { return; };
+        let sector = outpost.sector;
+        let worn: Vec<u64> = self.fleets.values()
+            .filter(|f| {
+                f.owner_id == owner && f.location == sector && f.ships.has_damage()
+                    && !matches!(f.state, FleetStatus::Moving | FleetStatus::InCombat)
+            })
+            .map(|f| f.id)
+            .collect();
+        for fleet_id in worn {
+            self.mend_fleet(fleet_id, Dock::Outpost);
         }
     }
 
@@ -3274,18 +3702,6 @@ impl GameEngine {
         for (_, fleet) in self.fleets.iter_mut() {
             if fleet.action_cooldown > 0 {
                 fleet.action_cooldown -= 1;
-            }
-            if fleet.state == FleetStatus::Idle {
-                if fleet.idle_ticks < SHIELD_REGEN_IDLE_TICKS {
-                    fleet.idle_ticks += 1;
-                }
-                if fleet.idle_ticks >= SHIELD_REGEN_IDLE_TICKS {
-                    for ship in &mut fleet.ships[0..fleet.ship_count] {
-                        if ship.shield < ship.shield_max {
-                            ship.shield = (ship.shield + ship.shield_max * 0.1).min(ship.shield_max);
-                        }
-                    }
-                }
             }
         }
         Ok(())
@@ -3454,26 +3870,18 @@ impl GameEngine {
             owner_id: player_id,
             location: homeworld,
             state: FleetStatus::Idle,
-            ships: [Ship::default(); MAX_SHIPS_PER_FLEET],
-            ship_count: 0,
+            ships: Ships::of(STARTING_SHIPS),
+            refit: Refit::of(&ResearchLevels::default()),
             cargo: Resources::default(),
             fuel: 0.0,
             fuel_max: 0.0,
             move_cooldown: 0,
             action_cooldown: 0,
             move_target: None,
-            idle_ticks: 0,
             harvest_target: HarvestResource::Auto,
             charts: Vec::new(),
             laden: false,
         };
-
-        for &(class, count) in STARTING_SHIPS {
-            for _ in 0..count {
-                fleet.ships[fleet.ship_count] = built_ship(self.next_id(), class, &ResearchLevels::default());
-                fleet.ship_count += 1;
-            }
-        }
 
         if let Some(player) = self.players.get(&player_id) {
             fleet.fuel_max = fleet_fuel_max(&fleet, player);
@@ -3494,7 +3902,7 @@ impl GameEngine {
     fn owned_fleet(&self, player_id: u64, fleet_id: u64) -> Result<&Fleet, ErrorCode> {
         let fleet = self.fleets.get(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
         if fleet.owner_id != player_id { return Err(ErrorCode::FleetNotFound); }
-        if fleet.ship_count == 0 { return Err(ErrorCode::FleetNotFound); }
+        if fleet.ships.is_empty() { return Err(ErrorCode::FleetNotFound); }
         Ok(fleet)
     }
 
@@ -3607,9 +4015,10 @@ impl GameEngine {
         ratio
     }
 
-    /// The ratio of `ours` against `theirs` (`odds::outlook`), `ours` firing first.
+    /// The ratio of `ours` against `theirs`: the fight itself, played
+    /// forward (`odds::outlook`), and remembered by the two sides.
     pub fn odds_ratio(&self, ours: &Force, theirs: &Force) -> f32 {
-        let key = (*ours, *theirs);
+        let key = (ours.clone(), theirs.clone());
         if let Some(&ratio) = self.odds_memo.borrow().get(&key) {
             return ratio;
         }
@@ -3696,14 +4105,14 @@ impl GameEngine {
     fn sector_opposing(&self, coord: Hex) -> Opposing {
         let mut force = Force::default();
         for npc in self.npc_fleets.values().filter(|n| n.location == coord) {
-            force.join(&Force::of_ships(&npc.ships[..npc.ship_count as usize]));
+            force.join(&Force::of(npc.arms, npc.ships.squads()));
         }
         if !force.is_empty() || self.outpost_at(coord).is_some() {
-            return Opposing::Ships(Box::new(force));
+            return Opposing::Ships(force);
         }
         match self.pending_template_npc(coord) {
             Some(tmpl) => {
-                Opposing::Ships(Box::new(Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier)))
+                Opposing::Ships(Force::of_group(tmpl.ship_class, u32::from(tmpl.count), tmpl.stat_multiplier))
             }
             None => Opposing::Ring(coord.dist_from_origin()),
         }
@@ -3719,12 +4128,8 @@ impl GameEngine {
         npcs: impl Iterator<Item = &'a NpcFleet>,
     ) -> ThreatInfo {
         let mut observed: Option<f32> = None;
-        for npc in npcs.filter(|n| n.ship_count > 0) {
-            let power: f32 = npc.ships[..npc.ship_count as usize].iter()
-                .filter(|s| s.hull > 0.0)
-                .map(|s| s.weapon_power + (s.hull + s.shield) / 10.0)
-                .sum();
-            *observed.get_or_insert(0.0) += power * behavior_threat_bonus(npc.behavior);
+        for npc in npcs.filter(|n| !n.ships.is_empty()) {
+            *observed.get_or_insert(0.0) += npc.ships.power(npc.arms) * behavior_threat_bonus(npc.behavior);
         }
         if observed.is_none()
             && let Some(tmpl) = pending
@@ -3758,7 +4163,7 @@ impl GameEngine {
 
     /// Hops a scan by `fleet` reveals.
     pub fn scan_range(fleet: &Fleet) -> u8 {
-        if fleet_has(fleet, ShipClass::EspionageProbe) { SCAN_PROBE_RANGE } else { SCAN_BASE_RANGE }
+        if fleet.ships.has(ShipClass::EspionageProbe) { SCAN_PROBE_RANGE } else { SCAN_BASE_RANGE }
     }
 
     /// The ways home from `from`. `direct` is the fewest hops over the real
@@ -4402,57 +4807,63 @@ impl GameEngine {
             self.world_gen.world_seed ^ self.current_tick.wrapping_mul(0x9E3779B97F4A7C15) ^ fleet_id.rotate_left(32)
         );
 
-        let ships_before = fleet_mut.ship_count;
-        let (mut damaged, mut hull_lost) = (0usize, 0.0f32);
-        let mut i = 0;
-        while i < fleet_mut.ship_count {
-            let roll = rng.random_range(0.0..1.0);
-            if roll < damage_chance {
-                let damage_pct = RECALL_HULL_DAMAGE_MIN + rng.random_range(0.0..1.0) * (RECALL_HULL_DAMAGE_MAX - RECALL_HULL_DAMAGE_MIN);
-                let dealt = fleet_mut.ships[i].hull_max * damage_pct;
-                fleet_mut.ships[i].hull -= dealt;
-
-                if fleet_mut.ships[i].hull <= 0.0 {
-                    self.pending_events.push(GameEvent {
-                        tick: self.current_tick,
-                        kind: EventKind::ShipDestroyed(iac_shared::protocol::ShipDestroyedEvent {
-                            ship_id: fleet_mut.ships[i].id,
-                            ship_class: fleet_mut.ships[i].ship_class,
-                            owner_fleet_id: fleet_id,
-                            is_npc: false,
-                            sector: fleet_mut.location,
-                            owner: Some(player.name.clone()),
-                            mine: false,
-                        }),
-                    });
-                    // Swap-remove
-                    fleet_mut.ship_count -= 1;
-                    fleet_mut.ships[i] = fleet_mut.ships[fleet_mut.ship_count];
-                    fleet_mut.ships[fleet_mut.ship_count] = Ship::default();
-                    continue;
+        let arms = fleet_mut.arms();
+        let ships_before = fleet_mut.ships.total();
+        let (mut damaged, mut hull_lost) = (0u32, 0u64);
+        let mut broken: Vec<ShipCount> = Vec::new();
+        let mut after = Ships::default();
+        for group in fleet_mut.ships.groups() {
+            let full = scaling::ship_figures(group.ship_class, arms).hull;
+            let mut gone = 0u32;
+            let holding = std::iter::repeat_n(full, group.whole() as usize).chain(group.damaged.iter().copied());
+            for hull in holding {
+                let mut left = hull;
+                let roll = rng.random_range(0.0..1.0);
+                if roll < damage_chance {
+                    let share = RECALL_HULL_DAMAGE_MIN + rng.random_range(0.0..1.0) * (RECALL_HULL_DAMAGE_MAX - RECALL_HULL_DAMAGE_MIN);
+                    let dealt = (full as f32 * share) as u32;
+                    if dealt >= hull {
+                        gone += 1;
+                        continue;
+                    }
+                    left = hull - dealt;
+                    damaged += 1;
+                    hull_lost += u64::from(dealt);
                 }
-                damaged += 1;
-                hull_lost += dealt;
+                after.add_holding(group.ship_class, left, full);
             }
-            i += 1;
+            if gone > 0 {
+                broken.push(ShipCount { ship_class: group.ship_class, count: gone });
+            }
         }
+        fleet_mut.ships = after;
 
         let home = player.homeworld;
-        let lost = ships_before - fleet_mut.ship_count;
+        let lost = ships_before - fleet_mut.ships.total();
         if lost > 0 {
+            self.pending_events.push(GameEvent {
+                tick: self.current_tick,
+                kind: EventKind::ShipsLost(ShipsLostEvent {
+                    fleet_id,
+                    sector: from,
+                    owner: player.name.clone(),
+                    mine: false,
+                    ships: broken,
+                }),
+            });
             self.settle_hold(fleet_id);
         }
-        let of_ships = |n: usize| match (n, ships_before) {
+        let of_ships = |n: u32| match (n, ships_before) {
             (_, 1) => "its one ship".to_string(),
             (n, all) if n == all => format!("all {all} of its ships"),
             (n, all) => format!("{n} of its {all} ships"),
         };
         let harm = match (lost, damaged) {
             (0, 0) => "no ship was damaged".to_string(),
-            (0, _) => format!("{} took {hull_lost:.0} hull damage, which is not repaired", of_ships(damaged)),
+            (0, _) => format!("{} took {hull_lost} hull damage", of_ships(damaged)),
             (_, 0) => format!("{} broke up in the jump", of_ships(lost)),
             _ => format!(
-                "{} broke up in the jump and {damaged} more took {hull_lost:.0} hull damage, which is not repaired",
+                "{} broke up in the jump and {damaged} more took {hull_lost} hull damage",
                 of_ships(lost),
             ),
         };
@@ -4470,7 +4881,7 @@ impl GameEngine {
         );
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.location = home;
-        fleet_mut.state = if fleet_mut.ship_count == 0 { FleetStatus::Docked } else { FleetStatus::Idle };
+        fleet_mut.state = if fleet_mut.ships.is_empty() { FleetStatus::Docked } else { FleetStatus::Idle };
         fleet_mut.move_target = None;
         fleet_mut.move_cooldown = 0;
 
@@ -4484,26 +4895,28 @@ impl GameEngine {
         fleet.state == FleetStatus::Idle || fleet.state == FleetStatus::Docked
     }
 
-    /// Detach `ship_ids` from a fleet into a new fleet at the same sector and
-    /// return its id. Fuel and cargo follow the ships in proportion to the
-    /// tank and hold they take along; both halves of a laden fleet stay laden.
-    pub fn handle_split(&mut self, player_id: u64, fleet_id: u64, ship_ids: &[u64]) -> Result<u64, ErrorCode> {
+    /// Detach `take`, so many ships of each class named, from a fleet into
+    /// a new fleet at the same sector and return its id. Of a class the
+    /// whole ships go first and then the least damaged; with `damaged_first`
+    /// the most damaged go first. Both halves fight with the fleet's refit.
+    /// Fuel and cargo follow the ships in proportion to the tank and hold
+    /// they take along; both halves of a laden fleet stay laden.
+    pub fn handle_split(&mut self, player_id: u64, fleet_id: u64, take: &[ShipCount], damaged_first: bool) -> Result<u64, ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         if !Self::fleet_is_free(fleet) { return Err(ErrorCode::OnCooldown); }
 
-        let mut take: Vec<u64> = ship_ids.to_vec();
-        take.sort_unstable();
-        take.dedup();
-        let aboard = &fleet.ships[0..fleet.ship_count];
-        if take.is_empty()
-            || take.len() >= fleet.ship_count
-            || take.iter().any(|id| !aboard.iter().any(|s| s.id == *id))
-        {
-            return Err(ErrorCode::InvalidTarget);
+        let mut kept = fleet.ships.clone();
+        let mut taken = Ships::default();
+        for (i, order) in take.iter().enumerate() {
+            let named_twice = take[..i].iter().any(|earlier| earlier.ship_class == order.ship_class);
+            if order.count == 0 || named_twice { return Err(ErrorCode::InvalidTarget); }
+            let group = kept.take(order.ship_class, order.count, damaged_first).ok_or(ErrorCode::InvalidTarget)?;
+            taken.absorb(Ships(vec![group]));
         }
+        if taken.is_empty() || kept.is_empty() { return Err(ErrorCode::InvalidTarget); }
 
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
-        let owned = self.fleets.values().filter(|f| f.owner_id == player_id && f.ship_count > 0).count();
+        let owned = self.fleets.values().filter(|f| f.owner_id == player_id && !f.ships.is_empty()).count();
         if owned >= MAX_FLEETS_TOTAL { return Err(ErrorCode::FleetLimitReached); }
         if fleet.location != player.homeworld
             && !self.docked_at_outpost(fleet)
@@ -4512,30 +4925,25 @@ impl GameEngine {
             return Err(ErrorCode::FleetLimitReached);
         }
 
-        let (kept, taken): (Vec<Ship>, Vec<Ship>) = aboard.iter().copied().partition(|s| !take.contains(&s.id));
         let mut new_fleet = Fleet {
             id: 0,
             owner_id: player_id,
             location: fleet.location,
             state: FleetStatus::Idle,
-            ships: [Ship::default(); MAX_SHIPS_PER_FLEET],
-            ship_count: taken.len(),
+            ships: taken,
+            refit: fleet.refit,
             cargo: Resources::default(),
             fuel: 0.0,
             fuel_max: 0.0,
             move_cooldown: fleet.move_cooldown,
             action_cooldown: fleet.action_cooldown,
             move_target: None,
-            idle_ticks: fleet.idle_ticks,
             harvest_target: fleet.harvest_target,
             charts: fleet.charts.clone(),
             laden: fleet.laden,
         };
-        new_fleet.ships[..taken.len()].copy_from_slice(&taken);
         let mut rest = fleet.clone();
-        rest.ships = [Ship::default(); MAX_SHIPS_PER_FLEET];
-        rest.ships[..kept.len()].copy_from_slice(&kept);
-        rest.ship_count = kept.len();
+        rest.ships = kept;
 
         let old_tank = fleet_fuel_max(fleet, player);
         let old_hold = fleet_cargo_capacity(fleet, &self.world.pace);
@@ -4552,7 +4960,7 @@ impl GameEngine {
         let new_id = self.next_id();
         new_fleet.id = new_id;
         let location = new_fleet.location;
-        let count = new_fleet.ship_count;
+        let count = new_fleet.ships.total();
         self.fleets.insert(fleet_id, rest);
         self.fleets.insert(new_id, new_fleet);
         self.push_alert(
@@ -4564,19 +4972,24 @@ impl GameEngine {
 
     /// Fold `other_id` into `fleet_id`: ships, cargo and fuel pool and the
     /// absorbed fleet and its standing orders cease to exist. The merged
-    /// fleet is laden if `fleet_id` was.
+    /// fleet is laden if `fleet_id` was. It fights with the lower of the
+    /// two fleets' Weapons, Shielding and Armour levels, each damaged ship
+    /// keeping the share of its hull it had, until the home dock refits it.
     pub fn handle_merge(&mut self, player_id: u64, fleet_id: u64, other_id: u64) -> Result<(), ErrorCode> {
         if fleet_id == other_id { return Err(ErrorCode::InvalidTarget); }
         let a = self.owned_fleet(player_id, fleet_id)?;
         let b = self.owned_fleet(player_id, other_id)?;
         if a.location != b.location { return Err(ErrorCode::NotInSector); }
         if !Self::fleet_is_free(a) || !Self::fleet_is_free(b) { return Err(ErrorCode::OnCooldown); }
-        if a.ship_count + b.ship_count > MAX_SHIPS_PER_FLEET { return Err(ErrorCode::InvalidCommand); }
+        if a.ships.total() + b.ships.total() > MAX_FLEET_SHIPS { return Err(ErrorCode::InvalidCommand); }
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
 
         let mut merged = a.clone();
-        merged.ships[a.ship_count..a.ship_count + b.ship_count].copy_from_slice(&b.ships[..b.ship_count]);
-        merged.ship_count = a.ship_count + b.ship_count;
+        merged.refit = a.refit.lower(b.refit);
+        merged.ships.rearm(a.arms(), merged.arms());
+        let mut joining = b.ships.clone();
+        joining.rearm(b.arms(), merged.arms());
+        merged.ships.absorb(joining);
         merged.cargo = a.cargo.add(b.cargo);
         merged.fuel_max = fleet_fuel_max(&merged, player);
         merged.fuel = (a.fuel + b.fuel).min(merged.fuel_max);
@@ -4588,15 +5001,26 @@ impl GameEngine {
             }
         }
         let location = merged.location;
-        let count = merged.ship_count;
+        let count = merged.ships.total();
+        let refit = merged.refit;
+        let lowered = (a.refit != refit || b.refit != refit) && location != player.homeworld;
 
         let orders_ended = self.policies.contains_key(&other_id);
         self.remove_fleet(other_id);
         self.fleets.insert(fleet_id, merged);
+        self.tend_at_home(fleet_id, false);
         self.push_alert(
             AlertLevel::Info, fleet_id, location,
             format!(
-                "fleet {other_id} merged into fleet {fleet_id}: {count} ship(s){}",
+                "fleet {other_id} merged into fleet {fleet_id}: {count} ship(s){}{}",
+                if lowered {
+                    format!(
+                        ", fighting at the lower of the two fleets' levels (Weapons {}, Shielding {}, Armour {}) until the home dock refits them",
+                        refit.weapons, refit.shielding, refit.armour,
+                    )
+                } else {
+                    String::new()
+                },
                 if orders_ended { "; the absorbed fleet's standing orders ended" } else { "" },
             ),
         );
@@ -4898,7 +5322,6 @@ impl GameEngine {
         let sectors_revealed = revealed.len() as u16;
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.action_cooldown = SCAN_COOLDOWN;
-        fleet_mut.idle_ticks = 0;
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -4949,7 +5372,6 @@ impl GameEngine {
                     // action_cooldown was the boarding timer — release it.
                     fleet_mut.action_cooldown = 0;
                 }
-                fleet_mut.idle_ticks = 0;
                 Ok(())
             }
             FleetStatus::InCombat => Err(ErrorCode::OnCooldown),
@@ -4982,7 +5404,7 @@ impl GameEngine {
     /// Ambush odds for a boarding attempt by this fleet at `site`.
     fn site_ambush_chance(&self, fleet: &Fleet, site: Hex, bumps: u8) -> f32 {
         let base = scaling::derelict_ambush(ring_rating(site));
-        let read = if fleet_has(fleet, ShipClass::EspionageProbe) { EXPLORE_PROBE_AMBUSH_REDUCTION } else { 0.0 };
+        let read = if fleet.ships.has(ShipClass::EspionageProbe) { EXPLORE_PROBE_AMBUSH_REDUCTION } else { 0.0 };
         (base + bumps as f32 * EXPLORE_RETRY_AMBUSH_BUMP - read).clamp(0.02, 0.95)
     }
 
@@ -5055,7 +5477,6 @@ impl GameEngine {
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.state = FleetStatus::Exploring;
         fleet_mut.action_cooldown = EXPLORE_DURATION_TICKS;
-        fleet_mut.idle_ticks = 0;
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -5102,7 +5523,7 @@ impl GameEngine {
 
         let fleet = self.fleets.get(&fleet_id).unwrap();
         let ambush_chance = self.site_ambush_chance(fleet, location, bumps);
-        let has_rigging = fleet_has(fleet, ShipClass::Recycler);
+        let has_rigging = fleet.ships.has(ShipClass::Recycler);
 
         let mut rng = StdRng::seed_from_u64(
             self.current_tick
@@ -5226,18 +5647,16 @@ impl GameEngine {
         Ok(())
     }
 
-    /// Wedge a battered-but-flyable ship into the fleet, if there's room.
+    /// Wedge a battered-but-flyable ship into the fleet, if there's room. It
+    /// fights at the levels of the fleet that found it.
     fn add_recovered_ship(&mut self, fleet_id: u64, class: ShipClass, rng: &mut StdRng) {
-        let research = self.fleets.get(&fleet_id)
-            .and_then(|f| self.players.get(&f.owner_id))
-            .map(|p| p.research.clone())
-            .unwrap_or_default();
         let hull_frac: f32 = rng.random_range(0.35..0.70);
-        let ship = built_ship(self.next_id(), class, &research);
-        if let Some(f) = self.fleets.get_mut(&fleet_id) {
-            if f.ship_count >= MAX_SHIPS_PER_FLEET { return; }
-            f.ships[f.ship_count] = Ship { hull: ship.hull_max * hull_frac, shield: 0.0, ..ship };
-            f.ship_count += 1;
+        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
+        if fleet.ships.total() >= MAX_FLEET_SHIPS { return; }
+        let full = scaling::ship_figures(class, fleet.arms()).hull;
+        fleet.ships.add_holding(class, (full as f32 * hull_frac) as u32, full);
+        if let Some(player) = self.players.get(&fleet.owner_id) {
+            fleet.fuel_max = fleet_fuel_max(fleet, player);
         }
     }
 
@@ -5359,7 +5778,7 @@ impl GameEngine {
                 self.policies.remove(&fid);
                 continue;
             };
-            if fleet.ship_count == 0 { continue; }
+            if fleet.ships.is_empty() { continue; }
             // Only steer a fleet that is free to act.
             if fleet.state != FleetStatus::Idle && fleet.state != FleetStatus::Docked { continue; }
             if fleet.action_cooldown > 0 || fleet.move_cooldown > 0 { continue; }
@@ -5368,10 +5787,14 @@ impl GameEngine {
                 p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64;
             }
 
-            let wait = self.policy_shield_wait(fid)
-                .or_else(|| self.policy_unload_wait(fid))
-                .or_else(|| self.policy_fuel_wait(fid));
-            let acted = if let Some(why) = wait {
+            let wait = self.policy_unload_wait(fid).or_else(|| self.policy_fuel_wait(fid));
+            let acted = if let Some((why, at_home)) = self.policy_hull_low(fid) {
+                if at_home {
+                    self.hold_policy(fid, preset, &format!("waiting at the dock to be mended: {why}"))
+                } else {
+                    self.policy_head_home(fid, preset, &format!("returning to be mended: {why}"))
+                }
+            } else if let Some(why) = wait {
                 self.hold_policy(fid, preset, &why)
             } else {
                 match preset {
@@ -5409,14 +5832,23 @@ impl GameEngine {
         player.production_per_tick(&self.world.pace).deuterium.max(0.0) * f64::from(params.fuel_budget_pct) / 100.0
     }
 
-    /// Shields come back while a fleet idles and hull never does, so a fleet
-    /// under orders stands still after a fight until its shields are up:
-    /// the reason it is waiting, if it is.
-    fn policy_shield_wait(&self, fleet_id: u64) -> Option<String> {
+    /// Hull lost stays lost until a dock mends it, and a mauled fleet is
+    /// brittle. A fleet under orders whose hull has fallen below
+    /// `POLICY_HULL_READY` of full does nothing else until the home dock
+    /// has mended it: the reason, and whether it already stands there.
+    fn policy_hull_low(&self, fleet_id: u64) -> Option<(String, bool)> {
         let fleet = self.fleets.get(&fleet_id)?;
-        let (now, full) = fleet.ships[..fleet.ship_count].iter()
-            .fold((0.0f32, 0.0f32), |(now, full), s| (now + s.shield, full + s.shield_max));
-        (now < POLICY_SHIELDS_READY * full).then(|| format!("shields recharging ({:.0}%)", 100.0 * now / full))
+        let (held, full) = fleet.ships.hull(fleet.arms());
+        if full == 0 || held as f32 >= POLICY_HULL_READY * full as f32 { return None; }
+        let at_home = self.players.get(&fleet.owner_id).is_some_and(|p| p.homeworld == fleet.location);
+        Some((
+            format!(
+                "hull at {:.0}% of full, and a fleet under orders works at {:.0}% or more",
+                100.0 * held as f32 / full as f32,
+                100.0 * POLICY_HULL_READY,
+            ),
+            at_home,
+        ))
     }
 
     /// A full store leaves cargo aboard a docked fleet, and a fleet that
@@ -5634,7 +6066,7 @@ impl GameEngine {
                 ..Resources::default()
             }),
             room: (fleet_cargo_capacity(fleet, &self.world.pace) - fleet.cargo.total()).max(0.0),
-            groups: self.npc_fleets.values().filter(|n| n.ship_count > 0).fold(KeyMap::default(), |mut groups, n| {
+            groups: self.npc_fleets.values().filter(|n| !n.ships.is_empty()).fold(KeyMap::default(), |mut groups, n| {
                 *groups.entry(n.location.to_key()).or_insert(false) |=
                     n.behavior != iac_shared::world::NpcBehaviorType::Passive;
                 groups
@@ -5768,7 +6200,7 @@ impl GameEngine {
         let Some((_, bumps)) = self.derelict_site_at(coord) else { return false; };
         if self.site_ambush_chance(fleet, coord, bumps) < 0.25 { return true; }
         let (class, count, multiplier) = scaling::ambush_guard(coord.dist_from_origin());
-        let guard = Force::of_group(class, f32::from(count), multiplier);
+        let guard = Force::of_group(class, u32::from(count), multiplier);
         self.odds_ratio(&fleet_force(fleet), &guard) * 10.0 >= f32::from(params.engage_ratio_x10)
     }
 
@@ -6019,7 +6451,7 @@ impl GameEngine {
         }
 
         // Engage what we can beat, where we stand.
-        let hostiles_here = self.npc_fleets.values().any(|n| n.location == location && n.ship_count > 0)
+        let hostiles_here = self.npc_fleets.values().any(|n| n.location == location && !n.ships.is_empty())
             || self.pending_template_npc(location).is_some();
         if hostiles_here {
             let ratio = self.odds_ratio(&fleet_force(&fleet), &self.sector_force(location));
@@ -6028,7 +6460,7 @@ impl GameEngine {
                 return Ok(self.policy_stand_down(fleet_id, preset, at_home, &why));
             }
             let target_id = self.npc_fleets.values()
-                .find(|n| n.location == location && n.ship_count > 0)
+                .find(|n| n.location == location && !n.ships.is_empty())
                 .map(|n| n.id)
                 .unwrap_or_else(|| template_npc_id(location));
             if self.handle_attack(owner, fleet_id, target_id).is_ok() {
@@ -6064,7 +6496,7 @@ impl GameEngine {
     /// True if the sector holds a live NPC fleet or an unspawned,
     /// uncleared NPC template.
     fn sector_has_hostiles(&self, coord: Hex) -> bool {
-        if self.npc_fleets.values().any(|n| n.location == coord && n.ship_count > 0) {
+        if self.npc_fleets.values().any(|n| n.location == coord && !n.ships.is_empty()) {
             return true;
         }
         let cleared = self.sector_overrides.get(&coord.to_key())
@@ -6127,7 +6559,7 @@ impl GameEngine {
     /// Fleets away from both docks: the homeworld and the owner's finished outpost.
     fn count_deployed_fleets(&self, player_id: u64, homeworld: Hex) -> usize {
         self.fleets.values().filter(|f| {
-            f.owner_id == player_id && f.location != homeworld && f.ship_count > 0 && !self.docked_at_outpost(f)
+            f.owner_id == player_id && f.location != homeworld && !f.ships.is_empty() && !self.docked_at_outpost(f)
         }).count()
     }
 
@@ -6166,6 +6598,7 @@ impl GameEngine {
         fleet.fuel_max = fleet_fuel_max(fleet, player);
         fleet.fuel = fleet.fuel.min(fleet.fuel_max);
         self.refuel_fleet(fleet_id);
+        self.tend_at_home(fleet_id, true);
 
         Ok(())
     }
@@ -6220,35 +6653,22 @@ impl GameEngine {
     }
 
     fn spawn_npc_fleet(&mut self, location: Hex, npc: iac_shared::world::NpcTemplate, npc_fleet_id: u64) -> Result<NpcFleet, Box<dyn std::error::Error>> {
-        let mut ships = [Ship::default(); MAX_NPC_SHIPS];
-        let stats = npc.ship_class.base_stats();
-        let m = npc.stat_multiplier;
-        let count = (npc.count as usize).min(MAX_NPC_SHIPS);
-
-        for ship in ships.iter_mut().take(count) {
-            *ship = Ship {
-                id: self.next_id(),
-                ship_class: npc.ship_class,
-                hull: stats.hull * m,
-                hull_max: stats.hull * m,
-                shield: stats.shield * m,
-                shield_max: stats.shield * m,
-                weapon_power: stats.weapon * m,
-            };
-        }
+        let count = u32::from(npc.count).min(scaling::NPC_MAX_SHIPS as u32);
+        let ships = Ships::of(&[(npc.ship_class, count)]);
+        let arms = Arms::of_grade(npc.stat_multiplier);
 
         let npc_fleet = NpcFleet {
             id: npc_fleet_id,
             location,
+            power: ships.power(arms),
             ships,
-            ship_count: count as u8,
+            arms,
             behavior: npc.behavior,
             home_sector: location,
             patrol_timer: 0,
             in_combat: false,
             label: npc.label(),
-            bounty: npc.ship_class.build_cost().scale(count as f64),
-            power: ships[..count].iter().map(|s| s.weapon_power + (s.hull + s.shield) / 10.0).sum(),
+            bounty: npc.ship_class.build_cost().scale(f64::from(count)),
         };
 
         self.npc_fleets.insert(npc_fleet_id, npc_fleet.clone());
@@ -6308,6 +6728,9 @@ impl GameEngine {
             npc_fleet_ids: Vec::new(),
             round: 0,
             peak_power: 0.0,
+            quiet_rounds: 0,
+            losses: Vec::new(),
+            last_round: None,
         };
         new_combat.add_player_fleet(fleet_id);
         new_combat.add_npc_fleet(npc_id);
@@ -6345,9 +6768,9 @@ impl GameEngine {
             let f = self.fleets.get(&fid).unwrap();
             if f.location != sector { continue; }
             if f.state == FleetStatus::InCombat { continue; }
-            if f.ship_count == 0 { continue; }
+            if f.ships.is_empty() { continue; }
             if existing_fleet_ids.contains(&fid) { continue; }
-            
+
             if let Some(combat_mut) = self.active_combats.get_mut(combat_id) {
                 combat_mut.add_player_fleet(fid);
             }
@@ -6357,46 +6780,16 @@ impl GameEngine {
     }
 
     /// Take a fleet that has left the sector out of the fight it was in. The
-    /// fight goes on for the fleets that stay; with none left it is broken off.
+    /// fight goes on for the fleets that stay; with none left it is over.
     fn leave_combat(&mut self, fleet_id: u64) {
         let Some(combat) = self.active_combats.values_mut().find(|c| c.has_player_fleet(fleet_id)) else { return; };
         let combat_id = combat.id;
         combat.player_fleet_ids.retain(|id| *id != fleet_id);
         let fleets = &self.fleets;
-        if !combat.player_fleet_ids.iter().any(|id| fleets.get(id).is_some_and(|f| f.ship_count > 0)) {
+        if !combat.player_fleet_ids.iter().any(|id| fleets.get(id).is_some_and(|f| !f.ships.is_empty())) {
             let withdrew = fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
-            self.break_off_combat(combat_id, withdrew);
+            self.end_combat(combat_id, BattleOutcome::Withdrawn, withdrew);
         }
-    }
-
-    /// End a fight that nobody won. As after a lost fight, its NPC groups are
-    /// gone and their sectors' templates stand again; fleets still listed are
-    /// free. `withdrew` names the owner of a fleet whose leaving ended it.
-    fn break_off_combat(&mut self, combat_id: u64, withdrew: Option<String>) {
-        let Some(combat) = self.active_combats.remove(&combat_id) else { return; };
-        for nid in &combat.npc_fleet_ids {
-            self.npc_fleets.remove(nid);
-        }
-        let mut owners: std::collections::BTreeSet<String> = withdrew.into_iter().collect();
-        for fid in &combat.player_fleet_ids {
-            let Some(fleet) = self.fleets.get_mut(fid) else { continue; };
-            if fleet.state == FleetStatus::InCombat {
-                fleet.state = FleetStatus::Idle;
-                fleet.idle_ticks = 0;
-            }
-            owners.extend(self.players.get(&fleet.owner_id).map(|p| p.name.clone()));
-        }
-        self.pending_events.push(GameEvent {
-            tick: self.current_tick,
-            kind: EventKind::CombatEnded(iac_shared::protocol::CombatEndedEvent {
-                sector: combat.sector,
-                player_victory: false,
-                owners: owners.into_iter().collect(),
-                mine: false,
-                salvage: None,
-                salvage_despawn_tick: None,
-            }),
-        });
     }
 
     /// Put a fleet into a fight. A jump it was still charging is abandoned,
@@ -6501,6 +6894,7 @@ impl GameEngine {
     fn add_ship_to_homeworld(&mut self, player_id: u64, ship_class: ShipClass) -> Result<(), Box<dyn std::error::Error>> {
         let player = self.players.get(&player_id).ok_or("Player not found")?;
         let homeworld = player.homeworld;
+        let refit = Refit::of(&player.research);
 
         // New hulls reinforce the lowest-numbered idle fleet at home that
         // has no standing orders and room; otherwise they form their own.
@@ -6509,7 +6903,7 @@ impl GameEngine {
                 f.owner_id == player_id
                     && f.location == homeworld
                     && f.state == FleetStatus::Idle
-                    && f.ship_count < MAX_SHIPS_PER_FLEET
+                    && f.ships.total() < MAX_FLEET_SHIPS
                     && !self.policies.contains_key(&f.id)
             })
             .map(|f| f.id)
@@ -6524,15 +6918,14 @@ impl GameEngine {
                 owner_id: player_id,
                 location: homeworld,
                 state: FleetStatus::Idle,
-                ships: [Ship::default(); MAX_SHIPS_PER_FLEET],
-                ship_count: 0,
+                ships: Ships::default(),
+                refit,
                 cargo: Resources::default(),
                 fuel: 0.0,
                 fuel_max: 0.0,
                 move_cooldown: 0,
                 action_cooldown: 0,
                 move_target: None,
-                idle_ticks: 0,
                 harvest_target: HarvestResource::Auto,
                 charts: Vec::new(),
                 laden: false,
@@ -6541,13 +6934,8 @@ impl GameEngine {
             new_id
         };
 
-        let research = self.players.get(&player_id).unwrap().research.clone();
-        let ship = built_ship(self.next_id(), ship_class, &research);
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
-        if fleet.ship_count >= MAX_SHIPS_PER_FLEET { return Ok(()); }
-
-        fleet.ships[fleet.ship_count] = ship;
-        fleet.ship_count += 1;
+        fleet.ships.add(ship_class, 1);
 
         let player = self.players.get(&player_id).unwrap();
         let old_max = fleet.fuel_max;
@@ -6563,7 +6951,7 @@ impl GameEngine {
         for fid in fleet_ids {
             let fleet = self.fleets.get(&fid).unwrap();
             if fleet.owner_id != player.id { continue; }
-            if fleet.ship_count == 0 { continue; }
+            if fleet.ships.is_empty() { continue; }
 
             let new_max = fleet_fuel_max(fleet, player);
             if new_max > fleet.fuel_max {
@@ -6717,7 +7105,7 @@ fn remembered_opposing(seen: &SectorState) -> Opposing {
     use iac_shared::protocol::NpcBehavior::{Aggressive, Swarm};
     let ring = || Opposing::Ring(seen.location.dist_from_origin());
     if seen.outpost.is_some() && seen.hostiles.is_none() {
-        return Opposing::Ships(Box::default());
+        return Opposing::Ships(Force::default());
     }
     let Some(groups) = seen.hostiles.as_ref().filter(|_| seen.threat.basis == ThreatBasis::Observed) else {
         return ring();
@@ -6726,7 +7114,7 @@ fn remembered_opposing(seen: &SectorState) -> Opposing {
         .iter()
         .map(|g| {
             let bonus = if matches!(g.behavior, Aggressive | Swarm) { scaling::THREAT_AGGRESSIVE_BONUS } else { 1.0 };
-            bonus * g.ships.iter().map(|s| f32::from(s.count) * scaling::ship_power(s.ship_class)).sum::<f32>()
+            bonus * g.ships.iter().map(|s| s.count as f32 * scaling::ship_power(s.ship_class)).sum::<f32>()
         })
         .sum();
     if rated <= 0.0 {
@@ -6735,28 +7123,9 @@ fn remembered_opposing(seen: &SectorState) -> Opposing {
     let multiplier = seen.threat.est_power / rated;
     let mut force = Force::default();
     for ship in groups.iter().flat_map(|g| &g.ships) {
-        force.add_group(ship.ship_class, f32::from(ship.count), multiplier);
+        force.join(&Force::of_group(ship.ship_class, ship.count, multiplier));
     }
-    Opposing::Ships(Box::new(force))
-}
-
-/// A ship as the yard delivers it: the class's figures with the owner's
-/// Armour, Shielding and Weapons Technology, which it keeps.
-fn built_ship(id: u64, ship_class: ShipClass, research: &ResearchLevels) -> Ship {
-    let stats = scaling::apply_research_to_stats(ship_class.base_stats(), research);
-    Ship {
-        id,
-        ship_class,
-        hull: stats.hull,
-        hull_max: stats.hull,
-        shield: stats.shield,
-        shield_max: stats.shield,
-        weapon_power: stats.weapon,
-    }
-}
-
-fn fleet_has(fleet: &Fleet, class: ShipClass) -> bool {
-    fleet.ships[0..fleet.ship_count].iter().any(|s| s.ship_class == class)
+    Opposing::Ships(force)
 }
 
 /// Ticks one jump takes `fleet`: its slowest ship sets them, with the
@@ -6764,8 +7133,8 @@ fn fleet_has(fleet: &Fleet, class: ShipClass) -> bool {
 fn fleet_jump_ticks(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
     let none = ResearchLevels::default();
     let research = research.unwrap_or(&none);
-    fleet.ships[0..fleet.ship_count].iter()
-        .map(|s| scaling::jump_ticks(scaling::ship_speed(s.ship_class, research)))
+    fleet.ships.counts()
+        .map(|(class, _)| scaling::jump_ticks(scaling::ship_speed(class, research)))
         .max()
         .unwrap_or(MOVE_BASE_COOLDOWN)
 }
@@ -6775,21 +7144,21 @@ fn fleet_jump_ticks(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
 fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>) -> f64 {
     let none = ResearchLevels::default();
     let research = research.unwrap_or(&none);
-    let burn = fleet.ships[0..fleet.ship_count].iter()
-        .fold(0.0, |burn, s| burn + scaling::ship_burn(s.ship_class, research));
+    let burn = fleet.ships.counts()
+        .fold(0.0, |burn, (class, count)| burn + f64::from(count) * scaling::ship_burn(class, research));
     burn * scaling::fuel_rate_modifier(research.energy_technology)
 }
 
 /// Raw units per tick the fleet can extract at density multiplier 1.
 fn fleet_harvest_power(fleet: &Fleet) -> f64 {
-    fleet.ships[0..fleet.ship_count].iter().map(|s| s.ship_class.harvest_power()).sum()
+    fleet.ships.counts().fold(0.0, |power, (class, count)| power + f64::from(count) * class.harvest_power())
 }
 
 fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f64 {
     // Folded from 0.0: the `sum()` of no floats is -0.0, and a fleet with no
     // ships left must not carry a zero whose sign a store may not keep.
-    let total_fuel = fleet.ships[0..fleet.ship_count].iter()
-        .fold(0.0, |tank, s| tank + scaling::ship_tank(s.ship_class, &player.research));
+    let total_fuel = fleet.ships.counts()
+        .fold(0.0, |tank, (class, count)| tank + f64::from(count) * scaling::ship_tank(class, &player.research));
     total_fuel * scaling::tank_modifier(player.buildings.deuterium_tank)
 }
 
@@ -6812,17 +7181,65 @@ pub fn refining(fleet: &Fleet) -> Option<Refining> {
     })
 }
 
-/// The ships a fleet brings to a fight.
+/// The ships a fleet brings to a fight, as they stand and with its refit.
 pub fn fleet_force(fleet: &Fleet) -> Force {
-    Force::of_ships(&fleet.ships[..fleet.ship_count])
+    Force::of(fleet.arms(), fleet.ships.squads())
 }
 
-/// Live combat power of a whole fleet.
+/// Live combat power of a whole fleet, with its refit.
 pub fn fleet_power(fleet: &Fleet) -> f32 {
-    fleet.ships[0..fleet.ship_count].iter()
-        .filter(|s| s.hull > 0.0)
-        .map(|s| s.weapon_power + (s.hull + s.shield) / 10.0)
-        .sum()
+    fleet.ships.power(fleet.arms())
+}
+
+/// What one round of fire from the whole fleet adds up to, and the shield
+/// it raises at the start of each round.
+pub fn fleet_broadside(fleet: &Fleet) -> (u64, u64) {
+    let arms = fleet.arms();
+    fleet.ships.counts().fold((0, 0), |(attack, shield), (class, count)| {
+        let figures = scaling::ship_figures(class, arms);
+        (attack + u64::from(count) * u64::from(figures.attack), shield + u64::from(count) * u64::from(figures.shield))
+    })
+}
+
+/// One side of a round as a report carries it, without its groups.
+fn battle_side(side: &combat::SideReport) -> BattleSide {
+    BattleSide {
+        groups: Vec::new(),
+        volleys: side.volleys.clone(),
+        shots: side.shots,
+        power: side.power,
+        absorbed: side.absorbed,
+        hull_damage: side.hull_damage,
+        destroyed: side.destroyed,
+    }
+}
+
+/// Add what `group` lost this round to the fight's running count, which
+/// gains an entry for every fleet and group the first time it stands in a
+/// round.
+fn tally_losses(losses: &mut Vec<BattleLosses>, group: &BattleGroup) {
+    let at = losses.iter().position(|l| l.fleet_id == group.fleet_id && l.owner == group.owner).unwrap_or_else(|| {
+        losses.push(BattleLosses {
+            fleet_id: group.fleet_id,
+            owner: group.owner.clone(),
+            label: group.label.clone(),
+            mine: false,
+            lost: Vec::new(),
+            destroyed: false,
+        });
+        losses.len() - 1
+    });
+    let entry = &mut losses[at];
+    for units in group.units.iter().filter(|u| u.lost > 0) {
+        match entry.lost.iter_mut().find(|l| l.unit == units.unit) {
+            Some(so_far) => so_far.count += units.lost,
+            None => {
+                let before = entry.lost.partition_point(|l| l.unit.index() < units.unit.index());
+                entry.lost.insert(before, UnitCount { unit: units.unit, count: units.lost });
+            }
+        }
+    }
+    entry.destroyed = group.units.iter().all(|u| u.count == 0);
 }
 
 /// What jumps a careless boarding party: a share of the ring's group.
@@ -6831,7 +7248,7 @@ fn ambush_guardian_template(site: Hex, rng: &mut StdRng) -> iac_shared::world::N
     let swing = rng.random_range(0.8..=1.2);
     iac_shared::world::NpcTemplate {
         ship_class,
-        count: ((f32::from(count) * swing).round() as usize).clamp(1, MAX_NPC_SHIPS) as u8,
+        count: ((f32::from(count) * swing).round() as usize).clamp(1, scaling::NPC_MAX_SHIPS) as u8,
         behavior: iac_shared::world::NpcBehaviorType::Aggressive,
         stat_multiplier,
     }
@@ -6865,8 +7282,8 @@ pub fn site_risk_label(site: Hex, bumps: u8) -> iac_shared::protocol::SiteRisk {
 pub fn fleet_cargo_capacity(fleet: &Fleet, pace: &Pace) -> f64 {
     // Folded from 0.0 for the reason given in `fleet_fuel_max`: what is left
     // in the hold of a fleet with no ships is scaled by this.
-    let base = fleet.ships[0..fleet.ship_count].iter()
-        .fold(0.0, |hold, s| hold + f64::from(s.ship_class.base_stats().cargo));
+    let base = fleet.ships.counts()
+        .fold(0.0, |hold, (class, count)| hold + f64::from(count) * f64::from(class.base_stats().cargo));
     base * pace.cargo_mult()
 }
 

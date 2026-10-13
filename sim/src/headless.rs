@@ -621,7 +621,7 @@ impl Headless {
     }
 
     fn ships_of(&self, player_id: u64) -> usize {
-        self.engine.fleets.values().filter(|f| f.owner_id == player_id).map(|f| f.ship_count).sum()
+        self.engine.fleets.values().filter(|f| f.owner_id == player_id).map(|f| f.ships.total() as usize).sum()
     }
 
     /// The player's outpost as it stands, with the two paybacks the design
@@ -956,9 +956,16 @@ impl Counting<'_> {
                         }
                     }
                 }
-                EventKind::ShipDestroyed(e) if !e.is_npc => {
-                    if let Some(t) = tally_of(entries, e.owner.as_deref().and_then(named)) {
-                        t.ships_lost += 1;
+                EventKind::BattleRound(e) => {
+                    for group in &e.fleets.groups {
+                        if let Some(t) = tally_of(entries, group.owner.as_deref().and_then(named)) {
+                            t.ships_lost += group.units.iter().map(|u| u.lost).sum::<u32>();
+                        }
+                    }
+                }
+                EventKind::ShipsLost(e) => {
+                    if let Some(t) = tally_of(entries, named(&e.owner)) {
+                        t.ships_lost += e.ships.iter().map(|s| s.count).sum::<u32>();
                     }
                 }
                 EventKind::RaidResolved(e) => {

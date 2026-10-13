@@ -20,17 +20,15 @@
 
 use std::collections::BTreeSet;
 
-use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::protocol::{
-    FleetBrief, NpcBehavior, NpcFleetInfo, NpcShipInfo, OutpostBrief, SectorResources, SectorState, ShipCount,
-    SiteBrief,
+    FleetBrief, NpcBehavior, NpcFleetInfo, OutpostBrief, SectorResources, SectorState, ShipCount, SiteBrief,
 };
-use iac_shared::scaling;
+use iac_shared::scaling::{self, Arms};
 use iac_shared::world::{NpcBehaviorType, NpcTemplate};
 
-use crate::engine::{site_risk_label, template_npc_id, Fleet, GameEngine, NpcFleet, SectorOverride, Ship};
+use crate::engine::{site_risk_label, template_npc_id, Fleet, GameEngine, NpcFleet, SectorOverride, Ships};
 use crate::snapshot::KnownRow;
 
 #[derive(Debug, Clone)]
@@ -117,7 +115,7 @@ impl KnownSectors {
         }
 
         let mut fleet_cells: KeyMap<u64, Vec<u32>> = KeyMap::default();
-        for fleet in engine.fleets.values().filter(|f| f.ship_count > 0) {
+        for fleet in engine.fleets.values().filter(|f| !f.ships.is_empty()) {
             fleet_cells.entry(fleet.owner_id).or_default().push(fleet.location.to_key());
         }
         let mut entered: Vec<(u64, u32)> = Vec::new();
@@ -438,7 +436,7 @@ pub fn live_coords(engine: &GameEngine, player_id: u64) -> Vec<Hex> {
     let mut fleet_locations: Vec<Hex> = engine
         .fleets
         .values()
-        .filter(|f| f.owner_id == player_id && f.ship_count > 0)
+        .filter(|f| f.owner_id == player_id && !f.ships.is_empty())
         .map(|f| f.location)
         .collect();
     fleet_locations.sort_by_key(|h| h.to_key());
@@ -465,9 +463,11 @@ fn behavior(b: NpcBehaviorType) -> NpcBehavior {
 }
 
 fn template_hostile(coord: Hex, tmpl: &NpcTemplate) -> NpcFleetInfo {
+    let count = u32::from(tmpl.count);
     NpcFleetInfo {
         id: template_npc_id(coord),
-        ships: vec![NpcShipInfo { ship_class: tmpl.ship_class, count: tmpl.count as u16 }],
+        ships: Ships::of(&[(tmpl.ship_class, count)]).states(Arms::of_grade(tmpl.stat_multiplier)),
+        ship_count: count,
         behavior: behavior(tmpl.behavior),
     }
 }
@@ -489,7 +489,7 @@ impl<'a> Presence<'a> {
         }
         let mut fleets: KeyMap<u32, Vec<&Fleet>> = KeyMap::default();
         if with_fleets {
-            for fleet in engine.fleets.values().filter(|f| f.ship_count > 0) {
+            for fleet in engine.fleets.values().filter(|f| !f.ships.is_empty()) {
                 let key = fleet.location.to_key();
                 if keys.contains(&key) {
                     fleets.entry(key).or_default().push(fleet);
@@ -530,19 +530,6 @@ fn live_states(engine: &GameEngine, coords: &[Hex], viewer: u64) -> Vec<SectorSt
 
 /// The sector as it is this tick. Other empires' fleets are listed unless
 /// `viewer` is None (a memory snapshot), and `viewer`'s own fleets never are.
-/// How many of each class `ships` holds, in catalogue order, without the
-/// classes it has none of.
-fn class_counts(ships: &[Ship]) -> impl Iterator<Item = (ShipClass, u16)> {
-    let mut counts = [0u16; ShipClass::COUNT];
-    for ship in ships {
-        counts[ship.ship_class as usize] += 1;
-    }
-    ShipClass::ALL.into_iter().filter_map(move |class| {
-        let count = counts[class as usize];
-        (count > 0).then_some((class, count))
-    })
-}
-
 pub fn build_sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>) -> SectorState {
     let keys = KeySet::from_iter([coord.to_key()]);
     Presence::of(engine, &keys, viewer.is_some()).state(engine, coord, viewer)
@@ -557,10 +544,12 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
 
     let mut hostile_list: Vec<NpcFleetInfo> = Vec::new();
     for npc in npcs {
-        let ships = class_counts(&npc.ships[0..npc.ship_count as usize])
-            .map(|(ship_class, count)| NpcShipInfo { ship_class, count })
-            .collect();
-        hostile_list.push(NpcFleetInfo { id: npc.id, ships, behavior: behavior(npc.behavior) });
+        hostile_list.push(NpcFleetInfo {
+            id: npc.id,
+            ships: npc.ships.states(npc.arms),
+            ship_count: npc.ships.total(),
+            behavior: behavior(npc.behavior),
+        });
     }
     hostile_list.sort_by_key(|h| h.id);
 
@@ -575,9 +564,7 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
     let mut player_fleet_list: Vec<FleetBrief> = Vec::new();
     if let Some(viewer) = viewer {
         for fleet in fleets.iter().filter(|f| f.owner_id != viewer) {
-            let counts = class_counts(&fleet.ships[0..fleet.ship_count])
-                .map(|(ship_class, count)| ShipCount { ship_class, count })
-                .collect();
+            let counts = fleet.ships.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect();
             player_fleet_list.push(FleetBrief {
                 id: fleet.id,
                 owner_name: engine
@@ -585,7 +572,7 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
                     .get(&fleet.owner_id)
                     .map(|o| o.name.clone())
                     .unwrap_or_else(|| "Unknown".to_string()),
-                ship_count: fleet.ship_count as u16,
+                ship_count: fleet.ships.total(),
                 ship_classes: counts,
             });
         }

@@ -8,12 +8,14 @@ use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BuildQueueItem, BuildingState, DefenceState, EnergyState, FleetState, GameEvent, GameState, HomeworldState,
     OutpostLevel, OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch,
-    QueuedShip, Requirement, ResearchItem, ResearchState, ShipState, ShipyardQueueItem, StandingOrders, TickUpdate,
-    WorldInfo,
+    QueuedShip, Requirement, ResearchItem, ResearchState, ShipGroupState, ShipyardQueueItem, StandingOrders,
+    TickUpdate, WorldInfo,
 };
-use iac_shared::scaling::{self, BuildingType, DefenceKind, ResearchType};
+use iac_shared::scaling::{self, BuildingType, DefenceKind, Refit, ResearchType};
 
-use crate::engine::{fleet_cargo_capacity, outpost_raid_range, FleetStatus, GameEngine, OutpostTask, Player};
+use crate::engine::{
+    fleet_broadside, fleet_cargo_capacity, fleet_power, outpost_raid_range, FleetStatus, GameEngine, OutpostTask, Player,
+};
 
 /// The whole picture for one player, as sent on login and on request.
 pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
@@ -25,6 +27,19 @@ pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
         homeworld: build_homeworld_state(engine, player),
         outpost: outpost_state(engine, player),
         known_sectors: engine.known.chart(engine, player_id),
+        battles: engine
+            .battles_of(player_id)
+            .into_iter()
+            .map(|mut battle| {
+                if let Some(round) = &mut battle.last_round {
+                    mark_round(round, player);
+                }
+                for losses in &mut battle.losses {
+                    losses.mine = losses.owner.as_deref() == Some(player.name.as_str());
+                }
+                battle
+            })
+            .collect(),
         world: WorldInfo::new(engine.pace(), engine.world.economy_version, engine.world.worldgen_version),
     })
 }
@@ -88,6 +103,7 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
             .collect(),
         grade: scaling::site_grade(densities),
         platform_power: if outpost.breached { 0.0 } else { scaling::outpost_platform_power(outpost.level) },
+        ships_power: engine.outpost_ships_power(player.id),
         defence_power: engine.outpost_defense_power(player.id),
         raid_power: outpost_raid_range(ring),
         raid_arrival_tick: outpost.raid.incoming.map(|raid| raid.arrival_tick),
@@ -127,20 +143,9 @@ fn range_hops(fuel: f64, home_fuel: f64, jump_fuel: f64) -> u32 {
 
 fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState> {
     let mut list = Vec::new();
+    let current = engine.players.get(&player_id).map(|p| Refit::of(&p.research));
     for fleet in engine.fleets.values() {
-        if fleet.owner_id != player_id || fleet.ship_count == 0 { continue; }
-
-        let ship_states: Vec<ShipState> = fleet.ships[0..fleet.ship_count].iter().map(|ship| {
-            ShipState {
-                id: ship.id,
-                ship_class: ship.ship_class,
-                hull: ship.hull,
-                hull_max: ship.hull_max,
-                shield: ship.shield,
-                shield_max: ship.shield_max,
-                weapon_power: ship.weapon_power,
-            }
-        }).collect();
+        if fleet.owner_id != player_id || fleet.ships.is_empty() { continue; }
 
         let status = match fleet.state {
             FleetStatus::Idle => iac_shared::protocol::FleetStatus::Idle,
@@ -156,11 +161,21 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
         let bound_for = fleet.move_target.unwrap_or(fleet.location);
         let hops_home = engine.direct_hops_home(fleet.owner_id, bound_for);
         let home_fuel = engine.route_home_cost(fleet, bound_for);
+        let (hull, hull_max) = fleet.ships.hull(fleet.arms());
+        let (attack, shield) = fleet_broadside(fleet);
         list.push(FleetState {
             id: fleet.id,
             location: fleet.location,
             state: status,
-            ships: ship_states,
+            ships: fleet.ships.states(fleet.arms()),
+            ship_count: fleet.ships.total(),
+            hull,
+            hull_max,
+            attack,
+            shield,
+            refit: fleet.refit,
+            refit_due: current.is_some_and(|current| fleet.refit.behind(current)),
+            repair: engine.repair_quote(fleet),
             cargo: fleet.cargo,
             cargo_capacity: fleet_cargo_capacity(fleet, &engine.pace()),
             fuel: fleet.fuel,
@@ -171,7 +186,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             jump_ticks: engine.hop_ticks(fleet),
             scan_range: GameEngine::scan_range(fleet),
             cooldown_remaining: fleet.action_cooldown,
-            power: crate::engine::fleet_power(fleet),
+            power: fleet_power(fleet),
             range_hops: range_hops(fleet.fuel, home_fuel, jump_fuel),
             cargo_blocked: !fleet.laden
                 && fleet.cargo.total() > 0.0
@@ -266,22 +281,23 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
         end_tick: q.end_tick,
     });
 
-    let mut docked_ships: Vec<ShipState> = Vec::new();
+    let mut docked_ships: Vec<ShipGroupState> = Vec::new();
     for fleet in engine.fleets.values() {
-        if fleet.owner_id == player.id && fleet.location == player.homeworld {
-            for ship in &fleet.ships[0..fleet.ship_count] {
-                docked_ships.push(ShipState {
-                    id: ship.id,
-                    ship_class: ship.ship_class,
-                    hull: ship.hull,
-                    hull_max: ship.hull_max,
-                    shield: ship.shield,
-                    shield_max: ship.shield_max,
-                    weapon_power: ship.weapon_power,
-                });
+        if fleet.owner_id != player.id || fleet.location != player.homeworld { continue; }
+        for group in fleet.ships.states(fleet.arms()) {
+            match docked_ships.iter_mut().find(|docked| docked.ship_class == group.ship_class) {
+                Some(docked) => {
+                    docked.count += group.count;
+                    docked.damaged += group.damaged;
+                    docked.at_risk += group.at_risk;
+                    docked.hull += group.hull;
+                    docked.hull_max += group.hull_max;
+                }
+                None => docked_ships.push(group),
             }
         }
     }
+    docked_ships.sort_by_key(|group| group.ship_class);
 
     let power = player.power(&pace);
     let reactor = player.buildings.fusion_reactor;
@@ -315,6 +331,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
         shipyard_pending,
         research_active,
         research_pending,
+        docked_ship_count: docked_ships.iter().map(|group| group.count).sum(),
         docked_ships,
         defences: DefenceKind::ALL.iter().map(|&kind| DefenceState {
             kind,
@@ -344,7 +361,15 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
 fn present_at(engine: &GameEngine, player: &Player, sector: Hex) -> bool {
     player.homeworld == sector
         || engine.outposts.get(&player.id).is_some_and(|o| o.sector == sector)
-        || engine.fleets.values().any(|f| f.owner_id == player.id && f.location == sector && f.ship_count > 0)
+        || engine.fleets.values().any(|f| f.owner_id == player.id && f.location == sector && !f.ships.is_empty())
+}
+
+/// Fill in whose a round's fleets are for `player`.
+fn mark_round(round: &mut iac_shared::protocol::BattleRoundEvent, player: &Player) {
+    for group in &mut round.fleets.groups {
+        group.mine = group.owner.as_deref() == Some(player.name.as_str());
+    }
+    round.mine = round.fleets.groups.iter().any(|group| group.mine);
 }
 
 /// The event as `player` should see it, or None if it does not concern them.
@@ -362,12 +387,12 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
     let mut out = event.clone();
 
     let relevant = match &mut out.kind {
-        K::CombatRound(e) => {
-            e.mine = named(&e.attacker_owner) || named(&e.target_owner);
+        K::BattleRound(e) => {
+            mark_round(e, player);
             e.mine || in_sector(e.sector)
         }
-        K::ShipDestroyed(e) => {
-            e.mine = named(&e.owner);
+        K::ShipsLost(e) => {
+            e.mine = e.owner == player.name;
             e.mine || in_sector(e.sector)
         }
         K::FleetDestroyed(e) => {
@@ -380,6 +405,9 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
         }
         K::CombatEnded(e) => {
             e.mine = e.owners.contains(&player.name);
+            for losses in &mut e.losses {
+                losses.mine = losses.owner.as_deref() == Some(player.name.as_str());
+            }
             e.mine || in_sector(e.sector)
         }
         K::SalvageDespawned(e) => in_sector(e.sector),

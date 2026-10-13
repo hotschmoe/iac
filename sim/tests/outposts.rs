@@ -79,9 +79,9 @@ fn stow(e: &mut Empire, fid: u64, cargo: Resources) {
 }
 
 /// Small Cargos enough to hold `load` at this world's pace.
-fn haulers_for(engine: &GameEngine, load: f64) -> usize {
+fn haulers_for(engine: &GameEngine, load: f64) -> u32 {
     let hold = f64::from(ShipClass::SmallCargo.base_stats().cargo);
-    (load / (hold * engine.pace().cargo_mult())).ceil() as usize
+    (load / (hold * engine.pace().cargo_mult())).ceil() as u32
 }
 
 /// Stand the empire's fleet on `at` as Small Cargos carrying `cargo`.
@@ -93,12 +93,12 @@ fn haul(e: &mut Empire, at: Hex, cargo: Resources) {
 }
 
 /// Ships with the tanks they are built with, full.
-fn crew(e: &mut Empire, fid: u64, classes: &[(ShipClass, usize)], at: Hex) {
+fn crew(e: &mut Empire, fid: u64, classes: &[(ShipClass, u32)], at: Hex) {
     muster(&mut e.engine, fid, classes, at);
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
         let none = scaling::ResearchLevels::default();
-        let tank: f64 = fleet.ships[..fleet.ship_count].iter().map(|s| scaling::ship_tank(s.ship_class, &none)).sum();
+        let tank: f64 = fleet.ships.counts().map(|(class, count)| f64::from(count) * scaling::ship_tank(class, &none)).sum();
         fleet.fuel_max = tank;
         fleet.fuel = tank;
     });
@@ -773,10 +773,10 @@ fn a_fleet_at_the_outpost_is_docked_and_needs_a_slot_to_leave() {
     let home = e.engine.players[&pid].homeworld;
     muster(&mut e.engine, fid, &[(ShipClass::EspionageProbe, 5)], home);
     stow(&mut e, fid, Resources::default());
-    let ships: Vec<u64> = e.fleet().ships.iter().map(|s| s.id).collect();
     let mut wings = vec![fid];
-    for ship in &ships[1..] {
-        e.order(Command::Split { fleet_id: fid, ship_ids: vec![*ship] }).expect("split at home");
+    for _ in 1..5 {
+        let one = counts(&[(ShipClass::EspionageProbe, 1)]);
+        e.order(Command::Split { fleet_id: fid, ships: one, damaged_first: false }).expect("split at home");
         let newest = e.engine.fleets.values().filter(|f| f.owner_id == pid).map(|f| f.id).max().unwrap();
         wings.push(newest);
     }
@@ -1260,7 +1260,7 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
 
 /// An idle empire with an outpost stood for it as `sim-run --outpost` stands one, its fleet
 /// mustered there as `garrison` when there is one.
-fn stand(world: &mut Headless, ring: u16, level: u8, garrison: &[(ShipClass, usize)]) -> u64 {
+fn stand(world: &mut Headless, ring: u16, level: u8, garrison: &[(ShipClass, u32)]) -> u64 {
     let label = format!("Keeper-{}", world.players());
     let pid = world.add_player(Box::new(IdlePlayer { label }), "idle").expect("a seat");
     let fid = world.engine.fleets.values().find(|f| f.owner_id == pid).unwrap().id;
@@ -1273,7 +1273,7 @@ fn stand(world: &mut Headless, ring: u16, level: u8, garrison: &[(ShipClass, usi
 }
 
 /// A ring, a level, and the ships standing there.
-type Post = (u16, u8, &'static [(ShipClass, usize)]);
+type Post = (u16, u8, &'static [(ShipClass, u32)]);
 
 #[test]
 fn a_season_week_of_raids_takes_nothing_from_an_outpost_defended_as_its_ring_asks() {

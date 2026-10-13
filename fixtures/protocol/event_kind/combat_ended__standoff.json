@@ -1,0 +1,16 @@
+{
+  "kind": "CombatEnded",
+  "losses": [],
+  "mine": true,
+  "outcome": "standoff",
+  "owners": [
+    "Admiral"
+  ],
+  "player_victory": false,
+  "rounds": 1,
+  "sector": {
+    "q": 5,
+    "r": -5
+  },
+  "tick": 1234
+}

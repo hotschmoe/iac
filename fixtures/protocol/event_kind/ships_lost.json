@@ -1,0 +1,17 @@
+{
+  "fleet_id": 4,
+  "kind": "ShipsLost",
+  "mine": true,
+  "owner": "Admiral",
+  "sector": {
+    "q": 5,
+    "r": -5
+  },
+  "ships": [
+    {
+      "class": "LightFighter",
+      "count": 3
+    }
+  ],
+  "tick": 1234
+}

@@ -735,7 +735,7 @@ impl<'a> Planner<'a> {
         let target = self.profile.fleet_share * scaling::econ_points(&self.built, &built_research);
         let value = |class: ShipClass| scaling::resource_weight(&class.build_cost());
 
-        let flying = self.state.fleets.iter().flat_map(|f| f.ships.iter()).map(|s| (s.ship_class, 1.0));
+        let flying = self.state.fleets.iter().flat_map(|f| f.ships.iter()).map(|s| (s.ship_class, s.count as f32));
         let coming = self.ordered().filter_map(|(item, left)| match item {
             ShipyardItem::Ship(class) if class.flies() => Some((class, f32::from(left))),
             _ => None,

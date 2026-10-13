@@ -4,12 +4,13 @@ use iac_shared::constants::{Density, ShipClass};
 use iac_shared::hex::Hex;
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
-    Command, ErrorCode, EventKind, GameEvent, GameState, HarvestResource, QueueEvent, QueueType, SectorState, ServerMessage,
+    Command, ErrorCode, EventKind, GameEvent, GameState, HarvestResource, QueueEvent, QueueType, SectorState,
+    ServerMessage, ShipCount,
 };
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::scaling::{ship_figures, Arms, BuildingType, Refit, ResearchType};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::template_npc_id;
-use iac_sim::engine::{FleetStatus, Ship};
+use iac_sim::engine::{FleetStatus, NpcFleet, Ships};
 use iac_sim::host::Cast;
 use iac_sim::store::{self, Store};
 use iac_sim::{views, GameEngine, Snapshot};
@@ -122,44 +123,87 @@ pub fn lone_fighter_sector(engine: &GameEngine, behavior: NpcBehaviorType) -> He
     panic!("no such NPC sector in a 40x40 window");
 }
 
-pub fn deploy(engine: &mut GameEngine, fid: u64, at: Hex, weapon_power: Option<f32>) {
+/// Levels no empire reaches: a fleet stamped with them fires 26 times its
+/// class's attack behind 26 times its hull and shield, and keeps them until
+/// it docks at home.
+pub const MIGHTY: Refit = Refit { weapons: 250, shielding: 250, armour: 250 };
+
+pub fn deploy(engine: &mut GameEngine, fid: u64, at: Hex, refit: Option<Refit>) {
     edit(engine, |s| {
         let fleet = s.fleets.get_mut(&fid).expect("fleet");
         fleet.location = at;
-        if let Some(power) = weapon_power {
-            for ship in &mut fleet.ships[..fleet.ship_count] {
-                ship.weapon_power = power;
-                ship.hull = 1e6;
-                ship.hull_max = 1e6;
-            }
+        if let Some(refit) = refit {
+            fleet.refit = refit;
         }
     });
 }
 
-pub fn muster(engine: &mut GameEngine, fid: u64, classes: &[(ShipClass, usize)], at: Hex) {
+/// Research `pid` to `MIGHTY` and stamp it on `fid`: might the home dock
+/// leaves in place.
+pub fn empower(engine: &mut GameEngine, pid: u64, fid: u64) {
+    edit(engine, |s| {
+        let research = &mut s.players.get_mut(&pid).expect("player").research;
+        research.weapons_technology = MIGHTY.weapons;
+        research.shielding_technology = MIGHTY.shielding;
+        research.armour_technology = MIGHTY.armour;
+        s.fleets.get_mut(&fid).expect("fleet").refit = MIGHTY;
+    });
+}
+
+pub fn muster(engine: &mut GameEngine, fid: u64, classes: &[(ShipClass, u32)], at: Hex) {
     edit(engine, |s| {
         let fleet = s.fleets.get_mut(&fid).expect("fleet");
-        fleet.ships.fill(Ship::default());
-        fleet.ship_count = 0;
-        for &(class, count) in classes {
-            let stats = class.base_stats();
-            for _ in 0..count {
-                fleet.ships[fleet.ship_count] = Ship {
-                    id: 1_000_000 + fleet.ship_count as u64,
-                    ship_class: class,
-                    hull: stats.hull,
-                    hull_max: stats.hull,
-                    shield: stats.shield,
-                    shield_max: stats.shield,
-                    weapon_power: stats.weapon,
-                };
-                fleet.ship_count += 1;
-            }
-        }
+        fleet.ships = Ships::of(classes);
         fleet.fuel_max = 1e6;
         fleet.fuel = 1e6;
         fleet.location = at;
     });
+}
+
+/// `whole` ships of `class` and one more for each entry of `damaged`,
+/// holding that much of the class's own hull.
+pub fn squadron(class: ShipClass, whole: u32, damaged: &[u32]) -> Ships {
+    let full = ship_figures(class, Arms::BASE).hull;
+    let mut ships = Ships::of(&[(class, whole)]);
+    for &hull in damaged {
+        ships.add_holding(class, hull, full);
+    }
+    ships
+}
+
+/// So many ships of each class, as a `split` names them.
+pub fn counts(ships: &[(ShipClass, u32)]) -> Vec<ShipCount> {
+    ships.iter().map(|&(ship_class, count)| ShipCount { ship_class, count }).collect()
+}
+
+/// A hostile group of `ships` standing in `at`, every figure of its
+/// classes at `grade`, under the id `id`: what `attack` is aimed at.
+pub fn horde(engine: &mut GameEngine, id: u64, at: Hex, ships: &[(ShipClass, u32)], grade: f32) {
+    edit(engine, |s| {
+        let ships = Ships::of(ships);
+        let arms = Arms::of_grade(grade);
+        s.npc_fleets.insert(
+            id,
+            NpcFleet {
+                id,
+                location: at,
+                power: ships.power(arms),
+                ships,
+                arms,
+                behavior: NpcBehaviorType::Passive,
+                home_sector: at,
+                patrol_timer: 0,
+                in_combat: false,
+                bounty: iac_shared::constants::Resources::default(),
+                label: "horde".to_string(),
+            },
+        );
+    });
+}
+
+/// Hull the ships of `fid` hold between them; 0 for a fleet that is gone.
+pub fn hull_held(engine: &GameEngine, fid: u64) -> u64 {
+    engine.fleets.get(&fid).map_or(0, |fleet| fleet.ships.hull(fleet.arms()).0)
 }
 
 pub fn lair(engine: &GameEngine, ring: u16, wanted: impl Fn(NpcBehaviorType) -> bool) -> Hex {
@@ -193,8 +237,11 @@ pub struct Fights {
     pub hull_kept: f32,
 }
 
+/// The same fight fought `fought` times over, each on other dice. A win is
+/// a fight that destroyed the hostiles; `hull_kept` is the hull the fleet
+/// held afterwards as a share of what it held before, lost fights counting 0.
 pub fn fights(engine: &GameEngine, pid: u64, fid: u64, at: Hex, fought: usize) -> Fights {
-    let before: f32 = engine.fleets[&fid].ships.iter().map(|s| s.hull).sum();
+    let before = hull_held(engine, fid) as f32;
     let (mut won, mut kept) = (0, 0.0);
     for round in 0..fought {
         let mut start = engine.snapshot();
@@ -202,16 +249,16 @@ pub fn fights(engine: &GameEngine, pid: u64, fid: u64, at: Hex, fought: usize) -
         let mut world = GameEngine::restore(start);
         let outcome = world.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) });
         assert!(outcome.error.is_none(), "{:?}", outcome.error);
-        run_until(&mut world, 5000, |e| e.active_combats.is_empty());
-        let left: f32 = world.fleets.get(&fid).map_or(0.0, |f| f.ships[..f.ship_count].iter().map(|s| s.hull).sum());
-        won += usize::from(left > 0.0);
-        kept += left / before;
+        let events = run_until(&mut world, 5000, |e| e.active_combats.is_empty());
+        let victory = events.iter().any(|e| matches!(&e.kind, EventKind::CombatEnded(c) if c.player_victory));
+        won += usize::from(victory);
+        kept += hull_held(&world, fid) as f32 / before;
     }
     Fights { fought, won, hull_kept: kept / fought as f32 }
 }
 
 pub fn fight(engine: &mut GameEngine, pid: u64, fid: u64, at: Hex) -> Vec<GameEvent> {
-    deploy(engine, fid, at, Some(5000.0));
+    deploy(engine, fid, at, Some(MIGHTY));
     let outcome = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) });
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     let events = run_until(engine, 10, |e| e.active_combats.is_empty());

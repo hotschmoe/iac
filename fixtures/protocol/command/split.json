@@ -1,8 +1,15 @@
 {
   "action": "split",
+  "damaged_first": false,
   "fleet_id": 9,
-  "ship_ids": [
-    101,
-    102
+  "ships": [
+    {
+      "class": "SmallCargo",
+      "count": 1
+    },
+    {
+      "class": "LightFighter",
+      "count": 120
+    }
   ]
 }

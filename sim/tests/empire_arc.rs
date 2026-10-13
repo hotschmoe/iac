@@ -121,7 +121,7 @@ fn an_empire_grows_fights_charts_and_survives_a_raid() {
     let mut e = recruit("Arc");
     let start = e.state();
     assert_eq!(start.fleets.len(), 1);
-    assert_eq!(start.fleets[0].ships.len(), 2);
+    assert_eq!((start.fleets[0].ship_count, start.fleets[0].ships.len()), (2, 1), "two ships of one class");
     chart_the_neighbourhood(&mut e);
     build_the_foundations(&mut e);
     mind_the_queue(&mut e);
@@ -367,7 +367,7 @@ fn build_a_battle_group(e: &mut Empire, count: u16) {
     }).iter().sum();
     assert_eq!(built, running.built + 2 + rest);
     assert!(built >= count);
-    assert_eq!(e.fleet().ships.len(), 2 + usize::from(built), "new hulls reinforce the fleet at home");
+    assert_eq!(e.fleet().ship_count, 2 + u32::from(built), "new hulls reinforce the fleet at home");
 }
 
 fn hunt_pirates(e: &mut Empire, lair: Hex) {
@@ -468,8 +468,7 @@ fn settle_the_score(e: &mut Empire) {
         .fleets
         .iter()
         .flat_map(|f| &f.ships)
-        .filter(|s| s.hull > 0.0)
-        .map(|s| scaling::resource_weight(&s.ship_class.build_cost()))
+        .map(|s| s.count as f32 * scaling::resource_weight(&s.ship_class.build_cost()))
         .sum();
     let core = scaling::econ_points(&buildings, &research) + fleet;
 

@@ -27,6 +27,7 @@
   "fleets": [
     {
       "at_outpost": false,
+      "attack": 20610,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 0.0,
@@ -39,6 +40,8 @@
       "fuel_max": 500.0,
       "home_fuel": 63.0,
       "hops_home": 2,
+      "hull": 164960,
+      "hull_max": 165600,
       "id": 1,
       "jump_fuel": 31.5,
       "jump_ticks": 2,
@@ -60,31 +63,68 @@
       },
       "power": 61.5,
       "range_hops": 4,
+      "refit": {
+        "armour": 0,
+        "shielding": 0,
+        "weapons": 0
+      },
+      "refit_due": true,
+      "repair": {
+        "home": {
+          "hull": 640,
+          "payment": {
+            "crystal": 0.0,
+            "deuterium": 0.0,
+            "metal": 0.0
+          },
+          "price": 0.0,
+          "ships": 4
+        },
+        "hull": 640,
+        "outpost": {
+          "hull": 160,
+          "payment": {
+            "crystal": 0.0,
+            "deuterium": 0.0,
+            "metal": 180.0
+          },
+          "price": 720.0,
+          "ships": 1
+        },
+        "ships": 4
+      },
       "scan_range": 1,
+      "shield": 4140,
+      "ship_count": 414,
       "ships": [
         {
-          "class": "LightFighter",
-          "hull": 80.5,
-          "hull_max": 100.0,
-          "id": 11,
-          "shield": 25.0,
-          "shield_max": 50.0,
-          "weapon_power": 4.0
+          "at_risk": 0,
+          "class": "SmallCargo",
+          "count": 2,
+          "damaged": 0,
+          "hull": 800,
+          "hull_max": 800,
+          "unit_attack": 5,
+          "unit_hull": 400,
+          "unit_shield": 10
         },
         {
-          "class": "SmallCargo",
-          "hull": 100.0,
-          "hull_max": 100.0,
-          "id": 12,
-          "shield": 0.0,
-          "shield_max": 50.0,
-          "weapon_power": 0.0
+          "at_risk": 2,
+          "class": "LightFighter",
+          "count": 412,
+          "damaged": 4,
+          "hull": 164160,
+          "hull_max": 164800,
+          "unit_attack": 50,
+          "unit_hull": 400,
+          "unit_shield": 10
         }
       ],
       "state": "Harvesting"
     },
     {
       "at_outpost": false,
+      "attack": 20610,
       "cargo": {
         "crystal": 3.0,
         "deuterium": 20.0,
@@ -97,6 +137,8 @@
       "fuel_max": 500.0,
       "home_fuel": 63.0,
       "hops_home": 2,
+      "hull": 164960,
+      "hull_max": 165600,
       "id": 2,
       "jump_fuel": 31.5,
       "jump_ticks": 2,
@@ -111,25 +153,61 @@
         "deuterium": 20.0,
         "fuel": 212.5
       },
+      "refit": {
+        "armour": 0,
+        "shielding": 0,
+        "weapons": 0
+      },
+      "refit_due": true,
+      "repair": {
+        "home": {
+          "hull": 640,
+          "payment": {
+            "crystal": 0.0,
+            "deuterium": 0.0,
+            "metal": 0.0
+          },
+          "price": 0.0,
+          "ships": 4
+        },
+        "hull": 640,
+        "outpost": {
+          "hull": 160,
+          "payment": {
+            "crystal": 0.0,
+            "deuterium": 0.0,
+            "metal": 180.0
+          },
+          "price": 720.0,
+          "ships": 1
+        },
+        "ships": 4
+      },
       "scan_range": 1,
+      "shield": 4140,
+      "ship_count": 414,
       "ships": [
         {
-          "class": "LightFighter",
-          "hull": 80.5,
-          "hull_max": 100.0,
-          "id": 21,
-          "shield": 25.0,
-          "shield_max": 50.0,
-          "weapon_power": 4.0
+          "at_risk": 0,
+          "class": "SmallCargo",
+          "count": 2,
+          "damaged": 0,
+          "hull": 800,
+          "hull_max": 800,
+          "unit_attack": 5,
+          "unit_hull": 400,
+          "unit_shield": 10
         },
         {
-          "class": "SmallCargo",
-          "hull": 100.0,
-          "hull_max": 100.0,
-          "id": 22,
-          "shield": 0.0,
-          "shield_max": 50.0,
-          "weapon_power": 0.0
+          "at_risk": 2,
+          "class": "LightFighter",
+          "count": 412,
+          "damaged": 4,
+          "hull": 164160,
+          "hull_max": 164800,
+          "unit_attack": 50,
+          "unit_hull": 400,
+          "unit_shield": 10
         }
       ],
       "state": "Docked"
@@ -623,7 +701,7 @@
           "count": 0,
           "hull": 200.0,
           "kind": "LightLaser",
-          "power": 143.25,
+          "power": 143.1999969482422,
           "requires": [
             {
               "energy": false,
@@ -647,14 +725,14 @@
               "need": 3
             }
           ],
-          "shield": 32.5,
+          "shield": 32.0,
           "ticks_per_unit": 6,
           "unit_cost": {
             "crystal": 500.0,
             "deuterium": 0.0,
             "metal": 1500.0
           },
-          "weapon": 120.00000762939453
+          "weapon": 120.0
         },
         {
           "count": 0,
@@ -795,14 +873,14 @@
             "deuterium": 30000.0,
             "metal": 50000.0
           },
-          "weapon": 3600.000244140625
+          "weapon": 3600.0
         },
         {
           "count": 1,
           "hull": 2000.0,
           "kind": "SmallShieldDome",
           "max": 1,
-          "power": 461.20001220703125,
+          "power": 461.0,
           "requires": [
             {
               "energy": false,
@@ -827,14 +905,14 @@
             "deuterium": 0.0,
             "metal": 10000.0
           },
-          "weapon": 1.2000000476837158
+          "weapon": 1.0
         },
         {
           "count": 0,
           "hull": 10000.0,
           "kind": "LargeShieldDome",
           "max": 1,
-          "power": 2301.199951171875,
+          "power": 2301.0,
           "requires": [
             {
               "energy": false,
@@ -859,7 +937,7 @@
             "deuterium": 0.0,
             "metal": 50000.0
           },
-          "weapon": 1.2000000476837158
+          "weapon": 1.0
         }
       ],
       "research": [
@@ -1399,7 +1477,7 @@
           "hull": 1200.0,
           "jump_fuel": 47.5,
           "jump_ticks": 3,
-          "power": 129.25,
+          "power": 129.1999969482422,
           "requires": [
             {
               "energy": false,
@@ -1416,7 +1494,7 @@
               "need": 6
             }
           ],
-          "shield": 32.5,
+          "shield": 32.0,
           "ship_class": "LargeCargo",
           "speed": 9750.0,
           "tank": 2100.0,
@@ -1463,7 +1541,7 @@
             "deuterium": 0.0,
             "metal": 3000.0
           },
-          "weapon": 60.000003814697266
+          "weapon": 60.0
         },
         {
           "cargo": 100.0,
@@ -1473,7 +1551,7 @@
           "hull": 1000.0,
           "jump_fuel": 71.25,
           "jump_ticks": 3,
-          "power": 283.25,
+          "power": 283.20001220703125,
           "requires": [
             {
               "energy": false,
@@ -1497,7 +1575,7 @@
               "need": 2
             }
           ],
-          "shield": 32.5,
+          "shield": 32.0,
           "ship_class": "HeavyFighter",
           "speed": 10000.0,
           "tank": 2625.0,
@@ -1551,7 +1629,7 @@
             "deuterium": 2000.0,
             "metal": 20000.0
           },
-          "weapon": 480.0000305175781
+          "weapon": 480.0
         },
         {
           "cargo": 1500.0,
@@ -1598,7 +1676,7 @@
           "hull": 1600.0,
           "jump_fuel": 285.0,
           "jump_ticks": 5,
-          "power": 162.5,
+          "power": 162.3000030517578,
           "requires": [
             {
               "energy": false,
@@ -1632,7 +1710,7 @@
             "deuterium": 2000.0,
             "metal": 10000.0
           },
-          "weapon": 1.2000000476837158
+          "weapon": 1.0
         },
         {
           "cargo": 5.0,
@@ -1729,7 +1807,7 @@
           "hull": 200.0,
           "jump_fuel": 0.0,
           "jump_ticks": 0,
-          "power": 21.330001831054688,
+          "power": 21.100000381469727,
           "requires": [
             {
               "energy": false,
@@ -1739,7 +1817,7 @@
               "need": 1
             }
           ],
-          "shield": 1.2999999523162842,
+          "shield": 1.0,
           "ship_class": "SolarSatellite",
           "speed": 0.0,
           "tank": 0.0,
@@ -1749,7 +1827,7 @@
             "deuterium": 500.0,
             "metal": 0.0
           },
-          "weapon": 1.2000000476837158
+          "weapon": 1.0
         },
         {
           "cargo": 2000.0,
@@ -1834,7 +1912,7 @@
               "need": 1
             }
           ],
-          "shield": 64999.99609375,
+          "shield": 65000.0,
           "ship_class": "Deathstar",
           "speed": 130.0,
           "tank": 21.0,
@@ -1844,7 +1922,7 @@
             "deuterium": 1000000.0,
             "metal": 5000000.0
           },
-          "weapon": 240000.015625
+          "weapon": 240000.0
         },
         {
           "cargo": 750.0,
@@ -1895,7 +1973,7 @@
             "deuterium": 15000.0,
             "metal": 30000.0
           },
-          "weapon": 840.0000610351562
+          "weapon": 840.0
         }
       ]
     },
@@ -1914,15 +1992,29 @@
       }
     ],
     "docked_power": 444.0,
+    "docked_ship_count": 46,
     "docked_ships": [
       {
+        "at_risk": 0,
+        "class": "LightFighter",
+        "count": 40,
+        "damaged": 0,
+        "hull": 16000,
+        "hull_max": 16000,
+        "unit_attack": 50,
+        "unit_hull": 400,
+        "unit_shield": 10
+      },
+      {
+        "at_risk": 0,
         "class": "Cruiser",
-        "hull": 100.0,
-        "hull_max": 100.0,
-        "id": 501,
-        "shield": 50.0,
-        "shield_max": 50.0,
-        "weapon_power": 18.0
+        "count": 6,
+        "damaged": 0,
+        "hull": 16200,
+        "hull_max": 16200,
+        "unit_attack": 400,
+        "unit_hull": 2700,
+        "unit_shield": 50
       }
     ],
     "energy": {
@@ -2148,24 +2240,47 @@
         {
           "behavior": "Aggressive",
           "id": 9001,
+          "ship_count": 4,
           "ships": [
             {
+              "at_risk": 1,
               "class": "Cruiser",
-              "count": 3
+              "count": 3,
+              "damaged": 1,
+              "hull": 6200,
+              "hull_max": 8100,
+              "unit_attack": 400,
+              "unit_hull": 2700,
+              "unit_shield": 50
             },
             {
+              "at_risk": 0,
               "class": "Battlecruiser",
-              "count": 1
+              "count": 1,
+              "damaged": 0,
+              "hull": 7000,
+              "hull_max": 7000,
+              "unit_attack": 700,
+              "unit_hull": 7000,
+              "unit_shield": 400
             }
           ]
         },
         {
           "behavior": "Passive",
           "id": 9002,
+          "ship_count": 2,
           "ships": [
             {
+              "at_risk": 0,
               "class": "LightFighter",
-              "count": 2
+              "count": 2,
+              "damaged": 0,
+              "hull": 800,
+              "hull_max": 800,
+              "unit_attack": 50,
+              "unit_hull": 400,
+              "unit_shield": 10
             }
           ]
         }

@@ -1,0 +1,11 @@
+{
+  "action": "split",
+  "damaged_first": true,
+  "fleet_id": 9,
+  "ships": [
+    {
+      "class": "Cruiser",
+      "count": 3
+    }
+  ]
+}
