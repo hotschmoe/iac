@@ -473,9 +473,10 @@ What every doctrine does:
   it holds (metal first, then crystal at 1.5 and deuterium at 2, as its own
   repair is): whole ships only, the most damaged first, as far as the store
   pays, and not while it is breached or unfinished, nor for a fleet under
-  standing orders. Either dock says what it did in an `Alert` ("fleet 7 was
-  mended at your outpost: 3 ships made whole, 1200 hull restored, for 84
-  metal; 2 more wait for the dock's stock to cover them"). `fleets[].repair`
+  standing orders. Either dock says what it did in an `Alert` ("fleet 2 was
+  mended at the home dock: 2 ship(s) made whole, 67 hull restored, for
+  nothing"; the outpost's names what it took from the store and how many
+  ships still wait for its stock to cover them). `fleets[].repair`
   is there while a fleet carries damage: `ships`, `hull` (what is missing),
   and for `home` and for `outpost` (absent with no outpost) the `price`,
   the `payment` it would be taken as, the `ships` and `hull` it would mend
