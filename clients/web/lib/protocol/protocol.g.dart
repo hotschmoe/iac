@@ -2025,8 +2025,12 @@ class FleetState {
   /// reserve, one jump per five minutes.
   final double jumpFuel;
 
-  /// Fuel the way home costs: the fewest hops over lanes the player has
-  /// charted, times `jump_fuel`; 0 at the homeworld. Compare with `fuel`.
+  /// Fuel the way home costs: the fewest hops over the real lanes, charted
+  /// or not, times `jump_fuel`. That is the way a fleet flies one jump at
+  /// a time, and what standing orders budget for. 0 at the homeworld.
+  /// Compare with `fuel`. An emergency recall does not fly this way: it
+  /// jumps straight home and burns twice `jump_fuel` per hex of straight
+  /// distance.
   final double homeFuel;
 
   /// Ticks one jump takes this fleet from the order to the arrival: the

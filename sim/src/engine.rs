@@ -5378,8 +5378,9 @@ impl GameEngine {
     }
 
     /// Fuel/cargo doctrine thresholds: the reason to head home, if any. Fuel
-    /// is judged against the actual cost of the charted route home plus the
-    /// doctrine's reserve, not a fraction of the tank.
+    /// is judged against the cost of the direct route home, the fewest hops
+    /// over the real lanes, charted or not, plus the doctrine's reserve.
+    /// It is not a fraction of the tank.
     fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<String> {
         let need = self.route_home_cost(fleet, fleet.location);
         let reserve = fleet.fuel_max * params.min_fuel_pct as f32 / 100.0;

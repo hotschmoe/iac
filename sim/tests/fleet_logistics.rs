@@ -7,7 +7,8 @@ mod common;
 use common::*;
 use iac_shared::hex::Hex;
 use iac_shared::constants::{
-    Density, Resources, ShipClass, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS,
+    Density, Resources, ShipClass, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, RECALL_FUEL_MULTIPLIER,
+    STRANDED_RECOVERY_TICKS,
 };
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
@@ -180,6 +181,67 @@ fn previews_and_warnings_tell_charted_routes_from_direct_ones() {
     let warning = alerts_since(&e, mark).remove(0);
     assert!(warning.message.contains("no charted route home; the direct route is 2 hops"), "{}", warning.message);
     assert!(warning.message.contains("across unexplored space"), "{}", warning.message);
+}
+
+#[test]
+fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
+    let (mut e, chain) = outpost("Accountant", 2);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let at = chain[1];
+    assert_eq!(e.engine.fleets[&fid].location, at);
+    edit(&mut e.engine, |s| s.explored.retain(|key| key.0 != pid));
+    let route = e.engine.home_route(pid, at);
+    assert!(route.charted.is_none() && route.unexplored, "the chart joins this fleet to home by no lane: {route:?}");
+    assert!(route.direct >= 2, "the lane home is more than one hop: {}", route.direct);
+    let hop = e.fleet().jump_fuel;
+    let need = hop * route.direct as f32;
+    assert_eq!(e.fleet().home_fuel, need, "home_fuel is those lanes, chart or none");
+    let straight = f32::from(Hex::distance(&at, &home));
+    assert_eq!(
+        e.engine.recall_fuel_cost(&e.engine.fleets[&fid]),
+        hop * straight * RECALL_FUEL_MULTIPLIER,
+        "a recall burns twice the jump fuel per hex of straight distance, and then jumps",
+    );
+
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().fuel = need);
+    e.engine
+        .handle_policy_update(pid, fid, PolicyPreset::MineAndReturn, Some(PolicyParams {
+            min_fuel_pct: 0,
+            cargo_return_pct: 100,
+            max_range: 8,
+            engage_ratio_x10: 15,
+            fuel_budget_pct: 100,
+        }))
+        .expect("orders");
+    let mark = e.mark();
+    e.run(1);
+    let covered = reports(&e, mark);
+    assert!(
+        covered.iter().all(|(_, why)| !why.contains("route home")),
+        "fuel for the direct way is enough, though the chart has no way home: {covered:?}",
+    );
+
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = at;
+        fleet.fuel = need - hop * 0.5;
+        fleet.state = FleetStatus::Idle;
+        fleet.move_target = None;
+        fleet.move_cooldown = 0;
+        fleet.action_cooldown = 0;
+        s.policies.get_mut(&fid).unwrap().next_eval_tick = s.tick + 1;
+    });
+    let mark = e.mark();
+    e.run(1);
+    let moves = policy_reasons(&e, mark, "move");
+    assert!(!moves.is_empty(), "short of the direct way, it starts home: {:?}", reports(&e, mark));
+    assert!(
+        moves[0].contains(&format!("fuel {:.0} is below the route home {:.0}", need - hop * 0.5, need)),
+        "{moves:?}",
+    );
+    let step = e.engine.fleets[&fid].move_target.expect("the jump is ordered");
+    assert!(e.engine.home_route(pid, step).direct < route.direct, "the jump is along the lanes toward home, to {step}");
 }
 
 #[test]

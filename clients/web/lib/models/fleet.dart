@@ -66,7 +66,8 @@ class FleetState {
   final int fuel;
   final int fuelMax;
 
-  /// Fuel per jump and fuel for the charted way home (0 at the homeworld).
+  /// Fuel per jump, and fuel for the fewest hops home over the real lanes,
+  /// charted or not (0 at the homeworld).
   final int jumpFuel;
   final int homeFuel;
 
