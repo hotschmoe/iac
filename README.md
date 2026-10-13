@@ -1,10 +1,10 @@
 # IN AMBER CLAD
 
-**A multiplayer space strategy game played through an amber terminal.**
+**A multiplayer space strategy game played at an amber CRT console.**
 
 You are an admiral at a CRT console, commanding fleets across an infinite hex grid. Mine resources, build your homeworld, research technology, and push deeper into the wandering, where the map grows sparse, dead-ends can trap you, and Morning Light Mountain swarms hunt in the dark.
 
-Humans play through a retro amber TUI. LLM agents connect over WebSocket and play the same game via JSON. Both are first-class citizens. Think OGame x The Infinite Black, with a 1 Hz tick loop hidden inside cooldowns so real-time play feels responsive to humans and tractable for LLMs.
+Humans play in the browser, through the Flutter web client and its amber CRT look. LLM agents play the same game directly, as JSON over the wire protocol (a WebSocket, or the headless NDJSON pipe). Both are first-class citizens. A terminal client (ratatui) exists too; it is secondary, and is not necessarily kept up with what the web client and the protocol gain. Think OGame x The Infinite Black, with a 1 Hz tick loop hidden inside cooldowns so real-time play feels responsive to humans and tractable for LLMs.
 
 ## Layout
 
@@ -14,8 +14,8 @@ Humans play through a retro amber TUI. LLM agents connect over WebSocket and pla
 | `sim/` | `iac-sim`: the whole game as a pure, deterministic library (engine, tick, commands, combat, intel, queues, score, snapshots, built-in bots, headless runner `sim-run`), the host core (`host.rs`): the one tick, the one session gate and the one way to seat a world that every host runs, and what a stored world is (`store.rs`): one document, the same for every host; no I/O, builds for WebAssembly |
 | `server/` | `iac-server`: what a network and a disk add to the host core: the WebSocket transport, tokens, the world's file and the thread that writes it, the 1 Hz tick timer |
 | `solo/` | `iac-solo`: what one player and a browser tab add to it: a commander with no password, a clock it is told and the catch-up after an absence; compiled to WebAssembly and run in a browser worker (`solo/web/worker.js`) with the save, the same document a server keeps, in IndexedDB |
-| `clients/tui/` | `iac-client`: ratatui amber TUI plus headless NDJSON mode for agents |
-| `clients/web/` | Flutter web client (amber CRT UI), served by `iac-server`, or bundled with `iac-solo` as a static single-player build |
+| `clients/web/` | Flutter web client (amber CRT UI), the interface people play through: served by `iac-server`, or bundled with `iac-solo` as a static single-player build |
+| `clients/tui/` | `iac-client`: the headless NDJSON mode agents play through, and a ratatui terminal client, which is secondary and may lag the web client |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
 | `tools/` | `playtest/` (live multi-agent sessions) and `check_sim_constants.py` (the formulas of the planning simulation, `docs/design/economy/sim.py`, against the game's; its numbers are not compared, they are generated from Rust) |
 | `SPEC.md` | Original technical specification (world model, combat, economy, networking) |
@@ -46,7 +46,7 @@ cargo run -p iac-server -- --pace season --world season.iac --bot all:check-in -
 # serve the web client too (after `flutter build web --release` in clients/web):
 cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web
 
-# Terminal 2: the TUI client
+# Terminal 2, optional: the terminal client (secondary; it may lag the web client)
 cargo run -p iac-client -- --name Admiral
 ```
 
@@ -102,7 +102,8 @@ nobody else can register, so it is tagged wherever a player is named: on the
 map, in fleet lists, in events. Bots are not ranked with people: the
 leaderboard lists them apart (see `leaderboard` below).
 
-TUI basics: `w` windshield / `m` star map / `b` homeworld / `` ` `` command
+The terminal client is secondary: people play through the web client (see
+"Web client" below), and a newer feature may be missing here. Its basics: `w` windshield / `m` star map / `b` homeworld / `` ` `` command
 center, `?` for all keybinds. In the windshield: `1-6` move, `v` scan,
 `h` harvest, `a` attack, `s` salvage, `r` recall, `S` stop. `p` cycles the
 active fleet's standing orders; `P` steps their fuel budget (10, 20, 35, 50
@@ -309,7 +310,8 @@ What every doctrine does:
 
 ## Web client
 
-`clients/web/` is a Flutter web app with the amber CRT look: command center,
+`clients/web/` is the interface people play through, a Flutter web app with
+the amber CRT look: command center,
 windshield and star map, driven by a command bar (`help` lists commands) and
 hotkeys (`1`/`2`/`3` views, numpad 1-6 to move, Esc leaves the bar). It speaks
 the Rust wire protocol over `/ws` on the page's own host and port. In the
@@ -937,7 +939,7 @@ Crates: `iac-shared` (`shared/`) (protocol, constants, scaling, hex math, worldg
 `iac-server` (network, the world's file, tick timer around `iac-sim`) · `iac-solo` (`solo/`) (the
 single-player host: a session, a clock fed by its caller and the catch-up after an
 absence, behind one function of bytes; three exports as WebAssembly, no
-bindings generator) · `iac-client` (ratatui TUI + headless mode).
+bindings generator) · `iac-client` (the headless mode agents use, and the secondary ratatui terminal client).
 
 `iac-sim` talks to its host through three seams: `GameEngine::execute` (a protocol
 `Command` in, reply or refusal out), `views::{full_state, tick_update}` (what a player
