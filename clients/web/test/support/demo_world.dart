@@ -63,7 +63,7 @@ class _Outpost {
 ///   N (6,-5) T3 corvette patrol    NE (7,-5) nebula, derelict tier 1
 ///   SE (7,-4) debris, salvage      SW (5,-3) toward home
 ///   NW (5,-4) T5 aggressive (uncharted until scanned)
-///   (7,-3) passive scout           (8,-6) T4 patrol, hot derelict
+///   (7,-3) passive scout           (8,-6) T3 scout patrol, hot derelict
 ///   (9,-7) T7 swarm (stale chart)
 class DemoWorld {
   static const _playerId = 1;
@@ -356,7 +356,7 @@ class DemoWorld {
     const Hex(5, -4).toKey(): (t: TerrainType.anomaly, ore: [0, 3, 1], npc: [(ShipClass.frigate, 1), (ShipClass.corvette, 2)], b: NpcBehavior.aggressive, tier: 0, risk: null, salv: null),
     const Hex(3, -1).toKey(): (t: TerrainType.asteroidField, ore: [2, 1, 0], npc: null, b: null, tier: 0, risk: null, salv: null),
     const Hex(7, -3).toKey(): (t: TerrainType.empty, ore: [1, 1, 0], npc: [(ShipClass.scout, 1)], b: NpcBehavior.passive, tier: 0, risk: null, salv: null),
-    const Hex(8, -6).toKey(): (t: TerrainType.asteroidField, ore: [4, 2, 1], npc: [(ShipClass.corvette, 2)], b: NpcBehavior.patrol, tier: 1, risk: SiteRisk.hot, salv: null),
+    const Hex(8, -6).toKey(): (t: TerrainType.asteroidField, ore: [4, 2, 1], npc: [(ShipClass.scout, 2)], b: NpcBehavior.patrol, tier: 1, risk: SiteRisk.hot, salv: null),
     const Hex(9, -7).toKey(): (t: TerrainType.empty, ore: [1, 1, 1], npc: [(ShipClass.cruiser, 1), (ShipClass.frigate, 2), (ShipClass.corvette, 3)], b: NpcBehavior.swarm, tier: 0, risk: null, salv: null),
   };
 
@@ -404,7 +404,7 @@ class DemoWorld {
       if (_authored.containsKey(k)) continue;
       final d = h.distFromOrigin;
       if (Hex.distance(h, _home) > 2 && _h01(h.q, h.r, 5) < min(.85, .25 + .025 * d)) {
-        final cls = d <= 7 ? ShipClass.scout : d <= 12 ? ShipClass.corvette : d <= 20 ? ShipClass.frigate : ShipClass.cruiser;
+        final cls = d <= zoneInnerRingRadius ? ShipClass.scout : d <= 12 ? ShipClass.corvette : d <= zoneOuterRingRadius ? ShipClass.frigate : ShipClass.cruiser;
         final target = 4 * pow(1.22, d - 1) * 1.8;
         final n = max(1, min(12, (target / _ratingPower[cls]!).round()));
         final beh = _h01(h.q, h.r, 6) < max(0, .5 - .08 * (d - 8))
