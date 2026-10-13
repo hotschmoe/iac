@@ -44,7 +44,7 @@ use iac_shared::scaling::{
 };
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
-    MovePreview, OreReserve, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
+    MovePreview, OreReserve, Refining, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
     StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
@@ -492,6 +492,12 @@ pub struct HarvestReport {
     ticks: u16,
     /// Tick the first unreported harvest happened.
     since: u64,
+}
+
+/// Which of a doctrine's two thresholds turns a fleet home, with its wording.
+enum Homeward {
+    Fuel(String),
+    Cargo(String),
 }
 
 /// A fleet's standing orders plus the bit of memory the autopilot needs.
@@ -4261,6 +4267,68 @@ impl GameEngine {
         fleet.cargo = fleet.cargo.sub(moved);
     }
 
+    /// What `refine` would turn into what for `fleet_id` right now, or why
+    /// the order is refused.
+    pub fn refine_order(&self, player_id: u64, fleet_id: u64) -> Result<Refining, Refusal> {
+        let fleet = self.owned_fleet(player_id, fleet_id)
+            .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
+        refining(fleet).ok_or_else(|| match (fleet.state, fleet.move_target) {
+            (FleetStatus::InCombat, _) => Refusal::new(
+                ErrorCode::OnCooldown,
+                format!("fleet {fleet_id} is in combat; nothing is refined in a fight"),
+            ),
+            (FleetStatus::Moving, Some(target)) => Refusal::new(
+                ErrorCode::OnCooldown,
+                format!("fleet {fleet_id} is charging a jump to {target}; it can refine once it has arrived"),
+            ),
+            (FleetStatus::Moving, None) => Refusal::new(
+                ErrorCode::OnCooldown,
+                format!("fleet {fleet_id} is charging a jump; it can refine once it has arrived"),
+            ),
+            _ if fleet.cargo.deuterium <= 0.0 => Refusal::new(
+                ErrorCode::NoResources,
+                format!("the hold of fleet {fleet_id} carries no deuterium to refine"),
+            ),
+            _ => Refusal::new(ErrorCode::InvalidCommand, format!(
+                "the tank of fleet {fleet_id} is full ({} of {} fuel); refining would add nothing",
+                fuel_words(fleet.fuel), fuel_words(fleet.fuel_max),
+            )),
+        })
+    }
+
+    /// Turn deuterium in the hold into fuel, as `refine_order` quotes it, and
+    /// tell the owner both figures. It takes no time and changes nothing
+    /// else: a harvest or a boarding goes on.
+    pub fn handle_refine(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        self.refine_order(player_id, fleet_id).map_err(|refusal| refusal.code)?;
+        let Refining { deuterium, fuel } = self.refine_hold(fleet_id).ok_or(ErrorCode::ServerError)?;
+        let fleet = self.fleets.get(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        let (left, sector) = (fleet.cargo.deuterium, fleet.location);
+        let hold = if left > 0.0 {
+            format!("{} deuterium is left in the hold", fuel_words(left))
+        } else {
+            "the hold has no deuterium left".to_string()
+        };
+        let message = format!(
+            "fleet {fleet_id} refined {} deuterium into {} fuel: the tank stands at {} of {}, and {hold}",
+            fuel_words(deuterium), fuel_words(fuel), fuel_words(fleet.fuel), fuel_words(fleet.fuel_max),
+        );
+        self.push_alert(AlertLevel::Info, fleet_id, sector, message);
+        Ok(())
+    }
+
+    /// Do what `refining` says for `fleet_id`: what left the hold and what
+    /// the tank gained, or None when there was nothing to refine. A tank
+    /// that is filled reads exactly its size.
+    fn refine_hold(&mut self, fleet_id: u64) -> Option<Refining> {
+        let fleet = self.fleets.get_mut(&fleet_id)?;
+        let done = refining(fleet)?;
+        let missing = fleet.fuel_max - fleet.fuel;
+        fleet.cargo.deuterium = (fleet.cargo.deuterium - done.deuterium).max(0.0);
+        fleet.fuel = if done.fuel >= missing { fleet.fuel_max } else { fleet.fuel + done.fuel };
+        Some(done)
+    }
+
     /// Fuel an emergency jump home would burn: the per-hop cost over the
     /// straight distance, doubled. All-or-nothing: a fleet with less than
     /// this does not move at all.
@@ -5220,8 +5288,9 @@ impl GameEngine {
             format!("fuel budget {}% of deuterium income", params.fuel_budget_pct)
         };
         let reason = format!(
-            "doctrine set: {} (range {}, engage {:.1}x, {fuel}){}",
+            "doctrine set: {} (range {}, engage {:.1}x, {fuel}{}){}",
             preset.label(), params.max_range, f32::from(params.engage_ratio_x10) / 10.0,
+            if params.refine { ", refining from the hold when short of fuel" } else { "" },
             if was_laden { "; the hold loaded by hand goes back to the stockpile" } else { "" },
         );
         self.push_policy_event(fleet_id, preset, "engage", &reason);
@@ -5381,24 +5450,54 @@ impl GameEngine {
     /// is judged against the cost of the direct route home, the fewest hops
     /// over the real lanes, charted or not, plus the doctrine's reserve.
     /// It is not a fraction of the tank.
-    fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<String> {
+    fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<Homeward> {
         let need = self.route_home_cost(fleet, fleet.location);
         let reserve = fleet.fuel_max * f64::from(params.min_fuel_pct) / 100.0;
         if fleet.fuel < need + reserve {
-            return Some(format!(
+            return Some(Homeward::Fuel(format!(
                 "fuel {:.0} is below the route home {:.0} plus reserve {:.0}",
                 fleet.fuel, need, reserve,
-            ));
+            )));
         }
         let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
         if max_cargo > 0.0 {
             let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
             let cargo_pct = used / max_cargo * 100.0;
             if cargo_pct >= f64::from(params.cargo_return_pct) {
-                return Some(format!("cargo {:.0}%", cargo_pct));
+                return Some(Homeward::Cargo(format!("cargo {:.0}%", cargo_pct)));
             }
         }
         None
+    }
+
+    /// Act on those thresholds for a fleet away from home; None when
+    /// neither sends it home. Short of fuel, a fleet whose orders say so
+    /// refines first and is weighed again at its next evaluation; otherwise
+    /// it turns home. True if the autopilot acted.
+    fn policy_homeward(&mut self, fleet_id: u64, preset: PolicyPreset, fleet: &Fleet, params: &PolicyParams) -> Option<bool> {
+        let reason = self.policy_return_reason(fleet, params)?;
+        if let Homeward::Fuel(short) = &reason
+            && self.policy_refine(fleet_id, preset, short)
+        {
+            return Some(true);
+        }
+        let (Homeward::Fuel(why) | Homeward::Cargo(why)) = reason;
+        Some(self.policy_head_home(fleet_id, preset, &format!("returning: {why}")))
+    }
+
+    /// A fleet whose orders have `refine` set turns the deuterium in its
+    /// hold into fuel when it is `short`, and reports both figures. True if
+    /// it refined anything: with no deuterium aboard or a full tank it
+    /// did not, and the doctrine goes on to what it would have done.
+    fn policy_refine(&mut self, fleet_id: u64, preset: PolicyPreset, short: &str) -> bool {
+        if !self.policies.get(&fleet_id).is_some_and(|p| p.params.refine) { return false; }
+        let Some(Refining { deuterium, fuel }) = self.refine_hold(fleet_id) else { return false; };
+        let why = format!(
+            "refined {} deuterium from the hold into {} fuel: {short}",
+            fuel_words(deuterium), fuel_words(fuel),
+        );
+        self.push_policy_event(fleet_id, preset, "refine", &why);
+        true
     }
 
     /// Whether a hold for `reason` is news: the same reason is announced at
@@ -5565,6 +5664,7 @@ impl GameEngine {
                     "a jump to {step} would leave {:.0} fuel against {:.0} needed to return home",
                     (fuel - hop).max(0.0), need,
                 );
+                if self.policy_refine(fleet_id, preset, &why) { return true; }
                 let home = self.players.get(&owner).map(|p| p.homeworld);
                 if let Some(home) = home && from != home {
                     return self.policy_head_home(fleet_id, preset, &format!("returning: {why}"));
@@ -5649,8 +5749,8 @@ impl GameEngine {
         let Some(home) = self.players.get(&fleet.owner_id).map(|p| p.homeworld) else { return Ok(false); };
         let (owner, location) = (fleet.owner_id, fleet.location);
 
-        if location != home && let Some(reason) = self.policy_return_reason(&fleet, &params) {
-            return Ok(self.policy_head_home(fleet_id, preset, &format!("returning: {reason}")));
+        if location != home && let Some(acted) = self.policy_homeward(fleet_id, preset, &fleet, &params) {
+            return Ok(acted);
         }
 
         // Scan if this position hasn't been pinged recently.
@@ -5721,8 +5821,8 @@ impl GameEngine {
 
         // Loaded or low on fuel for the way home: head home (docking
         // deposits + refuels).
-        if !at_home && let Some(reason) = self.policy_return_reason(&fleet, &params) {
-            return Ok(self.policy_head_home(fleet_id, preset, &format!("returning: {reason}")));
+        if !at_home && let Some(acted) = self.policy_homeward(fleet_id, preset, &fleet, &params) {
+            return Ok(acted);
         }
 
         let leashed = !at_home && Hex::distance(&location, &home) <= u16::from(params.max_range);
@@ -5803,8 +5903,8 @@ impl GameEngine {
         let (owner, location) = (fleet.owner_id, fleet.location);
         let at_home = location == home;
 
-        if !at_home && let Some(reason) = self.policy_return_reason(&fleet, &params) {
-            return Ok(self.policy_head_home(fleet_id, preset, &format!("returning: {reason}")));
+        if !at_home && let Some(acted) = self.policy_homeward(fleet_id, preset, &fleet, &params) {
+            return Ok(acted);
         }
 
         if !at_home {
@@ -5879,8 +5979,8 @@ impl GameEngine {
         let (owner, location) = (fleet.owner_id, fleet.location);
         let at_home = location == home;
 
-        if !at_home && let Some(reason) = self.policy_return_reason(&fleet, &params) {
-            return Ok(self.policy_head_home(fleet_id, preset, &format!("returning: {reason}")));
+        if !at_home && let Some(acted) = self.policy_homeward(fleet_id, preset, &fleet, &params) {
+            return Ok(acted);
         }
 
         // Engage what we can beat, where we stand.
@@ -6663,6 +6763,25 @@ fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f64 {
     total_fuel
         * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
         * scaling::fuel_depot_modifier(player.buildings.fuel_depot)
+}
+
+/// What `refine` would turn into what for `fleet` right now: all the
+/// deuterium in its hold, or as much of it as fills the tank, at the dock's
+/// rate less `REFINE_LOSS`. None when the order would be refused: in a fight,
+/// charging a jump, no deuterium aboard or no room in the tank. A hold's
+/// deuterium becomes a tank's fuel here and nowhere else.
+pub fn refining(fleet: &Fleet) -> Option<Refining> {
+    if matches!(fleet.state, FleetStatus::InCombat | FleetStatus::Moving) { return None; }
+    let aboard = fleet.cargo.deuterium;
+    let room = fleet.fuel_max - fleet.fuel;
+    if aboard <= 0.0 || room <= 0.0 { return None; }
+    let rate = scaling::refined_fuel_per_deuterium();
+    let fuel = aboard * rate;
+    Some(if fuel <= room {
+        Refining { deuterium: aboard, fuel }
+    } else {
+        Refining { deuterium: room / rate, fuel: room }
+    })
 }
 
 /// The ships a fleet brings to a fight.

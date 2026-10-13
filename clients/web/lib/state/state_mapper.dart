@@ -612,6 +612,7 @@ class StateMapper {
       laden: f.laden,
       cargoBlocked: f.cargoBlocked,
       holdCapacity: f.cargoCapacity,
+      refine: f.refine,
     );
   }
 

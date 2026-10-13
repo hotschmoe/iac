@@ -6247,6 +6247,138 @@ price a candidate sector's way home by straight distance, the scripted test
 world still moves a fleet at once, and the ratio gauge's captions wait for the
 OGame work.
 
+## 2026-10-13: fuel from the hold, the `refine` order
+
+The first step of the order of work the owner set with "defaults": item 10 of
+the OGame study's questions, section 8.5 of `docs/design/ogame.md`. Built in a
+worktree on master `d87f440`, for a reviewer to merge.
+
+**Read first.** Section 8.5 and the decision. In `sim/src/engine.rs`: the two
+docks (`refuel_fleet`, `refuel_at_outpost`), `load`, `unload` and `laden`,
+`fleet_is_free`, the stranded reserve, `handle_move`, `handle_harvest`, and how
+`commands.rs` words a refusal by asking the engine again. One thing learned on
+the way and left alone: the home dock fills the tank of a fleet that is
+charging a jump out of it, so the first jump from home is paid by the
+stockpile at the dock's rate and the fleet arrives one hop out with a full
+tank.
+
+**The rule as built.** `refine` turns deuterium in a fleet's hold into fuel
+until the tank is full or the deuterium is gone, at once. A unit of deuterium
+is `1 / FUEL_DEUT_PER_UNIT` = 12.5 fuel at a dock and `REFINE_LOSS` (0.15)
+less from the hold: 10.625, which is `scaling::refined_fuel_per_deuterium`.
+Refused in combat and while a jump charges (`OnCooldown`), with no deuterium
+aboard (`NoResources`) and with a full tank (`InvalidCommand`), each with the
+engine's sentence. Accepted while harvesting, boarding or on a cooldown, and
+those go on. Deuterium loaded at a dock is refined like any other. The owner
+is told by an `Alert` (info): "fleet 7 refined 4 deuterium into 42.5 fuel: the
+tank stands at 45.5 of 120, and the hold has no deuterium left". What the
+owner did not decide is in `decisions.md`, ten items.
+
+**Where it is.**
+
+- `shared/src/constants.rs`: `REFINE_LOSS`. `shared/src/scaling.rs`: the rate.
+- `sim/src/engine.rs`: `refining(&Fleet) -> Option<Refining>`, a free
+  function, is the one place a hold's deuterium becomes a tank's fuel; the
+  order, the refusal and the state all go through it. `GameEngine::refine_order`
+  words the refusal, `handle_refine` applies it. `commands.rs` routes it.
+- `shared/src/protocol.rs`: `Command::Refine { fleet_id }`, and
+  `FleetState.refine: Option<Refining>` (`deuterium`, `fuel`), what the order
+  would do now, absent when it would be refused. `sim/src/views.rs` fills it.
+- The web client: a Refine button under the hold in the windshield's fleet
+  status (`lib/views/windshield/parts.dart`), lit on `FleetState.refine` and
+  printing its figure; `refine` in the command bar; the loss in its words is
+  the generated `refineLoss`. `test/support/demo_world.dart` answers the order
+  by the engine's rule and in its sentences.
+- The TUI: `d` in the fleet panel, which prints the offer. Added before the
+  owner's word that the TUI is secondary; kept, and nothing more was done
+  there.
+- `tools/playtest/RULES.md` and the README: the command's row, a Refining
+  entry, a line under Fuel and stranding. `tools/playtest/play.py` prints the
+  offer in a fleet's row.
+
+**Versions.** `ECONOMY_VERSION` stays 7 and `SAVE_FORMAT` stays 5. Nothing a
+stored world would play next has moved, and the snapshot holds nothing new.
+The fixtures and `protocol.g.dart` were regenerated: one command, one field of
+`FleetState`, one struct, two constants. The synthetic fixtures renumber their
+sample values when a type is added, so 41 of them changed.
+
+**For the branch that makes `Resources` 64-bit.** The only arithmetic that
+mixes a `Resources` field with a tank is the body of `engine::refining` (and
+the two assignments in `handle_refine` that apply its result). It is written
+without a type name; `Refining` on the wire has two `f32` fields.
+
+**Tests.** Four scenarios in `sim/tests/fleet_logistics.rs`: a fleet two hops
+out with 3 fuel and 4 deuterium is refused its jump, refines to 45.5 fuel and
+flies home, the yield being 0.85 of the dock's; a tank 8.5 short takes 0.8
+deuterium of 10 and reads exactly full; deuterium loaded at home is refused
+there for a full tank and refined two hops out; and every refusal, with the
+order going on beside a harvest and a boarding. In the web client: the button
+on a state set by the test, the same against the scripted world by button and
+by typed command, and the fixture read through the mapper.
+
+**Run on this commit.**
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 162 passed, 0 failed. Master
+  has 158; the four more are the scenarios above.
+- `cargo clippy --workspace --all-targets`: silent.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 pass.
+- `flutter analyze`: no issues.
+- `flutter test`, pinned to the big cores: the first run 483 passed and 1
+  failed, a test of this client that counts the commands and said 27; set to
+  28 and a fixture test added, the second run 485 passed.
+
+**How the checks were run.** The shell of this worktree refuses a command
+line that puts `nice` or `taskset` in front of `cargo test` or `flutter test`.
+So cargo ran with `-j 4` and without `nice`, and Flutter ran in a shell pinned
+first with `taskset -cp 0,1,6-11 $$` and lowered with `renice`.
+
+**Not verified on this commit.** No browser and no single-player bundle: the
+end-to-end run is recorded with the last entry of this work. No person or
+agent played. The TUI was built and not run.
+
+## 2026-10-13: standing orders may refine before they turn home
+
+A second commit on the `refine` order, separate so the reviewer can take the
+first without it. The brief said to stop if it was more than a small change.
+It is 66 lines added and 18 taken out of the engine and one field on the
+wire; the rest is the panel, the typed command, the rules and the tests.
+Built.
+
+**Read first.** How a doctrine's settings travel: `PolicyParams` in
+`shared/src/protocol.rs` (every field optional on the wire, by a struct-level
+serde default), clamped in `handle_policy_update`, kept in `FleetPolicy` and
+so in the snapshot, sent back as `FleetState.policy`. In the web client the
+orders panel builds a `PolicyParams` and sends the line a player would type,
+so the typed `policy` had to learn the setting first. Where a doctrine gives
+up for fuel: `policy_return_reason`, called by all four doctrines, and the
+outward check in `policy_move`.
+
+**Built.** `PolicyParams.refine`, false by default. `policy_return_reason`
+now says which threshold it is (`Homeward::Fuel` or `Cargo`) and the four
+doctrines call `policy_homeward`, which refines first when short of fuel and
+the switch is set, and otherwise turns home as before. `policy_move` does the
+same before it gives up an outward jump. Both go through `policy_refine` and
+`refine_hold`, which the order uses too, so `engine::refining` is still the
+one place the arithmetic is. The report: `PolicyAction` `refine`, "refined 4
+deuterium from the hold into 42.5 fuel: a jump to [x,y] would leave 9 fuel
+against 12 needed to return home". The orders' own report names the switch
+when it is set. Web client: a row in the orders panel, `refine=on|off` in
+`policy`. Rules and README: the settings table and the Refining entry.
+`play.py` names it in a fleet's orders. The TUI was not touched.
+
+**Versions.** `SAVE_FORMAT` 5 to 6, `ECONOMY_VERSION` stays 7; the reasoning
+and what it costs are in `decisions.md`, with five other choices.
+
+**Tests.** One scenario in `sim/tests/fleet_logistics.rs`, four cases: with
+the switch off a prospector turns home with its deuterium aboard; with it on
+it refines once and pushes on; two hops out with 3 fuel it refines and goes
+on working; and with 0.4 deuterium, which is not enough, it refines and then
+turns home with the engine's usual reason. In the web client the demo flow
+sets the switch through the panel, reads the engine's report of it, and
+clears it by typing.
+
 ## 2026-10-13: the flutter test flake: a C program loses a callee-saved double on this kernel
 
 Read `CLAUDE.md` (the Flutter paragraph blames the A520s and tells the run to
@@ -6349,6 +6481,63 @@ another `memcpy` and nothing would reach the SVE trap. Neither a newer kernel
 nor that parameter was tried: both are changes to the machine and the
 owner's. Twenty runs of the suite after either would say whether the flake is
 this fault.
+
+## 2026-10-13: `refine` and the standing orders' switch, checked on the merged tree
+
+Master (`5dc7a37`: the web client is the interface, the TUI secondary, the
+flake study) was merged into the branch after the two commits; the journal
+and the decisions log conflicted, both sides having appended, and keep both.
+
+**What the first full run after the switch found.** Three places compare a
+fleet's orders with a literal of exactly five settings and so did not know
+the sixth: `server/tests/scenarios.rs` (which waited 90 seconds for orders
+that never matched and said "the boarding never started"),
+`solo/tests/single_player.rs`, and three literals in
+`clients/web/tool/solo_e2e.dart`. Each got `refine: false`. They are in a
+commit after the merge, so the commit of the switch alone fails those two
+tests; taking the switch means taking that commit with it.
+
+**Run on the merged tree, with those fixes.**
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 163 passed, 0 failed. Master
+  has 158; the five more are the four scenarios of the order and the one of
+  the switch. `fleet_logistics` 33, `hosts_agree` 2 in 45.13 s,
+  `both_targets` 3 in 106.91 s, server `scenarios` 9 in 66.46 s, `smoke` 9,
+  `single_player` 7, `golden_fixtures` 2, `chart_equivalence` 1. The run
+  before the fixes: 161 passed and the 2 named above failed.
+- `cargo clippy --workspace --all-targets`: silent.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 pass.
+- `flutter pub get --offline`, `flutter analyze`: no issues.
+- `flutter test`, three full runs in a shell pinned to CPUs 0, 1 and 6 to 11,
+  each under `timeout 300`. First: 485 passed. Second: 484 passed and 1
+  failed, `map_test.dart`'s route priced from the unrounded jump cost, on two
+  `RenderFlex` overflows in `lib/views/hud.dart`, one of 791 pixels and one
+  of 3,441; that file is not touched by this work, and `map_test.dart` alone
+  then passed, 15 of 15. Third: 485 passed. The brief gives master 480. Three of
+  the five more are this work's by name (two for the Refine button, one
+  fixture test); the other two were not traced, and the two new fixture
+  files, which the fixture tests read one by one, are the likely source. An
+  earlier full run, while
+  the switch's row still had a sentence under it, failed four: two of this
+  work's own (the settings literal, and the orders form no longer fitting a
+  900 pixel window, which is why the row has no sentence) and two in
+  `order_fit_test.dart` that passed in every run since.
+- `scripts/play.sh --single-player --no-serve`: built, 48M.
+- `dart run tool/solo_e2e.dart --port 8101`: `SOLO E2E OK in 191 s`.
+
+**How they were run.** As the entry of the first commit says: this shell
+refuses `nice`, `taskset` or `timeout -k` in front of a test command, so
+cargo ran with `-j 4` and no `nice`, and Flutter in a shell pinned with
+`taskset -cp` and lowered with `renice`, under a plain `timeout 300`.
+
+**Not verified.** No person or agent played, and `tools/playtest` was not
+run. The end-to-end run passed with the new field and the new row in the
+bundle, but it does not press Refine or set the switch: in a browser neither
+has been used. No world was played for days with the switch on, so what it
+does to a miner's deuterium income is reasoned and not measured. The TUI was
+built and not run.
 
 ## 2026-10-13: the headless client is a crate of its own
 
@@ -6471,146 +6660,44 @@ headless binary, among them).
 
 **Not verified.** `tools/playtest` was not run.
 
-## 2026-10-13: amounts are 64-bit (slice 0b of the OGame work)
+## 2026-10-13: `refine` after the clients were split
 
-`Resources` is three `f64`. `ECONOMY_VERSION` is 8 and `SAVE_FORMAT` is 6;
-nothing is migrated. No rule and no constant's figure changed. Branch
-`worktree-agent-a71db3f9c1a5ab67e`, not merged and not pushed.
+The coordinator's word, while the checks above ran: the headless client is
+its own crate and the TUI is to leave the tree. So the `d` key and the offer
+line written into the TUI's fleet panel with the first commit were taken out
+again by hand, and the README's sentence about them with them; `clients/tui`
+is byte for byte what master has, so its removal on master meets nothing of
+this branch. Master `6c22e2d` (the split) was then merged; the journal
+conflicted again and keeps both. The commit that takes the TUI out of the
+tree had not reached master when this was written.
 
-**Read.** `docs/design/ogame.md` 8.1, 8.4, 8.5 and 12; `shared/src/maths.rs`
-and the three `clippy.toml`; `constants.rs`, `scaling.rs`, `pace.rs` and
-`engine.rs` whole; `serde_json` 1.0.150's `de.rs`.
+**Run on this tree.** `cargo build --workspace --all-targets -j 4`, no
+warning; `cargo test --workspace --no-fail-fast -j 4`: 163 passed, 0 failed;
+`cargo clippy --workspace --all-targets` silent;
+`tools/check_sim_constants.py` agrees on 2,390 values; the play tool's own 36
+tests pass. The merge changed nothing under `clients/web`, `fixtures`,
+`shared`, `sim`, `solo` or `server/src`, so the three Flutter runs, the
+bundle and the browser run of the entry before the split were not repeated.
 
-**The line** is in `docs/design/decisions.md` ("amounts are 64-bit"). In
-short: an amount of a resource, ore in the ground, fuel and the tank, and
-every constant or curve that only scales one, are `f64`. Hull, shield,
-weapon, power, odds, score, chances and rolls stay `f32`.
-`scaling::resource_weight` is the one place an amount is narrowed, to
-points. No random draw changed type: a roll that scales loot is drawn as the
-`f32` it was and widened after.
+**Not verified.** As that entry lists. And the tree without the TUI: when
+master drops `clients/tui`, the workspace wants one more build and test run.
 
-**The stockpile and the tank.** `refuel_fleet` and `refuel_at_outpost` in
-`sim/src/engine.rs` are the only two places deuterium becomes fuel. Both
-sides and `FUEL_DEUT_PER_UNIT` are `f64`, so there is no conversion of width
-there. A jump's cost is where 32 bits enter: `fleet_fuel_cost` sums the
-hulls as `f32`, widens the sum with `f64::from` and multiplies by
-`FUEL_RATE_PER_MASS` and `fuel_rate_modifier`, both `f64`.
+## 2026-10-13: fuel from the hold is merged
 
-**What nobody asked for and the change needed: `float_roundtrip`.**
-`serde_json` without that feature reads a float as `digits as f64` divided
-by a power of ten, which is right for the nine digits an `f32` prints and
-wrong for a seventeen-digit `f64`. Measured in a scratch program: 200,843 of
-2,000,000 values between 0 and five million came back one unit in the last
-place away; with the feature, none. With the feature taken out of a scratch
-copy of this branch, `stored_world.rs`, the restart test of `bots.rs` and
-the new scenario fail. `shared/Cargo.toml` and `sim/Cargo.toml` turn it on.
-`Cargo.lock` does not change.
+Merged into master with `--no-ff` and pushed, both commits: the `refine` order
+and the standing order's switch. `SAVE_FORMAT` is 6 (stored orders hold one
+more setting); `ECONOMY_VERSION` stays 7. Added at the merge: `CLAUDE.md`
+(the branch's `claude-md.patch`: a Refining entry under Key Concepts and the
+switch in the Standing orders entry). The branch's edits to the TUI had been
+taken out by the branch itself, so the TUI's leaving merged without a word.
 
-**Changed.** `shared/src`: `constants.rs` (`Resources`, the fuel and raid
-shares, `ResourceKind::weight`), `scaling.rs` (caps, production, costs,
-fuel modifiers, ore, loot, the outpost's repair), `pace.rs` (`rate` and the
-three multipliers no longer narrow what they computed in 64 bits),
-`world.rs` (`ore_units`), `protocol.rs` (the amounts on the wire: order
-amounts, `ExchangeTerms` and `ExchangeMeter` with their fees, a fleet's
-hold, fuel, tank, `jump_fuel`, `home_fuel`, `outpost_fuel`, the three
-figures of `MovePreview`, `TileReserve`, `StorageNearCapEvent.ratio`).
-`sim/src`: `engine.rs`, `views.rs`, `queue.rs`, `bot/` (a bot's thresholds
-on amounts; its budgets in points are as they were), `headless.rs` and
-`sim-run` (the deuterium the report counts as refuel is an `f64`).
-`shared/tests/wire/mod.rs` learned `From<f64> for Cell`; the generator
-needed nothing else, and the only lines of `protocol.g.dart` that moved are
-`storageNearCapRatio = 0.85` (it was the float, 0.8500000238418579) and a
-comment. `clients/web/lib/protocol/protocol.dart`: `storageNearCap` is the
-server's division and no longer rounds to `f32`.
+**Run on the merged tree**, which is the first with both `refine` and no TUI.
+`cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`: 163 passed, 0 failed; `cargo clippy --workspace --all-targets`
+silent; `tools/check_sim_constants.py` agrees on 2,390 values; `flutter
+analyze` clean; `flutter test` under `timeout -k 20 300`, two runs: 485 passed
+each time; `scripts/play.sh --single-player --no-serve`; `tool/solo_e2e.dart`:
+`SOLO E2E OK in 196 s`.
 
-**One test added**, at the end of `sim/tests/scenarios_world.rs`: five
-million metal under level 10 mines at pace 1 grows in an hour by what the
-mines make to within 0.00001 (a tick adds 0.072, which an `f32` at five
-million cannot hold), and the document gives back 2950448.3359709606 to the
-bit, one of the values the default parser gets wrong.
-
-**The chart recording** changed on every line, because an ore figure is
-written as 42.9 and no longer as 42.900001525878906. So the two engines
-were played side by side from scratch copies, with what the test hashes
-written out for all 4,000 ticks, the events, and every player's whole state
-every 50 ticks.
-
-- Events: 3,747 of 4,000 ticks identical to the byte. The rest differ in the
-  last digits of floats (at most 5.9e-5 relative, a shortfall of 3,785
-  metal against a stockpile of 30,000) and in one sentence, fifteen times:
-  "about 226 ticks to one jump" is now 225, which is the right count at 25
-  percent of 300. The pilots had 2,283 orders accepted in both.
-- States, 320 of them: the economy version, `refills_in_s`, `full_in_s` and
-  `start_in` by one second, and `range_hops` twice, 51 where it was 50.
-  That fleet's tank was 4289.9995 in 32 bits and is 4290; the floor of
-  (fuel less the way home) over two jumps fell one short.
-- Chart: no float differs by more than 0.0001 relative and 0.001 absolute;
-  `refills_in_s` differs by one second; and six times a refilling tile
-  reaches its next level one tick apart, each at the exact boundary (3.0 of
-  42 units, 22.0, 3.993).
-
-**`numbers.json`.** 523 of 4,094 numbers moved, all under `tables`, by
-4.7e-7 relative at most: production an hour, storage caps, the ring's ore
-factor, wreck and derelict values, the exchange spans, the outpost's store
-caps and yields. Nothing under `game` moved. `check_sim_constants.py`
-agrees on 2,390 values.
-
-**The seven-day balance report** (`sim-run --pace season --days 7`), master
-against the branch. The three turtles and the idle player end on the same
-score to the tenth (1619.3, 1833.1, 2399.8, 0.8); raids are 388 repelled
-and 17 lost in both. Every player that flies ends elsewhere: the sum of
-scores is 38,631 and 38,394 (0.6 percent lower), one player 18 percent
-lower, one 8 percent higher. The two worlds part at tick 58 of 604,800: a
-mining fleet's harvest report closes after 5 ticks where it took 6, for
-the same ore to seven digits, the fleet turns for home a tick sooner, and
-every roll seeded by the tick differs from there. Under a second seed
-(20261013) the branch is 1.8 percent lower. For scale, master against
-itself under the two seeds differs by 0.7 percent in the sum and 6.2
-percent a style on average; the branch against master differs by 4.1 and
-4.4 percent a style. Two seeds do not show whether the lower sum is chance.
-
-**Faults the wider type showed, left as they fall.**
-
-- A hold, a tank or a tile that 32 bits left a hair short of a round figure
-  now reaches it: a harvest one tick shorter, a range one hop longer, a
-  wait one tick shorter in a sentence. Each is the figure the decimal
-  arithmetic gives.
-- `scaling::apply_research_to_stats` truncates a per-ship tank that nothing
-  reads (the tank is `fleet_fuel_max`). In 64 bits 100 x 1.15 truncates to
-  114 where 32 bits gave 115. Left: the field has no reader and slice 1
-  replaces the tank.
-
-**Run**, on the branch with master merged (the headless split and the TUI's
-removal included):
-
-- `cargo build --workspace --all-targets -j 4`: no warning.
-- `cargo test --workspace --no-fail-fast -j 4`: 159 passed, 0 failed (158
-  and the new scenario). `both_targets` 3 in 105 s, `hosts_agree` 2 in 45 s.
-  An earlier run had one failure, `smoke.rs`, which names the format number
-  in a literal; it reads 6 now.
-- `cargo clippy --workspace --all-targets`: silent.
-- `iac_solo.wasm`, release: 2,384,202 bytes on master, 2,434,909 on the
-  branch, 50,707 more (2.1 percent). Not split between the wider floats and
-  the exact parser.
-- `flutter analyze`: no issues. `flutter test`, pinned and with a 300 s
-  timeout, four runs: the first 479 passed and 1 failed, and the failure
-  was this branch's: the first commit gave the fixture's sample player 2.5
-  million metal, and the onboarding test builds a first login from that
-  player. The 64-bit sample now rides in `event_kind/raid_resolved.json`.
-  The three runs after: 480 passed each.
-- `scripts/play.sh --single-player --no-serve`, then `tool/solo_e2e.dart
-  --port 8102`: `SOLO E2E OK in 198 s`. Both were run before the last two
-  merges of master, which changed `server/tests/common/mod.rs`, docs and
-  the clients' crates and nothing the bundle is built from.
-
-**The TUI.** Three of its files were changed so that it compiled. Master
-then removed it; the merge takes master's side and the edits are dropped.
-
-**Not verified.** No person or agent played, and `tools/playtest` was not
-run. No browser beyond the headless end-to-end run. The tick that master
-spends at tick 58 on less than 0.00001 units of ore was inferred from the
-two harvest reports and not singled out. Whether the exact parser or the
-wider floats account for the 50 KB was not measured. Parsing speed was not
-measured (`serde_json` documents about twice the cost for floats); the
-tick timings of the end-to-end run are in its log and were not compared
-with master's.
+**Not verified.** No person or agent played; nothing presses Refine or sets
+the switch in a browser; no long run with the switch on.

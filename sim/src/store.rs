@@ -4,7 +4,7 @@
 // What: one document. A header line of JSON, a newline, then the world's
 // `Snapshot` as JSON:
 //
-//   {"format":6,"economy_version":8,"worldgen_version":3,"digest":<xxh3 of the body>,"host":{...}}
+//   {"format":7,"economy_version":8,"worldgen_version":3,"digest":<xxh3 of the body>,"host":{...}}
 //   {"world_seed":...,"meta":{...},"tick":...,"players":{...},...}
 //
 // The header names what wrote the document, so one from another format,
@@ -32,7 +32,7 @@ use crate::host::Stale;
 use crate::snapshot::Snapshot;
 
 /// Bumped when the header or what the snapshot must hold changes.
-pub const SAVE_FORMAT: u32 = 6;
+pub const SAVE_FORMAT: u32 = 7;
 
 #[derive(Debug, Deserialize)]
 struct Stamp {

@@ -590,6 +590,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           shieldFrac: shield,
           atHome: f.sector == st.homeworld,
           holding: st.holdOf(f),
+          onRefine: () => con.game.refineHold(f.id),
           footer: Wrap(spacing: 6, runSpacing: 6, children: [
             GuideTarget('orders', child: ConsoleButton(_orders ? 'Hide orders' : 'Orders', key: const ValueKey('orders-toggle'), small: true, keyHint: 'P', active: _orders, onPressed: _toggleOrders)),
             ConsoleButton(_manage ? 'Hide fleet' : 'Manage fleet', key: const ValueKey('manage-toggle'), small: true, active: _manage, onPressed: () => setState(() => _manage = !_manage)),

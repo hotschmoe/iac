@@ -66,7 +66,123 @@ stored world, an order and the cross-language fixtures depend on it.
 units a full tile holds are its density's reserve times the ring's factor,
 now multiplied in 64 bits, so they differ from before in the eighth digit;
 that is the economy's arithmetic, and `ECONOMY_VERSION` (8) and `SAVE_FORMAT`
-(6) refuse every older world as it is.
+(7) refuse every older world as it is.
+
+## 2026-10-13 (standing orders may refine: one switch, off by default)
+
+The study left this for afterwards ("standing orders can learn to refine when
+they run low"), and the owner asked for fleets that "fly longer" on what they
+mine and salvage. Built as its own commit on top of the `refine` order, so it
+can be left out. None of what follows is the owner's.
+
+1. **One switch on the orders, `PolicyParams.refine`, false unless set.** A
+   world in which nobody sets it plays as before, and the built-in bots do
+   not set it.
+   *To reverse:* revert the commit; or make it the default in
+   `PolicyParams::default`, which changes what every fleet under orders does.
+2. **It refines at the two places a doctrine gives up for fuel**, not only
+   the one the brief named: when fuel no longer covers the way home and the
+   reserve (`policy_return_reason`), and when the next jump outward would
+   leave too little for them (`policy_move`). The second is where a fleet
+   that still has its way home in the tank turns round, which is most of the
+   time; without it the switch would only ever save a fleet already short.
+   It does not refine to relieve a full hold.
+   *To reverse:* the one line in `policy_move` that calls `policy_refine`.
+3. **It refines all it can, once, and is weighed again.** The same amount as
+   the order: every unit of deuterium aboard, or a full tank. The report is a
+   `PolicyAction` with the action `refine` and both figures in front of the
+   shortage that caused it. At its next evaluation the fleet either flies on
+   or, with no deuterium left or a full tank that is still too small, turns
+   home as it would have.
+   So a fleet under this switch that runs short spends the deuterium it
+   carries on staying out and brings home what is left: stockpile deuterium
+   for time in the field, at 15 percent.
+   *To reverse:* an amount (only what the way home and the reserve lack) in
+   `policy_refine`.
+4. **Not charged to the fuel budget.** `fuel_budget_pct` bounds what a fleet
+   under orders takes from the stockpile at the dock. Deuterium in a hold
+   never was in the stockpile. A player who wants the budget to bound it too
+   has the switch off.
+   *To reverse:* charge `FleetPolicy::fuel_credit` in `policy_refine`.
+5. **`SAVE_FORMAT` 5 to 6; `ECONOMY_VERSION` stays 7.** The orders are
+   stored in the snapshot, and they hold one more field. The rule is that the
+   format moves when what a snapshot must hold changes and nothing is
+   migrated, and the precedent is `laden`, a field of the fleet, which moved
+   it from 2 to 3. **The cost, for the owner to weigh:** every stored world of
+   format 5 is refused, a server's file and a browser's save alike. A
+   document of format 5 would in fact read correctly, because serde gives the
+   missing field its default, which is off; keeping format 5 is the one
+   constant in `sim/src/store.rs` and the two tests that carry the number
+   (`server/tests/smoke.rs`, `solo/tests/single_player.rs`). The branch that
+   makes `Resources` 64-bit will move the format as well; one bump between
+   the two is enough.
+6. **The web client has the switch in the orders panel and as `refine=on` or
+   `refine=off` in the typed `policy`.** The panel has room for one row and
+   no sentence under it at 900 pixels of height, so the row's label says what
+   it does. The settings line above the form does not show it. The TUI was
+   left alone.
+
+## 2026-10-13 (fuel from the hold: what building `refine` had to settle)
+
+The owner's decision is item 10 of the entry below: by an order, not in a
+fight, at a loss of 15 percent. `REFINE_LOSS` is 0.15 in
+`shared/src/constants.rs`, provisional and his. Building it meant choosing the
+rest. None of these is the owner's; each says what he would change to reverse
+it.
+
+1. **Refused in two states and no others: in combat and while a jump
+   charges.** Those are the study's two. A fleet that is harvesting or
+   boarding a derelict refines and goes on with its work, and so does one
+   whose cooldown is running after a scan. The order takes no time, so a
+   cooldown, which says when a fleet takes its next act, has nothing of it to
+   time; and a miner that had to stop mining to refine would pay a tick of ore
+   for nothing.
+   *To reverse:* the first line of `engine::refining`, which names the two
+   states. `fleet_is_free` there would make it an order for idle fleets only.
+2. **No rule of its own at a dock.** At home the dock keeps the tank full, so
+   the order is refused there as it is anywhere with a full tank. A docked
+   fleet whose tank is not full (a dry stockpile, a breached outpost) may
+   refine what is in its hold, at the loss.
+   *To reverse:* a refusal by place in `GameEngine::refine_order`.
+3. **A fleet under standing orders takes the order by hand**, as it takes
+   every fleet order but `load`. What it refines is not charged to its fuel
+   budget: the budget is a share of the homeworld's deuterium income, and this
+   deuterium is in a hold.
+   *To reverse:* refuse it in `refine_order` as `load_at_dock` refuses, or
+   charge `FleetPolicy::fuel_credit` in `handle_refine`.
+4. **All of it or a full tank, with no amount.** The study's words. A player
+   who wants to keep deuterium for the stockpile cannot say how much.
+   *To reverse:* an optional `amount` on the command, as `load` has.
+5. **Nothing is rounded and nothing is slack.** A hold with any deuterium and
+   a tank with any room refine. A tank that is filled reads exactly its size,
+   and a hold that is emptied exactly zero.
+6. **The state says what the order would do** (`FleetState.refine`: the
+   deuterium and the fuel), and leaves it out when the order would be
+   refused. A client lights its control on that and prints the figure; it
+   does not multiply. The reason for a refusal is not in the state: the
+   control says the rule in general, and the refused order is answered with
+   the engine's sentence.
+   *To reverse:* nothing to reverse; a `refusal` sentence beside it is the
+   addition if a client should say which of the four it is.
+7. **The answer is an `Alert` (info)**, as for `load` and `unload`, not a new
+   kind of event.
+8. **`REFINE_LOSS` is not in `numbers.json`.** The planning simulation flies
+   no fleet on its hold. Two constants are handed to the web client
+   (`shared/tests/wire/mod.rs`): `REFINE_LOSS`, which its words quote, and
+   `FUEL_DEUT_PER_UNIT`, which only the scripted test world uses to keep to
+   the engine's rule.
+9. **The versions stand: `ECONOMY_VERSION` 7, `SAVE_FORMAT` 5.** No cost,
+   time, formula or payment moment moved, and a stored world plays on exactly
+   as it would have until somebody gives the new order. The snapshot holds
+   nothing new. The built-in bots do not refine.
+10. **Where the clients put it.** The web client: a Refine button under the
+    hold in the windshield's fleet status, always there and greyed without an
+    offer, and `refine` in the command bar. No key and no tile in the dock
+    row: it is offered where the hold and the tank are shown, and a tile
+    there was not tried against the phone layout. `tools/playtest/play.py`
+    prints the offer in the fleet row. The TUI has neither: a `d` key in its
+    fleet panel was written first and taken out again the same day, when the
+    owner retired the TUI.
 
 ## 2026-10-13 (the web client is the interface; the TUI is secondary)
 

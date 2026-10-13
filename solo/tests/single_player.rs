@@ -182,7 +182,7 @@ fn a_reload_plays_the_unsaved_ticks_again_and_arrives_at_the_same_world() {
         flown["policy"],
         json!({
             "preset": "patrol_home",
-            "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 2, "engage_ratio_x10": 100, "fuel_budget_pct": 50},
+            "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 2, "engage_ratio_x10": 100, "fuel_budget_pct": 50, "refine": false},
         }),
         "the console that opens the save reads the orders and every setting in force: {flown}",
     );
@@ -521,16 +521,16 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let (_, reply) = load(T0, other_generator.as_bytes());
     assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 3"), "{reply}");
 
-    assert_eq!(SAVE_FORMAT, 6);
-    let before_one_document = text.replacen("\"format\":6", "\"format\":4", 1);
-    let (_, reply) = load(T0, before_one_document.as_bytes());
+    assert_eq!(SAVE_FORMAT, 7);
+    let before_amounts_were_64_bit = text.replacen("\"format\":7", "\"format\":6", 1);
+    let (_, reply) = load(T0, before_amounts_were_64_bit.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert_eq!(reply["refused"], "this save is format 4, this build reads format 6; start a new game");
+    assert_eq!(reply["refused"], "this save is format 6, this build reads format 7; start a new game");
 
-    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":7", 1);
+    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":8", 1);
     let (_, reply) = load(T0, other_format.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 7, this build reads format {SAVE_FORMAT}")), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 8, this build reads format {SAVE_FORMAT}")), "{reply}");
 
     let (_, reply) = load(T0, &document[..document.len() - 40]);
     assert_eq!(reply["refused"], "this save cannot be read: its contents do not match its checksum");

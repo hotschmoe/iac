@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{
     Density, ResourceKind, Resources, ShipClass, ShipStats, Zone, EXCHANGE_FEE_MAX, EXCHANGE_FEE_MIN,
-    EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS, OUTPOST_BUILD_RATE, OUTPOST_COST, OUTPOST_GROWTH,
+    EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS, FUEL_DEUT_PER_UNIT, OUTPOST_BUILD_RATE, OUTPOST_COST, OUTPOST_GROWTH,
     OUTPOST_PLATFORM_POWER, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR,
+    REFINE_LOSS,
 };
 use crate::maths;
 use crate::pace::Pace;
@@ -652,6 +653,12 @@ pub fn fuel_capacity_modifier(tanks_level: u8) -> f64 {
 
 pub fn fuel_depot_modifier(depot_level: u8) -> f64 {
     1.0 + 0.25 * f64::from(depot_level)
+}
+
+/// Fuel one unit of deuterium becomes when a fleet refines it from its hold:
+/// the home dock's rate less `REFINE_LOSS`.
+pub fn refined_fuel_per_deuterium() -> f64 {
+    (1.0 - REFINE_LOSS) / FUEL_DEUT_PER_UNIT
 }
 
 pub fn sensor_range(sensor_level: u8) -> u8 {

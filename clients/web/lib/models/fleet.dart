@@ -1,5 +1,5 @@
 import '../protocol/hex.dart';
-import '../protocol/protocol.dart' as proto show StandingOrders;
+import '../protocol/protocol.dart' as proto show Refining, StandingOrders;
 
 enum FleetStatus {
   docked('DOCKED'),
@@ -106,6 +106,10 @@ class FleetState {
   /// Exact hold size as the server enforces it ([cargo] is rounded for display).
   final double holdCapacity;
 
+  /// What a refine order would turn into what right now; null while the
+  /// server would refuse it.
+  final proto.Refining? refine;
+
   const FleetState({
     required this.id,
     required this.name,
@@ -133,6 +137,7 @@ class FleetState {
     this.laden = false,
     this.cargoBlocked = false,
     this.holdCapacity = 0,
+    this.refine,
   });
 
   /// The doctrine's label, as the server names it; null when flown by hand.

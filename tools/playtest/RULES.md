@@ -110,6 +110,7 @@ can pick up where you left off if your session is restarted.
 | `exchange_quote` | same as `exchange` | do not trade: reply `exchange_quote` with `amount`, `receive`, `par`, `fee`, `meter` and `meter_after`, exactly what `exchange` with the same fields would do (`./play do` prints it as one `quote ...` line). It answers from anywhere and for an amount the fleet does not carry; `refusal` is then the sentence the trade would be refused with right now |
 | `load` | `fleet_id`, `resource` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | move `amount` of `resource` from your stockpile into the fleet's hold; without `amount`, all the stockpile holds and the hold has room for. One resource an order. The fleet must stand idle at your homeworld with no standing orders. It is then `laden`: the dock leaves its hold alone until the fleet has been away (see Loading a hold). The answer is an `Alert` (info) saying what went aboard. Refused with nothing moved and a sentence saying what is short: `NoResources` when the stockpile holds less than `amount` or none, `CargoFull` when the hold lacks the room, `NotInSector` away from home, `OnCooldown` in transit or busy, `InvalidCommand` for an amount that is not positive or a fleet under standing orders. At your outpost `load` takes from the outpost's store instead and does not make the fleet `laden`; see Outposts |
 | `unload` | `fleet_id` | put a `laden` hold back: what the caps allow goes into the stockpile now and the dock takes the rest as room opens. The answer is an `Alert` (info). Refused with `InvalidCommand` when the fleet was not loaded by `load`, `NotInSector` away from home. At your outpost `unload` puts the whole hold of any fleet into the outpost's store as far as it has room (`NoResources` for an empty hold); see Outposts |
+| `refine` | `fleet_id` | turn the deuterium in the fleet's hold into fuel, until the tank is full or the deuterium is gone. It works anywhere, takes no time, and loses 15%: a unit of deuterium is 12.5 fuel at a dock and 10.625 from the hold (see Refining). The fleet row's `refine` (`deuterium`, `fuel`) says beforehand what the order would turn into what, and is absent when it would be refused. The answer is an `Alert` (info) with both figures. Refused with nothing changed and a sentence saying why: `OnCooldown` in combat or while a jump charges, `NoResources` with no deuterium aboard, `InvalidCommand` with a full tank |
 | `found_outpost` | `fleet_id` | found your outpost in the sector the fleet stands in, paying 1000 metal, 500 crystal and 200 deuterium from its hold. The fleet must stand idle with no standing orders; the sector must be in rings 9 to 20, not an Anomaly, without a derelict, without a group in it (win the sector first), and at least 3 hexes from every other outpost; you may have one outpost. The answer is an `Alert` (info) with the tick it will be finished. Refused with nothing changed and a sentence saying why: `InvalidTarget` for a sector that does not qualify, `InvalidCommand` if you already have an outpost or the fleet is under standing orders, `NoResources` naming what the hold lacks, `OnCooldown` for a fleet that is moving, fighting or busy |
 | `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, the `cost` and `build_ticks` of level 1, `raid_power` (`least` and `most`: the weakest and the strongest raid that ring sends), `platform_power`, `site` (`densities`, `grade`, `production` a tick at level 1, `hops_home`) and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector may be asked about. One you have never seen is answered without `site` and with a `refusal` that says it is not on your chart (or that its ring is outside 9 to 20): what follows from the ring is told, what is there is not. For a sector the fleet does not stand in, a `refusal` that only says the fleet is elsewhere means the site itself qualifies |
 | `upgrade_outpost` | none | build the next level of your outpost, paid in full from the outpost's own store at that moment. The answer is an `Alert` (info). Refused with `InsufficientResources` and the exact shortfall when the store does not cover it, `MaxLevelReached` at level 3, `InvalidCommand` with no outpost, while it is building or repairing, or while it is breached. `outpost.upgrade_refusal` in your state is that refusal's sentence beforehand, absent when the order would be accepted |
@@ -125,7 +126,7 @@ Standing orders are a separate message type (not a command):
 `params` is optional, and so is every field in it: send only what you want to
 change (`"params":{"max_range":2}`) and the rest take their defaults. A fleet
 under orders carries them in its row: `fleets[].policy` is
-`{"preset": ..., "params": {...}}` with all five settings as the server holds
+`{"preset": ..., "params": {...}}` with all six settings as the server holds
 them (after clamping), in `full_state` and in every `tick_update`. A fleet you
 fly by hand has no `policy` field.
 
@@ -136,6 +137,7 @@ fly by hand has no `policy` field.
 | `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting, salvage runs and patrols (1-30); never measured from the last claim |
 | `engage_ratio_x10` | 15 | fight only if the fleet's odds `ratio` against the hostiles is at least this/10 (1-100); also exactly the least ratio at which any doctrine will enter a sector, hostiles there or not. It is the same number `preview_move` and `odds` show. The default is FAVOURABLE. A value below EVEN (1.1) that you set deliberately is honoured |
 | `fuel_budget_pct` | 20 | the share of your deuterium income, in percent, that this fleet may spend on fuel while it flies under these orders (0-100; 100 lifts the bound). See "Fuel budget" |
+| `refine` | false | `true`: before the fleet would turn home for fuel it refines the deuterium in its hold, as a `refine` order does and at the same 15% loss, reports it as a `PolicyAction` `refine` with both figures and the shortage, and is weighed again; it turns home only if that was not enough. Not charged to the fuel budget |
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
@@ -381,7 +383,8 @@ What every doctrine does:
   away from home with less than one jump of fuel is stranded: its emergency
   reserve slowly recovers exactly one jump (about 5 minutes from empty,
   announced at each quarter), enough to hop toward home, then the wait starts
-  over. `merge` with a fresh fleet from home pools fuel and also rescues it.
+  over. `merge` with a fresh fleet from home pools fuel and also rescues it,
+  and so does `refine` when there is deuterium in its hold (see Refining).
   `recall` costs 2x the jump fuel per hex, all or nothing; ships that break
   up in it leave their share of the cargo where the fleet jumped from.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
@@ -526,6 +529,25 @@ What every doctrine does:
     home with the stockpile (see Raids). Loading moves no score.
   - The trip: `load` the resource that is at its cap, fly to 0,0, `exchange`,
     fly home; the dock unloads what you bought.
+- **Refining** — `refine` turns the deuterium in a fleet's hold into fuel, on
+  the spot and at once, until the tank is full or the deuterium is gone. A
+  dock makes 12.5 fuel of a unit of deuterium (0.08 a fuel unit); the hold
+  makes 15% less, 10.625.
+  - Any deuterium aboard counts: mined, salvaged, bought at the exchange or
+    loaded at a dock. A Hauler loaded with deuterium at home is a tanker for
+    the fleet it flies in.
+  - The fleet row's `refine` (`deuterium`, `fuel`) is what the order would
+    do right now. It is absent when the order would be refused: in combat,
+    while a jump charges, with no deuterium aboard, or with a full tank. A
+    harvest or a boarding goes on beside it.
+  - A dock fills the tank at the full rate, and a full tank refuses the
+    order, so refining is for the field: a fleet that mines or salvages
+    deuterium stays out on it, and one too dry to get home flies back.
+  - Standing orders refine only when told to (`refine: true` in the
+    `policy_update` params, off by default): then a fleet that would turn
+    home for fuel refines what deuterium its hold has first and flies on if
+    that was enough. The order is also taken by hand for a fleet under
+    orders. Neither is charged to its fuel budget.
 - **Outposts** — one station per empire, on a sector of rings 9 to 20, the
   space where PvP will be allowed. It is built from what you carry to it.
   `load` the founding cost at home, fly it out, clear the sector if a pack
