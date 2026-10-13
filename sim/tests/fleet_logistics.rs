@@ -408,7 +408,7 @@ fn docked_with_half_a_tank(budget: u8, deuterium: impl Fn(f64) -> f64) -> (Empir
     edit(&mut e.engine, |s| {
         let player = s.players.get_mut(&pid).unwrap();
         player.buildings.deuterium_synthesizer = 2;
-        let cap = iac_shared::scaling::storage_cap(player.buildings.storage_vault, &pace).deuterium;
+        let cap = iac_shared::scaling::storage_cap(&player.buildings, &pace).deuterium;
         player.resources.deuterium = deuterium(cap);
         s.fleets.get_mut(&fid).unwrap().fuel = tank / 2.0;
     });
@@ -544,7 +544,7 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     let mut e = Empire::join(world("test"), "Mauled");
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    let at = lone_scout_sector(&e.engine, NpcBehaviorType::Passive);
+    let at = lone_fighter_sector(&e.engine, NpcBehaviorType::Passive);
     deploy(&mut e.engine, fid, at, None);
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
@@ -656,7 +656,7 @@ fn same(a: Resources, b: Resources) -> bool {
 /// full, and each ship with the hull given.
 fn laden_and_outgunned(e: &mut Empire, hulls: [f32; 2]) -> (Hex, f64, Resources) {
     let fid = e.fid;
-    let at = lone_scout_sector(&e.engine, NpcBehaviorType::Passive);
+    let at = lone_fighter_sector(&e.engine, NpcBehaviorType::Passive);
     deploy(&mut e.engine, fid, at, None);
     let hold = e.fleet().cargo_capacity;
     let cargo = Resources { metal: hold * 0.5, crystal: hold * 0.25, deuterium: hold * 0.15 };
@@ -745,7 +745,7 @@ fn a_recall_that_breaks_ships_leaves_their_share_of_the_cargo_where_it_jumped_fr
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
     let far = Hex { q: home.q + 25, r: home.r };
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 20)], far);
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 20)], far);
     let hold = e.fleet().cargo_capacity;
     let cargo = Resources { metal: hold * 0.5, crystal: hold * 0.25, deuterium: hold * 0.25 };
     e.set_stockpile(Resources::default());
@@ -798,15 +798,15 @@ fn a_jump_called_off_tells_its_owner_what_fuel_is_forfeit_and_a_halted_harvest_i
 
     let tank = fuel_of(&e, fid);
     e.order(Command::Move { fleet_id: fid, target: out }).expect("a jump out");
-    assert_eq!(tank - fuel_of(&e, fid), 6.0, "two scouts burn 6 fuel a jump, paid when it is ordered");
+    assert_eq!(tank - fuel_of(&e, fid), 40.0, "two Light Fighters burn 20 fuel each a jump, paid when it is ordered");
     let mark = e.mark();
     e.order(Command::Stop { fleet_id: fid }).expect("stop calls a charging jump off");
     let told = alerts_since(&e, mark);
     assert_eq!(told.len(), 1, "{told:?}");
-    assert_eq!(told[0].message, format!("fleet {fid} called off its jump to {out}: the 6 fuel it burned for the jump is forfeit"));
+    assert_eq!(told[0].message, format!("fleet {fid} called off its jump to {out}: the 40 fuel it burned for the jump is forfeit"));
     assert!(matches!(told[0].level, AlertLevel::Warning) && told[0].fleet_id == Some(fid) && told[0].sector == Some(home), "{:?}", told[0]);
     let halted = &e.engine.fleets[&fid];
-    assert_eq!((halted.state, halted.location, halted.fuel), (FleetStatus::Idle, home, tank - 6.0), "the fuel is gone, as the event says");
+    assert_eq!((halted.state, halted.location, halted.fuel), (FleetStatus::Idle, home, tank - 40.0), "the fuel is gone, as the event says");
 
     edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().state = FleetStatus::Harvesting);
     let mark = e.mark();
@@ -903,7 +903,7 @@ fn a_fight_that_catches_a_boarding_tells_its_owner_and_frees_the_fleet() {
     let (from, timer, move_tick) = approach.expect("a neighbor whose one patrol step lands on the derelict before the boarding pays");
 
     let npc_id = 900_000;
-    let scout = ShipClass::Scout.base_stats();
+    let scout = ShipClass::LightFighter.base_stats();
     edit(&mut e.engine, |s| {
         for npc in s.npc_fleets.values_mut() {
             npc.patrol_timer = 1_000;
@@ -911,13 +911,12 @@ fn a_fight_that_catches_a_boarding_tells_its_owner_and_frees_the_fleet() {
         let mut ships = [Ship::default(); MAX_NPC_SHIPS];
         ships[0] = Ship {
             id: npc_id,
-            ship_class: ShipClass::Scout,
+            ship_class: ShipClass::LightFighter,
             hull: scout.hull,
             hull_max: scout.hull,
             shield: scout.shield,
             shield_max: scout.shield,
             weapon_power: scout.weapon,
-            speed: scout.speed,
         };
         s.npc_fleets.insert(npc_id, NpcFleet {
             id: npc_id,
@@ -986,9 +985,11 @@ fn a_recall_tells_its_owner_what_the_jump_cost_in_fuel_in_hull_and_in_a_jump_aba
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
     let far = Hex { q: home.q + 25, r: home.r };
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 20)], far);
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 20)], far);
     let fuel = e.engine.recall_fuel_cost(&e.engine.fleets[&fid]);
-    assert_eq!(fuel, 3000.0, "twenty scouts, 60 fuel a hex, 25 hexes, doubled");
+    let burn = f64::from(ShipClass::LightFighter.base_stats().fuel);
+    assert_eq!(fuel, 20.0 * burn * 25.0 * 2.0, "twenty Light Fighters at OGame's fuel figure each, 25 hexes, doubled");
+    assert_eq!(fuel, 20_000.0);
 
     let mark = e.mark();
     e.order(Command::Recall { fleet_id: fid }).expect("recall");
@@ -1001,7 +1002,7 @@ fn a_recall_tells_its_owner_what_the_jump_cost_in_fuel_in_hull_and_in_a_jump_aba
     assert_eq!(
         told[0].message,
         format!(
-            "fleet {fid} made the emergency jump home from {far} for 3000 fuel: {} of its 20 ships took {:.0} hull damage, which is not repaired",
+            "fleet {fid} made the emergency jump home from {far} for 20000 fuel: {} of its 20 ships took {:.0} hull damage, which is not repaired",
             hurt.len(),
             hurt.iter().sum::<f32>(),
         ),
@@ -1012,7 +1013,7 @@ fn a_recall_tells_its_owner_what_the_jump_cost_in_fuel_in_hull_and_in_a_jump_aba
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
     let chain = outward_chain(&e.engine, home, 2);
-    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.emergency_jump = 10);
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.hyperspace_technology = 10);
     e.travel(chain[0]);
     e.run_until(200, |e| e.engine.fleets[&fid].action_cooldown == 0);
     e.order(Command::Move { fleet_id: fid, target: chain[1] }).expect("a jump further out");
@@ -1023,7 +1024,7 @@ fn a_recall_tells_its_owner_what_the_jump_cost_in_fuel_in_hull_and_in_a_jump_aba
     assert_eq!(
         told[0].message,
         format!(
-            "fleet {fid} made the emergency jump home from {} for 12 fuel, abandoning the jump to {} it had burned 6 fuel for: no ship was damaged",
+            "fleet {fid} made the emergency jump home from {} for 80 fuel, abandoning the jump to {} it had burned 40 fuel for: no ship was damaged",
             chain[0], chain[1],
         ),
     );
@@ -1049,7 +1050,7 @@ fn a_harvest_that_ends_by_itself_says_why_once_and_a_fleet_under_orders_leaves_i
     let mut e = Empire::join(world("test"), "Miner");
     let fid = e.fid;
     let at = seam(&e);
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 2)], at);
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 2)], at);
     let hold = e.fleet().cargo_capacity;
     edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().cargo.crystal = hold - 1.0);
     let mark = e.mark();
@@ -1066,14 +1067,14 @@ fn a_harvest_that_ends_by_itself_says_why_once_and_a_fleet_under_orders_leaves_i
 
     let mut e = Empire::join(world("test"), "Stripper");
     let fid = e.fid;
-    muster(&mut e.engine, fid, &[(ShipClass::Hauler, 40)], at);
+    muster(&mut e.engine, fid, &[(ShipClass::Recycler, 40)], at);
     let hold = e.fleet().cargo_capacity;
     let mark = e.mark();
     e.order(Command::Harvest { fleet_id: fid, resource: HarvestResource::Metal }).expect("harvest");
     e.run_until(4000, |e| e.engine.fleets[&fid].state != FleetStatus::Harvesting);
     e.run(30);
     let aboard = e.fleet().cargo.total();
-    assert!(aboard > 0.0 && aboard < hold, "forty Haulers strip the metal with room to spare: {aboard} of {hold}");
+    assert!(aboard > 0.0 && aboard < hold, "forty Recyclers strip the metal with room to spare: {aboard} of {hold}");
     assert_eq!(
         stopped(&e, mark),
         [format!("fleet {fid} stopped mining at {at}: no metal is left to mine there; it carries {aboard:.0} of {hold:.0}")],
@@ -1081,7 +1082,7 @@ fn a_harvest_that_ends_by_itself_says_why_once_and_a_fleet_under_orders_leaves_i
 
     let mut e = Empire::join(world("test"), "Ordered");
     let (pid, fid) = (e.pid, e.fid);
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 2)], at);
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 2)], at);
     let hold = e.fleet().cargo_capacity;
     edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().cargo.crystal = hold - 1.0);
     e.order(Command::Harvest { fleet_id: fid, resource: HarvestResource::Metal }).expect("harvest");
@@ -1110,11 +1111,15 @@ fn shields(e: &Empire) -> f32 {
 fn a_ship_from_the_yard_or_a_fleet_merged_in_leaves_the_docked_fleet_fit_for_its_orders() {
     let mut e = Empire::join(world("test"), "Yardmaster");
     let (pid, fid) = (e.pid, e.fid);
-    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.shipyard = 1);
-    e.set_stockpile(Resources { metal: 400.0, crystal: 100.0, deuterium: 60.0 });
-    e.order(Command::BuildShip { ship_class: ShipClass::Scout, count: 1 }).expect("a scout ordered");
+    edit(&mut e.engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        player.buildings.shipyard = 1;
+        player.research.combustion_drive = 1;
+    });
+    e.set_stockpile(ShipClass::LightFighter.build_cost());
+    e.order(Command::BuildShip { ship_class: ShipClass::LightFighter, count: 1 }).expect("a fighter ordered");
     e.run_until(400, |e| e.fleet().ships.len() == 3);
-    assert_eq!(shields(&e), 1.0, "the scout the yard delivers joins the docked fleet with its shields up: {:?}", e.fleet().ships);
+    assert_eq!(shields(&e), 1.0, "the ship the yard delivers joins the docked fleet with its shields up: {:?}", e.fleet().ships);
 
     let newest = e.fleet().ships[2].id;
     e.order(Command::Split { fleet_id: fid, ship_ids: vec![newest] }).expect("split it off");
@@ -1140,11 +1145,14 @@ fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_do
         .expect("a world whose first home has a convoy standing over it");
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 3)], home);
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 3)], home);
     assert_eq!(shields(&e), 1.0);
 
     let mark = e.mark();
-    let params = PolicyParams { max_range: 1, engage_ratio_x10: 100, ..PolicyParams::default() };
+    // Three Light Fighters rate about 1.75 against the one over a home: a
+    // sure win in which the convoy fires once, and OGame's shields are a
+    // fifth of its weapons.
+    let params = PolicyParams { max_range: 1, engage_ratio_x10: 15, ..PolicyParams::default() };
     e.engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, Some(params)).expect("patrol orders");
     e.run_until(10, |e| !reports(e, mark).is_empty());
     assert_eq!(reports(&e, mark), [("attack".to_string(), "engaging hostiles".to_string())], "its first act under orders is the fight");
@@ -1156,7 +1164,7 @@ fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_do
         })
     };
     e.run_until(300, |e| !ended(e).is_empty());
-    assert_eq!(ended(&e), [(home, true)], "three scouts beat the convoy, in the home sector");
+    assert_eq!(ended(&e), [(home, true)], "three fighters beat the convoy, in the home sector");
     let worn = shields(&e);
     assert!(worn < 0.95, "and the convoy shot back: shields at {:.0}%", worn * 100.0);
 
@@ -1172,17 +1180,38 @@ fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_do
 
 #[test]
 fn a_jump_takes_the_ticks_the_fleet_reports() {
-    let scouts: &[(ShipClass, usize)] = &[(ShipClass::Scout, 2)];
-    let with_a_frigate: &[(ShipClass, usize)] = &[(ShipClass::Scout, 1), (ShipClass::Frigate, 1)];
-    for (classes, navigation, ticks) in [(scouts, 0, 2), (with_a_frigate, 0, 3), (with_a_frigate, 1, 2), (scouts, 1, 1)] {
+    use ShipClass as S;
+    let fighters: &[(ShipClass, usize)] = &[(S::LightFighter, 2)];
+    let with_a_heavy: &[(ShipClass, usize)] = &[(S::LightFighter, 1), (S::HeavyFighter, 1)];
+    // The drives as (Combustion, Impulse, Hyperspace). A fleet jumps at the
+    // speed of its slowest ship: max(1, ceil(sqrt(50,000 / speed))) ticks.
+    let cases: [(&[(ShipClass, usize)], (u8, u8, u8), u16); 13] = [
+        (fighters, (0, 0, 0), 2),
+        (fighters, (9, 0, 0), 2),
+        (with_a_heavy, (0, 0, 0), 3),
+        (with_a_heavy, (0, 2, 0), 2),
+        (&[(S::EspionageProbe, 2)], (0, 0, 0), 1),
+        (&[(S::SmallCargo, 1)], (0, 0, 0), 4),
+        (&[(S::SmallCargo, 1)], (2, 0, 0), 3),
+        (&[(S::SmallCargo, 1)], (2, 5, 0), 2),
+        (&[(S::Recycler, 1), (S::Cruiser, 3)], (6, 4, 0), 4),
+        (&[(S::Cruiser, 3)], (0, 4, 0), 2),
+        (&[(S::Battleship, 1)], (0, 0, 4), 2),
+        (&[(S::Bomber, 1)], (0, 6, 8), 2),
+        (&[(S::Deathstar, 1)], (0, 0, 7), 13),
+    ];
+    for (classes, drives, ticks) in cases {
         let mut e = Empire::join(world("test"), "Jumper");
         let (pid, fid) = (e.pid, e.fid);
         let home = e.engine.players[&pid].homeworld;
         let chain = outward_chain(&e.engine, home, 3);
         sweep(&mut e.engine, &chain);
         muster(&mut e.engine, fid, classes, home);
-        edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.navigation = navigation);
-        assert_eq!(e.fleet().jump_ticks, ticks, "{classes:?} with Navigation {navigation}");
+        edit(&mut e.engine, |s| {
+            let research = &mut s.players.get_mut(&pid).unwrap().research;
+            (research.combustion_drive, research.impulse_drive, research.hyperspace_drive) = drives;
+        });
+        assert_eq!(e.fleet().jump_ticks, ticks, "{classes:?} with drives {drives:?}");
 
         for &hop in &chain {
             assert_eq!(e.order(Command::Move { fleet_id: fid, target: hop }), Ok(()), "it takes the next order the tick it lands");
@@ -1190,9 +1219,9 @@ fn a_jump_takes_the_ticks_the_fleet_reports() {
             while e.fleet().location != hop {
                 e.run(1);
                 flown += 1;
-                assert!(flown <= ticks, "{classes:?} with Navigation {navigation}: not at {hop} after {flown} ticks");
+                assert!(flown <= ticks, "{classes:?} with drives {drives:?}: not at {hop} after {flown} ticks");
             }
-            assert_eq!(flown, ticks, "{classes:?} with Navigation {navigation}");
+            assert_eq!(flown, ticks, "{classes:?} with drives {drives:?}");
         }
     }
 }
@@ -1219,14 +1248,18 @@ fn a_fleet_too_dry_to_fly_home_refines_the_deuterium_in_its_hold_at_a_loss_and_f
     let (mut e, chain) = outpost("Refiner", 2);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    adrift(&mut e, chain[1], 3.0, 4.0);
+    adrift(&mut e, chain[1], 20.0, 16.0);
 
     let before = e.fleet();
-    assert_eq!((before.jump_fuel, before.home_fuel, before.fuel_max), (6.0, 12.0, 120.0));
+    assert_eq!(
+        (before.jump_fuel, before.home_fuel, before.fuel_max),
+        (40.0, 80.0, 400.0),
+        "two Light Fighters: 20 fuel each a jump, and a tank of ten jumps"
+    );
     assert_eq!(e.order(Command::Move { fleet_id: fid, target: chain[0] }), Err(ErrorCode::InsufficientFuel));
     let offer = before.refine.expect("the state says what refining would do");
-    assert_eq!(offer.deuterium, 4.0, "all the deuterium aboard: the tank has room for what it makes");
-    assert!((offer.fuel - 42.5).abs() < 1e-3, "{offer:?}");
+    assert_eq!(offer.deuterium, 16.0, "all the deuterium aboard: the tank has room for what it makes");
+    assert!((offer.fuel - 170.0).abs() < 1e-3, "{offer:?}");
     let at_the_dock = offer.deuterium / FUEL_DEUT_PER_UNIT;
     assert!((offer.fuel / at_the_dock - (1.0 - REFINE_LOSS)).abs() < 1e-5, "the dock's 50 less the loss");
 
@@ -1234,10 +1267,10 @@ fn a_fleet_too_dry_to_fly_home_refines_the_deuterium_in_its_hold_at_a_loss_and_f
     e.order(Command::Refine { fleet_id: fid }).expect("refine");
     assert_eq!(
         refined(&e, mark),
-        format!("fleet {fid} refined 4 deuterium into 42.5 fuel: the tank stands at 45.5 of 120, and the hold has no deuterium left"),
+        format!("fleet {fid} refined 16 deuterium into 170 fuel: the tank stands at 190 of 400, and the hold has no deuterium left"),
     );
     let after = e.fleet();
-    assert_eq!(after.fuel, 3.0 + offer.fuel, "what the state offered is what the order did");
+    assert_eq!(after.fuel, 20.0 + offer.fuel, "what the state offered is what the order did");
     assert_eq!((after.cargo.deuterium, after.cargo.metal), (0.0, 7.0), "only the deuterium is touched");
     assert_eq!(after.refine, None);
     assert_eq!(
@@ -1255,7 +1288,7 @@ fn a_fleet_too_dry_to_fly_home_refines_the_deuterium_in_its_hold_at_a_loss_and_f
 fn refining_stops_when_the_tank_is_full_and_keeps_the_rest_of_the_deuterium() {
     let (mut e, chain) = outpost("Topped", 2);
     let fid = e.fid;
-    adrift(&mut e, chain[1], 120.0 - 8.5, 10.0);
+    adrift(&mut e, chain[1], 400.0 - 8.5, 10.0);
 
     let offer = e.fleet().refine.expect("the state says what refining would do");
     assert!((offer.deuterium - 0.8).abs() < 1e-4 && offer.fuel == 8.5, "only what the tank has room for: {offer:?}");
@@ -1263,7 +1296,7 @@ fn refining_stops_when_the_tank_is_full_and_keeps_the_rest_of_the_deuterium() {
     e.order(Command::Refine { fleet_id: fid }).expect("refine");
     assert_eq!(
         refined(&e, mark),
-        format!("fleet {fid} refined 0.8 deuterium into 8.5 fuel: the tank stands at 120 of 120, and 9.2 deuterium is left in the hold"),
+        format!("fleet {fid} refined 0.8 deuterium into 8.5 fuel: the tank stands at 400 of 400, and 9.2 deuterium is left in the hold"),
     );
     let after = e.fleet();
     assert_eq!(after.fuel, after.fuel_max, "the tank is full to the unit");
@@ -1271,7 +1304,7 @@ fn refining_stops_when_the_tank_is_full_and_keeps_the_rest_of_the_deuterium() {
     assert_eq!(after.refine, None);
     assert_eq!(
         e.refusal(Command::Refine { fleet_id: fid }),
-        (ErrorCode::InvalidCommand, format!("the tank of fleet {fid} is full (120 of 120 fuel); refining would add nothing")),
+        (ErrorCode::InvalidCommand, format!("the tank of fleet {fid} is full (400 of 400 fuel); refining would add nothing")),
     );
     assert_eq!(e.fleet().cargo, after.cargo, "a refused order changes nothing");
 }
@@ -1284,19 +1317,19 @@ fn deuterium_loaded_at_the_dock_is_refined_like_any_other_once_the_tank_has_room
     let out = outward_chain(&e.engine, home, 2)[1];
     e.set_stockpile(Resources { deuterium: 50.0, ..Resources::default() });
 
-    e.order(Command::Load { fleet_id: fid, resource: ResourceKind::Deuterium, amount: Some(2.0) }).expect("load");
+    e.order(Command::Load { fleet_id: fid, resource: ResourceKind::Deuterium, amount: Some(5.0) }).expect("load");
     assert_eq!(
         e.refusal(Command::Refine { fleet_id: fid }),
-        (ErrorCode::InvalidCommand, format!("the tank of fleet {fid} is full (120 of 120 fuel); refining would add nothing")),
+        (ErrorCode::InvalidCommand, format!("the tank of fleet {fid} is full (400 of 400 fuel); refining would add nothing")),
         "the dock keeps the tank full, so there is nothing to refine for at home",
     );
 
     e.travel(out);
-    assert_eq!((fuel_of(&e, fid), e.fleet().cargo.deuterium), (114.0, 2.0));
+    assert_eq!((fuel_of(&e, fid), e.fleet().cargo.deuterium), (360.0, 5.0));
     e.order(Command::Refine { fleet_id: fid }).expect("refine");
     let after = e.fleet();
-    assert_eq!(after.fuel, 120.0, "the jump the dock did not pay for is made good from the hold");
-    assert!((after.cargo.deuterium - (2.0 - 6.0 / 10.625)).abs() < 1e-4, "{:?}", after.cargo);
+    assert_eq!(after.fuel, 400.0, "the jump the dock did not pay for is made good from the hold");
+    assert!((after.cargo.deuterium - (5.0 - 40.0 / 10.625)).abs() < 1e-4, "{:?}", after.cargo);
 }
 
 /// A prospector `hops` out with `fuel` in its tank and `deuterium` in its
@@ -1319,16 +1352,16 @@ fn dry_prospector(hops: usize, fuel: f64, deuterium: f64, refine: bool) -> (Empi
 
 #[test]
 fn a_doctrine_told_to_refine_does_so_before_it_would_turn_home_for_fuel_and_turns_home_only_if_that_was_not_enough() {
-    let (mut e, mark) = dry_prospector(1, 15.0, 4.0, false);
+    let (mut e, mark) = dry_prospector(1, 100.0, 16.0, false);
     let fid = e.fid;
     assert!(!policy_reasons(&e, mark, "engage")[0].contains("refining"), "the switch is off unless set");
     e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
     let moves = policy_reasons(&e, mark, "move");
     assert!(moves[0].starts_with("returning: a jump to"), "without the switch it turns home: {moves:?}");
     assert!(policy_reasons(&e, mark, "refine").is_empty());
-    assert_eq!(e.engine.fleets[&fid].cargo.deuterium, 4.0, "with its deuterium for the stockpile");
+    assert_eq!(e.engine.fleets[&fid].cargo.deuterium, 16.0, "with its deuterium for the stockpile");
 
-    let (mut e, mark) = dry_prospector(1, 15.0, 4.0, true);
+    let (mut e, mark) = dry_prospector(1, 100.0, 16.0, true);
     assert!(
         policy_reasons(&e, mark, "engage")[0].ends_with("fuel budget 20% of deuterium income, refining from the hold when short of fuel)"),
         "{:?}", policy_reasons(&e, mark, "engage"),
@@ -1337,30 +1370,30 @@ fn a_doctrine_told_to_refine_does_so_before_it_would_turn_home_for_fuel_and_turn
     let refined = policy_reasons(&e, mark, "refine");
     assert_eq!(refined.len(), 1, "{refined:?}");
     assert!(
-        refined[0].starts_with("refined 4 deuterium from the hold into 42.5 fuel: a jump to ")
-            && refined[0].ends_with(" would leave 9 fuel against 12 needed to return home"),
+        refined[0].starts_with("refined 16 deuterium from the hold into 170 fuel: a jump to ")
+            && refined[0].ends_with(" would leave 60 fuel against 80 needed to return home"),
         "{refined:?}",
     );
     assert_eq!(policy_reasons(&e, mark, "move")[0], "pushing frontier", "and then flies on");
     assert_eq!(e.engine.fleets[&fid].cargo.deuterium, 0.0);
 
-    let (mut e, mark) = dry_prospector(2, 3.0, 4.0, true);
+    let (mut e, mark) = dry_prospector(2, 20.0, 16.0, true);
     e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
     assert_eq!(
         policy_reasons(&e, mark, "refine"),
-        ["refined 4 deuterium from the hold into 42.5 fuel: fuel 3 is below the route home 12 plus reserve 0"],
+        ["refined 16 deuterium from the hold into 170 fuel: fuel 20 is below the route home 80 plus reserve 0"],
     );
     assert!(!policy_reasons(&e, mark, "move")[0].starts_with("returning"), "{:?}", policy_reasons(&e, mark, "move"));
 
-    let (mut e, mark) = dry_prospector(2, 3.0, 0.4, true);
+    let (mut e, mark) = dry_prospector(2, 20.0, 2.0, true);
     e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
     assert_eq!(
         policy_reasons(&e, mark, "refine"),
-        ["refined 0.4 deuterium from the hold into 4.3 fuel: fuel 3 is below the route home 12 plus reserve 0"],
+        ["refined 2 deuterium from the hold into 21.3 fuel: fuel 20 is below the route home 80 plus reserve 0"],
     );
     assert_eq!(
         policy_reasons(&e, mark, "move")[0],
-        "returning: fuel 7 is below the route home 12 plus reserve 0",
+        "returning: fuel 41 is below the route home 80 plus reserve 0",
         "what it refined was not enough, so it turns home",
     );
 }
@@ -1383,7 +1416,7 @@ fn refining_is_refused_in_a_fight_and_while_a_jump_charges_and_goes_on_beside_a_
     );
     assert!(e.engine.execute(rival, Command::Refine { fleet_id: fid }).error.is_some());
 
-    adrift(&mut e, chain[1], 30.0, 1.0);
+    adrift(&mut e, chain[1], 60.0, 1.0);
     e.order(Command::Move { fleet_id: fid, target: chain[0] }).expect("a jump toward home");
     assert_eq!(e.fleet().refine, None, "nothing is offered while the jump charges");
     assert_eq!(
@@ -1393,9 +1426,9 @@ fn refining_is_refused_in_a_fight_and_while_a_jump_charges_and_goes_on_beside_a_
     e.run_until(50, idle);
     e.order(Command::Refine { fleet_id: fid }).expect("arrived, it refines");
 
-    let lair = lone_scout_sector(&e.engine, NpcBehaviorType::Passive);
+    let lair = lone_fighter_sector(&e.engine, NpcBehaviorType::Passive);
     deploy(&mut e.engine, fid, lair, Some(5000.0));
-    adrift(&mut e, lair, 30.0, 1.0);
+    adrift(&mut e, lair, 60.0, 1.0);
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(lair) }).expect("attack");
     assert_eq!(e.engine.fleets[&fid].state, FleetStatus::InCombat);
     assert_eq!(e.fleet().refine, None, "nothing is offered in a fight");
@@ -1403,17 +1436,17 @@ fn refining_is_refused_in_a_fight_and_while_a_jump_charges_and_goes_on_beside_a_
         e.refusal(Command::Refine { fleet_id: fid }),
         (ErrorCode::OnCooldown, format!("fleet {fid} is in combat; nothing is refined in a fight")),
     );
-    assert_eq!((fuel_of(&e, fid), e.engine.fleets[&fid].cargo.deuterium), (30.0, 1.0));
+    assert_eq!((fuel_of(&e, fid), e.engine.fleets[&fid].cargo.deuterium), (60.0, 1.0));
     e.run_until(20, idle);
     e.order(Command::Refine { fleet_id: fid }).expect("the fight over, it refines");
 
     let seam = find_sector(&e.engine, 3, |metal, _, _| metal != Density::None);
     sweep(&mut e.engine, &[seam]);
-    adrift(&mut e, seam, 30.0, 1.0);
+    adrift(&mut e, seam, 60.0, 1.0);
     e.order(Command::Harvest { fleet_id: fid, resource: HarvestResource::Auto }).expect("harvest");
     e.order(Command::Refine { fleet_id: fid }).expect("a harvesting fleet refines");
     assert_eq!(e.engine.fleets[&fid].state, FleetStatus::Harvesting, "and the harvest goes on");
-    assert!(fuel_of(&e, fid) > 40.0);
+    assert!(fuel_of(&e, fid) > 70.0);
 
     let site = (-30i16..30)
         .flat_map(|q| (-30i16..30).map(move |r| Hex { q, r }))
@@ -1421,7 +1454,7 @@ fn refining_is_refused_in_a_fight_and_while_a_jump_charges_and_goes_on_beside_a_
         .expect("a derelict with no hostile group over it");
     e.order(Command::Stop { fleet_id: fid }).expect("stop the harvest");
     e.run_until(10, idle);
-    adrift(&mut e, site, 30.0, 1.0);
+    adrift(&mut e, site, 60.0, 1.0);
     e.order(Command::ExploreSite { fleet_id: fid }).expect("a boarding party goes in");
     let timer = e.engine.fleets[&fid].action_cooldown;
     e.order(Command::Refine { fleet_id: fid }).expect("a boarding fleet refines");
