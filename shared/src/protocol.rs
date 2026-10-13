@@ -981,6 +981,11 @@ pub struct FleetState {
     /// distance.
     #[serde(default)]
     pub home_fuel: f32,
+    /// Fewest hops home over the real lanes, charted or not. `home_fuel` is
+    /// the fuel for these. 0 at the homeworld. Counted from where the fleet
+    /// is bound: its destination while a jump is in progress, otherwise
+    /// where it stands. An emergency recall does not fly these hops.
+    pub hops_home: u32,
     /// Ticks one jump takes this fleet from the order to the arrival: the
     /// charge, which its slowest ship and Navigation set, and the tick it
     /// lands on. A route of `n` jumps flown without a pause takes

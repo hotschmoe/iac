@@ -162,6 +162,7 @@ class DemoWorld {
         fuel: 96,
         fuelMax: 120,
         jumpTicks: _jumpTicks(v),
+        hopsHome: 0,
       )),
       _norm(FleetState(
         id: 102,
@@ -173,6 +174,7 @@ class DemoWorld {
         fuel: 200,
         fuelMax: 200,
         jumpTicks: _jumpTicks(haulers),
+        hopsHome: 0,
       )),
       _norm(FleetState(
         id: 103,
@@ -184,6 +186,7 @@ class DemoWorld {
         fuel: 44,
         fuelMax: 60,
         jumpTicks: _jumpTicks(scouts),
+        hopsHome: 0,
         policy: const StandingOrders(preset: PolicyPreset.prospect, params: PolicyParams(maxRange: 6, engageRatioX10: 20, fuelBudgetPct: 35)),
       )),
     ];
@@ -1623,7 +1626,10 @@ class DemoWorld {
 
   static int _jumpTicks(List<ShipState> ships) => 10 ~/ ships.fold<int>(10, (m, s) => min(m, _speed[s.shipClass]!)) + 1;
 
-  FleetState _norm(FleetState f) => FleetState(
+  FleetState _norm(FleetState f) {
+    final jump = _jump(f.ships);
+    final homeHops = _pathHome(f.location)?.length ?? Hex.distance(f.location, _home);
+    return FleetState(
         id: f.id,
         location: f.location,
         state: f.state,
@@ -1632,8 +1638,9 @@ class DemoWorld {
         cargoCapacity: f.cargoCapacity,
         fuel: f.fuel,
         fuelMax: f.fuelMax,
-        jumpFuel: _jump(f.ships).toDouble(),
-        homeFuel: f.location == _home ? 0 : (Hex.distance(f.location, _home) * _jump(f.ships)).toDouble(),
+        jumpFuel: jump.toDouble(),
+        homeFuel: (homeHops * jump).toDouble(),
+        hopsHome: homeHops,
         jumpTicks: _jumpTicks(f.ships),
         atOutpost: _outpost?.at == f.location,
         outpostFuel: _inService ? (Hex.distance(f.location, _outpost!.at) * _jump(f.ships)).toDouble() : null,
@@ -1644,6 +1651,7 @@ class DemoWorld {
         laden: f.laden,
         policy: f.policy,
       );
+  }
 
   FleetState _copy(
     FleetState f, {
@@ -1668,6 +1676,7 @@ class DemoWorld {
         fuelMax: f.fuelMax,
         jumpFuel: f.jumpFuel,
         homeFuel: f.homeFuel,
+        hopsHome: f.hopsHome,
         jumpTicks: _jumpTicks(ships ?? f.ships),
         cooldownRemaining: cooldown ?? f.cooldownRemaining,
         power: f.power,
@@ -2572,6 +2581,7 @@ class DemoWorld {
                 fuel: e.fuel * (1 - share),
                 fuelMax: e.fuelMax * (1 - share),
                 jumpTicks: _jumpTicks(rest),
+                hopsHome: e.hopsHome,
                 policy: e.policy,
               )
             else
@@ -2586,6 +2596,7 @@ class DemoWorld {
             fuel: f.fuel * share,
             fuelMax: f.fuelMax * share,
             jumpTicks: _jumpTicks(taken),
+            hopsHome: f.hopsHome,
           ),
         ];
         _pending.add(GameEvent(
@@ -2620,6 +2631,7 @@ class DemoWorld {
                 fuel: a.fuel + b.fuel,
                 fuelMax: a.fuelMax + b.fuelMax,
                 jumpTicks: _jumpTicks([...a.ships, ...b.ships]),
+                hopsHome: a.hopsHome,
                 policy: a.policy,
               )
             else if (e.id != otherFleetId)

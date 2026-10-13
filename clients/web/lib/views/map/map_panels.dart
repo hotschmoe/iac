@@ -35,7 +35,7 @@ class FleetChips extends StatelessWidget {
   }
 
   Widget _chip(int i, ui.FleetState f, bool on) {
-    final hops = f.jumpFuel > 0 ? f.fuel ~/ f.jumpFuel : 0;
+    final hops = f.fuelForHops ?? 0;
     final col = on ? C.own : C.a200;
     return GestureDetector(
       key: Key('fleet-chip-${f.id}'),

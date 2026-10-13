@@ -3757,7 +3757,7 @@ impl GameEngine {
 
     /// `home_route(owner, from).direct`, from the lane distances the world
     /// generator remembers: views and autopilots ask this every tick.
-    fn direct_hops_home(&self, owner: u64, from: Hex) -> u32 {
+    pub(crate) fn direct_hops_home(&self, owner: u64, from: Hex) -> u32 {
         let Some(home) = self.players.get(&owner).map(|p| p.homeworld) else { return 0; };
         self.lane_hops(from, home)
     }

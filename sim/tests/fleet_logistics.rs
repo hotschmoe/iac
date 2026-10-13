@@ -196,15 +196,43 @@ fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
     assert!(route.direct >= 2, "the lane home is more than one hop: {}", route.direct);
     let hop = e.fleet().jump_fuel;
     let need = hop * route.direct as f32;
+    assert_eq!(e.fleet().hops_home, route.direct, "hops_home counts the lanes home_fuel is priced from");
     assert_eq!(e.fleet().home_fuel, need, "home_fuel is those lanes, chart or none");
     let straight = f32::from(Hex::distance(&at, &home));
+    let bent = (-12..12)
+        .flat_map(|q| (-12..12).map(move |r| Hex::new(q, r)))
+        .find(|hex| *hex != home && e.engine.home_route(pid, *hex).direct != Hex::distance(hex, &home) as u32)
+        .expect("a sector whose lane home is not the straight line");
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = bent;
+        fleet.state = FleetStatus::Idle;
+        fleet.move_target = None;
+    });
+    let bent_route = e.engine.home_route(pid, bent);
+    assert_eq!(e.fleet().hops_home, bent_route.direct);
+    assert_ne!(e.fleet().hops_home, Hex::distance(&bent, &home) as u32, "not the straight line, at {bent}");
+    assert_eq!(e.fleet().home_fuel, hop * bent_route.direct as f32);
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = home;
+        fleet.state = FleetStatus::Docked;
+        fleet.move_target = None;
+    });
+    assert_eq!((e.fleet().hops_home, e.fleet().home_fuel), (0, 0.0), "at the homeworld both are zero");
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = at;
+        fleet.state = FleetStatus::Idle;
+        fleet.move_target = None;
+        fleet.fuel = need;
+    });
     assert_eq!(
         e.engine.recall_fuel_cost(&e.engine.fleets[&fid]),
         hop * straight * RECALL_FUEL_MULTIPLIER,
         "a recall burns twice the jump fuel per hex of straight distance, and then jumps",
     );
 
-    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().fuel = need);
     e.engine
         .handle_policy_update(pid, fid, PolicyPreset::MineAndReturn, Some(PolicyParams {
             min_fuel_pct: 0,
@@ -241,7 +269,10 @@ fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
         "{moves:?}",
     );
     let step = e.engine.fleets[&fid].move_target.expect("the jump is ordered");
-    assert!(e.engine.home_route(pid, step).direct < route.direct, "the jump is along the lanes toward home, to {step}");
+    let step_hops = e.engine.home_route(pid, step).direct;
+    assert!(step_hops < route.direct, "the jump is along the lanes toward home, to {step}");
+    assert_eq!(e.fleet().hops_home, step_hops, "while the jump is in progress the count is from where it is bound");
+    assert_eq!(e.fleet().home_fuel, hop * step_hops as f32);
 }
 
 #[test]
@@ -527,6 +558,7 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     assert_eq!(whole.ships.len(), 2);
     assert_eq!(whole.fuel, whole.fuel_max, "it set out with a full tank");
     let hops_home = whole.home_fuel / whole.jump_fuel;
+    assert!((whole.hops_home as f32 - hops_home).abs() < 1e-3, "hops_home is that count");
 
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
     e.run_until(200, |e| e.engine.fleets[&fid].ship_count == 1);
@@ -544,6 +576,7 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     assert!(mauled.fuel <= mauled.fuel_max, "{} fuel in a {} tank", mauled.fuel, mauled.fuel_max);
     assert!((mauled.jump_fuel - whole.jump_fuel / 2.0).abs() < 1e-3, "a jump costs what the ships present weigh");
     assert!((mauled.home_fuel / mauled.jump_fuel - hops_home).abs() < 1e-3, "the way home is as many jumps as before");
+    assert_eq!(mauled.hops_home, whole.hops_home, "losing a ship does not change how many hops home are");
     let reach = ((mauled.fuel - mauled.home_fuel) / (2.0 * mauled.jump_fuel)).floor().max(0.0) as u32;
     assert_eq!(mauled.range_hops, reach);
 

@@ -311,12 +311,12 @@ class _FleetCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final home = proto.Hex.distance(f.sector, con.state.homeworld);
-    final hops = f.jumpFuel > 0 ? f.fuel ~/ f.jumpFuel : null;
+    final home = f.hopsHome;
+    final hops = f.fuelForHops;
     final low = f.homeFuel > 0 && f.fuel < f.homeFuel * 1.3;
     final status = f.status;
     final chipCol = status == ui.FleetStatus.docked ? C.own : C.text2;
-    final recallWhy = home == 0 ? 'Already at the homeworld' : null;
+    final recallWhy = f.sector == con.state.homeworld ? 'Already at the homeworld' : null;
     final ships = <proto.ShipClass>[];
     for (final g in f.ships) {
       final c = _cls(g.shipClass);

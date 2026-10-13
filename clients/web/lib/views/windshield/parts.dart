@@ -175,7 +175,7 @@ class _FleetRailState extends State<FleetRail> {
 
   Widget _card(int i, ui.FleetState f) {
     final on = i == ctrl.activeFleet;
-    final hops = f.jumpFuel > 0 ? f.fuel ~/ f.jumpFuel : f.fuel;
+    final hops = f.fuelForHops ?? f.fuel;
     final pol = f.policy == null || f.policy == 'manual' ? 'manual' : f.policy!;
     return Hover(
       builder: (hv) => GestureDetector(
@@ -260,7 +260,7 @@ class StatusPanel extends StatelessWidget {
       hm += g.hullMax;
     }
     final hullFrac = hm > 0 ? hull / hm : 0.0;
-    final hops = f.jumpFuel > 0 ? f.fuel ~/ f.jumpFuel : f.fuel;
+    final hops = f.fuelForHops ?? f.fuel;
     final need = f.homeFuel;
     final low = need > 0 && f.fuel < need * 1.2;
     // The engine's `handle_scan` picks the range the same way: a Scout aboard extends it.

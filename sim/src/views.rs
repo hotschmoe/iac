@@ -153,6 +153,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
 
         let jump_fuel = engine.hop_fuel_cost(fleet);
         let bound_for = fleet.move_target.unwrap_or(fleet.location);
+        let hops_home = engine.direct_hops_home(fleet.owner_id, bound_for);
         let home_fuel = engine.route_home_cost(fleet, bound_for);
         list.push(FleetState {
             id: fleet.id,
@@ -165,6 +166,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             fuel_max: fleet.fuel_max,
             jump_fuel,
             home_fuel,
+            hops_home,
             jump_ticks: engine.hop_ticks(fleet),
             cooldown_remaining: fleet.action_cooldown,
             power: crate::engine::fleet_power(fleet),

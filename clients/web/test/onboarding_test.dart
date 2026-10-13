@@ -51,6 +51,7 @@ Map<String, dynamic> _fleet({Map<String, int> at = _home, String state = 'Docked
     ..['state'] = state
     ..['cooldown_remaining'] = 0
     ..['home_fuel'] = at == _home ? 0.0 : 31.5
+    ..['hops_home'] = at == _home ? 0 : 1
     ..remove('policy');
   if (policy != null) {
     f['policy'] = {
