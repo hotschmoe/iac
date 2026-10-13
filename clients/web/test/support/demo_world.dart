@@ -1,7 +1,115 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
+import 'package:iac_client/console/intel.dart' show trimmed;
 import 'package:iac_client/protocol/protocol.dart';
+
+import '../fixtures_util.dart';
+
+/// The engine's numbers as the scripted world reads them, from the two
+/// files Rust renders and the tests of Rust keep current: the catalogue of
+/// an empire at each level (`fixtures/protocol/catalog_by_level.json`) and
+/// the economy's numbers (`docs/design/economy/numbers.json`). Both hold a
+/// world at the pace of the season preset, which is the scripted world's.
+/// Nothing of the game's is typed in this file: a number it needs is read
+/// here, or is a column or a constant of the generated wire types.
+class _Book {
+  _Book._(this.byLevel, Map<String, dynamic> numbers)
+      : _game = numbers['game'] as Map<String, dynamic>,
+        _tables = numbers['tables'] as Map<String, dynamic>;
+
+  static final _Book it = () {
+    final root = fixturesDir();
+    final numbers = jsonDecode(File('${root.parent.path}/docs/design/economy/numbers.json').readAsStringSync()) as Map<String, dynamic>;
+    final levels = jsonDecode(File('${root.path}/protocol/catalog_by_level.json').readAsStringSync()) as List<dynamic>;
+    return _Book._([for (final c in levels) HomeworldCatalog.fromJson(c)], numbers);
+  }();
+
+  static const preset = 'season';
+
+  /// The catalogue of an empire whose every building and research stands
+  /// at the index's level, without a Nanite Factory.
+  final List<HomeworldCatalog> byLevel;
+  final Map<String, dynamic> _game;
+  final Map<String, dynamic> _tables;
+
+  double constant(String name) => ((_game['constants'] as Map<String, dynamic>)[name] as num).toDouble();
+
+  List<double> constants(String name) => [for (final v in (_game['constants'] as Map<String, dynamic>)[name] as List<dynamic>) (v as num).toDouble()];
+
+  late final double pace = ((_game['presets'] as Map<String, dynamic>)[preset] as num).toDouble();
+
+  late final int satelliteEnergy = _game['satellite_energy'] as int;
+
+  static Resources _amounts(dynamic triple) {
+    final v = [for (final x in triple as List<dynamic>) (x as num).toDouble()];
+    return Resources(metal: v[0], crystal: v[1], deuterium: v[2]);
+  }
+
+  Map<String, dynamic> _row(String table, bool Function(Map<String, dynamic>) where) =>
+      (_tables[table] as List<dynamic>).cast<Map<String, dynamic>>().firstWhere(where);
+
+  Map<String, dynamic> _ring(int ring) => _row('rings', (r) => r['ring'] == max(1, ring));
+
+  /// What stands guard a ring out, and what it is rated.
+  double npcPower(int ring) => (_ring(ring)['npc_power'] as num).toDouble();
+  int ringRating(int ring) => _ring(ring)['threat_rating'] as int;
+  int npcCount(int ring) => _ring(ring)['count'] as int;
+  double oreRingMult(int ring) => (_ring(ring)['ring_mult'] as num).toDouble();
+  double outpostRaidPower(int ring) => (_ring(ring)['outpost_raid_power'] as num).toDouble();
+  double derelictValue(int ring) => (_ring(ring)['derelict_value'] as num).toDouble();
+  int derelictTier(int ring) => _ring(ring)['derelict_tier'] as int;
+
+  Map<String, dynamic> _ringRule(int ring) => (_game['rings'] as List<dynamic>).cast<Map<String, dynamic>>().firstWhere((r) => r['ring'] == max(1, ring));
+
+  ShipClass npcClass(int ring) => ShipClass.fromJson(_ringRule(ring)['npc_class']);
+
+  /// The chance that a sector of [ring] holds a group, and the share of
+  /// those that are passive, both 0 to 1.
+  double npcPresence(int ring) => (_ringRule(ring)['npc_presence_pct'] as num).toDouble() / 100;
+  double npcPassiveShare(int ring) => (_ringRule(ring)['npc_passive_share'] as num).toDouble();
+
+  Map<String, dynamic> _density(Density d) => (_game['densities'] as Map<String, dynamic>)[d.wire] as Map<String, dynamic>;
+
+  /// Units a full tile of [d] holds before its ring's growth, and what a
+  /// harvest of it is multiplied by; nothing for no ore.
+  double reserveUnits(Density d) => d == Density.none ? 0 : (_density(d)['reserve_units'] as num).toDouble();
+  double harvestMultiplier(Density d) => d == Density.none ? 0 : (_density(d)['harvest_multiplier'] as num).toDouble();
+
+  Map<String, dynamic> _outpost(int level) => _row('outpost_levels', (r) => r['level'] == level && r['pace'] == pace);
+
+  Resources outpostCost(int level) => _amounts(_outpost(level)['cost']);
+  Resources outpostStoreCap(int level) => _amounts(_outpost(level)['store_cap']);
+  int outpostTicks(int level) => _outpost(level)['ticks'] as int;
+  int outpostRepairTicks(int level) => _outpost(level)['repair_ticks'] as int;
+  double outpostRepairPrice(int level) => (_outpost(level)['repair_price'] as num).toDouble();
+  double outpostPlatform(int level) => (_outpost(level)['platform'] as num).toDouble().abs();
+
+  /// What the extractor of an outpost of [level] makes of a seam of [d] a
+  /// tick, [ring] rings out. The table is an hour's yield at pace 1, and a
+  /// rate goes with the pace.
+  double outpostYield(Density d, int ring, int level) {
+    if (d == Density.none || level == 0) return 0;
+    final row = _row('outpost_yields', (r) => r['ring'] == ring.clamp(outpostMinRing, outpostMaxRing) && r['level'] == level && r['pace'] == 1);
+    return ((row['per_hour'] as List<dynamic>)[d.index - 1] as num).toDouble() * pace / 3600;
+  }
+
+  /// Which class fires again at what, as `WorldInfo.rapid_fire` lists it.
+  late final List<RapidFire> rapidFire = [
+    for (final c in ShipClass.values)
+      for (final e in (((_game['ships'] as Map<String, dynamic>)[c.wire] as Map<String, dynamic>)['rapid_fire'] as Map<String, dynamic>).entries)
+        RapidFire(shipClass: c, against: ShipyardItem.fromJson(e.key), shots: e.value as int),
+  ];
+
+  /// The exchange's window at this pace, in ticks.
+  late final int exchangeWindow = _row('exchange_spans', (r) => r['pace'] == pace)['window'] as int;
+
+  /// The power of a raid on a homeworld the script calls for: the rows of
+  /// the raid law the planning simulation reads, weakest first.
+  late final List<double> raidPowers = [for (final r in (_tables['raid_power'] as List<dynamic>)) ((r as Map<String, dynamic>)['power'] as num).toDouble()];
+}
 
 /// A hostile ship while a fight is running.
 class _NpcShip {
@@ -50,33 +158,48 @@ class _Outpost {
 /// single-player build, on the real engine. It produces the protocol's own
 /// messages (full_state, tick_update, error, game events) and simulates
 /// move, scan, harvest, recall, stop, queues, policies (as labels), NPC
-/// fights, salvage, derelict boarding and a raid cycle, and the economy
-/// rework (storage caps, build slots, pending queues, defences, raids). Its
-/// numbers follow the economy formulas at pace 1, with a time-lapse on
-/// production and build times so things move. It has one outpost to found:
-/// the survey with the engine's refusals, the store with load and unload,
-/// the levels, abandoning, and a raid a test announces ([raidOutpost]),
-/// which breaches it when lost and is repaired from the store. Its levels
-/// take seconds, and a raid there takes from the store only, not the holds.
+/// fights, salvage, derelict boarding and a raid cycle, the homeworld's
+/// energy, its three stockpiles with their caps, build slots, pending
+/// queues, defences, Solar Satellites and raids.
+///
+/// It is a world at the season preset's pace, and its numbers are the
+/// engine's ([_Book]). Every row of its catalogue is the engine's for that
+/// item at its level, in an empire whose other levels all stand there too:
+/// a building's or a research's row is taken at its own level, a ship's and
+/// a defence's at the Shipyard's, and its requirements are judged against
+/// the levels this empire has. A build or research time is that row's,
+/// carried from the speed the row was worked out with to the speed this
+/// empire's factory or lab gives. It has no Nanite Factory.
+///
+/// It has one outpost to found: the survey with the engine's refusals, the
+/// store with load and unload, the levels, abandoning, and a raid a test
+/// announces ([raidOutpost]), which breaches it when lost and is repaired
+/// from the store. Its levels take seconds, not the hours of the engine's,
+/// and a raid there takes from the store only, not the holds. A fight is
+/// played a ship at a time on the classes' base figures, and a harvest
+/// takes no ore out of the ground.
 ///
 /// Layout (home H=(4,-2); fleet 101 starts at S0=(6,-4)):
-///   N (6,-5) T3 corvette patrol    NE (7,-5) nebula, derelict tier 1
+///   N (6,-5) T3 fighter patrol     NE (7,-5) nebula, derelict tier 1
 ///   SE (7,-4) debris, salvage      SW (5,-3) toward home
 ///   NW (5,-4) T5 aggressive (uncharted until scanned)
-///   (7,-3) passive scout           (8,-6) T3 scout patrol, hot derelict
+///   (7,-3) passive fighter         (8,-6) T3 fighter patrol, hot derelict
 ///   (9,-7) T7 swarm (stale chart)
 class DemoWorld {
   static const _playerId = 1;
   static const _home = Hex(4, -2);
   static const _s0 = Hex(6, -4);
   static const _hubRadius = 24;
-  static const _pace = 1.0;
-
-  /// Demo-only time-lapse on mine output and build times.
-  static const _lapse = 30.0;
+  static final _book = _Book.it;
   static const _raidPeriod = 300;
-  static const _raidEstimate = 120.0;
-  static const _gridPowerPerLevel = 20.0;
+
+  /// What the scripted raid on the homeworld is announced at: a row of the
+  /// raid law well under what the empire's defences hold.
+  static double get _raidEstimate => _book.raidPowers[2];
+
+  /// Scripted only: an outpost's levels and repairs go this many times
+  /// faster than the engine's, so a test sees one finished.
+  static const _outpostHaste = 270;
 
   final void Function(List<ServerMessage>) _emit;
   final Random _rng = Random(7);
@@ -113,117 +236,69 @@ class DemoWorld {
   final Set<ResourceKind> _fullAlerted = {};
   _Outpost? _outpost;
 
-  late Resources _resources = const Resources(metal: 7340, crystal: 6900, deuterium: 880);
+  late Resources _resources = const Resources(metal: 73400, crystal: 69000, deuterium: 8800);
   late List<FleetState> _fleets;
   late HomeworldState _hw;
-
-  // ── Ship tables (shared/src/constants.rs base stats) ──────────
-
-  static const _stats = {
-    ShipClass.scout: (30.0, 10.0, 5.0, 20.0, 2),
-    ShipClass.corvette: (50.0, 20.0, 15.0, 10.0, 4),
-    ShipClass.frigate: (120.0, 60.0, 30.0, 30.0, 5),
-    ShipClass.cruiser: (200.0, 100.0, 80.0, 50.0, 7),
-    ShipClass.hauler: (80.0, 20.0, 5.0, 200.0, 5),
-  };
-  static const _power = {
-    ShipClass.scout: 9.0,
-    ShipClass.corvette: 22.0,
-    ShipClass.frigate: 48.0,
-    ShipClass.cruiser: 110.0,
-    ShipClass.hauler: 15.0,
-  };
-  static const _speed = {
-    ShipClass.scout: 10,
-    ShipClass.corvette: 8,
-    ShipClass.frigate: 5,
-    ShipClass.cruiser: 4,
-    ShipClass.hauler: 6,
-  };
+  int _satellites = _startingSatellites;
 
   DemoWorld(this._emit) {
-    final v = [
-      _ship(1011, ShipClass.corvette),
-      _ship(1012, ShipClass.corvette),
-      _ship(1013, ShipClass.corvette),
-      _ship(1014, ShipClass.scout),
-      _ship(1015, ShipClass.hauler),
-    ];
-    final haulers = [_ship(1021, ShipClass.hauler), _ship(1022, ShipClass.hauler)];
-    final scouts = [_ship(1031, ShipClass.scout), _ship(1032, ShipClass.scout)];
-    _fleets = [
-      _norm(FleetState(
-        id: 101,
-        location: _s0,
-        state: FleetStatus.idle,
-        ships: v,
-        cargo: const Resources(metal: 34, crystal: 12),
-        cargoCapacity: 250,
-        fuel: 96,
-        fuelMax: 120,
-        jumpTicks: _jumpTicks(v),
-        hopsHome: 0,
-      )),
-      _norm(FleetState(
-        id: 102,
-        location: _home,
-        state: FleetStatus.docked,
-        ships: haulers,
-        cargo: const Resources(),
-        cargoCapacity: 400,
-        fuel: 200,
-        fuelMax: 200,
-        jumpTicks: _jumpTicks(haulers),
-        hopsHome: 0,
-      )),
-      _norm(FleetState(
-        id: 103,
-        location: const Hex(3, -1),
-        state: FleetStatus.harvesting,
-        ships: scouts,
-        cargo: const Resources(metal: 19, crystal: 6),
-        cargoCapacity: 40,
-        fuel: 44,
-        fuelMax: 60,
-        jumpTicks: _jumpTicks(scouts),
-        hopsHome: 0,
-        policy: const StandingOrders(preset: PolicyPreset.prospect, params: PolicyParams(maxRange: 6, engageRatioX10: 20, fuelBudgetPct: 35)),
-      )),
-    ];
-    _harvest[103] = HarvestResource.auto;
-
     final buildings = [
-      for (final t in BuildingType.values)
-        BuildingState(buildingType: t, level: _buildingLevels[t] ?? 0),
+      for (final t in BuildingType.values) BuildingState(buildingType: t, level: _buildingLevels[t] ?? 0),
     ];
     final research = [
       for (final t in ResearchType.values) ResearchState(tech: t, level: _researchLevels[t] ?? 0),
     ];
+    final catalog = _catalogFor(buildings, research, const {}, 0);
     _hw = HomeworldState(
       location: _home,
-      production: _production(buildings),
-      storage: _storage(buildings, _resources, _production(buildings)),
+      production: const Resources(),
+      energy: const EnergyState(made: 0, needed: 0, fraction: 1, perSatellite: 0, fusionBurn: 0, fusionStarved: false),
+      satellites: _satellites,
+      storage: const StorageState(cap: Resources(), protected: Resources(), fullInS: ResourceEta(), capped: []),
       buildings: buildings,
       research: research,
-      catalog: _catalogFor(buildings, research),
+      catalog: catalog,
       buildSlots: 1,
       queueWaitingMax: 3,
       buildQueue: [BuildQueueItem(id: 401, buildingType: BuildingType.crystalMine, targetLevel: 8, startTick: _tick - 420, endTick: _tick + 260)],
       buildPending: const [],
-      shipyardQueue: ShipyardQueueItem(id: 402, item: const ShipyardItem.ship(ShipClass.corvette), count: 3, built: 1, startTick: _tick - 200, endTick: _tick + 170),
+      shipyardQueue:
+          ShipyardQueueItem(id: 402, item: const ShipyardItem.ship(ShipClass.lightFighter), count: 3, built: 1, startTick: _tick - 200, endTick: _tick + 170),
       shipyardPending: const [],
-      researchActive: ResearchItem(id: 403, tech: ResearchType.weaponsResearch, targetLevel: 4, startTick: _tick - 300, endTick: _tick + 410),
+      researchActive: ResearchItem(id: 403, tech: ResearchType.weaponsTechnology, targetLevel: 4, startTick: _tick - 300, endTick: _tick + 410),
       researchPending: const [],
       dockedShips: const [],
       defences: [
-        for (final k in DefenceKind.values)
-          DefenceState(kind: k, count: _defenceCount[k] ?? 0, restoring: 0, power: _defencePower[k]! * (1 + 0.04 * (_buildingLevels[BuildingType.defenseGrid] ?? 0))),
+        for (final o in catalog.defences) DefenceState(kind: o.kind, count: _defenceCount[o.kind] ?? 0, restoring: 0, power: o.power),
       ],
       homeDefencePower: 0,
+      dockedPower: 0,
+      satellitePower: 0,
+      structurePower: 0,
       nextRaidEstimatePower: _raidEstimate,
     );
+
+    final wing = [
+      _ship(1011, ShipClass.lightFighter),
+      _ship(1012, ShipClass.lightFighter),
+      _ship(1013, ShipClass.lightFighter),
+      _ship(1014, ShipClass.espionageProbe),
+      _ship(1015, ShipClass.smallCargo),
+    ];
+    final freighters = [_ship(1021, ShipClass.smallCargo), _ship(1022, ShipClass.smallCargo)];
+    final prospectors = [_ship(1031, ShipClass.lightFighter), _ship(1032, ShipClass.lightFighter)];
+    _fleets = [
+      _fleet(101, _s0, FleetStatus.idle, wing, tank: .8, cargo: const Resources(metal: 34, crystal: 12)),
+      _fleet(102, _home, FleetStatus.docked, freighters),
+      _fleet(103, const Hex(3, -1), FleetStatus.harvesting, prospectors,
+          tank: .75,
+          cargo: const Resources(metal: 19, crystal: 6),
+          policy: const StandingOrders(preset: PolicyPreset.prospect, params: PolicyParams(maxRange: 6, engageRatioX10: 20, fuelBudgetPct: 35))),
+    ];
+    _harvest[103] = HarvestResource.auto;
+
     final pendingBuilds = <QueuedBuild>[];
-    for (final t in const [BuildingType.metalMine, BuildingType.storageVault]) {
+    for (final t in const [BuildingType.metalMine, BuildingType.metalStorage]) {
       final (cost, ticks) = _buildingStep(t, (_buildingLevels[t] ?? 0) + 1);
       pendingBuilds.add(QueuedBuild(
           id: _newQueueId(), buildingType: t, targetLevel: (_buildingLevels[t] ?? 0) + 1, cost: cost, ticks: ticks, waitingFor: _missing(cost), waitingOn: WaitReason.slot));
@@ -239,32 +314,59 @@ class DemoWorld {
     _pending.add(GameEvent(tick: _tick, kind: _raidIncoming()));
   }
 
+  /// The empire as the script opens on it: mines that the Solar Plant just
+  /// powers, a yard that builds the first four hulls, and research some way
+  /// into the tree, with most of it still locked.
   static const _buildingLevels = {
     BuildingType.metalMine: 9,
     BuildingType.crystalMine: 7,
     BuildingType.deuteriumSynthesizer: 5,
+    BuildingType.solarPlant: 10,
+    BuildingType.roboticsFactory: 2,
     BuildingType.shipyard: 4,
-    BuildingType.researchLab: 3,
-    BuildingType.fuelDepot: 2,
-    BuildingType.sensorArray: 3,
-    BuildingType.defenseGrid: 2,
-    BuildingType.storageVault: 2,
+    BuildingType.metalStorage: 2,
+    BuildingType.crystalStorage: 1,
+    BuildingType.researchLab: 4,
   };
   static const _researchLevels = {
-    ResearchType.fuelEfficiency: 5,
-    ResearchType.reinforcedHulls: 2,
-    ResearchType.weaponsResearch: 3,
-    ResearchType.navigation: 1,
-    ResearchType.harvestingEfficiency: 2,
-    ResearchType.corvetteTech: 1,
-    ResearchType.frigateTech: 1,
-    ResearchType.haulerTech: 1,
+    ResearchType.espionageTechnology: 2,
+    ResearchType.computerTechnology: 1,
+    ResearchType.weaponsTechnology: 3,
+    ResearchType.armourTechnology: 2,
+    ResearchType.energyTechnology: 3,
+    ResearchType.combustionDrive: 4,
+    ResearchType.impulseDrive: 2,
+    ResearchType.laserTechnology: 3,
   };
+  static const _defenceCount = {DefenceKind.rocketLauncher: 6};
+  static const _startingSatellites = 2;
 
-  ShipState _ship(int id, ShipClass c, {double? hull}) {
-    final s = _stats[c]!;
-    return ShipState(id: id, shipClass: c, hull: hull ?? s.$1, hullMax: s.$1, shield: s.$2, shieldMax: s.$2, weaponPower: s.$3);
+  /// A ship as the yard builds it now: its class's row of the catalogue.
+  ShipState _ship(int id, ShipClass c) {
+    final o = _shipOption(c);
+    return ShipState(id: id, shipClass: c, hull: o.hull, hullMax: o.hull, shield: o.shield, shieldMax: o.shield, weaponPower: o.weapon);
   }
+
+  ShipOption _shipOption(ShipClass c) => _hw.catalog.ships.firstWhere((o) => o.shipClass == c);
+
+  /// A fleet of [ships] with [fuel] aboard, or the share [tank] of what its
+  /// tanks hold. What the ships make of it is worked out in [_norm].
+  FleetState _fleet(int id, Hex at, FleetStatus state, List<ShipState> ships,
+          {double? fuel, double tank = 1, Resources cargo = const Resources(), StandingOrders? policy}) =>
+      _norm(FleetState(
+        id: id,
+        location: at,
+        state: state,
+        ships: ships,
+        cargo: cargo,
+        cargoCapacity: 0,
+        fuel: fuel ?? _tank(ships) * tank,
+        fuelMax: 0,
+        jumpTicks: 0,
+        scanRange: scanBaseRange,
+        hopsHome: 0,
+        policy: policy,
+      ));
 
   RaidIncomingEvent _raidIncoming() =>
       RaidIncomingEvent(playerId: _playerId, arrivalTick: _raidArrival, threat: 'moderate', estPower: _raidEstimate);
@@ -314,50 +416,48 @@ class DemoWorld {
   static List<Hex> _lanes(Hex h) => [for (final n in h.neighbors()) if (_edge(h, n)) n];
 
   /// The ring's group power and its rating, as the server's `npc_power` and
-  /// `threat_rating` compute them.
-  static ThreatInfo _ringThreat(Hex h) {
-    final power = 4.0 * pow(1.22, max(1, h.distFromOrigin) - 1);
-    return ThreatInfo(rating: _rating(power), estPower: power, basis: ThreatBasis.estimate);
+  /// `threat_rating` give them.
+  static ThreatInfo _ringThreat(Hex h) =>
+      ThreatInfo(rating: _book.ringRating(h.distFromOrigin), estPower: _book.npcPower(h.distFromOrigin), basis: ThreatBasis.estimate);
+
+  /// The server's `threat_rating`: one step for each doubling of [power]
+  /// over the power of a group at ring 1.
+  static int _rating(double power) {
+    final base = _book.constant('NPC_POWER_BASE');
+    return power <= base ? 1 : (1 + (log(power / base) / ln2).floor()).clamp(1, maxThreat);
   }
 
-  static int _rating(double power) => power <= 4 ? 1 : (1 + (log(power / 4) / ln2).floor()).clamp(1, 9);
+  static double _groupPower(NpcFleetInfo g) => g.ships.fold(0.0, (n, s) => n + s.shipClass.power * s.count);
 
-  /// A hostile group rated by its own ships (Aggressive and Swarm count 25 percent more).
+  /// Hostile groups rated by what their ships add up to. The engine rates
+  /// an Aggressive or a Swarm group higher than that; the script does not.
   static ThreatInfo _observedThreat(List<NpcFleetInfo> groups) {
-    var power = 0.0;
-    for (final g in groups) {
-      final ships = g.ships.fold(0.0, (n, s) => n + _ratingPower[s.shipClass]! * s.count);
-      final pushy = g.behavior == NpcBehavior.aggressive || g.behavior == NpcBehavior.swarm;
-      power += ships * (pushy ? 1.25 : 1.0);
-    }
+    final power = groups.fold(0.0, (n, g) => n + _groupPower(g));
     return ThreatInfo(rating: _rating(power), estPower: power, basis: ThreatBasis.observed);
   }
 
-  /// Reserve units a full tile holds `d` rings out: 3 / 10 / 22 / 42 by
-  /// density, times 1.10 per ring from ring 3.
+  /// What a full tile of [den] holds `d` rings out.
   static TileReserve _tile(Density den, Hex h) {
-    const totals = [0.0, 3.0, 10.0, 22.0, 42.0];
-    final d = h.distFromOrigin;
-    final max = totals[den.index] * (d < 3 ? 1.0 : pow(1.1, min(d, 20) - 3));
+    final max = _book.reserveUnits(den) * _book.oreRingMult(h.distFromOrigin);
     return TileReserve(units: max, maxUnits: max);
   }
 
-  static double _fleetPower(FleetState f) => f.ships.fold(0.0, (n, s) => n + s.weaponPower + (s.hull + s.shield) / 10);
-
-  static const _ratingPower = {ShipClass.scout: 9, ShipClass.corvette: 22, ShipClass.frigate: 48, ShipClass.cruiser: 110, ShipClass.hauler: 15};
+  /// A fleet's power as the wire states it: each ship counts its weapon and
+  /// a tenth of its hull and shield.
+  static double _fleetPower(List<ShipState> ships) => ships.fold(0.0, (n, s) => n + s.weaponPower + (s.hull + s.shield) / 10);
 
   /// Authored opening neighbourhood (terrain, ore m/c/d, hostiles, salvage, site).
   static final Map<int, ({TerrainType t, List<int> ore, List<(ShipClass, int)>? npc, NpcBehavior? b, int tier, SiteRisk? risk, Resources? salv})> _authored = {
     const Hex(6, -4).toKey(): (t: TerrainType.asteroidField, ore: [3, 2, 0], npc: null, b: null, tier: 0, risk: null, salv: null),
-    const Hex(6, -5).toKey(): (t: TerrainType.empty, ore: [1, 0, 1], npc: [(ShipClass.corvette, 1)], b: NpcBehavior.patrol, tier: 0, risk: null, salv: null),
+    const Hex(6, -5).toKey(): (t: TerrainType.empty, ore: [1, 0, 1], npc: [(ShipClass.lightFighter, 2)], b: NpcBehavior.patrol, tier: 0, risk: null, salv: null),
     const Hex(7, -5).toKey(): (t: TerrainType.nebula, ore: [0, 1, 3], npc: null, b: null, tier: 1, risk: SiteRisk.uneasy, salv: null),
-    const Hex(7, -4).toKey(): (t: TerrainType.debrisField, ore: [2, 0, 0], npc: null, b: null, tier: 0, risk: null, salv: Resources(metal: 40, crystal: 10, deuterium: 4)),
+    const Hex(7, -4).toKey(): (t: TerrainType.debrisField, ore: [2, 0, 0], npc: null, b: null, tier: 0, risk: null, salv: Resources(metal: 400, crystal: 100, deuterium: 40)),
     const Hex(5, -3).toKey(): (t: TerrainType.empty, ore: [1, 1, 0], npc: null, b: null, tier: 0, risk: null, salv: null),
-    const Hex(5, -4).toKey(): (t: TerrainType.anomaly, ore: [0, 3, 1], npc: [(ShipClass.frigate, 1), (ShipClass.corvette, 2)], b: NpcBehavior.aggressive, tier: 0, risk: null, salv: null),
+    const Hex(5, -4).toKey(): (t: TerrainType.anomaly, ore: [0, 3, 1], npc: [(ShipClass.heavyFighter, 2), (ShipClass.lightFighter, 3)], b: NpcBehavior.aggressive, tier: 0, risk: null, salv: null),
     const Hex(3, -1).toKey(): (t: TerrainType.asteroidField, ore: [2, 1, 0], npc: null, b: null, tier: 0, risk: null, salv: null),
-    const Hex(7, -3).toKey(): (t: TerrainType.empty, ore: [1, 1, 0], npc: [(ShipClass.scout, 1)], b: NpcBehavior.passive, tier: 0, risk: null, salv: null),
-    const Hex(8, -6).toKey(): (t: TerrainType.asteroidField, ore: [4, 2, 1], npc: [(ShipClass.scout, 2)], b: NpcBehavior.patrol, tier: 1, risk: SiteRisk.hot, salv: null),
-    const Hex(9, -7).toKey(): (t: TerrainType.empty, ore: [1, 1, 1], npc: [(ShipClass.cruiser, 1), (ShipClass.frigate, 2), (ShipClass.corvette, 3)], b: NpcBehavior.swarm, tier: 0, risk: null, salv: null),
+    const Hex(7, -3).toKey(): (t: TerrainType.empty, ore: [1, 1, 0], npc: [(ShipClass.lightFighter, 1)], b: NpcBehavior.passive, tier: 0, risk: null, salv: null),
+    const Hex(8, -6).toKey(): (t: TerrainType.asteroidField, ore: [4, 2, 1], npc: [(ShipClass.lightFighter, 2)], b: NpcBehavior.patrol, tier: 1, risk: SiteRisk.hot, salv: null),
+    const Hex(9, -7).toKey(): (t: TerrainType.empty, ore: [1, 1, 1], npc: [(ShipClass.cruiser, 3), (ShipClass.heavyFighter, 4), (ShipClass.lightFighter, 6)], b: NpcBehavior.swarm, tier: 0, risk: null, salv: null),
   };
 
   /// Terrain, ore and lanes only; hostiles, salvage and sites are mutable state.
@@ -403,20 +503,32 @@ class DemoWorld {
       final k = h.toKey();
       if (_authored.containsKey(k)) continue;
       final d = h.distFromOrigin;
-      if (Hex.distance(h, _home) > 2 && _h01(h.q, h.r, 5) < min(.85, .25 + .025 * d)) {
-        final cls = d <= zoneInnerRingRadius ? ShipClass.scout : d <= 12 ? ShipClass.corvette : d <= zoneOuterRingRadius ? ShipClass.frigate : ShipClass.cruiser;
-        final target = 4 * pow(1.22, d - 1) * 1.8;
-        final n = max(1, min(12, (target / _ratingPower[cls]!).round()));
-        final beh = _h01(h.q, h.r, 6) < max(0, .5 - .08 * (d - 8))
+      // Whether a ring's sector holds a group, what flies in it and how
+      // often it is passive are the engine's; the rolls, and which of the
+      // other three tempers it has, are the script's.
+      if (Hex.distance(h, _home) > 2 && _h01(h.q, h.r, 5) < _book.npcPresence(d)) {
+        final roll = _h01(h.q, h.r, 6);
+        final passive = _book.npcPassiveShare(d);
+        final beh = roll < passive
             ? NpcBehavior.passive
-            : _ratingPower[cls]! * n >= 256 ? NpcBehavior.swarm : _ratingPower[cls]! * n >= 64 ? NpcBehavior.aggressive : NpcBehavior.patrol;
-        _hostiles[k] = [_npcGroup([(cls, n)], beh)];
+            : roll < passive + (1 - passive) * .5
+                ? NpcBehavior.patrol
+                : roll < passive + (1 - passive) * .85
+                    ? NpcBehavior.aggressive
+                    : NpcBehavior.swarm;
+        _hostiles[k] = [_npcGroup([(_book.npcClass(d), _book.npcCount(d))], beh)];
       }
       if (_h01(h.q, h.r, 8) < .08) {
-        _salvage[k] = (Resources(metal: (20 + _h01(h.q, h.r, 9) * 60 + d * 4).roundToDouble(), crystal: (5 + _h01(h.q, h.r, 10) * 20).roundToDouble(), deuterium: (_h01(h.q, h.r, 11) * 12).roundToDouble()), _tick + 1500 + _hash(h.q, h.r, 3) % 3000);
+        _salvage[k] = (
+          Resources(
+              metal: (200 + _h01(h.q, h.r, 9) * 600 + d * 40).roundToDouble(),
+              crystal: (50 + _h01(h.q, h.r, 10) * 200).roundToDouble(),
+              deuterium: (_h01(h.q, h.r, 11) * 120).roundToDouble()),
+          _tick + 1500 + _hash(h.q, h.r, 3) % 3000
+        );
       }
       if (d > 2 && _h01(h.q, h.r, 12) < .05 + d * .004) {
-        _sites[k] = SiteBrief(tier: d <= 11 ? 1 : d <= 21 ? 2 : 3, risk: SiteRisk.values[(_h01(h.q, h.r, 13) * 3).floor()]);
+        _sites[k] = SiteBrief(tier: _book.derelictTier(d), risk: SiteRisk.values[(_h01(h.q, h.r, 13) * 3).floor()]);
       }
     }
     // Chart memory: ages from live to fossil.
@@ -501,28 +613,34 @@ class DemoWorld {
         homeworld: _hw,
         outpost: _outpostState(),
         knownSectors: _knownSectors(),
-        world: const WorldInfo(
-          pace: _pace,
-          preset: 'persistent',
+        world: WorldInfo(
+          pace: _book.pace,
+          preset: _Book.preset,
           tickHz: 1,
           economyVersion: 2,
           worldgenVersion: 2,
-          hub: [HubSite(location: Hex.origin, services: [HubService.exchange])],
+          hub: const [HubSite(location: Hex.origin, services: [HubService.exchange])],
+          rapidFire: _book.rapidFire,
         ),
       );
 
   PlayerState _player() =>
       PlayerState(id: _playerId, name: 'Demo', resources: _resources, homeworld: _home, exchange: _meter(_pressureNow));
 
-  // ── Exchange (shared/src/scaling.rs, at pace 1) ───────────────
+  // ── Exchange (the server's `exchange_span`, `exchange_fee` and `exchange_return`) ──
 
-  static const _exchangeWindow = 86400;
+  static int get _exchangeWindow => _book.exchangeWindow;
+  static double get _feeMin => _book.constant('EXCHANGE_FEE_MIN');
+  static double get _feeMax => _book.constant('EXCHANGE_FEE_MAX');
   double _pressure = 0;
   int _pressureTick = 0;
 
+  /// What the meter holds: a share of what the homeworld makes in a window,
+  /// each resource at its weight.
   double get _span {
     final p = _hw.production;
-    return .15 * _exchangeWindow * (p.metal + 1.5 * p.crystal + 2 * p.deuterium);
+    final made = ResourceKind.values.fold(0.0, (n, k) => n + k.weight * max(0.0, k.of(p)));
+    return _book.constant('EXCHANGE_METER_SHARE') * _exchangeWindow * made;
   }
 
   double get _pressureNow => max(0.0, _pressure - _span * (_tick - _pressureTick) / _exchangeWindow);
@@ -532,17 +650,19 @@ class DemoWorld {
     return ExchangeMeter(
       pressure: pressure,
       span: span,
-      fee: span > 0 ? .25 + .5 * min(1.0, pressure / span) : .75,
+      fee: span > 0 ? _feeMin + (_feeMax - _feeMin) * min(1.0, pressure / span) : _feeMax,
       windowTicks: _exchangeWindow,
       clearIn: pressure <= 0 ? 0 : (span > 0 ? (pressure / span * _exchangeWindow).ceil() : null),
     );
   }
 
+  /// What comes back for everything sold up to [pressure]: the fee rises
+  /// along the meter and stays at its most past the end of it.
   double _kept(double pressure) {
     final span = _span;
     final ramp = min(pressure, span);
-    final onRamp = span > 0 ? .75 * ramp - .5 * ramp * ramp / (2 * span) : 0.0;
-    return onRamp + .25 * (pressure - ramp);
+    final onRamp = span > 0 ? (1 - _feeMin) * ramp - (_feeMax - _feeMin) * ramp * ramp / (2 * span) : 0.0;
+    return onRamp + (1 - _feeMax) * (pressure - ramp);
   }
 
   List<ServerMessage> _exchange(int fleetId, ResourceKind give, ResourceKind want, double? amount, {required bool quote}) {
@@ -709,64 +829,65 @@ class DemoWorld {
     return back;
   }
 
-  // ── Outpost (shared/src/scaling.rs at pace 1; levels at the demo's own speed) ──
+  // ── Outpost (the server's numbers; levels and repairs at the script's own speed) ──
 
-  static const _outpostCost = Resources(metal: 1000, crystal: 500, deuterium: 200);
-  static const _outpostStoreBase = Resources(metal: 3000, crystal: 1500, deuterium: 750);
-  static const _outpostMaxLevel = 3;
+  static int get _outpostMaxLevel => _book.constant('OUTPOST_MAX_LEVEL').toInt();
+  static Resources get _outpostCost => _book.outpostCost(1);
 
-  /// Demo-only: level 1 is built in this many ticks, not the 54,000 of pace 1.
-  static const _outpostLevelTicks = 20;
-  static const _densityGrade = {Density.none: 0.0, Density.sparse: .5, Density.moderate: 1.0, Density.rich: 2.0, Density.pristine: 4.0};
+  static Resources _levelCost(int level) => _book.outpostCost(level);
+  static int _levelTicks(int level) => max(1, (_book.outpostTicks(level) / _outpostHaste).round());
+  static int _repairTicks(int level) => max(1, (_book.outpostRepairTicks(level) / _outpostHaste).round());
 
-  static double _outpostGrowth(int level) => pow(2.5, max(1, level) - 1).toDouble();
-  static Resources _levelCost(int level) => _times(_outpostCost, _outpostGrowth(level));
-  static int _levelTicks(int level) => (_outpostLevelTicks * _outpostGrowth(level)).round();
-  /// What a repair of [level] costs in metal: a quarter of the level's cost at par.
-  static double _repairPrice(int level) {
-    if (level == 0) return 0;
-    final quarter = _times(_levelCost(level), .25);
-    return quarter.metal + quarter.crystal * 1.5 + quarter.deuterium * 2;
-  }
+  /// What a repair of [level] costs, in metal.
+  static double _repairPrice(int level) => _book.outpostRepairPrice(level);
 
-  static String _repairWords(int level) => '${_repairPrice(level).ceil()} metal, or crystal at 1.5 and deuterium at 2 a unit in its place';
+  static String _weight(ResourceKind k) => trimmed(k.weight);
+
+  static String _repairWords(int level) => '${_repairPrice(level).ceil()} metal, or crystal at ${_weight(ResourceKind.crystal)} and deuterium at '
+      '${_weight(ResourceKind.deuterium)} a unit in its place';
 
   /// What a repair of [level] takes from [store], metal first, then crystal
-  /// and deuterium at par, and the metal the store is short of paying it.
+  /// and deuterium at their weights, and the metal the store is short of
+  /// paying it.
   static (Resources, double) _repairPayment(int level, Resources store) {
     var owed = _repairPrice(level);
-    double take(double stock, double par) {
-      if (stock >= owed / par) {
-        final paid = owed / par;
+    double take(ResourceKind k) {
+      final stock = k.of(store);
+      if (stock >= owed / k.weight) {
+        final paid = owed / k.weight;
         owed = 0;
         return paid;
       }
-      owed -= stock * par;
+      owed -= stock * k.weight;
       return stock;
     }
 
-    final metal = take(store.metal, 1);
-    final crystal = take(store.crystal, 1.5);
-    final deuterium = take(store.deuterium, 2);
+    final metal = take(ResourceKind.metal);
+    final crystal = take(ResourceKind.crystal);
+    final deuterium = take(ResourceKind.deuterium);
     return (Resources(metal: metal, crystal: crystal, deuterium: deuterium), owed);
   }
-  static Resources _storeCap(int level) => _times(_outpostStoreBase, _outpostGrowth(level));
-  static double _platform(int level) => level == 0 ? 0 : 40 * _outpostGrowth(level);
+
+  static Resources _storeCap(int level) => _book.outpostStoreCap(level);
+  static double _platform(int level) => _book.outpostPlatform(level);
+
+  /// The least and the most a raid on an outpost at [at] can be: its ring's
+  /// raid at the two ends of the roll.
   static PowerRange _outpostRaids(Hex at) {
-    final base = 2 * _ringThreat(at).estPower;
-    return PowerRange(least: base * .8, most: base * 1.15);
+    final base = _book.outpostRaidPower(at.distFromOrigin);
+    return PowerRange(least: base * _book.constant('RAID_POWER_ROLL_MIN'), most: base * _book.constant('RAID_POWER_ROLL_MAX'));
   }
 
   Resources _siteYield(Hex at, int level) {
     final ore = _base(at).resources;
-    final ring = at.distFromOrigin.clamp(3, 20);
-    double perTick(Density d) => 2 * _densityGrade[d]! * pow(1.1, ring - 3) * level / 3600;
+    double perTick(Density d) => _book.outpostYield(d, at.distFromOrigin, level);
     return Resources(metal: perTick(ore.metal), crystal: perTick(ore.crystal), deuterium: perTick(ore.deuterium));
   }
 
+  /// A site's grade: what a harvest of each of its three seams is multiplied by, added up.
   double _siteGrade(Hex at) {
     final ore = _base(at).resources;
-    return _densityGrade[ore.metal]! + _densityGrade[ore.crystal]! + _densityGrade[ore.deuterium]!;
+    return _book.harvestMultiplier(ore.metal) + _book.harvestMultiplier(ore.crystal) + _book.harvestMultiplier(ore.deuterium);
   }
 
   bool get _inService => _outpost != null && _outpost!.level >= 1 && !_outpost!.breached;
@@ -777,7 +898,7 @@ class DemoWorld {
     final building = o.work?.kind == OutpostWork.build ? o.work!.level : null;
     final next = (building ?? o.level) + 1;
     final platform = o.breached ? 0.0 : _platform(o.level);
-    final ships = [for (final f in _fleets) if (f.location == o.at) ...f.ships].fold(0.0, (p, s) => p + _power[s.shipClass]!);
+    final ships = _fleetPower([for (final f in _fleets) if (f.location == o.at) ...f.ships]);
     final cap = _storeCap(o.level);
     final makes = _inService ? _siteYield(o.at, o.level) : const Resources();
     final repair = o.breached && o.work == null ? _repairPayment(o.level, o.store) : null;
@@ -814,14 +935,16 @@ class DemoWorld {
     );
   }
 
+  static const _outpostRings = 'an outpost stands in rings $outpostMinRing to $outpostMaxRing';
+
   /// Why [f] cannot found an outpost in [at] now, in the order and the
   /// sentences of the server's `outpost_site`; null when it can.
   (ErrorCode, String)? _siteRefusal(FleetState f, Hex at) {
     final id = f.id;
     final here = f.location == at;
     final ring = at.distFromOrigin;
-    if (ring < 9 || ring > 20) {
-      return (ErrorCode.invalidTarget, '${here ? 'fleet $id' : '$at'} is at ring $ring; an outpost stands in rings 9 to 20');
+    if (ring < outpostMinRing || ring > outpostMaxRing) {
+      return (ErrorCode.invalidTarget, '${here ? 'fleet $id' : '$at'} is at ring $ring; $_outpostRings');
     }
     if (_base(at).terrain == TerrainType.anomaly) return (ErrorCode.invalidTarget, '$at is an Anomaly; no outpost stands in one');
     if (_sites.containsKey(at.toKey())) {
@@ -887,8 +1010,8 @@ class DemoWorld {
         platformPower: _platform(1),
         refusal: seen
             ? _siteRefusal(f, at)?.$2
-            : ring < 9 || ring > 20
-                ? '$at is at ring $ring; an outpost stands in rings 9 to 20'
+            : ring < outpostMinRing || ring > outpostMaxRing
+                ? '$at is at ring $ring; $_outpostRings'
                 : '$at is not on your chart; a survey reads the site of a sector you have seen',
       ),
     ];
@@ -1025,7 +1148,7 @@ class DemoWorld {
     if (o.breached && o.work == null) {
       final (cost, short) = _repairPayment(o.level, o.store);
       if (short <= 0) {
-        final ticks = (_levelTicks(o.level) * .25).round();
+        final ticks = _repairTicks(o.level);
         o.store = _less(o.store, cost);
         o.work = OutpostWorkState(kind: OutpostWork.repair, level: o.level, startTick: _tick, endTick: _tick + ticks);
         o.repairWarned = false;
@@ -1068,7 +1191,7 @@ class DemoWorld {
     var shipsLost = 0;
     if (!defended) {
       final there = [for (final f in _fleets) if (f.location == o.at) f];
-      var toLose = there.isEmpty ? 0 : max(1, there.fold(0, (n, f) => n + f.ships.length) ~/ 4);
+      var toLose = there.isEmpty ? 0 : max(1, (there.fold(0, (n, f) => n + f.ships.length) * raidLostShipFraction).floor());
       for (final f in there) {
         final gone = min(toLose, f.ships.length - 1);
         if (gone <= 0) continue;
@@ -1076,7 +1199,7 @@ class DemoWorld {
         toLose -= gone;
         shipsLost += gone;
       }
-      lost = _times(_less(o.store, state.protected), .25);
+      lost = _times(_less(o.store, state.protected), _book.constant('OUTPOST_RAID_LOSS'));
       o.store = _less(o.store, lost);
       o.breached = true;
       o.repairWarned = false;
@@ -1163,6 +1286,18 @@ class DemoWorld {
     _hw = _hwWith(research: [for (final e in _hw.research) e.tech == tech ? ResearchState(tech: tech, level: level) : e]);
   }
 
+  /// Stand [building] at [level], for a test that needs an empire the
+  /// script does not open on.
+  void raise(BuildingType building, int level) {
+    _hw = _hwWith(buildings: [for (final e in _hw.buildings) e.buildingType == building ? BuildingState(buildingType: building, level: level) : e]);
+  }
+
+  /// Put [stock] in the stockpile.
+  void stock(Resources stock) {
+    _resources = stock;
+    _hw = _hwWith();
+  }
+
   void start() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => step());
@@ -1175,9 +1310,10 @@ class DemoWorld {
 
   void _ev(EventKind k) => _pending.add(GameEvent(tick: _tick, kind: k));
 
+  /// A stockpile ends at its cap, and one the Fusion Reactor drains at nothing.
   Resources _clampCaps(Resources r) {
     final cap = _hw.storage.cap;
-    return Resources(metal: min(r.metal, cap.metal), crystal: min(r.crystal, cap.crystal), deuterium: min(r.deuterium, cap.deuterium));
+    return Resources(metal: min(r.metal, cap.metal), crystal: min(r.crystal, cap.crystal), deuterium: max(0, min(r.deuterium, cap.deuterium)));
   }
 
   /// One server tick. Public so tests can drive the simulation.
@@ -1228,12 +1364,12 @@ class DemoWorld {
       (ResourceKind.deuterium, _resources.deuterium, cap.deuterium, eta.deuterium),
     ]) {
       final ratio = e.$2 / e.$3;
-      if (ratio >= .85) {
+      if (storageNearCap(e.$2, e.$3)) {
         if (_capAlerted.add(e.$1)) _ev(StorageNearCapEvent(playerId: _playerId, resource: e.$1, ratio: ratio, fullInS: e.$4));
-      } else if (ratio < .8) {
+      } else {
         _capAlerted.remove(e.$1);
       }
-      if (ratio >= .999) {
+      if (e.$2 >= e.$3) {
         if (_fullAlerted.add(e.$1)) _ev(StorageFullEvent(playerId: _playerId, resource: e.$1));
       } else {
         _fullAlerted.remove(e.$1);
@@ -1261,7 +1397,8 @@ class DemoWorld {
 
   // ── Per-tick systems ──────────────────────────────────────────
 
-  static const _densityRate = {Density.none: 0.0, Density.sparse: .5, Density.moderate: 1.0, Density.rich: 1.6, Density.pristine: 2.5};
+  /// Raw units of ore a tick the ships of [f] extract between them.
+  double _harvestPower(FleetState f) => f.ships.fold(0.0, (n, s) => n + s.shipClass.harvest);
 
   Density _density(SectorState s, String k) => switch (k) {
         'metal' => s.resources.metal,
@@ -1286,7 +1423,7 @@ class DemoWorld {
       }
       var m = 0.0, c = 0.0, d = 0.0;
       for (final k in keys) {
-        final g = min(free / keys.length, _densityRate[_density(sec, k)]! * (1 + f.ships.length * .15));
+        final g = min(free / keys.length, _book.harvestMultiplier(_density(sec, k)) * _harvestPower(f));
         if (k == 'metal') m += g;
         if (k == 'crystal') c += g;
         if (k == 'deut') d += g;
@@ -1341,27 +1478,26 @@ class DemoWorld {
       _sites.remove(k);
       _dirty.add(k);
       if (site.risk == SiteRisk.hot && _rng.nextDouble() < .6) {
-        final g = _npcGroup([(ShipClass.corvette, 2)], NpcBehavior.aggressive);
+        final g = _npcGroup([(_book.npcClass(x.sector.distFromOrigin), 2)], NpcBehavior.aggressive);
         _hostiles[k] = [...?_hostiles[k], g];
         _ev(SiteAmbushEvent(fleetId: id, sector: x.sector, npcFleetId: g.id));
         _setFleet(_copy(f, state: FleetStatus.idle));
         continue;
       }
       final t = site.tier;
-      final res = Resources(
-        metal: (60 * t * (.7 + _rng.nextDouble() * .6)).roundToDouble(),
-        crystal: (25 * t * (.7 + _rng.nextDouble() * .6)).roundToDouble(),
-        deuterium: (10 * t * _rng.nextDouble()).roundToDouble(),
-      );
+      final value = _book.derelictValue(x.sector.distFromOrigin);
+      final split = _book.constants('LOOT_SPLIT');
+      double part(int i) => (value * split[i] * (.7 + _rng.nextDouble() * .6)).roundToDouble();
+      final res = Resources(metal: part(0), crystal: part(1), deuterium: part(2));
       final roll = _rng.nextDouble();
       ShipClass? ship;
       ResearchType? tech;
       var ships = f.ships;
       if (roll > .6) {
-        tech = ResearchType.navigation;
+        tech = ResearchType.combustionDrive;
       } else if (roll > .35) {
-        ship = ShipClass.scout;
-        ships = [...f.ships, _ship(_nextShip++, ShipClass.scout)];
+        ship = ShipClass.lightFighter;
+        ships = [...f.ships, _ship(_nextShip++, ShipClass.lightFighter)];
       }
       _resources = _clampCaps(Resources(
         metal: _resources.metal + res.metal,
@@ -1406,7 +1542,11 @@ class DemoWorld {
     final s = _hw.shipyardQueue;
     if (s != null && _tick >= s.endTick) {
       if (s.item.ship case final cls?) {
-        _setDocked([..._hw.dockedShips, _ship(_nextShip++, cls)]);
+        if (_shipOption(cls).flies) {
+          _hw = _hw.copyWith(dockedShips: [..._hw.dockedShips, _ship(_nextShip++, cls)]);
+        } else {
+          _satellites++;
+        }
         _ev(ShipBuiltEvent(shipClass: cls, count: 1));
       } else {
         final k = s.item.defence!;
@@ -1426,60 +1566,41 @@ class DemoWorld {
     _startWaiting();
   }
 
-  void _setDocked(List<ShipState> docked) {
-    final h = _hw;
-    _hw = HomeworldState(
-      location: h.location,
-      production: h.production,
-      storage: h.storage,
-      buildings: h.buildings,
-      research: h.research,
-      buildQueue: h.buildQueue,
-      buildPending: h.buildPending,
-      buildSlots: h.buildSlots,
-      queueWaitingMax: h.queueWaitingMax,
-      shipyardQueue: h.shipyardQueue,
-      shipyardPending: h.shipyardPending,
-      researchActive: h.researchActive,
-      researchPending: h.researchPending,
-      dockedShips: docked,
-      defences: h.defences,
-      homeDefencePower: h.homeDefencePower,
-      nextRaidEstimatePower: h.nextRaidEstimatePower,
-      catalog: h.catalog,
-    );
-  }
+  /// What the ships standing at the homeworld add to its defence: the
+  /// fleets there and the hulls the yard has delivered.
+  double _dockedPower() => _fleetPower([
+        for (final f in _fleets)
+          if (f.location == _home) ...f.ships,
+        ..._hw.dockedShips,
+      ]);
 
-  double _dockedPower() {
-    var p = 0.0;
-    for (final f in _fleets) {
-      if (f.location == _home && f.state == FleetStatus.docked) {
-        for (final s in f.ships) {
-          p += _power[s.shipClass]!;
-        }
-      }
-    }
-    for (final s in _hw.dockedShips) {
-      p += _power[s.shipClass]!;
-    }
-    return p;
-  }
-
+  /// The scripted raid arrives, at a roll of what was announced. Held, it
+  /// costs nothing. Lost, it destroys the engine's share of the Solar
+  /// Satellites and of the hulls the yard has delivered; what a raid takes
+  /// of a stockpile is not scripted, so the stockpile keeps all it has.
   void _stepRaid() {
     if (_tick < _raidArrival) return;
-    final raid = _raidEstimate * (.85 + .3 * _h01(_raidArrival, 3, 7));
-    final defense = _homePower(_hw.defences, _hw.buildings);
+    final least = _book.constant('RAID_POWER_ROLL_MIN'), most = _book.constant('RAID_POWER_ROLL_MAX');
+    final raid = _raidEstimate * (least + (most - least) * _h01(_raidArrival, 3, 7));
+    final defense = _defence(_hw.defences).total;
     final defended = defense >= raid;
-    var lost = const Resources();
-    var kept = const Resources();
+    var shipsLost = 0, satellitesLost = 0;
     if (!defended) {
-      final prot = _hw.storage.protected;
-      double skim(double v, double p) => max(0, min(v - p, v * .15));
-      lost = Resources(metal: skim(_resources.metal, prot.metal), crystal: skim(_resources.crystal, prot.crystal), deuterium: skim(_resources.deuterium, prot.deuterium));
-      kept = prot;
-      _resources = Resources(metal: _resources.metal - lost.metal, crystal: _resources.crystal - lost.crystal, deuterium: _resources.deuterium - lost.deuterium);
+      satellitesLost = (_satellites * raidLostShipFraction).ceil();
+      _satellites -= satellitesLost;
+      final docked = _hw.dockedShips;
+      shipsLost = docked.isEmpty ? 0 : max(1, (docked.length * raidLostShipFraction).floor());
+      _hw = _hw.copyWith(dockedShips: docked.sublist(shipsLost));
     }
-    _ev(RaidResolvedEvent(playerId: _playerId, defended: defended, resourcesLost: lost, raidPower: raid, defensePower: defense, protectedKept: kept));
+    _ev(RaidResolvedEvent(
+        playerId: _playerId,
+        defended: defended,
+        resourcesLost: const Resources(),
+        raidPower: raid,
+        defensePower: defense,
+        protectedKept: defended ? const Resources() : _least(_resources, _hw.storage.protected),
+        shipsLost: shipsLost,
+        satellitesLost: satellitesLost));
     _raidArrival += _raidPeriod;
     _ev(_raidIncoming());
   }
@@ -1490,9 +1611,9 @@ class DemoWorld {
     final ships = <_NpcShip>[];
     var i = 0;
     for (final g in npc.ships) {
-      final s = _stats[g.shipClass]!;
+      final c = g.shipClass;
       for (var n = 0; n < g.count; n++) {
-        ships.add(_NpcShip(npc.id * 100 + i++, g.shipClass, s.$1, s.$2, s.$3));
+        ships.add(_NpcShip(npc.id * 100 + i++, c, c.hull, c.shield, c.weapon));
       }
     }
     _combats[f.id] = _Combat(f.id, f.location, npc, ships);
@@ -1597,8 +1718,9 @@ class DemoWorld {
       _setFleet(f);
       if (!npcLeft) {
         _combats.remove(c.fleetId);
-        final th = _threatOf(c.npc);
-        final loot = Resources(metal: 30.0 * th + 12, crystal: 8.0 * th, deuterium: 3.0 * th);
+        final worth = _book.constant('WRECK_VALUE_K') * pow(_groupPower(c.npc), _book.constant('WRECK_VALUE_EXPONENT'));
+        final split = _book.constants('LOOT_SPLIT');
+        final loot = Resources(metal: worth * split[0], crystal: worth * split[1], deuterium: worth * split[2]);
         final k = c.sector.toKey();
         _hostiles[k] = [for (final h in _hostiles[k] ?? <NpcFleetInfo>[]) if (h.id != c.npc.id) h];
         final prev = _salvage[k]?.$1;
@@ -1613,54 +1735,57 @@ class DemoWorld {
     }
   }
 
-  static int _threatOf(NpcFleetInfo n) {
-    var p = 0.0;
-    for (final s in n.ships) {
-      p += _ratingPower[s.shipClass]! * s.count;
-    }
-    return max(1, min(9, 1 + (log(max(1, p) / 4) / ln2).floor()));
-  }
-
   // ── Fleet helpers ─────────────────────────────────────────────
 
-  static int _jump(List<ShipState> ships) => ships.fold<int>(1, (m, s) => max(m, _stats[s.shipClass]!.$5));
+  /// What a fleet of [ships] is, as the catalogue's rows for its classes
+  /// add up: the fuel a jump burns, its tank and its hold are sums, and it
+  /// jumps as slowly as its slowest ship.
+  double _jump(List<ShipState> ships) => ships.fold(0.0, (n, s) => n + _shipOption(s.shipClass).jumpFuel);
+  double _tank(List<ShipState> ships) => ships.fold(0.0, (n, s) => n + _shipOption(s.shipClass).tank);
+  double _hold(List<ShipState> ships) => ships.fold(0.0, (n, s) => n + _shipOption(s.shipClass).cargo);
+  int _jumpTicks(List<ShipState> ships) => ships.fold(1, (m, s) => max(m, _shipOption(s.shipClass).jumpTicks));
 
-  static int _jumpTicks(List<ShipState> ships) => 10 ~/ ships.fold<int>(10, (m, s) => min(m, _speed[s.shipClass]!)) + 1;
+  /// The server's `scan_range`: farther with an Espionage Probe aboard.
+  static int _scanRange(List<ShipState> ships) =>
+      ships.any((s) => s.shipClass == ShipClass.espionageProbe) ? scanProbeRange : scanBaseRange;
 
   FleetState _norm(FleetState f) {
     final jump = _jump(f.ships);
+    final tank = _tank(f.ships);
     final homeHops = _pathHome(f.location)?.length ?? Hex.distance(f.location, _home);
+    final homeFuel = homeHops * jump;
     return FleetState(
         id: f.id,
         location: f.location,
         state: f.state,
         ships: f.ships,
         cargo: f.cargo,
-        cargoCapacity: f.cargoCapacity,
-        fuel: f.fuel,
-        fuelMax: f.fuelMax,
-        jumpFuel: jump.toDouble(),
-        homeFuel: (homeHops * jump).toDouble(),
+        cargoCapacity: _hold(f.ships),
+        fuel: min(f.fuel, tank),
+        fuelMax: tank,
+        jumpFuel: jump,
+        homeFuel: homeFuel,
         hopsHome: homeHops,
         jumpTicks: _jumpTicks(f.ships),
+        scanRange: _scanRange(f.ships),
         atOutpost: _outpost?.at == f.location,
-        outpostFuel: _inService ? (Hex.distance(f.location, _outpost!.at) * _jump(f.ships)).toDouble() : null,
+        outpostFuel: _inService ? Hex.distance(f.location, _outpost!.at) * jump : null,
         cooldownRemaining: f.cooldownRemaining,
-        power: f.ships.fold<double>(0, (p, s) => p + _power[s.shipClass]!),
-        rangeHops: f.fuel ~/ _jump(f.ships),
+        power: _fleetPower(f.ships),
+        rangeHops: jump > 0 ? max(0, ((f.fuel - homeFuel) / (2 * jump)).floor()) : 0,
         cargoBlocked: f.cargoBlocked,
         laden: f.laden,
-        refine: _refining(f),
+        refine: _refining(f, tank),
         policy: f.policy,
       );
   }
 
-  /// The engine's `refining`: what a refine order would do for [f] now,
-  /// null where the engine refuses it.
-  static Refining? _refining(FleetState f) {
+  /// The engine's `refining`: what a refine order would do now for [f],
+  /// whose tank holds [fuelMax], null where the engine refuses it.
+  static Refining? _refining(FleetState f, double fuelMax) {
     if (f.state == FleetStatus.inCombat || f.state == FleetStatus.moving) return null;
     final aboard = f.cargo.deuterium;
-    final room = f.fuelMax - f.fuel;
+    final room = fuelMax - f.fuel;
     if (aboard <= 0 || room <= 0) return null;
     const rate = (1 - refineLoss) / fuelDeutPerUnit;
     final fuel = aboard * rate;
@@ -1677,7 +1802,7 @@ class DemoWorld {
   List<ServerMessage> _refine(int fleetId) {
     final f = _find(fleetId);
     if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
-    final offer = _refining(f);
+    final offer = _refining(f, f.fuelMax);
     if (offer == null) {
       return [
         switch (f.state) {
@@ -1714,7 +1839,7 @@ class DemoWorld {
     int? cooldown,
     bool? laden,
   }) =>
-      FleetState(
+      _norm(FleetState(
         id: f.id,
         location: location ?? f.location,
         state: state ?? f.state,
@@ -1723,16 +1848,13 @@ class DemoWorld {
         cargoCapacity: f.cargoCapacity,
         fuel: fuel ?? f.fuel,
         fuelMax: f.fuelMax,
-        jumpFuel: f.jumpFuel,
-        homeFuel: f.homeFuel,
         hopsHome: f.hopsHome,
-        jumpTicks: _jumpTicks(ships ?? f.ships),
+        jumpTicks: f.jumpTicks,
+        scanRange: f.scanRange,
         cooldownRemaining: cooldown ?? f.cooldownRemaining,
-        power: f.power,
-        rangeHops: f.rangeHops,
         laden: laden ?? f.laden,
         policy: clearPolicy ? null : (policy ?? f.policy),
-      );
+      ));
 
   FleetState? _find(int id) {
     for (final f in _fleets) {
@@ -1830,29 +1952,85 @@ class DemoWorld {
   }) {
     final b = buildings ?? _hw.buildings;
     final r = research ?? _hw.research;
-    final slots = 1 + r.firstWhere((e) => e.tech == ResearchType.modularFabrication).level;
-    final power = _homePower(defences ?? _hw.defences, b);
+    final yard = clearShip ? null : (ship ?? _hw.shipyardQueue);
+    final waiting = shipPending ?? _hw.shipyardPending;
+    final standing = defences ?? _hw.defences;
+    final energy = _energy(b);
+    final production = _production(b, energy);
+    final catalog = _catalogFor(b, r, {
+      for (final d in standing)
+        d.kind: (
+          d.count,
+          d.count +
+              d.restoring +
+              (yard?.item.defence == d.kind ? yard!.count - yard.built : 0) +
+              waiting.where((q) => q.item.defence == d.kind).fold(0, (n, q) => n + q.count)
+        ),
+    }, energy.made);
+    final defs = [
+      for (final d in standing)
+        DefenceState(kind: d.kind, count: d.count, restoring: d.restoring, power: catalog.defences.firstWhere((o) => o.kind == d.kind).power),
+    ];
+    final power = _defence(defs, catalog);
+    final computer = r.firstWhere((e) => e.tech == ResearchType.computerTechnology).level;
+    final unlock = _slotUnlock(computer);
     return _hw.copyWith(
-      homeDefencePower: power,
-      production: _production(b),
-      storage: _storage(b, _resources, _production(b)),
+      homeDefencePower: power.total,
+      dockedPower: power.docked,
+      satellitePower: power.satellites,
+      structurePower: power.structures,
+      production: production,
+      energy: energy,
+      satellites: _satellites,
+      storage: _storage(catalog, _resources, production),
       buildings: b,
       research: r,
       buildQueue: buildQueue,
       buildPending: buildPending,
-      buildSlots: slots,
+      buildSlots: _slotsAt(computer),
+      buildSlotUnlock: unlock,
+      clearBuildSlotUnlock: unlock == null,
       shipyardQueue: ship,
       clearShipyardQueue: clearShip,
       shipyardPending: shipPending,
       researchActive: researchItem,
       clearResearchActive: clearResearch,
       researchPending: researchPending,
-      defences: defences,
-      catalog: _catalogFor(b, r),
+      defences: defs,
+      catalog: catalog,
     );
   }
 
-  Resources _unitCostOf(ShipyardItem item) => item.ship != null ? _shipCost[item.ship]! : _defenceCost[item.defence]!;
+  /// The home's defence in the three parts the server counts.
+  ({double docked, double satellites, double structures, double total}) _defence(List<DefenceState> standing, [HomeworldCatalog? catalog]) {
+    final docked = _dockedPower();
+    final each = (catalog ?? _hw.catalog).ships.firstWhere((o) => o.shipClass == ShipClass.solarSatellite).power;
+    final satellites = _satellites * each;
+    final structures = standing.fold(0.0, (n, d) => n + d.count * d.power);
+    return (docked: docked, satellites: satellites, structures: structures, total: docked + satellites + structures);
+  }
+
+  static Effect _effect(List<Effect> effects, EffectKind kind) => effects.firstWhere((e) => e.kind == kind);
+
+  /// Building slots at a level of Computer Technology, which is what its
+  /// row of the catalogue says it gives.
+  static int _slotsAt(int computer) =>
+      _effect(_book.byLevel[computer].research[ResearchType.computerTechnology.index].effects, EffectKind.buildSlots).now.round();
+
+  /// What opens the next building slot: the first level of Computer
+  /// Technology above [computer] that gives more of them; none past the last.
+  static Requirement? _slotUnlock(int computer) {
+    for (var level = computer + 1; level < _book.byLevel.length; level++) {
+      if (_slotsAt(level) > _slotsAt(computer)) {
+        return Requirement(name: ResearchType.computerTechnology.label, need: level, have: computer, met: false, energy: false);
+      }
+    }
+    return null;
+  }
+
+  Resources _unitCostOf(ShipyardItem item) => item.ship != null
+      ? _hw.catalog.ships.firstWhere((o) => o.shipClass == item.ship).unitCost
+      : _hw.catalog.defences.firstWhere((o) => o.kind == item.defence).unitCost;
 
   int _unitTicksOf(ShipyardItem item) => item.ship != null
       ? _hw.catalog.ships.firstWhere((o) => o.shipClass == item.ship).ticksPerShip
@@ -1922,15 +2100,40 @@ class DemoWorld {
         for (final q in _hw.researchPending) if (q.tech == t) q.targetLevel,
       ].reduce(max);
 
-  bool _buildingPrereqs(BuildingType t, int Function(BuildingType) level) {
-    final need = _buildingNeeds[t];
-    return need == null || level(need.$1) >= need.$2;
+  /// The level of the building or the research the catalogue calls [name]:
+  /// what stands, or with [projected] what stands once the queues are done.
+  int _levelNamed(String name, {required bool projected}) {
+    for (final t in BuildingType.values) {
+      if (t.label == name) return projected ? _projectedBuilding(t) : _bl(t);
+    }
+    for (final t in ResearchType.values) {
+      if (t.label == name) return projected ? _projectedResearch(t) : _rl(t);
+    }
+    throw StateError('the catalogue requires "$name", which is neither a building nor a research');
   }
 
-  bool _buildingReady(BuildingType t, int target) =>
-      _hw.buildQueue.every((q) => q.buildingType != t) && _bl(t) + 1 == target && _buildingPrereqs(t, _bl);
+  /// "Cruiser needs Shipyard level 5 (you have 2) and Ion Technology level
+  /// 2 (you have 0)": the server's sentence for what [subject] still lacks
+  /// of [requires], as they stand in the catalogue.
+  static String _needs(String subject, List<Requirement> requires) {
+    final parts = [
+      for (final r in requires)
+        if (!r.met) r.energy ? '${r.need} energy made (you make ${r.have})' : '${r.name} level ${r.need} (you have ${r.have})',
+    ];
+    return '$subject needs ${parts.length < 2 ? parts.join() : '${parts.sublist(0, parts.length - 1).join(', ')} and ${parts.last}'}';
+  }
 
-  bool _researchReady(ResearchType t, int target) => _bl(BuildingType.researchLab) > 0 && _rl(t) + 1 == target;
+  /// Whether what the catalogue lists in [requires] is in place.
+  bool _met(List<Requirement> requires, {bool projected = false}) =>
+      requires.every((r) => r.energy ? _hw.energy.made >= r.need : _levelNamed(r.name, projected: projected) >= r.need);
+
+  BuildingOption _buildingOption(BuildingType t) => _hw.catalog.buildings[t.index];
+  ResearchOption _researchOption(ResearchType t) => _hw.catalog.research[t.index];
+
+  bool _buildingReady(BuildingType t, int target) =>
+      _hw.buildQueue.every((q) => q.buildingType != t) && _bl(t) + 1 == target && _met(_buildingOption(t).requires);
+
+  bool _researchReady(ResearchType t, int target) => _rl(t) + 1 == target && _met(_researchOption(t).requires);
 
   WaitReason _waitOn({required bool ready, required Resources cost, required bool slotFree}) {
     if (!ready) return WaitReason.prerequisite;
@@ -1951,18 +2154,30 @@ class DemoWorld {
     return m.total > 0 ? m : null;
   }
 
-  static (Resources, int) _buildingStep(BuildingType t, int level) {
-    final (base, growth) = _buildingBase[t]!;
-    final cost = _grown(base, growth, level);
-    return (cost, _ticksFor(cost, 700));
+  /// What [factory] divides a time by at [level], as its row says.
+  static double _speedAt(int level, BuildingType factory, EffectKind kind) =>
+      _effect(_book.byLevel[level].buildings[factory.index].effects, kind).now;
+
+  /// A time worked out at the speed [was], at the speed [now] instead.
+  static int _carried(int ticks, double was, double now) => max(1, (ticks * was / now).round());
+
+  /// What level [level] of [t] costs and how long it takes with a Robotics
+  /// Factory at [robotics]: the step out of the row one level below.
+  static (Resources, int) _buildingStepAt(BuildingType t, int level, int robotics) {
+    final step = _book.byLevel[level - 1].buildings[t.index].next!;
+    const factory = BuildingType.roboticsFactory, kind = EffectKind.buildingSpeed;
+    return (step.cost, _carried(step.ticks, _speedAt(level - 1, factory, kind), _speedAt(robotics, factory, kind)));
   }
 
-  static (Resources, int) _researchStep(ResearchType t, int level) {
-    final cost = t == ResearchType.modularFabrication
-        ? _grown(const Resources(metal: 1500, crystal: 1200, deuterium: 500), 2, level)
-        : _grown(const Resources(metal: 200, crystal: 150, deuterium: 100), 1.6, level);
-    return (cost, _ticksFor(cost, 500));
+  /// The same for a research, with a Research Lab at [lab].
+  static (Resources, int) _researchStepAt(ResearchType t, int level, int lab) {
+    final step = _book.byLevel[level - 1].research[t.index].next!;
+    const factory = BuildingType.researchLab, kind = EffectKind.researchSpeed;
+    return (step.cost, _carried(step.ticks, _speedAt(level - 1, factory, kind), _speedAt(lab, factory, kind)));
   }
+
+  (Resources, int) _buildingStep(BuildingType t, int level) => _buildingStepAt(t, level, _bl(BuildingType.roboticsFactory));
+  (Resources, int) _researchStep(ResearchType t, int level) => _researchStepAt(t, level, _bl(BuildingType.researchLab));
 
   void _startBuilding(int id, BuildingType t, int target) {
     final (cost, ticks) = _buildingStep(t, target);
@@ -2073,89 +2288,21 @@ class DemoWorld {
     );
   }
 
-  // Level-1 cost and per-level growth for the demo catalog.
-  static const _buildingBase = {
-    BuildingType.metalMine: (Resources(metal: 60, crystal: 15), 1.5),
-    BuildingType.crystalMine: (Resources(metal: 48, crystal: 24), 1.6),
-    BuildingType.deuteriumSynthesizer: (Resources(metal: 150, crystal: 50), 1.5),
-    BuildingType.shipyard: (Resources(metal: 200, crystal: 100, deuterium: 50), 1.8),
-    BuildingType.researchLab: (Resources(metal: 100, crystal: 200, deuterium: 50), 1.8),
-    BuildingType.fuelDepot: (Resources(metal: 150, crystal: 50, deuterium: 100), 1.7),
-    BuildingType.sensorArray: (Resources(metal: 100, crystal: 150, deuterium: 75), 1.7),
-    BuildingType.defenseGrid: (Resources(metal: 300, crystal: 200, deuterium: 100), 1.8),
-    BuildingType.storageVault: (Resources(metal: 200, crystal: 100), 1.7),
-    BuildingType.fabricator: (Resources(metal: 120, crystal: 80, deuterium: 40), 1.9),
-  };
-  static const _buildingNeeds = {
-    BuildingType.shipyard: (BuildingType.metalMine, 2),
-    BuildingType.researchLab: (BuildingType.crystalMine, 2),
-    BuildingType.fuelDepot: (BuildingType.deuteriumSynthesizer, 2),
-    BuildingType.sensorArray: (BuildingType.researchLab, 1),
-    BuildingType.defenseGrid: (BuildingType.shipyard, 3),
-    BuildingType.storageVault: (BuildingType.metalMine, 2),
-    BuildingType.fabricator: (BuildingType.shipyard, 2),
-  };
-  static const _shipCost = {
-    ShipClass.scout: Resources(metal: 200, crystal: 50, deuterium: 30),
-    ShipClass.corvette: Resources(metal: 400, crystal: 100, deuterium: 60),
-    ShipClass.frigate: Resources(metal: 1000, crystal: 400, deuterium: 200),
-    ShipClass.cruiser: Resources(metal: 3000, crystal: 1500, deuterium: 800),
-    ShipClass.hauler: Resources(metal: 600, crystal: 200, deuterium: 150),
-  };
-  static const _defenceCost = {
-    DefenceKind.pulseTurret: Resources(metal: 120, crystal: 20),
-    DefenceKind.lancerBattery: Resources(metal: 400, crystal: 120, deuterium: 20),
-    DefenceKind.ionBastion: Resources(metal: 1200, crystal: 500, deuterium: 100),
-  };
-  static const _defencePower = {
-    DefenceKind.pulseTurret: 17.0,
-    DefenceKind.lancerBattery: 51.0,
-    DefenceKind.ionBastion: 135.0,
-  };
-  static const _defenceCount = {DefenceKind.pulseTurret: 6};
-  static const _techShipyard = {
-    ResearchType.corvetteTech: 2,
-    ResearchType.frigateTech: 4,
-    ResearchType.cruiserTech: 6,
-    ResearchType.haulerTech: 2,
-  };
-  static const _shipTech = {
-    ShipClass.corvette: ResearchType.corvetteTech,
-    ShipClass.frigate: ResearchType.frigateTech,
-    ShipClass.cruiser: ResearchType.cruiserTech,
-    ShipClass.hauler: ResearchType.haulerTech,
-  };
-
-  static int _researchMax(ResearchType t) =>
-      _shipTech.containsValue(t) ? 1 : (t == ResearchType.modularFabrication ? 2 : 5);
-
   static Resources _times(Resources r, num n) =>
       Resources(metal: r.metal * n, crystal: r.crystal * n, deuterium: r.deuterium * n);
 
-  /// `base * growth^(level - 1)`, rounded.
-  static Resources _grown(Resources base, double growth, int level) {
-    final f = pow(growth, level - 1);
-    return Resources(
-      metal: (base.metal * f).roundToDouble(),
-      crystal: (base.crystal * f).roundToDouble(),
-      deuterium: (base.deuterium * f).roundToDouble(),
-    );
-  }
-
-  /// Whole ticks for a cost at [rate] cost units per game hour, at the demo pace.
-  static int _ticksFor(Resources cost, double rate, [double speed = 1]) =>
-      max(1, ((cost.metal + cost.crystal) / rate * 3600 / speed / _pace / _lapse).ceil());
-
-  static StorageState _storage(List<BuildingState> buildings, Resources stock, Resources production) {
-    final vault = buildings.firstWhere((b) => b.buildingType == BuildingType.storageVault).level;
-    final scale = pow(1.5, vault) * pow(_pace, 0.75);
-    final cap = Resources(metal: 5000 * scale.toDouble(), crystal: 3500 * scale.toDouble(), deuterium: 2500 * scale.toDouble());
-    final share = min(0.6, 0.08 * vault);
+  /// The three stockpiles' limits: each resource's cap and what a raid
+  /// cannot take of it are what its own storage building's row says.
+  static StorageState _storage(HomeworldCatalog catalog, Resources stock, Resources production) {
+    double of(ResourceKind k, EffectKind kind) => _effect(catalog.storageOf(k)!.effects, kind).now;
+    Resources each(EffectKind kind) =>
+        Resources(metal: of(ResourceKind.metal, kind), crystal: of(ResourceKind.crystal, kind), deuterium: of(ResourceKind.deuterium, kind));
+    final cap = each(EffectKind.storageCap);
     int? eta(double have, double limit, double rate) =>
         have >= limit ? 0 : (rate > 0 ? ((limit - have) / rate).ceil() : null);
     return StorageState(
       cap: cap,
-      protected: Resources(metal: cap.metal * share, crystal: cap.crystal * share, deuterium: cap.deuterium * share),
+      protected: each(EffectKind.storageProtected),
       fullInS: ResourceEta(
         metal: eta(stock.metal, cap.metal, production.metal),
         crystal: eta(stock.crystal, cap.crystal, production.crystal),
@@ -2169,78 +2316,101 @@ class DemoWorld {
     );
   }
 
-  static HomeworldCatalog _catalogFor(List<BuildingState> buildings, List<ResearchState> research) {
+  /// The catalogue of an empire with these levels, row by row out of the
+  /// engine's ([_Book.byLevel]): a building's and a research's at its own
+  /// level, a ship's and a defence's at the Shipyard's. What a row requires
+  /// is judged against these levels and [energyMade]. [defences] is, for
+  /// each kind, how many stand and how many its limit counts.
+  static HomeworldCatalog _catalogFor(
+      List<BuildingState> buildings, List<ResearchState> research, Map<DefenceKind, (int, int)> defences, int energyMade) {
     int bl(BuildingType t) => buildings.firstWhere((b) => b.buildingType == t).level;
     int rl(ResearchType t) => research.firstWhere((r) => r.tech == t).level;
-    Requirement needBuilding(BuildingType t, int l) =>
-        Requirement(name: t.label, need: l, have: bl(t), met: bl(t) >= l);
+    final levels = {
+      for (final t in BuildingType.values) t.label: bl(t),
+      for (final t in ResearchType.values) t.label: rl(t),
+    };
+    List<Requirement> judged(List<Requirement> requires) => [
+          for (final r in requires)
+            if (r.energy)
+              Requirement(name: r.name, need: r.need, have: energyMade, met: energyMade >= r.need, energy: true)
+            else
+              Requirement(name: r.name, need: r.need, have: levels[r.name]!, met: levels[r.name]! >= r.need, energy: false),
+        ];
+    final yard = _book.byLevel[bl(BuildingType.shipyard)];
 
     return HomeworldCatalog(
       buildings: [
         for (final t in BuildingType.values)
-          BuildingOption(
-            buildingType: t,
-            level: bl(t),
-            maxLevel: 20,
-            next: bl(t) >= 20
-                ? null
-                : () {
-                    final (cost, ticks) = _buildingStep(t, bl(t) + 1);
-                    return UpgradeStep(level: bl(t) + 1, cost: cost, ticks: ticks);
-                  }(),
-            requires: [
-              if (_buildingNeeds[t] case (final b, final l)) needBuilding(b, l),
-            ],
-          ),
+          () {
+            final row = _book.byLevel[bl(t)].buildings[t.index];
+            return BuildingOption(
+              buildingType: t,
+              level: row.level,
+              maxLevel: row.maxLevel,
+              next: switch (row.next) {
+                null => null,
+                final step => UpgradeStep(level: step.level, cost: step.cost, ticks: _buildingStepAt(t, step.level, bl(BuildingType.roboticsFactory)).$2),
+              },
+              requires: judged(row.requires),
+              effects: row.effects,
+            );
+          }(),
       ],
       research: [
         for (final t in ResearchType.values)
-          ResearchOption(
-            tech: t,
-            level: rl(t),
-            maxLevel: _researchMax(t),
-            next: rl(t) >= _researchMax(t)
-                ? null
-                : () {
-                    final (cost, ticks) = _researchStep(t, rl(t) + 1);
-                    return UpgradeStep(level: rl(t) + 1, cost: cost, ticks: ticks);
-                  }(),
-            requires: [
-              needBuilding(BuildingType.researchLab, 1),
-              if (_techShipyard[t] case final l?) needBuilding(BuildingType.shipyard, l),
-              if (t == ResearchType.modularFabrication) needBuilding(BuildingType.researchLab, 4),
-              if (t == ResearchType.emergencyJump) Requirement(name: ResearchType.navigation.label, need: 3, have: rl(ResearchType.navigation), met: rl(ResearchType.navigation) >= 3),
-            ],
-          ),
+          () {
+            final row = _book.byLevel[rl(t)].research[t.index];
+            return ResearchOption(
+              tech: t,
+              level: row.level,
+              maxLevel: row.maxLevel,
+              next: switch (row.next) {
+                null => null,
+                final step => UpgradeStep(level: step.level, cost: step.cost, ticks: _researchStepAt(t, step.level, bl(BuildingType.researchLab)).$2),
+              },
+              requires: judged(row.requires),
+              effects: row.effects,
+            );
+          }(),
       ],
       ships: [
-        for (final c in ShipClass.values)
+        for (final o in yard.ships)
           ShipOption(
-            shipClass: c,
-            unitCost: _shipCost[c]!,
-            ticksPerShip: _ticksFor(_shipCost[c]!, 1200, 1 + 0.1 * bl(BuildingType.shipyard)),
-            requires: [
-              needBuilding(BuildingType.shipyard, 1),
-              if (_shipTech[c] case final t?) Requirement(name: t.label, need: 1, have: rl(t), met: rl(t) >= 1),
-            ],
+            shipClass: o.shipClass,
+            unitCost: o.unitCost,
+            ticksPerShip: o.ticksPerShip,
+            requires: judged(o.requires),
+            hull: o.hull,
+            shield: o.shield,
+            weapon: o.weapon,
+            power: o.power,
+            cargo: o.cargo,
+            flies: o.flies,
+            drive: o.drive,
+            speed: o.speed,
+            jumpTicks: o.jumpTicks,
+            jumpFuel: o.jumpFuel,
+            tank: o.tank,
+            harvest: o.harvest,
           ),
       ],
       defences: [
-        for (final k in DefenceKind.values)
+        for (final o in yard.defences)
           DefenceOption(
-            kind: k,
-            count: _defenceCount[k] ?? 0,
-            unitCost: _defenceCost[k]!,
-            ticksPerUnit: _ticksFor(_defenceCost[k]!, 1200, 1 + 0.1 * bl(BuildingType.shipyard)),
-            power: _defencePower[k]! * (1 + 0.04 * bl(BuildingType.defenseGrid)),
-            requires: [
-              needBuilding(BuildingType.shipyard, 1),
-              needBuilding(BuildingType.defenseGrid, switch (k) {
-                DefenceKind.pulseTurret => 1,
-                DefenceKind.lancerBattery => 2,
-                DefenceKind.ionBastion => 4,
-              }),
-            ],
+            kind: o.kind,
+            count: defences[o.kind]?.$1 ?? 0,
+            max: o.max,
+            room: switch (o.max) {
+              null => null,
+              final most => max(0, most - (defences[o.kind]?.$2 ?? 0)),
+            },
+            unitCost: o.unitCost,
+            ticksPerUnit: o.ticksPerUnit,
+            hull: o.hull,
+            shield: o.shield,
+            weapon: o.weapon,
+            power: o.power,
+            requires: judged(o.requires),
           ),
       ],
     );
@@ -2261,27 +2431,42 @@ class DemoWorld {
     return null;
   }
 
-  /// Docked ships, the Defense Grid and structures.
-  double _homePower(List<DefenceState> defences, List<BuildingState> buildings) {
-    var p = _dockedPower();
-    p += _gridPowerPerLevel * buildings.firstWhere((e) => e.buildingType == BuildingType.defenseGrid).level;
-    for (final d in defences) {
-      p += d.count * d.power;
-    }
-    return p;
+  static const _mines = [BuildingType.metalMine, BuildingType.crystalMine, BuildingType.deuteriumSynthesizer];
+
+  /// What the row of [t] at its level in [buildings] says of [kind].
+  static double _figure(List<BuildingState> buildings, BuildingType t, EffectKind kind) =>
+      _effect(_book.byLevel[buildings.firstWhere((b) => b.buildingType == t).level].buildings[t.index].effects, kind).now;
+
+  /// The server's `home_power`: the mines need energy, the Solar Plant, the
+  /// Fusion Reactor while it has deuterium to burn and the Solar Satellites
+  /// make it, and short of it the mines run at the share there is.
+  EnergyState _energy(List<BuildingState> buildings) {
+    final needed = _mines.fold(0.0, (n, t) => n + _figure(buildings, t, EffectKind.energyUsed)).round();
+    final reactor = buildings.firstWhere((b) => b.buildingType == BuildingType.fusionReactor).level;
+    final starved = reactor > 0 && _resources.deuterium <= 0;
+    final made = _figure(buildings, BuildingType.solarPlant, EffectKind.energyMade).round() +
+        (starved ? 0 : _figure(buildings, BuildingType.fusionReactor, EffectKind.energyMade).round()) +
+        _satellites * _book.satelliteEnergy;
+    return EnergyState(
+      made: made,
+      needed: needed,
+      fraction: needed == 0 ? 1 : min(1, made / needed),
+      perSatellite: _book.satelliteEnergy,
+      fusionBurn: reactor > 0 && !starved ? _figure(buildings, BuildingType.fusionReactor, EffectKind.fusionBurnPerTick) : 0,
+      fusionStarved: starved,
+    );
   }
 
-  /// The demo plays the server: mine output at the given building levels.
-  static Resources _production(List<BuildingState> buildings) {
-    double rate(BuildingType t, double perHour) {
-      final l = buildings.firstWhere((b) => b.buildingType == t).level;
-      return l == 0 ? 0 : perHour / 3600 * l * pow(1.1, l) * _pace * _lapse;
-    }
-
+  /// The server's `production_per_tick`: each mine at the share of its
+  /// output the energy allows, the natural production, less what the
+  /// Fusion Reactor burns.
+  static Resources _production(List<BuildingState> buildings, EnergyState energy) {
+    double natural(String name) => _book.constant(name) * _book.pace / 3600;
+    double mined(BuildingType t, EffectKind kind) => _figure(buildings, t, kind) * energy.fraction;
     return Resources(
-      metal: rate(BuildingType.metalMine, 10),
-      crystal: rate(BuildingType.crystalMine, 7),
-      deuterium: rate(BuildingType.deuteriumSynthesizer, 5),
+      metal: mined(BuildingType.metalMine, EffectKind.metalPerTick) + natural('NATURAL_PER_HOUR_METAL'),
+      crystal: mined(BuildingType.crystalMine, EffectKind.crystalPerTick) + natural('NATURAL_PER_HOUR_CRYSTAL'),
+      deuterium: mined(BuildingType.deuteriumSynthesizer, EffectKind.deuteriumPerTick) - energy.fusionBurn,
     );
   }
 
@@ -2364,7 +2549,7 @@ class DemoWorld {
         final f = _find(fleetId);
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
         if (f.cooldownRemaining > 0) return [_err(ErrorCode.onCooldown, 'Scanner recharging: ${f.cooldownRemaining} tick(s)')];
-        final range = f.ships.any((s) => s.shipClass == ShipClass.scout) ? scanScoutRange : scanBaseRange;
+        final range = _scanRange(f.ships);
         final fresh = _reveal(f.location, range, scan: true);
         var hostile = 0;
         for (final h in hexSpiral(f.location, range)) {
@@ -2459,9 +2644,10 @@ class DemoWorld {
         return [_tickUpdate()];
       case BuildCommand(:final buildingType, :final reserve):
         final proj = _projectedBuilding(buildingType);
-        if (proj >= 20) return [_err(ErrorCode.maxLevelReached, '${buildingType.label} is maxed')];
-        if (!_buildingPrereqs(buildingType, _projectedBuilding)) {
-          return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
+        final option = _buildingOption(buildingType);
+        if (proj >= option.maxLevel) return [_err(ErrorCode.maxLevelReached, '${buildingType.label} is maxed')];
+        if (!_met(option.requires, projected: true)) {
+          return [_err(ErrorCode.prerequisitesNotMet, _needs(buildingType.label, option.requires))];
         }
         if (_hw.buildQueue.length + _hw.buildPending.length >= _hw.buildSlots + _hw.queueWaitingMax) {
           return [_err(ErrorCode.queueFull, 'The building queue is full (${_hw.buildSlots} running + ${_hw.queueWaitingMax} waiting)')];
@@ -2479,11 +2665,11 @@ class DemoWorld {
         return [_tickUpdate()];
       case ResearchCommand(:final tech, :final reserve):
         if (_bl(BuildingType.researchLab) == 0) return [_err(ErrorCode.noResearchLab, 'Build a research lab first')];
-        final maxLevel = _shipTech.containsValue(tech) ? 1 : (tech == ResearchType.modularFabrication ? 2 : 5);
+        final option = _researchOption(tech);
         final proj = _projectedResearch(tech);
-        if (proj >= maxLevel) return [_err(ErrorCode.maxLevelReached, '${tech.label} is maxed')];
-        if (_hw.catalog.research.firstWhere((o) => o.tech == tech).requires.any((r) => !r.met)) {
-          return [_err(ErrorCode.prerequisitesNotMet, 'Prerequisites not met')];
+        if (proj >= option.maxLevel) return [_err(ErrorCode.maxLevelReached, '${tech.label} is maxed')];
+        if (option.requires.any((r) => !r.met)) {
+          return [_err(ErrorCode.prerequisitesNotMet, _needs(tech.label, option.requires))];
         }
         if ((_hw.researchActive == null ? 0 : 1) + _hw.researchPending.length >= 1 + _hw.queueWaitingMax) {
           return [_err(ErrorCode.queueFull, 'The research queue is full (1 running + ${_hw.queueWaitingMax} waiting)')];
@@ -2500,13 +2686,16 @@ class DemoWorld {
         return [_tickUpdate()];
       case BuildShipCommand(:final shipClass, :final count):
         final o = _hw.catalog.ships.firstWhere((o) => o.shipClass == shipClass);
-        if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
-        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.shipLocked, 'Ship class not unlocked')];
+        if (_bl(BuildingType.shipyard) == 0) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
+        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.shipLocked, _needs(shipClass.label, o.requires))];
         return _orderYard(ShipyardItem.ship(shipClass), count);
       case BuildDefenceCommand(:final kind, :final count):
         final o = _hw.catalog.defences.firstWhere((o) => o.kind == kind);
-        if (!o.requires.first.met) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
-        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.defenceLocked, '${kind.label} is locked')];
+        if (_bl(BuildingType.shipyard) == 0) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
+        if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.defenceLocked, _needs(kind.label, o.requires))];
+        if (o.room case final room? when count > room) {
+          return [_err(ErrorCode.maxLevelReached, 'at most ${o.max} ${kind.label} may stand, those being rebuilt and on order included')];
+        }
         return _orderYard(ShipyardItem.defence(kind), count);
       case CancelBuildCommand(:final queueType, :final id):
         late final String label;
@@ -2618,35 +2807,8 @@ class DemoWorld {
         final newId = 1 + _fleets.map((e) => e.id).reduce(max);
         final rest = [for (final s in f.ships) if (!shipIds.contains(s.id)) s];
         _fleets = [
-          for (final e in _fleets)
-            if (e.id == fleetId)
-              FleetState(
-                id: e.id,
-                location: e.location,
-                state: e.state,
-                ships: rest,
-                cargo: e.cargo,
-                cargoCapacity: e.cargoCapacity * (1 - share),
-                fuel: e.fuel * (1 - share),
-                fuelMax: e.fuelMax * (1 - share),
-                jumpTicks: _jumpTicks(rest),
-                hopsHome: e.hopsHome,
-                policy: e.policy,
-              )
-            else
-              e,
-          FleetState(
-            id: newId,
-            location: f.location,
-            state: FleetStatus.idle,
-            ships: taken,
-            cargo: const Resources(),
-            cargoCapacity: f.cargoCapacity * share,
-            fuel: f.fuel * share,
-            fuelMax: f.fuelMax * share,
-            jumpTicks: _jumpTicks(taken),
-            hopsHome: f.hopsHome,
-          ),
+          for (final e in _fleets) e.id == fleetId ? _copy(e, ships: rest, fuel: e.fuel * (1 - share)) : e,
+          _fleet(newId, f.location, FleetStatus.idle, taken, fuel: f.fuel * share),
         ];
         _pending.add(GameEvent(
           tick: _tick,
@@ -2666,23 +2828,7 @@ class DemoWorld {
         _fleets = [
           for (final e in _fleets)
             if (e.id == fleetId)
-              FleetState(
-                id: a.id,
-                location: a.location,
-                state: a.state,
-                ships: [...a.ships, ...b.ships],
-                cargo: Resources(
-                  metal: a.cargo.metal + b.cargo.metal,
-                  crystal: a.cargo.crystal + b.cargo.crystal,
-                  deuterium: a.cargo.deuterium + b.cargo.deuterium,
-                ),
-                cargoCapacity: a.cargoCapacity + b.cargoCapacity,
-                fuel: a.fuel + b.fuel,
-                fuelMax: a.fuelMax + b.fuelMax,
-                jumpTicks: _jumpTicks([...a.ships, ...b.ships]),
-                hopsHome: a.hopsHome,
-                policy: a.policy,
-              )
+              _copy(a, ships: [...a.ships, ...b.ships], cargo: _plus(a.cargo, b.cargo), fuel: a.fuel + b.fuel)
             else if (e.id != otherFleetId)
               e,
         ];
@@ -2755,7 +2901,7 @@ class DemoWorld {
             fuelToReturn: hops * f.jumpFuel,
             canReturn: left >= hops * f.jumpFuel,
             threat: odds.threat,
-            fleetPower: _fleetPower(f),
+            fleetPower: _fleetPower(f.ships),
             ratio: odds.ratio,
             label: odds.label,
           ),
@@ -2771,7 +2917,7 @@ class DemoWorld {
   /// The real server plays the fight out; nothing outside the demo uses this.
   SectorOdds _demoOdds(FleetState f, Hex sector) {
     final threat = _sector(sector, live: _liveNow.contains(sector.toKey())).threat;
-    final ratio = _fleetPower(f) / threat.estPower;
+    final ratio = _fleetPower(f.ships) / threat.estPower;
     return SectorOdds(sector: sector, threat: threat, ratio: ratio, label: ratioLabelFor(ratio));
   }
 }

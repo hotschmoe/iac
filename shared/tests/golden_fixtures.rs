@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use iac_shared::Resources;
 use iac_shared::constants::{Density, ResourceKind, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
-use iac_shared::pace::Pace;
+use iac_shared::pace::{Pace, preset_named};
 use iac_shared::protocol::*;
 use iac_shared::scaling::{
     BuildingLevels, BuildingType, DefenceKind, MAX_BUILDING_LEVEL, RatioLabel, ResearchLevels, ResearchType, ShipyardItem,
@@ -1834,11 +1834,13 @@ fn generate() -> Files {
 }
 
 /// The catalogue of an empire whose every building and research stands at
-/// one level, for each level there is, one catalogue a line. The scripted
-/// world of the Flutter tests takes each of its rows from here, so what it
-/// offers and charges is what the engine would. No Nanite Factory stands in
-/// it: one a level would halve every time that often.
+/// one level, for each level there is, one catalogue a line, in a world at
+/// the pace of the season preset. The scripted world of the Flutter tests
+/// is such a world and takes each of its rows from here, so what it offers
+/// and charges is what the engine would. No Nanite Factory stands in it:
+/// one a level would halve every time that often.
 fn catalog_levels(files: &mut Files) {
+    let pace = Pace::new(preset_named("season").unwrap().pace).unwrap();
     let lines: Vec<String> = (0..=MAX_BUILDING_LEVEL)
         .map(|level| {
             let mut buildings = BuildingLevels::default();
@@ -1850,7 +1852,7 @@ fn catalog_levels(files: &mut Files) {
                 research.set(t, level.min(research_max_level(t)));
             }
             let none = [0; DefenceKind::COUNT];
-            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, &Pace::PERSISTENT);
+            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, &pace);
             serde_json::to_string(&catalog).unwrap()
         })
         .collect();
