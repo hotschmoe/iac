@@ -21,9 +21,11 @@ of it was put to the owner.
   harvested from it, what it regains a tick.
 - Fuel: a fleet's fuel and tank, what a jump, a way home and a recall cost, a
   doctrine's fuel credit and income. The tank is filled from the deuterium
-  stockpile and the outpost's store, so the two are one kind of number, and
-  `FUEL_DEUT_PER_UNIT` between them is an `f64`: no width is crossed at a
-  dock.
+  stockpile and the outpost's store, and by `refine` from the hold, so the
+  two are one kind of number, and `FUEL_DEUT_PER_UNIT` and `REFINE_LOSS`
+  between them are `f64`: no width is crossed at a dock or in
+  `engine::refining`, and the wire's `Refining` carries both figures in 64
+  bits.
 - The exchange's figures on the wire (`ExchangeTerms`, `ExchangeMeter`), the
   fee included. The engine already worked them out in 64 bits and narrowed
   them to send them.
