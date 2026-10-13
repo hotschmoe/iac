@@ -14,7 +14,8 @@ use iac_shared::protocol::{
 use iac_shared::scaling::{self, BuildingType, DefenceKind, Refit, ResearchType};
 
 use crate::engine::{
-    fleet_broadside, fleet_cargo_capacity, fleet_power, outpost_raid_range, FleetStatus, GameEngine, OutpostTask, Player,
+    fleet_broadside, fleet_cargo_capacity, fleet_power, outpost_raid_range, platform_units, FleetStatus, GameEngine,
+    OutpostTask, Player,
 };
 
 /// The whole picture for one player, as sent on login and on request.
@@ -106,16 +107,19 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
             .collect(),
         grade: scaling::site_grade(densities),
         platform_power: if outpost.breached { 0.0 } else { scaling::outpost_platform_power(outpost.level) },
+        platform: if outpost.breached { Vec::new() } else { platform_units(outpost.level) },
         ships_power: engine.outpost_ships_power(player.id),
         defence_power: engine.outpost_defense_power(player.id),
         raid_power: outpost_raid_range(ring),
-        raid_arrival_tick: outpost.raid.incoming.map(|raid| raid.arrival_tick),
+        raid_arrival_tick: outpost.raid.incoming.as_ref().map(|raid| raid.arrival_tick),
+        raid: engine.outpost_raid_forecast(player.id),
         next_level: (next <= OUTPOST_MAX_LEVEL).then(|| OutpostLevel {
             level: next,
             cost: scaling::outpost_cost(next),
             ticks: scaling::outpost_build_ticks(next, &pace),
             store_cap: scaling::outpost_store_cap(next, &pace),
             platform_power: scaling::outpost_platform_power(next),
+            platform: platform_units(next),
             production: scaling::outpost_yield_per_tick(densities, ring, next, &pace),
         }),
         upgrade_refusal: engine.outpost_upgrade(player.id).err().map(|refusal| refusal.reason),
@@ -342,7 +346,6 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
         defences: DefenceKind::ALL.iter().map(|&kind| DefenceState {
             kind,
             count: player.defences.count[kind as usize],
-            restoring: player.defences.restoring[kind as usize],
             power: iac_shared::scaling::structure_power(kind, &player.research),
         }).collect(),
         home_defence_power: engine.home_defense_power(player.id),
@@ -352,6 +355,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
         next_raid_estimate_power: iac_shared::scaling::raid_power_base(
             iac_shared::scaling::econ_points(&player.buildings, &player.research),
         ) * (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0,
+        raid: engine.home_raid_forecast(player),
         catalog: iac_shared::protocol::HomeworldCatalog::new(
             &player.buildings,
             &player.research,

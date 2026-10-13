@@ -4,6 +4,7 @@
     "destroyed": 229,
     "groups": [
       {
+        "battery": false,
         "fleeing": false,
         "fleet_id": 3,
         "mine": true,
@@ -42,6 +43,7 @@
     "destroyed": 2,
     "groups": [
       {
+        "battery": false,
         "fleeing": false,
         "fleet_id": 4294967400,
         "label": "400x light fighter swarm",
@@ -59,6 +61,7 @@
         ]
       },
       {
+        "battery": false,
         "fleeing": false,
         "fleet_id": 4294967401,
         "label": "2x espionage probe picket",
@@ -94,6 +97,7 @@
   },
   "kind": "BattleRound",
   "mine": true,
+  "raid": false,
   "round": 3,
   "sector": {
     "q": -5,

@@ -23,7 +23,7 @@ use iac_shared::protocol::{
 };
 use iac_shared::scaling;
 use iac_shared::world::{HubService, NpcBehaviorType, WorldGen};
-use iac_sim::engine::{FleetStatus, IncomingRaid, RaidState};
+use iac_sim::engine::FleetStatus;
 use iac_sim::{GameEngine, Snapshot};
 
 use ResourceKind::{Crystal, Deuterium, Metal};
@@ -694,19 +694,9 @@ fn raided(
     let cap = scaling::storage_cap(&stores_at_two(), &e.engine.pace());
     let stockpile = restock(e.stockpile(), cap);
     e.set_stockpile(stockpile);
-    let arrival_tick = e.engine.current_tick() + 1;
-    edit(&mut e.engine, |s| {
-        s.raid_states.insert(pid, RaidState {
-            first_seen_tick: 0,
-            next_roll_tick: u64::MAX,
-            last_raid_tick: 0,
-            suppress_until: 0,
-            missed_rolls: 0,
-            incoming: Some(IncomingRaid { arrival_tick, power: 1e9 }),
-        });
-    });
+    send_raid(&mut e.engine, pid, &[(ShipClass::Battleship, 500)], 1.0, 1);
     let mark = e.mark();
-    e.run(1);
+    e.run_until(10, |e| e.log[mark..].iter().any(|ev| matches!(ev.kind, EventKind::RaidResolved(_))));
     let raid = e.since(mark, |k| match k {
         EventKind::RaidResolved(r) => Some(r.clone()),
         _ => None,

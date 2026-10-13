@@ -13,7 +13,7 @@ use iac_shared::constants::{
 };
 use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{BattleOutcome, EventKind, GameEvent, PursuitPhase, QueueType, WaitReason};
+use iac_shared::protocol::{BattleOutcome, EventKind, GameEvent, PursuitPhase, QueueType, UnitCount, WaitReason};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use serde::Serialize;
 
@@ -89,11 +89,31 @@ pub struct FieldTally {
     pub largest_fleet: u32,
     /// Deuterium paid at the homeworld to fill fleet tanks.
     pub refuel_deuterium: f64,
-    /// Raids on the homeworld.
+    /// Raids on the homeworld: those repelled, and the part of them in
+    /// which no raider was left (the rest were outlasted); those lost, and
+    /// the part of them that found nothing in their way.
     pub raids_repelled: u32,
+    pub raids_destroyed: u32,
     pub raids_lost: u32,
-    /// Raids on the outpost.
+    pub raids_unopposed: u32,
+    /// What lost raids took from the stockpile.
+    pub raided: f32,
+    /// Rounds fought in raids, at the homeworld and at the outpost.
+    pub raid_rounds: u32,
+    /// Ships of the player's fleets destroyed in raids, at either dock.
+    pub raid_ships_lost: u32,
+    /// What raids on the homeworld destroyed of its Solar Satellites and
+    /// its defences, and how many of the defences were rebuilt at once.
+    pub raid_satellites_lost: u32,
+    pub raid_defences_lost: u32,
+    pub raid_defences_rebuilt: u32,
+    /// What raids on the homeworld cost in ships, satellites and defences
+    /// that did not come back, at the weight of what they cost to build.
+    pub raid_losses: f32,
+    /// Raids on the outpost, and the part of those repelled in which no
+    /// raider was left.
     pub outpost_raids_repelled: u32,
+    pub outpost_raids_destroyed: u32,
     pub outpost_raids_lost: u32,
     /// The part of `outpost_raids_lost` that found it breached already,
     /// with no platform to meet them.
@@ -967,7 +987,7 @@ impl Counting<'_> {
                         t.sectors_charted += e.sectors;
                     }
                 }
-                EventKind::CombatEnded(e) => {
+                EventKind::CombatEnded(e) if !e.raid => {
                     for owner in &e.owners {
                         if let Some(t) = tally_of(entries, named(owner)) {
                             t.kills += u32::from(e.player_victory);
@@ -983,7 +1003,7 @@ impl Counting<'_> {
                         }
                     }
                 }
-                EventKind::BattleRound(e) => {
+                EventKind::BattleRound(e) if !e.raid => {
                     for group in &e.fleets.groups {
                         if let Some(t) = tally_of(entries, group.owner.as_deref().and_then(named)) {
                             let lost = group.units.iter().map(|u| u.lost).sum::<u32>();
@@ -1009,10 +1029,21 @@ impl Counting<'_> {
                 EventKind::RaidResolved(e) => {
                     if let Some(entry) = entry_of(entries, Some(e.player_id)) {
                         let t = &mut entry.tally;
+                        let destroyed = e.raiders_lost.iter().map(|s| s.count).sum::<u32>() >= e.raiders.iter().map(|s| s.count).sum();
                         match (e.outpost.is_some(), e.defended) {
-                            (false, true) => t.raids_repelled += 1,
-                            (false, false) => t.raids_lost += 1,
-                            (true, true) => t.outpost_raids_repelled += 1,
+                            (false, true) => {
+                                t.raids_repelled += 1;
+                                t.raids_destroyed += u32::from(destroyed);
+                            }
+                            (false, false) => {
+                                t.raids_lost += 1;
+                                t.raids_unopposed += u32::from(e.outcome.is_none());
+                                t.raided += scaling::resource_weight(&e.resources_lost);
+                            }
+                            (true, true) => {
+                                t.outpost_raids_repelled += 1;
+                                t.outpost_raids_destroyed += u32::from(destroyed);
+                            }
                             (true, false) => {
                                 t.outpost_raids_lost += 1;
                                 t.outpost_raids_on_breach += u32::from(entry.extracted.open);
@@ -1020,6 +1051,17 @@ impl Counting<'_> {
                             }
                         }
                         t.ships_lost += e.ships_lost;
+                        t.raid_rounds += e.rounds;
+                        t.raid_ships_lost += e.ships_lost;
+                        if e.outpost.is_none() {
+                            t.raid_satellites_lost += e.satellites_lost;
+                            t.raid_defences_lost += e.structures_lost;
+                            t.raid_defences_rebuilt += e.structures_restored;
+                            let cost = |units: &[UnitCount]| {
+                                units.iter().map(|u| scaling::resource_weight(&u.unit.unit_cost()) * u.count as f32).sum::<f32>()
+                            };
+                            t.raid_losses += cost(&e.lost) - cost(&e.rebuilt);
+                        }
                     }
                 }
                 EventKind::Queue(e) if e.paid.total() > 0.0 => {

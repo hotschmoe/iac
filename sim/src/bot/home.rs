@@ -714,7 +714,7 @@ impl<'a> Planner<'a> {
         let power_of = |kind: DefenceKind| {
             self.home.defences.iter().find(|d| d.kind == kind).map_or(kind.power(), |d| d.power)
         };
-        let standing: f32 = self.home.defences.iter().map(|d| (d.count + d.restoring) as f32 * d.power).sum();
+        let standing: f32 = self.home.defences.iter().map(|d| d.count as f32 * d.power).sum();
         let coming: f32 = self
             .ordered()
             .filter_map(|(item, left)| match item {

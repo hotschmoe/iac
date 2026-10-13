@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 11;
+pub const ECONOMY_VERSION: u32 = 12;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 4;
 
@@ -651,8 +651,9 @@ pub const SCAN_REVEAL_TICKS: u64 = 120;
 
 /// Homeworld raids: forecasted pressure, never a random tax. A raid is
 /// rolled periodically, announced in advance, sized from the player's
-/// economy points (`scaling::raid_power_base`) and resolved against docked
-/// ships, Solar Satellites and defences. Losses are hard-capped.
+/// economy points (`scaling::raid_power_base`) and fought as a battle
+/// against the ships at home, the Solar Satellites and the defences
+/// (`docs/design/ogame.md`, section 7.6). What a lost one takes is capped.
 /// The cadence is attention-class: it follows P^0.75, not P.
 pub const RAID_ROLL_INTERVAL: u64 = 21_600;
 pub const RAID_ROLL_CHANCE: f32 = 0.30;
@@ -669,23 +670,24 @@ pub const RAID_POWER_ROLL_MAX: f32 = 1.15;
 pub const RAID_LOSS_CAP_METAL: f64 = 0.08;
 pub const RAID_LOSS_CAP_CRYSTAL: f64 = 0.08;
 pub const RAID_LOSS_CAP_DEUT: f64 = 0.05;
-/// Salvage reward for repelling a raid (fraction of raid fleet value).
+/// What a raid destroyed to the last ship leaves at the place it raided, as
+/// a fraction of what its ships cost.
 pub const RAID_DEFENSE_SALVAGE_FRACTION: f64 = 0.30;
 /// After losing a raid, no raids for this long (no death spiral).
 pub const RAID_SUPPRESS_AFTER_LOSS: u64 = 172_800;
-/// A repelled raid wears down structures: this fraction of them, scaled by
-/// raid power over defence power (at most 1), is destroyed.
-pub const RAID_STRUCTURE_DAMAGE: f32 = 0.5;
-/// Of the structures a repelled raid destroys, this share is rebuilt free.
-pub const RAID_STRUCTURE_RESTORE: f32 = 0.7;
-/// Delay before they are rebuilt, in pace-1 ticks (finds class).
-pub const RAID_RESTORE_TICKS: u64 = 600;
-/// A lost raid destroys this fraction of the structures, with no rebuild.
-pub const RAID_LOST_STRUCTURE_FRACTION: f32 = 0.5;
-/// A lost raid also destroys this fraction of the ships docked at home
-/// (at least one) and of the Solar Satellites: ships parked at home defend,
-/// and when the defence fails they are what the raiders reach.
-pub const RAID_LOST_SHIP_FRACTION: f32 = 0.25;
+/// The most rounds a raid is fought for: raiders came for the stockpile and
+/// leave if they cannot reach it. OGame's. It trades a defence that can
+/// outlast a raid against one that must beat it.
+pub const RAID_ROUNDS: u32 = 6;
+/// Of the defences a raid destroys, this many in a hundred are rebuilt at
+/// once and for nothing when it is over: where fewer than
+/// `DEFENCE_REBUILD_EACH_BELOW` of a kind fell each has that chance, and
+/// where more fell a share within `DEFENCE_REBUILD_SPREAD` either side of
+/// it is rolled for the kind. OGame's. It trades what defences cost to hold
+/// against what ships cost.
+pub const DEFENCE_REBUILD_PCT: u32 = 70;
+pub const DEFENCE_REBUILD_SPREAD: u32 = 10;
+pub const DEFENCE_REBUILD_EACH_BELOW: u32 = 10;
 /// An empire is raided once its Shipyard stands at this level, or it has
 /// any defence. Provisional.
 pub const RAID_MIN_SHIPYARD: u8 = 2;

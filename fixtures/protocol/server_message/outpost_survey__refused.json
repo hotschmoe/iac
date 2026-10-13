@@ -6,7 +6,30 @@
     "metal": 1000.0
   },
   "fleet_id": 1,
-  "platform_power": 40.0,
+  "platform": [
+    {
+      "count": 4,
+      "unit": "RocketLauncher"
+    }
+  ],
+  "platform_power": 408.0,
+  "raid": {
+    "odds": {
+      "destroyed": 0.0,
+      "kept": 0.17000000178813934,
+      "label": "at_risk",
+      "lost": 0.5,
+      "outlasted": 0.5,
+      "raiders_kept": 0.9800000190734863
+    },
+    "power": 467.0,
+    "ships": [
+      {
+        "class": "Cruiser",
+        "count": 1
+      }
+    ]
+  },
   "raid_power": {
     "least": 10.5,
     "most": 15.100000381469727

@@ -1,0 +1,33 @@
+{
+  "breached": false,
+  "defended": false,
+  "defense_power": 0.0,
+  "kind": "RaidResolved",
+  "lost": [],
+  "player_id": 42,
+  "protected_kept": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "raid_power": 219.0,
+  "raiders": [
+    {
+      "class": "LightFighter",
+      "count": 2
+    }
+  ],
+  "raiders_lost": [],
+  "rebuilt": [],
+  "resources_lost": {
+    "crystal": 406.5,
+    "deuterium": 90.25,
+    "metal": 812.0
+  },
+  "rounds": 0,
+  "satellites_lost": 0,
+  "ships_lost": 0,
+  "structures_lost": 0,
+  "structures_restored": 0,
+  "tick": 1234
+}

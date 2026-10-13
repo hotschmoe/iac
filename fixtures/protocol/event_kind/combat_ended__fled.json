@@ -2,6 +2,7 @@
   "kind": "CombatEnded",
   "losses": [
     {
+      "battery": false,
       "destroyed": false,
       "fleet_id": 3,
       "lost": [
@@ -14,6 +15,7 @@
       "owner": "Admiral"
     },
     {
+      "battery": false,
       "destroyed": true,
       "fleet_id": 4294967400,
       "label": "400x light fighter swarm",
@@ -32,6 +34,7 @@
     "Admiral"
   ],
   "player_victory": false,
+  "raid": false,
   "rounds": 4,
   "sector": {
     "q": 9,

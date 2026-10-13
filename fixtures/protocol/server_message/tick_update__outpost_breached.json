@@ -5,6 +5,17 @@
       "defended": false,
       "defense_power": 294.0,
       "kind": "RaidResolved",
+      "lost": [
+        {
+          "count": 1,
+          "unit": "LightFighter"
+        },
+        {
+          "count": 4,
+          "unit": "RocketLauncher"
+        }
+      ],
+      "outcome": "fled",
       "outpost": {
         "q": 10,
         "r": -2
@@ -16,14 +27,23 @@
         "metal": 1200.0
       },
       "raid_power": 310.5,
+      "raiders": [
+        {
+          "class": "Cruiser",
+          "count": 1
+        }
+      ],
+      "raiders_lost": [],
+      "rebuilt": [],
       "resources_lost": {
         "crystal": 0.0,
         "deuterium": 0.0,
         "metal": 0.0
       },
+      "rounds": 2,
       "satellites_lost": 0,
       "ships_lost": 1,
-      "structures_lost": 0,
+      "structures_lost": 4,
       "structures_restored": 0,
       "tick": 5000
     }
@@ -127,6 +147,7 @@
       "r": -2
     },
     "max_level": 3,
+    "platform": [],
     "platform_power": 0.0,
     "production": {
       "crystal": 0.0,
@@ -138,9 +159,26 @@
       "deuterium": 0.0,
       "metal": 1200.0
     },
+    "raid": {
+      "odds": {
+        "destroyed": 0.0,
+        "kept": 0.0,
+        "label": "lost",
+        "lost": 1.0,
+        "outlasted": 0.0,
+        "raiders_kept": 1.0
+      },
+      "power": 467.0,
+      "ships": [
+        {
+          "class": "Cruiser",
+          "count": 1
+        }
+      ]
+    },
     "raid_power": {
-      "least": 38.29999923706055,
-      "most": 55.099998474121094
+      "least": 383.0,
+      "most": 551.0
     },
     "repair_cost": {
       "crystal": 781.25,

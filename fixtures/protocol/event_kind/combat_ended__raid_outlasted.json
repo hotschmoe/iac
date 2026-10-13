@@ -1,0 +1,66 @@
+{
+  "kind": "CombatEnded",
+  "losses": [
+    {
+      "battery": false,
+      "destroyed": false,
+      "fleet_id": 3,
+      "lost": [
+        {
+          "count": 1,
+          "unit": "LightFighter"
+        }
+      ],
+      "mine": true,
+      "owner": "Admiral"
+    },
+    {
+      "battery": true,
+      "destroyed": false,
+      "fleet_id": 0,
+      "label": "home defences",
+      "lost": [
+        {
+          "count": 2,
+          "unit": "SolarSatellite"
+        },
+        {
+          "count": 11,
+          "unit": "RocketLauncher"
+        },
+        {
+          "count": 2,
+          "unit": "LightLaser"
+        }
+      ],
+      "mine": true,
+      "owner": "Admiral"
+    },
+    {
+      "battery": false,
+      "destroyed": false,
+      "fleet_id": 912,
+      "label": "raid of 12 Light Fighter, 2 Cruiser",
+      "lost": [
+        {
+          "count": 5,
+          "unit": "LightFighter"
+        }
+      ],
+      "mine": false
+    }
+  ],
+  "mine": true,
+  "outcome": "outlasted",
+  "owners": [
+    "Admiral"
+  ],
+  "player_victory": false,
+  "raid": true,
+  "rounds": 6,
+  "sector": {
+    "q": 8,
+    "r": -3
+  },
+  "tick": 1234
+}

@@ -1023,6 +1023,13 @@ class OutpostSurvey extends ServerMessage {
   /// What the platform defends with at level 1.
   final double platformPower;
 
+  /// The defences the platform is at level 1.
+  final List<UnitCount> platform;
+
+  /// The raid of this ring at its typical power against that platform
+  /// alone: what it flies and how the fight is expected to end.
+  final RaidForecast? raid;
+
   /// Why `found_outpost` would be refused right now; absent when the
   /// fleet could found here this tick.
   final String? refusal;
@@ -1036,6 +1043,8 @@ class OutpostSurvey extends ServerMessage {
     required this.buildTicks,
     required this.raidPower,
     required this.platformPower,
+    this.platform = const [],
+    this.raid,
     this.refusal,
   });
 
@@ -1050,6 +1059,8 @@ class OutpostSurvey extends ServerMessage {
       buildTicks: _int(m['build_ticks']),
       raidPower: PowerRange.fromJson(m['raid_power']),
       platformPower: _double(m['platform_power']),
+      platform: _opt(m['platform'], (v) => _list(v, UnitCount.fromJson)) ?? const [],
+      raid: _opt(m['raid'], RaidForecast.fromJson),
       refusal: _opt(m['refusal'], _string),
     );
   }
@@ -1065,8 +1076,135 @@ class OutpostSurvey extends ServerMessage {
     'build_ticks': buildTicks,
     'raid_power': raidPower.toJson(),
     'platform_power': platformPower,
+    'platform': platform.map((e) => e.toJson()).toList(),
+    'raid': ?raid?.toJson(),
     'refusal': ?refusal,
   };
+}
+
+/// A raid on the homeworld or on the outpost, announced or expected, and how
+/// it would go against what stands there now.
+///
+/// A raid is a battle (`BattleRound`, one a tick): the raiders against every
+/// ship of the owner standing there and, at home, every defence and Solar
+/// Satellite, or at the outpost its platform. It is fought for at most
+/// `RAID_ROUNDS` rounds. It is repelled when no raider is left or when the
+/// rounds are over and a defender still stands; it is lost only when no
+/// defender is left.
+class RaidForecast {
+  /// The tick an announced raid arrives. Absent while none is on its way:
+  /// `power` and `ships` are then those of a raid of typical size were
+  /// one announced now.
+  final int? arrivalTick;
+
+  /// The raid's power on the scale `FleetState.power` uses. It is fixed
+  /// when the raid is announced.
+  final double power;
+
+  /// What it flies, by class in catalogue order. Fixed when announced.
+  final List<ShipCount> ships;
+
+  /// How it would end against what stands in its way this tick.
+  final RaidOdds odds;
+
+  const RaidForecast({this.arrivalTick, required this.power, required this.ships, required this.odds});
+
+  factory RaidForecast.fromJson(Object? json) {
+    final m = _obj(json);
+    return RaidForecast(
+      arrivalTick: _opt(m['arrival_tick'], _int),
+      power: _double(m['power']),
+      ships: _list(m['ships'], ShipCount.fromJson),
+      odds: RaidOdds.fromJson(m['odds']),
+    );
+  }
+
+  Json toJson() => {
+    'arrival_tick': ?arrivalTick,
+    'power': power,
+    'ships': ships.map((e) => e.toJson()).toList(),
+    'odds': odds.toJson(),
+  };
+}
+
+/// How a raid would end against what stands in its way now: the server
+/// plays the fight itself, the round a raid is fought by, a few times over
+/// with fixed dice for `RAID_ROUNDS` rounds, as `SectorOdds` are worked out.
+/// `destroyed`, `outlasted` and `lost` are the shares of the fights played
+/// that ended each way and add up to 1.
+class RaidOdds {
+  final RaidLabel label;
+
+  /// No raider was left: the raid is repelled and leaves wreckage.
+  final double destroyed;
+
+  /// The rounds were over and a defender still stood: the raid is
+  /// repelled and leaves nothing.
+  final double outlasted;
+
+  /// No defender was left: the raid takes its share of the stockpile.
+  final double lost;
+
+  /// The share of their worth the defenders are expected to keep, before
+  /// any defence is rebuilt, and the share of theirs the raiders keep.
+  final double kept;
+  final double raidersKept;
+
+  const RaidOdds({
+    required this.label,
+    required this.destroyed,
+    required this.outlasted,
+    required this.lost,
+    required this.kept,
+    required this.raidersKept,
+  });
+
+  factory RaidOdds.fromJson(Object? json) {
+    final m = _obj(json);
+    return RaidOdds(
+      label: RaidLabel.fromJson(m['label']),
+      destroyed: _double(m['destroyed']),
+      outlasted: _double(m['outlasted']),
+      lost: _double(m['lost']),
+      kept: _double(m['kept']),
+      raidersKept: _double(m['raiders_kept']),
+    );
+  }
+
+  Json toJson() => {
+    'label': label.toJson(),
+    'destroyed': destroyed,
+    'outlasted': outlasted,
+    'lost': lost,
+    'kept': kept,
+    'raiders_kept': raidersKept,
+  };
+}
+
+/// What `RaidOdds` come to, from the worst for the defender to the best.
+enum RaidLabel {
+  /// Lost in every fight played, or nothing stands in its way.
+  lost('lost', label: 'LOST', outcome: 'nothing here stands through the fight: the raid takes its share'),
+
+  /// Lost in some of the fights played.
+  atRisk('at_risk', label: 'AT RISK', outcome: 'the fight may leave no defender standing'),
+
+  /// Lost in none, and not destroyed in every one: the defence lasts the
+  /// rounds out.
+  held('held', label: 'HELD', outcome: 'a defender stands when the raiders give up; what falls before that is lost'),
+
+  /// The raiders were destroyed in every fight played.
+  repelled('repelled', label: 'REPELLED', outcome: 'the raiders are destroyed and leave their wreckage');
+
+  const RaidLabel(this.wire, {required this.label, required this.outcome});
+
+  final String wire;
+  final String label;
+  final String outcome;
+
+  static RaidLabel fromJson(Object? json) => _named(values, (v) => v.wire, json);
+
+  String toJson() => wire;
 }
 
 /// What a survey reads of a sector the player has seen.
@@ -1665,7 +1803,8 @@ class GameState extends ServerMessage {
   /// The fights under way that the player has a fleet in or is present
   /// at, each with its last round: what a client that arrives in the
   /// middle of one has missed. The rounds before that are not kept.
-  /// Left out when there is none.
+  /// A raid being fought at the player's homeworld or outpost is one of
+  /// them, with `raid` set. Left out when there is none.
   final List<BattleState> battles;
   final WorldInfo world;
 
@@ -1721,7 +1860,11 @@ class BattleState {
   /// What each fleet and group has lost so far, as `CombatEnded` will say.
   final List<BattleLosses> losses;
 
-  const BattleState({required this.sector, required this.rounds, this.lastRound, required this.losses});
+  /// The fight is a raid on a homeworld or an outpost; absent for a fight
+  /// in open space.
+  final RaidBattle? raid;
+
+  const BattleState({required this.sector, required this.rounds, this.lastRound, required this.losses, this.raid});
 
   factory BattleState.fromJson(Object? json) {
     final m = _obj(json);
@@ -1730,6 +1873,7 @@ class BattleState {
       rounds: _int(m['rounds']),
       lastRound: _opt(m['last_round'], BattleRoundEvent.fromJson),
       losses: _list(m['losses'], BattleLosses.fromJson),
+      raid: _opt(m['raid'], RaidBattle.fromJson),
     );
   }
 
@@ -1738,6 +1882,64 @@ class BattleState {
     'rounds': rounds,
     'last_round': ?lastRound?.toJson(),
     'losses': losses.map((e) => e.toJson()).toList(),
+    'raid': ?raid?.toJson(),
+  };
+}
+
+/// A raid that has arrived and is being fought.
+class RaidBattle {
+  /// The empire raided.
+  final String owner;
+
+  /// It is the receiver's own homeworld or outpost.
+  final bool mine;
+
+  /// The raid is on the owner's outpost, not the homeworld.
+  final bool outpost;
+
+  /// The power it was announced with.
+  final double power;
+
+  /// What it flew in with, by class.
+  final List<ShipCount> ships;
+
+  /// Rounds still to fight at the most: the raiders leave after the last.
+  final int roundsLeft;
+
+  /// How the fight would end from where it stands, over the rounds left.
+  final RaidOdds odds;
+
+  const RaidBattle({
+    required this.owner,
+    this.mine = false,
+    required this.outpost,
+    required this.power,
+    required this.ships,
+    required this.roundsLeft,
+    required this.odds,
+  });
+
+  factory RaidBattle.fromJson(Object? json) {
+    final m = _obj(json);
+    return RaidBattle(
+      owner: _string(m['owner']),
+      mine: _opt(m['mine'], _bool) ?? false,
+      outpost: _bool(m['outpost']),
+      power: _double(m['power']),
+      ships: _list(m['ships'], ShipCount.fromJson),
+      roundsLeft: _int(m['rounds_left']),
+      odds: RaidOdds.fromJson(m['odds']),
+    );
+  }
+
+  Json toJson() => {
+    'owner': owner,
+    'mine': mine,
+    'outpost': outpost,
+    'power': power,
+    'ships': ships.map((e) => e.toJson()).toList(),
+    'rounds_left': roundsLeft,
+    'odds': odds.toJson(),
   };
 }
 
@@ -1754,10 +1956,13 @@ class BattleState {
 /// Nothing in the store scores or can be spent at home.
 ///
 /// Pirates of its ring raid it on the homeworld's raid clock
-/// (`RaidIncoming` and `RaidResolved` carry `outpost`). A lost raid takes a
-/// quarter of what lies above `protected` in the store and in the holds of
-/// fleets standing there, destroys a quarter of those ships, and breaches
-/// the outpost. No raid destroys it, and a fleet standing there is not safe.
+/// (`RaidIncoming` and `RaidResolved` carry `outpost`), and the raid is a
+/// battle as a raid on the homeworld is (`RaidForecast`): the raiders
+/// against the `platform` and every ship of the owner standing there. A
+/// lost raid, one that left no defender, takes a quarter of what lies above
+/// `protected` in the store and breaches the outpost. No raid destroys it,
+/// the platform stands whole again after every fight it is not breached
+/// by, and a fleet standing there is in the fight.
 class OutpostState {
   final Hex location;
 
@@ -1800,23 +2005,30 @@ class OutpostState {
   /// The site's grade, 0 to 12; see `SurveySite.grade`.
   final double grade;
 
-  /// What the platform defends with; 0 while breached or unfinished.
+  /// What the platform adds up to on the power scale; 0 while breached or
+  /// unfinished.
   final double platformPower;
 
-  /// What the owner's ships standing in the sector add.
+  /// The defences the platform is; empty while breached or unfinished.
+  final List<UnitCount> platform;
+
+  /// What the owner's ships standing in the sector add up to.
   final double shipsPower;
 
-  /// The platform and the owner's ships standing in the sector: what the
-  /// next raid meets.
+  /// `platform_power` and `ships_power` together. It is a sum on the
+  /// power scale and decides nothing: `raid.odds` is how a raid would go.
   final double defencePower;
 
-  /// The least and the most a raid on this outpost can be. The outcome
-  /// is `defence_power`, taken a tenth higher or lower by chance, against
-  /// the raid's power.
+  /// The least and the most a raid on this outpost can be.
   final PowerRange raidPower;
 
   /// Tick an announced raid arrives; absent when none is on its way.
   final int? raidArrivalTick;
+
+  /// The raid announced, or one of typical size for the ring, against the
+  /// platform and the ships standing there now. Absent before level 1 is
+  /// finished: nothing raids a building site.
+  final RaidForecast? raid;
 
   /// What `upgrade_outpost` would build; absent at `max_level`.
   final OutpostLevel? nextLevel;
@@ -1852,10 +2064,12 @@ class OutpostState {
     this.yieldLost = const [],
     required this.grade,
     required this.platformPower,
+    this.platform = const [],
     required this.shipsPower,
     required this.defencePower,
     required this.raidPower,
     this.raidArrivalTick,
+    this.raid,
     this.nextLevel,
     this.upgradeRefusal,
     this.repairCost,
@@ -1879,10 +2093,12 @@ class OutpostState {
       yieldLost: _opt(m['yield_lost'], (v) => _list(v, ResourceKind.fromJson)) ?? const [],
       grade: _double(m['grade']),
       platformPower: _double(m['platform_power']),
+      platform: _opt(m['platform'], (v) => _list(v, UnitCount.fromJson)) ?? const [],
       shipsPower: _double(m['ships_power']),
       defencePower: _double(m['defence_power']),
       raidPower: PowerRange.fromJson(m['raid_power']),
       raidArrivalTick: _opt(m['raid_arrival_tick'], _int),
+      raid: _opt(m['raid'], RaidForecast.fromJson),
       nextLevel: _opt(m['next_level'], OutpostLevel.fromJson),
       upgradeRefusal: _opt(m['upgrade_refusal'], _string),
       repairCost: _opt(m['repair_cost'], Resources.fromJson),
@@ -1905,10 +2121,12 @@ class OutpostState {
     'yield_lost': yieldLost.map((e) => e.toJson()).toList(),
     'grade': grade,
     'platform_power': platformPower,
+    'platform': platform.map((e) => e.toJson()).toList(),
     'ships_power': shipsPower,
     'defence_power': defencePower,
     'raid_power': raidPower.toJson(),
     'raid_arrival_tick': ?raidArrivalTick,
+    'raid': ?raid?.toJson(),
     'next_level': ?nextLevel?.toJson(),
     'upgrade_refusal': ?upgradeRefusal,
     'repair_cost': ?repairCost?.toJson(),
@@ -1969,6 +2187,9 @@ class OutpostLevel {
   final Resources storeCap;
   final double platformPower;
 
+  /// The defences the platform is at this level.
+  final List<UnitCount> platform;
+
   /// What the extractor makes each tick at this level, on this site.
   final Resources production;
 
@@ -1978,6 +2199,7 @@ class OutpostLevel {
     required this.ticks,
     required this.storeCap,
     required this.platformPower,
+    this.platform = const [],
     required this.production,
   });
 
@@ -1989,6 +2211,7 @@ class OutpostLevel {
       ticks: _int(m['ticks']),
       storeCap: Resources.fromJson(m['store_cap']),
       platformPower: _double(m['platform_power']),
+      platform: _opt(m['platform'], (v) => _list(v, UnitCount.fromJson)) ?? const [],
       production: Resources.fromJson(m['production']),
     );
   }
@@ -1999,6 +2222,7 @@ class OutpostLevel {
     'ticks': ticks,
     'store_cap': storeCap.toJson(),
     'platform_power': platformPower,
+    'platform': platform.map((e) => e.toJson()).toList(),
     'production': production.toJson(),
   };
 }
@@ -2294,7 +2518,7 @@ class FleetState {
 
   /// The fleet is in the sector of its owner's outpost, whatever state
   /// the outpost is in: `load` and `unload` use the outpost's store
-  /// here, and a raid on it finds the fleet.
+  /// here, and a raid on it finds the fleet in its fight.
   final bool atOutpost;
 
   /// Fuel the way to the owner's outpost costs: the fewest lane hops
@@ -3238,12 +3462,13 @@ class HomeworldState {
   final List<ShipGroupState> dockedShips;
   final int dockedShipCount;
 
-  /// Defences standing at home (those being rebuilt after a raid are
-  /// counted in `restoring`, not `count`).
+  /// Defences standing at home. Those a raid destroys are counted out as
+  /// they fall and the ones rebuilt are back the tick the raid ends.
   final List<DefenceState> defences;
 
-  /// Docked ships, Solar Satellites and all defences together: what the
-  /// next raid meets.
+  /// Docked ships, Solar Satellites and all defences together, on the
+  /// power scale. It is a sum and decides nothing: a raid is a battle,
+  /// and `raid.odds` is how it would go.
   final double homeDefencePower;
 
   /// The share of `home_defence_power` the ships standing at home add.
@@ -3258,6 +3483,11 @@ class HomeworldState {
   /// Typical power of the next raid, from the empire's building and
   /// research points; the actual raid rolls 0.80 to 1.15 times this.
   final double nextRaidEstimatePower;
+
+  /// The raid announced, or one of typical size were it announced now:
+  /// what it flies, and how it would end against the ships, satellites
+  /// and defences standing at home this tick.
+  final RaidForecast raid;
 
   /// What can be queued right now and what it costs; see `HomeworldCatalog`.
   final HomeworldCatalog catalog;
@@ -3287,6 +3517,7 @@ class HomeworldState {
     required this.satellitePower,
     required this.structurePower,
     required this.nextRaidEstimatePower,
+    required this.raid,
     required this.catalog,
   });
 
@@ -3317,6 +3548,7 @@ class HomeworldState {
       satellitePower: _double(m['satellite_power']),
       structurePower: _double(m['structure_power']),
       nextRaidEstimatePower: _double(m['next_raid_estimate_power']),
+      raid: RaidForecast.fromJson(m['raid']),
       catalog: HomeworldCatalog.fromJson(m['catalog']),
     );
   }
@@ -3346,6 +3578,7 @@ class HomeworldState {
     'satellite_power': satellitePower,
     'structure_power': structurePower,
     'next_raid_estimate_power': nextRaidEstimatePower,
+    'raid': raid.toJson(),
     'catalog': catalog.toJson(),
   };
 }
@@ -3354,25 +3587,17 @@ class DefenceState {
   final DefenceKind kind;
   final int count;
 
-  /// Structures a repelled raid destroyed that come back for free.
-  final int restoring;
-
   /// Power of one with the owner's Weapons, Shielding and Armour Technology.
   final double power;
 
-  const DefenceState({required this.kind, required this.count, required this.restoring, required this.power});
+  const DefenceState({required this.kind, required this.count, required this.power});
 
   factory DefenceState.fromJson(Object? json) {
     final m = _obj(json);
-    return DefenceState(
-      kind: DefenceKind.fromJson(m['kind']),
-      count: _int(m['count']),
-      restoring: _int(m['restoring']),
-      power: _double(m['power']),
-    );
+    return DefenceState(kind: DefenceKind.fromJson(m['kind']), count: _int(m['count']), power: _double(m['power']));
   }
 
-  Json toJson() => {'kind': kind.toJson(), 'count': count, 'restoring': restoring, 'power': power};
+  Json toJson() => {'kind': kind.toJson(), 'count': count, 'power': power};
 }
 
 /// A homeworld's energy. The mines need it and the Solar Plant, the Fusion
@@ -4723,11 +4948,18 @@ class BattleRoundEvent {
   /// The players' fleets, with what they fired this round.
   final BattleSide fleets;
 
-  /// The hostile groups, with what they fired.
+  /// The hostile groups, with what they fired. In a raid they are one
+  /// group, the raiders.
   final BattleSide hostiles;
 
-  /// A fleet of the receiver's is in the fight.
+  /// A fleet of the receiver's is in the fight, or the fight is a raid on
+  /// the receiver's homeworld or outpost.
   final bool mine;
+
+  /// The round is a raid's: `fleets` holds the raided empire's fleets at
+  /// the dock and, marked `battery`, its defences. `BattleState.raid` of
+  /// the same sector says how many rounds are left.
+  final bool raid;
 
   const BattleRoundEvent({
     required this.sector,
@@ -4735,6 +4967,7 @@ class BattleRoundEvent {
     required this.fleets,
     required this.hostiles,
     this.mine = false,
+    this.raid = false,
   });
 
   factory BattleRoundEvent.fromJson(Object? json) {
@@ -4745,6 +4978,7 @@ class BattleRoundEvent {
       fleets: BattleSide.fromJson(m['fleets']),
       hostiles: BattleSide.fromJson(m['hostiles']),
       mine: _opt(m['mine'], _bool) ?? false,
+      raid: _opt(m['raid'], _bool) ?? false,
     );
   }
 
@@ -4754,6 +4988,7 @@ class BattleRoundEvent {
     'fleets': fleets.toJson(),
     'hostiles': hostiles.toJson(),
     'mine': mine,
+    'raid': raid,
   };
 }
 
@@ -4811,12 +5046,15 @@ class BattleSide {
 }
 
 class BattleGroup {
+  /// The fleet or the group. A raid's raiders carry an id of their own;
+  /// the defences of the place raided carry 0 and `battery`.
   final int fleetId;
 
   /// Empire owning the fleet; `None` for a hostile group.
   final String? owner;
 
-  /// What a hostile group is ("3x cruiser pack"); empty for a player's fleet.
+  /// What a hostile group is ("3x cruiser pack"); empty for a player's
+  /// fleet. For a battery, what it is ("home defences", "outpost platform").
   final String label;
 
   /// The fleet is the receiver's.
@@ -4824,6 +5062,10 @@ class BattleGroup {
 
   /// The fleet is leaving: it was fired on this round and did not fire.
   final bool fleeing;
+
+  /// Not a fleet: the defences and Solar Satellites of a homeworld under
+  /// raid, or an outpost's platform. It stands on the fleets' side.
+  final bool battery;
 
   /// By unit, in catalogue order. A unit wiped out this round is listed
   /// once more with a count of 0.
@@ -4835,6 +5077,7 @@ class BattleGroup {
     this.label = '',
     this.mine = false,
     this.fleeing = false,
+    this.battery = false,
     required this.units,
   });
 
@@ -4846,6 +5089,7 @@ class BattleGroup {
       label: _opt(m['label'], _string) ?? '',
       mine: _opt(m['mine'], _bool) ?? false,
       fleeing: _opt(m['fleeing'], _bool) ?? false,
+      battery: _opt(m['battery'], _bool) ?? false,
       units: _list(m['units'], BattleUnits.fromJson),
     );
   }
@@ -4856,6 +5100,7 @@ class BattleGroup {
     if (label.isNotEmpty) 'label': label,
     'mine': mine,
     'fleeing': fleeing,
+    'battery': battery,
     'units': units.map((e) => e.toJson()).toList(),
   };
 }
@@ -4986,7 +5231,11 @@ enum BattleOutcome {
   /// The last fleet jumped out of the sector under fire. The hostiles keep
   /// the losses and the damage they took; a group that was beating the
   /// fleet may follow it (`Pursuit`).
-  fled('fled');
+  fled('fled'),
+
+  /// A raid's `RAID_ROUNDS` rounds are over, or a round took no hull from
+  /// anybody, and a defender still stands: the raiders leave with nothing.
+  outlasted('outlasted');
 
   const BattleOutcome(this.wire);
 
@@ -5004,6 +5253,9 @@ class BattleLosses {
   final String label;
   final bool mine;
 
+  /// As `BattleGroup.battery`: the defences of the place raided.
+  final bool battery;
+
   /// Units destroyed, by kind, in catalogue order; empty when it lost none.
   final List<UnitCount> lost;
 
@@ -5015,6 +5267,7 @@ class BattleLosses {
     this.owner,
     this.label = '',
     this.mine = false,
+    this.battery = false,
     required this.lost,
     required this.destroyed,
   });
@@ -5026,6 +5279,7 @@ class BattleLosses {
       owner: _opt(m['owner'], _string),
       label: _opt(m['label'], _string) ?? '',
       mine: _opt(m['mine'], _bool) ?? false,
+      battery: _opt(m['battery'], _bool) ?? false,
       lost: _list(m['lost'], UnitCount.fromJson),
       destroyed: _bool(m['destroyed']),
     );
@@ -5036,6 +5290,7 @@ class BattleLosses {
     'owner': ?owner,
     if (label.isNotEmpty) 'label': label,
     'mine': mine,
+    'battery': battery,
     'lost': lost.map((e) => e.toJson()).toList(),
     'destroyed': destroyed,
   };
@@ -5164,8 +5419,8 @@ enum PursuitPhase {
 }
 
 /// Ships a fleet lost outside a fight: those that broke up in an emergency
-/// jump. A fight's losses are in `BattleRound` and `CombatEnded`, a raid's
-/// in `RaidResolved`.
+/// jump. A fight's losses are in `BattleRound` and `CombatEnded`, and a
+/// raid's in `RaidResolved` as well.
 class ShipsLostEvent extends EventKind {
   final int fleetId;
   final Hex sector;
@@ -5357,13 +5612,18 @@ class CombatStartedEvent extends EventKind {
 
 /// A fight is over. `owners` lists the empires that fought. `salvage` is the
 /// pile the hostiles' destruction left in the sector (absent when they were
-/// not destroyed); it despawns at `salvage_despawn_tick`.
+/// not destroyed); it despawns at `salvage_despawn_tick`. When the fight was
+/// a raid, `raid` is set and the `RaidResolved` of the same tick says what
+/// was rebuilt and what was taken.
 class CombatEndedEvent extends EventKind {
   final Hex sector;
 
   /// `outcome` is `HostilesDestroyed`.
   final bool playerVictory;
   final BattleOutcome outcome;
+
+  /// The fight was a raid on a homeworld or an outpost.
+  final bool raid;
 
   /// Rounds fought.
   final int rounds;
@@ -5379,6 +5639,7 @@ class CombatEndedEvent extends EventKind {
     required this.sector,
     required this.playerVictory,
     required this.outcome,
+    this.raid = false,
     required this.rounds,
     required this.losses,
     required this.owners,
@@ -5393,6 +5654,7 @@ class CombatEndedEvent extends EventKind {
       sector: Hex.fromJson(m['sector']),
       playerVictory: _bool(m['player_victory']),
       outcome: BattleOutcome.fromJson(m['outcome']),
+      raid: _opt(m['raid'], _bool) ?? false,
       rounds: _int(m['rounds']),
       losses: _list(m['losses'], BattleLosses.fromJson),
       owners: _list(m['owners'], _string),
@@ -5408,6 +5670,7 @@ class CombatEndedEvent extends EventKind {
     'sector': sector.toJson(),
     'player_victory': playerVictory,
     'outcome': outcome.toJson(),
+    'raid': raid,
     'rounds': rounds,
     'losses': losses.map((e) => e.toJson()).toList(),
     'owners': owners,
@@ -5670,18 +5933,28 @@ enum SignalKind {
 }
 
 /// Advance warning that a raid fleet is vectoring toward the homeworld, or
-/// toward the player's outpost when `outpost` names its sector.
+/// toward the player's outpost when `outpost` names its sector. A fleet may
+/// leave before it arrives; one that stays is in the fight.
 class RaidIncomingEvent extends EventKind {
   final int playerId;
   final int arrivalTick;
 
-  /// Rough size read against the defence standing now: "light" (under
-  /// half of it), "moderate" (under all of it) or "heavy".
+  /// `odds.label` in a word, read off the fight as it would go against
+  /// what stands there now: "light" (the raiders are destroyed), "moderate"
+  /// (the defence lasts the rounds out) or "heavy" (it may be lost).
   final String threat;
 
-  /// The raid fleet's power, fixed at forecast time, on the same scale as
-  /// `home_defence_power` and `OutpostState.defence_power`.
+  /// The raid fleet's power, fixed at forecast time, on the scale
+  /// `FleetState.power` uses.
   final double estPower;
+
+  /// What it flies, by class, fixed at forecast time.
+  final List<ShipCount> ships;
+
+  /// How it would end against what stands there now. The same figures
+  /// follow in `HomeworldState.raid` and `OutpostState.raid` every tick
+  /// until it arrives, as what stands there changes.
+  final RaidOdds? odds;
 
   /// The outpost the raid is bound for; absent for a raid on the homeworld.
   final Hex? outpost;
@@ -5691,6 +5964,8 @@ class RaidIncomingEvent extends EventKind {
     required this.arrivalTick,
     required this.threat,
     this.estPower = 0,
+    this.ships = const [],
+    this.odds,
     this.outpost,
   });
 
@@ -5701,6 +5976,8 @@ class RaidIncomingEvent extends EventKind {
       arrivalTick: _int(m['arrival_tick']),
       threat: _string(m['threat']),
       estPower: _opt(m['est_power'], _double) ?? 0,
+      ships: _opt(m['ships'], (v) => _list(v, ShipCount.fromJson)) ?? const [],
+      odds: _opt(m['odds'], RaidOdds.fromJson),
       outpost: _opt(m['outpost'], Hex.fromJson),
     );
   }
@@ -5712,19 +5989,35 @@ class RaidIncomingEvent extends EventKind {
     'arrival_tick': arrivalTick,
     'threat': threat,
     'est_power': estPower,
+    'ships': ships.map((e) => e.toJson()).toList(),
+    'odds': ?odds?.toJson(),
     'outpost': ?outpost?.toJson(),
   };
 }
 
-/// Outcome of a raid on the homeworld, or on the player's outpost when
-/// `outpost` names its sector. An outpost has no structures and a repelled
-/// raid on one leaves no salvage, so those fields are zero and absent then.
+/// How a raid on the homeworld ended, or on the player's outpost when
+/// `outpost` names its sector. The fight itself was told round by round
+/// (`BattleRound`) and ends with a `CombatEnded` in the same tick; a raid
+/// that found nothing standing in its way was lost without a round, has no
+/// `outcome` and no `CombatEnded`.
 class RaidResolvedEvent extends EventKind {
   final int playerId;
 
   /// The outpost that was raided; absent for a raid on the homeworld.
   final Hex? outpost;
+
+  /// Repelled: no raider was left, or a defender stood when the rounds
+  /// were over. False when no defender was left.
   final bool defended;
+
+  /// How the fight ended: `hostiles_destroyed` and `both_destroyed` (no
+  /// raider left), `outlasted`, `fleets_destroyed` (lost), or `fled` and
+  /// `withdrawn` (lost: the last defender left). Absent when no round was
+  /// fought.
+  final BattleOutcome? outcome;
+
+  /// Rounds fought.
+  final int rounds;
 
   /// The raid broke the outpost: it makes nothing, fills no tank and has
   /// no platform until it has repaired itself from its store. Always
@@ -5735,22 +6028,41 @@ class RaidResolvedEvent extends EventKind {
   /// aboard fleets at home, counted as one pile above the protected
   /// floor. At an outpost, the same of its store and the fleets there.
   final Resources resourcesLost;
+
+  /// The wreckage of a raid destroyed to the last ship, left where it was
+  /// fought; absent otherwise.
   final Resources? salvageDropped;
 
-  /// Tick the pile on the homeworld despawns (absent when none dropped).
-  /// A fleet docked at home scoops it into storage on its own; without
-  /// one, an alert warns when it has `HOME_SALVAGE_WARN_TICKS` left.
+  /// Tick the pile despawns (absent when none dropped). At the homeworld
+  /// a fleet docked there scoops it into storage on its own; without one,
+  /// an alert warns when it has `HOME_SALVAGE_WARN_TICKS` left. At an
+  /// outpost a fleet collects it as any wreckage.
   final int? salvageDespawnTick;
+
+  /// The power the raid was announced with, and what stood in its way
+  /// when it arrived on the same scale. Neither decided anything.
   final double raidPower;
   final double defensePower;
 
-  /// Solar Satellites a lost raid destroyed.
+  /// What the raid flew in with and what it lost, by class.
+  final List<ShipCount> raiders;
+  final List<ShipCount> raidersLost;
+
+  /// Everything the defender lost in the fight, by unit: ships, Solar
+  /// Satellites and defences, the defences before any is rebuilt.
+  final List<UnitCount> lost;
+
+  /// The defences rebuilt at once and for nothing when the fight ended,
+  /// by kind: about `DEFENCE_REBUILD_PCT` in a hundred of those that fell.
+  /// Ships and Solar Satellites are not rebuilt.
+  final List<UnitCount> rebuilt;
+
+  /// Solar Satellites destroyed.
   final int satellitesLost;
 
-  /// Structures the raid destroyed.
+  /// Defences destroyed, and how many of them were rebuilt: the sums of
+  /// `lost` and of `rebuilt` over the defences.
   final int structuresLost;
-
-  /// Of those, how many are rebuilt for free after a short delay.
   final int structuresRestored;
 
   /// What the storage buildings kept out of reach of a successful raid, of
@@ -5758,20 +6070,25 @@ class RaidResolvedEvent extends EventKind {
   /// outpost, what its protected floor kept.
   final Resources protectedKept;
 
-  /// Ships docked at home, or standing at the outpost, that a lost raid
-  /// destroyed.
+  /// Ships of the owner's fleets destroyed in the fight.
   final int shipsLost;
 
   const RaidResolvedEvent({
     required this.playerId,
     this.outpost,
     required this.defended,
+    this.outcome,
+    this.rounds = 0,
     this.breached = false,
     required this.resourcesLost,
     this.salvageDropped,
     this.salvageDespawnTick,
     required this.raidPower,
     required this.defensePower,
+    this.raiders = const [],
+    this.raidersLost = const [],
+    this.lost = const [],
+    this.rebuilt = const [],
     this.satellitesLost = 0,
     this.structuresLost = 0,
     this.structuresRestored = 0,
@@ -5785,12 +6102,18 @@ class RaidResolvedEvent extends EventKind {
       playerId: _int(m['player_id']),
       outpost: _opt(m['outpost'], Hex.fromJson),
       defended: _bool(m['defended']),
+      outcome: _opt(m['outcome'], BattleOutcome.fromJson),
+      rounds: _opt(m['rounds'], _int) ?? 0,
       breached: _opt(m['breached'], _bool) ?? false,
       resourcesLost: Resources.fromJson(m['resources_lost']),
       salvageDropped: _opt(m['salvage_dropped'], Resources.fromJson),
       salvageDespawnTick: _opt(m['salvage_despawn_tick'], _int),
       raidPower: _double(m['raid_power']),
       defensePower: _double(m['defense_power']),
+      raiders: _opt(m['raiders'], (v) => _list(v, ShipCount.fromJson)) ?? const [],
+      raidersLost: _opt(m['raiders_lost'], (v) => _list(v, ShipCount.fromJson)) ?? const [],
+      lost: _opt(m['lost'], (v) => _list(v, UnitCount.fromJson)) ?? const [],
+      rebuilt: _opt(m['rebuilt'], (v) => _list(v, UnitCount.fromJson)) ?? const [],
       satellitesLost: _opt(m['satellites_lost'], _int) ?? 0,
       structuresLost: _opt(m['structures_lost'], _int) ?? 0,
       structuresRestored: _opt(m['structures_restored'], _int) ?? 0,
@@ -5805,12 +6128,18 @@ class RaidResolvedEvent extends EventKind {
     'player_id': playerId,
     'outpost': ?outpost?.toJson(),
     'defended': defended,
+    'outcome': ?outcome?.toJson(),
+    'rounds': rounds,
     'breached': breached,
     'resources_lost': resourcesLost.toJson(),
     'salvage_dropped': ?salvageDropped?.toJson(),
     'salvage_despawn_tick': ?salvageDespawnTick,
     'raid_power': raidPower,
     'defense_power': defensePower,
+    'raiders': raiders.map((e) => e.toJson()).toList(),
+    'raiders_lost': raidersLost.map((e) => e.toJson()).toList(),
+    'lost': lost.map((e) => e.toJson()).toList(),
+    'rebuilt': rebuilt.map((e) => e.toJson()).toList(),
     'satellites_lost': satellitesLost,
     'structures_lost': structuresLost,
     'structures_restored': structuresRestored,
@@ -6513,10 +6842,20 @@ const double fuelDeutPerUnit = 0.08;
 /// with cargo ships against the worth of the docks as places to fill up.
 const double refineLoss = 0.15;
 
-/// A lost raid also destroys this fraction of the ships docked at home
-/// (at least one) and of the Solar Satellites: ships parked at home defend,
-/// and when the defence fails they are what the raiders reach.
-const double raidLostShipFraction = 0.25;
+/// The most rounds a raid is fought for: raiders came for the stockpile and
+/// leave if they cannot reach it. OGame's. It trades a defence that can
+/// outlast a raid against one that must beat it.
+const raidRounds = 6;
+
+/// Of the defences a raid destroys, this many in a hundred are rebuilt at
+/// once and for nothing when it is over: where fewer than
+/// `DEFENCE_REBUILD_EACH_BELOW` of a kind fell each has that chance, and
+/// where more fell a share within `DEFENCE_REBUILD_SPREAD` either side of
+/// it is rolled for the kind. OGame's. It trades what defences cost to hold
+/// against what ships cost.
+const defenceRebuildPct = 70;
+
+const defenceRebuildSpread = 10;
 
 /// The most ships one fleet holds. It bounds the worst round of a fight.
 const maxFleetShips = 5000;

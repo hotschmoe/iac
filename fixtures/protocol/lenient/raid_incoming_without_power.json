@@ -4,6 +4,7 @@
     "est_power": 0.0,
     "kind": "RaidIncoming",
     "player_id": 1,
+    "ships": [],
     "threat": "light",
     "tick": 3,
     "type": "event"

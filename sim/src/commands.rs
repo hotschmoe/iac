@@ -429,6 +429,9 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
             Ok(_) => format!("command rejected ({code:?})"),
         },
         (ErrorCode::InvalidCommand, Command::AbandonOutpost) => "you have no outpost to abandon".to_string(),
+        (ErrorCode::OnCooldown, Command::AbandonOutpost) => {
+            "your outpost is under raid; it cannot be abandoned until the fight is over".to_string()
+        }
         (ErrorCode::FleetNotFound, _) => format!("fleet {fid} not found (or it has no ships left)"),
         (ErrorCode::OnCooldown, Command::Attack { target_fleet_id, .. })
             if fleet.is_some_and(|f| f.state != FleetStatus::InCombat && f.state != FleetStatus::Moving) =>
@@ -476,6 +479,12 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         (ErrorCode::FleetLimitReached, Command::Split { .. }) => format!(
             "fleet limit reached: at most {MAX_FLEETS_TOTAL} fleets in all and {MAX_FLEETS_PER_PLAYER} deployed away from home"
         ),
+        (ErrorCode::FleetLimitReached, Command::Move { .. }) if fleet.is_some_and(|f| f.state == FleetStatus::InCombat) => {
+            match fleet.map(|f| engine.flight_order(f)) {
+                Some(Err(refusal)) => refusal.reason,
+                _ => format!("fleet limit reached: at most {MAX_FLEETS_PER_PLAYER} fleets can be deployed"),
+            }
+        }
         (ErrorCode::FleetLimitReached, _) => {
             format!("fleet limit reached: at most {MAX_FLEETS_PER_PLAYER} fleets can be deployed")
         }

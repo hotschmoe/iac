@@ -1862,6 +1862,23 @@
       "metal": 0.0
     },
     "queue_waiting_max": 3,
+    "raid": {
+      "odds": {
+        "destroyed": 0.0,
+        "kept": 0.0,
+        "label": "lost",
+        "lost": 1.0,
+        "outlasted": 0.0,
+        "raiders_kept": 1.0
+      },
+      "power": 55.5,
+      "ships": [
+        {
+          "class": "LightFighter",
+          "count": 1
+        }
+      ]
+    },
     "research": [],
     "research_pending": [],
     "satellite_power": 0.0,
@@ -2013,7 +2030,7 @@
   ],
   "outpost": {
     "breached": false,
-    "defence_power": 172.0,
+    "defence_power": 540.0,
     "grade": 3.0,
     "hops_home": 7,
     "in_service": true,
@@ -2030,7 +2047,21 @@
         "metal": 6250.0
       },
       "level": 3,
-      "platform_power": 250.0,
+      "platform": [
+        {
+          "count": 16,
+          "unit": "RocketLauncher"
+        },
+        {
+          "count": 8,
+          "unit": "LightLaser"
+        },
+        {
+          "count": 4,
+          "unit": "HeavyLaser"
+        }
+      ],
+      "platform_power": 3972.0,
       "production": {
         "crystal": 0.0,
         "deuterium": 0.016191,
@@ -2043,7 +2074,13 @@
       },
       "ticks": 33750
     },
-    "platform_power": 40.0,
+    "platform": [
+      {
+        "count": 4,
+        "unit": "RocketLauncher"
+      }
+    ],
+    "platform_power": 408.0,
     "production": {
       "crystal": 0.0,
       "deuterium": 0.005397,
@@ -2054,10 +2091,28 @@
       "deuterium": 180.25,
       "metal": 412.5
     },
+    "raid": {
+      "arrival_tick": 4990,
+      "odds": {
+        "destroyed": 0.0,
+        "kept": 0.20999999344348907,
+        "label": "at_risk",
+        "lost": 0.375,
+        "outlasted": 0.625,
+        "raiders_kept": 0.9700000286102295
+      },
+      "power": 512.5,
+      "ships": [
+        {
+          "class": "Cruiser",
+          "count": 1
+        }
+      ]
+    },
     "raid_arrival_tick": 4990,
     "raid_power": {
-      "least": 38.29999923706055,
-      "most": 55.099998474121094
+      "least": 383.0,
+      "most": 551.0
     },
     "ships_power": 132.0,
     "store": {

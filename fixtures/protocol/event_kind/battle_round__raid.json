@@ -1,0 +1,254 @@
+{
+  "fleets": {
+    "absorbed": 820,
+    "destroyed": 4,
+    "groups": [
+      {
+        "battery": false,
+        "fleeing": false,
+        "fleet_id": 3,
+        "mine": true,
+        "owner": "Admiral",
+        "units": [
+          {
+            "at_risk": 1,
+            "count": 5,
+            "damaged": 2,
+            "hull": 1710,
+            "hull_max": 2000,
+            "lost": 1,
+            "unit": "LightFighter"
+          }
+        ]
+      },
+      {
+        "battery": true,
+        "fleeing": false,
+        "fleet_id": 0,
+        "label": "home defences",
+        "mine": true,
+        "owner": "Admiral",
+        "units": [
+          {
+            "at_risk": 0,
+            "count": 2,
+            "damaged": 0,
+            "hull": 400,
+            "hull_max": 400,
+            "lost": 2,
+            "unit": "SolarSatellite"
+          },
+          {
+            "at_risk": 0,
+            "count": 9,
+            "damaged": 2,
+            "hull": 1690,
+            "hull_max": 1800,
+            "lost": 11,
+            "unit": "RocketLauncher"
+          },
+          {
+            "at_risk": 0,
+            "count": 10,
+            "damaged": 3,
+            "hull": 1840,
+            "hull_max": 2000,
+            "lost": 2,
+            "unit": "LightLaser"
+          },
+          {
+            "at_risk": 0,
+            "count": 1,
+            "damaged": 0,
+            "hull": 2000,
+            "hull_max": 2000,
+            "lost": 0,
+            "unit": "SmallShieldDome"
+          }
+        ]
+      }
+    ],
+    "hull_damage": 2280,
+    "power": 3240,
+    "shots": 38,
+    "volleys": [
+      {
+        "absorbed": 40,
+        "at": "LightFighter",
+        "bounced": 0,
+        "destroyed": 0,
+        "from": "LightFighter",
+        "hull_damage": 160,
+        "shots": 4,
+        "wasted": 0
+      },
+      {
+        "absorbed": 100,
+        "at": "Cruiser",
+        "bounced": 0,
+        "destroyed": 0,
+        "from": "LightFighter",
+        "hull_damage": 0,
+        "shots": 2,
+        "wasted": 0
+      },
+      {
+        "absorbed": 140,
+        "at": "LightFighter",
+        "bounced": 0,
+        "destroyed": 2,
+        "from": "RocketLauncher",
+        "hull_damage": 980,
+        "shots": 14,
+        "wasted": 0
+      },
+      {
+        "absorbed": 300,
+        "at": "Cruiser",
+        "bounced": 0,
+        "destroyed": 0,
+        "from": "RocketLauncher",
+        "hull_damage": 180,
+        "shots": 6,
+        "wasted": 0
+      },
+      {
+        "absorbed": 90,
+        "at": "LightFighter",
+        "bounced": 0,
+        "destroyed": 2,
+        "from": "LightLaser",
+        "hull_damage": 810,
+        "shots": 9,
+        "wasted": 0
+      },
+      {
+        "absorbed": 150,
+        "at": "Cruiser",
+        "bounced": 0,
+        "destroyed": 0,
+        "from": "LightLaser",
+        "hull_damage": 150,
+        "shots": 3,
+        "wasted": 0
+      }
+    ]
+  },
+  "hostiles": {
+    "absorbed": 424,
+    "destroyed": 16,
+    "groups": [
+      {
+        "battery": false,
+        "fleeing": false,
+        "fleet_id": 912,
+        "label": "raid of 12 Light Fighter, 2 Cruiser",
+        "mine": false,
+        "units": [
+          {
+            "at_risk": 2,
+            "count": 7,
+            "damaged": 4,
+            "hull": 2230,
+            "hull_max": 2800,
+            "lost": 4,
+            "unit": "LightFighter"
+          },
+          {
+            "at_risk": 0,
+            "count": 2,
+            "damaged": 1,
+            "hull": 5070,
+            "hull_max": 5400,
+            "lost": 0,
+            "unit": "Cruiser"
+          }
+        ]
+      }
+    ],
+    "hull_damage": 3027,
+    "power": 9000,
+    "shots": 33,
+    "volleys": [
+      {
+        "absorbed": 20,
+        "at": "LightFighter",
+        "bounced": 0,
+        "destroyed": 1,
+        "from": "LightFighter",
+        "hull_damage": 80,
+        "shots": 2,
+        "wasted": 0
+      },
+      {
+        "absorbed": 3,
+        "at": "SolarSatellite",
+        "bounced": 0,
+        "destroyed": 1,
+        "from": "LightFighter",
+        "hull_damage": 147,
+        "shots": 3,
+        "wasted": 0
+      },
+      {
+        "absorbed": 100,
+        "at": "RocketLauncher",
+        "bounced": 0,
+        "destroyed": 1,
+        "from": "LightFighter",
+        "hull_damage": 150,
+        "shots": 5,
+        "wasted": 0
+      },
+      {
+        "absorbed": 50,
+        "at": "LightLaser",
+        "bounced": 0,
+        "destroyed": 0,
+        "from": "LightFighter",
+        "hull_damage": 50,
+        "shots": 2,
+        "wasted": 0
+      },
+      {
+        "absorbed": 1,
+        "at": "SolarSatellite",
+        "bounced": 0,
+        "destroyed": 1,
+        "from": "Cruiser",
+        "hull_damage": 200,
+        "shots": 1,
+        "wasted": 0
+      },
+      {
+        "absorbed": 200,
+        "at": "RocketLauncher",
+        "bounced": 0,
+        "destroyed": 10,
+        "from": "Cruiser",
+        "hull_damage": 2000,
+        "shots": 18,
+        "wasted": 0
+      },
+      {
+        "absorbed": 50,
+        "at": "LightLaser",
+        "bounced": 0,
+        "destroyed": 2,
+        "from": "Cruiser",
+        "hull_damage": 400,
+        "shots": 2,
+        "wasted": 0
+      }
+    ]
+  },
+  "kind": "BattleRound",
+  "mine": true,
+  "raid": true,
+  "round": 2,
+  "sector": {
+    "q": 8,
+    "r": -3
+  },
+  "tick": 1234
+}

@@ -1,0 +1,63 @@
+{
+  "breached": false,
+  "defended": true,
+  "defense_power": 4120.0,
+  "kind": "RaidResolved",
+  "lost": [
+    {
+      "count": 5,
+      "unit": "RocketLauncher"
+    }
+  ],
+  "outcome": "hostiles_destroyed",
+  "player_id": 42,
+  "protected_kept": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "raid_power": 1350.5,
+  "raiders": [
+    {
+      "class": "LightFighter",
+      "count": 12
+    },
+    {
+      "class": "Cruiser",
+      "count": 2
+    }
+  ],
+  "raiders_lost": [
+    {
+      "class": "LightFighter",
+      "count": 12
+    },
+    {
+      "class": "Cruiser",
+      "count": 2
+    }
+  ],
+  "rebuilt": [
+    {
+      "count": 3,
+      "unit": "RocketLauncher"
+    }
+  ],
+  "resources_lost": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "rounds": 3,
+  "salvage_despawn_tick": 2543,
+  "salvage_dropped": {
+    "crystal": 7800.0,
+    "deuterium": 1200.0,
+    "metal": 22800.0
+  },
+  "satellites_lost": 0,
+  "ships_lost": 0,
+  "structures_lost": 5,
+  "structures_restored": 3,
+  "tick": 1234
+}

@@ -18,17 +18,17 @@ use serde_json::{Value, json};
 
 use iac_shared::Resources;
 use iac_shared::constants::{
-    CHASE_MIN_RATIO, Density, Drive, EXPLODE_BELOW_PCT, EXPLORE_DURATION_TICKS, FLEE_FUEL_MULTIPLIER,
-    FLEE_MIN_ROUNDS, FUEL_DEUT_PER_UNIT, LANE_SEARCH_HOPS, MAX_FLEET_SHIPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
-    POLICY_CARGO_RETURN_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_DISENGAGE_RATIO_X10_MAX,
-    POLICY_DISENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX, POLICY_ENGAGE_RATIO_X10_MIN,
-    POLICY_FUEL_UNBOUNDED_PCT, POLICY_HULL_READY, POLICY_MIN_FUEL_PCT_MAX, POLICY_RANGE_MAX, POLICY_RANGE_MIN,
-    RAID_LOST_SHIP_FRACTION, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_PROBE_RANGE,
-    ShipClass, TerrainType, Zone,
+    CHASE_MIN_RATIO, DEFENCE_REBUILD_PCT, DEFENCE_REBUILD_SPREAD, Density, Drive, EXPLODE_BELOW_PCT,
+    EXPLORE_DURATION_TICKS, FLEE_FUEL_MULTIPLIER, FLEE_MIN_ROUNDS, FUEL_DEUT_PER_UNIT, LANE_SEARCH_HOPS,
+    MAX_FLEET_SHIPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING, POLICY_CARGO_RETURN_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN,
+    POLICY_DISENGAGE_RATIO_X10_MAX, POLICY_DISENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
+    POLICY_ENGAGE_RATIO_X10_MIN, POLICY_FUEL_UNBOUNDED_PCT, POLICY_HULL_READY, POLICY_MIN_FUEL_PCT_MAX,
+    POLICY_RANGE_MAX, POLICY_RANGE_MIN, RAID_ROUNDS, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN,
+    SCAN_PROBE_RANGE, ShipClass, TerrainType, Zone,
 };
 use iac_shared::protocol::{
     BOT_NAME_PREFIX, ClientMessage, EffectKind, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN,
-    PolicyParams, PolicyPreset, ServerMessage, SignalKind, SiteRisk,
+    PolicyParams, PolicyPreset, RaidLabel, ServerMessage, SignalKind, SiteRisk,
 };
 use iac_shared::scaling::{
     BuildingType, DefenceKind, MAX_THREAT, RATIO_EVEN, RATIO_FAVOURABLE, RATIO_RISKY, RATIO_SAFE, RatioLabel,
@@ -160,6 +160,8 @@ pub fn extras(model: &Model) -> Extras {
         column(model, "label", EffectKind::label),
         column(model, "label", RatioLabel::label),
         column(model, "outcome", RatioLabel::outcome),
+        column(model, "label", RaidLabel::label),
+        column(model, "outcome", RaidLabel::outcome),
         column(model, "label", PolicyPreset::label),
         column(model, "label", SiteRisk::label),
         column(model, "label", SignalKind::label),
@@ -195,7 +197,9 @@ pub fn extras(model: &Model) -> Extras {
         POLICY_FUEL_UNBOUNDED_PCT,
         FUEL_DEUT_PER_UNIT,
         REFINE_LOSS,
-        RAID_LOST_SHIP_FRACTION,
+        RAID_ROUNDS,
+        DEFENCE_REBUILD_PCT,
+        DEFENCE_REBUILD_SPREAD,
         MAX_FLEET_SHIPS,
         EXPLODE_BELOW_PCT,
         POLICY_HULL_READY,

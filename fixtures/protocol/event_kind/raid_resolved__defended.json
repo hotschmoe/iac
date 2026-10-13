@@ -1,23 +1,69 @@
 {
   "breached": false,
   "defended": true,
-  "defense_power": 805.5,
+  "defense_power": 2340.5,
   "kind": "RaidResolved",
+  "lost": [
+    {
+      "count": 1,
+      "unit": "LightFighter"
+    },
+    {
+      "count": 4,
+      "unit": "SolarSatellite"
+    },
+    {
+      "count": 17,
+      "unit": "RocketLauncher"
+    },
+    {
+      "count": 3,
+      "unit": "LightLaser"
+    }
+  ],
+  "outcome": "outlasted",
   "player_id": 42,
   "protected_kept": {
     "crystal": 0.0,
     "deuterium": 0.0,
     "metal": 0.0
   },
-  "raid_power": 400.0,
+  "raid_power": 1350.5,
+  "raiders": [
+    {
+      "class": "LightFighter",
+      "count": 12
+    },
+    {
+      "class": "Cruiser",
+      "count": 2
+    }
+  ],
+  "raiders_lost": [
+    {
+      "class": "LightFighter",
+      "count": 9
+    }
+  ],
+  "rebuilt": [
+    {
+      "count": 12,
+      "unit": "RocketLauncher"
+    },
+    {
+      "count": 2,
+      "unit": "LightLaser"
+    }
+  ],
   "resources_lost": {
     "crystal": 0.0,
     "deuterium": 0.0,
     "metal": 0.0
   },
-  "satellites_lost": 0,
-  "ships_lost": 0,
-  "structures_lost": 3,
-  "structures_restored": 2,
+  "rounds": 6,
+  "satellites_lost": 4,
+  "ships_lost": 1,
+  "structures_lost": 20,
+  "structures_restored": 14,
   "tick": 1234
 }

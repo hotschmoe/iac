@@ -12,6 +12,7 @@
 // `scaling::outcome_ratio` turns that into the ratio the labels are cut from.
 
 use iac_shared::constants::{ShipClass, ODDS_ROUNDS, ODDS_RUNS, ODDS_RUNS_MOST, ODDS_UNITS};
+use iac_shared::protocol::{RaidLabel, RaidOdds};
 use iac_shared::scaling::{self, Arms, ShipyardItem};
 
 use crate::combat::{self, Dice, Squad, Troop};
@@ -59,18 +60,45 @@ impl Force {
 
 /// Share of its starting worth each side is expected to keep, and how the
 /// fights played ended for the first side: the share it won (the other
-/// side destroyed and itself not) and the share in which it was destroyed.
+/// side destroyed and itself not), the share in which it was destroyed, and
+/// the part of that in which the other side fell with it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outlook {
     pub ours: f32,
     pub theirs: f32,
     pub won: f32,
     pub lost: f32,
+    pub mutual: f32,
 }
 
 impl Outlook {
     pub fn ratio(self) -> f32 {
         scaling::outcome_ratio(self.ours, self.theirs, self.won, self.lost)
+    }
+
+    /// The outlook read as a raid's, the first side defending: a raid is
+    /// repelled when no raider is left, whatever became of the defenders,
+    /// and lost only when the raiders outlive them.
+    pub fn raid(self) -> RaidOdds {
+        let destroyed = self.won + self.mutual;
+        let lost = (self.lost - self.mutual).max(0.0);
+        let label = if lost >= 1.0 {
+            RaidLabel::Lost
+        } else if lost > 0.0 {
+            RaidLabel::AtRisk
+        } else if destroyed >= 1.0 {
+            RaidLabel::Repelled
+        } else {
+            RaidLabel::Held
+        };
+        RaidOdds {
+            label,
+            destroyed,
+            outlasted: (1.0 - destroyed - lost).max(0.0),
+            lost,
+            kept: self.ours,
+            raiders_kept: self.theirs,
+        }
     }
 }
 
@@ -125,12 +153,20 @@ fn after(before: &[Troop], squads: Vec<Vec<Squad>>) -> Vec<Troop> {
     before.iter().zip(squads).map(|(troop, squads)| Troop { arms: troop.arms, squads, silent: troop.silent }).collect()
 }
 
+/// The outlook of a fight in open space, which has no limit of rounds.
 pub fn outlook(ours: &Force, theirs: &Force) -> Outlook {
+    outlook_within(ours, theirs, ODDS_ROUNDS)
+}
+
+/// The outlook of a fight that ends after `rounds` rounds at the latest, as
+/// a raid does: what is left standing then is what each side keeps, and a
+/// fight neither side was destroyed in is neither won nor lost.
+pub fn outlook_within(ours: &Force, theirs: &Force, rounds: u32) -> Outlook {
     if theirs.is_empty() {
-        return Outlook { ours: 1.0, theirs: 0.0, won: 1.0, lost: 0.0 };
+        return Outlook { ours: 1.0, theirs: 0.0, won: 1.0, lost: 0.0, mutual: 0.0 };
     }
     if ours.is_empty() {
-        return Outlook { ours: 0.0, theirs: 1.0, won: 0.0, lost: 1.0 };
+        return Outlook { ours: 0.0, theirs: 1.0, won: 0.0, lost: 1.0, mutual: 0.0 };
     }
     let larger = units(&ours.troops).max(units(&theirs.troops));
     let (a, b) = if larger > ODDS_UNITS {
@@ -141,15 +177,16 @@ pub fn outlook(ours: &Force, theirs: &Force) -> Outlook {
     let runs = (ODDS_RUNS * ODDS_UNITS / larger.max(1)).clamp(ODDS_RUNS, ODDS_RUNS_MOST);
     let (a_worth, b_worth) = (worth(&a), worth(&b));
     let (mut a_kept, mut b_kept) = (0.0, 0.0);
-    let (mut won, mut lost) = (0u32, 0u32);
+    let (mut won, mut lost, mut mutual) = (0u32, 0u32, 0u32);
     for run in 0..runs {
         let mut dice = Dice::new(DICE ^ u64::from(run).wrapping_mul(RUN));
-        let (x, y) = combat::fight(&a, &b, &mut dice, ODDS_ROUNDS);
+        let (x, y) = combat::fight(&a, &b, &mut dice, rounds);
         let (x, y) = (after(&a, x), after(&b, y));
         a_kept += worth(&x);
         b_kept += worth(&y);
         won += u32::from(units(&y) == 0 && units(&x) > 0);
         lost += u32::from(units(&x) == 0);
+        mutual += u32::from(units(&x) == 0 && units(&y) == 0);
     }
     let share = |kept: f64, start: f64| if start > 0.0 { (kept / (start * f64::from(runs))) as f32 } else { 0.0 };
     Outlook {
@@ -157,5 +194,6 @@ pub fn outlook(ours: &Force, theirs: &Force) -> Outlook {
         theirs: share(b_kept, b_worth),
         won: won as f32 / runs as f32,
         lost: lost as f32 / runs as f32,
+        mutual: mutual as f32 / runs as f32,
     }
 }

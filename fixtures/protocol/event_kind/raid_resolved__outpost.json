@@ -3,6 +3,17 @@
   "defended": false,
   "defense_power": 590.0,
   "kind": "RaidResolved",
+  "lost": [
+    {
+      "count": 2,
+      "unit": "LightFighter"
+    },
+    {
+      "count": 4,
+      "unit": "RocketLauncher"
+    }
+  ],
+  "outcome": "fleets_destroyed",
   "outpost": {
     "q": 10,
     "r": -2
@@ -14,14 +25,23 @@
     "metal": 1612.5
   },
   "raid_power": 825.0,
+  "raiders": [
+    {
+      "class": "Cruiser",
+      "count": 2
+    }
+  ],
+  "raiders_lost": [],
+  "rebuilt": [],
   "resources_lost": {
     "crystal": 24.0,
     "deuterium": 32.5,
     "metal": 40.625
   },
+  "rounds": 3,
   "satellites_lost": 0,
-  "ships_lost": 1,
-  "structures_lost": 0,
+  "ships_lost": 2,
+  "structures_lost": 4,
   "structures_restored": 0,
   "tick": 1234
 }

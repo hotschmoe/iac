@@ -514,10 +514,99 @@ pub struct OutpostSurvey {
     pub raid_power: PowerRange,
     /// What the platform defends with at level 1.
     pub platform_power: f32,
+    /// The defences the platform is at level 1.
+    #[serde(default)]
+    pub platform: Vec<UnitCount>,
+    /// The raid of this ring at its typical power against that platform
+    /// alone: what it flies and how the fight is expected to end.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub raid: Option<RaidForecast>,
     /// Why `found_outpost` would be refused right now; absent when the
     /// fleet could found here this tick.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub refusal: Option<String>,
+}
+
+/// A raid on the homeworld or on the outpost, announced or expected, and how
+/// it would go against what stands there now.
+///
+/// A raid is a battle (`BattleRound`, one a tick): the raiders against every
+/// ship of the owner standing there and, at home, every defence and Solar
+/// Satellite, or at the outpost its platform. It is fought for at most
+/// `RAID_ROUNDS` rounds. It is repelled when no raider is left or when the
+/// rounds are over and a defender still stands; it is lost only when no
+/// defender is left.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RaidForecast {
+    /// The tick an announced raid arrives. Absent while none is on its way:
+    /// `power` and `ships` are then those of a raid of typical size were
+    /// one announced now.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub arrival_tick: Option<u64>,
+    /// The raid's power on the scale `FleetState.power` uses. It is fixed
+    /// when the raid is announced.
+    pub power: f32,
+    /// What it flies, by class in catalogue order. Fixed when announced.
+    pub ships: Vec<ShipCount>,
+    /// How it would end against what stands in its way this tick.
+    pub odds: RaidOdds,
+}
+
+/// How a raid would end against what stands in its way now: the server
+/// plays the fight itself, the round a raid is fought by, a few times over
+/// with fixed dice for `RAID_ROUNDS` rounds, as `SectorOdds` are worked out.
+/// `destroyed`, `outlasted` and `lost` are the shares of the fights played
+/// that ended each way and add up to 1.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RaidOdds {
+    pub label: RaidLabel,
+    /// No raider was left: the raid is repelled and leaves wreckage.
+    pub destroyed: f32,
+    /// The rounds were over and a defender still stood: the raid is
+    /// repelled and leaves nothing.
+    pub outlasted: f32,
+    /// No defender was left: the raid takes its share of the stockpile.
+    pub lost: f32,
+    /// The share of their worth the defenders are expected to keep, before
+    /// any defence is rebuilt, and the share of theirs the raiders keep.
+    pub kept: f32,
+    pub raiders_kept: f32,
+}
+
+/// What `RaidOdds` come to, from the worst for the defender to the best.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RaidLabel {
+    /// Lost in every fight played, or nothing stands in its way.
+    Lost,
+    /// Lost in some of the fights played.
+    AtRisk,
+    /// Lost in none, and not destroyed in every one: the defence lasts the
+    /// rounds out.
+    Held,
+    /// The raiders were destroyed in every fight played.
+    Repelled,
+}
+
+impl RaidLabel {
+    pub fn label(self) -> &'static str {
+        match self {
+            RaidLabel::Lost => "LOST",
+            RaidLabel::AtRisk => "AT RISK",
+            RaidLabel::Held => "HELD",
+            RaidLabel::Repelled => "REPELLED",
+        }
+    }
+
+    /// The sentence a client prints beside the label.
+    pub fn outcome(self) -> &'static str {
+        match self {
+            RaidLabel::Lost => "nothing here stands through the fight: the raid takes its share",
+            RaidLabel::AtRisk => "the fight may leave no defender standing",
+            RaidLabel::Held => "a defender stands when the raiders give up; what falls before that is lost",
+            RaidLabel::Repelled => "the raiders are destroyed and leave their wreckage",
+        }
+    }
 }
 
 /// What a survey reads of a sector the player has seen.
@@ -825,7 +914,8 @@ pub struct GameState {
     /// The fights under way that the player has a fleet in or is present
     /// at, each with its last round: what a client that arrives in the
     /// middle of one has missed. The rounds before that are not kept.
-    /// Left out when there is none.
+    /// A raid being fought at the player's homeworld or outpost is one of
+    /// them, with `raid` set. Left out when there is none.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub battles: Vec<BattleState>,
     pub world: WorldInfo,
@@ -842,6 +932,30 @@ pub struct BattleState {
     pub last_round: Option<BattleRoundEvent>,
     /// What each fleet and group has lost so far, as `CombatEnded` will say.
     pub losses: Vec<BattleLosses>,
+    /// The fight is a raid on a homeworld or an outpost; absent for a fight
+    /// in open space.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub raid: Option<RaidBattle>,
+}
+
+/// A raid that has arrived and is being fought.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RaidBattle {
+    /// The empire raided.
+    pub owner: String,
+    /// It is the receiver's own homeworld or outpost.
+    #[serde(default)]
+    pub mine: bool,
+    /// The raid is on the owner's outpost, not the homeworld.
+    pub outpost: bool,
+    /// The power it was announced with.
+    pub power: f32,
+    /// What it flew in with, by class.
+    pub ships: Vec<ShipCount>,
+    /// Rounds still to fight at the most: the raiders leave after the last.
+    pub rounds_left: u32,
+    /// How the fight would end from where it stands, over the rounds left.
+    pub odds: RaidOdds,
 }
 
 /// A player's outpost: a station on one sector of rings 9 to 20, built from
@@ -857,10 +971,13 @@ pub struct BattleState {
 /// Nothing in the store scores or can be spent at home.
 ///
 /// Pirates of its ring raid it on the homeworld's raid clock
-/// (`RaidIncoming` and `RaidResolved` carry `outpost`). A lost raid takes a
-/// quarter of what lies above `protected` in the store and in the holds of
-/// fleets standing there, destroys a quarter of those ships, and breaches
-/// the outpost. No raid destroys it, and a fleet standing there is not safe.
+/// (`RaidIncoming` and `RaidResolved` carry `outpost`), and the raid is a
+/// battle as a raid on the homeworld is (`RaidForecast`): the raiders
+/// against the `platform` and every ship of the owner standing there. A
+/// lost raid, one that left no defender, takes a quarter of what lies above
+/// `protected` in the store and breaches the outpost. No raid destroys it,
+/// the platform stands whole again after every fight it is not breached
+/// by, and a fleet standing there is in the fight.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutpostState {
     pub location: Hex,
@@ -896,20 +1013,27 @@ pub struct OutpostState {
     pub yield_lost: Vec<ResourceKind>,
     /// The site's grade, 0 to 12; see `SurveySite.grade`.
     pub grade: f32,
-    /// What the platform defends with; 0 while breached or unfinished.
+    /// What the platform adds up to on the power scale; 0 while breached or
+    /// unfinished.
     pub platform_power: f32,
-    /// What the owner's ships standing in the sector add.
+    /// The defences the platform is; empty while breached or unfinished.
+    #[serde(default)]
+    pub platform: Vec<UnitCount>,
+    /// What the owner's ships standing in the sector add up to.
     pub ships_power: f32,
-    /// The platform and the owner's ships standing in the sector: what the
-    /// next raid meets.
+    /// `platform_power` and `ships_power` together. It is a sum on the
+    /// power scale and decides nothing: `raid.odds` is how a raid would go.
     pub defence_power: f32,
-    /// The least and the most a raid on this outpost can be. The outcome
-    /// is `defence_power`, taken a tenth higher or lower by chance, against
-    /// the raid's power.
+    /// The least and the most a raid on this outpost can be.
     pub raid_power: PowerRange,
     /// Tick an announced raid arrives; absent when none is on its way.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub raid_arrival_tick: Option<u64>,
+    /// The raid announced, or one of typical size for the ring, against the
+    /// platform and the ships standing there now. Absent before level 1 is
+    /// finished: nothing raids a building site.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub raid: Option<RaidForecast>,
     /// What `upgrade_outpost` would build; absent at `max_level`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub next_level: Option<OutpostLevel>,
@@ -956,6 +1080,9 @@ pub struct OutpostLevel {
     pub ticks: u64,
     pub store_cap: Resources,
     pub platform_power: f32,
+    /// The defences the platform is at this level.
+    #[serde(default)]
+    pub platform: Vec<UnitCount>,
     /// What the extractor makes each tick at this level, on this site.
     pub production: Resources,
 }
@@ -1160,7 +1287,7 @@ pub struct FleetState {
     pub laden: bool,
     /// The fleet is in the sector of its owner's outpost, whatever state
     /// the outpost is in: `load` and `unload` use the outpost's store
-    /// here, and a raid on it finds the fleet.
+    /// here, and a raid on it finds the fleet in its fight.
     #[serde(default)]
     pub at_outpost: bool,
     /// Fuel the way to the owner's outpost costs: the fewest lane hops
@@ -1573,11 +1700,12 @@ pub struct HomeworldState {
     /// catalogue order, and how many they are in all.
     pub docked_ships: Vec<ShipGroupState>,
     pub docked_ship_count: u32,
-    /// Defences standing at home (those being rebuilt after a raid are
-    /// counted in `restoring`, not `count`).
+    /// Defences standing at home. Those a raid destroys are counted out as
+    /// they fall and the ones rebuilt are back the tick the raid ends.
     pub defences: Vec<DefenceState>,
-    /// Docked ships, Solar Satellites and all defences together: what the
-    /// next raid meets.
+    /// Docked ships, Solar Satellites and all defences together, on the
+    /// power scale. It is a sum and decides nothing: a raid is a battle,
+    /// and `raid.odds` is how it would go.
     pub home_defence_power: f32,
     /// The share of `home_defence_power` the ships standing at home add.
     pub docked_power: f32,
@@ -1588,6 +1716,10 @@ pub struct HomeworldState {
     /// Typical power of the next raid, from the empire's building and
     /// research points; the actual raid rolls 0.80 to 1.15 times this.
     pub next_raid_estimate_power: f32,
+    /// The raid announced, or one of typical size were it announced now:
+    /// what it flies, and how it would end against the ships, satellites
+    /// and defences standing at home this tick.
+    pub raid: RaidForecast,
     /// What can be queued right now and what it costs; see `HomeworldCatalog`.
     pub catalog: HomeworldCatalog,
 }
@@ -1596,8 +1728,6 @@ pub struct HomeworldState {
 pub struct DefenceState {
     pub kind: DefenceKind,
     pub count: u32,
-    /// Structures a repelled raid destroyed that come back for free.
-    pub restoring: u32,
     /// Power of one with the owner's Weapons, Shielding and Armour Technology.
     pub power: f32,
 }
@@ -2491,11 +2621,18 @@ pub struct BattleRoundEvent {
     pub round: u32,
     /// The players' fleets, with what they fired this round.
     pub fleets: BattleSide,
-    /// The hostile groups, with what they fired.
+    /// The hostile groups, with what they fired. In a raid they are one
+    /// group, the raiders.
     pub hostiles: BattleSide,
-    /// A fleet of the receiver's is in the fight.
+    /// A fleet of the receiver's is in the fight, or the fight is a raid on
+    /// the receiver's homeworld or outpost.
     #[serde(default)]
     pub mine: bool,
+    /// The round is a raid's: `fleets` holds the raided empire's fleets at
+    /// the dock and, marked `battery`, its defences. `BattleState.raid` of
+    /// the same sector says how many rounds are left.
+    #[serde(default)]
+    pub raid: bool,
 }
 
 /// One side of a round: who stands after it, and what the side fired.
@@ -2519,11 +2656,14 @@ pub struct BattleSide {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BattleGroup {
+    /// The fleet or the group. A raid's raiders carry an id of their own;
+    /// the defences of the place raided carry 0 and `battery`.
     pub fleet_id: u64,
     /// Empire owning the fleet; `None` for a hostile group.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub owner: Option<String>,
-    /// What a hostile group is ("3x cruiser pack"); empty for a player's fleet.
+    /// What a hostile group is ("3x cruiser pack"); empty for a player's
+    /// fleet. For a battery, what it is ("home defences", "outpost platform").
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub label: String,
     /// The fleet is the receiver's.
@@ -2532,6 +2672,10 @@ pub struct BattleGroup {
     /// The fleet is leaving: it was fired on this round and did not fire.
     #[serde(default)]
     pub fleeing: bool,
+    /// Not a fleet: the defences and Solar Satellites of a homeworld under
+    /// raid, or an outpost's platform. It stands on the fleets' side.
+    #[serde(default)]
+    pub battery: bool,
     /// By unit, in catalogue order. A unit wiped out this round is listed
     /// once more with a count of 0.
     pub units: Vec<BattleUnits>,
@@ -2590,6 +2734,9 @@ pub enum BattleOutcome {
     /// the losses and the damage they took; a group that was beating the
     /// fleet may follow it (`Pursuit`).
     Fled,
+    /// A raid's `RAID_ROUNDS` rounds are over, or a round took no hull from
+    /// anybody, and a defender still stands: the raiders leave with nothing.
+    Outlasted,
 }
 
 /// What one fleet or group lost over a whole fight.
@@ -2602,6 +2749,9 @@ pub struct BattleLosses {
     pub label: String,
     #[serde(default)]
     pub mine: bool,
+    /// As `BattleGroup.battery`: the defences of the place raided.
+    #[serde(default)]
+    pub battery: bool,
     /// Units destroyed, by kind, in catalogue order; empty when it lost none.
     pub lost: Vec<UnitCount>,
     /// Nothing of it is left.
@@ -2658,8 +2808,8 @@ pub enum PursuitPhase {
 }
 
 /// Ships a fleet lost outside a fight: those that broke up in an emergency
-/// jump. A fight's losses are in `BattleRound` and `CombatEnded`, a raid's
-/// in `RaidResolved`.
+/// jump. A fight's losses are in `BattleRound` and `CombatEnded`, and a
+/// raid's in `RaidResolved` as well.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShipsLostEvent {
     pub fleet_id: u64,
@@ -2729,13 +2879,18 @@ pub struct CombatStartedEvent {
 
 /// A fight is over. `owners` lists the empires that fought. `salvage` is the
 /// pile the hostiles' destruction left in the sector (absent when they were
-/// not destroyed); it despawns at `salvage_despawn_tick`.
+/// not destroyed); it despawns at `salvage_despawn_tick`. When the fight was
+/// a raid, `raid` is set and the `RaidResolved` of the same tick says what
+/// was rebuilt and what was taken.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatEndedEvent {
     pub sector: Hex,
     /// `outcome` is `HostilesDestroyed`.
     pub player_victory: bool,
     pub outcome: BattleOutcome,
+    /// The fight was a raid on a homeworld or an outpost.
+    #[serde(default)]
+    pub raid: bool,
     /// Rounds fought.
     pub rounds: u32,
     /// What every fleet and group that fought lost, fleets first.
@@ -2863,33 +3018,56 @@ impl SignalKind {
 }
 
 /// Advance warning that a raid fleet is vectoring toward the homeworld, or
-/// toward the player's outpost when `outpost` names its sector.
+/// toward the player's outpost when `outpost` names its sector. A fleet may
+/// leave before it arrives; one that stays is in the fight.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaidIncomingEvent {
     pub player_id: u64,
     pub arrival_tick: u64,
-    /// Rough size read against the defence standing now: "light" (under
-    /// half of it), "moderate" (under all of it) or "heavy".
+    /// `odds.label` in a word, read off the fight as it would go against
+    /// what stands there now: "light" (the raiders are destroyed), "moderate"
+    /// (the defence lasts the rounds out) or "heavy" (it may be lost).
     pub threat: String,
-    /// The raid fleet's power, fixed at forecast time, on the same scale as
-    /// `home_defence_power` and `OutpostState.defence_power`.
+    /// The raid fleet's power, fixed at forecast time, on the scale
+    /// `FleetState.power` uses.
     #[serde(default)]
     pub est_power: f32,
+    /// What it flies, by class, fixed at forecast time.
+    #[serde(default)]
+    pub ships: Vec<ShipCount>,
+    /// How it would end against what stands there now. The same figures
+    /// follow in `HomeworldState.raid` and `OutpostState.raid` every tick
+    /// until it arrives, as what stands there changes.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub odds: Option<RaidOdds>,
     /// The outpost the raid is bound for; absent for a raid on the homeworld.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost: Option<Hex>,
 }
 
-/// Outcome of a raid on the homeworld, or on the player's outpost when
-/// `outpost` names its sector. An outpost has no structures and a repelled
-/// raid on one leaves no salvage, so those fields are zero and absent then.
+/// How a raid on the homeworld ended, or on the player's outpost when
+/// `outpost` names its sector. The fight itself was told round by round
+/// (`BattleRound`) and ends with a `CombatEnded` in the same tick; a raid
+/// that found nothing standing in its way was lost without a round, has no
+/// `outcome` and no `CombatEnded`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaidResolvedEvent {
     pub player_id: u64,
     /// The outpost that was raided; absent for a raid on the homeworld.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost: Option<Hex>,
+    /// Repelled: no raider was left, or a defender stood when the rounds
+    /// were over. False when no defender was left.
     pub defended: bool,
+    /// How the fight ended: `hostiles_destroyed` and `both_destroyed` (no
+    /// raider left), `outlasted`, `fleets_destroyed` (lost), or `fled` and
+    /// `withdrawn` (lost: the last defender left). Absent when no round was
+    /// fought.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub outcome: Option<BattleOutcome>,
+    /// Rounds fought.
+    #[serde(default)]
+    pub rounds: u32,
     /// The raid broke the outpost: it makes nothing, fills no tank and has
     /// no platform until it has repaired itself from its store. Always
     /// false for a raid on the homeworld.
@@ -2899,22 +3077,41 @@ pub struct RaidResolvedEvent {
     /// aboard fleets at home, counted as one pile above the protected
     /// floor. At an outpost, the same of its store and the fleets there.
     pub resources_lost: Resources,
+    /// The wreckage of a raid destroyed to the last ship, left where it was
+    /// fought; absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage_dropped: Option<Resources>,
-    /// Tick the pile on the homeworld despawns (absent when none dropped).
-    /// A fleet docked at home scoops it into storage on its own; without
-    /// one, an alert warns when it has `HOME_SALVAGE_WARN_TICKS` left.
+    /// Tick the pile despawns (absent when none dropped). At the homeworld
+    /// a fleet docked there scoops it into storage on its own; without one,
+    /// an alert warns when it has `HOME_SALVAGE_WARN_TICKS` left. At an
+    /// outpost a fleet collects it as any wreckage.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage_despawn_tick: Option<u64>,
+    /// The power the raid was announced with, and what stood in its way
+    /// when it arrived on the same scale. Neither decided anything.
     pub raid_power: f32,
     pub defense_power: f32,
-    /// Solar Satellites a lost raid destroyed.
+    /// What the raid flew in with and what it lost, by class.
+    #[serde(default)]
+    pub raiders: Vec<ShipCount>,
+    #[serde(default)]
+    pub raiders_lost: Vec<ShipCount>,
+    /// Everything the defender lost in the fight, by unit: ships, Solar
+    /// Satellites and defences, the defences before any is rebuilt.
+    #[serde(default)]
+    pub lost: Vec<UnitCount>,
+    /// The defences rebuilt at once and for nothing when the fight ended,
+    /// by kind: about `DEFENCE_REBUILD_PCT` in a hundred of those that fell.
+    /// Ships and Solar Satellites are not rebuilt.
+    #[serde(default)]
+    pub rebuilt: Vec<UnitCount>,
+    /// Solar Satellites destroyed.
     #[serde(default)]
     pub satellites_lost: u32,
-    /// Structures the raid destroyed.
+    /// Defences destroyed, and how many of them were rebuilt: the sums of
+    /// `lost` and of `rebuilt` over the defences.
     #[serde(default)]
     pub structures_lost: u32,
-    /// Of those, how many are rebuilt for free after a short delay.
     #[serde(default)]
     pub structures_restored: u32,
     /// What the storage buildings kept out of reach of a successful raid, of
@@ -2922,8 +3119,7 @@ pub struct RaidResolvedEvent {
     /// outpost, what its protected floor kept.
     #[serde(default)]
     pub protected_kept: Resources,
-    /// Ships docked at home, or standing at the outpost, that a lost raid
-    /// destroyed.
+    /// Ships of the owner's fleets destroyed in the fight.
     #[serde(default)]
     pub ships_lost: u32,
 }
