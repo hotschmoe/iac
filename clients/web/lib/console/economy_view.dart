@@ -73,25 +73,38 @@ class SlotsView {
   /// Items running or waiting in the building queue, and the server's depth limit.
   final int depth;
   final int maxDepth;
+
+  /// The most the research queue holds, and the shipyard's: each runs one
+  /// order, and the server's waiting line stands behind it.
+  final int singleMaxDepth;
+
+  /// Buildings that may be under construction at once, as the server counts them.
   final int slotCount;
+
+  /// The buildings under construction, in slot order: at most [slotCount].
+  final List<QueueSlotView> running;
   final List<QueuedItemView> queued;
   final List<QueuedItemView> shipQueued;
   final List<QueuedItemView> researchQueued;
-  final bool slotBUnlocked;
-  final String slotBRequirement;
-  final QueueSlotView? slotB;
+
+  /// What opens one more building slot, while the tech that adds them has a
+  /// level left; null when it has none.
+  final String? nextSlot;
   const SlotsView({
     required this.depth,
     required this.maxDepth,
+    required this.singleMaxDepth,
     required this.slotCount,
+    required this.running,
     required this.queued,
     required this.shipQueued,
     required this.researchQueued,
-    required this.slotBUnlocked,
-    required this.slotBRequirement,
-    this.slotB,
+    required this.nextSlot,
   });
 }
+
+/// "A", "B", "C": the name of the building slot at [index].
+String slotLetter(int index) => String.fromCharCode(0x41 + index);
 
 class DefenceRow {
   final proto.DefenceKind kind;
@@ -185,18 +198,22 @@ class EconomyView {
       return QueueSlotView(q.buildingType.label, q.targetLevel, ((tick - q.startTick) / total).clamp(0.0, 1.0), math.max(0, q.endTick - tick), q.startTick);
     }
 
+    // The engine's `scaling::building_slots` gives one slot for each level of Modular Fabrication.
     final fab = s.catalog?.research.where((r) => r.tech == proto.ResearchType.modularFabrication).firstOrNull;
+    final fabNext = fab?.next;
     final unmet = [for (final r in fab?.requires ?? const <proto.Requirement>[]) if (!r.met) r.label];
     final slots = SlotsView(
       depth: hw.buildQueue.length + hw.buildPending.length,
       maxDepth: hw.buildSlots + hw.queueWaitingMax,
+      singleMaxDepth: 1 + hw.queueWaitingMax,
       slotCount: hw.buildSlots,
+      running: [for (final q in hw.buildQueue) slot(q)],
       queued: [for (final q in hw.buildPending) QueuedItemView('${q.buildingType.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
       shipQueued: [for (final q in hw.shipyardPending) QueuedItemView('${q.item.label} x${q.count}', batchWaitSummary(q.waitingOn, q.startIn))],
       researchQueued: [for (final q in hw.researchPending) QueuedItemView('${q.tech.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
-      slotBUnlocked: hw.buildSlots >= 2,
-      slotBRequirement: 'Needs Modular Fabrication${unmet.isEmpty ? '' : ' (requires ${unmet.join(', ')})'}',
-      slotB: hw.buildQueue.length >= 2 ? slot(hw.buildQueue[1]) : null,
+      nextSlot: fab == null || fabNext == null
+          ? null
+          : 'Needs ${fab.tech.label} L${fabNext.level}${unmet.isEmpty ? '' : ' (requires ${unmet.join(', ')})'}',
     );
 
     final rows = [

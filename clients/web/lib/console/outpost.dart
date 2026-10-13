@@ -33,7 +33,13 @@ String yieldAnHour(proto.Resources perTick) {
 }
 
 /// "7 hops", or what the server means by leaving it out.
-String hopsHome(int? hops) => hops == null ? 'more than 64 hops' : hopCount(hops);
+String hopsHome(int? hops) => hops == null ? 'more than ${proto.laneSearchHops} hops' : hopCount(hops);
+
+/// "7.5 OF 12": a site's grade against the most a grade can be.
+String gradeOfMax(double grade) => '${grade.toStringAsFixed(1)} OF ${proto.siteGradeMax.toStringAsFixed(0)}';
+
+/// "rings 9 to 20": where an outpost may stand.
+const outpostRings = 'rings ${proto.outpostMinRing} to ${proto.outpostMaxRing}';
 
 /// The share of its cap the fullest resource of the store has reached: at
 /// 1 the extractor makes no more of that resource.

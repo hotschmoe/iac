@@ -70,6 +70,9 @@ class FleetState {
   final int jumpFuel;
   final int homeFuel;
 
+  /// Ticks one jump takes this fleet, from the order to the arrival.
+  final int jumpTicks;
+
   /// Fuel for the way to the player's outpost, 0 standing at it; null
   /// unless that outpost is in service.
   final int? outpostFuel;
@@ -108,6 +111,7 @@ class FleetState {
     this.fuelMax = 1,
     this.jumpFuel = 0,
     this.homeFuel = 0,
+    this.jumpTicks = 0,
     this.outpostFuel,
     this.atOutpost = false,
     this.cooldown = 0,

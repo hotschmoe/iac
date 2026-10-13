@@ -394,10 +394,10 @@ class ArenaPainter extends CustomPainter {
     }
     c.restore();
     Draw.dashedPath(c, Path()..addOval(Rect.fromCircle(center: o, radius: s * 2.9 + math.sin(t * 2) * 2)), Draw.line(rc, 1, .5), 2, 6);
-    final b = sim.boarding;
-    if (b != null) {
-      final p = math.min(1.0, (sim.now - b.t0) / b.dur), seg = 16, full = (p * seg).floor();
-      final rr = s * 3.4;
+    final p = sim.boardingProgress;
+    if (p != null) {
+      const seg = 16;
+      final full = (p * seg).floor(), rr = s * 3.4;
       for (var i = 0; i < full; i++) {
         final a0 = -math.pi / 2 + i / seg * tau + .05, a1 = -math.pi / 2 + (i + 1) / seg * tau - .05;
         c.drawArc(Rect.fromCircle(center: o, radius: rr), a0, a1 - a0, false, Draw.line(_violet, 3, .9));

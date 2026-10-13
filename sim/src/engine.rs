@@ -30,6 +30,9 @@ use iac_shared::constants::{
     EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_FUEL_PAYBACK, POLICY_FUEL_UNBOUNDED_PCT,
     POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_SHIELDS_READY,
+    POLICY_MIN_FUEL_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_CARGO_RETURN_PCT_MAX,
+    POLICY_RANGE_MIN, POLICY_RANGE_MAX, POLICY_ENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
+    LANE_SEARCH_HOPS,
     OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_MAX_LEVEL, OUTPOST_RAID_LOSS, OUTPOST_SPACING,
     defense_grid_scout_units,
 };
@@ -2887,7 +2890,7 @@ impl GameEngine {
                 grade: scaling::site_grade(densities),
                 production: scaling::outpost_yield_per_tick(densities, ring, 1, &pace),
                 hops_home: self.players.get(&player_id)
-                    .and_then(|player| self.world_gen.lane_hops(sector, player.homeworld, 64)),
+                    .and_then(|player| self.world_gen.lane_hops(sector, player.homeworld, LANE_SEARCH_HOPS)),
             }
         });
         let verdict = if seen {
@@ -3712,6 +3715,13 @@ impl GameEngine {
         fleet_fuel_cost(fleet, research)
     }
 
+    /// Ticks from a `move` order to the arrival: the charge `handle_move`
+    /// sets, and the tick `process_movement` lands the fleet on.
+    pub fn hop_ticks(&self, fleet: &Fleet) -> u16 {
+        let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
+        fleet_move_cooldown(fleet, research) + 1
+    }
+
     /// The ways home from `from`. `direct` is the fewest hops over the real
     /// lanes, charted or not, and is what a fleet can actually fly; `charted`
     /// is the fewest over sectors the owner has entered, None when no such
@@ -3726,8 +3736,8 @@ impl GameEngine {
             return HomeRoute { charted: Some(0), direct: 0, unexplored: false };
         }
         let entered = |n: Hex| self.explored.contains(&(owner, n.to_key()));
-        let direct = self.lane_path(from, home, 64, &|_| true);
-        let charted = self.lane_path(from, home, 64, &entered).map(|p| p.len() as u32);
+        let direct = self.lane_path(from, home, LANE_SEARCH_HOPS, &|_| true);
+        let charted = self.lane_path(from, home, LANE_SEARCH_HOPS, &entered).map(|p| p.len() as u32);
         match direct {
             Some(path) => HomeRoute {
                 charted,
@@ -3753,9 +3763,9 @@ impl GameEngine {
     }
 
     /// Fewest jumps from `from` to `to` over the real lanes; the straight
-    /// distance when no route of 64 hops exists.
+    /// distance when no route of `LANE_SEARCH_HOPS` exists.
     fn lane_hops(&self, from: Hex, to: Hex) -> u32 {
-        self.world_gen.lane_hops(from, to, 64).unwrap_or(Hex::distance(&from, &to) as u32)
+        self.world_gen.lane_hops(from, to, LANE_SEARCH_HOPS).unwrap_or(Hex::distance(&from, &to) as u32)
     }
 
     /// Fuel the way from `from` to the fleet's owner's outpost costs, while
@@ -5173,11 +5183,11 @@ impl GameEngine {
         // Clamp wire params to the same bounds the DB reload enforces,
         // or behavior would change across a restart.
         let mut params = params.unwrap_or_default();
-        params.min_fuel_pct = params.min_fuel_pct.min(90);
-        params.cargo_return_pct = params.cargo_return_pct.clamp(10, 100);
-        params.max_range = params.max_range.clamp(1, 30);
-        params.engage_ratio_x10 = params.engage_ratio_x10.clamp(1, 100);
-        params.fuel_budget_pct = params.fuel_budget_pct.min(100);
+        params.min_fuel_pct = params.min_fuel_pct.min(POLICY_MIN_FUEL_PCT_MAX);
+        params.cargo_return_pct = params.cargo_return_pct.clamp(POLICY_CARGO_RETURN_PCT_MIN, POLICY_CARGO_RETURN_PCT_MAX);
+        params.max_range = params.max_range.clamp(POLICY_RANGE_MIN, POLICY_RANGE_MAX);
+        params.engage_ratio_x10 = params.engage_ratio_x10.clamp(POLICY_ENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX);
+        params.fuel_budget_pct = params.fuel_budget_pct.min(POLICY_FUEL_UNBOUNDED_PCT);
 
         // The allowance starts empty: a fleet flies its first sortie on the
         // tank it has. New orders for a fleet already under orders keep what

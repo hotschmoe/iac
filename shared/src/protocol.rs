@@ -477,7 +477,7 @@ pub struct SurveySite {
     pub grade: f32,
     /// What the extractor would add to the store each tick at level 1.
     pub production: Resources,
-    /// Lane hops from the sector to the homeworld; absent beyond 64.
+    /// Lane hops from the sector to the homeworld; absent beyond `LANE_SEARCH_HOPS`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub hops_home: Option<u32>,
 }
@@ -580,6 +580,12 @@ pub struct LeaderboardReply {
 /// Start of every built-in bot's account name, reserved for them
 /// (compared without regard to case).
 pub const BOT_NAME_PREFIX: &str = "BOT-";
+
+/// The fewest characters an account name may have (`iac_sim::auth` holds
+/// the other rules of a name).
+pub const NAME_MIN_LEN: usize = 3;
+/// The most characters an account name may have.
+pub const NAME_MAX_LEN: usize = 24;
 
 /// Whether `name` is a built-in bot's.
 pub fn is_bot_name(name: &str) -> bool {
@@ -836,7 +842,7 @@ pub struct OutpostState {
     /// value. Absent when no repair is waiting.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub repair_waiting_for: Option<Resources>,
-    /// Lane hops to the homeworld; absent beyond 64.
+    /// Lane hops to the homeworld; absent beyond `LANE_SEARCH_HOPS`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub hops_home: Option<u32>,
 }
@@ -971,6 +977,14 @@ pub struct FleetState {
     /// charted, times `jump_fuel`; 0 at the homeworld. Compare with `fuel`.
     #[serde(default)]
     pub home_fuel: f32,
+    /// Ticks one jump takes this fleet from the order to the arrival: the
+    /// charge, which its slowest ship and Navigation set, and the tick it
+    /// lands on. A route of `n` jumps flown without a pause takes
+    /// `n * jump_ticks`.
+    pub jump_ticks: u16,
+    /// Ticks before the fleet takes its next order. While it boards a
+    /// derelict (`Exploring`) it is what the boarding has left, out of
+    /// `EXPLORE_DURATION_TICKS`.
     #[serde(default)]
     pub cooldown_remaining: u16,
     /// Combat power of the whole fleet on the scale raids and threat ratings

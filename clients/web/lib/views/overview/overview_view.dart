@@ -9,7 +9,6 @@ import '../../design/gauges.dart';
 import '../../design/panel.dart';
 import '../../design/symbols.dart';
 import '../../design/tokens.dart';
-import '../../hex/hex_math.dart';
 import '../../models/fleet.dart' as ui;
 import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
@@ -136,7 +135,7 @@ class _Hero extends StatelessWidget {
     final researchLevels = cat?.research.fold<int>(0, (a, b) => a + b.level) ?? 0;
     final dockedShips = RegExp(r'(\d+)x').allMatches(s.docked).fold<int>(0, (a, m) => a + int.parse(m.group(1)!));
     final ships = s.fleets.fold<int>(0, (a, f) => a + f.shipCount) + dockedShips;
-    final zone = s.homeworld.zone.toUpperCase();
+    final zone = s.homeworld.zone.label.toUpperCase();
     final name = con.game.playerName.isEmpty ? 'Homeworld' : con.game.playerName;
     final chips = <Widget>[
       Tag(zone, on: true),
@@ -344,7 +343,7 @@ class _FleetCard extends StatelessWidget {
           Tag(status.label, on: status == ui.FleetStatus.harvesting, color: chipCol),
         ]),
         const SizedBox(height: 4),
-        Text('${f.sector.q},${f.sector.r} - ${f.sector.zone.toUpperCase()} - ${home == 0 ? 'AT HOME' : '$home HOP${home == 1 ? '' : 'S'} HOME'}', style: T.mono(size: 10, color: C.text3)),
+        Text('${f.sector.q},${f.sector.r} - ${f.sector.zone.label.toUpperCase()} -${home == 0 ? 'AT HOME' : '$home HOP${home == 1 ? '' : 'S'} HOME'}', style: T.mono(size: 10, color: C.text3)),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 9),
           child: SizedBox(

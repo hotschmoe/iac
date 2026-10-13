@@ -133,6 +133,13 @@ class DemoWorld {
     ShipClass.cruiser: 110.0,
     ShipClass.hauler: 15.0,
   };
+  static const _speed = {
+    ShipClass.scout: 10,
+    ShipClass.corvette: 8,
+    ShipClass.frigate: 5,
+    ShipClass.cruiser: 4,
+    ShipClass.hauler: 6,
+  };
 
   DemoWorld(this._emit) {
     final v = [
@@ -142,6 +149,8 @@ class DemoWorld {
       _ship(1014, ShipClass.scout),
       _ship(1015, ShipClass.hauler),
     ];
+    final haulers = [_ship(1021, ShipClass.hauler), _ship(1022, ShipClass.hauler)];
+    final scouts = [_ship(1031, ShipClass.scout), _ship(1032, ShipClass.scout)];
     _fleets = [
       _norm(FleetState(
         id: 101,
@@ -152,26 +161,29 @@ class DemoWorld {
         cargoCapacity: 250,
         fuel: 96,
         fuelMax: 120,
+        jumpTicks: _jumpTicks(v),
       )),
       _norm(FleetState(
         id: 102,
         location: _home,
         state: FleetStatus.docked,
-        ships: [_ship(1021, ShipClass.hauler), _ship(1022, ShipClass.hauler)],
+        ships: haulers,
         cargo: const Resources(),
         cargoCapacity: 400,
         fuel: 200,
         fuelMax: 200,
+        jumpTicks: _jumpTicks(haulers),
       )),
       _norm(FleetState(
         id: 103,
         location: const Hex(3, -1),
         state: FleetStatus.harvesting,
-        ships: [_ship(1031, ShipClass.scout), _ship(1032, ShipClass.scout)],
+        ships: scouts,
         cargo: const Resources(metal: 19, crystal: 6),
         cargoCapacity: 40,
         fuel: 44,
         fuelMax: 60,
+        jumpTicks: _jumpTicks(scouts),
         policy: const StandingOrders(preset: PolicyPreset.prospect, params: PolicyParams(maxRange: 6, engageRatioX10: 20, fuelBudgetPct: 35)),
       )),
     ];
@@ -1143,6 +1155,10 @@ class DemoWorld {
     _reveal(at, 0);
   }
 
+  void learn(ResearchType tech, int level) {
+    _hw = _hwWith(research: [for (final e in _hw.research) e.tech == tech ? ResearchState(tech: tech, level: level) : e]);
+  }
+
   void start() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => step());
@@ -1605,6 +1621,8 @@ class DemoWorld {
 
   static int _jump(List<ShipState> ships) => ships.fold<int>(1, (m, s) => max(m, _stats[s.shipClass]!.$5));
 
+  static int _jumpTicks(List<ShipState> ships) => 10 ~/ ships.fold<int>(10, (m, s) => min(m, _speed[s.shipClass]!)) + 1;
+
   FleetState _norm(FleetState f) => FleetState(
         id: f.id,
         location: f.location,
@@ -1616,6 +1634,7 @@ class DemoWorld {
         fuelMax: f.fuelMax,
         jumpFuel: _jump(f.ships).toDouble(),
         homeFuel: f.location == _home ? 0 : (Hex.distance(f.location, _home) * _jump(f.ships)).toDouble(),
+        jumpTicks: _jumpTicks(f.ships),
         atOutpost: _outpost?.at == f.location,
         outpostFuel: _inService ? (Hex.distance(f.location, _outpost!.at) * _jump(f.ships)).toDouble() : null,
         cooldownRemaining: f.cooldownRemaining,
@@ -1649,6 +1668,7 @@ class DemoWorld {
         fuelMax: f.fuelMax,
         jumpFuel: f.jumpFuel,
         homeFuel: f.homeFuel,
+        jumpTicks: _jumpTicks(ships ?? f.ships),
         cooldownRemaining: cooldown ?? f.cooldownRemaining,
         power: f.power,
         rangeHops: f.rangeHops,
@@ -1691,7 +1711,7 @@ class DemoWorld {
       location: target,
       state: home ? FleetStatus.docked : (returning ? FleetStatus.returning : FleetStatus.idle),
       fuel: cur.fuel - _jump(cur.ships),
-      cooldown: 1,
+      cooldown: cur.jumpTicks,
       laden: false,
     );
     if (home) {
@@ -2286,7 +2306,7 @@ class DemoWorld {
         final f = _find(fleetId);
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
         if (f.cooldownRemaining > 0) return [_err(ErrorCode.onCooldown, 'Scanner recharging: ${f.cooldownRemaining} tick(s)')];
-        final range = f.ships.any((s) => s.shipClass == ShipClass.scout) ? 2 : 1;
+        final range = f.ships.any((s) => s.shipClass == ShipClass.scout) ? scanScoutRange : scanBaseRange;
         final fresh = _reveal(f.location, range, scan: true);
         var hostile = 0;
         for (final h in hexSpiral(f.location, range)) {
@@ -2321,7 +2341,7 @@ class DemoWorld {
             signals.add(SignalContact(sector: h, signal: kind, threatBand: (rating + 2) ~/ 3));
           }
         }
-        _setFleet(_copy(f, cooldown: 5));
+        _setFleet(_copy(f, cooldown: scanCooldown));
         _ev(ScanCompletedEvent(
           fleetId: fleetId,
           sector: f.location,
@@ -2368,12 +2388,15 @@ class DemoWorld {
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
         final k = f.location.toKey();
         final site = _sites[k];
-        if (site == null) return [_err(ErrorCode.invalidTarget, 'No derelict in this sector')];
-        if (_hostiles[k]?.isNotEmpty ?? false) return [_err(ErrorCode.invalidTarget, 'Hostiles in range: clear the sector first')];
+        if (site == null) return [_err(ErrorCode.invalidTarget, 'no derelict to board in this sector')];
+        if (f.state == FleetStatus.inCombat) return [_err(ErrorCode.onCooldown, 'fleet $fleetId is in combat')];
+        if (f.cooldownRemaining > 0) {
+          return [_err(ErrorCode.onCooldown, 'fleet $fleetId is on cooldown for ${f.cooldownRemaining} more ticks')];
+        }
         _stopActivities(f);
-        final end = _tick + 12 * site.tier;
+        final end = _tick + exploreDurationTicks;
         _explores[fleetId] = _Explore(fleetId, f.location, end);
-        _setFleet(_copy(f, state: FleetStatus.exploring));
+        _setFleet(_copy(f, state: FleetStatus.exploring, cooldown: exploreDurationTicks));
         _ev(SiteExplorationStartedEvent(fleetId: fleetId, sector: f.location, tier: site.tier, endTick: end));
         return [_tickUpdate()];
       case BuildCommand(:final buildingType, :final reserve):
@@ -2548,6 +2571,7 @@ class DemoWorld {
                 cargoCapacity: e.cargoCapacity * (1 - share),
                 fuel: e.fuel * (1 - share),
                 fuelMax: e.fuelMax * (1 - share),
+                jumpTicks: _jumpTicks(rest),
                 policy: e.policy,
               )
             else
@@ -2561,6 +2585,7 @@ class DemoWorld {
             cargoCapacity: f.cargoCapacity * share,
             fuel: f.fuel * share,
             fuelMax: f.fuelMax * share,
+            jumpTicks: _jumpTicks(taken),
           ),
         ];
         _pending.add(GameEvent(
@@ -2594,6 +2619,7 @@ class DemoWorld {
                 cargoCapacity: a.cargoCapacity + b.cargoCapacity,
                 fuel: a.fuel + b.fuel,
                 fuelMax: a.fuelMax + b.fuelMax,
+                jumpTicks: _jumpTicks([...a.ships, ...b.ships]),
                 policy: a.policy,
               )
             else if (e.id != otherFleetId)

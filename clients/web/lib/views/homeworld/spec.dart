@@ -60,7 +60,7 @@ const buildingNotes = <proto.BuildingType, String>{
   proto.BuildingType.sensorArray: 'Longer sensor reach around home.',
   proto.BuildingType.defenseGrid: 'Raises homeworld defence power.',
   proto.BuildingType.storageVault: 'Raises the stockpile caps and the protected share.',
-  proto.BuildingType.fabricator: 'Speeds up shipyard builds.',
+  proto.BuildingType.fabricator: 'Higher levels shorten the construction time of every building.',
 };
 
 ItemSpec? specFor(GameController c, {int? index}) {

@@ -8,7 +8,8 @@ import '../../models/homeworld.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
 
-/// Four queue pills: build slot A, slot B (when reported), research, shipyard.
+/// The queue pills: one for each building slot the server reports, the next
+/// slot while it can still be unlocked, research, shipyard.
 class QueueStrip extends StatelessWidget {
   final GameState state;
   final EconomyView eco;
@@ -16,10 +17,24 @@ class QueueStrip extends StatelessWidget {
   final bool narrow;
   const QueueStrip({super.key, required this.state, required this.eco, required this.ctrl, required this.narrow});
 
+  static Key _slotKey(int index) => Key('hw-pill-slot-${slotLetter(index).toLowerCase()}');
+
+  /// The pill of a building slot after the first, which carries the queue.
+  Widget _slot(int index, QueueItem? build) => _Pill(
+      key: _slotKey(index),
+      label: 'Build slot ${slotLetter(index)}',
+      title: build?.name ?? 'Idle',
+      time: build?.time,
+      pct: build?.pct,
+      cancelKey: 'hw-cancel-building-${slotLetter(index).toLowerCase()}',
+      onCancel: build == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.building, index: index),
+      onTap: () => ctrl.selectHomeworldTab(HomeworldTab.buildings));
+
   @override
   Widget build(BuildContext context) {
     final slots = eco.slots;
-    final b = state.runningBuild;
+    final running = [for (final q in state.buildQueue) if (q.active) q];
+    final b = running.firstOrNull;
     final sh = state.runningShip;
     final bWait = state.waitingBuild.firstOrNull;
     final shWait = state.waitingShips.firstOrNull;
@@ -37,15 +52,11 @@ class QueueStrip extends StatelessWidget {
           cancelKey: 'hw-cancel-building',
           onCancel: b == null && bWait == null ? null : () => ctrl.cancelHomeworldQueue(proto.QueueType.building, waiting: b == null),
           onTap: () => ctrl.selectHomeworldTab(HomeworldTab.buildings)),
-      if (slots != null)
-        _Pill(
-            key: const Key('hw-pill-slot-b'),
-            label: 'Build slot B',
-            title: slots.slotBUnlocked ? (slots.slotB?.name ?? 'Idle') : 'Locked',
-            sub: slots.slotBUnlocked ? null : slots.slotBRequirement,
-            locked: !slots.slotBUnlocked,
-            time: null,
-            pct: null),
+      if (slots != null) ...[
+        for (var i = 1; i < slots.slotCount; i++) _slot(i, running.elementAtOrNull(i)),
+        if (slots.nextSlot case final needs?)
+          _Pill(key: _slotKey(slots.slotCount), label: 'Build slot ${slotLetter(slots.slotCount)}', title: 'Locked', sub: needs, locked: true),
+      ],
       _Pill(
           key: const Key('hw-pill-research'),
           label: 'Research',

@@ -62,6 +62,7 @@ proto.SectorState sector(proto.Hex h,
         List<proto.NpcFleetInfo>? hostiles,
         proto.SectorResources res = const proto.SectorResources(metal: proto.Density.rich, crystal: proto.Density.sparse, deuterium: proto.Density.none),
         proto.Resources? salvage,
+        proto.SiteBrief? site,
         bool live = true,
         proto.TerrainType terrain = proto.TerrainType.asteroidField}) =>
     proto.SectorState(
@@ -71,6 +72,7 @@ proto.SectorState sector(proto.Hex h,
         connections: lanes,
         hostiles: hostiles,
         salvage: salvage,
+        site: site,
         threat: _threatOf(hostiles),
         lastSeen: 100,
         live: live);
@@ -454,6 +456,29 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.text('No hostile contact here.'), findsWidgets);
     expect(c.commands.whereType<proto.AttackCommand>(), isEmpty);
+    await tester.pump(const Duration(seconds: 5));
+    await finish(tester, c);
+  });
+
+  testWidgets('a derelict is boarded with a group in the sector, as the engine allows; with no derelict the order is not sent', (tester) async {
+    GameState beside({proto.SiteBrief? site, ui.FleetStatus status = ui.FleetStatus.idle}) => world([
+          fleet(1, [('Scout', 1)], status: status),
+        ], {
+          here: sector(here, lanes: [const proto.Hex(2, -1)], site: site, hostiles: const [
+            proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.scout, count: 2)], behavior: proto.NpcBehavior.passive)
+          ]),
+          const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
+        });
+    final c = await pumpFake(tester, beside());
+    await key(tester, LogicalKeyboardKey.keyB, 'b');
+    expect(find.text('No derelict here.'), findsWidgets);
+    expect(c.commands.whereType<proto.ExploreSiteCommand>(), isEmpty);
+
+    c.push(beside(site: const proto.SiteBrief(tier: 2, risk: proto.SiteRisk.uneasy)));
+    await tester.pump(const Duration(milliseconds: 100));
+    await key(tester, LogicalKeyboardKey.keyB, 'b');
+    expect(c.commands.whereType<proto.ExploreSiteCommand>().single.fleetId, 1);
+    expect(find.textContaining('Hostiles in range'), findsNothing);
     await tester.pump(const Duration(seconds: 5));
     await finish(tester, c);
   });

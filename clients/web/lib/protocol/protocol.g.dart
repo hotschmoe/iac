@@ -996,7 +996,7 @@ class SurveySite {
   /// What the extractor would add to the store each tick at level 1.
   final Resources production;
 
-  /// Lane hops from the sector to the homeworld; absent beyond 64.
+  /// Lane hops from the sector to the homeworld; absent beyond `LANE_SEARCH_HOPS`.
   final int? hopsHome;
 
   const SurveySite({required this.densities, required this.grade, required this.production, this.hopsHome});
@@ -1688,7 +1688,7 @@ class OutpostState {
   /// value. Absent when no repair is waiting.
   final Resources? repairWaitingFor;
 
-  /// Lane hops to the homeworld; absent beyond 64.
+  /// Lane hops to the homeworld; absent beyond `LANE_SEARCH_HOPS`.
   final int? hopsHome;
 
   const OutpostState({
@@ -2028,6 +2028,16 @@ class FleetState {
   /// Fuel the way home costs: the fewest hops over lanes the player has
   /// charted, times `jump_fuel`; 0 at the homeworld. Compare with `fuel`.
   final double homeFuel;
+
+  /// Ticks one jump takes this fleet from the order to the arrival: the
+  /// charge, which its slowest ship and Navigation set, and the tick it
+  /// lands on. A route of `n` jumps flown without a pause takes
+  /// `n * jump_ticks`.
+  final int jumpTicks;
+
+  /// Ticks before the fleet takes its next order. While it boards a
+  /// derelict (`Exploring`) it is what the boarding has left, out of
+  /// `EXPLORE_DURATION_TICKS`.
   final int cooldownRemaining;
 
   /// Combat power of the whole fleet on the scale raids and threat ratings
@@ -2073,6 +2083,7 @@ class FleetState {
     required this.fuelMax,
     this.jumpFuel = 0,
     this.homeFuel = 0,
+    required this.jumpTicks,
     this.cooldownRemaining = 0,
     this.power = 0,
     this.rangeHops = 0,
@@ -2096,6 +2107,7 @@ class FleetState {
       fuelMax: _double(m['fuel_max']),
       jumpFuel: _opt(m['jump_fuel'], _double) ?? 0,
       homeFuel: _opt(m['home_fuel'], _double) ?? 0,
+      jumpTicks: _int(m['jump_ticks']),
       cooldownRemaining: _opt(m['cooldown_remaining'], _int) ?? 0,
       power: _opt(m['power'], _double) ?? 0,
       rangeHops: _opt(m['range_hops'], _int) ?? 0,
@@ -2118,6 +2130,7 @@ class FleetState {
     'fuel_max': fuelMax,
     'jump_fuel': jumpFuel,
     'home_fuel': homeFuel,
+    'jump_ticks': jumpTicks,
     'cooldown_remaining': cooldownRemaining,
     'power': power,
     'range_hops': rangeHops,
@@ -4767,17 +4780,17 @@ const botNamePrefix = 'BOT-';
 const maxOddsSectors = 256;
 
 /// Ratio at and above which a fight is SAFE: the fleet keeps 98 percent of its hull or more.
-const ratioSafe = 2.5;
+const double ratioSafe = 2.5;
 
 /// FAVOURABLE from here: a sure win that costs about 1 to 15 percent of the hull.
-const ratioFavourable = 1.5;
+const double ratioFavourable = 1.5;
 
 /// EVEN from here: a win in practice, but 15 to 50 percent of the hull is lost.
-const ratioEven = 1.100000023841858;
+const double ratioEven = 1.100000023841858;
 
 /// RISKY from here: anything from a lost fleet to a win that keeps half the hull.
 /// Below it (DEADLY) the fleet is lost, or wins one fight in six at best.
-const ratioRisky = 0.8999999761581421;
+const double ratioRisky = 0.8999999761581421;
 
 /// Outposts (`docs/design/outposts.md`). Every number here is a proposal the
 /// owner has not signed off. Change it here only; the simulation reads it
@@ -4790,3 +4803,59 @@ const ratioRisky = 0.8999999761581421;
 const outpostMinRing = 9;
 
 const outpostMaxRing = 20;
+
+/// The most characters an account name may have.
+const nameMaxLen = 24;
+
+/// The last ring of the Inner Ring.
+const zoneInnerRingRadius = 8;
+
+/// The last ring of the Outer Ring; The Wandering starts one ring further out.
+const zoneOuterRingRadius = 20;
+
+/// The highest threat rating.
+const maxThreat = 9;
+
+/// The grade of a site whose three ores are all Pristine: the most a grade can be.
+const double siteGradeMax = 12;
+
+/// How far along the lanes the engine looks for the way between two sectors:
+/// a fleet's way home or to its outpost, the hops from an outpost or a
+/// surveyed site to the homeworld. A way longer than this is not found.
+const laneSearchHops = 64;
+
+/// `StorageNearCap` fires at this fill ratio.
+const double storageNearCapRatio = 0.8500000238418579;
+
+/// Active scan: hops revealed from the scanning fleet's position.
+/// Fleets carrying a Scout get the extended range; signals are faint
+/// contacts detected one hop beyond the reveal radius.
+const scanBaseRange = 1;
+
+/// The scan range of a fleet with a Scout aboard.
+const scanScoutRange = 2;
+
+/// Ticks a fleet takes no order after a scan.
+const scanCooldown = 5;
+
+/// Ticks a boarding takes, at every pace.
+const exploreDurationTicks = 20;
+
+/// The bounds `policy_update` holds the other doctrine thresholds to.
+const policyMinFuelPctMax = 90;
+
+const policyCargoReturnPctMin = 10;
+
+const policyCargoReturnPctMax = 100;
+
+const policyRangeMin = 1;
+
+const policyRangeMax = 30;
+
+const policyEngageRatioX10Min = 1;
+
+const policyEngageRatioX10Max = 100;
+
+/// At or above this `fuel_budget_pct` the fleet refuels without a bound; it
+/// is also the most the setting can be.
+const policyFuelUnboundedPct = 100;

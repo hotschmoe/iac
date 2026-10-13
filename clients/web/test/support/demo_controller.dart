@@ -30,6 +30,13 @@ class DemoController extends GameController {
     receive(world.initial());
   }
 
+  /// Give the scripted world's empire [tech] at [level].
+  void learn(proto.ResearchType tech, int level) {
+    final world = _world!;
+    world.learn(tech, level);
+    receive(world.initial());
+  }
+
   /// Announce a raid of [power] on the scripted world's outpost, arriving
   /// in [inTicks].
   void raidOutpost(double power, {int inTicks = 10}) => _world!.raidOutpost(power, inTicks: inTicks);

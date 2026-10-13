@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../design/panel.dart';
 import '../design/tokens.dart';
+import '../protocol/protocol.dart' show nameMaxLen;
 import '../solo/solo_engine.dart';
 
 /// Opponent counts the new-game form offers, as far as the world has seats.
@@ -217,7 +218,7 @@ class _SoloScreenState extends State<SoloScreen> {
               key: const Key('solo-name'),
               controller: _name,
               autofocus: true,
-              maxLength: 24,
+              maxLength: nameMaxLen,
               style: T.mono(size: 14, color: C.a100),
               cursorColor: C.a500,
               decoration: InputDecoration(

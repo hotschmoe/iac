@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../design/panel.dart';
 import '../design/tokens.dart';
+import '../protocol/protocol.dart' show nameMaxLen;
 
 /// Name prompt shown before connecting (skipped when `?name=` is in the URL),
 /// and again when the server refuses the login. A new name creates an
@@ -76,7 +77,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: TextField(
                       controller: _name,
                       autofocus: true,
-                      maxLength: 24,
+                      maxLength: nameMaxLen,
                       style: T.mono(size: 14, color: C.a100),
                       cursorColor: C.a500,
                       decoration: InputDecoration(

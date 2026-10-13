@@ -62,6 +62,12 @@ class ParsedError extends ParsedCommand {
   const ParsedError(this.message);
 }
 
+/// What the server takes for each doctrine setting, as the help prints it.
+const _rangeBounds = '$policyRangeMin-$policyRangeMax';
+const _engageBounds = '${policyEngageRatioX10Min / 10}-${policyEngageRatioX10Max ~/ 10}';
+const _cargoBounds = '$policyCargoReturnPctMin-$policyCargoReturnPctMax';
+const _reserveBounds = '0-$policyMinFuelPctMax';
+
 const helpLines = [
   'fleet:  h[arvest] [metal|crystal|deut]  a[ttack] [n]  r[ecall]  s[alvage]  v|scan  x|explore  stop',
   'move:   m[ove] <e|ne|nw|w|sw|se | 1-6 | q r>      (one hop along a known lane)',
@@ -77,9 +83,9 @@ const helpLines = [
   '        salvage   scoops wreckage and boards derelicts, nearest first',
   '        patrol    hunts the hostiles it rates at its engage ratio, in range of home',
   '        manual    clears the orders (also: off); policy with no name steps to the next doctrine',
-  '        settings, after the name, or alone to change the orders in force:  range=<hexes from home, 1-30>  engage=<least odds ratio, 0.1-10>',
-  '                  fuel=<% of deuterium income it may burn, 100 = no bound>  cargo=<% of the hold that sends it home, 10-100>',
-  '                  reserve=<% of the tank kept spare, 0-90>     e.g. policy mine range=8 fuel=40',
+  '        settings, after the name, or alone to change the orders in force:  range=<hexes from home, $_rangeBounds>  engage=<least odds ratio, $_engageBounds>',
+  '                  fuel=<% of deuterium income it may burn, $policyFuelUnboundedPct = no bound>  cargo=<% of the hold that sends it home, $_cargoBounds>',
+  '                  reserve=<% of the tank kept spare, $_reserveBounds>     e.g. policy mine range=8 fuel=40',
   'hub:    quote <give> <want> [amount|all]  ask the exchange what a trade would return, from anywhere   e.g. quote metal deut 400',
   '        trade <give> <want> [amount|all]  sell cargo from the hold, standing on the hub; no amount = all of it aboard',
   'hold:   load <metal|crystal|deut> [amount|all]  stockpile into the hold of the active fleet, idle at home with no standing orders;',
@@ -87,7 +93,7 @@ const helpLines = [
   '        unload    put a hold loaded by hand back: what the stockpile has room for now, the rest as room opens',
   '        at your outpost load takes from its store and unload puts the whole hold into it, as far as it has room',
   'outpost: survey [q r]  what an outpost would be worth in a sector (its ore only if it is on your chart), and why it cannot be founded now; none = where the fleet stands',
-  '        found     the active fleet founds your outpost where it stands, in rings 9 to 20, paid from its hold',
+  '        found     the active fleet founds your outpost where it stands, in rings $outpostMinRing to $outpostMaxRing, paid from its hold',
   '        outpost upgrade  build the next level, paid from the outpost\'s own store     outpost abandon  give it up; nothing is refunded',
   'other:  status  refresh  leaderboard [n]  help      views: 1|cc  2|ws  3|map  4|hw  5|op',
   'keys:   on the windshield 1-9 select a fleet, P opens its standing orders and O the outpost; ? lists every key',
@@ -442,7 +448,8 @@ String policyCommand(PolicyPreset preset, [PolicyParams params = const PolicyPar
   ].join(' ');
 }
 
-const _policyUsage ='policy: manual|prospect|mine|salvage|patrol  [range=1-30] [engage=0.1-10] [fuel=0-100] [cargo=10-100] [reserve=0-90]';
+const _policyUsage =
+    'policy: manual|prospect|mine|salvage|patrol  [range=$_rangeBounds] [engage=$_engageBounds] [fuel=0-$policyFuelUnboundedPct] [cargo=$_cargoBounds] [reserve=$_reserveBounds]';
 
 /// Doctrine settings typed as `key=value` over [over], the settings the
 /// fleet's orders have when the line names no doctrine, or else over the
@@ -472,7 +479,11 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
     }
   }
   bool within(int value, int least, int most) => value >= least && value <= most;
-  if (!within(reserve, 0, 90) || !within(cargo, 10, 100) || !within(range, 1, 30) || !within(engage, 1, 100) || !within(fuel, 0, 100)) {
+  if (!within(reserve, 0, policyMinFuelPctMax) ||
+      !within(cargo, policyCargoReturnPctMin, policyCargoReturnPctMax) ||
+      !within(range, policyRangeMin, policyRangeMax) ||
+      !within(engage, policyEngageRatioX10Min, policyEngageRatioX10Max) ||
+      !within(fuel, 0, policyFuelUnboundedPct)) {
     return null;
   }
   return PolicyParams(

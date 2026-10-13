@@ -40,7 +40,7 @@ class OvActions {
     con.play('ok');
   }
 
-  void cancel(proto.QueueType q) => g.cancelHomeworldQueue(q);
+  void cancel(proto.QueueType q, {int index = 0}) => g.cancelHomeworldQueue(q, index: index);
 
   void openTab(HomeworldTab t) {
     g.selectHomeworldTab(t);
@@ -112,7 +112,7 @@ class _ResourceTileState extends State<ResourceTile> {
     final cap = st?.cap[k];
     final pct = cap == null || cap <= 0 ? 0.0 : (stock / cap).clamp(0.0, 1.0);
     final full = cap != null && pct > .97;
-    final near = cap != null && pct >= .85 && !full;
+    final near = cap != null && proto.storageNearCap(stock, cap) && !full;
     final left = st?.fullIn(k, stock, rate);
     final narrow = widget.narrow;
     final warnCol = full ? C.ember : C.threat(5);
@@ -212,7 +212,7 @@ class QueueCards extends StatelessWidget {
     final con = Console.of(context);
     final cards = <Widget>[
       GuideTarget('build', child: _BuildSlotA(con)),
-      _BuildSlotB(con),
+      _MoreBuildSlots(con),
       _ResearchCard(con),
       _ShipyardCard(con),
     ];
@@ -413,51 +413,74 @@ Widget _queuedRows(List<QueuedItemView> items, {int first = 2}) {
   );
 }
 
-class _BuildSlotB extends StatelessWidget {
+/// The building slots after the first, as many as the server reports, each
+/// with what it builds, and the next slot with what opens it while one can
+/// still be opened.
+class _MoreBuildSlots extends StatelessWidget {
   final Console con;
-  const _BuildSlotB(this.con);
+  const _MoreBuildSlots(this.con);
 
   @override
   Widget build(BuildContext context) {
     final slots = con.economy.slots;
     final act = OvActions(con);
-    if (slots != null && slots.slotBUnlocked && slots.slotB != null) {
-      final b = slots.slotB!;
-      return OvPanel(
-        key: const Key('card-slot-b'),
-        title: 'Build slot B',
-        padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          _ringRow(b.frac, '${(b.frac * 100).round()}%', clockFmt(b.etaTicks), 'remaining'),
-          const SizedBox(height: 10),
-          _qTitle(b.name),
-          _qSub('Level ${b.toLevel - 1} -> ${b.toLevel}'),
-        ]),
+    final count = slots?.slotCount ?? 1;
+    final running = slots?.running ?? const <QueueSlotView>[];
+    final needs = slots == null ? 'Not available on this server yet' : slots.nextSlot;
+    final last = needs == null ? count - 1 : count;
+    final locked = needs == null
+        ? null
+        : SizedBox(
+            width: double.infinity,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.lock_outline, size: 30, color: C.text3),
+              const SizedBox(height: 8),
+              _qTitle(count == 1 ? 'One more build slot' : 'Slot ${slotLetter(count)} locked', color: C.text2),
+              const SizedBox(height: 6),
+              Text(needs, textAlign: TextAlign.center, style: T.mono(size: 10.5, color: C.text3, height: 1.4)),
+              const SizedBox(height: 10),
+              ConsoleButton('View tech', small: true, onPressed: () => act.openTab(HomeworldTab.research)),
+            ]),
+          );
+    if (count == 1) {
+      return Opacity(
+        opacity: .85,
+        child: OvPanel(
+          key: const Key('card-slot-b'),
+          title: 'Build slot B',
+          subText: locked == null ? 'none' : 'locked',
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+          child: locked ?? _qSub('This world has one build slot.'),
+        ),
       );
     }
-    final why = slots?.slotBRequirement ?? 'Not available on this server yet';
-    return Opacity(
-      opacity: .85,
-      child: OvPanel(
-        key: const Key('card-slot-b'),
-        title: 'Build slot B',
-        subText: 'locked',
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-        child: SizedBox(
-          width: double.infinity,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            const Icon(Icons.lock_outline, size: 30, color: C.text3),
-            const SizedBox(height: 8),
-            _qTitle('Second build slot', color: C.text2),
-            const SizedBox(height: 6),
-            Text(why, textAlign: TextAlign.center, style: T.mono(size: 10.5, color: C.text3, height: 1.4)),
-            const SizedBox(height: 10),
-            ConsoleButton('View tech', small: true, onPressed: () => act.openTab(HomeworldTab.research)),
-          ]),
-        ),
-      ),
+    return OvPanel(
+      key: const Key('card-slot-b'),
+      title: last == 1 ? 'Build slot B' : 'Build slots B-${slotLetter(last)}',
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        for (var i = 1; i < count; i++) ...[
+          if (i > 1) const SizedBox(height: 12),
+          if (last > 1) Lbl('Slot ${slotLetter(i)}', size: 10),
+          ..._slot(act, i, running.elementAtOrNull(i)),
+        ],
+        if (locked != null) ...[const SizedBox(height: 14), locked],
+      ]),
     );
   }
+
+  List<Widget> _slot(OvActions act, int index, QueueSlotView? build) => build == null
+      ? [_qTitle('Idle', color: C.a400), _qSub('An order that can start takes this slot.')]
+      : [
+          _ringRow(build.frac, '${(build.frac * 100).round()}%', clockFmt(build.etaTicks), 'remaining'),
+          const SizedBox(height: 10),
+          _qTitle(build.name),
+          _qSub('Level ${build.toLevel - 1} -> ${build.toLevel}'),
+          ConsoleButton('Cancel',
+              key: ValueKey('ov-cancel-slot-${slotLetter(index).toLowerCase()}'),
+              small: true,
+              onPressed: () => act.cancel(proto.QueueType.building, index: index)),
+        ];
 }
 
 class _ResearchCard extends StatelessWidget {
@@ -470,7 +493,7 @@ class _ResearchCard extends StatelessWidget {
     final act = OvActions(con);
     final r = s.research;
     final slots = con.economy.slots;
-    final sub = slots == null ? null : 'queue ${(r.name == 'Idle' ? 0 : 1) + slots.researchQueued.length}/${slots.maxDepth}';
+    final sub = slots == null ? null : 'queue ${(r.name == 'Idle' ? 0 : 1) + slots.researchQueued.length}/${slots.singleMaxDepth}';
     if (r.name != 'Idle') {
       final to = int.tryParse(_lvl(r.name) ?? '');
       return OvPanel(
@@ -531,7 +554,7 @@ class _ShipyardCard extends StatelessWidget {
     final act = OvActions(con);
     final slots = con.economy.slots;
     final q = s.runningShip;
-    final sub = slots == null ? null : 'queue ${(q == null ? 0 : 1) + slots.shipQueued.length}/${slots.maxDepth}';
+    final sub = slots == null ? null : 'queue ${(q == null ? 0 : 1) + slots.shipQueued.length}/${slots.singleMaxDepth}';
     if (q != null) {
       final m = RegExp(r'^(.*?) x(\d+) \((\d+) built\)').firstMatch(q.name);
       final label = m?.group(1) ?? q.name;

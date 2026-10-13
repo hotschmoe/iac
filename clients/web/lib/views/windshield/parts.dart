@@ -39,11 +39,6 @@ const dockVoiceLaden = 'A DOCKED FLEET REFUELS, AND NOTHING IN THE FIELD REACHES
     'HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.\n'
     'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS AND TAKES ITS SHARE OF THE HOLD.';
 
-String zoneName(proto.Hex h) {
-  final d = h.distFromOrigin;
-  return d == 0 ? 'Central Hub' : d <= 8 ? 'Inner Ring' : d <= 20 ? 'Outer Ring' : 'The Wandering';
-}
-
 ui.ShipState? groupOf(ui.FleetState f, proto.ShipClass c) {
   for (final g in f.ships) {
     if (g.shipClass.toLowerCase() == c.label.toLowerCase()) return g;
@@ -103,7 +98,7 @@ class SectorHead extends StatelessWidget {
         coord,
         if (!narrow) ...[
           const SizedBox(height: 8),
-          Kv('Zone', v: zoneName(loc).toUpperCase(), size: 11),
+          Kv('Zone', v: loc.zone.label.toUpperCase(), size: 11),
           Kv('Terrain', v: (sector?.terrain.label ?? 'Unknown').toUpperCase(), size: 11),
           Kv('Range', v: '${loc.distFromOrigin} FROM HUB - ${fromHome == 0 ? 'AT HOME' : '$fromHome FROM HOME'}', size: 11),
         ],
@@ -268,7 +263,8 @@ class StatusPanel extends StatelessWidget {
     final hops = f.jumpFuel > 0 ? f.fuel ~/ f.jumpFuel : f.fuel;
     final need = f.homeFuel;
     final low = need > 0 && f.fuel < need * 1.2;
-    final scanRange = f.ships.any((g) => g.shipClass.toLowerCase() == 'scout') ? 2 : 1;
+    // The engine's `handle_scan` picks the range the same way: a Scout aboard extends it.
+    final scanRange = groupOf(f, proto.ShipClass.scout) != null ? proto.scanScoutRange : proto.scanBaseRange;
     final cargo = f.cargo.total;
     final pol = f.policy == null ? 'MANUAL' : f.policy!.toUpperCase();
     return ConsolePanel(
@@ -698,13 +694,13 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
 
 // ── Standing orders ────────────────────────────────────────────
 
-/// Least odds ratios the panel steps through, times ten. Any ratio from 0.1
-/// to 10 can be typed (`policy ... engage=`).
-const engageSteps = [5, 9, 11, 13, 15, 20, 25, 30, 40, 60, 100];
+/// Least odds ratios the panel steps through, times ten, up to the most the
+/// server takes. Any ratio it takes can be typed (`policy ... engage=`).
+const engageSteps = [5, 9, 11, 13, 15, 20, 25, 30, 40, 60, proto.policyEngageRatioX10Max];
 
 /// Fuel budgets the panel steps through, in percent of deuterium income.
-/// 100 lifts the bound; any percentage can be typed (`policy ... fuel=`).
-const fuelBudgets = [10, 20, 35, 50, 75, 100];
+/// The last lifts the bound; any percentage can be typed (`policy ... fuel=`).
+const fuelBudgets = [10, 20, 35, 50, 75, proto.policyFuelUnboundedPct];
 
 proto.PolicyPreset presetOf(ui.FleetState f) => f.orders?.preset ?? proto.PolicyPreset.manual;
 
@@ -719,7 +715,7 @@ String doctrineLine(proto.PolicyPreset p) => switch (p) {
 
 String _hexes(int n) => '$n HEX${n == 1 ? '' : 'ES'}';
 
-String _budget(int pct) => pct >= 100 ? 'NO BOUND' : '$pct%';
+String _budget(int pct) => pct >= proto.policyFuelUnboundedPct ? 'NO BOUND' : '$pct%';
 
 /// "RANGE 8 HEXES - ENGAGE 1.5X - FUEL 40%".
 String settingsLine(proto.PolicyParams p) =>
@@ -810,7 +806,9 @@ class _OrdersPanelState extends State<OrdersPanel> {
         if (!manual) ...[
           const SizedBox(height: 6),
           _stepper('Range from home', 'range', _hexes(form.maxRange),
-              down: form.maxRange > 1 ? form.maxRange - 1 : null, up: form.maxRange < 30 ? form.maxRange + 1 : null, set: (v) => _range = v),
+              down: form.maxRange > proto.policyRangeMin ? form.maxRange - 1 : null,
+              up: form.maxRange < proto.policyRangeMax ? form.maxRange + 1 : null,
+              set: (v) => _range = v),
           _stepper('Least odds to fight', 'engage', '${(form.engageRatioX10 / 10).toStringAsFixed(1)}X',
               down: engageSteps.where((s) => s < form.engageRatioX10).lastOrNull,
               up: engageSteps.where((s) => s > form.engageRatioX10).firstOrNull,
@@ -821,7 +819,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
               down: fuelBudgets.where((b) => b < form.fuelBudgetPct).lastOrNull,
               up: fuelBudgets.where((b) => b > form.fuelBudgetPct).firstOrNull,
               set: (v) => _fuel = v),
-          WhyText(form.fuelBudgetPct >= 100
+          WhyText(form.fuelBudgetPct >= proto.policyFuelUnboundedPct
               ? 'No bound: the tank takes what the stockpile holds, ahead of every queue.'
               : 'It leaves the dock on a full tank only, paid for from this share of your deuterium income.'),
           WhyText('It turns home at ${form.cargoReturnPct}% hold, or with fuel down to the way back plus ${form.minFuelPct}% of the tank.'),

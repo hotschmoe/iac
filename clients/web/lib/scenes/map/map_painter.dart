@@ -261,16 +261,22 @@ class MapPainter extends CustomPainter {
         }
       }
     }
-    for (final z in const [(8, C.a500), (20, C.ember)]) {
-      Draw.dashedPath(c, _ring(z.$1), Draw.line(z.$2, 1.2, .5), 8, 6);
+    const rings = [
+      (proto.zoneInnerRingRadius, proto.WorldZone.innerRing, C.a500),
+      (proto.zoneOuterRingRadius, proto.WorldZone.outerRing, C.ember),
+    ];
+    for (final (radius, _, color) in rings) {
+      Draw.dashedPath(c, _ring(radius), Draw.line(color, 1.2, .5), 8, 6);
     }
     if (s > .5) {
-      for (final z in const [(8, 'R08  INNER RING', C.a500), (20, 'R20  OUTER RING', C.ember)]) {
-        final p = vp.toScreen(0, -z.$1);
-        Draw.text(c, z.$2, p.dx, p.dy - 8, T.cond(size: 10, color: z.$3.withValues(alpha: .85), spacing: 2.4), anchor: .5);
+      for (final (radius, zone, color) in rings) {
+        final p = vp.toScreen(0, -radius);
+        Draw.text(c, 'R${'$radius'.padLeft(2, '0')}  ${zone.label.toUpperCase()}', p.dx, p.dy - 8,
+            T.cond(size: 10, color: color.withValues(alpha: .85), spacing: 2.4), anchor: .5);
       }
       final p = vp.toScreen(0, -mapRMax);
-      Draw.text(c, 'R22+  THE WANDERING', p.dx, p.dy - 10, T.cond(size: 10, color: C.a(C.rare, .7), spacing: 2.4), anchor: .5);
+      Draw.text(c, 'R${proto.zoneOuterRingRadius + 1}+  ${proto.WorldZone.wandering.label.toUpperCase()}', p.dx, p.dy - 10,
+          T.cond(size: 10, color: C.a(C.rare, .7), spacing: 2.4), anchor: .5);
     }
   }
 

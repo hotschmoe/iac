@@ -21,7 +21,18 @@ class RoutePlan {
   final List<Intel> intel;
   final int fuel;
   final int fuelHave;
-  final int backFuel;
+
+  /// Fewest jumps from [to] to the homeworld over the lanes on the player's
+  /// chart, and null when the chart joins them by none. The server counts
+  /// the way home over every lane there is, charted or not, so its count is
+  /// never more than this one: a return this plan calls possible is.
+  final int? backHops;
+
+  /// Fuel those jumps cost; null with [backHops].
+  final int? backFuel;
+
+  /// Ticks the route takes flown without a pause, by the server's time for
+  /// one jump of this fleet.
   final int etaTicks;
   final List<int> holds;
 
@@ -34,6 +45,7 @@ class RoutePlan {
     required this.intel,
     required this.fuel,
     required this.fuelHave,
+    required this.backHops,
     required this.backFuel,
     required this.etaTicks,
     required this.holds,
@@ -45,9 +57,7 @@ class RoutePlan {
   int get blindSectors => intel.where((i) => !i.live && i.age != IntelAge.fresh).length;
   int get fuelLeft => fuelHave - fuel;
   bool get canMake => fuelHave >= fuel;
-  bool get canReturn => fuelLeft >= backFuel;
-  int get returnMargin => fuelLeft - backFuel;
-  int get hopsLeftToReturn => fuel == 0 || hops == 0 ? 0 : (fuelLeft ~/ math.max(1, fuel ~/ hops));
+  bool get canReturn => backFuel != null && fuelLeft >= backFuel!;
   bool get hasHold => holds.isNotEmpty;
 
   /// The hops that hold hostiles: the ones worth asking the server's odds for.
@@ -59,6 +69,25 @@ class RoutePlanner {
 
   static bool lane(SectorMap m, proto.Hex a, proto.Hex b) =>
       (m[a]?.connections.contains(b) ?? false) || (m[b]?.connections.contains(a) ?? false);
+
+  /// Fewest jumps from [from] to [to] over known lanes; null when none joins them.
+  static int? chartedHops(SectorMap sectors, proto.Hex from, proto.Hex to) {
+    if (from == to) return 0;
+    final seen = {from};
+    var frontier = [from];
+    for (var hops = 1; frontier.isNotEmpty; hops++) {
+      final next = <proto.Hex>[];
+      for (final at in frontier) {
+        for (final n in at.neighbors()) {
+          if (!sectors.containsKey(n) || !lane(sectors, at, n) || !seen.add(n)) continue;
+          if (n == to) return hops;
+          next.add(n);
+        }
+      }
+      frontier = next;
+    }
+    return null;
+  }
 
   /// Cheapest path over known lanes; null when none.
   static RoutePlan? plan({
@@ -152,6 +181,7 @@ class RoutePlanner {
       if (t.rating >= holdThreat) holds.add(i);
     }
     final per = math.max(1, fleet.jumpFuel);
+    final back = chartedHops(sectors, path.last, home);
     return RoutePlan(
       from: from,
       to: path.last,
@@ -161,8 +191,9 @@ class RoutePlanner {
       intel: intel,
       fuel: per * path.length,
       fuelHave: fleet.fuel,
-      backFuel: proto.Hex.distance(path.last, home) * per,
-      etaTicks: path.length * 2,
+      backHops: back,
+      backFuel: back == null ? null : back * per,
+      etaTicks: path.length * fleet.jumpTicks,
       holds: holds,
     );
   }

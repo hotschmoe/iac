@@ -40,7 +40,7 @@ class SurveyReadout extends StatelessWidget {
       if (site == null)
         const Kv('Grade', key: Key('survey-grade'), v: 'NOT ON YOUR CHART', vc: C.text3)
       else ...[
-        Kv('Grade', key: const Key('survey-grade'), v: '${site.grade.toStringAsFixed(1)} OF 12'),
+        Kv('Grade', key: const Key('survey-grade'), v: gradeOfMax(site.grade)),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: Text.rich(
@@ -115,7 +115,7 @@ class FoundingPanel extends StatelessWidget {
           child: ConsoleButton('Found outpost', key: const ValueKey('found-order'), small: true, primary: why == null, onPressed: why == null ? c.foundOutpost : null, reason: why),
         ),
         if (why != null) WhyText(why, key: const Key('found-why')),
-        const WhyText('One outpost an empire, on a sector of rings 9 to 20. Its first level is paid from this hold; until it is '
+        const WhyText('One outpost an empire, on a sector of $outpostRings. Its first level is paid from this hold; until it is '
             'finished it has a store and nothing else. Raiders come for it as they do for the homeworld, and a raid it loses '
             'breaches it and destroys a quarter of the ships standing there.'),
       ]),
@@ -148,7 +148,7 @@ class _OutpostPanelState extends State<OutpostPanel> {
         subText: 'none',
         padding: EdgeInsets.fromLTRB(12, 8, 12, 12),
         child: WhyText(
-            'You have no outpost. One is founded by a fleet standing in a sector of rings 9 to 20 with the cost of level 1 in its hold: '
+            'You have no outpost. One is founded by a fleet standing in a sector of $outpostRings with the cost of level 1 in its hold: '
             'open the founding survey there with O on the windshield, or type found.',
             key: Key('outpost-none')),
       );
@@ -196,7 +196,7 @@ class _OutpostPanelState extends State<OutpostPanel> {
             key: const Key('outpost-yield'),
             v: o.inService ? yieldAnHour(o.production).toUpperCase() : 'NOTHING: ${o.breached ? 'BREACHED' : 'NOT YET OPEN'}',
             vc: o.inService ? null : C.text3),
-        Kv('Site grade', v: '${o.grade.toStringAsFixed(1)} OF 12'),
+        Kv('Site grade', v: gradeOfMax(o.grade)),
         Kv('Way home', v: hopsHome(o.hopsHome).toUpperCase()),
         const SizedBox(height: 8),
         const Lbl('Defence'),

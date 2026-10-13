@@ -923,6 +923,22 @@ Future<void> shipBatches(Browser browser) async {
       'the refused scout is the only error frame so far');
 }
 
+/// The research tab draws a node for each tech of the catalog the engine in
+/// the worker sent, Modular Fabrication among them, and the fleet says what
+/// a jump takes it.
+Future<void> everyTechHasANode(Browser browser) async {
+  final state = (await browser.last('full_state'))!;
+  final techs = (((state['homeworld'] as Map<String, dynamic>)['catalog'] as Map<String, dynamic>)['research'] as List)
+      .cast<Map<String, dynamic>>();
+  final page = (await browser.text()).toLowerCase();
+  final nodes = RegExp(r' level \d+ of \d+, ').allMatches(page).length;
+  check(nodes == techs.length, 'the research tab has a node for each of the engine\'s ${techs.length} techs (it draws $nodes)');
+  final fab = techs.firstWhere((o) => o['tech'] == 'ModularFabrication');
+  check(page.contains('modular fabrication level ${fab['level']} of ${fab['max_level']}'), 'Modular Fabrication is one of them');
+  final ticks = (await firstFleet(browser))['jump_ticks'];
+  check(ticks == 2, 'the engine says a jump takes the two scouts 2 ticks (it says $ticks)');
+}
+
 /// Every screen and panel a new commander meets, pictured at desktop and at
 /// phone width for whoever reads the pictures: the check here is only that
 /// each one opens. The fleet scans from home on the way.
@@ -993,6 +1009,7 @@ Future<void> screens(Browser browser) async {
   for (final (digit, tab) in [('1', 'buildings'), ('2', 'research'), ('3', 'shipyard'), ('4', 'defence'), ('5', 'storage')]) {
     await browser.type(digit);
     await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (tab == 'research') await everyTechHasANode(browser);
     await browser.shotBoth('25-homeworld-$tab');
   }
   await browser.type('1');

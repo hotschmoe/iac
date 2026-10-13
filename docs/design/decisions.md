@@ -3,6 +3,137 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the web client stops working the rules out for itself)
+
+Merged into master on 2026-10-13, not pushed.
+The journal entry of the same day has what was run.
+
+**The owner's request.** The sweep that came with the generated wire types
+listed places where the web client works a rule out for itself and gets
+another answer than the engine. The owner asked for them to be fixed.
+
+**The rule.** A client draws and words. It does not work out a rule of the
+game. What a view shows comes from one of three places, tried in this order:
+the state the server already sends; a constant or a table generated from Rust
+through `shared/tests/wire/mod.rs`; a field added to the state for it. Only
+where none fits does the client keep a formula, with a comment naming the Rust
+function it follows. No value the game plays by moved: `ECONOMY_VERSION` is 5,
+`chart_golden.txt` and `numbers.json` are untouched.
+
+**The eight disagreements, as settled.**
+
+1. **Every tech has a node.** The research tab listed 12 techs by hand and
+   Modular Fabrication was not one. The lanes are now an exhaustive `switch`
+   over the generated `ResearchType`, filled from the catalog. A tech added
+   in Rust does not compile in the client until it has a lane.
+2. **As many build slots as the state says.** `HomeworldState.build_slots` is
+   1 plus the level of Modular Fabrication, so 1 to 3. The queue strip has a
+   pill for each, and one locked pill for the next slot while Modular
+   Fabrication has a level left. The overview keeps four cards: the second
+   card lists every slot after the first. Each slot after the first has its
+   own Cancel. On the overview an unlocked slot with nothing in it reads
+   IDLE; before, it read LOCKED. The research and shipyard cards count their
+   line against 1 plus the waiting line, not against the building queue's
+   depth.
+3. **Boarding takes the engine's 20 ticks.** `EXPLORE_DURATION_TICKS` is of
+   the real-time class: 20 ticks at every pace. While a fleet boards, its
+   `cooldown_remaining` is what the boarding has left (a server test already
+   held it to `end_tick - tick`). The ring is drawn from that and from the
+   generated constant, so it is right after a reconnect too. It was a timer
+   of 8 seconds.
+4. **No loot tier is invented.** The map printed `1 + min(3, ring / 6)` for
+   every sector. The engine's tier is the threat band of the ring (1 to ring
+   11, 2 to ring 21, 3 beyond) and belongs to a derelict. The line is gone;
+   a sector that holds a derelict shows the tier the server sent, as before.
+5. **The Fabricator shortens building time.** Its note said it speeds up the
+   shipyard, and its tile said SLOT B. Slots come from Modular Fabrication.
+   README and `RULES.md` already had it right.
+6. **One source for zones.** `Zone::INNER_RING_RADIUS` and
+   `OUTER_RING_RADIUS` are generated. `WorldZone` in `lib/protocol/protocol.dart`
+   is the one place a ring is given its zone and its name; six copies of the
+   ternary and four of the names are gone. The map says `R21+ THE WANDERING`.
+7. **A route's time and its way home.** The engine charges a jump for
+   `10 / slowest speed` ticks, less the Navigation level, and lands the fleet
+   on the tick after: a Scout fleet takes 2 ticks a jump, one with a Frigate
+   3, and Navigation takes one off each. The state now says so:
+   `FleetState.jump_ticks`. The route panel's ETA is hops times that. The way
+   home from a route's end is counted over the lanes on the player's chart,
+   not by straight distance, and the panel says so (`OK BY THE CHART, 4 hops,
+   margin 65 fuel`). The server counts the way home over every lane, charted
+   or not, so its count is never more than the chart's: a return the panel
+   calls possible is possible. For a route of one jump the server's
+   `preview_move` answers, as before. `preview_move` takes an adjacent sector
+   only, so it cannot answer for a longer route.
+8. **A derelict can be boarded with a group in the sector.** The engine has
+   no rule against it. It refuses a boarding only where there is no derelict,
+   or while the fleet fights, moves, already boards or is on cooldown, and it
+   words each refusal. The windshield now greys Board only where the state
+   shows no derelict, and sends the order otherwise; a refusal arrives as the
+   engine's sentence. A group that attacks on sight has the fleet in combat
+   the tick it arrives, so the case this opens is mostly a derelict beside a
+   passive group.
+
+**The hand-copied numbers.** Generated and used: the highest threat (9), the
+scan ranges (1 and 2) and the scan cooldown (5), the most a site's grade can
+be (12, now `SITE_GRADE_MAX`), the lane search limit (64, now
+`LANE_SEARCH_HOPS`), the longest name (24, moved to `shared` with its
+shortest), the bounds of the doctrine settings (now `POLICY_*_MIN` and
+`_MAX`), the fuel budget that lifts the bound (100), the rings of an outpost
+where three sentences spelled them, and the four ratios the gauge is drawn
+from. The storage threshold is generated too and compared as the engine
+compares it: `stock / cap` as an `f32` against the `f32` 0.85. Arithmetic in
+double precision against 0.8500000238 would have moved the edge; this does
+not, and a stockpile exactly on it reads NEAR CAP in the client on the tick
+the engine says `StorageNearCap`.
+
+Left as literals, with the reason: the right end of the ratio gauge (4.0, how
+far the scale is drawn); the ten colours of the threat palette (a drawing
+table, indexed by its own length); `mapRMax` 22 (how far the map draws); the
+steps the doctrine panel offers between the generated bounds.
+
+**What the client still copies.** Each is small and has a comment or a type
+that holds it: `WorldZone.ofRing` follows `Zone::from_distance` on generated
+radii; the status panel picks the scan range by "a Scout aboard", as
+`handle_scan` does; the locked slot says Modular Fabrication opens it, as
+`scaling::building_slots` does.
+
+**Found in the engine, and left as found. The owner's to decide.**
+
+1. **A boarding pays a tick after `end_tick`.** `SiteExplorationStarted`
+   carries `end_tick = tick + 20`. The timer reaches 0 on that tick, and
+   `process_exploration` runs before `process_cooldowns`, so the loot or the
+   ambush comes on `end_tick + 1`. By reading, not by a run.
+2. **A fight drops a boarding without a word.** A patrol that wanders in
+   takes the fleet into combat. The boarding is gone, the site is not put on
+   alert, no `Alert` says so, and the fleet keeps what was left of the
+   boarding timer as its cooldown after the fight.
+3. **`home_fuel` is not the charted way home.** The protocol and the README
+   say it is the fewest hops over lanes the player has charted. The engine
+   prices `direct_hops_home`: every lane, charted or not.
+4. **`preview_move` cannot answer for a route.** A sector more than one jump
+   away is refused with `NoConnection`. If the server should judge a planned
+   route's return, that is a new request.
+
+**For the owner.**
+
+1. Merge or not. The protocol gained one field, `FleetState.jump_ticks`.
+2. Four views still count "hops home" and "fuel for N hops" by straight
+   distance or by dividing rounded figures (the sweep listed them; the brief
+   did not). `FleetState.range_hops` is sent and shown nowhere. A `hops_home`
+   on the fleet would settle them.
+3. The route panel adds up whole-number fuel (`jump_fuel` rounded, times
+   hops). Over ten jumps that can be a few units off the engine's figure.
+4. The map inspector still calls a sector RICH, TYPICAL or POOR "for this
+   distance" by a formula of its own (`1.2 + 0.11 * ring`). No rule of the
+   engine stands behind it.
+5. The scripted world of the widget tests still gives ring 8 Corvettes where
+   the engine gives Scouts (`npc_class`), and moves a fleet at once where the
+   engine has it in transit. Its jump now takes as many ticks as the
+   engine's, and its boarding 20.
+6. The captions under the ratio gauge (98 percent, 1 to 15 percent) repeat
+   the comments on the `RATIO_*` constants, which the sweep found at odds
+   with `RATIO_MARGINS`.
+
 ## 2026-10-13 (the economy's numbers are written once, in Rust; `sim.py` reads a file Rust renders)
 
 Merged into master and pushed on 2026-10-13.
