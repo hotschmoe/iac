@@ -3,6 +3,29 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the web client is the interface; the TUI is secondary)
+
+The owner:
+
+> also update docs where needed, flutter UI is primary ui, TUI is not
+> secondary and not necessariliy supported. (humans via flutter ui, llms
+> interact with engine directly)
+
+Read as "now secondary"; he then asked whether the TUI should be kept in play
+after all, and was advised not, for these reasons. The first players come
+from a static page, where only the web client and the engine in the tab
+exist; the TUI needs a server. Agents use the headless NDJSON mode, not the
+screens. The TUI has no tests of its own. And the move to OGame's catalogue
+would have every screen built twice.
+
+So: people play through the Flutter web client. Agents play against the wire
+protocol. A feature is done when the protocol and the web client have it. The
+`clients/tui` crate keeps building, because the headless client (about 400 of
+its 5,000 lines) and the server's scenario tests live in it; its ratatui
+screens need not follow new features and may fall behind. Nothing is removed.
+If the screens ever stop being worth compiling, the headless client is split
+out first.
+
 ## 2026-10-13 (the Flutter test flake is left alone)
 
 `docs/design/flutter_test_flake.md` found that this machine's kernel loses
