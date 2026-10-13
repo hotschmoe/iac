@@ -5957,3 +5957,70 @@ the client's.
 **Not verified.** No person or agent played. The boarding ring and `R21+ THE
 WANDERING` were not seen in a browser (the branch's entry says why). Why the
 Dart VM misbehaves here, pinned or not, has not been investigated.
+
+## 2026-10-13: the OGame study
+
+A study, `docs/design/ogame.md`, commissioned by the entry of the same day in
+`decisions.md`. No game code was changed. It is a proposal for owner review and
+ends in eleven questions, each with the default that is built if it is not
+answered.
+
+**The commission moved while it was written.** The owner answered nine things
+through the coordinator before the document was finished, and it is built on
+them: classic OGame; OGame's names; a fight fought a round a tick and watched;
+flight to the next hex with pursuit, and speed to matter; the catalogue changes
+and the game does not (no fields, moons, colonies, espionage reports, debris,
+missiles, expeditions or fleet slots are brought in); fleeing has a price; damage
+lasts until the fleet is home; shields recharge as OGame's do; pirate groups heal
+over about an hour to a few. Those answers are recorded in `decisions.md` on
+master, which this branch does not edit.
+
+**What it says, shortly.** Of OGame's 58 buildings, researches, ships and
+defences, 47 are taken and 11 left out. Every building and research this game
+has is replaced by an OGame one or has its job carried by one. A fleet becomes a
+count a class and the hull of each damaged ship; shields are no longer stored.
+The fight is OGame's round, one a tick, with no six-round limit in open space
+and six rounds for a raid. Raids are fought as battles, because nothing else
+makes a defence fire before PvP. The catalogue has to land before the fight:
+OGame's round does not work on this game's present ships, whose shields are
+twice their weapons. Every number of the study's own is a named constant with a
+starting value (its section 11), as the owner asked.
+
+**Found on the way, and not asked for.** `Resources` is three `f32`. At OGame's
+scale a stockpile of five million rounds a level 10 mine's whole output a tick
+away at pace 1. Stockpiles, holds and stores have to be 64-bit before the
+catalogue lands; the study makes it a slice of its own.
+
+**Read.** `shared/src/constants.rs`, `scaling.rs` and `pace.rs`,
+`sim/src/combat.rs`, `odds.rs` and `score.rs` in full; `sim/src/engine.rs` in
+the parts the study names. Two reading agents surveyed the protocol, the views,
+the bots, the tests, the planning simulation, the stored world and both clients;
+their reports carry sections 4, 8, 10 and 13, and their line references were not
+each checked a second time.
+
+**Sources for OGame.** `ogamespec/ogame-opensource` at commit `efffece`, a
+reconstruction of OGame 0.84 with its tables, formulas and battle in source
+(`techs.php`, `prod.php`, `defs.php`, `queue.php`, `fleet.php`, `battle.php`,
+`battle.cpp`); and `alaingilbert/ogame`, a Go library for today's game written
+from the live game by other people. Every unit figure, rapid-fire figure, level
+1 cost, growth factor and requirement of the classic units is the same in both.
+The OGame wiki refused every request (HTTP 402) and gave nothing.
+
+**Not confirmed** (the study's section 15.3): the classic figures where the two
+sources differ because the second is a later version (the Bomber's fuel, the Ion
+Cannon's cost, the storage costs and formula, the synthesizer's temperature
+term, natural production, the satellite's output); how a fractional cost is
+rounded; and four details of the battle that only the reconstruction gives
+(shield damage in whole hundredths, the explosion roll only when the shield is
+down, a round without hull damage ending the battle, "at or under" 70 percent).
+
+**Run.** Nothing of the game: no cargo, no Flutter, no test, because two other
+agents were timing a flaky test on this machine. One script of arithmetic, kept
+in the scratch directory, made the worked tables. So nothing in the study is a
+measurement: the cost of a round, of the odds and of the single-player host's
+catch-up are counts of shots, and the study lists them as the first things to
+measure when the fight is built.
+
+**Not known.** What an empire owns under OGame's catalogue at this game's paces:
+no simulation of it exists, and the pirates' growth by ring, the size of a raid,
+what the map pays and the presets' estimates all wait on one.
