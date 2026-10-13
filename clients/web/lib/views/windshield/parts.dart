@@ -769,6 +769,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
 
   proto.PolicyPreset? _preset;
   int? _range, _engage, _fuel;
+  bool? _refine;
   int? _forFleet;
   proto.StandingOrders? _stood;
   GameController get c => widget.controller;
@@ -778,6 +779,7 @@ class _OrdersPanelState extends State<OrdersPanel> {
     _range = null;
     _engage = null;
     _fuel = null;
+    _refine = null;
   }
 
   @override
@@ -800,8 +802,9 @@ class _OrdersPanelState extends State<OrdersPanel> {
       maxRange: _range ?? usual.maxRange,
       engageRatioX10: _engage ?? usual.engageRatioX10,
       fuelBudgetPct: _fuel ?? usual.fuelBudgetPct,
+      refine: _refine ?? usual.refine,
     );
-    final same = preset == inForce && (manual || form == usual);
+    final same =preset == inForce && (manual || form == usual);
     final why = !same
         ? null
         : manual
@@ -848,6 +851,18 @@ class _OrdersPanelState extends State<OrdersPanel> {
               ? 'No bound: the tank takes what the stockpile holds, ahead of every queue.'
               : 'It leaves the dock on a full tank only, paid for from this share of your deuterium income.'),
           WhyText('It turns home at ${form.cargoReturnPct}% hold, or with fuel down to the way back plus ${form.minFuelPct}% of the tank.'),
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(children: [
+              const Expanded(child: Lbl('Refine the hold before turning home for fuel')),
+              ConsoleButton(form.refine ? 'On' : 'Off',
+                  key: const ValueKey('orders-refine'),
+                  small: true,
+                  active: form.refine,
+                  semanticsLabel: 'Refine the hold before turning home for fuel, ${form.refine ? 'on' : 'off'}. $refineRule',
+                  onPressed: () => setState(() => _refine = !form.refine)),
+            ]),
+          ),
         ],
         if (fleet.laden && !manual)
           Padding(

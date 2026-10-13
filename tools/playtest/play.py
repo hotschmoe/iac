@@ -671,7 +671,7 @@ def orders_words(f):
     p = orders["params"]
     fuel = "unbounded" if p["fuel_budget_pct"] >= 100 else f"{p['fuel_budget_pct']}%"
     return (f"{orders['preset']} (range {p['max_range']}, engage {p['engage_ratio_x10'] / 10:.1f}x, fuel {fuel}, "
-            f"home at cargo {p['cargo_return_pct']}%, reserve {p['min_fuel_pct']}%)")
+            f"home at cargo {p['cargo_return_pct']}%, reserve {p['min_fuel_pct']}%{', refines its hold' if p.get('refine') else ''})")
 
 
 def fleet_rows(fs):

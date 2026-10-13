@@ -53,7 +53,8 @@
           "engage_ratio_x10": 15,
           "fuel_budget_pct": 20,
           "max_range": 4,
-          "min_fuel_pct": 10
+          "min_fuel_pct": 10,
+          "refine": false
         },
         "preset": "patrol_home"
       },

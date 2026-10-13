@@ -126,7 +126,7 @@ Standing orders are a separate message type (not a command):
 `params` is optional, and so is every field in it: send only what you want to
 change (`"params":{"max_range":2}`) and the rest take their defaults. A fleet
 under orders carries them in its row: `fleets[].policy` is
-`{"preset": ..., "params": {...}}` with all five settings as the server holds
+`{"preset": ..., "params": {...}}` with all six settings as the server holds
 them (after clamping), in `full_state` and in every `tick_update`. A fleet you
 fly by hand has no `policy` field.
 
@@ -137,6 +137,7 @@ fly by hand has no `policy` field.
 | `max_range` | 4 | farthest the autopilot goes from your HOMEWORLD, in hexes, for claims, prospecting, salvage runs and patrols (1-30); never measured from the last claim |
 | `engage_ratio_x10` | 15 | fight only if the fleet's odds `ratio` against the hostiles is at least this/10 (1-100); also exactly the least ratio at which any doctrine will enter a sector, hostiles there or not. It is the same number `preview_move` and `odds` show. The default is FAVOURABLE. A value below EVEN (1.1) that you set deliberately is honoured |
 | `fuel_budget_pct` | 20 | the share of your deuterium income, in percent, that this fleet may spend on fuel while it flies under these orders (0-100; 100 lifts the bound). See "Fuel budget" |
+| `refine` | false | `true`: before the fleet would turn home for fuel it refines the deuterium in its hold, as a `refine` order does and at the same 15% loss, reports it as a `PolicyAction` `refine` with both figures and the shortage, and is weighed again; it turns home only if that was not enough. Not charged to the fuel budget |
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
@@ -542,8 +543,11 @@ What every doctrine does:
   - A dock fills the tank at the full rate, and a full tank refuses the
     order, so refining is for the field: a fleet that mines or salvages
     deuterium stays out on it, and one too dry to get home flies back.
-  - Standing orders do not refine. The order is taken for a fleet that
-    flies under them, and what it refines is not charged to its fuel budget.
+  - Standing orders refine only when told to (`refine: true` in the
+    `policy_update` params, off by default): then a fleet that would turn
+    home for fuel refines what deuterium its hold has first and flies on if
+    that was enough. The order is also taken by hand for a fleet under
+    orders. Neither is charged to its fuel budget.
 - **Outposts** — one station per empire, on a sector of rings 9 to 20, the
   space where PvP will be allowed. It is built from what you carry to it.
   `load` the founding cost at home, fly it out, clear the sector if a pack

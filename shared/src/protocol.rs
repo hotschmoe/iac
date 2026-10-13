@@ -391,6 +391,14 @@ pub struct PolicyParams {
     /// bound (the tank takes whatever the stockpile holds, ahead of every
     /// queue, as a fleet flown by hand does). Clamped to 0..=100. Default 20.
     pub fuel_budget_pct: u8,
+    /// Refine before turning home for fuel. When the fleet's fuel no longer
+    /// covers the way home and the reserve, or the next jump outward would
+    /// leave too little for them, it turns the deuterium in its hold into
+    /// fuel first, as a `refine` order does and at the same loss, reports it
+    /// as a `PolicyAction` `refine`, and is weighed again; it turns home
+    /// only if that was not enough. What it refines is not charged to
+    /// `fuel_budget_pct`. Default false.
+    pub refine: bool,
 }
 
 impl Default for PolicyParams {
@@ -401,6 +409,7 @@ impl Default for PolicyParams {
             max_range: crate::constants::POLICY_DEFAULT_MAX_RANGE,
             engage_ratio_x10: crate::constants::POLICY_DEFAULT_ENGAGE_RATIO_X10,
             fuel_budget_pct: crate::constants::POLICY_DEFAULT_FUEL_BUDGET_PCT,
+            refine: false,
         }
     }
 }

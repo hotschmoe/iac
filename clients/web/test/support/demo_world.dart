@@ -1116,7 +1116,8 @@ class DemoWorld {
         fleetId: fleetId,
         preset: preset,
         action: 'engage',
-        reason: 'doctrine set: ${preset.label} (range ${params.maxRange}, engage ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x, $fuel)'
+        reason: 'doctrine set: ${preset.label} (range ${params.maxRange}, engage ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x, $fuel'
+            '${params.refine ? ', refining from the hold when short of fuel' : ''})'
             '${f.laden ? '; the hold loaded by hand goes back to the stockpile' : ''}'));
     return [_tickUpdate()];
   }

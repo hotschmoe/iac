@@ -821,12 +821,22 @@ class PolicyParams {
   /// queue, as a fleet flown by hand does). Clamped to 0..=100. Default 20.
   final int fuelBudgetPct;
 
+  /// Refine before turning home for fuel. When the fleet's fuel no longer
+  /// covers the way home and the reserve, or the next jump outward would
+  /// leave too little for them, it turns the deuterium in its hold into
+  /// fuel first, as a `refine` order does and at the same loss, reports it
+  /// as a `PolicyAction` `refine`, and is weighed again; it turns home
+  /// only if that was not enough. What it refines is not charged to
+  /// `fuel_budget_pct`. Default false.
+  final bool refine;
+
   const PolicyParams({
     this.minFuelPct = 10,
     this.cargoReturnPct = 85,
     this.maxRange = 4,
     this.engageRatioX10 = 15,
     this.fuelBudgetPct = 20,
+    this.refine = false,
   });
 
   factory PolicyParams.fromJson(Object? json) {
@@ -837,6 +847,7 @@ class PolicyParams {
       maxRange: _opt(m['max_range'], _int) ?? 4,
       engageRatioX10: _opt(m['engage_ratio_x10'], _int) ?? 15,
       fuelBudgetPct: _opt(m['fuel_budget_pct'], _int) ?? 20,
+      refine: _opt(m['refine'], _bool) ?? false,
     );
   }
 
@@ -846,9 +857,10 @@ class PolicyParams {
     'max_range': maxRange,
     'engage_ratio_x10': engageRatioX10,
     'fuel_budget_pct': fuelBudgetPct,
+    'refine': refine,
   };
 
-  List<Object?> get _props => [minFuelPct, cargoReturnPct, maxRange, engageRatioX10, fuelBudgetPct];
+  List<Object?> get _props => [minFuelPct, cargoReturnPct, maxRange, engageRatioX10, fuelBudgetPct, refine];
 
   @override
   bool operator ==(Object other) => other is PolicyParams && _same(_props, other._props);

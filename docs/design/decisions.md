@@ -3,6 +3,61 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (standing orders may refine: one switch, off by default)
+
+The study left this for afterwards ("standing orders can learn to refine when
+they run low"), and the owner asked for fleets that "fly longer" on what they
+mine and salvage. Built as its own commit on top of the `refine` order, so it
+can be left out. None of what follows is the owner's.
+
+1. **One switch on the orders, `PolicyParams.refine`, false unless set.** A
+   world in which nobody sets it plays as before, and the built-in bots do
+   not set it.
+   *To reverse:* revert the commit; or make it the default in
+   `PolicyParams::default`, which changes what every fleet under orders does.
+2. **It refines at the two places a doctrine gives up for fuel**, not only
+   the one the brief named: when fuel no longer covers the way home and the
+   reserve (`policy_return_reason`), and when the next jump outward would
+   leave too little for them (`policy_move`). The second is where a fleet
+   that still has its way home in the tank turns round, which is most of the
+   time; without it the switch would only ever save a fleet already short.
+   It does not refine to relieve a full hold.
+   *To reverse:* the one line in `policy_move` that calls `policy_refine`.
+3. **It refines all it can, once, and is weighed again.** The same amount as
+   the order: every unit of deuterium aboard, or a full tank. The report is a
+   `PolicyAction` with the action `refine` and both figures in front of the
+   shortage that caused it. At its next evaluation the fleet either flies on
+   or, with no deuterium left or a full tank that is still too small, turns
+   home as it would have.
+   So a fleet under this switch that runs short spends the deuterium it
+   carries on staying out and brings home what is left: stockpile deuterium
+   for time in the field, at 15 percent.
+   *To reverse:* an amount (only what the way home and the reserve lack) in
+   `policy_refine`.
+4. **Not charged to the fuel budget.** `fuel_budget_pct` bounds what a fleet
+   under orders takes from the stockpile at the dock. Deuterium in a hold
+   never was in the stockpile. A player who wants the budget to bound it too
+   has the switch off.
+   *To reverse:* charge `FleetPolicy::fuel_credit` in `policy_refine`.
+5. **`SAVE_FORMAT` 5 to 6; `ECONOMY_VERSION` stays 7.** The orders are
+   stored in the snapshot, and they hold one more field. The rule is that the
+   format moves when what a snapshot must hold changes and nothing is
+   migrated, and the precedent is `laden`, a field of the fleet, which moved
+   it from 2 to 3. **The cost, for the owner to weigh:** every stored world of
+   format 5 is refused, a server's file and a browser's save alike. A
+   document of format 5 would in fact read correctly, because serde gives the
+   missing field its default, which is off; keeping format 5 is the one
+   constant in `sim/src/store.rs` and the two tests that carry the number
+   (`server/tests/smoke.rs`, `solo/tests/single_player.rs`). The branch that
+   makes `Resources` 64-bit will move the format as well; one bump between
+   the two is enough.
+6. **The web client has the switch in the orders panel and as `refine=on` or
+   `refine=off` in the typed `policy`.** The panel has room for one row and
+   no sentence under it at 900 pixels of height, so the row's label says what
+   it does. The settings line above the form does not show it. The TUI was
+   left alone: it keeps the switch of a fleet whose orders it changes and
+   cannot set it.
+
 ## 2026-10-13 (fuel from the hold: what building `refine` had to settle)
 
 The owner's decision is item 10 of the entry below: by an order, not in a

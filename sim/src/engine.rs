@@ -494,6 +494,12 @@ pub struct HarvestReport {
     since: u64,
 }
 
+/// Which of a doctrine's two thresholds turns a fleet home, with its wording.
+enum Homeward {
+    Fuel(String),
+    Cargo(String),
+}
+
 /// A fleet's standing orders plus the bit of memory the autopilot needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetPolicy {
@@ -4294,11 +4300,9 @@ impl GameEngine {
     /// tell the owner both figures. It takes no time and changes nothing
     /// else: a harvest or a boarding goes on.
     pub fn handle_refine(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
-        let Refining { deuterium, fuel } = self.refine_order(player_id, fleet_id).map_err(|refusal| refusal.code)?;
-        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
-        let missing = fleet.fuel_max - fleet.fuel;
-        fleet.cargo.deuterium = (fleet.cargo.deuterium - deuterium).max(0.0);
-        fleet.fuel = if fuel >= missing { fleet.fuel_max } else { fleet.fuel + fuel };
+        self.refine_order(player_id, fleet_id).map_err(|refusal| refusal.code)?;
+        let Refining { deuterium, fuel } = self.refine_hold(fleet_id).ok_or(ErrorCode::ServerError)?;
+        let fleet = self.fleets.get(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
         let (left, sector) = (fleet.cargo.deuterium, fleet.location);
         let hold = if left > 0.0 {
             format!("{} deuterium is left in the hold", fuel_words(left))
@@ -4311,6 +4315,18 @@ impl GameEngine {
         );
         self.push_alert(AlertLevel::Info, fleet_id, sector, message);
         Ok(())
+    }
+
+    /// Do what `refining` says for `fleet_id`: what left the hold and what
+    /// the tank gained, or None when there was nothing to refine. A tank
+    /// that is filled reads exactly its size.
+    fn refine_hold(&mut self, fleet_id: u64) -> Option<Refining> {
+        let fleet = self.fleets.get_mut(&fleet_id)?;
+        let done = refining(fleet)?;
+        let missing = fleet.fuel_max - fleet.fuel;
+        fleet.cargo.deuterium = (fleet.cargo.deuterium - done.deuterium).max(0.0);
+        fleet.fuel = if done.fuel >= missing { fleet.fuel_max } else { fleet.fuel + done.fuel };
+        Some(done)
     }
 
     /// Fuel an emergency jump home would burn: the per-hop cost over the
@@ -5272,8 +5288,9 @@ impl GameEngine {
             format!("fuel budget {}% of deuterium income", params.fuel_budget_pct)
         };
         let reason = format!(
-            "doctrine set: {} (range {}, engage {:.1}x, {fuel}){}",
+            "doctrine set: {} (range {}, engage {:.1}x, {fuel}{}){}",
             preset.label(), params.max_range, f32::from(params.engage_ratio_x10) / 10.0,
+            if params.refine { ", refining from the hold when short of fuel" } else { "" },
             if was_laden { "; the hold loaded by hand goes back to the stockpile" } else { "" },
         );
         self.push_policy_event(fleet_id, preset, "engage", &reason);
@@ -5433,24 +5450,54 @@ impl GameEngine {
     /// is judged against the cost of the direct route home, the fewest hops
     /// over the real lanes, charted or not, plus the doctrine's reserve.
     /// It is not a fraction of the tank.
-    fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<String> {
+    fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<Homeward> {
         let need = self.route_home_cost(fleet, fleet.location);
         let reserve = fleet.fuel_max * params.min_fuel_pct as f32 / 100.0;
         if fleet.fuel < need + reserve {
-            return Some(format!(
+            return Some(Homeward::Fuel(format!(
                 "fuel {:.0} is below the route home {:.0} plus reserve {:.0}",
                 fleet.fuel, need, reserve,
-            ));
+            )));
         }
         let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
         if max_cargo > 0.0 {
             let used = fleet.cargo.metal + fleet.cargo.crystal + fleet.cargo.deuterium;
             let cargo_pct = used / max_cargo * 100.0;
             if cargo_pct >= params.cargo_return_pct as f32 {
-                return Some(format!("cargo {:.0}%", cargo_pct));
+                return Some(Homeward::Cargo(format!("cargo {:.0}%", cargo_pct)));
             }
         }
         None
+    }
+
+    /// Act on those thresholds for a fleet away from home; None when
+    /// neither sends it home. Short of fuel, a fleet whose orders say so
+    /// refines first and is weighed again at its next evaluation; otherwise
+    /// it turns home. True if the autopilot acted.
+    fn policy_homeward(&mut self, fleet_id: u64, preset: PolicyPreset, fleet: &Fleet, params: &PolicyParams) -> Option<bool> {
+        let reason = self.policy_return_reason(fleet, params)?;
+        if let Homeward::Fuel(short) = &reason
+            && self.policy_refine(fleet_id, preset, short)
+        {
+            return Some(true);
+        }
+        let (Homeward::Fuel(why) | Homeward::Cargo(why)) = reason;
+        Some(self.policy_head_home(fleet_id, preset, &format!("returning: {why}")))
+    }
+
+    /// A fleet whose orders have `refine` set turns the deuterium in its
+    /// hold into fuel when it is `short`, and reports both figures. True if
+    /// it refined anything: with no deuterium aboard or a full tank it
+    /// did not, and the doctrine goes on to what it would have done.
+    fn policy_refine(&mut self, fleet_id: u64, preset: PolicyPreset, short: &str) -> bool {
+        if !self.policies.get(&fleet_id).is_some_and(|p| p.params.refine) { return false; }
+        let Some(Refining { deuterium, fuel }) = self.refine_hold(fleet_id) else { return false; };
+        let why = format!(
+            "refined {} deuterium from the hold into {} fuel: {short}",
+            fuel_words(deuterium), fuel_words(fuel),
+        );
+        self.push_policy_event(fleet_id, preset, "refine", &why);
+        true
     }
 
     /// Whether a hold for `reason` is news: the same reason is announced at
@@ -5617,6 +5664,7 @@ impl GameEngine {
                     "a jump to {step} would leave {:.0} fuel against {:.0} needed to return home",
                     (fuel - hop).max(0.0), need,
                 );
+                if self.policy_refine(fleet_id, preset, &why) { return true; }
                 let home = self.players.get(&owner).map(|p| p.homeworld);
                 if let Some(home) = home && from != home {
                     return self.policy_head_home(fleet_id, preset, &format!("returning: {why}"));
@@ -5701,8 +5749,8 @@ impl GameEngine {
         let Some(home) = self.players.get(&fleet.owner_id).map(|p| p.homeworld) else { return Ok(false); };
         let (owner, location) = (fleet.owner_id, fleet.location);
 
-        if location != home && let Some(reason) = self.policy_return_reason(&fleet, &params) {
-            return Ok(self.policy_head_home(fleet_id, preset, &format!("returning: {reason}")));
+        if location != home && let Some(acted) = self.policy_homeward(fleet_id, preset, &fleet, &params) {
+            return Ok(acted);
         }
 
         // Scan if this position hasn't been pinged recently.
@@ -5773,8 +5821,8 @@ impl GameEngine {
 
         // Loaded or low on fuel for the way home: head home (docking
         // deposits + refuels).
-        if !at_home && let Some(reason) = self.policy_return_reason(&fleet, &params) {
-            return Ok(self.policy_head_home(fleet_id, preset, &format!("returning: {reason}")));
+        if !at_home && let Some(acted) = self.policy_homeward(fleet_id, preset, &fleet, &params) {
+            return Ok(acted);
         }
 
         let leashed = !at_home && Hex::distance(&location, &home) <= u16::from(params.max_range);
@@ -5855,8 +5903,8 @@ impl GameEngine {
         let (owner, location) = (fleet.owner_id, fleet.location);
         let at_home = location == home;
 
-        if !at_home && let Some(reason) = self.policy_return_reason(&fleet, &params) {
-            return Ok(self.policy_head_home(fleet_id, preset, &format!("returning: {reason}")));
+        if !at_home && let Some(acted) = self.policy_homeward(fleet_id, preset, &fleet, &params) {
+            return Ok(acted);
         }
 
         if !at_home {
@@ -5931,8 +5979,8 @@ impl GameEngine {
         let (owner, location) = (fleet.owner_id, fleet.location);
         let at_home = location == home;
 
-        if !at_home && let Some(reason) = self.policy_return_reason(&fleet, &params) {
-            return Ok(self.policy_head_home(fleet_id, preset, &format!("returning: {reason}")));
+        if !at_home && let Some(acted) = self.policy_homeward(fleet_id, preset, &fleet, &params) {
+            return Ok(acted);
         }
 
         // Engage what we can beat, where we stand.

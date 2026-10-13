@@ -6337,3 +6337,44 @@ first with `taskset -cp 0,1,6-11 $$` and lowered with `renice`.
 **Not verified on this commit.** No browser and no single-player bundle: the
 end-to-end run is recorded with the last entry of this work. No person or
 agent played. The TUI was built and not run.
+
+## 2026-10-13: standing orders may refine before they turn home
+
+A second commit on the `refine` order, separate so the reviewer can take the
+first without it. The brief said to stop if it was more than a small change.
+It is 66 lines added and 18 taken out of the engine and one field on the
+wire; the rest is the panel, the typed command, the rules and the tests.
+Built.
+
+**Read first.** How a doctrine's settings travel: `PolicyParams` in
+`shared/src/protocol.rs` (every field optional on the wire, by a struct-level
+serde default), clamped in `handle_policy_update`, kept in `FleetPolicy` and
+so in the snapshot, sent back as `FleetState.policy`. In the web client the
+orders panel builds a `PolicyParams` and sends the line a player would type,
+so the typed `policy` had to learn the setting first. Where a doctrine gives
+up for fuel: `policy_return_reason`, called by all four doctrines, and the
+outward check in `policy_move`.
+
+**Built.** `PolicyParams.refine`, false by default. `policy_return_reason`
+now says which threshold it is (`Homeward::Fuel` or `Cargo`) and the four
+doctrines call `policy_homeward`, which refines first when short of fuel and
+the switch is set, and otherwise turns home as before. `policy_move` does the
+same before it gives up an outward jump. Both go through `policy_refine` and
+`refine_hold`, which the order uses too, so `engine::refining` is still the
+one place the arithmetic is. The report: `PolicyAction` `refine`, "refined 4
+deuterium from the hold into 42.5 fuel: a jump to [x,y] would leave 9 fuel
+against 12 needed to return home". The orders' own report names the switch
+when it is set. Web client: a row in the orders panel, `refine=on|off` in
+`policy`. Rules and README: the settings table and the Refining entry.
+`play.py` names it in a fleet's orders. The TUI was not touched.
+
+**Versions.** `SAVE_FORMAT` 5 to 6, `ECONOMY_VERSION` stays 7; the reasoning
+and what it costs are in `decisions.md`, with five other choices.
+
+**Tests.** One scenario in `sim/tests/fleet_logistics.rs`, four cases: with
+the switch off a prospector turns home with its deuterium aboard; with it on
+it refines once and pushes on; two hops out with 3 fuel it refines and goes
+on working; and with 0.4 deuterium, which is not enough, it refines and then
+turns home with the engine's usual reason. In the web client the demo flow
+sets the switch through the panel, reads the engine's report of it, and
+clears it by typing.

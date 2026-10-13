@@ -240,6 +240,7 @@ fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
             max_range: 8,
             engage_ratio_x10: 15,
             fuel_budget_pct: 100,
+            refine: false,
         }))
         .expect("orders");
     let mark = e.mark();
@@ -1296,6 +1297,72 @@ fn deuterium_loaded_at_the_dock_is_refined_like_any_other_once_the_tank_has_room
     let after = e.fleet();
     assert_eq!(after.fuel, 120.0, "the jump the dock did not pay for is made good from the hold");
     assert!((after.cargo.deuterium - (2.0 - 6.0 / 10.625)).abs() < 1e-4, "{:?}", after.cargo);
+}
+
+/// A prospector `hops` out with `fuel` in its tank and `deuterium` in its
+/// hold, given orders with no reserve; the mark is taken before the orders.
+fn dry_prospector(hops: usize, fuel: f32, deuterium: f32, refine: bool) -> (Empire, usize) {
+    let (mut e, chain) = outpost("Thirsty", hops);
+    let (pid, fid) = (e.pid, e.fid);
+    adrift(&mut e, chain[hops - 1], fuel, deuterium);
+    edit(&mut e.engine, |s| {
+        for ship in &mut s.fleets.get_mut(&fid).unwrap().ships {
+            ship.weapon_power = 5000.0;
+        }
+    });
+    let mark = e.mark();
+    let params = PolicyParams { min_fuel_pct: 0, max_range: 4, refine, ..PolicyParams::default() };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+    e.absorb();
+    (e, mark)
+}
+
+#[test]
+fn a_doctrine_told_to_refine_does_so_before_it_would_turn_home_for_fuel_and_turns_home_only_if_that_was_not_enough() {
+    let (mut e, mark) = dry_prospector(1, 15.0, 4.0, false);
+    let fid = e.fid;
+    assert!(!policy_reasons(&e, mark, "engage")[0].contains("refining"), "the switch is off unless set");
+    e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
+    let moves = policy_reasons(&e, mark, "move");
+    assert!(moves[0].starts_with("returning: a jump to"), "without the switch it turns home: {moves:?}");
+    assert!(policy_reasons(&e, mark, "refine").is_empty());
+    assert_eq!(e.engine.fleets[&fid].cargo.deuterium, 4.0, "with its deuterium for the stockpile");
+
+    let (mut e, mark) = dry_prospector(1, 15.0, 4.0, true);
+    assert!(
+        policy_reasons(&e, mark, "engage")[0].ends_with("fuel budget 20% of deuterium income, refining from the hold when short of fuel)"),
+        "{:?}", policy_reasons(&e, mark, "engage"),
+    );
+    e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
+    let refined = policy_reasons(&e, mark, "refine");
+    assert_eq!(refined.len(), 1, "{refined:?}");
+    assert!(
+        refined[0].starts_with("refined 4 deuterium from the hold into 42.5 fuel: a jump to ")
+            && refined[0].ends_with(" would leave 9 fuel against 12 needed to return home"),
+        "{refined:?}",
+    );
+    assert_eq!(policy_reasons(&e, mark, "move")[0], "pushing frontier", "and then flies on");
+    assert_eq!(e.engine.fleets[&fid].cargo.deuterium, 0.0);
+
+    let (mut e, mark) = dry_prospector(2, 3.0, 4.0, true);
+    e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
+    assert_eq!(
+        policy_reasons(&e, mark, "refine"),
+        ["refined 4 deuterium from the hold into 42.5 fuel: fuel 3 is below the route home 12 plus reserve 0"],
+    );
+    assert!(!policy_reasons(&e, mark, "move")[0].starts_with("returning"), "{:?}", policy_reasons(&e, mark, "move"));
+
+    let (mut e, mark) = dry_prospector(2, 3.0, 0.4, true);
+    e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
+    assert_eq!(
+        policy_reasons(&e, mark, "refine"),
+        ["refined 0.4 deuterium from the hold into 4.3 fuel: fuel 3 is below the route home 12 plus reserve 0"],
+    );
+    assert_eq!(
+        policy_reasons(&e, mark, "move")[0],
+        "returning: fuel 7 is below the route home 12 plus reserve 0",
+        "what it refined was not enough, so it turns home",
+    );
 }
 
 #[test]

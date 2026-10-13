@@ -5,7 +5,8 @@
     "engage_ratio_x10": 15,
     "fuel_budget_pct": 35,
     "max_range": 6,
-    "min_fuel_pct": 30
+    "min_fuel_pct": 30,
+    "refine": true
   },
   "preset": "mine_and_return",
   "type": "policy_update"
