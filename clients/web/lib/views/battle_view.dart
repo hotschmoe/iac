@@ -280,7 +280,7 @@ class _BattlePanelState extends State<BattlePanel> {
         Text('${outcomeSentence(e.outcome)}, after ${roundsOf(e.rounds)} at ${e.sector.q}, ${e.sector.r}.'.toUpperCase(), style: _small),
         const SizedBox(height: 7),
         const Lbl('Losses'),
-        ..._losses(e.losses, key: 'battle-end-losses'),
+        ..._losses(e.losses, key: 'battle-end-losses', none: 'NO SHIP WAS LOST ON EITHER SIDE.'),
         if (e.salvage case final pile?)
           Padding(padding: const EdgeInsets.only(top: 5), child: Text('WRECKAGE LEFT: ${amountsOf(pile).toUpperCase()}', key: const Key('battle-wreckage'), style: _small.copyWith(color: C.gold))),
         Padding(
@@ -295,9 +295,9 @@ class _BattlePanelState extends State<BattlePanel> {
         if (_lastRound) const SizedBox(height: 8),
       ];
 
-  List<Widget> _losses(List<proto.BattleLosses> losses, {required String key}) => [
+  List<Widget> _losses(List<proto.BattleLosses> losses, {required String key, String none = 'NOTHING YET.'}) => [
         if (losses.every((l) => l.lost.isEmpty))
-          Text('NOTHING YET.', key: Key(key), style: _small)
+          Text(none, key: Key(key), style: _small)
         else
           Column(key: Key(key), crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
             for (final l in losses)

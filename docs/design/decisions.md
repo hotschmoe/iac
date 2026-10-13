@@ -3,6 +3,159 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (the web client on flight, pursuit and pirates that mend: what the agent decided)
+
+Slice 3 of `docs/design/ogame.md`, section 12, stage 2: the hand-written Dart
+of `clients/web` on the engine stage 1 built, after master (slice 2, engine
+and web client) was merged into the branch. The windshield as a picture of
+class marks with flight and pursuit drawn on it is slice 5 and was not
+built: what is here is controls, panels and words. What follows is what the
+agent that built it chose. None of it was put to the owner. Each line ends
+with what undoes it. `SAVE_FORMAT` and `ECONOMY_VERSION` did not move, and
+no wire type changed: every figure a view shows was already in the state
+stage 1 sends.
+
+**What Rust gained.** Nothing on the wire. For the scripted world of the
+widget tests, which types no number of the game,
+`sim/tests/economy_numbers.rs` names `CHASE_HEXES` and `NPC_HEAL_STEPS`,
+gives a ring's row in the `rings` table its `npc_jump_ticks`, and renders a
+`group_healing` table (ring, pace, the ticks between two steps of a group's
+mending). `sim.py` reads none of them. Undo: those four lines; the scripted
+world would then have to type the leash and the mending clock.
+
+**The way out of a fight.**
+
+- *A panel, the gates and the keys, and no second press.* A fleet in a
+  fight gets a Leave the fight panel from `flight`: the odds as the fight
+  stands, the price, who would follow, and a button a lane. Every gate card
+  says `FLEE n RND` in place of its intel line, and a gate key in a fight is
+  flight. Fire asks for a second F on deadly odds; leaving asks for nothing,
+  because the order can be called off and a fleet that needs to leave has
+  no second to spare. Undo: the `quote` branch of
+  `_WindshieldViewState.jump` for a confirmation; `FlightPanel` and
+  `GateCard.flight` in `lib/views/windshield/parts.dart` for the rest.
+- *Every lane is asked about while the fight lasts.* The fleet's own quote
+  says who would follow it out; only a `preview_move` says whether a group
+  follows into a given sector, which it does not into home ground, the hub
+  or an outpost's sector. So the windshield asks the server for each lane of
+  a fleet in a fight, as it does for a gate under the mouse, at most once
+  every three ticks a lane, and prints "NOTHING FOLLOWS TO ..." for a lane
+  whose quote has no `chase` while the fleet's has one. Undo: the
+  `requestPreview` in the gate loop of `WindshieldView.build`.
+- *Stop is offered where the fleet is leaving, with its price.* The Leaving
+  the fight panel has a Stop button and the sentence that the fleet fights
+  on and the fuel is forfeit; the dock's Stop tile carries the same sentence
+  as its hint while the fleet is leaving (`DockAction.note`). Undo: the
+  note, and `stopFlightRule` in `lib/console/battle.dart`.
+- *The end of a fight is told where the fleet lands.* The report of a fight
+  used to be the one in the fleet's sector, and a fleet that has fled stands
+  somewhere else. The mapper now remembers where each fleet last fought
+  (`FleetState.foughtAt` of the client's model) and `GameState.battleOf`
+  gives a fleet the report of the fight it left once that has ended. Undo:
+  `battleOf` back to `battleAt(f.sector)` in the windshield.
+- *FLEEING is the client's word.* On the wire a fleeing fleet is `Moving`.
+  The fleet rail, the map's chips and the Overview's cards print
+  `statusLabel`, which is the status's own word but for a fleet with
+  `fleeing`. Undo: `statusLabel` and `underFire` in `lib/models/fleet.dart`.
+
+**Pursuit.**
+
+- *Pinned.* The Pursuit panel stands over the windshield's other panels and
+  does not scroll with them: the first version stood first in the scrolled
+  column, and a column scrolled down to a button hid it. The screen's edges
+  pulse as they do in a fight, the fleet's card turns ember and says when
+  the group lands, a banner is shown when the pursuit begins, and on a
+  phone it is a line over the fleets. Undo: `panels` in
+  `WindshieldView.build`, which would put `PursuitPanel` back in the column.
+- *Said on every screen that lists the fleet.* The Overview's card has a
+  PURSUED tag and the sentence, its alerts have "F3 IS PURSUED" while the
+  state says so (the alert the event raised is not shown beside it), the
+  map's chip and sector panel say it, and the map draws the lane the group
+  is jumping down and a ring round the fleet; a fleet's own flight is a lane
+  too. A pursuit begun is one of the things the console tells a player whose
+  tab is in the background. Undo: the three views; `_drawChases` in
+  `lib/scenes/map/map_painter.dart`; the `PursuitEvent` case in
+  `lib/console/attention.dart`.
+- *Whether it catches is the state's word, worded twice.* `catches` means
+  one thing for a fleet that is charging a jump and another for one that is
+  not, and the panel says which: "the jump under way is gone before it
+  lands" or "a jump ordered now is gone before it lands; a fleet that stays
+  is caught". The client reads the fleet's status to pick the sentence and
+  works out nothing. Undo: `pursuitVerdict`.
+
+**A group.**
+
+- *One brief for every screen.* `GroupBrief` prints, under a group's ships:
+  when it is whole again, how far it follows and how long its jump takes
+  with the selected fleet's own beside it, and its errand. The heading says
+  "3 OF 5 SHIPS" when it has losses. The contacts, the map's sector panel
+  and the route's hold panel use it. No screen says which of the two jumps
+  is the faster: `flight.chase` says what a chase would do. Undo:
+  `GroupBrief` and `groupHeading` in `lib/views/battle_view.dart`.
+- *`whole_at` is a time from now, and old news is said to be old.* In
+  sensor range: "WHOLE AGAIN IN 4:10". On a sector last seen earlier: the
+  same "AS LAST SEEN", or "WHOLE AGAIN BY NOW, IF NOTHING DISTURBED IT" once
+  the tick is past. A sentence beside it says that it mends at rest in its
+  own sector and that a fight or a pursuit stops the clock. Undo:
+  `GroupBrief._mending`.
+
+**Standing orders.**
+
+- *The seventh setting has no gauge of its own.* "Leave a fight below"
+  steps through 0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 2, 3 and 10 (any
+  ratio the server takes can be typed, `policy ... disengage=1.2`). It
+  stands under "Least odds to fight" and shares that stepper's gauge and one
+  note for the two. The panel does not clamp it to the engage ratio: the
+  server does, and the settings in force, now on two lines, show what it
+  took. Undo: `disengageSteps` and the stepper in `_OrdersPanelState`.
+- *The form no longer leaves room for the guide strip.* With seven settings
+  the Set button of a fleet under orders still shows without scrolling on a
+  900 px window, but the 66 px the widget test kept free under it for the
+  onboarding guide strip are gone, and the test now asks for the first
+  only. Undo: nothing short of a shorter form; the five doctrines with two
+  lines each are the largest part of it.
+- A doctrine that leaves a fight reports `flee`; the panel's heading words
+  it "LEFT A FIGHT" and the log marks the line as the player's to see.
+
+**Words.** `fled` is "FLED UNDER FIRE". `withdrawn`, which now means the
+emergency jump only, is "RECALLED" (it was "FLEETS WITHDREW"). The sentence
+for a stand-off says both sides stay as they are, and no sentence says a
+group is whole again after a fight. An ended fight in which nobody lost a
+ship says so in place of "NOTHING YET". Undo: `outcomeTitle` and
+`outcomeSentence`.
+
+**The scripted world of the widget tests** flies, follows and mends by the
+engine's rules, with the engine's sentences for a second order and for
+Stop, and differs in one thing its header states: only a jump out of a
+fight is charged before it is made; every other jump there is made at once
+with a cooldown after it, as it was. So in it a fleet that jumps on the
+moment it lands is gone when its pursuer lands, whatever the two speeds,
+and one that stays is caught. Its groups jump in the ticks the ring's own
+class takes, and its odds are power against power, as they were. Undo:
+`_stepGroups` and `_landOutOfFight` in `test/support/demo_world.dart`.
+
+**The end-to-end check** sends the two Light Fighters it splits off to
+scout, into the group and out again, and then the six along the same way.
+The six wait a jump away until a scan shows the group back in its sector
+and whole, because at a blitz a group the two hurt mends in seconds and
+the check counts what the six destroy. Of two groups it would take
+otherwise, it takes the one that outweighs the two. Undo: `flight` in
+`tool/solo_e2e.dart` and the two lines of the hunt's order.
+
+**Unsure of.**
+
+- Whether leaving should ask for a second press when the odds are SAFE, the
+  way Fire does when they are DEADLY.
+- The flee control stands above the round panel and pushes it down. In a
+  long fight a player may want the round first.
+- "RECALLED" for `withdrawn` names the order, not what the fleet did; the
+  engine's alert of the recall says what it cost.
+- A phone's map keeps the route in its sheet and not the sector, so a
+  wounded group's panel cannot be read on the map at 390 px. That was so
+  for a whole group too.
+- The windshield's scope still spreads the fleet toward the gate while it
+  charges and does nothing else for a flight or a pursuer: slice 5.
+
 ## 2026-10-14 (flight, pursuit and pirates that mend: what the agent decided)
 
 Slice 3 of `docs/design/ogame.md`, section 12, stage 1: everything that is

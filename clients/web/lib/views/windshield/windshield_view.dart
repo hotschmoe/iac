@@ -619,9 +619,11 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _clearForSheet();
       }
 
-      Widget panels(Widget scrolled) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Widget panels(Widget scrolled, {Color? ground}) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             if (hunter != null)
-              Padding(padding: const EdgeInsets.only(bottom: 8), child: ColoredBox(color: C.deep, child: PursuitPanel(fleet: f, pursuit: hunter))),
+              ColoredBox(
+                  color: ground ?? Colors.transparent,
+                  child: Padding(padding: const EdgeInsets.only(bottom: 8), child: PursuitPanel(fleet: f, pursuit: hunter))),
             Expanded(child: scrolled),
           ]);
 
@@ -796,7 +798,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               width: size.width > _sheetWidth + 16 ? _sheetWidth : null,
               top: 40,
               bottom: 130,
-              child: panels(SingleChildScrollView(child: ColoredBox(color: C.deep, child: rightCol)))),
+              child: panels(SingleChildScrollView(child: ColoredBox(color: C.deep, child: rightCol)), ground: C.deep)),
         if (!narrow && feedWidth >= 200)
           Positioned(left: 16, bottom: 14, width: feedWidth, child: Feed(events: st.events, maxHeight: size.height - 14 - 8 - feedCeiling)),
         if (_hsub)

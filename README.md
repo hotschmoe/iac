@@ -305,12 +305,14 @@ the Rust wire protocol over `/ws` on the page's own host and port. In the
 windshield `P` (or Orders under Fleet status) opens the standing orders of the
 active fleet: the doctrine in force, what it last reported and, when the fleet
 stands still, the engine's reason for the hold; the five doctrines with a line
-each, steppers for the range, the least odds and the fuel budget, and a
+each, steppers for the range, the least odds to fight, the odds below which
+it leaves a fight, and the fuel budget, and a
 switch for refining the hold before turning home for fuel. Its
 button sends what the command bar sends for
-`policy mine range=8 engage=1.5 fuel=40 cargo=85 reserve=10 refine=on` (any
+`policy mine range=8 engage=1.5 disengage=0.9 fuel=40 cargo=85 reserve=10 refine=on` (any
 subset; `fuel` is `fuel_budget_pct`, 100 for no bound; `refine` is `on` or
-`off`; `policy manual` clears). The
+`off`; `policy manual` clears). The server never holds `disengage` above
+`engage`, and the panel shows what it took. The
 fleet row carries the settings with the doctrine, so the panel shows the
 settings in force for any fleet under orders, whoever gave them and whenever,
 and its steppers start from them; settings typed with no doctrine
@@ -336,7 +338,11 @@ Weapons, Shielding and Armour levels it fights with (and that a refit waits
 at the home dock, when one does), and, once a ship is damaged, what the home
 dock and the outpost would mend and for what, or the server's reason why
 not. A hostile group is listed the same way among the contacts and in the
-map's sector panel. The scope beside the list never draws a ship each: a
+map's sector panel, and under its ships: how many of its muster stand when it
+has losses, when it will be whole again (a time from now; for a sector out of
+sensor range, as it was last seen), how far it follows a fleet that leaves
+it and how long its jump takes beside the fleet's own, and, when it is out of
+its sector, whom it is after or that it is on its way back. The scope beside the list never draws a ship each: a
 side is at most sixteen marks, a class with a ship in it always has one, a
 mark stands for 1, 2, 5, 10 and so on ships on both sides alike, and the
 scope says what a mark stands for when that is more than one. Manage fleet
@@ -355,6 +361,29 @@ marks and takes away the marks the round's losses leave nothing for. On a
 phone the fight is a line over the fleets that opens the panel in the
 status sheet. The log keeps one line for a fight's rounds, the last round's,
 and a line for its end.
+
+A fleet in a fight has a way out, and the windshield shows it from the
+server's quote (`fleets[].flight`): a Leave the fight panel with the odds of
+the fight as it stands, what the jump out costs (fuel, ticks, rounds under
+fire), who would follow and how far, and a button for each lane; each gate
+card says `FLEE 1 RND` and, once the server has quoted that lane, whether a
+group follows there. A gate key, a gate card, a button or `move` all send
+the same ordinary `move`. When the server would refuse it the control is
+greyed with its sentence. While the fleet charges its jump the panel is
+Leaving the fight: where to, the count to the jump, the rounds still to
+take, and Stop, with what Stop costs (the fleet fights on and the fuel is
+forfeit); its side of the round is marked as fired on and not firing. The
+fight's end is told where the fleet lands (`FLED UNDER FIRE`). A group on a
+fleet's trail (`fleets[].pursued_by`) stands in a Pursuit panel pinned over
+the others: what follows, when it lands and from where, whether it lands
+before the fleet can be gone, and how much further it follows; the fleet's
+cards on the windshield, the Overview and the map say it too, the Overview
+lists it among its alerts, and the map draws the lane the group is jumping
+down and a ring round the fleet. The log has a line for a pursuit begun,
+continued and given up, the last with the server's reason. On a phone each
+of these is a line over the fleets that opens the status sheet. `status` in
+the command bar prints the quote, the flight and the pursuit of the active
+fleet.
 
 The homeworld (`G` then `H`) has five tabs, each drawn from the catalogue the
 server sends. Buildings is a plan of the twelve buildings around the core
