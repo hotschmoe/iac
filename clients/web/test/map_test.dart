@@ -59,7 +59,9 @@ ui.FleetState _fleet(proto.Hex at, {int fuel = 100, double? jumpFuelExact}) => u
       sector: at,
       status: ui.FleetStatus.idle,
       shipCount: 3,
-      ships: const [ui.ShipState(shipClass: 'Light Fighter', count: 3, hull: 1200, hullMax: 1200, ids: [1, 2, 3])],
+      ships: [shipRow(proto.ShipClass.lightFighter, 3)],
+      hull: 1200,
+      hullMax: 1200,
       fuel: fuel,
       fuelMax: 120,
       jumpFuel: 5,
@@ -79,9 +81,9 @@ GameState _state(int tick, List<ui.FleetState> fleets) {
       resources: const proto.SectorResources(metal: proto.Density.rich, crystal: proto.Density.sparse, deuterium: proto.Density.none),
       connections: [for (final n in h.neighbors()) if (n.distFromOrigin <= 6) n],
       hostiles: hostile
-          ? const [proto.NpcFleetInfo(id: 9, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.cruiser, count: 1)], behavior: proto.NpcBehavior.aggressive)]
+          ? [hostileGroup(9, [shipRow(proto.ShipClass.cruiser, 1)], proto.NpcBehavior.aggressive)]
           : minor
-              ? const [proto.NpcFleetInfo(id: 10, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 1)], behavior: proto.NpcBehavior.patrol)]
+              ? [hostileGroup(10, [shipRow(proto.ShipClass.lightFighter, 1)], proto.NpcBehavior.patrol)]
               : null,
       threat: hostile
           ? const proto.ThreatInfo(rating: 6, estPower: 137.5, basis: proto.ThreatBasis.observed)
@@ -109,11 +111,9 @@ GameState _state(int tick, List<ui.FleetState> fleets) {
     fleets: fleets,
     buildQueue: const [],
     shipyard: const [],
-    docked: 'none',
     research: const ResearchState(name: 'Idle', time: '-', pct: 0, completed: []),
     events: const [],
     alerts: const [],
-    sector: SectorInfo.unknown,
     homeworld: _home,
     waypoints: const [],
     sectors: sectors,

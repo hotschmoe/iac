@@ -9,6 +9,7 @@ import 'package:iac_client/console/notifier.dart';
 import 'package:iac_client/console/prefs.dart';
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/design/theme.dart';
+import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/views/shell.dart';
 
@@ -67,6 +68,30 @@ Future<GameController> pumpShell(
   await tester.pump(settle);
   return c;
 }
+
+/// [count] ships of [cls] as a fleet's or a group's row lists them, on the
+/// class's base figures: [damaged] of them not whole, [atRisk] of those at
+/// risk, and [hullLost] hull gone between them.
+proto.ShipGroupState shipRow(proto.ShipClass cls, int count, {int damaged = 0, int atRisk = 0, int hullLost = 0}) => proto.ShipGroupState(
+      shipClass: cls,
+      count: count,
+      damaged: damaged,
+      atRisk: atRisk,
+      hull: count * cls.hull.round() - hullLost,
+      hullMax: count * cls.hull.round(),
+      unitAttack: cls.weapon.round(),
+      unitShield: cls.shield.round(),
+      unitHull: cls.hull.round(),
+    );
+
+/// A hostile group of [rows], counted as the server counts it.
+proto.NpcFleetInfo hostileGroup(int id, List<proto.ShipGroupState> rows, proto.NpcBehavior behavior) =>
+    proto.NpcFleetInfo(id: id, ships: rows, shipCount: rows.fold(0, (n, g) => n + g.count), behavior: behavior);
+
+/// Everything printed under [box], a line a piece of text.
+String textUnder(WidgetTester tester, Finder box) => [
+      for (final e in find.descendant(of: box, matching: find.byType(RichText)).evaluate()) (e.widget as RichText).text.toPlainText(),
+    ].join('\n');
 
 /// Every piece of text under [box] is drawn whole and inside it.
 void expectTextFits(WidgetTester tester, Finder box, {required String reason}) {
