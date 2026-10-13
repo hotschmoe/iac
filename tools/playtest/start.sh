@@ -22,7 +22,7 @@ mkdir -p "$RUN"/{logs,fifo,state,cfg,players}
 RUN="$(cd "$RUN" && pwd)"
 export IAC_RUN="$RUN" IAC_PORT="$PORT"
 
-(cd "$REPO" && cargo build --release -q -p iac-server -p iac-client)
+(cd "$REPO" && cargo build --release -q -p iac-server -p iac-headless)
 web="$REPO/clients/web/build/web"
 [ -f "$web/index.html" ] || echo "no web build at $web (scripts/play.sh builds it); serving WS only" >&2
 pace_args=(); [ -n "$PACE" ] && pace_args=(--pace "$PACE")
