@@ -567,17 +567,23 @@ impl Window {
 
 /// The ships a fight in a sector would meet: the group the ring spawns at
 /// that distance from the hub, or ships that were counted.
-#[derive(Clone, Copy)]
 enum Opposing {
     Ring(u16),
-    Ships(Force),
+    Ships(Box<Force>),
 }
 
 impl Opposing {
     fn force(self) -> Force {
         match self {
             Opposing::Ring(dist) => Force::of_ring(dist),
-            Opposing::Ships(force) => force,
+            Opposing::Ships(force) => *force,
+        }
+    }
+
+    fn ring(&self) -> Option<u16> {
+        match self {
+            Opposing::Ring(dist) => Some(*dist),
+            Opposing::Ships(_) => None,
         }
     }
 }
@@ -3583,13 +3589,14 @@ impl GameEngine {
 
     /// `odds_ratio` of `ours` against `theirs`. `rings` must be `ours`'s own.
     fn ratio_against(&self, ours: &Force, theirs: Opposing, rings: &RingOdds) -> f32 {
-        if let Opposing::Ring(dist) = theirs
+        let ring = theirs.ring();
+        if let Some(dist) = ring
             && let Some(&ratio) = rings.0.borrow().get(&dist)
         {
             return ratio;
         }
         let ratio = self.odds_ratio(ours, &theirs.force());
-        if let Opposing::Ring(dist) = theirs {
+        if let Some(dist) = ring {
             rings.0.borrow_mut().insert(dist, ratio);
         }
         ratio
@@ -3687,10 +3694,12 @@ impl GameEngine {
             force.join(&Force::of_ships(&npc.ships[..npc.ship_count as usize]));
         }
         if !force.is_empty() || self.outpost_at(coord).is_some() {
-            return Opposing::Ships(force);
+            return Opposing::Ships(Box::new(force));
         }
         match self.pending_template_npc(coord) {
-            Some(tmpl) => Opposing::Ships(Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier)),
+            Some(tmpl) => {
+                Opposing::Ships(Box::new(Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier)))
+            }
             None => Opposing::Ring(coord.dist_from_origin()),
         }
     }
@@ -6703,7 +6712,7 @@ fn remembered_opposing(seen: &SectorState) -> Opposing {
     use iac_shared::protocol::NpcBehavior::{Aggressive, Swarm};
     let ring = || Opposing::Ring(seen.location.dist_from_origin());
     if seen.outpost.is_some() && seen.hostiles.is_none() {
-        return Opposing::Ships(Force::default());
+        return Opposing::Ships(Box::default());
     }
     let Some(groups) = seen.hostiles.as_ref().filter(|_| seen.threat.basis == ThreatBasis::Observed) else {
         return ring();
@@ -6723,7 +6732,7 @@ fn remembered_opposing(seen: &SectorState) -> Opposing {
     for ship in groups.iter().flat_map(|g| &g.ships) {
         force.add_group(ship.ship_class, f32::from(ship.count), multiplier);
     }
-    Opposing::Ships(force)
+    Opposing::Ships(Box::new(force))
 }
 
 /// A ship as the yard delivers it: the class's figures with the owner's

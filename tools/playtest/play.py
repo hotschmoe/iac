@@ -795,6 +795,7 @@ def build_state(fs, board=None, left=None, alerts=None):
         "stock": {k: round(pl["resources"].get(k, 0), 1) for k in RES},
         "cap": {k: round(st["cap"].get(k, 0)) for k in RES},
         "per_s": {k: round(hw["production"].get(k, 0), 4) for k in RES},
+        "energy": {"made": hw["energy"]["made"], "needed": hw["energy"]["needed"], "fraction": round(hw["energy"]["fraction"], 3)},
         "full_in_s": {k: v for k, v in (st.get("full_in_s") or {}).items() if v},
         "levels": {"buildings": {b["building_type"]: b["level"] for b in hw["buildings"]},
                    "research": {r["tech"]: r["level"] for r in hw["research"]}},
@@ -951,6 +952,12 @@ def summarize(fs, doc, odds):
     per_tick = [hw["production"].get(k, 0) for k in RES]
     print(f"Stockpile: {caps}   production per tick: " + "/".join(f"{x:.4g}" for x in per_tick)
           + "  (per hour: " + "/".join(f"{x * 3600:.4g}" for x in per_tick) + ")")
+    en = hw.get("energy")
+    if en:
+        short = "" if en["made"] >= en["needed"] else f"  SHORT: the mines run at {en['fraction'] * 100:.0f}%, raise the Solar Plant"
+        starved = "  the Fusion Reactor has no deuterium to burn and stands still" if en.get("fusion_starved") else ""
+        sats = f", {hw.get('satellites', 0)} Solar Satellites at {en['per_satellite']} each" if hw.get("satellites") else ""
+        print(f"Energy: {en['made']} made, {en['needed']} needed by the mines{sats}{short}{starved}")
     eta = [f"{k} full in {age(v)}" for k, v in st["full_in_s"].items() if v]
     print(f"Raid-protected stock: {res(st['protected'])}" + (f"   ({', '.join(eta)})" if eta else ""))
     if p.get("exchange"):
@@ -1021,18 +1028,28 @@ def summarize(fs, doc, odds):
             describe(sec, loc, sectors, fs["tick"], indent="  ", odds=(f["id"], odds.get((f["id"], *loc))))
 
 
-GROWTH = {"MetalMine": 1.5, "CrystalMine": 1.6, "DeuteriumSynthesizer": 1.5, "Shipyard": 1.8, "ResearchLab": 1.8,
-          "FuelDepot": 1.7, "SensorArray": 1.7, "DefenseGrid": 1.8, "StorageVault": 1.7, "Fabricator": 1.9,
-          "ModularFabrication": 2.0}
-RESEARCH_GROWTH = 1.6
-MINES = {"MetalMine": ("metal", 10.0), "CrystalMine": ("crystal", 7.0), "DeuteriumSynthesizer": ("deuterium", 5.0)}
-EFFECT = {"Shipyard": "ships build 10% faster per level; unlocks ships and defences", "ResearchLab": "research 10% faster per level",
-          "Fabricator": "buildings build 15% faster per level", "StorageVault": "stockpile caps x1.5 per level, raid-protected share +8%",
-          "FuelDepot": "more fuel per fleet", "SensorArray": "wider live sensor range", "DefenseGrid": "stronger home defence"}
+GROWTH = {"MetalMine": 1.5, "CrystalMine": 1.6, "DeuteriumSynthesizer": 1.5, "SolarPlant": 1.5, "FusionReactor": 1.8}
+OTHER_GROWTH = 2.0
+MINES = {"MetalMine": ("metal", 30.0), "CrystalMine": ("crystal", 20.0), "DeuteriumSynthesizer": ("deuterium", 12.0)}
 
 
 def weighted(cost):
     return sum(WEIGHT[k] * cost.get(k, 0) for k in RES)
+
+
+def effects_of(fs):
+    """label -> the catalog entry's effects: what it does at its level and at the next, as the server says it."""
+    cat = fs["homeworld"]["catalog"]
+    out = {o["building_type"]: o.get("effects") or [] for o in cat["buildings"]}
+    out.update({o["tech"]: o.get("effects") or [] for o in cat["research"]})
+    return out
+
+
+def effect_text(effects):
+    def one(e):
+        name = e["kind"].replace("_", " ")
+        return f"{name} {e['now']:.4g}" + (f" -> {e['next']:.4g}" if e.get("next") is not None else "")
+    return "; ".join(one(e) for e in effects)
 
 
 def future_steps(label, level, max_level, nxt, section, count=3):
@@ -1040,7 +1057,7 @@ def future_steps(label, level, max_level, nxt, section, count=3):
     if not nxt:
         return []
     steps = [{"level": nxt["level"], "cost": nxt["cost"], "ticks": nxt["ticks"], "exact": True}]
-    g = GROWTH.get(label, RESEARCH_GROWTH if section == "research" else 1.6)
+    g = GROWTH.get(label, OTHER_GROWTH)
     while len(steps) < count and steps[-1]["level"] < (max_level or 0):
         p = steps[-1]
         cost = {k: round(p["cost"].get(k, 0) * g) for k in RES}
@@ -1050,19 +1067,21 @@ def future_steps(label, level, max_level, nxt, section, count=3):
     return steps
 
 
-def mine_gain(label, level, steps, fs):
-    """Per-step production gain (units per tick) of a mine, from its current output."""
+def mine_gain(label, level, steps, fs, effects):
+    """Per-step production gain (units per tick) of a mine with all the energy it needs.
+
+    The first step is the server's own figure (the mine's effect, now and next); the steps
+    beyond it follow the curve."""
     res_name, per_hour = MINES[label]
     pace = (fs.get("world") or {}).get("pace") or 1
     def p(l):
         return per_hour / 3600 * pace * l * 1.1 ** l
-    now = fs["homeworld"]["production"].get(res_name, 0)
-    gains, lv, cur = [], level, now
-    for s in steps:
-        base = p(lv)
-        nxt = cur * p(lv + 1) / base if base > 0 and cur > 0 else p(lv + 1)
-        gains.append((res_name, nxt - cur))
-        cur, lv = nxt, lv + 1
+    told = next((e for e in effects if e["kind"] == f"{res_name}_per_tick"), None)
+    gains, lv = [], level
+    for i, _ in enumerate(steps):
+        exact = i == 0 and told is not None and told.get("next") is not None
+        gains.append((res_name, told["next"] - told["now"] if exact else p(lv + 1) - p(lv)))
+        lv += 1
     return gains
 
 
@@ -1081,6 +1100,7 @@ def unlock_text(rows, label, level, cap=5):
 
 def costs_lines(fs, what=None, depth=3):
     cat_rows = catalog_rows(fs)
+    effects = effects_of(fs)
     stock = fs["player"]["resources"]
     lines = []
 
@@ -1102,12 +1122,13 @@ def costs_lines(fs, what=None, depth=3):
                 tag = "per ship" if title == "ships" else f"{lvl} standing"
                 lines.append(f"  {label:<22} {tag:<12} costs {res(nxt['cost'])} in {age(nxt['ticks'])}{afford(nxt['cost'])}{need(requires)}")
                 continue
+            does = effect_text(effects.get(label) or [])
             if nxt is None:
-                lines.append(f"  {label:<22} L{lvl}/{mx}  maxed")
+                lines.append(f"  {label:<22} L{lvl}/{mx}  maxed" + (f"   {does}" if does else ""))
                 continue
             steps = future_steps(label, lvl, mx, nxt, title, depth)
-            gains = mine_gain(label, lvl, steps, fs) if label in MINES else None
-            lines.append(f"  {label:<22} L{lvl}/{mx}" + (f"   {EFFECT[label]}" if label in EFFECT else ""))
+            gains = mine_gain(label, lvl, steps, fs, effects.get(label) or []) if label in MINES else None
+            lines.append(f"  {label:<22} L{lvl}/{mx}" + (f"   {does}" if does else ""))
             for i, s in enumerate(steps):
                 unl = unlock_text(cat_rows, label, s["level"])
                 bits = [f"    -> L{s['level']}{'' if s['exact'] else '~'} costs {res(s['cost'])} in {age(s['ticks'])}"]
@@ -1122,7 +1143,8 @@ def costs_lines(fs, what=None, depth=3):
                 lines.append("  ".join(b for b in bits if b))
     if not what:
         lines.append("(-> L~ lines past the first are extrapolated along the cost curve; payback = cost / extra output, "
-                     "metal 1: crystal 1.5: deut 2; mines gain +10%/level compounding on level x output)")
+                     "metal 1: crystal 1.5: deut 2; a mine's gain is with all the energy it needs, so raise the Solar "
+                     "Plant first; mines gain +10%/level compounding on level x output)")
     return lines
 
 
@@ -1317,7 +1339,7 @@ def mentions(c, msg):
         return True
     if c.get("id") is not None:   # cancels name their order by id; queue_type is not an item name
         return re.search(rf"\border {c['id']}\b", msg) is not None
-    flat = re.sub(r"[\s_]", "", msg).lower()   # the server writes "Corvette Tech" for CorvetteTech
+    flat = re.sub(r"[\s_]", "", msg).lower()   # the server writes "Combustion Drive" for CombustionDrive
     return any(re.sub(r"[\s_]", "", v).lower() in flat for k, v in c.items() if isinstance(v, str) and k not in ("action", "type"))
 
 
@@ -1644,7 +1666,7 @@ USAGE = """usage: play <command>
                          loses 15-50%, RISKY >= 0.9x anything from a lost fleet to a costly win, else DEADLY)
   do '<json>' ['<json>' ...]   send commands in order (or one JSON array: do '[{...},{...}]'); one result line each,
                          returns at the server's next tick (about 0.5 s) or at once on an error; --fast skips that wait
-                         e.g. play do '{"action":"build","building_type":"MetalMine"}' '{"action":"research","tech":"Navigation"}'
+                         e.g. play do '{"action":"build","building_type":"MetalMine"}' '{"action":"research","tech":"EnergyTechnology"}'
                          standing orders: play do '{"type":"policy_update","fleet_id":2,"preset":"prospect"}'
                          with settings:   play do '{"type":"policy_update","fleet_id":2,"preset":"mine_and_return",
                                                     "params":{"max_range":8,"engage_ratio_x10":15,"fuel_budget_pct":40}}'

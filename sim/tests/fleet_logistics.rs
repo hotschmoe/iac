@@ -1181,11 +1181,12 @@ fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_do
 #[test]
 fn a_jump_takes_the_ticks_the_fleet_reports() {
     use ShipClass as S;
-    let fighters: &[(ShipClass, usize)] = &[(S::LightFighter, 2)];
-    let with_a_heavy: &[(ShipClass, usize)] = &[(S::LightFighter, 1), (S::HeavyFighter, 1)];
+    type Ships = &'static [(ShipClass, usize)];
+    let fighters: Ships = &[(S::LightFighter, 2)];
+    let with_a_heavy: Ships = &[(S::LightFighter, 1), (S::HeavyFighter, 1)];
     // The drives as (Combustion, Impulse, Hyperspace). A fleet jumps at the
     // speed of its slowest ship: max(1, ceil(sqrt(50,000 / speed))) ticks.
-    let cases: [(&[(ShipClass, usize)], (u8, u8, u8), u16); 13] = [
+    let cases: [(Ships, (u8, u8, u8), u16); 13] = [
         (fighters, (0, 0, 0), 2),
         (fighters, (9, 0, 0), 2),
         (with_a_heavy, (0, 0, 0), 3),

@@ -6883,3 +6883,188 @@ when master lost the TUI, are in the repository's `.archive/tui-64bit-edits/`
 **Not verified.** No person or agent played. The branch's comparisons of the
 recorded chart, of `numbers.json` and of the seven-day balance report were
 read in its report and not run again.
+
+## 2026-10-13: the catalogue is OGame's (slice 1 of the OGame work, stage 1)
+
+Slice 1 of `docs/design/ogame.md`, section 12, as far as it goes without
+hand-written Dart: the engine, the wire, the bots, the planning simulation,
+the headless client's world and the documents. The web client is stage 2 and
+is not touched; the branch (`worktree-agent-a8b235984a4cae32d`, from master
+`779bfe5`) is not merged. `ECONOMY_VERSION` is 9, `WORLDGEN_VERSION` 4 (a
+sector's ore and its group are other numbers), `SAVE_FORMAT` 8.
+
+**Built.**
+
+- The four enumerations with OGame's names and numbers: 12 buildings, 14
+  researches, 13 ships, 8 defences, with costs, requirements, structure,
+  shield and attack, and the rapid-fire table (`scaling::rapid_fire_against`,
+  the unarmed rule for the Probe and the Satellite included). Hull in a fight
+  is a tenth of structure.
+- Production (`floor(base x L x 1.1^L)`, 20 metal and 10 crystal an hour
+  with no mine), energy (needed by the three mines; made by the Solar Plant,
+  the Fusion Reactor, which burns deuterium, and Solar Satellites; the mines
+  at made over needed when short), storage by three buildings, and OGame's
+  times behind the Robotics Factory, the Nanite Factory, the Shipyard and the
+  Research Lab.
+- The folds of 5.5: the Deuterium Tank carries the tank bonus, Energy
+  Technology the fuel saving, Laser Technology the ore yield, Computer
+  Technology the building slots, Hyperspace Technology the emergency jump,
+  Espionage Technology the hops seen from home; the Defense Grid, the
+  Fabricator, the Sensor Array, the Fuel Depot, the Storage Vault and the
+  thirteen researches are gone with every caller.
+- This game's columns of 5.7: a tank in jumps by class, a burn a jump that is
+  OGame's fuel figure, jump ticks from speed (`max(1, ceil(sqrt(50000 /
+  speed)))`, the fleet at its slowest ship, the Small Cargo's and the
+  Bomber's change of drive), harvest power, the Probe's scan and the
+  Recycler's boarding, and two Light Fighters to start with.
+- Pirates in OGame's classes (`NPC_POWER_BASE` 40; Light Fighter to ring 8,
+  Cruiser to 12, Battlecruiser to 20, Destroyer beyond), the raid law on the
+  new scale, the outpost's platform as the power of its defences, and
+  `MAP_PAYS` 3 on ore, derelicts, wreckage and the outpost.
+- The bots on the new tree and tables (`sim/src/bot/home.rs` rewritten).
+- `sim.py` on the catalogue with energy (rewritten by a sub-agent, checked
+  and run here), `numbers.json`, `tools/check_sim_constants.py`, and the
+  seven presets' two estimates from it in `shared/src/pace.rs`.
+- The wire: the enumerations, a catalogue that carries figures, requirements
+  and effects, `EnergyState`, the rapid-fire table in `WorldInfo`, and the
+  generated `protocol.g.dart` and fixtures.
+- `README.md`, `tools/playtest/RULES.md`, `play.py`, `bench_loop.py`.
+
+**Not built, as the slice says.** The fleet as counts, OGame's round, damage
+that lasts and repair, the refit stamp, flight and pursuit, pirates that
+heal, raids as battles, the windshield. The fight is today's, a fleet is at
+most 64 ship records, a raid is one number against another, and Weapons,
+Shielding and Armour Technology are stamped on a ship when it is built.
+
+**The study against its own tables.** No formula of the study disagreed with
+its table once the `1.1^L` curves were worked in whole numbers. In 64-bit
+floats `ceil(10 x 1 x 1.1)` is 12 and the table says 11; `scaling::tenth_curve`
+computes `11^L / 10^L` in 128 bits, and `numbers.json` shows 33 / 22 / 13.2
+for the mines at level 1, 11 / 11 / 22 energy, 22 for the Solar Plant, caps
+of 100k to 5.55M, a Metal Mine 10 in 4,153 s and a Light Fighter in 5,760 s
+with no Shipyard level behind it, and the jump ticks of the study's 5.7
+table for every class.
+
+**Departures and decisions** are in `docs/design/decisions.md` under today's
+date, each with what undoes it. The two that move numbers the study gave:
+wreckage is `0.57 x power^0.8`, three times what a ring left and not three
+times the old constant (which would have been nineteen times, power being
+counted ten times larger); and the score's points that are not a cost
+(chart, first boarding, relic) are ten times what they were.
+
+**Knobs.** Every knob of the study's section 11 that this slice reaches
+stands at its starting value. The two it leaves to be fitted: the raid law
+is `50 + 9 x S^0.75`. It stood at `50 + 5 x S^0.75` through most of the
+work, on a muddled argument; 9 is the old 11 carried to the new scale so that
+the same share of an empire's worth in the cheapest defence meets its raid
+(`11 x 10^0.25 x 51 / 113`, a point being worth 51 of power in Rocket
+Launchers where it was 113 in Pulse Turrets, and an empire's points being
+ten times what they were). The outpost's platform is 408 / 1306 / 3972.
+
+**What was measured on the new catalogue.**
+
+- The two starting Light Fighters win every lair through ring 8 (59 percent
+  of their hull kept at ring 7, 34 percent at ring 8, 40 fights each) and
+  lose every one from ring 9. The study's check on `NPC_POWER_BASE` holds.
+- The odds labels still say what happens (a grid of four classes, thirteen
+  fleet sizes and nine rings, thirty fights each, kept in the scratch
+  directory): 4 Light Fighters against the ring-9 Cruiser rate 0.88 and win
+  7 of 30; 2 Heavy Fighters rate 1.62 and keep 90 percent.
+- A season of seven days, every style once (`sim-run --pace season --days
+  7`, snapshot `62063fcd4a9b77d6`, 3,720 ticks a second): totals from 5,862
+  (explorer, hybrid) to 11,257 (explorer, hands-on); Metal Mines at 18 to 20
+  by day 7, which is the ceiling; 2 raids lost and 405 repelled in the
+  world; every building slot idle 94 to 96 percent of the time, waiting for
+  resources and not for the slot, which is OGame's prices against OGame's
+  times.
+- A blitz day (`--pace blitz --days 1`, snapshot `91cc7d026012848f`, 825
+  ticks a second): totals from 9,456 to 25,157; a bot at the controls all day
+  has every mine at 20 and nothing left to order for most of the day; the
+  check-in and hybrid bots turn 25 to 58 percent of what their mines make
+  away at a full store.
+- The planning simulation: first Cruiser and endgame kit at 21.3 and 59.9
+  days (persistent), 2.4 and 6.7 days (season), 54 minutes and 2.3 hours
+  (blitz). Its competent player's docked fleet is several times the
+  strongest raid, it never picks the Fusion Reactor, and the map is 2 to 5
+  percent of its income.
+
+**A fault found by the bot run and mended.** The bots' planner tilted its
+choice of mine toward the resource the stockpile was short of, reading each
+stockpile against its cap. OGame's stores begin at 100,000, the reading went
+flat, and under the rule that rates a cheap level at what a queue place is
+worth the Metal Mine ran away: the check-in and the hybrid explorer stood at
+Metal Mine 11 and Crystal Mine 1 for a week, with research taking every unit
+of crystal before the building in line could. The planner now reads each
+resource as a share of the stockpile (`SCARCITY_PULL` 2.0). In the runs that
+compared the two, the fifteen styles' totals over the week rose 18 percent
+together; the two explorers went from about 1,350 each to 8,900 and 5,900.
+Three variants were run for a week each and are kept in the scratch
+directory; the one that read shares only for levels rated at a queue place's
+worth was worst for the bots at the controls.
+
+**Tests.** Every test file was rewritten onto the catalogue; none was
+archived and none was replaced by another file. `sim/tests`: `common/mod.rs`,
+`determinism`, `bots`, `pace_scaling`, `scenarios_raids`, `stored_world`,
+`empire_arc`, `exchange`, `fleet_logistics`, `scenarios_world`, `outposts`,
+`chart_equivalence` (the recording made again each time a number of the
+world moved, the last for the raid law), `economy_numbers`. `shared/tests`: `golden_fixtures.rs`,
+`wire/mod.rs`, `wire/dart.rs`. `server`: the in-file tests of `network.rs`,
+`hosts_agree`, `smoke`, `scenarios`, `web`. `solo/tests`: `single_player`,
+`both_targets`. Where a band or a guard moved it is listed in the decisions
+entry with the reason. `.archive/zz_probe.rs` is a probe written for the
+odds grid; it was committed by mistake in `3c5f801` and taken out of the
+tree in `c3499da`.
+
+**Run**, on the branch:
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 164 passed, 0 failed
+  (master: 164; the same files hold the same number of tests).
+  `both_targets` 3 in 94 s, `hosts_agree` 2 in 45 s.
+- `cargo clippy --workspace --all-targets`: silent, after three warnings the
+  catalogue brought were mended (a `Force` of thirteen classes made
+  `Opposing` 264 bytes; it is boxed).
+- `iac_solo.wasm`, release: 2,518,678 bytes; master 2,446,176; 72,502 more
+  (3.0 percent).
+- `UPDATE_FIXTURES=1 cargo test -p iac-sim --test economy_numbers`, then
+  `python3 tools/check_sim_constants.py`: agrees on 4,410 values (master:
+  2,390). `python3 docs/design/economy/sim.py --tables` and the full report:
+  clean, about 16 s and 35 s.
+- A real server (`--port 0 --pace test`, its world file in the scratch
+  directory) and `iac-headless`: Solar Plant 2, Metal Mine 2, Deuterium
+  Synthesizer 1, Robotics Factory 2, Research Lab 1, Shipyard 1, Energy
+  Technology 1, Combustion Drive 1, then `ShipBuilt` Light Fighter at tick
+  145 and two Rocket Launchers; `home_defence_power` 477 (three Light
+  Fighters at 91 and two launchers at 102). The Cruiser ordered too early was
+  refused with `ShipLocked` and the three things it needs, and a batch the
+  stockpile did not cover with the shortfall. The mines ran at 83 percent
+  for want of energy and the state said so. The server was stopped by its
+  PID and wrote its file (format 8, economy 9, generator 4).
+
+**Not verified.**
+
+- No person or agent played, and nothing in `tools/playtest` was run:
+  `RULES.md`, `play.py`, `bench_loop.py` and `tests/test_play.py` with its
+  recorded full state (replaced by the first full state of the session
+  above) were changed by reading. `play.py` and `bench_loop.py` compile;
+  `test_play.py` was not run.
+- The web client does not compile against the new `protocol.g.dart`:
+  `flutter analyze`, `flutter test`, the single-player bundle and
+  `tool/solo_e2e.dart` are stage 2's. The generated file is as `dart format`
+  would write it.
+- The raid law was carried over by arithmetic and not fitted against play.
+  In the bot week two raids in four hundred were lost.
+- `MAP_PAYS`, the tanks, harvest powers and every other provisional knob
+  stand at the study's starting value and were not tuned.
+- The Fusion Reactor, the Nanite Factory, the domes, Graviton, the Bomber,
+  the Destroyer and the Deathstar are reached by no bot in a week of a
+  season; they are covered by `numbers.json` against the study's tables and
+  by the requirement and refusal scenarios, not by play.
+- The planning simulation does not model the exchange, outposts, refining or
+  what a drive adds to speed, and three numbers it would need for those are
+  not in `numbers.json` (`Drive::speed_per_level`, `POLICY_FUEL_PAYBACK`,
+  `Density::step_units`).
+- Speed under equal load was not measured; the season run took 163 s here
+  with other work on the machine.
+- `docs/design/economy/__pycache__/sim.cpython-311.pyc` is tracked in git and
+  changes whenever `sim.py` does; it was committed as Python rewrote it.

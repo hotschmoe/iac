@@ -73,7 +73,7 @@
       "RAID_MIN_PLAYER_AGE": 86400,
       "RAID_MIN_SHIPYARD": 2,
       "RAID_POWER_FLOOR": 50.0,
-      "RAID_POWER_PER_POINT": 5.0,
+      "RAID_POWER_PER_POINT": 9.0,
       "RAID_POWER_EXPONENT": 0.75,
       "RAID_POWER_ROLL_MIN": 0.8,
       "RAID_POWER_ROLL_MAX": 1.15,
@@ -945,13 +945,13 @@
       {"class": "Deathstar", "combustion_drive": 0, "impulse_drive": 0, "hyperspace_drive": 7, "energy_technology": 0, "deuterium_tank": 0, "speed": 310.0, "jump_ticks": 13, "jump_fuel": 1.0, "tank": 6.0}
     ],
     "raid_power": [
-      {"econ": 1.0, "power": 55.0},
-      {"econ": 10.0, "power": 78.117065},
-      {"econ": 100.0, "power": 208.11388},
-      {"econ": 500.0, "power": 578.6856},
-      {"econ": 1000.0, "power": 939.1397},
-      {"econ": 2000.0, "power": 1545.3489},
-      {"econ": 20000.0, "power": 8458.964}
+      {"econ": 1.0, "power": 59.0},
+      {"econ": 10.0, "power": 100.61072},
+      {"econ": 100.0, "power": 334.60498},
+      {"econ": 500.0, "power": 1001.6341},
+      {"econ": 1000.0, "power": 1650.4514},
+      {"econ": 2000.0, "power": 2741.628},
+      {"econ": 20000.0, "power": 15186.136}
     ],
     "rings": [
       {"ring": 1, "npc_power": 40.0, "threat_rating": 1, "count": 1, "stat_multiplier": 0.43956044, "group_power": 40.0, "outpost_raid_power": 80.0, "ring_mult": 1.0, "ore_regen_hours": 144.0, "wreck_value": 10.902418497606423, "derelict_value": 485.97949166545175, "derelict_tier": 1},

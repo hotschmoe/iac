@@ -1259,9 +1259,10 @@ pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32
 /// A raid's mean power is `RAID_POWER_FLOOR + RAID_POWER_PER_POINT * econ^RAID_POWER_EXPONENT`.
 /// The law is this game's; the two figures are provisional. The floor is
 /// about half a Light Fighter, and a point spent on Rocket Launchers is 51
-/// power: an empire of 1,000 points meets its raid (939) with 19 of them.
+/// power: an empire of 1,000 points meets its raid (1,650) with 33 of them,
+/// 3 percent of what it is worth, and one of 10,000 (9,050) with 2 percent.
 pub const RAID_POWER_FLOOR: f32 = 50.0;
-pub const RAID_POWER_PER_POINT: f32 = 5.0;
+pub const RAID_POWER_PER_POINT: f32 = 9.0;
 pub const RAID_POWER_EXPONENT: f32 = 0.75;
 
 /// Mean power of the next raid on a player with `econ` points; the actual

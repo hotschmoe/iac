@@ -3,6 +3,165 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the catalogue is OGame's: what the agent decided)
+
+Slice 1 of `docs/design/ogame.md`, section 12, stage 1: the engine, the wire,
+the bots, the planning simulation and the documents. The owner decided that
+the catalogue is classic OGame's with its numbers, energy included; the study
+gave the folds (5.5), this game's columns (5.7) and the knobs (11). What
+follows is what neither settled and the agent that built it chose. None of it
+was put to the owner. Each line ends with what undoes it.
+
+**A new empire.**
+
+- It stands with a Metal Mine, a Crystal Mine and a Solar Plant at level 1
+  (22 energy made, 22 needed). OGame begins with nothing built; an empire
+  with no Solar Plant and one order would have had its mines at a stand for
+  its first minutes. Undo: `BuildingLevels::default`.
+- `STARTING_RESOURCES` stays 500 / 300 / 100. OGame gives 500 / 500 / 0. Undo:
+  the constant.
+- Levels stop at 20 for buildings and for research (Graviton at 1). OGame has
+  no ceiling. At blitz pace a bot at the controls all day reaches mines at 20
+  within the day. Undo: `MAX_BUILDING_LEVEL`, `MAX_RESEARCH_LEVEL`.
+
+**OGame's formulas, where they met this engine.**
+
+- The curves in `1.1^level` (mine output, energy needed, Solar Plant, the
+  Fusion Reactor's burn) are worked in whole numbers (`11^L / 10^L` in 128
+  bits). In floating point `10 x 1.1` is 11.000000000000002 and its ceiling
+  12, where OGame's table says 11. The Fusion Reactor's output, whose base is
+  not a tenth, is 64-bit float through `iac_shared::maths`. Undo: nothing to
+  undo; the tables of the study are what both give.
+- The Fusion Reactor runs while the stockpile holds deuterium, and its burn
+  is taken after the tick's production, never below zero. At an empty
+  stockpile it runs one tick and stands the next. Undo:
+  `Player::power`, `process_homeworlds`.
+- Solar Satellites are a count on the player, ordered in the shipyard as a
+  ship. They never join a fleet. Until raids are battles they stand in the
+  homeworld's defence at their fight figures (21 of power each), a lost raid
+  destroys a quarter of them rounded up, and they score as ships. Undo:
+  `Player.satellites`, `home_defense_power`, the raid's loss.
+- Graviton Technology asks for 300,000 energy made when it is ordered and
+  again when it starts; the energy is not spent. No derelict's data core
+  gives it. Undo: `research_ready`, `pick_tech_cache`.
+- A homeworld holds one Small and one Large Shield Dome, counting those
+  standing, being rebuilt and on order; a second is refused with
+  `MaxLevelReached`. Until raids are battles a dome is a hull and a shield in
+  the sum of the defence and nothing else. Undo: `DefenceKind::max_count`.
+- Each storage building protects 8 percent of its own cap a level from a
+  raid, to 60 percent: the Storage Vault's rule, one resource at a time.
+  Undo: `storage_protected_at`.
+- The time of a research is `(metal + crystal) / 1000` hours behind the Lab's
+  level alone; OGame 0.84 has no research network and none was added.
+
+**This game's columns.**
+
+- A ship's record no longer carries its speed. Speed is the class's, with the
+  owner's drive research, everywhere at once (the study's section 9 says so
+  of drives; the record held a copy that could only disagree). Tanks follow
+  the same rule: every fleet's is counted again when a Deuterium Tank level
+  or the Impulse Drive level that moves the Small Cargo completes.
+- A ship's tank is its jumps (5.7) times what it burns a jump, so the Small
+  Cargo's doubles with its burn at Impulse Drive 5 and its reach stays.
+- Wrecks to recover from a derelict: an Espionage Probe or a Light Fighter at
+  tier 1; a Light Fighter, a Small Cargo or a Heavy Fighter at tier 2; a
+  Heavy Fighter, a Large Cargo, a Cruiser or a Battleship at tier 3. Undo:
+  `recoverable_ship_class`.
+
+**The world's strength** (the study leaves these to be fitted).
+
+- A raid's mean power is `50 + 9 x S^0.75` (`RAID_POWER_FLOOR`,
+  `RAID_POWER_PER_POINT`; the exponent is unchanged). The floor is about half
+  a Light Fighter, as it was half a Scout. The 9 is the old 11 carried over
+  so that the same share of an empire's worth, put into the cheapest
+  defence, meets its raid: an empire's points are ten times what they were,
+  and a point of Rocket Launchers is 51 of power where a point of Pulse
+  Turrets was 113 (`11 x 10^0.25 x 51 / 113` is 8.8). An empire of 1,000
+  points meets its raid with 3 percent of its worth in launchers. It was
+  carried over by arithmetic and not fitted against play: in the seven-day
+  bot world 2 raids were lost and 405 repelled, and the planning
+  simulation's competent player has several times the strongest raid docked
+  at home. Any empire that keeps a fleet at home is safe from it, as before.
+  Undo: the two constants.
+- An empire is raided once its Shipyard is at 2 or it has built any defence
+  (`RAID_MIN_SHIPYARD`): the Defense Grid's part in that rule went with it.
+- What a repelled raid leaves in orbit is priced as Light Fighters of the
+  raid's power, as it was priced as Corvettes.
+- The map multiplier of 3 (`MAP_PAYS`) is applied to ore in a tile, to what a
+  doctrine counts as a seam worth the trip, to a derelict's hold and to the
+  outpost's cost, store and yield; the outpost's build rate takes it too, so
+  its levels take the hours they took.
+- **Wreckage is not three times the old constant.** A group leaves
+  `K x power^0.8`, and power is now counted on a scale ten times the old one
+  (`NPC_POWER_BASE` 4 to 40). Three times the old K (3.6) would have left 19
+  times the wreckage ring for ring. `WRECK_VALUE_K` is 0.57
+  (`1.2 x 3 / 10^0.8`), which leaves three times what a ring left. The other
+  reading of the study, that the constant itself is tripled, is one number
+  away. Undo: the constant.
+- The outpost's platform is the power of the defences the study names by
+  level (4 Rocket Launchers; 8 and 4 Light Lasers; 16, 8 and 4 Heavy Lasers),
+  at their base figures: 408, 1306, 3972. `OUTPOST_PLATFORM_POWER` and its
+  growth are gone. Undo: `scaling::outpost_platform`.
+
+**The score.** Core points are cost over 1000, and OGame's costs are about
+ten times this game's. The points that are not a cost were multiplied by ten
+so that they stay the share of a score they were: a chart (`1.5 + 1.0 x
+T^1.5`), a first boarding (`15 x T^1.5`), a relic (300). Kill points follow
+the wreckage and needed nothing. Undo: `CHART_BASE_POINTS`,
+`CHART_THREAT_POINTS`, `DISCOVERY_POINTS`, `RELIC_POINTS`.
+
+**The exchange.** Its span is 15 percent of what the homeworld makes in a
+window with all the energy it needs, the natural 20 metal and 10 crystal an
+hour included and the Fusion Reactor's burn left out. So no empire has a span
+of zero any more, and a reactor cannot make a span negative. Undo:
+`Player::mined_per_tick` at the span.
+
+**The wire.** Static figures of a class or a defence are columns of the
+generated enumerations; what depends on the player (research in the figures,
+times, requirements, effects) is in the catalogue of the homeworld's state;
+the rapid-fire table is sent once, in `WorldInfo.rapid_fire`. A building's or
+a research's entry carries `effects`, what it does at its level and the next,
+so that no client holds one of OGame's formulas. `Requirement` gained
+`energy` and counts in 32 bits. `HomeworldState.production` is what the
+stockpile gains, so its deuterium may be negative. `ShipClassCounts` became a
+list of `ShipCount`. Undo: these are additions but for the last two.
+
+**The bots.**
+
+- The planner reads requirements from the catalogue's tree, builds the Solar
+  Plant before a mine that would run short, orders Solar Satellites only once
+  the Solar Plant is at 20, and builds Rocket Launchers and no other defence.
+- Its scarcity rule, which tilts the choice of mine toward the resource the
+  stockpile is short of, read each stockpile against its cap. OGame's stores
+  begin at 100,000 and the rule went blind: two explorers stood at Crystal
+  Mine 1 for a week of a season. It now reads each resource as a share of the
+  stockpile, and `SCARCITY_PULL` is 2.0 where it was 4.0.
+- The pilots fight at `SAFE_ODDS` 2.0 where it was 3.0, and the careful
+  doctrine at 2.0 where it was 2.5. OGame's ships carry a shield a fifth of
+  their weapon, and at 3.0 the bots of the blitz world that
+  `both_targets.rs` plays found no fight to take.
+- Undo: `sim/src/bot/home.rs`, `field.rs`.
+
+**Tests whose bands moved, and why** (the assertions were not weakened to
+pass; each was read against the three questions first).
+
+- `scenarios_raids.rs`, raids in a blitz day on a small empire: 1.2 to 3.0 a
+  game day became 2.0 to 4.5. Two Light Fighters repel every raid a new
+  empire draws, so the two-day quiet after a lost raid never starts.
+- `both_targets.rs`, the guard that the two worlds were busy enough to
+  prove anything: 12 sectors heated by a kill in the blitz world where it
+  asked 20 (it has 16), and one empire with combat points and one heated
+  sector in the season day where it asked 4 and 20 (it has 2 and 2). A
+  season day on OGame's prices is an empire's first Light Fighters; the
+  fighting that the comparison needs is the blitz world's.
+- `bots.rs`, the check-in builder that pays for every batch it orders: five
+  days where it ran two, and the guard that it did order batches reads its
+  fleet points, because what its yard builds first is Solar Satellites,
+  which fly in no fleet. The assertion itself, that no order was refused, is
+  as it was.
+- `exchange.rs`: the case of an empire with no mine output is gone with the
+  natural production; it is now the span that production gives.
+
 ## 2026-10-13 (amounts are 64-bit: where the line runs)
 
 Slice 0b of `docs/design/ogame.md`, section 12. The owner decided that

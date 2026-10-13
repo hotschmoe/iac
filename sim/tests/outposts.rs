@@ -469,7 +469,7 @@ fn a_survey_reads_any_charted_sector_and_says_what_stands_in_the_way() {
 fn the_extractor_makes_what_the_survey_said_at_every_pace() {
     for (pace, p, ticks, cap) in [
         ("persistent", 1.0f64, 54_000u64, res(9000.0, 4500.0, 2250.0)),
-        ("season", 10.0, 5400, res(28_460.499, 14_230.2495, 7115.1247)),
+        ("season", 10.0, 5400, res(28_460.499, 14_230.249_5, 7115.1247)),
         ("blitz", 600.0, 90, res(220_454.077, 110_227.038, 55_113.519)),
     ] {
         let mut e = Empire::join(world(pace), "Miner");
