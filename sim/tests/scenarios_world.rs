@@ -12,7 +12,7 @@ use iac_shared::constants::{
     Density, ResourceKind, Resources, ShipClass, Zone, DEFAULT_WORLD_SEED, HOME_SALVAGE_WARN_TICKS,
     SALVAGE_DESPAWN_TICKS, SCAN_REVEAL_TICKS,
 };
-use iac_shared::hex::{hex_ring, hex_spiral, Hex};
+use iac_shared::hex::{hex_spiral, Hex};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertLevel, BattleOutcome, BattleRoundEvent, BattleSide, ChaseForecast, CombatEndedEvent, Command, ErrorCode,
@@ -1074,39 +1074,6 @@ fn a_shot_too_weak_for_a_shield_bounces_and_a_fight_nobody_can_hurt_anybody_in_i
 
 const PACK: u64 = 900_002;
 
-/// `len` quiet sectors in a row along one lane leading out from home, each
-/// a hex farther from it than the last, and none of them on or beside
-/// ground a group stays out of.
-fn open_lane(engine: &iac_sim::GameEngine, home: Hex, len: usize) -> Vec<Hex> {
-    fn open(at: Hex) -> bool {
-        std::iter::once(at).chain(hex_ring(at, 1)).all(|n| !iac_shared::world::is_home_ground(n) && !iac_shared::world::is_hub(n))
-    }
-    fn extend(engine: &iac_sim::GameEngine, chain: &mut Vec<Hex>, home: Hex, len: usize) -> bool {
-        if chain.len() > len && chain[chain.len() - len..].iter().all(|at| open(*at)) {
-            return true;
-        }
-        if chain.len() > 12 {
-            return false;
-        }
-        let tip = *chain.last().unwrap();
-        for &next in engine.world_gen.connected_neighbors(tip).slice() {
-            let quiet = engine.world_gen.generate_sector(next).npc_template.is_none();
-            if usize::from(Hex::distance(&next, &home)) != chain.len() || !quiet {
-                continue;
-            }
-            chain.push(next);
-            if extend(engine, chain, home, len) {
-                return true;
-            }
-            chain.pop();
-        }
-        false
-    }
-    let mut chain = vec![home];
-    assert!(extend(engine, &mut chain, home, len), "no open lane of {len} sectors out of home");
-    chain.split_off(chain.len() - len)
-}
-
 /// An empire whose fleet of `ours` has fought one round against a group of
 /// `theirs` with `behavior`, in the first sector of an open lane, which is
 /// the group's own.
@@ -1298,8 +1265,8 @@ fn how_far_a_group_follows_goes_by_its_behaviour_and_it_follows_only_what_it_was
         assert_eq!((listed[0].chase_hexes, listed[0].jump_ticks), (hexes, 2), "{behavior:?}");
         assert_eq!(e.fleet().flight.expect("a quote").chase.map_or(0, |c| c.hexes), hexes, "{behavior:?}");
         let mut followed = 0;
-        for hop in 1..=4 {
-            jump(&mut e, lane[hop]);
+        for &next in &lane[1..] {
+            jump(&mut e, next);
             followed += u8::from(e.fleet().pursued_by.is_some());
         }
         assert_eq!(followed, hexes, "{behavior:?}");

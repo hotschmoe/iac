@@ -295,7 +295,8 @@ class Wait(unittest.TestCase):
         self.assertTrue(any("fleet" in w for w in play.wait_reasons(base, self.snap(arrived), [], "any")))
         self.assertEqual(play.wait_reasons(base, self.snap(arrived), [], "idle"), [])
         orders = {"preset": "prospect",
-                  "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 6, "engage_ratio_x10": 20, "fuel_budget_pct": 35}}
+                  "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 6, "engage_ratio_x10": 20,
+                             "disengage_ratio_x10": 9, "fuel_budget_pct": 35}}
         auto = copy.deepcopy(fs)
         auto["fleets"][0]["policy"] = orders
         auto_arrived = copy.deepcopy(arrived)

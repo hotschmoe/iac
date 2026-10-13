@@ -21,7 +21,11 @@
 // and it reads off each sector's chart mark whether a visit still pays.
 // Hull lost stays lost until the home dock mends it, so it fights only at
 // odds that cost it little, and takes a fleet whose hull has fallen below
-// `HULL_READY` home before it does anything else. The odds are the
+// `HULL_READY` home before it does anything else. A wing with no warship
+// in it picks no fight at any odds. In a fight it reads the server's odds
+// of that fight as it stands (`FleetState::flight`) and jumps out toward
+// home once they are under `LEAVE_ODDS`; with a group on its trail it
+// runs for home. The odds are the
 // server's, and they count the damage a fleet carries: before its orders
 // the admiral asks (`odds`) how each fleet it may move would fare in every
 // sector where that decides something, and it stays out of any sector it
@@ -135,8 +139,7 @@ impl Wing {
     /// bring resources home earn their fuel back and get the larger budget;
     /// the ones that fly for points get the game's default.
     fn orders(preset: PolicyPreset, fleet: &FleetState) -> PolicyUpdate {
-        let armed = fleet.ships.iter().any(|s| Hull::of(s.ship_class) == Hull::Warship);
-        let fights = armed || preset == PolicyPreset::Prospect;
+        let fights = armed(fleet) || preset == PolicyPreset::Prospect;
         let careful = if fights && fleet.ship_count >= CAREFUL_WING_SHIPS { CAREFUL_RATIO_X10 } else { DOCTRINE_RATIO_X10 };
         let (engage_ratio_x10, fuel_budget_pct) = match preset {
             PolicyPreset::PatrolHome => ((SAFE_ODDS * 10.0) as u8, POLICY_DEFAULT_FUEL_BUDGET_PCT),
@@ -741,10 +744,17 @@ fn ratio(odds: &Odds, fleet: &FleetState, sector: &SectorState) -> Option<f32> {
     odds.get(&(fleet.id, sector.location.to_key())).copied()
 }
 
-/// Whether the server gives the fleet a fight in `sector` without lasting
-/// damage. No answer is a no.
+/// The fleet has a ship built to fight. One without picks no fight, whatever
+/// its odds: a hundred cargo ships beat a Battlecruiser every time the odds
+/// play it and lose twenty of themselves doing it.
+fn armed(fleet: &FleetState) -> bool {
+    fleet.ships.iter().any(|ships| Hull::of(ships.ship_class) == Hull::Warship)
+}
+
+/// Whether the server gives an armed fleet a fight in `sector` at the
+/// pilot's odds. No answer is a no.
 fn beats(odds: &Odds, fleet: &FleetState, sector: &SectorState) -> bool {
-    ratio(odds, fleet, sector).is_some_and(|ratio| ratio >= SAFE_ODDS)
+    armed(fleet) && ratio(odds, fleet, sector).is_some_and(|ratio| ratio >= SAFE_ODDS)
 }
 
 fn enterable(odds: &Odds, sector: &SectorState, fleet: &FleetState) -> bool {
@@ -752,8 +762,9 @@ fn enterable(odds: &Odds, sector: &SectorState, fleet: &FleetState) -> bool {
 }
 
 /// A site is boarded when it reads quiet, or when the sector it lies in
-/// reads favourable for the fleet: the guard an ambush wakes is a share of
-/// the group the sector is rated by.
+/// reads favourable for an armed fleet: the guard an ambush wakes is a
+/// share of the group the sector is rated by.
 fn boardable(odds: &Odds, fleet: &FleetState, sector: &SectorState, site: SiteBrief) -> bool {
-    site.risk == SiteRisk::Quiet || ratio(odds, fleet, sector).is_some_and(|ratio| ratio >= scaling::RATIO_FAVOURABLE)
+    site.risk == SiteRisk::Quiet
+        || (armed(fleet) && ratio(odds, fleet, sector).is_some_and(|ratio| ratio >= scaling::RATIO_FAVOURABLE))
 }

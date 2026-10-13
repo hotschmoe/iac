@@ -284,9 +284,10 @@ def collapse_events(msgs, mine_only=False, errors=True):
             elif k == "BattleRound":
                 key = (e["sector"]["q"], e["sector"]["r"])
                 g = fights.setdefault(key, {"t0": tick, "t1": tick, "rounds": 0, "shots": 0, "mine": False, "took": 0, "dealt": 0,
-                                            "lost": 0, "killed": 0})
+                                            "lost": 0, "killed": 0, "silent": 0})
                 ours, theirs = e["fleets"], e["hostiles"]
                 g["t1"] = tick; g["rounds"] += 1; g["mine"] = g["mine"] or bool(e.get("mine"))
+                g["silent"] += any(group.get("fleeing") and group.get("mine") for group in ours["groups"])
                 g["shots"] += ours["shots"] + theirs["shots"]
                 g["took"] += theirs["hull_damage"]; g["dealt"] += ours["hull_damage"]
                 g["lost"] += theirs["destroyed"]; g["killed"] += ours["destroyed"]
@@ -310,7 +311,8 @@ def collapse_events(msgs, mine_only=False, errors=True):
             span = f"ticks {g['t0']}-{g['t1']}" if g["t1"] != g["t0"] else f"tick {g['t0']}"
             sides = (f"took {g['took']} hull and lost {g['lost']} ship(s), dealt {g['dealt']} and destroyed {g['killed']}")
             who = f"your side {sides}" if g["mine"] else f"witnessed: the fleets {sides}"
-            items[i] = f"  combat @{key[1][0]},{key[1][1]} {span}: {g['rounds']} round(s), {g['shots']} shots, {who}"
+            left = f"; in {g['silent']} of them a fleet of yours was leaving and did not fire" if g["silent"] else ""
+            items[i] = f"  combat @{key[1][0]},{key[1][1]} {span}: {g['rounds']} round(s), {g['shots']} shots, {who}{left}"
         elif key[0] == "policy":
             g, f = policy[key[1]], key[1]
             span = f"x{g['n']}, ticks {g['t0']}-{g['t1']}" if g["n"] > 1 else f"tick {g['t0']}"
@@ -361,6 +363,14 @@ def event_text(e):
     if k == "ShipsLost":
         ships = ", ".join(f"{s['count']}x {s['class']}" for s in e["ships"])
         return f"fleet {e['fleet_id']} lost {ships} at {hexs(e['sector'])}"
+    if k == "Pursuit":
+        whose = "your fleet" if e.get("mine") else f"{e['owner']}'s fleet"
+        jump = f", jumping to {hexs(e['to'])}, there in {e['arrives_in']} tick(s)" if e.get("to") else ""
+        if e["phase"] == "abandoned":
+            return f"the {e['label']} at {hexs(e['sector'])} gave up {whose} {e['fleet_id']}: {e.get('why')}{jump}"
+        verb = "is after" if e["phase"] == "began" else "is still after"
+        return (f"PURSUIT: the {e['label']} at {hexs(e['sector'])} {verb} {whose} {e['fleet_id']}{jump}; "
+                f"it follows {e['hexes_left']} more hex(es) after that")
     rest = {a: b for a, b in e.items() if a not in ("kind", "tick", "player_id")}
     return k + " " + json.dumps(rest, separators=(",", ":"))[:220]
 
@@ -384,7 +394,20 @@ def preview_line(m):
             + (" across unexplored space" if m.get("route_unexplored") else "")
             + ("" if m["can_jump"] else "  CANNOT JUMP: not enough fuel")
             + ("" if m["can_return"] else "  CANNOT RETURN afterwards")
-            + f"; T{t['rating']} NPC power {t['est_power']:.0f} ({t['basis']}); " + odds_text(m["fleet_id"], m))
+            + f"; T{t['rating']} NPC power {t['est_power']:.0f} ({t['basis']}); " + odds_text(m["fleet_id"], m)
+            + (f"\n  this jump is FLIGHT: {flight_words(m['flight'])}" if m.get("flight") else ""))
+
+
+def flight_words(q):
+    """What leaving the fight costs, from `fleets[].flight` or a preview's `flight`."""
+    chase = q.get("chase")
+    follows = (f"the {chase['label']} would follow {chase['hexes']} hex(es), jumping in {chase['jump_ticks']} tick(s)"
+               + (f" and firing on you for {chase['rounds_per_hex']} round(s) at each" if chase["rounds_per_hex"]
+                  else ", too slow to catch you if you keep jumping")
+               if chase else "nothing would follow")
+    cost = f"{q['fuel']:.0f} fuel, gone in {q['ticks']} tick(s) after {q['rounds']} round(s) under fire without firing back"
+    refused = f"  CANNOT LEAVE: {q['refusal']}" if q.get("refusal") else ""
+    return f"the fight stands at {q['ratio']:.2f}x {q['label'].upper()}; a move out costs {cost}; {follows}{refused}"
 
 
 def trade_text(t):
@@ -557,6 +580,25 @@ def world_line(world):
             + (f"; {hub}" if hub else ""))
 
 
+def hostile_words(h, now):
+    """A group's losses, when it is whole again, how it follows and what it is doing away from its sector."""
+    lost = h["muster"] - h["ship_count"]
+    state = f"{h['ship_count']} of {h['muster']} ships" + (f" ({lost} lost)" if lost else "")
+    if h.get("whole_at") is not None:
+        left = h["whole_at"] - now
+        state += f", whole again at tick {h['whole_at']}" + (f" (in {left}s if left alone)" if left > 0 else " (by now)")
+    chase = (f"follows a fleet that leaves it {h['chase_hexes']} hex(es)" if h["chase_hexes"] else "follows nobody")
+    out = f"{state}; {chase}, jumps in {h['jump_ticks']} tick(s)"
+    errand = h.get("errand")
+    if errand:
+        where = f" to {hexs(errand['to'])}, there at tick {errand['arrives_at']}" if errand.get("to") else ""
+        if errand.get("quarry") is not None:
+            out += f"; AFTER fleet {errand['quarry']} of {errand.get('quarry_owner')}{where}, {errand['hexes_left']} more hex(es)"
+        else:
+            out += f"; on its way back to {hexs(errand['home'])}{where}"
+    return out
+
+
 def describe(sec, loc, sectors, now, indent="", odds=None):
     r = sec.get("resources") or {}
     print(f"{indent}sector {loc[0]},{loc[1]} [{freshness(sec, now)}]: {sec['terrain']}  ore metal={r.get('metal')} crystal={r.get('crystal')} deut={r.get('deuterium')}")
@@ -583,6 +625,7 @@ def describe(sec, loc, sectors, now, indent="", odds=None):
     print(f"{indent}exits: " + (", ".join(exits) or "none"))
     for h in sec.get("hostiles") or []:
         print(f"{indent}HOSTILE fleet id {h['id']} {h['behavior']} (attack target_fleet_id {h['id']}): " + json.dumps(h.get("ships"), separators=(",", ":"))[:200])
+        print(f"{indent}  {hostile_words(h, now)}")
     for pf in sec.get("player_fleets") or []:
         print(f"{indent}player fleet {pf['id']} of {pf['owner_name']}: {pf['ship_count']} ships")
     if sec.get("salvage"):
@@ -701,7 +744,8 @@ def orders_words(f):
         return "manual"
     p = orders["params"]
     fuel = "unbounded" if p["fuel_budget_pct"] >= 100 else f"{p['fuel_budget_pct']}%"
-    return (f"{orders['preset']} (range {p['max_range']}, engage {p['engage_ratio_x10'] / 10:.1f}x, fuel {fuel}, "
+    return (f"{orders['preset']} (range {p['max_range']}, engage {p['engage_ratio_x10'] / 10:.1f}x, "
+            f"disengage {p['disengage_ratio_x10'] / 10:.1f}x, fuel {fuel}, "
             f"home at cargo {p['cargo_return_pct']}%, reserve {p['min_fuel_pct']}%{', refines its hold' if p.get('refine') else ''})")
 
 
@@ -729,6 +773,14 @@ def fleet_rows(fs):
             row["laden"] = True
         if f.get("refine"):
             row["refine"] = {k: round(v, 1) for k, v in f["refine"].items()}
+        if f.get("flight"):
+            q = f["flight"]
+            row["flight"] = {"odds": round(q["ratio"], 2), "label": q["label"], "fuel": round(q["fuel"]), "rounds": q["rounds"],
+                             "chased": bool(q.get("chase")), **({"refusal": q["refusal"]} if q.get("refusal") else {})}
+        if f.get("fleeing"):
+            row["fleeing"] = f["fleeing"]
+        if f.get("pursued_by"):
+            row["pursued_by"] = {k: f["pursued_by"][k] for k in ("label", "arrives_in", "catches", "hexes_left")}
         sec = sectors.get(tuple(loc))
         if sec:
             row["exits"] = [DIRS.get((c["q"] - loc[0], c["r"] - loc[1]), "?") + f"->{c['q']},{c['r']}" for c in sec.get("connections") or []]
@@ -908,7 +960,8 @@ def wait_reasons(base, cur, events, until="any"):
             if f["state"] in QUIET and (b["state"] not in QUIET or f["at"] != b["at"]):
                 why.append(f"fleet {fid} {f['state'].lower()} at {f['at'][0]},{f['at'][1]}")
             elif f["state"] != b["state"] and b["state"] == "InCombat":
-                why.append(f"fleet {fid} left combat ({f['state']})")
+                why.append(f"fleet {fid} is jumping out of its fight" if f["state"] == "Moving"
+                           else f"fleet {fid} left combat ({f['state']})")
         for fid in base["fleets"]:
             if fid not in cur["fleets"]:
                 why.append(f"fleet {fid} is gone")
@@ -1044,6 +1097,17 @@ def summarize(fs, doc, odds):
                 for s in f["ships"] if s["damaged"]]
         if worn:
             print("  damage: " + ", ".join(worn) + repair_words(f.get("repair")))
+        if f.get("flight"):
+            print("  IN A FIGHT: " + flight_words(f["flight"]))
+        if f.get("fleeing"):
+            g = f["fleeing"]
+            print(f"  LEAVING the fight for {hexs(g['to'])}: gone in {g['ticks']} tick(s), {g['rounds']} more round(s) under fire"
+                  " (stop calls the jump off, its fuel is forfeit, and the fleet fights on)")
+        if f.get("pursued_by"):
+            p = f["pursued_by"]
+            print(f"  PURSUED by the {p['label']} from {hexs(p['from'])}: it lands here in {p['arrives_in']} tick(s), "
+                  + ("BEFORE a jump ordered now would be gone" if p["catches"] else "too late to catch a jump ordered now")
+                  + f", and follows {p['hexes_left']} more hex(es) after that")
         r = f["refit"]
         print(f"  fights at Weapons {r['weapons']}, Shielding {r['shielding']}, Armour {r['armour']}"
               + ("  REFIT DUE: your research is ahead of it; dock at home" if f.get("refit_due") else "")

@@ -52,8 +52,13 @@ const PLAY_TICKS: u64 = 40;
 /// Ticks between two hops of that flight: a jump of Light Fighters and the
 /// wait after it.
 const HOP_TICKS: u64 = 5;
-/// Ticks the commander stays for the fight it flew into.
-const FIGHT_TICKS: u64 = 8;
+/// Ticks after ordering the last hop at which the commander orders the jump
+/// back out: the hop lands a tick or two after its order, and the fight
+/// has then had one round.
+const FLEE_AFTER: u64 = 2;
+/// Ticks the commander is watched after the jump out: what follows it, and
+/// for how long.
+const CHASE_TICKS: u64 = 8;
 const T0: u64 = 1_800_000_000_000;
 const ENTROPY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -196,7 +201,8 @@ fn into_a_fight(world: &WorldGen, home: Hex) -> Vec<Hex> {
 
 /// What the commander orders, by ticks after logging in: things that are
 /// accepted, things that are refused, questions about the whole world, and
-/// at the end a flight into a group that shoots first.
+/// at the end the way into a group that shoots first, a round of the fight,
+/// and the jump back out of it under fire.
 fn orders(fleet_id: u64, home: Hex) -> Vec<(u64, Vec<Value>)> {
     let world = WorldGen::init(SEED);
     let next = world.connected_neighbors(home).slice()[0];
@@ -229,11 +235,17 @@ fn orders(fleet_id: u64, home: Hex) -> Vec<(u64, Vec<Value>)> {
         (38, vec![board()]),
     ];
     let mut after = PLAY_TICKS;
-    for target in into_a_fight(&world, home) {
+    let route = into_a_fight(&world, home);
+    for &target in &route {
         script.push((after, vec![command(Command::Move { fleet_id, target })]));
         after += HOP_TICKS;
     }
-    script.push((after + FIGHT_TICKS, vec![board()]));
+    let back = route.iter().rev().nth(1).copied().unwrap_or(home);
+    script.push((after - HOP_TICKS + FLEE_AFTER, vec![
+        command(Command::PreviewMove { fleet_id, target: back }),
+        command(Command::Move { fleet_id, target: back }),
+    ]));
+    script.push((after + CHASE_TICKS, vec![board()]));
     script
 }
 
@@ -381,7 +393,7 @@ async fn the_server_and_the_single_player_host_play_one_world_alike() {
     let kinds = |kind: &str| played.got.iter().filter(|frame| frame["type"] == kind).count();
     assert!(kinds("tick_update") as u64 >= PLAY_TICKS && kinds("full_state") == 1 + 2 * batches);
     assert!(kinds("error") >= 3, "the script has orders that are refused: {} were", kinds("error"));
-    assert!(kinds("preview_move") == 1 && kinds("odds") == 1 && kinds("leaderboard") == 6);
+    assert!(kinds("preview_move") == 2 && kinds("odds") == 1 && kinds("leaderboard") == 6);
     let boards: Vec<&Value> = played.got.iter().filter(|frame| frame["type"] == "leaderboard").collect();
     let scores = |board: &Value| -> f64 { board["bots"].as_array().unwrap().iter().map(|row| row["score"].as_f64().unwrap()).sum() };
     assert_eq!(boards[0]["bots"].as_array().unwrap().len(), 7);
@@ -393,12 +405,24 @@ async fn the_server_and_the_single_player_host_play_one_world_alike() {
         updates.flat_map(|frame| frame["events"].as_array().into_iter().flatten()).filter(|event| event["kind"] == kind).collect()
     };
     let (rounds, ended) = (told("BattleRound"), told("CombatEnded"));
+    let fired = |round: &&&Value| round["fleets"]["shots"].as_u64().unwrap() > 0;
+    let leaving = |round: &&&Value| round["fleets"]["groups"].as_array().unwrap().iter().any(|group| group["fleeing"] == true);
     assert!(
-        !rounds.is_empty() && rounds.iter().all(|round| round["fleets"]["shots"].as_u64().unwrap() > 0) && ended.len() == 1,
-        "the commander flew into a group that shoots first and both hosts fought it: {} rounds, {} fights ended",
+        rounds.iter().filter(fired).count() >= 1 && rounds.iter().filter(leaving).count() >= 1,
+        "the commander flew into a group that shoots first, fought it and jumped out under fire on both hosts: \
+         {} rounds",
         rounds.len(),
-        ended.len(),
     );
+    assert_eq!(
+        ended.iter().map(|fight| fight["outcome"].as_str().unwrap_or_default()).collect::<Vec<_>>(),
+        ["fled"],
+        "and the fight ended because it left",
+    );
+    let flight = played.got.iter().filter(|frame| frame["type"] == "preview_move").nth(1).expect("the second preview");
+    assert!(flight["flight"]["rounds"].as_u64() == Some(1) && flight["flight"]["refusal"].is_null(), "{flight}");
+    let fleets = |frame: &Value| frame["fleets"].as_array().cloned().unwrap_or_default();
+    let shown = |field: &str| played.got.iter().any(|frame| fleets(frame).iter().any(|fleet| fleet[field].is_object()));
+    assert!(shown("flight") && shown("fleeing"), "the states said a fleet could leave and then that it was leaving");
 
     server.stop();
     let ended = stored_world(&file).tick;

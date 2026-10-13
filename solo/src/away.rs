@@ -4,7 +4,7 @@
 
 use iac_shared::constants::{Resources, TICK_RATE_HZ};
 use iac_shared::hex::Hex;
-use iac_shared::protocol::{AlertEvent, AlertLevel, EventKind, GameEvent};
+use iac_shared::protocol::{AlertEvent, AlertLevel, BattleOutcome, EventKind, GameEvent};
 use iac_sim::engine::{GameEngine, Outpost, OutpostTask, Player};
 use iac_sim::views;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,8 @@ pub struct Tally {
     pub docked_ships_lost: u32,
     pub fleets_lost: u32,
     pub ships_lost: u32,
+    /// Fights the commander's last fleet in them jumped out of under fire.
+    pub fights_fled: u32,
     /// Levels the outpost finished.
     pub outpost_levels: u32,
     /// Raids on the outpost, counted apart from those on the homeworld.
@@ -42,6 +44,7 @@ impl Tally {
                 | EventKind::RaidResolved(_)
                 | EventKind::FleetDestroyed(_)
                 | EventKind::BattleRound(_)
+                | EventKind::CombatEnded(_)
                 | EventKind::ShipsLost(_)
                 | EventKind::OutpostCompleted(_)
         );
@@ -73,6 +76,7 @@ impl Tally {
                 self.ships_lost += mine.flat_map(|group| &group.units).map(|units| units.lost).sum::<u32>();
             }
             EventKind::ShipsLost(e) if e.mine => self.ships_lost += e.ships.iter().map(|s| s.count).sum::<u32>(),
+            EventKind::CombatEnded(e) if e.mine && e.outcome == BattleOutcome::Fled => self.fights_fled += 1,
             _ => {}
         }
     }
@@ -106,11 +110,9 @@ impl Tally {
         });
         let lost = list(&[count(self.fleets_lost, "fleet", "fleets"), count(self.ships_lost, "ship", "ships")])
             .map(|lost| format!("{lost} lost in the field"));
-        match (broke, lost) {
-            (None, None) => None,
-            (Some(one), None) | (None, Some(one)) => Some(one),
-            (Some(broke), Some(lost)) => Some(format!("{broke}; {lost}")),
-        }
+        let fled = count(self.fights_fled, "fight", "fights").map(|fights| format!("{fights} left under fire"));
+        let parts: Vec<String> = [broke, lost, fled].into_iter().flatten().collect();
+        (!parts.is_empty()).then(|| parts.join("; "))
     }
 
     /// What raids that broke the outpost took, and how it stands now.

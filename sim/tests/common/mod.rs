@@ -437,6 +437,41 @@ pub fn outward_chain(engine: &GameEngine, home: Hex, len: usize) -> Vec<Hex> {
     chain.split_off(1)
 }
 
+/// `len` quiet sectors in a row along one lane leading out from home, each
+/// a hex farther from it than the last, and none of them on or beside
+/// ground a group stays out of.
+pub fn open_lane(engine: &GameEngine, home: Hex, len: usize) -> Vec<Hex> {
+    fn open(at: Hex) -> bool {
+        std::iter::once(at)
+            .chain(iac_shared::hex::hex_ring(at, 1))
+            .all(|n| !iac_shared::world::is_home_ground(n) && !iac_shared::world::is_hub(n))
+    }
+    fn extend(engine: &GameEngine, chain: &mut Vec<Hex>, home: Hex, len: usize) -> bool {
+        if chain.len() > len && chain[chain.len() - len..].iter().all(|at| open(*at)) {
+            return true;
+        }
+        if chain.len() > 12 {
+            return false;
+        }
+        let tip = *chain.last().unwrap();
+        for &next in engine.world_gen.connected_neighbors(tip).slice() {
+            let quiet = engine.world_gen.generate_sector(next).npc_template.is_none();
+            if usize::from(Hex::distance(&next, &home)) != chain.len() || !quiet {
+                continue;
+            }
+            chain.push(next);
+            if extend(engine, chain, home, len) {
+                return true;
+            }
+            chain.pop();
+        }
+        false
+    }
+    let mut chain = vec![home];
+    assert!(extend(engine, &mut chain, home, len), "no open lane of {len} sectors out of home");
+    chain.split_off(chain.len() - len)
+}
+
 /// Accounts flown by a script that is a function of the tick and the
 /// visible world, with no state of its own: the cast of a busy world.
 pub struct Pilots {

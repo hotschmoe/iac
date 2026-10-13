@@ -363,6 +363,25 @@ fn founding_is_refused_with_the_rule_that_forbids_it() {
             format!("fleet {fid} is in combat; an outpost is founded on a sector its founder has won"),
         ),
     );
+    let beside = e.engine.world_gen.connected_neighbors(den).slice()[0];
+    let den_pack = e.engine.npc_fleets[&template_npc_id(den)].label.clone();
+    edit(&mut e.engine, |s| {
+        s.combats.clear();
+        s.fleets.get_mut(&fid).unwrap().state = FleetStatus::Idle;
+        let pack = s.npc_fleets.get_mut(&template_npc_id(den)).unwrap();
+        (pack.in_combat, pack.location, pack.strayed) = (false, beside, 1);
+    });
+    assert_eq!(
+        e.refusal(Command::FoundOutpost { fleet_id: fid }),
+        (
+            ErrorCode::InvalidTarget,
+            format!(
+                "the {den_pack} that holds {den} is away at {beside} and will be back; \
+                 an outpost is founded on a sector its founder has won"
+            ),
+        ),
+        "a lair whose group has gone after a fleet is empty and is not won",
+    );
     edit(&mut e.engine, |s| {
         s.combats.clear();
         s.npc_fleets.clear();

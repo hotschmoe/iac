@@ -182,7 +182,10 @@ fn a_reload_plays_the_unsaved_ticks_again_and_arrives_at_the_same_world() {
         flown["policy"],
         json!({
             "preset": "patrol_home",
-            "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 2, "engage_ratio_x10": 100, "fuel_budget_pct": 50, "refine": false},
+            "params": {
+                "min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 2, "engage_ratio_x10": 100,
+                "disengage_ratio_x10": 9, "fuel_budget_pct": 50, "refine": false,
+            },
         }),
         "the console that opens the save reads the orders and every setting in force: {flown}",
     );
@@ -548,10 +551,10 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     assert_eq!(reply["world"], Value::Null);
     assert_eq!(reply["refused"], "this save is format 9, this build reads format 10; start a new game");
 
-    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":10", 1);
+    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":11", 1);
     let (_, reply) = load(T0, other_format.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 10, this build reads format {SAVE_FORMAT}")), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 11, this build reads format {SAVE_FORMAT}")), "{reply}");
 
     let (_, reply) = load(T0, &document[..document.len() - 40]);
     assert_eq!(reply["refused"], "this save cannot be read: its contents do not match its checksum");
