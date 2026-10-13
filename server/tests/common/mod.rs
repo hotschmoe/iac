@@ -155,7 +155,7 @@ pub async fn login(port: u16, name: &str, token: Option<&str>) -> (Ws, Value) {
     (ws, reply)
 }
 
-/// The terminal client's binary, built into the directory the server's is
+/// The headless client's binary, built into the directory the server's is
 /// in. Cargo builds a package's binaries for that package's own tests only,
 /// so the client's is built here, with the cargo and the profile of this
 /// test run.
@@ -163,15 +163,15 @@ fn client_binary() -> PathBuf {
     let server = Path::new(env!("CARGO_BIN_EXE_iac-server"));
     let profile = server.parent().expect("the server binary stands in a profile directory");
     let mut build = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    build.args(["build", "-p", "iac-client", "--target-dir"]).arg(profile.parent().expect("the target directory"));
+    build.args(["build", "-p", "iac-headless", "--target-dir"]).arg(profile.parent().expect("the target directory"));
     if profile.ends_with("release") {
         build.arg("--release");
     }
-    assert!(build.status().expect("cargo did not run").success(), "iac-client did not build");
-    profile.join(format!("iac-client{}", std::env::consts::EXE_SUFFIX))
+    assert!(build.status().expect("cargo did not run").success(), "iac-headless did not build");
+    profile.join(format!("iac-headless{}", std::env::consts::EXE_SUFFIX))
 }
 
-/// `iac-client --headless` logged in to the server on `port`: the pipe an
+/// `iac-headless` logged in to the server on `port`: the pipe an
 /// agent plays through. Lines written to it are commands; the lines it
 /// prints are the server's messages, and its own `client_error` for a line
 /// it could not read.
@@ -186,7 +186,7 @@ impl HeadlessClient {
     /// test reads or writes the user's own.
     pub fn start(port: u16, name: &str, token: &str, config: &Path) -> Self {
         let mut child = Command::new(client_binary())
-            .args(["--headless", "--host", "127.0.0.1", "--port", &port.to_string(), "--name", name, "--token", token])
+            .args(["--host", "127.0.0.1", "--port", &port.to_string(), "--name", name, "--token", token])
             .env("XDG_CONFIG_HOME", config)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -15,7 +15,8 @@ Humans play in the browser, through the Flutter web client and its amber CRT loo
 | `server/` | `iac-server`: what a network and a disk add to the host core: the WebSocket transport, tokens, the world's file and the thread that writes it, the 1 Hz tick timer |
 | `solo/` | `iac-solo`: what one player and a browser tab add to it: a commander with no password, a clock it is told and the catch-up after an absence; compiled to WebAssembly and run in a browser worker (`solo/web/worker.js`) with the save, the same document a server keeps, in IndexedDB |
 | `clients/web/` | Flutter web client (amber CRT UI), the interface people play through: served by `iac-server`, or bundled with `iac-solo` as a static single-player build |
-| `clients/tui/` | `iac-client`: the headless NDJSON mode agents play through, and a ratatui terminal client, which is secondary and may lag the web client |
+| `clients/headless/` | `iac-headless`: the headless client agents and scripts play through, the game as an NDJSON pipe; its library is the WebSocket connection, the login and the token file |
+| `clients/tui/` | `iac-tui`: a ratatui terminal client over that library, which is secondary and may lag the web client; nothing depends on it |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
 | `tools/` | `playtest/` (live multi-agent sessions) and `check_sim_constants.py` (the formulas of the planning simulation, `docs/design/economy/sim.py`, against the game's; its numbers are not compared, they are generated from Rust) |
 | `SPEC.md` | Original technical specification (world model, combat, economy, networking) |
@@ -47,7 +48,7 @@ cargo run -p iac-server -- --pace season --world season.iac --bot all:check-in -
 cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web
 
 # Terminal 2, optional: the terminal client (secondary; it may lag the web client)
-cargo run -p iac-client -- --name Admiral
+cargo run -p iac-tui -- --name Admiral
 ```
 
 **The world file** (`--world <path>`, default `world.iac`) is the whole world
@@ -124,13 +125,13 @@ the active fleet stands in, where `F` surveys (also from outside the
 overlay) and Enter founds. The star map marks your outpost `O` and another
 empire's `o`.
 
-## Headless / LLM agent mode
+## Headless client / LLM agents
 
-The game is fully playable without a terminal. Headless mode turns the
-client into an NDJSON pipe:
+The game is fully playable without a terminal. The headless client,
+`iac-headless`, is the game as an NDJSON pipe:
 
 ```sh
-cargo run -p iac-client -- --headless --name MyAgent [--token <token>]
+cargo run -p iac-headless -- --name MyAgent [--token <token>]
 ```
 
 - **stdout** — every server message, one JSON object per line: `auth_result`,
@@ -180,7 +181,7 @@ Example session:
   sleep 2
   echo '{"action":"scan","fleet_id":2}'
   sleep 3
-} | iac-client --headless --name Probe | jq -c 'select(.type=="tick_update") | .events[]?'
+} | iac-headless --name Probe | jq -c 'select(.type=="tick_update") | .events[]?'
 ```
 
 ### Command reference (stdin)
@@ -967,7 +968,8 @@ Crates: `iac-shared` (`shared/`) (protocol, constants, scaling, hex math, worldg
 `iac-server` (network, the world's file, tick timer around `iac-sim`) · `iac-solo` (`solo/`) (the
 single-player host: a session, a clock fed by its caller and the catch-up after an
 absence, behind one function of bytes; three exports as WebAssembly, no
-bindings generator) · `iac-client` (the headless mode agents use, and the secondary ratatui terminal client).
+bindings generator) · `iac-headless` (`clients/headless/`) (the NDJSON pipe agents use, and the connection, login and token file as a library) ·
+`iac-tui` (`clients/tui/`) (the secondary ratatui terminal client, over that library; no crate depends on it).
 
 `iac-sim` talks to its host through three seams: `GameEngine::execute` (a protocol
 `Command` in, reply or refusal out), `views::{full_state, tick_update}` (what a player

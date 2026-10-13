@@ -13,22 +13,19 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 
+use iac_headless::connection::{self, Connection};
 use iac_shared::constants::{DEFAULT_HOST, DEFAULT_PORT};
 use iac_shared::protocol::ClientMessage;
 
-mod connection;
-mod headless;
 mod input;
 mod renderer;
 mod state;
-mod token_store;
 
-use connection::Connection;
 use state::ClientState;
 
-/// IAC Game Client
+/// IAC terminal client
 #[derive(Parser, Debug)]
-#[command(name = "iac-client", version, about)]
+#[command(name = "iac-tui", version, about)]
 struct Cli {
     /// Server host
     #[arg(long, default_value = DEFAULT_HOST)]
@@ -42,11 +39,6 @@ struct Cli {
     #[arg(long, default_value = "Admiral")]
     name: String,
 
-    /// Headless NDJSON mode: server messages on stdout (one JSON per
-    /// line), commands from stdin. Built for LLM agents and scripts.
-    #[arg(long)]
-    headless: bool,
-
     /// Auth token for this name. Defaults to the one saved for this server
     /// and name; a token issued on first login is saved automatically.
     #[arg(long)]
@@ -57,7 +49,7 @@ struct Cli {
 async fn main() {
     env_logger::init();
     if let Err(e) = run_client().await {
-        eprintln!("iac-client: {e}");
+        eprintln!("iac-tui: {e}");
         std::process::exit(1);
     }
 }
@@ -69,12 +61,13 @@ async fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         host: cli.host.clone(),
         port: cli.port,
     };
-    if cli.headless {
-        return headless::run(&config, &cli.name, cli.token.as_deref()).await;
-    }
 
     // Log in before taking over the terminal so a refusal prints normally.
-    let (conn, _) = connection::login(&config, &cli.name, cli.token.as_deref(), false).await?;
+    let login = connection::login(&config, &cli.name, cli.token.as_deref(), false).await?;
+    if let Some(notice) = &login.notice {
+        eprintln!("iac-tui: {notice}");
+    }
+    let conn = login.connection;
 
     // Initialize terminal
     crossterm::terminal::enable_raw_mode()?;
