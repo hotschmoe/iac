@@ -27,7 +27,7 @@ pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
         homeworld: build_homeworld_state(engine, player),
         outpost: outpost_state(engine, player),
         known_sectors: engine.known.chart(engine, player_id),
-        battles: battles(engine, player),
+        battles: battles(engine, player, true),
         world: WorldInfo::new(engine.pace(), engine.world.economy_version, engine.world.worldgen_version),
     })
 }
@@ -51,14 +51,16 @@ pub fn tick_update(engine: &GameEngine, player_id: u64, events: &[GameEvent]) ->
         sector_updates: if sector_updates.is_empty() { None } else { Some(sector_updates) },
         homeworld_update,
         outpost: player_data.and_then(|p| outpost_state(engine, p)),
-        battles: player_data.map(|p| battles(engine, p)).unwrap_or_default(),
+        battles: player_data.map(|p| battles(engine, p, false)).unwrap_or_default(),
         events: if player_events.is_empty() { None } else { Some(player_events) },
     }
 }
 
-/// The fights `player` is in or present at, marked as theirs where they are.
-fn battles(engine: &GameEngine, player: &Player) -> Vec<BattleState> {
-    let mut list = engine.battles_of(player.id);
+/// The fights `player` is in or present at, marked as theirs where they
+/// are, each with its last round only when `with_round`: a tick update
+/// carries that round as an event.
+fn battles(engine: &GameEngine, player: &Player, with_round: bool) -> Vec<BattleState> {
+    let mut list = engine.battles_of(player.id, with_round);
     for battle in &mut list {
         if let Some(round) = &mut battle.last_round {
             mark_round(round, player);
@@ -133,6 +135,7 @@ fn player_state(engine: &GameEngine, player: &Player) -> PlayerState {
         name: player.name.clone(),
         resources: player.resources,
         homeworld: player.homeworld,
+        ship_count: engine.fleets.values().filter(|f| f.owner_id == player.id).map(|f| f.ships.total()).sum(),
         exchange: engine.exchange_meter(player),
     }
 }

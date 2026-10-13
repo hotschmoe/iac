@@ -183,6 +183,7 @@ fn sample_round() -> BattleRoundEvent {
                 mine: true,
                 units: vec![battle_units(ShipClass::Cruiser, 57, 21, 4, 9_480, 2)],
             }],
+            standing: 57,
             volleys: vec![Volley {
                 from: cruiser,
                 at: fighter,
@@ -216,6 +217,7 @@ fn sample_round() -> BattleRoundEvent {
                     units: vec![battle_units(ShipClass::EspionageProbe, 0, 0, 0, 0, 2)],
                 },
             ],
+            standing: 83,
             volleys: vec![Volley {
                 from: fighter,
                 at: cruiser,
@@ -662,6 +664,7 @@ fn sample_player() -> PlayerState {
         name: "Admiral".into(),
         resources: res(1200.5, 600.0, 150.25),
         homeworld: h(4, -2),
+        ship_count: 828,
         exchange: sold_meter(),
     }
 }
@@ -1024,12 +1027,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
                 homeworld_update: Some(sample_homeworld()),
                 outpost: None,
-                battles: vec![BattleState {
-                    sector: h(-5, 7),
-                    rounds: 3,
-                    last_round: Some(sample_round()),
-                    losses: sample_losses(),
-                }],
+                battles: vec![BattleState { sector: h(-5, 7), rounds: 3, last_round: None, losses: sample_losses() }],
                 events: Some(vec![
                     GameEvent {
                         tick: 4821,
@@ -1154,7 +1152,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             "".into(),
             ServerMessage::FullState(GameState {
                 tick: 4820,
-                player: sample_player(),
+                player: PlayerState { ship_count: 888, ..sample_player() },
                 fleets: vec![
                     sample_fleet(1, h(3, -2), FleetStatus::Moving, Some(StandingOrders {
                         preset: PolicyPreset::SalvageAndSites,
@@ -1231,6 +1229,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     name: "New".into(),
                     resources: res(0.0, 0.0, 0.0),
                     homeworld: h(3, 0),
+                    ship_count: 0,
                     exchange: ExchangeMeter { pressure: 0.0, span: 0.0, fee: 0.75, window_ticks: 5238, clear_in: Some(0) },
                 },
                 fleets: vec![],
@@ -1827,7 +1826,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             "ServerMessage",
             json!({"type": "tick_update", "tick": 9, "fleets": [], "player": {
                 "id": 1, "name": "x", "resources": {"metal": 1.0, "crystal": 2.0, "deuterium": 3.0},
-                "homeworld": {"q": 3, "r": 0}
+                "homeworld": {"q": 3, "r": 0}, "ship_count": 4
             }}),
         ),
     ]

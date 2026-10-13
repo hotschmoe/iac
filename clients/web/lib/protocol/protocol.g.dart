@@ -1564,9 +1564,10 @@ class TickUpdate extends ServerMessage {
   final OutpostState? outpost;
 
   /// Every fight under way that the player has a fleet in or is present
-  /// at, whole, every tick, as in `GameState.battles`. Left out when
-  /// there is none: a client replaces its list with this one. The round
-  /// each carries is the `BattleRound` event of the same tick.
+  /// at, whole, every tick, as in `GameState.battles` but without
+  /// `last_round`: the round fought this tick is the `BattleRound` event
+  /// of the same update. Left out when there is none: a client replaces
+  /// its list with this one.
   final List<BattleState> battles;
   final List<GameEvent>? events;
 
@@ -1671,14 +1672,15 @@ class GameState extends ServerMessage {
   };
 }
 
-/// A fight under way, as `GameState.battles` carries it.
+/// A fight under way, as `GameState.battles` and `TickUpdate.battles` carry it.
 class BattleState {
   final Hex sector;
 
   /// Rounds fought so far.
   final int rounds;
 
-  /// The last of them; absent before the first is fought.
+  /// The last of them, in a full state; absent before the first is
+  /// fought, and in a tick update, whose events carry the round.
   final BattleRoundEvent? lastRound;
 
   /// What each fleet and group has lost so far, as `CombatEnded` will say.
@@ -2119,6 +2121,9 @@ class PlayerState {
   final Resources resources;
   final Hex homeworld;
 
+  /// Every ship of every fleet the player has, docked or away.
+  final int shipCount;
+
   /// Where the player's meter at the hub's exchange stands this tick.
   final ExchangeMeter exchange;
 
@@ -2127,6 +2132,7 @@ class PlayerState {
     required this.name,
     required this.resources,
     required this.homeworld,
+    required this.shipCount,
     this.exchange = const ExchangeMeter(),
   });
 
@@ -2137,6 +2143,7 @@ class PlayerState {
       name: _string(m['name']),
       resources: Resources.fromJson(m['resources']),
       homeworld: Hex.fromJson(m['homeworld']),
+      shipCount: _int(m['ship_count']),
       exchange: _opt(m['exchange'], ExchangeMeter.fromJson) ?? const ExchangeMeter(),
     );
   }
@@ -2146,6 +2153,7 @@ class PlayerState {
     'name': name,
     'resources': resources.toJson(),
     'homeworld': homeworld.toJson(),
+    'ship_count': shipCount,
     'exchange': exchange.toJson(),
   };
 }
@@ -4431,6 +4439,9 @@ class BattleSide {
   /// it stands after it.
   final List<BattleGroup> groups;
 
+  /// Units of the side still standing after the round, in all its groups.
+  final int standing;
+
   /// The side's fire, one line for each pair of firing and target unit
   /// that exchanged a shot, in catalogue order.
   final List<Volley> volleys;
@@ -4446,6 +4457,7 @@ class BattleSide {
 
   const BattleSide({
     required this.groups,
+    required this.standing,
     required this.volleys,
     required this.shots,
     required this.power,
@@ -4458,6 +4470,7 @@ class BattleSide {
     final m = _obj(json);
     return BattleSide(
       groups: _list(m['groups'], BattleGroup.fromJson),
+      standing: _int(m['standing']),
       volleys: _list(m['volleys'], Volley.fromJson),
       shots: _int(m['shots']),
       power: _int(m['power']),
@@ -4469,6 +4482,7 @@ class BattleSide {
 
   Json toJson() => {
     'groups': groups.map((e) => e.toJson()).toList(),
+    'standing': standing,
     'volleys': volleys.map((e) => e.toJson()).toList(),
     'shots': shots,
     'power': power,
