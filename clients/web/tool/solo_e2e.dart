@@ -1470,6 +1470,10 @@ Future<int?> flight(Browser browser,
       'the state quotes the jump out: ${fuelWords(quote['fuel'] as num)} fuel, gone in ${plural(quote['ticks'], 'tick')}, ${plural(quote['rounds'], 'round')} under fire; '
       'the fight stands at ${(quote['ratio'] as num).toStringAsFixed(2)}, ${quote['label']}; '
       '${chase == null ? 'nothing would follow' : 'the ${chase['label']} would follow ${plural(chase['hexes'], 'hex')}, ${plural(chase['rounds_per_hex'], 'round')} at each'}');
+  if (!const ['deadly', 'risky'].contains(quote['label'])) {
+    print('  the chart offered no group that outweighs the two: this flight is from a fight they might have won, '
+        'and a flight from one they could not, with the group on their trail, is the widget tests\'');
+  }
   await browser.untilText('leave the fight');
   final price = '${fuelWords(quote['fuel'] as num)} FUEL, GONE IN ${plural(quote['ticks'], 'TICK').toUpperCase()}, ${plural(quote['rounds'], 'ROUND').toUpperCase()} UNDER FIRE';
   final control = (await browser.text()).toUpperCase();

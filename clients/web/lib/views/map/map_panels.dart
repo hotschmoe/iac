@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../console/battle.dart' show fleeingLine, hullOf, pursuitLine, pursuitVerdict, shipsOf, shortCount;
+import '../../console/battle.dart' show chaseLine, fleeingLine, flightPrice, hullOf, pursuitLine, pursuitVerdict, shipsOf, shortCount;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show surveyClear, surveyLines;
 import '../../console/route_planner.dart';
@@ -398,6 +398,7 @@ class Inspector extends StatelessWidget {
           if (pv != null)
             Kv('Way home',
                 vw: Text(_wayHome(pv), key: const Key('inspector-home'), style: T.mono(size: 10.5, color: pv.canReturn ? C.text2 : C.threat(7)))),
+          if (pv?.flight case final quote?) _FlightNote(quote, 'inspector-flight'),
           _oreRow('Metal', sec.resources.metal, C.metal, sec.oreReserve?.metal),
           _oreRow('Crystal', sec.resources.crystal, C.crystal, sec.oreReserve?.crystal),
           _oreRow('Deut', sec.resources.deuterium, C.deut, sec.oreReserve?.deuterium),
@@ -482,6 +483,29 @@ class Inspector extends StatelessWidget {
           color: fossil ? const Color(0x1F8A7552) : null,
         ),
         child: Text(text, style: T.mono(size: 10.5, color: col, height: 1.3)),
+      );
+}
+
+/// A jump the server has previewed for a fleet that stands in a fight: it
+/// is flight, and this is its quote for that lane, or why it would be
+/// refused.
+class _FlightNote extends StatelessWidget {
+  final proto.FlightQuote quote;
+
+  /// The key of the sentence, for the panel that shows it.
+  final String id;
+  const _FlightNote(this.quote, this.id);
+
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.symmetric(vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+        decoration: BoxDecoration(border: Border.all(color: quote.refusal == null ? C.a300 : C.ember)),
+        child: Text(
+            quote.refusal ??
+                'THE FLEET IS IN A FIGHT, SO THIS JUMP IS FLIGHT: ${flightPrice(quote).toUpperCase()}. ${chaseLine(quote.chase).toUpperCase()}',
+            key: Key(id),
+            style: T.mono(size: 10.5, color: quote.refusal == null ? C.a300 : C.ember, height: 1.3)),
       );
 }
 
@@ -584,6 +608,7 @@ class RoutePanel extends StatelessWidget {
                 key: const Key('route-return'), style: T.mono(size: 10.5, color: retOk ? C.threat(1) : C.threat(7)))),
         if (first != null)
           Kv('Way home', vw: Text(_wayHome(first), key: const Key('route-home'), style: T.mono(size: 10.5, color: C.text2))),
+        if (first?.flight case final quote?) _FlightNote(quote, 'route-flight'),
         Kv('ETA', vw: Text(clockFmt(plan.etaTicks), key: const Key('route-eta'), style: T.mono(size: 11.5, weight: FontWeight.w500))),
         Kv('Threat along route', vw: ThreatBadge(plan.maxThreat, sm: true)),
         _Strip(plan: plan, secs: secs),

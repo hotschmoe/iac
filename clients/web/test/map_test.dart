@@ -158,7 +158,10 @@ Future<void> clickHex(WidgetTester tester, proto.Hex h, {Size size = _win}) asyn
 
 String _text(WidgetTester t, String key) => (t.widget(find.byKey(Key(key))) as Text).textSpan?.toPlainText() ?? (t.widget(find.byKey(Key(key))) as Text).data ?? '';
 
-proto.MovePreview _preview(proto.Hex target, {double ratio = 1.3, proto.RatioLabel label = proto.RatioLabel.even, int hops = 1, int? charted = 9}) => proto.MovePreview(
+proto.MovePreview _preview(proto.Hex target,
+        {double ratio = 1.3, proto.RatioLabel label = proto.RatioLabel.even, int hops = 1, int? charted = 9, proto.FlightQuote? flight}) =>
+    proto.MovePreview(
+      flight: flight,
       fleetId: 7,
       target: target,
       fuelCost: 5,
@@ -311,6 +314,30 @@ void main() {
     expect(textUnder(tester, find.byKey(const Key('inspector-hostile-10-whole'))), startsWith('WHOLE AGAIN BY NOW, IF NOTHING DISTURBED IT  '),
         reason: 'a group last seen wounded, whose time to mend has passed since');
     expect(tester.takeException(), isNull, reason: 'the lanes of the pursuit are drawn');
+    await m.removePointer();
+    await endShell(tester, g);
+  });
+
+  testWidgets('a jump the server previews for a fleet in a fight is shown as flight, in the sector panel and in the route, with the quote for that lane', (tester) async {
+    const quote = proto.FlightQuote(
+        fuel: 5,
+        ticks: 3,
+        rounds: 2,
+        ratio: .7,
+        label: proto.RatioLabel.deadly,
+        chase: proto.ChaseForecast(groupId: 9, label: 'cruiser pack', hexes: 2, jumpTicks: 2, roundsPerHex: 1));
+    const said = 'THE FLEET IS IN A FIGHT, SO THIS JUMP IS FLIGHT: 5 FUEL, GONE IN 3 TICKS, 2 ROUNDS UNDER FIRE. '
+        'THE CRUISER PACK FOLLOWS 2 HEXES AND FIRES 1 ROUND AT EACH ON A FLEET THAT JUMPS ON AT ONCE; ONE THAT STOPS IS CAUGHT.';
+    final g = await openMap(tester);
+    final m = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await m.addPointer(location: Offset.zero);
+    await m.moveTo(at(const proto.Hex(2, -1), _win));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('inspector-flight')), findsNothing, reason: 'a fleet in no fight has no flight to show');
+    _answer(g, _preview(const proto.Hex(2, -1), flight: quote));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(_text(tester, 'inspector-flight'), said);
+    expect(_text(tester, 'route-flight'), said);
     await m.removePointer();
     await endShell(tester, g);
   });

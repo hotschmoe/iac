@@ -23,7 +23,8 @@ class Notice {
 }
 
 /// Watches the game for what needs the player: a queue that finished or went
-/// idle, a raid, a lost fleet, full storage, and at the outpost a raid, a
+/// idle, a raid, a lost fleet, a group that sets out after a fleet, full
+/// storage, and at the outpost a raid, a
 /// breach, a finished level, a full store and a repair that waits for its
 /// materials. While the page is in the
 /// background each one is counted for the tab title and, if the player
