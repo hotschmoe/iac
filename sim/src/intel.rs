@@ -1,7 +1,7 @@
 // Sector intel: what each player can see this tick and what they remember.
 //
 // A sector is "live" for a player while a fleet of theirs is in it, their
-// sensor array covers it, or an active scan has not expired. Live sectors
+// homeworld's sensors cover it, or an active scan has not expired. Live sectors
 // stream to the client every tick. Every live sector is also written into the
 // player's chart (`KnownSectors`), so when it stops being live the client keeps
 // what was last observed, marked stale with the tick it was seen.
@@ -424,7 +424,7 @@ fn mark_charts(engine: &GameEngine, player_id: u64, sectors: &mut [SectorState])
 }
 
 /// Sectors the server is watching for this player right now: fleet
-/// locations, their outpost, the homeworld sensor array, and unexpired
+/// locations, their outpost, the homeworld's sensors, and unexpired
 /// active scans.
 pub fn live_coords(engine: &GameEngine, player_id: u64) -> Vec<Hex> {
     let mut seen: KeySet<u32> = KeySet::default();

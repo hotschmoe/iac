@@ -352,9 +352,9 @@ fn nanite_speed(buildings: &BuildingLevels) -> f64 {
 
 /// OGame's storage: `STORAGE_BASE + STORAGE_STEP * ceil(STORAGE_GROWTH^level - 1)`
 /// of each resource, by the level of its own building, before the pace
-/// multiplier (which is this game's). 100,000 with no building: the early
-/// squeeze the Storage Vault made is gone, and `STORAGE_BASE` is the knob
-/// if it is missed.
+/// multiplier (which is this game's). 100,000 with no building, so a new
+/// empire is not squeezed by its stores; `STORAGE_BASE` is the knob if it
+/// should be.
 pub const STORAGE_BASE: f64 = 100_000.0;
 pub const STORAGE_STEP: f64 = 50_000.0;
 pub const STORAGE_GROWTH: f64 = 1.6;
@@ -1257,11 +1257,9 @@ pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32
 }
 
 /// A raid's mean power is `RAID_POWER_FLOOR + RAID_POWER_PER_POINT * econ^RAID_POWER_EXPONENT`.
-/// The law is the one the game had before OGame's catalogue; the two
-/// figures are put on the new scale and are provisional. The floor is half
-/// a Light Fighter, as it was half a Scout. A point of economy buys half
-/// the defence it did (a Rocket Launcher is 51 power for a point where a
-/// Pulse Turret was 113), so the raid it draws is half what it was.
+/// The law is this game's; the two figures are provisional. The floor is
+/// about half a Light Fighter, and a point spent on Rocket Launchers is 51
+/// power: an empire of 1,000 points meets its raid (939) with 19 of them.
 pub const RAID_POWER_FLOOR: f32 = 50.0;
 pub const RAID_POWER_PER_POINT: f32 = 5.0;
 pub const RAID_POWER_EXPONENT: f32 = 0.75;
@@ -1457,9 +1455,9 @@ pub fn ore_density_odds(dist: u16) -> [f32; 4] {
 // ── Loot ─────────────────────────────────────────────────────────
 
 /// A destroyed group leaves `WRECK_VALUE_K * power^WRECK_VALUE_EXPONENT`
-/// units. A group of a given ring is to leave `MAP_PAYS` times what it did
-/// before OGame's catalogue, when this was 1.2 and a group's power was a
-/// tenth of what it is: 1.2 * 3 / 10^0.8. Provisional.
+/// units: 1.2 * `MAP_PAYS` / 10^0.8, the 10 being what a group's power
+/// grew by with `NPC_POWER_BASE`, so the wreckage of a ring follows
+/// `MAP_PAYS` and not the scale power is counted on. Provisional.
 pub const WRECK_VALUE_K: f64 = 0.57;
 pub const WRECK_VALUE_EXPONENT: f64 = 0.8;
 /// Metal, crystal and deuterium shares of any loot value.
@@ -1517,7 +1515,7 @@ pub fn derelict_tier(dist: u16) -> u8 {
     threat_band(threat_rating(npc_power(dist)))
 }
 
-/// Chance a boarding wakes the guard, before scouts and earlier failures.
+/// Chance a boarding wakes the guard, before a probe's read and earlier failures.
 pub fn derelict_ambush(rating: u8) -> f32 {
     (0.10 + 0.03 * (f32::from(rating) - 1.0)).min(0.35)
 }
@@ -1636,7 +1634,7 @@ pub fn npc_respawn_hours(dist: u16) -> f32 {
     2.0 + 0.25 * dist as f32
 }
 
-/// T1 to T9: one step per doubling of `power` over 4.
+/// T1 to T9: one step per doubling of `power` over `NPC_POWER_BASE`.
 pub fn threat_rating(power: f32) -> u8 {
     if power.is_nan() || power <= NPC_POWER_BASE {
         return 1;

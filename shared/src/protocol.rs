@@ -766,7 +766,7 @@ pub struct TickUpdate {
 /// Full snapshot, sent on login and on `request_full_state`.
 ///
 /// `known_sectors` is the player's whole chart: every sector the player has
-/// ever had eyes on (fleet present, sensor array, active scan), not only the
+/// ever had eyes on (fleet present, the homeworld's sensors, active scan), not only the
 /// ones with fresh intel. Entries with `live: true` are current; the rest
 /// carry what was last observed and the tick it was observed (`last_seen`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1112,7 +1112,7 @@ pub struct ShipState {
 /// One sector as the player knows it.
 ///
 /// `live: true` means the server is watching the sector this tick (a fleet
-/// is there, the sensor array covers it, or a scan has not expired) and every
+/// is there, the homeworld's sensors cover it, or a scan has not expired) and every
 /// field is current. `live: false` is chart memory: `resources`, `hostiles`,
 /// `salvage` and `site` are what was last observed at tick `last_seen` and
 /// may have changed since (a wreck despawns, a hostile moves, a derelict is
@@ -2090,7 +2090,7 @@ pub struct QueueEvent {
     /// The stable queue id of the order; what `cancel_build` and
     /// `cancel_queued` take.
     pub id: u64,
-    /// "Metal Mine Lv.5", "Corvette x3".
+    /// "Metal Mine Lv.5", "Light Fighter x3".
     pub item: String,
     pub action: QueueAction,
     /// What this event took from the stockpile. A building or research
@@ -2254,7 +2254,7 @@ pub struct FleetDestroyedEvent {
     #[serde(default)]
     pub mine: bool,
     pub salvage: Resources,
-    /// What an NPC group was ("3x corvette pack"); empty for a player fleet.
+    /// What an NPC group was ("3x cruiser pack"); empty for a player fleet.
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub label: String,
 }
@@ -2283,7 +2283,7 @@ pub struct CombatStartedEvent {
     /// Empire owning `player_fleet_id`.
     pub owner: String,
     pub enemy_fleet_id: u64,
-    /// What the hostile group is ("3x corvette pack").
+    /// What the hostile group is ("3x cruiser pack").
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub enemy: String,
     pub sector: Hex,

@@ -149,7 +149,7 @@ pub struct NpcFleet {
     /// What the group cost to build, and its combined power, fixed at spawn.
     pub bounty: Resources,
     pub power: f32,
-    /// "3x corvette pack": how messages name the group.
+    /// "3x cruiser pack": how messages name the group.
     pub label: String,
 }
 
@@ -1808,7 +1808,7 @@ impl GameEngine {
 
     /// A fleet that has lost ships keeps what the holds it has left carry.
     /// The rest leaves, each resource in proportion: at the owner's
-    /// homeworld into the stockpile as far as the Vault allows, at the
+    /// homeworld into the stockpile as far as its caps allow, at the
     /// owner's outpost into its store as far as that has room, and the
     /// remainder is lost; anywhere else into the sector's wreckage. Nothing
     /// is made, and a fleet with no ships left sheds its whole cargo.
@@ -4836,8 +4836,8 @@ impl GameEngine {
     }
 
     /// Active scan: reveal connected sectors around the fleet and pick up
-    /// faint signal contacts one hop beyond. Scouts extend the range —
-    /// that's their job.
+    /// faint signal contacts one hop beyond. An Espionage Probe aboard
+    /// extends the range.
     pub fn handle_scan(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }

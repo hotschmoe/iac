@@ -70,17 +70,18 @@ pub fn timer_class(name: &str) -> Option<PaceClass> {
 
 /// Named multipliers; any positive number in range is also accepted.
 pub const PRESETS: &[Preset] = &[
-    Preset { name: "persistent", pace: 1.0, first_cruiser_s: 1_365_000, endgame_s: 6_385_000 },
-    Preset { name: "fortnight", pace: 5.0, first_cruiser_s: 276_000, endgame_s: 1_279_000 },
-    Preset { name: "season", pace: 10.0, first_cruiser_s: 165_600, endgame_s: 622_000 },
-    Preset { name: "sprint", pace: 70.0, first_cruiser_s: 18_000, endgame_s: 86_400 },
-    Preset { name: "dev", pace: 100.0, first_cruiser_s: 13_700, endgame_s: 46_800 },
-    Preset { name: "blitz", pace: 600.0, first_cruiser_s: 2_520, endgame_s: 10_800 },
-    Preset { name: "test", pace: 8000.0, first_cruiser_s: 240, endgame_s: 720 },
+    Preset { name: "persistent", pace: 1.0, first_cruiser_s: 1_839_000, endgame_s: 5_172_900 },
+    Preset { name: "fortnight", pace: 5.0, first_cruiser_s: 433_320, endgame_s: 1_048_380 },
+    Preset { name: "season", pace: 10.0, first_cruiser_s: 209_460, endgame_s: 576_960 },
+    Preset { name: "sprint", pace: 70.0, first_cruiser_s: 26_715, endgame_s: 71_230 },
+    Preset { name: "dev", pace: 100.0, first_cruiser_s: 18_735, endgame_s: 49_940 },
+    Preset { name: "blitz", pace: 600.0, first_cruiser_s: 3_210, endgame_s: 8_450 },
+    Preset { name: "test", pace: 8000.0, first_cruiser_s: 262, endgame_s: 665 },
 ];
 
 /// A named pace with the simulation's milestone estimates for a competent
-/// player (`docs/design/economy/spec.md`, section 1.2).
+/// player: the estimates table of `docs/design/economy/sim.py --tables`,
+/// whose endgame is the kit that file names.
 #[derive(Debug, Clone, Copy)]
 pub struct Preset {
     pub name: &'static str,
@@ -161,7 +162,8 @@ impl Pace {
     /// Production grows with P while a human's look-in window shrinks, so
     /// beyond a season the cap must grow much slower than P^0.75 to stay
     /// within a few windows of production; at a blitz P^0.75 (121x) held four
-    /// hours of mine output and the Storage Vault never mattered.
+    /// hours of mine output and storage never mattered. OGame does not scale
+    /// storage with its universe speed; this multiplier is this game's.
     pub fn cap_mult(&self) -> f64 {
         let (p, attention) = (self.0, PaceClass::Attention.exponent());
         if p <= CAP_KNEE {

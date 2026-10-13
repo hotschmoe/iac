@@ -20,7 +20,7 @@
 // (it scans first), it treats a cleared lair it cannot watch as occupied,
 // and it reads off each sector's chart mark whether a visit still pays.
 // Hull damage is never repaired, so it fights only with shields up and at
-// odds that end the fight before the shields are through. The odds are the
+// odds that cost it a few percent of its hull at most. The odds are the
 // server's: before its orders the admiral asks (`odds`) how each fleet it
 // may move would fare in every sector where that decides something, and it
 // stays out of any sector it has no answer for.
@@ -120,9 +120,9 @@ impl Wing {
     /// doctrine starts a fight where it has to. A patrol hunts, and fights
     /// only what it beats without lasting damage. `prospect` has to enter a
     /// lair to chart it, and a wing with warships is the one strong enough
-    /// to go where every lane has a fight: both fly at SAFE odds once they
-    /// have the ships to leave home at them. The hauling doctrines pick no
-    /// fight for a payday, so for scouts and haulers under them the ratio
+    /// to go where every lane has a fight: both fly at the pilot's odds once
+    /// they have the ships to leave home at them. The hauling doctrines pick no
+    /// fight for a payday, so for probes and cargo ships under them the ratio
     /// gates quiet space, and stays at the game's default. Doctrines that
     /// bring resources home earn their fuel back and get the larger budget;
     /// the ones that fly for points get the game's default.

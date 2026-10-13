@@ -519,26 +519,25 @@ pub const HOME_TEMPERATURE_MAX: i32 = 40;
 /// every trip takes.
 pub const JUMP_SPEED_REF: f64 = 50_000.0;
 
-/// Each level of the Deuterium Tank adds this share to every fleet's tank,
-/// the job the Fuel Depot had. Provisional.
+/// Each level of the Deuterium Tank adds this share to every fleet's tank.
+/// Provisional.
 pub const TANK_PER_DEUT_TANK_LEVEL: f64 = 0.25;
 /// Each level of Energy Technology takes this share off what a jump burns,
-/// up to `FUEL_SAVING_MAX`: the job Fuel Efficiency had. Provisional.
+/// up to `FUEL_SAVING_MAX`. Provisional.
 pub const FUEL_SAVING_PER_LEVEL: f64 = 0.05;
 pub const FUEL_SAVING_MAX: f64 = 0.5;
 /// Each of the first `HARVEST_YIELD_LEVELS` levels of Laser Technology adds
-/// this share to what a unit of ore yields: the job Harvesting Efficiency
-/// had. Provisional.
+/// this share to what a unit of ore yields. Provisional.
 pub const HARVEST_YIELD_PER_LEVEL: f64 = 0.20;
 pub const HARVEST_YIELD_LEVELS: u8 = 5;
-/// The levels of Computer Technology that each open one more building slot:
-/// the job Modular Fabrication had. Provisional.
+/// The levels of Computer Technology that each open one more building slot.
+/// Provisional.
 pub const BUILD_SLOT_LEVELS: [u8; 2] = [3, 6];
 /// Each level of Hyperspace Technology takes this much off the chance that
-/// an emergency jump harms a ship: the job Emergency Jump had. Provisional.
+/// an emergency jump harms a ship. Provisional.
 pub const RECALL_SAVING_PER_LEVEL: f32 = 0.05;
-/// Hops around the homeworld seen for each level of Espionage Technology:
-/// the job the Sensor Array had. Provisional.
+/// Hops around the homeworld seen for each level of Espionage Technology.
+/// Provisional.
 pub const SENSOR_HOPS_PER_LEVEL: u8 = 1;
 
 /// Fleets that may be away from the homeworld at once.
@@ -631,11 +630,11 @@ pub const RAID_LOST_STRUCTURE_FRACTION: f32 = 0.5;
 /// and when the defence fails they are what the raiders reach.
 pub const RAID_LOST_SHIP_FRACTION: f32 = 0.25;
 /// An empire is raided once its Shipyard stands at this level, or it has
-/// any defence: the job the Defense Grid had.
+/// any defence. Provisional.
 pub const RAID_MIN_SHIPYARD: u8 = 2;
 
 /// Wreckage piles drift away after this long. Piles are worth thousands at
-/// a fast pace and a hauler round trip from the outer ring takes about a
+/// a fast pace and a cargo ship's round trip from the outer ring takes about a
 /// minute, so 60 s lost most of them.
 pub const SALVAGE_DESPAWN_TICKS: u32 = 180;
 
@@ -738,7 +737,7 @@ pub const OUTPOST_COST: Resources =
 /// Cost and store grow by this factor a level.
 pub const OUTPOST_GROWTH: f64 = 2.5;
 /// Metal plus crystal of a level's cost that one game hour of building pays
-/// for. It follows the cost, so a level takes as long as it did.
+/// for. It follows `MAP_PAYS` as the cost does, so the knob moves no time.
 pub const OUTPOST_BUILD_RATE: f64 = 100.0 * MAP_PAYS;
 /// The store at level 1, before the pace multiplier.
 pub const OUTPOST_STORE_BASE: Resources =

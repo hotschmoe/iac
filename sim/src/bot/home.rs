@@ -92,7 +92,7 @@ const STORAGE_PRESSURE: f64 = 0.75;
 /// Share of the income expected while away that the building queue should hold.
 const ABSORB: f32 = 0.6;
 /// How strongly a lopsided stockpile tilts the choice of mine.
-const SCARCITY_PULL: f64 = 4.0;
+const SCARCITY_PULL: f64 = 2.0;
 const MAX_SHIP_BATCH: f32 = 12.0;
 const MAX_DEFENCE_BATCH: f32 = 100.0;
 const MAX_SURPLUS_BATCH: u16 = 500;
@@ -906,15 +906,18 @@ impl<'a> Planner<'a> {
         due.into_iter().map(|(_, b)| b).collect()
     }
 
-    /// The three mines, best return on cost first. A resource whose stockpile
-    /// (less what is already promised) sits lower against its cap than the
-    /// others counts for more. A level that costs less than `place_worth` is
-    /// rated as if it cost that much: with queue places scarcer than
-    /// resources, the bigger gain wins, not the cheaper level. A level's
-    /// cost counts the Solar Plant it takes to power it.
+    /// The three mines, best return on cost first. A resource that is a
+    /// smaller share of the stockpile (less what is already promised, each
+    /// resource at its weight) than the others counts for more. A level that
+    /// costs less than `place_worth` is rated as if it cost that much: with
+    /// queue places scarcer than resources, the bigger gain wins, not the
+    /// cheaper level. The bigger gain is always the mine that is ahead, and
+    /// only the shares keep it from running away from the other two. A
+    /// level's cost counts the Solar Plant it takes to power it.
     fn mines(&self, place_worth: f32) -> Vec<BuildingType> {
-        let cap = self.cap();
-        let fill = |k: ResourceKind| self.spare.get(k) / cap.get(k);
+        let held = |k: ResourceKind| self.spare.get(k) * k.weight();
+        let all = ResourceKind::ALL.into_iter().map(|k| held(k).abs()).sum::<f64>().max(1.0);
+        let fill = |k: ResourceKind| held(k) / all;
         let mean_fill = ResourceKind::ALL.into_iter().map(fill).sum::<f64>() / 3.0;
         let energy_price = self.energy_price();
 
@@ -925,9 +928,9 @@ impl<'a> Planner<'a> {
                 let gain = self.pace.rate(
                     (scaling::mine_output_per_hour(mine, level + 1) - scaling::mine_output_per_hour(mine, level)) / 3600.0,
                 );
-                let scarcity = (1.0 + SCARCITY_PULL * (mean_fill - fill(kind))).clamp(0.25, 3.0);
                 let energy = scaling::energy_needed_by(mine, level + 1) - scaling::energy_needed_by(mine, level);
                 let cost = scaling::resource_weight(&scaling::building_cost(mine, level + 1)) + energy as f32 * energy_price;
+                let scarcity = (1.0 + SCARCITY_PULL * (mean_fill - fill(kind))).clamp(0.25, 3.0);
                 (gain * kind.weight() * scarcity / f64::from(cost.max(place_worth)), mine)
             })
             .collect();

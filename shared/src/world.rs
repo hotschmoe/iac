@@ -498,8 +498,8 @@ pub struct NpcTemplate {
     pub stat_multiplier: f32,
 }
 
-/// How a hostile group is named in messages: "scout patrol", "3x corvette
-/// pack". The numeric fleet id stays in the event fields.
+/// How a hostile group is named in messages: "light fighter patrol", "3x
+/// cruiser pack". The numeric fleet id stays in the event fields.
 pub fn hostile_label(class: ShipClass, count: usize, behavior: NpcBehaviorType) -> String {
     let noun = match behavior {
         NpcBehaviorType::Passive => "convoy",

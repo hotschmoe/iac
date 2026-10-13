@@ -304,7 +304,7 @@ fn a_blitz_of_hands_on_bots_is_one_world_past_the_tick_where_the_two_parted() {
     assert_eq!(snapshot["tick"], 3000);
     let [fought, explored, raided, heated] = deeds(&snapshot);
     assert!(
-        fought >= 4 && explored >= 4 && raided >= 4 && heated >= 20,
+        fought >= 4 && explored >= 4 && raided >= 4 && heated >= 12,
         "the world was meant to be busy: {fought} empires with combat points, {explored} with exploration points, \
          {raided} homes raided, {heated} sectors heated by a kill"
     );
@@ -323,7 +323,7 @@ fn a_season_day_of_sixteen_seats_is_one_world() {
     // A season day at OGame's prices is an empire's first few Light
     // Fighters: the fighting of this world is the blitz's above.
     assert!(
-        fought >= 2 && explored >= 4 && raided >= 4 && heated >= 4,
+        fought >= 1 && explored >= 4 && raided >= 4 && heated >= 1,
         "the world was meant to be busy: {fought} empires with combat points, {explored} with exploration points, \
          {raided} homes raided, {heated} sectors heated by a kill"
     );

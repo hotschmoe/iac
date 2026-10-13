@@ -2427,8 +2427,8 @@
   "world": {
     "economy_version": 2,
     "estimate": {
-      "endgame_s": 622000,
-      "first_cruiser_s": 165600
+      "endgame_s": 576960,
+      "first_cruiser_s": 209460
     },
     "hub": [
       {
