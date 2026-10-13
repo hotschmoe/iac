@@ -2,9 +2,11 @@
 // that stops comes back as its last document says. This plays one busy
 // world twice: straight through, and stopped and started again through its
 // document, at fixed intervals and at the moments most likely to lose
-// something (a fight, an announced raid, a live scan and a jump at once; a
-// boarding; an outpost being built, or warned of a raid). The two must be
-// the same world at every stop and at the end.
+// something (a fight between two of its rounds; an announced raid, a live
+// scan and a jump at once; a boarding; an outpost being built, or warned of
+// a raid). The two must be the same world at every stop and at the end.
+// A second world does the same to a fight of large fleets, stopped between
+// every two rounds.
 
 #[allow(dead_code)]
 mod common;
@@ -119,10 +121,17 @@ struct Crew {
 }
 
 impl Crew {
+    /// The pilots begin with a yard that builds Light Fighters and draws
+    /// raids, so that neither waits on the luck of their random orders.
     fn join(engine: &mut GameEngine) -> Crew {
-        let pilots = (0..PLAYERS)
+        let pilots: Vec<u64> = (0..PLAYERS)
             .map(|i| engine.authenticate(&format!("Pilot{i}"), None, i % 2 == 0, || "f".repeat(64)).unwrap().player_id)
             .collect();
+        for pid in &pilots {
+            let player = engine.players.get_mut(pid).unwrap();
+            (player.buildings.robotics_factory, player.buildings.shipyard) = (2, 2);
+            player.research.combustion_drive = 1;
+        }
         Crew { settler: Settler::join(engine), pilots }
     }
 }
@@ -287,7 +296,8 @@ fn a_world_restarted_through_its_document_continues_as_if_it_had_never_stopped()
         let outpost = stopped.outposts.get(&settler);
         let outpost_build = outpost.is_some_and(|o| o.job.is_some());
         let outpost_warning = outpost.is_some_and(|o| o.raid.incoming.is_some());
-        let rare = (fight && raid && scan && jump && caught.all_at_once < 3)
+        let rare = (fight && caught.fights < 6)
+            || (raid && scan && jump && caught.all_at_once < 3)
             || (boarding && caught.boardings < 3)
             || (outpost_build && caught.outpost_builds < 3)
             || (outpost_warning && caught.outpost_warnings < 3);
@@ -298,7 +308,7 @@ fn a_world_restarted_through_its_document_continues_as_if_it_had_never_stopped()
             caught.scans += u32::from(scan);
             caught.jumps += u32::from(jump);
             caught.boardings += u32::from(boarding);
-            caught.all_at_once += u32::from(fight && raid && scan && jump);
+            caught.all_at_once += u32::from(raid && scan && jump);
             caught.outpost_builds += u32::from(outpost_build);
             caught.outpost_warnings += u32::from(outpost_warning);
 
@@ -312,8 +322,9 @@ fn a_world_restarted_through_its_document_continues_as_if_it_had_never_stopped()
 
     assert_eq!(stopped.snapshot().hash(), straight.snapshot().hash(), "restarts changed the course of the world");
     assert!(
-        caught.all_at_once > 0 && caught.boardings > 0,
-        "no restart interrupted a fight, an announced raid, a scan and a jump together, or none a boarding: {caught:?}",
+        caught.fights > 0 && caught.all_at_once > 0 && caught.boardings > 0,
+        "no restart interrupted a fight, or none an announced raid, a scan and a jump together, or none a boarding \
+         ({raids} raids resolved): {caught:?}",
     );
     assert!(raids > 0 && doctrine_moves > 0, "{raids} raids resolved, {doctrine_moves} moves by standing orders");
     assert!(laden_holds > 0, "no document held a hold loaded at the dock");
@@ -328,4 +339,61 @@ fn a_world_restarted_through_its_document_continues_as_if_it_had_never_stopped()
         "no restart fell inside an outpost's build, or none inside the warning of a raid on it ({outpost_raids} resolved): {caught:?}",
     );
     assert!(stored_outposts > 0, "no document held a stocked outpost");
+}
+
+/// Two thousand ships against two thousand: the host stops after every
+/// round and starts again from its document. What a fight needs between
+/// two ticks is the fleets' counts and the hull of their damaged ships, and
+/// the dice are drawn from the world's seed, the tick, the sector and the
+/// round, so the next round picks the same targets.
+#[test]
+fn a_fight_of_large_fleets_stopped_between_every_two_rounds_is_fought_as_if_it_had_never_stopped() {
+    use ShipClass::{Cruiser, HeavyFighter, LightFighter};
+    const HORDE: u64 = 900_001;
+    let muster = || {
+        let mut engine = GameEngine::new(DEFAULT_WORLD_SEED, Pace::parse("persistent").unwrap());
+        let (pid, fid) = common::join(&mut engine, "Admiral");
+        let home = engine.players[&pid].homeworld;
+        let at = common::outward_chain(&engine, home, 2)[1];
+        common::muster(&mut engine, fid, &[(LightFighter, 1500), (HeavyFighter, 300), (Cruiser, 200)], at);
+        common::horde(&mut engine, HORDE, at, &[(LightFighter, 2000), (Cruiser, 150)], 1.0);
+        let attack = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: HORDE });
+        assert!(attack.error.is_none(), "{:?}", attack.error);
+        (engine, fid)
+    };
+    let (mut straight, fid) = muster();
+    let (mut stopped, _) = muster();
+    let mut place = Memory::default();
+
+    let (mut rounds, mut damaged_most, mut largest) = (0u32, 0u32, 0usize);
+    while !stopped.active_combats.is_empty() {
+        straight.tick().unwrap();
+        stopped.tick().unwrap();
+        let (told, told_stopped) = (straight.drain_events(), stopped.drain_events());
+        assert_eq!(
+            serde_json::to_value(&told).unwrap(),
+            serde_json::to_value(&told_stopped).unwrap(),
+            "round {}: the restarted world reported another round",
+            rounds + 1,
+        );
+        rounds += told.iter().filter(|e| matches!(e.kind, EventKind::BattleRound(_))).count() as u32;
+        assert!(rounds < 200, "the fight does not end");
+
+        largest = largest.max(iac_sim::store::encode(&(), &stopped.snapshot()).len());
+        let world = stored_in(&mut place, &stopped);
+        assert_same(&stopped.snapshot(), &world, &format!("stored after round {rounds}"));
+        assert_eq!(world.hash(), straight.snapshot().hash(), "the restarted world left the other by round {rounds}");
+        let wounded = world.fleets.get(&fid).map_or(0, |f| f.ships.damaged()) + world.npc_fleets.get(&HORDE).map_or(0, |n| n.ships.damaged());
+        damaged_most = damaged_most.max(wounded);
+        if let Some(fight) = world.combats.values().next() {
+            assert_eq!(fight.round, rounds, "the document holds the fight's count of rounds");
+            assert!(fight.last_round.is_some(), "and its last round, for a client that arrives now");
+        }
+        stopped = GameEngine::restore(world);
+    }
+
+    assert_eq!(stopped.snapshot().hash(), straight.snapshot().hash(), "restarts changed the course of the fight");
+    assert!(rounds >= 4, "a fight of thousands lasts: {rounds} rounds");
+    assert!(damaged_most > 200, "the documents held the hull of hundreds of damaged ships: {damaged_most}");
+    assert!(largest < 64 * 1024, "and a world with four thousand ships in a fight is {largest} bytes");
 }

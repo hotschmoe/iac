@@ -761,7 +761,7 @@ fn ships_lost_to_a_raid_at_the_dock_leave_their_share_of_the_hold_in_the_stockpi
 
     for e in [&roomy, &full] {
         let fleet = e.fleet();
-        assert_eq!(fleet.ships.len(), 24);
+        assert_eq!(fleet.ship_count, 24);
         assert!(fleet.cargo.total() <= fleet.cargo_capacity, "{} aboard a hold of {}", fleet.cargo.total(), fleet.cargo_capacity);
         assert!(fleet.cargo.total() > 0.9 * fleet.cargo_capacity, "the six holds left stay loaded");
     }

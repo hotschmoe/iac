@@ -1,7 +1,7 @@
 [
-{"canonical":{"full_in_s":16,"kind":"StorageNearCap","player_id":14,"ratio":15.25,"resource":"metal","tick":38,"type":"event"},"input":{"full_in_s":16,"kind":"StorageNearCap","player_id":14,"ratio":15.25,"resource":"metal","tick":38,"type":"event"}},
-{"canonical":{"full_in_s":16,"kind":"StorageNearCap","player_id":14,"ratio":15.25,"resource":"crystal","tick":38,"type":"event"},"input":{"full_in_s":16,"kind":"StorageNearCap","player_id":14,"ratio":15.25,"resource":"crystal","tick":38,"type":"event"}},
-{"canonical":{"full_in_s":16,"kind":"StorageNearCap","player_id":14,"ratio":15.25,"resource":"deuterium","tick":38,"type":"event"},"input":{"full_in_s":16,"kind":"StorageNearCap","player_id":14,"ratio":15.25,"resource":"deuterium","tick":38,"type":"event"}},
-{"canonical":{"kind":"StorageNearCap","ratio":15.25,"resource":"deuterium","tick":38,"type":"event"},"input":{"kind":"StorageNearCap","ratio":15.25,"resource":"deuterium","tick":38,"type":"event"}},
-{"canonical":{"kind":"StorageNearCap","ratio":15.25,"resource":"deuterium","tick":38,"type":"event"},"input":{"full_in_s":null,"kind":"StorageNearCap","player_id":null,"ratio":15.25,"resource":"deuterium","tick":38,"type":"event"}}
+{"canonical":{"full_in_s":66,"kind":"StorageNearCap","player_id":64,"ratio":65.25,"resource":"metal","tick":88,"type":"event"},"input":{"full_in_s":66,"kind":"StorageNearCap","player_id":64,"ratio":65.25,"resource":"metal","tick":88,"type":"event"}},
+{"canonical":{"full_in_s":66,"kind":"StorageNearCap","player_id":64,"ratio":65.25,"resource":"crystal","tick":88,"type":"event"},"input":{"full_in_s":66,"kind":"StorageNearCap","player_id":64,"ratio":65.25,"resource":"crystal","tick":88,"type":"event"}},
+{"canonical":{"full_in_s":66,"kind":"StorageNearCap","player_id":64,"ratio":65.25,"resource":"deuterium","tick":88,"type":"event"},"input":{"full_in_s":66,"kind":"StorageNearCap","player_id":64,"ratio":65.25,"resource":"deuterium","tick":88,"type":"event"}},
+{"canonical":{"kind":"StorageNearCap","ratio":65.25,"resource":"deuterium","tick":88,"type":"event"},"input":{"kind":"StorageNearCap","ratio":65.25,"resource":"deuterium","tick":88,"type":"event"}},
+{"canonical":{"kind":"StorageNearCap","ratio":65.25,"resource":"deuterium","tick":88,"type":"event"},"input":{"full_in_s":null,"kind":"StorageNearCap","player_id":null,"ratio":65.25,"resource":"deuterium","tick":88,"type":"event"}}
 ]

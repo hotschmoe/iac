@@ -773,6 +773,12 @@ pub struct TickUpdate {
     /// they have none: a client drops the one it held.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost: Option<OutpostState>,
+    /// Every fight under way that the player has a fleet in or is present
+    /// at, whole, every tick, as in `GameState.battles`. Left out when
+    /// there is none: a client replaces its list with this one. The round
+    /// each carries is the `BattleRound` event of the same tick.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub battles: Vec<BattleState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub events: Option<Vec<GameEvent>>,
 }
@@ -796,7 +802,8 @@ pub struct GameState {
     /// The fights under way that the player has a fleet in or is present
     /// at, each with its last round: what a client that arrives in the
     /// middle of one has missed. The rounds before that are not kept.
-    #[serde(default)]
+    /// Left out when there is none.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub battles: Vec<BattleState>,
     pub world: WorldInfo,
 }

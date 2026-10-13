@@ -1,4 +1,137 @@
 {
+  "battles": [
+    {
+      "last_round": {
+        "fleets": {
+          "absorbed": 2830,
+          "destroyed": 229,
+          "groups": [
+            {
+              "fleet_id": 3,
+              "mine": true,
+              "owner": "Admiral",
+              "units": [
+                {
+                  "at_risk": 4,
+                  "count": 57,
+                  "damaged": 21,
+                  "hull": 144420,
+                  "hull_max": 153900,
+                  "lost": 2,
+                  "unit": "Cruiser"
+                }
+              ]
+            }
+          ],
+          "hull_damage": 104110,
+          "power": 137600,
+          "shots": 344,
+          "volleys": [
+            {
+              "absorbed": 2830,
+              "at": "LightFighter",
+              "bounced": 0,
+              "destroyed": 229,
+              "from": "Cruiser",
+              "hull_damage": 104110,
+              "shots": 344,
+              "wasted": 61
+            }
+          ]
+        },
+        "hostiles": {
+          "absorbed": 13900,
+          "destroyed": 2,
+          "groups": [
+            {
+              "fleet_id": 4294967400,
+              "label": "400x light fighter swarm",
+              "mine": false,
+              "units": [
+                {
+                  "at_risk": 22,
+                  "count": 83,
+                  "damaged": 30,
+                  "hull": 28080,
+                  "hull_max": 33200,
+                  "lost": 229,
+                  "unit": "LightFighter"
+                }
+              ]
+            },
+            {
+              "fleet_id": 4294967401,
+              "label": "2x espionage probe picket",
+              "mine": false,
+              "units": [
+                {
+                  "at_risk": 0,
+                  "count": 0,
+                  "damaged": 0,
+                  "hull": 0,
+                  "hull_max": 0,
+                  "lost": 2,
+                  "unit": "EspionageProbe"
+                }
+              ]
+            }
+          ],
+          "hull_damage": 1550,
+          "power": 15600,
+          "shots": 312,
+          "volleys": [
+            {
+              "absorbed": 13900,
+              "at": "Cruiser",
+              "bounced": 0,
+              "destroyed": 2,
+              "from": "LightFighter",
+              "hull_damage": 1550,
+              "shots": 312,
+              "wasted": 3
+            }
+          ]
+        },
+        "mine": true,
+        "round": 3,
+        "sector": {
+          "q": -5,
+          "r": 7
+        }
+      },
+      "losses": [
+        {
+          "destroyed": false,
+          "fleet_id": 3,
+          "lost": [
+            {
+              "count": 3,
+              "unit": "Cruiser"
+            }
+          ],
+          "mine": true,
+          "owner": "Admiral"
+        },
+        {
+          "destroyed": true,
+          "fleet_id": 4294967400,
+          "label": "400x light fighter swarm",
+          "lost": [
+            {
+              "count": 400,
+              "unit": "LightFighter"
+            }
+          ],
+          "mine": false
+        }
+      ],
+      "rounds": 3,
+      "sector": {
+        "q": -5,
+        "r": 7
+      }
+    }
+  ],
   "events": [
     {
       "fleet_id": 1,

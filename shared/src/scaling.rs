@@ -1770,17 +1770,19 @@ pub fn threat_band(rating: u8) -> u8 {
     rating.clamp(1, MAX_THREAT).div_ceil(3)
 }
 
-/// Ratio at and above which a fight is SAFE: a sure win that keeps nine
-/// tenths of the fleet's worth or more. Both sides fire at once, so no
-/// fight against armed ships is free.
+/// Ratio at and above which a fight is SAFE: a win that keeps nine tenths
+/// of the fleet. Both sides fire at once, so no fight against armed ships
+/// is free. What each band means was measured on fleets of one class
+/// against the lairs of thirteen rings, sixty fights a pairing: SAFE won
+/// 58 to 60 of them and kept 0.85 or more of its hull.
 pub const RATIO_SAFE: f32 = 2.5;
-/// FAVOURABLE from here: a sure win that keeps about 70 to 90 percent.
+/// FAVOURABLE from here: won 59 or 60 of 60 and kept 0.63 to 0.91.
 pub const RATIO_FAVOURABLE: f32 = 1.5;
-/// EVEN from here: a win in practice, nine fights in ten between a handful
-/// of ships and every one between many, that keeps about 30 to 70 percent.
+/// EVEN from here: won 45 to 60 of 60 and kept 0.36 to 0.90 on average,
+/// the fights it lost counted as nothing kept.
 pub const RATIO_EVEN: f32 = 1.1;
-/// RISKY from here: anything from a lost fleet to a win that keeps a third.
-/// Below it (DEADLY) the fleet is lost, or wins one fight in fifteen at best.
+/// RISKY from here: won 10 to 51 of 60. Below it (DEADLY) the fleet won 25
+/// of 60 at best, most pairings none, and kept under a fifth.
 pub const RATIO_RISKY: f32 = 0.9;
 
 /// What each ratio means, as (ratio, margin): the margin is the share of its
@@ -1821,20 +1823,45 @@ fn margin_depth(margin: f32) -> f32 {
     if m >= 0.0 { -maths::ln(1.0 - m) } else { maths::ln(1.0 + m) }
 }
 
+/// A fight is rated FAVOURABLE or better only if the fleet won every time
+/// the odds played it, and EVEN or better only if it won this share of
+/// them. A handful of ships wins or loses whole, so what it keeps on
+/// average says little of the risk; many ships end near the average and
+/// the rule changes nothing for them.
+pub const EVEN_WINS: f32 = 0.8;
+/// How far under a band's edge a ratio is put that the rule above keeps
+/// out of the band.
+const RATIO_STEP: f32 = 0.01;
+
 /// The ratio of a fight in which the fleet is expected to keep `ours_kept`
 /// of its worth and the other side `theirs_kept` of its own (both 0 to 1):
-/// the ratio of numbers at which equal ship classes end the same way.
-pub fn outcome_ratio(ours_kept: f32, theirs_kept: f32) -> f32 {
+/// the ratio of numbers at which equal ship classes end the same way. It is
+/// then held under the band its win record does not earn: `won` is the
+/// share of the fights played in which the other side was destroyed and
+/// the fleet was not, `lost` the share in which the fleet was destroyed.
+/// A fleet destroyed every time is DEADLY whatever it took with it.
+pub fn outcome_ratio(ours_kept: f32, theirs_kept: f32, won: f32, lost: f32) -> f32 {
     let depth = margin_depth(ours_kept - theirs_kept);
     let mut low = RATIO_MARGINS[0];
+    let mut ratio = RATIO_MARGINS[RATIO_MARGINS.len() - 1].0;
     for high in RATIO_MARGINS.into_iter().skip(1) {
         let (from, to) = (margin_depth(low.1), margin_depth(high.1));
         if depth <= to {
-            return low.0 + (high.0 - low.0) * ((depth - from) / (to - from)).clamp(0.0, 1.0);
+            ratio = low.0 + (high.0 - low.0) * ((depth - from) / (to - from)).clamp(0.0, 1.0);
+            break;
         }
         low = high;
     }
-    low.0
+    let most = if lost >= 1.0 {
+        RATIO_RISKY - RATIO_STEP
+    } else if won < EVEN_WINS {
+        RATIO_EVEN - RATIO_STEP
+    } else if won < 1.0 {
+        RATIO_FAVOURABLE - RATIO_STEP
+    } else {
+        ratio
+    };
+    ratio.min(most)
 }
 
 /// How a fleet is expected to fare against what waits in a sector. The ratio
@@ -1869,10 +1896,10 @@ impl RatioLabel {
     /// sentence a client prints beside the label.
     pub fn outcome(self) -> &'static str {
         match self {
-            RatioLabel::Safe => "a sure win that keeps nine tenths of the fleet or more",
-            RatioLabel::Favourable => "a sure win that keeps 70 to 90 percent of the fleet",
-            RatioLabel::Even => "a win in practice that keeps 30 to 70 percent of the fleet",
-            RatioLabel::Risky => "anything from a lost fleet to a win that keeps a third of it",
+            RatioLabel::Safe => "a win that keeps nine tenths of the fleet",
+            RatioLabel::Favourable => "a win that keeps two thirds to nine tenths of the fleet",
+            RatioLabel::Even => "a win three times in four or better, at the cost of a third of the fleet or more",
+            RatioLabel::Risky => "as likely lost as won",
             RatioLabel::Deadly => "the fleet is lost",
         }
     }

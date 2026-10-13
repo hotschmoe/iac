@@ -1,16 +1,17 @@
 // What a fight is expected to cost each side.
 //
 // There is no second model of the fight. `outlook` plays `combat::round`
-// itself, `ODDS_RUNS` times with dice that are the same every time it is
-// asked, from the two sides as they stand, damage and arms included, until
-// one side is gone, a round takes no hull, or `ODDS_ROUNDS` have passed. Two
-// large sides are scaled down together first, so that the larger has at most
-// `ODDS_UNITS` units. The result is the share of its worth each side keeps:
-// a ship counts its cost at the score's weights times the share of its hull
-// it holds. `scaling::outcome_ratio` turns that into the ratio the labels
-// are cut from.
+// itself, `ODDS_RUNS` times or more with dice that are the same every time
+// it is asked, from the two sides as they stand, damage and arms included,
+// until one side is gone, a round takes no hull, or `ODDS_ROUNDS` have
+// passed. Two large sides are scaled down together first, so that the larger
+// has at most `ODDS_UNITS` units; two small ones are played more often for
+// the same work. The result is the share of its worth each side keeps (a
+// ship counts its cost at the score's weights times the share of its hull
+// it holds) and how often the first side won and was destroyed.
+// `scaling::outcome_ratio` turns that into the ratio the labels are cut from.
 
-use iac_shared::constants::{ShipClass, ODDS_ROUNDS, ODDS_RUNS, ODDS_UNITS};
+use iac_shared::constants::{ShipClass, ODDS_ROUNDS, ODDS_RUNS, ODDS_RUNS_MOST, ODDS_UNITS};
 use iac_shared::scaling::{self, Arms, ShipyardItem};
 
 use crate::combat::{self, Dice, Squad, Troop};
@@ -56,16 +57,20 @@ impl Force {
     }
 }
 
-/// Share of its starting worth each side is expected to keep.
+/// Share of its starting worth each side is expected to keep, and how the
+/// fights played ended for the first side: the share it won (the other
+/// side destroyed and itself not) and the share in which it was destroyed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outlook {
     pub ours: f32,
     pub theirs: f32,
+    pub won: f32,
+    pub lost: f32,
 }
 
 impl Outlook {
     pub fn ratio(self) -> f32 {
-        scaling::outcome_ratio(self.ours, self.theirs)
+        scaling::outcome_ratio(self.ours, self.theirs, self.won, self.lost)
     }
 }
 
@@ -121,10 +126,10 @@ fn after(before: &[Troop], squads: Vec<Vec<Squad>>) -> Vec<Troop> {
 
 pub fn outlook(ours: &Force, theirs: &Force) -> Outlook {
     if theirs.is_empty() {
-        return Outlook { ours: 1.0, theirs: 0.0 };
+        return Outlook { ours: 1.0, theirs: 0.0, won: 1.0, lost: 0.0 };
     }
     if ours.is_empty() {
-        return Outlook { ours: 0.0, theirs: 1.0 };
+        return Outlook { ours: 0.0, theirs: 1.0, won: 0.0, lost: 1.0 };
     }
     let larger = units(&ours.troops).max(units(&theirs.troops));
     let (a, b) = if larger > ODDS_UNITS {
@@ -132,9 +137,11 @@ pub fn outlook(ours: &Force, theirs: &Force) -> Outlook {
     } else {
         (ours.troops.clone(), theirs.troops.clone())
     };
+    let runs = (ODDS_RUNS * ODDS_UNITS / larger.max(1)).clamp(ODDS_RUNS, ODDS_RUNS_MOST);
     let (a_worth, b_worth) = (worth(&a), worth(&b));
     let (mut a_kept, mut b_kept) = (0.0, 0.0);
-    for run in 0..ODDS_RUNS {
+    let (mut won, mut lost) = (0u32, 0u32);
+    for run in 0..runs {
         let mut dice = Dice::new(DICE ^ u64::from(run).wrapping_mul(RUN));
         let (mut x, mut y) = (a.clone(), b.clone());
         for _ in 0..ODDS_ROUNDS {
@@ -151,7 +158,14 @@ pub fn outlook(ours: &Force, theirs: &Force) -> Outlook {
         }
         a_kept += worth(&x);
         b_kept += worth(&y);
+        won += u32::from(units(&y) == 0 && units(&x) > 0);
+        lost += u32::from(units(&x) == 0);
     }
-    let share = |kept: f64, start: f64| if start > 0.0 { (kept / (start * f64::from(ODDS_RUNS))) as f32 } else { 0.0 };
-    Outlook { ours: share(a_kept, a_worth), theirs: share(b_kept, b_worth) }
+    let share = |kept: f64, start: f64| if start > 0.0 { (kept / (start * f64::from(runs))) as f32 } else { 0.0 };
+    Outlook {
+        ours: share(a_kept, a_worth),
+        theirs: share(b_kept, b_worth),
+        won: won as f32 / runs as f32,
+        lost: lost as f32 / runs as f32,
+    }
 }

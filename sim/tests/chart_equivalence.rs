@@ -41,6 +41,12 @@
 // its tiles three times the ore, and the pilots fly two Light Fighters.
 // Nothing was compared across that change; the file pins what this
 // catalogue's chart sends.
+//
+// And when a fleet became a count for each class and a fight OGame's round:
+// a hostile group is listed with the hull its ships hold and what one of
+// them fights with, a group's ships take no ids from the world's counter,
+// and every fight runs another course. Nothing was compared across that
+// change either.
 
 #[allow(dead_code)]
 mod common;

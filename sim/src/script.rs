@@ -267,6 +267,7 @@ fn apply(state: &mut GameState, update: TickUpdate) {
         state.player = player;
     }
     state.fleets = update.fleets;
+    state.battles = update.battles;
     if let Some(homeworld) = update.homeworld_update {
         state.homeworld = homeworld;
     }

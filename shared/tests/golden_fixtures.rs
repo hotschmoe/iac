@@ -1024,6 +1024,12 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
                 homeworld_update: Some(sample_homeworld()),
                 outpost: None,
+                battles: vec![BattleState {
+                    sector: h(-5, 7),
+                    rounds: 3,
+                    last_round: Some(sample_round()),
+                    losses: sample_losses(),
+                }],
                 events: Some(vec![
                     GameEvent {
                         tick: 4821,
@@ -1055,6 +1061,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 sector_updates: None,
                 homeworld_update: None,
                 outpost: None,
+                battles: vec![],
                 events: None,
             }),
         ),
@@ -1067,6 +1074,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 sector_updates: Some(vec![]),
                 homeworld_update: Some(idle_homeworld()),
                 outpost: None,
+                battles: vec![],
                 events: Some(vec![]),
             }),
         ),
@@ -1088,6 +1096,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 })]),
                 homeworld_update: None,
                 outpost: Some(breached_outpost()),
+                battles: vec![],
                 events: Some(vec![GameEvent {
                     tick: 5000,
                     kind: EventKind::RaidResolved(RaidResolvedEvent {
@@ -1137,6 +1146,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     ),
                     ..sample_outpost()
                 }),
+                battles: vec![],
                 events: None,
             }),
         ),

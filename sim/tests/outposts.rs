@@ -767,6 +767,85 @@ fn an_outpost_scores_its_finished_levels_and_nothing_it_holds() {
 }
 
 #[test]
+fn the_outposts_dock_mends_ships_from_its_store_at_a_tenth_of_their_cost_and_does_not_refit_them() {
+    use ShipClass::Cruiser;
+    let (mut e, at) = settle("season", 9, any_ore);
+    let (pid, fid) = (e.pid, e.fid);
+    let stock = |e: &mut Empire, store: Resources| edit(&mut e.engine, |s| s.outposts.get_mut(&pid).unwrap().store = store);
+    let wound = |e: &mut Empire, damaged: &[u32]| {
+        edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().ships = squadron(Cruiser, 1, damaged));
+    };
+    let mended = |e: &Empire, mark: usize| -> Vec<String> { said(e, mark).into_iter().filter(|m| m.contains("was mended")).collect() };
+
+    // A Cruiser costs 20,000 metal, 7,000 crystal and 2,000 deuterium:
+    // 34,500 at par, so a whole hull of 2,700 is 3,450 here. One Cruiser has
+    // lost nine tenths of its hull and one a half.
+    wound(&mut e, &[270, 1350]);
+    stock(&mut e, Resources::default());
+    let mark = e.mark();
+    e.run(1);
+    assert_eq!(mended(&e, mark), Vec::<String>::new(), "an empty store mends nothing");
+    let quote = e.fleet().repair.expect("the fleet is damaged");
+    let dock = quote.outpost.clone().expect("the empire has an outpost");
+    assert_eq!((quote.ships, quote.hull, dock.price), (2, 2430 + 1350, 3105.0 + 1725.0));
+    assert_eq!((dock.ships, dock.hull, dock.refusal), (0, 0, None), "and the state says so: {:?}", dock.payment);
+    assert_eq!((quote.home.price, quote.home.ships, quote.home.hull), (0.0, 2, 3780), "the home dock would mend both for nothing");
+
+    stock(&mut e, res(3200.0, 0.0, 0.0));
+    let mark = e.mark();
+    e.run(1);
+    assert_eq!(
+        mended(&e, mark),
+        [format!(
+            "fleet {fid} was mended at your outpost: 1 ship(s) made whole, 2430 hull restored, for 3105 metal; \
+             1 more wait for the dock's stock to cover them"
+        )],
+        "the most damaged first, and no ship in part",
+    );
+    assert_eq!(e.engine.fleets[&fid].ships, squadron(Cruiser, 2, &[1350]));
+    let left = outpost(&e).store;
+    assert!((left.metal - 95.0).abs() < 1.0 && left.crystal < 1.0, "the store paid 3,105 metal: {left:?}");
+
+    stock(&mut e, res(95.0, 2000.0, 0.0));
+    let mark = e.mark();
+    e.run(1);
+    let told = mended(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("1 ship(s) made whole, 1350 hull restored, for ") && told[0].ends_with(" metal and 1087 crystal"), "{}", told[0]);
+    let left = outpost(&e).store;
+    assert!(
+        left.metal < 1.0 && (left.crystal - (2000.0 - (1725.0 - 95.0) / 1.5)).abs() < 1.0,
+        "metal first, then crystal at its weight of 1.5: {left:?}",
+    );
+    assert_eq!((e.fleet().hull, e.fleet().repair), (e.fleet().hull_max, None));
+
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.weapons_technology = 3);
+    e.run(2);
+    let stood = e.fleet();
+    assert_eq!((stood.refit.weapons, stood.refit_due, stood.ships[0].unit_attack), (0, true, 400), "the outpost has no yard: it does not refit");
+
+    wound(&mut e, &[270]);
+    stock(&mut e, res(50_000.0, 0.0, 0.0));
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).expect("orders");
+    let under_orders = e.fleet().repair.unwrap().outpost.unwrap();
+    assert_eq!(
+        (under_orders.ships, under_orders.refusal.as_deref()),
+        (0, Some("a fleet under standing orders does not use the outpost")),
+    );
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Manual, None).expect("orders lifted");
+
+    edit(&mut e.engine, |s| s.outposts.get_mut(&pid).unwrap().breached = true);
+    let mark = e.mark();
+    e.run(1);
+    assert_eq!(mended(&e, mark), Vec::<String>::new(), "a breached outpost mends nothing");
+    let breached = e.fleet().repair.unwrap().outpost.unwrap();
+    assert_eq!(
+        (breached.ships, breached.price, breached.refusal),
+        (0, 3105.0, Some(format!("the outpost at {at} is breached and mends nothing until it is repaired"))),
+    );
+}
+
+#[test]
 fn a_fleet_at_the_outpost_is_docked_and_needs_a_slot_to_leave() {
     let (mut e, at) = settle("season", 9, |_| true);
     let (pid, fid) = (e.pid, e.fid);

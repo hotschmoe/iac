@@ -565,11 +565,15 @@ pub const EXPLODE_BELOW_PCT: u32 = 70;
 /// A fight in open space ends when this many rounds in a row took no hull
 /// from either side. OGame's.
 pub const STANDOFF_ROUNDS: u16 = 1;
-/// The odds of a fight are the real round played this many times with fixed
-/// dice, on forces scaled down together until the larger has at most
-/// `ODDS_UNITS` units, for at most `ODDS_ROUNDS` rounds each. They trade how
-/// steady the odds are against what they cost.
+/// The odds of a fight are the real round played `ODDS_RUNS` times with
+/// fixed dice, on forces scaled down together until the larger has at most
+/// `ODDS_UNITS` units, for at most `ODDS_ROUNDS` rounds each. A smaller
+/// fight is cheaper to play and turns more on its dice, so it is played
+/// more often, as many times as the same work pays for and at most
+/// `ODDS_RUNS_MOST`. They trade how steady the odds are against what they
+/// cost.
 pub const ODDS_RUNS: u32 = 8;
+pub const ODDS_RUNS_MOST: u32 = 64;
 pub const ODDS_UNITS: u32 = 200;
 pub const ODDS_ROUNDS: u32 = 64;
 

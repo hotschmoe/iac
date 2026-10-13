@@ -1562,6 +1562,12 @@ class TickUpdate extends ServerMessage {
   /// The player's outpost, whole, every tick they have one. Absent means
   /// they have none: a client drops the one it held.
   final OutpostState? outpost;
+
+  /// Every fight under way that the player has a fleet in or is present
+  /// at, whole, every tick, as in `GameState.battles`. Left out when
+  /// there is none: a client replaces its list with this one. The round
+  /// each carries is the `BattleRound` event of the same tick.
+  final List<BattleState> battles;
   final List<GameEvent>? events;
 
   const TickUpdate({
@@ -1571,6 +1577,7 @@ class TickUpdate extends ServerMessage {
     this.sectorUpdates,
     this.homeworldUpdate,
     this.outpost,
+    this.battles = const [],
     this.events,
   });
 
@@ -1583,6 +1590,7 @@ class TickUpdate extends ServerMessage {
       sectorUpdates: _opt(m['sector_updates'], (v) => _list(v, SectorState.fromJson)),
       homeworldUpdate: _opt(m['homeworld_update'], HomeworldState.fromJson),
       outpost: _opt(m['outpost'], OutpostState.fromJson),
+      battles: _opt(m['battles'], (v) => _list(v, BattleState.fromJson)) ?? const [],
       events: _opt(m['events'], (v) => _list(v, GameEvent.fromJson)),
     );
   }
@@ -1596,6 +1604,7 @@ class TickUpdate extends ServerMessage {
     'sector_updates': ?sectorUpdates?.map((e) => e.toJson()).toList(),
     'homeworld_update': ?homeworldUpdate?.toJson(),
     'outpost': ?outpost?.toJson(),
+    if (battles.isNotEmpty) 'battles': battles.map((e) => e.toJson()).toList(),
     'events': ?events?.map((e) => e.toJson()).toList(),
   };
 }
@@ -1619,6 +1628,7 @@ class GameState extends ServerMessage {
   /// The fights under way that the player has a fleet in or is present
   /// at, each with its last round: what a client that arrives in the
   /// middle of one has missed. The rounds before that are not kept.
+  /// Left out when there is none.
   final List<BattleState> battles;
   final WorldInfo world;
 
@@ -1656,7 +1666,7 @@ class GameState extends ServerMessage {
     'homeworld': homeworld.toJson(),
     'outpost': ?outpost?.toJson(),
     'known_sectors': knownSectors.map((e) => e.toJson()).toList(),
-    'battles': battles.map((e) => e.toJson()).toList(),
+    if (battles.isNotEmpty) 'battles': battles.map((e) => e.toJson()).toList(),
     'world': world.toJson(),
   };
 }
@@ -5916,10 +5926,14 @@ class ShipyardItem {
 /// a fight is decided long before the ratio reaches 2.
 enum RatioLabel {
   deadly('deadly', label: 'DEADLY', outcome: 'the fleet is lost'),
-  risky('risky', label: 'RISKY', outcome: 'anything from a lost fleet to a win that keeps a third of it'),
-  even('even', label: 'EVEN', outcome: 'a win in practice that keeps 30 to 70 percent of the fleet'),
-  favourable('favourable', label: 'FAVOURABLE', outcome: 'a sure win that keeps 70 to 90 percent of the fleet'),
-  safe('safe', label: 'SAFE', outcome: 'a sure win that keeps nine tenths of the fleet or more');
+  risky('risky', label: 'RISKY', outcome: 'as likely lost as won'),
+  even(
+    'even',
+    label: 'EVEN',
+    outcome: 'a win three times in four or better, at the cost of a third of the fleet or more',
+  ),
+  favourable('favourable', label: 'FAVOURABLE', outcome: 'a win that keeps two thirds to nine tenths of the fleet'),
+  safe('safe', label: 'SAFE', outcome: 'a win that keeps nine tenths of the fleet');
 
   const RatioLabel(this.wire, {required this.label, required this.outcome});
 
@@ -5953,20 +5967,22 @@ const botNamePrefix = 'BOT-';
 /// Most sectors one `odds` request may name.
 const maxOddsSectors = 256;
 
-/// Ratio at and above which a fight is SAFE: a sure win that keeps nine
-/// tenths of the fleet's worth or more. Both sides fire at once, so no
-/// fight against armed ships is free.
+/// Ratio at and above which a fight is SAFE: a win that keeps nine tenths
+/// of the fleet. Both sides fire at once, so no fight against armed ships
+/// is free. What each band means was measured on fleets of one class
+/// against the lairs of thirteen rings, sixty fights a pairing: SAFE won
+/// 58 to 60 of them and kept 0.85 or more of its hull.
 const double ratioSafe = 2.5;
 
-/// FAVOURABLE from here: a sure win that keeps about 70 to 90 percent.
+/// FAVOURABLE from here: won 59 or 60 of 60 and kept 0.63 to 0.91.
 const double ratioFavourable = 1.5;
 
-/// EVEN from here: a win in practice, nine fights in ten between a handful
-/// of ships and every one between many, that keeps about 30 to 70 percent.
+/// EVEN from here: won 45 to 60 of 60 and kept 0.36 to 0.90 on average,
+/// the fights it lost counted as nothing kept.
 const double ratioEven = 1.100000023841858;
 
-/// RISKY from here: anything from a lost fleet to a win that keeps a third.
-/// Below it (DEADLY) the fleet is lost, or wins one fight in fifteen at best.
+/// RISKY from here: won 10 to 51 of 60. Below it (DEADLY) the fleet won 25
+/// of 60 at best, most pairings none, and kept under a fifth.
 const double ratioRisky = 0.8999999761581421;
 
 /// Outposts (`docs/design/outposts.md`). Every number here is a proposal the
