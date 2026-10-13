@@ -973,10 +973,19 @@ pub struct FleetState {
     /// reserve, one jump per five minutes.
     #[serde(default)]
     pub jump_fuel: f32,
-    /// Fuel the way home costs: the fewest hops over lanes the player has
-    /// charted, times `jump_fuel`; 0 at the homeworld. Compare with `fuel`.
+    /// Fuel the way home costs: the fewest hops over the real lanes, charted
+    /// or not, times `jump_fuel`. That is the way a fleet flies one jump at
+    /// a time, and what standing orders budget for. 0 at the homeworld.
+    /// Compare with `fuel`. An emergency recall does not fly this way: it
+    /// jumps straight home and burns twice `jump_fuel` per hex of straight
+    /// distance.
     #[serde(default)]
     pub home_fuel: f32,
+    /// Fewest hops home over the real lanes, charted or not. `home_fuel` is
+    /// the fuel for these. 0 at the homeworld. Counted from where the fleet
+    /// is bound: its destination while a jump is in progress, otherwise
+    /// where it stands. An emergency recall does not fly these hops.
+    pub hops_home: u32,
     /// Ticks one jump takes this fleet from the order to the arrival: the
     /// charge, which its slowest ship and Navigation set, and the tick it
     /// lands on. A route of `n` jumps flown without a pause takes

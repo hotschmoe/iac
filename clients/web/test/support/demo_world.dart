@@ -63,7 +63,7 @@ class _Outpost {
 ///   N (6,-5) T3 corvette patrol    NE (7,-5) nebula, derelict tier 1
 ///   SE (7,-4) debris, salvage      SW (5,-3) toward home
 ///   NW (5,-4) T5 aggressive (uncharted until scanned)
-///   (7,-3) passive scout           (8,-6) T4 patrol, hot derelict
+///   (7,-3) passive scout           (8,-6) T3 scout patrol, hot derelict
 ///   (9,-7) T7 swarm (stale chart)
 class DemoWorld {
   static const _playerId = 1;
@@ -162,6 +162,7 @@ class DemoWorld {
         fuel: 96,
         fuelMax: 120,
         jumpTicks: _jumpTicks(v),
+        hopsHome: 0,
       )),
       _norm(FleetState(
         id: 102,
@@ -173,6 +174,7 @@ class DemoWorld {
         fuel: 200,
         fuelMax: 200,
         jumpTicks: _jumpTicks(haulers),
+        hopsHome: 0,
       )),
       _norm(FleetState(
         id: 103,
@@ -184,6 +186,7 @@ class DemoWorld {
         fuel: 44,
         fuelMax: 60,
         jumpTicks: _jumpTicks(scouts),
+        hopsHome: 0,
         policy: const StandingOrders(preset: PolicyPreset.prospect, params: PolicyParams(maxRange: 6, engageRatioX10: 20, fuelBudgetPct: 35)),
       )),
     ];
@@ -353,7 +356,7 @@ class DemoWorld {
     const Hex(5, -4).toKey(): (t: TerrainType.anomaly, ore: [0, 3, 1], npc: [(ShipClass.frigate, 1), (ShipClass.corvette, 2)], b: NpcBehavior.aggressive, tier: 0, risk: null, salv: null),
     const Hex(3, -1).toKey(): (t: TerrainType.asteroidField, ore: [2, 1, 0], npc: null, b: null, tier: 0, risk: null, salv: null),
     const Hex(7, -3).toKey(): (t: TerrainType.empty, ore: [1, 1, 0], npc: [(ShipClass.scout, 1)], b: NpcBehavior.passive, tier: 0, risk: null, salv: null),
-    const Hex(8, -6).toKey(): (t: TerrainType.asteroidField, ore: [4, 2, 1], npc: [(ShipClass.corvette, 2)], b: NpcBehavior.patrol, tier: 1, risk: SiteRisk.hot, salv: null),
+    const Hex(8, -6).toKey(): (t: TerrainType.asteroidField, ore: [4, 2, 1], npc: [(ShipClass.scout, 2)], b: NpcBehavior.patrol, tier: 1, risk: SiteRisk.hot, salv: null),
     const Hex(9, -7).toKey(): (t: TerrainType.empty, ore: [1, 1, 1], npc: [(ShipClass.cruiser, 1), (ShipClass.frigate, 2), (ShipClass.corvette, 3)], b: NpcBehavior.swarm, tier: 0, risk: null, salv: null),
   };
 
@@ -401,7 +404,7 @@ class DemoWorld {
       if (_authored.containsKey(k)) continue;
       final d = h.distFromOrigin;
       if (Hex.distance(h, _home) > 2 && _h01(h.q, h.r, 5) < min(.85, .25 + .025 * d)) {
-        final cls = d <= 7 ? ShipClass.scout : d <= 12 ? ShipClass.corvette : d <= 20 ? ShipClass.frigate : ShipClass.cruiser;
+        final cls = d <= zoneInnerRingRadius ? ShipClass.scout : d <= 12 ? ShipClass.corvette : d <= zoneOuterRingRadius ? ShipClass.frigate : ShipClass.cruiser;
         final target = 4 * pow(1.22, d - 1) * 1.8;
         final n = max(1, min(12, (target / _ratingPower[cls]!).round()));
         final beh = _h01(h.q, h.r, 6) < max(0, .5 - .08 * (d - 8))
@@ -1623,7 +1626,10 @@ class DemoWorld {
 
   static int _jumpTicks(List<ShipState> ships) => 10 ~/ ships.fold<int>(10, (m, s) => min(m, _speed[s.shipClass]!)) + 1;
 
-  FleetState _norm(FleetState f) => FleetState(
+  FleetState _norm(FleetState f) {
+    final jump = _jump(f.ships);
+    final homeHops = _pathHome(f.location)?.length ?? Hex.distance(f.location, _home);
+    return FleetState(
         id: f.id,
         location: f.location,
         state: f.state,
@@ -1632,8 +1638,9 @@ class DemoWorld {
         cargoCapacity: f.cargoCapacity,
         fuel: f.fuel,
         fuelMax: f.fuelMax,
-        jumpFuel: _jump(f.ships).toDouble(),
-        homeFuel: f.location == _home ? 0 : (Hex.distance(f.location, _home) * _jump(f.ships)).toDouble(),
+        jumpFuel: jump.toDouble(),
+        homeFuel: (homeHops * jump).toDouble(),
+        hopsHome: homeHops,
         jumpTicks: _jumpTicks(f.ships),
         atOutpost: _outpost?.at == f.location,
         outpostFuel: _inService ? (Hex.distance(f.location, _outpost!.at) * _jump(f.ships)).toDouble() : null,
@@ -1644,6 +1651,7 @@ class DemoWorld {
         laden: f.laden,
         policy: f.policy,
       );
+  }
 
   FleetState _copy(
     FleetState f, {
@@ -1668,6 +1676,7 @@ class DemoWorld {
         fuelMax: f.fuelMax,
         jumpFuel: f.jumpFuel,
         homeFuel: f.homeFuel,
+        hopsHome: f.hopsHome,
         jumpTicks: _jumpTicks(ships ?? f.ships),
         cooldownRemaining: cooldown ?? f.cooldownRemaining,
         power: f.power,
@@ -2572,6 +2581,7 @@ class DemoWorld {
                 fuel: e.fuel * (1 - share),
                 fuelMax: e.fuelMax * (1 - share),
                 jumpTicks: _jumpTicks(rest),
+                hopsHome: e.hopsHome,
                 policy: e.policy,
               )
             else
@@ -2586,6 +2596,7 @@ class DemoWorld {
             fuel: f.fuel * share,
             fuelMax: f.fuelMax * share,
             jumpTicks: _jumpTicks(taken),
+            hopsHome: f.hopsHome,
           ),
         ];
         _pending.add(GameEvent(
@@ -2620,6 +2631,7 @@ class DemoWorld {
                 fuel: a.fuel + b.fuel,
                 fuelMax: a.fuelMax + b.fuelMax,
                 jumpTicks: _jumpTicks([...a.ships, ...b.ships]),
+                hopsHome: a.hopsHome,
                 policy: a.policy,
               )
             else if (e.id != otherFleetId)

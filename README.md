@@ -700,8 +700,9 @@ worldgen rolls inside `shared/src/world.rs`.
   has no standing orders, or form their own. Each fleet reports its `power`
   (the scale raids use) and `range_hops`: how many more hops out it can fly
   and still get home.
-- **Fuel and stranding** — each fleet reports `jump_fuel` (one jump) and
-  `home_fuel` (the charted way home) next to `fuel`, and `jump_ticks`: the
+- **Fuel and stranding** — each fleet reports `jump_fuel` (one jump),
+  `hops_home` (the fewest hops home over the real lanes, charted or not)
+  and `home_fuel` (the fuel for those hops) next to `fuel`, and `jump_ticks`: the
   ticks one jump takes it from the order to the arrival, which its slowest
   ship and Navigation set. Refuelling at the
   homeworld costs 0.08 deuterium per fuel unit (the Fuel Depot adds +25% tank

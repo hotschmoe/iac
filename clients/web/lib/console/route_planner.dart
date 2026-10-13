@@ -19,8 +19,9 @@ class RoutePlan {
   final List<proto.Hex> path;
   final List<int> threats;
   final List<Intel> intel;
-  final int fuel;
-  final int fuelHave;
+  /// Fuel the route burns, and what is aboard, before display rounding.
+  final double fuelCost;
+  final double fuelAboard;
 
   /// Fewest jumps from [to] to the homeworld over the lanes on the player's
   /// chart, and null when the chart joins them by none. The server counts
@@ -28,8 +29,8 @@ class RoutePlan {
   /// never more than this one: a return this plan calls possible is.
   final int? backHops;
 
-  /// Fuel those jumps cost; null with [backHops].
-  final int? backFuel;
+  /// Fuel those jumps cost, before display rounding; null with [backHops].
+  final double? backCost;
 
   /// Ticks the route takes flown without a pause, by the server's time for
   /// one jump of this fleet.
@@ -43,10 +44,10 @@ class RoutePlan {
     required this.path,
     required this.threats,
     required this.intel,
-    required this.fuel,
-    required this.fuelHave,
+    required this.fuelCost,
+    required this.fuelAboard,
     required this.backHops,
-    required this.backFuel,
+    required this.backCost,
     required this.etaTicks,
     required this.holds,
   });
@@ -55,9 +56,14 @@ class RoutePlan {
   int get maxThreat => threats.isEmpty ? 0 : threats.reduce(math.max);
   int get hostileSectors => threats.where((t) => t > 0).length;
   int get blindSectors => intel.where((i) => !i.live && i.age != IntelAge.fresh).length;
+  int get fuel => fuelCost.round();
+  int get fuelHave => fuelAboard.round();
+  int? get backFuel => backCost?.round();
   int get fuelLeft => fuelHave - fuel;
-  bool get canMake => fuelHave >= fuel;
-  bool get canReturn => backFuel != null && fuelLeft >= backFuel!;
+  int? get returnMargin => backCost == null ? null : (fuelAboard - fuelCost - backCost!).round();
+  bool get canMake => fuelAboard >= fuelCost;
+  bool get canReturn => backCost != null && fuelAboard - fuelCost >= backCost!;
+  int? hopsAfter(double per) => per <= 0 ? null : math.max(0, ((fuelAboard - fuelCost) / per).floor());
   bool get hasHold => holds.isNotEmpty;
 
   /// The hops that hold hostiles: the ones worth asking the server's odds for.
@@ -180,7 +186,7 @@ class RoutePlanner {
       intel.add(Intel.of(sectors[path[i]], tick));
       if (t.rating >= holdThreat) holds.add(i);
     }
-    final per = math.max(1, fleet.jumpFuel);
+    final per = fleet.jumpFuelExact ?? math.max(1, fleet.jumpFuel).toDouble();
     final back = chartedHops(sectors, path.last, home);
     return RoutePlan(
       from: from,
@@ -189,10 +195,10 @@ class RoutePlanner {
       path: path,
       threats: threats,
       intel: intel,
-      fuel: per * path.length,
-      fuelHave: fleet.fuel,
+      fuelCost: per * path.length,
+      fuelAboard: fleet.fuelExact ?? fleet.fuel.toDouble(),
       backHops: back,
-      backFuel: back == null ? null : back * per,
+      backCost: back == null ? null : back * per,
       etaTicks: path.length * fleet.jumpTicks,
       holds: holds,
     );

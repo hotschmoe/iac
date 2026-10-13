@@ -116,6 +116,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         fuel_max: 500.0,
         jump_fuel: 31.5,
         home_fuel: 63.0,
+        hops_home: 2,
         jump_ticks: 2,
         cooldown_remaining: 3,
         power: 61.5,
@@ -1554,7 +1555,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             json!({"type": "tick_update", "tick": 9, "fleets": [{
                 "id": 1, "location": {"q": 0, "r": 0}, "state": "Idle", "ships": [],
                 "cargo": {"metal": 0.0, "crystal": 0.0, "deuterium": 0.0},
-                "cargo_capacity": 20.0, "fuel": 1.0, "fuel_max": 2.0, "jump_ticks": 2
+                "cargo_capacity": 20.0, "fuel": 1.0, "fuel_max": 2.0, "jump_ticks": 2, "hops_home": 0
             }]}),
         ),
         (

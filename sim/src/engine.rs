@@ -3757,7 +3757,7 @@ impl GameEngine {
 
     /// `home_route(owner, from).direct`, from the lane distances the world
     /// generator remembers: views and autopilots ask this every tick.
-    fn direct_hops_home(&self, owner: u64, from: Hex) -> u32 {
+    pub(crate) fn direct_hops_home(&self, owner: u64, from: Hex) -> u32 {
         let Some(home) = self.players.get(&owner).map(|p| p.homeworld) else { return 0; };
         self.lane_hops(from, home)
     }
@@ -4956,13 +4956,18 @@ impl GameEngine {
         Ok(())
     }
 
-    /// Resolve boardings whose timer has run out.
+    /// Resolve a boarding on the tick its start event named. The cooldown
+    /// pass later this tick is what brings a timer of 1 down to 0, so a
+    /// timer of 1 is due now.
     fn process_exploration(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let due: Vec<u64> = self.fleets.values()
-            .filter(|f| f.state == FleetStatus::Exploring && f.action_cooldown == 0)
+            .filter(|f| f.state == FleetStatus::Exploring && f.action_cooldown <= 1)
             .map(|f| f.id)
             .collect();
         for fleet_id in due {
+            if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+                fleet.action_cooldown = 0;
+            }
             self.resolve_exploration(fleet_id)?;
         }
         Ok(())
@@ -5373,8 +5378,9 @@ impl GameEngine {
     }
 
     /// Fuel/cargo doctrine thresholds: the reason to head home, if any. Fuel
-    /// is judged against the actual cost of the charted route home plus the
-    /// doctrine's reserve, not a fraction of the tank.
+    /// is judged against the cost of the direct route home, the fewest hops
+    /// over the real lanes, charted or not, plus the doctrine's reserve.
+    /// It is not a fraction of the tank.
     fn policy_return_reason(&self, fleet: &Fleet, params: &PolicyParams) -> Option<String> {
         let need = self.route_home_cost(fleet, fleet.location);
         let reserve = fleet.fuel_max * params.min_fuel_pct as f32 / 100.0;
@@ -6262,12 +6268,15 @@ impl GameEngine {
     /// Put a fleet into a fight. A jump it was still charging is abandoned,
     /// as `stop` would: only a moving fleet carries a jump target or
     /// cooldown. Its fuel is gone as it is for a stop, and the owner is told
-    /// in the same terms.
+    /// in the same terms. A boarding is abandoned too, and told of: the
+    /// timer was the boarding's, and a fight is not a backing-out, so the
+    /// site is not put on alert.
     fn engage_fleet(&mut self, fleet_id: u64) {
         let charging = self.fleets.get(&fleet_id).and_then(|fleet| match (fleet.state, fleet.move_target) {
             (FleetStatus::Moving, Some(target)) => Some((fleet.location, target, self.hop_fuel_cost(fleet))),
             _ => None,
         });
+        let boarding = self.fleets.get(&fleet_id).filter(|fleet| fleet.state == FleetStatus::Exploring).map(|fleet| fleet.location);
         if let Some((at, target, fuel)) = charging {
             self.push_alert(AlertLevel::Warning, fleet_id, at, format!(
                 "fleet {fleet_id} was caught in a fight at {at} while charging its jump to {target}: \
@@ -6275,7 +6284,16 @@ impl GameEngine {
                 fuel_words(fuel),
             ));
         }
+        if let Some(at) = boarding {
+            self.push_alert(AlertLevel::Warning, fleet_id, at, format!(
+                "fleet {fleet_id} was caught in a fight at {at} while boarding the derelict: \
+                 the boarding is abandoned and nothing was recovered",
+            ));
+        }
         if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+            if boarding.is_some() {
+                fleet.action_cooldown = 0;
+            }
             fleet.state = FleetStatus::InCombat;
             fleet.move_target = None;
             fleet.move_cooldown = 0;

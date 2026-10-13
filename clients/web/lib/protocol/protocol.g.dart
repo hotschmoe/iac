@@ -2025,9 +2025,19 @@ class FleetState {
   /// reserve, one jump per five minutes.
   final double jumpFuel;
 
-  /// Fuel the way home costs: the fewest hops over lanes the player has
-  /// charted, times `jump_fuel`; 0 at the homeworld. Compare with `fuel`.
+  /// Fuel the way home costs: the fewest hops over the real lanes, charted
+  /// or not, times `jump_fuel`. That is the way a fleet flies one jump at
+  /// a time, and what standing orders budget for. 0 at the homeworld.
+  /// Compare with `fuel`. An emergency recall does not fly this way: it
+  /// jumps straight home and burns twice `jump_fuel` per hex of straight
+  /// distance.
   final double homeFuel;
+
+  /// Fewest hops home over the real lanes, charted or not. `home_fuel` is
+  /// the fuel for these. 0 at the homeworld. Counted from where the fleet
+  /// is bound: its destination while a jump is in progress, otherwise
+  /// where it stands. An emergency recall does not fly these hops.
+  final int hopsHome;
 
   /// Ticks one jump takes this fleet from the order to the arrival: the
   /// charge, which its slowest ship and Navigation set, and the tick it
@@ -2083,6 +2093,7 @@ class FleetState {
     required this.fuelMax,
     this.jumpFuel = 0,
     this.homeFuel = 0,
+    required this.hopsHome,
     required this.jumpTicks,
     this.cooldownRemaining = 0,
     this.power = 0,
@@ -2107,6 +2118,7 @@ class FleetState {
       fuelMax: _double(m['fuel_max']),
       jumpFuel: _opt(m['jump_fuel'], _double) ?? 0,
       homeFuel: _opt(m['home_fuel'], _double) ?? 0,
+      hopsHome: _int(m['hops_home']),
       jumpTicks: _int(m['jump_ticks']),
       cooldownRemaining: _opt(m['cooldown_remaining'], _int) ?? 0,
       power: _opt(m['power'], _double) ?? 0,
@@ -2130,6 +2142,7 @@ class FleetState {
     'fuel_max': fuelMax,
     'jump_fuel': jumpFuel,
     'home_fuel': homeFuel,
+    'hops_home': hopsHome,
     'jump_ticks': jumpTicks,
     'cooldown_remaining': cooldownRemaining,
     'power': power,

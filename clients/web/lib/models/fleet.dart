@@ -66,9 +66,18 @@ class FleetState {
   final int fuel;
   final int fuelMax;
 
-  /// Fuel per jump and fuel for the charted way home (0 at the homeworld).
+  /// Fuel per jump, and fuel for the fewest hops home over the real lanes,
+  /// charted or not (0 at the homeworld).
   final int jumpFuel;
   final int homeFuel;
+
+  /// Fewest hops home over the real lanes, charted or not. [homeFuel] is the
+  /// fuel for these. 0 at the homeworld.
+  final int hopsHome;
+
+  /// The server's fuel and jump cost before display rounding.
+  final double? fuelExact;
+  final double? jumpFuelExact;
 
   /// Ticks one jump takes this fleet, from the order to the arrival.
   final int jumpTicks;
@@ -111,6 +120,9 @@ class FleetState {
     this.fuelMax = 1,
     this.jumpFuel = 0,
     this.homeFuel = 0,
+    this.hopsHome = 0,
+    this.fuelExact,
+    this.jumpFuelExact,
     this.jumpTicks = 0,
     this.outpostFuel,
     this.atOutpost = false,
@@ -125,6 +137,12 @@ class FleetState {
 
   /// The doctrine's label, as the server names it; null when flown by hand.
   String? get policy => orders?.preset.label;
+
+  int? get fuelForHops {
+    final jf = jumpFuelExact ?? jumpFuel.toDouble();
+    if (jf <= 0) return null;
+    return ((fuelExact ?? fuel.toDouble()) / jf).floor();
+  }
 
   /// Away from home with less than one jump of fuel.
   bool get stranded => homeFuel > 0 && jumpFuel > 0 && fuel < jumpFuel;

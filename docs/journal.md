@@ -6042,3 +6042,207 @@ it, was read in part and not checked.
 
 **Open.** The study's eleven questions (section 14) are the owner's. Nothing
 is built until slice 0a or 0b is ordered.
+
+## 2026-10-13: the oddities left in the engine and the web client
+
+On the branch `grok-oddities`, not merged and not pushed. The list is the end
+of "the web client stops working the rules out for itself" in
+`docs/design/decisions.md`, and the journal entry of the same name. Each item
+below was run, except the two the brief said to leave and the leftovers that
+are marked as read.
+
+**A boarding pays on the tick it announces.** Confirmed, and the event's tick
+was the contract. `SiteExplorationStarted.end_tick` is `tick + 20`. The
+cooldown reaches 1 on that tick, and `process_cooldowns` is what brings a 1
+down to 0, so `process_exploration` was a tick late. Written against that
+engine, `a_boarding_pays_on_the_tick_it_announces` failed: the loot or the
+ambush came on tick 21 where the start event had named 20. The pass now
+treats a timer of 1 as due, zeroes it, and resolves. The same scenario
+passes: the ring counts `end_tick - tick` while the fleet is still boarding,
+the payoff is on `end_tick`, and the timer does not outlive it. Moving the
+cooldown pass would have moved shield regen against combat, and naming
+`end_tick + 1` would have broken the restart test that holds
+`cooldown_remaining == end_tick - tick`. The bot waits out a boarding for
+the cooldown it is shown; a jump still waits one tick past a timer of 0,
+because a jump lands the tick after the view shows that. `4a3aa8c`.
+`ECONOMY_VERSION` 5 to 6. The ambush draw is seeded from `current_tick`, so
+which boardings are ambushes can change. `chart_golden.txt` and
+`numbers.json` did not.
+
+**A fight that catches a boarding tells its owner and clears the timer.**
+Confirmed. A patrol parked so its one step lands on the derelict took the
+fleet into combat. Before the change the scenario failed twice: the cooldown
+was still 16 after the fight, and with the alert asserted first the owner
+was told nothing. `engage_fleet` now sends a Warning that the boarding is
+abandoned and nothing was recovered, and sets the timer to 0. The site is
+not put on alert: a fight is not a backing-out (`handle_stop` still is, and
+that scenario was already there). An ambush resolves the fleet to Idle
+before combat, so it does not get this alert as well. `84aa97c`.
+`ECONOMY_VERSION` 6 to 7. Taking this commit onto master, which is still at
+5, will not apply the version hunk on its own; `4a3aa8c` is the step from 5
+to 6.
+
+**`home_fuel` was already the lanes a fleet flies.** The protocol, the
+README, `tools/playtest/RULES.md` and the fleet model called it the fewest
+hops over lanes the player has charted. The engine prices
+`direct_hops_home`: every real lane, charted or not, times the hop cost, and
+straight distance only past `LANE_SEARCH_HOPS`. Standing orders budget that
+and fly it (`way_home`). A recall does not use it. `recall_fuel_cost` is the
+hop cost times the straight distance times `RECALL_FUEL_MULTIPLIER` (2), all
+or nothing, and the order is refused at the homeworld.
+`home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not` passed
+against the engine before any word changed: with the chart empty, `home_fuel`
+was the direct lanes; a sector whose lanes bend was not the straight line;
+short of that fuel the doctrine started home and said so; the recall figure
+was the straight distance, doubled. The words were brought to the figure.
+`fb63f8a`. No version bump. The figure did not move.
+
+**`FleetState.hops_home` is that count.** Fewest hops home over the real
+lanes, charted or not, 0 at the homeworld, counted from where the fleet is
+bound (its destination while a jump is in progress). `home_fuel` is the fuel
+for these. The field is required on the wire, as `jump_ticks` is. The
+overview's "N HOPS HOME" reads it. "Fuel for N hops" stays the one-way jumps
+the tank buys: the unrounded fuel divided by the unrounded jump fuel, floored
+once. The windshield test that expects `16 HOPS` from 80 fuel at 5 a jump
+still holds. `range_hops`, the outward hops that still leave the fuel to
+come back, is still sent and shown nowhere. `6871885`. A view field: no
+version bump. Regenerating the fixtures moved the synthetic messages,
+because the generator's counter is consumed by the new field (`event__Alert`
+and the rest took the next sample values). `golden_fixtures_match` passed.
+`numbers.json` and the chart golden did not move.
+
+**The route panel multiplies the server's jump fuel.** It kept
+`jumpFuelExact` and `fuelExact` from the wire and rounds only the total it
+shows. A whole-number route still reads `15 of 100` and `OK BY THE CHART, 4
+hops, margin 65 fuel`. At a jump cost of 5.1 the same three hops still show
+15, the return margin is 64, and 16 hops are left. `1a0bf4c`.
+
+**`preview_move` answers for one jump.** Read, and left. A target that is
+not a neighbour is `NoConnection` (`engine.rs` `preview_move`, the same check
+`handle_move` makes). The README already says a one-jump preview, and the
+route panel says when it counted the chart itself. A request that answers
+for a whole route is a new feature.
+
+**The map inspector no longer calls a sector rich, typical or poor.** The
+label was `1.2 + 0.11 * ring` against the sum of the density indices. No
+rule of the engine stands behind it. Worldgen rolls presence and then
+quality; the densities and the ore reserves were already on the panel, and
+they stayed. `5d7d5e8`. The scripted world still uses that formula to invent
+ore (`demo_world.dart` `_base`). Read, and left: it is how the widget world
+fills a tile, not a label the player is shown.
+
+**The scripted world gives ring 8 Scouts.** `npc_class` is Scout through
+`Zone::INNER_RING_RADIUS` (8), Corvette through the literal 12, Frigate
+through 20, Cruiser past that. The procedural groups followed `d <= 7`.
+They now follow `zoneInnerRingRadius`, the literal 12, and
+`zoneOuterRingRadius`. The authored patrol at (8, -6) is two Scouts, and
+the header calls it T3. `b1de46c`. A hop in that world still lands the
+moment it is ordered (`_hop`): the fleet is idle at the target with the
+jump cooldown already counting, and `FleetArrived` is emitted then. The
+engine keeps a fleet Moving until the tick its timer is already 0. Many
+widget tests assume the fleet is there as soon as the order is accepted, so
+that was listed and left. Also left, by reading: `rangeHops` is fuel divided
+by the jump cost, where the engine's `range_hops` is the round trip that
+still gets home; `outpostFuel` is straight distance times the jump cost,
+where `outpost_route_cost` counts lane hops; `_jump` takes the greatest
+per-class figure, where the engine sums hull mass. Two authored groups are
+still the wrong class for their ring, on purpose: one Corvette at (6, -5),
+a Frigate and Corvettes at (5, -4).
+
+**The ratio captions disagree with the margin table, in the words only.**
+Read, and left, as the brief required. The gauge is cut at the four
+generated `RATIO_*` values, and those cutoffs match the comments. The
+percentages do not match `RATIO_MARGINS` (`scaling.rs`) or `SectorOdds`
+(`protocol.rs`), which already follow the table: at least 2.5 keeps 99
+percent of the hull, 1.5 keeps 86 to 99, 1.1 keeps 53 to 86, 0.9 runs from a
+loss (margin -0.24) to a win with half the hull (margin 0.53 at 1.1). The
+captions (`gauges.dart` `RatioInfo.outcome`), the comments on the constants,
+and `docs/design/economy/spec.md` §7.2a still say 98 percent, 1 to 15 percent
+lost, and 15 to 50 percent lost. The risky caption's "half the hull" matches
+the top of that band. The owner has just decided to rebuild combat, odds,
+ships and research; the words want settling then, and nothing there was
+touched.
+
+**Also found, by reading, and not run.**
+
+- A harvest caught in a fight keeps its timer. `engage_fleet` zeroes
+  `action_cooldown` only while the fleet is Exploring. Harvesting is set to
+  InCombat and the harvest cooldown is left. Same shape as the boarding
+  timer was. `engine.rs`, the boarding branch of `engage_fleet`.
+- The bot prices a candidate sector's way home by straight distance
+  (`sim/src/bot/field.rs` `in_range`). `hops_home` is from the fleet's bound
+  sector, so it does not answer a sector the fleet has not reached.
+- The windshield's "N FROM HOME" (`parts.dart` `SectorHead`) and the map
+  inspector's distance to a clicked sector (`map_panels.dart`) are geometric.
+  They were left: they do not claim to be lane hops.
+- `tools/playtest` was not run. The JSON a play script reads gained
+  `hops_home` and kept every field it already had.
+
+**What a stored world plays.** `ECONOMY_VERSION` is 7. A boarding pays one
+tick earlier, on the tick its start event names, so an ambush draw can
+change. A boarding interrupted by combat no longer keeps its timer, and its
+owner gets an Alert. `chart_golden.txt` and `numbers.json` are byte for byte
+what master has. `home_fuel`'s number is unchanged.
+
+**Run on the branch.** With the shell at nice 10 and cargo at `-j 4`.
+
+- `cargo build --workspace --all-targets`: Finished `dev` in 2m 53s, no
+  warning.
+- `cargo test --workspace --no-fail-fast`: 158 passed, 0 failed, 313.34 s.
+  Master has 155. The three more are the boarding tick, the interrupted
+  boarding, and `home_fuel`. `fleet_logistics` 28 in 0.05 s, `scenarios_world`
+  31, `chart_equivalence` 1 in 7.71 s, `economy_numbers` 1, `hosts_agree` 2
+  in 44.79 s, `both_targets` 3 in 131.42 s, server `scenarios` 9 in 85.14 s,
+  `smoke` 9, `single_player` 7, `golden_fixtures` 2.
+- `cargo clippy --workspace --all-targets`: Finished in 26.76 s, silent.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `flutter analyze`: no issues, 3.6 s.
+- `flutter test`, pinned to the big cores with a 300 s timeout. First run:
+  480 passed, the runner's clock at 00:33. Master has 479; the one more is
+  the route priced at a jump cost of 5.1. Second run: 479 passed and 1
+  failed, the recorded-outpost widget. Twenty paint exceptions,
+  "Rect argument contained a NaN" inside `ArenaPainter._stars`, and
+  `takeException` then failed. The same test passed in the first run and
+  again on its own (1 passed, 00:03). That is the Dart VM signature the
+  previous entry recorded. A first attempt at the second run was started
+  from the worktree root; Flutter reported that `test/` was missing, and
+  that log is kept beside the real one.
+
+**Not verified.** No person or agent played. No browser: the web changes are
+labels and figures, and the widget tests and the analyzer are what checked
+them. The TUI was built with the workspace and not run; it shows home fuel
+and does not show `hops_home`. `tools/playtest` was not run. A harvest
+interrupted by a fight, and the bot's straight-line way home, were read and
+not run.
+
+**Left for the owner.** `preview_move` stays one jump unless a route request
+is wanted. `range_hops` is worth showing as outward range, and "fuel for N
+hops" is worth leaving as the one-way count. The ratio words want settling
+with the OGame rebuild. The scripted world's instant hop, its range, its
+outpost fuel, its jump cost, and the two staged groups in the scout band are
+listed above. A harvest caught in a fight looks like the boarding timer did;
+it wants a run before a fix.
+
+## 2026-10-13: the oddities are merged
+
+The branch `grok-oddities` (the work of a Grok agent, run headless in a
+worktree, its diff read before the merge) merged into master with `--no-ff`
+and pushed. `ECONOMY_VERSION` is 7: a boarding pays on the tick it names, and
+a fight that catches a boarding tells the owner and clears the timer. Stored
+worlds of version 5 are refused, the single-player save in a browser among
+them. Added at the merge: `CLAUDE.md` names `FleetState.hops_home` beside
+`jump_ticks` among the fields added to the state for a view. The journal
+conflicted (both sides had appended) and keeps both entries.
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo test
+--workspace --no-fail-fast`: 158 passed, 0 failed; `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees on 2,390 values;
+`flutter analyze` clean; `flutter test` pinned, three runs: 480 passed each
+time; `scripts/play.sh --single-player --no-serve`; `tool/solo_e2e.dart`:
+`SOLO E2E OK in 190 s`.
+
+**Not verified.** No person or agent played. Left as the branch's entry lists
+them: a harvest caught in a fight keeps its timer (read, not run), the bots
+price a candidate sector's way home by straight distance, the scripted test
+world still moves a fleet at once, and the ratio gauge's captions wait for the
+OGame work.

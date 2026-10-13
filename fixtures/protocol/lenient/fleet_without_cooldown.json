@@ -14,6 +14,7 @@
         "fuel": 1.0,
         "fuel_max": 2.0,
         "home_fuel": 0.0,
+        "hops_home": 0,
         "id": 1,
         "jump_fuel": 0.0,
         "jump_ticks": 2,
@@ -42,6 +43,7 @@
         "cargo_capacity": 20.0,
         "fuel": 1.0,
         "fuel_max": 2.0,
+        "hops_home": 0,
         "id": 1,
         "jump_ticks": 2,
         "location": {

@@ -1,7 +1,7 @@
 [
-{"canonical":{"count":68,"defence":"PulseTurret","kind":"DefenceBuilt","player_id":69,"tick":4,"type":"event"},"input":{"count":68,"defence":"PulseTurret","kind":"DefenceBuilt","player_id":69,"tick":4,"type":"event"}},
-{"canonical":{"count":68,"defence":"LancerBattery","kind":"DefenceBuilt","player_id":69,"tick":4,"type":"event"},"input":{"count":68,"defence":"LancerBattery","kind":"DefenceBuilt","player_id":69,"tick":4,"type":"event"}},
-{"canonical":{"count":68,"defence":"IonBastion","kind":"DefenceBuilt","player_id":69,"tick":4,"type":"event"},"input":{"count":68,"defence":"IonBastion","kind":"DefenceBuilt","player_id":69,"tick":4,"type":"event"}},
-{"canonical":{"count":68,"defence":"IonBastion","kind":"DefenceBuilt","tick":4,"type":"event"},"input":{"count":68,"defence":"IonBastion","kind":"DefenceBuilt","tick":4,"type":"event"}},
-{"canonical":{"count":68,"defence":"IonBastion","kind":"DefenceBuilt","tick":4,"type":"event"},"input":{"count":68,"defence":"IonBastion","kind":"DefenceBuilt","player_id":null,"tick":4,"type":"event"}}
+{"canonical":{"count":70,"defence":"PulseTurret","kind":"DefenceBuilt","player_id":71,"tick":6,"type":"event"},"input":{"count":70,"defence":"PulseTurret","kind":"DefenceBuilt","player_id":71,"tick":6,"type":"event"}},
+{"canonical":{"count":70,"defence":"LancerBattery","kind":"DefenceBuilt","player_id":71,"tick":6,"type":"event"},"input":{"count":70,"defence":"LancerBattery","kind":"DefenceBuilt","player_id":71,"tick":6,"type":"event"}},
+{"canonical":{"count":70,"defence":"IonBastion","kind":"DefenceBuilt","player_id":71,"tick":6,"type":"event"},"input":{"count":70,"defence":"IonBastion","kind":"DefenceBuilt","player_id":71,"tick":6,"type":"event"}},
+{"canonical":{"count":70,"defence":"IonBastion","kind":"DefenceBuilt","tick":6,"type":"event"},"input":{"count":70,"defence":"IonBastion","kind":"DefenceBuilt","tick":6,"type":"event"}},
+{"canonical":{"count":70,"defence":"IonBastion","kind":"DefenceBuilt","tick":6,"type":"event"},"input":{"count":70,"defence":"IonBastion","kind":"DefenceBuilt","player_id":null,"tick":6,"type":"event"}}
 ]

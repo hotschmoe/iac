@@ -35,7 +35,7 @@ class FleetChips extends StatelessWidget {
   }
 
   Widget _chip(int i, ui.FleetState f, bool on) {
-    final hops = f.jumpFuel > 0 ? f.fuel ~/ f.jumpFuel : 0;
+    final hops = f.fuelForHops ?? 0;
     final col = on ? C.own : C.a200;
     return GestureDetector(
       key: Key('fleet-chip-${f.id}'),
@@ -309,8 +309,6 @@ class Inspector extends StatelessWidget {
     final rated = fleet.id == 0 ? null : st.oddsFor(fleet.id, h);
     final odds = rated == null ? null : RatioInfo.fromOdds(rated);
     final d = h.distFromOrigin;
-    final rich = sec == null ? 0 : sec.resources.metal.index + sec.resources.crystal.index + sec.resources.deuterium.index;
-    final expect = 1.2 + d * .11;
     final selected = plan.selected == h;
     final onFleet = fleet.sector == h;
     final survey = fleet.id == 0 ? null : st.surveyOf(fleet.id, h);
@@ -374,10 +372,6 @@ class Inspector extends StatelessWidget {
           _oreRow('Metal', sec.resources.metal, C.metal, sec.oreReserve?.metal),
           _oreRow('Crystal', sec.resources.crystal, C.crystal, sec.oreReserve?.crystal),
           _oreRow('Deut', sec.resources.deuterium, C.deut, sec.oreReserve?.deuterium),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Text('${rich >= expect * 3 ? 'RICH' : rich <= expect ? 'POOR' : 'TYPICAL'} FOR THIS DISTANCE', style: T.mono(size: 10, color: C.text3)),
-          ),
           if (salvagePinVisible(sec, st.tick))
             Kv('Salvage',
                 vw: Text.rich(TextSpan(children: [
@@ -507,8 +501,8 @@ class RoutePanel extends StatelessWidget {
     final di = dth.hostile && dOdds != null ? RatioInfo.fromOdds(dOdds) : null;
     final retOk = plan.hops == 1 && first != null ? first.canReturn : plan.canReturn;
     final fuelPct = fleet.fuelMax > 0 ? math.max(0, plan.fuelLeft) / fleet.fuelMax : 0.0;
-    final per = math.max(1, fleet.jumpFuel);
-    final hopsLeft = math.max(0, plan.fuelLeft ~/ per);
+    final per = fleet.jumpFuelExact ?? math.max(1, fleet.jumpFuel).toDouble();
+    final hopsLeft = plan.hopsAfter(per);
     final stale = plan.intel.where((i) => i.age == IntelAge.stale || i.age == IntelAge.aging).length;
     return ConsolePanel(
       title: info.pending ? 'Route plan' : 'Route preview',
@@ -555,7 +549,7 @@ class RoutePanel extends StatelessWidget {
                     : switch (plan.backFuel) {
                         null => 'NO CHARTED WAY HOME FROM THERE',
                         final back => plan.canReturn
-                            ? 'OK BY THE CHART, ${hopCount(plan.backHops!)}, margin ${plan.fuelLeft - back} fuel'
+                            ? 'OK BY THE CHART, ${hopCount(plan.backHops!)}, margin ${plan.returnMargin} fuel'
                             : 'NO FUEL TO COME HOME BY THE CHART (${hopCount(plan.backHops!)}, needs $back)',
                       },
                 key: const Key('route-return'), style: T.mono(size: 10.5, color: retOk ? C.threat(1) : C.threat(7)))),
@@ -589,7 +583,7 @@ class RoutePanel extends StatelessWidget {
                       '${dth.hostile ? ', EST NPC POWER ${dth.power.round()}, ${di == null ? 'RATIO PENDING' : 'RATIO ${di.r.toStringAsFixed(1)} '}' : ''}'),
               if (di != null) TextSpan(text: di.label, style: TextStyle(color: di.color)),
               if (first != null && plan.hops > 1) TextSpan(text: '. NEXT HOP (${first.target.q},${first.target.r}) T${first.threat.rating} ${first.threat.basis.wire.toUpperCase()}, RATIO ${first.ratio.toStringAsFixed(1)} ${first.label.label}'),
-              TextSpan(text: '. FUEL ${plan.fuel} OF ${fleet.fuel} ($hopsLeft HOPS LEFT TO RETURN)'),
+              TextSpan(text: '. FUEL ${plan.fuel} OF ${fleet.fuel}${hopsLeft == null ? '' : ' ($hopsLeft HOPS LEFT TO RETURN)'}'),
             ]),
             style: T.mono(size: 10.5, color: C.text2, height: 1.55),
           ),

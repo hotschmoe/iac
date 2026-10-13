@@ -41,6 +41,7 @@
       "fuel": 271.5,
       "fuel_max": 500.0,
       "home_fuel": 220.5,
+      "hops_home": 2,
       "id": 7,
       "jump_fuel": 31.5,
       "jump_ticks": 2,

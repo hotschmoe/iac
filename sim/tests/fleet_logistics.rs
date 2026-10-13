@@ -6,15 +6,20 @@ mod common;
 
 use common::*;
 use iac_shared::hex::Hex;
-use iac_shared::constants::{Density, Resources, ShipClass, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
+use iac_shared::constants::{
+    Density, Resources, ShipClass, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, RECALL_FUEL_MULTIPLIER,
+    STRANDED_RECOVERY_TICKS,
+};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ClientMessage, Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset,
     PolicyUpdate, ServerMessage, ThreatBasis, MAX_ODDS_SECTORS,
 };
 use iac_shared::scaling::{ratio_label, RatioLabel};
-use iac_shared::world::NpcBehaviorType;
-use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus};
+use iac_shared::world::{self, NpcBehaviorType};
+use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus, NpcFleet, Ship, MAX_NPC_SHIPS};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use iac_sim::odds::{self, Force};
 use iac_sim::snapshot::ExploreCredit;
 use iac_sim::GameEngine;
@@ -176,6 +181,98 @@ fn previews_and_warnings_tell_charted_routes_from_direct_ones() {
     let warning = alerts_since(&e, mark).remove(0);
     assert!(warning.message.contains("no charted route home; the direct route is 2 hops"), "{}", warning.message);
     assert!(warning.message.contains("across unexplored space"), "{}", warning.message);
+}
+
+#[test]
+fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
+    let (mut e, chain) = outpost("Accountant", 2);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let at = chain[1];
+    assert_eq!(e.engine.fleets[&fid].location, at);
+    edit(&mut e.engine, |s| s.explored.retain(|key| key.0 != pid));
+    let route = e.engine.home_route(pid, at);
+    assert!(route.charted.is_none() && route.unexplored, "the chart joins this fleet to home by no lane: {route:?}");
+    assert!(route.direct >= 2, "the lane home is more than one hop: {}", route.direct);
+    let hop = e.fleet().jump_fuel;
+    let need = hop * route.direct as f32;
+    assert_eq!(e.fleet().hops_home, route.direct, "hops_home counts the lanes home_fuel is priced from");
+    assert_eq!(e.fleet().home_fuel, need, "home_fuel is those lanes, chart or none");
+    let straight = f32::from(Hex::distance(&at, &home));
+    let bent = (-12..12)
+        .flat_map(|q| (-12..12).map(move |r| Hex::new(q, r)))
+        .find(|hex| *hex != home && e.engine.home_route(pid, *hex).direct != Hex::distance(hex, &home) as u32)
+        .expect("a sector whose lane home is not the straight line");
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = bent;
+        fleet.state = FleetStatus::Idle;
+        fleet.move_target = None;
+    });
+    let bent_route = e.engine.home_route(pid, bent);
+    assert_eq!(e.fleet().hops_home, bent_route.direct);
+    assert_ne!(e.fleet().hops_home, Hex::distance(&bent, &home) as u32, "not the straight line, at {bent}");
+    assert_eq!(e.fleet().home_fuel, hop * bent_route.direct as f32);
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = home;
+        fleet.state = FleetStatus::Docked;
+        fleet.move_target = None;
+    });
+    assert_eq!((e.fleet().hops_home, e.fleet().home_fuel), (0, 0.0), "at the homeworld both are zero");
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = at;
+        fleet.state = FleetStatus::Idle;
+        fleet.move_target = None;
+        fleet.fuel = need;
+    });
+    assert_eq!(
+        e.engine.recall_fuel_cost(&e.engine.fleets[&fid]),
+        hop * straight * RECALL_FUEL_MULTIPLIER,
+        "a recall burns twice the jump fuel per hex of straight distance, and then jumps",
+    );
+
+    e.engine
+        .handle_policy_update(pid, fid, PolicyPreset::MineAndReturn, Some(PolicyParams {
+            min_fuel_pct: 0,
+            cargo_return_pct: 100,
+            max_range: 8,
+            engage_ratio_x10: 15,
+            fuel_budget_pct: 100,
+        }))
+        .expect("orders");
+    let mark = e.mark();
+    e.run(1);
+    let covered = reports(&e, mark);
+    assert!(
+        covered.iter().all(|(_, why)| !why.contains("route home")),
+        "fuel for the direct way is enough, though the chart has no way home: {covered:?}",
+    );
+
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = at;
+        fleet.fuel = need - hop * 0.5;
+        fleet.state = FleetStatus::Idle;
+        fleet.move_target = None;
+        fleet.move_cooldown = 0;
+        fleet.action_cooldown = 0;
+        s.policies.get_mut(&fid).unwrap().next_eval_tick = s.tick + 1;
+    });
+    let mark = e.mark();
+    e.run(1);
+    let moves = policy_reasons(&e, mark, "move");
+    assert!(!moves.is_empty(), "short of the direct way, it starts home: {:?}", reports(&e, mark));
+    assert!(
+        moves[0].contains(&format!("fuel {:.0} is below the route home {:.0}", need - hop * 0.5, need)),
+        "{moves:?}",
+    );
+    let step = e.engine.fleets[&fid].move_target.expect("the jump is ordered");
+    let step_hops = e.engine.home_route(pid, step).direct;
+    assert!(step_hops < route.direct, "the jump is along the lanes toward home, to {step}");
+    assert_eq!(e.fleet().hops_home, step_hops, "while the jump is in progress the count is from where it is bound");
+    assert_eq!(e.fleet().home_fuel, hop * step_hops as f32);
 }
 
 #[test]
@@ -461,6 +558,7 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     assert_eq!(whole.ships.len(), 2);
     assert_eq!(whole.fuel, whole.fuel_max, "it set out with a full tank");
     let hops_home = whole.home_fuel / whole.jump_fuel;
+    assert!((whole.hops_home as f32 - hops_home).abs() < 1e-3, "hops_home is that count");
 
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
     e.run_until(200, |e| e.engine.fleets[&fid].ship_count == 1);
@@ -478,6 +576,7 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     assert!(mauled.fuel <= mauled.fuel_max, "{} fuel in a {} tank", mauled.fuel, mauled.fuel_max);
     assert!((mauled.jump_fuel - whole.jump_fuel / 2.0).abs() < 1e-3, "a jump costs what the ships present weigh");
     assert!((mauled.home_fuel / mauled.jump_fuel - hops_home).abs() < 1e-3, "the way home is as many jumps as before");
+    assert_eq!(mauled.hops_home, whole.hops_home, "losing a ship does not change how many hops home are");
     let reach = ((mauled.fuel - mauled.home_fuel) / (2.0 * mauled.jump_fuel)).floor().max(0.0) as u32;
     assert_eq!(mauled.range_hops, reach);
 
@@ -714,6 +813,145 @@ fn a_jump_called_off_tells_its_owner_what_fuel_is_forfeit_and_a_halted_harvest_i
     assert!(alerts_since(&e, mark).is_empty(), "halting a harvest costs nothing and says nothing");
     let (code, why) = e.refusal(Command::Stop { fleet_id: fid });
     assert_eq!((code, why), (ErrorCode::InvalidCommand, format!("fleet {fid} has nothing to stop")));
+}
+
+#[test]
+fn a_boarding_pays_on_the_tick_it_announces() {
+    let mut e = Empire::join(world("test"), "Boarder");
+    let fid = e.fid;
+    let site = (-30i16..30)
+        .flat_map(|q| (-30i16..30).map(move |r| Hex { q, r }))
+        .find(|&h| e.engine.derelict_site_at(h).is_some() && e.engine.world_gen.generate_sector(h).npc_template.is_none())
+        .expect("a derelict with no hostile group over it");
+    deploy(&mut e.engine, fid, site, None);
+    edit(&mut e.engine, |s| {
+        for npc in s.npc_fleets.values_mut() {
+            npc.patrol_timer = 1_000;
+        }
+    });
+
+    let mark = e.mark();
+    e.order(Command::ExploreSite { fleet_id: fid }).expect("a boarding party goes in");
+    let (announced_at, end_tick) = e.log[mark..]
+        .iter()
+        .find_map(|ev| match &ev.kind {
+            EventKind::SiteExplorationStarted(s) => Some((ev.tick, s.end_tick)),
+            _ => None,
+        })
+        .expect("the boarding announces when it pays");
+    assert_eq!(end_tick, announced_at + u64::from(EXPLORE_DURATION_TICKS));
+    assert_eq!(e.engine.current_tick(), announced_at);
+
+    let mut saw_exploring = false;
+    e.run_until(u64::from(EXPLORE_DURATION_TICKS) + 5, |e| {
+        let fleet = &e.engine.fleets[&fid];
+        if fleet.state == FleetStatus::Exploring {
+            saw_exploring = true;
+            assert_eq!(
+                u64::from(e.fleet().cooldown_remaining),
+                end_tick - e.engine.current_tick(),
+                "the ring counts down to the announced tick, at tick {}",
+                e.engine.current_tick(),
+            );
+            return false;
+        }
+        true
+    });
+    assert!(saw_exploring, "the boarding was visible before it paid");
+    let paid: Vec<u64> = e.log[mark..]
+        .iter()
+        .filter(|ev| matches!(ev.kind, EventKind::SiteExplored(_) | EventKind::SiteAmbush(_)))
+        .map(|ev| ev.tick)
+        .collect();
+    assert_eq!(paid, vec![end_tick], "loot or the ambush comes on the tick the boarding announced");
+    let fleet = &e.engine.fleets[&fid];
+    assert_ne!(fleet.state, FleetStatus::Exploring);
+    assert_eq!(fleet.action_cooldown, 0, "the timer does not outlive the boarding");
+}
+
+#[test]
+fn a_fight_that_catches_a_boarding_tells_its_owner_and_frees_the_fleet() {
+    let mut e = Empire::join(world("test"), "Interrupted");
+    let fid = e.fid;
+    let site = (-30i16..30)
+        .flat_map(|q| (-30i16..30).map(move |r| Hex { q, r }))
+        .find(|&h| e.engine.derelict_site_at(h).is_some() && e.engine.world_gen.generate_sector(h).npc_template.is_none())
+        .expect("a derelict with no hostile group over it");
+    deploy(&mut e.engine, fid, site, Some(1.0e6));
+
+    let legal = |engine: &GameEngine, from: Hex| -> Vec<Hex> {
+        engine.world_gen.connected_neighbors(from).slice().iter().copied()
+            .filter(|c| !world::is_home_ground(*c) && !world::is_hub(*c) && engine.outpost_at(*c).is_none())
+            .collect()
+    };
+    let now = e.engine.current_tick();
+    let mut approach: Option<(Hex, u16, u64)> = None;
+    for from in e.engine.world_gen.connected_neighbors(site).slice().to_vec() {
+        let steps = legal(&e.engine, from);
+        let Some(want) = steps.iter().position(|h| *h == site) else { continue };
+        for delay in 1..u64::from(EXPLORE_DURATION_TICKS) {
+            let move_tick = now + delay;
+            let mut rng = StdRng::seed_from_u64(move_tick.wrapping_mul(0x9E3779B97F4A7C15));
+            if rng.random_range(0..steps.len()) == want {
+                approach = Some((from, (delay - 1) as u16, move_tick));
+                break;
+            }
+        }
+        if approach.is_some() { break; }
+    }
+    let (from, timer, move_tick) = approach.expect("a neighbor whose one patrol step lands on the derelict before the boarding pays");
+
+    let npc_id = 900_000;
+    let scout = ShipClass::Scout.base_stats();
+    edit(&mut e.engine, |s| {
+        for npc in s.npc_fleets.values_mut() {
+            npc.patrol_timer = 1_000;
+        }
+        let mut ships = [Ship::default(); MAX_NPC_SHIPS];
+        ships[0] = Ship {
+            id: npc_id,
+            ship_class: ShipClass::Scout,
+            hull: scout.hull,
+            hull_max: scout.hull,
+            shield: scout.shield,
+            shield_max: scout.shield,
+            weapon_power: scout.weapon,
+            speed: scout.speed,
+        };
+        s.npc_fleets.insert(npc_id, NpcFleet {
+            id: npc_id,
+            location: from,
+            ships,
+            ship_count: 1,
+            behavior: NpcBehaviorType::Patrol,
+            home_sector: from,
+            patrol_timer: timer,
+            in_combat: false,
+            bounty: Resources::default(),
+            power: 1.0,
+            label: "scout patrol".to_string(),
+        });
+    });
+
+    let mark = e.mark();
+    e.order(Command::ExploreSite { fleet_id: fid }).expect("a boarding party goes in");
+    let quiet = e.engine.derelict_site_at(site).expect("the site stands").1;
+    e.run_until(u64::from(EXPLORE_DURATION_TICKS) + 5, |e| e.engine.current_tick() >= move_tick);
+    assert_eq!(e.engine.npc_fleets[&npc_id].location, site, "the patrol walked into the boarding");
+    assert_eq!(e.engine.fleets[&fid].state, FleetStatus::InCombat, "and took the fleet into the fight");
+
+    e.run_until(30, |e| e.engine.fleets[&fid].state != FleetStatus::InCombat);
+    let told = alerts_since(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    let fleet = &e.engine.fleets[&fid];
+    assert_ne!(fleet.state, FleetStatus::Exploring, "the boarding does not resume");
+    assert_eq!(fleet.action_cooldown, 0, "the boarding timer does not outlive the fight");
+    assert_eq!(e.engine.derelict_site_at(site).expect("the site was not looted").1, quiet, "a fight is not a backing-out: the site is not put on alert");
+    assert_eq!(
+        told[0].message,
+        format!("fleet {fid} was caught in a fight at {site} while boarding the derelict: the boarding is abandoned and nothing was recovered"),
+    );
+    assert!(matches!(told[0].level, AlertLevel::Warning) && told[0].fleet_id == Some(fid) && told[0].sector == Some(site), "{:?}", told[0]);
 }
 
 #[test]
