@@ -23,11 +23,11 @@ use iac_shared::constants::{
     TEMPLATE_NPC_ID_BASE,
     MOVE_BASE_COOLDOWN,
     SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_PROBE_RANGE, SCAN_REVEAL_TICKS,
-    RAID_ROLL_INTERVAL, RAID_ROLL_CHANCE, RAID_PITY_STEP, RAID_LOST_SHIP_FRACTION, RAID_MIN_INTERVAL,
+    RAID_ROLL_INTERVAL, RAID_ROLL_CHANCE, RAID_PITY_STEP, RAID_MIN_INTERVAL,
     RAID_MIN_PLAYER_AGE, RAID_MIN_SHIPYARD, RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX,
-    RAID_STRUCTURE_DAMAGE, RAID_STRUCTURE_RESTORE, RAID_RESTORE_TICKS, RAID_LOST_STRUCTURE_FRACTION,
     RAID_LOSS_CAP_METAL, RAID_LOSS_CAP_CRYSTAL, RAID_LOSS_CAP_DEUT,
-    RAID_DEFENSE_SALVAGE_FRACTION, RAID_SUPPRESS_AFTER_LOSS,
+    RAID_DEFENSE_SALVAGE_FRACTION, RAID_SUPPRESS_AFTER_LOSS, RAID_ROUNDS, ODDS_ROUNDS,
+    DEFENCE_REBUILD_PCT, DEFENCE_REBUILD_SPREAD, DEFENCE_REBUILD_EACH_BELOW,
     EXPLORE_DURATION_TICKS, EXPLORE_PROBE_AMBUSH_REDUCTION, EXPLORE_RECYCLER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_FUEL_PAYBACK, POLICY_FUEL_UNBOUNDED_PCT,
     POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_HULL_READY,
@@ -49,7 +49,8 @@ use iac_shared::protocol::{
     StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
-    BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState,
+    BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState, BattleUnits,
+    RaidBattle, RaidForecast, RaidLabel, RaidOdds,
     DockRepair, RepairQuote, ShipCount, ShipGroupState, ShipsLostEvent, UnitCount,
     ChaseForecast, Fleeing, FlightQuote, Pursuit, PursuitEvent, PursuitPhase,
 };
@@ -201,25 +202,6 @@ impl Ships {
         group.count -= count;
         self.settle();
         Some(ShipGroup { ship_class: class, count, damaged })
-    }
-
-    /// Remove the ship at `index` of the fleet's ships as a round lists
-    /// them: classes in catalogue order, the whole and then the damaged.
-    pub fn remove_at(&mut self, mut index: u32) -> Option<ShipClass> {
-        for group in &mut self.0 {
-            if index >= group.count {
-                index -= group.count;
-                continue;
-            }
-            let class = group.ship_class;
-            if index >= group.whole() {
-                group.damaged.remove((index - group.whole()) as usize);
-            }
-            group.count -= 1;
-            self.settle();
-            return Some(class);
-        }
-        None
     }
 
     /// The hull every damaged ship holds, carried from one full hull to
@@ -515,13 +497,10 @@ pub struct PendingShip {
     pub count: u16,
 }
 
-/// Defence structures standing at home, and those a repelled raid knocked
-/// out that come back free at `restore_tick`.
+/// Defence structures standing at home.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Defences {
     pub count: [u32; DefenceKind::COUNT],
-    pub restoring: [u32; DefenceKind::COUNT],
-    pub restore_tick: [u64; DefenceKind::COUNT],
 }
 
 impl Defences {
@@ -532,9 +511,8 @@ impl Defences {
             .sum()
     }
 
-    /// Standing or being rebuilt after a raid.
     pub fn owned(&self, kind: DefenceKind) -> u32 {
-        self.count[kind as usize] + self.restoring[kind as usize]
+        self.count[kind as usize]
     }
 }
 
@@ -645,6 +623,43 @@ pub struct Combat {
     /// The last round as it was reported, for a client that arrives in the
     /// middle of the fight.
     pub last_round: Option<BattleRoundEvent>,
+    /// The fight is a raid on a homeworld or an outpost: the raiders, and
+    /// the defences that stand with the fleets. It has no group of
+    /// `npc_fleets` in it.
+    pub siege: Option<Siege>,
+}
+
+/// A raid being fought (`docs/design/ogame.md`, section 7.6). The raiders
+/// are no group of the map: they come for one dock, stand in no sector's
+/// view and are gone when the fight is over. The defender's fleets are the
+/// fight's own, as in any fight, so they leave it as they leave any.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Siege {
+    pub owner: u64,
+    pub dock: Dock,
+    /// The power the raid was announced with, and what stood in its way
+    /// when it arrived, on the same scale.
+    pub power: f32,
+    pub met: f32,
+    pub raiders: Ships,
+    pub arms: Arms,
+    /// The raiders as they arrived.
+    pub muster: Ships,
+    /// What defends that is not a fleet, as the fight has left it: at home
+    /// the Solar Satellites and the defences, at the outpost its platform.
+    pub battery: Vec<Squad>,
+}
+
+impl Siege {
+    fn battery_stands(&self) -> bool {
+        self.battery.iter().any(|squad| squad.count > 0)
+    }
+
+    /// How the raiders are named in a sentence: "raid of 12 Light Fighter, 2 Cruiser".
+    pub fn label(&self) -> String {
+        let ships: Vec<String> = self.muster.counts().map(|(class, count)| format!("{count} {}", class.label())).collect();
+        format!("raid of {}", ships.join(", "))
+    }
 }
 
 impl Combat {
@@ -801,9 +816,10 @@ pub enum OutpostTask {
     Repair,
 }
 
-/// Where a fleet's hold is filled and emptied by hand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Dock {
+/// An empire's two docks: where a fleet's hold is filled and emptied by
+/// hand, and where a raid comes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Dock {
     Home,
     Outpost,
 }
@@ -1161,12 +1177,14 @@ impl Reach<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// A raid on its way: its power and what it flies, fixed at forecast time
+/// so the player's preparations after the warning actually help.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingRaid {
     pub arrival_tick: u64,
-    /// Combat power of the raid fleet, fixed at forecast time so the
-    /// player's preparations after the warning actually help.
     pub power: f32,
+    pub ships: Ships,
+    pub arms: Arms,
 }
 
 // ── GameEngine ────────────────────────────────────────────────────
@@ -1272,12 +1290,20 @@ pub struct GameEngine {
     pub(crate) chart_news: Vec<(u64, u32)>,
     /// What each player has seen of the galaxy, live or remembered.
     pub known: KnownSectors,
-    /// Ratios already worked out, by the two sides; speed only.
-    odds_memo: RefCell<KeyMap<(Force, Force), f32>>,
+    /// Fights already played forward, by the two sides and the rounds they
+    /// were given; speed only.
+    odds_memo: RefCell<OddsMemo>,
 }
+
+/// Two sides and the rounds they are given, and how that fight goes.
+type OddsMemo = KeyMap<(Force, Force, u32), (odds::Outlook, f32)>;
 
 /// Entries kept in the odds memo before it is emptied.
 const ODDS_MEMO_LIMIT: usize = 4096;
+
+/// The middle of the roll that sizes a raid: what a forecast with no raid
+/// announced is made at.
+const RAID_POWER_ROLL_MID: f32 = (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0;
 
 impl GameEngine {
     /// A fresh world: no players, tick 0.
@@ -1387,7 +1413,6 @@ impl GameEngine {
         self.process_outposts();
         self.process_build_queues()?;
         self.process_raids()?;
-        self.process_defence_restore();
         self.process_home_salvage();
         self.process_salvage_despawn()?;
         self.process_derelict_respawn();
@@ -1551,12 +1576,13 @@ impl GameEngine {
 
         for combat_id in combat_ids {
             let Some(active) = self.active_combats.get(&combat_id) else { continue; };
+            if active.siege.is_some() {
+                self.siege_round(combat_id);
+                continue;
+            }
             let sector = active.sector;
             let round = active.round + 1;
-            let mut fleet_ids: Vec<u64> = active.player_fleet_ids.iter().copied()
-                .filter(|id| self.fleets.get(id).is_some_and(|f| !f.ships.is_empty()))
-                .collect();
-            fleet_ids.sort_unstable();
+            let fleet_ids = self.fleets_fighting(active);
             let mut group_ids: Vec<u64> = active.npc_fleet_ids.iter().copied()
                 .filter(|id| self.npc_fleets.get(id).is_some_and(|n| !n.ships.is_empty()))
                 .collect();
@@ -1575,21 +1601,7 @@ impl GameEngine {
             let fought = combat::round(&fleets, &groups, &mut dice);
             let quiet = !fought.hull_lost();
 
-            let mut wiped: Vec<u64> = Vec::new();
-            for (&fid, squads) in fleet_ids.iter().zip(&fought.fleets.troops) {
-                let Some(fleet) = self.fleets.get_mut(&fid) else { continue; };
-                let before = fleet.ships.total();
-                fleet.ships = Ships::of_squads(squads);
-                if fleet.ships.total() == before { continue; }
-                if let Some(player) = self.players.get(&fleet.owner_id) {
-                    fleet.fuel_max = fleet_fuel_max(fleet, player);
-                    fleet.fuel = fleet.fuel.min(fleet.fuel_max);
-                }
-                if fleet.ships.is_empty() {
-                    wiped.push(fid);
-                }
-                self.settle_hold(fid);
-            }
+            let wiped = self.write_back_fleets(&fleet_ids, &fought.fleets.troops);
             for (nid, squads) in group_ids.iter().zip(&fought.hostiles.troops) {
                 if let Some(group) = self.npc_fleets.get_mut(nid) {
                     group.ships = Ships::of_squads(squads);
@@ -1597,14 +1609,7 @@ impl GameEngine {
             }
 
             let fleet_side = BattleSide {
-                groups: fleet_ids.iter().zip(&fought.fleets.standing).map(|(&fleet_id, units)| BattleGroup {
-                    fleet_id,
-                    owner: self.fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone()),
-                    label: String::new(),
-                    mine: false,
-                    fleeing: self.fleets.get(&fleet_id).is_some_and(|f| f.state == FleetStatus::Moving),
-                    units: units.clone(),
-                }).collect(),
+                groups: self.fleet_groups(&fleet_ids, &fought.fleets.standing),
                 ..battle_side(&fought.fleets)
             };
             let hostile_side = BattleSide {
@@ -1614,41 +1619,19 @@ impl GameEngine {
                     label: self.npc_fleets.get(&fleet_id).map(|n| n.label.clone()).unwrap_or_default(),
                     mine: false,
                     fleeing: false,
+                    battery: false,
                     units: units.clone(),
                 }).collect(),
                 ..battle_side(&fought.hostiles)
             };
-            let report = BattleRoundEvent { sector, round, fleets: fleet_side, hostiles: hostile_side, mine: false };
+            let report = BattleRoundEvent { sector, round, fleets: fleet_side, hostiles: hostile_side, mine: false, raid: false };
+            let Some(quiet_rounds) = self.record_round(combat_id, report, engaged, quiet) else { continue; };
 
-            let quiet_rounds = {
-                let Some(active) = self.active_combats.get_mut(&combat_id) else { continue; };
-                active.round = round;
-                active.peak_power = active.peak_power.max(engaged);
-                active.quiet_rounds = if quiet { active.quiet_rounds + 1 } else { 0 };
-                for group in report.fleets.groups.iter().chain(&report.hostiles.groups) {
-                    tally_losses(&mut active.losses, group);
-                }
-                active.last_round = Some(report.clone());
-                active.quiet_rounds
-            };
-            self.pending_events.push(GameEvent { tick: self.current_tick, kind: EventKind::BattleRound(report) });
-
-            for fid in wiped {
-                let owner = self.fleets.get(&fid).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
-                self.pending_events.push(GameEvent {
-                    tick: self.current_tick,
-                    kind: EventKind::FleetDestroyed(iac_shared::protocol::FleetDestroyedEvent {
-                        fleet_id: fid,
-                        is_npc: false,
-                        sector,
-                        owner,
-                        mine: false,
-                        salvage: Resources::default(),
-                        label: String::new(),
-                    }),
-                });
-                self.alert_fleet_lost(fid, sector, &group_ids);
-            }
+            let enemies = group_ids.iter()
+                .map(|id| self.npc_fleets.get(id).map_or_else(|| "hostile group".to_string(), |n| n.label.clone()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.announce_wiped(&wiped, sector, &format!("hostile {enemies}"));
 
             let fleets_left = fought.fleets.units() > 0;
             let groups_left = fought.hostiles.units() > 0;
@@ -1664,6 +1647,474 @@ impl GameEngine {
         }
 
         Ok(())
+    }
+
+    /// The fleets of `combat` that still have ships, in the order they
+    /// stand in a round.
+    fn fleets_fighting(&self, combat: &Combat) -> Vec<u64> {
+        let mut fleet_ids: Vec<u64> = combat.player_fleet_ids.iter().copied()
+            .filter(|id| self.fleets.get(id).is_some_and(|f| !f.ships.is_empty()))
+            .collect();
+        fleet_ids.sort_unstable();
+        fleet_ids
+    }
+
+    /// Write what a round left of each fleet back to it, and settle the
+    /// tank and the hold of one that lost ships. Returns the fleets that
+    /// have none left.
+    fn write_back_fleets(&mut self, fleet_ids: &[u64], troops: &[Vec<Squad>]) -> Vec<u64> {
+        let mut wiped: Vec<u64> = Vec::new();
+        for (&fid, squads) in fleet_ids.iter().zip(troops) {
+            let Some(fleet) = self.fleets.get_mut(&fid) else { continue; };
+            let before = fleet.ships.total();
+            fleet.ships = Ships::of_squads(squads);
+            if fleet.ships.total() == before { continue; }
+            if let Some(player) = self.players.get(&fleet.owner_id) {
+                fleet.fuel_max = fleet_fuel_max(fleet, player);
+                fleet.fuel = fleet.fuel.min(fleet.fuel_max);
+            }
+            if fleet.ships.is_empty() {
+                wiped.push(fid);
+            }
+            self.settle_hold(fid);
+        }
+        wiped
+    }
+
+    /// The fleets of a round as its report lists them.
+    fn fleet_groups(&self, fleet_ids: &[u64], standing: &[Vec<BattleUnits>]) -> Vec<BattleGroup> {
+        fleet_ids.iter().zip(standing).map(|(&fleet_id, units)| BattleGroup {
+            fleet_id,
+            owner: self.fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone()),
+            label: String::new(),
+            mine: false,
+            fleeing: self.fleets.get(&fleet_id).is_some_and(|f| f.state == FleetStatus::Moving),
+            battery: false,
+            units: units.clone(),
+        }).collect()
+    }
+
+    /// Count a round into its fight and send its report. Returns the rounds
+    /// in a row that took no hull, this one included.
+    fn record_round(&mut self, combat_id: u64, report: BattleRoundEvent, engaged: f32, quiet: bool) -> Option<u16> {
+        let active = self.active_combats.get_mut(&combat_id)?;
+        active.round = report.round;
+        active.peak_power = active.peak_power.max(engaged);
+        active.quiet_rounds = if quiet { active.quiet_rounds + 1 } else { 0 };
+        for group in report.fleets.groups.iter().chain(&report.hostiles.groups) {
+            tally_losses(&mut active.losses, group);
+        }
+        active.last_round = Some(report.clone());
+        let quiet_rounds = active.quiet_rounds;
+        self.pending_events.push(GameEvent { tick: self.current_tick, kind: EventKind::BattleRound(report) });
+        Some(quiet_rounds)
+    }
+
+    /// Say that each of `wiped` lost its last ship in `sector`, to `by`.
+    fn announce_wiped(&mut self, wiped: &[u64], sector: Hex, by: &str) {
+        for &fid in wiped {
+            let owner = self.fleets.get(&fid).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
+            self.pending_events.push(GameEvent {
+                tick: self.current_tick,
+                kind: EventKind::FleetDestroyed(iac_shared::protocol::FleetDestroyedEvent {
+                    fleet_id: fid,
+                    is_npc: false,
+                    sector,
+                    owner,
+                    mine: false,
+                    salvage: Resources::default(),
+                    label: String::new(),
+                }),
+            });
+            self.alert_fleet_lost(fid, sector, by);
+        }
+    }
+
+    /// The sector of `owner`'s `dock`, if it has one.
+    fn dock_sector(&self, owner: u64, dock: Dock) -> Option<Hex> {
+        match dock {
+            Dock::Home => self.players.get(&owner).map(|p| p.homeworld),
+            Dock::Outpost => self.outposts.get(&owner).map(|o| o.sector),
+        }
+    }
+
+    /// What defends `owner`'s `dock` that is not a fleet, whole, as a round
+    /// takes it: at home the Solar Satellites and every defence, at the
+    /// outpost the platform of its level, none while it is breached.
+    fn battery_of(&self, owner: u64, dock: Dock) -> Vec<Squad> {
+        let whole = |unit: ShipyardItem, count: u32| Squad { unit, count, damaged: Vec::new() };
+        let squads: Vec<Squad> = match dock {
+            Dock::Home => {
+                let Some(player) = self.players.get(&owner) else { return Vec::new(); };
+                std::iter::once(whole(ShipyardItem::Ship(ShipClass::SolarSatellite), player.satellites))
+                    .chain(DefenceKind::ALL.into_iter().map(|kind| whole(ShipyardItem::Defence(kind), player.defences.count[kind as usize])))
+                    .collect()
+            }
+            Dock::Outpost => {
+                let Some(outpost) = self.outposts.get(&owner).filter(|o| !o.breached) else { return Vec::new(); };
+                scaling::outpost_platform(outpost.level).iter().map(|&(kind, count)| whole(ShipyardItem::Defence(kind), count)).collect()
+            }
+        };
+        squads.into_iter().filter(|squad| squad.count > 0).collect()
+    }
+
+    /// What a battery fights with: at home its owner's Weapons, Shielding
+    /// and Armour Technology as they stand this tick; the outpost's
+    /// platform at the catalogue's figures.
+    fn battery_arms(&self, owner: u64, dock: Dock) -> Arms {
+        match dock {
+            Dock::Home => self.players.get(&owner).map_or(Arms::BASE, |p| Refit::of(&p.research).arms()),
+            Dock::Outpost => Arms::BASE,
+        }
+    }
+
+    /// The fleets of `owner` standing at `sector` that would fire in a raid
+    /// arriving now: not one that is charging a jump out.
+    fn garrison(&self, owner: u64, sector: Hex) -> Force {
+        let mut force = Force::default();
+        for fleet in self.fleets.values() {
+            if fleet.owner_id == owner && fleet.location == sector && !fleet.ships.is_empty() && fleet.state != FleetStatus::Moving {
+                force.join(&fleet_force(fleet));
+            }
+        }
+        force
+    }
+
+    /// How a raid of `ships` fighting with `arms` would end against what
+    /// stands at `owner`'s `dock` this tick: the fight itself played
+    /// forward for `RAID_ROUNDS` rounds.
+    pub fn raid_odds(&self, owner: u64, dock: Dock, ships: &Ships, arms: Arms) -> RaidOdds {
+        let mut ours = self.dock_sector(owner, dock).map_or_else(Force::default, |sector| self.garrison(owner, sector));
+        ours.join(&Force::of(self.battery_arms(owner, dock), self.battery_of(owner, dock)));
+        self.odds_outlook(&ours, &Force::of(arms, ships.squads()), RAID_ROUNDS).raid()
+    }
+
+    /// The raid on `player`'s homeworld as a client is told of it: the one
+    /// being fought, else the one announced, else one at the middle of its
+    /// roll were it announced now.
+    pub fn home_raid_forecast(&self, player: &Player) -> RaidForecast {
+        if let Some(fought) = self.raid_fought(player.id, Dock::Home) {
+            return fought;
+        }
+        let announced = self.raid_states.get(&player.id).and_then(|state| state.incoming.as_ref());
+        match announced {
+            Some(raid) => self.forecast(player.id, Dock::Home, Some(raid.arrival_tick), raid),
+            None => {
+                let base = scaling::raid_power_base(scaling::econ_points(&player.buildings, &player.research));
+                self.forecast(player.id, Dock::Home, None, &Self::home_raid(player, base * RAID_POWER_ROLL_MID, 0))
+            }
+        }
+    }
+
+    /// The same for `owner`'s outpost; None before its first level is
+    /// finished, when nothing raids it.
+    pub fn outpost_raid_forecast(&self, owner: u64) -> Option<RaidForecast> {
+        let outpost = self.outposts.get(&owner).filter(|outpost| outpost.level >= 1)?;
+        if let Some(fought) = self.raid_fought(owner, Dock::Outpost) {
+            return Some(fought);
+        }
+        Some(match outpost.raid.incoming.as_ref() {
+            Some(raid) => self.forecast(owner, Dock::Outpost, Some(raid.arrival_tick), raid),
+            None => {
+                let ring = outpost.sector.dist_from_origin();
+                let raid = outpost_raid(ring, scaling::outpost_raid_power(ring) * RAID_POWER_ROLL_MID, 0);
+                self.forecast(owner, Dock::Outpost, None, &raid)
+            }
+        })
+    }
+
+    /// The raid being fought at `owner`'s `dock`, as its forecast: what it
+    /// flew in with, the rounds left, and how the fight would end from
+    /// where it stands.
+    fn raid_fought(&self, owner: u64, dock: Dock) -> Option<RaidForecast> {
+        let combat = self
+            .active_combats
+            .values()
+            .find(|c| c.siege.as_ref().is_some_and(|siege| siege.owner == owner && siege.dock == dock))?;
+        let siege = combat.siege.as_ref()?;
+        Some(RaidForecast {
+            arrival_tick: None,
+            rounds_left: Some(RAID_ROUNDS.saturating_sub(combat.round)),
+            power: siege.power,
+            ships: siege.muster.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect(),
+            odds: self.siege_outlook(combat)?.raid(),
+        })
+    }
+
+    fn forecast(&self, owner: u64, dock: Dock, arrival_tick: Option<u64>, raid: &IncomingRaid) -> RaidForecast {
+        RaidForecast {
+            arrival_tick,
+            rounds_left: None,
+            power: raid.power,
+            ships: raid.ships.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect(),
+            odds: self.raid_odds(owner, dock, &raid.ships, raid.arms),
+        }
+    }
+
+    /// A raid of `power` on `player`'s homeworld, arriving at `arrival_tick`:
+    /// what it flies is decided by the defences that stand there now.
+    fn home_raid(player: &Player, power: f32, arrival_tick: u64) -> IncomingRaid {
+        let (ships, multiplier) = scaling::raid_composition(power, &player.defences.count);
+        IncomingRaid { arrival_tick, power, ships: Ships::of(&ships), arms: Arms::of_grade(multiplier) }
+    }
+
+    /// A raid has arrived at `owner`'s `dock`. With nothing in its way it
+    /// is lost on the spot. Otherwise it stands there as a fight of its
+    /// own: every fleet of the owner at the dock is in it, with the
+    /// battery, and the first round is fought on the next tick.
+    fn begin_siege(&mut self, owner: u64, dock: Dock, raid: IncomingRaid) {
+        let Some(sector) = self.dock_sector(owner, dock) else { return; };
+        let met = match dock {
+            Dock::Home => self.home_defense_power(owner),
+            Dock::Outpost => self.outpost_defense_power(owner),
+        };
+        let siege = Siege {
+            owner,
+            dock,
+            power: raid.power,
+            met,
+            raiders: raid.ships.clone(),
+            arms: raid.arms,
+            muster: raid.ships,
+            battery: self.battery_of(owner, dock),
+        };
+        let fleets: Vec<u64> = self.fleets.values()
+            .filter(|f| f.owner_id == owner && f.location == sector && !f.ships.is_empty())
+            .map(|f| f.id)
+            .collect();
+        if fleets.is_empty() && !siege.battery_stands() {
+            self.settle_raid(sector, &siege, None, 0, &[], None);
+            return;
+        }
+        let against = {
+            let ships: u32 = fleets.iter().filter_map(|id| self.fleets.get(id)).map(|f| f.ships.total()).sum();
+            let (satellites, defences) = siege.battery.iter().fold((0, 0), |(satellites, defences), squad| match squad.unit {
+                ShipyardItem::Ship(_) => (satellites + squad.count, defences),
+                ShipyardItem::Defence(_) => (satellites, defences + squad.count),
+            });
+            format!("{ships} ship(s), {satellites} Solar Satellite(s) and {defences} defence(s)")
+        };
+        let place = match dock {
+            Dock::Home => format!("your homeworld at {sector}"),
+            Dock::Outpost => format!("your outpost at {sector}"),
+        };
+        let message = format!(
+            "the {} has arrived at {place}: it meets {against} and fights for at most {RAID_ROUNDS} rounds, the first next tick",
+            siege.label(),
+        );
+        let combat_id = self.next_id();
+        self.active_combats.insert(combat_id, Combat {
+            id: combat_id,
+            sector,
+            player_fleet_ids: Vec::new(),
+            npc_fleet_ids: Vec::new(),
+            round: 0,
+            peak_power: 0.0,
+            quiet_rounds: 0,
+            fled: Vec::new(),
+            losses: Vec::new(),
+            last_round: None,
+            siege: Some(siege),
+        });
+        self.enlist_garrison(combat_id);
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Alert(AlertEvent {
+                player_id: Some(owner),
+                level: AlertLevel::Warning,
+                message,
+                sector: Some(sector),
+                fleet_id: None,
+            }),
+        });
+    }
+
+    /// Every fleet of the raided empire that stands at the dock is in the
+    /// raid's fight: those there when it arrived, and one that arrives or
+    /// is built while it lasts, from the next round. A fleet of another
+    /// empire standing there is not: the raid is not on it.
+    fn enlist_garrison(&mut self, combat_id: u64) {
+        let Some(combat) = self.active_combats.get(&combat_id) else { return; };
+        let Some(owner) = combat.siege.as_ref().map(|siege| siege.owner) else { return; };
+        let sector = combat.sector;
+        let newcomers: Vec<u64> = self.fleets.values()
+            .filter(|f| f.owner_id == owner && f.location == sector && !f.ships.is_empty() && !combat.has_player_fleet(f.id))
+            .map(|f| f.id)
+            .collect();
+        for fid in newcomers {
+            if let Some(combat) = self.active_combats.get_mut(&combat_id) {
+                combat.add_player_fleet(fid);
+            }
+            self.engage_fleet(fid);
+        }
+    }
+
+    /// The battery of a raid on a homeworld takes in what the yard has
+    /// finished since the last round: a defence or a Solar Satellite built
+    /// during the fight stands in it from the next round.
+    fn reinforce_battery(&mut self, combat_id: u64) {
+        let Some(siege) = self.active_combats.get_mut(&combat_id).and_then(|c| c.siege.as_mut()) else { return; };
+        if siege.dock != Dock::Home { return; }
+        let Some(player) = self.players.get(&siege.owner) else { return; };
+        let standing = std::iter::once((ShipyardItem::Ship(ShipClass::SolarSatellite), player.satellites))
+            .chain(DefenceKind::ALL.into_iter().map(|kind| (ShipyardItem::Defence(kind), player.defences.count[kind as usize])));
+        for (unit, count) in standing {
+            match siege.battery.iter_mut().find(|squad| squad.unit == unit) {
+                Some(squad) => squad.count = squad.count.max(count),
+                None if count > 0 => {
+                    let at = siege.battery.partition_point(|squad| squad.unit.index() < unit.index());
+                    siege.battery.insert(at, Squad { unit, count, damaged: Vec::new() });
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// One round of a raid's fight: the owner's fleets at the dock and the
+    /// battery against the raiders, by the round every fight is fought by.
+    /// It is repelled when no raider is left, or when `RAID_ROUNDS` rounds
+    /// are over or a round took no hull and a defender still stands; it is
+    /// lost only when no defender is left.
+    fn siege_round(&mut self, combat_id: u64) {
+        self.enlist_garrison(combat_id);
+        self.reinforce_battery(combat_id);
+        let Some(active) = self.active_combats.get(&combat_id) else { return; };
+        let Some(siege) = active.siege.as_ref() else { return; };
+        let (sector, round, owner, dock) = (active.sector, active.round + 1, siege.owner, siege.dock);
+        let fleet_ids = self.fleets_fighting(active);
+        let battery: Vec<Squad> = siege.battery.iter().filter(|squad| squad.count > 0).cloned().collect();
+        let has_battery = !battery.is_empty();
+        if fleet_ids.is_empty() && !has_battery {
+            self.end_siege(combat_id, BattleOutcome::FleetsDestroyed);
+            return;
+        }
+        if siege.raiders.is_empty() {
+            self.end_siege(combat_id, BattleOutcome::HostilesDestroyed);
+            return;
+        }
+
+        let mut defenders: Vec<Troop> = fleet_ids.iter().map(|id| self.fleets[id].troop()).collect();
+        if has_battery {
+            defenders.push(Troop { arms: self.battery_arms(owner, dock), squads: battery, silent: false });
+        }
+        let raiders = [Troop { arms: siege.arms, squads: siege.raiders.squads(), silent: false }];
+        let label = siege.label();
+        let engaged: f32 = fleet_ids.iter().map(|id| fleet_power(&self.fleets[id])).sum();
+        let owner_name = self.players.get(&owner).map(|p| p.name.clone());
+
+        let mut dice = combat::Dice::of_round(self.world_gen.world_seed, sector, self.current_tick, round);
+        let fought = combat::round(&defenders, &raiders, &mut dice);
+        let quiet = !fought.hull_lost();
+
+        let wiped = self.write_back_fleets(&fleet_ids, &fought.fleets.troops);
+        let mut groups = self.fleet_groups(&fleet_ids, &fought.fleets.standing);
+        if has_battery {
+            let stands = fought.fleets.troops.last().cloned().unwrap_or_default();
+            if dock == Dock::Home
+                && let Some(player) = self.players.get_mut(&owner)
+            {
+                let left = |unit: ShipyardItem| stands.iter().find(|squad| squad.unit == unit).map_or(0, |squad| squad.count);
+                player.satellites = left(ShipyardItem::Ship(ShipClass::SolarSatellite));
+                for kind in DefenceKind::ALL {
+                    player.defences.count[kind as usize] = left(ShipyardItem::Defence(kind));
+                }
+            }
+            groups.push(BattleGroup {
+                fleet_id: 0,
+                owner: owner_name,
+                label: match dock {
+                    Dock::Home => "home defences".to_string(),
+                    Dock::Outpost => "outpost platform".to_string(),
+                },
+                mine: false,
+                fleeing: false,
+                battery: true,
+                units: fought.fleets.standing.last().cloned().unwrap_or_default(),
+            });
+            if let Some(siege) = self.active_combats.get_mut(&combat_id).and_then(|c| c.siege.as_mut()) {
+                siege.battery = stands;
+            }
+        }
+        if let Some(siege) = self.active_combats.get_mut(&combat_id).and_then(|c| c.siege.as_mut()) {
+            siege.raiders = Ships::of_squads(&fought.hostiles.troops[0]);
+        }
+
+        let report = BattleRoundEvent {
+            sector,
+            round,
+            fleets: BattleSide { groups, ..battle_side(&fought.fleets) },
+            hostiles: BattleSide {
+                groups: vec![BattleGroup {
+                    fleet_id: combat_id,
+                    owner: None,
+                    label: label.clone(),
+                    mine: false,
+                    fleeing: false,
+                    battery: false,
+                    units: fought.hostiles.standing[0].clone(),
+                }],
+                ..battle_side(&fought.hostiles)
+            },
+            mine: false,
+            raid: true,
+        };
+        let Some(quiet_rounds) = self.record_round(combat_id, report, engaged, quiet) else { return; };
+        self.announce_wiped(&wiped, sector, &format!("the {label}"));
+
+        let defenders_left = fought.fleets.units() > 0;
+        let raiders_left = fought.hostiles.units() > 0;
+        let outcome = match (defenders_left, raiders_left) {
+            (true, false) => Some(BattleOutcome::HostilesDestroyed),
+            (false, true) => Some(BattleOutcome::FleetsDestroyed),
+            (false, false) => Some(BattleOutcome::BothDestroyed),
+            (true, true) => (round >= RAID_ROUNDS || quiet_rounds >= STANDOFF_ROUNDS).then_some(BattleOutcome::Outlasted),
+        };
+        if let Some(outcome) = outcome {
+            self.end_siege(combat_id, outcome);
+        }
+    }
+
+    /// End a raid's fight. The fleets in it are free, and one charging its
+    /// jump out goes on charging. Raiders destroyed to the last ship at a
+    /// homeworld leave their wreckage there; at an outpost they leave
+    /// none, as no raid on one ever did. Raiders that are not destroyed
+    /// are gone with what they kept. What follows for the dock is
+    /// `settle_raid`'s.
+    fn end_siege(&mut self, combat_id: u64, outcome: BattleOutcome) {
+        let Some(combat) = self.active_combats.remove(&combat_id) else { return; };
+        let Some(siege) = combat.siege.as_ref() else { return; };
+        let sector = combat.sector;
+        for fid in &combat.player_fleet_ids {
+            let Some(fleet) = self.fleets.get_mut(fid) else { continue; };
+            if fleet.state == FleetStatus::InCombat {
+                fleet.state = if fleet.ships.is_empty() { FleetStatus::Docked } else { FleetStatus::Idle };
+            }
+        }
+        let dropped = (siege.raiders.is_empty() && siege.dock == Dock::Home).then(|| {
+            let worth = siege.muster.counts()
+                .fold(Resources::default(), |sum, (class, count)| sum.add(class.build_cost().scale(f64::from(count))));
+            let salvage = worth.scale(RAID_DEFENSE_SALVAGE_FRACTION);
+            let (pile, despawn) = self.drop_salvage(sector, salvage);
+            (salvage, pile, despawn)
+        });
+        let (fleets, hostiles): (Vec<BattleLosses>, Vec<BattleLosses>) =
+            combat.losses.iter().cloned().partition(|l| l.owner.is_some());
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::CombatEnded(iac_shared::protocol::CombatEndedEvent {
+                sector,
+                player_victory: outcome == BattleOutcome::HostilesDestroyed,
+                outcome,
+                raid: true,
+                rounds: combat.round,
+                losses: fleets.into_iter().chain(hostiles).collect(),
+                owners: self.players.get(&siege.owner).map(|p| p.name.clone()).into_iter().collect(),
+                mine: false,
+                salvage: dropped.map(|(_, pile, _)| pile),
+                salvage_despawn_tick: dropped.map(|(_, _, despawn)| despawn),
+            }),
+        });
+        self.settle_raid(sector, siege, Some(outcome), combat.round, &combat.losses, dropped.map(|(salvage, _, despawn)| (salvage, despawn)));
     }
 
     /// End a fight. Fleets still in it are free, and one charging its jump
@@ -1728,6 +2179,7 @@ impl GameEngine {
                 sector,
                 player_victory: outcome == BattleOutcome::HostilesDestroyed,
                 outcome,
+                raid: false,
                 rounds: combat.round,
                 losses: fleets.into_iter().chain(hostiles).collect(),
                 owners: owners.into_iter().collect(),
@@ -1937,6 +2389,15 @@ impl GameEngine {
                 rounds: combat.round,
                 last_round: combat.last_round.as_ref().filter(|_| with_round).cloned(),
                 losses: combat.losses.clone(),
+                raid: combat.siege.as_ref().zip(self.siege_outlook(combat)).map(|(siege, outlook)| RaidBattle {
+                    owner: self.players.get(&siege.owner).map(|p| p.name.clone()).unwrap_or_default(),
+                    mine: siege.owner == player_id,
+                    outpost: siege.dock == Dock::Outpost,
+                    power: siege.power,
+                    ships: siege.muster.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect(),
+                    rounds_left: RAID_ROUNDS.saturating_sub(combat.round),
+                    odds: outlook.raid(),
+                }),
             })
             .collect()
     }
@@ -2021,20 +2482,16 @@ impl GameEngine {
         self.harvest_reports.retain(|fid, _| fleets.contains_key(fid));
     }
 
-    /// Tell a fleet's owner, loudly, that the fleet is gone.
-    fn alert_fleet_lost(&mut self, fleet_id: u64, sector: Hex, enemy_ids: &[u64]) {
+    /// Tell a fleet's owner, loudly, that the fleet is gone, and `by` what.
+    fn alert_fleet_lost(&mut self, fleet_id: u64, sector: Hex, by: &str) {
         let Some(owner) = self.fleets.get(&fleet_id).map(|f| f.owner_id) else { return; };
-        let enemies = enemy_ids.iter()
-            .map(|id| self.npc_fleets.get(id).map_or_else(|| "hostile group".to_string(), |n| n.label.clone()))
-            .collect::<Vec<_>>()
-            .join(", ");
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
             kind: EventKind::Alert(iac_shared::protocol::AlertEvent {
                 player_id: Some(owner),
                 level: iac_shared::protocol::AlertLevel::Critical,
                 message: format!(
-                    "FLEET LOST: fleet {fleet_id} destroyed at [{},{}] by hostile {enemies}; every ship is gone",
+                    "FLEET LOST: fleet {fleet_id} destroyed at [{},{}] by {by}; every ship is gone",
                     sector.q, sector.r
                 ),
                 sector: Some(sector),
@@ -2937,10 +3394,12 @@ impl GameEngine {
 
     // ── Homeworld Raids ───────────────────────────────────────────
     //
-    // Forecasted pressure, never a random tax: raids are announced
-    // RAID_WARNING_TICKS in advance, sized against the defense the player
-    // already has, hard-capped on losses, and pay out salvage when repelled.
-    // Defences exist so a player can leave home without babysitting it.
+    // Forecasted pressure, never a random tax: a raid is announced a
+    // warning ahead with its power and what it flies, sized by what the
+    // empire has built, and fought as a battle when it arrives
+    // (`begin_siege`, `siege_round`, `settle_raid`). What a lost one takes
+    // is capped. Defences exist so a player can leave home without
+    // babysitting it.
 
     fn process_raids(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let tick = self.current_tick;
@@ -2957,13 +3416,16 @@ impl GameEngine {
                 incoming: None,
             });
 
-            if let Some(incoming) = state.incoming {
-                if tick >= incoming.arrival_tick {
-                    state.incoming = None;
-                    self.resolve_raid(pid, incoming.power)?;
+            if let Some(arrival) = state.incoming.as_ref().map(|raid| raid.arrival_tick) {
+                if tick >= arrival
+                    && let Some(raid) = state.incoming.take()
+                {
+                    self.begin_siege(pid, Dock::Home, raid);
                 }
                 continue;
             }
+            if self.besieged(pid, Dock::Home) { continue; }
+            let Some(state) = self.raid_states.get_mut(&pid) else { continue; };
 
             if tick < state.next_roll_tick { continue; }
             state.next_roll_tick = tick + timers.roll_interval;
@@ -2981,7 +3443,6 @@ impl GameEngine {
             if !eligible { continue; }
 
             let base = scaling::raid_power_base(scaling::econ_points(&player.buildings, &player.research));
-            let defense = self.home_defense_power(pid);
 
             let mut rng = StdRng::seed_from_u64(
                 tick.wrapping_mul(0xA24BAED4963EE407).wrapping_add(pid),
@@ -2996,32 +3457,12 @@ impl GameEngine {
             }
 
             let power = base * rng.random_range(RAID_POWER_ROLL_MIN..RAID_POWER_ROLL_MAX);
-            let arrival_tick = tick + timers.warning;
-
+            let raid = Self::home_raid(player, power, tick + timers.warning);
+            self.announce_raid(pid, Dock::Home, &raid);
             if let Some(state) = self.raid_states.get_mut(&pid) {
-                state.incoming = Some(IncomingRaid { arrival_tick, power });
+                state.incoming = Some(raid);
                 state.missed_rolls = 0;
             }
-
-            let threat = if power < defense * 0.5 {
-                "light"
-            } else if power < defense {
-                "moderate"
-            } else {
-                "heavy"
-            };
-
-            self.pending_events.push(GameEvent {
-                tick,
-                kind: EventKind::RaidIncoming(iac_shared::protocol::RaidIncomingEvent {
-                    player_id: pid,
-                    arrival_tick,
-                    threat: threat.to_string(),
-                    est_power: power,
-                    outpost: None,
-                }),
-            });
-            info!("Raid forecast for player {} ({} threat, arrives tick {})", pid, threat, arrival_tick);
         }
 
         let outposts: Vec<u64> = self.outposts.iter().filter(|(_, o)| o.level >= 1).map(|(owner, _)| *owner).collect();
@@ -3042,13 +3483,16 @@ impl GameEngine {
         let sector = outpost.sector;
         let state = &mut outpost.raid;
 
-        if let Some(incoming) = state.incoming {
-            if tick >= incoming.arrival_tick {
-                state.incoming = None;
-                self.resolve_outpost_raid(owner, incoming.power);
+        if let Some(arrival) = state.incoming.as_ref().map(|raid| raid.arrival_tick) {
+            if tick >= arrival
+                && let Some(raid) = state.incoming.take()
+            {
+                self.begin_siege(owner, Dock::Outpost, raid);
             }
             return;
         }
+        if self.besieged(owner, Dock::Outpost) { return; }
+        let Some(state) = self.outposts.get_mut(&owner).map(|outpost| &mut outpost.raid) else { return; };
 
         if tick < state.next_roll_tick { return; }
         state.next_roll_tick = tick + timers.roll_interval;
@@ -3068,337 +3512,193 @@ impl GameEngine {
             return;
         }
 
-        let power = scaling::outpost_raid_power(sector.dist_from_origin())
-            * rng.random_range(RAID_POWER_ROLL_MIN..RAID_POWER_ROLL_MAX);
-        let arrival_tick = tick + timers.warning;
-        state.incoming = Some(IncomingRaid { arrival_tick, power });
+        let ring = sector.dist_from_origin();
+        let power = scaling::outpost_raid_power(ring) * rng.random_range(RAID_POWER_ROLL_MIN..RAID_POWER_ROLL_MAX);
+        let raid = outpost_raid(ring, power, tick + timers.warning);
+        state.incoming = Some(raid.clone());
         state.missed_rolls = 0;
-
-        let defense = self.outpost_defense_power(owner);
-        let threat = if power < defense * 0.5 {
-            "light"
-        } else if power < defense {
-            "moderate"
-        } else {
-            "heavy"
-        };
-        self.pending_events.push(GameEvent {
-            tick,
-            kind: EventKind::RaidIncoming(iac_shared::protocol::RaidIncomingEvent {
-                player_id: owner,
-                arrival_tick,
-                threat: threat.to_string(),
-                est_power: power,
-                outpost: Some(sector),
-            }),
-        });
-        info!("Raid forecast for the outpost of player {} at {} ({} threat, arrives tick {})", owner, sector, threat, arrival_tick);
+        self.announce_raid(owner, Dock::Outpost, &raid);
     }
 
-    /// A raid reaches `owner`'s outpost. The platform and the owner's ships
-    /// in the sector defend, with the homeworld raid's fog. Repelled,
-    /// nothing happens. Lost, a share of the ships there is destroyed, a
-    /// share of the store and of the holds there above what the next repair
-    /// would take of them is taken, and the outpost is breached. It is
-    /// never destroyed.
-    fn resolve_outpost_raid(&mut self, owner: u64, raid_power: f32) {
+    /// A raid is being fought at `owner`'s `dock`.
+    fn besieged(&self, owner: u64, dock: Dock) -> bool {
+        self.active_combats.values().any(|c| c.siege.as_ref().is_some_and(|siege| siege.owner == owner && siege.dock == dock))
+    }
+
+    /// Warn `owner` of `raid` on its way to their `dock`: when it arrives,
+    /// what it flies, and how it would end against what stands there now.
+    fn announce_raid(&mut self, owner: u64, dock: Dock, raid: &IncomingRaid) {
+        let odds = self.raid_odds(owner, dock, &raid.ships, raid.arms);
+        let threat = match odds.label {
+            RaidLabel::Repelled => "light",
+            RaidLabel::Held => "moderate",
+            RaidLabel::AtRisk | RaidLabel::Lost => "heavy",
+        };
+        let outpost = self.dock_sector(owner, dock).filter(|_| dock == Dock::Outpost);
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::RaidIncoming(iac_shared::protocol::RaidIncomingEvent {
+                player_id: owner,
+                arrival_tick: raid.arrival_tick,
+                threat: threat.to_string(),
+                est_power: raid.power,
+                ships: raid.ships.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect(),
+                odds: Some(odds),
+                outpost,
+            }),
+        });
+        info!("Raid forecast for player {} at {:?} ({} threat, arrives tick {})", owner, dock, threat, raid.arrival_tick);
+    }
+
+    /// What follows a raid on `siege.dock` once its fight is over, or once
+    /// it has found nothing in its way (`outcome` None). The defences that
+    /// fell at home are rebuilt at OGame's rate, at once; ships and Solar
+    /// Satellites lost are lost. A raid that left no defender takes its
+    /// share of the dock's stock above the protected floor, and
+    /// no raid follows for a while; at the outpost it also breaches it,
+    /// and the outpost is never destroyed. `dropped` is the wreckage the
+    /// raiders left and the tick it despawns.
+    fn settle_raid(
+        &mut self,
+        sector: Hex,
+        siege: &Siege,
+        outcome: Option<BattleOutcome>,
+        rounds: u32,
+        losses: &[BattleLosses],
+        dropped: Option<(Resources, u64)>,
+    ) {
         let tick = self.current_tick;
-        let Some(outpost) = self.outposts.get(&owner) else { return; };
-        let (sector, level, store) = (outpost.sector, outpost.repair_level(), outpost.store);
-        let defense_power = self.outpost_defense_power(owner);
+        let (owner, dock) = (siege.owner, siege.dock);
+        let defended = outcome.is_some_and(|outcome| {
+            !matches!(outcome, BattleOutcome::FleetsDestroyed | BattleOutcome::Fled | BattleOutcome::Withdrawn)
+        });
 
-        let mut rng = StdRng::seed_from_u64(
-            self.world_gen.world_seed
-                ^ tick.wrapping_mul(0xE7037ED1A0B428DB)
-                ^ owner.wrapping_mul(0x9FB21C651E98DF25),
-        );
-        let defended = defense_power * rng.random_range(0.9..1.1) >= raid_power;
+        let mut lost: Vec<UnitCount> = Vec::new();
+        let mut fallen = [0u32; DefenceKind::COUNT];
+        let (mut ships_lost, mut satellites_lost) = (0u32, 0u32);
+        for entry in losses.iter().filter(|entry| entry.owner.is_some()) {
+            for units in &entry.lost {
+                match lost.iter_mut().find(|so_far| so_far.unit == units.unit) {
+                    Some(so_far) => so_far.count += units.count,
+                    None => {
+                        let before = lost.partition_point(|so_far| so_far.unit.index() < units.unit.index());
+                        lost.insert(before, *units);
+                    }
+                }
+                match units.unit {
+                    ShipyardItem::Defence(kind) => fallen[kind as usize] += units.count,
+                    ShipyardItem::Ship(_) if entry.battery => satellites_lost += units.count,
+                    ShipyardItem::Ship(_) => ships_lost += units.count,
+                }
+            }
+        }
+        let raiders_lost: Vec<ShipCount> = losses.iter()
+            .filter(|entry| entry.owner.is_none())
+            .flat_map(|entry| &entry.lost)
+            .filter_map(|units| match units.unit {
+                ShipyardItem::Ship(ship_class) => Some(ShipCount { ship_class, count: units.count }),
+                ShipyardItem::Defence(_) => None,
+            })
+            .collect();
+        let rebuilt = if dock == Dock::Home { self.rebuild_defences(owner, &fallen) } else { Vec::new() };
 
-        let (mut resources_lost, mut protected_kept, mut ships_lost) = (Resources::default(), Resources::default(), 0);
+        let (mut resources_lost, mut protected_kept) = (Resources::default(), Resources::default());
         if !defended {
-            ships_lost = self.destroy_docked_ships(owner, sector, RAID_LOST_SHIP_FRACTION, &mut rng);
-            let store = self.outposts.get(&owner).map_or(store, |o| o.store);
-            let rate = Resources { metal: OUTPOST_RAID_LOSS, crystal: OUTPOST_RAID_LOSS, deuterium: OUTPOST_RAID_LOSS };
-            let left;
-            let floor = |pile: Resources| scaling::outpost_repair_payment(level, pile).0;
-            (left, resources_lost, protected_kept) = self.skim_dock(owner, sector, store, floor, rate);
-            if let Some(outpost) = self.outposts.get_mut(&owner) {
-                outpost.store = left;
-                outpost.breached = true;
-                outpost.repair_warned = false;
+            let pace = self.world.pace;
+            match dock {
+                Dock::Home => {
+                    if let Some(player) = self.players.get_mut(&owner) {
+                        let protected = scaling::storage_protected(&player.buildings, &pace);
+                        let rate = Resources { metal: RAID_LOSS_CAP_METAL, crystal: RAID_LOSS_CAP_CRYSTAL, deuterium: RAID_LOSS_CAP_DEUT };
+                        (player.resources, resources_lost, protected_kept) = skim(player.resources, protected, rate);
+                    }
+                }
+                Dock::Outpost => {
+                    if let Some(outpost) = self.outposts.get_mut(&owner) {
+                        let rate = Resources { metal: OUTPOST_RAID_LOSS, crystal: OUTPOST_RAID_LOSS, deuterium: OUTPOST_RAID_LOSS };
+                        (outpost.store, resources_lost, protected_kept) = skim(outpost.store, outpost.protected(), rate);
+                        outpost.breached = true;
+                        outpost.repair_warned = false;
+                    }
+                }
             }
         }
 
         let suppress = RaidTimers::new(&self.world.pace).suppress_after_loss;
-        if let Some(outpost) = self.outposts.get_mut(&owner) {
-            outpost.raid.last_raid_tick = tick;
+        let clock = match dock {
+            Dock::Home => self.raid_states.get_mut(&owner),
+            Dock::Outpost => self.outposts.get_mut(&owner).map(|outpost| &mut outpost.raid),
+        };
+        if let Some(state) = clock {
+            state.last_raid_tick = tick;
             if !defended {
-                outpost.raid.suppress_until = tick + suppress;
+                state.suppress_until = tick + suppress;
             }
         }
 
+        let ships_of = |ships: &Ships| ships.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect();
         self.pending_events.push(GameEvent {
             tick,
             kind: EventKind::RaidResolved(iac_shared::protocol::RaidResolvedEvent {
                 player_id: owner,
-                outpost: Some(sector),
+                outpost: (dock == Dock::Outpost).then_some(sector),
                 defended,
-                breached: !defended,
+                outcome,
+                rounds,
+                breached: dock == Dock::Outpost && !defended,
                 resources_lost,
-                salvage_dropped: None,
-                salvage_despawn_tick: None,
-                raid_power,
-                defense_power,
-                satellites_lost: 0,
-                structures_lost: 0,
-                structures_restored: 0,
-                protected_kept,
-                ships_lost,
-            }),
-        });
-        info!(
-            "Raid on the outpost of player {} at {} resolved: {} (raid {:.0} vs defense {:.0})",
-            owner, sector, if defended { "repelled" } else { "lost" }, raid_power, defense_power,
-        );
-    }
-
-    fn resolve_raid(&mut self, player_id: u64, raid_power: f32) -> Result<(), Box<dyn std::error::Error>> {
-        let Some(player) = self.players.get(&player_id) else { return Ok(()); };
-        let homeworld = player.homeworld;
-
-        // Defense is measured at arrival, not forecast — ships built or
-        // recalled during the warning window count.
-        let defense_power = self.home_defense_power(player_id);
-
-        let mut rng = StdRng::seed_from_u64(
-            self.current_tick.wrapping_mul(0xD6E8FEB86659FD93).wrapping_add(player_id),
-        );
-        // ±10% fog of war on the outcome so a near-run thing stays tense.
-        let effective_defense = defense_power * rng.random_range(0.9..1.1);
-        let defended = effective_defense >= raid_power;
-
-        // Raid fleet value, for salvage: treat it as Light Fighters.
-        let raiders = (raid_power / scaling::ship_power(ShipClass::LightFighter)).ceil().max(1.0);
-        let raid_value = ShipClass::LightFighter.build_cost().scale(f64::from(raiders));
-
-        let mut resources_lost = Resources::default();
-        let mut ships_lost = 0;
-        let mut satellites_lost = 0;
-        let mut salvage_dropped: Option<Resources> = None;
-        let mut salvage_despawn_tick: Option<u64> = None;
-        let mut protected_kept = Resources::default();
-        let (structures_lost, structures_restored);
-
-        if defended {
-            (structures_lost, structures_restored) =
-                self.damage_structures(player_id, (raid_power / defense_power).min(1.0) * RAID_STRUCTURE_DAMAGE, true);
-            let salvage = raid_value.scale(RAID_DEFENSE_SALVAGE_FRACTION);
-            let key = homeworld.to_key();
-            let tick = self.current_tick;
-            let ov = self.ensure_override(key);
-            ov.salvage = Some(ov.salvage.unwrap_or_default().add(salvage));
-            salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
-            ov.salvage_despawn_tick = salvage_despawn_tick;
-            salvage_dropped = Some(salvage);
-        } else {
-            (structures_lost, structures_restored) =
-                self.damage_structures(player_id, RAID_LOST_STRUCTURE_FRACTION, false);
-            ships_lost = self.destroy_docked_ships(player_id, homeworld, RAID_LOST_SHIP_FRACTION, &mut rng);
-            let player = self.players.get_mut(&player_id).unwrap();
-            satellites_lost = (player.satellites as f32 * RAID_LOST_SHIP_FRACTION).ceil() as u32;
-            player.satellites -= satellites_lost.min(player.satellites);
-            let player = &self.players[&player_id];
-            let protected = scaling::storage_protected(&player.buildings, &self.world.pace);
-            let rate = Resources { metal: RAID_LOSS_CAP_METAL, crystal: RAID_LOSS_CAP_CRYSTAL, deuterium: RAID_LOSS_CAP_DEUT };
-            let left;
-            (left, resources_lost, protected_kept) = self.skim_dock(player_id, homeworld, player.resources, |_| protected, rate);
-            self.players.get_mut(&player_id).unwrap().resources = left;
-        }
-
-        let tick = self.current_tick;
-        let timers = RaidTimers::new(&self.world.pace);
-        let state = self.raid_states.entry(player_id).or_insert_with(|| RaidState {
-            first_seen_tick: tick,
-            next_roll_tick: tick + timers.roll_interval,
-            last_raid_tick: 0,
-            suppress_until: 0,
-            missed_rolls: 0,
-            incoming: None,
-        });
-        state.last_raid_tick = tick;
-        if !defended {
-            state.suppress_until = tick + timers.suppress_after_loss;
-        }
-
-        self.pending_events.push(GameEvent {
-            tick: self.current_tick,
-            kind: EventKind::RaidResolved(iac_shared::protocol::RaidResolvedEvent {
-                player_id,
-                outpost: None,
-                defended,
-                breached: false,
-                resources_lost,
-                salvage_dropped,
-                salvage_despawn_tick,
-                raid_power,
-                defense_power,
+                salvage_dropped: dropped.map(|(salvage, _)| salvage),
+                salvage_despawn_tick: dropped.map(|(_, despawn)| despawn),
+                raid_power: siege.power,
+                defense_power: siege.met,
+                raiders: ships_of(&siege.muster),
+                raiders_lost,
+                structures_lost: fallen.iter().sum(),
+                structures_restored: rebuilt.iter().map(|units| units.count).sum(),
+                lost,
+                rebuilt,
                 satellites_lost,
-                structures_lost,
-                structures_restored,
                 protected_kept,
                 ships_lost,
             }),
         });
         info!(
-            "Raid on player {} resolved: {} (raid {:.0} vs defense {:.0})",
-            player_id, if defended { "repelled" } else { "lost" },
-            raid_power, defense_power,
+            "Raid on player {} at {} ({:?}) resolved: {} after {} round(s) (raid {:.0} met {:.0})",
+            owner, sector, dock, if defended { "repelled" } else { "lost" }, rounds, siege.power, siege.met,
         );
-
-        Ok(())
     }
 
-    /// What a lost raid takes at a dock of `owner`'s in `sector`. The dock's
-    /// own `stock` and the cargo aboard the owner's fleets there are raided
-    /// as one pile with one floor, which `protected` reads off the pile:
-    /// `rate` of what lies above it is taken, and each part pays its share.
-    /// Returns the stock that is left, what was taken in all, and what the
-    /// floor kept.
-    fn skim_dock(
-        &mut self,
-        owner: u64,
-        sector: Hex,
-        stock: Resources,
-        protected: impl Fn(Resources) -> Resources,
-        rate: Resources,
-    ) -> (Resources, Resources, Resources) {
-        let holds: Vec<u64> = self.fleets.values()
-            .filter(|f| f.owner_id == owner && f.location == sector && !f.ships.is_empty() && f.cargo.total() > 0.0)
-            .map(|f| f.id)
-            .collect();
-        let aboard = holds.iter().fold(Resources::default(), |sum, fid| sum.add(self.fleets[fid].cargo));
-        let pile = stock.add(aboard);
-        let protected = protected(pile);
-        let kept = protected.min(pile);
-        let exposed = pile.sub(protected);
-        let lost = Resources {
-            metal: exposed.metal.max(0.0) * rate.metal,
-            crystal: exposed.crystal.max(0.0) * rate.crystal,
-            deuterium: exposed.deuterium.max(0.0) * rate.deuterium,
-        };
-        let share_of = |part: Resources| {
-            let mut share = Resources::default();
-            for kind in ResourceKind::ALL {
-                if pile.get(kind) > 0.0 {
-                    *share.get_mut(kind) = lost.get(kind) * (part.get(kind) / pile.get(kind));
-                }
-            }
-            share
-        };
-        for fid in holds {
-            let fleet = self.fleets.get_mut(&fid).unwrap();
-            fleet.cargo = fleet.cargo.sub(share_of(fleet.cargo));
-        }
-        (stock.sub(share_of(stock)), lost, kept)
-    }
-
-    /// A raid wears down the structures at home: `fraction` of each kind is
-    /// destroyed. With `restore`, 70 percent of what fell comes back free
-    /// after a delay. Returns (destroyed, restoring).
-    fn damage_structures(&mut self, player_id: u64, fraction: f32, restore: bool) -> (u32, u32) {
-        let due = self.current_tick + self.world.pace.finds_ticks(RAID_RESTORE_TICKS as f64);
-        let Some(player) = self.players.get_mut(&player_id) else { return (0, 0); };
-        let (mut lost, mut coming) = (0, 0);
+    /// OGame's rebuild: of the defences of each kind that fell, where fewer
+    /// than `DEFENCE_REBUILD_EACH_BELOW` fell each comes back with
+    /// `DEFENCE_REBUILD_PCT` chances in a hundred, and where more fell a
+    /// share within `DEFENCE_REBUILD_SPREAD` of it is rolled for the kind.
+    /// They stand again at once and cost nothing. A dome is not rebuilt
+    /// beside one ordered since. Returns what was rebuilt, by kind.
+    fn rebuild_defences(&mut self, owner: u64, fallen: &[u32; DefenceKind::COUNT]) -> Vec<UnitCount> {
+        let mut rng = StdRng::seed_from_u64(
+            self.current_tick.wrapping_mul(0xD6E8FEB86659FD93).wrapping_add(owner),
+        );
+        let mut rebuilt = Vec::new();
         for kind in DefenceKind::ALL {
-            let i = kind as usize;
-            let destroyed = ((player.defences.count[i] as f32 * fraction).round() as u32).min(player.defences.count[i]);
-            if destroyed == 0 { continue; }
-            player.defences.count[i] -= destroyed;
-            lost += destroyed;
-            if restore {
-                let back = (destroyed as f32 * RAID_STRUCTURE_RESTORE).round() as u32;
-                player.defences.restoring[i] += back;
-                player.defences.restore_tick[i] = due;
-                coming += back;
+            let fell = fallen[kind as usize];
+            if fell == 0 { continue; }
+            let mut back = if fell < DEFENCE_REBUILD_EACH_BELOW {
+                (0..fell).filter(|_| rng.random_range(0..100u32) < DEFENCE_REBUILD_PCT).count() as u32
+            } else {
+                let pct = rng.random_range(DEFENCE_REBUILD_PCT - DEFENCE_REBUILD_SPREAD..=DEFENCE_REBUILD_PCT + DEFENCE_REBUILD_SPREAD);
+                (u64::from(fell) * u64::from(pct) / 100) as u32
+            };
+            let Some(player) = self.players.get_mut(&owner) else { continue; };
+            if let Some(most) = kind.max_count() {
+                back = back.min(most.saturating_sub(Self::defences_owned_and_ordered(player, kind)));
             }
+            if back == 0 { continue; }
+            player.defences.count[kind as usize] += back;
+            rebuilt.push(UnitCount { unit: ShipyardItem::Defence(kind), count: back });
         }
-        (lost, coming)
+        rebuilt
     }
 
-    /// A lost raid reaches the ships of `player_id` at their dock in `dock`,
-    /// the homeworld or the outpost: `fraction` of them (at least one) are
-    /// destroyed, chosen at random, and the holds they leave are settled.
-    /// Returns how many.
-    fn destroy_docked_ships(&mut self, player_id: u64, dock: Hex, fraction: f32, rng: &mut StdRng) -> u32 {
-        let fleet_ids: Vec<u64> = self.fleets.values()
-            .filter(|f| f.owner_id == player_id && f.location == dock && !f.ships.is_empty())
-            .map(|f| f.id)
-            .collect();
-        let mut docked: u32 = fleet_ids.iter().map(|fid| self.fleets[fid].ships.total()).sum();
-        if docked == 0 { return 0; }
-        let lose = ((docked as f32 * fraction).ceil() as u32).clamp(1, docked);
-        for _ in 0..lose {
-            let mut pick = rng.random_range(0..docked);
-            for fid in &fleet_ids {
-                let Some(fleet) = self.fleets.get_mut(fid) else { continue; };
-                let here = fleet.ships.total();
-                if pick < here {
-                    fleet.ships.remove_at(pick);
-                    break;
-                }
-                pick -= here;
-            }
-            docked -= 1;
-        }
-        for fid in &fleet_ids {
-            self.settle_hold(*fid);
-        }
-        for fid in fleet_ids {
-            if let Some(f) = self.fleets.get(&fid) {
-                if f.ships.is_empty() {
-                    self.remove_fleet(fid);
-                } else {
-                    let fuel_max = fleet_fuel_max(f, &self.players[&player_id]);
-                    let f = self.fleets.get_mut(&fid).unwrap();
-                    f.fuel_max = fuel_max;
-                    f.fuel = f.fuel.min(fuel_max);
-                }
-            }
-        }
-        lose
-    }
-
-    /// Structures a repelled raid knocked out return when their time is up.
-    fn process_defence_restore(&mut self) {
-        let tick = self.current_tick;
-        let mut notes = Vec::new();
-        for player in self.players.values_mut() {
-            let mut back = 0;
-            for kind in DefenceKind::ALL {
-                let i = kind as usize;
-                if player.defences.restoring[i] > 0 && tick >= player.defences.restore_tick[i] {
-                    player.defences.count[i] += player.defences.restoring[i];
-                    back += player.defences.restoring[i];
-                    player.defences.restoring[i] = 0;
-                }
-            }
-            if back > 0 {
-                notes.push((player.id, back, player.homeworld));
-            }
-        }
-        for (pid, back, home) in notes {
-            self.pending_events.push(GameEvent {
-                tick,
-                kind: EventKind::Alert(AlertEvent {
-                    player_id: Some(pid),
-                    level: AlertLevel::Info,
-                    message: format!("{back} defence structure(s) rebuilt after the raid"),
-                    sector: Some(home),
-                    fleet_id: None,
-                }),
-            });
-        }
-    }
 
     /// Combat power defending the homeworld: docked ships, Solar Satellites
     /// and every defence.
@@ -3622,6 +3922,23 @@ impl GameEngine {
             build_ticks: scaling::outpost_build_ticks(1, &pace),
             raid_power: outpost_raid_range(ring),
             platform_power: scaling::outpost_platform_power(1),
+            platform: platform_units(1),
+            raid: Self::outpost_ring(fleet, sector).is_ok().then(|| {
+                let power = scaling::outpost_raid_power(ring) * RAID_POWER_ROLL_MID;
+                let raid = outpost_raid(ring, power, 0);
+                let platform = scaling::outpost_platform(1)
+                    .iter()
+                    .map(|&(kind, count)| Squad { unit: ShipyardItem::Defence(kind), count, damaged: Vec::new() })
+                    .collect();
+                let ours = Force::of(Arms::BASE, platform);
+                RaidForecast {
+                    arrival_tick: None,
+                    rounds_left: None,
+                    power,
+                    ships: raid.ships.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect(),
+                    odds: self.odds_outlook(&ours, &Force::of(raid.arms, raid.ships.squads()), RAID_ROUNDS).raid(),
+                }
+            }),
             refusal: verdict.err().map(|refusal| refusal.reason),
         })
     }
@@ -3670,6 +3987,7 @@ impl GameEngine {
     /// Give up `player_id`'s outpost: its store drifts in the sector and
     /// the lair it displaced returns after its usual delay.
     pub fn handle_abandon_outpost(&mut self, player_id: u64) -> Result<(), ErrorCode> {
+        if self.besieged(player_id, Dock::Outpost) { return Err(ErrorCode::OnCooldown); }
         let outpost = self.outposts.remove(&player_id).ok_or(ErrorCode::InvalidCommand)?;
         self.outpost_sites.remove(&outpost.sector.to_key());
         let sector = outpost.sector;
@@ -4278,6 +4596,15 @@ impl GameEngine {
                 return Err(Refusal::new(ErrorCode::InvalidCommand, format!("fleet {fleet_id} is in no fight to leave")));
             }
         }
+        if let Some(player) = self.players.get(&fleet.owner_id)
+            && (fleet.location == player.homeworld || self.docked_at_outpost(fleet))
+            && self.count_deployed_fleets(fleet.owner_id, player.homeworld) >= MAX_FLEETS_PER_PLAYER
+        {
+            return Err(Refusal::new(ErrorCode::FleetLimitReached, format!(
+                "fleet {fleet_id} cannot leave the dock at {at}: {MAX_FLEETS_PER_PLAYER} of your fleets are away from \
+                 your docks already, the most an empire may have there",
+            )));
+        }
         let fuel = self.hop_fuel_cost(fleet) * FLEE_FUEL_MULTIPLIER;
         if fleet.fuel < fuel {
             return Err(Refusal::new(ErrorCode::InsufficientFuel, format!(
@@ -4292,6 +4619,9 @@ impl GameEngine {
     /// The odds of `combat` as it stands: its fleets that are firing against
     /// every group in it, each with the losses and the damage it has taken.
     fn fight_ratio(&self, combat: &Combat) -> f32 {
+        if let Some(outlook) = self.siege_outlook(combat) {
+            return outlook.ratio();
+        }
         let mut fleet_ids = combat.player_fleet_ids.clone();
         fleet_ids.sort_unstable();
         let mut ours = Force::default();
@@ -4305,6 +4635,20 @@ impl GameEngine {
             theirs.join(&Force::of(group.arms, group.ships.squads()));
         }
         self.odds_ratio(&ours, &theirs)
+    }
+
+    /// How the raid fought in `combat` would end from where it stands: its
+    /// fleets that are firing and its battery against the raiders, over the
+    /// rounds that are left. None for a fight that is not a raid.
+    fn siege_outlook(&self, combat: &Combat) -> Option<odds::Outlook> {
+        let siege = combat.siege.as_ref()?;
+        let mut ours = Force::default();
+        for fleet in self.fleets_fighting(combat).iter().filter_map(|id| self.fleets.get(id)).filter(|f| f.state != FleetStatus::Moving) {
+            ours.join(&fleet_force(fleet));
+        }
+        ours.join(&Force::of(self.battery_arms(siege.owner, siege.dock), siege.battery.clone()));
+        let theirs = Force::of(siege.arms, siege.raiders.squads());
+        Some(self.odds_outlook(&ours, &theirs, RAID_ROUNDS.saturating_sub(combat.round).max(1)))
     }
 
     /// What a `move` out of the fight `fleet` is in would cost right now,
@@ -4410,20 +4754,32 @@ impl GameEngine {
         ratio
     }
 
-    /// The ratio of `ours` against `theirs`: the fight itself, played
-    /// forward (`odds::outlook`), and remembered by the two sides.
+    /// The ratio of `ours` against `theirs` in a fight in open space.
     pub fn odds_ratio(&self, ours: &Force, theirs: &Force) -> f32 {
-        let key = (ours.clone(), theirs.clone());
-        if let Some(&ratio) = self.odds_memo.borrow().get(&key) {
-            return ratio;
+        self.odds_of(ours, theirs, ODDS_ROUNDS).1
+    }
+
+    /// What a fight of `ours` against `theirs` over at most `rounds` rounds
+    /// is expected to leave of each: a raid's reading of it.
+    pub fn odds_outlook(&self, ours: &Force, theirs: &Force, rounds: u32) -> odds::Outlook {
+        self.odds_of(ours, theirs, rounds).0
+    }
+
+    /// The fight itself, played forward (`odds::outlook_within`), with the
+    /// ratio it comes to, and remembered by the two sides and the rounds.
+    fn odds_of(&self, ours: &Force, theirs: &Force, rounds: u32) -> (odds::Outlook, f32) {
+        let key = (ours.clone(), theirs.clone(), rounds);
+        if let Some(&known) = self.odds_memo.borrow().get(&key) {
+            return known;
         }
-        let ratio = odds::outlook(ours, theirs).ratio();
+        let outlook = odds::outlook_within(ours, theirs, rounds);
+        let known = (outlook, outlook.ratio());
         let mut memo = self.odds_memo.borrow_mut();
         if memo.len() >= ODDS_MEMO_LIMIT {
             memo.clear();
         }
-        memo.insert(key, ratio);
-        ratio
+        memo.insert(key, known);
+        known
     }
 
     /// What the ore tiles of `coord` hold now; None when the sector has no ore.
@@ -5545,7 +5901,7 @@ impl GameEngine {
         self.order_shipyard(player_id, ShipyardItem::Defence(kind), count)
     }
 
-    /// Defences of `kind` standing, being rebuilt and paid for in the yard.
+    /// Defences of `kind` standing and paid for in the yard.
     pub fn defences_owned_and_ordered(player: &Player, kind: DefenceKind) -> u32 {
         let item = ShipyardItem::Defence(kind);
         let building = player.ship_queue.iter().filter(|q| q.item == item).map(|q| u32::from(q.undelivered()));
@@ -7145,6 +7501,11 @@ impl GameEngine {
         let sector = fleet.location;
         let owner = self.players.get(&fleet.owner_id).map(|p| p.name.clone()).unwrap_or_default();
 
+        // A sector under raid holds that fight and no other.
+        if self.active_combats.values().any(|c| c.sector == sector && c.siege.is_some()) {
+            return Ok(());
+        }
+
         // Check for existing combat in same sector
         for existing in self.active_combats.values() {
             if existing.sector == sector {
@@ -7194,6 +7555,7 @@ impl GameEngine {
             fled: Vec::new(),
             losses: Vec::new(),
             last_round: None,
+            siege: None,
         };
         new_combat.add_player_fleet(fleet_id);
         new_combat.add_npc_fleet(npc_id);
@@ -7258,7 +7620,9 @@ impl GameEngine {
     /// Take a fleet that has left the sector out of the fight it was in:
     /// `jumped` out of it under fire, or gone home by the emergency jump.
     /// The fight goes on for the fleets that stay; with none left it is
-    /// over, and a group may follow those that jumped.
+    /// over, and a group may follow those that jumped. A raid's fight goes
+    /// on while its battery stands, and with nothing left to defend the
+    /// dock it is lost; raiders follow nobody.
     fn leave_combat(&mut self, fleet_id: u64, jumped: bool) {
         let Some(combat) = self.active_combats.values_mut().find(|c| c.has_player_fleet(fleet_id)) else { return; };
         let combat_id = combat.id;
@@ -7266,10 +7630,19 @@ impl GameEngine {
         if jumped {
             combat.fled.push(fleet_id);
         }
-        let fleets = &self.fleets;
-        if !combat.player_fleet_ids.iter().any(|id| fleets.get(id).is_some_and(|f| !f.ships.is_empty())) {
-            let withdrew = fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
-            let outcome = if jumped { BattleOutcome::Fled } else { BattleOutcome::Withdrawn };
+        let battery = combat.siege.as_ref().map(Siege::battery_stands);
+        if battery.is_some() {
+            self.enlist_garrison(combat_id);
+        }
+        let Some(combat) = self.active_combats.get(&combat_id) else { return; };
+        if battery == Some(true) || !self.fleets_fighting(combat).is_empty() {
+            return;
+        }
+        let outcome = if jumped { BattleOutcome::Fled } else { BattleOutcome::Withdrawn };
+        if battery.is_some() {
+            self.end_siege(combat_id, outcome);
+        } else {
+            let withdrew = self.fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
             self.end_combat(combat_id, outcome, withdrew);
         }
     }
@@ -7552,6 +7925,36 @@ pub fn outpost_raid_range(ring: u16) -> PowerRange {
     PowerRange { least: base * RAID_POWER_ROLL_MIN, most: base * RAID_POWER_ROLL_MAX }
 }
 
+/// What a lost raid takes of a dock's `stock`: `rate` of what lies above
+/// `protected`. Returns the stock that is left, what was taken, and what
+/// the floor kept. The cargo of the ships that stood there is in the stock
+/// by then, as far as it had room: they fell in the fight, and a hold that
+/// loses its ships is emptied into the dock (`settle_hold`).
+fn skim(stock: Resources, protected: Resources, rate: Resources) -> (Resources, Resources, Resources) {
+    let exposed = stock.sub(protected);
+    let lost = Resources {
+        metal: exposed.metal.max(0.0) * rate.metal,
+        crystal: exposed.crystal.max(0.0) * rate.crystal,
+        deuterium: exposed.deuterium.max(0.0) * rate.deuterium,
+    };
+    (stock.sub(lost), lost, protected.min(stock))
+}
+
+/// A raid of `power` on an outpost at `ring`, arriving at `arrival_tick`:
+/// ships of the class the ring's own groups fly.
+fn outpost_raid(ring: u16, power: f32, arrival_tick: u64) -> IncomingRaid {
+    let (class, count, multiplier) = scaling::outpost_raid_composition(ring, power);
+    IncomingRaid { arrival_tick, power, ships: Ships::of(&[(class, count)]), arms: Arms::of_grade(multiplier) }
+}
+
+/// The defences an outpost's platform is at `level`, as a client is told.
+pub fn platform_units(level: u8) -> Vec<UnitCount> {
+    scaling::outpost_platform(level)
+        .iter()
+        .map(|&(kind, count)| UnitCount { unit: ShipyardItem::Defence(kind), count })
+        .collect()
+}
+
 /// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.
 fn npc_salvage(npc: &NpcFleet, pace: &Pace) -> Resources {
     scaling::split_loot(scaling::wreck_value(npc.power)).scale(pace.finds_mult())
@@ -7729,6 +8132,7 @@ fn tally_losses(losses: &mut Vec<BattleLosses>, group: &BattleGroup) {
             owner: group.owner.clone(),
             label: group.label.clone(),
             mine: false,
+            battery: group.battery,
             lost: Vec::new(),
             destroyed: false,
         });

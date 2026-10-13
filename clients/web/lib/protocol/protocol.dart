@@ -41,10 +41,6 @@ bool storageNearCap(num stock, num cap) => cap > 0 && stock.toDouble() / cap.toD
 /// What a `refine` order loses against a dock, as a whole percent.
 const refineLossPct = (refineLoss * 100 + 0.5) ~/ 1;
 
-/// The share of the ships at home, and of the Solar Satellites, that a raid
-/// which breaks through destroys, as a whole percent.
-const raidLostShipPct = (raidLostShipFraction * 100 + 0.5) ~/ 1;
-
 /// The zones of the world. A ring's zone is cut as the engine's
 /// `Zone::from_distance` cuts it, at the radii Rust holds; the names are the
 /// client's.
@@ -204,6 +200,7 @@ extension HomeworldStateEdit on HomeworldState {
     ResearchItem? researchActive,
     bool clearResearchActive = false,
     List<QueuedResearch>? researchPending,
+    RaidForecast? raid,
     HomeworldCatalog? catalog,
   }) =>
       HomeworldState(
@@ -231,6 +228,7 @@ extension HomeworldStateEdit on HomeworldState {
         satellitePower: satellitePower ?? this.satellitePower,
         structurePower: structurePower ?? this.structurePower,
         nextRaidEstimatePower: nextRaidEstimatePower,
+        raid: raid ?? this.raid,
         catalog: catalog ?? this.catalog,
       );
 }

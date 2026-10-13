@@ -1688,6 +1688,23 @@
       "metal": 0.0
     },
     "queue_waiting_max": 3,
+    "raid": {
+      "odds": {
+        "destroyed": 0.0,
+        "kept": 0.0,
+        "label": "lost",
+        "lost": 1.0,
+        "outlasted": 0.0,
+        "raiders_kept": 1.0
+      },
+      "power": 55.5,
+      "ships": [
+        {
+          "class": "LightFighter",
+          "count": 1
+        }
+      ]
+    },
     "research": [],
     "research_pending": [],
     "satellite_power": 0.0,

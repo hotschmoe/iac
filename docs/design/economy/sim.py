@@ -24,11 +24,14 @@ inner ring, hunt and board up to ring 20), far = greedy (engage at 1.5x, mine th
 farthest ring whose net value is within 80% of the best).  The competent player's
 milestone times are the median of three session-schedule offsets.  Piloting is
 modelled as expected values (ore refill supply, respawn supply, active-time caps,
-attrition, refuel cost), not as individual fights, and a raid on the homeworld as
-one number against another.
+attrition, refuel cost), not as individual fights.  A raid on the homeworld is not
+fought here either: the game fights it as a battle of at most RAID_ROUNDS rounds, and
+this player only buys defence until its power is over the strongest raid's, a rule of
+thumb of its own that no rule of the game reads.
 Not modelled: the hub exchange as a way to turn one resource into another, outposts,
-refining fuel from a hold, what a drive's research adds to speed, and what a lost
-raid takes.  The planner is heuristic: expect about +-15% run-to-run noise.
+refining fuel from a hold, what a drive's research adds to speed, what a raid's fight
+destroys and what a lost raid takes.  The planner is heuristic: expect about +-15%
+run-to-run noise.
 """
 import math, sys, argparse, json, pathlib, functools
 from collections import defaultdict
@@ -727,7 +730,8 @@ class Sim:
         if satellites > 0:
             item = ('satellite', min(satellites, ENERGY_BATCH))
         elif self.raid_eligible():
-            # defence first when the strongest raid of the forecast would beat us
+            # defence first while the strongest raid of the forecast outweighs what stands at home: this
+            # player's own rule of thumb; the game fights the raid as a battle and compares no two powers
             short = RAID_POWER_ROLL_MAX * raid_power(self.econ_pts) - self.def_power()
             pick = self.best_defence() if short > 0 else None
             if pick:
@@ -1246,8 +1250,9 @@ def player_text():
          + ', '.join(f'{LABEL[n]} x{ratio:g}' for n, ratio, _, _ in SCRIPT)
          + f'), the Crystal Mine or the Deuterium Synthesizer raised up to {SCARCE_AHEAD} levels past it when its resource runs out, '
          'power ordered with each mine from the cheapest source at the score\'s weights and no mine begun before its power, '
-         'a store raised when a cap is in the way, defence bought when the strongest raid of the forecast would beat the warships '
-         'docked at home, the Solar Satellites and the defences together, and this research order:', '']
+         'a store raised when a cap is in the way, defence bought while the strongest raid of the forecast outweighs the warships '
+         'docked at home, the Solar Satellites and the defences together on the power scale (the game fights a raid as a battle; '
+         'the comparison is this player\'s rule of thumb), and this research order:', '']
     for what, goals in RESEARCH_PLAN:
         L.append(f'- {what}: ' + ', '.join(f'{LABEL[n]} {l}' for n, l in goals))
     asked = {n for _, goals in RESEARCH_PLAN for n, _ in goals}

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:iac_client/console/battle.dart' show flightPrice;
+import 'package:iac_client/console/battle.dart' show flightPrice, raidForce, raidKept, roundsLeftOf;
 import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/console/kv_store.dart';
@@ -43,10 +43,7 @@ class _Fake extends DemoController {
         catalog: s.catalog,
       );
     }
-    return s.copyWith(
-      stock: stockOverride,
-      raid: proto.RaidIncomingEvent(playerId: 1, arrivalTick: s.tick + 270, threat: 'Moderate', estPower: 120),
-    );
+    return s.copyWith(stock: stockOverride);
   }
 }
 
@@ -70,6 +67,16 @@ void main() {
     expect(find.textContaining('Needs Computer Technology level 3 (you have 1)'), findsOneWidget);
     expect(find.text('VIEW TECH'), findsOneWidget);
     expect(find.byKey(const Key('raid-card')), findsOneWidget);
+    final raid = c.state.hw!.raid;
+    Finder onCard(String text) => find.descendant(of: find.byKey(const Key('raid-card')), matching: find.textContaining(text));
+    expect(onCard('RAID IN '), findsOneWidget, reason: 'the card counts down to the raid the state announces');
+    expect(onCard(raidForce(raid.ships, raid.power)), findsOneWidget, reason: 'and says what it flies');
+    expect((tester.widget<Text>(find.byKey(const Key('raid-card-label'))).data, raid.odds.label), ('REPELLED', proto.RaidLabel.repelled),
+        reason: 'the forecast\'s label, not a comparison of two powers');
+    expect(tester.widget<Text>(find.byKey(const Key('raid-card-sentence'))).data, proto.RaidLabel.repelled.outcome.toUpperCase());
+    expect(onCard('DESTROYED 100%'), findsOneWidget);
+    expect(onCard('LOST 0%'), findsOneWidget);
+    expect(tester.widget<Text>(find.byKey(const Key('raid-card-kept'))).data, '${raidKept(raid.odds).toUpperCase()}.');
     expect(find.text('COMMS'), findsNothing);
     expect(find.text('TEAM-UPS'), findsNothing);
     expect(find.byKey(const Key('slot-comms')), findsOneWidget);
@@ -116,6 +123,31 @@ void main() {
     await tester.tap(btn);
     await tester.pump(const Duration(milliseconds: 100));
     expect(c.hwTab, HomeworldTab.defence);
+    await endShell(tester, c);
+  });
+
+  testWidgets('a raid that has arrived is on the card, in the top bar and in status as being fought, and the bar opens the Defence tab with its fight',
+      (tester) async {
+    final c = await _boot(tester);
+    final bar = find.byKey(const ValueKey('hud-raid'));
+    expect(find.descendant(of: bar, matching: find.textContaining('REPELLED')), findsOneWidget, reason: 'a raid on its way stands in the top bar with its label');
+    c.raidHome(c.state.hw!.raid.power, inTicks: 2);
+    for (var i = 0; i < 4 && c.state.raidAtHome == null; i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final raid = c.state.hw!.raid;
+    expect((raid.roundsLeft, raid.arrivalTick), (proto.raidRounds, null), reason: 'the forecast is the raid being fought');
+    final card = find.byKey(const Key('raid-card'));
+    expect(find.descendant(of: card, matching: find.text('RAID BEING FOUGHT')), findsOneWidget);
+    expect(find.descendant(of: card, matching: find.textContaining(roundsLeftOf(proto.raidRounds))), findsOneWidget);
+    expect(find.descendant(of: bar, matching: find.textContaining('FOUGHT')), findsOneWidget);
+    c.handleCommand('status');
+    expect(c.state.events.map((e) => e.message), contains(startsWith('Raid on your homeworld. Being fought, ${roundsLeftOf(proto.raidRounds)}: a raid of ')));
+    await tester.tap(bar);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.hwTab, HomeworldTab.defence);
+    expect(find.byKey(const Key('raid-forecast')), findsOneWidget, reason: 'the bar opens the Defence tab');
+    expect(find.byKey(const Key('battle-panel')), findsOneWidget, reason: 'where the fight is told');
     await endShell(tester, c);
   });
 

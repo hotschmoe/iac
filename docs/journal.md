@@ -8243,3 +8243,688 @@ the pursuit panel and its lane on the map, a refusal to leave, a doctrine's
 without a warship picks no fight ended their losses (18,279 ships in a blitz
 day before, 0 after) and also most of the hands-on raider's fighting in a
 season week (12 fights won where it won 290); nothing was done about that.
+
+## 2026-10-14: a raid is fought as a battle, at the homeworld and at the outpost (slice 4 of the OGame work, stage 1)
+
+Slice 4 of `docs/design/ogame.md`, sections 7.6 and 12, as far as it goes
+without hand-written Dart: the engine, the wire, the bots, the runner, the
+headless tools and the documents. The web client is stage 2 and is not
+touched. The branch (`worktree-agent-aa04d228ab8d3a0d5`) starts from
+`cea4528`, the engine halves of slices 2 and 3, which are not on master
+either; nothing is merged. `SAVE_FORMAT` is 11 and `ECONOMY_VERSION` 12;
+`WORLDGEN_VERSION` stays 4. Nothing is migrated.
+
+**Built.**
+
+- *The raid is a fight.* When a raid arrives it stands at the dock and
+  fights from the next tick: one `combat::round` a tick, the raiders
+  against every fleet of the owner standing there, every defence and every
+  Solar Satellite, for at most `RAID_ROUNDS`, 6. Fleets fight with their
+  refit; defences and satellites with the owner's research of that tick.
+  It is a `Combat` with a `Siege` in it: the raiders are not an
+  `NpcFleet`, and nothing else in the world knows them.
+- *Three endings.* No raider is left: repelled, and three tenths of what
+  the raiders cost lies at home as wreckage. The rounds are over, or a
+  round took no hull from anybody, and a defender stands
+  (`BattleOutcome::Outlasted`): repelled, nothing taken, no wreckage. No
+  defender is left: lost, 8, 8 and 5 percent of the stockpile above the
+  protected share are taken and no raid comes for the quiet after a loss.
+  A raid that meets nothing at all is lost on the spot, without a fight.
+- *The rebuild.* Of the defences that fell, about 70 in a hundred stand
+  again the tick the fight ends, for nothing: of a kind that lost fewer
+  than ten each on its own 70 in a hundred, of one that lost ten or more a
+  share of 60 to 80 percent. Ships and Solar Satellites lost are lost. The
+  delayed return of structures and everything that served it is gone.
+- *What a raid flies* (`scaling::raid_composition`, the table
+  `RAID_WINGS`): Light Fighters; two fifths of its power in Cruisers once
+  20 Rocket Launchers stand; three tenths in Bombers once 20 Light Lasers,
+  Heavy Lasers and Ion Cannons stand between them. Fixed with the raid's
+  power when it is announced. The power is what it was.
+- *Leaving.* A fleet may leave during the warning by an ordinary `move`,
+  or during the fight by slice 3's flight; nothing follows it. With
+  defences or satellites standing the fight goes on without it. A fleet
+  that arrives home during the fight docks and stands in that tick's
+  round; what the yard finishes stands in the next; research finished
+  reaches the defences the next round and a fleet when the fight is over.
+- *The outpost.* The same fight. Its platform is defences now: 4 Rocket
+  Launchers at level 1; 8 and 4 Light Lasers at level 2; 16, 8 and 4
+  Heavy Lasers at level 3, at the catalogue's figures, whole again after
+  every fight it is not breached in. A raid flies the class of its ring's
+  groups. A lost raid has destroyed every ship that stayed, takes the
+  quarter of the store above the repair's floor and breaches it, as
+  before; a destroyed one leaves no wreckage, as before.
+- *The state says it.* `homeworld.raid` in every state, `outpost.raid`
+  and `OutpostSurvey.raid`: the raid announced or a typical one, its
+  power, what it flies, and `odds`: the fight played forward by the server
+  as a sector's odds are, the share of those fights destroyed, outlasted
+  and lost, what each side keeps, and a label (`repelled`, `held`,
+  `at_risk`, `lost`). `battles[].raid` while it is fought, with the rounds
+  left and the odds from where it stands. `BattleRound.raid`, the defences
+  as a group marked `battery`, `CombatEnded.raid`, and `RaidResolved` with
+  the ending, the rounds, the raiders and their losses, everything lost by
+  unit, the defences rebuilt, what was taken and the wreckage.
+  `RaidIncoming` carries the ships and the odds. No comparison of two
+  powers decides or forecasts anything any more; the sums stay on the
+  wire, documented as sums.
+- *Everything that read the old resolution.* The away report counts ships,
+  satellites and defences a raid's fight destroyed and what was rebuilt,
+  and keeps raid rounds out of the field's losses. Standing orders stay in
+  a raid's fight or leave it by the disengage ratio, on the odds of the
+  fight as it stands. The bots' planner orders the defence that answers
+  the forecast raid and their pilots step aside from one that may be lost
+  (below). `sim-run` prints a table of how raids ended and what they
+  cost. `sim.py` models no raid resolution and only its words changed;
+  `numbers.json` has the three new constants and lost the five old.
+  `play.py`, `RULES.md`, the README and the spec's section 5.2 say the new
+  rules.
+
+**Departures and decisions** are in `docs/design/decisions.md` under today's
+date, each with what undoes it. The four departures: the raiders are a
+`Siege` in the fight and not a group in the sector; no wreckage at an
+outpost; the platform fights at the catalogue's figures and not with the
+owner's research; a quiet round ends a raid as six rounds do.
+
+**The knobs, and what was measured at each value tried.** All runs are
+`sim-run`, sixteen seats (fifteen bots and an idle one), the default seed
+unless said, on a machine other agents were building on. "Cost" is what
+did not come back, at cost weight (points); "taken" and "wreckage" are in
+the points they buy.
+
+A season week (`--pace season --days 7`):
+
+| | slice 3 | raids as battles, the bots of slice 3 | the new planner and pilots (kept) | `RAID_ROUNDS` 4 | raid size x2 | kept, seed 7 |
+|---|---|---|---|---|---|---|
+| raids | 411 | 403 | 414 | 415 | 405 | 420 |
+| destroyed / outlasted / lost | 410 repelled, 1 lost | 390 / 2 / 11 | 406 / 6 / 2 | 413 / 1 / 1 | 371 / 21 / 13 | 418 / 0 / 2 |
+| rounds fought | none | 1,072 | 1,087 | 1,029 | 1,258 | |
+| ships lost in raids | | 541 | 423 | 425 | 560 | |
+| Solar Satellites lost | | 1,040 | 591 | 524 | 1,361 | |
+| defences lost / rebuilt | | 2,523 / 1,709 | 567 / 392 | 436 / 314 | 2,406 / 1,656 | |
+| cost | not counted | 7,566 | 3,844 | 3,168 | 10,336 | 3,110 |
+| taken | not counted | 493 | 1.5 | 1 | 145 | |
+| wreckage scooped | 16,040 | 12,494 | 12,475 | 13,752 | 21,946 | |
+| totals, lowest to highest | 6,078 to 10,596 | 2,383 to 10,364 | 5,812 to 10,431 | 5,777 to 10,431 | 1,883 to 11,149 | 3,462 to 10,066 |
+| sum of the fifteen totals | 133,569 | 117,581 | 119,526 | 121,743 | 109,603 | 118,580 |
+| ticks a second | 3,471 | 3,379 | 3,310 to 3,451 | 3,466 | 3,461 | |
+
+A blitz day (`--pace blitz --days 1`):
+
+| | slice 3 | the bots of slice 3 | the new planner and pilots (kept) |
+|---|---|---|---|
+| raids | 1,213 | 1,131 | 1,169 |
+| destroyed / outlasted / lost | 1,212 repelled, 1 lost | 1,009 / 28 / 94 | 1,158 / 6 / 5 |
+| ships lost in raids | | 7,787 | 5,511 |
+| Solar Satellites lost | | 19,380 | 16,387 |
+| defences lost / rebuilt | | 24,921 / 17,140 | 5,426 / 3,716 |
+| cost | not counted | 107,025 | 80,723 |
+| taken | not counted | 33,788 | 144 |
+| wreckage scooped | 66,868 | 39,653 | 55,363 |
+| totals, lowest to highest | 7,270 to 23,752 | 6,449 to 22,603 | 6,493 to 25,941 |
+| sum of the fifteen totals | 245,438 | | 241,241 |
+| ticks a second | 918, 925 | 876 | 878, 889 |
+
+What the columns say:
+
+- *The bots of slice 3 do not survive the change.* They bought Rocket
+  Launchers to 1.15 to 1.5 times the raid's power and nothing else. Past
+  twenty of them the raid brings Cruisers, which fire again nine times in
+  ten at a Rocket Launcher: the three turtles lost 1, 4 and 6 raids in the
+  week and the hybrid turtle ended at 2,383 points (10,083 in slice 3). In
+  a blitz day 94 raids were lost and 33,788 points of stockpile taken.
+  That is the table doing what the study asks of it, "a wall of one cheap
+  defence has an answer", and it is why the planner had to change.
+- *The new planner* orders the defence with the most power for its cost
+  after what the forecast raid's rapid fire takes of it, a dome, and the
+  research the better defences need, and tops up while the forecast is
+  short of `repelled`; the pilots step aside from a raid that may be lost.
+  With it two raids of 414 are lost in the week and 1.5 points taken, and
+  five of 1,169 in the blitz day.
+- *What a week of raids costs an empire that defends itself*: 3,844 points
+  between fifteen, 256 each, 3 percent of a total; it gets back 12,475 in
+  wreckage, three times that. In slice 3 raids cost nothing and paid
+  16,040. The sum of the totals is 10.5 percent under slice 3's in the
+  season week and 1.7 percent under it in the blitz day. What the raids
+  destroy is 3 of those 10.5 points and the smaller wreckage as much
+  again; the rest is likely what the bots now
+  spend on domes and on research for defences and not on mines, and what a
+  fleet that steps aside does not earn. The split was not measured.
+- *Solar Satellites are what a raid eats.* Every armed ship fires again
+  four times in five after a shot at one, and none is rebuilt: 591 in the
+  season week beside 175 defences that did not come back, and 16,387 in
+  the blitz day, where the bots lean on satellites for energy and a raid
+  comes every twenty minutes. The blitz day's cost, 80,723 points, is a
+  third of the sum of the totals, and most of it is satellites bought
+  again; the totals stand where slice 3's stood all the same, with 55,363
+  of wreckage scooped. Nothing was changed for it: it is OGame's rapid
+  fire and OGame's satellite. A bot that built a Fusion Reactor instead
+  would lose less, and no bot weighs that.
+- *`RAID_ROUNDS`.* At 4 the week differs from 6 by less than one seed does
+  from another: a raid is fought for about two and a half rounds and few reach
+  the limit (6 outlasted of 414 at six rounds, 1 of 415 at four). It stays
+  at 6, OGame's and the study's. It will matter when raids are large
+  enough to be outlasted, which these are not.
+- *The raid's size.* Twice the size (`RAID_POWER_PER_POINT` 18): 13 raids
+  lost of 405, 21 outlasted, 10,336 of cost, and one explorer of fifteen
+  ends at 1,883 with its Crystal Mine at level 1 and 787 points of Rocket
+  Launchers. That last is the home planner's queue standing behind an
+  order that waits for crystal, not the raid's rule, but the larger raid
+  is what pushed it there. One and a half times was not played. The size
+  stays where it was, 9: raised, it first breaks the bots.
+- *The table.* Kept: Cruisers at 0.4 of the power from 20 Rocket
+  Launchers, Bombers at 0.3 from 20 lasers and ion cannons. A harsher one,
+  0.5 from 10 and 0.4 from 10, gave the same week of 414 raids with 412
+  destroyed, none outlasted and 2 lost, 392 ships, 704 satellites and 690
+  defences lost (479 rebuilt), a cost of 4,698 against 3,844, 13,283 of
+  wreckage, totals of 5,710 to 10,419 and a sum of 119,215 against
+  119,526. It costs a fifth more and decides no raid, because the planner
+  answers what the raid flies. Against the bots of slice 3 the table at
+  its kept values was the whole difference (the second column). The
+  values kept are the milder ones; nothing measured here chooses between
+  them.
+- *At seed 7* the lowest total is 3,462, against 5,812 at the default
+  seed. It is the hybrid turtle, whose building slot stood waiting for
+  resources for 97 percent of the week with its Solar Plant at level 20;
+  raids cost it 92 points and it lost none. Raids cost that world less
+  than the default one (3,110 against 3,844). Slice 3 was not played at
+  seed 7, so whether its bots stall there too is not known, and the
+  planner's stall was not looked into further.
+
+**An empire that does not defend itself and keeps its fleet away**
+(`an_empire_with_nothing_at_home_loses_every_raid_and_a_share_of_its_stock_each_time`,
+a season week, the stockpile held at 100,000 metal, 60,000 crystal and
+30,000 deuterium with no storage building): 16 raids, every one unopposed
+and lost on the spot, 128,365 metal, 77,020 crystal and 24,000 deuterium
+taken, 8, 8 and 5 percent each time, with the quiet of two days of the raid
+clock after each. It loses no ship and no building. That is what it was
+before this slice; only the fight is new, and it has none.
+
+**What a platform holds alone**
+(`the_forecast_says_what_each_level_of_platform_holds_alone`, the typical
+raid of each ring against nobody but the platform): level 1 is at risk or
+lost on every ring (at ring 9 lost in four fights of five or more); level 2
+is `repelled` from ring 9 to 14, `repelled` or `held` at 16 and at risk or
+lost at 18 and 20; level 3 is `repelled` everywhere, `held` at ring 20 for
+the largest roll. The platforms are the study's starting values and none
+was tuned to this. Before this slice level 1 at ring 9 held with two Light
+Fighters beside it; the forecast of that outpost now says what it takes.
+
+**Tests.** All end to end, in the existing files.
+
+- `scenarios_raids.rs`, which held the raid clock's two scenarios, has ten
+  more, staged by `garrison` (an empire with given ships, defences and
+  satellites) and `common::send_raid` (a raid of given ships on its way):
+  destroyed round by round with its wreckage and its events; a Large
+  Shield Dome and 30 Ion Cannons outlasting 24 Cruisers for six rounds; a
+  round that hurts nobody ending it early; a lost raid with the rebuild at
+  OGame's rate over twelve raids; Cruisers' rapid fire against Rocket
+  Launchers and Bombers' against lasers read off the rounds' volleys; a
+  fleet that leaves in the warning; a fleet that flees under fire and is
+  not followed; standing orders that stay and that leave; what arrives or
+  is built or researched during a fight; and the undefended week above.
+- `outposts.rs`: the raid tests are fights now (a platform that destroys
+  its raid and stands whole again; a lost raid that destroys what stood
+  there, takes the quarter and breaches; ships beside the platform winning
+  it; a fleet recalled from a breached outpost under raid), with the table
+  of platforms above and a season week on outposts whose platform holds
+  their ring. The story test stops a world between two rounds of a raid.
+- `stored_world.rs`: a raid stopped and started through its document after
+  every round is the raid played straight through.
+- `exchange.rs`: two tests of the hold at a lost raid, rewritten for a raid
+  that destroys the ships that stayed.
+- `empire_arc.rs`: the empire reinforces until its forecast reads
+  `repelled`, not until its power is 1.6 times the estimate.
+- `hosts_agree.rs`: the world the two hosts play has a raid on its way to
+  12 Rocket Launchers, 6 Light Lasers and 4 Solar Satellites, and the test
+  requires that it was fought. `both_targets.rs`: the commander who founds
+  an outpost stands at it until a raid is fought there, on both targets.
+- Bands and guards that changed, each because the rule it asserted is
+  gone: `home_defence_power >= 1.6 x next_raid_estimate_power`
+  (`empire_arc`), `threat` read against half the platform's power, a lost
+  outpost raid's "a quarter of the ships there, at least one" and its
+  count of the holds with the store, the week of outposts "defended as
+  their ring asks" by `0.9 x (platform + ships) >= 2 x 1.15 x the ring's
+  group` (all `outposts`), and the format numbers of `smoke` and
+  `single_player` (10 refused, 11 read).
+
+**A real session.** `iac-server --port 0 --pace 3000 --seed 20261014` with
+its world file in scratch, played through `iac-headless` by a script that
+orders the economy, with `XDG_CONFIG_HOME` in scratch. 1,443 ticks, 63
+messages sent, four raids.
+
+- *Lost on purpose.* Shipyard 2, one Solar Satellite, no defence, the two
+  Light Fighters an empire starts with. `RaidIncoming` at tick 272:
+  arrives at 302, power 378, 4 Light Fighters, `threat` heavy, odds `lost`
+  (lost in every fight played; the raiders keep 0.86). The fleet left by
+  an ordinary `move` at 274 and stood next door at 276; the forecast then
+  read the raiders keeping 1.00. At 302 the alert: "the raid of 4 Light
+  Fighter has arrived at your homeworld at [-4,5]: it meets 0 ship(s), 1
+  Solar Satellite(s) and 0 defence(s) and fights for at most 6 rounds, the
+  first next tick", and `battles` held it with `rounds_left` 6. Round 1 at
+  303: the satellite fired once, the raiders 43 times, and it fell.
+  `CombatEnded` with `raid` and `fleets_destroyed`; `RaidResolved`:
+  `defended` false, 1 round, lost 1 Solar Satellite, raiders lost nothing,
+  2,525 metal, 1,865 crystal and 869 deuterium taken, 8, 8 and 5 percent
+  of the stockpile with no storage building to protect any of it.
+- *Defended.* Rocket Launchers ordered four at a time while the forecast
+  of a typical raid read short of `repelled`; it moved from `lost` to
+  `at_risk` at four and to `repelled` at nine, with the economy and the
+  raid growing under it. Tick 758: 9 Light Fighters, power 779, against 2
+  Light Fighters and 9 Rocket Launchers, forecast `repelled`, 0.58 kept.
+  Four rounds, 789 to 792, each a `BattleRound` of 1,242 to 1,379 bytes
+  with the fleet as one group and "home defences" as another marked
+  `battery`; the odds in `battles` rose from 0.58 kept to 0.94 as the
+  raiders fell. 2 Rocket Launchers lost, none rebuilt (two rolls of 70 in
+  a hundred, both missed), 9 raiders destroyed, wreckage 8,100 metal and
+  2,700 crystal, scooped by the fleet in the same tick, which the home
+  dock also mended in that tick. Tick 1028: 8 Light Fighters against 11
+  Rocket Launchers, three rounds, nothing lost. Tick 1406: 8 Light
+  Fighters, four rounds, 4 Rocket Launchers lost and 2 rebuilt at once: 11
+  before, 9 after.
+- *What the session showed that the tests had not.* While a raid is
+  fought, `homeworld.raid` is already the forecast of the next one, with
+  no arrival: the fight is in `battles`. It is as built and the rules now
+  say so; a screen has to read `battles` first. `play.py` named the
+  defences' losses in a fight's summary by the owner alone, twice; it says
+  "Slice4's defences" now.
+- Three earlier sessions were stopped by me within two minutes each, for
+  mistakes of the script (an order that waited for deuterium no mine made,
+  a satellite ordered a tick before it could be paid). Their files are
+  beside the fourth's.
+- `play.py`'s lines were read off the session's frames by a script, and
+  its fixture is the session's first full state.
+
+**Measured, and not.** `iac_solo.wasm`, release: 2,856,262 bytes (slice 3
+2,752,469; 103,793 more, 3.8 percent). `both_targets`: five tests in 102 s
+with the engine built (slice 3: 99 s). `hosts_agree`: 64 s, as before, with
+the raid in it. `sim-run`: 3,310 to 3,451 ticks a second in a season week
+(slice 3: 3,471) and 878 to 889 in a blitz day (918, 925), on a machine
+that was busy; the forecast in every state is the cost, a fight played 8
+to 64 times for each new pair of sides, behind the memo slice 2 gave the
+odds. The single-player host's catch-up after a day and a week away was
+not timed.
+
+**Run**, on the branch, after the last change to Rust:
+
+- `cargo test --workspace --no-fail-fast -j 4`: 196 passed, 0 failed
+  (slice 3: 182).
+- `cargo clippy --workspace --all-targets`: silent.
+- `cargo build -p iac-solo --target wasm32-unknown-unknown --release`:
+  built.
+- `UPDATE_FIXTURES=1 cargo test -p iac-shared` and `UPDATE_FIXTURES=1
+  cargo test -p iac-sim --test economy_numbers`: rendered, and the full
+  run after them found nothing stale.
+- `python3 tools/check_sim_constants.py`: 4,410 values agree.
+- `python3 docs/design/economy/sim.py --tables`: prints its tables.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 pass, on the
+  new fixture.
+- `sim-run --pace season --days 7` and `--pace blitz --days 1`, each as
+  text and as JSON: the tables above.
+
+**Not verified.**
+
+- No person or agent played. Nothing in `tools/playtest` was run but its
+  offline tests; `play.py` was loaded by a script to read the session's
+  frames.
+- The web client does not compile against the new `protocol.g.dart`:
+  `flutter analyze`, `flutter test`, the bundle and `tool/solo_e2e.dart`
+  are stage 2's. `DefenceState.restoring` and the generated
+  `raidLostShipFraction` are gone and the Dart still reads them.
+- No raid on an outpost was fought over a real socket, and no raid was
+  outlasted or fled from over one: those are `iac-sim`'s tests, and the
+  outpost's fight is also `both_targets`'.
+- No raid that flies Cruisers or Bombers was fought over a socket, nor by
+  a person: the session's empire never had twenty of a defence.
+- The raid's size at one and a half times, and any world longer than a
+  season week or a blitz day.
+- The planner's stall (the explorer at twice the raid's size, the hybrid
+  turtle at seed 7) was seen and not explained.
+- This branch stands on `cea4528`; the web client's halves of slices 2
+  and 3 are on other branches and have not been brought together with it.
+
+**Unsure of.**
+
+- A fleet under standing orders that leaves a raid it would die in flies
+  toward home, which is where the raid is: it may land in the same fight
+  and leave again. The scenario asserts that it left and kept its ships,
+  not where it went next.
+- A ship the yard finishes during a raid is a fleet of its own, because
+  the docked fleets are fighting; after the raid the player has one fleet
+  more than before.
+- Flight from a dock is refused at the deployed-fleet limit. A player with
+  three fleets out cannot pull a fourth out of a raid. It follows from a
+  fleet at home not being deployed, and it may read as a trap.
+- `homeworld.raid` during the fight, above.
+- Whether satellites falling by the dozen to every raid is the game the
+  owner wants. It is OGame's, and the bots pay for it.
+
+## 2026-10-14: the web client on raids fought as battles (slice 4 of the OGame work, stage 2)
+
+Stage 2 of slice 4, on the branch stage 1 left
+(`worktree-agent-aa04d228ab8d3a0d5`): first master was merged into it, then
+the hand-written Dart of `clients/web` was brought onto what the engine
+sends since a raid is a fight. `SAVE_FORMAT` and `ECONOMY_VERSION` are as
+stage 1 left them, 11 and 12. One wire field was added, and what
+`homeworld.raid` and `outpost.raid` say while a raid is fought changed
+(below). The windshield as a picture of class marks and a battle view are
+slice 5 and were not built.
+
+**The merge.** `git merge master` (`dcc1ba7`, slices 2 and 3 with their web
+clients) into the branch (`f1e2f2d`), a merge commit, `0068b5f`. Git merged
+`README.md`, `tools/playtest/RULES.md`, `protocol.g.dart`, `numbers.json`,
+`CLAUDE.md` and every Rust file but one by itself; `CLAUDE.md` is master's,
+whole. It stopped on four things.
+
+- `docs/journal.md` and `docs/design/decisions.md`, where both sides had
+  added at the same place. Both keep every entry: the journal has master's
+  entries first and stage 1's after them, the decisions have stage 1's on
+  top. They were put together with `git merge-file --union` on the three
+  stages of each file, and a blank line was added by hand where the two
+  sides meet.
+- One hunk of `shared/tests/golden_fixtures.rs`: master had given a tick
+  update's `battles` no `last_round`, stage 1 had given them `raid`. Both
+  hold: `last_round: None, raid: None`.
+- Thirty-eight generated fixtures. The branch's side was taken for each
+  and `UPDATE_FIXTURES=1 cargo test -p iac-shared` rendered them again; no
+  file was removed.
+
+Two things the merge left wrong without a conflict, both in the fixtures
+written by hand. `raid_round()` did not build: master's
+`BattleSide.standing` was missing from the two sides of a raid's round, and
+they have it now (27 and 9). The tick update of a raid being fought carried
+a `last_round`, which a tick update no longer does after master's change;
+it carries none. On the merged tree: `cargo build --workspace
+--all-targets` without a warning, `cargo test --workspace --no-fail-fast -j
+4` 196 passed and 0 failed, clippy silent, `tools/check_sim_constants.py`
+agreeing on 4,410 values. The web client did not compile then.
+
+**Changed in Rust.**
+
+- `RaidForecast.rounds_left`, and with it what the forecast is during a
+  fight: `homeworld.raid` and `outpost.raid` are the raid being fought
+  until it ends, with what it flew in with, the odds from where the fight
+  stands, the rounds it may still be fought and no `arrival_tick`
+  (`GameEngine::raid_fought`). Stage 1 had left the forecast of the next
+  raid there and called it a surprise; a screen, an agent and a bot now
+  read one field to know where a raid stands. `scenarios_raids.rs` and
+  `outposts.rs` assert it, and that the forecast is of the next raid again
+  once the fight is over. The bots read the forecast, so worlds of bots
+  moved: a season week, sixteen seats, 414 raids, 412 destroyed, none
+  outlasted, 2 lost, a cost of 3,280 points, 12,943 of wreckage, the
+  fifteen totals summing to 121,845, at 3,413 ticks a second (stage 1: 406,
+  6 and 2, 3,844, 12,475, 119,526); a blitz day, 1,170 raids, 1,158, 8 and
+  4, a cost of 78,431, a sum of 241,081, at 877 ticks a second (1,169
+  raids, 1,158, 6 and 5, 80,723, 241,241). `ECONOMY_VERSION` stays 12: no
+  world of that version exists outside this branch.
+- The refusal of a defence past its limit said "stand, are being rebuilt
+  or are on order"; nothing is being rebuilt any more, and it says "stand
+  or are on order".
+- The generated constants have `defenceRebuildEachBelow`
+  (`DEFENCE_REBUILD_EACH_BELOW`, one line of `wire/mod.rs`).
+- `numbers.json` names `DEFENCE_REBUILD_EACH_BELOW`, the three
+  `RAID_LOSS_CAP_*` and `RAID_DEFENSE_SALVAGE_FRACTION`, and each outpost
+  level's row has `platform_units`: the scripted world of the widget tests
+  reads them.
+- The raid fixtures written by hand stand at the sample player's homeworld
+  (they stood in another sector, which no raid on that player could), the
+  state of a raid being fought carries its forecast with `rounds_left`, and
+  the sample homeworld's raid arrives after the sample tick.
+- `play.py` words a forecast with `rounds_left` as "RAID BEING FOUGHT";
+  `RULES.md` and the README's passage on the forecast say the same. No test
+  of `tools/playtest` was run.
+
+**Built, screen by screen.** Every figure is a field of the state; the
+phrases are in `lib/console/battle.dart`, the widgets every screen shares
+in `lib/views/battle_view.dart`.
+
+- *The Defence tab.* A forecast panel from `homeworld.raid`: "RAID IN
+  m:ss" from `arrival_tick`, "RAID BEING FOUGHT" with the rounds left from
+  `rounds_left`, or "NO RAID ANNOUNCED" for the typical raid the state
+  forecasts when none is on its way; the label and its sentence
+  (`RaidLabel`'s generated `label` and `outcome`); what it flies (`ships`)
+  and its `power`; a bar of the three shares (`odds.destroyed`,
+  `outlasted`, `lost`), each printed as a percent; what each side keeps
+  (`odds.kept`, `raiders_kept`); and what the three endings mean. Under it,
+  while a raid is fought and after it, the round panel (below); then what
+  stands: every fleet docked at home by class with its hull, the Solar
+  Satellites, the defences with their counts. `restoring` is gone, and the
+  rule of the rebuild is printed from the generated `defenceRebuildPct`,
+  `defenceRebuildSpread` and `defenceRebuildEachBelow`.
+- *The fight.* `GameState.raidAtHome` and `raidAtOutpost` are the `battles`
+  entry with `raid` set at that sector. The round panel every fight has is
+  headed "Raid", says the round of `raidRounds` and the rounds left
+  (`battles[].raid.rounds_left`), the label from where the fight stands
+  (`raid.odds`), names the sides Defenders and Raiders, and heads a group
+  marked `battery` with its engine label and "NO FLEET: THEY STAND WHERE
+  THEY ARE". The volleys, the losses and the last round are the panel's as
+  for any fight. The tick a raid arrives it says that the raid stands
+  there and the first round is fought on the next tick.
+- *The ending.* From `RaidResolved`: `defended` and `outcome` give one of
+  four (`RaidEnding`: destroyed, outlasted, lost, lost without a fight)
+  with a title and a sentence and `rounds`; the losses by unit (`lost`,
+  `raiders_lost`), what stood again at once (`rebuilt`), what was taken
+  (`resources_lost`), the wreckage (`salvage_dropped`) and, at an outpost,
+  the breach (`breached`). `CombatEnded.outcome` has `outlasted`, worded
+  for the windshield's panel and banner. The report is attached to the
+  ended fight in the panel, and kept as "Last raid" on the Defence tab and
+  the outpost's screen once that panel is dismissed, for as long as the
+  page lives: the state has nothing of a raid that is over.
+- *Leaving.* A fleet docked where a raid is fought is in its fight and has
+  `flight`: the Defence tab and the outpost's screen show the windshield's
+  flee control for each such fleet (`RaidExits`): the odds as the fight
+  stands, the price, that nothing follows, a button a lane, the engine's
+  `refusal` as a sentence with the buttons greyed, and Stop while the jump
+  charges. A fleet flown out during the warning leaves by an ordinary jump
+  from the windshield or the map; the tab says such a fleet is not in the
+  fight.
+- *The outpost.* Its panel has "What fights a raid here": the platform
+  unit by unit (`platform`), or that a breached outpost has none; the
+  fleets standing there; the range a raid of the ring moves in
+  (`raid_power`); the forecast (`outpost.raid`), as on the Defence tab; the
+  next level's platform (`next_level.platform`). The founding panel and
+  the typed `survey` name level 1's platform (`OutpostSurvey.platform`) and
+  the forecast against that platform alone (`OutpostSurvey.raid`, absent
+  outside the rings an outpost stands in). The outpost's screen shows the
+  fight, the ways out and the last raid as the Defence tab does. The
+  outpost's field in the top bar says "RAID m:ss" or "RAID FOUGHT".
+- *The overview* has the raid as its first card while one is on its way or
+  fought: the countdown or the rounds left, the label, the sentence, the
+  shares, what is kept. Its alerts and its "next up" say the same from the
+  forecast. The figure "Defence power" became a count of defences.
+- *The top bar* gives the world's name up for the raid while one is on its
+  way or fought: the countdown or "FOUGHT" and the label, and a press
+  opens the Defence tab. On a phone it is a line under the bar.
+- *Notices and the log.* `RaidIncoming` is a line and an alert with what
+  flies, its power and the forecast (`ships`, `est_power`, `odds`);
+  `RaidResolved` is a headline short enough for a toast and a summary line
+  under it; a raid's own `CombatEnded` is not logged beside them. A
+  background tab's notices are titled by the ending.
+- *The command bar.* `status` prints the forecast of the homeworld's raid
+  and the outpost's in one line each, and `help` has a paragraph on raids.
+
+**Nothing compares two powers.** `home_defence_power` and its three parts,
+`next_raid_estimate_power`, the outpost's `platform_power`, `ships_power`,
+`defence_power` and `raid_arrival_tick`, `OutpostSurvey.platform_power`,
+`OutpostLevel.platform_power`, `RaidResolved.raid_power` and
+`defense_power` and `RaidIncoming.threat` are read by no screen. The
+client-side `RaidCover` and `raidLostShipPct` are gone. A forecast's
+`power`, `RaidIncoming.est_power` and the outpost's `raid_power` range are
+printed, each as what a force is.
+
+**The scripted world** (`test/support/demo_world.dart`) fights its raids:
+a raid announced with what it flies, standing at the dock on the tick it
+arrives, a round a tick against the docked fleets and a battery of the
+defences and satellites (or the outpost's platform), for at most the
+engine's rounds, with the three endings, the wreckage, the share taken, the
+rebuild and the breach, and the forecast in the state being the raid
+fought. It answers `move` and Stop from a fleet in a raid in the engine's
+sentences. The rounds, the rebuild's rate and threshold, the shares taken,
+the wreckage's fraction and the platforms are read from `numbers.json` and
+the generated constants. Where it is not the engine, its header says so:
+its fights are played without dice, so its forecast is that one fight
+played forward and a share is all or nothing (no `at_risk`); a raid flies
+one class at its base figures; the rebuild is the engine's rate cut off to
+a whole number.
+
+**Tests.** Moved, in the files that were there, each because what it
+asserted is gone or changed: the Defence tab's test (no `restoring`, no
+cover against an estimate), the outpost's panel, founding panel, typed
+`survey` and story (platform as units, forecast, a raid fought and lost),
+the two background-notice tests, the overview's raid card and alerts, the
+onboarding test (the sample forecast now arrives in the future, so its
+fresh empire is given none on its way), the windshield's dock wording, and
+the fixture tests for the forecast. Added: a raid at home destroyed round
+by round with its panel, its wreckage and the forecast returning to the
+next raid; a raid lost with what is taken and the defences rebuilt at
+once; a dome outlasting a raid; leaving a raid from the Defence tab by a
+lane, with Stop and a second leaving, at 390; the fixture of a raid being
+fought read into
+the model; and the raid in the top bar, on the overview's card and in
+`status`, with the bar opening the Defence tab.
+
+**The end-to-end check** (`tool/solo_e2e.dart`) has a raid at home. An
+empire with a defence or a Shipyard at level 2 is raided, and the check
+passes the world four minutes at a time, where a raid would be fought
+unseen: the Rocket Launcher it used to order in its first steps is ordered
+in the raid step. It reads the forecast of a typical raid off the state
+and the Defence tab, orders the launcher, passes the world twenty ticks at
+a time (less than the warning) until `homeworld.raid.arrival_tick` is set,
+reads the announcement off the tab and the top bar, waits for the raid to
+stand at home as a fight with its forecast carrying `rounds_left`, holds
+`RaidResolved`, the rounds and `CombatEnded` to one another, and reads the
+ending, the wreckage and the forecast of the next raid off the page. In
+the founding step it reads level 1's platform off the panel, and that a
+survey outside the rings forecasts no raid.
+
+**Looked at**, at 1440 and 390, the check's shots of the Defence tab's
+forecast with none on its way, the raid announced, the raid standing, the
+ending and its last round, and the widget tests' `IAC_SHOTS` of the tab
+with a raid on its way, fought, destroyed, outlasted and lost, leaving at
+390, the outpost's screen and panel, a raid arrived at and lost at an
+outpost, the founding panel and the overview. Changed for what was seen:
+the bar of the three shares had no height and did not show; the raid
+panel's heading was cut off in the windshield's column and lost the
+sector; a raid's end as one line was too long for a toast and became a
+headline and a summary; the engine's refusal of a defence still spoke of
+rebuilding; the forecast panel's corner read "the fight as it stan…" on a
+phone and says "as it stands"; the check's phone pictures of the ending
+lay under the arrival's alert, and it waits for the alert to leave.
+
+**Run.**
+
+- `cargo test --workspace --no-fail-fast -j 4`: 196 passed, 0 failed on the
+  merged tree; 196 and 0 after the forecast changed; 196 and 0 after the
+  last change to Rust (317 s), with `cargo build --workspace --all-targets`
+  without a warning, clippy silent and `tools/check_sim_constants.py`
+  agreeing on 4,410 values. No test was added to Rust and none removed.
+- `flutter analyze`: no issues.
+- `flutter test` under `timeout -k 20 300`, six full runs. The first, with
+  the tests not yet moved: 491 passed, 19 failed, all of them tests of the
+  forecast, the outpost and the raid notices that the new rules falsified.
+  The second, part moved: 510 passed, 4 failed (the onboarding test, the
+  two background-notice tests and the windshield's dock wording, each on
+  what had changed). The third: 514 passed. The fourth, with the overview's
+  new test: 514 passed, 1 failed, `windshield_test.dart` "firing on deadly
+  odds needs a second F", on "A RenderFlex overflowed by 2550 pixels on the
+  right" in a flex 138 px wide. The fifth and the sixth: 515 passed. The
+  one failure did not come again and is read as the machine's flake
+  (`docs/design/flutter_test_flake.md`).
+- `scripts/play.sh --single-player --no-serve`: built twice, the second
+  time after the last change to the client; `iac_solo.wasm` 2,860,542
+  bytes.
+- `tool/solo_e2e.dart`, eight runs, each a new world. The first failed, on
+  the check's own new line and not on the client: it looked for "RAID ON
+  HOME" in the page's text, where the top bar's field reads "Raid on your
+  homeworld: 0:13, forecast REPELLED" to a reader of the page. The second
+  to the fourth passed with exit 0 in 314, 313 and 340 s on the bundle
+  built before the forecast panel's corner text changed. The fifth to the
+  eighth passed with exit 0 on the final bundle, in 342, 362, 343 and
+  381 s. In all eight the raid was one Light Fighter of power 109 against
+  eight Light Fighters, a Solar Satellite and a Rocket Launcher, announced
+  after 40 to 100 ticks of waiting and forecast REPELLED with every fight
+  played destroyed; in the seven that went on it stood at home at tick
+  2,716 and was destroyed in the one round of tick 2,717, with nothing
+  lost and 900 metal and 300 crystal of wreckage. In every run the two
+  that scouted fled a fight that ended `fled`.
+
+**Not verified.**
+
+- No person played.
+- In a browser against the engine the only raid seen is the one above. A
+  raid lost, a raid outlasted, a raid without a fight, a battery losing a
+  unit, the rebuild, a share of the stockpile taken, a label other than
+  REPELLED, a raid of two classes, a raid fought for more than one round
+  with its rounds left counting down, and a fleet leaving a raid or
+  stopping its jump out of one are widget tests on the scripted world and
+  on the recorded fixtures. The flee control was on the Defence tab in the
+  browser, with the engine's quote; nobody pressed it there.
+- No outpost was founded in the browser: the check's fleet stands in ring
+  5, reads the survey with level 1's platform and is refused. The
+  outpost's panel with its platform and forecast, its screen, a raid
+  fought and lost there, the breach and the repair are widget tests, and
+  their pictures are the widget tests'.
+- The two refusals stage 1 named, `abandon_outpost` during a raid and
+  flight from a dock at the deployed-fleet limit, were not produced on a
+  page. The client prints a refusal as the engine words it, and the flee
+  control's `refusal` is tested on the windshield, not on the Defence tab.
+- The scripted world's forecast is never `at_risk` and its raids never fly
+  two classes; `AT RISK` on a page is the recorded fixture's.
+- The away report after a raid fought during an absence was not read in a
+  browser; its lines are the engine's alerts.
+- In the story test of the outpost the script lifts the fleet out of the
+  raid by hand, and the lanes the flee control had asked the world about
+  are answered "No lane" as toasts. It is the test's own doing; the engine
+  moves no fleet that way.
+- `tools/playtest` was not run. `play.py` was parsed, not executed.
+- Worlds of bots were played once each after the forecast changed, at the
+  default seed.
+
+**Kept out of the tree.** Nothing was moved to `.archive/` in this stage:
+the fixture generator removed no file.
+
+**Unsure of** is in `docs/design/decisions.md` under today's date, with
+the decisions and what undoes each.
+
+## 2026-10-14: raids fought as battles, engine and web client, merged
+
+Slice 4 of `docs/design/ogame.md`, both stages, merged into master with
+`--no-ff` and pushed. `SAVE_FORMAT` is 11 and `ECONOMY_VERSION` 12. The engine
+stage was built on slice 3's engine before slice 3's web client was done; the
+web stage merged master into the branch first (the two documents, one hunk of
+`shared/tests/golden_fixtures.rs` and 38 generated fixtures conflicted).
+Added at this merge: `CLAUDE.md` (the web stage's patch against master's,
+applied clean and compared with the copy it left), and a correction to
+`clients/web/tool/solo_e2e.dart` (below).
+
+**Read before the merge.** The two stages' reports. Two pictures: the Defence
+tab with a raid announced, from the browser (the countdown, the label and its
+sentence, what the raid flies, the three shares, what is kept, what stands at
+home), and an outpost's raid lost, from a widget test (the ending, the
+platform's losses, the breach and what the repair waits for).
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo test
+--workspace --no-fail-fast`: 196 passed, 0 failed; `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees on 4,410 values;
+`flutter analyze` clean; `flutter test` under `timeout -k 20 300`, three
+runs: 515 passed each time; `scripts/play.sh --single-player --no-serve`
+(`iac_solo.wasm` 2,860,542 bytes).
+
+`tool/solo_e2e.dart`, seven runs. The second failed in the flight step: "the
+two are in a fight at [-3,0]". The prey was a single Light Fighter, which the
+two destroyed in the round they attacked it, so there was no fight left to
+read or leave. The step now stands down when the fight is won before the two
+can be ordered out of it, at the three places it waited on a fight (joining,
+the quote, the flee control), and says that no flight is shown in that run.
+The four runs after that all passed (319 to 379 s), each with a flight ending
+`fled`, one of them from a single ship; none of them met the case the
+correction is for, so those three branches have not been run. In every run
+the raid at home was one Light Fighter, forecast REPELLED and destroyed in
+one round.
+
+**Not verified.** No person or agent played. The engine stage's balance runs
+and its real session were read in its report and not run again. In a browser
+no raid was lost, outlasted or unopposed, no defence or satellite fell, none
+was rebuilt, nothing was taken, and no outpost was founded: those endings,
+the battery in a round, the rebuild and the outpost's fight are widget tests
+on a scripted world that plays without dice. Whether Solar Satellites should
+fall to every raid and never be rebuilt (16,387 fell in the engine stage's
+blitz day of bots) is a question put to the owner and not answered.

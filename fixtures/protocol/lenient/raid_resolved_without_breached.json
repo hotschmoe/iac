@@ -4,6 +4,7 @@
     "defended": true,
     "defense_power": 80.0,
     "kind": "RaidResolved",
+    "lost": [],
     "player_id": 1,
     "protected_kept": {
       "crystal": 0.0,
@@ -11,11 +12,15 @@
       "metal": 0.0
     },
     "raid_power": 40.0,
+    "raiders": [],
+    "raiders_lost": [],
+    "rebuilt": [],
     "resources_lost": {
       "crystal": 0.0,
       "deuterium": 0.0,
       "metal": 0.0
     },
+    "rounds": 0,
     "satellites_lost": 0,
     "ships_lost": 0,
     "structures_lost": 0,

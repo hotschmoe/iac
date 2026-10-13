@@ -12,17 +12,18 @@ mod common;
 
 use common::*;
 use iac_shared::constants::{
-    Density, ResourceKind, Resources, ShipClass, TerrainType, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER,
+    Density, ResourceKind, Resources, ShipClass, TerrainType, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, RAID_ROUNDS,
     SALVAGE_DESPAWN_TICKS,
 };
 use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::maths;
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
-    AlertEvent, AlertLevel, ChartMark, Command, ErrorCode, EventKind, OutpostState, OutpostSurvey, OutpostWork,
-    PolicyPreset, RaidIncomingEvent, RaidResolvedEvent, ServerMessage, ThreatBasis,
+    AlertEvent, AlertLevel, BattleOutcome, BattleRoundEvent, ChartMark, Command, ErrorCode, EventKind, OutpostState,
+    OutpostSurvey, OutpostWork, PolicyPreset, RaidIncomingEvent, RaidLabel, RaidResolvedEvent, ServerMessage, ThreatBasis,
+    UnitCount,
 };
-use iac_shared::scaling::{self, RatioLabel};
+use iac_shared::scaling::{self, DefenceKind, RatioLabel, ShipyardItem};
 use iac_shared::world::{NpcBehaviorType, SectorTemplate};
 use iac_sim::engine::{template_npc_id, FleetStatus};
 use iac_sim::headless::{Headless, OutpostOrder};
@@ -1030,8 +1031,19 @@ fn everything(e: &Empire) -> Resources {
     e.engine.outposts[&e.pid].store.add(holds)
 }
 
+fn rounds_since(e: &Empire, mark: usize) -> Vec<BattleRoundEvent> {
+    e.since(mark, |k| match k {
+        EventKind::BattleRound(round) => Some(round.clone()),
+        _ => None,
+    })
+}
+
+fn platform_of(level: u8) -> Vec<UnitCount> {
+    scaling::outpost_platform(level).iter().map(|&(kind, count)| UnitCount { unit: ShipyardItem::Defence(kind), count }).collect()
+}
+
 #[test]
-fn a_platform_that_outguns_its_ring_repels_the_raid_and_loses_nothing() {
+fn a_platform_that_outguns_its_ring_destroys_the_raid_and_stands_whole_again() {
     let (mut e, at) = settle("blitz", 10, |t| t.metal_density != Density::None);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
@@ -1041,11 +1053,16 @@ fn a_platform_that_outguns_its_ring_repels_the_raid_and_loses_nothing() {
     e.run(build_ticks(&e, 2));
     let post = outpost(&e);
     assert_eq!((post.level, post.platform_power, post.defence_power), (2, PLATFORM[1], PLATFORM[1]), "nobody is home but the platform");
+    assert_eq!(post.platform, platform_of(2), "eight Rocket Launchers and four Light Lasers");
+    let expected = post.raid.clone().expect("a finished outpost has a raid to expect");
+    assert!(expected.arrival_tick.is_none() && expected.ships == counts(&[(ShipClass::Cruiser, 1)]), "{expected:?}");
+    assert_eq!(expected.odds.label, RaidLabel::Repelled, "the platform of level 2 destroys the raid of ring 10 every time it is played");
     let estimate = e.state().homeworld.next_raid_estimate_power;
 
     let opened = e.engine.outposts[&pid].raid.first_seen_tick;
     let min_age = e.engine.pace().attention_ticks(86_400.0);
     let before = post.store;
+    let mark = e.mark();
     let ((told, forecast), (resolved, outcome)) = next_raid(&mut e, 20_000);
 
     assert!(told >= opened + min_age, "no raid before the outpost has stood a day of raid clock: {told} against {opened} + {min_age}");
@@ -1053,23 +1070,44 @@ fn a_platform_that_outguns_its_ring_repels_the_raid_and_loses_nothing() {
     assert_eq!(forecast.arrival_tick, told + e.engine.pace().raid_warning_ticks(), "the homeworld's warning");
     let base = 2.0 * scaling::npc_group_power(10);
     assert!((base * 0.80..=base * 1.15).contains(&forecast.est_power), "{} against a base of {base}", forecast.est_power);
-    assert_eq!(forecast.threat, if forecast.est_power < PLATFORM[1] / 2.0 { "light" } else { "moderate" });
+    assert_eq!((forecast.threat.as_str(), &forecast.ships), ("light", &expected.ships), "one Cruiser of its ring, and the fight is the platform's");
+    assert_eq!(forecast.odds.map(|odds| odds.label), Some(RaidLabel::Repelled));
 
-    assert_eq!(resolved, forecast.arrival_tick);
+    let rounds = rounds_since(&e, mark);
+    assert!(!rounds.is_empty() && rounds.len() as u32 == outcome.rounds && outcome.rounds <= RAID_ROUNDS);
+    assert_eq!(resolved, forecast.arrival_tick + u64::from(outcome.rounds), "it arrives on its tick and fights a round a tick after it");
+    let first = &rounds[0];
+    assert!(first.raid && first.mine && first.sector == at);
+    let battery = &first.fleets.groups[0];
+    assert!(first.fleets.groups.len() == 1 && battery.battery && battery.label == "outpost platform" && battery.fleet_id == 0);
+    let stood: Vec<UnitCount> = battery.units.iter().map(|u| UnitCount { unit: u.unit, count: u.count + u.lost }).collect();
+    assert_eq!(stood, platform_of(2), "the platform is the defences of its level, and they fire");
+    assert!(first.fleets.shots == 12 && first.hostiles.groups[0].label == "raid of 1 Cruiser");
+
     assert_eq!((outcome.outpost, outcome.defended, outcome.breached), (Some(at), true, false));
+    assert_eq!(outcome.outcome, Some(BattleOutcome::HostilesDestroyed));
     assert_eq!((outcome.raid_power, outcome.defense_power), (forecast.est_power, PLATFORM[1]));
-    assert_eq!((outcome.resources_lost, outcome.ships_lost, outcome.structures_lost), (Resources::default(), 0, 0));
-    assert_eq!((outcome.salvage_dropped, outcome.salvage_despawn_tick), (None, None), "a repelled outpost raid leaves no salvage");
+    assert_eq!((outcome.resources_lost, outcome.ships_lost), (Resources::default(), 0));
+    assert!(outcome.rebuilt.is_empty(), "nothing is rebuilt at an outpost: its platform is not its owner's to lose");
+    assert_eq!((outcome.salvage_dropped, outcome.salvage_despawn_tick), (None, None), "a raid on an outpost leaves no wreckage");
 
     let after = outpost(&e);
     assert!(after.store.metal > before.metal && after.store.crystal >= before.crystal, "the store only grew: {:?}", after.store);
     assert!(after.in_service && !after.breached && after.raid_arrival_tick.is_none());
+    assert_eq!((after.platform, after.platform_power), (platform_of(2), PLATFORM[1]), "whatever fell, the platform is whole again");
     assert_eq!(e.state().homeworld.next_raid_estimate_power, estimate);
     assert!(chart(&e.engine, pid)[&at.to_key()].salvage.is_none());
+
+    let mark = e.mark();
+    let (_, (_, again)) = next_raid(&mut e, 20_000);
+    let first = &rounds_since(&e, mark)[0];
+    let stood: Vec<UnitCount> = first.fleets.groups[0].units.iter().map(|u| UnitCount { unit: u.unit, count: u.count + u.lost }).collect();
+    assert_eq!(stood, platform_of(2), "the next raid meets every defence of the level, whatever the last one destroyed");
+    assert!(again.defended && again.defense_power == PLATFORM[1]);
 }
 
 #[test]
-fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_until_it_repairs_itself() {
+fn a_lost_raid_destroys_what_stood_there_takes_a_quarter_above_the_floor_and_breaches_the_outpost_until_it_repairs_itself() {
     let (mut e, at) = settle("blitz", 16, |t| t.metal_density != Density::None && t.deut_density == Density::None);
     let (pid, fid) = (e.pid, e.fid);
     deliver(&mut e, at, res(6000.0, 1800.0, 900.0));
@@ -1081,6 +1119,12 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     let fighter = scaling::ship_power(ShipClass::LightFighter);
     assert_eq!(fighter, 91.0, "50 attack and a tenth of 400 hull and 10 shield");
     assert_eq!((post.platform_power, post.defence_power), (PLATFORM[0], PLATFORM[0] + 2.0 * fighter));
+    assert_eq!(post.platform, platform_of(1), "four Rocket Launchers");
+    assert_eq!(
+        post.raid.as_ref().map(|raid| (raid.ships.clone(), raid.odds.label)),
+        Some((counts(&[(ShipClass::Battlecruiser, 1)]), RaidLabel::Lost)),
+        "four Rocket Launchers and two Light Fighters do not stand six rounds of a Battlecruiser",
+    );
     let floor = res(REPAIR, 0.0, 0.0);
     assert_eq!(post.protected, floor, "750 metal, 375 crystal and 150 deuterium at par, in metal while the store has it");
 
@@ -1095,51 +1139,64 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     let rate = outpost(&e).production;
 
     e.run(1);
-    let (resolved, outcome) = outcomes(&e, mark).pop().expect("the raid arrives on its tick");
-    assert_eq!(resolved, forecast.arrival_tick);
-    assert_eq!((outcome.outpost, outcome.defended, outcome.breached, outcome.ships_lost), (Some(at), false, true, 1));
+    assert!(outcomes(&e, mark).is_empty() && rounds_since(&e, mark).is_empty(), "it stands there on the tick it arrives");
+    let battle = e.state().battles.into_iter().next().expect("the raid's fight is in the state");
+    let raid = battle.raid.expect("and says it is a raid on the outpost");
+    assert!(raid.outpost && raid.mine && battle.sector == at && raid.odds.label == RaidLabel::Lost);
+    let fought = outpost(&e).raid.expect("the outpost's forecast is the raid being fought");
+    assert_eq!((fought.arrival_tick, fought.rounds_left), (None, Some(raid.rounds_left)));
+    assert!(fought.ships == raid.ships && fought.odds == raid.odds);
+    assert_eq!(e.refusal(Command::AbandonOutpost), (ErrorCode::OnCooldown, "your outpost is under raid; it cannot be abandoned until the fight is over".to_string()));
+    e.run_until(10, |e| !outcomes(e, mark).is_empty());
+    let (resolved, outcome) = outcomes(&e, mark).pop().unwrap();
+    let rounds = rounds_since(&e, mark);
+    assert!((1..=RAID_ROUNDS).contains(&outcome.rounds) && rounds.len() as u32 == outcome.rounds);
+    assert_eq!(resolved, forecast.arrival_tick + u64::from(outcome.rounds));
+    let sides: Vec<bool> = rounds[0].fleets.groups.iter().map(|group| group.battery).collect();
+    assert_eq!(sides, [false, true], "the fleet standing there and the platform fight side by side");
+
+    assert_eq!((outcome.outpost, outcome.defended, outcome.breached), (Some(at), false, true));
+    assert_eq!(outcome.outcome, Some(BattleOutcome::FleetsDestroyed));
+    assert_eq!(outcome.ships_lost, 2, "every ship that stood there, not a quarter of them");
+    assert_eq!(outcome.lost, [
+        UnitCount { unit: ShipyardItem::Ship(ShipClass::LightFighter), count: 2 },
+        UnitCount { unit: ShipyardItem::Defence(DefenceKind::RocketLauncher), count: 4 },
+    ]);
+    assert!(outcome.rebuilt.is_empty() && outcome.salvage_dropped.is_none());
     assert_eq!(outcome.raid_power, forecast.est_power);
-    let after = everything(&e);
-    let pile = before.add(rate);
+    assert!(e.engine.fleets.get(&fid).is_none_or(|fleet| fleet.ships.is_empty()));
+    let carried = said(&e, mark).into_iter().find(|line| line.contains("lost carried")).expect("the hold of the lost ships is told of");
+    assert!(carried.ends_with("it went to the outpost's store"), "{carried}");
+
+    let pile = before.add(rate.scale(f64::from(outcome.rounds)));
     let taken = res((pile.metal - REPAIR) * 0.25, pile.crystal * 0.25, pile.deuterium * 0.25);
     assert!(near(outcome.resources_lost, taken, 0.01), "a quarter above the floor: {:?} against {taken:?}", outcome.resources_lost);
-    assert!(near(after, pile.sub(taken), 0.01), "and no more: {after:?} left of {pile:?}");
     assert_eq!(outcome.protected_kept, floor);
-    let fleet = e.fleet();
-    assert_eq!(fleet.ships.len(), 1, "a quarter of the ships there, at least one");
-    assert!(fleet.cargo.total() <= fleet.cargo_capacity + 0.01 && fleet.cargo_capacity < hold, "what the lost ship carried went to the store");
 
-    let broken = outpost(&e);
-    assert!(broken.breached && !broken.in_service);
-    assert_eq!((broken.production, broken.platform_power, broken.defence_power), (Resources::default(), 0.0, fighter));
-    assert_eq!((broken.repair_cost, broken.work, broken.raid_arrival_tick), (Some(floor), None, None));
-    assert_eq!(broken.repair_waiting_for, None, "the store covers the repair, so it waits for nothing");
-    assert!(e.fleet().at_outpost && e.fleet().outpost_fuel.is_none(), "a fleet stands at a breached outpost that fills no tank");
+    let repairing = outpost(&e);
+    assert!(repairing.breached && !repairing.in_service);
+    assert_eq!((repairing.production, repairing.platform_power, repairing.defence_power), (Resources::default(), 0.0, 0.0));
+    assert!(repairing.platform.is_empty() && repairing.raid_arrival_tick.is_none());
     let brief = chart(&e.engine, pid)[&at.to_key()].outpost.clone().unwrap();
     assert!(brief.breached && brief.mine);
     assert_eq!(e.refusal(Command::UpgradeOutpost).0, ErrorCode::InvalidCommand, "a breached outpost repairs before it grows");
-
-    let mark = e.mark();
-    e.run(1);
-    let repairing = outpost(&e);
-    let work = repairing.work.expect("the repair starts by itself");
+    let work = repairing.work.expect("the repair starts by itself, on the tick of the breach when the store covers it");
     let ticks = scaling::outpost_repair_ticks(1, &e.engine.pace());
-    assert_eq!((work.kind, work.level, work.start_tick, work.end_tick), (OutpostWork::Repair, 1, resolved + 1, resolved + 1 + ticks));
+    assert_eq!((work.kind, work.level, work.start_tick, work.end_tick), (OutpostWork::Repair, 1, resolved, resolved + ticks));
     assert_eq!(ticks, 23, "a quarter of level 1's 90 blitz ticks");
-    assert!(near(repairing.store, broken.store.sub(floor), 1e-3) && repairing.repair_cost.is_none());
-    assert_eq!(
-        said(&e, mark),
-        vec![format!(
-            "your outpost at {at} began its repair, paid 1613 metal from its store: it is whole at tick {}, in 23 ticks",
-            work.end_tick,
-        )],
-    );
+    assert!(near(repairing.store, pile.sub(taken).sub(floor), 0.01), "what the raid left, less the repair: {:?}", repairing.store);
+    assert!(repairing.repair_cost.is_none() && repairing.repair_waiting_for.is_none());
+    assert!(said(&e, mark).contains(&format!(
+        "your outpost at {at} began its repair, paid 1613 metal from its store: it is whole at tick {}, in 23 ticks",
+        work.end_tick,
+    )));
+    let mark = e.mark();
     e.run(ticks - 1);
     assert!(outpost(&e).breached && outpost(&e).store == repairing.store, "the extractor stands still until the repair is done");
     e.run(1);
     let whole = outpost(&e);
     assert!(!whole.breached && whole.in_service && whole.work.is_none());
-    assert_eq!((whole.platform_power, whole.production), (PLATFORM[0], rate));
+    assert_eq!((whole.platform_power, whole.production, &whole.platform), (PLATFORM[0], rate, &platform_of(1)));
     assert!(whole.store.metal > repairing.store.metal, "it extracts again from the tick it is whole");
     assert_eq!(said(&e, mark).last().unwrap(), &format!("your outpost at {at} is repaired: its extractor, its tanks and its platform work again"));
 
@@ -1148,6 +1205,64 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     e.run_until(40_000, |e| !forecasts(e, mark).is_empty());
     let (again, _) = forecasts(&e, mark).pop().unwrap();
     assert!(again >= resolved + grace, "no raid is announced inside the grace: {again} against {resolved} + {grace}");
+}
+
+#[test]
+fn ships_standing_at_the_outpost_fight_its_raid_beside_the_platform_and_win_it() {
+    let (mut e, at) = settle("blitz", 12, |t| t.metal_density != Density::None);
+    let (pid, fid) = (e.pid, e.fid);
+    deliver(&mut e, at, res(6000.0, 3000.0, 1500.0));
+    muster(&mut e.engine, fid, &[(ShipClass::Cruiser, 6)], at);
+    stow(&mut e, fid, Resources::default());
+    let post = outpost(&e);
+    let expected = post.raid.clone().expect("a raid to expect");
+    assert_eq!(expected.odds.label, RaidLabel::Repelled, "six Cruisers and the platform destroy the raid of ring 12: {expected:?}");
+    assert!(post.ships_power > 0.0 && post.defence_power == post.platform_power + post.ships_power);
+
+    send_outpost_raid(&mut e.engine, pid, &[(ShipClass::Cruiser, 2)], 1.0, 2);
+    let announced = outpost(&e).raid.expect("the raid announced");
+    assert_eq!((announced.arrival_tick, &announced.ships), (Some(e.engine.current_tick() + 2), &counts(&[(ShipClass::Cruiser, 2)])));
+    let mark = e.mark();
+    e.run_until(20, |e| !outcomes(e, mark).is_empty());
+    let (_, outcome) = outcomes(&e, mark).pop().unwrap();
+    let rounds = rounds_since(&e, mark);
+    assert!(!rounds.is_empty() && rounds.iter().all(|round| round.raid && round.sector == at));
+    let first = &rounds[0].fleets.groups;
+    assert_eq!(first.iter().map(|group| (group.fleet_id, group.battery)).collect::<Vec<_>>(), [(fid, false), (0, true)]);
+    assert!(rounds[0].fleets.volleys.iter().any(|v| v.from == ShipyardItem::Ship(ShipClass::Cruiser)));
+    assert!(rounds[0].fleets.volleys.iter().any(|v| v.from == ShipyardItem::Defence(DefenceKind::RocketLauncher)));
+
+    assert!(outcome.defended && !outcome.breached);
+    assert_eq!(outcome.outcome, Some(BattleOutcome::HostilesDestroyed));
+    assert_eq!(outcome.raiders_lost, counts(&[(ShipClass::Cruiser, 2)]));
+    assert_eq!((outcome.salvage_dropped, outcome.resources_lost), (None, Resources::default()), "no wreckage at an outpost, and nothing taken");
+    assert_eq!(e.fleet().ship_count, 6 - outcome.ships_lost);
+    let after = outpost(&e);
+    assert!(after.in_service && after.platform == platform_of(1), "the platform is whole again whatever it lost");
+    assert!(e.state().battles.is_empty());
+}
+
+#[test]
+fn a_fleet_recalled_from_a_breached_outpost_under_raid_leaves_it_to_the_raid() {
+    let (mut e, at) = settle("blitz", 16, |t| t.metal_density != Density::None);
+    let (pid, fid) = (e.pid, e.fid);
+    deliver(&mut e, at, res(900.0, 0.0, 0.0));
+    muster(&mut e.engine, fid, &[(ShipClass::SmallCargo, 6)], at);
+    stow(&mut e, fid, Resources::default());
+    edit(&mut e.engine, |s| s.outposts.get_mut(&pid).unwrap().breached = true);
+    send_outpost_raid(&mut e.engine, pid, &[(ShipClass::Battlecruiser, 2)], 1.0, 1);
+    let mark = e.mark();
+    e.run(1);
+    let battle = e.state().battles.into_iter().next().expect("the ships there are all that stands in the raid's way");
+    assert!(battle.raid.is_some_and(|raid| raid.outpost && raid.odds.label == RaidLabel::Lost));
+    assert!(rounds_since(&e, mark).is_empty());
+
+    e.order(Command::Recall { fleet_id: fid }).expect("the emergency jump home is open from an outpost under raid");
+    let (_, outcome) = outcomes(&e, mark).pop().expect("with the last defender gone the raid is settled at once");
+    assert!(!outcome.defended && outcome.breached);
+    assert_eq!((outcome.outcome, outcome.rounds, outcome.ships_lost), (Some(BattleOutcome::Withdrawn), 0, 0));
+    assert_eq!(e.fleet().location, e.engine.players[&pid].homeworld);
+    assert!(e.state().battles.is_empty());
 }
 
 #[test]
@@ -1166,9 +1281,9 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     e.run_until(100, |e| !outcomes(e, mark).is_empty());
     let (resolved, outcome) = outcomes(&e, mark).pop().unwrap();
     assert_eq!((outcome.defended, outcome.breached, outcome.ships_lost), (false, true, 0), "nobody was there to lose");
+    assert_eq!(outcome.structures_lost, 4, "the platform fought alone and fell");
     assert_eq!(outcome.resources_lost, Resources::default(), "nothing lies above a floor the store had not reached");
 
-    let mark = e.mark();
     e.run(400);
     let waiting = outpost(&e);
     let held = scaling::par_value(&waiting.store);
@@ -1178,7 +1293,7 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     let lacks = waiting.repair_waiting_for.expect("the state says what the repair waits for");
     assert!((lacks.metal - short).abs() < 1e-3 && lacks.crystal == 0.0 && lacks.deuterium == 0.0, "the shortfall, in metal: {lacks:?}");
     assert_eq!(waiting.repair_cost, Some(waiting.store.add(lacks)), "the store and the metal it lacks");
-    let warned = alerts_since(&e, mark);
+    let warned: Vec<AlertEvent> = alerts_since(&e, mark).into_iter().filter(|alert| alert.message.contains("breached")).collect();
     assert_eq!(warned.len(), 1, "{warned:?}");
     assert!(matches!(warned[0].level, AlertLevel::Warning));
     assert_eq!(
@@ -1373,30 +1488,54 @@ fn stand(world: &mut Headless, ring: u16, level: u8, garrison: &[(ShipClass, u32
 /// A ring, a level, and the ships standing there.
 type Post = (u16, u8, &'static [(ShipClass, u32)]);
 
+fn forecast_of(world: &Headless, pid: u64) -> iac_shared::protocol::RaidForecast {
+    let state = iac_sim::views::full_state(&world.engine, pid).expect("the keeper's state");
+    state.outpost.and_then(|post| post.raid).expect("a finished outpost has a raid to expect")
+}
+
+/// What a platform holds alone, by level and ring: the forecast of each of
+/// these outposts against the typical raid of its ring, nobody standing
+/// there. Level 1 holds nowhere, level 2 through the middle of the Outer
+/// Ring, level 3 to its edge. It is the fight that says so; the platforms
+/// are the study's starting values and none was tuned to this table.
 #[test]
-fn a_season_week_of_raids_takes_nothing_from_an_outpost_defended_as_its_ring_asks() {
-    use ShipClass::{Cruiser, LightFighter};
-    let weight = |r: Resources| scaling::resource_weight(&r);
-    let mut world = Headless::new(SEED, Pace::parse("season").unwrap());
-    let posts: [Post; 6] = [
-        (9, 1, &[(LightFighter, 2)]),
-        (12, 1, &[(LightFighter, 6)]),
-        (12, 2, &[]),
-        (17, 3, &[]),
-        (19, 3, &[]),
-        (20, 3, &[(Cruiser, 1)]),
+fn the_forecast_says_what_each_level_of_platform_holds_alone() {
+    use RaidLabel::{AtRisk, Held, Lost, Repelled};
+    let table: [(u16, [&[RaidLabel]; 3]); 6] = [
+        (9, [&[AtRisk, Lost], &[Repelled], &[Repelled]]),
+        (12, [&[Lost], &[Repelled], &[Repelled]]),
+        (14, [&[Lost], &[Repelled], &[Repelled]]),
+        (16, [&[Lost], &[Repelled, Held], &[Repelled]]),
+        (18, [&[Lost], &[AtRisk, Lost], &[Repelled]]),
+        (20, [&[Lost], &[AtRisk, Lost], &[Repelled, Held]]),
     ];
-    for (ring, level, garrison) in posts {
-        let ships: f32 = garrison.iter().map(|&(class, count)| count as f32 * scaling::ship_power(class)).sum();
-        let worst = 2.0 * 1.15 * scaling::npc_group_power(ring);
-        let least = 0.9 * (PLATFORM[usize::from(level) - 1] + ships);
-        assert!(least >= worst, "level {level} at ring {ring} with {garrison:?}: {least} at its worst against a raid of {worst}");
-        if let Some(&(class, _)) = garrison.first() {
-            let one_fewer = least - 0.9 * scaling::ship_power(class);
-            assert!(one_fewer < worst, "level {level} at ring {ring}: with one {} fewer it could lose", class.label());
+    for (ring, by_level) in table {
+        let mut world = Headless::new(SEED, Pace::parse("season").unwrap());
+        for (level, allowed) in (1..=3u8).zip(by_level) {
+            let pid = stand(&mut world, ring, level, &[]);
+            let raid = forecast_of(&world, pid);
+            assert!(
+                allowed.contains(&raid.odds.label),
+                "level {level} at ring {ring} against {:?} of power {:.0}: {:?}",
+                raid.ships, raid.power, raid.odds,
+            );
+            assert_eq!(raid.ships.len(), 1, "an outpost is raided by the class of its ring");
+            assert_eq!(raid.ships[0].ship_class, scaling::npc_class(ring));
+            assert_eq!(raid.odds.label <= AtRisk, raid.odds.lost > 0.0);
         }
     }
+}
+
+#[test]
+fn a_season_week_of_raids_takes_nothing_from_an_outpost_whose_platform_holds_its_ring() {
+    let weight = |r: Resources| scaling::resource_weight(&r);
+    let mut world = Headless::new(SEED, Pace::parse("season").unwrap());
+    let posts: [Post; 6] = [(9, 2, &[]), (12, 2, &[]), (14, 2, &[]), (16, 3, &[]), (18, 3, &[]), (20, 3, &[])];
     let keepers: Vec<u64> = posts.iter().map(|&(ring, level, garrison)| stand(&mut world, ring, level, garrison)).collect();
+    for (pid, (ring, level, _)) in keepers.iter().zip(posts) {
+        let odds = forecast_of(&world, *pid).odds;
+        assert_eq!(odds.lost, 0.0, "level {level} at ring {ring} is never lost in the fights the server plays: {odds:?}");
+    }
     let sites: Vec<Hex> = keepers.iter().map(|pid| world.engine.outposts[pid].sector).collect();
     for (i, a) in sites.iter().enumerate() {
         let t = world.engine.world_gen.generate_sector(*a);
@@ -1412,6 +1551,7 @@ fn a_season_week_of_raids_takes_nothing_from_an_outpost_defended_as_its_ring_ask
         let field = report.field;
         let what = format!("level {level} at ring {ring}: {field:?}");
         assert!(field.outpost_raids_repelled >= 8, "raids came all week, {what}");
+        assert!(field.raid_rounds >= field.outpost_raids_repelled, "and each was fought, {what}");
         assert_eq!((field.outpost_raids_lost, field.outpost_raided, field.outpost_ticks_breached, field.ships_lost), (0, 0.0, 0, 0), "{what}");
         assert_eq!(field.outpost_ticks, 7 * 86_400);
         let site = report.outpost.unwrap();
@@ -1471,6 +1611,9 @@ fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
         if post.breached {
             note("breached", tick, &mut seen, &mut marks);
         }
+        if e.engine.active_combats.values().any(|fight| fight.siege.is_some() && fight.round >= 1) {
+            note("a raid between two of its rounds", tick, &mut seen, &mut marks);
+        }
         if tick >= 2500 && tick.is_multiple_of(50) {
             let _ = e.order(Command::UpgradeOutpost);
         }
@@ -1480,10 +1623,10 @@ fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
                 let _ = e.order(Command::Load { fleet_id: fid, resource: Metal, amount: None });
                 let _ = e.order(Command::Move { fleet_id: fid, target: next });
             }
-            (40, Some(place)) if place == next => {
+            (250, Some(place)) if place == next => {
                 let _ = e.order(Command::Move { fleet_id: fid, target: at });
             }
-            (70, Some(place)) if place == at => {
+            (280, Some(place)) if place == at => {
                 let _ = e.order(Command::Unload { fleet_id: fid });
             }
             _ => {}
@@ -1493,6 +1636,7 @@ fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
     let raids = outcomes(&e, 0);
     let lost = raids.iter().filter(|(_, raid)| !raid.defended).count();
     assert!(lost >= 1 && raids.len() > lost, "the story has raids won and lost in it: {lost} lost of {}", raids.len());
+    assert!(raids.iter().any(|(_, raid)| raid.rounds >= 2), "and fought over more rounds than one");
     (e.engine.snapshot().hash(), seen, marks)
 }
 
@@ -1500,12 +1644,18 @@ fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
 fn a_world_with_an_outpost_replays_and_resumes_from_a_snapshot_to_the_same_state() {
     const TICKS: u64 = 6000;
     let (straight, seen, marks) = story(TICKS, &[]);
-    for wanted in ["level 1 under construction", "level 2 under construction", "a raid announced", "breached"] {
+    let moments =
+        ["level 1 under construction", "level 2 under construction", "a raid announced", "a raid between two of its rounds", "breached"];
+    for wanted in moments {
         assert!(seen.contains(&wanted), "the story never came to: {wanted} (it came to {seen:?})");
     }
     assert_eq!(story(TICKS, &[]).0, straight, "the same seed and the same orders give the same world");
 
-    let stops: Vec<u64> = marks.iter().map(|tick| tick + 3).collect();
+    let stops: Vec<u64> = seen
+        .iter()
+        .zip(&marks)
+        .map(|(what, tick)| if *what == "a raid between two of its rounds" { *tick } else { tick + 3 })
+        .collect();
     let (resumed, ..) = story(TICKS, &stops);
     assert_eq!(resumed, straight, "stopped and read back at ticks {stops:?} ({seen:?}), the world went on as if it had not been");
 }

@@ -292,6 +292,7 @@ class _ShellState extends State<Shell> {
                     onHelp: () => setState(() => _help = !_help),
                     onAlerts: () => setState(() => _alerts = !_alerts),
                   ),
+                  if (narrow) const RaidStrip(),
                   if (outpost && box.maxWidth < Hud.outpostFrom) const OutpostStrip(),
                   GuideStrip(screen: _screen, narrow: narrow),
                   Expanded(

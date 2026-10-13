@@ -10,8 +10,11 @@ import 'dart:ui' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/battle.dart' show RaidEnding, shipsList;
+import 'package:iac_client/console/intel.dart' show groupDigits;
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/design/panel.dart';
+import 'package:iac_client/models/fleet.dart' show FleetStatus;
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/views/overlays.dart' show ToastLayer;
 import 'package:iac_client/views/rail.dart';
@@ -43,6 +46,13 @@ Map<String, dynamic> _each(num v) => {'metal': v, 'crystal': v, 'deuterium': v};
 const _bigRefusal = 'outpost level 3 costs 23456789 metal, 23456789 crystal and 23456789 deuterium; the store at [10,-2] is short by 22222222 metal, '
     '22222222 crystal and 22222222 deuterium. A level is paid in full from the outpost\'s own store when it is ordered';
 
+/// A platform of three kinds of defence, each by the million.
+const _bigPlatform = [
+  {'unit': 'RocketLauncher', 'count': 1234567},
+  {'unit': 'LightLaser', 'count': 2345678},
+  {'unit': 'HeavyLaser', 'count': 3456789},
+];
+
 /// The recorded state with an outpost, every figure of the outpost at seven
 /// digits and more, and the longest sentence an upgrade is refused with.
 Map<String, dynamic> _bigOutpost() {
@@ -52,16 +62,21 @@ Map<String, dynamic> _bigOutpost() {
     ..['store_cap'] = _each(12345678)
     ..['protected'] = _each(1234567)
     ..['production'] = _each(12.3456)
-    ..['defence_power'] = 1234567.8
-    ..['platform_power'] = 123456.7
+    ..['platform'] = _bigPlatform
     ..['raid_power'] = {'least': 6543210.5, 'most': 7654321.5}
     ..['upgrade_refusal'] = _bigRefusal
     ..['hops_home'] = 64;
+  ((json['outpost'] as Map<String, dynamic>)['raid'] as Map<String, dynamic>)
+    ..['power'] = 7654321.5
+    ..['ships'] = [
+      {'class': 'Cruiser', 'count': 1234567},
+      {'class': 'Battlecruiser', 'count': 2345678},
+    ];
   ((json['outpost'] as Map<String, dynamic>)['next_level'] as Map<String, dynamic>)
     ..['cost'] = _each(23456789)
     ..['store_cap'] = _each(123456789)
     ..['production'] = _each(123.456)
-    ..['platform_power'] = 1234567
+    ..['platform'] = _bigPlatform
     ..['ticks'] = 3456789;
   for (final f in json['fleets'] as List) {
     (f as Map<String, dynamic>)
@@ -146,7 +161,7 @@ void main() {
 
     final contact = _said(tester, 'contact-outpost');
     expect(contact, contains('LEVEL 1 OF 3 - BUILDING LEVEL 2, 3:43:00 LEFT'));
-    expect(contact, contains('A RAID THE OUTPOST LOSES DESTROYS A QUARTER OF THE SHIPS STANDING HERE'), reason: 'a fleet at the outpost is in a raid\'s reach, and the contact says so');
+    expect(contact, contains('A FLEET STANDING HERE WHEN A RAID ARRIVES IS IN ITS FIGHT'), reason: 'a fleet at the outpost is in a raid\'s reach, and the contact says so');
     expect(contact.toUpperCase(), isNot(contains('SAFE')));
     expect(find.text('YOUR OUTPOST'), findsWidgets);
     expect(find.descendant(of: find.byKey(const ValueKey('dock-outpost')), matching: find.text('OUTPOST')), findsOneWidget);
@@ -165,11 +180,19 @@ void main() {
     expect(find.descendant(of: find.byKey(const Key('outpost-store-metal')), matching: find.text('RAIDABLE 0')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('outpost-store-deuterium')), matching: find.text('180 / 2,371')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('38.9 FE, 19.4 DE')), findsOneWidget);
-    expect(find.descendant(of: find.byKey(const Key('outpost-defence')), matching: find.text('40 + 132 = 172')), findsOneWidget);
-    expect(find.descendant(of: find.byKey(const Key('outpost-raid-range')), matching: find.text('38 TO 55')), findsOneWidget);
-    expect(_said(tester, 'outpost-raid'), 'RAID ARRIVES IN 2:50');
-    expect(_said(tester, 'outpost-cover'), 'DEFENCE ABOVE THE STRONGEST RAID');
+    expect(textUnder(tester, find.byKey(const Key('outpost-platform-RocketLauncher'))), 'ROCKET LAUNCHER\n4', reason: 'the platform is listed as the defences it is');
+    expect(find.byKey(const Key('outpost-defence')), findsNothing, reason: 'no sum of two powers stands for the defence');
+    expect(find.descendant(of: find.byKey(const Key('outpost-raid-range')), matching: find.text('383 TO 551')), findsOneWidget);
+    expect((_said(tester, 'outpost-raid-when'), _said(tester, 'outpost-raid-label'), _said(tester, 'outpost-raid-sentence')),
+        ('RAID IN 2:50', 'AT RISK', proto.RaidLabel.atRisk.outcome.toUpperCase()),
+        reason: 'the forecast of the raid on its way is the state\'s, with the server\'s label');
+    expect(_said(tester, 'outpost-raid-ships'), 'IT FLIES  1X CRUISER   POWER 513');
+    expect(textUnder(tester, find.byKey(const Key('outpost-raid-shares'))), 'DESTROYED 0%\nOUTLASTED 63%\nLOST 38%');
+    expect(_said(tester, 'outpost-raid-kept'), 'YOU KEEP 21% OF WHAT STANDS HERE, THE RAIDERS 97% OF THEIRS, BEFORE ANY DEFENCE IS REBUILT.');
+    expect(find.byKey(const Key('outpost-cover')), findsNothing);
     expect(find.text('AFTER LEVEL 2: LEVEL 3'), findsOneWidget, reason: 'the level that could be ordered once the one being built is done');
+    expect(find.descendant(of: find.byKey(const Key('outpost-next-platform')), matching: find.text('16X ROCKET LAUNCHER, 8X LIGHT LASER, 4X HEAVY LASER')),
+        findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('outpost-next-cost')), matching: find.text('6,250 FE, 3,125 CR, 1,250 DE')), findsOneWidget);
     expect(find.text('9:22:30'), findsOneWidget);
     expect(_why(tester, 'outpost-upgrade-why'), 'your outpost at [10,-2] is building level 2 until tick 18200; it does one job at a time',
@@ -192,7 +215,7 @@ void main() {
     expect(find.text('at the outpost'), findsOneWidget);
     expect(find.text('TAKE FROM THE STORE'), findsOneWidget);
     expect(find.descendant(of: find.byKey(const ValueKey('hold-res-metal')), matching: find.text('FE 412')), findsOneWidget);
-    expect(_why(tester, 'hold-rule'), allOf(contains('Nothing moves by itself here'), contains('destroys a quarter of the ships standing here')));
+    expect(_why(tester, 'hold-rule'), allOf(contains('Nothing moves by itself here'), contains('A fleet standing here is in a raid\'s fight')));
     await _press(tester, 'hold-res-deuterium');
     await _press(tester, 'hold-load');
     final load = c.commands.whereType<proto.LoadCommand>().single;
@@ -221,8 +244,16 @@ void main() {
         reason: 'the fleet is told to stand at the outpost while it is breached and fills no tank');
     expect(find.byKey(const ValueKey('dock-outpost')), findsOneWidget);
     expect(find.descendant(of: _hudLine, matching: find.text('L3 STORE 3% BREACHED')), findsOneWidget);
-    expect(_said(tester, 'contact-outpost'), allOf(contains('NO TANK IS FILLED HERE WHILE IT IS BREACHED'), contains('A RAID THE OUTPOST LOSES DESTROYS A QUARTER')));
-    expect(find.descendant(of: find.byType(ToastLayer), matching: find.textContaining('Raid broke your outpost at [10,-2]')), findsOneWidget);
+    expect(_said(tester, 'contact-outpost'), allOf(contains('NO TANK IS FILLED HERE WHILE IT IS BREACHED'), contains('IS IN ITS FIGHT, BESIDE THE PLATFORM')));
+    expect(_said(tester, 'outpost-platform-none'), 'NO PLATFORM: BREACHED');
+    expect((_said(tester, 'outpost-raid-when'), _said(tester, 'outpost-raid-label')), ('NO RAID ANNOUNCED', 'LOST'),
+        reason: 'with no platform and no ship there, the forecast of the next raid is the server\'s LOST');
+    expect(
+        find.descendant(
+            of: find.byType(ToastLayer), matching: find.text('Raid on your outpost at 10, -2 lost after 2 rounds: no defender was left standing')),
+        findsOneWidget,
+        reason: 'the raid\'s end is told in a line a toast has room for');
+    expect(c.state.events.map((e) => e.message), contains(startsWith('The raiders flew 1x Cruiser and lost nothing. You lost 1x Light Fighter, 4x Rocket Launcher. Taken: nothing.')));
     await shot(tester, 'outpost-breached-1440');
     expect(tester.takeException(), isNull);
     await endShell(tester, c);
@@ -307,7 +338,9 @@ void main() {
       expect(find.descendant(of: find.byKey(const Key('outpost-store-crystal')), matching: find.text('1,234,567 / 12,345,678')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('44,444 FE, 44,444 CR, 44,444 DE')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('outpost-raid-range')), matching: find.text('6,543,211 TO 7,654,322')), findsOneWidget);
-      expect(_said(tester, 'outpost-cover'), 'DEFENCE BELOW THE WEAKEST RAID');
+      expect(textUnder(tester, find.byKey(const Key('outpost-platform-HeavyLaser'))), 'HEAVY LASER\n3.46M');
+      expect(_said(tester, 'outpost-raid-ships'), 'IT FLIES  1,234,567X CRUISER, 2,345,678X BATTLECRUISER   POWER 7,654,322');
+      expect(_said(tester, 'outpost-raid-label'), 'AT RISK');
       expect(_why(tester, 'outpost-upgrade-why'), _bigRefusal);
       expect(tester.takeException(), isNull, reason: 'the windshield at $wide');
       await shot(tester, 'outpost-big-windshield-$wide');
@@ -350,8 +383,13 @@ void main() {
       expect(_why(tester, 'found-why'), refusal);
       expect(find.descendant(of: find.byKey(const Key('survey-grade')), matching: find.text('3.0 OF 12')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-yield')), matching: find.text('44,444 FE, 44,444 CR, 44,444 DE AN HOUR')), findsOneWidget);
-      expect(find.descendant(of: find.byKey(const Key('survey-raid')), matching: find.text('38 TO 55')), findsOneWidget);
-      expect(find.descendant(of: find.byKey(const Key('survey-platform')), matching: find.text('40')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('survey-raid')), matching: find.text('383 TO 551')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('survey-platform')), matching: find.text('4X ROCKET LAUNCHER')), findsOneWidget);
+      expect((_said(tester, 'survey-forecast-label'), _said(tester, 'survey-forecast-sentence')), ('AT RISK', proto.RaidLabel.atRisk.outcome.toUpperCase()),
+          reason: 'the survey says how a raid of the ring would go against the platform of level 1 alone');
+      expect(_said(tester, 'survey-forecast-ships'), 'IT FLIES  1X CRUISER   POWER 467');
+      expect(textUnder(tester, find.byKey(const Key('survey-forecast-shares'))), 'DESTROYED 0%\nOUTLASTED 50%\nLOST 50%');
+      expect(find.byKey(const Key('survey-forecast-when')), findsNothing, reason: 'it is the forecast of no raid in particular');
       expect(find.descendant(of: find.byKey(const Key('survey-time')), matching: find.text('1:30:00')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-cost-metal')), matching: find.text('ABOARD 0 - SHORT 1,000')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('survey-cost-crystal')), matching: find.text('ABOARD 1,234,567')), findsOneWidget);
@@ -435,15 +473,54 @@ void main() {
     expect(_said(tester, 'outpost-standing'), 'LEVEL 2 OF 3 - IN SERVICE');
     expect(find.text('OUTPOST LEVEL 2'), findsOneWidget);
 
+    expect(textUnder(tester, find.byKey(const Key('outpost-platform-RocketLauncher'))), 'ROCKET LAUNCHER\n8');
+    expect(textUnder(tester, find.byKey(const Key('outpost-platform-LightLaser'))), 'LIGHT LASER\n4', reason: 'level 2 stands with the platform of its level');
+    expect(_said(tester, 'outpost-raid-when'), 'NO RAID ANNOUNCED');
+    final typical = c.state.outpost!.raid!;
+    expect(_said(tester, 'outpost-raid-ships'), 'IT FLIES  ${shipsList(typical.ships).toUpperCase()}   POWER ${groupDigits(typical.power.round())}');
+
     c.raidOutpost(5000, inTicks: 5);
     await tester.pump(const Duration(seconds: 1));
     await tester.pump(const Duration(milliseconds: 300));
-    expect(_said(tester, 'outpost-raid'), startsWith('RAID ARRIVES IN 0:0'));
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pump(const Duration(milliseconds: 300));
+    expect(_said(tester, 'outpost-raid-when'), startsWith('RAID IN 0:0'));
+    expect((_said(tester, 'outpost-raid-label'), c.state.outpost!.raid!.odds.lost), ('LOST', 1), reason: 'the platform and five ships do not stand through this raid');
+    for (var i = 0; i < 6 && c.state.raidAtOutpost == null; i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final fight = c.state.raidAtOutpost!;
+    expect((fight.raid!.outpost, fight.raid!.roundsLeft, fight.round), (true, proto.raidRounds, null), reason: 'the raid stands at the outpost on the tick it arrives');
+    expect(_said(tester, 'outpost-raid-when'), 'RAID BEING FOUGHT');
+    expect(find.descendant(of: _hudLine, matching: find.textContaining('RAID FOUGHT')), findsOneWidget);
+    expect(textUnder(tester, find.byKey(const Key('battle-panel'))), allOf(contains('RAID\n'), contains('THE RAID STANDS HERE')));
+    final quote = c.state.fleets.first.flight!;
+    expect((c.state.fleets.first.status, quote.chase, find.byKey(const Key('flight-panel')).evaluate().length), (FleetStatus.combat, null, 1),
+        reason: 'the fleet standing there is in the fight, and may leave it');
+    await shot(tester, 'outpost-raid-arrived-1440');
+
+    c.place(101, _demoHome, const proto.Resources());
+    await tester.pump(const Duration(seconds: 1));
+    final round = c.state.raidAtOutpost!.round!;
+    expect(round.raid, isTrue);
+    expect(round.fleets.groups.map((g) => (g.fleetId, g.battery, g.label)), [(0, true, 'outpost platform')],
+        reason: 'with the fleet taken away by the script, the platform fights alone, as a battery');
+    for (var i = 0; i <= proto.raidRounds && !(c.state.raidAtOutpost?.over ?? false); i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final resolved = c.state.lastOutpostRaid!.raid;
+    expect((RaidEnding.of(resolved), resolved.breached, resolved.salvageDropped), (RaidEnding.lost, true, null), reason: 'no raid on an outpost leaves wreckage');
+    expect(resolved.lost.map((u) => (u.unit.defence, u.count)), [(proto.DefenceKind.rocketLauncher, 8), (proto.DefenceKind.lightLaser, 4)],
+        reason: 'what the raid destroyed is the platform, unit by unit');
     expect(c.state.outpost!.breached, isTrue);
-    expect(c.state.fleets.first.shipCount, 4, reason: 'a quarter of the five ships standing there');
+    expect(c.state.outpost!.platform, isEmpty);
+    expect(_said(tester, 'battle-outcome'), 'RAID LOST', reason: 'the fight\'s end is told to the fleet that was in it, where it now stands');
+    expect(_said(tester, 'battle-breach'), startsWith('THE OUTPOST IS BREACHED'));
+    expect(find.byKey(const Key('battle-rebuilt')), findsNothing, reason: 'a platform is not rebuilt unit by unit');
+    await shot(tester, 'outpost-raid-lost-1440');
+
+    c.place(101, _site, const proto.Resources());
+    await tester.pump(const Duration(milliseconds: 300));
     expect(_said(tester, 'outpost-standing'), 'LEVEL 2 OF 3 - BREACHED, THE REPAIR WAITS FOR ITS STORE');
+    expect(_said(tester, 'outpost-platform-none'), 'NO PLATFORM: BREACHED');
     expect(_said(tester, 'outpost-repair'), contains('WHICH IS SHORT BY'));
     expect(c.state.events.map((e) => e.message), contains(startsWith('! your outpost at [10,0] is breached and cannot repair itself: the repair costs 4032 metal, or crystal at 1.5 and deuterium at 2 a unit in its place, and its store is short by ')));
 
@@ -509,9 +586,10 @@ void main() {
     List<String> log() => c.state.events.map((e) => e.message).toList();
 
     c.handleCommand('survey');
-    expect(log().take(5), [
+    expect(log().take(6), [
       'Site [10,0], ring 10: grade 1.5, level 1 makes 117 Cr, 58.5 De an hour, 8 hops from home',
-      'Raids of 383 to 551 against a platform of 408',
+      'Level 1 stands with a platform of 4x Rocket Launcher; raids of this ring are of power 383 to 551',
+      'Against that platform alone a raid of 1x Cruiser (power 467) is LOST: ${proto.RaidLabel.lost.outcome} (destroyed 0%, outlasted 0%, lost 100%)',
       'Level 1 costs 3,000 Fe, 1,500 Cr, 600 De from the founding hold and takes 0:20',
       'F101 can found it now',
       '> survey',
@@ -519,9 +597,10 @@ void main() {
     c.handleCommand('survey 4 -2');
     expect(log()[3], 'Cannot be founded now: [4,-2] is at ring 4; an outpost stands in rings 9 to 20');
     c.handleCommand('survey 20 -10');
-    expect(log().take(4), [
+    expect(log().take(5), [
       'Site [20,-10], ring 20: not on your chart, so its ore and its yield are not known',
-      'Raids of 2,799 to 4,024 against a platform of 408',
+      'Level 1 stands with a platform of 4x Rocket Launcher; raids of this ring are of power 2,799 to 4,024',
+      allOf(startsWith('Against that platform alone a raid of '), contains(' is LOST: '), endsWith('(destroyed 0%, outlasted 0%, lost 100%)')),
       'Level 1 costs 3,000 Fe, 1,500 Cr, 600 De from the founding hold and takes 0:20',
       'Cannot be founded now: [20,-10] is not on your chart; a survey reads the site of a sector you have seen',
     ], reason: 'a sector never seen is answered with what its ring decides and nothing of what is there');
@@ -584,14 +663,15 @@ void main() {
     final reply = find.byKey(const Key('inspector-survey-reply'));
     for (final line in [
       'Site [10,-2], ring 10: grade 3.0, level 1 makes 77.9 Fe, 39.0 De an hour, more than 64 hops from home',
-      'Raids of 38 to 55 against a platform of 40',
+      'Level 1 stands with a platform of 4x Rocket Launcher; raids of this ring are of power 383 to 551',
+      'Against that platform alone a raid of 1x Cruiser (power 467) is AT RISK: ${proto.RaidLabel.atRisk.outcome} (destroyed 0%, outlasted 50%, lost 50%)',
       'Level 1 costs 1,000 Fe, 500 Cr, 200 De from the founding hold and takes 1:30:00',
     ]) {
       expect(find.descendant(of: reply, matching: find.text(line)), findsOneWidget);
     }
     expect(_said(tester, 'inspector-survey-verdict'), 'fleet 7 is at [4,-2], 6 hexes from [10,-2]; an outpost is founded by a fleet standing in its sector',
         reason: 'the refusal as the server gave it');
-    expect(c.state.events[3].message, startsWith('Cannot be founded now: fleet 7 is at [4,-2], 6 hexes from [10,-2]'), reason: 'and in the log, as a typed survey is');
+    expect(c.state.events[4].message, startsWith('Cannot be founded now: fleet 7 is at [4,-2], 6 hexes from [10,-2]'), reason: 'and in the log, as a typed survey is');
     expectTextFits(tester, reply, reason: 'survey reply');
     await shot(tester, 'map-outpost-survey-1440');
 

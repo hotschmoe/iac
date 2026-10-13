@@ -7,10 +7,10 @@ use iac_shared::protocol::{
     Command, ErrorCode, EventKind, GameEvent, GameState, HarvestResource, QueueEvent, QueueType, SectorState,
     ServerMessage, ShipCount,
 };
-use iac_shared::scaling::{ship_figures, Arms, BuildingType, Refit, ResearchType};
+use iac_shared::scaling::{ship_figures, Arms, BuildingType, DefenceKind, Refit, ResearchType};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::template_npc_id;
-use iac_sim::engine::{FleetStatus, NpcFleet, Ships};
+use iac_sim::engine::{FleetStatus, IncomingRaid, NpcFleet, RaidState, Ships};
 use iac_sim::host::Cast;
 use iac_sim::store::{self, Store};
 use iac_sim::{views, GameEngine, Snapshot};
@@ -201,6 +201,52 @@ pub fn horde(engine: &mut GameEngine, id: u64, at: Hex, ships: &[(ShipClass, u32
                 errand: None,
             },
         );
+    });
+}
+
+fn raid_of(tick: u64, ships: &[(ShipClass, u32)], grade: f32, in_ticks: u64) -> IncomingRaid {
+    let (ships, arms) = (Ships::of(ships), Arms::of_grade(grade));
+    IncomingRaid { arrival_tick: tick + in_ticks, power: ships.power(arms), ships, arms }
+}
+
+fn clock_with(raid: IncomingRaid) -> RaidState {
+    RaidState {
+        first_seen_tick: 0,
+        next_roll_tick: u64::MAX,
+        last_raid_tick: 0,
+        suppress_until: 0,
+        missed_rolls: 0,
+        incoming: Some(raid),
+    }
+}
+
+/// A raid of `ships`, every figure of its classes at `grade`, on its way to
+/// the homeworld of `pid`: it arrives `in_ticks` ticks from now and fights
+/// its first round the tick after. The raid clock rolls no other.
+pub fn send_raid(engine: &mut GameEngine, pid: u64, ships: &[(ShipClass, u32)], grade: f32, in_ticks: u64) {
+    let raid = raid_of(engine.current_tick(), ships, grade, in_ticks);
+    edit(engine, |s| {
+        s.raid_states.insert(pid, clock_with(raid));
+    });
+}
+
+/// The same on its way to the outpost of `owner`.
+pub fn send_outpost_raid(engine: &mut GameEngine, owner: u64, ships: &[(ShipClass, u32)], grade: f32, in_ticks: u64) {
+    let raid = raid_of(engine.current_tick(), ships, grade, in_ticks);
+    edit(engine, |s| {
+        s.outposts.get_mut(&owner).expect("an outpost").raid = clock_with(raid);
+    });
+}
+
+/// So many of each defence stand at the homeworld of `pid`, and so many
+/// Solar Satellites.
+pub fn fortify(engine: &mut GameEngine, pid: u64, defences: &[(DefenceKind, u32)], satellites: u32) {
+    edit(engine, |s| {
+        let player = s.players.get_mut(&pid).expect("player");
+        for &(kind, count) in defences {
+            player.defences.count[kind as usize] = count;
+        }
+        player.satellites = satellites;
     });
 }
 

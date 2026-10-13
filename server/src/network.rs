@@ -726,14 +726,12 @@ mod tests {
             let p = t.engine().players.get_mut(&pid).unwrap();
             p.research.weapons_technology = 1;
             p.defences.count[0] = 5;
-            p.defences.restoring[0] = 1;
             p.satellites = 3;
         }
         let tick = t.update();
         let hw = &tick["homeworld_update"];
         assert_eq!(hw["defences"][0]["kind"], "RocketLauncher");
         assert_eq!(hw["defences"][0]["count"], 5);
-        assert_eq!(hw["defences"][0]["restoring"], 1);
         let launcher = 80.0 * 1.1 + (200.0 + 20.0) / 10.0;
         assert!((hw["defences"][0]["power"].as_f64().unwrap() - launcher).abs() < 1e-3, "Weapons Technology reaches a defence");
         let defence = hw["home_defence_power"].as_f64().unwrap();
@@ -746,6 +744,14 @@ mod tests {
         );
         assert!(defence > 5.0 * launcher + satellites, "defences and satellites count toward home defence: {defence}");
         assert!(hw["next_raid_estimate_power"].as_f64().unwrap() > 50.0);
+        let raid = &hw["raid"];
+        assert_eq!(raid["power"], hw["next_raid_estimate_power"], "with none announced the forecast is the typical raid");
+        assert!(raid["arrival_tick"].is_null());
+        assert_eq!(raid["ships"][0]["class"], "LightFighter", "a new empire's raid is Light Fighters: {raid}");
+        assert_eq!(
+            raid["odds"]["label"], "repelled",
+            "two Light Fighters, five Rocket Launchers and three satellites destroy it every time: {raid}"
+        );
         assert_eq!(hw["catalog"]["defences"][0]["count"], 5);
         assert_eq!((&hw["satellites"], &hw["energy"]["made"]), (&3.into(), &(22 + 3 * 30).into()));
     }

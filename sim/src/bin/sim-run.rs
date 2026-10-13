@@ -10,11 +10,13 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use iac_shared::constants::DEFAULT_WORLD_SEED;
+use iac_shared::constants::{DEFAULT_WORLD_SEED, RAID_ROUNDS};
 use iac_shared::pace::Pace;
 use iac_shared::world::home_seats;
 use iac_sim::bot::{Attention, Bot, Personality, Style, DAY, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
-use iac_sim::headless::{Headless, IdleWhy, OutpostOrder, PlayerSummary, ScoreBreakdown, SlotIdle, Why, WHY_LABELS};
+use iac_sim::headless::{
+    FieldTally, Headless, IdleWhy, OutpostOrder, PlayerSummary, ScoreBreakdown, SlotIdle, Why, WHY_LABELS,
+};
 use iac_sim::score::ExtraRule;
 use iac_sim::script::IdlePlayer;
 use serde_json::json;
@@ -356,6 +358,56 @@ fn percent(value: f32, of: Option<f32>) -> String {
     }
 }
 
+/// How each player's raids on the homeworld ended and what they cost.
+fn raid_table(players: &[PlayerSummary]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<22} {:>5} {:>9} {:>9} {:>4} {:>9} {:>6} {:>6} {:>6} {:>8} {:>7} {:>8} {:>8} {:>8}",
+        "raids", "all", "destroyed", "outlasted", "lost", "unopposed", "rounds", "ships", "sats", "defences", "rebuilt",
+        "cost", "taken", "wreckage",
+    );
+    let mut sum = FieldTally::default();
+    let mut line = |name: &str, f: &FieldTally| {
+        let _ = writeln!(
+            out,
+            "{:<22} {:>5} {:>9} {:>9} {:>4} {:>9} {:>6} {:>6} {:>6} {:>8} {:>7} {:>8.1} {:>8.1} {:>8.1}",
+            name,
+            f.raids_repelled + f.raids_lost,
+            f.raids_destroyed,
+            f.raids_repelled - f.raids_destroyed,
+            f.raids_lost,
+            f.raids_unopposed,
+            f.raid_rounds,
+            f.raid_ships_lost,
+            f.raid_satellites_lost,
+            f.raid_defences_lost,
+            f.raid_defences_rebuilt,
+            f.raid_losses,
+            f.raided,
+            f.raid_salvage,
+        );
+    };
+    for p in players {
+        let f = &p.field;
+        line(&p.name, f);
+        sum.raids_repelled += f.raids_repelled;
+        sum.raids_destroyed += f.raids_destroyed;
+        sum.raids_lost += f.raids_lost;
+        sum.raids_unopposed += f.raids_unopposed;
+        sum.raid_rounds += f.raid_rounds;
+        sum.raid_ships_lost += f.raid_ships_lost;
+        sum.raid_satellites_lost += f.raid_satellites_lost;
+        sum.raid_defences_lost += f.raid_defences_lost;
+        sum.raid_defences_rebuilt += f.raid_defences_rebuilt;
+        sum.raid_losses += f.raid_losses;
+        sum.raided += f.raided;
+        sum.raid_salvage += f.raid_salvage;
+    }
+    line("all", &sum);
+    out
+}
+
 /// What each player's outpost scored, made and lost to raids; None when no
 /// player has had one, which is every world bots play alone.
 fn outpost_table(players: &[PlayerSummary]) -> Option<String> {
@@ -646,6 +698,14 @@ fn main() {
         println!("  one more combat or exploration point would not have counted\n");
         println!("{}", sample_table(&players));
         println!("{}", style_table(&players));
+        println!("raids on the homeworld, each fought as a battle of at most {RAID_ROUNDS} rounds:");
+        println!("  destroyed: no raider was left. outlasted: a defender stood when the rounds were over. lost: no defender");
+        println!("    was left; unopposed is the part of lost that found nothing in its way and was not fought");
+        println!("  rounds: rounds fought, the outpost's raids included. ships: ships of fleets destroyed in raids, at either dock");
+        println!("  sats, defences, rebuilt: Solar Satellites and defences destroyed, and the defences rebuilt at once");
+        println!("  cost: the ships, satellites and defences that did not come back, at the weight of what they cost");
+        println!("  taken: what lost raids took from the stockpile. wreckage: what was scooped at home. Both in the points they buy\n");
+        println!("{}", raid_table(&players));
         if let Some(order) = args.outpost {
             println!(
                 "--outpost: at the start of day 3 every bot was given an outpost of level {}{} in ring {}, on the free",

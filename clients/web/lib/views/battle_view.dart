@@ -156,8 +156,167 @@ class FleetCondition extends StatelessWidget {
 Color _outcomeColor(proto.BattleOutcome o) => switch (o) {
       proto.BattleOutcome.hostilesDestroyed => C.own,
       proto.BattleOutcome.fleetsDestroyed || proto.BattleOutcome.bothDestroyed => C.ember,
-      proto.BattleOutcome.withdrawn || proto.BattleOutcome.standoff || proto.BattleOutcome.fled => C.a300,
+      proto.BattleOutcome.withdrawn || proto.BattleOutcome.standoff || proto.BattleOutcome.fled || proto.BattleOutcome.outlasted => C.a300,
     };
+
+Color _endingColor(RaidEnding e) => switch (e) {
+      RaidEnding.destroyed => C.own,
+      RaidEnding.outlasted => C.a300,
+      RaidEnding.lost || RaidEnding.unopposed => C.ember,
+    };
+
+/// The colour of a raid forecast's label, from the worst to the best.
+Color raidLabelColor(proto.RaidLabel l) => switch (l) {
+      proto.RaidLabel.lost => C.ratioDeadly,
+      proto.RaidLabel.atRisk => C.ratioRisky,
+      proto.RaidLabel.held => C.ratioEven,
+      proto.RaidLabel.repelled => C.ratioFav,
+    };
+
+/// How the fights the server played ended: one bar cut at the forecast's
+/// three shares, with each share named under it.
+class RaidShares extends StatelessWidget {
+  final proto.RaidOdds odds;
+
+  /// A name for the keys, where a screen has more than one forecast.
+  final String tag;
+  const RaidShares(this.odds, {super.key, required this.tag});
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = [('DESTROYED', odds.destroyed, C.ratioFav), ('OUTLASTED', odds.outlasted, C.ratioEven), ('LOST', odds.lost, C.ratioDeadly)];
+    return Column(key: Key('$tag-shares'), crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      SizedBox(
+        height: 9,
+        child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          for (final (_, share, color) in parts)
+            if ((share * 1000).round() > 0) Expanded(flex: (share * 1000).round(), child: ColoredBox(color: C.a(color, .8))),
+        ]),
+      ),
+      const SizedBox(height: 4),
+      Wrap(spacing: 12, runSpacing: 2, children: [
+        for (final (name, share, color) in parts)
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Container(width: 7, height: 7, color: color),
+            const SizedBox(width: 5),
+            Text('$name ${sharePct(share)}', style: T.mono(size: 10.5, color: share > 0 ? C.text : C.text3)),
+          ]),
+      ]),
+    ]);
+  }
+}
+
+/// A raid's forecast as every screen prints it, all of it the state's: where
+/// the raid stands (being fought, on its way, or none announced and one of
+/// typical size), the label with Rust's sentence for it, what it flies and
+/// its power, how the fights the server played ended, and what each side
+/// keeps. [tick] turns the arrival into a time from now.
+class RaidForecastReadout extends StatelessWidget {
+  final proto.RaidForecast raid;
+  final int tick;
+
+  /// A name for the keys: `raid` at home, `outpost-raid` at the outpost.
+  final String tag;
+
+  /// Print what the three shares are shares of.
+  final bool rule;
+
+  /// Print where the raid stands. Off for a survey's forecast, which is of
+  /// no raid in particular.
+  final bool headline;
+  const RaidForecastReadout(this.raid, {super.key, required this.tick, required this.tag, this.rule = true, this.headline = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final odds = raid.odds;
+    final color = raidLabelColor(odds.label);
+    final (stands, hot, note) = switch ((raid.roundsLeft, raid.arrivalTick)) {
+      (final left?, _) => ('RAID BEING FOUGHT', true, roundsLeftOf(left).toUpperCase()),
+      (null, final at?) => ('RAID IN ${clockFmt(at > tick ? at - tick : 0)}', true, 'AGAINST WHAT STANDS HERE NOW'),
+      _ => ('NO RAID ANNOUNCED', false, 'ONE OF TYPICAL SIZE, WERE IT ANNOUNCED NOW'),
+    };
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      if (headline) ...[
+        Wrap(crossAxisAlignment: WrapCrossAlignment.end, spacing: 10, runSpacing: 2, children: [
+          Text(stands, key: Key('$tag-when'), style: T.cond(size: 22, color: hot ? C.ember : C.text2, weight: FontWeight.w700, spacing: 2, height: 1.1)),
+          Text(note, key: Key('$tag-note'), style: T.cond(size: 11, color: C.text3, spacing: 1.3)),
+        ]),
+        const SizedBox(height: 7),
+      ],
+      Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 10, runSpacing: 2, children: [
+        Text(odds.label.label, key: Key('$tag-label'), style: T.cond(size: 17, color: color, weight: FontWeight.w700, spacing: 2.2)),
+        Text(odds.label.outcome.toUpperCase(), key: Key('$tag-sentence'), style: _small.copyWith(color: C.text2)),
+      ]),
+      const SizedBox(height: 6),
+      Text.rich(
+        key: Key('$tag-ships'),
+        TextSpan(children: [
+          const TextSpan(text: 'IT FLIES  ', style: TextStyle(color: C.text3)),
+          TextSpan(text: shipsList(raid.ships).toUpperCase()),
+          const TextSpan(text: '   POWER ', style: TextStyle(color: C.text3)),
+          TextSpan(text: groupDigits(raid.power.round())),
+        ]),
+        style: T.mono(size: 11, color: C.text, height: 1.35),
+      ),
+      const SizedBox(height: 7),
+      RaidShares(odds, tag: tag),
+      const SizedBox(height: 5),
+      Text('${raidKept(odds).toUpperCase()}, BEFORE ANY DEFENCE IS REBUILT.', key: Key('$tag-kept'), style: _small.copyWith(color: C.text2)),
+      if (rule) const WhyText(raidSharesRule),
+    ]);
+  }
+}
+
+/// Defences and Solar Satellites, or an outpost's platform: so many of each
+/// kind, plain, a row a kind.
+class UnitRows extends StatelessWidget {
+  final List<proto.UnitCount> units;
+  final String tag;
+  const UnitRows(this.units, {super.key, required this.tag});
+
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+        for (final u in units)
+          Padding(
+            key: Key('$tag-${u.unit.ship?.wire ?? u.unit.defence!.wire}'),
+            padding: const EdgeInsets.only(top: 3),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+              Expanded(child: Text(u.unit.label.toUpperCase(), overflow: TextOverflow.ellipsis, style: _name)),
+              const SizedBox(width: 6),
+              Text(shortCount(u.count), style: _figure),
+            ]),
+          ),
+      ]);
+}
+
+/// A raid that has ended, as its summary: how it ended and after how many
+/// rounds, then what the raiders flew and lost, what the defender lost,
+/// what was rebuilt, what was taken, the wreckage and a breach. Every
+/// figure is the `RaidResolved` event's.
+class RaidSummary extends StatelessWidget {
+  final RaidReport report;
+  final int tick;
+  final String tag;
+  const RaidSummary(this.report, {super.key, required this.tick, required this.tag});
+
+  @override
+  Widget build(BuildContext context) {
+    final e = report.raid;
+    final ending = RaidEnding.of(e);
+    final ago = tick - report.tick;
+    return Column(key: Key(tag), crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      Wrap(crossAxisAlignment: WrapCrossAlignment.end, spacing: 10, runSpacing: 2, children: [
+        Text(ending.title, key: Key('$tag-ending'), style: T.cond(size: 15, color: _endingColor(ending), weight: FontWeight.w700, spacing: 2)),
+        Text(
+            '${ending == RaidEnding.unopposed ? '' : 'AFTER ${roundsOf(e.rounds).toUpperCase()}, '}${ago <= 0 ? 'JUST NOW' : '${clockFmt(ago)} AGO'}',
+            style: T.cond(size: 10.5, color: C.text3, spacing: 1.3)),
+      ]),
+      Text('${ending.sentence}.'.toUpperCase(), style: _small.copyWith(color: C.text2)),
+      const SizedBox(height: 4),
+      for (final line in raidSummary(e, tick: tick)) Text('${line.toUpperCase()}.', style: _small.copyWith(color: C.text2)),
+    ]);
+  }
+}
 
 /// "PATROL - 3 OF 5 SHIPS": a hostile group's behaviour and its ships
 /// against what it musters when whole.
@@ -254,16 +413,36 @@ class _BattlePanelState extends State<BattlePanel> {
   Widget build(BuildContext context) {
     final round = b.round;
     final ended = b.ended;
+    final raid = b.isRaid;
+    final standing = ended == null ? b.raid : null;
+    final at = '${b.sector.q}, ${b.sector.r}';
     return ConsolePanel(
       key: const Key('battle-panel'),
-      title: 'Battle',
+      title: raid ? 'Raid' : 'Battle',
       titleColor: C.ember,
       mark: C.ember,
-      subText: ended != null ? 'ENDED - ${roundsOf(ended.rounds).toUpperCase()}' : 'ROUND ${b.rounds} - ${b.sector.q}, ${b.sector.r}',
+      subText: ended != null
+          ? 'ENDED - ${roundsOf(ended.rounds).toUpperCase()}'
+          : raid
+              ? raidRoundOf(b.rounds)
+              : 'ROUND ${b.rounds} - $at',
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
         if (ended != null) ..._end(ended),
-        if (ended == null && round == null) Text('THE FIRST ROUND IS NOT FOUGHT YET.', style: _small),
+        if (standing != null) ...[
+          Text.rich(
+            key: const Key('battle-raid'),
+            TextSpan(children: [
+              TextSpan(text: '${roundsLeftOf(standing.roundsLeft).toUpperCase()}.  AS IT STANDS  ', style: const TextStyle(color: C.text3)),
+              TextSpan(text: standing.odds.label.label, style: TextStyle(color: raidLabelColor(standing.odds.label), fontWeight: FontWeight.w600)),
+              TextSpan(text: '  ${standing.odds.label.outcome.toUpperCase()}'),
+            ]),
+            style: _small.copyWith(color: C.text2),
+          ),
+          const SizedBox(height: 6),
+        ],
+        if (ended == null && round == null)
+          Text(raid ? 'THE RAID STANDS HERE. THE FIRST ROUND IS FOUGHT ON THE NEXT TICK.' : 'THE FIRST ROUND IS NOT FOUGHT YET.', style: _small),
         if (round != null && (ended == null || _lastRound)) ..._round(round),
         if (ended == null) ...[
           const SizedBox(height: 9),
@@ -274,13 +453,30 @@ class _BattlePanelState extends State<BattlePanel> {
     );
   }
 
-  List<Widget> _end(proto.CombatEndedEvent e) => [
-        Text(outcomeTitle(e.outcome),
-            key: const Key('battle-outcome'), style: T.cond(size: 17, color: _outcomeColor(e.outcome), weight: FontWeight.w700, spacing: 2.4)),
-        Text('${outcomeSentence(e.outcome)}, after ${roundsOf(e.rounds)} at ${e.sector.q}, ${e.sector.r}.'.toUpperCase(), style: _small),
+  /// How the fight ended, in a raid's own words when the server has said
+  /// what the raid came to.
+  (String, Color, String) _verdict(proto.CombatEndedEvent e) => switch (b.resolved) {
+        final how? => (RaidEnding.of(how).title, _endingColor(RaidEnding.of(how)), RaidEnding.of(how).sentence),
+        null => (outcomeTitle(e.outcome), _outcomeColor(e.outcome), outcomeSentence(e.outcome)),
+      };
+
+  List<Widget> _end(proto.CombatEndedEvent e) {
+    final (title, color, sentence) = _verdict(e);
+    final how = b.resolved;
+    Widget line(String text, String key, {Color? color}) => Padding(
+        padding: const EdgeInsets.only(top: 5),
+        child: Text('${text.toUpperCase()}.', key: Key(key), style: _small.copyWith(color: color ?? C.text2)));
+    return [
+        Text(title, key: const Key('battle-outcome'), style: T.cond(size: 17, color: color, weight: FontWeight.w700, spacing: 2.4)),
+        Text('$sentence, after ${roundsOf(e.rounds)} at ${e.sector.q}, ${e.sector.r}.'.toUpperCase(), style: _small),
         const SizedBox(height: 7),
         const Lbl('Losses'),
-        ..._losses(e.losses, key: 'battle-end-losses', none: 'NO SHIP WAS LOST ON EITHER SIDE.'),
+        ..._losses(e.losses, key: 'battle-end-losses', none: e.raid ? 'NOTHING WAS LOST ON EITHER SIDE.' : 'NO SHIP WAS LOST ON EITHER SIDE.'),
+        if (how != null) ...[
+          if (raidRebuilt(how) case final rebuilt?) line(rebuilt, 'battle-rebuilt', color: C.own),
+          if (raidTaken(how) case final taken?) line(taken, 'battle-taken', color: atRiskColor),
+          if (raidBreach(how) case final breach?) line(breach, 'battle-breach', color: atRiskColor),
+        ],
         if (e.salvage case final pile?)
           Padding(padding: const EdgeInsets.only(top: 5), child: Text('WRECKAGE LEFT: ${amountsOf(pile).toUpperCase()}', key: const Key('battle-wreckage'), style: _small.copyWith(color: C.gold))),
         Padding(
@@ -294,6 +490,7 @@ class _BattlePanelState extends State<BattlePanel> {
             ])),
         if (_lastRound) const SizedBox(height: 8),
       ];
+  }
 
   List<Widget> _losses(List<proto.BattleLosses> losses, {required String key, String none = 'NOTHING YET.'}) => [
         if (losses.every((l) => l.lost.isEmpty))
@@ -306,15 +503,20 @@ class _BattlePanelState extends State<BattlePanel> {
           ]),
       ];
 
-  List<Widget> _round(proto.BattleRoundEvent r) => [
-        _standing('Fleets', r.fleets, lost: r.hostiles.destroyed, color: C.own, tag: 'battle-fleets'),
-        const SizedBox(height: 8),
-        _standing('Hostiles', r.hostiles, lost: r.fleets.destroyed, color: C.ember, tag: 'battle-hostiles'),
-        const SizedBox(height: 9),
-        _fire('Fleets fired', r.fleets, all: _allFleets, color: C.own, tag: 'battle-fire-fleets', toggle: () => setState(() => _allFleets = !_allFleets)),
-        const SizedBox(height: 8),
-        _fire('Hostiles fired', r.hostiles, all: _allHostiles, color: C.ember, tag: 'battle-fire-hostiles', toggle: () => setState(() => _allHostiles = !_allHostiles)),
-      ];
+  /// A round's two sides, named as a raid's when it is one: who defends the
+  /// place, and the raiders.
+  List<Widget> _round(proto.BattleRoundEvent r) {
+    final (ours, theirs) = r.raid ? ('Defenders', 'Raiders') : ('Fleets', 'Hostiles');
+    return [
+      _standing(ours, r.fleets, lost: r.hostiles.destroyed, color: C.own, tag: 'battle-fleets'),
+      const SizedBox(height: 8),
+      _standing(theirs, r.hostiles, lost: r.fleets.destroyed, color: C.ember, tag: 'battle-hostiles'),
+      const SizedBox(height: 9),
+      _fire('$ours fired', r.fleets, all: _allFleets, color: C.own, tag: 'battle-fire-fleets', toggle: () => setState(() => _allFleets = !_allFleets)),
+      const SizedBox(height: 8),
+      _fire('$theirs fired', r.hostiles, all: _allHostiles, color: C.ember, tag: 'battle-fire-hostiles', toggle: () => setState(() => _allHostiles = !_allHostiles)),
+    ];
+  }
 
   /// What a side has standing after the round, group by group and class by
   /// class, with what the round took from it.
@@ -335,13 +537,14 @@ class _BattlePanelState extends State<BattlePanel> {
           ]),
           _cells('', 'LEFT', 'LOST', 'DMG', 'RISK', head: true),
           for (final g in side.groups) ...[
-            if (side.groups.length > 1 || !g.mine || g.fleeing)
+            if (side.groups.length > 1 || !g.mine || g.fleeing || g.battery)
               Padding(
                   padding: const EdgeInsets.only(top: 3),
                   child: Text.rich(
-                    key: Key('$tag-group-${g.fleetId}'),
+                    key: Key(g.battery ? '$tag-battery' : '$tag-group-${g.fleetId}'),
                     TextSpan(children: [
-                      TextSpan(text: groupName(g).toUpperCase()),
+                      TextSpan(text: groupName(g).toUpperCase(), style: g.battery ? const TextStyle(color: C.crystal) : null),
+                      if (g.battery) const TextSpan(text: '  NO FLEET: THEY STAND WHERE THEY ARE'),
                       if (g.fleeing) const TextSpan(text: '  LEAVING: FIRED ON, NOT FIRING', style: TextStyle(color: damagedColor)),
                     ]),
                     overflow: TextOverflow.ellipsis,
@@ -350,7 +553,7 @@ class _BattlePanelState extends State<BattlePanel> {
             for (final u in g.units)
               _cells(u.unit.label.toUpperCase(), shortCount(u.count), u.lost > 0 ? '-${shortCount(u.lost)}' : '',
                   u.damaged > 0 ? shortCount(u.damaged) : '', u.atRisk > 0 ? shortCount(u.atRisk) : '',
-                  gone: u.count == 0),
+                  gone: u.count == 0, tint: g.battery ? C.a(C.crystal, .85) : C.text2),
           ],
         ],
       );
@@ -358,14 +561,15 @@ class _BattlePanelState extends State<BattlePanel> {
   /// A row of the standing table: a kind of unit, how many are left, how
   /// many the round destroyed, and of those left how many are damaged and
   /// how many at risk.
-  Widget _cells(String name, String left, String lost, String damaged, String atRisk, {bool head = false, bool gone = false}) {
+  Widget _cells(String name, String left, String lost, String damaged, String atRisk,
+      {bool head = false, bool gone = false, Color tint = C.text2}) {
     final label = T.cond(size: 9, color: C.text3, weight: FontWeight.w500, spacing: 1.2);
     Widget cell(String text, Color color) =>
         SizedBox(width: 40, child: Text(text, textAlign: TextAlign.right, style: head ? label : _figure.copyWith(color: color)));
     return Padding(
       padding: const EdgeInsets.only(top: 2),
       child: Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
-        Expanded(child: Text(name, overflow: TextOverflow.ellipsis, style: _name.copyWith(color: gone ? C.text4 : C.text2))),
+        Expanded(child: Text(name, overflow: TextOverflow.ellipsis, style: _name.copyWith(color: gone ? C.text4 : tint))),
         cell(left, gone ? C.text3 : C.text),
         cell(lost, atRiskColor),
         cell(damaged, damagedColor),
@@ -424,18 +628,23 @@ class BattleStrip extends StatelessWidget {
     final ended = battle.ended;
     final Widget line;
     if (ended != null) {
-      line = Text('${outcomeTitle(ended.outcome)} - ${roundsOf(ended.rounds).toUpperCase()}',
-          overflow: TextOverflow.ellipsis, style: T.cond(size: 11.5, color: _outcomeColor(ended.outcome), spacing: 1.2));
+      final (title, color) = switch (battle.resolved) {
+        final how? => (RaidEnding.of(how).title, _endingColor(RaidEnding.of(how))),
+        null => (outcomeTitle(ended.outcome), _outcomeColor(ended.outcome)),
+      };
+      line = Text('$title - ${roundsOf(ended.rounds).toUpperCase()}',
+          overflow: TextOverflow.ellipsis, style: T.cond(size: 11.5, color: color, spacing: 1.2));
     } else if (r == null) {
-      line = Text('BATTLE JOINED', style: T.cond(size: 11.5, color: C.ember, spacing: 1.2));
+      line = Text(battle.isRaid ? 'THE RAID HAS ARRIVED' : 'BATTLE JOINED', style: T.cond(size: 11.5, color: C.ember, spacing: 1.2));
     } else {
+      final (ours, theirs) = r.raid ? ('DEFENDERS', 'RAIDERS') : ('FLEETS', 'HOSTILES');
       line = Text.rich(
         TextSpan(children: [
-          TextSpan(text: 'ROUND ${r.round}  ', style: const TextStyle(color: C.ember)),
-          TextSpan(text: 'FLEETS ${shortCount(r.fleets.standing)}', style: const TextStyle(color: C.own)),
+          TextSpan(text: '${r.raid ? raidRoundOf(r.round) : 'ROUND ${r.round}'}  ', style: const TextStyle(color: C.ember)),
+          TextSpan(text: '$ours ${shortCount(r.fleets.standing)}', style: const TextStyle(color: C.own)),
           if (r.hostiles.destroyed > 0) TextSpan(text: ' -${shortCount(r.hostiles.destroyed)}', style: const TextStyle(color: atRiskColor)),
           const TextSpan(text: '  V  ', style: TextStyle(color: C.text3)),
-          TextSpan(text: 'HOSTILES ${shortCount(r.hostiles.standing)}', style: const TextStyle(color: C.text)),
+          TextSpan(text: '$theirs ${shortCount(r.hostiles.standing)}', style: const TextStyle(color: C.text)),
           if (r.fleets.destroyed > 0) TextSpan(text: ' -${shortCount(r.fleets.destroyed)}', style: const TextStyle(color: atRiskColor)),
         ]),
         overflow: TextOverflow.ellipsis,

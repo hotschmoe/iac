@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
-import '../../console/battle.dart' show fleeingLine, flightPrice, outcomeTitle, roundsOf, stopFlightRule, ticksOf;
+import '../../console/battle.dart' show RaidEnding, fleeingLine, flightPrice, outcomeTitle, roundsOf, stopFlightRule, ticksOf;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show inOutpostRings;
 import '../../console/route_planner.dart';
@@ -210,10 +210,14 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           con.play('alert');
         }
       case proto.CombatEndedEvent():
-        if (k.mine) {
+        if (k.mine && !k.raid) {
           _showBanner(outcomeTitle(k.outcome), 'After ${roundsOf(k.rounds)} at ${k.sector.q}, ${k.sector.r}.', !k.playerVictory);
           con.play(k.playerVictory ? 'ok' : 'alert');
         }
+      case proto.RaidResolvedEvent():
+        final ending = RaidEnding.of(k);
+        _showBanner(ending.title, '${k.outpost == null ? 'At home' : 'At your outpost'}${k.outcome == null ? '' : ', after ${roundsOf(k.rounds)}'}.', !k.defended);
+        con.play(k.defended ? 'ok' : 'alert');
       case proto.PursuitEvent(mine: true, :final phase, :final label, :final fleetId):
         if (fleetId != _fleet?.id) break;
         if (phase == proto.PursuitPhase.abandoned) {

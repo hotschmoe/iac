@@ -113,7 +113,7 @@ can pick up where you left off if your session is restarted.
 | `unload` | `fleet_id` | put a `laden` hold back: what the caps allow goes into the stockpile now and the dock takes the rest as room opens. The answer is an `Alert` (info). Refused with `InvalidCommand` when the fleet was not loaded by `load`, `NotInSector` away from home. At your outpost `unload` puts the whole hold of any fleet into the outpost's store as far as it has room (`NoResources` for an empty hold); see Outposts |
 | `refine` | `fleet_id` | turn the deuterium in the fleet's hold into fuel, until the tank is full or the deuterium is gone. It works anywhere, takes no time, and loses 15%: a unit of deuterium is 12.5 fuel at a dock and 10.625 from the hold (see Refining). The fleet row's `refine` (`deuterium`, `fuel`) says beforehand what the order would turn into what, and is absent when it would be refused. The answer is an `Alert` (info) with both figures. Refused with nothing changed and a sentence saying why: `OnCooldown` in combat or while a jump charges, `NoResources` with no deuterium aboard, `InvalidCommand` with a full tank |
 | `found_outpost` | `fleet_id` | found your outpost in the sector the fleet stands in, paying 1000 metal, 500 crystal and 200 deuterium from its hold. The fleet must stand idle with no standing orders; the sector must be in rings 9 to 20, not an Anomaly, without a derelict, without a group in it or away from it after a fleet (win the sector first: its group has to be destroyed), and at least 3 hexes from every other outpost; you may have one outpost. The answer is an `Alert` (info) with the tick it will be finished. Refused with nothing changed and a sentence saying why: `InvalidTarget` for a sector that does not qualify, `InvalidCommand` if you already have an outpost or the fleet is under standing orders, `NoResources` naming what the hold lacks, `OnCooldown` for a fleet that is moving, fighting or busy |
-| `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, the `cost` and `build_ticks` of level 1, `raid_power` (`least` and `most`: the weakest and the strongest raid that ring sends), `platform_power`, `site` (`densities`, `grade`, `production` a tick at level 1, `hops_home`) and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector may be asked about. One you have never seen is answered without `site` and with a `refusal` that says it is not on your chart (or that its ring is outside 9 to 20): what follows from the ring is told, what is there is not. For a sector the fleet does not stand in, a `refusal` that only says the fleet is elsewhere means the site itself qualifies |
+| `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, the `cost` and `build_ticks` of level 1, `raid_power` (`least` and `most`: the weakest and the strongest raid that ring sends), `platform` (the defences level 1 stands with) and `platform_power`, `raid` (a typical raid of that ring, its `ships`, and `odds` against a level 1 platform alone; absent outside rings 9 to 20), `site` (`densities`, `grade`, `production` a tick at level 1, `hops_home`) and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector may be asked about. One you have never seen is answered without `site` and with a `refusal` that says it is not on your chart (or that its ring is outside 9 to 20): what follows from the ring is told, what is there is not. For a sector the fleet does not stand in, a `refusal` that only says the fleet is elsewhere means the site itself qualifies |
 | `upgrade_outpost` | none | build the next level of your outpost, paid in full from the outpost's own store at that moment. The answer is an `Alert` (info). Refused with `InsufficientResources` and the exact shortfall when the store does not cover it, `MaxLevelReached` at level 3, `InvalidCommand` with no outpost, while it is building or repairing, or while it is breached. `outpost.upgrade_refusal` in your state is that refusal's sentence beforehand, absent when the order would be accepted |
 | `abandon_outpost` | none | give up your outpost. Its store is left as wreckage in the sector for 180 ticks, its score is gone, nothing is refunded, and you may found another. `InvalidCommand` with no outpost |
 
@@ -249,7 +249,8 @@ What every doctrine does:
   the hub and pace. The fight in open space is OGame's round, one a tick,
   between fleets of up to 5000 ships, which a fleet may leave under fire
   and from which a group keeps its losses until it has mended (Combat,
-  below); raids fought as battles are later work.
+  below). A raid on your homeworld or your outpost is the same fight, for
+  at most six rounds, and it is where your defences fire (Raids, below).
   A new empire has a Metal Mine, a Crystal Mine and the Solar Plant that
   powers them, all at level 1, and two Light Fighters.
 - **Economy** — metal / crystal / deuterium from homeworld mines and fleet
@@ -270,9 +271,11 @@ What every doctrine does:
   with the energy there is, less the reactor's burn, so its deuterium may be
   negative; a reactor with no deuterium to burn stands still
   (`fusion_starved`). Solar Satellites are built in the shipyard as ships,
-  stay at the homeworld (`homeworld.satellites`), never join a fleet, stand
-  in its defence for 21 power each and are what a lost raid shoots first
-  (a quarter of them). Raise the Solar Plant before a mine, not after.
+  stay at the homeworld (`homeworld.satellites`), never join a fleet, and
+  stand in every raid's fight with a hull of 200, a shield of 1 and an
+  attack of 1: every armed ship fires again four times in five after a shot
+  at one, so a raid that is not destroyed quickly takes them by the dozen,
+  and none is rebuilt. Raise the Solar Plant before a mine, not after.
 - **Ore** — an ore tile holds 9 / 30 / 66 / 126 raw units (Sparse to Pristine)
   times 1.10 per ring from ring 3 (x5 from ring 20), and the further out the
   richer the density rolls. Harvesting takes units out of the tile (depletion
@@ -675,12 +678,20 @@ What every doctrine does:
   from the shipyard queue, stay home, burn no fuel, and cost 16 to 32
   resources per point of power (warships cost 37 to 59). Weapons, Shielding
   and Armour Technology raise every structure standing, at once.
-  `homeworld.defences` lists them,
-  `home_defence_power` is what a raid meets (docked ships + Solar
-  Satellites + structures, each stated beside it: `docked_power`,
-  `satellite_power`, `structure_power`). A catalogue entry with a limit
-  (`max`) says how many more may be ordered now (`room`). The domes are a
-  shield and a hull and no more until raids are fought as battles.
+  `homeworld.defences` lists them. They fire in one place only: the fight
+  of a raid on your homeworld (Raids, next). Each is a unit of the round as
+  a ship is, with a hull, a shield that is full again every round, and one
+  shot a round; no defence has rapid fire, and ships have it against some:
+  a Cruiser fires again nine times in ten after a shot at a Rocket
+  Launcher, a Bomber nineteen in twenty at a Rocket Launcher or a Light
+  Laser and nine in ten at a Heavy Laser or an Ion Cannon; nothing has it
+  against the Gauss Cannon, the Plasma Turret or the domes
+  (`world.rapid_fire` is the whole table). A dome is a hull and a shield
+  that soak shots: a shot under a hundredth of its shield bounces, and the
+  shield is full again the next round. `home_defence_power` and its three
+  parts (`docked_power`, `satellite_power`, `structure_power`) are sums on
+  the power scale and decide nothing. A catalogue entry with a limit
+  (`max`) says how many more may be ordered now (`room`).
 - **Raids** — once your empire is worth raiding (Shipyard ≥ 2 or any
   defence built), pirates occasionally vector at your homeworld: a roll every 6 hours
   at pace 1 (30%), at most one per 18 hours, never in your first day, all
@@ -688,25 +699,70 @@ What every doctrine does:
   by 15 points, so a raid is never long overdue. A raid's power is `50 + 9 x S^0.75` (S = your building
   and research points, ships and defences excluded; a Rocket Launcher is 102
   of power, a Light Fighter 91) times a roll of 0.80 to
-  1.15, so it grows with your economy and not with your defence;
-  `next_raid_estimate_power` shows what to expect. `RaidIncoming` warns
-  `600 / sqrt(P)` ticks ahead (30 to 600) with the raid's `est_power`.
-  Docked ships, Solar Satellites and structures defend (±10% fog). Repelled: bonus
-  salvage in orbit and a share of structures destroyed (up to half, scaled by
-  raid over defence power), 70% of them rebuilt free shortly after. Lost: a
-  hard-capped slice of the stockpile above the share the storage buildings
-  protect (≤8%),
-  half the structures gone for good, a quarter of the ships docked at home
-  and a quarter of the Solar Satellites
-  destroyed (at least one of each), and a long grace period. What the destroyed
-  ships carried beyond the holds left goes to the stockpile as far as the
-  stores have room, and the rest is lost. Cargo aboard fleets at
-  home counts as stockpile: the raid takes its slice of the two together,
-  above one protected share, from stockpile and holds alike, so a hold at the
-  dock hides nothing. Never
-  buildings, never queues. `RaidResolved` reports `structures_lost`,
-  `structures_restored`, `protected_kept`, `ships_lost`, `satellites_lost` and, for a repelled
-  raid, `salvage_despawn_tick`. The orbital salvage is on your own planet, so
+  1.15, so it grows with your economy and not with your defence.
+  **What it flies** answers what you built: Light Fighters; once 20 Rocket
+  Launchers stand, two fifths of its power in Cruisers; once 20 Light
+  Lasers, Heavy Lasers and Ion Cannons stand between them, three tenths in
+  Bombers. So a wall of one cheap defence brings the class that shreds it.
+  `RaidIncoming` warns `600 / sqrt(P)` ticks ahead (30 to 600) with the
+  raid's `est_power`, its `ships`, and `odds`; power and ships are fixed
+  from then on.
+  **The forecast.** `homeworld.raid` is in every state: the raid being
+  fought (`rounds_left` set), else the raid announced (`arrival_tick` set),
+  else, with none on its way, one of typical size were it
+  announced now; its `power`, its `ships`, and `odds` against everything
+  standing at home this tick. The server plays the fight itself 8 to 64 times
+  over, as it does for a sector's odds: `destroyed`, `outlasted` and `lost`
+  are the shares of those fights that ended each way, `kept` the share of
+  their worth your ships, satellites and defences keep (before any defence
+  is rebuilt), `raiders_kept` the raiders' share, and `label` is `repelled`
+  (destroyed every time), `held` (never lost, not always destroyed),
+  `at_risk` (lost in some) or `lost`. Build against the label, not against
+  a power figure: nothing compares two powers any more.
+  **The fight.** When the raid arrives it stands at your homeworld and
+  fights the next tick: the round of every fight (Combat, above), one a
+  tick, the raiders against every ship of yours standing at home, every
+  Solar Satellite and every defence, for at most 6 rounds. Your ships fight
+  with their refit, satellites and defences with your research as it
+  stands. `battles` holds the fight while it lasts, with `raid` (`mine`,
+  `outpost`, `power`, `ships`, `rounds_left`, `odds` from where it
+  stands); `homeworld.raid` is that raid too until it ends, with the same
+  `rounds_left` and odds, and no `arrival_tick`.
+  Each round is a `BattleRound` with `raid: true`, your fleets as
+  groups and your defences and satellites as one more group marked
+  `battery` (label "home defences"). It ends one of three ways:
+  no raider is left (`hostiles_destroyed`): repelled, and three tenths of
+  what the raiders cost lies at home as wreckage; the rounds are over, or a
+  round took no hull from anybody, and a defender still stands
+  (`outlasted`): repelled, the raiders leave, nothing is taken and there
+  is no wreckage; no defender is left (`fleets_destroyed`, or `fled` when
+  your last fleet jumped out): lost. A raid that finds nothing at all in
+  its way is lost on the spot, without a fight.
+  **After it.** Of the defences that fell, about 70 in a hundred stand
+  again at once and for nothing (fewer than ten of a kind: each on its own
+  70 in a hundred; ten or more: 60 to 80 percent of them). Ships and Solar
+  Satellites lost are lost. A lost raid also takes a hard-capped slice of
+  the stockpile above the share the storage buildings protect (8% of metal
+  and crystal, 5% of deuterium), and none comes for 48 game hours divided
+  by P^0.75. What destroyed ships carried goes to the stockpile as far as
+  the stores have room, before the raid takes its slice, so a hold at the
+  dock hides nothing; the rest is lost. Never buildings, never queues.
+  **Your fleets.** A fleet standing at home when the raid arrives is in
+  the fight: it cannot load or unload, the dock does not mend it until it
+  is over, and research finished meanwhile reaches it afterwards. It may
+  leave before the raid arrives with an ordinary `move`, and during the
+  fight by the same `move`, which is flight (`flight` on its row says what
+  it costs): it stops firing, is fired on while its jump charges, and
+  nothing follows it. A fleet that arrives home during the fight docks
+  and stands in it from that tick's round; a ship, satellite or defence
+  the yard finishes stands in it from the next. A fleet under standing
+  orders leaves when the fight's odds fall under its disengage ratio.
+  `RaidResolved` is the summary: `defended`, `outcome`, `rounds`,
+  `raiders` and `raiders_lost`, `lost` (everything you lost, by unit, the
+  defences before the rebuild), `rebuilt`, `ships_lost`, `satellites_lost`,
+  `structures_lost`, `structures_restored`, `resources_lost`,
+  `protected_kept`, and for a destroyed raid `salvage_dropped` and
+  `salvage_despawn_tick`. The wreckage is on your own planet, so
   a fleet docked at home scoops it into storage by itself, up to what the
   stores hold (`SalvageCollected` says what); with no fleet docked, or the
   stores full, an `Alert` fires once when 60 s are left.
@@ -760,8 +816,9 @@ What every doctrine does:
     goes back to the stockpile.
   - A hold is storage of a kind: a fleet at home holds what it can carry on
     top of the stores. A Small Cargo costs 4,000 resources and
-    holds 5,000 x sqrt(P), but it is no hiding place: a lost raid counts cargo at
-    home with the stockpile (see Raids). Loading moves no score.
+    holds 5,000 x sqrt(P), but it is no hiding place: a lost raid destroys
+    the ships that stayed, and what they carried is in the stockpile when
+    the raid takes its slice (see Raids). Loading moves no score.
   - The trip: `load` the resource that is at its cap, fly to 0,0, `exchange`,
     fly home; the dock unloads what you bought.
 - **Refining** — `refine` turns the deuterium in a fleet's hold into fuel, on
@@ -832,18 +889,38 @@ What every doctrine does:
     ring 9, 570 to 820 at ring 12, 1264 to 1816 at ring 16, 2799 to 4024 at ring
     20, whatever your empire is worth (`raid_power` in the survey and in
     your outpost's state gives the two ends; a Light Fighter is 91 of power,
-    a Cruiser 675). The platform (408, 1306, 3972 by
-    level: the power of 4 Rocket Launchers, then of 8 with 4 Light Lasers,
-    then of 16 with 8 and 4 Heavy Lasers) and your ships standing there defend, and the defence counts a
-    tenth more or less by chance. Repelled: nothing happens to your ships,
-    and there is no salvage. Lost: a quarter of the ships there are destroyed
-    (at least one), and what they carried goes into the store; a quarter of
-    the store, and of the cargo aboard fleets there, above the protected
-    floor is taken; and the outpost is breached: no extractor, no
-    refuelling, no platform. The floor is what the next repair would take
-    from what is there (`protected`), for the level it stands at or the
-    level it is building. After a lost raid none comes for 48 game hours
-    divided by P^0.75. No raid destroys an outpost.
+    a Cruiser 675). It flies what the packs of its ring fly, one class:
+    Cruisers at rings 9 to 12, Battlecruisers from 13 to 20; its
+    `ships` are in the warning and in the forecast. It is fought as a raid
+    on your homeworld is (Raids, above): a round a tick for at most 6, the
+    raiders against your ships standing there and the platform, with the
+    same three endings, the same `battles` entry (`raid.outpost` true) and
+    the same rounds, the platform as a group marked `battery` (label
+    "outpost platform"). The platform is fixed defences, at the catalogue's
+    figures whatever your research: 4 Rocket Launchers at level 1; 8 with 4
+    Light Lasers at level 2; 16 with 8 and 4 Heavy Lasers at level 3
+    (`platform` in the survey, in your outpost's state and in its
+    `next_level`). It stands whole again after every fight
+    that is not lost: nothing of it is rolled for or paid for. A breached
+    outpost has none. `outpost.raid` is the forecast, as `homeworld.raid`
+    is: the raid being fought, the one on its way or a typical one of the
+    ring, its ships, and the odds against the platform and the ships there
+    now. Alone, level 1
+    does not hold any ring, level 2 holds a typical raid to about ring 16,
+    and level 3 holds every ring; a fleet standing there is what the
+    difference is made of. Repelled (destroyed or outlasted): the outpost
+    is as it was, your ships are as the fight left them, and there is no
+    wreckage. Lost (no ship of yours left there and no platform): what your
+    ships carried goes into the store as far as it has room; a quarter of
+    the store above the protected floor is taken; and the outpost is
+    breached: no extractor, no refuelling, no platform. The floor is what
+    the next repair would take from what is there (`protected`), for the
+    level it stands at or the level it is building. A fleet may leave
+    before the raid or flee during it, as at home; when the last one jumps
+    out the platform fights on alone. A raid on a breached outpost with no
+    ship there finds nothing in its way and is lost without a fight. An
+    outpost under raid cannot be abandoned. After a lost raid none comes
+    for 48 game hours divided by P^0.75. No raid destroys an outpost.
   - **Repair**: a breached outpost repairs itself. A repair is priced in
     metal: 1612.5 at level 1, 4031.25 at level 2, 10078.125 at level 3 (a
     quarter of the level's cost at par). The store pays it in metal; where
@@ -866,8 +943,11 @@ What every doctrine does:
     `breached`, `work` (`kind`, `level`, `start_tick`, `end_tick`), `store`,
     `store_cap`, `protected`, `production`, `yield_lost` (the resources the
     extractor makes and the store is full of, so that yield is lost),
-    `grade`, `platform_power`, `ships_power` (your ships standing there),
-    `defence_power` (the two together), `raid_power` (`least`,
+    `grade`, `platform` (the defences it stands with, none while breached),
+    `raid` (the forecast: `rounds_left` while one is fought, `arrival_tick`
+    when one is on its way, `power`, `ships`, `odds`), `platform_power`, `ships_power` (your ships standing
+    there), `defence_power` (the two together; three sums on the power
+    scale that decide nothing), `raid_power` (`least`,
     `most`), `raid_arrival_tick`, `next_level` (what `upgrade_outpost` would
     cost and give), `upgrade_refusal` (why it would be refused now),
     `repair_cost` (what the repair takes from the store, what the store

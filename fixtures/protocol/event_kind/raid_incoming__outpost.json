@@ -1,12 +1,26 @@
 {
   "arrival_tick": 4990,
-  "est_power": 41.5,
+  "est_power": 512.5,
   "kind": "RaidIncoming",
+  "odds": {
+    "destroyed": 0.0,
+    "kept": 0.20999999344348907,
+    "label": "at_risk",
+    "lost": 0.375,
+    "outlasted": 0.625,
+    "raiders_kept": 0.9700000286102295
+  },
   "outpost": {
     "q": 10,
     "r": -2
   },
   "player_id": 42,
-  "threat": "light",
+  "ships": [
+    {
+      "class": "Cruiser",
+      "count": 1
+    }
+  ],
+  "threat": "heavy",
   "tick": 1234
 }

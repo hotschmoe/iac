@@ -1,6 +1,6 @@
 import '../protocol/protocol.dart' as proto;
 import '../state/state_mapper.dart' show amountsOf;
-import 'intel.dart' show groupDigits;
+import 'intel.dart' show clockFmt, groupDigits;
 
 /// "4,120", "165K", "1.25M", "30.5M": a count or a hull figure in a fleet or
 /// battle row. Exact up to 99,999 and three figures above, so a row keeps
@@ -42,13 +42,17 @@ String shipsList(List<proto.ShipCount> ships) =>
 String groupsList(List<proto.ShipGroupState> ships) =>
     ships.isEmpty ? 'no ships' : [for (final g in ships) '${groupDigits(g.count)}x ${g.shipClass.label}'].join(', ');
 
-/// Who a fleet or a group of a fight is, to the player reading it.
-String sideName({required int fleetId, required String? owner, required String label, required bool mine}) =>
-    mine ? 'F$fleetId' : owner != null ? "$owner's F$fleetId" : label.isEmpty ? 'hostile group' : label;
+/// Who a fleet or a group of a fight is, to the player reading it. A
+/// [battery] is no fleet: the defences of the place raided, under the name
+/// the server gives them, with the empire's when they are another's.
+String sideName({required int fleetId, required String? owner, required String label, required bool mine, bool battery = false}) {
+  if (battery) return mine || owner == null ? label : "$owner's $label";
+  return mine ? 'F$fleetId' : owner != null ? "$owner's F$fleetId" : label.isEmpty ? 'hostile group' : label;
+}
 
-String groupName(proto.BattleGroup g) => sideName(fleetId: g.fleetId, owner: g.owner, label: g.label, mine: g.mine);
+String groupName(proto.BattleGroup g) => sideName(fleetId: g.fleetId, owner: g.owner, label: g.label, mine: g.mine, battery: g.battery);
 
-String lossesName(proto.BattleLosses l) => sideName(fleetId: l.fleetId, owner: l.owner, label: l.label, mine: l.mine);
+String lossesName(proto.BattleLosses l) => sideName(fleetId: l.fleetId, owner: l.owner, label: l.label, mine: l.mine, battery: l.battery);
 
 /// "F3 lost 4x Light Fighter" or "3x cruiser pack lost 5x Cruiser and is
 /// destroyed": one fleet's or group's losses over a fight.
@@ -66,6 +70,7 @@ String outcomeTitle(proto.BattleOutcome o) => switch (o) {
       proto.BattleOutcome.withdrawn => 'RECALLED',
       proto.BattleOutcome.standoff => 'STAND-OFF',
       proto.BattleOutcome.fled => 'FLED UNDER FIRE',
+      proto.BattleOutcome.outlasted => 'OUTLASTED',
     };
 
 /// The same as a sentence of the log.
@@ -76,9 +81,155 @@ String outcomeSentence(proto.BattleOutcome o) => switch (o) {
       proto.BattleOutcome.withdrawn => 'the last fleet made the emergency jump home; the hostiles keep what they lost and mend in time',
       proto.BattleOutcome.standoff => 'a stand-off: neither side could hurt the other, and both stay as they are',
       proto.BattleOutcome.fled => 'the last fleet jumped out under fire; the hostiles keep what they lost and mend in time',
+      proto.BattleOutcome.outlasted => 'the raiders gave up with a defender still standing and left with nothing',
     };
 
 String roundsOf(int n) => '$n round${n == 1 ? '' : 's'}';
+
+// ── Raids ──────────────────────────────────────────────────────
+
+/// "ROUND 2 OF 6": a raid's round against the most it is fought for.
+String raidRoundOf(int round) => 'ROUND $round OF ${proto.raidRounds}';
+
+/// "4 rounds left at the most", from the state's `rounds_left`.
+String roundsLeftOf(int n) => n == 0 ? 'no round left' : '${roundsOf(n)} left at the most';
+
+/// "75%": a share of the fights the server played, or of a side's worth.
+String sharePct(double share) => '${(share * 100).round()}%';
+
+/// "destroyed 25%, outlasted 75%, lost 0%": how the fights the server
+/// played ended, in the forecast's own three shares.
+String raidShares(proto.RaidOdds o) => 'destroyed ${sharePct(o.destroyed)}, outlasted ${sharePct(o.outlasted)}, lost ${sharePct(o.lost)}';
+
+/// "you keep 62% of what stands here, the raiders 31% of theirs": the
+/// forecast's `kept` and `raiders_kept`.
+String raidKept(proto.RaidOdds o) => 'you keep ${sharePct(o.kept)} of what stands here, the raiders ${sharePct(o.raidersKept)} of theirs';
+
+/// "HELD: a defender stands when the raiders give up; ...": the label of a
+/// forecast with the sentence Rust holds for it.
+String raidVerdict(proto.RaidOdds o) => '${o.label.label}: ${o.label.outcome}';
+
+/// What the three shares of a forecast are shares of.
+const raidSharesRule = 'The server plays the fight forward a few times over. Destroyed: no raider is left, and at the homeworld its wreckage is. '
+    'Outlasted: a defender still stands after ${proto.raidRounds} rounds and the raiders leave with nothing. '
+    'Lost: no defender is left and the raid takes its share.';
+
+/// What a raid's fight costs for good and what it does not, in the engine's
+/// three figures.
+const rebuildRule = 'Of the defences that fall in a raid about ${proto.defenceRebuildPct} in a hundred stand again the moment it ends, for nothing: '
+    'each on its own chance where fewer than ${proto.defenceRebuildEachBelow} of a kind fell, a share within ${proto.defenceRebuildSpread} '
+    'either side of it where more did. Ships and Solar Satellites lost are lost.';
+
+/// "a raid of 12x Light Fighter, 2x Cruiser (power 1,351)": what a
+/// forecast says is flown. [opening] starts a sentence with it.
+String raidForce(List<proto.ShipCount> ships, double power, {bool opening = false}) =>
+    '${opening ? 'A' : 'a'} raid of ${shipsList(ships)} (power ${groupDigits(power.round())})';
+
+/// "Being fought, 4 rounds left at the most", "Arrives in 2:50" or "None
+/// announced; one of typical size": where a forecast's raid stands at
+/// [tick], from `rounds_left` and `arrival_tick`.
+String raidWhen(proto.RaidForecast raid, int tick) => switch ((raid.roundsLeft, raid.arrivalTick)) {
+      (final left?, _) => 'Being fought, ${roundsLeftOf(left)}',
+      (null, final at?) => 'Arrives in ${clockFmt(at > tick ? at - tick : 0)}',
+      _ => 'None announced; one of typical size',
+    };
+
+/// "FOUGHT" for a raid that has arrived, "2:50" for one on its way, in the
+/// room a bar has; null for a forecast of no raid in particular.
+String? raidClock(proto.RaidForecast? raid, int tick) => switch ((raid?.roundsLeft, raid?.arrivalTick)) {
+      (_?, _) => 'FOUGHT',
+      (null, final at?) => clockFmt(at > tick ? at - tick : 0),
+      _ => null,
+    };
+
+/// A forecast in one sentence, for the log, a notice and the command bar.
+String raidForecastLine(proto.RaidForecast raid, int tick) =>
+    '${raidWhen(raid, tick)}: ${raidForce(raid.ships, raid.power)}. Forecast ${raidVerdict(raid.odds)} '
+    '(${raidShares(raid.odds)}; ${raidKept(raid.odds)})';
+
+/// How a raid ended, in the three ways a raid's fight ends and the fourth
+/// that is no fight.
+enum RaidEnding {
+  destroyed('RAID DESTROYED', 'destroyed', 'no raider is left'),
+  outlasted('RAID OUTLASTED', 'outlasted', 'the raiders gave up with a defender still standing and took nothing'),
+  lost('RAID LOST', 'lost', 'no defender was left standing'),
+  unopposed('RAID LOST WITHOUT A FIGHT', 'lost without a fight', 'nothing stood in its way');
+
+  final String title;
+  final String word;
+  final String sentence;
+  const RaidEnding(this.title, this.word, this.sentence);
+
+  /// The server's verdict on the raid (`defended`) and how its fight ended
+  /// (`outcome`, absent when no round was fought).
+  static RaidEnding of(proto.RaidResolvedEvent e) => switch ((e.defended, e.outcome)) {
+        (false, null) => unopposed,
+        (false, _) => lost,
+        (true, proto.BattleOutcome.outlasted) => outlasted,
+        (true, _) => destroyed,
+      };
+}
+
+/// "Raid on your homeworld" or "Raid on your outpost at 10, -2".
+String raidPlace(proto.RaidResolvedEvent e) => switch (e.outpost) {
+      null => 'Raid on your homeworld',
+      final at => 'Raid on your outpost at ${at.q}, ${at.r}',
+    };
+
+/// "Rebuilt at once: 3x Rocket Launcher", or that none was, when defences
+/// fell at the homeworld; null when none did, and for an outpost, whose
+/// platform is not rebuilt unit by unit.
+String? raidRebuilt(proto.RaidResolvedEvent e) => e.rebuilt.isNotEmpty
+    ? 'Rebuilt at once: ${unitsList(e.rebuilt)}'
+    : e.structuresLost > 0 && e.outpost == null
+        ? 'None of the defences that fell was rebuilt'
+        : null;
+
+/// "Taken: 2,525 Fe, 1,865 Cr": what a lost raid took; null for one repelled.
+String? raidTaken(proto.RaidResolvedEvent e) => e.defended ? null : 'Taken: ${amountsOf(e.resourcesLost)}';
+
+/// "Wreckage left: 8,100 Fe, 2,700 Cr, which drifts away in 10:00 ...";
+/// null when the raid left none. [tick] turns the pile's last tick into a
+/// time from now.
+String? raidWreckage(proto.RaidResolvedEvent e, {int? tick}) {
+  final pile = e.salvageDropped;
+  if (pile == null) return null;
+  final drift = switch ((e.salvageDespawnTick, tick)) {
+    (final at?, final now?) => ', which drifts away in ${clockFmt(at > now ? at - now : 0)} unless a fleet docked at home scoops it',
+    _ => '',
+  };
+  return 'Wreckage left: ${amountsOf(pile)}$drift';
+}
+
+/// What a breach means, when the raid left one.
+String? raidBreach(proto.RaidResolvedEvent e) =>
+    e.breached ? 'The outpost is breached: no extractor, no refuelling and no platform until it has repaired itself from its store' : null;
+
+/// A raid's ending as the lines of its summary, every figure the event's:
+/// what the raiders flew and lost, what the defender lost by unit, what was
+/// rebuilt at once, what was taken, the wreckage and a breach.
+List<String> raidSummary(proto.RaidResolvedEvent e, {int? tick}) => [
+      if (e.raiders.isNotEmpty) 'The raiders flew ${shipsList(e.raiders)} and lost ${shipsList(e.raidersLost)}',
+      'You lost ${unitsList(e.lost)}',
+      ?raidRebuilt(e),
+      ?raidTaken(e),
+      ?raidWreckage(e, tick: tick),
+      ?raidBreach(e),
+    ];
+
+/// "Raid on your homeworld destroyed after 4 rounds: no raider is left":
+/// where a raid was and how it ended, for a line that has to be short.
+String raidHeadline(proto.RaidResolvedEvent e) {
+  final ending = RaidEnding.of(e);
+  final after = ending == RaidEnding.unopposed ? '' : ' after ${roundsOf(e.rounds)}';
+  return '${raidPlace(e)} ${ending.word}$after: ${ending.sentence}';
+}
+
+/// The headline and the whole summary in one line, for a notice.
+String raidLine(proto.RaidResolvedEvent e, {int? tick}) => '${raidHeadline(e)}. ${raidSummary(e, tick: tick).join('. ')}';
+
+/// "4x Rocket Launcher"; "none" for a platform that is not standing.
+String platformList(List<proto.UnitCount> units) => units.isEmpty ? 'none' : unitsList(units);
 
 String ticksOf(int n) => '$n tick${n == 1 ? '' : 's'}';
 

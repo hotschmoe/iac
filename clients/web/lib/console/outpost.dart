@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import '../protocol/protocol.dart' as proto;
 import '../state/state_mapper.dart' show amountsOf;
+import 'battle.dart' show platformList, raidClock, raidForce, raidShares, raidVerdict;
 import 'intel.dart' show anHour, clockFmt, groupDigits, hopCount;
 
 /// Whether [h] lies in the rings an outpost stands in, which are the
@@ -14,7 +15,7 @@ String outpostDockVoice(proto.OutpostState o) =>
     '${o.inService ? 'A FLEET FLOWN BY HAND IS REFUELLED HERE FROM THE STORE, AND' : 'NO TANK IS FILLED HERE WHILE IT IS ${o.breached ? 'BREACHED' : 'NOT YET OPEN'}. A FLEET'} '
     'LOADS AND UNLOADS BY ORDER.\n'
     '${o.inService ? 'ITS DAMAGED SHIPS ARE MENDED FROM THE STORE, AT A PRICE; NO FLEET IS REFITTED HERE.\n' : ''}'
-    'IT IS IN A RAID\'S REACH: A RAID THE OUTPOST LOSES DESTROYS A QUARTER OF THE SHIPS STANDING HERE.';
+    'IT IS IN A RAID\'S REACH: A FLEET STANDING HERE WHEN A RAID ARRIVES IS IN ITS FIGHT, BESIDE THE PLATFORM.';
 
 /// "77.9 Fe, 39.0 De" made in a game hour; "nothing" when [perTick] is zero.
 String yieldAnHour(proto.Resources perTick) {
@@ -51,20 +52,9 @@ bool storeAtCap(proto.OutpostState o, proto.ResourceKind k) => k.of(o.storeCap) 
 /// "57 to 82": the least and the most a raid can be.
 String raidRange(proto.PowerRange r) => '${groupDigits(r.least.round())} to ${groupDigits(r.most.round())}';
 
-/// Where a defence stands beside the raids it may meet. A raid is decided
-/// by the defence, taken up to a tenth higher or lower by chance, against
-/// the raid's power, so only the two ends say much.
-enum RaidCover {
-  above('above the strongest raid'),
-  within('within the range of the raids'),
-  below('below the weakest raid');
-
-  final String label;
-  const RaidCover(this.label);
-
-  static RaidCover of(double defence, proto.PowerRange raids) =>
-      defence >= raids.most ? above : defence < raids.least ? below : within;
-}
+/// "RAID 2:50" for a raid on its way, "RAID FOUGHT" for one that has
+/// arrived, from the outpost's forecast; null with neither.
+String? outpostRaidMark(proto.OutpostState o, int tick) => switch (raidClock(o.raid, tick)) { null => null, final clock => 'RAID $clock' };
 
 /// "LEVEL 2 OF 3 - BUILDING LEVEL 3, 0:40:00 LEFT": the level it stands at
 /// and the one thing it is doing or waiting for.
@@ -84,25 +74,27 @@ String outpostStanding(proto.OutpostState o, int tick) {
 String outpostLevelMark(proto.OutpostState o) => o.level == 0 ? 'NOT OPEN' : 'L${o.level}';
 
 /// "OUTPOST 12,-3 L2 STORE 41%", with a breach or an announced raid after it.
-String outpostHudLine(proto.OutpostState o, int tick) {
-  final raid = o.raidArrivalTick;
-  return [
-    'OUTPOST ${o.location.q},${o.location.r} ${outpostLevelMark(o)} STORE ${(storeFill(o) * 100).round()}%',
-    if (o.breached) 'BREACHED',
-    if (raid != null) 'RAID ${clockFmt(raid - tick)}',
-  ].join(' ');
-}
+String outpostHudLine(proto.OutpostState o, int tick) => [
+      'OUTPOST ${o.location.q},${o.location.r} ${outpostLevelMark(o)} STORE ${(storeFill(o) * 100).round()}%',
+      if (o.breached) 'BREACHED',
+      ?outpostRaidMark(o, tick),
+    ].join(' ');
 
-/// A survey in three lines: the site and its yield, the raids against the
-/// platform, the cost and the time. Of a sector the player has never seen
-/// the server tells no site, and the first line says so.
+/// A survey in its lines: the site and its yield, the platform of level 1
+/// and the raids of the ring, the forecast of a typical one of them against
+/// that platform alone, the cost and the time. Of a sector the player has
+/// never seen the server tells no site, and the first line says so; outside
+/// the rings an outpost stands in it forecasts no raid, and that line is
+/// left out.
 List<String> surveyLines(proto.OutpostSurvey s) => [
       switch (s.site) {
         final site? => 'Site ${s.sector}, ring ${s.ring}: grade ${site.grade.toStringAsFixed(1)}, level 1 makes ${yieldAnHour(site.production)} an hour, '
             '${hopsHome(site.hopsHome)} from home',
         null => 'Site ${s.sector}, ring ${s.ring}: not on your chart, so its ore and its yield are not known',
       },
-      'Raids of ${raidRange(s.raidPower)} against a platform of ${s.platformPower.round()}',
+      'Level 1 stands with a platform of ${platformList(s.platform)}; raids of this ring are of power ${raidRange(s.raidPower)}',
+      if (s.raid case final raid?)
+        'Against that platform alone ${raidForce(raid.ships, raid.power)} is ${raidVerdict(raid.odds)} (${raidShares(raid.odds)})',
       'Level 1 costs ${amountsOf(s.cost)} from the founding hold and takes ${clockFmt(s.buildTicks)}',
     ];
 

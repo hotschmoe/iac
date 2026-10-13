@@ -1296,7 +1296,8 @@ void main() {
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     Screen screen() => Console.of(tester.element(find.byType(Rail))).screen;
     final dock = find.byKey(const Key('contact-dock'));
-    expect(tester.widget<Text>(dock).data, allOf(contains('NOTHING IN THE FIELD REACHES IT'), contains('A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS')),
+    expect(tester.widget<Text>(dock).data,
+        allOf(contains('NOTHING IN THE FIELD REACHES IT'), contains('A RAID IS FOUGHT HERE: A FLEET DOCKED WHEN ONE ARRIVES IS IN THE FIGHT')),
         reason: 'the dock is out of the field, not out of a raid\'s reach');
     expect(tester.widget<Text>(dock).data, isNot(contains('SAFE')));
 
@@ -1312,7 +1313,8 @@ void main() {
     Console.of(tester.element(find.byType(Rail))).go(Screen.windshield);
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.widget<Text>(dock).data,
-        allOf(contains('HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.'), contains('TAKES ITS SHARE OF THE HOLD'), isNot(contains('UNLOADS'))));
+        allOf(contains('HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.'), contains('WHAT A SHIP LOST IN IT CARRIED FALLS TO THE STOCKPILE'),
+            isNot(contains('UNLOADS'))));
     final card = tester.getRect(find.byType(ContactsPanel)), words = tester.getRect(dock);
     expect(words.left >= card.left && words.right <= card.right, isTrue, reason: 'the longer sentence wraps inside the contacts panel');
     expect(find.text('CARGO - LADEN'), findsOneWidget);

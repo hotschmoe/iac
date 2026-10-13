@@ -98,6 +98,12 @@ class _Book {
   double outpostRepairPrice(int level) => (_outpost(level)['repair_price'] as num).toDouble();
   double outpostPlatform(int level) => (_outpost(level)['platform'] as num).toDouble().abs();
 
+  /// The defences an outpost's platform is at [level], by kind.
+  List<UnitCount> outpostPlatformUnits(int level) => [
+        for (final row in (_outpost(level)['platform_units'] as List<dynamic>).cast<List<dynamic>>())
+          UnitCount(unit: ShipyardItem.fromJson(row[0]), count: row[1] as int),
+      ];
+
   /// What the extractor of an outpost of [level] makes of a seam of [d] a
   /// tick, [ring] rings out. The table is an hour's yield at pace 1, and a
   /// rate goes with the pace.
@@ -122,19 +128,38 @@ class _Book {
   late final List<double> raidPowers = [for (final r in (_tables['raid_power'] as List<dynamic>)) ((r as Map<String, dynamic>)['power'] as num).toDouble()];
 }
 
-/// The ships of one class in a scripted fleet or group, as the engine keeps
-/// them: a count, and the hull of each ship that is not whole, lowest first.
+/// The ships of one class in a scripted fleet or group, or the defences of
+/// one kind in a battery, as the engine keeps them: a count, and the hull of
+/// each unit that is not whole, lowest first.
 class _Squad {
-  final ShipClass cls;
+  final ShipyardItem unit;
   int count;
   final List<int> wounds;
-  _Squad(this.cls, this.count, [List<int>? wounds]) : wounds = wounds ?? [];
 
-  _Squad copy() => _Squad(cls, count, [...wounds]);
+  /// What one of its units fights with, for a squad taken into a raid's
+  /// round: there a side is fleets of different refits and a battery.
+  final _Arms? arms;
+  _Squad(ShipClass cls, this.count, [List<int>? wounds])
+      : unit = ShipyardItem.ship(cls),
+        wounds = wounds ?? [],
+        arms = null;
+  _Squad.of(this.unit, this.count, [List<int>? wounds, this.arms]) : wounds = wounds ?? [];
+
+  /// The class of a squad of ships, which is all a fleet or a group holds.
+  ShipClass get cls => unit.ship!;
+
+  _Squad copy() => _Squad.of(unit, count, [...wounds], arms);
+
+  /// A copy that fights with [arms].
+  _Squad armed(_Arms arms) => _Squad.of(unit, count, [...wounds], arms);
 }
 
 /// What one ship of a class fires, raises and holds in a round.
 typedef _Arms = ({int attack, int shield, int hull});
+
+/// What one side fired in a round: its volleys by pair of units, the attack
+/// of every shot summed, and the hull it took.
+typedef _Fire = ({List<Volley> volleys, int power, int hull});
 
 /// A fight between one fleet and one group, a round a tick.
 class _Combat {
@@ -157,6 +182,53 @@ class _Combat {
   Hex? fleeTo;
   int fleeRounds = 0;
   _Combat(this.fleetId, this.sector, this.npc, this.label);
+}
+
+/// A raid on its way: the tick it arrives, the power it was announced with
+/// and what it flies, fixed when it is announced.
+class _Raid {
+  final int arrival;
+  final double power;
+  final List<_Squad> ships;
+  const _Raid(this.arrival, this.power, this.ships);
+}
+
+/// A raid being fought at the homeworld or at the outpost: the raiders
+/// against every fleet standing there and the battery, a round a tick.
+class _Siege {
+  final int id;
+  final Hex sector;
+  final bool outpost;
+
+  /// The power it was announced with, and what stood in its way when it
+  /// arrived, as a sum on the same scale.
+  final double power;
+  final double met;
+
+  /// The raiders as they arrived, and as the fight has left them, armed.
+  final List<_Squad> muster;
+  List<_Squad> raiders;
+
+  /// What defends that is no fleet, as the fight has left it: at home the
+  /// Solar Satellites and the defences, at the outpost its platform.
+  List<_Squad> battery;
+  int round = 0;
+  BattleRoundEvent? lastRound;
+
+  /// What each fleet, the battery (0) and the raiders ([id]) have lost so
+  /// far, by unit.
+  final Map<int, Map<ShipyardItem, int>> lost = {};
+
+  /// The fleets charging a jump out: where to, and the rounds each is
+  /// still fired on before it is gone.
+  final Map<int, (Hex, int)> leaving = {};
+  _Siege(this.id, this.sector, this.power, this.muster, this.battery, {required this.met, required this.outpost})
+      : raiders = [for (final s in muster) s.copy()];
+
+  /// How the raiders are named, as the engine's `Siege::label` names them.
+  String get label => 'raid of ${[for (final s in muster) '${s.count} ${s.cls.label}'].join(', ')}';
+
+  String get batteryLabel => outpost ? 'outpost platform' : 'home defences';
 }
 
 /// A jump a hostile group is making: after the fleet [quarry], or back to
@@ -203,8 +275,8 @@ class _Outpost {
   bool breached = false;
   bool repairWarned = false;
 
-  /// An announced raid: the tick it arrives and its power.
-  (int, double)? raid;
+  /// The raid on its way, when a test has announced one.
+  _Raid? raid;
   final Set<ResourceKind> fullSaid = {};
   _Outpost(this.at);
 }
@@ -231,9 +303,28 @@ class _Outpost {
 /// It has one outpost to found: the survey with the engine's refusals, the
 /// store with load and unload, the levels, abandoning, and a raid a test
 /// announces ([raidOutpost]), which breaches it when lost and is repaired
-/// from the store. Its levels take seconds, not the hours of the engine's,
-/// and a raid there takes from the store only, not the holds. A harvest
-/// takes no ore out of the ground.
+/// from the store. Its levels take seconds, not the hours of the engine's.
+/// A harvest takes no ore out of the ground.
+///
+/// A raid is a fight, shaped as the engine's: it is announced with what it
+/// flies and a forecast, stands at the dock on the tick it arrives and fires
+/// from the next, a round a tick for at most the engine's count of rounds,
+/// the raiders against every fleet standing there and a battery (at home
+/// the Solar Satellites and the defences at the empire's research, at the
+/// outpost its level's platform at the catalogue's figures). It ends
+/// destroyed, with the engine's share of the raiders' cost as wreckage at
+/// home; outlasted, when the rounds are over or a round took no hull; or
+/// lost, when no defender is left, and then takes the engine's shares of the
+/// stockpile above what storage protects, or of the outpost's store, and
+/// breaches the outpost. Defences that fell are rebuilt at once at the
+/// engine's rate, cut off to a whole number where the engine rolls for it.
+/// A fleet in it may be ordered out as from any fight, and nothing follows.
+/// Where this world is simpler than the engine: the fight is the one
+/// without dice described below; a raid flies one class, Light Fighters at
+/// home and its ring's class at the outpost, at the class's base figures;
+/// its forecast is that one fight played forward, so its three shares are
+/// each all or nothing and it is never `at_risk`; a fleet docked at home
+/// does not scoop the wreckage; and what a destroyed ship carried is lost.
 ///
 /// A fleet is the engine's: a count a class and the hull of each damaged
 /// ship, fighting at the Weapons, Shielding and Armour levels it last
@@ -313,7 +404,14 @@ class DemoWorld {
   /// hold was last said (0 before the first).
   final Map<int, int> _holdSaid = {};
   int _nextNpcFleet = 9100;
-  int _raidArrival = 0;
+
+  /// The raid on its way to the homeworld; null while one is fought.
+  _Raid? _raid;
+
+  /// The raids being fought, by sector key: at the homeworld and at the
+  /// outpost.
+  final Map<int, _Siege> _sieges = {};
+  int _nextSiege = 7000;
 
   /// The ships of every fleet and every hostile group, by its id, and the
   /// levels each of the player's fleets fights with.
@@ -363,13 +461,15 @@ class DemoWorld {
       dockedShips: const [],
       dockedShipCount: 0,
       defences: [
-        for (final o in catalog.defences) DefenceState(kind: o.kind, count: _defenceCount[o.kind] ?? 0, restoring: 0, power: o.power),
+        for (final o in catalog.defences) DefenceState(kind: o.kind, count: _defenceCount[o.kind] ?? 0, power: o.power),
       ],
       homeDefencePower: 0,
       dockedPower: 0,
       satellitePower: 0,
       structurePower: 0,
       nextRaidEstimatePower: _raidEstimate,
+      raid: const RaidForecast(
+          power: 0, ships: [], odds: RaidOdds(label: RaidLabel.repelled, destroyed: 1, outlasted: 0, lost: 0, kept: 1, raidersKept: 0)),
     );
 
     final wing = [_Squad(ShipClass.smallCargo, 1), _Squad(ShipClass.lightFighter, 3), _Squad(ShipClass.espionageProbe, 1)];
@@ -399,8 +499,8 @@ class DemoWorld {
     for (final k in _liveNow) {
       _seen[k] = _tick;
     }
-    _raidArrival = (_tick ~/ _raidPeriod + 1) * _raidPeriod;
-    _pending.add(GameEvent(tick: _tick, kind: _raidIncoming()));
+    _announceRaid((_tick ~/ _raidPeriod + 1) * _raidPeriod);
+    _hw = _hwWith();
   }
 
   /// The empire as the script opens on it: mines that the Solar Plant just
@@ -532,8 +632,6 @@ class DemoWorld {
     ));
   }
 
-  RaidIncomingEvent _raidIncoming() =>
-      RaidIncomingEvent(playerId: _playerId, arrivalTick: _raidArrival, threat: 'moderate', estPower: _raidEstimate);
 
   // ── World ─────────────────────────────────────────────────────
 
@@ -843,7 +941,10 @@ class DemoWorld {
         homeworld: _hw,
         outpost: _outpostState(),
         knownSectors: _knownSectors(),
-        battles: [for (final c in _combats.values) _battle(c, withRound: true)],
+        battles: [
+          for (final c in _combats.values) _battle(c, withRound: true),
+          for (final siege in _sieges.values) _siegeState(siege, withRound: true),
+        ],
         world: WorldInfo(
           pace: _book.pace,
           preset: _Book.preset,
@@ -1143,10 +1244,12 @@ class DemoWorld {
       yieldLost: [for (final k in ResourceKind.values) if (k.of(makes) > 0 && k.of(o.store) >= k.of(cap)) k],
       grade: _siteGrade(o.at),
       platformPower: platform,
+      platform: o.breached ? const [] : _book.outpostPlatformUnits(o.level),
       shipsPower: ships,
       defencePower: platform + ships,
       raidPower: _outpostRaids(o.at),
-      raidArrivalTick: o.raid?.$1,
+      raidArrivalTick: o.raid?.arrival,
+      raid: o.level < 1 ? null : _raidAt(o.at, o.raid, () => _outpostRaid(o.at, 0)),
       nextLevel: next > _outpostMaxLevel
           ? null
           : OutpostLevel(
@@ -1155,6 +1258,7 @@ class DemoWorld {
               ticks: _levelTicks(next),
               storeCap: _storeCap(next),
               platformPower: _platform(next),
+              platform: _book.outpostPlatformUnits(next),
               production: _siteYield(o.at, next)),
       upgradeRefusal: _upgradeRefusal()?.$2,
       repairCost: repair == null ? null : _plus(repair.$1, Resources(metal: repair.$2)),
@@ -1236,6 +1340,16 @@ class DemoWorld {
         buildTicks: _levelTicks(1),
         raidPower: _outpostRaids(at),
         platformPower: _platform(1),
+        platform: _book.outpostPlatformUnits(1),
+        raid: ring < outpostMinRing || ring > outpostMaxRing
+            ? null
+            : () {
+                final raid = _outpostRaid(at, 0);
+                return RaidForecast(
+                    power: raid.power,
+                    ships: _shipCounts(raid.ships),
+                    odds: _raidOdds([for (final s in _platformSquads(1)) s.armed(_baseArms(s))], [for (final s in raid.ships) s.armed(_baseArms(s))], raidRounds));
+              }(),
         refusal: seen
             ? _siteRefusal(f, at)?.$2
             : ring < outpostMinRing || ring > outpostMaxRing
@@ -1348,8 +1462,21 @@ class DemoWorld {
   /// and whether the outpost holds.
   void raidOutpost(double power, {int inTicks = 10}) {
     final o = _outpost!;
-    o.raid = (_tick + inTicks, power);
-    _ev(RaidIncomingEvent(playerId: _playerId, arrivalTick: _tick + inTicks, threat: 'moderate', estPower: power, outpost: o.at));
+    final raid = _outpostRaid(o.at, _tick + inTicks, power: power);
+    o.raid = raid;
+    _ev(_raidIncoming(raid, o.at));
+  }
+
+  /// Announce a raid of [power] on the homeworld, arriving in [inTicks], in
+  /// place of the one the script had on its way.
+  void raidHome(double power, {int inTicks = 10}) => _announceRaid(_tick + inTicks, power);
+
+  /// Scripted only: what stands at the homeworld that is no fleet becomes
+  /// [defences] and [satellites], so a test can stage a raid's ending.
+  void garrison(Map<DefenceKind, int> defences, {int satellites = 0}) {
+    _satellites = satellites;
+    _hw = _hwWith(defences: [for (final d in _hw.defences) DefenceState(kind: d.kind, count: defences[d.kind] ?? 0, power: d.power)]);
+    _hw = _hwWith();
   }
 
   /// The outpost's tick, in the server's order: a finished job, the
@@ -1404,60 +1531,468 @@ class DemoWorld {
       }
     }
     final raid = o.raid;
-    if (raid != null && _tick >= raid.$1) _resolveOutpostRaid(o, raid.$2);
-  }
-
-  /// What a lost raid destroys of the fleets standing [there]: the engine's
-  /// share of their ships, at least one, and never a fleet's last.
-  int _raidToll(List<FleetState> there) {
-    final total = there.fold(0, (n, f) => n + f.shipCount);
-    var toLose = total == 0 ? 0 : max(1, (total * raidLostShipFraction).floor());
-    var lost = 0;
-    for (final f in there) {
-      final ships = _squads[f.id]!;
-      var gone = min(toLose, _shipsIn(ships) - 1);
-      if (gone <= 0) continue;
-      toLose -= gone;
-      lost += gone;
-      for (final s in ships) {
-        final n = min(gone, s.count);
-        _take(s, n);
-        gone -= n;
-      }
-      ships.removeWhere((s) => s.count == 0);
-      _setFleet(_copy(f));
+    if (raid != null && _tick >= raid.arrival) {
+      o.raid = null;
+      _beginSiege(o.at, raid, met: _outpostState()!.defencePower);
     }
-    return lost;
   }
 
-  /// A raid on the outpost arrives. Repelled, nothing is lost. Lost, a
-  /// quarter of the ships standing there are destroyed (at least one, and
-  /// never a fleet's last ship here), a quarter of the store above the
-  /// protected floor is taken, and the outpost is breached.
-  void _resolveOutpostRaid(_Outpost o, double power) {
-    o.raid = null;
-    final state = _outpostState()!;
-    final defended = state.defencePower >= power;
-    var lost = const Resources();
-    var shipsLost = 0;
-    if (!defended) {
-      shipsLost = _raidToll([for (final f in _fleets) if (f.location == o.at) f]);
-      lost = _times(_less(o.store, state.protected), _book.constant('OUTPOST_RAID_LOSS'));
-      o.store = _less(o.store, lost);
-      o.breached = true;
-      o.repairWarned = false;
-      _dirty.add(o.at.toKey());
+  // ── Raids ─────────────────────────────────────────────────────
+
+  /// The engine's word for a forecast's label, as `RaidIncoming.threat`
+  /// carries it.
+  static String _threatWord(RaidLabel label) => switch (label) {
+        RaidLabel.repelled => 'light',
+        RaidLabel.held => 'moderate',
+        RaidLabel.atRisk || RaidLabel.lost => 'heavy',
+      };
+
+  static List<ShipCount> _shipCounts(List<_Squad> ships) => [for (final s in ships) ShipCount(shipClass: s.cls, count: s.count)];
+
+  /// A raid of [power] flown as [cls]: as many as that power buys at the
+  /// class's own, and one at the least.
+  static List<_Squad> _raiders(ShipClass cls, double power) => [_Squad(cls, max(1, (power / cls.power).floor()))];
+
+  /// A raid on an outpost at [at] arriving at [arrival], flown as its
+  /// ring's class: of [power], or at the middle of the ring's roll.
+  static _Raid _outpostRaid(Hex at, int arrival, {double? power}) {
+    final ring = at.distFromOrigin;
+    final middle = (_book.constant('RAID_POWER_ROLL_MIN') + _book.constant('RAID_POWER_ROLL_MAX')) / 2;
+    final flown = power ?? _book.outpostRaidPower(ring) * middle;
+    return _Raid(arrival, flown, _raiders(_book.npcClass(ring), flown));
+  }
+
+  /// A raid on the homeworld is on its way, to arrive at [arrival]: Light
+  /// Fighters, of [power] or of what the script announces.
+  void _announceRaid(int arrival, [double? power]) {
+    final flown = power ?? _raidEstimate;
+    final raid = _Raid(arrival, flown, _raiders(ShipClass.lightFighter, flown));
+    _raid = raid;
+    _ev(_raidIncoming(raid, null));
+  }
+
+  RaidIncomingEvent _raidIncoming(_Raid raid, Hex? outpost) {
+    final odds = _forecast(outpost ?? _home, raid).odds;
+    return RaidIncomingEvent(
+        playerId: _playerId,
+        arrivalTick: raid.arrival,
+        threat: _threatWord(odds.label),
+        estPower: raid.power,
+        ships: _shipCounts(raid.ships),
+        odds: odds,
+        outpost: outpost);
+  }
+
+  /// One unit of a battery at the levels [r]: the engine's row of the unit
+  /// at each of the three levels.
+  static _Arms _unitArms(ShipyardItem unit, Refit r) {
+    if (unit.ship case final cls?) return _arms(cls, r);
+    DefenceOption at(int level) => _book.byLevel[level].defences.firstWhere((o) => o.kind == unit.defence);
+    return (attack: at(r.weapons).weapon.round(), shield: at(r.shielding).shield.round(), hull: at(r.armour).hull.round());
+  }
+
+  /// One unit at the catalogue's figures, as an outpost's platform and
+  /// every raider fights.
+  static _Arms _baseArms(_Squad s) => switch (s.unit.defence) {
+        null => _npcArms(s.cls),
+        final kind => (attack: kind.weapon.round(), shield: kind.shield.round(), hull: kind.hull.round()),
+      };
+
+  static _Arms _armed(_Squad s) => s.arms!;
+
+  static List<_Squad> _platformSquads(int level) => [for (final u in _book.outpostPlatformUnits(level)) _Squad.of(u.unit, u.count)];
+
+  /// What defends [sector], the homeworld or the outpost, that is no fleet,
+  /// whole and armed: at home the Solar Satellites and every defence at the
+  /// empire's research, at the outpost its platform at the catalogue's
+  /// figures, and none while it is breached.
+  List<_Squad> _batteryAt(Hex sector) {
+    if (sector == _home) {
+      final levels = _levels;
+      return [
+        for (final s in [
+          if (_satellites > 0) _Squad(ShipClass.solarSatellite, _satellites),
+          for (final d in _hw.defences)
+            if (d.count > 0) _Squad.of(ShipyardItem.defence(d.kind), d.count),
+        ])
+          s.armed(_unitArms(s.unit, levels)),
+      ];
+    }
+    final o = _outpost!;
+    return o.breached ? [] : [for (final s in _platformSquads(o.level)) s.armed(_baseArms(s))];
+  }
+
+  /// The fleets a raid at [sector] fights: every one of the player's that
+  /// stands there, and of those in transit the ones leaving this fight.
+  List<FleetState> _garrison(Hex sector, [_Siege? siege]) => [
+        for (final f in _fleets)
+          if (f.location == sector && (f.state != FleetStatus.moving || (siege?.leaving.containsKey(f.id) ?? false))) f,
+      ];
+
+  /// The ships of fleet [id] as a raid's round takes them: copies in
+  /// catalogue order, armed with the fleet's refit.
+  List<_Squad> _fleetArmed(int id) {
+    final refit = _refits[id]!;
+    return [for (final s in [..._squads[id]!]..sort((a, b) => a.cls.index.compareTo(b.cls.index))) s.armed(_arms(s.cls, refit))];
+  }
+
+  /// What [squads] are worth: each unit its cost at the score's weights,
+  /// times the share of its hull it holds.
+  double _worth(List<_Squad> squads) => squads.fold(0.0, (n, s) {
+        final cost = _unitCostOf(s.unit);
+        final each = ResourceKind.values.fold(0.0, (sum, k) => sum + k.of(cost) * k.weight);
+        final held = s.wounds.fold(0.0, (sum, hull) => sum + hull / s.arms!.hull);
+        return n + each * (s.count - s.wounds.length + held);
+      });
+
+  /// How a fight between [defenders] and [raiders], both armed, would end
+  /// over [rounds] rounds: the fight itself played forward on copies. It is
+  /// played once, without dice, so each of the three shares is all or
+  /// nothing.
+  RaidOdds _raidOdds(List<_Squad> defenders, List<_Squad> raiders, int rounds) {
+    var ours = [for (final s in defenders) s.copy()], theirs = [for (final s in raiders) s.copy()];
+    final (oursAtFirst, theirsAtFirst) = (_worth(ours), _worth(theirs));
+    for (var round = 0; round < rounds && ours.isNotEmpty && theirs.isNotEmpty; round++) {
+      final (firing, raiding) = ([for (final s in ours) s.copy()], [for (final s in theirs) s.copy()]);
+      final hurt = _volleys(firing, _armed, theirs, _armed).hull + _volleys(raiding, _armed, ours, _armed).hull;
+      ours = [for (final s in ours) if (s.count > 0) s];
+      theirs = [for (final s in theirs) if (s.count > 0) s];
+      if (hurt == 0) break;
+    }
+    final destroyed = theirs.isEmpty, lost = !destroyed && ours.isEmpty;
+    return RaidOdds(
+      label: lost
+          ? RaidLabel.lost
+          : destroyed
+              ? RaidLabel.repelled
+              : RaidLabel.held,
+      destroyed: destroyed ? 1 : 0,
+      outlasted: destroyed || lost ? 0 : 1,
+      lost: lost ? 1 : 0,
+      kept: oursAtFirst > 0 ? _worth(ours) / oursAtFirst : 0,
+      raidersKept: theirsAtFirst > 0 ? _worth(theirs) / theirsAtFirst : 0,
+    );
+  }
+
+  /// The forecast of [raid] on [sector], the homeworld or the outpost,
+  /// against the fleets that would fire and the battery standing there now.
+  RaidForecast _forecast(Hex sector, _Raid raid) => RaidForecast(
+      arrivalTick: raid.arrival > 0 ? raid.arrival : null,
+      power: raid.power,
+      ships: _shipCounts(raid.ships),
+      odds: _raidOdds(
+          [for (final f in _garrison(sector)) ..._fleetArmed(f.id), ..._batteryAt(sector)], [for (final s in raid.ships) s.armed(_baseArms(s))], raidRounds));
+
+  /// The odds of [siege] from where it stands, over the rounds left.
+  RaidOdds _siegeOdds(_Siege siege) => _raidOdds([
+        for (final f in _garrison(siege.sector, siege))
+          if (!siege.leaving.containsKey(f.id)) ..._fleetArmed(f.id),
+        ...siege.battery,
+      ], siege.raiders, max(1, raidRounds - siege.round));
+
+  /// The raid on [sector], the homeworld or the outpost, as the state
+  /// forecasts it: the one being fought, else [onItsWay], else [typical],
+  /// one of the usual size were it announced now.
+  RaidForecast _raidAt(Hex sector, _Raid? onItsWay, _Raid Function() typical) {
+    if (_sieges[sector.toKey()] case final siege?) {
+      return RaidForecast(roundsLeft: raidRounds - siege.round, power: siege.power, ships: _shipCounts(siege.muster), odds: _siegeOdds(siege));
+    }
+    return _forecast(sector, onItsWay ?? typical());
+  }
+
+  RaidForecast _homeForecast() => _raidAt(_home, _raid, () => _Raid(0, _raidEstimate, _raiders(ShipClass.lightFighter, _raidEstimate)));
+
+  /// [raid] has arrived at [sector]. With nothing in its way it is lost on
+  /// the spot. Otherwise it stands there as a fight: every fleet of the
+  /// player's at the dock is in it, with the battery, and the first round
+  /// is fought on the next tick. [met] is what stood there, as a sum.
+  void _beginSiege(Hex sector, _Raid raid, {required double met}) {
+    final siege = _Siege(_nextSiege++, sector, raid.power, [for (final s in raid.ships) s.armed(_baseArms(s))], _batteryAt(sector),
+        met: met, outpost: sector != _home);
+    final fleets = _garrison(sector);
+    if (fleets.isEmpty && siege.battery.isEmpty) {
+      _settleRaid(siege, null);
+      return;
+    }
+    _sieges[sector.toKey()] = siege;
+    for (final f in fleets) {
+      _stopActivities(f);
+      _setFleet(_copy(f, state: FleetStatus.inCombat));
+    }
+    final ships = fleets.fold(0, (n, f) => n + f.shipCount);
+    final satellites = siege.battery.where((s) => s.unit.ship != null).fold(0, (n, s) => n + s.count);
+    final defences = siege.battery.where((s) => s.unit.defence != null).fold(0, (n, s) => n + s.count);
+    _ev(AlertEvent(
+        level: AlertLevel.warning,
+        message: 'the ${siege.label} has arrived at ${siege.outpost ? 'your outpost' : 'your homeworld'} at $sector: it meets $ships ship(s), '
+            '$satellites Solar Satellite(s) and $defences defence(s) and fights for at most $raidRounds rounds, the first next tick',
+        sector: sector));
+  }
+
+  /// What a jump out of [siege] costs the fleet [id], which burns [jump] a
+  /// jump, takes [jumpTicks] over one and holds [fuel]: the price of any
+  /// flight, the odds of the fight as it stands, power against power, and
+  /// nobody who follows.
+  FlightQuote _raidFlight(_Siege siege, int id, {required double fuel, required double jump, required int jumpTicks}) {
+    double power(List<_Squad> squads) => squads.fold(0.0, (n, s) => n + s.count * (s.unit.ship?.power ?? s.unit.defence!.power));
+    final rounds = max(jumpTicks - 1, fleeMinRounds);
+    final burn = jump * fleeFuelMultiplier;
+    final ours = power([for (final f in _garrison(siege.sector, siege)) ..._squads[f.id]!, ...siege.battery]);
+    final ratio = ours / max(1, power(siege.raiders));
+    return FlightQuote(
+      fuel: burn,
+      ticks: rounds + 1,
+      rounds: rounds,
+      ratio: ratio,
+      label: ratioLabelFor(ratio),
+      refusal: fuel >= burn
+          ? null
+          : 'fleet $id has ${_tenths(fuel)} fuel and the jump out of the fight at ${siege.sector} burns ${_tenths(burn)}: it cannot leave, '
+              'except by recall if it holds the fuel for that',
+    );
+  }
+
+  /// A raid's fight as the state lists it, with the odds from where it
+  /// stands.
+  BattleState _siegeState(_Siege siege, {required bool withRound}) => BattleState(
+      sector: siege.sector,
+      rounds: siege.round,
+      lastRound: withRound ? siege.lastRound : null,
+      losses: _siegeLosses(siege),
+      raid: RaidBattle(
+          owner: 'Demo',
+          mine: true,
+          outpost: siege.outpost,
+          power: siege.power,
+          ships: _shipCounts(siege.muster),
+          roundsLeft: raidRounds - siege.round,
+          odds: _siegeOdds(siege)));
+
+  /// What every fleet, the battery and the raiders of [siege] have lost so
+  /// far, fleets first.
+  List<BattleLosses> _siegeLosses(_Siege siege) {
+    List<UnitCount> units(int group) => [
+          for (final cls in ShipClass.values)
+            if (siege.lost[group]?[ShipyardItem.ship(cls)] case final n?) UnitCount(unit: ShipyardItem.ship(cls), count: n),
+          for (final kind in DefenceKind.values)
+            if (siege.lost[group]?[ShipyardItem.defence(kind)] case final n?) UnitCount(unit: ShipyardItem.defence(kind), count: n),
+        ];
+    return [
+      for (final id in siege.lost.keys)
+        if (id != 0 && id != siege.id) BattleLosses(fleetId: id, owner: 'Demo', mine: true, lost: units(id), destroyed: _find(id) == null),
+      BattleLosses(fleetId: 0, owner: 'Demo', label: siege.batteryLabel, mine: true, battery: true, lost: units(0), destroyed: siege.battery.isEmpty),
+      BattleLosses(fleetId: siege.id, label: siege.label, lost: units(siege.id), destroyed: siege.raiders.isEmpty),
+    ];
+  }
+
+  /// A raid on the homeworld that has arrived, and a round of every raid
+  /// being fought: a fleet whose rounds under fire are over lands where it
+  /// was bound; every fleet at the dock and the battery fire at the raiders
+  /// and the raiders at them, all at once; what fell is counted out; and the
+  /// fight ends when a side is gone, a round took no hull, or the rounds
+  /// are over.
+  void _stepRaids() {
+    for (final siege in _sieges.values.toList()) {
+      for (final MapEntry(key: id, value: (to, rounds)) in siege.leaving.entries.toList()) {
+        final f = _find(id);
+        if (f == null || rounds > 0) continue;
+        siege.leaving.remove(id);
+        _hop(f, to, paid: true);
+      }
+      final fleets = _garrison(siege.sector, siege);
+      if (fleets.isEmpty && siege.battery.isEmpty) {
+        _endSiege(siege, BattleOutcome.fled);
+        continue;
+      }
+      for (final f in fleets) {
+        if (f.state != FleetStatus.inCombat && f.state != FleetStatus.moving) _setFleet(_copy(f, state: FleetStatus.inCombat));
+      }
+      siege.round++;
+      final before = {for (final f in fleets) f.id: _fleetArmed(f.id)};
+      final after = {for (final MapEntry(key: id, value: squads) in before.entries) id: [for (final s in squads) s.copy()]};
+      final battery = [for (final s in siege.battery) s.copy()];
+      final raiders = [for (final s in siege.raiders) s.copy()];
+      final ours = _volleys(
+          [for (final f in fleets) if (!siege.leaving.containsKey(f.id)) ...before[f.id]!, ...siege.battery], _armed, raiders, _armed);
+      final theirs = _volleys(siege.raiders, _armed, [for (final f in fleets) ...after[f.id]!, ...battery], _armed);
+      for (final id in siege.leaving.keys.toList()) {
+        final (to, rounds) = siege.leaving[id]!;
+        siege.leaving[id] = (to, rounds - 1);
+      }
+      final round = BattleRoundEvent(
+        sector: siege.sector,
+        round: siege.round,
+        fleets: _side([
+          for (final f in fleets)
+            BattleGroup(
+                fleetId: f.id, owner: 'Demo', mine: true, fleeing: siege.leaving.containsKey(f.id), units: _unitsAfter(before[f.id]!, after[f.id]!)),
+          BattleGroup(fleetId: 0, owner: 'Demo', label: siege.batteryLabel, mine: true, battery: true, units: _unitsAfter(siege.battery, battery)),
+        ], [for (final squads in after.values) ...squads, ...battery], ours),
+        hostiles: _side([BattleGroup(fleetId: siege.id, label: siege.label, units: _unitsAfter(siege.raiders, raiders))], raiders, theirs),
+        mine: true,
+        raid: true,
+      );
+      for (final g in [...round.fleets.groups, ...round.hostiles.groups]) {
+        for (final u in g.units) {
+          if (u.lost > 0) siege.lost.putIfAbsent(g.fleetId, () => {}).update(u.unit, (n) => n + u.lost, ifAbsent: () => u.lost);
+        }
+      }
+      for (final f in fleets) {
+        siege.lost.putIfAbsent(f.id, () => {});
+        final left = _standing(after[f.id]!);
+        if (left.isNotEmpty) {
+          _squads[f.id] = left;
+          _setFleet(_copy(f));
+          continue;
+        }
+        siege.leaving.remove(f.id);
+        _fleets = [for (final e in _fleets) if (e.id != f.id) e];
+        _squads.remove(f.id);
+        _refits.remove(f.id);
+        _ev(FleetDestroyedEvent(fleetId: f.id, isNpc: false, sector: siege.sector, owner: 'Demo', mine: true, salvage: const Resources()));
+      }
+      siege
+        ..lastRound = round
+        ..battery = [for (final s in battery) if (s.count > 0) s]
+        ..raiders = [for (final s in raiders) if (s.count > 0) s];
+      if (!siege.outpost) _standAtHome(siege.battery);
+      _ev(BattleRoundKind(round));
+      final raidersGone = siege.raiders.isEmpty;
+      final defendersGone = siege.battery.isEmpty && _garrison(siege.sector, siege).isEmpty;
+      final quiet = round.fleets.hullDamage + round.hostiles.hullDamage == 0;
+      if (raidersGone) {
+        _endSiege(siege, defendersGone ? BattleOutcome.bothDestroyed : BattleOutcome.hostilesDestroyed);
+      } else if (defendersGone) {
+        _endSiege(siege, BattleOutcome.fleetsDestroyed);
+      } else if (quiet || siege.round >= raidRounds) {
+        _endSiege(siege, BattleOutcome.outlasted);
+      }
+    }
+    final raid = _raid;
+    if (raid != null && _tick >= raid.arrival) {
+      _raid = null;
+      _beginSiege(_home, raid, met: _defence(_hw.defences).total);
+    }
+  }
+
+  /// What stands at home that is no fleet becomes what [battery] has left:
+  /// the homeworld's counts fall as its units do.
+  void _standAtHome(List<_Squad> battery) {
+    int left(ShipyardItem unit) => battery.where((s) => s.unit == unit).fold(0, (n, s) => n + s.count);
+    _satellites = left(const ShipyardItem.ship(ShipClass.solarSatellite));
+    _hw = _hwWith(defences: [for (final d in _hw.defences) DefenceState(kind: d.kind, count: left(ShipyardItem.defence(d.kind)), power: d.power)]);
+  }
+
+  /// The fight of [siege] is over, [outcome] is how: its fleets stand at
+  /// the dock again, the end is told as any fight's, and the raid is
+  /// settled.
+  void _endSiege(_Siege siege, BattleOutcome outcome) {
+    _sieges.remove(siege.sector.toKey());
+    for (final f in _garrison(siege.sector, siege)) {
+      if (siege.leaving[f.id] case (final to, _)?) {
+        _hop(f, to, paid: true);
+      } else if (f.state == FleetStatus.inCombat) {
+        _setFleet(_copy(f, state: siege.outpost ? FleetStatus.idle : FleetStatus.docked));
+      }
+    }
+    _settleRaid(siege, outcome);
+  }
+
+  /// What follows a raid once its fight is over, or at once when nothing
+  /// stood in its way ([outcome] null): defences rebuilt at the engine's
+  /// rate, the wreckage of a raid destroyed at home, what a lost raid takes
+  /// and the breach it leaves at an outpost, the two events that say so,
+  /// and at home the next raid of the script.
+  void _settleRaid(_Siege siege, BattleOutcome? outcome) {
+    final home = !siege.outpost;
+    final key = siege.sector.toKey();
+    final raidersGone = siege.raiders.isEmpty;
+    final defended = raidersGone || outcome == BattleOutcome.outlasted;
+    final fell = siege.lost[0] ?? const <ShipyardItem, int>{};
+    final rebuilt = [
+      if (home)
+        for (final kind in DefenceKind.values)
+          if ((fell[ShipyardItem.defence(kind)] ?? 0) * defenceRebuildPct ~/ 100 case final back when back > 0)
+            UnitCount(unit: ShipyardItem.defence(kind), count: back),
+    ];
+    if (rebuilt.isNotEmpty) {
+      _hw = _hwWith(defences: [
+        for (final d in _hw.defences)
+          DefenceState(
+              kind: d.kind, count: d.count + rebuilt.where((u) => u.unit.defence == d.kind).fold(0, (n, u) => n + u.count), power: d.power),
+      ]);
+    }
+    Resources? pile;
+    int? despawn;
+    if (home && raidersGone) {
+      final cost = siege.muster.fold(const Resources(), (sum, s) => _plus(sum, _times(_unitCostOf(s.unit), s.count)));
+      pile = _times(cost, _book.constant('RAID_DEFENSE_SALVAGE_FRACTION'));
+      despawn = _tick + 600;
+      _salvage[key] = (_plus(pile, _salvage[key]?.$1 ?? const Resources()), despawn);
+      _dirty.add(key);
+    }
+    var taken = const Resources(), kept = const Resources();
+    if (!defended && home) {
+      final above = _less(_resources, _hw.storage.protected);
+      taken = Resources(
+          metal: above.metal * _book.constant('RAID_LOSS_CAP_METAL'),
+          crystal: above.crystal * _book.constant('RAID_LOSS_CAP_CRYSTAL'),
+          deuterium: above.deuterium * _book.constant('RAID_LOSS_CAP_DEUT'));
+      _resources = _less(_resources, taken);
+      kept = _least(_resources, _hw.storage.protected);
+    } else if (!defended) {
+      final o = _outpost!;
+      final floor = _outpostState()!.protected;
+      taken = _times(_less(o.store, floor), _book.constant('OUTPOST_RAID_LOSS'));
+      o
+        ..store = _less(o.store, taken)
+        ..breached = true
+        ..repairWarned = false;
+      kept = _least(o.store, floor);
+      _dirty.add(key);
+    }
+    final losses = _siegeLosses(siege);
+    List<UnitCount> lostBy(bool Function(BattleLosses) whose) => [
+          for (final cls in ShipClass.values) ShipyardItem.ship(cls),
+          for (final kind in DefenceKind.values) ShipyardItem.defence(kind),
+        ].map((unit) => UnitCount(unit: unit, count: losses.where(whose).expand((l) => l.lost).where((u) => u.unit == unit).fold(0, (n, u) => n + u.count))).where((u) => u.count > 0).toList();
+    final ours = lostBy((l) => l.mine);
+    int lostOf(bool Function(UnitCount) which) => ours.where(which).fold(0, (n, u) => n + u.count);
+    if (outcome != null) {
+      _ev(CombatEndedEvent(
+          sector: siege.sector,
+          playerVictory: outcome == BattleOutcome.hostilesDestroyed,
+          outcome: outcome,
+          raid: true,
+          rounds: siege.round,
+          losses: losses,
+          owners: const ['Demo'],
+          mine: true,
+          salvage: pile,
+          salvageDespawnTick: despawn));
     }
     _ev(RaidResolvedEvent(
         playerId: _playerId,
-        outpost: o.at,
+        outpost: home ? null : siege.sector,
         defended: defended,
-        breached: !defended,
-        resourcesLost: lost,
-        raidPower: power,
-        defensePower: state.defencePower,
-        protectedKept: defended ? const Resources() : _least(o.store, state.protected),
-        shipsLost: shipsLost));
+        outcome: outcome,
+        rounds: siege.round,
+        breached: !defended && !home,
+        resourcesLost: taken,
+        salvageDropped: pile,
+        salvageDespawnTick: despawn,
+        raidPower: siege.power,
+        defensePower: siege.met,
+        raiders: _shipCounts(siege.muster),
+        raidersLost: [for (final u in lostBy((l) => !l.mine)) ShipCount(shipClass: u.unit.ship!, count: u.count)],
+        lost: ours,
+        rebuilt: rebuilt,
+        satellitesLost: lostOf((u) => u.unit.ship == ShipClass.solarSatellite),
+        structuresLost: lostOf((u) => u.unit.defence != null),
+        structuresRestored: rebuilt.fold(0, (n, u) => n + u.count),
+        protectedKept: kept,
+        shipsLost: lostOf((u) => u.unit.ship != null && u.unit.ship != ShipClass.solarSatellite)));
+    if (home) _announceRaid(((_tick ~/ _raidPeriod) + 1) * _raidPeriod);
   }
 
   /// The server's `policy_update`, with the reports it makes: `clear` for
@@ -1591,7 +2126,7 @@ class DemoWorld {
     _stepQueues();
     _stepDocks();
     _stepSalvage();
-    _stepRaid();
+    _stepRaids();
     _stepOutpost();
     _stepOrders();
 
@@ -1646,7 +2181,10 @@ class DemoWorld {
       homeworldUpdate: _hw,
       outpost: _outpostState(),
       sectorUpdates: secs.isEmpty ? null : secs,
-      battles: [for (final c in _combats.values) _battle(c, withRound: false)],
+      battles: [
+        for (final c in _combats.values) _battle(c, withRound: false),
+        for (final siege in _sieges.values) _siegeState(siege, withRound: false),
+      ],
       events: events.isEmpty ? null : events,
     );
   }
@@ -1842,7 +2380,7 @@ class DemoWorld {
       } else {
         final k = s.item.defence!;
         _hw = _hwWith(defences: [
-          for (final d in _hw.defences) d.kind == k ? DefenceState(kind: k, count: d.count + 1, restoring: d.restoring, power: d.power) : d,
+          for (final d in _hw.defences) d.kind == k ? DefenceState(kind: k, count: d.count + 1, power: d.power) : d,
         ]);
         _ev(DefenceBuiltEvent(defence: k, count: 1, playerId: _playerId));
       }
@@ -1897,35 +2435,6 @@ class DemoWorld {
 
   /// What the ships standing at the homeworld add to its defence.
   double _dockedPower() => _fleets.where((f) => f.location == _home).fold(0.0, (n, f) => n + f.power);
-
-  /// The scripted raid arrives, at a roll of what was announced. Held, it
-  /// costs nothing. Lost, it destroys the engine's share of the Solar
-  /// Satellites and of the ships standing at the homeworld; what a raid
-  /// takes of a stockpile is not scripted, so the stockpile keeps all it has.
-  void _stepRaid() {
-    if (_tick < _raidArrival) return;
-    final least = _book.constant('RAID_POWER_ROLL_MIN'), most = _book.constant('RAID_POWER_ROLL_MAX');
-    final raid = _raidEstimate * (least + (most - least) * _h01(_raidArrival, 3, 7));
-    final defense = _defence(_hw.defences).total;
-    final defended = defense >= raid;
-    var shipsLost = 0, satellitesLost = 0;
-    if (!defended) {
-      satellitesLost = (_satellites * raidLostShipFraction).ceil();
-      _satellites -= satellitesLost;
-      shipsLost = _raidToll([for (final f in _fleets) if (f.location == _home) f]);
-    }
-    _ev(RaidResolvedEvent(
-        playerId: _playerId,
-        defended: defended,
-        resourcesLost: const Resources(),
-        raidPower: raid,
-        defensePower: defense,
-        protectedKept: defended ? const Resources() : _least(_resources, _hw.storage.protected),
-        shipsLost: shipsLost,
-        satellitesLost: satellitesLost));
-    _raidArrival += _raidPeriod;
-    _ev(_raidIncoming());
-  }
 
   // ── Combat ────────────────────────────────────────────────────
 
@@ -2155,27 +2664,31 @@ class DemoWorld {
     }
   }
 
-  /// What [from] fires at [at] in one round, class at class, and what it
-  /// does to [at], whose squads are changed. Without dice: every ship of
-  /// [from] fires once, at the classes of [at] in proportion to their
-  /// numbers, and as often again as its rapid fire against a class says. A
-  /// shot under a hundredth of the shield it meets bounces; each other one
-  /// meets a full shield and takes the rest from the hull of the class's
-  /// most damaged ship, which explodes if it was already at risk.
-  List<Volley> _volleys(List<_Squad> from, _Arms Function(ShipClass) fromArms, List<_Squad> at, _Arms Function(ShipClass) atArms) {
-    final stood = {for (final t in at) t.cls: t.count};
+  /// What [from] fires at [at] in one round, squad at squad, and what it
+  /// does to [at], whose squads are changed. Without dice: every unit of
+  /// [from] fires once, at the squads of [at] in proportion to their
+  /// numbers, and a ship as often again as its rapid fire against what it
+  /// hits says. A shot under a hundredth of the shield it meets bounces;
+  /// each other one meets a full shield and takes the rest from the hull of
+  /// the squad's most damaged unit, which explodes if it was already at
+  /// risk. Two squads of one unit on a side, as two fleets at a dock have,
+  /// share a line of the report.
+  _Fire _volleys(List<_Squad> from, _Arms Function(_Squad) fromArms, List<_Squad> at, _Arms Function(_Squad) atArms) {
+    final stood = [for (final t in at) t.count];
     final total = _shipsIn(at);
-    final out = <Volley>[];
-    if (total == 0) return out;
+    final lines = <(ShipyardItem, ShipyardItem), Volley>{};
+    var power = 0;
+    if (total == 0) return (volleys: const [], power: 0, hull: 0);
     for (final a in from) {
-      final attack = fromArms(a.cls).attack;
-      var spare = a.count - at.fold(0, (n, t) => n + a.count * stood[t.cls]! ~/ total);
-      for (final t in at) {
-        final aimed = a.count * stood[t.cls]! ~/ total + (spare-- > 0 ? 1 : 0);
-        final again = _book.rapidFire.where((r) => r.shipClass == a.cls && r.against.ship == t.cls).firstOrNull?.shots ?? 1;
+      final attack = fromArms(a).attack;
+      var spare = a.count - stood.fold(0, (n, count) => n + a.count * count ~/ total);
+      for (final (i, t) in at.indexed) {
+        final aimed = a.count * stood[i] ~/ total + (spare-- > 0 ? 1 : 0);
+        final again = _book.rapidFire.where((r) => r.shipClass == a.unit.ship && r.against == t.unit).firstOrNull?.shots ?? 1;
         final shots = aimed * again;
         if (shots == 0) continue;
-        final target = atArms(t.cls);
+        final target = atArms(t);
+        power += shots * attack;
         var bounced = 0, wasted = 0, absorbed = 0, hullDamage = 0, destroyed = 0;
         if (attack * 100 < target.shield) {
           bounced = shots;
@@ -2198,51 +2711,62 @@ class DemoWorld {
             }
           }
         }
-        out.add(Volley(
-            from: ShipyardItem.ship(a.cls),
-            at: ShipyardItem.ship(t.cls),
-            shots: shots,
-            bounced: bounced,
-            wasted: wasted,
-            absorbed: absorbed,
-            hullDamage: hullDamage,
-            destroyed: destroyed));
+        lines.update(
+            (a.unit, t.unit),
+            (v) => Volley(
+                from: v.from,
+                at: v.at,
+                shots: v.shots + shots,
+                bounced: v.bounced + bounced,
+                wasted: v.wasted + wasted,
+                absorbed: v.absorbed + absorbed,
+                hullDamage: v.hullDamage + hullDamage,
+                destroyed: v.destroyed + destroyed),
+            ifAbsent: () => Volley(
+                from: a.unit, at: t.unit, shots: shots, bounced: bounced, wasted: wasted, absorbed: absorbed, hullDamage: hullDamage, destroyed: destroyed));
       }
     }
-    return out;
+    final volleys = lines.values.toList();
+    return (volleys: volleys, power: power, hull: volleys.fold(0, (n, v) => n + v.hullDamage));
   }
 
-  /// One side of a round as its report carries it: the force as it stands
-  /// after the round with what the round took from it, and what it fired.
-  static BattleSide _side(
-      BattleGroup Function(List<BattleUnits>) group, List<_Squad> before, List<_Squad> after, _Arms Function(ShipClass) arms, List<Volley> fired) {
-    final units = [
-      for (final was in before)
-        () {
-          final now = after.firstWhere((s) => s.cls == was.cls);
-          final unit = arms(was.cls);
-          return BattleUnits(
-            unit: ShipyardItem.ship(was.cls),
-            count: now.count,
-            damaged: now.wounds.length,
-            atRisk: now.wounds.where((hull) => _atRisk(hull, unit.hull)).length,
-            hull: (now.count - now.wounds.length) * unit.hull + now.wounds.fold(0, (n, hull) => n + hull),
-            hullMax: now.count * unit.hull,
-            lost: was.count - now.count,
-          );
-        }(),
-    ];
-    return BattleSide(
-      groups: [group(units)],
-      standing: _shipsIn(after),
-      volleys: fired,
-      shots: fired.fold(0, (n, v) => n + v.shots),
-      power: fired.fold(0, (n, v) => n + v.shots * arms(v.from.ship!).attack),
-      absorbed: fired.fold(0, (n, v) => n + v.absorbed),
-      hullDamage: fired.fold(0, (n, v) => n + v.hullDamage),
-      destroyed: fired.fold(0, (n, v) => n + v.destroyed),
-    );
-  }
+  /// What a round has left of a fleet's or a group's [squads], as the world
+  /// keeps them between rounds: those with a unit left, without the arms
+  /// the round gave them.
+  static List<_Squad> _standing(List<_Squad> squads) => [for (final s in squads) if (s.count > 0) _Squad.of(s.unit, s.count, s.wounds)];
+
+  /// The squads of one fleet, group or battery as a round's report lists
+  /// them: [after] the round, squad for squad with [before], which is armed,
+  /// and what the round took from each.
+  static List<BattleUnits> _unitsAfter(List<_Squad> before, List<_Squad> after) => [
+        for (final (i, was) in before.indexed)
+          () {
+            final now = after[i];
+            final unit = was.arms!;
+            return BattleUnits(
+              unit: was.unit,
+              count: now.count,
+              damaged: now.wounds.length,
+              atRisk: now.wounds.where((hull) => _atRisk(hull, unit.hull)).length,
+              hull: (now.count - now.wounds.length) * unit.hull + now.wounds.fold(0, (n, hull) => n + hull),
+              hullMax: now.count * unit.hull,
+              lost: was.count - now.count,
+            );
+          }(),
+      ];
+
+  /// One side of a round as its report carries it: its [groups] as they
+  /// stand after the round, all of them [standing], and what it [fired].
+  static BattleSide _side(List<BattleGroup> groups, List<_Squad> standing, _Fire fired) => BattleSide(
+        groups: groups,
+        standing: _shipsIn(standing),
+        volleys: fired.volleys,
+        shots: fired.volleys.fold(0, (n, v) => n + v.shots),
+        power: fired.power,
+        absorbed: fired.volleys.fold(0, (n, v) => n + v.absorbed),
+        hullDamage: fired.hull,
+        destroyed: fired.volleys.fold(0, (n, v) => n + v.destroyed),
+      );
 
   void _stepCombat() {
     // Aggressive groups engage fleets that share their sector.
@@ -2270,20 +2794,18 @@ class DemoWorld {
         continue;
       }
       c.round++;
-      final refit = _refits[f.id]!;
-      _Arms arms(ShipClass cls) => _arms(cls, refit);
-      List<_Squad> ordered(List<_Squad> squads) => [for (final s in squads) s.copy()]..sort((a, b) => a.cls.index.compareTo(b.cls.index));
-      final fleetBefore = ordered(_squads[f.id]!), groupBefore = ordered(_squads[c.npc.id]!);
-      final fleet = ordered(fleetBefore), group = ordered(groupBefore);
-      final ours = leaving == null ? _volleys(fleetBefore, arms, group, _npcArms) : const <Volley>[];
-      final theirs = _volleys(groupBefore, _npcArms, fleet, arms);
+      final fleetBefore = _fleetArmed(f.id);
+      final groupBefore = [for (final s in [..._squads[c.npc.id]!]..sort((a, b) => a.cls.index.compareTo(b.cls.index))) s.armed(_baseArms(s))];
+      final fleet = [for (final s in fleetBefore) s.copy()], group = [for (final s in groupBefore) s.copy()];
+      final _Fire ours = leaving == null ? _volleys(fleetBefore, _armed, group, _armed) : (volleys: const [], power: 0, hull: 0);
+      final theirs = _volleys(groupBefore, _armed, fleet, _armed);
       if (leaving != null) c.fleeRounds--;
       final round = BattleRoundEvent(
         sector: c.sector,
         round: c.round,
-        fleets: _side((units) => BattleGroup(fleetId: c.fleetId, owner: 'Demo', mine: true, fleeing: leaving != null, units: units), fleetBefore, fleet, arms,
-            ours),
-        hostiles: _side((units) => BattleGroup(fleetId: c.npc.id, label: c.label, units: units), groupBefore, group, _npcArms, theirs),
+        fleets: _side(
+            [BattleGroup(fleetId: c.fleetId, owner: 'Demo', mine: true, fleeing: leaving != null, units: _unitsAfter(fleetBefore, fleet))], fleet, ours),
+        hostiles: _side([BattleGroup(fleetId: c.npc.id, label: c.label, units: _unitsAfter(groupBefore, group))], group, theirs),
         mine: true,
       );
       for (final u in round.fleets.groups.single.units) {
@@ -2294,8 +2816,8 @@ class DemoWorld {
       }
       c.lastRound = round;
       _ev(BattleRoundKind(round));
-      _squads[f.id] = [for (final s in fleet) if (s.count > 0) s];
-      _squads[c.npc.id] = [for (final s in group) if (s.count > 0) s];
+      _squads[f.id] = _standing(fleet);
+      _squads[c.npc.id] = _standing(group);
       final k = c.sector.toKey();
       final fleetGone = _squads[f.id]!.isEmpty, groupGone = _squads[c.npc.id]!.isEmpty;
       final quiet = leaving == null && round.fleets.hullDamage + round.hostiles.hullDamage == 0;
@@ -2505,11 +3027,19 @@ class DemoWorld {
     final fight = _combats[f.id];
     final leaving = fight?.fleeTo;
     final fuel = min(f.fuel, tank);
+    final siege = _sieges[f.location.toKey()];
+    final bound = siege?.leaving[f.id];
     return FleetState(
-        flight: fight == null || leaving != null
-            ? null
-            : _flightQuote(fight, fuel: fuel, jump: jump, jumpTicks: _jumpTicks(ships), power: _power(rows)),
-        fleeing: leaving == null ? null : Fleeing(to: leaving, ticks: fight!.fleeRounds + 1, rounds: fight.fleeRounds),
+        flight: fight != null && leaving == null
+            ? _flightQuote(fight, fuel: fuel, jump: jump, jumpTicks: _jumpTicks(ships), power: _power(rows))
+            : siege != null && bound == null && f.state == FleetStatus.inCombat
+                ? _raidFlight(siege, f.id, fuel: fuel, jump: jump, jumpTicks: _jumpTicks(ships))
+                : null,
+        fleeing: switch ((leaving, bound)) {
+          (final to?, _) => Fleeing(to: to, ticks: fight!.fleeRounds + 1, rounds: fight.fleeRounds),
+          (null, (final to, final rounds)?) => Fleeing(to: to, ticks: rounds + 1, rounds: rounds),
+          _ => null,
+        },
         pursuedBy: _pursuitOf(f.id, f.location, f.cooldownRemaining),
         id: f.id,
         location: f.location,
@@ -2733,14 +3263,12 @@ class DemoWorld {
         d.kind: (
           d.count,
           d.count +
-              d.restoring +
               (yard?.item.defence == d.kind ? yard!.count - yard.built : 0) +
               waiting.where((q) => q.item.defence == d.kind).fold(0, (n, q) => n + q.count)
         ),
     }, energy.made);
     final defs = [
-      for (final d in standing)
-        DefenceState(kind: d.kind, count: d.count, restoring: d.restoring, power: catalog.defences.firstWhere((o) => o.kind == d.kind).power),
+      for (final d in standing) DefenceState(kind: d.kind, count: d.count, power: catalog.defences.firstWhere((o) => o.kind == d.kind).power),
     ];
     final power = _defence(defs, catalog);
     final docked = _dockedRows();
@@ -2771,6 +3299,7 @@ class DemoWorld {
       dockedShips: docked,
       dockedShipCount: docked.fold<int>(0, (n, g) => n + g.count),
       defences: defs,
+      raid: _homeForecast(),
       catalog: catalog,
     );
   }
@@ -3303,6 +3832,19 @@ class DemoWorld {
           _setFleet(_copy(f, state: FleetStatus.moving, fuel: f.fuel - quote.fuel));
           return [_tickUpdate()];
         }
+        if (_sieges[f.location.toKey()] case final siege? when f.state == FleetStatus.inCombat || siege.leaving.containsKey(fleetId)) {
+          if (siege.leaving[fleetId] case (final to, _)?) {
+            return [
+              _err(ErrorCode.onCooldown,
+                  'fleet $fleetId is already leaving the fight at ${f.location} for $to; stop calls the jump off, and its fuel is forfeit'),
+            ];
+          }
+          final quote = f.flight!;
+          if (quote.refusal case final why?) return [_err(ErrorCode.insufficientFuel, why)];
+          siege.leaving[fleetId] = (target, quote.rounds);
+          _setFleet(_copy(f, state: FleetStatus.moving, fuel: f.fuel - quote.fuel));
+          return [_tickUpdate()];
+        }
         if (f.cooldownRemaining > 0) return [_err(ErrorCode.onCooldown, 'Drive recharging: ${f.cooldownRemaining} tick(s)')];
         if (f.fuel < f.jumpFuel) return [_err(ErrorCode.insufficientFuel, 'Not enough fuel for a jump')];
         _stopActivities(f);
@@ -3352,6 +3894,18 @@ class DemoWorld {
               level: AlertLevel.warning,
               message: 'fleet $fleetId called off its jump to $to: the ${_tenths(f.jumpFuel * fleeFuelMultiplier)} fuel it burned for the jump is forfeit, '
                   'and it fights on at ${f.location}',
+              fleetId: fleetId,
+              sector: f.location));
+          return [_tickUpdate()];
+        }
+        if (_sieges[f.location.toKey()] case final siege? when f.state == FleetStatus.inCombat || siege.leaving.containsKey(fleetId)) {
+          final bound = siege.leaving.remove(fleetId);
+          if (bound == null) return [_err(ErrorCode.onCooldown, 'fleet $fleetId is in combat')];
+          _setFleet(_copy(f, state: FleetStatus.inCombat));
+          _ev(AlertEvent(
+              level: AlertLevel.warning,
+              message: 'fleet $fleetId called off its jump to ${bound.$1}: the ${_tenths(f.jumpFuel * fleeFuelMultiplier)} fuel it burned for the jump '
+                  'is forfeit, and it fights on at ${f.location}',
               fleetId: fleetId,
               sector: f.location));
           return [_tickUpdate()];
@@ -3508,7 +4062,7 @@ class DemoWorld {
         if (_bl(BuildingType.shipyard) == 0) return [_err(ErrorCode.noShipyard, 'Build a shipyard first')];
         if (o.requires.any((r) => !r.met)) return [_err(ErrorCode.defenceLocked, _needs(kind.label, o.requires))];
         if (o.room case final room? when count > room) {
-          return [_err(ErrorCode.maxLevelReached, 'at most ${o.max} ${kind.label} may stand, those being rebuilt and on order included')];
+          return [_err(ErrorCode.maxLevelReached, 'no more than ${o.max} ${kind.label} may stand; ${o.max! - room} stand or are on order')];
         }
         return _orderYard(ShipyardItem.defence(kind), count);
       case CancelBuildCommand(:final queueType, :final id):

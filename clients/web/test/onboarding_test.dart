@@ -23,13 +23,15 @@ const _home = {'q': 4, 'r': -2};
 const _oreField = {'q': 3, 'r': -2};
 
 /// The golden state cut back to a first login: one fleet docked at home, an
-/// empty build queue, mines with all the energy they need, and the home
-/// sector charted with its lane to the ore field next door.
+/// empty build queue, no raid on its way, mines with all the energy they
+/// need, and the home sector charted with its lane to the ore field next
+/// door.
 void _freshEmpire(Map<String, dynamic> s) {
   s['fleets'] = [_fleet()];
   final hw = s['homeworld'] as Map<String, dynamic>;
   hw['build_queue'] = <dynamic>[];
   hw['build_pending'] = <dynamic>[];
+  (hw['raid'] as Map<String, dynamic>).remove('arrival_tick');
   final energy = hw['energy'] as Map<String, dynamic>;
   energy
     ..['made'] = energy['needed']

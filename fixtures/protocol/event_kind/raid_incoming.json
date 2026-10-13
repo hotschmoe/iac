@@ -1,8 +1,26 @@
 {
-  "arrival_tick": 5000,
-  "est_power": 353.5,
+  "arrival_tick": 1640,
+  "est_power": 1350.5,
   "kind": "RaidIncoming",
+  "odds": {
+    "destroyed": 0.25,
+    "kept": 0.6200000047683716,
+    "label": "held",
+    "lost": 0.0,
+    "outlasted": 0.75,
+    "raiders_kept": 0.3100000023841858
+  },
   "player_id": 42,
+  "ships": [
+    {
+      "class": "LightFighter",
+      "count": 12
+    },
+    {
+      "class": "Cruiser",
+      "count": 2
+    }
+  ],
   "threat": "moderate",
   "tick": 1234
 }

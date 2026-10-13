@@ -18,7 +18,14 @@ pub struct Tally {
     pub raids_repelled: u32,
     pub raids_lost: u32,
     pub raided: Resources,
+    /// What the fights of the raids on the homeworld destroyed, repelled or
+    /// lost: ships of fleets docked there, Solar Satellites and defences,
+    /// and how many of the defences were rebuilt when a fight ended.
     pub docked_ships_lost: u32,
+    pub satellites_lost: u32,
+    pub defences_lost: u32,
+    pub defences_rebuilt: u32,
+    /// Fleets and ships lost away from both docks.
     pub fleets_lost: u32,
     pub ships_lost: u32,
     /// Fights the commander's last fleet in them jumped out of under fire.
@@ -52,31 +59,43 @@ impl Tally {
             return;
         }
         let Some(seen) = views::event_for(event, commander, engine) else { return };
+        let at_a_dock = |sector: Hex| {
+            sector == commander.homeworld || engine.outposts.get(&commander.id).is_some_and(|post| post.sector == sector)
+        };
         match seen.kind {
             EventKind::BuildingCompleted(_) => self.buildings += 1,
             EventKind::ResearchCompleted(_) => self.research += 1,
             EventKind::ShipBuilt(e) => self.ships += u32::from(e.count),
             EventKind::DefenceBuilt(e) => self.defences += u32::from(e.count),
             EventKind::OutpostCompleted(_) => self.outpost_levels += 1,
-            EventKind::RaidResolved(e) if e.outpost.is_some() && e.defended => self.outpost_raids_repelled += 1,
             EventKind::RaidResolved(e) if e.outpost.is_some() => {
-                self.outpost_raids_lost += 1;
-                self.outpost_raided = self.outpost_raided.add(e.resources_lost);
                 self.outpost_ships_lost += e.ships_lost;
+                if e.defended {
+                    self.outpost_raids_repelled += 1;
+                } else {
+                    self.outpost_raids_lost += 1;
+                    self.outpost_raided = self.outpost_raided.add(e.resources_lost);
+                }
             }
-            EventKind::RaidResolved(e) if e.defended => self.raids_repelled += 1,
             EventKind::RaidResolved(e) => {
-                self.raids_lost += 1;
-                self.raided = self.raided.add(e.resources_lost);
                 self.docked_ships_lost += e.ships_lost;
+                self.satellites_lost += e.satellites_lost;
+                self.defences_lost += e.structures_lost;
+                self.defences_rebuilt += e.structures_restored;
+                if e.defended {
+                    self.raids_repelled += 1;
+                } else {
+                    self.raids_lost += 1;
+                    self.raided = self.raided.add(e.resources_lost);
+                }
             }
-            EventKind::FleetDestroyed(e) if e.mine => self.fleets_lost += 1,
-            EventKind::BattleRound(e) => {
+            EventKind::FleetDestroyed(e) if e.mine && !at_a_dock(e.sector) => self.fleets_lost += 1,
+            EventKind::BattleRound(e) if !e.raid => {
                 let mine = e.fleets.groups.iter().filter(|group| group.mine);
                 self.ships_lost += mine.flat_map(|group| &group.units).map(|units| units.lost).sum::<u32>();
             }
             EventKind::ShipsLost(e) if e.mine => self.ships_lost += e.ships.iter().map(|s| s.count).sum::<u32>(),
-            EventKind::CombatEnded(e) if e.mine && e.outcome == BattleOutcome::Fled => self.fights_fled += 1,
+            EventKind::CombatEnded(e) if e.mine && !e.raid && e.outcome == BattleOutcome::Fled => self.fights_fled += 1,
             _ => {}
         }
     }
@@ -98,29 +117,41 @@ impl Tally {
 
     fn trouble(&self) -> Option<String> {
         let broke = count(self.raids_lost, "raid", "raids").map(|raids| {
-            let docked = count(self.docked_ships_lost, "docked ship", "docked ships")
-                .map(|ships| format!(" and {ships}"))
-                .unwrap_or_default();
             format!(
-                "{raids} broke through and took {} Fe, {} Cr, {} De{docked}",
+                "{raids} left no defender standing and took {} Fe, {} Cr, {} De",
                 self.raided.metal.round(),
                 self.raided.crystal.round(),
                 self.raided.deuterium.round(),
             )
         });
+        let fought = list(&[
+            count(self.docked_ships_lost, "docked ship", "docked ships"),
+            count(self.satellites_lost, "Solar Satellite", "Solar Satellites"),
+            count(self.defences_lost, "defence", "defences"),
+        ])
+        .map(|destroyed| {
+            let rebuilt = match self.defences_rebuilt {
+                0 => String::new(),
+                n => format!(", and {n} of the defences were rebuilt"),
+            };
+            format!("the raids on your homeworld destroyed {destroyed}{rebuilt}")
+        });
         let lost = list(&[count(self.fleets_lost, "fleet", "fleets"), count(self.ships_lost, "ship", "ships")])
             .map(|lost| format!("{lost} lost in the field"));
         let fled = count(self.fights_fled, "fight", "fights").map(|fights| format!("{fights} left under fire"));
-        let parts: Vec<String> = [broke, lost, fled].into_iter().flatten().collect();
+        let parts: Vec<String> = [broke, fought, lost, fled].into_iter().flatten().collect();
         (!parts.is_empty()).then(|| parts.join("; "))
+    }
+
+    /// The ships the raids on the outpost destroyed there, as a clause.
+    fn outpost_ships(&self) -> Option<String> {
+        count(self.outpost_ships_lost, "ship there", "ships there")
     }
 
     /// What raids that broke the outpost took, and how it stands now.
     fn outpost_trouble(&self, post: &Standing) -> Option<String> {
         let raids = count(self.outpost_raids_lost, "raid", "raids")?;
-        let ships = count(self.outpost_ships_lost, "ship there", "ships there")
-            .map(|ships| format!(" and {ships}"))
-            .unwrap_or_default();
+        let ships = self.outpost_ships().map(|ships| format!(", and the raids destroyed {ships}")).unwrap_or_default();
         let now = match (post.breached, post.repaired_at) {
             (false, _) => "It has repaired itself and is whole".to_string(),
             (true, Some(tick)) => format!("It is breached and under repair until tick {tick}"),
@@ -199,7 +230,12 @@ impl Absence {
         if let Some(post) = &self.outpost {
             if let Some(raids) = count(self.tally.outpost_raids_repelled, "raid", "raids") {
                 let were = if self.tally.outpost_raids_repelled == 1 { "was" } else { "were" };
-                notices.push((AlertLevel::Info, format!("While away: {raids} on your outpost at {} {were} repelled.", post.sector)));
+                let cost = self.tally.outpost_ships().filter(|_| self.tally.outpost_raids_lost == 0);
+                let (level, cost) = match cost {
+                    Some(ships) => (AlertLevel::Warning, format!(", at the cost of {ships}")),
+                    None => (AlertLevel::Info, String::new()),
+                };
+                notices.push((level, format!("While away: {raids} on your outpost at {} {were} repelled{cost}.", post.sector)));
             }
             if let Some(trouble) = self.tally.outpost_trouble(post) {
                 notices.push((AlertLevel::Warning, format!("While away: {trouble}.")));

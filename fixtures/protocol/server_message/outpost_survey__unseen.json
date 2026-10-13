@@ -6,10 +6,33 @@
     "metal": 1000.0
   },
   "fleet_id": 7,
-  "platform_power": 40.0,
+  "platform": [
+    {
+      "count": 4,
+      "unit": "RocketLauncher"
+    }
+  ],
+  "platform_power": 408.0,
+  "raid": {
+    "odds": {
+      "destroyed": 0.0,
+      "kept": 0.17000000178813934,
+      "label": "at_risk",
+      "lost": 0.5,
+      "outlasted": 0.5,
+      "raiders_kept": 0.9800000190734863
+    },
+    "power": 467.0,
+    "ships": [
+      {
+        "class": "Cruiser",
+        "count": 1
+      }
+    ]
+  },
   "raid_power": {
-    "least": 38.29999923706055,
-    "most": 55.099998474121094
+    "least": 383.0,
+    "most": 551.0
   },
   "refusal": "[10,-2] is not on your chart; a survey reads the site of a sector you have seen",
   "ring": 10,

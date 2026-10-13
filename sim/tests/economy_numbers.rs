@@ -193,7 +193,9 @@ fn game() -> Json {
         DERELICT_SPAWN_PCT, DERELICT_RESPAWN_TICKS, DERELICT_VALUE_BASE, DERELICT_VALUE_GROWTH, DERELICT_VALUE_RING,
         AMBUSH_GUARD_SHARE,
         RAID_MIN_PLAYER_AGE, RAID_MIN_SHIPYARD, RAID_POWER_FLOOR, RAID_POWER_PER_POINT, RAID_POWER_EXPONENT,
-        RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX, RAID_LOST_SHIP_FRACTION, RAID_LOST_STRUCTURE_FRACTION,
+        RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX, RAID_ROUNDS, DEFENCE_REBUILD_PCT, DEFENCE_REBUILD_SPREAD,
+        DEFENCE_REBUILD_EACH_BELOW, RAID_LOSS_CAP_METAL, RAID_LOSS_CAP_CRYSTAL, RAID_LOSS_CAP_DEUT,
+        RAID_DEFENSE_SALVAGE_FRACTION,
         EXTRA_CAP, KILL_SHARE, FULL_PAY_RATIO, MIN_PAY, BOARD_VALUE_SHARE, DISCOVERY_POINTS,
         CHART_BASE_POINTS, CHART_THREAT_POINTS, THREAT_POINTS_EXPONENT, DEFENCE_SHARE,
         RELIC_POINTS, FARM_DECAY, FARM_HALF_LIFE_RESPAWNS,
@@ -523,6 +525,7 @@ fn tables() -> Json {
                 "ticks": outpost_build_ticks(level, &pace), "repair_ticks": outpost_repair_ticks(level, &pace),
                 "repair_price": outpost_repair_price(level), "store_cap": outpost_store_cap(level, &pace),
                 "platform": outpost_platform_power(level), "points": outpost_points(level),
+                "platform_units": outpost_platform(level).iter().map(|&(kind, count)| list![format!("{kind:?}"), count]).collect::<Vec<Json>>(),
             }
         })
         .collect();

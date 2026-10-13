@@ -7,6 +7,7 @@
           "destroyed": 229,
           "groups": [
             {
+              "battery": false,
               "fleeing": false,
               "fleet_id": 3,
               "mine": true,
@@ -46,6 +47,7 @@
           "destroyed": 2,
           "groups": [
             {
+              "battery": false,
               "fleeing": false,
               "fleet_id": 4294967400,
               "label": "400x light fighter swarm",
@@ -63,6 +65,7 @@
               ]
             },
             {
+              "battery": false,
               "fleeing": false,
               "fleet_id": 4294967401,
               "label": "2x espionage probe picket",
@@ -98,6 +101,7 @@
           ]
         },
         "mine": true,
+        "raid": false,
         "round": 3,
         "sector": {
           "q": -5,
@@ -106,6 +110,7 @@
       },
       "losses": [
         {
+          "battery": false,
           "destroyed": false,
           "fleet_id": 3,
           "lost": [
@@ -118,6 +123,7 @@
           "owner": "Admiral"
         },
         {
+          "battery": false,
           "destroyed": true,
           "fleet_id": 4294967400,
           "label": "400x light fighter swarm",
@@ -2243,14 +2249,12 @@
       {
         "count": 12,
         "kind": "RocketLauncher",
-        "power": 112.4000015258789,
-        "restoring": 2
+        "power": 112.4000015258789
       },
       {
         "count": 1,
         "kind": "SmallShieldDome",
-        "power": 421.1000061035156,
-        "restoring": 0
+        "power": 421.1000061035156
       }
     ],
     "docked_power": 444.0,
@@ -2299,6 +2303,28 @@
       "metal": 2.75
     },
     "queue_waiting_max": 3,
+    "raid": {
+      "arrival_tick": 4990,
+      "odds": {
+        "destroyed": 0.25,
+        "kept": 0.6200000047683716,
+        "label": "held",
+        "lost": 0.0,
+        "outlasted": 0.75,
+        "raiders_kept": 0.3100000023841858
+      },
+      "power": 1350.5,
+      "ships": [
+        {
+          "class": "LightFighter",
+          "count": 12
+        },
+        {
+          "class": "Cruiser",
+          "count": 2
+        }
+      ]
+    },
     "research": [
       {
         "level": 0,

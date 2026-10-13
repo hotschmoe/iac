@@ -293,6 +293,8 @@ Built from the shipyard queue as quantities, listed in the catalog as `defences`
 
 ### 5.2 Raid model (replaces "35 to 55 percent of your own defence")
 
+Since 2026-10-14 (slice 4 of `docs/design/ogame.md`) the resolution below is not the game: a raid is fought, a round a tick for at most `RAID_ROUNDS` (6), by the round every fight is fought by, the raiders against the ships at the dock, the Solar Satellites and the defences. There is no fog, no comparison of two powers and no share of structures or of ships: what falls is what the round destroys, about 70 in a hundred of the fallen defences stand again at once (`DEFENCE_REBUILD_PCT`, `DEFENCE_REBUILD_SPREAD`), the wreckage of 30 percent is left only by a raid destroyed to its last ship, and the skim above the protected amount is taken only when no defender is left. What a raid flies answers the defences that stand (`scaling::raid_composition`). The raid's power, its timers and its eligibility are as below. The rules as players read them are in the README under Raids, the measurements in `docs/journal.md` and the choices in `docs/design/decisions.md`. `sim.py` does not fight raids: its player still keeps a defence of 1.15 times the next raid's power on the power scale, which is a spending model and not a forecast.
+
 Today a raid is sized from the player's own defence, so it can never be an actual threat and building no defence at all (Grok-1) is rational. New:
 
 * `raid_power = (5 + 11 * S^0.75) * U(0.80, 1.15)`, with `S` = the player's building and research points (section 9, excludes fleets and defences). S = 10 gives 67, S = 100 gives 353, S = 500 gives 1168, S = 1000 gives 1961 (about 15 Ion Bastions, roughly 26k resource units, a day or two of late-game income).

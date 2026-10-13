@@ -3,6 +3,254 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (the web client on raids fought as battles: what the agent decided)
+
+Slice 4 of `docs/design/ogame.md`, section 12, stage 2: the hand-written Dart
+of `clients/web` on what the engine sends since raids are fights, after
+master was merged into the branch. None of it was put to the owner. Each
+line ends with what undoes it. `SAVE_FORMAT` and `ECONOMY_VERSION` are as
+stage 1 left them, 11 and 12.
+
+**In Rust.**
+
+- *The forecast is the raid being fought until it ends.* Stage 1 left
+  `homeworld.raid` as the forecast of the next raid while one was fought,
+  and its own session called that a surprise: a screen that read only the
+  forecast said no raid was announced during a raid. `RaidForecast` has
+  `rounds_left`, present while the raid is fought; `homeworld.raid` and
+  `outpost.raid` are then that raid, with what it flew in with and the odds
+  from where the fight stands, and no `arrival_tick`. So one field says
+  where a raid stands, for the web client, for an agent and for a bot, and
+  nobody looks in `battles` to find out. The fight's rounds are still in
+  `battles`. The bots read the forecast, so a world of bots plays a little
+  differently while a raid is fought (the journal has the two runs); no
+  world of economy version 12 exists outside this branch, so the version
+  did not move. Undo: `GameEngine::raid_fought` and its two callers, and the
+  field; a client then finds the fight in `battles` first, as stage 1 said.
+- *The engine's refusal of a defence past its limit* said "stand, are being
+  rebuilt or are on order". Nothing is being rebuilt any more: it says
+  "stand or are on order". Undo: the sentence in `commands.rs`.
+- *The hand-written raid fixtures* stand at the sample player's homeworld
+  (they stood in another sector), and the sample homeworld's raid arrives
+  after the sample tick, not before it. Undo: `golden_fixtures.rs`.
+- *For the client*: the generated constant `defenceRebuildEachBelow`
+  (`DEFENCE_REBUILD_EACH_BELOW`), so the rebuild's rule is printed whole.
+  *For its scripted world*: `numbers.json` names that constant, the three
+  `RAID_LOSS_CAP_*` and `RAID_DEFENSE_SALVAGE_FRACTION`, and each outpost
+  level's `platform_units`.
+
+**In the client.**
+
+- *Where a raid's fight is told.* On the Defence tab, under the forecast,
+  and on the outpost's own screen, under its panel: the round panel every
+  fight has, with the sides named defenders and raiders and the defences a
+  group headed as no fleet. It is reached from any screen by the raid's
+  field in the top bar (a line under the bar on a phone) and from the
+  Overview's card. The windshield shows it too, to a fleet standing in it.
+  No battle view was built: that is slice 5. Undo: `DefenceTab`,
+  `OutpostRaid`.
+- *The top bar's world name gives way to the raid* while one is on its way
+  or fought, so the bar grows no wider; on a phone a line appears under the
+  bar for that time and the screen below moves down by its height. Undo:
+  `_RaidField`, `RaidStrip`.
+- *The way out of a raid from the homeworld's and the outpost's screens* is
+  the windshield's flee control without its keys (`RaidExits`): a button a
+  lane, the price, that nothing follows, Stop while the jump charges. It
+  asks for no preview of a lane, since no raider follows anywhere. Leaving
+  during the warning is an ordinary jump from the windshield or the map, as
+  before; the tab says that a fleet flown out then is not in the fight and
+  offers no button for it. Undo: `RaidExits`.
+- *An ending is worded from two fields.* `RaidResolved.defended` and
+  `outcome` give one of four: destroyed, outlasted, lost, lost without a
+  fight (`RaidEnding`). The words are Dart's, as the words for a fight's
+  outcome are. Undo: a column on an enum in Rust, if the owner wants the
+  words to be the engine's.
+- *The last raid is the client's to keep.* The state has the raid on its
+  way and the one being fought, and nothing of one that is over. The
+  Defence tab and the outpost's screen show the summary of the last
+  `RaidResolved` the page saw, and a reload forgets it. Undo: a field in
+  the state, which is a Rust change.
+- *A raid's end is two lines of the log*, a headline short enough for a
+  toast and the summary under it, and a raid's own `CombatEnded` is not
+  logged beside them. Undo: `StateMapper`, the `RaidResolvedEvent` case.
+- *No screen reads a power sum.* `home_defence_power` with its three parts,
+  `next_raid_estimate_power`, the outpost's `platform_power`, `ships_power`
+  and `defence_power`, `RaidResolved.raid_power` and `defense_power`,
+  `OutpostSurvey.platform_power` and `OutpostLevel.platform_power`,
+  `OutpostState.raid_arrival_tick` and `RaidIncoming.threat` are read by
+  nothing in `clients/web/lib`. The Overview's "Defence power" figure
+  became a count of defences. Two powers are still printed, each as what a
+  force is and beside nothing it could be compared with: a forecast's
+  `power`, and the least and the most a raid of an outpost's ring can be
+  (`raid_power`). Taking the unread fields off the wire is the engine's to
+  do; the scripted world of the tests still fills the required ones.
+- *The three shares are each rounded to a whole percent*, so 0.625 and
+  0.375 print as 63 and 38. Undo: `sharePct`.
+- *The scripted world's raids* are fights shaped as the engine's and played
+  without dice, as its other fights are. Its forecast is that one fight
+  played forward, so a share is all or nothing and the label is never
+  `at_risk`; a raid flies one class at its base figures; the rebuild is
+  the engine's rate cut off to a whole number. Its header says all of it.
+  The label `at_risk`, a raid of several classes and the dice are in the
+  recorded fixtures and in the browser against the engine.
+- *The end-to-end check orders its first defence late.* An empire with a
+  defence or a Shipyard at 2 is raided, and the check passes the world four
+  minutes at a time: a raid then would be fought unseen with the docked
+  fleet in it. The Rocket Launcher it used to order in its first steps is
+  ordered in its raid step, after which it passes the world twenty ticks at
+  a time, less than the warning, until the state says a raid is on its way.
+  Undo: `raid` in `tool/solo_e2e.dart`.
+
+**Unsure of.**
+
+- A phone gets a new line under the top bar whenever a raid is on its way,
+  which moves the screen under it. A raid is rare and the line says what
+  matters; it may still read as a jolt on the windshield.
+- The outpost's panel still prints the least and the most a raid of its
+  ring can be, beside the forecast of a typical one. It is the range the
+  roll moves in and may be one figure too many.
+- `Taken: nothing` is printed for a lost raid whose storage protected all
+  of the stockpile. It is true and reads oddly.
+- A fleet docked at home when a raid of one Light Fighter arrives is
+  offered the way out with the engine's quote at SAFE. That is right, and
+  it puts a panel about leaving on a tab where nothing needs leaving.
+- Whether the Defence tab should offer a button to fly a docked fleet out
+  during the warning. It says in words that such a fleet is out of the
+  fight, and the jump is made elsewhere.
+
+## 2026-10-14 (raids fought as battles: what the agent decided)
+
+Slice 4 of `docs/design/ogame.md`, sections 7.6 and 12, stage 1: everything
+that is not hand-written Dart. The owner chose the study's defaults. What
+follows is what the study left open or what was done otherwise than it
+says. None of it was put to the owner. Each line ends with what undoes it.
+`SAVE_FORMAT` is 11 and `ECONOMY_VERSION` 12; nothing is migrated.
+
+**Where the work departs from the study.**
+
+- *The raiders are not a group in the sector.* The study has the raid
+  "stand at the homeworld as a group of OGame ships". It stands there as a
+  `Siege` inside the fight's `Combat`, with its ships, and not as an
+  `NpcFleet`: no sector view lists it, no threat rating, odds reply,
+  standing order or pursuit of anybody knows it, and it fights nobody but
+  the empire it came for. A group at a homeworld would have had to be
+  taught to every reader of `npc_fleets` (home ground holds none), and a
+  second empire's fleet passing through would have been in the fight.
+  Undo: an `NpcFleet` at the dock listed in `Combat.npc_fleet_ids`, and a
+  rule for each of those readers.
+- *No wreckage at an outpost.* "The same fight", and at home a raid
+  destroyed to its last ship leaves three tenths of its cost. At an outpost
+  that would be 5,000 (ring 9) to 53,000 (ring 20) resources a raid, days of
+  an extractor's yield, for a platform that costs nothing to keep. No raid
+  on an outpost left wreckage before, and none does. Undo: the
+  `siege.dock == Dock::Home` in `GameEngine::end_siege`.
+- *The outpost's platform fights at the catalogue's figures*, not with its
+  owner's research, which the study gives to "defences and satellites".
+  A platform is the same for every empire, as its level's table says, and
+  the forecast of a site is then the same for whoever surveys it. Undo:
+  `GameEngine::battery_arms`.
+- *A quiet round ends a raid.* The study's second ending is "six rounds, a
+  defender still stands". A round that takes no hull from anybody ends it
+  the same way at once, as `STANDOFF_ROUNDS` ends any fight: a dome that
+  nothing can scratch against raiders it cannot hurt would otherwise be
+  fought for six ticks to the same end. Undo: the `quiet_rounds` half of
+  the condition in `siege_round`.
+- *Gone with the old resolution*: `RAID_LOST_SHIP_FRACTION`,
+  `RAID_LOST_STRUCTURE_FRACTION`, `RAID_STRUCTURE_DAMAGE`,
+  `RAID_STRUCTURE_RESTORE`, `RAID_RESTORE_TICKS`, the delayed return
+  (`Defences.restoring`, `DefenceState.restoring`, its pass and its alert),
+  the fog of a tenth on the defence, and the skim of holds at the dock:
+  a lost raid leaves no ship of the owner there, and what the destroyed
+  ships carried went into the stockpile or the store first, as far as it
+  had room. The quarter of the ships at a lost outpost raid is gone with
+  it. Undo: git, at `cea4528`.
+
+**What the study left to the builder.**
+
+- *What a raid flies* (`scaling::RAID_WINGS`, the study's knob table):
+  Light Fighters; two fifths of its power in Cruisers once 20 Rocket
+  Launchers stand; three tenths in Bombers once 20 Light Lasers, Heavy
+  Lasers and Ion Cannons stand between them. A wing flies when its share
+  buys a whole ship. The power is `raid_power_base`'s and is not moved by
+  the table; what the whole ships do not add up to is a multiplier on
+  their figures, as a pirate group's is. An outpost's raid flies the one
+  class the groups of its ring fly (`outpost_raid_composition`). Undo: the
+  table.
+- *The composition is fixed when the raid is announced*, from the defences
+  standing then, with its power. What is built during the warning changes
+  the odds and not the raiders. Undo: compose in `begin_siege`.
+- *The forecast with no raid announced* is a raid at the middle of the
+  roll (0.975 of the base), composed for the defences standing now.
+- *The label of a forecast* (`RaidLabel`, `odds::Outlook::raid`), over the
+  fights the server plays: `lost` when every one was lost, `at_risk` when
+  any was, `repelled` when the raiders were destroyed in every one, `held`
+  otherwise. A fight in which both sides fell counts as destroyed. Undo:
+  `Outlook::raid`.
+- *`RaidIncoming.threat`*, a word older clients read, is now from the
+  label: `light` is repelled, `moderate` held, `heavy` at risk or lost.
+- *Who is in the fight.* Every fleet of the raided empire standing at the
+  dock, one charging a jump out included (it is in it as a fleet that is
+  leaving, slice 3's rule). A fleet of another empire standing there is
+  not, and is not fired on. Undo: `enlist_garrison`.
+- *A raid that meets nothing* (no ship, no satellite, no defence; at an
+  outpost, breached with no ship) is lost on the spot: no fight, no round,
+  no `CombatEnded`, and `RaidResolved.outcome` is absent.
+- *Both sides destroyed in one round*: repelled, and the wreckage is left.
+- *An outlasted raid leaves no wreckage*, whatever it lost: the wreckage
+  is of a raid destroyed to its last ship, by the study's table.
+- *The last fleet jumps out*: with defences or satellites standing the
+  fight goes on without it; with none it is over and lost (`fled`).
+- *During the fight.* A fleet that arrives at the dock docks as any
+  arrival (unloads, refuels, is refitted, is mended at home) and stands in
+  the round of that tick. A ship the yard finishes is a fleet of its own,
+  since the fleets docked there are fighting, and stands in the next
+  round; a defence or a Solar Satellite stands in the next round. Research
+  finished: the defences and satellites fight with it from the next round
+  (the study: "as it stands that tick"), a fleet in the fight after it
+  (the home dock does not tend a fleet in a fight). `load` and `unload`
+  are refused for a fleet in the fight. Undo, each: `enlist_garrison`,
+  `reinforce_battery`, `battery_arms`, `tend_at_home`.
+- *Flight from a dock needs a free slot.* A fleet standing at home or at
+  the outpost is not deployed; one that flees a raid is, so its flight is
+  refused at the deployed-fleet limit, as its leaving before the raid is.
+  Undo: the limit check in `flight_order`.
+- *The rebuild's dice* (`rebuild_defences`): of a kind of which fewer than
+  ten fell, each comes back on its own 70 in a hundred; of ten or more, a
+  share of 60 to 80 percent is rolled for the kind and cut off to a whole
+  number (`DEFENCE_REBUILD_EACH_BELOW`, OGame's own rule beside the two
+  constants the study names). Seeded from the tick and the owner. A dome
+  is not rebuilt beside one ordered since it fell. Undo: the function.
+- *One raid at a time at a dock*: no raid is rolled for a dock while one
+  is being fought there, and an outpost under raid cannot be abandoned.
+- *The alert of an arrival is a warning.* It says what the raid meets and
+  for how many rounds. A fleet destroyed in the fight has the critical
+  alert of any lost fleet; the ending itself is `RaidResolved` and no
+  alert.
+- *The sums stay on the wire and decide nothing*: `home_defence_power`
+  with its three parts, `next_raid_estimate_power`, the outpost's
+  `platform_power`, `ships_power` and `defence_power`, and
+  `RaidResolved.raid_power` and `defense_power`. A client that compares
+  two of them is wrong; `raid.odds` is what replaces every such
+  comparison. Removing them is a wire change for the slice that moves the
+  web client. Undo: nothing to undo; remove them when no client reads
+  them.
+- *The bots* (not a rule of the game, but it moves every world of bots).
+  The home planner orders, of the six armed defences it may build, the one
+  with the most power for its cost divided by what the forecast raid's
+  rapid fire does to it, one Small and one Large Shield Dome, and the
+  research the better defences need; it keeps the defence at its style's
+  margin over the raid and tops it up while the forecast is short of
+  `repelled` with 0.85 kept. A pilot steps a fleet aside to the next
+  sector when a raid on its way is `at_risk` or `lost`, and waits beside
+  home while one threatens or is fought. Bots still do nothing with
+  outposts. Undo: `sim/src/bot/home.rs` (`ARSENAL`, `answer`,
+  `defences_wanted`) and `field.rs` (`raid_threatens`, `step_aside`).
+
+**The knobs, as left** (measured in `docs/journal.md`): `RAID_ROUNDS` 6,
+the study's; the raid's size unchanged (`RAID_POWER_PER_POINT` 9); the
+table above. Four rounds and a raid of twice the size were played and are
+in the journal with what they did.
+
 ## 2026-10-14 (the web client on flight, pursuit and pirates that mend: what the agent decided)
 
 Slice 3 of `docs/design/ogame.md`, section 12, stage 2: the hand-written Dart

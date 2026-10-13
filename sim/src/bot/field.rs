@@ -25,7 +25,10 @@
 // in it picks no fight at any odds. In a fight it reads the server's odds
 // of that fight as it stands (`FleetState::flight`) and jumps out toward
 // home once they are under `LEAVE_ODDS`; with a group on its trail it
-// runs for home. The odds are the
+// runs for home. A raid on the homeworld is a fight too: when the
+// server's forecast of one that is announced says it may leave no defender
+// standing, the pilot takes its fleets to the next sector for it and
+// brings them back when it is over. The odds are the
 // server's, and they count the damage a fleet carries: before its orders
 // the admiral asks (`odds`) how each fleet it may move would fare in every
 // sector where that decides something, and it stays out of any sector it
@@ -45,7 +48,7 @@ use iac_shared::constants::{
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     Command, FleetState, FleetStatus, GameState, HarvestResource, MAX_ODDS_SECTORS, NpcBehavior, PolicyParams,
-    PolicyPreset, PolicyUpdate, SectorState, ShipCount, SiteBrief, SiteRisk, ThreatBasis,
+    PolicyPreset, PolicyUpdate, RaidLabel, SectorState, ShipCount, SiteBrief, SiteRisk, ThreatBasis,
 };
 use iac_shared::scaling;
 use serde::{Deserialize, Serialize};
@@ -531,6 +534,9 @@ impl<'a> Admiral<'a> {
             return WAIT;
         }
         if at_home {
+            if self.raid_threatens() {
+                return self.step_aside(unit);
+            }
             if let Some(wait) = held_at_home(self.state, self.brief, unit) {
                 return wait;
             }
@@ -555,10 +561,34 @@ impl<'a> Admiral<'a> {
 
     /// In a fight: stay while the server's odds of it, as it stands, are
     /// `LEAVE_ODDS` or better, and otherwise jump out toward home under
-    /// fire. A fleet that cannot leave fights on.
+    /// fire, or out of home when the fight is a raid on it. A fleet that
+    /// cannot leave fights on.
     fn fight(&mut self, unit: Unit) -> u64 {
         let leaves = unit.fleet.flight.as_ref().is_some_and(|flight| flight.ratio < LEAVE_ODDS && flight.refusal.is_none());
-        if leaves { self.head_home(unit) } else { 1 }
+        match (leaves, unit.fleet.location == self.home) {
+            (false, _) => 1,
+            (true, true) => self.step_aside(unit),
+            (true, false) => self.head_home(unit),
+        }
+    }
+
+    /// A raid is announced that the server's forecast says may leave no
+    /// defender standing: a fleet that stays at home for it is lost with
+    /// the rest.
+    fn raid_threatens(&self) -> bool {
+        let raid = &self.state.homeworld.raid;
+        raid.arrival_tick.is_some() && matches!(raid.odds.label, RaidLabel::AtRisk | RaidLabel::Lost)
+    }
+
+    /// A raid is being fought at home.
+    fn raid_fought(&self) -> bool {
+        self.state.battles.iter().any(|battle| battle.sector == self.home && battle.raid.is_some())
+    }
+
+    /// Jump to a sector beside the homeworld, where no raider follows.
+    fn step_aside(&mut self, unit: Unit) -> u64 {
+        let beside = self.chart.get(self.home).and_then(|home| home.connections.first().copied());
+        beside.map_or(WAIT, |target| self.jump(unit, target))
     }
 
     /// After `hops` more jumps to `sector` the fleet still has the way home in the tank.
@@ -601,6 +631,10 @@ impl<'a> Admiral<'a> {
         let fleet = unit.fleet;
         if fleet.fuel < fleet.jump_fuel {
             return WAIT;
+        }
+        let beside_home = self.chart.get(fleet.location).is_some_and(|here| here.connections.contains(&self.home));
+        if beside_home && (self.raid_threatens() || self.raid_fought()) {
+            return REST;
         }
         if let Some(wait) = self.follow(unit, true) {
             return wait;

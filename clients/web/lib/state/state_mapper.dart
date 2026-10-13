@@ -5,7 +5,8 @@ import 'package:clock/clock.dart';
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
-import '../console/battle.dart' show endedLine, pursuitEventLine, roundLine, shipsList, ticksOf;
+import '../console/battle.dart'
+    show endedLine, pursuitEventLine, raidForce, raidHeadline, raidSummary, raidVerdict, roundLine, shipsList, ticksOf;
 import '../console/intel.dart' show clockFmt, groupDigits;
 import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
@@ -111,9 +112,11 @@ class StateMapper {
   /// `outpost_survey` answers by (fleet id, sector key).
   final Map<(int, int), SurveyEntry> surveys = {};
 
-  /// The raid on the homeworld the server last announced and has not yet
-  /// resolved. A raid on the outpost is told by [outpost].
-  proto.RaidIncomingEvent? raid;
+  /// The last raid on the homeworld that ended while the console was open,
+  /// and the last on the outpost. The raid on its way or being fought is
+  /// the state's: [homeworld] and [outpost] carry it.
+  RaidReport? lastRaid;
+  RaidReport? lastOutpostRaid;
 
   /// Known sectors keyed by [proto.Hex.toKey].
   final Map<int, proto.SectorState> sectors = {};
@@ -171,7 +174,8 @@ class StateMapper {
     leaderboard = null;
     outpost = null;
     surveys.clear();
-    raid = null;
+    lastRaid = null;
+    lastOutpostRaid = null;
     sectors.clear();
     signals.clear();
     signalBands.clear();
@@ -237,7 +241,7 @@ class StateMapper {
       ..removeWhere((_, b) => !b.over)
       ..addAll({
         for (final b in s.battles)
-          b.sector.toKey(): Battle(sector: b.sector, rounds: b.rounds, round: b.lastRound, losses: b.losses),
+          b.sector.toKey(): Battle(sector: b.sector, rounds: b.rounds, round: b.lastRound, losses: b.losses, raid: b.raid),
       });
     previews.clear();
     odds.clear();
@@ -267,8 +271,8 @@ class StateMapper {
     battles.removeWhere((key, b) => b.over ? tick - b.endedTick > battleReportTicks : !live.contains(key));
     for (final b in u.battles) {
       final known = battles[b.sector.toKey()];
-      battles[b.sector.toKey()] =
-          Battle(sector: b.sector, rounds: b.rounds, round: known == null || known.over ? null : known.round, losses: b.losses);
+      battles[b.sector.toKey()] = Battle(
+          sector: b.sector, rounds: b.rounds, round: known == null || known.over ? null : known.round, losses: b.losses, raid: b.raid);
     }
     policyActs.removeWhere((id, _) => fleets.every((f) => f.id != id));
     _noteFights();
@@ -329,7 +333,7 @@ class StateMapper {
         final known = battles[key];
         battles[key] = known == null || known.over
             ? Battle(sector: round.sector, rounds: round.round, round: round)
-            : Battle(sector: round.sector, rounds: round.round, round: round, losses: known.losses);
+            : Battle(sector: round.sector, rounds: round.round, round: round, losses: known.losses, raid: known.raid);
         if (!round.mine) return;
         log.remove(_roundLines.remove(key));
         final line = LogEntry(tick: e.tick, message: roundLine(round), level: EventLevel.dim);
@@ -361,8 +365,10 @@ class StateMapper {
       case proto.CombatEndedEvent():
         final key = k.sector.toKey();
         _roundLines.remove(key);
+        final fought = battles[key];
         battles[key] = Battle(
-            sector: k.sector, rounds: k.rounds, round: battles[key]?.round, losses: k.losses, ended: k, endedTick: e.tick);
+            sector: k.sector, rounds: k.rounds, round: fought?.round, losses: k.losses, ended: k, endedTick: e.tick, raid: fought?.raid);
+        if (k.raid && k.mine) return;
         msg = '${k.mine ? '! ' : ''}${endedLine(k)}';
         level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.SalvageCollectedEvent():
@@ -420,45 +426,29 @@ class StateMapper {
       case proto.OutpostCompletedEvent():
         msg = 'Outpost at ${k.sector}: level ${k.level} complete';
         level = EventLevel.bright;
-      case proto.RaidIncomingEvent(outpost: final at?):
-        msg = '! RAID INCOMING on your outpost at $at (${k.threat}, power ${k.estPower.round()}) -- arrival tick ${k.arrivalTick}';
-        level = EventLevel.bright;
-        _pushAlert(Alert(
-          icon: '!',
-          message: 'Raid incoming on your outpost (${k.threat}, power ${k.estPower.round()})',
-          detail: 'Arrives tick ${k.arrivalTick} -- ${math.max(0, k.arrivalTick - tick)}s',
-          level: AlertTone.glow,
-        ));
-      case proto.RaidResolvedEvent(outpost: final at?):
-        final fight = 'raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}';
-        msg = k.defended
-            ? '! Raid on your outpost at $at repelled ($fight)'
-            : '! Raid broke your outpost at $at ($fight): lost ${amountsOf(k.resourcesLost)}'
-                '${k.shipsLost > 0 ? ', ${k.shipsLost} ship${k.shipsLost == 1 ? '' : 's'} there destroyed' : ''}'
-                '${k.breached ? '; it is breached until it has repaired itself' : ''}';
-        level = EventLevel.bright;
       case proto.RaidIncomingEvent():
-        raid = k;
-        msg = '! RAID INCOMING (${k.threat}, power ${k.estPower.round()}) -- arrival tick ${k.arrivalTick}';
+        final where = switch (k.outpost) { null => '', final at => ' on your outpost at $at' };
+        final forecast = switch (k.odds) { null => '', final odds => ', forecast ${raidVerdict(odds)}' };
+        final left = math.max(0, k.arrivalTick - tick);
+        msg = '! RAID INCOMING$where: ${raidForce(k.ships, k.estPower)}$forecast -- arrives in ${clockFmt(left)}, at tick ${k.arrivalTick}';
         level = EventLevel.bright;
         _pushAlert(Alert(
           icon: '!',
-          message: 'Raid incoming (${k.threat}, power ${k.estPower.round()})',
-          detail: 'Arrives tick ${k.arrivalTick} -- ${math.max(0, k.arrivalTick - tick)}s',
+          message: 'Raid incoming$where: ${shipsList(k.ships)}${switch (k.odds) { null => '', final odds => ', forecast ${odds.label.label}' }}',
+          detail: 'Arrives tick ${k.arrivalTick} -- ${left}s',
           level: AlertTone.glow,
         ));
       case proto.RaidResolvedEvent():
-        raid = null;
-        final structures = k.structuresLost == 0
-            ? ''
-            : ', ${k.structuresLost} structures lost (${k.structuresRestored} will be rebuilt)';
-        final pile = k.salvageDropped == null
-            ? ''
-            : ', wreckage ${amountsOf(k.salvageDropped!)}${k.salvageDespawnTick == null ? '' : ' drifts away in ${clockFmt(math.max(0, k.salvageDespawnTick! - tick))}'}';
-        final satellites = k.satellitesLost == 0 ? '' : ', ${k.satellitesLost} Solar Satellite${k.satellitesLost == 1 ? '' : 's'} destroyed';
-        msg = k.defended
-            ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})$structures$pile'
-            : '! Raid broke through (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}): lost ${amountsOf(k.resourcesLost)}$structures${k.shipsLost > 0 ? ', ${k.shipsLost} docked ships destroyed' : ''}$satellites';
+        final report = RaidReport(k, e.tick);
+        if (k.outpost == null) {
+          lastRaid = report;
+        } else {
+          lastOutpostRaid = report;
+        }
+        final key = (k.outpost ?? player?.homeworld)?.toKey();
+        if (battles[key] case final fought? when fought.over && fought.endedTick == e.tick) battles[key!] = fought.resolvedAs(k);
+        _log(LogEntry(tick: e.tick, message: '${raidSummary(k, tick: e.tick).join('. ')}.', level: EventLevel.normal));
+        msg = '! ${raidHeadline(k)}';
         level = EventLevel.bright;
       case proto.SiteExplorationStartedEvent():
         msg = '${_fleet(k.fleetId)} boarding derelict (tier ${k.tier}) in ${k.sector}, done tick ${k.endTick}';
@@ -597,7 +587,8 @@ class StateMapper {
       hw: hw,
       world: world,
       leaderboard: leaderboard,
-      raid: raid,
+      lastRaid: lastRaid,
+      lastOutpostRaid: lastOutpostRaid,
       outpost: outpost,
       surveys: {for (final e in surveys.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       policyActs: {for (final f in fleets) f.id: ?policyActs[f.id]?.toList()},

@@ -1384,6 +1384,62 @@ pub fn raid_power_base(econ: f32) -> f32 {
     RAID_POWER_FLOOR + RAID_POWER_PER_POINT * maths::powf(econ, RAID_POWER_EXPONENT)
 }
 
+/// A class that flies in a raid on a homeworld once the defences it is the
+/// answer to stand there in number: so many of `against` between them, and
+/// then `share` of the raid's power goes into it.
+pub struct RaidWing {
+    pub class: ShipClass,
+    pub share: f32,
+    pub against: &'static [DefenceKind],
+    pub from: u32,
+}
+
+/// What raiders fly beside their Light Fighters, so that a wall of one
+/// cheap defence has an answer: Cruisers, with rapid fire against Rocket
+/// Launchers, and Bombers, with rapid fire against both lasers, the Ion
+/// Cannon and the Rocket Launcher. Provisional, every figure of it.
+pub const RAID_WINGS: [RaidWing; 2] = [
+    RaidWing { class: ShipClass::Cruiser, share: 0.4, against: &[DefenceKind::RocketLauncher], from: 20 },
+    RaidWing {
+        class: ShipClass::Bomber,
+        share: 0.3,
+        against: &[DefenceKind::LightLaser, DefenceKind::HeavyLaser, DefenceKind::IonCannon],
+        from: 20,
+    },
+];
+/// What the rest of a raid's power is flown as.
+pub const RAID_ESCORT: ShipClass = ShipClass::LightFighter;
+
+/// What a raid of `power` flies at a homeworld where `defences` stand, by
+/// class in catalogue order, and the multiplier on every figure of its
+/// ships that makes them add up to `power`. A wing flies only when its
+/// share buys a whole ship of its class; the rest is Light Fighters, one
+/// at the least. The power is `raid_power_base`'s: this decides the
+/// classes and nothing else.
+pub fn raid_composition(power: f32, defences: &[u32; DefenceKind::COUNT]) -> (Vec<(ShipClass, u32)>, f32) {
+    let mut counts = [0u32; ShipClass::COUNT];
+    let mut left = power;
+    for wing in &RAID_WINGS {
+        let standing: u32 = wing.against.iter().map(|&kind| defences[kind as usize]).sum();
+        if standing < wing.from {
+            continue;
+        }
+        let each = ship_power(wing.class);
+        let count = (wing.share * power / each).floor();
+        counts[wing.class as usize] = count as u32;
+        left -= count * each;
+    }
+    let escorts = (left / ship_power(RAID_ESCORT)).round().max(0.0) as u32;
+    counts[RAID_ESCORT as usize] += escorts;
+    if counts.iter().all(|&count| count == 0) {
+        counts[RAID_ESCORT as usize] = 1;
+    }
+    let ships: Vec<(ShipClass, u32)> =
+        ShipClass::ALL.into_iter().map(|class| (class, counts[class as usize])).filter(|&(_, count)| count > 0).collect();
+    let plain: f32 = ships.iter().map(|&(class, count)| count as f32 * ship_power(class)).sum();
+    (ships, (power / plain).min(NPC_STAT_MULT_MAX))
+}
+
 // ── Outposts ─────────────────────────────────────────────────────
 //
 // One level sets everything an outpost is: what it costs, how long it takes,
@@ -1410,9 +1466,10 @@ pub fn outpost_store_cap(level: u8, pace: &Pace) -> Resources {
     OUTPOST_STORE_BASE.scale(outpost_growth(level) * pace.cargo_mult())
 }
 
-/// The defences an outpost's platform stands for at each level. Until a
-/// raid is fought as a battle they count as their power and nothing else.
-/// Provisional: it sets an undefended outpost's odds.
+/// The defences an outpost's platform is at each level. They fight a raid
+/// at the catalogue's figures, whatever their owner has researched, and
+/// stand whole again after every fight. Provisional: it sets an undefended
+/// outpost's odds.
 pub fn outpost_platform(level: u8) -> &'static [(DefenceKind, u32)] {
     match level {
         0 => &[],
@@ -1450,6 +1507,14 @@ pub fn outpost_yield_per_tick(densities: [Density; 3], ring: u16, level: u8, pac
 /// between 0.80 and 1.15 times this, as a homeworld's is.
 pub fn outpost_raid_power(ring: u16) -> f32 {
     OUTPOST_RAID_FACTOR * npc_group_power(ring)
+}
+
+/// What a raid of `power` on an outpost at `ring` flies: the class of the
+/// ring's own groups, so many of it, and the multiplier on its figures, as
+/// a group of that power would be made up there.
+pub fn outpost_raid_composition(ring: u16, power: f32) -> (ShipClass, u32, f32) {
+    let (class, count, multiplier) = npc_group(ring, power);
+    (class, u32::from(count), multiplier)
 }
 
 /// What repairing a breached outpost of `level` costs, in metal: the par

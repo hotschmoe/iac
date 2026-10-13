@@ -27,7 +27,7 @@
 
 use iac_shared::constants::{ResourceKind, Resources, ShipClass};
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{Command, GameState, HomeworldState};
+use iac_shared::protocol::{Command, GameState, HomeworldState, RaidLabel};
 use iac_shared::scaling::{
     self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, ResearchLevels, ResearchType, ShipyardItem,
 };
@@ -97,8 +97,41 @@ const MAX_SHIP_BATCH: f32 = 12.0;
 const MAX_DEFENCE_BATCH: f32 = 100.0;
 const MAX_SURPLUS_BATCH: u16 = 500;
 const MAX_SATELLITE_BATCH: f64 = 50.0;
-/// The one defence a bot builds.
-const TURRET: DefenceKind = DefenceKind::RocketLauncher;
+/// The defences that fire, of which a bot builds the one that answers what
+/// the next raid flies. The first needs no research.
+const ARSENAL: [DefenceKind; 6] = [
+    DefenceKind::RocketLauncher,
+    DefenceKind::LightLaser,
+    DefenceKind::HeavyLaser,
+    DefenceKind::IonCannon,
+    DefenceKind::GaussCannon,
+    DefenceKind::PlasmaTurret,
+];
+/// The domes, of which a homeworld holds one each: built once one costs no
+/// more than this many yardsticks.
+const DOMES: [DefenceKind; 2] = [DefenceKind::SmallShieldDome, DefenceKind::LargeShieldDome];
+const DOME_APPETITE: f32 = 4.0;
+/// The research that opens the defences, wanted by every personality once
+/// a level costs no more than this many yardsticks.
+const DEFENCE_RESEARCH: &[(ResearchType, u8)] = &[
+    (T::EnergyTechnology, 2),
+    (T::LaserTechnology, 3),
+    (T::EnergyTechnology, 3),
+    (T::ShieldingTechnology, 2),
+    (T::LaserTechnology, 6),
+    (T::IonTechnology, 4),
+    (T::WeaponsTechnology, 3),
+    (T::EnergyTechnology, 6),
+    (T::ShieldingTechnology, 6),
+];
+const DEFENCE_TECH_APPETITE: f32 = 1.5;
+/// While the server's forecast of the next raid is worse than this, the
+/// raiders destroyed every time and this share of what stands at home
+/// kept, a bot orders more defence than its margin asks: so much of the
+/// raid's power at a time, and never past so many times it in all.
+const KEEP_AT_HOME: f32 = 0.85;
+const TOP_UP: f32 = 0.5;
+const MOST_DEFENCE: f32 = 6.0;
 
 use ResearchType as T;
 
@@ -437,9 +470,10 @@ impl<'a> Planner<'a> {
             return Want::Prerequisite;
         }
         let satellites = self.satellites_wanted().map(|_| ShipyardItem::Ship(ShipClass::SolarSatellite));
-        let turrets = self.turrets_wanted().map(|_| ShipyardItem::Defence(TURRET));
+        let dome = self.dome_wanted().map(ShipyardItem::Defence);
+        let turrets = self.defences_wanted().map(|(kind, _)| ShipyardItem::Defence(kind));
         let ships = self.ships_wanted().map(|(class, _)| ShipyardItem::Ship(class));
-        let called_for: Vec<ShipyardItem> = satellites.into_iter().chain(turrets).chain(ships).collect();
+        let called_for: Vec<ShipyardItem> = satellites.into_iter().chain(dome).chain(turrets).chain(ships).collect();
         if !called_for.is_empty() {
             return Want::Order { covered: called_for.iter().any(|item| fits(item.unit_cost(), self.stock)) };
         }
@@ -501,8 +535,10 @@ impl<'a> Planner<'a> {
         let yardstick = self.yardstick();
         let profile = self.profile;
         let planned = profile.research.iter().map(|&(tech, level)| (tech, level, profile.tech));
+        let defence = DEFENCE_RESEARCH.iter().map(|&(tech, level)| (tech, level, DEFENCE_TECH_APPETITE));
         let rest = T::ALL.into_iter().map(|tech| (tech, scaling::research_max_level(tech), SPARE_TECH_APPETITE));
         planned
+            .chain(defence)
             .chain(rest)
             .filter_map(|(tech, goal, appetite)| {
                 let level = self.plan.research.get(tech) + 1;
@@ -567,15 +603,31 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// The Shipyard levels the fleet is waiting on: the first, and the one
-    /// the next class up of each line asks for once its research is in and
-    /// the economy has grown into its price.
+    /// The Shipyard levels the yard's work is waiting on: the first; the
+    /// one a defence asks for once its research is in and the economy has
+    /// grown into its price; and the same for the next class up of each
+    /// line the fleet flies.
     fn yard_needs(&mut self) {
+        self.need(BuildingType::Shipyard, 1);
+        let yardstick = self.yardstick();
+        for kind in ARSENAL.into_iter().chain(DOMES) {
+            let prereqs = kind.prerequisites();
+            let researched = prereqs.iter().all(|&(p, level)| match p {
+                PrereqRef::Research(tech) => self.plan.research.get(tech) >= level,
+                PrereqRef::Building(_) => true,
+            });
+            if !researched || scaling::resource_weight(&kind.build_cost()) > CLASS_APPETITE * yardstick {
+                continue;
+            }
+            for &(p, level) in prereqs {
+                if let PrereqRef::Building(building) = p {
+                    self.need(building, level);
+                }
+            }
+        }
         if self.profile.fleet_share <= 0.0 {
             return;
         }
-        self.need(BuildingType::Shipyard, 1);
-        let yardstick = self.yardstick();
         for &(hull, _) in self.profile.hulls {
             let line = self.profile.line(hull);
             let have = line.iter().position(|&class| self.plan.unlocked(ShipyardItem::Ship(class))).unwrap_or(line.len());
@@ -615,8 +667,11 @@ impl<'a> Planner<'a> {
         if let Some(count) = self.satellites_wanted() {
             self.wanted(ShipyardItem::Ship(ShipClass::SolarSatellite), count, orders);
         }
-        if let Some(count) = self.turrets_wanted() {
-            self.wanted(ShipyardItem::Defence(TURRET), count, orders);
+        if let Some(dome) = self.dome_wanted() {
+            self.wanted(ShipyardItem::Defence(dome), 1, orders);
+        }
+        if let Some((kind, count)) = self.defences_wanted() {
+            self.wanted(ShipyardItem::Defence(kind), count, orders);
         }
         if let Some((class, count)) = self.ships_wanted() {
             self.wanted(ShipyardItem::Ship(class), count, orders);
@@ -657,10 +712,10 @@ impl<'a> Planner<'a> {
 
     /// What is in stock beyond every order placed would sit there scoring
     /// nothing until the next look-in. An empire that flies puts it into
-    /// Rocket Launchers, which cost no deuterium; one that does not, into
-    /// the heaviest warship it can build, and into Rocket Launchers while it
-    /// can build none. Only stock no order has claimed is spent, so no
-    /// queued order is kept waiting by it.
+    /// the defence that answers the next raid; one that does not, into the
+    /// heaviest warship it can build, and into that defence while it can
+    /// build none. Only stock no order has claimed is spent, so no queued
+    /// order is kept waiting by it.
     fn surplus(&mut self, orders: &mut Vec<Order>) {
         if let Some(item) = self.surplus_item() {
             self.batch(item, MAX_SURPLUS_BATCH, self.spare, orders);
@@ -668,9 +723,8 @@ impl<'a> Planner<'a> {
     }
 
     fn surplus_item(&self) -> Option<ShipyardItem> {
-        let turret = ShipyardItem::Defence(TURRET);
         let hull = self.started.heaviest(WARSHIPS).map(ShipyardItem::Ship).filter(|_| self.profile.fleet_share <= 0.0);
-        let item = hull.unwrap_or(turret);
+        let item = hull.or_else(|| self.answer().map(ShipyardItem::Defence))?;
         (self.started.unlocked(item) && fits(item.unit_cost(), self.cap())).then_some(item)
     }
 
@@ -704,27 +758,78 @@ impl<'a> Planner<'a> {
         (count >= 1.0 && fits(item.unit_cost(), self.cap())).then_some(count as u16)
     }
 
-    /// Rocket Launchers give the most power for their cost of the defences
-    /// that need no research.
-    fn turrets_wanted(&self) -> Option<u16> {
-        if !self.started.unlocked(ShipyardItem::Defence(TURRET)) {
-            return None;
-        }
-        let raid = scaling::raid_power_base(scaling::econ_points(&self.plan.buildings, &self.plan.research));
-        let power_of = |kind: DefenceKind| {
-            self.home.defences.iter().find(|d| d.kind == kind).map_or(kind.power(), |d| d.power)
+    /// Power of one `kind` standing at home, with the research it has.
+    fn power_of(&self, kind: DefenceKind) -> f32 {
+        self.home.defences.iter().find(|d| d.kind == kind).map_or(kind.power(), |d| d.power)
+    }
+
+    /// The defence to build against the raid the server forecasts: of those
+    /// the yard can build, the one that buys the most power for its cost
+    /// once the rapid fire of what the raid flies against it is counted.
+    /// Against Light Fighters alone that is the cheapest; a wall of it
+    /// brings the class that shreds it, and the answer moves on.
+    fn answer(&self) -> Option<DefenceKind> {
+        let raid = &self.home.raid.ships;
+        let flown: f32 = raid.iter().map(|s| s.count as f32 * scaling::ship_power(s.ship_class)).sum();
+        let exposure = |kind: DefenceKind| {
+            if flown <= 0.0 {
+                return 1.0;
+            }
+            let shots: f32 = raid
+                .iter()
+                .map(|s| {
+                    let again = scaling::rapid_fire_against(s.ship_class, ShipyardItem::Defence(kind)).max(1);
+                    s.count as f32 * scaling::ship_power(s.ship_class) * f32::from(again)
+                })
+                .sum();
+            shots / flown
         };
-        let standing: f32 = self.home.defences.iter().map(|d| (d.count + d.restoring) as f32 * d.power).sum();
+        let worth = |kind: DefenceKind| self.power_of(kind) / scaling::resource_weight(&kind.build_cost()) / exposure(kind);
+        ARSENAL
+            .into_iter()
+            .filter(|&kind| self.started.unlocked(ShipyardItem::Defence(kind)) && fits(kind.build_cost(), self.cap()))
+            .max_by(|&a, &b| worth(a).total_cmp(&worth(b)))
+    }
+
+    /// A dome the yard can build, the economy has grown into and the
+    /// homeworld does not have, standing or on order.
+    fn dome_wanted(&self) -> Option<DefenceKind> {
+        let yardstick = self.yardstick();
+        DOMES.into_iter().find(|&dome| {
+            let item = ShipyardItem::Defence(dome);
+            let have = self.home.defences.iter().find(|d| d.kind == dome).map_or(0, |d| d.count);
+            let coming = self.ordered().any(|(ordered, _)| ordered == item);
+            have == 0
+                && !coming
+                && self.started.unlocked(item)
+                && fits(dome.build_cost(), self.cap())
+                && scaling::resource_weight(&dome.build_cost()) <= DOME_APPETITE * yardstick
+        })
+    }
+
+    /// The defence the next raid calls for and how many of it: enough to
+    /// hold the profile's margin over the raid's power, and, while the
+    /// server's forecast of the raid against what stands at home is worse
+    /// than a raid destroyed with little lost, more of it at each look.
+    fn defences_wanted(&self) -> Option<(DefenceKind, u16)> {
+        let kind = self.answer()?;
+        let forecast = &self.home.raid;
+        let raid = forecast.power.max(scaling::raid_power_base(scaling::econ_points(&self.plan.buildings, &self.plan.research)));
+        let standing: f32 = self.home.defences.iter().map(|d| d.count as f32 * d.power).sum();
         let coming: f32 = self
             .ordered()
             .filter_map(|(item, left)| match item {
-                ShipyardItem::Defence(d) => Some(f32::from(left) * power_of(d)),
+                ShipyardItem::Defence(d) => Some(f32::from(left) * self.power_of(d)),
                 ShipyardItem::Ship(_) => None,
             })
             .sum();
-        let short = self.profile.defence_margin * raid - standing - coming;
-        let count = (short / power_of(TURRET)).ceil().min(MAX_DEFENCE_BATCH);
-        (count >= 1.0 && fits(TURRET.build_cost(), self.cap())).then_some(count as u16)
+        let mut short = self.profile.defence_margin * raid - standing - coming;
+        let holds = forecast.odds.label == RaidLabel::Repelled && forecast.odds.kept >= KEEP_AT_HOME;
+        if short <= 0.0 && !holds && coming <= 0.0 && standing < MOST_DEFENCE * raid {
+            short = TOP_UP * raid;
+        }
+        let count = (short / self.power_of(kind)).ceil().min(MAX_DEFENCE_BATCH);
+        (count >= 1.0).then_some((kind, count as u16))
     }
 
     fn ships_wanted(&self) -> Option<(ShipClass, u16)> {
