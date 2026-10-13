@@ -3,6 +3,139 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (raids fought as battles: what the agent decided)
+
+Slice 4 of `docs/design/ogame.md`, sections 7.6 and 12, stage 1: everything
+that is not hand-written Dart. The owner chose the study's defaults. What
+follows is what the study left open or what was done otherwise than it
+says. None of it was put to the owner. Each line ends with what undoes it.
+`SAVE_FORMAT` is 11 and `ECONOMY_VERSION` 12; nothing is migrated.
+
+**Where the work departs from the study.**
+
+- *The raiders are not a group in the sector.* The study has the raid
+  "stand at the homeworld as a group of OGame ships". It stands there as a
+  `Siege` inside the fight's `Combat`, with its ships, and not as an
+  `NpcFleet`: no sector view lists it, no threat rating, odds reply,
+  standing order or pursuit of anybody knows it, and it fights nobody but
+  the empire it came for. A group at a homeworld would have had to be
+  taught to every reader of `npc_fleets` (home ground holds none), and a
+  second empire's fleet passing through would have been in the fight.
+  Undo: an `NpcFleet` at the dock listed in `Combat.npc_fleet_ids`, and a
+  rule for each of those readers.
+- *No wreckage at an outpost.* "The same fight", and at home a raid
+  destroyed to its last ship leaves three tenths of its cost. At an outpost
+  that would be 5,000 (ring 9) to 53,000 (ring 20) resources a raid, days of
+  an extractor's yield, for a platform that costs nothing to keep. No raid
+  on an outpost left wreckage before, and none does. Undo: the
+  `siege.dock == Dock::Home` in `GameEngine::end_siege`.
+- *The outpost's platform fights at the catalogue's figures*, not with its
+  owner's research, which the study gives to "defences and satellites".
+  A platform is the same for every empire, as its level's table says, and
+  the forecast of a site is then the same for whoever surveys it. Undo:
+  `GameEngine::battery_arms`.
+- *A quiet round ends a raid.* The study's second ending is "six rounds, a
+  defender still stands". A round that takes no hull from anybody ends it
+  the same way at once, as `STANDOFF_ROUNDS` ends any fight: a dome that
+  nothing can scratch against raiders it cannot hurt would otherwise be
+  fought for six ticks to the same end. Undo: the `quiet_rounds` half of
+  the condition in `siege_round`.
+- *Gone with the old resolution*: `RAID_LOST_SHIP_FRACTION`,
+  `RAID_LOST_STRUCTURE_FRACTION`, `RAID_STRUCTURE_DAMAGE`,
+  `RAID_STRUCTURE_RESTORE`, `RAID_RESTORE_TICKS`, the delayed return
+  (`Defences.restoring`, `DefenceState.restoring`, its pass and its alert),
+  the fog of a tenth on the defence, and the skim of holds at the dock:
+  a lost raid leaves no ship of the owner there, and what the destroyed
+  ships carried went into the stockpile or the store first, as far as it
+  had room. The quarter of the ships at a lost outpost raid is gone with
+  it. Undo: git, at `cea4528`.
+
+**What the study left to the builder.**
+
+- *What a raid flies* (`scaling::RAID_WINGS`, the study's knob table):
+  Light Fighters; two fifths of its power in Cruisers once 20 Rocket
+  Launchers stand; three tenths in Bombers once 20 Light Lasers, Heavy
+  Lasers and Ion Cannons stand between them. A wing flies when its share
+  buys a whole ship. The power is `raid_power_base`'s and is not moved by
+  the table; what the whole ships do not add up to is a multiplier on
+  their figures, as a pirate group's is. An outpost's raid flies the one
+  class the groups of its ring fly (`outpost_raid_composition`). Undo: the
+  table.
+- *The composition is fixed when the raid is announced*, from the defences
+  standing then, with its power. What is built during the warning changes
+  the odds and not the raiders. Undo: compose in `begin_siege`.
+- *The forecast with no raid announced* is a raid at the middle of the
+  roll (0.975 of the base), composed for the defences standing now.
+- *The label of a forecast* (`RaidLabel`, `odds::Outlook::raid`), over the
+  fights the server plays: `lost` when every one was lost, `at_risk` when
+  any was, `repelled` when the raiders were destroyed in every one, `held`
+  otherwise. A fight in which both sides fell counts as destroyed. Undo:
+  `Outlook::raid`.
+- *`RaidIncoming.threat`*, a word older clients read, is now from the
+  label: `light` is repelled, `moderate` held, `heavy` at risk or lost.
+- *Who is in the fight.* Every fleet of the raided empire standing at the
+  dock, one charging a jump out included (it is in it as a fleet that is
+  leaving, slice 3's rule). A fleet of another empire standing there is
+  not, and is not fired on. Undo: `enlist_garrison`.
+- *A raid that meets nothing* (no ship, no satellite, no defence; at an
+  outpost, breached with no ship) is lost on the spot: no fight, no round,
+  no `CombatEnded`, and `RaidResolved.outcome` is absent.
+- *Both sides destroyed in one round*: repelled, and the wreckage is left.
+- *An outlasted raid leaves no wreckage*, whatever it lost: the wreckage
+  is of a raid destroyed to its last ship, by the study's table.
+- *The last fleet jumps out*: with defences or satellites standing the
+  fight goes on without it; with none it is over and lost (`fled`).
+- *During the fight.* A fleet that arrives at the dock docks as any
+  arrival (unloads, refuels, is refitted, is mended at home) and stands in
+  the round of that tick. A ship the yard finishes is a fleet of its own,
+  since the fleets docked there are fighting, and stands in the next
+  round; a defence or a Solar Satellite stands in the next round. Research
+  finished: the defences and satellites fight with it from the next round
+  (the study: "as it stands that tick"), a fleet in the fight after it
+  (the home dock does not tend a fleet in a fight). `load` and `unload`
+  are refused for a fleet in the fight. Undo, each: `enlist_garrison`,
+  `reinforce_battery`, `battery_arms`, `tend_at_home`.
+- *Flight from a dock needs a free slot.* A fleet standing at home or at
+  the outpost is not deployed; one that flees a raid is, so its flight is
+  refused at the deployed-fleet limit, as its leaving before the raid is.
+  Undo: the limit check in `flight_order`.
+- *The rebuild's dice* (`rebuild_defences`): of a kind of which fewer than
+  ten fell, each comes back on its own 70 in a hundred; of ten or more, a
+  share of 60 to 80 percent is rolled for the kind and cut off to a whole
+  number (`DEFENCE_REBUILD_EACH_BELOW`, OGame's own rule beside the two
+  constants the study names). Seeded from the tick and the owner. A dome
+  is not rebuilt beside one ordered since it fell. Undo: the function.
+- *One raid at a time at a dock*: no raid is rolled for a dock while one
+  is being fought there, and an outpost under raid cannot be abandoned.
+- *The alert of an arrival is a warning.* It says what the raid meets and
+  for how many rounds. A fleet destroyed in the fight has the critical
+  alert of any lost fleet; the ending itself is `RaidResolved` and no
+  alert.
+- *The sums stay on the wire and decide nothing*: `home_defence_power`
+  with its three parts, `next_raid_estimate_power`, the outpost's
+  `platform_power`, `ships_power` and `defence_power`, and
+  `RaidResolved.raid_power` and `defense_power`. A client that compares
+  two of them is wrong; `raid.odds` is what replaces every such
+  comparison. Removing them is a wire change for the slice that moves the
+  web client. Undo: nothing to undo; remove them when no client reads
+  them.
+- *The bots* (not a rule of the game, but it moves every world of bots).
+  The home planner orders, of the six armed defences it may build, the one
+  with the most power for its cost divided by what the forecast raid's
+  rapid fire does to it, one Small and one Large Shield Dome, and the
+  research the better defences need; it keeps the defence at its style's
+  margin over the raid and tops it up while the forecast is short of
+  `repelled` with 0.85 kept. A pilot steps a fleet aside to the next
+  sector when a raid on its way is `at_risk` or `lost`, and waits beside
+  home while one threatens or is fought. Bots still do nothing with
+  outposts. Undo: `sim/src/bot/home.rs` (`ARSENAL`, `answer`,
+  `defences_wanted`) and `field.rs` (`raid_threatens`, `step_aside`).
+
+**The knobs, as left** (measured in `docs/journal.md`): `RAID_ROUNDS` 6,
+the study's; the raid's size unchanged (`RAID_POWER_PER_POINT` 9); the
+table above. Four rounds and a raid of twice the size were played and are
+in the journal with what they did.
+
 ## 2026-10-14 (flight, pursuit and pirates that mend: what the agent decided)
 
 Slice 3 of `docs/design/ogame.md`, section 12, stage 1: everything that is

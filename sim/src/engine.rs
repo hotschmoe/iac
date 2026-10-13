@@ -1292,8 +1292,11 @@ pub struct GameEngine {
     pub known: KnownSectors,
     /// Fights already played forward, by the two sides and the rounds they
     /// were given; speed only.
-    odds_memo: RefCell<KeyMap<(Force, Force, u32), (odds::Outlook, f32)>>,
+    odds_memo: RefCell<OddsMemo>,
 }
+
+/// Two sides and the rounds they are given, and how that fight goes.
+type OddsMemo = KeyMap<(Force, Force, u32), (odds::Outlook, f32)>;
 
 /// Entries kept in the odds memo before it is emptied.
 const ODDS_MEMO_LIMIT: usize = 4096;
@@ -3525,7 +3528,7 @@ impl GameEngine {
     /// it has found nothing in its way (`outcome` None). The defences that
     /// fell at home are rebuilt at OGame's rate, at once; ships and Solar
     /// Satellites lost are lost. A raid that left no defender takes its
-    /// share of the dock's stock and of the cargo aboard fleets there, and
+    /// share of the dock's stock above the protected floor, and
     /// no raid follows for a while; at the outpost it also breaches it,
     /// and the outpost is never destroyed. `dropped` is the wreckage the
     /// raiders left and the tick it despawns.

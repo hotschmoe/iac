@@ -1990,8 +1990,7 @@ class OutpostState {
   /// or of the level it is building, would take from the store as it
   /// stands. A repair is priced in metal; where the store lacks metal,
   /// crystal pays for it and then deuterium, each unit at its par value
-  /// (1.5 and 2). A raid counts the holds of fleets standing there with
-  /// the store and reads the floor off both.
+  /// (1.5 and 2).
   final Resources protected;
 
   /// What the extractor adds to the store each tick now; zero while not
@@ -6024,19 +6023,19 @@ class RaidResolvedEvent extends EventKind {
   /// false for a raid on the homeworld.
   final bool breached;
 
-  /// What a lost raid took: its share of the stockpile and of the cargo
-  /// aboard fleets at home, counted as one pile above the protected
-  /// floor. At an outpost, the same of its store and the fleets there.
+  /// What a lost raid took: its share of the stockpile above the
+  /// protected floor, or of the outpost's store. What the ships destroyed
+  /// in the fight carried was in the stockpile or the store by then, as
+  /// far as it had room.
   final Resources resourcesLost;
 
-  /// The wreckage of a raid destroyed to the last ship, left where it was
-  /// fought; absent otherwise.
+  /// The wreckage of a raid destroyed to the last ship at a homeworld;
+  /// absent otherwise, and always for a raid on an outpost.
   final Resources? salvageDropped;
 
-  /// Tick the pile despawns (absent when none dropped). At the homeworld
-  /// a fleet docked there scoops it into storage on its own; without one,
-  /// an alert warns when it has `HOME_SALVAGE_WARN_TICKS` left. At an
-  /// outpost a fleet collects it as any wreckage.
+  /// Tick the pile despawns (absent when none dropped). A fleet docked at
+  /// home scoops it into storage on its own; without one, an alert warns
+  /// when it has `HOME_SALVAGE_WARN_TICKS` left.
   final int? salvageDespawnTick;
 
   /// The power the raid was announced with, and what stood in its way
@@ -6065,8 +6064,7 @@ class RaidResolvedEvent extends EventKind {
   final int structuresLost;
   final int structuresRestored;
 
-  /// What the storage buildings kept out of reach of a successful raid, of
-  /// the stockpile and the cargo aboard fleets at home together. At an
+  /// What the storage buildings kept out of reach of a lost raid. At an
   /// outpost, what its protected floor kept.
   final Resources protectedKept;
 
