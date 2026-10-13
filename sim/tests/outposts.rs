@@ -31,7 +31,13 @@ use iac_sim::GameEngine;
 
 use ResourceKind::{Crystal, Deuterium, Metal};
 
-const COST: Resources = Resources { metal: 1000.0, crystal: 500.0, deuterium: 200.0 };
+const COST: Resources = Resources { metal: 3000.0, crystal: 1500.0, deuterium: 600.0 };
+/// The platform at each level, as the defences it stands for add up: four
+/// Rocket Launchers; eight and four Light Lasers; sixteen, eight and four
+/// Heavy Lasers.
+const PLATFORM: [f32; 3] = [408.0, 1306.0, 3972.0];
+/// The repair of level 1: a quarter of its cost at par, in metal.
+const REPAIR: f64 = 1612.5;
 
 fn res(metal: f64, crystal: f64, deuterium: f64) -> Resources {
     Resources { metal, crystal, deuterium }
@@ -72,16 +78,17 @@ fn stow(e: &mut Empire, fid: u64, cargo: Resources) {
     });
 }
 
-/// Haulers enough to hold `load` at this world's pace.
+/// Small Cargos enough to hold `load` at this world's pace.
 fn haulers_for(engine: &GameEngine, load: f64) -> usize {
-    (load / (200.0 * engine.pace().cargo_mult())).ceil() as usize
+    let hold = f64::from(ShipClass::SmallCargo.base_stats().cargo);
+    (load / (hold * engine.pace().cargo_mult())).ceil() as usize
 }
 
-/// Stand the empire's fleet on `at` as Haulers carrying `cargo`.
+/// Stand the empire's fleet on `at` as Small Cargos carrying `cargo`.
 fn haul(e: &mut Empire, at: Hex, cargo: Resources) {
     let fid = e.fid;
     let haulers = haulers_for(&e.engine, cargo.total().max(1.0));
-    muster(&mut e.engine, fid, &[(ShipClass::Hauler, haulers)], at);
+    muster(&mut e.engine, fid, &[(ShipClass::SmallCargo, haulers)], at);
     stow(e, fid, cargo);
 }
 
@@ -90,7 +97,8 @@ fn crew(e: &mut Empire, fid: u64, classes: &[(ShipClass, usize)], at: Hex) {
     muster(&mut e.engine, fid, classes, at);
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
-        let tank: f64 = fleet.ships[..fleet.ship_count].iter().map(|s| f64::from(s.ship_class.base_stats().fuel)).sum();
+        let none = scaling::ResearchLevels::default();
+        let tank: f64 = fleet.ships[..fleet.ship_count].iter().map(|s| scaling::ship_tank(s.ship_class, &none)).sum();
         fleet.fuel_max = tank;
         fleet.fuel = tank;
     });
@@ -117,7 +125,7 @@ fn build_ticks(e: &Empire, level: u8) -> u64 {
 }
 
 /// An empire whose outpost on `at` has just finished level 1, the founding
-/// Haulers still standing there with empty holds.
+/// Small Cargos still standing there with empty holds.
 fn settle(pace: &str, ring: u16, wanted: impl Fn(&SectorTemplate) -> bool) -> (Empire, Hex) {
     let mut e = Empire::join(world(pace), "Settler");
     let at = site(&e.engine, ring, wanted);
@@ -154,6 +162,7 @@ fn near(a: Resources, b: Resources, tolerance: f64) -> bool {
     ResourceKind::ALL.into_iter().all(|k| (a.get(k) - b.get(k)).abs() <= tolerance)
 }
 
+/// A homeworld that makes its natural production and nothing else.
 fn no_mines(e: &mut Empire) {
     let pid = e.pid;
     edit(&mut e.engine, |s| {
@@ -177,7 +186,7 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
         })
         .expect("a hostile lair in ring 10 within nine hops of home");
 
-    muster(&mut e.engine, fid, &[(ShipClass::Corvette, 4), (ShipClass::Hauler, 3)], home);
+    muster(&mut e.engine, fid, &[(ShipClass::HeavyFighter, 8), (ShipClass::SmallCargo, 1)], home);
     e.set_stockpile(COST);
     for kind in ResourceKind::ALL {
         e.order(Command::Load { fleet_id: fid, resource: kind, amount: Some(COST.get(kind)) }).expect("load at home");
@@ -191,7 +200,7 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
         Some(format!("{target} is not on your chart; a survey reads the site of a sector you have seen")),
     );
     assert_eq!(unseen.site, None, "nothing of a sector the empire has never seen is told");
-    assert_eq!((unseen.ring, unseen.cost, unseen.build_ticks, unseen.platform_power), (10, COST, 5400, 40.0));
+    assert_eq!((unseen.ring, unseen.cost, unseen.build_ticks, unseen.platform_power), (10, COST, 5400, PLATFORM[0]));
     assert!((unseen.raid_power.least - 1.6 * pack).abs() < 0.01 && (unseen.raid_power.most - 2.3 * pack).abs() < 0.01);
     let beyond = Hex::new(target.q * 3, target.r * 3);
     assert_eq!(
@@ -213,7 +222,7 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
 
     let quote = survey(&mut e, None);
     assert_eq!((quote.sector, quote.ring, quote.refusal.clone()), (target, 10, None));
-    assert_eq!((quote.cost, quote.build_ticks, quote.platform_power), (COST, 5400, 40.0));
+    assert_eq!((quote.cost, quote.build_ticks, quote.platform_power), (COST, 5400, PLATFORM[0]));
     assert_eq!(quote.raid_power, unseen.raid_power);
     let found = quote.site.clone().expect("the fleet stands in the sector");
     assert_eq!(found.hops_home, Some(lane_path(&e.engine, target, home, 12).unwrap().len() as u32));
@@ -226,7 +235,7 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
     assert_eq!(told.len(), 1);
     assert!(
         told[0].starts_with(&format!(
-            "fleet {fid} founded your outpost at {target} for 1000 metal, 500 crystal and 200 deuterium: \
+            "fleet {fid} founded your outpost at {target} for 3000 metal, 1500 crystal and 600 deuterium: \
              level 1 is finished at tick {}, in 5400 ticks",
             founded_at + 5400,
         )),
@@ -245,7 +254,7 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
     e.run(1);
     let post = outpost(&e);
     assert_eq!((post.level, post.in_service, post.work, completed(&e, mark)), (1, true, None, vec![1]));
-    assert_eq!((post.platform_power, post.production), (40.0, found.production));
+    assert_eq!((post.platform_power, post.production), (PLATFORM[0], found.production));
     assert_eq!(e.fleet().outpost_fuel, Some(0.0));
     let founder = e.fleet();
     assert!(founder.fuel < founder.fuel_max && post.store.deuterium == 0.0, "the convoy's tank is not full and the new store has nothing for it");
@@ -328,20 +337,20 @@ fn founding_is_refused_with_the_rule_that_forbids_it() {
 
     let ground = site(&e.engine, 11, |_| true);
     assert_eq!(
-        refused(&mut e, ground, res(1000.0, 499.0, 200.0)),
+        refused(&mut e, ground, res(3000.0, 1499.0, 600.0)),
         (
             ErrorCode::NoResources,
             format!(
-                "the hold of fleet {fid} lacks 1 crystal of the 1000 metal, 500 crystal and 200 deuterium an outpost costs; \
+                "the hold of fleet {fid} lacks 1 crystal of the 3000 metal, 1500 crystal and 600 deuterium an outpost costs; \
                  it is built from what the founding fleet carries, loaded at home"
             ),
         ),
     );
-    assert_eq!(refused(&mut e, ground, res(0.0, 500.0, 0.0)).0, ErrorCode::NoResources);
+    assert_eq!(refused(&mut e, ground, res(0.0, 1500.0, 0.0)).0, ErrorCode::NoResources);
 
     let den = in_outer_ring(&e.engine, |at, t| {
         at.dist_from_origin() >= 16
-            && t.npc_template.as_ref().is_some_and(|npc| npc.behavior != NpcBehaviorType::Passive && npc.count >= 4)
+            && t.npc_template.as_ref().is_some_and(|npc| npc.behavior != NpcBehaviorType::Passive)
             && !t.has_derelict
             && t.terrain != TerrainType::Anomaly
     });
@@ -379,7 +388,7 @@ fn founding_is_refused_with_the_rule_that_forbids_it() {
 
     let (rival, rival_fleet) = join(&mut e.engine, "Rival");
     let theirs = site(&e.engine, 14, |_| true);
-    muster(&mut e.engine, rival_fleet, &[(ShipClass::Hauler, 3)], theirs);
+    muster(&mut e.engine, rival_fleet, &[(ShipClass::SmallCargo, 3)], theirs);
     edit(&mut e.engine, |s| s.fleets.get_mut(&rival_fleet).unwrap().cargo = COST);
     let outcome = e.engine.execute(rival, Command::FoundOutpost { fleet_id: rival_fleet });
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
@@ -435,7 +444,7 @@ fn a_survey_reads_any_charted_sector_and_says_what_stands_in_the_way() {
     );
     assert_eq!(read.grade, grade_of(&template));
     let ring_factor = maths::powi(1.1f64, 9);
-    let per_tick = |d: Density| 2.0 / 3600.0 * f64::from(d.harvest_multiplier()) * ring_factor * 10.0;
+    let per_tick = |d: Density| 6.0 / 3600.0 * f64::from(d.harvest_multiplier()) * ring_factor * 10.0;
     let quoted = res(per_tick(template.metal_density), per_tick(template.crystal_density), per_tick(template.deut_density));
     assert!(near(read.production, quoted, 1e-6), "{:?} against {quoted:?}", read.production);
     assert_eq!(
@@ -459,9 +468,9 @@ fn a_survey_reads_any_charted_sector_and_says_what_stands_in_the_way() {
 #[test]
 fn the_extractor_makes_what_the_survey_said_at_every_pace() {
     for (pace, p, ticks, cap) in [
-        ("persistent", 1.0f64, 54_000u64, res(3000.0, 1500.0, 750.0)),
-        ("season", 10.0, 5400, res(9486.833, 4743.4165, 2371.7083)),
-        ("blitz", 600.0, 90, res(73_484.69, 36_742.346, 18_371.173)),
+        ("persistent", 1.0f64, 54_000u64, res(9000.0, 4500.0, 2250.0)),
+        ("season", 10.0, 5400, res(28_460.499, 14_230.2495, 7115.1247)),
+        ("blitz", 600.0, 90, res(220_454.077, 110_227.038, 55_113.519)),
     ] {
         let mut e = Empire::join(world(pace), "Miner");
         let at = site(&e.engine, 12, |t| t.metal_density != Density::None && grade_of(t) >= 3.0);
@@ -469,7 +478,7 @@ fn the_extractor_makes_what_the_survey_said_at_every_pace() {
         haul(&mut e, at, COST);
         let quote = survey(&mut e, None);
         let quoted = quote.site.as_ref().expect("the fleet stands in the sector").production;
-        let per_tick = |d: Density| 2.0 / 3600.0 * f64::from(d.harvest_multiplier()) * maths::powi(1.1f64, 9) * p;
+        let per_tick = |d: Density| 6.0 / 3600.0 * f64::from(d.harvest_multiplier()) * maths::powi(1.1f64, 9) * p;
         let rate = res(per_tick(template.metal_density), per_tick(template.crystal_density), per_tick(template.deut_density));
         assert!(near(quoted, rate, rate.total() * 1e-5), "{pace}: {quoted:?} against {rate:?}");
         assert_eq!(quote.build_ticks, ticks, "{pace}");
@@ -534,23 +543,25 @@ fn a_convoy_round_trip_makes_nothing_but_the_yield() {
         .expect("an ore site in ring 9");
     let out = lane_path(&e.engine, home, at, 12).expect("a lane to the site");
     let back = lane_path(&e.engine, at, home, 12).expect("a lane home");
-    assert!(out.len() + back.len() <= 12, "two Haulers fly 12 hops on a tank: {} out", out.len());
+    assert!(out.len() + back.len() <= 12, "two Small Cargos fly 12 hops on a tank: {} out", out.len());
 
     found(&mut e, at);
     e.run(build_ticks(&e, 1));
-    crew(&mut e, fid, &[(ShipClass::Hauler, 2)], at);
+    crew(&mut e, fid, &[(ShipClass::SmallCargo, 2)], at);
     stow(&mut e, fid, Resources::default());
     e.set_stockpile(res(0.0, 0.0, 400.0));
     e.run(600);
 
     let rate = outpost(&e).production;
+    let natural = e.state().homeworld.production;
+    assert!(natural.metal > 0.0 && natural.deuterium == 0.0, "a home with no mines makes its natural production: {natural:?}");
     let owned = |e: &Empire| {
         let holds = e.engine.fleets.values().filter(|f| f.owner_id == pid).fold(Resources::default(), |sum, f| sum.add(f.cargo));
         e.stockpile().add(e.engine.outposts[&pid].store).add(holds)
     };
     let jump = e.fleet().jump_fuel;
-    assert_eq!((jump, e.fleet().fuel, e.fleet().fuel_max), (16.0, 200.0, 200.0));
-    let (before, started) = (owned(&e), e.engine.current_tick());
+    assert_eq!((jump, e.fleet().fuel, e.fleet().fuel_max), (20.0, 240.0, 240.0), "10 fuel a jump each, and a tank of twelve jumps");
+    let (before, started, home_stock) = (owned(&e), e.engine.current_tick(), e.stockpile().metal);
 
     e.order(Command::Load { fleet_id: fid, resource: Metal, amount: None }).expect("load the yield");
     let carried = e.fleet().cargo.metal;
@@ -558,18 +569,19 @@ fn a_convoy_round_trip_makes_nothing_but_the_yield() {
     sweep(&mut e.engine, &back);
     e.travel(home);
     e.run(2);
-    assert!((e.stockpile().metal - carried).abs() < 0.01, "the home dock unloads the yield: {:?}", e.stockpile());
-    assert_eq!(e.fleet().fuel, 200.0, "and fills the tank from the stockpile");
+    let at_home = home_stock + natural.metal * (e.engine.current_tick() - started) as f64;
+    assert!((e.stockpile().metal - carried - at_home).abs() < 0.01, "the home dock unloads the yield: {:?}", e.stockpile());
+    assert_eq!(e.fleet().fuel, 240.0, "and fills the tank from the stockpile");
 
     e.order(Command::Load { fleet_id: fid, resource: Deuterium, amount: Some(100.0) }).expect("load fuel for the outpost");
     sweep(&mut e.engine, &out);
     e.travel(at);
     e.order(Command::Unload { fleet_id: fid }).expect("unload at the outpost");
     e.run(2);
-    assert_eq!(e.fleet().fuel, 200.0, "the outpost fills the tank from what the convoy brought");
+    assert_eq!(e.fleet().fuel, 240.0, "the outpost fills the tank from what the convoy brought");
 
     let burned = jump * (out.len() + back.len()) as f64;
-    let made = rate.scale((e.engine.current_tick() - started) as f64);
+    let made = rate.add(natural).scale((e.engine.current_tick() - started) as f64);
     let after = owned(&e);
     let spent = res(0.0, 0.0, burned * FUEL_DEUT_PER_UNIT);
     assert!(
@@ -584,7 +596,7 @@ fn the_outpost_fills_tanks_from_its_store_and_says_once_when_it_cannot() {
     let (pid, fid) = (e.pid, e.fid);
     let next = e.engine.world_gen.connected_neighbors(at).slice()[0];
     sweep(&mut e.engine, &[next]);
-    crew(&mut e, fid, &[(ShipClass::Hauler, 1), (ShipClass::Corvette, 1)], at);
+    crew(&mut e, fid, &[(ShipClass::SmallCargo, 1), (ShipClass::LightFighter, 1)], at);
     stow(&mut e, fid, res(40.0, 0.0, 0.0));
 
     let mark = e.mark();
@@ -592,7 +604,7 @@ fn the_outpost_fills_tanks_from_its_store_and_says_once_when_it_cannot() {
     sweep(&mut e.engine, &[next]);
     e.travel(at);
     let fleet = e.fleet();
-    assert_eq!((fleet.fuel, fleet.fuel_max, fleet.jump_fuel), (124.0, 150.0, 13.0), "two jumps burned, none refilled");
+    assert_eq!((fleet.fuel, fleet.fuel_max, fleet.jump_fuel), (260.0, 320.0, 30.0), "two jumps burned, none refilled");
     let dry: Vec<AlertEvent> = alerts_since(&e, mark).into_iter().filter(|a| a.message.contains("no deuterium left")).collect();
     assert_eq!(dry.len(), 1, "{dry:?}");
     assert!(matches!(dry[0].level, AlertLevel::Warning) && dry[0].fleet_id == Some(fid));
@@ -600,23 +612,23 @@ fn the_outpost_fills_tanks_from_its_store_and_says_once_when_it_cannot() {
         dry[0].message,
         format!(
             "your outpost at {at} has no deuterium left for the tank of fleet {fid}; unload some into its store: \
-             fleet {fid} stands at 124 of 150 fuel"
+             fleet {fid} stands at 260 of 320 fuel"
         ),
     );
     e.run(300);
     assert_eq!(alerts_since(&e, mark).iter().filter(|a| a.message.contains("no deuterium left")).count(), 1, "once a stay");
-    assert_eq!(e.fleet().fuel, 124.0, "nothing fills a tank from an empty store, and a fleet at a dock is not stranded");
+    assert_eq!(e.fleet().fuel, 260.0, "nothing fills a tank from an empty store, and a fleet at a dock is not stranded");
 
     edit(&mut e.engine, |s| s.outposts.get_mut(&pid).unwrap().store.deuterium = 1.0);
     e.run(1);
-    assert_eq!((e.fleet().fuel, outpost(&e).store.deuterium), (136.5, 0.0), "one deuterium buys 12.5 fuel");
+    assert_eq!((e.fleet().fuel, outpost(&e).store.deuterium), (272.5, 0.0), "one deuterium buys 12.5 fuel");
     assert_eq!(alerts_since(&e, mark).iter().filter(|a| a.message.contains("no deuterium left")).count(), 1);
 
     edit(&mut e.engine, |s| s.outposts.get_mut(&pid).unwrap().store.deuterium = 50.0);
     e.run(1);
     let filled = e.fleet();
-    assert_eq!(filled.fuel, 150.0);
-    assert!((outpost(&e).store.deuterium - (50.0 - 13.5 * FUEL_DEUT_PER_UNIT)).abs() < 1e-4, "the home price: 0.08 a unit");
+    assert_eq!(filled.fuel, 320.0);
+    assert!((outpost(&e).store.deuterium - (50.0 - 47.5 * FUEL_DEUT_PER_UNIT)).abs() < 1e-4, "the home price: 0.08 a unit");
     assert_eq!(filled.cargo, res(40.0, 0.0, 0.0), "nothing at an outpost unloads by itself");
 
     let mark = e.mark();
@@ -645,10 +657,10 @@ fn a_level_is_paid_from_the_store_and_the_outpost_works_on_meanwhile() {
     let fid = e.fid;
     let one = outpost(&e);
     let next = one.next_level.clone().expect("level 2 is on offer");
-    assert_eq!((next.level, next.cost, next.ticks, next.platform_power), (2, res(2500.0, 1250.0, 500.0), 13_500, 100.0));
+    assert_eq!((next.level, next.cost, next.ticks, next.platform_power), (2, res(7500.0, 3750.0, 1500.0), 13_500, PLATFORM[1]));
     assert!(near(next.store_cap, one.store_cap.scale(2.5), 0.05) && near(next.production, one.production.scale(2.0), 1e-6));
 
-    deliver(&mut e, at, res(2000.0, 1250.0, 100.0));
+    deliver(&mut e, at, res(6000.0, 3750.0, 300.0));
     let held = outpost(&e).store;
     let before = e.engine.snapshot().hash();
     let foretold = outpost(&e).upgrade_refusal.expect("the state says beforehand why the order would be refused");
@@ -657,15 +669,15 @@ fn a_level_is_paid_from_the_store_and_the_outpost_works_on_meanwhile() {
     assert_eq!(
         why,
         format!(
-            "outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at {at} is short by {} metal \
-             and 400 deuterium. A level is paid in full from the outpost's own store when it is ordered",
-            (2500.0 - held.metal).ceil(),
+            "outpost level 2 costs 7500 metal, 3750 crystal and 1500 deuterium; the store at {at} is short by {} metal \
+             and 1200 deuterium. A level is paid in full from the outpost's own store when it is ordered",
+            (7500.0 - held.metal).ceil(),
         ),
     );
     assert_eq!(foretold, why, "and in the sentence the refusal carries");
     assert_eq!(e.engine.snapshot().hash(), before, "a refused upgrade changes nothing");
 
-    deliver(&mut e, at, res(600.0, 0.0, 400.0));
+    deliver(&mut e, at, res(1800.0, 0.0, 1200.0));
     let held = outpost(&e).store;
     assert_eq!(outpost(&e).upgrade_refusal, None, "the store covers it, so nothing stands in the way");
     let (mark, ordered) = (e.mark(), e.engine.current_tick());
@@ -674,11 +686,11 @@ fn a_level_is_paid_from_the_store_and_the_outpost_works_on_meanwhile() {
     assert!(near(building.store, held.sub(next.cost), 1e-3), "{:?}", building.store);
     let work = building.work.expect("level 2 is being built");
     assert_eq!((work.kind, work.level, work.start_tick, work.end_tick), (OutpostWork::Build, 2, ordered, ordered + 13_500));
-    assert_eq!((building.level, building.in_service, building.platform_power), (1, true, 40.0));
+    assert_eq!((building.level, building.in_service, building.platform_power), (1, true, PLATFORM[0]));
     assert_eq!((building.production, building.store_cap), (one.production, one.store_cap), "it works at level 1 meanwhile");
     assert_eq!(building.next_level.map(|n| n.level), Some(3), "what could be ordered after this one");
     let told = said(&e, mark);
-    assert!(told[0].starts_with(&format!("your outpost at {at} began level 2, paid 2500 metal, 1250 crystal and 500 deuterium from its store")), "{told:?}");
+    assert!(told[0].starts_with(&format!("your outpost at {at} began level 2, paid 7500 metal, 3750 crystal and 1500 deuterium from its store")), "{told:?}");
 
     let (code, why) = e.refusal(Command::UpgradeOutpost);
     assert_eq!(
@@ -696,18 +708,18 @@ fn a_level_is_paid_from_the_store_and_the_outpost_works_on_meanwhile() {
     assert!((outpost(&e).store.metal - stored - one.production.metal * 13_499.0).abs() < 0.5, "the extractor ran all the while");
     e.run(1);
     let two = outpost(&e);
-    assert_eq!((two.level, two.work, two.platform_power, completed(&e, mark)), (2, None, 100.0, vec![2]));
+    assert_eq!((two.level, two.work, two.platform_power, completed(&e, mark)), (2, None, PLATFORM[1], vec![2]));
     assert_eq!((two.store_cap, two.production), (next.store_cap, next.production));
     assert!(scaling::par_value(&two.store) < scaling::outpost_repair_price(2), "{:?}", two.store);
     assert_eq!(two.protected, two.store, "the floor is the repair of the level it stands at: all of a store that holds less");
 
     let last = two.next_level.expect("level 3 is on offer");
-    assert_eq!((last.level, last.cost, last.ticks, last.platform_power), (3, res(6250.0, 3125.0, 1250.0), 33_750, 250.0));
+    assert_eq!((last.level, last.cost, last.ticks, last.platform_power), (3, res(18_750.0, 9375.0, 3750.0), 33_750, PLATFORM[2]));
     deliver(&mut e, at, last.cost);
     e.order(Command::UpgradeOutpost).expect("the store covers level 3");
     e.run(33_750);
     let three = outpost(&e);
-    assert_eq!((three.level, three.platform_power, three.next_level.clone()), (3, 250.0, None));
+    assert_eq!((three.level, three.platform_power, three.next_level.clone()), (3, PLATFORM[2], None));
     assert!(near(three.production, one.production.scale(3.0), 1e-6) && near(three.store_cap, one.store_cap.scale(6.25), 0.5));
     assert_eq!(
         e.refusal(Command::UpgradeOutpost),
@@ -722,7 +734,7 @@ fn an_outpost_scores_its_finished_levels_and_nothing_it_holds() {
     let mut e = Empire::join(world("season"), "Counter");
     let fid = e.fid;
     let at = site(&e.engine, 12, any_ore);
-    muster(&mut e.engine, fid, &[(ShipClass::Hauler, 16)], at);
+    muster(&mut e.engine, fid, &[(ShipClass::SmallCargo, 2)], at);
     stow(&mut e, fid, COST);
     let before = e.score_row();
 
@@ -730,9 +742,9 @@ fn an_outpost_scores_its_finished_levels_and_nothing_it_holds() {
     assert_eq!(e.score_row().core, before.core, "an outpost under construction scores nothing");
     e.run(build_ticks(&e, 1));
     let one = e.score_row();
-    assert!((one.core - before.core - 2.15).abs() < 1e-3, "level 1 is 1000 + 1.5 x 500 + 2 x 200 a thousand: {}", one.core - before.core);
+    assert!((one.core - before.core - 6.45).abs() < 1e-3, "level 1 is 3000 + 1.5 x 1500 + 2 x 600 a thousand: {}", one.core - before.core);
 
-    stow(&mut e, fid, res(5000.0, 3000.0, 1000.0));
+    stow(&mut e, fid, res(15_000.0, 9000.0, 3000.0));
     e.order(Command::Unload { fleet_id: fid }).expect("unload at the outpost");
     e.run(500);
     e.order(Command::Load { fleet_id: e.fid, resource: Crystal, amount: Some(100.0) }).expect("load from the store");
@@ -742,7 +754,7 @@ fn an_outpost_scores_its_finished_levels_and_nothing_it_holds() {
     assert_eq!(e.score_row().core, one.core, "a level scores when it is finished, not when it is paid");
     e.run(build_ticks(&e, 2));
     let two = e.score_row();
-    assert!((two.core - one.core - 5.375).abs() < 1e-3, "level 2 adds 5.375: {}", two.core - one.core);
+    assert!((two.core - one.core - 16.125).abs() < 1e-3, "level 2 adds 16.125: {}", two.core - one.core);
     assert_eq!((two.combat, two.explore), (before.combat, before.explore));
 
     let pid = e.pid;
@@ -759,7 +771,7 @@ fn a_fleet_at_the_outpost_is_docked_and_needs_a_slot_to_leave() {
     let (mut e, at) = settle("season", 9, |_| true);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 5)], home);
+    muster(&mut e.engine, fid, &[(ShipClass::EspionageProbe, 5)], home);
     stow(&mut e, fid, Resources::default());
     let ships: Vec<u64> = e.fleet().ships.iter().map(|s| s.id).collect();
     let mut wings = vec![fid];
@@ -797,7 +809,7 @@ fn another_empires_outpost_is_a_mark_on_the_chart_and_no_dock() {
     let (mut e, at) = settle("season", 10, any_ore);
     let (rival, rival_fleet) = join(&mut e.engine, "Rival");
     let next = e.engine.world_gen.connected_neighbors(at).slice()[0];
-    muster(&mut e.engine, rival_fleet, &[(ShipClass::Hauler, 1)], next);
+    muster(&mut e.engine, rival_fleet, &[(ShipClass::SmallCargo, 1)], next);
     edit(&mut e.engine, |s| s.fleets.get_mut(&rival_fleet).unwrap().cargo = res(50.0, 0.0, 0.0));
     sweep(&mut e.engine, &[next]);
     let outcome = e.engine.execute(rival, Command::Move { fleet_id: rival_fleet, target: at });
@@ -925,12 +937,12 @@ fn a_platform_that_outguns_its_ring_repels_the_raid_and_loses_nothing() {
     let (mut e, at) = settle("blitz", 10, |t| t.metal_density != Density::None);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    deliver(&mut e, at, res(2500.0, 1250.0, 500.0));
+    deliver(&mut e, at, res(7500.0, 3750.0, 1500.0));
     e.order(Command::UpgradeOutpost).expect("level 2");
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 1)], home);
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 1)], home);
     e.run(build_ticks(&e, 2));
     let post = outpost(&e);
-    assert_eq!((post.level, post.platform_power, post.defence_power), (2, 100.0, 100.0), "nobody is home but the platform");
+    assert_eq!((post.level, post.platform_power, post.defence_power), (2, PLATFORM[1], PLATFORM[1]), "nobody is home but the platform");
     let estimate = e.state().homeworld.next_raid_estimate_power;
 
     let opened = e.engine.outposts[&pid].raid.first_seen_tick;
@@ -943,11 +955,11 @@ fn a_platform_that_outguns_its_ring_repels_the_raid_and_loses_nothing() {
     assert_eq!(forecast.arrival_tick, told + e.engine.pace().raid_warning_ticks(), "the homeworld's warning");
     let base = 2.0 * scaling::npc_group_power(10);
     assert!((base * 0.80..=base * 1.15).contains(&forecast.est_power), "{} against a base of {base}", forecast.est_power);
-    assert_eq!(forecast.threat, if forecast.est_power < 50.0 { "light" } else { "moderate" });
+    assert_eq!(forecast.threat, if forecast.est_power < PLATFORM[1] / 2.0 { "light" } else { "moderate" });
 
     assert_eq!(resolved, forecast.arrival_tick);
     assert_eq!((outcome.outpost, outcome.defended, outcome.breached), (Some(at), true, false));
-    assert_eq!((outcome.raid_power, outcome.defense_power), (forecast.est_power, 100.0));
+    assert_eq!((outcome.raid_power, outcome.defense_power), (forecast.est_power, PLATFORM[1]));
     assert_eq!((outcome.resources_lost, outcome.ships_lost, outcome.structures_lost), (Resources::default(), 0, 0));
     assert_eq!((outcome.salvage_dropped, outcome.salvage_despawn_tick), (None, None), "a repelled outpost raid leaves no salvage");
 
@@ -962,15 +974,17 @@ fn a_platform_that_outguns_its_ring_repels_the_raid_and_loses_nothing() {
 fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_until_it_repairs_itself() {
     let (mut e, at) = settle("blitz", 16, |t| t.metal_density != Density::None && t.deut_density == Density::None);
     let (pid, fid) = (e.pid, e.fid);
-    deliver(&mut e, at, res(2000.0, 600.0, 300.0));
-    muster(&mut e.engine, fid, &[(ShipClass::Corvette, 2)], at);
-    stow(&mut e, fid, res(300.0, 0.0, 0.0));
+    deliver(&mut e, at, res(6000.0, 1800.0, 900.0));
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 2)], at);
+    stow(&mut e, fid, res(900.0, 0.0, 0.0));
     let hold = e.fleet().cargo_capacity;
-    assert!((hold - 489.9).abs() < 0.1, "two Corvettes hold 20 x sqrt(600): {hold}");
+    assert!((hold - 2449.49).abs() < 0.1, "two Light Fighters hold 100 x sqrt(600): {hold}");
     let post = outpost(&e);
-    assert_eq!((post.platform_power, post.defence_power), (40.0, 40.0 + 2.0 * 22.0));
-    let floor = res(537.5, 0.0, 0.0);
-    assert_eq!(post.protected, floor, "250 metal, 125 crystal and 50 deuterium at par, in metal while the store has it");
+    let fighter = scaling::ship_power(ShipClass::LightFighter);
+    assert_eq!(fighter, 91.0, "50 attack and a tenth of 400 hull and 10 shield");
+    assert_eq!((post.platform_power, post.defence_power), (PLATFORM[0], PLATFORM[0] + 2.0 * fighter));
+    let floor = res(REPAIR, 0.0, 0.0);
+    assert_eq!(post.protected, floor, "750 metal, 375 crystal and 150 deuterium at par, in metal while the store has it");
 
     let mark = e.mark();
     e.run_until(20_000, |e| !forecasts(e, mark).is_empty());
@@ -989,7 +1003,7 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     assert_eq!(outcome.raid_power, forecast.est_power);
     let after = everything(&e);
     let pile = before.add(rate);
-    let taken = res((pile.metal - 537.5) * 0.25, pile.crystal * 0.25, pile.deuterium * 0.25);
+    let taken = res((pile.metal - REPAIR) * 0.25, pile.crystal * 0.25, pile.deuterium * 0.25);
     assert!(near(outcome.resources_lost, taken, 0.01), "a quarter above the floor: {:?} against {taken:?}", outcome.resources_lost);
     assert!(near(after, pile.sub(taken), 0.01), "and no more: {after:?} left of {pile:?}");
     assert_eq!(outcome.protected_kept, floor);
@@ -999,7 +1013,7 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
 
     let broken = outpost(&e);
     assert!(broken.breached && !broken.in_service);
-    assert_eq!((broken.production, broken.platform_power, broken.defence_power), (Resources::default(), 0.0, 22.0));
+    assert_eq!((broken.production, broken.platform_power, broken.defence_power), (Resources::default(), 0.0, fighter));
     assert_eq!((broken.repair_cost, broken.work, broken.raid_arrival_tick), (Some(floor), None, None));
     assert_eq!(broken.repair_waiting_for, None, "the store covers the repair, so it waits for nothing");
     assert!(e.fleet().at_outpost && e.fleet().outpost_fuel.is_none(), "a fleet stands at a breached outpost that fills no tank");
@@ -1018,7 +1032,7 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     assert_eq!(
         said(&e, mark),
         vec![format!(
-            "your outpost at {at} began its repair, paid 538 metal from its store: it is whole at tick {}, in 23 ticks",
+            "your outpost at {at} began its repair, paid 1613 metal from its store: it is whole at tick {}, in 23 ticks",
             work.end_tick,
         )],
     );
@@ -1027,7 +1041,7 @@ fn a_lost_raid_takes_a_quarter_above_the_floor_a_ship_and_breaches_the_outpost_u
     e.run(1);
     let whole = outpost(&e);
     assert!(!whole.breached && whole.in_service && whole.work.is_none());
-    assert_eq!((whole.platform_power, whole.production), (40.0, rate));
+    assert_eq!((whole.platform_power, whole.production), (PLATFORM[0], rate));
     assert!(whole.store.metal > repairing.store.metal, "it extracts again from the tick it is whole");
     assert_eq!(said(&e, mark).last().unwrap(), &format!("your outpost at {at} is repaired: its extractor, its tanks and its platform work again"));
 
@@ -1048,8 +1062,8 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     for kind in ResourceKind::ALL {
         let _ = e.order(Command::Load { fleet_id: fid, resource: kind, amount: None });
     }
-    assert!(e.fleet().cargo.metal > 250.0, "the owner carries the store off before the raid arrives");
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 1)], home);
+    assert!(e.fleet().cargo.metal > 750.0, "the owner carries the store off before the raid arrives");
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 1)], home);
     stow(&mut e, fid, Resources::default());
     e.run_until(100, |e| !outcomes(e, mark).is_empty());
     let (resolved, outcome) = outcomes(&e, mark).pop().unwrap();
@@ -1060,7 +1074,7 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     e.run(400);
     let waiting = outpost(&e);
     let held = scaling::par_value(&waiting.store);
-    let short = 537.5 - held;
+    let short = REPAIR - held;
     assert!(waiting.breached && waiting.work.is_none() && short > 0.0, "the store holds {held} at par");
     assert_eq!(waiting.protected, waiting.store, "all of a store that cannot pay is floor");
     let lacks = waiting.repair_waiting_for.expect("the state says what the repair waits for");
@@ -1072,7 +1086,7 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     assert_eq!(
         warned[0].message,
         format!(
-            "your outpost at {at} is breached and cannot repair itself: the repair costs 538 metal, or crystal at 1.5 and \
+            "your outpost at {at} is breached and cannot repair itself: the repair costs 1613 metal, or crystal at 1.5 and \
              deuterium at 2 a unit in its place, and its store is short by {} metal. It makes nothing, fills no tank and \
              has no platform until a fleet unloads the rest",
             lacks.metal.ceil(),
@@ -1083,7 +1097,7 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     assert_eq!(
         e.refusal(Command::UpgradeOutpost).1,
         format!(
-            "your outpost at {at} is breached; it repairs itself first, once its store covers the repair: 538 metal, or \
+            "your outpost at {at} is breached; it repairs itself first, once its store covers the repair: 1613 metal, or \
              crystal at 1.5 and deuterium at 2 a unit in its place"
         ),
     );
@@ -1094,7 +1108,7 @@ fn a_breached_outpost_whose_store_cannot_pay_waits_for_a_delivery_and_says_so_on
     let repairing = outpost(&e);
     assert_eq!(repairing.work.map(|w| w.kind), Some(OutpostWork::Repair), "the repair starts on the delivery, whatever it brought");
     let paid = stocked.sub(repairing.store);
-    assert!((scaling::par_value(&paid) - 537.5).abs() < 1e-2, "537.5 at par: {paid:?}");
+    assert!((scaling::par_value(&paid) - REPAIR).abs() < 1e-2, "1612.5 at par: {paid:?}");
     assert!(paid.metal == stocked.metal && paid.crystal > 0.0 && paid.deuterium == 0.0, "metal first, then crystal, and no deuterium: {paid:?}");
     e.run(scaling::outpost_repair_ticks(1, &e.engine.pace()));
     assert!(outpost(&e).in_service);
@@ -1105,8 +1119,8 @@ fn thirty_days_of_raids_never_destroy_an_undefended_outpost() {
     let (mut e, at) = settle("season", 18, |t| t.metal_density != Density::None && grade_of(t) >= 2.0);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    deliver(&mut e, at, res(2000.0, 3000.0, 1500.0));
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 1)], home);
+    deliver(&mut e, at, res(6000.0, 9000.0, 4500.0));
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 1)], home);
     stow(&mut e, fid, Resources::default());
     let estimate = e.state().homeworld.next_raid_estimate_power;
     let core = e.score_row().core;
@@ -1143,7 +1157,7 @@ fn a_site_that_lacks_an_ore_pays_every_repair_in_what_it_makes() {
     let (mut e, at) = settle("season", 18, |t| t.deut_density == Density::None && grade_of(t) >= 4.0);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    muster(&mut e.engine, fid, &[(ShipClass::Scout, 1)], home);
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 1)], home);
     stow(&mut e, fid, Resources::default());
     assert_eq!(outpost(&e).production.deuterium, 0.0, "the site makes no deuterium, and nobody brings any");
 
@@ -1170,13 +1184,13 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     let weight = |r: Resources| scaling::resource_weight(&r);
     let mut held = Headless::new(SEED, Pace::parse("blitz").unwrap());
     let mut bare = Headless::new(SEED, Pace::parse("blitz").unwrap());
-    let stocked = res(4000.0, 2000.0, 1000.0);
+    let stocked = res(12_000.0, 6000.0, 3000.0);
     let settle = |world: &mut Headless, ring: u16, upgrade: bool| -> u64 {
         let pid = world.add_player(Box::new(IdlePlayer { label: "Keeper".to_string() }), "idle").expect("a seat");
         let fid = world.engine.fleets.values().find(|f| f.owner_id == pid).unwrap().id;
         let home = world.engine.players[&pid].homeworld;
         let at = site(&world.engine, ring, |t| t.metal_density != Density::None);
-        muster(&mut world.engine, fid, &[(ShipClass::Hauler, 2)], at);
+        muster(&mut world.engine, fid, &[(ShipClass::SmallCargo, 2)], at);
         edit(&mut world.engine, |s| s.fleets.get_mut(&fid).unwrap().cargo = COST.add(stocked));
         for cmd in [Command::FoundOutpost { fleet_id: fid }, Command::Unload { fleet_id: fid }] {
             assert!(world.engine.execute(pid, cmd).error.is_none());
@@ -1185,7 +1199,7 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
         if upgrade {
             assert!(world.engine.execute(pid, Command::UpgradeOutpost).error.is_none());
         }
-        muster(&mut world.engine, fid, &[(ShipClass::Scout, 1)], home);
+        muster(&mut world.engine, fid, &[(ShipClass::LightFighter, 1)], home);
         world.run(scaling::outpost_build_ticks(2, &world.engine.pace())).unwrap();
         pid
     };
@@ -1196,7 +1210,7 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     held.run(6000).unwrap();
     let report = held.summaries().remove(0);
     let post = &held.engine.outposts[&keeper];
-    assert!((report.score.outpost - 7.525).abs() < 1e-3 && report.score.core >= report.score.econ + report.score.fleet + 7.5);
+    assert!((report.score.outpost - 22.575).abs() < 1e-3 && report.score.core >= report.score.econ + report.score.fleet + 22.5);
     assert!(report.field.outpost_raids_repelled >= 2, "{:?}", report.field);
     assert_eq!((report.field.outpost_raids_lost, report.field.outpost_ticks_breached, report.field.outpost_raided), (0, 0, 0.0));
     assert_eq!((report.field.raids_repelled, report.field.raids_lost), (0, 0), "the homeworld's raids are counted apart");
@@ -1211,17 +1225,17 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     assert_eq!((field.outpost_repairs, field.outpost_ticks_waiting, field.outpost_hauled), (0.0, 0, 0.0));
     let site = report.outpost.expect("the report says where it stands");
     assert_eq!((site.sector, site.ring, site.level, site.breached, site.waiting), (post.sector, 10, 2, false, false));
-    let payback = 1700.0 / (2.0 * f64::from(site.grade) * scaling::ring_mult(10));
+    let payback = COST.total() / (6.0 * f64::from(site.grade) * scaling::ring_mult(10));
     assert!((f64::from(site.payback_hours) - payback).abs() < 0.05, "{site:?}");
     assert_eq!(site.next_mine_level, 2, "an idle empire's next Metal Mine level");
 
     let (fid, at) = (held.engine.fleets.values().find(|f| f.owner_id == keeper).unwrap().id, post.sector);
-    muster(&mut held.engine, fid, &[(ShipClass::Hauler, 2)], at);
+    muster(&mut held.engine, fid, &[(ShipClass::SmallCargo, 2)], at);
     for (resource, amount) in [(Metal, Some(300.0)), (Crystal, None)] {
         assert!(held.engine.execute(keeper, Command::Load { fleet_id: fid, resource, amount }).error.is_none());
     }
     let aboard = held.engine.fleets[&fid].cargo;
-    assert!(aboard.metal == 300.0 && aboard.crystal >= 750.0, "{aboard:?}");
+    assert!(aboard.metal == 300.0 && aboard.crystal >= 2250.0, "{aboard:?}");
     held.run(1).unwrap();
     let hauled = held.summaries()[0].field.outpost_hauled;
     assert!((hauled - weight(aboard)).abs() < 1e-3, "what load took from the store is counted as hauled: {hauled} against {aboard:?}");
@@ -1233,9 +1247,9 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     let field = report.field;
     assert!(field.outpost_raids_lost >= 2 && field.outpost_raids_repelled == 0, "{field:?}");
     assert!(field.outpost_raided > 0.0 && field.outpost_ticks_breached >= u64::from(field.outpost_raids_lost) * 23, "{field:?}");
-    assert!((report.score.outpost - 2.15).abs() < 1e-3);
+    assert!((report.score.outpost - 6.45).abs() < 1e-3);
     let post = &bare.engine.outposts[&loser];
-    let repairs = weight(res(250.0, 125.0, 50.0)) * (field.outpost_raids_lost - u32::from(post.breached && post.job.is_none())) as f32;
+    let repairs = weight(res(750.0, 375.0, 150.0)) * (field.outpost_raids_lost - u32::from(post.breached && post.job.is_none())) as f32;
     assert!((field.outpost_repairs - repairs).abs() < 1e-3, "every repair it paid is counted: {field:?}");
     let kept = weight(post.store) - weight(stocked);
     let owed = field.outpost_yield - field.outpost_raided - repairs;
@@ -1263,17 +1277,27 @@ type Post = (u16, u8, &'static [(ShipClass, usize)]);
 
 #[test]
 fn a_season_week_of_raids_takes_nothing_from_an_outpost_defended_as_its_ring_asks() {
-    use ShipClass::{Corvette, Cruiser, Frigate};
+    use ShipClass::{Cruiser, LightFighter};
     let weight = |r: Resources| scaling::resource_weight(&r);
     let mut world = Headless::new(SEED, Pace::parse("season").unwrap());
     let posts: [Post; 6] = [
-        (9, 1, &[(Corvette, 1)]),
-        (12, 1, &[(Corvette, 3)]),
+        (9, 1, &[(LightFighter, 2)]),
+        (12, 1, &[(LightFighter, 6)]),
         (12, 2, &[]),
         (17, 3, &[]),
-        (18, 3, &[(Frigate, 1)]),
-        (20, 3, &[(Cruiser, 2)]),
+        (19, 3, &[]),
+        (20, 3, &[(Cruiser, 1)]),
     ];
+    for (ring, level, garrison) in posts {
+        let ships: f32 = garrison.iter().map(|&(class, count)| count as f32 * scaling::ship_power(class)).sum();
+        let worst = 2.0 * 1.15 * scaling::npc_group_power(ring);
+        let least = 0.9 * (PLATFORM[usize::from(level) - 1] + ships);
+        assert!(least >= worst, "level {level} at ring {ring} with {garrison:?}: {least} at its worst against a raid of {worst}");
+        if let Some(&(class, _)) = garrison.first() {
+            let one_fewer = least - 0.9 * scaling::ship_power(class);
+            assert!(one_fewer < worst, "level {level} at ring {ring}: with one {} fewer it could lose", class.label());
+        }
+    }
     let keepers: Vec<u64> = posts.iter().map(|&(ring, level, garrison)| stand(&mut world, ring, level, garrison)).collect();
     let sites: Vec<Hex> = keepers.iter().map(|pid| world.engine.outposts[pid].sector).collect();
     for (i, a) in sites.iter().enumerate() {
@@ -1319,8 +1343,8 @@ fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
         .iter()
         .find(|n| open_ground(&e.engine.world_gen.generate_sector(**n)))
         .unwrap();
-    muster(&mut e.engine, fid, &[(ShipClass::Hauler, 2), (ShipClass::Scout, 6)], at);
-    stow(&mut e, fid, COST.add(res(2500.0, 1250.0, 500.0)).add(res(0.0, 0.0, 600.0)));
+    muster(&mut e.engine, fid, &[(ShipClass::SmallCargo, 2), (ShipClass::LightFighter, 8)], at);
+    stow(&mut e, fid, COST.add(res(7500.0, 3750.0, 1500.0)).add(res(0.0, 0.0, 600.0)));
     e.order(Command::FoundOutpost { fleet_id: fid }).expect("found");
     e.order(Command::Unload { fleet_id: fid }).expect("the outpost under construction has a store");
 

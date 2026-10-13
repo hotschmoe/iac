@@ -35,6 +35,12 @@
 // ticks, and the charts differed in three ways: ore figures in their last
 // digits, `refills_in_s` by one second, and six times in the 4000 ticks a
 // refilling tile reached its next level one tick apart.
+//
+// And when the catalogue became OGame's: the world under the script is
+// another one. Its lairs hold Light Fighters, Cruisers and Battlecruisers,
+// its tiles three times the ore, and the pilots fly two Light Fighters.
+// Nothing was compared across that change; the file pins what this
+// catalogue's chart sends.
 
 #[allow(dead_code)]
 mod common;
