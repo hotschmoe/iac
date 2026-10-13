@@ -1,19 +1,6 @@
 import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
-import '../protocol/hex.dart';
-
-/// Zone names by distance from the hub (constants.rs `Zone`: inner ring <= 8,
-/// outer ring <= 20).
-extension HexZone on Hex {
-  String get zone {
-    final d = distFromOrigin;
-    if (d == 0) return 'Central Hub';
-    if (d <= 8) return 'Inner Ring';
-    if (d <= 20) return 'Outer Ring';
-    return 'The Wandering';
-  }
-}
 
 const double sqrt3 = 1.7320508075688772;
 

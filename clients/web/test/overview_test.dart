@@ -81,6 +81,34 @@ void main() {
     await endShell(tester, c);
   });
 
+  testWidgets('the queue cards follow the build slots the server reports, and the research and shipyard lines keep their own depth', (tester) async {
+    final c = await _boot(tester);
+    Finder inCard(String card, String text) => find.descendant(of: find.byKey(Key(card)), matching: find.textContaining(text));
+    expect(inCard('card-slot-a', 'queue 3/4'), findsOneWidget);
+    expect(inCard('card-research', 'queue 1/4'), findsOneWidget);
+
+    c.learn(proto.ResearchType.modularFabrication, 1);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('BUILD SLOTS B-C'), findsOneWidget);
+    expect(inCard('card-slot-b', 'SLOT C LOCKED'), findsOneWidget);
+    expect(inCard('card-slot-b', 'Needs Modular Fabrication L2'), findsOneWidget);
+    expect(inCard('card-slot-b', c.state.hw!.buildQueue[1].buildingType.label.toUpperCase()), findsOneWidget);
+
+    c.learn(proto.ResearchType.modularFabrication, 2);
+    await tester.pump(const Duration(seconds: 1));
+    expect(c.state.hw!.buildSlots, 3);
+    expect(find.text('BUILD SLOTS B-C'), findsOneWidget);
+    expect(find.textContaining('LOCKED'), findsNothing);
+    for (final build in c.state.hw!.buildQueue.skip(1)) {
+      expect(inCard('card-slot-b', build.buildingType.label.toUpperCase()), findsOneWidget);
+    }
+    expect(inCard('card-slot-a', 'queue 3/6'), findsOneWidget);
+    expect(inCard('card-research', 'queue 1/4'), findsOneWidget, reason: 'research runs one order whatever the build slots');
+    expect(inCard('card-shipyard', 'queue 1/4'), findsOneWidget);
+    await shot(tester, 'desktop-three-slots');
+    await endShell(tester, c);
+  });
+
   testWidgets('open defence jumps to the homeworld defence tab', (tester) async {
     final c = await _boot(tester);
     final btn = find.text('OPEN DEFENCE');

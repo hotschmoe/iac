@@ -59,8 +59,8 @@ class C {
     Color(0xFFD04BFF),
   ];
 
-  /// Threat T1..T9; 0 is "clear".
-  static Color threat(int t) => _threat[t.clamp(0, 9)];
+  /// A colour for each threat rating the palette has; 0 is "clear".
+  static Color threat(int t) => _threat[t.clamp(0, _threat.length - 1)];
 
   static const ratioDeadly = Color(0xFFFF2E86);
   static const ratioRisky = Color(0xFFFF9A2E);

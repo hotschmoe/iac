@@ -31,7 +31,9 @@ pub enum Zone {
 }
 
 impl Zone {
+    /// The last ring of the Inner Ring.
     pub const INNER_RING_RADIUS: u16 = 8;
+    /// The last ring of the Outer Ring; The Wandering starts one ring further out.
     pub const OUTER_RING_RADIUS: u16 = 20;
 
     pub fn from_distance(dist: u16) -> Zone {
@@ -71,7 +73,7 @@ pub enum Density {
 }
 
 impl Density {
-    pub fn harvest_multiplier(self) -> f32 {
+    pub const fn harvest_multiplier(self) -> f32 {
         match self {
             Density::None => 0.0,
             Density::Sparse => 0.5,
@@ -440,6 +442,7 @@ pub const HOMEWORLD_MAX_DIST: u16 = 5;
 /// Cooldowns (in ticks).
 pub const MOVE_BASE_COOLDOWN: u16 = 1;
 pub const HARVEST_COOLDOWN: u16 = 1;
+/// Ticks a fleet takes no order after a scan.
 pub const SCAN_COOLDOWN: u16 = 5;
 
 /// Combat.
@@ -471,6 +474,7 @@ pub const NPC_PATROL_INTERVAL: u16 = 15;
 /// Fleets carrying a Scout get the extended range; signals are faint
 /// contacts detected one hop beyond the reveal radius.
 pub const SCAN_BASE_RANGE: u8 = 1;
+/// The scan range of a fleet with a Scout aboard.
 pub const SCAN_SCOUT_RANGE: u8 = 2;
 /// How long actively-scanned sectors keep streaming live updates.
 pub const SCAN_REVEAL_TICKS: u64 = 120;
@@ -548,6 +552,7 @@ pub const TEMPLATE_NPC_ID_BASE: u64 = 1 << 32;
 /// tech cache), and risks waking whatever killed the crew.
 pub const DERELICT_SPAWN_PCT: u8 = 8;
 pub const DERELICT_MIN_DIST: u16 = 4;
+/// Ticks a boarding takes, at every pace.
 pub const EXPLORE_DURATION_TICKS: u16 = 20;
 /// A Scout aboard reads the hulk before breaching (ambush chance down);
 /// a Hauler's rigging doubles what the boarding party can strip.
@@ -568,8 +573,17 @@ pub const POLICY_DEFAULT_MAX_RANGE: u8 = 4;
 pub const POLICY_DEFAULT_ENGAGE_RATIO_X10: u8 = 15;
 /// Share of deuterium income, in percent, a fleet under orders may burn.
 pub const POLICY_DEFAULT_FUEL_BUDGET_PCT: u8 = 20;
-/// At or above this `fuel_budget_pct` the fleet refuels without a bound.
+/// At or above this `fuel_budget_pct` the fleet refuels without a bound; it
+/// is also the most the setting can be.
 pub const POLICY_FUEL_UNBOUNDED_PCT: u8 = 100;
+/// The bounds `policy_update` holds the other doctrine thresholds to.
+pub const POLICY_MIN_FUEL_PCT_MAX: u8 = 90;
+pub const POLICY_CARGO_RETURN_PCT_MIN: u8 = 10;
+pub const POLICY_CARGO_RETURN_PCT_MAX: u8 = 100;
+pub const POLICY_RANGE_MIN: u8 = 1;
+pub const POLICY_RANGE_MAX: u8 = 30;
+pub const POLICY_ENGAGE_RATIO_X10_MIN: u8 = 1;
+pub const POLICY_ENGAGE_RATIO_X10_MAX: u8 = 100;
 /// MineAndReturn treats a sector holding fewer raw units than this as
 /// stripped: a tile that has only begun to refill is not worth a jump.
 pub const POLICY_MIN_SEAM_UNITS: f32 = 3.0;
@@ -582,6 +596,11 @@ pub const POLICY_FUEL_PAYBACK: f32 = 1.5;
 pub const POLICY_SHIELDS_READY: f32 = 0.95;
 /// How far along the lanes a doctrine looks for its next sector.
 pub const POLICY_SEARCH_HOPS: u8 = 32;
+
+/// How far along the lanes the engine looks for the way between two sectors:
+/// a fleet's way home or to its outpost, the hops from an outpost or a
+/// surveyed site to the homeworld. A way longer than this is not found.
+pub const LANE_SEARCH_HOPS: u8 = 64;
 
 /// The hub exchange (`scaling::exchange_return`). These four numbers are a
 /// proposal the owner has not signed off. Change them here only:

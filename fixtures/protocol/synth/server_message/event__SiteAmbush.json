@@ -1,3 +1,3 @@
 [
-{"canonical":{"fleet_id":20,"kind":"SiteAmbush","npc_fleet_id":23,"sector":{"q":21,"r":-22},"tick":2,"type":"event"},"input":{"fleet_id":20,"kind":"SiteAmbush","npc_fleet_id":23,"sector":{"q":21,"r":-22},"tick":2,"type":"event"}}
+{"canonical":{"fleet_id":22,"kind":"SiteAmbush","npc_fleet_id":25,"sector":{"q":23,"r":-24},"tick":4,"type":"event"},"input":{"fleet_id":22,"kind":"SiteAmbush","npc_fleet_id":25,"sector":{"q":23,"r":-24},"tick":4,"type":"event"}}
 ]

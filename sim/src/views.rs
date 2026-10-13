@@ -1,7 +1,9 @@
 // What a player is allowed to see: the protocol's full-state and per-tick
 // views of the engine, and which events reach whom.
 
-use iac_shared::constants::{ResourceKind, Resources, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN};
+use iac_shared::constants::{
+    ResourceKind, Resources, LANE_SEARCH_HOPS, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN,
+};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BuildQueueItem, BuildingState, DefenceState, FleetState, GameEvent, GameState, HomeworldState, OutpostLevel,
@@ -101,7 +103,7 @@ fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
         repair_waiting_for: repair
             .filter(|&(_, short)| short > 0.0)
             .map(|(_, short)| Resources { metal: short, ..Resources::default() }),
-        hops_home: engine.world_gen.lane_hops(outpost.sector, player.homeworld, 64),
+        hops_home: engine.world_gen.lane_hops(outpost.sector, player.homeworld, LANE_SEARCH_HOPS),
     })
 }
 
@@ -163,6 +165,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             fuel_max: fleet.fuel_max,
             jump_fuel,
             home_fuel,
+            jump_ticks: engine.hop_ticks(fleet),
             cooldown_remaining: fleet.action_cooldown,
             power: crate::engine::fleet_power(fleet),
             range_hops: range_hops(fleet.fuel, home_fuel, jump_fuel),

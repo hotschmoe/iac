@@ -134,7 +134,7 @@ class SegBar extends StatelessWidget {
       ]);
 }
 
-/// Threat rating: digit, nine cells, never colour alone.
+/// Threat rating: digit, a cell for each rating there is, never colour alone.
 class ThreatBadge extends StatelessWidget {
   final int t;
   final bool sm;
@@ -144,13 +144,13 @@ class ThreatBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final col = C.threat(t);
     return Semantics(
-      label: t == 0 ? 'Threat clear' : 'Threat $t of 9',
+      label: t == 0 ? 'Threat clear' : 'Threat $t of ${proto.maxThreat}',
       excludeSemantics: true,
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Text(t == 0 ? '--' : 'T$t', style: T.cond(size: sm ? 11 : 13, color: col, weight: FontWeight.w700, spacing: .9)),
         if (showBar) ...[
           const SizedBox(width: 6),
-          SegBar(9, t, color: col, w: sm ? 3 : 4, h: sm ? 7 : 9),
+          SegBar(proto.maxThreat, t, color: col, w: sm ? 3 : 4, h: sm ? 7 : 9),
         ],
       ]),
     );
@@ -230,7 +230,7 @@ String reserveText(proto.TileReserve r) {
   return '${r.units.round()}/${r.maxUnits.round()}$eta';
 }
 
-/// Ratio gauge: five zones (<0.9, 0.9-1.1, 1.1-1.5, 1.5-2.5, >=2.5) with a pointer.
+/// Ratio gauge: the server's five bands, cut at its four ratios, with a pointer.
 class RatioGauge extends StatelessWidget {
   final double ratio;
   const RatioGauge(this.ratio, {super.key});
@@ -244,23 +244,35 @@ class RatioGauge extends StatelessWidget {
 class _RatioPainter extends CustomPainter {
   final double r;
   _RatioPainter(this.r);
+
+  /// The ratio at the right end of the gauge: how far the scale is drawn.
+  static const _top = 4.0;
+
+  /// The ratio each band ends at and its colour, as `scaling::ratio_label` cuts them.
+  static const _bands = [
+    (proto.ratioRisky, C.ratioDeadly),
+    (proto.ratioEven, C.ratioRisky),
+    (proto.ratioFavourable, C.ratioEven),
+    (proto.ratioSafe, C.ratioFav),
+    (_top, C.ratioSafe),
+  ];
+
   @override
   void paint(Canvas c, Size s) {
-    const zones = [(.225, C.ratioDeadly), (.05, C.ratioRisky), (.10, C.ratioEven), (.25, C.ratioFav), (.375, C.ratioSafe)];
-    var x = 0.0;
-    for (final z in zones) {
-      final rect = Rect.fromLTWH(x, 6, s.width * z.$1, 8);
-      c.drawRect(rect, Paint()..color = z.$2.withValues(alpha: .22));
+    var from = 0.0;
+    for (final (to, color) in _bands) {
+      final rect = Rect.fromLTRB(s.width * from / _top, 6, s.width * to / _top, 14);
+      c.drawRect(rect, Paint()..color = color.withValues(alpha: .22));
       c.drawRect(rect.deflate(.5), Paint()
         ..style = PaintingStyle.stroke
-        ..color = z.$2.withValues(alpha: .75));
-      x += s.width * z.$1;
+        ..color = color.withValues(alpha: .75));
+      from = to;
     }
-    final px = (math.min(4.0, r) / 4) * s.width;
+    final px = (math.min(_top, r) / _top) * s.width;
     c.drawPath(Path()..moveTo(px - 4, 0)..lineTo(px + 4, 0)..lineTo(px, 6.5)..close(), Paint()..color = C.a100);
-    for (final m in const [(.225, '0.9'), (.375, '1.5'), (.625, '2.5')]) {
-      final tp = TextPainter(text: TextSpan(text: m.$2, style: T.mono(size: 8.5, color: C.text3)), textDirection: TextDirection.ltr)..layout();
-      tp.paint(c, Offset(s.width * m.$1 - tp.width / 2, 15));
+    for (final edge in const [proto.ratioRisky, proto.ratioFavourable, proto.ratioSafe]) {
+      final tp = TextPainter(text: TextSpan(text: edge.toStringAsFixed(1), style: T.mono(size: 8.5, color: C.text3)), textDirection: TextDirection.ltr)..layout();
+      tp.paint(c, Offset(s.width * edge / _top - tp.width / 2, 15));
     }
   }
 

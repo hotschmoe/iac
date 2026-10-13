@@ -159,7 +159,10 @@ class WindshieldSim {
   bool combat = false;
   bool harvesting = false;
   String harvestRes = 'ore';
-  ({double t0, double dur})? boarding;
+
+  /// A boarding under way: the ticks the server last said it has left, and
+  /// when it said so.
+  ({int left, double at})? boarding;
   double drift0 = 0, drift1 = -1;
   double now = 0;
   double time = 0;
@@ -367,14 +370,25 @@ class WindshieldSim {
     final wasHarvest = harvesting;
     harvesting = f.status == ui.FleetStatus.harvesting;
     if (harvesting && !wasHarvest) harvestRes = 'ore';
-    final exploring = f.status == ui.FleetStatus.exploring;
-    if (exploring && boarding == null) boarding = (t0: now, dur: 8);
-    if (!exploring && boarding != null && derelict != null) boarding = null;
-    if (!exploring && derelict == null) boarding = null;
+    if (f.status != ui.FleetStatus.exploring) {
+      boarding = null;
+    } else if (boarding?.left != f.cooldown) {
+      boarding = (left: f.cooldown, at: now);
+    }
     final nowCombat = f.status == ui.FleetStatus.combat;
     if (nowCombat != combat) {
       combat = nowCombat;
     }
+  }
+
+  /// How far the boarding has come, 0 to 1, of the engine's boarding time:
+  /// the ticks the fleet's state says are left, and the part of a tick that
+  /// has passed since.
+  double? get boardingProgress {
+    final b = boarding;
+    if (b == null) return null;
+    final done = proto.exploreDurationTicks - b.left + math.min(1.0, now - b.at);
+    return (done / proto.exploreDurationTicks).clamp(0.0, 1.0);
   }
 
   void setCombat(bool v) => combat = v;

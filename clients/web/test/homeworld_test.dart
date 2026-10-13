@@ -152,15 +152,55 @@ void main() {
     await endShell(tester, c);
   });
 
-  testWidgets('research tab renders the tech graph', (tester) async {
+  testWidgets('research tab renders the tech graph, with a node for every tech of the catalog', (tester) async {
     final c = await open(tester);
     await tester.tap(find.byKey(const ValueKey('hw-tab-research')));
     await tester.pump();
     expect(find.text('FUEL EFFICIENCY'), findsWidgets);
+    final techs = c.state.catalog!.research;
+    expect([for (final o in techs) o.tech], proto.ResearchType.values);
+    for (var i = 0; i < techs.length; i++) {
+      expect(find.byKey(ValueKey('hw-card-$i')), findsOneWidget, reason: '${techs[i].tech.label} has a node');
+    }
+    final fab = techs.indexWhere((o) => o.tech == proto.ResearchType.modularFabrication);
+    await tester.tap(find.byKey(ValueKey('hw-card-$fab')));
+    await tester.pump();
+    expect(c.hwCursor, fab);
     await tester.tap(find.byKey(const ValueKey('hw-card-1')));
     await tester.pump();
     expect(c.hwCursor, 1);
     await snap(tester, 'homeworld/research-1440');
+    await endShell(tester, c);
+  });
+
+  testWidgets('the queue strip has a pill for each build slot the server reports, and for the next one while a level of Modular Fabrication is left', (tester) async {
+    final c = await open(tester) as DemoController;
+    Finder inPill(String letter, String text) => find.descendant(of: find.byKey(Key('hw-pill-slot-$letter')), matching: find.textContaining(text));
+    expect(inPill('b', 'LOCKED'), findsOneWidget);
+    expect(inPill('b', 'Needs Modular Fabrication L1'), findsOneWidget);
+    expect(find.byKey(const Key('hw-pill-slot-c')), findsNothing);
+
+    c.learn(proto.ResearchType.modularFabrication, 1);
+    await tester.pump(const Duration(seconds: 1));
+    expect(c.state.hw!.buildSlots, 2);
+    expect(inPill('b', 'LOCKED'), findsNothing);
+    expect(inPill('c', 'LOCKED'), findsOneWidget);
+    expect(inPill('c', 'Needs Modular Fabrication L2'), findsOneWidget);
+
+    c.learn(proto.ResearchType.modularFabrication, 2);
+    await tester.pump(const Duration(seconds: 1));
+    expect(c.state.hw!.buildSlots, 3);
+    expect(c.state.hw!.buildQueue, hasLength(3), reason: 'the two waiting orders took the new slots');
+    for (final (letter, build) in [('b', c.state.hw!.buildQueue[1]), ('c', c.state.hw!.buildQueue[2])]) {
+      expect(inPill(letter, build.buildingType.label.toUpperCase()), findsOneWidget);
+    }
+    expect(find.text('LOCKED'), findsNothing);
+    expect(find.byKey(const Key('hw-pill-slot-d')), findsNothing);
+    await snap(tester, 'homeworld/three-slots-1440');
+
+    await tester.tap(find.byKey(const ValueKey('hw-cancel-building-c')));
+    await tester.pump();
+    expect(c.state.hw!.buildQueue, hasLength(2));
     await endShell(tester, c);
   });
 

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use syn::{Attribute, Expr, Fields, GenericArgument, Item, Lit, LitStr, Meta, PathArguments, Token, Type};
+use syn::{Attribute, Expr, Fields, GenericArgument, ImplItem, Item, Lit, LitStr, Meta, PathArguments, Token, Type};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
@@ -106,9 +106,20 @@ impl Model {
                 Item::Struct(s) if derives(&s.attrs).contains("Serialize") => declared.push((s.ident.to_string(), item)),
                 Item::Enum(e) if derives(&e.attrs).contains("Serialize") => declared.push((e.ident.to_string(), item)),
                 Item::Impl(i) => {
-                    let of_default = i.trait_.as_ref().is_some_and(|(_, path, _)| path.is_ident("Default"));
-                    if let (true, Type::Path(p)) = (of_default, &*i.self_ty) {
-                        defaulted.extend(p.path.get_ident().map(ToString::to_string));
+                    let Type::Path(p) = &*i.self_ty else { continue };
+                    let Some(owner) = p.path.get_ident() else { continue };
+                    match &i.trait_ {
+                        Some((_, path, _)) if path.is_ident("Default") => {
+                            defaulted.insert(owner.to_string());
+                        }
+                        Some(_) => {}
+                        None => {
+                            for member in &i.items {
+                                if let ImplItem::Const(c) = member {
+                                    const_docs.insert(format!("{owner}::{}", c.ident), docs(&c.attrs));
+                                }
+                            }
+                        }
                     }
                 }
                 Item::Const(c) => {
@@ -141,7 +152,7 @@ impl Model {
         self.types.iter().find(|def| def.name == name).unwrap_or_else(|| panic!("{name} is not a wire type"))
     }
 
-    /// The doc comment of a `const` in shared/src.
+    /// The doc comment of a `const` in shared/src, an associated one under `Type::NAME`.
     pub fn const_docs(&self, name: &str) -> &[String] {
         self.const_docs.get(name).unwrap_or_else(|| panic!("no const {name} in shared/src"))
     }

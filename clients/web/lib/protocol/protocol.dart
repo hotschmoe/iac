@@ -21,12 +21,46 @@ bool isBotName(String name) => name.toUpperCase().startsWith(botNamePrefix.toUpp
 /// the edges fall where the server's do. The ratio itself only the server
 /// can work out; the demo world uses this to label the ones it makes up.
 RatioLabel ratioLabelFor(double ratio) {
-  final r = (Float32List(1)..[0] = ratio)[0];
+  final r = _f32(ratio);
   if (r >= ratioSafe) return RatioLabel.safe;
   if (r >= ratioFavourable) return RatioLabel.favourable;
   if (r >= ratioEven) return RatioLabel.even;
   if (r >= ratioRisky) return RatioLabel.risky;
   return RatioLabel.deadly;
+}
+
+double _f32(double x) => (Float32List(1)..[0] = x)[0];
+
+/// Whether a stockpile holding [stock] of [cap] is at the fill where the
+/// server's `StorageNearCap` fires. The server divides one `f32` by the
+/// other and compares the `f32` quotient with [storageNearCapRatio]; this
+/// does the same, so the edge falls where the server's does.
+bool storageNearCap(num stock, num cap) =>
+    cap > 0 && _f32(_f32(stock.toDouble()) / _f32(cap.toDouble())) >= storageNearCapRatio;
+
+/// The zones of the world. A ring's zone is cut as the engine's
+/// `Zone::from_distance` cuts it, at the radii Rust holds; the names are the
+/// client's.
+enum WorldZone {
+  centralHub('Central Hub'),
+  innerRing('Inner Ring'),
+  outerRing('Outer Ring'),
+  wandering('The Wandering');
+
+  const WorldZone(this.label);
+  final String label;
+
+  static WorldZone ofRing(int ring) => ring <= 0
+      ? centralHub
+      : ring <= zoneInnerRingRadius
+          ? innerRing
+          : ring <= zoneOuterRingRadius
+              ? outerRing
+              : wandering;
+}
+
+extension HexZone on Hex {
+  WorldZone get zone => WorldZone.ofRing(distFromOrigin);
 }
 
 extension BatchWaitReason on BatchWait {

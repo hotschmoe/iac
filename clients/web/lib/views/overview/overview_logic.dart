@@ -129,7 +129,7 @@ NextUp nextUp(GameState s, EconomyView eco) {
   if (st != null) {
     for (final e in {'metal': (s.stock.metal, 'Metal'), 'crystal': (s.stock.crystal, 'Crystal'), 'deut': (s.stock.deuterium, 'Deuterium')}.entries) {
       final cap = st.cap[e.key] ?? 0;
-      if (cap > 0 && e.value.$1 / cap >= .85) {
+      if (proto.storageNearCap(e.value.$1, cap)) {
         return NextUp('STORAGE', '${e.value.$2} is near its cap', 'Production above the cap is discarded. Spend it or raise the Storage Vault.', 'Open homeworld', NextAction.openHomeworld);
       }
     }
@@ -184,7 +184,7 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
     final names = {'metal': 'Metal', 'crystal': 'Crystal', 'deut': 'Deuterium'};
     for (final k in stock.keys) {
       final cap = st.cap[k] ?? 0;
-      if (cap > 0 && stock[k]! / cap >= .85) {
+      if (proto.storageNearCap(stock[k]!, cap)) {
         final f = st.fullIn(k, stock[k]!, rates[k]!);
         out.add(OvAlert('${names[k]} storage near cap', '${(stock[k]! / cap * 100).round()}% of the Vault L${st.vaultLevel} cap. Production above the cap is discarded.', time: f == null ? null : clockFmt(f), tab: 'storage'));
       }

@@ -17,14 +17,19 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use iac_shared::Resources;
-use iac_shared::constants::{Density, OUTPOST_MAX_RING, OUTPOST_MIN_RING, ResourceKind, ShipClass, TerrainType};
+use iac_shared::constants::{
+    Density, EXPLORE_DURATION_TICKS, LANE_SEARCH_HOPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
+    POLICY_CARGO_RETURN_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
+    POLICY_ENGAGE_RATIO_X10_MIN, POLICY_FUEL_UNBOUNDED_PCT, POLICY_MIN_FUEL_PCT_MAX, POLICY_RANGE_MAX,
+    POLICY_RANGE_MIN, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_SCOUT_RANGE, ShipClass, TerrainType, Zone,
+};
 use iac_shared::protocol::{
-    BOT_NAME_PREFIX, ClientMessage, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, PolicyParams, PolicyPreset,
-    ServerMessage, ShipClassCounts, SignalKind, SiteRisk,
+    BOT_NAME_PREFIX, ClientMessage, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN, PolicyParams,
+    PolicyPreset, ServerMessage, ShipClassCounts, SignalKind, SiteRisk,
 };
 use iac_shared::scaling::{
-    BuildingType, DefenceKind, RATIO_EVEN, RATIO_FAVOURABLE, RATIO_RISKY, RATIO_SAFE, RatioLabel, ResearchType,
-    ship_power,
+    BuildingType, DefenceKind, MAX_THREAT, RATIO_EVEN, RATIO_FAVOURABLE, RATIO_RISKY, RATIO_SAFE, RatioLabel,
+    ResearchType, SITE_GRADE_MAX, STORAGE_NEAR_CAP_RATIO, ship_power,
 };
 
 use model::{Body, Model};
@@ -58,6 +63,12 @@ impl From<&str> for Cell {
     }
 }
 
+impl From<u8> for Cell {
+    fn from(n: u8) -> Cell {
+        Cell::Int(n.into())
+    }
+}
+
 impl From<u16> for Cell {
     fn from(n: u16) -> Cell {
         Cell::Int(n.into())
@@ -84,6 +95,7 @@ pub struct Column {
     pub cells: Vec<Cell>,
 }
 
+/// A constant of shared/src under its Rust name, an associated one as `Type::NAME`.
 pub struct Constant {
     pub rust: &'static str,
     pub cell: Cell,
@@ -97,7 +109,7 @@ pub struct Extras {
 }
 
 macro_rules! constants {
-    ($($name:ident),* $(,)?) => {
+    ($($name:path),* $(,)?) => {
         vec![$(Constant { rust: stringify!($name), cell: Cell::from($name) }),*]
     };
 }
@@ -132,6 +144,25 @@ pub fn extras(model: &Model) -> Extras {
         RATIO_RISKY,
         OUTPOST_MIN_RING,
         OUTPOST_MAX_RING,
+        NAME_MAX_LEN,
+        Zone::INNER_RING_RADIUS,
+        Zone::OUTER_RING_RADIUS,
+        MAX_THREAT,
+        SITE_GRADE_MAX,
+        LANE_SEARCH_HOPS,
+        STORAGE_NEAR_CAP_RATIO,
+        SCAN_BASE_RANGE,
+        SCAN_SCOUT_RANGE,
+        SCAN_COOLDOWN,
+        EXPLORE_DURATION_TICKS,
+        POLICY_MIN_FUEL_PCT_MAX,
+        POLICY_CARGO_RETURN_PCT_MIN,
+        POLICY_CARGO_RETURN_PCT_MAX,
+        POLICY_RANGE_MIN,
+        POLICY_RANGE_MAX,
+        POLICY_ENGAGE_RATIO_X10_MIN,
+        POLICY_ENGAGE_RATIO_X10_MAX,
+        POLICY_FUEL_UNBOUNDED_PCT,
     ];
     let rust_defaults = BTreeMap::from([
         rust_default::<Resources>(),

@@ -64,6 +64,7 @@ ui.FleetState _fleet(proto.Hex at, {int fuel = 100}) => ui.FleetState(
       fuelMax: 120,
       jumpFuel: 5,
       homeFuel: 5,
+      jumpTicks: 3,
     );
 
 GameState _state(int tick, List<ui.FleetState> fleets) {
@@ -301,13 +302,14 @@ void main() {
     await endShell(tester, g);
   });
 
-  testWidgets('clicking a known sector plans a route with hops and fuel', (tester) async {
+  testWidgets('clicking a known sector plans a route: hops, fuel, the charted way home and the time by the fleet\'s own jump', (tester) async {
     final g = await openMap(tester);
     await clickHex(tester, const proto.Hex(4, -1));
     expect(find.text('ROUTE PLAN'), findsOneWidget);
     expect(_text(tester, 'route-hops'), '3');
     expect(_text(tester, 'route-fuel'), '15 of 100');
-    expect(_text(tester, 'route-return'), contains('OK, margin 65'));
+    expect(_text(tester, 'route-return'), 'OK BY THE CHART, 4 hops, margin 65 fuel');
+    expect(_text(tester, 'route-eta'), '0:09', reason: 'three jumps of three ticks each');
     expect(find.byKey(const Key('route-preview-text')), findsOneWidget);
     expect(painterOf(tester).route!.path.length, 3);
     await endShell(tester, g);

@@ -8,12 +8,33 @@ import '../../protocol/protocol.dart' as proto;
 import '../../scenes/homeworld/plan.dart';
 import '../../state/game_controller.dart';
 
-const _lanes = <(String, List<proto.ResearchType>)>[
-  ('Propulsion', [proto.ResearchType.fuelEfficiency, proto.ResearchType.extendedFuelTanks, proto.ResearchType.navigation, proto.ResearchType.emergencyJump]),
-  ('Combat', [proto.ResearchType.reinforcedHulls, proto.ResearchType.advancedShields, proto.ResearchType.weaponsResearch]),
-  ('Industry', [proto.ResearchType.harvestingEfficiency]),
-  ('Hull classes', [proto.ResearchType.corvetteTech, proto.ResearchType.frigateTech, proto.ResearchType.cruiserTech, proto.ResearchType.haulerTech]),
-];
+enum _Lane {
+  propulsion('Propulsion'),
+  combat('Combat'),
+  industry('Industry'),
+  hulls('Hull classes');
+
+  const _Lane(this.title);
+  final String title;
+
+  /// The lane a tech is drawn in. The switch is over every tech the engine
+  /// has, so a new one does not compile until it has a lane, and the tab
+  /// draws a node for each tech of the catalog.
+  static _Lane of(proto.ResearchType tech) => switch (tech) {
+        proto.ResearchType.fuelEfficiency ||
+        proto.ResearchType.extendedFuelTanks ||
+        proto.ResearchType.navigation ||
+        proto.ResearchType.emergencyJump =>
+          propulsion,
+        proto.ResearchType.reinforcedHulls || proto.ResearchType.advancedShields || proto.ResearchType.weaponsResearch => combat,
+        proto.ResearchType.harvestingEfficiency || proto.ResearchType.modularFabrication => industry,
+        proto.ResearchType.corvetteTech ||
+        proto.ResearchType.frigateTech ||
+        proto.ResearchType.cruiserTech ||
+        proto.ResearchType.haulerTech =>
+          hulls,
+      };
+}
 
 class ResearchTab extends StatelessWidget {
   final GameController ctrl;
@@ -25,6 +46,9 @@ class ResearchTab extends StatelessWidget {
     final cat = ctrl.state.catalog;
     if (cat == null) return const SizedBox.shrink();
     final byTech = {for (var i = 0; i < cat.research.length; i++) cat.research[i].tech: i};
+    final lanes = {
+      for (final lane in _Lane.values) lane: [for (final o in cat.research) if (_Lane.of(o.tech) == lane) o.tech],
+    };
     final active = ctrl.state.research.name;
     return LayoutBuilder(builder: (context, box) {
       final w = math.max(300.0, box.maxWidth);
@@ -34,10 +58,9 @@ class ResearchTab extends StatelessWidget {
       final rects = <proto.ResearchType, Rect>{};
       final heads = <(String, double)>[];
       var y = pad;
-      for (final lane in _lanes) {
-        heads.add((lane.$1, y));
+      for (final MapEntry(key: lane, value: techs) in lanes.entries) {
+        heads.add((lane.title, y));
         y += head;
-        final techs = [for (final t in lane.$2) if (byTech.containsKey(t)) t];
         for (var k = 0; k < techs.length; k++) {
           final cx = k % cols, cy = k ~/ cols;
           rects[techs[k]] = Rect.fromLTWH(pad + cx * (nw + gap), y + cy * (nh + 18), nw, nh);
@@ -45,8 +68,7 @@ class ResearchTab extends StatelessWidget {
         y += ((techs.length + cols - 1) ~/ math.max(1, cols)) * (nh + 18) + 6;
       }
       final edges = <(Rect, Rect, bool)>[];
-      for (final lane in _lanes) {
-        final techs = [for (final t in lane.$2) if (rects.containsKey(t)) t];
+      for (final techs in lanes.values) {
         for (var k = 0; k + 1 < techs.length; k++) {
           edges.add((rects[techs[k]]!, rects[techs[k + 1]]!, false));
         }

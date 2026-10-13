@@ -955,6 +955,9 @@ pub fn outpost_platform_power(level: u8) -> f32 {
     if level == 0 { 0.0 } else { OUTPOST_PLATFORM_POWER * outpost_growth(level) }
 }
 
+/// The grade of a site whose three ores are all Pristine: the most a grade can be.
+pub const SITE_GRADE_MAX: f32 = 3.0 * Density::Pristine.harvest_multiplier();
+
 /// A site's grade: the harvest multipliers of its metal, crystal and deuterium ore, summed. 0 to 12.
 pub fn site_grade(densities: [Density; 3]) -> f32 {
     densities.into_iter().map(Density::harvest_multiplier).sum()
@@ -1186,6 +1189,7 @@ pub const NPC_POWER_GROWTH: f32 = 1.22;
 pub const NPC_MAX_SHIPS: usize = 32;
 /// The most an NPC ship's hull, shield and weapon are scaled by.
 pub const NPC_STAT_MULT_MAX: f32 = 1.3;
+/// The highest threat rating.
 pub const MAX_THREAT: u8 = 9;
 /// Observed Aggressive and Swarm groups are rated this much stronger than
 /// their ships add up to: they come to you.

@@ -599,6 +599,7 @@ class StateMapper {
       fuelMax: math.max(1, f.fuelMax.round()),
       jumpFuel: f.jumpFuel.round(),
       homeFuel: f.homeFuel.round(),
+      jumpTicks: f.jumpTicks,
       outpostFuel: f.outpostFuel?.round(),
       atOutpost: f.atOutpost,
       cooldown: f.cooldownRemaining,

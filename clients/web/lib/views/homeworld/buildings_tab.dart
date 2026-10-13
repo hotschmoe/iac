@@ -30,7 +30,7 @@ class BuildingsTab extends StatelessWidget {
       proto.BuildingType.sensorArray => 'SENSORS',
       proto.BuildingType.defenseGrid => 'DEFENCE',
       proto.BuildingType.storageVault => 'STORAGE',
-      proto.BuildingType.fabricator => 'SLOT B',
+      proto.BuildingType.fabricator => 'BUILD TIME',
     };
   }
 
@@ -83,7 +83,7 @@ class BuildingsTab extends StatelessWidget {
     final c = origin + planCenter(slot.$1, slot.$2, s);
     final spec = specFor(ctrl, index: i);
     final locked = o.requires.any((r) => !r.met);
-    final busy = ctrl.state.buildQueue.isNotEmpty && ctrl.state.buildQueue.first.name.startsWith(o.buildingType.label);
+    final busy = ctrl.state.hw?.buildQueue.any((q) => q.buildingType == o.buildingType) ?? false;
     final sel = ctrl.hwCursor == i;
     final st = sel
         ? TileState.selected

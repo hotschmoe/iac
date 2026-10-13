@@ -134,8 +134,9 @@ pub fn render(model: &Model, defaults: &Defaults, extras: &Extras) -> String {
     for constant in &extras.constants {
         out.blank();
         out.docs(0, model.const_docs(constant.rust));
-        let name = camel(&constant.rust.to_lowercase());
-        out.line(0, &format!("const {name} = {};", cell(&constant.cell)));
+        let name = camel(&constant.rust.replace("::", "_").to_lowercase());
+        let ty = if matches!(constant.cell, Cell::Real(_)) { "double " } else { "" };
+        out.line(0, &format!("const {ty}{name} = {};", cell(&constant.cell)));
     }
     out.text
 }

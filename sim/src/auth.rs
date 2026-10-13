@@ -2,14 +2,11 @@
 // issuing needs OS entropy, so the host supplies it (see `GameEngine::authenticate`).
 // Design and rationale: docs/auth_spec.md ("Implemented subset").
 
-use iac_shared::protocol::{is_bot_name, BOT_NAME_PREFIX};
+use iac_shared::protocol::{is_bot_name, BOT_NAME_PREFIX, NAME_MAX_LEN, NAME_MIN_LEN};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 pub type TokenHash = [u8; 32];
-
-pub const NAME_MIN_LEN: usize = 3;
-pub const NAME_MAX_LEN: usize = 24;
 
 const RESERVED_NAMES: [&str; 10] = [
     "admin", "administrator", "server", "system", "moderator", "mod", "npc", "mlm", "gm", "gamemaster",

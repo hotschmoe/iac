@@ -364,7 +364,7 @@ class StorageTab extends StatelessWidget {
     final cap = st.cap[k] ?? 1;
     final prot = st.protected[k] ?? 0;
     final full = st.fullIn(k, stock, rate);
-    final near = stock >= cap * .85;
+    final near = proto.storageNearCap(stock, cap);
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -377,7 +377,7 @@ class StorageTab extends StatelessWidget {
           if (near) Lamp(stock >= cap * .98 ? 'Full' : 'Near cap', color: C.ember, blink: true),
         ]),
         const SizedBox(height: 4),
-        LedBar(stock / cap, color: near ? C.ember : c, height: 10, mark: C.ember, markAt: .85),
+        LedBar(stock / cap, color: near ? C.ember : c, height: 10, mark: C.ember, markAt: proto.storageNearCapRatio),
         const SizedBox(height: 6),
         Text(
             'PROTECTED ${groupDigits(prot.round())}   RAIDABLE ${groupDigits((stock - prot).clamp(0, cap).round())}   '

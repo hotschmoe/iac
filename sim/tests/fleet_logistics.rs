@@ -930,3 +930,30 @@ fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_do
     let next = reports(&e, mark).remove(0);
     assert!(!next.1.contains("shields"), "with the shields back the patrol goes on with its beat: {next:?}");
 }
+
+#[test]
+fn a_jump_takes_the_ticks_the_fleet_reports() {
+    let scouts: &[(ShipClass, usize)] = &[(ShipClass::Scout, 2)];
+    let with_a_frigate: &[(ShipClass, usize)] = &[(ShipClass::Scout, 1), (ShipClass::Frigate, 1)];
+    for (classes, navigation, ticks) in [(scouts, 0, 2), (with_a_frigate, 0, 3), (with_a_frigate, 1, 2), (scouts, 1, 1)] {
+        let mut e = Empire::join(world("test"), "Jumper");
+        let (pid, fid) = (e.pid, e.fid);
+        let home = e.engine.players[&pid].homeworld;
+        let chain = outward_chain(&e.engine, home, 3);
+        sweep(&mut e.engine, &chain);
+        muster(&mut e.engine, fid, classes, home);
+        edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.navigation = navigation);
+        assert_eq!(e.fleet().jump_ticks, ticks, "{classes:?} with Navigation {navigation}");
+
+        for &hop in &chain {
+            assert_eq!(e.order(Command::Move { fleet_id: fid, target: hop }), Ok(()), "it takes the next order the tick it lands");
+            let mut flown = 0;
+            while e.fleet().location != hop {
+                e.run(1);
+                flown += 1;
+                assert!(flown <= ticks, "{classes:?} with Navigation {navigation}: not at {hop} after {flown} ticks");
+            }
+            assert_eq!(flown, ticks, "{classes:?} with Navigation {navigation}");
+        }
+    }
+}

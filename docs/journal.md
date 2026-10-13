@@ -5764,3 +5764,145 @@ were run before the two comment lines changed and not again.
 driven in a browser beyond the browser check's own multiplayer step. The places
 where the client's own rules disagree with the engine (the branch's entry lists
 them) were not touched and are the owner's.
+
+## 2026-10-13: the web client stops working the rules out for itself
+
+On the branch `worktree-agent-aef205bfd9346a5b7`, not merged and not pushed.
+The decisions and what was left for the owner are in
+`docs/design/decisions.md`; this is what was read, built and run.
+
+**What the engine does, by the function read.**
+
+- Research: `ResearchType` has 13 variants; the catalog sends all of them.
+- Build slots: `scaling::building_slots` is 1 plus `modular_fabrication`,
+  whose `research_max_level` is 2.
+- Boarding: `handle_explore_site` sets the fleet `Exploring` and its
+  `action_cooldown` to `EXPLORE_DURATION_TICKS` (20, class `RealTime` in
+  `pace.rs`, so 20 at every pace). `FleetState.cooldown_remaining` is that
+  counter. `server/tests/scenarios.rs` already asserts it equals
+  `end_tick - tick` across a restart.
+- Derelict tier: `scaling::derelict_tier` is `threat_band(threat_rating(
+  npc_power(ring)))`. `numbers.json` has the table: 1 to ring 11, 2 from ring
+  12, 3 from ring 22.
+- Fabricator: `scaling::building_time` divides by `1 + FABRICATOR_SPEED *
+  level`. Nothing else reads the level.
+- Zones: `Zone::from_distance` with `INNER_RING_RADIUS` 8 and
+  `OUTER_RING_RADIUS` 20, so The Wandering starts at ring 21.
+- A jump: `handle_move` sets `move_cooldown` and `action_cooldown` to
+  `fleet_move_cooldown`, which is `10 / slowest speed` in whole ticks less the
+  Navigation level. `process_movement` counts it down and lands the fleet on
+  the tick after it reaches 0. So a jump takes that plus one: 2 ticks for
+  Scouts (speed 10), Corvettes (8) and Haulers (6), 3 with a Frigate (5) or a
+  Cruiser (4), one less for each Navigation level, never less than 1.
+- The way home: `home_route` and `route_home_cost` count lane hops over the
+  real lanes, to `LANE_SEARCH_HOPS` (64), and fall back to straight distance
+  beyond. `preview_move` refuses any target that is not adjacent.
+- Boarding beside hostiles: `handle_explore_site` refuses `OnCooldown` in
+  combat, moving, boarding or on cooldown, and `InvalidTarget` with no
+  derelict. It has no rule about hostiles. `check_npc_encounter` starts the
+  fight on arrival with any group that is not passive, so a fleet that stands
+  idle beside a group stands beside a passive one, or one busy with another
+  fleet. `process_npc_behavior` can bring a patrol in during a boarding;
+  `engage_fleet` then sets `InCombat`, and `process_exploration` no longer
+  finds the fleet.
+- Storage: `process_storage_alerts` divides stock by cap in `f32` and fires
+  at `>= STORAGE_NEAR_CAP_RATIO`.
+
+**Rust.** One field on the wire, `FleetState.jump_ticks`, from a new
+`GameEngine::hop_ticks`. Literals named, values unchanged: `LANE_SEARCH_HOPS`
+(64, five places in `engine.rs` and `views.rs`), seven `POLICY_*_MIN` and
+`_MAX` bounds for the clamps of `handle_policy_update`, `SITE_GRADE_MAX`
+(three times the Pristine multiplier; `Density::harvest_multiplier` became a
+`const fn` for it). `NAME_MIN_LEN` and `NAME_MAX_LEN` moved from
+`sim/src/auth.rs` to `shared/src/protocol.rs`, where the generator reads;
+`auth.rs` imports them. Six constants got a doc comment of their own, which
+the generator copies into the Dart.
+
+**The generator.** `wire/model.rs` reads the associated constants of inherent
+`impl` blocks, under `Type::NAME`. The `constants!` list of `wire/mod.rs`
+takes paths, so `Zone::INNER_RING_RADIUS` is one line like any other and
+becomes `zoneInnerRingRadius`. An `f32` constant is declared `const double`,
+because `SITE_GRADE_MAX` prints as `12` and would otherwise be an `int` in
+Dart. `Cell` takes a `u8`. Nineteen constants were added to the eight.
+
+**The client.** 28 files under `lib/` by hand, and the generated one.
+
+- `lib/protocol/protocol.dart`: `WorldZone` and `Hex.zone`, the one zone
+  helper; `storageNearCap`, which rounds stock, cap and their quotient to
+  `f32` as `ratioLabelFor` already rounded a ratio.
+- `research_tab.dart`: lanes by an exhaustive `switch`.
+- `economy_view.dart`, `queue_strip.dart`, `overview_cards.dart`,
+  `buildings_tab.dart`: slots from `build_slots` and `build_queue`. The tile
+  of a building is drawn busy when any slot builds it, not only the first.
+- `scenes/windshield/sim.dart` and `painter.dart`: the boarding ring from
+  the cooldown and `exploreDurationTicks`.
+- `route_planner.dart`: `chartedHops`, a breadth-first count over the lanes
+  the planner already routes by; ETA from `jumpTicks`. `hopsLeftToReturn`
+  had no caller and is gone.
+- `windshield_view.dart`: Board is greyed on a missing derelict only; the
+  scan countdown lasts `scanCooldown`; the zone tint is a `switch`.
+- `parts.dart`, `command_parser.dart`: doctrine bounds, the fuel budget
+  that lifts the bound, and the help text, from the generated constants.
+- `gauges.dart`: the ratio gauge is drawn from the four generated ratios
+  and its three labels are printed from them.
+- `tokens.dart`: the threat palette clamps to its own length.
+
+**The scripted world.** `test/support/demo_world.dart`: a boarding takes
+`exploreDurationTicks` and sets the cooldown, and is no longer refused beside
+hostiles; a jump's cooldown is the engine's `10 / slowest speed + 1`; the scan
+uses the generated ranges and cooldown. It gained `learn`, which gives its
+empire a tech, for the slot tests.
+
+**Tests added or changed.** All through the app's state path or the engine's
+command path.
+
+- `sim/tests/fleet_logistics.rs`, `a_jump_takes_the_ticks_the_fleet_reports`:
+  two Scouts, a Scout with a Frigate, and each with Navigation 1, three jumps
+  in a row; each takes `jump_ticks` ticks (2, 3, 2, 1) and the next order is
+  taken on the tick the fleet lands.
+- `homeworld_test.dart`: the research tab has a card for every tech of the
+  catalog, in the order of `ResearchType.values`; the queue strip at 1, 2 and
+  3 slots, with the locked pill moving from B to C and then gone, and Cancel
+  on slot C.
+- `overview_test.dart`: the second card at 2 and 3 slots; the building line
+  reads `queue 3/6` while research and the shipyard stay at `1/4`.
+- `map_test.dart`: the route panel says `OK BY THE CHART, 4 hops, margin 65
+  fuel` and an ETA of `0:09` for three jumps of a fleet whose jump takes 3
+  ticks. The old expectation, `OK, margin 65`, held the straight distance.
+- `windshield_test.dart`: B beside a passive group sends `explore_site`
+  where the sector holds a derelict, and sends nothing where it holds none.
+- `tool/solo_e2e.dart`: against the engine in the worker, the research tab
+  draws as many nodes as the catalog has techs, Modular Fabrication is one,
+  and the two starting Scouts report `jump_ticks` 2.
+
+**Run on the branch.** With the shell at nice 10 and `-j 4`.
+
+- `cargo build --workspace --all-targets`: no warning.
+- `cargo test --workspace --no-fail-fast`: 155 passed, 0 failed. Master has
+  154; the one more is the jump scenario. `hosts_agree` passed (2 tests,
+  46 s) and `both_targets` passed (3 tests, 136 s), with the new field in
+  every frame they compare. `economy_numbers` passed with `numbers.json`
+  untouched, and `dart_protocol_matches` after the regeneration.
+- `cargo clippy --workspace --all-targets`: silent.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `UPDATE_FIXTURES=1 cargo test -p iac-shared`: 41 fixture files changed.
+  Every fleet gained `jump_ticks`, and the synthetic messages made after it
+  took the next sample values. `protocol.g.dart` is 4,861 lines.
+- `iac_solo.wasm`, release: 2,382,579 bytes (2,381,965 on master).
+- `flutter analyze`: no issues.
+- `flutter test`: 479 passed, three full runs in a row. Master has 476; the
+  three more are the slot strip, the slot cards and the boarding. The runs
+  were not pinned to the big cores: this session's command guard refused
+  `taskset` in every form tried. None of the three runs flaked.
+- `scripts/play.sh --single-player --no-serve`: built, dart2wasm, 48 MB.
+- `dart run tool/solo_e2e.dart --port 8100`: `SOLO E2E OK in 194 s`, 96
+  checks, 62 screenshots.
+
+**Not verified.** No person or agent played. The boarding ring was not seen
+in a browser: no test reaches a derelict in a real world, and the ring is
+drawn on a canvas a widget test cannot read. The same holds for `R21+ THE
+WANDERING`, which lies off the screen in every picture taken. That a
+boarding pays on `end_tick + 1`, and that a fight drops it silently, are
+read from the code and were not run. The multiplayer client was not driven
+in a browser beyond the browser check's own step. The TUI was built and not
+run; it does not show `jump_ticks`.

@@ -227,7 +227,7 @@ class LegendPanel extends StatelessWidget {
         const Lbl('Threat rating'),
         const SizedBox(height: 4),
         Row(children: [
-          for (var i = 1; i <= 9; i++)
+          for (var i = 1; i <= proto.maxThreat; i++)
             Expanded(
                 child: Container(
               height: 14,
@@ -270,11 +270,6 @@ class LegendPanel extends StatelessWidget {
       ]),
     );
   }
-}
-
-String zoneOf(proto.Hex h) {
-  final d = h.distFromOrigin;
-  return d == 0 ? 'Central Hub' : d <= 8 ? 'Inner Ring' : d <= 20 ? 'Outer Ring' : 'The Wandering';
 }
 
 /// "2 hops direct (17 charted), through unexplored space, 12 fuel".
@@ -321,7 +316,7 @@ class Inspector extends StatelessWidget {
     final survey = fleet.id == 0 ? null : st.surveyOf(fleet.id, h);
     return ConsolePanel(
       title: selected ? 'Selected' : 'Sector',
-      subText: zoneOf(h),
+      subText: h.zone.label,
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
         Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
@@ -381,8 +376,7 @@ class Inspector extends StatelessWidget {
           _oreRow('Deut', sec.resources.deuterium, C.deut, sec.oreReserve?.deuterium),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Text('${rich >= expect * 3 ? 'RICH' : rich <= expect ? 'POOR' : 'TYPICAL'} FOR THIS DISTANCE - LOOT TIER x${1 + math.min(3, d ~/ 6)}',
-                style: T.mono(size: 10, color: C.text3)),
+            child: Text('${rich >= expect * 3 ? 'RICH' : rich <= expect ? 'POOR' : 'TYPICAL'} FOR THIS DISTANCE', style: T.mono(size: 10, color: C.text3)),
           ),
           if (salvagePinVisible(sec, st.tick))
             Kv('Salvage',
@@ -558,11 +552,16 @@ class RoutePanel extends StatelessWidget {
             vw: Text(
                 plan.hops == 1 && first != null
                     ? (first.canReturn ? 'OK, ${first.fuelToReturn.round()} fuel home' : 'NO FUEL TO COME HOME (needs ${first.fuelToReturn.round()})')
-                    : (plan.canReturn ? 'OK, margin ${plan.returnMargin} fuel' : 'NO FUEL TO COME HOME (needs ${plan.backFuel})'),
+                    : switch (plan.backFuel) {
+                        null => 'NO CHARTED WAY HOME FROM THERE',
+                        final back => plan.canReturn
+                            ? 'OK BY THE CHART, ${hopCount(plan.backHops!)}, margin ${plan.fuelLeft - back} fuel'
+                            : 'NO FUEL TO COME HOME BY THE CHART (${hopCount(plan.backHops!)}, needs $back)',
+                      },
                 key: const Key('route-return'), style: T.mono(size: 10.5, color: retOk ? C.threat(1) : C.threat(7)))),
         if (first != null)
           Kv('Way home', vw: Text(_wayHome(first), key: const Key('route-home'), style: T.mono(size: 10.5, color: C.text2))),
-        Kv('ETA', vw: Text(clockFmt(plan.etaTicks), style: T.mono(size: 11.5, weight: FontWeight.w500))),
+        Kv('ETA', vw: Text(clockFmt(plan.etaTicks), key: const Key('route-eta'), style: T.mono(size: 11.5, weight: FontWeight.w500))),
         Kv('Threat along route', vw: ThreatBadge(plan.maxThreat, sm: true)),
         _Strip(plan: plan, secs: secs),
         Text('${plan.hostileSectors} HOSTILE SECTOR${plan.hostileSectors == 1 ? '' : 'S'} - $stale ON STALE OR MISSING INTEL', style: T.mono(size: 10, color: C.text3)),

@@ -61,7 +61,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   final Set<proto.Hex> _firstVisits = {};
   final ValueNotifier<double> _scanFill = ValueNotifier(0);
   final ValueNotifier<int> _scanSecs = ValueNotifier(0);
-  static const _scanDur = 5.0;
+  static const _scanDur = proto.scanCooldown;
 
   /// The most the status sheet of the phone layout takes of a wide arena.
   static const _sheetWidth = 380.0;
@@ -169,7 +169,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _showBanner(post.mine ? 'YOUR OUTPOST' : 'OUTPOST', post.mine ? 'Its store and dock are open to this fleet.' : 'A station of ${post.owner}.', false);
       } else {
         _showBanner(first ? 'NEW SECTOR' : 'SECTOR ${f.sector.q}, ${f.sector.r}',
-            first ? 'First visit. ${voice[s?.terrain ?? proto.TerrainType.empty]}' : '${s?.terrain.label ?? ''} / ${zoneName(f.sector)}', th.rating >= 5);
+            first ? 'First visit. ${voice[s?.terrain ?? proto.TerrainType.empty]}' : '${s?.terrain.label ?? ''} / ${f.sector.zone.label}', th.rating >= 5);
       }
     }
   }
@@ -276,9 +276,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         final sv = s?.salvage;
         return sv != null && sv.total > 0 ? null : 'No salvage here.';
       case 'board':
-        if (s?.site == null) return 'No derelict here.';
-        if (th.hostile) return 'Hostiles in range. Clear the sector first.';
-        return null;
+        return s?.site == null ? 'No derelict here.' : null;
       case 'recall':
         return f.sector == con.state.homeworld ? 'Already at the homeworld.' : null;
       case 'load':
@@ -308,7 +306,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       case 'scan':
         _scanAt = clock.now();
         _scanFill.value = 1;
-        _scanSecs.value = _scanDur.toInt();
+        _scanSecs.value = _scanDur;
         sim.startScan();
         con.game.sendCommand(proto.ScanCommand(fleetId: f.id));
       case 'harvest':
@@ -748,10 +746,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
 
   Widget _wrapDock(bool narrow, Widget d) => narrow ? d : IntrinsicWidth(child: d);
 
-  Color _zoneTint(proto.Hex h) {
-    final d = h.distFromOrigin;
-    return d <= 0 ? C.a500 : d <= 8 ? const Color(0xFFFF961E) : d <= 20 ? const Color(0xFFFF5A28) : const Color(0xFFA05AFF);
-  }
+  Color _zoneTint(proto.Hex h) => switch (h.zone) {
+        proto.WorldZone.centralHub => C.a500,
+        proto.WorldZone.innerRing => const Color(0xFFFF961E),
+        proto.WorldZone.outerRing => const Color(0xFFFF5A28),
+        proto.WorldZone.wandering => const Color(0xFFA05AFF),
+      };
 
   double _shieldFrac() {
     var s = 0.0, m = 0.0;

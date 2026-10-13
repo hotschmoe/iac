@@ -231,14 +231,7 @@ class _Who extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final con = Console.of(context);
-    final hw = con.state.homeworld;
-    final zone = hw.distFromOrigin == 0
-        ? 'Hub'
-        : hw.distFromOrigin <= 8
-            ? 'Inner Ring'
-            : hw.distFromOrigin <= 20
-                ? 'Outer Ring'
-                : 'Wandering';
+    final zone = con.state.homeworld.zone.label;
     final rank = eco.rank;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -336,7 +329,7 @@ class _ResChip extends StatelessWidget {
           var v = stock + rate * dt;
           if (cap != null) v = math.min(v, cap);
           final full = cap != null && v >= cap * .98;
-          final near = cap != null && v >= cap * .85;
+          final near = cap != null && proto.storageNearCap(v, cap);
           return Semantics(
             label: '$name ${v.floor()}${cap != null ? ' of ${cap.floor()}' : ''}',
             excludeSemantics: true,
