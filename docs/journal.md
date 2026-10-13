@@ -8809,5 +8809,77 @@ rebuilding; the forecast panel's corner read "the fight as it stan…" on a
 phone and says "as it stands"; the check's phone pictures of the ending
 lay under the arrival's alert, and it waits for the alert to leave.
 
+**Run.**
+
+- `cargo test --workspace --no-fail-fast -j 4`: 196 passed, 0 failed on the
+  merged tree; 196 and 0 after the forecast changed; 196 and 0 after the
+  last change to Rust (317 s), with `cargo build --workspace --all-targets`
+  without a warning, clippy silent and `tools/check_sim_constants.py`
+  agreeing on 4,410 values. No test was added to Rust and none removed.
+- `flutter analyze`: no issues.
+- `flutter test` under `timeout -k 20 300`, six full runs. The first, with
+  the tests not yet moved: 491 passed, 19 failed, all of them tests of the
+  forecast, the outpost and the raid notices that the new rules falsified.
+  The second, part moved: 510 passed, 4 failed (the onboarding test, the
+  two background-notice tests and the windshield's dock wording, each on
+  what had changed). The third: 514 passed. The fourth, with the overview's
+  new test: 514 passed, 1 failed, `windshield_test.dart` "firing on deadly
+  odds needs a second F", on "A RenderFlex overflowed by 2550 pixels on the
+  right" in a flex 138 px wide. The fifth and the sixth: 515 passed. The
+  one failure did not come again and is read as the machine's flake
+  (`docs/design/flutter_test_flake.md`).
+- `scripts/play.sh --single-player --no-serve`: built twice, the second
+  time after the last change to the client; `iac_solo.wasm` 2,860,542
+  bytes.
+- `tool/solo_e2e.dart`, eight runs, each a new world. The first failed, on
+  the check's own new line and not on the client: it looked for "RAID ON
+  HOME" in the page's text, where the top bar's field reads "Raid on your
+  homeworld: 0:13, forecast REPELLED" to a reader of the page. The second
+  to the fourth passed with exit 0 in 314, 313 and 340 s on the bundle
+  built before the forecast panel's corner text changed. The fifth to the
+  eighth passed with exit 0 on the final bundle, in 342, 362, 343 and
+  381 s. In all eight the raid was one Light Fighter of power 109 against
+  eight Light Fighters, a Solar Satellite and a Rocket Launcher, announced
+  after 40 to 100 ticks of waiting and forecast REPELLED with every fight
+  played destroyed; in the seven that went on it stood at home at tick
+  2,716 and was destroyed in the one round of tick 2,717, with nothing
+  lost and 900 metal and 300 crystal of wreckage. In every run the two
+  that scouted fled a fight that ended `fled`.
+
+**Not verified.**
+
+- No person played.
+- In a browser against the engine the only raid seen is the one above. A
+  raid lost, a raid outlasted, a raid without a fight, a battery losing a
+  unit, the rebuild, a share of the stockpile taken, a label other than
+  REPELLED, a raid of two classes, a raid fought for more than one round
+  with its rounds left counting down, and a fleet leaving a raid or
+  stopping its jump out of one are widget tests on the scripted world and
+  on the recorded fixtures. The flee control was on the Defence tab in the
+  browser, with the engine's quote; nobody pressed it there.
+- No outpost was founded in the browser: the check's fleet stands in ring
+  5, reads the survey with level 1's platform and is refused. The
+  outpost's panel with its platform and forecast, its screen, a raid
+  fought and lost there, the breach and the repair are widget tests, and
+  their pictures are the widget tests'.
+- The two refusals stage 1 named, `abandon_outpost` during a raid and
+  flight from a dock at the deployed-fleet limit, were not produced on a
+  page. The client prints a refusal as the engine words it, and the flee
+  control's `refusal` is tested on the windshield, not on the Defence tab.
+- The scripted world's forecast is never `at_risk` and its raids never fly
+  two classes; `AT RISK` on a page is the recorded fixture's.
+- The away report after a raid fought during an absence was not read in a
+  browser; its lines are the engine's alerts.
+- In the story test of the outpost the script lifts the fleet out of the
+  raid by hand, and the lanes the flee control had asked the world about
+  are answered "No lane" as toasts. It is the test's own doing; the engine
+  moves no fleet that way.
+- `tools/playtest` was not run. `play.py` was parsed, not executed.
+- Worlds of bots were played once each after the forecast changed, at the
+  default seed.
+
+**Kept out of the tree.** Nothing was moved to `.archive/` in this stage:
+the fixture generator removed no file.
+
 **Unsure of** is in `docs/design/decisions.md` under today's date, with
 the decisions and what undoes each.
