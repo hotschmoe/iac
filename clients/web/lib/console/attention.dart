@@ -6,6 +6,7 @@ import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
 import '../state/state_mapper.dart' show amountsOf, shortBy;
+import 'battle.dart' show ticksOf;
 import 'intel.dart' show clockFmt;
 import 'notifier.dart';
 import 'prefs.dart';
@@ -22,7 +23,8 @@ class Notice {
 }
 
 /// Watches the game for what needs the player: a queue that finished or went
-/// idle, a raid, a lost fleet, full storage, and at the outpost a raid, a
+/// idle, a raid, a lost fleet, a group that sets out after a fleet, full
+/// storage, and at the outpost a raid, a
 /// breach, a finished level, a full store and a repair that waits for its
 /// materials. While the page is in the
 /// background each one is counted for the tab title and, if the player
@@ -177,6 +179,10 @@ class Attention extends ChangeNotifier {
                   critical: true));
         case proto.OutpostCompletedEvent(:final sector, :final level):
           out.add(Notice('outpost-level', level == 1 ? 'Outpost open' : 'Outpost level finished', 'Level $level of your outpost at ${sector.q}, ${sector.r} is finished.'));
+        case proto.PursuitEvent(mine: true, phase: proto.PursuitPhase.began, :final label, :final fleetId, :final arrivesIn):
+          out.add(Notice('pursuit-$fleetId', 'Fleet pursued',
+              'The $label is after fleet F$fleetId${arrivesIn == null ? '' : ' and lands where it stands in ${ticksOf(arrivesIn)}'}.',
+              critical: true));
         case proto.FleetDestroyedEvent(mine: true, :final fleetId, :final sector):
           out.add(Notice('fleet-$fleetId', 'Fleet lost', 'Fleet F$fleetId was destroyed in sector ${sector.q}, ${sector.r}. Every ship is gone.', critical: true));
         case proto.AlertEvent(level: proto.AlertLevel.critical, :final message, :final fleetId) when fleetId == null || !lost.contains(fleetId):

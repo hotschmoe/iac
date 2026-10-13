@@ -5,7 +5,7 @@ import 'package:flutter/material.dart' show Tooltip;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/console/services.dart';
-import 'package:iac_client/design/panel.dart' show KeyCap;
+import 'package:iac_client/design/panel.dart' show KeyCap, Kv;
 import 'package:iac_client/hex/hex_math.dart' as hm;
 import 'package:iac_client/models/fleet.dart' as ui;
 import 'package:iac_client/models/game_state.dart';
@@ -53,13 +53,16 @@ class FakeGame extends GameController {
   }
 }
 
-ui.FleetState _fleet(proto.Hex at, {int fuel = 100, double? jumpFuelExact}) => ui.FleetState(
+ui.FleetState _fleet(proto.Hex at, {int fuel = 100, double? jumpFuelExact, proto.Pursuit? pursuedBy}) => ui.FleetState(
       id: 7,
       name: 'F7',
       sector: at,
+      pursuedBy: pursuedBy,
       status: ui.FleetStatus.idle,
       shipCount: 3,
-      ships: const [ui.ShipState(shipClass: 'Light Fighter', count: 3, hull: 1200, hullMax: 1200, ids: [1, 2, 3])],
+      ships: [shipRow(proto.ShipClass.lightFighter, 3)],
+      hull: 1200,
+      hullMax: 1200,
       fuel: fuel,
       fuelMax: 120,
       jumpFuel: 5,
@@ -79,9 +82,9 @@ GameState _state(int tick, List<ui.FleetState> fleets) {
       resources: const proto.SectorResources(metal: proto.Density.rich, crystal: proto.Density.sparse, deuterium: proto.Density.none),
       connections: [for (final n in h.neighbors()) if (n.distFromOrigin <= 6) n],
       hostiles: hostile
-          ? const [proto.NpcFleetInfo(id: 9, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.cruiser, count: 1)], behavior: proto.NpcBehavior.aggressive)]
+          ? [hostileGroup(9, [shipRow(proto.ShipClass.cruiser, 1)], proto.NpcBehavior.aggressive)]
           : minor
-              ? const [proto.NpcFleetInfo(id: 10, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 1)], behavior: proto.NpcBehavior.patrol)]
+              ? [hostileGroup(10, [shipRow(proto.ShipClass.lightFighter, 1)], proto.NpcBehavior.patrol)]
               : null,
       threat: hostile
           ? const proto.ThreatInfo(rating: 6, estPower: 137.5, basis: proto.ThreatBasis.observed)
@@ -109,11 +112,9 @@ GameState _state(int tick, List<ui.FleetState> fleets) {
     fleets: fleets,
     buildQueue: const [],
     shipyard: const [],
-    docked: 'none',
     research: const ResearchState(name: 'Idle', time: '-', pct: 0, completed: []),
     events: const [],
     alerts: const [],
-    sector: SectorInfo.unknown,
     homeworld: _home,
     waypoints: const [],
     sectors: sectors,
@@ -157,7 +158,10 @@ Future<void> clickHex(WidgetTester tester, proto.Hex h, {Size size = _win}) asyn
 
 String _text(WidgetTester t, String key) => (t.widget(find.byKey(Key(key))) as Text).textSpan?.toPlainText() ?? (t.widget(find.byKey(Key(key))) as Text).data ?? '';
 
-proto.MovePreview _preview(proto.Hex target, {double ratio = 1.3, proto.RatioLabel label = proto.RatioLabel.even, int hops = 1, int? charted = 9}) => proto.MovePreview(
+proto.MovePreview _preview(proto.Hex target,
+        {double ratio = 1.3, proto.RatioLabel label = proto.RatioLabel.even, int hops = 1, int? charted = 9, proto.FlightQuote? flight}) =>
+    proto.MovePreview(
+      flight: flight,
       fleetId: 7,
       target: target,
       fuelCost: 5,
@@ -242,6 +246,98 @@ void main() {
     expect(_text(tester, 'ore-reserve-Crystal'), '3/3');
     expect(find.byKey(const Key('ore-reserve-Deut')), findsNothing);
     expect(find.textContaining('FOR THIS DISTANCE'), findsNothing);
+
+    await m.moveTo(at(const proto.Hex(3, 0), _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<Kv>(find.byKey(const Key('inspector-hostile-9'))).v, 'AGGRESSIVE - 1 SHIP');
+    expect(textUnder(tester, find.byKey(const Key('inspector-hostile-9-Cruiser'))), 'CRUISER\n1\n2,700 / 2,700',
+        reason: 'a group in sight is listed by class: its count and its hull against full hull');
+    await shot(tester, 'map-hostile-group-1440');
+    await m.moveTo(at(const proto.Hex(1, 0), _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<Kv>(find.byKey(const Key('inspector-fleet-7'))).v, '3 SHIPS - HULL 1,200 / 1,200');
+    await m.removePointer();
+    await endShell(tester, g);
+  });
+
+  testWidgets('a pursuit is drawn on the map and told in the sector panel: the lane the group jumps down, the fleet it is after, what it musters and when it is whole',
+      (tester) async {
+    const lair = proto.Hex(3, 0), landed = proto.Hex(2, 0), old = proto.Hex(0, 3);
+    final g = await openMap(tester);
+    final was = _state(1000, [
+      _fleet(landed, pursuedBy: const proto.Pursuit(groupId: 9, label: 'cruiser pack', from: lair, arrivesIn: 2, catches: false, hexesLeft: 1)),
+    ]);
+    proto.SectorState holding(proto.Hex h, proto.NpcFleetInfo group, {required bool live}) => proto.SectorState(
+        location: h,
+        terrain: proto.TerrainType.empty,
+        resources: was.sectors[h]!.resources,
+        connections: was.sectors[h]!.connections,
+        hostiles: [group],
+        threat: was.sectors[h]!.threat,
+        lastSeen: live ? 1000 : 400,
+        live: live);
+    g.fake = was.copyWith(sectors: {
+      ...was.sectors,
+      lair: holding(
+          lair,
+          hostileGroup(9, [shipRow(proto.ShipClass.cruiser, 1, damaged: 1, hullLost: 900)], proto.NpcBehavior.aggressive,
+              muster: 2,
+              wholeAt: 1300,
+              chaseHexes: 2,
+              jumpTicks: 2,
+              errand: const proto.GroupErrand(home: lair, quarry: 7, quarryOwner: 'Pilot', to: landed, arrivesAt: 1002, hexesLeft: 1)),
+          live: true),
+      old: holding(old, hostileGroup(10, [shipRow(proto.ShipClass.lightFighter, 1)], proto.NpcBehavior.patrol, muster: 3, wholeAt: 900, chaseHexes: 1), live: false),
+    });
+    g.notifyListeners();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final m = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await m.addPointer(location: Offset.zero);
+    await m.moveTo(at(lair, _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<Kv>(find.byKey(const Key('inspector-hostile-9'))).v, 'AGGRESSIVE - 1 OF 2 SHIPS');
+    expect(textUnder(tester, find.byKey(const Key('inspector-hostile-9-whole'))), startsWith('WHOLE AGAIN IN 5:00  '));
+    expect(_text(tester, 'inspector-hostile-9-chase'), 'FOLLOWS 2 HEXES, A JUMP TAKES IT 2 TICKS, F7 3 TICKS.');
+    expect(_text(tester, 'inspector-hostile-9-errand'), 'AFTER YOUR F7, JUMPING TO 2, 0, LANDS IN 2 TICKS, AND 1 HEX MORE.');
+    await shot(tester, 'map-pursuit-1440');
+
+    await m.moveTo(at(landed, _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(_text(tester, 'inspector-pursued-7'),
+        'PURSUED: THE CRUISER PACK LANDS IN 2 TICKS, FROM 3, 0. A JUMP ORDERED NOW IS GONE BEFORE IT LANDS; A FLEET THAT STAYS IS CAUGHT. IT FOLLOWS 1 HEX MORE AFTER THIS ONE.');
+    expect(_text(tester, 'fleet-chip-status-7'), 'PURSUED - IDLE');
+
+    await m.moveTo(at(old, _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<Kv>(find.byKey(const Key('inspector-hostile-10'))).v, 'PATROL - 1 OF 3 SHIPS');
+    expect(textUnder(tester, find.byKey(const Key('inspector-hostile-10-whole'))), startsWith('WHOLE AGAIN BY NOW, IF NOTHING DISTURBED IT  '),
+        reason: 'a group last seen wounded, whose time to mend has passed since');
+    expect(tester.takeException(), isNull, reason: 'the lanes of the pursuit are drawn');
+    await m.removePointer();
+    await endShell(tester, g);
+  });
+
+  testWidgets('a jump the server previews for a fleet in a fight is shown as flight, in the sector panel and in the route, with the quote for that lane', (tester) async {
+    const quote = proto.FlightQuote(
+        fuel: 5,
+        ticks: 3,
+        rounds: 2,
+        ratio: .7,
+        label: proto.RatioLabel.deadly,
+        chase: proto.ChaseForecast(groupId: 9, label: 'cruiser pack', hexes: 2, jumpTicks: 2, roundsPerHex: 1));
+    const said = 'THE FLEET IS IN A FIGHT, SO THIS JUMP IS FLIGHT: 5 FUEL, GONE IN 3 TICKS, 2 ROUNDS UNDER FIRE. '
+        'THE CRUISER PACK FOLLOWS 2 HEXES AND FIRES 1 ROUND AT EACH ON A FLEET THAT JUMPS ON AT ONCE; ONE THAT STOPS IS CAUGHT.';
+    final g = await openMap(tester);
+    final m = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await m.addPointer(location: Offset.zero);
+    await m.moveTo(at(const proto.Hex(2, -1), _win));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('inspector-flight')), findsNothing, reason: 'a fleet in no fight has no flight to show');
+    _answer(g, _preview(const proto.Hex(2, -1), flight: quote));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(_text(tester, 'inspector-flight'), said);
+    expect(_text(tester, 'route-flight'), said);
     await m.removePointer();
     await endShell(tester, g);
   });

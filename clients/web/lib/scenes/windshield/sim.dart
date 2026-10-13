@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import '../../console/battle.dart' show markScale, marksFor, shortCount, volleysByWeight;
 import '../../console/prefs.dart';
 import '../../models/fleet.dart' as ui;
 import '../../protocol/protocol.dart' as proto;
@@ -9,15 +10,28 @@ import 'geometry.dart';
 
 const tau = math.pi * 2;
 
+/// One mark on the scope. It stands for [WindshieldSim.scale] ships of its
+/// class, or for the last few of them: the scope never draws a ship each.
 class Unit {
   final int id;
   final proto.ShipClass cls;
   final bool enemy;
-  double hull, hullMax, shield, shieldMax;
   double x = 0, y = 0, tx = 0, ty = 0, ang = 0, flash = 0;
+
+  /// A shield that took a hit lights up and fades.
+  double screen = 0;
   bool dead = false;
+
+  /// When a round's loss takes this mark off the scope, after the fire that
+  /// did it has landed.
+  double? dieAt;
+
+  /// It has been given its place on the scope.
+  bool placed = false;
   double ph = 0, bx = 0, by = 0;
-  Unit(this.id, this.cls, this.enemy, this.hull, this.hullMax, this.shield, this.shieldMax);
+  Unit(this.id, this.cls, this.enemy);
+
+  bool get gone => dead || dieAt != null;
 }
 
 class Asteroid {
@@ -28,12 +42,14 @@ class Asteroid {
   Asteroid(this.x, this.y, this.r, this.rot, this.vr, this.vx, this.vy, this.ore, this.seed, this.n);
 }
 
+/// A stroke of fire from one mark to another, standing for a volley of the
+/// round: [hull] when the volley reached hulls, otherwise shields took it.
 class Shot {
   final Unit a, t;
   final bool side;
   final double t0, dur;
-  final double shield, hull;
-  Shot(this.a, this.t, this.side, this.t0, this.dur, this.shield, this.hull);
+  final bool hull;
+  Shot(this.a, this.t, this.side, this.t0, this.dur, {required this.hull});
 }
 
 class Spark {
@@ -134,8 +150,20 @@ class WindshieldSim {
   proto.SectorState? sector;
   ui.FleetState? fleet;
 
+  /// The most marks either side is drawn with, which every class of ship
+  /// fits in with one mark each.
+  static const marksASide = 16;
+
+  /// The most volleys of a side a round draws, and strokes of fire a volley.
+  static const _volleysDrawn = 6, _strokesAVolley = 3;
+
+  /// Ships one mark stands for, the same for both sides so that the scope
+  /// shows which is the larger: 1 while both fit in [marksASide].
+  int scale = 1;
+
   List<Unit> own = [];
   List<Unit> hostiles = [];
+  int _nextMark = 1;
   List<Asteroid> ast = [];
   List<Gas> gas = [];
   List<Bit> bits = [];
@@ -265,8 +293,7 @@ class WindshieldSim {
       }
     }
     _syncProps(s, r);
-    _buildOwn(f, keepPos: false);
-    _syncHostiles(s, fresh: true);
+    _syncMarks(f, s, fresh: true);
   }
 
   Map<String, int> _ore(proto.SectorState? s) => {
@@ -291,73 +318,121 @@ class WindshieldSim {
     }
   }
 
-  void _buildOwn(ui.FleetState f, {required bool keepPos}) {
-    final old = {for (final u in own) u.id: u};
+  /// Set the marks from the state: so many of each class as [scale] makes
+  /// of the fleet's rows and of the hostile groups' rows. A mark the state
+  /// no longer accounts for goes without a sound; a loss in a fight is
+  /// shown by the round that reports it ([onEvent]), which comes first.
+  void _syncMarks(ui.FleetState f, proto.SectorState? s, {required bool fresh}) {
+    final ownRows = [for (final g in f.ships) (g.shipClass, g.count)];
+    final hostileRows = [
+      for (final h in s?.hostiles ?? const <proto.NpcFleetInfo>[])
+        for (final g in h.ships) (g.shipClass, g.count),
+    ];
+    scale = markScale([ownRows.map((r) => r.$2), hostileRows.map((r) => r.$2)], most: marksASide);
+    own = _marks(fresh ? const [] : own, ownRows, enemy: false);
+    hostiles = _marks(fresh ? const [] : hostiles, hostileRows, enemy: true);
+    _formOwn(snap: fresh);
+    _formHostiles(snap: fresh);
+  }
+
+  /// The marks of one side for [rows], keeping those of [old] that still
+  /// stand for something. A mark a round is taking off the scope stays
+  /// until it has gone, and counts for nothing.
+  List<Unit> _marks(List<Unit> old, List<(proto.ShipClass, int)> rows, {required bool enemy}) {
+    final want = <proto.ShipClass, int>{};
+    for (final (cls, count) in rows) {
+      want[cls] = (want[cls] ?? 0) + marksFor(count, scale);
+    }
     final out = <Unit>[];
-    var synth = 1;
-    for (final g in f.ships) {
-      final cls = proto.ShipClass.values.firstWhere((c) => c.label.toLowerCase() == g.shipClass.toLowerCase(), orElse: () => proto.ShipClass.lightFighter);
-      for (var i = 0; i < g.count; i++) {
-        final id = i < g.ids.length ? g.ids[i] : f.id * 1000 + synth++;
-        final prev = old[id];
-        final hull = g.hull / g.count, hm = g.hullMax / g.count;
-        final u = prev ?? Unit(id, cls, false, hull, hm, cls.shield, cls.shield);
-        u.hull = hull;
-        u.hullMax = hm;
-        out.add(u);
+    for (final MapEntry(key: cls, value: n) in want.entries) {
+      final standing = [for (final u in old) if (u.cls == cls && !u.gone) u];
+      out.addAll(standing.take(n));
+      for (var i = standing.length; i < n; i++) {
+        out.add(Unit(_nextMark++, cls, enemy));
       }
     }
-    own = out;
-    final live = own.where((u) => !u.dead).toList();
-    for (var i = 0; i < live.length; i++) {
-      final fm = _formation(i);
-      live[i].tx = fm.dx * .1;
-      live[i].ty = .22 + fm.dy * .075;
-      if (!keepPos || (live[i].x == 0 && live[i].y == 0)) {
-        live[i].x = live[i].tx;
-        live[i].y = live[i].ty;
-      }
-      live[i].ang = 0;
-    }
+    out.addAll(old.where((u) => u.dieAt != null && !u.dead));
+    return out;
   }
 
-  Offset _formation(int i) {
-    const row = [Offset(0, 0), Offset(-1, .9), Offset(1, .9), Offset(-2, 1.8), Offset(2, 1.8), Offset(0, 1.8), Offset(-1, 2.7), Offset(1, 2.7)];
-    return i < row.length ? row[i] : Offset(0, i * .4);
-  }
+  /// How large the marks of each side are drawn, 1 at their full size:
+  /// smaller when a side has more of them than its ground holds.
+  double ownZoom = 1, hostileZoom = 1;
 
-  void _syncHostiles(proto.SectorState? s, {bool fresh = false}) {
-    final hs = s?.hostiles;
-    final want = <(proto.ShipClass, int)>[];
-    for (final h in hs ?? const <proto.NpcFleetInfo>[]) {
-      for (final sh in h.ships) {
-        want.add((sh.shipClass, sh.count));
-      }
-    }
-    final alive = hostiles.where((u) => !u.dead).length;
-    final total = want.fold<int>(0, (a, e) => a + e.$2);
-    if (total == 0) {
-      if (!combat) hostiles = [];
-      return;
-    }
-    if (fresh || hostiles.isEmpty || (!combat && alive != total)) {
-      final r = _seeded(loc ?? proto.Hex.origin);
-      var i = 0;
-      final list = <Unit>[];
-      for (final e in want) {
-        for (var k = 0; k < e.$2; k++) {
-          final cls = e.$1;
-          final u = Unit(900 + i++, cls, true, cls.hull, cls.hull, cls.shield, cls.shield)
-            ..x = (r.nextDouble() - .5) * .5
-            ..y = -.5 + r.nextDouble() * .18
-            ..ang = math.pi
-            ..ph = r.nextDouble() * tau;
-          u.bx = u.x;
-          u.by = u.y;
-          list.add(u);
+  /// What a mark takes of the scope at full size, as a share of the hex's
+  /// radius for each pixel of [_pxOf]: its width and its length.
+  static const _markWide = .0105, _markLong = .0145;
+
+  /// The sizes [_rows] tries, largest first.
+  static const _zooms = [1.0, .85, .7, .6, .5, .42, .35];
+
+  /// [marks] set out in rows across a ground [width] wide, at the largest
+  /// size whose rows are no deeper than [depth] in all: where each stands
+  /// across and how far in, and the size.
+  static (List<Offset>, double) _rows(List<Unit> marks, {required double width, required double depth}) {
+    const gap = .012;
+    for (final zoom in _zooms) {
+      final places = <Offset>[];
+      var row = <double>[], across = 0.0, deep = 0.0, long = 0.0;
+      void close() {
+        var x = -across / 2;
+        for (final w in row) {
+          places.add(Offset(x + w / 2, deep + long / 2));
+          x += w + gap;
         }
+        deep += long + gap;
+        row = [];
+        across = 0;
+        long = 0;
       }
-      hostiles = list;
+
+      for (final u in marks) {
+        final w = _pxOf(u.cls) * _markWide * zoom;
+        if (row.isNotEmpty && across + w > width) close();
+        row.add(w);
+        across += w + (row.length > 1 ? gap : 0);
+        long = math.max(long, _pxOf(u.cls) * _markLong * zoom);
+      }
+      if (row.isNotEmpty) close();
+      if (deep <= depth || zoom == _zooms.last) return (places, zoom);
+    }
+    return (const [], 1);
+  }
+
+  /// The fleet stands in rows below the centre of the scope.
+  void _formOwn({required bool snap}) {
+    final live = [for (final u in own) if (!u.gone) u];
+    final (places, zoom) = _rows(live, width: 1.0, depth: .6);
+    ownZoom = zoom;
+    for (final (i, u) in live.indexed) {
+      u.tx = places[i].dx;
+      u.ty = .16 + places[i].dy;
+      if (snap || !u.placed) {
+        u.x = u.tx;
+        u.y = u.ty;
+        u.placed = true;
+      }
+    }
+  }
+
+  /// Hostile marks stand in rows above it, and drift about their places
+  /// until a fight.
+  void _formHostiles({required bool snap}) {
+    final r = _seeded(loc ?? proto.Hex.origin);
+    final live = [for (final u in hostiles) if (!u.gone) u];
+    final (places, zoom) = _rows(live, width: 1.0, depth: .46);
+    hostileZoom = zoom;
+    for (final (i, u) in live.indexed) {
+      final phase = r.nextDouble() * tau;
+      u.tx = u.bx = places[i].dx;
+      u.ty = u.by = -.24 - places[i].dy;
+      if (snap || !u.placed) {
+        u.x = u.bx;
+        u.y = u.by;
+        u.ang = math.pi;
+        u.ph = phase;
+        u.placed = true;
+      }
     }
   }
 
@@ -365,8 +440,7 @@ class WindshieldSim {
     atHome = f.sector == home;
     final r = _seeded(f.sector);
     _syncProps(s, r);
-    _buildOwn(f, keepPos: true);
-    _syncHostiles(s);
+    _syncMarks(f, s, fresh: false);
     final wasHarvest = harvesting;
     harvesting = f.status == ui.FleetStatus.harvesting;
     if (harvesting && !wasHarvest) harvestRes = 'ore';
@@ -375,10 +449,7 @@ class WindshieldSim {
     } else if (boarding?.left != f.cooldown) {
       boarding = (left: f.cooldown, at: now);
     }
-    final nowCombat = f.status == ui.FleetStatus.combat;
-    if (nowCombat != combat) {
-      combat = nowCombat;
-    }
+    combat = f.underFire;
   }
 
   /// How far the boarding has come, 0 to 1, of the engine's boarding time:
@@ -429,46 +500,31 @@ class WindshieldSim {
 
   // ── server events ────────────────────────────────────────────
 
-  Unit? _ownById(int id) {
-    for (final u in own) {
-      if (u.id == id && !u.dead) return u;
-    }
-    return null;
+  /// A mark of [cls] still standing on [side], any of them.
+  Unit? _markOf(List<Unit> side, proto.ShipClass? cls) {
+    final marks = [for (final u in side) if (u.cls == cls && !u.gone) u];
+    return marks.isEmpty ? null : marks[rng.nextInt(marks.length)];
   }
 
-  Unit? _pick(List<Unit> l, int salt) {
-    final a = l.where((u) => !u.dead).toList();
-    if (a.isEmpty) return null;
-    return a[(salt.abs() + rng.nextInt(3)) % a.length];
-  }
-
+  /// A round of the fight in this sector is the scope's one source of fire
+  /// and of losses: its volleys are drawn as strokes between the marks of
+  /// the classes that exchanged them, and the units it reports lost take
+  /// their marks with them.
   void onEvent(proto.GameEvent e) {
     final k = e.kind;
     switch (k) {
-      case proto.CombatRoundEvent():
-        if (!k.mine) return;
+      case proto.BattleRoundKind(battleRound: final round):
+        if (round.sector != loc) return;
         combat = true;
-        final mineAttacks = k.attackerFleetId == fleetId;
-        final a = mineAttacks ? (_ownById(k.attackerShipId) ?? _pick(own, k.attackerShipId)) : _pick(hostiles, k.attackerShipId);
-        final t = mineAttacks ? _pick(hostiles, k.targetShipId) : (_ownById(k.targetShipId) ?? _pick(own, k.targetShipId));
-        if (a == null || t == null) return;
-        final delay = rng.nextDouble() * .5;
-        shots.add(Shot(a, t, mineAttacks, now + delay, .26, k.shieldAbsorbed, k.hullDamage));
+        _fire(round.fleets.volleys, own, hostiles, ours: true);
+        _fire(round.hostiles.volleys, hostiles, own, ours: false);
+        for (final g in round.fleets.groups) {
+          if (g.fleetId == fleetId) _take(g.units, own);
+        }
+        _take([for (final g in round.hostiles.groups) ...g.units], hostiles);
         onCue?.call('fire');
-      case proto.ShipDestroyedEvent():
-        if (k.sector != loc) return;
-        Unit? u;
-        if (k.isNpc) {
-          final c = hostiles.where((x) => !x.dead && x.cls == k.shipClass).toList();
-          u = c.isEmpty ? _pick(hostiles, 0) : c.first;
-        } else {
-          u = _ownById(k.shipId) ?? _pick(own, k.shipId);
-        }
-        if (u != null) {
-          u.dead = true;
-          _explode(u);
-        }
       case proto.CombatEndedEvent():
+        if (k.sector != loc) return;
         combat = false;
         for (final u in hostiles) {
           if (k.playerVictory && !u.dead) {
@@ -476,10 +532,44 @@ class WindshieldSim {
             _explode(u);
           }
         }
-      case proto.ScanCompletedEvent():
-        break;
       default:
         break;
+    }
+  }
+
+  /// Strokes of fire for the heaviest of [volleys], more of them for a
+  /// volley of many shots.
+  void _fire(List<proto.Volley> volleys, List<Unit> from, List<Unit> at, {required bool ours}) {
+    for (final v in volleysByWeight(volleys).take(_volleysDrawn)) {
+      final strokes = v.shots >= 100 ? _strokesAVolley : v.shots >= 10 ? 2 : 1;
+      for (var i = 0; i < strokes; i++) {
+        final a = _markOf(from, v.from.ship), t = _markOf(at, v.at.ship);
+        if (a == null || t == null) break;
+        shots.add(Shot(a, t, ours, now + rng.nextDouble() * .45, .26, hull: v.hullDamage > 0));
+      }
+    }
+  }
+
+  /// What a round took from one side: the marks that no longer stand for
+  /// any ship leave the scope once the fire has landed, and the loss is
+  /// printed over the class.
+  void _take(Iterable<proto.BattleUnits> units, List<Unit> side) {
+    final left = <proto.ShipClass, int>{}, lost = <proto.ShipClass, int>{};
+    for (final u in units) {
+      final cls = u.unit.ship;
+      if (cls == null) continue;
+      left[cls] = (left[cls] ?? 0) + marksFor(u.count, scale);
+      lost[cls] = (lost[cls] ?? 0) + u.lost;
+    }
+    for (final MapEntry(key: cls, value: n) in lost.entries) {
+      if (n == 0) continue;
+      final marks = [for (final u in side) if (u.cls == cls && !u.gone) u];
+      if (marks.isEmpty) continue;
+      for (final u in marks.reversed.take(math.max(0, marks.length - left[cls]!))) {
+        u.dieAt = now + .75 + rng.nextDouble() * .3;
+      }
+      final over = marks.last;
+      floats.add(Floater(over.x + .02, over.y - .07, '-${shortCount(n)}', over.enemy ? const Color(0xFFFFCC66) : const Color(0xFFFF8A5C), now + .75));
     }
   }
 
@@ -491,7 +581,7 @@ class WindshieldSim {
   }
 
   void _explode(Unit t) {
-    final sz = _pxOf(t.cls) / 300 * 1.2;
+    final sz = markPx(t) / 300 * 1.2;
     _burst(t.x, t.y, const Color(0xFFFFCC66), 22, 1.5);
     _burst(t.x, t.y, const Color(0xFFFF5A3C), 14, 1);
     rings.add(Ring(t.x, t.y, now, sz));
@@ -524,18 +614,15 @@ class WindshieldSim {
         proto.ShipClass.deathstar => 44,
       };
 
-  static double shipPx(proto.ShipClass c) => _pxOf(c);
+  /// How large [u] is drawn, in pixels at the reference scale.
+  double markPx(Unit u) => _pxOf(u.cls) * (u.enemy ? hostileZoom : ownZoom);
 
   void _impact(Shot s) {
     final t = s.t;
     if (t.dead) return;
     t.flash = 1;
-    t.shield -= math.min(t.shield, s.shield);
-    if (t.enemy) t.hull -= s.hull;
-    if (s.shield > 0) floats.add(Floater(t.x, t.y - .05, '-${s.shield.round()}', const Color(0xFF7FD4FF), now));
-    if (s.hull > 0) floats.add(Floater(t.x + .02, t.y - .08, '-${s.hull.round()}', const Color(0xFFFF8A5C), now));
-    final shieldOnly = s.shield > 0 && s.hull <= 0;
-    _burst(t.x, t.y, shieldOnly ? const Color(0xFF7FD4FF) : const Color(0xFFFFCC66), shieldOnly ? 5 : 9);
+    if (!s.hull) t.screen = 1;
+    _burst(t.x, t.y, s.hull ? const Color(0xFFFFCC66) : const Color(0xFF7FD4FF), s.hull ? 9 : 5);
     onCue?.call('hit');
   }
 
@@ -549,7 +636,7 @@ class WindshieldSim {
       var p = (now - w.t0) / 1.1;
       if (w.waiting && p >= .5) {
         p = .5;
-        if (now - w.t0 > 2.6) cancelWarp();
+        if (now - w.t0 > 2.6 && fleet?.fleeing == null) cancelWarp();
       }
       if (p >= 1) {
         warp = null;
@@ -559,25 +646,33 @@ class WindshieldSim {
         }
       }
     }
+    for (final u in [...own, ...hostiles]) {
+      final at = u.dieAt;
+      if (at != null && !u.dead && now >= at) {
+        u.dead = true;
+        _explode(u);
+      }
+    }
     for (final u in hostiles) {
       if (u.dead) continue;
       u.flash *= .9;
+      u.screen *= .92;
       if (!combat) {
-        u.x = u.bx + math.sin(time * .4 + u.ph) * .06;
-        u.y = u.by + math.cos(time * .3 + u.ph) * .03;
+        u.x = u.bx + math.sin(time * .4 + u.ph) * .02;
+        u.y = u.by + math.cos(time * .3 + u.ph) * .012;
         u.ang = math.pi + math.sin(time * .4 + u.ph) * .2;
       } else {
         final m = own.where((o) => !o.dead).firstOrNull;
         if (m != null) u.ang = math.atan2(m.x - u.x, -(m.y - u.y));
-        final i = hostiles.indexOf(u);
-        u.y += (-.34 + ((i % 2) * .1) - u.y) * .02;
-        u.x += ((i - (hostiles.length - 1) / 2) * .24 - u.x) * .02;
+        u.y += (u.ty - u.y) * .04;
+        u.x += (u.tx - u.x) * .04;
       }
     }
     final ww = warp;
     for (final u in own) {
       if (u.dead) continue;
       u.flash *= .9;
+      u.screen *= .92;
       if (ww != null) {
         var p = ((now - ww.t0) / 1.1).clamp(0.0, 1.0);
         if (ww.waiting) p = math.min(p, .5);
@@ -594,6 +689,8 @@ class WindshieldSim {
         u.ang = math.atan2(dy, dx) + math.pi / 2;
       } else {
         u.ang = combat ? 0 : u.ang * .9;
+        u.x += (u.tx - u.x) * .08;
+        u.y += (u.ty - u.y) * .08;
       }
     }
     for (final a in ast) {

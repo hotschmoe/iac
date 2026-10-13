@@ -33,7 +33,16 @@
 // engine's refusal of a typed order shown on screen with nothing charged, a
 // defence ordered by typed command), the catalogue in the homeworld's tabs
 // and their inspector, every screen pictured at
-// both widths, the bots on the board and acting, a reload that restores the
+// both widths, a flight and a fight (Light Fighters built by the batch into
+// the docked fleet, two split off by count through the picker and flown
+// into a group and out of it again: the flee control with the engine's
+// quote, the leaving panel, the parting rounds, the fled ending, the group
+// on their trail if it follows, the group's losses and when it mends; then
+// the rest flown at the same group, which they outweigh, the round panel
+// during the fight and at its end, the damage and the home dock's quote for
+// it, a refit waiting, and the mending and the refit at home), the bots on
+// the board and acting, a reload that
+// restores the
 // world, a two-hour absence caught up and reported with the page staying
 // responsive, a stall of the running page, a second tab kept out,
 // abandoning the save, and the same page from an origin that is not a
@@ -165,6 +174,9 @@ class Browser {
   final String _page;
   final Directory _shots;
   String? _worker;
+
+  /// The height of the window, which starts as a desktop's.
+  int _height = 900;
 
   /// Milliseconds the worker's clock runs ahead of the real one.
   int skewMs = 0;
@@ -345,6 +357,7 @@ class Browser {
 
   /// The viewport of a desktop window or of a phone held upright.
   Future<void> resize(int width, int height) async {
+    _height = height;
     await _send('Emulation.setDeviceMetricsOverride', {'width': width, 'height': height, 'deviceScaleFactor': 1, 'mobile': false});
     await Future<void>.delayed(const Duration(milliseconds: 700));
   }
@@ -385,8 +398,18 @@ class Browser {
     await _send('Input.dispatchMouseEvent', {'type': 'mouseReleased', ...at});
   }
 
-  /// A real click on the control whose label contains [label].
-  Future<void> click(String label) async => clickAt(await find(label));
+  /// A real click on the control whose label contains [label]. One that a
+  /// scrolling column holds below or above the window is wheeled into it
+  /// first, as a player would.
+  Future<void> click(String label) async {
+    var node = await find(label);
+    for (var tries = 0; tries < 3 && ((node['y'] as num) < 8 || (node['y'] as num) > _height - 8); tries++) {
+      await wheel(((node['y'] as num) - _height / 2).round(), x: (node['x'] as num).round());
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      node = await find(label);
+    }
+    await clickAt(node);
+  }
 
   Future<void> wheel(int deltaY, {int x = 720}) =>
       _send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': 500, 'deltaX': 0, 'deltaY': deltaY});
@@ -507,7 +530,20 @@ Future<void> main(List<String> args) async {
     process.kill();
     await process.exitCode;
     await host.stop();
-    profile.deleteSync(recursive: true);
+    // Chromium's helpers may still be writing their last files when the
+    // browser itself has gone: the profile is cleared once they have, and
+    // left where it is, with a word, if they never do.
+    for (var tries = 0; profile.existsSync(); tries++) {
+      try {
+        profile.deleteSync(recursive: true);
+      } on FileSystemException {
+        if (tries == 5) {
+          stderr.writeln('the browser profile was left at ${profile.path}');
+          break;
+        }
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+    }
   }
   exit(code);
 }
@@ -599,8 +635,8 @@ Future<void> loadHold(Browser browser) async {
   final hold = grouped((empty['cargo_capacity'] as num).floor());
   check(empty['laden'] == false && (empty['cargo']['deuterium'] as num) == 0 && (empty['cargo_capacity'] as num) > 100,
       'the fleet is docked with an empty hold of $hold');
-  final ships = [for (final s in empty['ships'] as List) (s as Map<String, dynamic>)['class']];
-  check('$ships' == '[LightFighter, LightFighter]', 'a new empire\'s fleet is two Light Fighters');
+  final ships = [for (final s in empty['ships'] as List) '${(s as Map<String, dynamic>)['count']}x ${s['class']}'];
+  check('$ships' == '[2x LightFighter]' && empty['ship_count'] == 2, 'a new empire\'s fleet is two Light Fighters, counted by class');
   check((await browser.text()).contains('0 / $hold'), 'the panel shows what is aboard and the size of the hold');
   await browser.shot('03a-hold-empty-1440');
 
@@ -669,21 +705,26 @@ Future<void> standingOrders(Browser browser) async {
   for (var i = 0; i < 6; i++) {
     await browser.click('least odds to fight up');
   }
-  await browser.until('the steppers at one hex and ten to one', () async {
+  await browser.untilText('leave a fight below');
+  for (var i = 0; i < 2; i++) {
+    await browser.click('leave a fight below up');
+  }
+  await browser.until('the steppers at one hex, ten to one and leaving below 1.3', () async {
     final text = await browser.text();
-    return text.contains('1 HEX') && text.contains('10.0X');
+    return text.contains('1 HEX') && text.contains('10.0X') && text.contains('1.3X');
   });
+  await browser.shot('21d-orders-seven-settings-1440');
   await browser.click('set patrol home');
   await browser.until('the orders on the wire', () => browser.tap('''t.sent.some((m) => m.type === "policy_update" && m.fleet_id === ${before['id']} &&
       m.preset === "patrol_home" && JSON.stringify(m.params) ===
-      JSON.stringify({min_fuel_pct: 10, cargo_return_pct: 85, max_range: 1, engage_ratio_x10: 100, fuel_budget_pct: 20, refine: false}))'''));
-  check(true, 'Set sends the doctrine with its settings, as the typed policy does');
+      JSON.stringify({min_fuel_pct: 10, cargo_return_pct: 85, max_range: 1, engage_ratio_x10: 100, disengage_ratio_x10: 13, fuel_budget_pct: 20, refine: false}))'''));
+  check(true, 'Set sends the doctrine with its seven settings, the disengage ratio among them, as the typed policy does');
 
   Future<String> report(String action) async => await browser.until(
       'the engine\'s "$action" report',
       () => browser.tap('t.events.findLast((e) => e.kind === "PolicyAction" && e.action === "$action")?.reason ?? null')) as String;
   final set = await report('engage');
-  check(set == 'doctrine set: patrol home (range 1, engage 10.0x, fuel budget 20% of deuterium income)', 'the engine confirms the orders: $set');
+  check(set == 'doctrine set: patrol home (range 1, engage 10.0x, disengage 1.3x, fuel budget 20% of deuterium income)', 'the engine confirms the orders: $set');
   const newest = 'JSON.stringify(t.events.findLast((e) => e.kind === "PolicyAction" && !["engage", "clear"].includes(e.action)) ?? null)';
   final first = jsonDecode(await browser.until('a report of what the fleet does under them',
       () => browser.tap(newest).then((found) => found == 'null' ? null : found)) as String) as Map<String, dynamic>;
@@ -701,11 +742,20 @@ Future<void> standingOrders(Browser browser) async {
       jsonEncode(flown) ==
           jsonEncode({
             'preset': 'patrol_home',
-            'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 1, 'engage_ratio_x10': 100, 'fuel_budget_pct': 20, 'refine': false},
+            'params': {
+              'min_fuel_pct': 10,
+              'cargo_return_pct': 85,
+              'max_range': 1,
+              'engage_ratio_x10': 100,
+              'disengage_ratio_x10': 13,
+              'fuel_budget_pct': 20,
+              'refine': false,
+            },
           }),
       'the fleet row carries patrol home with the settings in force: ${jsonEncode(flown)}');
   await browser.untilText('range 1 hex - engage 10.0x - fuel 20%');
-  check(true, 'and the panel shows them under the doctrine');
+  await browser.untilText('leaves a fight below 1.3x');
+  check(true, 'and the panel shows them under the doctrine, the ratio it leaves a fight below on a line of its own');
   await browser.shot('21d-orders-report-1440');
   await browser.resize(1100, 800);
   await browser.shot('21d-orders-report-1100');
@@ -1092,10 +1142,13 @@ Future<void> catalogue(Browser browser) async {
   }
 
   await browser.type('1');
-  final tiles = (await browser.text()).toLowerCase();
   final buildings = list('buildings');
-  check(buildings.length == 12 && buildings.every((o) => tiles.contains('${words(o['building_type']).toLowerCase()} level ${o['level']}')),
-      'the plan has a tile for each of the twelve buildings, at the level the engine gives it');
+  check(buildings.length == 12, 'the catalogue has twelve buildings');
+  await browser.until('a tile for each building at the level the engine gives it', () async {
+    final tiles = (await browser.text()).toLowerCase();
+    return buildings.every((o) => tiles.contains('${words(o['building_type']).toLowerCase()} level ${o['level']}'));
+  });
+  check(true, 'the plan has a tile for each of the twelve buildings, at the level the engine gives it');
   final nanite = buildings.indexWhere((o) => o['building_type'] == 'NaniteFactory');
   await select('1', nanite);
   final million = buildings[nanite]['next']['cost'] as Map<String, dynamic>;
@@ -1238,6 +1291,689 @@ Future<void> screens(Browser browser) async {
   await Future<void>.delayed(const Duration(milliseconds: 500));
   await browser.shotBoth('28-overview-log-help');
   await browser.wheel(-1600);
+}
+
+/// The fleet with [id] in the newest tick update; null once it is gone.
+Future<Map<String, dynamic>?> fleetWith(Browser browser, int id) async =>
+    ((await browser.last('tick_update'))!['fleets'] as List).cast<Map<String, dynamic>>().where((f) => f['id'] == id).firstOrNull;
+
+String spot(Object? hex) => '${(hex as Map)['q']},${hex['r']}';
+
+/// The chart as the engine holds it now, by sector: the typed `refresh`
+/// asks for a full state.
+Future<Map<String, Map<String, dynamic>>> chart(Browser browser) async {
+  final before = await browser.tap('t.counts.full_state') as int;
+  await browser.command('refresh');
+  await browser.until('a full state', () async => (await browser.tap('t.counts.full_state') as int) > before);
+  return {
+    for (final s in ((await browser.last('full_state'))!['known_sectors'] as List).cast<Map<String, dynamic>>()) spot(s['location']): s,
+  };
+}
+
+/// The fewest hops from [from] to [to] over the charted lanes, through
+/// sectors with no hostile group in them; null when the chart has no such way.
+List<String>? calmWay(Map<String, Map<String, dynamic>> sectors, String from, String to) {
+  final back = <String, String>{from: from};
+  final queue = [from];
+  while (queue.isNotEmpty) {
+    final at = queue.removeAt(0);
+    if (at == to) {
+      final way = <String>[];
+      for (var step = to; step != from; step = back[step]!) {
+        way.insert(0, step);
+      }
+      return way;
+    }
+    for (final lane in (sectors[at]?['connections'] as List? ?? const [])) {
+      final next = spot(lane);
+      if (back.containsKey(next) || !sectors.containsKey(next)) continue;
+      if (next != to && ((sectors[next]!['hostiles'] as List?) ?? const []).isNotEmpty) continue;
+      back[next] = at;
+      queue.add(next);
+    }
+  }
+  return null;
+}
+
+/// Fly fleet [id] one lane with the windshield's gate key, and wait until
+/// it stands there and the windshield has played the jump out.
+Future<void> jumpTo(Browser browser, int id, String hop) async {
+  final fleet = await browser.until('fleet $id ready to jump', () async {
+    final f = await fleetWith(browser, id);
+    return f != null && f['state'] != 'Moving' && f['cooldown_remaining'] == 0 ? f : null;
+  });
+  final here = fleet['location'] as Map<String, dynamic>;
+  final [q, r] = hop.split(',').map(int.parse).toList();
+  final gate = gates.entries.firstWhere((g) => g.value == (q - (here['q'] as int), r - (here['r'] as int)));
+  await browser.type(gate.key);
+  await browser.until('fleet $id at [$hop]', () async {
+    final f = await fleetWith(browser, id);
+    if (f == null) fail('fleet $id was lost on the way to [$hop]');
+    return spot(f['location']) == hop && f['state'] != 'Moving';
+  });
+  await Future<void>.delayed(const Duration(milliseconds: 1400));
+}
+
+/// At a phone's width, have the windshield's status sheet open or shut. It
+/// keeps the state it was last left in, and only an open one prints the
+/// fleet status.
+Future<void> sheet(Browser browser, {required bool open}) async {
+  if ((await browser.text()).toLowerCase().contains('fleet status') == open) return;
+  await browser.click('status');
+  await browser.until('the status sheet ${open ? 'open' : 'shut'}', () async => (await browser.text()).toLowerCase().contains('fleet status') == open);
+}
+
+int research(Map<String, dynamic> homeworld, String tech) =>
+    ((homeworld['research'] as List).firstWhere((r) => r['tech'] == tech) as Map<String, dynamic>)['level'] as int;
+
+/// Give the windshield the fleet [id], by the number key of its place in
+/// the fleet list.
+Future<void> select(Browser browser, int id) async {
+  final fleets = ((await browser.last('tick_update'))!['fleets'] as List).cast<Map<String, dynamic>>();
+  final place = fleets.indexWhere((f) => f['id'] == id);
+  if (place < 0) fail('fleet $id is gone');
+  await browser.type('${place + 1}');
+  await browser.untilText('f$id / ');
+}
+
+/// A scan by the fleet the windshield flies, and the chart as the engine
+/// holds it once the scan is back.
+Future<Map<String, Map<String, dynamic>>> scanned(Browser browser) async {
+  const scans = 't.events.filter((e) => e.kind === "ScanCompleted").length';
+  final before = await browser.tap(scans) as int;
+  await browser.type('v');
+  await browser.until('the scan to come back', () async => (await browser.tap(scans) as int) > before);
+  return chart(browser);
+}
+
+/// Whether [probe] comes true within [ms]. Nothing fails when it does not:
+/// what lasts a tick or two is pictured when it is caught and said to have
+/// been missed when it is not.
+Future<bool> soon(Future<bool> Function() probe, {required int ms}) async {
+  final deadline = DateTime.now().add(Duration(milliseconds: ms));
+  while (DateTime.now().isBefore(deadline)) {
+    if (await probe()) return true;
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  return false;
+}
+
+/// "20", "12.5": fuel as the page prints it.
+String fuelWords(num fuel) {
+  final tenths = (fuel * 10).round() / 10;
+  return tenths == tenths.roundToDouble() ? grouped(tenths.round()) : tenths.toStringAsFixed(1);
+}
+
+String plural(Object? n, String noun) => '$n $noun${n == 1 ? '' : 's'}';
+
+/// A flight, against the engine itself: the two Light Fighters that were
+/// split off jump into the group at [prey], which the six will fight later.
+///
+/// - In the fight the state quotes the jump out (`flight`): its fuel, its
+///   ticks, the rounds under fire, the odds as they stand, who would follow.
+///   The flee control prints the quote and every gate is a way out.
+/// - The gate key back to [door] sends an ordinary `move`. The fleet is
+///   `Moving` with `fleeing`, the page says it is leaving, and the rounds
+///   fought meanwhile name it as fleeing and carry no shot of its own.
+/// - The fight ends `fled`, with no wreckage, and the page says so where
+///   the two land.
+/// - If the group follows (`pursued_by`, a `Pursuit` event), the two jump on
+///   toward home at once and the banner and the map are pictured. A convoy
+///   never follows, and the hunt prefers convoys, so most runs see none.
+/// - The chart keeps the group as the two last saw it: its ships against
+///   its muster and the tick it will be whole at, which the map's panel for
+///   its sector prints. At this pace it mends in seconds.
+/// - The two fly [wayHome] with their damage, and the home dock mends them.
+///
+/// Returns the tick the group was to be whole at when the two last saw it,
+/// or null when they did it no lasting harm.
+Future<int?> flight(Browser browser,
+    {required int wing, required Map<String, dynamic> group, required String prey, required String door, required List<String> wayHome}) async {
+  print('  a flight');
+  final atPrey = 'e.sector.q + "," + e.sector.r === "$prey"';
+  final roundsAtPrey = 't.events.filter((e) => e.kind === "BattleRound" && $atPrey)';
+  final endsAtPrey = 't.events.filter((e) => e.kind === "CombatEnded" && e.mine && $atPrey)';
+  final rounds = await browser.tap('$roundsAtPrey.length') as int;
+  final ends = await browser.tap('$endsAtPrey.length') as int;
+  Future<Map<String, dynamic>> two(String when) async => (await fleetWith(browser, wing)) ?? fail('the two were destroyed $when');
+  (int, int) hex(String at) {
+    final [q, r] = at.split(',').map(int.parse).toList();
+    return (q, r);
+  }
+
+  String gateFrom(String from, String to) {
+    final (a, b) = (hex(from), hex(to));
+    return gates.entries.firstWhere((g) => g.value == (b.$1 - a.$1, b.$2 - a.$2)).key;
+  }
+
+  await jumpTo(browser, wing, prey);
+  var joined = (await two('on arrival'))['state'] == 'InCombat';
+  for (var wait = 0; wait < 12 && !joined && group['behavior'] != 'Passive'; wait++) {
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    joined = (await two('on arrival'))['state'] == 'InCombat';
+  }
+  for (var press = 0; press < 3 && !joined; press++) {
+    await browser.type('f');
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    joined = (await two('as they attacked'))['state'] == 'InCombat';
+  }
+  check(joined, 'the two are in a fight at [$prey]');
+
+  final fighting = await browser.until('the engine\'s quote for leaving the fight', () async {
+    final f = await two('before they could leave');
+    return f['flight'] != null ? f : null;
+  });
+  final quote = fighting['flight'] as Map<String, dynamic>;
+  final chase = quote['chase'] as Map<String, dynamic>?;
+  check(
+      quote['refusal'] == null && quote['ticks'] == (quote['rounds'] as int) + 1 && quote['label'] is String,
+      'the state quotes the jump out: ${fuelWords(quote['fuel'] as num)} fuel, gone in ${plural(quote['ticks'], 'tick')}, ${plural(quote['rounds'], 'round')} under fire; '
+      'the fight stands at ${(quote['ratio'] as num).toStringAsFixed(2)}, ${quote['label']}; '
+      '${chase == null ? 'nothing would follow' : 'the ${chase['label']} would follow ${plural(chase['hexes'], 'hex')}, ${plural(chase['rounds_per_hex'], 'round')} at each'}');
+  if (!const ['deadly', 'risky'].contains(quote['label'])) {
+    print('  the chart offered no group that outweighs the two: this flight is from a fight they might have won, '
+        'and a flight from one they could not, with the group on their trail, is the widget tests\'');
+  }
+  await browser.untilText('leave the fight');
+  final price = '${fuelWords(quote['fuel'] as num)} FUEL, GONE IN ${plural(quote['ticks'], 'TICK').toUpperCase()}, ${plural(quote['rounds'], 'ROUND').toUpperCase()} UNDER FIRE';
+  final control = (await browser.text()).toUpperCase();
+  check(
+      control.contains('A JUMP OUT COSTS') && control.contains(price) && control.contains('AS IT STANDS') && (control.contains('NOTHING FOLLOWS.') || control.contains(' FOLLOWS ')),
+      'the flee control prints the quote, the odds as they stand and who follows: $price');
+  check(control.contains('LEAVE THE FIGHT BY '), 'and a gate of a fleet in a fight is a way out of it');
+  await browser.shot('35-flee-control-1440');
+  await soon(() async => (await browser.tap('$roundsAtPrey.length') as int) > rounds, ms: 1500);
+
+  final sent = await browser.tap('t.sent.length') as int;
+  await browser.type(gateFrom(prey, door));
+  await browser.until('the move out of the fight on the wire', () => browser.tap('t.sent.slice($sent).some((m) => m.action === "move" && m.fleet_id === $wing)'));
+  final gone = await browser.until('the two leaving', () async {
+    final f = await two('as they left');
+    return f['fleeing'] != null || spot(f['location']) == door ? f : null;
+  });
+  if (gone['fleeing'] case final Map<String, dynamic> leaving) {
+    check(gone['state'] == 'Moving' && spot(leaving['to']) == door && gone['flight'] == null,
+        'the gate key is flight: the two are Moving to [$door], gone in ${plural(leaving['ticks'], 'tick')} with ${plural(leaving['rounds'], 'round')} more under fire');
+    if (await soon(() async => (await browser.text()).toUpperCase().contains('LEAVING THE FIGHT'), ms: 1200)) {
+      final page = (await browser.text()).toUpperCase();
+      check(page.contains('JUMP IN ') && page.contains('STOP CALLS THE JUMP OFF'), 'the page says they are leaving, counts the jump down, and says what Stop would cost');
+      await browser.shot('36-fleeing-1440');
+    } else {
+      print('  the jump landed before the leaving panel was read: it is not pictured');
+    }
+  } else {
+    print('  the two had landed before their flight was read from the state: the leaving panel is not pictured');
+  }
+
+  final ended = jsonDecode(await browser.until('the end of the fight the two left',
+      () => browser.tap('JSON.stringify($endsAtPrey[$ends] ?? null)').then((found) => found == 'null' ? null : found),
+      timeout: const Duration(seconds: 30)) as String) as Map<String, dynamic>;
+  final parting = jsonDecode(await browser.tap(
+          'JSON.stringify($roundsAtPrey.slice($rounds).filter((e) => e.fleets.groups.some((g) => g.fleet_id === $wing && g.fleeing)).map((e) => [e.round, e.tick, e.fleets.shots, e.hostiles.shots]))')
+      as String) as List;
+  if (ended['outcome'] == 'hostiles_destroyed' && parting.isEmpty) {
+    print('  the two destroyed the group in the round before their order to leave was taken: the jump was an ordinary one, and the ending of a flight is the widget tests\'');
+  } else {
+    check(ended['outcome'] == 'fled' && ended['player_victory'] == false && ended['salvage'] == null,
+        'the fight at [$prey] ended fled after ${plural(ended['rounds'], 'round')}, with no wreckage (outcome ${ended['outcome']})');
+    check(parting.length == quote['rounds'] && parting.every((r) => (r as List)[2] == 0),
+        'the two were fired on for ${plural(parting.length, 'parting round')} and fired no shot in them: (round, tick, their shots, the group\'s) $parting');
+    await browser.untilText('fled under fire');
+    check(true, 'where they land the page tells the end of the fight they left: FLED UNDER FIRE');
+  }
+
+  var landed = await browser.until('the two out of the fight', () async {
+    final f = await two('as they landed');
+    return spot(f['location']) == door && f['state'] != 'Moving' ? f : null;
+  });
+  var rest = wayHome;
+  if (landed['pursued_by'] case final Map<String, dynamic> hunter) {
+    final next = wayHome.firstOrNull;
+    if (next != null) await browser.type(gateFrom(door, next));
+    final began = jsonDecode(await browser.tap('JSON.stringify(t.events.findLast((e) => e.kind === "Pursuit" && e.fleet_id === $wing) ?? null)') as String) as Map<String, dynamic>?;
+    check(began != null && began['mine'] == true && began['group_id'] == hunter['group_id'],
+        'the ${hunter['label']} follows: it lands in ${plural(hunter['arrives_in'], 'tick')} from [${spot(hunter['from'])}], '
+        '${hunter['catches'] == true ? 'before the two can be gone' : 'after a jump ordered now is gone'}, and follows ${plural(hunter['hexes_left'], 'hex')} more');
+    if (await soon(() async => (await browser.text()).toUpperCase().contains('ARRIVES IN '), ms: 1500)) {
+      check((await browser.text()).toUpperCase().contains(' LANDS IN '), 'the pursuit stands over the panels, with what follows and when it lands');
+      await browser.shot('37-pursuit-1440');
+      await browser.type('gm');
+      await browser.untilText('click to plan a route');
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      await browser.shot('37b-map-pursuit-1440');
+      await browser.type('gw');
+      await browser.untilText('fleet status');
+    } else {
+      print('  the pursuit was over before its banner was read: it is not pictured');
+    }
+    if (next != null) {
+      landed = await browser.until('the two a jump further on', () async {
+        final f = await two('with the ${hunter['label']} on their trail');
+        return spot(f['location']) == next && f['state'] != 'Moving' ? f : null;
+      });
+      rest = wayHome.skip(1).toList();
+    }
+  } else {
+    print('  nothing follows the two${chase == null ? ', as the quote said' : ': the quote named the ${chase['label']}, which does not come to [$door]'}; '
+        'the pursuit banner is pictured from the widget tests');
+  }
+
+  int? wholeAt;
+  final remembered = ((((await chart(browser))[prey]!)['hostiles'] as List?) ?? const []).cast<Map<String, dynamic>>().where((g) => g['id'] == group['id']).firstOrNull;
+  if (remembered?['whole_at'] case final int at) {
+    wholeAt = at;
+    final now = (await browser.last('tick_update'))!['tick'] as int;
+    check(remembered!['muster'] == group['muster'] && (remembered['ship_count'] as int) <= (group['muster'] as int),
+        'the group keeps what the fight took: ${remembered['ship_count']} of ${plural(remembered['muster'], 'ship')}, '
+        'hull ${[for (final g in remembered['ships'] as List) '${g['hull']} of ${g['hull_max']}'].join(', ')}, whole again at tick $at (it is tick $now)');
+    if ((await two('with the group behind them'))['pursued_by'] == null) {
+      final here = hex(spot(landed['location'])), there = hex(prey);
+      final (dq, dr) = (there.$1 - here.$1, there.$2 - here.$2);
+      await browser.type('gm');
+      await browser.untilText('click to plan a route');
+      await browser.type('f');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await browser.clickAt({'x': 759 + mapHex * 1.5 * dq, 'y': 478 + mapHex * (sqrt3 / 2 * dq + sqrt3 * dr)});
+      if (await soon(() async => (await browser.text()).toUpperCase().contains('WHOLE AGAIN'), ms: 3000)) {
+        // The sector is in sensor range while the two stand beside it, so
+        // the panel shows the group as it is now, a step or two of mending
+        // on from what the chart held a moment ago.
+        final panel = (await browser.text()).toUpperCase();
+        final heading = panel.split('\n').where((line) => line.startsWith('${words(group['behavior']).toUpperCase()} - ')).firstOrNull;
+        check(heading != null && heading.contains(' SHIP') && panel.contains('A JUMP TAKES IT '),
+            'the map\'s panel for [$prey] lists the group ($heading), when it is whole again, how far it follows and its jump');
+        await browser.shot('39-wounded-group-1440');
+        print('  a phone\'s map keeps the route in its sheet, not the sector: a wounded group at 390 px is pictured from the widget tests, in the contacts');
+      } else {
+        print('  the map\'s panel for [$prey] did not show the wounded group: it is pictured from the widget tests');
+      }
+      await browser.press('Escape', 'Escape', 27);
+      await browser.press('Escape', 'Escape', 27);
+      await browser.type('gw');
+      await browser.untilText('fleet status');
+    } else {
+      print('  the group is still on the trail of the two, who fly on: its panel on the map is pictured from the widget tests');
+    }
+  } else {
+    print('  the two did the group no harm that lasts: a wounded group\'s panel is pictured from the widget tests');
+  }
+
+  final worn = await two('after the fight');
+  final damage = worn['repair'] as Map<String, dynamic>?;
+  print('  the two fly home ${damage == null ? 'whole' : 'with ${plural(damage['ships'], 'damaged ship')}, hull ${worn['hull']} of ${worn['hull_max']}'}, ${worn['ship_count']} of 2 left');
+  for (final hop in rest) {
+    await jumpTo(browser, wing, hop);
+  }
+  if (damage != null) {
+    final mended = await browser.until('the home dock\'s word on mending the two',
+        () => browser.tap('t.events.find((e) => e.kind === "Alert" && e.message.startsWith("fleet $wing was mended at the home dock"))?.message ?? null')) as String;
+    check((await two('at the dock'))['repair'] == null, 'home, the dock mends what the flight cost: "$mended"');
+  }
+  if ((await browser.text()).toUpperCase().contains('FLED UNDER FIRE')) {
+    await browser.shot('38-fled-ending-1440');
+    await browser.resize(390, 844);
+    await sheet(browser, open: true);
+    await soon(() async => !(await browser.text()).contains('Alert. '), ms: 11000);
+    await browser.shot('38-fled-ending-390');
+    await browser.resize(1440, 900);
+  } else {
+    print('  the report of the fight had been put away before the two were home: its fled ending is pictured from the widget tests');
+  }
+  return wholeAt;
+}
+
+/// The side of a hex on the map at its closest zoom, which F brings up
+/// around the fleet: `mapU` of the client, times the zoom of `centerOn`.
+const mapHex = 26 * 1.5;
+const sqrt3 = 1.7320508075688772;
+
+/// A fight, against the engine itself, from the yard to the dock and back.
+///
+/// - A Research Lab, Energy Technology and the Combustion Drive open the
+///   Light Fighter; six are ordered as one batch and are built into the
+///   fleet docked at home, which then counts eight of them, on the wire and
+///   on the page.
+/// - The fleet panel's picker takes two of them by count: the wire carries
+///   `split` with a class and a count and no ship id, and the engine names
+///   the new fleet.
+/// - The two that were split off scout by the gate keys for the nearest
+///   group the chart shows that the six outweigh about two to one, one of
+///   two ships or more before a single ship (which falls in one round) and a
+///   passive one before another. They fly into it and out again ([flight]),
+///   and go home.
+/// - The six fly the same way, wait a jump from the group until a scan
+///   shows it in its sector and whole (a group the two hurt keeps its losses
+///   and mends, in seconds at this pace; one that went after them comes
+///   back), and jump in. A group that does not attack is read on the map's
+///   panel for its sector and on the windshield, listed by class, before F
+///   fires on it.
+/// - The fight is a round a tick. The round panel is read while it lasts
+///   and when it has ended: the outcome, the rounds and the losses are the
+///   engine's `CombatEnded`.
+/// - The fleet carries its damage: the state quotes what the home dock
+///   would mend, and the page prints it. Armour Technology is researched
+///   while it is away, so a refit waits for it at home, and the page says
+///   that too.
+/// - Home, the dock mends and refits it and says so, and what is left of
+///   the two is merged back through the panel.
+///
+/// So small a fight lasts two or three seconds, so the round under way is
+/// pictured as it stands on a desktop only; a phone's picture is of the
+/// last round, opened after the end.
+Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
+  print('a fight');
+  final home = spot(homeHex);
+  final main = (await firstFleet(browser))['id'] as int;
+  await browser.type('gh');
+  await browser.untilText('build slot a');
+  await browser.command('build lab');
+  await passUntil(browser, 'a Research Lab', () async => level(await homeworld(browser), 'ResearchLab') >= 1);
+  await browser.command('build lab');
+  await browser.command('research energy');
+  await passUntil(browser, 'Energy Technology', () async => research(await homeworld(browser), 'EnergyTechnology') >= 1);
+  await browser.command('research combustion');
+  const batch = 6, all = batch + 2;
+  await passUntil(browser, 'the Combustion Drive, a second level of the lab and the price of $batch Light Fighters', () async {
+    final hw = await homeworld(browser);
+    if (research(hw, 'CombustionDrive') < 1 || level(hw, 'ResearchLab') < 2) return false;
+    final fighter = option(hw, 'ships', 'ship_class', 'LightFighter');
+    final (stock, cost) = (await stockpile(browser), fighter['unit_cost'] as Map<String, dynamic>);
+    return (fighter['requires'] as List).every((r) => r['met'] == true) &&
+        ['metal', 'crystal', 'deuterium'].every((k) => (stock[k] as num) >= batch * (cost[k] as num) + 1500);
+  });
+  await browser.command('ship lf $batch');
+  await browser.until('$batch Light Fighters ordered as one batch',
+      () => browser.tap('t.sent.some((m) => m.action === "build_ship" && m.ship_class === "LightFighter" && m.count === $batch)'));
+  await passUntil(browser, 'the $batch to be built', () async => (await fleetWith(browser, main))?['ship_count'] == all);
+  final built = (await fleetWith(browser, main))!;
+  final row = (built['ships'] as List).single as Map<String, dynamic>;
+  check(
+      row['class'] == 'LightFighter' && row['count'] == all && row['damaged'] == 0 && row['hull'] == row['hull_max'] && !row.containsKey('id'),
+      'the $batch were built into the docked fleet, which is a count: $all Light Fighters, hull ${row['hull']} of ${row['hull_max']}, no ship with an id');
+  final hw = await homeworld(browser);
+  check(hw['docked_ship_count'] == all && ((await browser.last('tick_update'))!['player'] as Map)['ship_count'] == all,
+      'the homeworld counts $all docked ships and the empire $all in all');
+
+  await browser.type('gw');
+  await browser.untilText('f$main / $all ships');
+  check((await browser.text()).toUpperCase().contains('LIGHT FIGHTER'), 'the fleet status lists the fleet by class and says $all ships');
+  await browser.click('manage fleet');
+  await browser.untilText('whole first');
+  // The picks live in the panel, and a phone's sheet that is shut holds no
+  // panel: they are made again wherever the panel has been opened anew.
+  Future<void> pickTwo() async {
+    for (var picked = 0; picked < 2 && !(await browser.text()).toLowerCase().contains('split off 2'); picked++) {
+      await browser.click('split off more light fighter');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    await browser.untilText('split off 2');
+  }
+
+  await pickTwo();
+  await browser.shot('23b-split-picker-1440');
+  await browser.resize(390, 844);
+  await sheet(browser, open: true);
+  await browser.untilText('fleet management');
+  await browser.wheel(900, x: 195);
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await pickTwo();
+  await browser.shot('23b-split-picker-390');
+  await browser.resize(1440, 900);
+  await pickTwo();
+  await browser.click('split off 2');
+  await browser.until('the split on the wire, by class and count', () => browser.tap('''t.sent.some((m) => m.action === "split" && m.fleet_id === $main &&
+      JSON.stringify(m.ships) === '[{"class":"LightFighter","count":2}]' && m.damaged_first === false && !("ship_ids" in m))'''));
+  final said = await browser.until('the engine\'s word on the split',
+      () => browser.tap('t.events.find((e) => e.kind === "Alert" && e.message.startsWith("fleet $main split: 2 ship(s) now fly as fleet "))?.message ?? null')) as String;
+  final wing = int.parse(said.split(' ').last);
+  await browser.until('the two fleets', () async => (await fleetWith(browser, main))?['ship_count'] == batch && (await fleetWith(browser, wing))?['ship_count'] == 2);
+  check(true, 'the picker splits two off by count: the wire names a class and a count, and the engine answers "$said"');
+  await browser.click('hide fleet');
+
+  print('  the hunt, flown by the two that were split off');
+  await select(browser, wing);
+  var prey = '';
+  final flown = <String>[];
+  for (var step = 0; prey.isEmpty; step++) {
+    if (step == 8) fail('no group the six outweigh two to one within eight scans of home');
+    if (step > 0) await Future<void>.delayed(const Duration(seconds: 4));
+    final sectors = await scanned(browser);
+    final six = (await fleetWith(browser, main))!, two = (await fleetWith(browser, wing))!;
+    final here = spot(two['location']);
+    final ways = [
+      for (final s in sectors.values)
+        if (((s['hostiles'] as List?) ?? const []).isNotEmpty && ((s['threat'] as Map)['est_power'] as num) * 1.9 <= (six['power'] as num))
+          (
+            calmWay(sectors, here, spot(s['location'])),
+            ((s['hostiles'] as List).first['ship_count'] as int >= 2 ? 0 : 2) + ((s['hostiles'] as List).first['behavior'] == 'Passive' ? 0 : 1),
+            ((s['threat'] as Map)['est_power'] as num) > (two['power'] as num) ? 0 : 1,
+          ),
+    ].where((w) => w.$1 != null && w.$1!.isNotEmpty).toList()
+      ..sort((a, b) => a.$2 != b.$2
+          ? a.$2.compareTo(b.$2)
+          : a.$3 != b.$3
+              ? a.$3.compareTo(b.$3)
+              : a.$1!.length.compareTo(b.$1!.length));
+    // A single ship falls in one round, before the round panel can be read:
+    // the first three scans look for a group of two or more, further out.
+    // Of two groups alike in that, the one that outweighs the two is taken,
+    // so that their flight is from a fight they could not win.
+    final near = ways.where((w) => w.$1!.length <= 4 && (w.$2 < 2 || step >= 3)).firstOrNull;
+    if (near != null) {
+      final way = near.$1!;
+      for (final hop in way.take(way.length - 1)) {
+        await jumpTo(browser, wing, hop);
+        flown.add(hop);
+      }
+      prey = way.last;
+    } else {
+      int ring(String at) {
+        final [q, r] = at.split(',').map(int.parse).toList();
+        return (q.abs() + r.abs() + (q + r).abs()) ~/ 2;
+      }
+
+      final calm = [
+        for (final lane in sectors[here]!['connections'] as List)
+          if (sectors.containsKey(spot(lane)) && ((sectors[spot(lane)]!['hostiles'] as List?) ?? const []).isEmpty && !flown.contains(spot(lane)) && spot(lane) != home)
+            spot(lane),
+      ]..sort((a, b) => ring(b).compareTo(ring(a)));
+      if (calm.isEmpty) fail('no calm way on from [$here]');
+      await jumpTo(browser, wing, calm.first);
+      flown.add(calm.first);
+    }
+  }
+  final spotted = (await chart(browser))[prey]!;
+  final mustered = (spotted['hostiles'] as List).first as Map<String, dynamic>;
+  print('  prey at [$prey]: ${[for (final g in mustered['ships'] as List) '${g['count']}x ${g['class']}'].join(', ')} (${mustered['behavior']}), '
+      'power ${(spotted['threat'] as Map)['est_power']} against the six\'s ${(await fleetWith(browser, main))!['power']} '
+      'and the two\'s ${(await fleetWith(browser, wing))!['power']}');
+  check(
+      (mustered['ships'] as List).every((g) => g['count'] is int && g['hull'] == g['hull_max'] && g['unit_hull'] is int) &&
+          mustered['ship_count'] == mustered['muster'] &&
+          mustered['whole_at'] == null &&
+          mustered['jump_ticks'] is int &&
+          mustered['chase_hexes'] is int,
+      'the group in sight is listed by class with its count, its hull and what one ship is; it is whole, '
+      'jumps in ${mustered['jump_ticks']} ticks and follows ${mustered['chase_hexes']} hex(es)');
+
+  final atPrey = 'e.sector.q + "," + e.sector.r === "$prey"';
+  final roundsAtPrey = 't.events.filter((e) => e.kind === "BattleRound" && $atPrey)';
+  final endsAtPrey = 't.events.filter((e) => e.kind === "CombatEnded" && e.mine && $atPrey)';
+  final wholeAt = await flight(browser,
+      wing: wing, group: mustered, prey: prey, door: flown.isEmpty ? home : flown.last, wayHome: [...flown.reversed.skip(1), if (flown.isNotEmpty) home]);
+
+  print('  the fight');
+  await select(browser, main);
+  for (final hop in flown) {
+    await jumpTo(browser, main, hop);
+  }
+  // The six stand a jump from the group. It may be out after the two, and
+  // what the chart holds of its sector is what the two last saw: a scan
+  // tells where it is and how it stands now.
+  // Where the two destroyed the group instead of leaving it, the six wait
+  // for the lair to stand again, which is another group.
+  final destroyed = await browser.tap('$endsAtPrey.some((e) => e.outcome === "hostiles_destroyed")') == true;
+  Map<String, dynamic>? sighted;
+  for (var look = 0; sighted == null; look++) {
+    if (look == 12) fail('the group of [$prey] was not back in its sector a minute after the two left it');
+    if (look > 0) await Future<void>.delayed(const Duration(seconds: 5));
+    final seen = (await scanned(browser))[prey]!;
+    final there = ((seen['hostiles'] as List?) ?? const []).cast<Map<String, dynamic>>();
+    if (there.length == 1 && (destroyed || there.single['id'] == mustered['id']) && there.single['errand'] == null && there.single['whole_at'] == null) {
+      sighted = seen;
+    }
+    if (look == 0 && there.length == 1 && wholeAt != null) {
+      final now = (await browser.last('tick_update'))!['tick'] as int;
+      final hurt = there.single['whole_at'] != null;
+      check(hurt || now >= wholeAt,
+          'when the six arrive at tick $now the group is ${hurt ? 'still hurt, ${there.single['ship_count']} of ${there.single['muster']} ships, whole at tick ${there.single['whole_at']}' : 'whole again'}: '
+          'the two had read that it would not be whole before tick $wholeAt');
+    }
+  }
+  final group = (sighted['hostiles'] as List).single as Map<String, dynamic>;
+  check(group['ship_count'] == group['muster'] && (group['ships'] as List).every((g) => g['hull'] == g['hull_max']),
+      'the six wait until it has mended: ${group['ship_count']} of ${group['muster']} ships, every hull whole');
+  final rounds = await browser.tap('$roundsAtPrey.length') as int;
+  final ends = await browser.tap('$endsAtPrey.length') as int;
+  await jumpTo(browser, main, prey);
+  var joined = (await fleetWith(browser, main))!['state'] == 'InCombat';
+  // A group that attacks by itself does so within a few ticks, and at this
+  // pace its lair stands again within the half minute the map would take.
+  for (var wait = 0; wait < 12 && !joined && group['behavior'] != 'Passive'; wait++) {
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    joined = (await browser.tap('$roundsAtPrey.length') as int) > rounds;
+  }
+  if (!joined) {
+    await browser.type('gm');
+    await browser.untilText('click to plan a route');
+    await browser.type('f');
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    await browser.clickAt({'x': 759, 'y': 478});
+    await browser.untilText('hostile group');
+    final panel = (await browser.text()).toUpperCase();
+    check(panel.contains('${words(group['behavior']).toUpperCase()} - ${group['ship_count']} SHIP') && panel.contains('F$main HERE'),
+        'the map\'s panel for the sector lists the group by class and the fleet standing in it');
+    await browser.shotBoth('29-map-hostile-group');
+    await browser.press('Escape', 'Escape', 27);
+    await browser.press('Escape', 'Escape', 27);
+    await browser.type('gw');
+    await browser.untilText('fleet status');
+    await browser.untilText('hostile group');
+    await browser.shotBoth('29b-windshield-hostile-group');
+    for (var press = 0; press < 3 && !joined; press++) {
+      await browser.type('f');
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      joined = await browser.tap('t.sent.some((m) => m.action === "attack" && m.fleet_id === $main)') == true;
+    }
+    check(joined, 'F fires on the group, a second press where the odds were not in yet');
+  } else {
+    print('  the group attacked on arrival: its panel on the map is not pictured');
+  }
+
+  await browser.until('the first round', () async => (await browser.tap('$roundsAtPrey.length') as int) > rounds);
+  final live = await browser.until('the round panel', () async {
+    final page = (await browser.text()).toUpperCase();
+    return page.contains('LOST SO FAR') || page.contains('ENDED - ') ? page : null;
+  });
+  await browser.shot('30-fight-round-1440');
+  if (live.contains('LOST SO FAR')) {
+    check(live.contains('BATTLE') && live.contains('STANDING') && live.contains('FLEETS FIRED') && live.contains('LIGHT FIGHTER > '),
+        'while the fight lasts the round panel says what stands on each side and who fired at what');
+  } else {
+    print('  the fight was over before its panel was read: the round under way is not pictured');
+  }
+  final ended = jsonDecode(await browser.until('the end of the fight',
+      () => browser.tap('JSON.stringify($endsAtPrey[$ends] ?? null)').then((found) => found == 'null' ? null : found),
+      timeout: const Duration(seconds: 90)) as String) as Map<String, dynamic>;
+  final fought = jsonDecode(await browser.tap('JSON.stringify($roundsAtPrey.slice($rounds).filter((e) => e.tick <= ${ended['tick']}))') as String) as List;
+  final elsewhere = await browser.tap(
+      'JSON.stringify(t.events.filter((e) => (e.kind === "BattleRound" || e.kind === "CombatEnded") && !($atPrey)).map((e) => [e.kind, e.sector.q, e.sector.r, e.tick, e.round ?? e.rounds, e.mine]))') as String;
+  if (elsewhere != '[]') print('  fights seen elsewhere in this run (kind, q, r, tick, round, mine): $elsewhere');
+  check(ended['outcome'] == 'hostiles_destroyed' && ended['player_victory'] == true && ended['rounds'] == fought.length,
+      'the fight at [$prey] ended with the hostiles destroyed after ${ended['rounds']} rounds, one BattleRound a round '
+      '(outcome ${ended['outcome']}, rounds ${[for (final r in fought) (r as Map)['round']]} on ticks ${[for (final r in fought) (r as Map)['tick']]})');
+  final first = fought.first as Map<String, dynamic>;
+  check((first['fleets']['volleys'] as List).isNotEmpty && first['fleets']['standing'] is int && !jsonEncode(first).contains('ship_id'),
+      'a round is by class: ${(first['fleets']['volleys'] as List).length} volley(s) of ours, ${first['fleets']['shots']} shots, and no ship is named');
+  await browser.untilText('hostiles destroyed');
+  final told = (await browser.text()).toUpperCase();
+  check(told.contains('ENDED - ${ended['rounds']} ROUND') && told.contains(' LOST ${group['ship_count']}X '),
+      'the panel says how it ended, after how many rounds, and that the group lost all ${group['ship_count']} of its ships');
+  await browser.shot('31-fight-end-1440');
+  await browser.click('show last round');
+  await browser.untilText('hostiles fired');
+  await browser.shot('31b-fight-last-round-1440');
+  await browser.resize(390, 844);
+  await sheet(browser, open: false);
+  await browser.shot('31-fight-end-strip-390');
+  await sheet(browser, open: true);
+  await browser.shot('31-fight-end-390');
+  if (!(await browser.text()).toLowerCase().contains('hostiles fired')) await browser.click('show last round');
+  await browser.untilText('hostiles fired');
+  await browser.shot('31b-fight-last-round-390');
+  await browser.resize(1440, 900);
+  await browser.click('dismiss');
+  await browser.until('the report put away', () async => !(await browser.text()).toUpperCase().contains('ENDED - '));
+  check(true, 'Dismiss puts the report of the fight away');
+
+  final worn = await browser.until('the fleet with its damage', () async {
+    final f = await fleetWith(browser, main);
+    return f != null && f['state'] != 'InCombat' ? f : null;
+  });
+  final quote = worn['repair'] as Map<String, dynamic>?;
+  check(quote != null && (worn['hull'] as int) < (worn['hull_max'] as int) && (quote['home'] as Map)['ships'] == quote['ships'] && (quote['home'] as Map)['price'] == 0,
+      'the fleet carries its damage out of the fight (hull ${worn['hull']} of ${worn['hull_max']}), and the state quotes the home dock: all ${quote?['ships']} for nothing');
+  final dock = 'HOME DOCK MENDS ALL ${quote!['ships']} (${grouped(quote['hull'] as int)} HULL) FOR NOTHING';
+  await browser.untilText(dock);
+  check((await browser.text()).toUpperCase().contains('${quote['ships']} DAMAGED SHIP'), 'the fleet status prints the damage and the quote: $dock');
+  await browser.command('research armour');
+  await browser.until('Armour Technology ordered', () => browser.tap('t.sent.some((m) => m.action === "research" && m.tech === "ArmourTechnology")'));
+  await browser.until('Armour Technology researched while the fleet is away', () async => (await fleetWith(browser, main))?['refit_due'] == true,
+      timeout: const Duration(seconds: 120));
+  await browser.untilText('a refit waits at the home dock');
+  final docked = await browser.until('the dock to refit the wing that is home', () async {
+    final f = await fleetWith(browser, wing);
+    return f != null && f['refit_due'] == false && (f['refit'] as Map)['armour'] == 1 ? f : null;
+  });
+  final away = (await fleetWith(browser, main))!;
+  check((away['refit'] as Map)['armour'] == 0 && away['refit_due'] == true && (docked['refit'] as Map)['armour'] == 1,
+      'the fleet in the field fights with Armour 0 and a refit waits for it; the wing at the dock has Armour 1 already');
+  await browser.shot('32-damaged-refit-waiting-1440');
+  await browser.resize(390, 844);
+  await sheet(browser, open: true);
+  await browser.wheel(480, x: 195);
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await browser.shot('32-damaged-refit-waiting-390');
+  await browser.wheel(-480, x: 195);
+  await browser.resize(1440, 900);
+
+  for (final hop in [...flown.reversed, home]) {
+    await jumpTo(browser, main, hop);
+  }
+  final mended = await browser.until('the home dock\'s word on the mending',
+      () => browser.tap('t.events.find((e) => e.kind === "Alert" && e.message.startsWith("fleet $main was mended at the home dock"))?.message ?? null')) as String;
+  final refitted = await browser.until('and on the refit',
+      () => browser.tap('t.events.find((e) => e.kind === "Alert" && e.message.startsWith("fleet $main was refitted at the home dock"))?.message ?? null')) as String;
+  final whole = await browser.until('the fleet whole again', () async {
+    final f = await fleetWith(browser, main);
+    return f != null && f['repair'] == null && f['refit_due'] == false ? f : null;
+  });
+  check(whole['hull'] == whole['hull_max'] && (whole['refit'] as Map)['armour'] == 1, 'home, the dock mends it and refits it: "$mended"; "$refitted"');
+  await browser.untilText('w0 s0 a1');
+  check(!(await browser.text()).toLowerCase().contains('a refit waits'), 'and the page shows the levels it now fights with and no damage');
+  await browser.shotBoth('33-home-mended-refitted');
+
+  final back = (await fleetWith(browser, wing))!['ship_count'] as int;
+  await browser.click('manage fleet');
+  await browser.click('merge f$wing in');
+  await browser.until('the merge on the wire', () => browser.tap('t.sent.some((m) => m.action === "merge" && m.fleet_id === $main && m.other_fleet_id === $wing)'));
+  await browser.until('one fleet again', () async => ((await browser.last('tick_update'))!['fleets'] as List).length == 1);
+  check((await fleetWith(browser, main))!['ship_count'] == (whole['ship_count'] as int) + back,
+      'the wing that fled, $back of its two left, is merged back through the panel');
+  await browser.click('hide fleet');
+  await browser.type('go');
+  await browser.untilText('admiral');
+  await browser.shotBoth('34-overview-after-the-fight');
 }
 
 /// The page as a player on the LAN gets it: over plain http from a name that
@@ -1383,6 +2119,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   await loadHold(browser);
   await firstSteps(browser);
   await screens(browser);
+  await fight(browser, home as Map<String, dynamic>);
 
   print('bots');
   final board = (jsonDecode(await browser.until('a leaderboard', () => browser.tap('t.boards.length ? JSON.stringify(t.boards[0]) : null')) as String)
@@ -1414,7 +2151,15 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   print('reload');
   const kept = {
     'preset': 'prospect',
-    'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 2, 'engage_ratio_x10': 15, 'fuel_budget_pct': 35, 'refine': false},
+    'params': {
+      'min_fuel_pct': 10,
+      'cargo_return_pct': 85,
+      'max_range': 2,
+      'engage_ratio_x10': 15,
+      'disengage_ratio_x10': 9,
+      'fuel_budget_pct': 35,
+      'refine': false,
+    },
   };
   await browser.type('gw');
   await browser.untilText('fleet status');

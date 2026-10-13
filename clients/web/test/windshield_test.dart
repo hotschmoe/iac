@@ -6,6 +6,7 @@ import 'dart:ui' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/battle.dart' show chaseLine, flightPrice, stopFlightRule, ticksOf;
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/design/panel.dart';
 import 'package:iac_client/models/fleet.dart' as ui;
@@ -13,6 +14,7 @@ import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/models/homeworld.dart';
 import 'package:iac_client/models/resources.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
+import 'package:iac_client/scenes/windshield/painter.dart' show ArenaPainter;
 import 'package:iac_client/state/command_parser.dart';
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/views/overlays.dart' show ToastLayer;
@@ -90,24 +92,53 @@ proto.ThreatInfo _threatOf(List<proto.NpcFleetInfo>? groups) {
   return proto.ThreatInfo(rating: rating, estPower: power, basis: proto.ThreatBasis.observed);
 }
 
+/// A fleet of whole ships, so many of each class named by its label; [rows]
+/// gives the rows themselves, for a fleet with damage in it.
 ui.FleetState fleet(int id, List<(String, int)> groups,
-        {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, proto.StandingOrders? orders, proto.Refining? refine}) =>
-    ui.FleetState(
-      orders: orders,
-      refine: refine,
-      id: id,
-      name: 'F$id',
-      sector: at,
-      status: status,
-      shipCount: groups.fold(0, (a, g) => a + g.$2),
-      ships: [for (var i = 0; i < groups.length; i++) ui.ShipState(shipClass: groups[i].$1, count: groups[i].$2, hull: 50.0 * groups[i].$2 ~/ 1, hullMax: 50 * groups[i].$2, ids: [for (var k = 0; k < groups[i].$2; k++) id * 100 + i * 10 + k])],
-      cargo: const ui.FleetCargo(capacity: 100),
-      fuel: fuel,
-      fuelMax: 120,
-      jumpFuel: 5,
-      homeFuel: 10,
-      power: groups.fold(0.0, (a, g) => a + proto.ShipClass.values.firstWhere((c) => c.label == g.$1).power * g.$2),
-    );
+    {proto.Hex at = here,
+    ui.FleetStatus status = ui.FleetStatus.idle,
+    int fuel = 80,
+    proto.StandingOrders? orders,
+    proto.Refining? refine,
+    List<proto.ShipGroupState>? rows,
+    proto.Refit refit = const proto.Refit(weapons: 0, shielding: 0, armour: 0),
+    bool refitDue = false,
+    proto.RepairQuote? repair,
+    proto.FlightQuote? flight,
+    proto.Fleeing? fleeing,
+    proto.Pursuit? pursuedBy,
+    proto.Hex? foughtAt,
+    int jumpTicks = 0}) {
+  final ships = rows ?? [for (final (label, count) in groups) shipRow(proto.ShipClass.values.firstWhere((c) => c.label == label), count)];
+  return ui.FleetState(
+    orders: orders,
+    refine: refine,
+    flight: flight,
+    fleeing: fleeing,
+    pursuedBy: pursuedBy,
+    foughtAt: foughtAt,
+    jumpTicks: jumpTicks,
+    id: id,
+    name: 'F$id',
+    sector: at,
+    status: status,
+    shipCount: ships.fold(0, (a, g) => a + g.count),
+    ships: ships,
+    hull: ships.fold(0, (a, g) => a + g.hull),
+    hullMax: ships.fold(0, (a, g) => a + g.hullMax),
+    attack: ships.fold(0, (a, g) => a + g.count * g.unitAttack),
+    shield: ships.fold(0, (a, g) => a + g.count * g.unitShield),
+    refit: refit,
+    refitDue: refitDue,
+    repair: repair,
+    cargo: const ui.FleetCargo(capacity: 100),
+    fuel: fuel,
+    fuelMax: 120,
+    jumpFuel: 5,
+    homeFuel: 10,
+    power: ships.fold(0.0, (a, g) => a + g.shipClass.power * g.count),
+  );
+}
 
 GameState world(List<ui.FleetState> fleets, Map<proto.Hex, proto.SectorState> sectors, {int tick = 500}) => GameState(
       tick: tick,
@@ -116,11 +147,9 @@ GameState world(List<ui.FleetState> fleets, Map<proto.Hex, proto.SectorState> se
       fleets: fleets,
       buildQueue: const [],
       shipyard: const [],
-      docked: 'none',
       research: const ResearchState(name: 'Idle', time: '-', pct: 0, completed: []),
       events: const [],
       alerts: const [],
-      sector: SectorInfo.unknown,
       homeworld: home,
       waypoints: const [],
       sectors: sectors,
@@ -132,8 +161,8 @@ GameState calm() => world([
     ], {
       here: sector(here, lanes: [const proto.Hex(2, -1), const proto.Hex(3, -1), const proto.Hex(3, 0)], salvage: const proto.Resources(metal: 40, crystal: 10, deuterium: 3)),
       const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
-      const proto.Hex(3, -1): sector(const proto.Hex(3, -1), lanes: [here], hostiles: const [
-        proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.heavyFighter, count: 2)], behavior: proto.NpcBehavior.patrol)
+      const proto.Hex(3, -1): sector(const proto.Hex(3, -1), lanes: [here], hostiles: [
+        hostileGroup(77, [shipRow(proto.ShipClass.heavyFighter, 2)], proto.NpcBehavior.patrol)
       ]),
       home: sector(home, lanes: [const proto.Hex(1, 0)]),
     });
@@ -141,11 +170,126 @@ GameState calm() => world([
 GameState hostileHere({ui.FleetStatus status = ui.FleetStatus.idle, int fighters = 1}) => world([
       fleet(1, [('Light Fighter', fighters)], status: status),
     ], {
-      here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: const [
-        proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.cruiser, count: 1), proto.NpcShipInfo(shipClass: proto.ShipClass.heavyFighter, count: 2)], behavior: proto.NpcBehavior.aggressive)
+      here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: [
+        hostileGroup(77, [shipRow(proto.ShipClass.heavyFighter, 2), shipRow(proto.ShipClass.cruiser, 1)], proto.NpcBehavior.aggressive)
       ]),
       const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
     });
+
+/// The classes that fly, in catalogue order.
+final flying = [for (final c in proto.ShipClass.values) if (c != proto.ShipClass.solarSatellite) c];
+
+proto.BattleUnits unitsOf(proto.ShipClass cls, int count, {int lost = 0, int damaged = 0, int atRisk = 0, int hullLost = 0}) => proto.BattleUnits(
+    unit: proto.ShipyardItem.ship(cls),
+    count: count,
+    damaged: damaged,
+    atRisk: atRisk,
+    hull: count * cls.hull.round() - hullLost,
+    hullMax: count * cls.hull.round(),
+    lost: lost);
+
+proto.Volley volley(proto.ShipClass from, proto.ShipClass at, int shots, {int bounced = 0, int wasted = 0, int absorbed = 0, int hull = 0, int destroyed = 0}) =>
+    proto.Volley(
+        from: proto.ShipyardItem.ship(from),
+        at: proto.ShipyardItem.ship(at),
+        shots: shots,
+        bounced: bounced,
+        wasted: wasted,
+        absorbed: absorbed,
+        hullDamage: hull,
+        destroyed: destroyed);
+
+/// The second round of three Light Fighters against the pack of [hostileHere]:
+/// a fighter and a Heavy Fighter fall in it. [leaving] marks the fleet as
+/// charging its jump out, which the engine reports as not firing.
+proto.BattleRoundEvent skirmish({bool leaving = false}) => proto.BattleRoundEvent(
+      sector: here,
+      round: 2,
+      fleets: proto.BattleSide(
+        groups: [
+          proto.BattleGroup(
+              fleetId: 1,
+              owner: 'Pilot',
+              mine: true,
+              fleeing: leaving,
+              units: [unitsOf(proto.ShipClass.lightFighter, 2, lost: 1, damaged: 1, atRisk: 1, hullLost: 150)]),
+        ],
+        standing: 2,
+        volleys: [
+          volley(proto.ShipClass.lightFighter, proto.ShipClass.heavyFighter, 2, absorbed: 50, hull: 50, destroyed: 1),
+          volley(proto.ShipClass.lightFighter, proto.ShipClass.cruiser, 1, absorbed: 10),
+        ],
+        shots: 3,
+        power: 150,
+        absorbed: 60,
+        hullDamage: 50,
+        destroyed: 1,
+      ),
+      hostiles: proto.BattleSide(
+        groups: [
+          proto.BattleGroup(
+              fleetId: 77,
+              label: '3x heavy fighter pack',
+              units: [unitsOf(proto.ShipClass.heavyFighter, 1, lost: 1), unitsOf(proto.ShipClass.cruiser, 1)]),
+        ],
+        standing: 2,
+        volleys: [
+          volley(proto.ShipClass.heavyFighter, proto.ShipClass.lightFighter, 2, absorbed: 20, hull: 280, destroyed: 1),
+          volley(proto.ShipClass.cruiser, proto.ShipClass.lightFighter, 1, bounced: 1),
+        ],
+        shots: 3,
+        power: 700,
+        absorbed: 20,
+        hullDamage: 280,
+        destroyed: 1,
+      ),
+      mine: true,
+    );
+
+/// The state a tick after [round] was fought: the fleet in the fight, and
+/// the fight with its losses so far.
+GameState fighting(proto.BattleRoundEvent round) => hostileHere(status: ui.FleetStatus.combat, fighters: 2).copyWith(battles: {
+      here: Battle(sector: here, rounds: round.round, round: round, losses: const [
+        proto.BattleLosses(fleetId: 1, owner: 'Pilot', mine: true, lost: [proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.lightFighter), count: 1)], destroyed: false),
+        proto.BattleLosses(
+            fleetId: 77,
+            label: '3x heavy fighter pack',
+            lost: [proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.heavyFighter), count: 2)],
+            destroyed: false),
+      ]),
+    });
+
+/// A round in which every class that flies fires at every class: a hundred
+/// and forty-four volleys a side.
+proto.BattleRoundEvent melee() {
+  proto.BattleSide side({required bool ours}) => proto.BattleSide(
+        groups: [
+          proto.BattleGroup(
+              fleetId: ours ? 1 : 77,
+              owner: ours ? 'Pilot' : null,
+              label: ours ? '' : '4800x small cargo swarm',
+              mine: ours,
+              units: [for (final c in flying) unitsOf(c, 388, lost: 12, damaged: 31, atRisk: 9, hullLost: 10 * c.hull.round())]),
+        ],
+        standing: 388 * flying.length,
+        volleys: [
+          for (final a in flying)
+            for (final t in flying)
+              volley(a, t, 34 + a.index,
+                  bounced: a.index < 2 ? 34 + a.index : 0,
+                  wasted: t.index,
+                  absorbed: 1200 * (a.index + 1),
+                  hull: 90000 * a.index + 1000 * t.index,
+                  destroyed: a == proto.ShipClass.deathstar && t == proto.ShipClass.lightFighter ? 180 : a.index ~/ 4),
+        ],
+        shots: 5712,
+        power: 123456789,
+        absorbed: 2345678,
+        hullDamage: 98765432,
+        destroyed: 144,
+      );
+  return proto.BattleRoundEvent(sector: here, round: 7, fleets: side(ours: true), hostiles: side(ours: false), mine: true);
+}
 
 GameState rated(GameState s, proto.Hex at, double ratio, proto.RatioLabel label) => s.copyWith(odds: {
       (1, at): OddsEntry(proto.SectorOdds(sector: at, threat: s.sectors[at]!.threat, ratio: ratio, label: label), s.tick),
@@ -226,7 +370,30 @@ Future<void> finish(WidgetTester tester, FakeController c) async {
   await c.ev.close();
 }
 
-proto.MovePreview preview(int fleetId, proto.Hex target, {double ratio = 1.3, proto.RatioLabel label = proto.RatioLabel.even, int hops = 2, int? charted = 17}) => proto.MovePreview(
+const pack = '3x heavy fighter pack';
+
+/// What the engine quotes fleet 1 for a jump out of the fight of
+/// [skirmish]: the pack follows it unless [followed] is false, and
+/// [refusal] is the engine's sentence when it would refuse the order.
+proto.FlightQuote wayOut({bool followed = true, String? refusal}) => proto.FlightQuote(
+    fuel: 5,
+    ticks: 2,
+    rounds: 1,
+    ratio: .54,
+    label: proto.RatioLabel.deadly,
+    refusal: refusal,
+    chase: followed ? const proto.ChaseForecast(groupId: 77, label: pack, hexes: 2, jumpTicks: 1, roundsPerHex: 1) : null);
+
+/// Fleet 1 in the fight of [skirmish], with what the state says of leaving it.
+GameState inFight({proto.FlightQuote? flight, proto.Fleeing? fleeing, bool leaving = false}) => fighting(skirmish(leaving: leaving)).copyWith(fleets: [
+      fleet(1, [('Light Fighter', 2)],
+          status: fleeing == null ? ui.FleetStatus.combat : ui.FleetStatus.enRoute, flight: flight, fleeing: fleeing, foughtAt: here, jumpTicks: 2),
+    ]);
+
+proto.MovePreview preview(int fleetId, proto.Hex target,
+        {double ratio = 1.3, proto.RatioLabel label = proto.RatioLabel.even, int hops = 2, int? charted = 17, proto.FlightQuote? flight}) =>
+    proto.MovePreview(
+      flight: flight,
       fleetId: fleetId,
       target: target,
       fuelCost: 5,
@@ -432,8 +599,8 @@ void main() {
 
   testWidgets('favourable odds fire at once', (tester) async {
     final s = world([fleet(1, [('Cruiser', 3)])], {
-      here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: const [
-        proto.NpcFleetInfo(id: 5, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 1)], behavior: proto.NpcBehavior.patrol)
+      here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: [
+        hostileGroup(5, [shipRow(proto.ShipClass.lightFighter, 1)], proto.NpcBehavior.patrol)
       ]),
     });
     final c = await pumpFake(tester, rated(s, here, 2.1, proto.RatioLabel.favourable));
@@ -467,8 +634,8 @@ void main() {
     GameState beside({proto.SiteBrief? site, ui.FleetStatus status = ui.FleetStatus.idle}) => world([
           fleet(1, [('Light Fighter', 1)], status: status),
         ], {
-          here: sector(here, lanes: [const proto.Hex(2, -1)], site: site, hostiles: const [
-            proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 2)], behavior: proto.NpcBehavior.passive)
+          here: sector(here, lanes: [const proto.Hex(2, -1)], site: site, hostiles: [
+            hostileGroup(77, [shipRow(proto.ShipClass.lightFighter, 2)], proto.NpcBehavior.passive)
           ]),
           const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
         });
@@ -486,25 +653,314 @@ void main() {
     await finish(tester, c);
   });
 
-  testWidgets('combat events draw and the scene survives a kill', (tester) async {
-    final c = await pumpFake(tester, hostileHere(fighters: 3));
-    c.push(hostileHere(status: ui.FleetStatus.combat, fighters: 3));
-    c.ev.add(const proto.GameEvent(tick: 501, kind: proto.CombatStartedEvent(playerFleetId: 1, owner: 'Pilot', enemyFleetId: 77, sector: here, mine: true)));
-    for (var i = 0; i < 6; i++) {
-      c.ev.add(proto.GameEvent(
-          tick: 501,
-          kind: proto.CombatRoundEvent(
-              sector: here, attackerFleetId: i.isEven ? 1 : 77, attackerOwner: null, attackerShipId: 100 + i, targetFleetId: i.isEven ? 77 : 1, targetOwner: null, targetShipId: 100 + i, damage: 18, shieldAbsorbed: 8, hullDamage: 10, rapidFire: false, mine: true)));
+  testWidgets('a round is drawn on the scope and told in the panel: what stands, what fell, who fired, the losses so far, and the end', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final wide = size.width > 1000;
+      final c = await pumpFake(tester, hostileHere(fighters: 3), size: size);
+      expect(find.byKey(const Key('battle-panel')), findsNothing);
+      final round = skirmish();
+      c.ev.add(const proto.GameEvent(tick: 501, kind: proto.CombatStartedEvent(playerFleetId: 1, owner: 'Pilot', enemyFleetId: 77, sector: here, mine: true)));
+      c.ev.add(proto.GameEvent(tick: 501, kind: proto.BattleRoundKind(round)));
+      c.push(fighting(round));
+      await tester.pump(const Duration(milliseconds: 150));
+      if (!wide) {
+        expect(textUnder(tester, find.byKey(const ValueKey('battle-strip'))), 'ROUND 2  FLEETS 2 -1  V  HOSTILES 2 -1');
+        await shot(tester, 'ws-combat-strip-390');
+        await tester.tap(find.byKey(const ValueKey('battle-strip')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final panel = find.byKey(const Key('battle-panel'));
+      final told = textUnder(tester, panel);
+      expect(told, contains('ROUND 2 - 2, 0'));
+      expect(textUnder(tester, find.byKey(const Key('battle-fleets'))),
+          allOf(contains('2 STANDING  -1 THIS ROUND'), contains('\nLEFT\nLOST\nDMG\nRISK\n'), contains('LIGHT FIGHTER\n2\n-1\n1\n1')),
+          reason: 'two fighters left, one lost this round, one of the two damaged and at risk');
+      expect(textUnder(tester, find.byKey(const Key('battle-hostiles'))),
+          allOf(contains('3X HEAVY FIGHTER PACK'), contains('HEAVY FIGHTER\n1\n-1\n\n'), contains('CRUISER\n1\n\n\n')));
+      expect(textUnder(tester, find.byKey(const Key('battle-fire-fleets'))),
+          allOf(contains('3 SHOTS\nPOWER 150\nSHIELDS TOOK 60\nHULL DAMAGE 50\nDESTROYED 1'), contains('LIGHT FIGHTER > HEAVY FIGHTER\n1 DESTROYED\n2 SHOTS\nSHIELDS 50\nHULL 50')));
+      expect(textUnder(tester, find.byKey(const Key('battle-fire-hostiles'))), contains('CRUISER > LIGHT FIGHTER\n1 SHOT\n1 BOUNCED'),
+          reason: 'a shot too weak for the shield is said to have bounced');
+      expect(textUnder(tester, find.byKey(const Key('battle-losses'))), 'F1 LOST 1X LIGHT FIGHTER\n3X HEAVY FIGHTER PACK LOST 2X HEAVY FIGHTER');
+      expectTextFits(tester, panel, reason: 'the round panel at ${size.width.round()}');
+      await shot(tester, 'ws-combat-${size.width.round()}');
+      await tester.pump(const Duration(seconds: 2));
+      expect(tester.takeException(), isNull, reason: 'the scope draws the round and the marks it took');
+
+      final end = proto.CombatEndedEvent(
+          sector: here,
+          playerVictory: true,
+          outcome: proto.BattleOutcome.hostilesDestroyed,
+          rounds: 3,
+          losses: const [
+            proto.BattleLosses(fleetId: 1, owner: 'Pilot', mine: true, lost: [proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.lightFighter), count: 1)], destroyed: false),
+            proto.BattleLosses(
+                fleetId: 77,
+                label: '3x heavy fighter pack',
+                lost: [
+                  proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.heavyFighter), count: 2),
+                  proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.cruiser), count: 1),
+                ],
+                destroyed: true),
+          ],
+          owners: const ['Pilot'],
+          mine: true,
+          salvage: const proto.Resources(metal: 900, crystal: 300));
+      c.ev.add(proto.GameEvent(tick: 503, kind: end));
+      c.push(hostileHere(fighters: 2).copyWith(
+          battles: {here: Battle(sector: here, rounds: 3, round: round, losses: end.losses, ended: end, endedTick: 503)}, tick: 503));
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(tester.widget<Text>(find.byKey(const Key('battle-outcome'))).data, 'HOSTILES DESTROYED');
+      expect(textUnder(tester, panel), allOf(contains('ENDED - 3 ROUNDS'), contains('AFTER 3 ROUNDS AT 2, 0')));
+      expect(textUnder(tester, find.byKey(const Key('battle-end-losses'))),
+          'F1 LOST 1X LIGHT FIGHTER\n3X HEAVY FIGHTER PACK LOST 2X HEAVY FIGHTER, 1X CRUISER AND IS DESTROYED');
+      expect(tester.widget<Text>(find.byKey(const Key('battle-wreckage'))).data, 'WRECKAGE LEFT: 900 FE, 300 CR');
+      expect(find.byKey(const Key('battle-fire-fleets')), findsNothing, reason: 'the last round is behind its button once the fight is over');
+      expectTextFits(tester, panel, reason: 'the end of the fight at ${size.width.round()}');
+      await shot(tester, 'ws-combat-end-${size.width.round()}');
+      await tester.ensureVisible(find.byKey(const ValueKey('battle-dismiss')));
+      await tester.tap(find.byKey(const ValueKey('battle-dismiss')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(panel, findsNothing, reason: 'Dismiss puts the report away');
+      await tester.pump(const Duration(seconds: 4));
+      await finish(tester, c);
     }
-    await tester.pump(const Duration(milliseconds: 150));
-    await shot(tester, 'ws-combat-1440');
-    await tester.pump(const Duration(milliseconds: 250));
-    c.ev.add(const proto.GameEvent(tick: 502, kind: proto.ShipDestroyedEvent(shipId: 0, shipClass: proto.ShipClass.heavyFighter,ownerFleetId: 77, isNpc: true, sector: here, owner: null, mine: false)));
-    await tester.pump(const Duration(milliseconds: 100));
-    await shot(tester, 'ws-kill-1440');
-    expect(tester.takeException(), isNull);
-    await tester.pump(const Duration(seconds: 3));
-    await finish(tester, c);
+  });
+
+  testWidgets('twelve classes firing at twelve stay readable: the volleys that decided the round first, the rest behind a button', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final round = melee();
+      final s = hostileHere(status: ui.FleetStatus.combat).copyWith(
+          fleets: [fleet(1, const [], status: ui.FleetStatus.combat, rows: [for (final c in flying) shipRow(c, 400)])],
+          battles: {here: Battle(sector: here, rounds: 7, round: round)});
+      final c = await pumpFake(tester, s, size: size);
+      if (size.width < 1000) {
+        await tester.tap(find.byKey(const ValueKey('battle-strip')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final fire = find.byKey(const Key('battle-fire-fleets'));
+      expect(' > '.allMatches(textUnder(tester, fire)), hasLength(3), reason: 'three volleys of a hundred and forty-four');
+      expect(textUnder(tester, fire), contains('DEATHSTAR > LIGHT FIGHTER'), reason: 'the volley that destroyed the most comes first');
+      expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('battle-fire-fleets-more'))).label, '141 more volleys');
+      expectTextFits(tester, find.byKey(const Key('battle-panel')), reason: 'a round of twelve classes a side at ${size.width.round()}');
+      await shot(tester, 'ws-melee-${size.width.round()}');
+      await tester.ensureVisible(find.byKey(const ValueKey('battle-fire-fleets-more')));
+      await tester.tap(find.byKey(const ValueKey('battle-fire-fleets-more')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(' > '.allMatches(textUnder(tester, fire)), hasLength(144));
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
+  testWidgets('a fleet of hundreds is a handful of marks on the scope and exact counts in the list beside it', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final rows = [shipRow(proto.ShipClass.smallCargo, 40), shipRow(proto.ShipClass.lightFighter, 412, damaged: 4, atRisk: 2, hullLost: 640), shipRow(proto.ShipClass.cruiser, 60)];
+      final s = world([fleet(1, const [], rows: rows)], {
+        here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: [
+          hostileGroup(77, [shipRow(proto.ShipClass.lightFighter, 3200), shipRow(proto.ShipClass.battlecruiser, 30)], proto.NpcBehavior.swarm)
+        ]),
+        const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
+      });
+      final c = await pumpFake(tester, s, size: size);
+      final scope = tester.widgetList<CustomPaint>(find.byType(CustomPaint)).map((p) => p.painter).whereType<ArenaPainter>().single.sim;
+      expect((scope.own.length, scope.hostiles.length), (3, 8), reason: 'a mark a class of the fleet, and seven for the 3,200 fighters of the swarm');
+      expect(scope.scale, 500, reason: 'one scale for both sides: the swarm of 3,230 fits in sixteen marks at 500 a mark');
+      if (size.width < 1000) {
+        await tester.tap(find.byKey(const ValueKey('status-sheet')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(textUnder(tester, find.byKey(const Key('status-ships'))),
+          allOf(contains('SMALL CARGO\n40\n16,000 / 16,000'), contains('LIGHT FIGHTER\n412\n164K / 165K'), contains('4 DAMAGED  2 AT RISK')));
+      expect(tester.widget<Text>(find.byKey(const Key('contact-hostile-77'))).data, 'SWARM - 3,230 SHIPS');
+      expect(textUnder(tester, find.byKey(const Key('contact-hostile-77-LightFighter'))), contains('3,200\n1.28M / 1.28M'));
+      await shot(tester, 'ws-hundreds-${size.width.round()}');
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
+  testWidgets('in a fight the flee control says what a jump out costs, the odds as they stand and who follows; a gate is a way out; a refusal greys it in the engine\'s words',
+      (tester) async {
+    const north = proto.Hex(2, -1);
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final wide = size.width > 1000;
+      final c = await pumpFake(tester, inFight(flight: wayOut()), size: size);
+      if (!wide) {
+        expect(textUnder(tester, find.byKey(const ValueKey('flight-strip'))), 'LEAVE  5 FUEL, GONE IN 2 TICKS, 1 ROUND UNDER FIRE');
+        await shot(tester, 'ws-flee-strip-390');
+        await tester.tap(find.byKey(const ValueKey('flight-strip')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final panel = find.byKey(const Key('flight-panel'));
+      expect(tester.widget<Text>(find.byKey(const Key('flight-price'))).data, '5 FUEL, GONE IN 2 TICKS, 1 ROUND UNDER FIRE');
+      expect(textUnder(tester, find.byKey(const Key('flight-odds'))), 'AS IT STANDS  DEADLY  ratio 0.54 - ${proto.RatioLabel.deadly.outcome}',
+          reason: 'the odds of the fight as it stands, with the generated sentence for the label');
+      expect(tester.widget<Text>(find.byKey(const Key('flight-chase'))).data,
+          'THE 3X HEAVY FIGHTER PACK FOLLOWS 2 HEXES AND FIRES 1 ROUND AT EACH ON A FLEET THAT JUMPS ON AT ONCE; ONE THAT STOPS IS CAUGHT.');
+      expect(find.byKey(const Key('flight-refuge')), findsNothing);
+      expect(find.byKey(const Key('leaving-panel')), findsNothing);
+      if (wide) expect(textUnder(tester, find.byKey(const ValueKey('gate-flight-w'))), 'FLEE 1 RND', reason: 'the gate says the price of leaving under fire');
+
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(c.commands.whereType<proto.PreviewMoveCommand>().map((p) => p.target), [north], reason: 'the lanes out are asked for while the fight lasts');
+      c.push(c.fake.copyWith(previews: {(1, north): PreviewEntry(preview(1, north, flight: wayOut(followed: false)), c.fake.tick)}));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.widget<Text>(find.byKey(const Key('flight-refuge'))).data, 'NOTHING FOLLOWS TO 2, -1 (W).',
+          reason: 'the quote for a lane says when the group does not follow there');
+      if (wide) expect(textUnder(tester, find.byKey(const ValueKey('gate-flight-w'))), 'FLEE 1 RND\nNO CHASE');
+      expectTextFits(tester, panel, reason: 'the flee control at ${size.width.round()}');
+      await shot(tester, 'ws-flee-control-${size.width.round()}');
+
+      await tester.ensureVisible(find.byKey(const ValueKey('flee-w')));
+      await tester.tap(find.byKey(const ValueKey('flee-w')));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(c.commands.whereType<proto.MoveCommand>().single.target, north, reason: 'leaving is an ordinary move');
+
+      const why = 'fleet 1 has 3 fuel and the jump out of the fight at (2, 0) burns 5: it cannot leave, except by recall if it holds the fuel for that';
+      c.push(inFight(flight: wayOut(refusal: why)));
+      await tester.pump(const Duration(seconds: 3));
+      expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('flee-w'))).onPressed, isNull);
+      expect(tester.widget<Text>(find.byKey(const Key('flight-refusal'))).data, why);
+      if (wide) expect(textUnder(tester, find.byKey(const ValueKey('gate-flight-w'))), 'CANNOT LEAVE');
+      c.sent.clear();
+      await key(tester, LogicalKeyboardKey.keyW, 'w');
+      expect(c.commands.whereType<proto.MoveCommand>(), isEmpty, reason: 'an order the state says would be refused is not sent');
+      expect(find.descendant(of: find.byType(ToastLayer), matching: find.textContaining('it cannot leave')), findsOneWidget);
+      expectTextFits(tester, panel, reason: 'the refused flee control at ${size.width.round()}');
+      await shot(tester, 'ws-flee-refused-${size.width.round()}');
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
+  testWidgets('a fleet leaving a fight says where to and for how many rounds, its side of the round is marked silent, Stop calls it off; where it lands the end is told and the group on its trail cannot be missed',
+      (tester) async {
+    const north = proto.Hex(2, -1);
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final wide = size.width > 1000;
+      final c = await pumpFake(tester, inFight(fleeing: const proto.Fleeing(to: north, ticks: 2, rounds: 1), leaving: true), size: size);
+      if (!wide) {
+        expect(textUnder(tester, find.byKey(const ValueKey('leaving-strip'))), 'LEAVING  JUMP IN 2 - 1 ROUND MORE UNDER FIRE');
+        await tester.tap(find.byKey(const ValueKey('leaving-strip')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(tester.widget<Text>(find.byKey(const Key('leaving-count'))).data, 'JUMP IN 2');
+      expect(tester.widget<Text>(find.byKey(const Key('leaving-line'))).data, 'LEAVING FOR 2, -1: JUMP IN 2 TICKS, 1 ROUND MORE UNDER FIRE.');
+      expect(find.byKey(const Key('flight-panel')), findsNothing, reason: 'the control and the leaving panel never show together');
+      expect(textUnder(tester, find.byKey(const Key('battle-fleets-group-1'))), 'F1  LEAVING: FIRED ON, NOT FIRING');
+      expect(find.descendant(of: find.byKey(const Key('leaving-panel')), matching: find.text(stopFlightRule)), findsOneWidget,
+          reason: 'where Stop is offered it says the fleet fights on and the fuel is forfeit');
+      expect(tester.widget<Tooltip>(find.ancestor(of: find.byKey(const ValueKey('dock-stop')), matching: find.byType(Tooltip)).first).message, stopFlightRule);
+      if (wide) {
+        expect(tester.widget<Text>(find.byKey(const Key('fleet-card-status-1'))).data, 'FLEEING');
+        expect(tester.widget<Text>(find.byKey(const Key('fleet-card-fleeing-1'))).data, 'TO 2,-1 IN 2 - 1 ROUND MORE');
+      }
+      expectTextFits(tester, find.byKey(const Key('leaving-panel')), reason: 'the leaving panel at ${size.width.round()}');
+      await shot(tester, 'ws-fleeing-${size.width.round()}');
+      await tester.ensureVisible(find.byKey(const ValueKey('leaving-stop')));
+      await tester.tap(find.byKey(const ValueKey('leaving-stop')));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(c.commands.whereType<proto.StopCommand>().single.fleetId, 1);
+
+      const end = proto.CombatEndedEvent(
+          sector: here,
+          playerVictory: false,
+          outcome: proto.BattleOutcome.fled,
+          rounds: 3,
+          losses: [
+            proto.BattleLosses(fleetId: 1, owner: 'Pilot', mine: true, lost: [proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.lightFighter), count: 1)], destroyed: false),
+            proto.BattleLosses(fleetId: 77, label: pack, lost: [proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.heavyFighter), count: 1)], destroyed: false),
+          ],
+          owners: ['Pilot'],
+          mine: true);
+      const hunter = proto.Pursuit(groupId: 77, label: pack, from: here, arrivesIn: 1, catches: true, hexesLeft: 1);
+      c.ev.add(const proto.GameEvent(tick: 503, kind: end));
+      c.ev.add(const proto.GameEvent(
+          tick: 503,
+          kind: proto.PursuitEvent(
+              groupId: 77, label: pack, fleetId: 1, owner: 'Pilot', mine: true, sector: here, phase: proto.PursuitPhase.began, to: north, arrivesIn: 1, hexesLeft: 1)));
+      c.push(world([
+        fleet(1, [('Light Fighter', 2)], at: north, foughtAt: here, jumpTicks: 2, pursuedBy: hunter),
+      ], {
+        here: sector(here, lanes: [north], hostiles: [
+          hostileGroup(77, [shipRow(proto.ShipClass.heavyFighter, 1), shipRow(proto.ShipClass.cruiser, 1)], proto.NpcBehavior.aggressive,
+              muster: 3,
+              wholeAt: 760,
+              chaseHexes: 2,
+              errand: const proto.GroupErrand(home: here, quarry: 1, quarryOwner: 'Pilot', to: north, arrivesAt: 504, hexesLeft: 1)),
+        ]),
+        north: sector(north, lanes: [here]),
+      }, tick: 503)
+          .copyWith(battles: {here: Battle(sector: here, rounds: 3, round: skirmish(leaving: true), losses: end.losses, ended: end, endedTick: 503)}));
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(tester.widget<Text>(find.byKey(const Key('battle-outcome'))).data, 'FLED UNDER FIRE', reason: 'the end of the fight it left is told where it has landed');
+      expect(textUnder(tester, find.byKey(const Key('battle-panel'))),
+          contains('THE LAST FLEET JUMPED OUT UNDER FIRE; THE HOSTILES KEEP WHAT THEY LOST AND MEND IN TIME, AFTER 3 ROUNDS AT 2, 0.'));
+      expect(tester.widget<Text>(find.byKey(const Key('pursuit-count'))).data, 'ARRIVES IN 1');
+      expect(tester.widget<Text>(find.byKey(const Key('pursuit-line'))).data, 'THE 3X HEAVY FIGHTER PACK LANDS IN 1 TICK, FROM 2, 0.');
+      expect(tester.widget<Text>(find.byKey(const Key('pursuit-verdict'))).data,
+          'IT LANDS BEFORE A JUMP ORDERED NOW WOULD, AND FIRES ON THE FLEET. IT FOLLOWS 1 HEX MORE AFTER THIS ONE.');
+      expect(find.byKey(const Key('leaving-panel')), findsNothing);
+      if (wide) {
+        expect(tester.widget<Text>(find.byKey(const Key('fleet-card-pursued-1'))).data, 'PURSUED - LANDS IN 1');
+      } else {
+        await tester.tap(find.byKey(const ValueKey('status-sheet')));
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(textUnder(tester, find.byKey(const ValueKey('pursuit-strip'))), 'PURSUIT  3X HEAVY FIGHTER PACK LANDS IN 1 - CATCHES');
+        await shot(tester, 'ws-pursuit-strip-390');
+        await tester.tap(find.byKey(const ValueKey('pursuit-strip')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expectTextFits(tester, find.byKey(const Key('pursuit-panel')), reason: 'the pursuit panel at ${size.width.round()}');
+      await shot(tester, 'ws-pursuit-${size.width.round()}');
+      await tester.pump(const Duration(seconds: 4));
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
+  testWidgets('a wounded group says how many of its muster stand, when it is whole again, how far it follows and what it is out of its sector for', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      proto.NpcFleetInfo wounded({proto.GroupErrand? errand}) => hostileGroup(
+          77, [shipRow(proto.ShipClass.heavyFighter, 1, damaged: 1, atRisk: 1, hullLost: 700), shipRow(proto.ShipClass.cruiser, 1)], proto.NpcBehavior.aggressive,
+          muster: 3, wholeAt: 750, chaseHexes: 2, jumpTicks: 1, errand: errand);
+      GameState seen(proto.NpcFleetInfo group) => world([
+            fleet(1, [('Light Fighter', 2)], jumpTicks: 2),
+          ], {
+            here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: [group]),
+            const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
+          });
+      final c = await pumpFake(tester, seen(wounded()), size: size);
+      if (size.width < 1000) {
+        await tester.tap(find.byKey(const ValueKey('status-sheet')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(tester.widget<Text>(find.byKey(const Key('contact-hostile-77'))).data, 'AGGRESSIVE - 2 OF 3 SHIPS');
+      expect(textUnder(tester, find.byKey(const Key('contact-hostile-77-whole'))),
+          'WHOLE AGAIN IN 4:10  IT MENDS AT REST IN ITS OWN SECTOR; A FIGHT OR A PURSUIT STOPS THE CLOCK.',
+          reason: 'the tick it is whole at, as a time from now');
+      expect(tester.widget<Text>(find.byKey(const Key('contact-hostile-77-chase'))).data, 'FOLLOWS 2 HEXES, A JUMP TAKES IT 1 TICK, F1 2 TICKS.');
+      expect(find.byKey(const Key('contact-hostile-77-errand')), findsNothing);
+      await tester.ensureVisible(find.byKey(const Key('contact-hostile-77-chase')));
+      await tester.pump(const Duration(milliseconds: 100));
+      await shot(tester, 'ws-wounded-group-${size.width.round()}');
+
+      c.push(seen(wounded(errand: const proto.GroupErrand(home: proto.Hex(3, 0), to: proto.Hex(3, 0), arrivesAt: 502, hexesLeft: 2))));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.widget<Text>(find.byKey(const Key('contact-hostile-77-errand'))).data, 'ON ITS WAY BACK TO 3, 0, JUMPING TO 3, 0, LANDS IN 2 TICKS.');
+      c.push(seen(wounded(errand: const proto.GroupErrand(home: proto.Hex(3, 0), hexesLeft: 1))));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.widget<Text>(find.byKey(const Key('contact-hostile-77-errand'))).data, 'AWAY FROM ITS OWN SECTOR AT 3, 0.',
+          reason: 'a group that caught its fleet fights where it landed');
+      c.push(seen(wounded(
+          errand: const proto.GroupErrand(home: proto.Hex(3, 0), quarry: 1, quarryOwner: 'Pilot', to: proto.Hex(2, -1), arrivesAt: 501, hexesLeft: 1))));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.widget<Text>(find.byKey(const Key('contact-hostile-77-errand'))).data,
+          'AFTER YOUR F1, JUMPING TO 2, -1, LANDS IN 1 TICK, AND 1 HEX MORE.');
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
   });
 
   testWidgets('scan sweep and cooldown', (tester) async {
@@ -527,24 +983,213 @@ void main() {
     await endShell(tester, c);
   });
 
-  testWidgets('split a ship off and merge it back through the panel (demo)', (tester) async {
+  testWidgets('ships are split off by class and count and merged back through the panel (demo)', (tester) async {
     final c = DemoController()..startDemo();
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     await tester.tap(find.byKey(const ValueKey('manage-toggle')));
     await tester.pump(const Duration(milliseconds: 100));
+    Future<void> press(String key) async {
+      await tester.ensureVisible(find.byKey(ValueKey(key)));
+      await tester.tap(find.byKey(ValueKey(key)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    String picked(proto.ShipClass cls) => tester.widget<Text>(find.byKey(Key('fm-count-${cls.wire}'))).data!;
+    List<(proto.ShipClass, int)> rows(ui.FleetState f) => [for (final g in f.ships) (g.shipClass, g.count)];
+    const cargo = proto.ShipClass.smallCargo, fighter = proto.ShipClass.lightFighter, probe = proto.ShipClass.espionageProbe;
     final before = c.state.fleets.length;
     final active = c.activeFleetId!;
-    final cls = c.currentFleet.ships.last.shipClass;
-    await tester.tap(find.byKey(ValueKey('fm-plus-$cls')));
-    await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('fm-split')));
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 3), (probe, 1)]);
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).onPressed, isNull, reason: 'nothing is picked yet');
+
+    await press('fm-step-10');
+    await press('fm-plus-LightFighter');
+    expect(picked(fighter), '3', reason: 'a step of ten stops at the three aboard');
+    await press('fm-all-SmallCargo');
+    await press('fm-all-EspionageProbe');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).onPressed, isNull, reason: 'one ship must stay');
+    expect(find.text('One ship must stay in the fleet.'), findsOneWidget);
+    await press('fm-all-SmallCargo');
+    await press('fm-step-1');
+    await press('fm-minus-LightFighter');
+    expect((picked(cargo), picked(fighter), picked(probe)), ('0', '2', '1'));
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).label, 'Split off 3');
+    await shot(tester, 'ws-split-1440');
+
+    await press('fm-split');
     await tester.pump(const Duration(milliseconds: 200));
     expect(c.state.fleets.length, before + 1);
     expect(c.currentFleet.id, active);
-    final newId = c.mergeCandidates.single.id;
-    await tester.tap(find.byKey(ValueKey('fm-merge-$newId')));
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 1)]);
+    final split = c.mergeCandidates.single;
+    expect(rows(split), [(fighter, 2), (probe, 1)]);
+    expect(c.state.events.map((e) => e.message), contains('fleet $active split: 3 ship(s) now fly as fleet ${split.id}'));
+    await press('fm-merge-${split.id}');
     await tester.pump(const Duration(milliseconds: 200));
     expect(c.state.fleets.length, before);
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 3), (probe, 1)]);
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
+
+  testWidgets('a fight is followed round by round to its end, the fleet shows its damage and what each dock would do, and the home dock mends it (demo)',
+      (tester) async {
+    const patrol = proto.Hex(6, -5), homeworld = proto.Hex(4, -2);
+    final c = DemoController()..startDemo();
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    expect(find.byKey(const Key('fleet-damage')), findsNothing, reason: 'a whole fleet has no damage to quote');
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S0 A2');
+    expect(find.byKey(const Key('fleet-refit-due')), findsNothing);
+
+    c.learn(proto.ResearchType.shieldingTechnology, 2);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S0 A2', reason: 'research that finishes while a fleet is away waits for it at home');
+    expect(tester.widget<Text>(find.byKey(const Key('fleet-refit-due'))).data, contains('A REFIT WAITS AT THE HOME DOCK'));
+
+    c.place(101, patrol, const proto.Resources());
+    await tester.pump(const Duration(milliseconds: 100));
+    final group = c.state.sectors[patrol]!.hostiles!.single;
+    expect(tester.widget<Text>(find.byKey(Key('contact-hostile-${group.id}'))).data, 'PATROL - 2 SHIPS');
+    c.sendCommand(proto.AttackCommand(fleetId: 101, targetFleetId: group.id));
+    await tester.pump(const Duration(seconds: 1));
+    final panel = find.byKey(const Key('battle-panel'));
+    expect(textUnder(tester, panel), allOf(contains('ROUND 1 - 6, -5'), contains('2X LIGHT FIGHTER PATROL'), contains('LIGHT FIGHTER > LIGHT FIGHTER')));
+    expect(c.state.events.map((e) => e.message),
+        contains('Round 1 in $patrol: fleets fired 5 shots and destroyed 0, hostiles fired 2 and destroyed 0; 5 against 2 still stand'));
+
+    for (var tick = 0; tick < 10 && !c.state.battleAt(patrol)!.over; tick++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final ended = c.state.battleAt(patrol)!.ended!;
+    expect((ended.outcome, ended.playerVictory), (proto.BattleOutcome.hostilesDestroyed, true));
+    expect(tester.widget<Text>(find.byKey(const Key('battle-outcome'))).data, 'HOSTILES DESTROYED');
+    expect(textUnder(tester, find.byKey(const Key('battle-end-losses'))), '2X LIGHT FIGHTER PATROL LOST 2X LIGHT FIGHTER AND IS DESTROYED');
+    expect(c.state.events.where((e) => e.message.startsWith('Round ')), hasLength(1), reason: 'a fight keeps one line of the log for its rounds');
+    expect(c.state.events.map((e) => e.message),
+        contains(startsWith('! Combat ended in $patrol after ${ended.rounds} rounds: the hostiles are destroyed. Wreckage ')));
+
+    final quote = c.currentFleet.repair!;
+    expect(c.currentFleet.hull, lessThan(c.currentFleet.hullMax));
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-damage'))).v, '${quote.ships} DAMAGED SHIPS LACK ${quote.hull} HULL');
+    expect(textUnder(tester, find.byKey(const Key('fleet-repair-home'))), 'HOME DOCK MENDS ALL ${quote.ships} (${quote.hull} HULL) FOR NOTHING');
+    expect(find.byKey(const Key('fleet-repair-outpost')), findsNothing, reason: 'the empire has no outpost');
+    expect(textUnder(tester, find.byKey(const Key('status-ships'))), contains('1 DAMAGED'));
+    await shot(tester, 'ws-damaged-1440');
+
+    c.place(101, homeworld, const proto.Resources());
+    await tester.pump(const Duration(seconds: 1));
+    expect(c.currentFleet.repair, isNull);
+    expect(find.byKey(const Key('fleet-damage')), findsNothing);
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S2 A2');
+    expect(find.byKey(const Key('fleet-refit-due')), findsNothing);
+    expect(
+        c.state.events.map((e) => e.message),
+        containsAll([
+          'fleet 101 was mended at the home dock: ${quote.ships} ship(s) made whole, ${quote.hull} hull restored, for nothing',
+          'fleet 101 was refitted at the home dock: Weapons 3, Shielding 2, Armour 2 (it flew with 3, 0, 2)',
+        ]));
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
+
+  testWidgets(
+      'a lone fighter leaves a patrol it cannot beat: the price is quoted, a second order and Stop are answered in the engine\'s words, it is fired on as it goes, '
+      'the fight ends fled, the patrol follows one jump, gives up, keeps its damage and mends (demo)', (tester) async {
+    const lair = proto.Hex(6, -5), s0 = proto.Hex(6, -4), on = proto.Hex(7, -4);
+    final c = DemoController()..startDemo();
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    c.place(101, lair, const proto.Resources());
+    c.handleCommand('split sc 1 lf 2 probe 1');
+    c.place(c.state.fleets.last.id, const proto.Hex(4, -2), const proto.Resources());
+    await tester.pump(const Duration(milliseconds: 100));
+    expect((c.currentFleet.id, c.currentFleet.shipCount), (101, 1));
+    final whole = c.state.sectors[lair]!.hostiles!.single;
+    expect((whole.shipCount, whole.muster, whole.wholeAt, whole.chaseHexes, whole.errand), (2, 2, null, 1, null));
+    expect(tester.widget<Text>(find.byKey(Key('contact-hostile-${whole.id}'))).data, 'PATROL - 2 SHIPS');
+    expect(tester.widget<Text>(find.byKey(Key('contact-hostile-${whole.id}-chase'))).data,
+        'FOLLOWS 1 HEX, A JUMP TAKES IT ${ticksOf(whole.jumpTicks).toUpperCase()}, F101 ${ticksOf(c.currentFleet.jumpTicks).toUpperCase()}.');
+
+    c.sendCommand(proto.AttackCommand(fleetId: 101, targetFleetId: whole.id));
+    await tester.pump(const Duration(seconds: 1));
+    final quote = c.currentFleet.flight!;
+    expect((quote.ticks, quote.refusal, quote.chase?.groupId, quote.chase?.hexes), (quote.rounds + 1, null, whole.id, 1),
+        reason: 'the patrol outweighs one fighter, so it would follow it, one jump');
+    expect(tester.widget<Text>(find.byKey(const Key('flight-price'))).data, flightPrice(quote).toUpperCase());
+    expect(tester.widget<Text>(find.byKey(const Key('flight-chase'))).data, chaseLine(quote.chase).toUpperCase());
+    expect(textUnder(tester, find.byKey(const Key('flight-odds'))), contains(quote.label.label));
+    expect(textUnder(tester, find.byKey(const ValueKey('gate-flight-s'))), startsWith('FLEE ${quote.rounds} RND'));
+    await shot(tester, 'ws-demo-flee-control-1440');
+
+    final fuel = c.currentFleet.fuelExact!;
+    c.handleCommand('move ${s0.q} ${s0.r}');
+    await tester.pump();
+    expect((c.currentFleet.status, c.currentFleet.fleeing?.to, c.currentFleet.fleeing?.rounds, c.currentFleet.flight), (ui.FleetStatus.enRoute, s0, quote.rounds, null));
+    expect(c.currentFleet.fuelExact, closeTo(fuel - quote.fuel, 1e-9), reason: 'the jump is paid for when it is ordered');
+    c.handleCommand('move ${s0.q} ${s0.r}');
+    await tester.pump();
+    expect(c.state.events.map((e) => e.message),
+        contains('Refused: fleet 101 is already leaving the fight at $lair for $s0; stop calls the jump off, and its fuel is forfeit'));
+    c.handleCommand('stop');
+    await tester.pump();
+    expect((c.currentFleet.status, c.currentFleet.fleeing, c.currentFleet.flight != null), (ui.FleetStatus.combat, null, true));
+    expect(c.state.events.map((e) => e.message), contains(allOf(contains('fleet 101 called off its jump to $s0'), endsWith('is forfeit, and it fights on at $lair'))));
+
+    await key(tester, LogicalKeyboardKey.keyS, 's');
+    final leaving = c.currentFleet.fleeing!;
+    expect((leaving.to, leaving.rounds, leaving.ticks), (s0, quote.rounds, quote.ticks), reason: 'the gate key of a fleet in a fight is flight');
+    expect(tester.widget<Text>(find.byKey(const Key('leaving-count'))).data, 'JUMP IN ${leaving.ticks}');
+    expect(tester.widget<Text>(find.byKey(const Key('fleet-card-status-101'))).data, 'FLEEING');
+    await tester.pump(const Duration(seconds: 1));
+    expect(textUnder(tester, find.byKey(const Key('battle-fleets-group-101'))), 'F101  LEAVING: FIRED ON, NOT FIRING');
+    expect(c.state.battleAt(lair)!.round!.fleets.shots, 0, reason: 'a fleet that is leaving does not fire');
+    expect(c.state.battleAt(lair)!.round!.hostiles.shots, greaterThan(0));
+    await shot(tester, 'ws-demo-fleeing-1440');
+    for (var tick = 0; tick < 6 && c.currentFleet.fleeing != null; tick++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    expect((c.currentFleet.sector, c.currentFleet.status), (s0, ui.FleetStatus.idle));
+    final ended = c.state.battleAt(lair)!.ended!;
+    expect((ended.outcome, ended.playerVictory, ended.salvage), (proto.BattleOutcome.fled, false, null));
+    expect(tester.widget<Text>(find.byKey(const Key('battle-outcome'))).data, 'FLED UNDER FIRE');
+    expect(c.currentFleet.repair, isNotNull, reason: 'it carries the damage of the parting rounds');
+    final hunter = c.currentFleet.pursuedBy!;
+    expect((hunter.groupId, hunter.from, hunter.catches, hunter.hexesLeft), (whole.id, lair, false, 0));
+    expect(tester.widget<Text>(find.byKey(const Key('pursuit-count'))).data, 'ARRIVES IN ${hunter.arrivesIn}');
+    expect(tester.widget<Text>(find.byKey(const Key('pursuit-verdict'))).data,
+        'A JUMP ORDERED NOW IS GONE BEFORE IT LANDS; A FLEET THAT STAYS IS CAUGHT. IT TURNS BACK AFTER THIS JUMP.');
+    expect(c.state.events.map((e) => e.message),
+        containsAll([startsWith('! Combat ended in $lair after '), startsWith('! Pursuit: the 2x light fighter patrol leaves 6, -5 after F101: it jumps to 6, -4')]));
+    expect(c.state.alerts.map((a) => a.message), contains('The 2x light fighter patrol is after F101'));
+    final hurt = c.state.sectors[lair]!.hostiles!.single;
+    expect((hurt.shipCount, hurt.wholeAt != null, hurt.errand?.quarry, hurt.errand?.to), (2, true, 101, s0),
+        reason: 'the patrol keeps the damage of the round the fighter fired, and is listed in its lair until its jump lands');
+    await shot(tester, 'ws-demo-pursuit-1440');
+
+    c.handleCommand('move ${on.q} ${on.r}');
+    for (var tick = 0; tick < 6 && c.currentFleet.pursuedBy != null; tick++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    expect((c.currentFleet.sector, c.currentFleet.pursuedBy), (on, null), reason: 'a fleet that jumps on at once is gone when the patrol lands');
+    expect(c.state.events.map((e) => e.message),
+        contains('The 2x light fighter patrol gave up on F101 at 6, -4: it has followed 1 jump from its own sector at $lair and goes no further. It goes back by 6, -5'));
+    final back = c.state.sectors[s0]!.hostiles!.single;
+    expect((back.id, back.errand?.quarry, back.errand?.to), (whole.id, null, lair));
+    expect(find.byKey(const Key('pursuit-panel')), findsNothing);
+
+    c.place(101, s0, const proto.Resources());
+    await tester.pump(const Duration(seconds: 3));
+    final resting = c.state.sectors[lair]!.hostiles!.single;
+    expect((resting.id, resting.errand, resting.wholeAt != null), (whole.id, null, true), reason: 'home again, hurt as the fight left it');
+    await tester.pump(const Duration(seconds: 2));
+    expect(c.state.sectors[lair]!.hostiles!.single.wholeAt, resting.wholeAt, reason: 'at rest the tick it is whole at stands still');
+    final wait = resting.wholeAt! - c.state.tick;
+    for (var tick = 0; tick <= wait; tick++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final mended = c.state.sectors[lair]!.hostiles!.single;
+    expect((mended.wholeAt, mended.ships.single.hull, mended.ships.single.damaged), (null, mended.ships.single.hullMax, 0),
+        reason: 'it mends in steps and is whole at the tick the state named');
     expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
@@ -803,7 +1448,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('orders-doctrine-mineAndReturn')));
     await tester.pump();
     String shown(String id) => tester.widget<Text>(find.byKey(Key('orders-$id'))).data!;
-    expect((shown('range'), shown('engage'), shown('fuel')), ('4 HEXES', '1.5X', '20%'), reason: 'the server\'s defaults');
+    expect((shown('range'), shown('engage'), shown('disengage'), shown('fuel')), ('4 HEXES', '1.5X', '0.9X', '20%'), reason: 'the server\'s defaults');
     for (var i = 0; i < 4; i++) {
       await tester.tap(find.byKey(const ValueKey('orders-range-up')));
       await tester.pump();
@@ -811,10 +1456,14 @@ void main() {
     await tester.ensureVisible(find.byKey(const ValueKey('orders-engage-up')));
     await tester.tap(find.byKey(const ValueKey('orders-engage-up')));
     await tester.pump();
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-disengage-up')));
+    await tester.tap(find.byKey(const ValueKey('orders-disengage-up')));
+    await tester.pump();
     await tester.ensureVisible(find.byKey(const ValueKey('orders-fuel-up')));
     await tester.tap(find.byKey(const ValueKey('orders-fuel-up')));
     await tester.pump();
-    expect((shown('range'), shown('engage'), shown('fuel')), ('8 HEXES', '2.0X', '35%'));
+    expect((shown('range'), shown('engage'), shown('disengage'), shown('fuel')), ('8 HEXES', '2.0X', '1.1X', '35%'));
+    expect(find.byKey(const Key('orders-disengage-note')), findsOneWidget, reason: 'the seventh setting says what it does and that the engine holds it under the engage ratio');
     await shot(tester, 'ws-orders-form-1440');
 
     await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
@@ -822,22 +1471,35 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('orders-set')));
     await tester.pump(const Duration(milliseconds: 50));
     final typed = parseCommand(
-        'policy mine range=8 engage=2 fuel=35',
+        'policy mine range=8 engage=2 fuel=35 disengage=1.1',
         const CommandContext(fleetId: 1, fleetSector: here, sectors: {}, fleets: [], cursor: here, tick: 500)) as ParsedSend;
     expect(c.sent.whereType<proto.PolicyUpdate>().single.toJson(), typed.messages.single.toJson());
     expect(typed.messages.single.toJson(), {
       'type': 'policy_update',
       'fleet_id': 1,
       'preset': 'mine_and_return',
-      'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 8, 'engage_ratio_x10': 20, 'fuel_budget_pct': 35, 'refine': false},
+      'params': {
+        'min_fuel_pct': 10,
+        'cargo_return_pct': 85,
+        'max_range': 8,
+        'engage_ratio_x10': 20,
+        'fuel_budget_pct': 35,
+        'refine': false,
+        'disengage_ratio_x10': 11,
+      },
     });
+    expect(
+        parseCommand('policy mine disengage=${proto.policyDisengageRatioX10Max / 10 + 1}',
+            const CommandContext(fleetId: 1, fleetSector: here, sectors: {}, fleets: [], cursor: here, tick: 500)),
+        isA<ParsedError>(),
+        reason: 'a ratio outside what the server takes is not sent');
 
     const held = 'refuelling on a fuel budget of 50% of deuterium income (tank 80 of 120, full in about 236 s)';
     c.push(world([
       fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)],
           orders: const proto.StandingOrders(
               preset: proto.PolicyPreset.mineAndReturn,
-              params: proto.PolicyParams(minFuelPct: 15, cargoReturnPct: 60, maxRange: 6, engageRatioX10: 30, fuelBudgetPct: 50))),
+              params: proto.PolicyParams(minFuelPct: 15, cargoReturnPct: 60, maxRange: 6, engageRatioX10: 30, fuelBudgetPct: 50, disengageRatioX10: 13))),
     ], calm().sectors, tick: 520)
         .copyWith(policyActs: {
       1: const [
@@ -847,9 +1509,10 @@ void main() {
     }));
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('MINE+RETURN')), findsOneWidget);
-    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 6 HEXES - ENGAGE 3.0X - FUEL 50%',
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 6 HEXES - ENGAGE 3.0X - FUEL 50%\nLEAVES A FIGHT BELOW 1.3X',
         reason: 'the fleet row carries the settings in force, whoever gave the orders and whenever');
-    expect((shown('range'), shown('engage'), shown('fuel')), ('6 HEXES', '3.0X', '50%'), reason: 'the steppers start from the orders in force, not from what was last set here');
+    expect((shown('range'), shown('engage'), shown('disengage'), shown('fuel')), ('6 HEXES', '3.0X', '1.3X', '50%'),
+        reason: 'the steppers start from the orders in force, not from what was last set here');
     expect(find.text('It turns home at 60% hold, or with fuel down to the way back plus 15% of the tank.'), findsOneWidget);
     expect(tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data, 'HOLDING FOR 0:14');
     expect(tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data, held, reason: 'the engine\'s sentence, as it sent it');
@@ -867,8 +1530,29 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('orders-set')));
     await tester.pump(const Duration(milliseconds: 50));
     expect(c.sent.whereType<proto.PolicyUpdate>().last.toJson()['params'],
-        {'min_fuel_pct': 15, 'cargo_return_pct': 60, 'max_range': 7, 'engage_ratio_x10': 30, 'fuel_budget_pct': 50, 'refine': false},
+        {'min_fuel_pct': 15, 'cargo_return_pct': 60, 'max_range': 7, 'engage_ratio_x10': 30, 'fuel_budget_pct': 50, 'refine': false, 'disengage_ratio_x10': 13},
         reason: 'one step changes one setting and keeps the others as they are in force');
+
+    final holding = c.fake;
+    c.push(holding.copyWith(policyActs: {
+      1: const [
+        PolicyAct(
+            tick: 519,
+            since: 519,
+            preset: proto.PolicyPreset.mineAndReturn,
+            action: 'flee',
+            reason: 'left the fight at (2, 0): odds fell to 0.54x, DEADLY, below the doctrine\'s 1.3x; jumping to (2, -1), under fire for 1 round'),
+        PolicyAct(tick: 503, since: 503, preset: proto.PolicyPreset.mineAndReturn, action: 'move', reason: 'heading to claim'),
+      ],
+    }));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data, 'LAST REPORT: LEFT A FIGHT, 0:01 AGO',
+        reason: 'a doctrine that jumps out of a fight says so in the report\'s heading');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data, startsWith('left the fight at (2, 0): odds fell to 0.54x'),
+        reason: 'and why, in the engine\'s sentence');
+    await shot(tester, 'ws-orders-fled-1440');
+    c.push(holding);
+    await tester.pump(const Duration(milliseconds: 100));
 
     await key(tester, LogicalKeyboardKey.escape, '');
     expect(panel, findsNothing);
@@ -899,13 +1583,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     String reason() => tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data!;
     String head() => tester.widget<Text>(find.byKey(const Key('orders-report-head'))).data!;
-    const unloaded = 'doctrine set: patrol home (range 4, engage 1.5x, fuel budget 20% of deuterium income); the hold loaded by hand goes back to the stockpile';
+    const unloaded =
+        'doctrine set: patrol home (range 4, engage 1.5x, disengage 0.9x, fuel budget 20% of deuterium income); the hold loaded by hand goes back to the stockpile';
     expect(find.descendant(of: find.byKey(const ValueKey('orders-panel')), matching: find.textContaining(unloaded, findRichText: true)), findsOneWidget,
         reason: 'the engine\'s report of the new orders, which says what became of the hold');
     expect((c.currentFleet.laden, c.state.holds[101]!.metal), (false, 0));
     expect(c.state.events.map((e) => e.message), containsAll(['F101 [patrol home] engage: $unloaded', '> policy patrol']),
         reason: 'the log shows the report and the line a player would have typed');
-    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 4 HEXES - ENGAGE 1.5X - FUEL 20%');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 4 HEXES - ENGAGE 1.5X - FUEL 20%\nLEAVES A FIGHT BELOW 0.9X');
 
     await tester.pump(const Duration(seconds: 1));
     expect(head(), startsWith('HOLDING FOR'));
@@ -927,23 +1612,44 @@ void main() {
     await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
     await tester.tap(find.byKey(const ValueKey('orders-set')));
     await tester.pump(const Duration(milliseconds: 100));
-    expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 3, engage 1.5x, fuel unbounded)'));
-    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 3 HEXES - ENGAGE 1.5X - FUEL NO BOUND');
+    expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 3, engage 1.5x, disengage 0.9x, fuel unbounded)'));
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 3 HEXES - ENGAGE 1.5X - FUEL NO BOUND\nLEAVES A FIGHT BELOW 0.9X');
     await tester.pump(const Duration(seconds: 1));
     expect(reason(), 'no contact within 3 hops of home that the fleet rates 1.5x against');
 
     c.send(const proto.PolicyUpdate(fleetId: 101, preset: proto.PolicyPreset.patrolHome, params: proto.PolicyParams(maxRange: 2)));
     await tester.pump(const Duration(milliseconds: 100));
-    expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 2, engage 1.5x, fuel budget 20% of deuterium income)'));
-    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 1.5X - FUEL 20%',
+    expect(c.state.policyActs[101]!.map((a) => a.reason),
+        contains('doctrine set: patrol home (range 2, engage 1.5x, disengage 0.9x, fuel budget 20% of deuterium income)'));
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 1.5X - FUEL 20%\nLEAVES A FIGHT BELOW 0.9X',
         reason: 'orders given from another console show with their settings, as the fleet row carries them');
     expect(tester.widget<Text>(find.byKey(const Key('orders-range'))).data, '2 HEXES', reason: 'and the steppers follow them');
 
     c.handleCommand('policy engage=3 cargo=60');
     await tester.pump(const Duration(milliseconds: 100));
-    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 3.0X - FUEL 20%',
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 3.0X - FUEL 20%\nLEAVES A FIGHT BELOW 0.9X',
         reason: 'settings typed with no doctrine change the orders in force and leave the rest of them');
     expect(find.text('It turns home at 60% hold, or with fuel down to the way back plus 10% of the tank.'), findsOneWidget);
+
+    final leaveUp = find.byKey(const ValueKey('orders-disengage-up'));
+    await tester.ensureVisible(leaveUp);
+    for (var i = 0; i < 6; i++) {
+      await tester.tap(leaveUp);
+      await tester.pump();
+    }
+    expect(tester.widget<Text>(find.byKey(const Key('orders-disengage'))).data, '10.0X', reason: 'the stepper goes to the most the server takes');
+    expect(tester.widget<ConsoleButton>(leaveUp).onPressed, isNull);
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.events.map((e) => e.message), contains(allOf(startsWith('> policy patrol '), endsWith(' disengage=${proto.policyDisengageRatioX10Max / 10}'))),
+        reason: 'what was asked is what is sent, as the line a player would have typed');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 3.0X - FUEL 20%\nLEAVES A FIGHT BELOW 3.0X',
+        reason: 'the server holds the ratio at the engage ratio, and the settings in force show what it took');
+    expect(tester.widget<Text>(find.byKey(const Key('orders-disengage'))).data, '3.0X', reason: 'and the stepper follows the orders in force');
+    c.handleCommand('policy disengage=0.9');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.currentFleet.orders!.params.disengageRatioX10, 9);
 
     final refineSwitch = find.byKey(const ValueKey('orders-refine'));
     await tester.ensureVisible(refineSwitch);
@@ -955,7 +1661,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('orders-set')));
     await tester.pump(const Duration(milliseconds: 100));
     expect(c.state.policyActs[101]!.map((a) => a.reason),
-        contains('doctrine set: patrol home (range 2, engage 3.0x, fuel budget 20% of deuterium income, refining from the hold when short of fuel)'));
+        contains('doctrine set: patrol home (range 2, engage 3.0x, disengage 0.9x, fuel budget 20% of deuterium income, refining from the hold when short of fuel)'));
     expect(c.currentFleet.orders!.params.refine, isTrue);
     expect(c.state.events.map((e) => e.message), contains(allOf(startsWith('> policy patrol '), endsWith(' refine=on'))),
         reason: 'the line a player would have typed');
@@ -1115,8 +1821,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     String shown(String id) => tester.widget<Text>(find.byKey(Key('orders-$id'))).data!;
     expect(find.descendant(of: find.byKey(const Key('orders-in-force')), matching: find.text('PROSPECT')), findsOneWidget);
-    expect(shown('settings'), 'RANGE 6 HEXES - ENGAGE 2.0X - FUEL 35%');
-    expect((shown('range'), shown('engage'), shown('fuel')), ('6 HEXES', '2.0X', '35%'));
+    expect(shown('settings'), 'RANGE 6 HEXES - ENGAGE 2.0X - FUEL 35%\nLEAVES A FIGHT BELOW 0.9X');
+    expect((shown('range'), shown('engage'), shown('disengage'), shown('fuel')), ('6 HEXES', '2.0X', '0.9X', '35%'));
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNull);
     expect(find.descendant(of: find.byKey(const Key('orders-why')), matching: find.text('These are the orders in force.')), findsOneWidget);
     await shot(tester, 'ws-orders-given-elsewhere-1440');
@@ -1144,12 +1850,12 @@ void main() {
       expect(panel.left >= 0 && panel.right <= size.width, isTrue);
       if (size.height >= 900) {
         final set = tester.getRect(find.byKey(const ValueKey('orders-set')));
-        const guideStrip = 66;
-        expect(set.bottom + guideStrip <= tester.getRect(find.byType(Dock)).bottom, isTrue,
-            reason: 'on a 900 px window the form shows down to its button without scrolling, with the guide strip above it too: $set');
+        expect(set.bottom <= tester.getRect(find.byType(Dock)).bottom, isTrue,
+            reason: 'on a 900 px window the form, seven settings long, shows down to its button without scrolling: $set');
       }
       expect(tester.widget<Text>(find.byKey(const Key('orders-report-reason'))).data, 'no seam within 8 hops of home repays the fuel to fetch it (stripped tiles refill over hours)');
-      expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 8 HEXES - ENGAGE 1.5X - FUEL 35%', reason: 'typed orders are known to the panel too');
+      expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 8 HEXES - ENGAGE 1.5X - FUEL 35%\nLEAVES A FIGHT BELOW 0.9X',
+          reason: 'typed orders are known to the panel too');
       await shot(tester, 'ws-orders-${size.width.round()}');
 
       c.send(const proto.PolicyUpdate(fleetId: 999, preset: proto.PolicyPreset.prospect));

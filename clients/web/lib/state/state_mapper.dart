@@ -5,7 +5,8 @@ import 'package:clock/clock.dart';
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
-import '../console/intel.dart' show clockFmt, despawnLabel, groupDigits;
+import '../console/battle.dart' show endedLine, pursuitEventLine, roundLine, shipsList, ticksOf;
+import '../console/intel.dart' show clockFmt, groupDigits;
 import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
 import 'command_parser.dart' show QueueIds;
@@ -143,6 +144,19 @@ class StateMapper {
 
   /// What each fleet's standing orders reported lately, newest first.
   final Map<int, List<PolicyAct>> policyActs = {};
+
+  /// The fights the player is in or present at and those just ended, by
+  /// sector key. The state lists the ones under way; the round each stands
+  /// at is the last `BattleRound` event, or a full state's `last_round`.
+  final Map<int, Battle> battles = {};
+
+  /// The log's line for the last round of each fight under way, by sector
+  /// key: a fight keeps one such line, which each round replaces.
+  final Map<int, LogEntry> _roundLines = {};
+
+  /// Where each fleet last stood in a fight, by fleet id: a fleet that
+  /// jumped out of one is shown that fight's end where it lands.
+  final Map<int, proto.Hex> _foughtAt = {};
   final List<Alert> alerts = [];
 
   bool get hasState => player != null;
@@ -162,6 +176,9 @@ class StateMapper {
     signals.clear();
     signalBands.clear();
     policyActs.clear();
+    battles.clear();
+    _roundLines.clear();
+    _foughtAt.clear();
     previews.clear();
     odds.clear();
     quotes.clear();
@@ -216,10 +233,17 @@ class StateMapper {
     }
     signals.removeWhere((k, _) => sectors.containsKey(k));
     signalBands.removeWhere((k, _) => sectors.containsKey(k));
+    battles
+      ..removeWhere((_, b) => !b.over)
+      ..addAll({
+        for (final b in s.battles)
+          b.sector.toKey(): Battle(sector: b.sector, rounds: b.rounds, round: b.lastRound, losses: b.losses),
+      });
     previews.clear();
     odds.clear();
     quotes.clear();
     surveys.clear();
+    _noteFights();
     pushLog(first ? 'Uplink established. Homeworld at ${s.player.homeworld}.' : 'Uplink refreshed: the console is in step with the world again.',
         EventLevel.bright);
   }
@@ -239,7 +263,22 @@ class StateMapper {
     for (final e in u.events ?? const <proto.GameEvent>[]) {
       _ingestEvent(e);
     }
+    final live = {for (final b in u.battles) b.sector.toKey()};
+    battles.removeWhere((key, b) => b.over ? tick - b.endedTick > battleReportTicks : !live.contains(key));
+    for (final b in u.battles) {
+      final known = battles[b.sector.toKey()];
+      battles[b.sector.toKey()] =
+          Battle(sector: b.sector, rounds: b.rounds, round: known == null || known.over ? null : known.round, losses: b.losses);
+    }
     policyActs.removeWhere((id, _) => fleets.every((f) => f.id != id));
+    _noteFights();
+  }
+
+  void _noteFights() {
+    _foughtAt.removeWhere((id, at) => fleets.every((f) => f.id != id) || !battles.containsKey(at.toKey()));
+    for (final f in fleets) {
+      if (f.state == proto.FleetStatus.inCombat || f.fleeing != null) _foughtAt[f.id] = f.location;
+    }
   }
 
   void _applyPreview(proto.MovePreview p) {
@@ -285,13 +324,23 @@ class StateMapper {
     var level = EventLevel.normal;
 
     switch (k) {
-      case proto.CombatRoundEvent():
-        return; // far too chatty for the log
-      case proto.ShipDestroyedEvent():
+      case proto.BattleRoundKind(battleRound: final round):
+        final key = round.sector.toKey();
+        final known = battles[key];
+        battles[key] = known == null || known.over
+            ? Battle(sector: round.sector, rounds: round.round, round: round)
+            : Battle(sector: round.sector, rounds: round.round, round: round, losses: known.losses);
+        if (!round.mine) return;
+        log.remove(_roundLines.remove(key));
+        final line = LogEntry(tick: e.tick, message: roundLine(round), level: EventLevel.dim);
+        _roundLines[key] = line;
+        _log(line);
+        return;
+      case proto.ShipsLostEvent():
         msg = k.mine
-            ? '! Your ${k.shipClass.label} lost in ${k.sector} (fleet ${k.ownerFleetId})'
-            : '${k.isNpc ? 'Hostile' : "${k.owner}'s"} ${k.shipClass.label} destroyed in ${k.sector}';
-        level = k.mine ? EventLevel.bright : (k.isNpc ? EventLevel.normal : EventLevel.dim);
+            ? '! ${_fleet(k.fleetId)} lost ${shipsList(k.ships)} breaking up in the emergency jump from ${k.sector}'
+            : "${k.owner}'s fleet ${_fleet(k.fleetId)} lost ${shipsList(k.ships)} in an emergency jump from ${k.sector}";
+        level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.FleetDestroyedEvent():
         if (k.mine) {
           msg = '!! YOUR FLEET ${_fleet(k.fleetId)} DESTROYED in ${k.sector}';
@@ -310,9 +359,11 @@ class StateMapper {
         msg = '! Combat in ${k.sector}: ${k.mine ? 'your' : "${k.owner}'s"} ${_fleet(k.playerFleetId)} vs hostile ${k.enemy.isEmpty ? 'fleet ${k.enemyFleetId}' : k.enemy}';
         level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.CombatEndedEvent():
-        final outcome = k.mine ? (k.playerVictory ? 'victory' : 'defeat') : (k.playerVictory ? 'won by others' : 'lost by others');
-        final pile = k.salvage == null ? '' : ' -- wreckage ${amountsOf(k.salvage!)}';
-        msg = '! Combat ended in ${k.sector}: $outcome$pile';
+        final key = k.sector.toKey();
+        _roundLines.remove(key);
+        battles[key] = Battle(
+            sector: k.sector, rounds: k.rounds, round: battles[key]?.round, losses: k.losses, ended: k, endedTick: e.tick);
+        msg = '${k.mine ? '! ' : ''}${endedLine(k)}';
         level = k.mine ? EventLevel.bright : EventLevel.dim;
       case proto.SalvageCollectedEvent():
         msg = '${_fleet(k.fleetId)} collected salvage ${amountsOf(k.resources)}'
@@ -432,8 +483,25 @@ class StateMapper {
         level = EventLevel.bright;
       case proto.PolicyActionEvent():
         if (_notePolicy(e.tick, k)) return;
-        msg = '${_fleet(k.fleetId)} [${k.preset.label}] ${k.action}: ${k.reason}';
-        level = EventLevel.dim;
+        final fled = k.action == policyFlee;
+        msg = '${fled ? '! ' : ''}${_fleet(k.fleetId)} [${k.preset.label}] ${k.action}: ${k.reason}';
+        level = fled ? EventLevel.bright : EventLevel.dim;
+      case proto.PursuitEvent():
+        final given = k.phase == proto.PursuitPhase.abandoned;
+        msg = '${k.mine && !given ? '! ' : ''}${pursuitEventLine(k)}';
+        level = !k.mine ? EventLevel.dim : given ? EventLevel.normal : EventLevel.bright;
+        if (k.mine) {
+          _pushAlert(Alert(
+            icon: given ? '.' : '!',
+            message: given ? 'The ${k.label} gave up on ${_fleet(k.fleetId)}' : 'The ${k.label} is after ${_fleet(k.fleetId)}',
+            detail: switch ((given, k.to, k.arrivesIn)) {
+              (true, _, _) => k.why ?? '',
+              (false, final to?, final ticks?) => 'Lands at $to in ${ticksOf(ticks)}',
+              _ => '',
+            },
+            level: given ? AlertTone.dim : AlertTone.glow,
+          ));
+        }
       case proto.AlertEvent():
         msg = '${k.level == proto.AlertLevel.info ? '' : '! '}${k.message}';
         level = k.level == proto.AlertLevel.info ? EventLevel.normal : EventLevel.bright;
@@ -472,27 +540,18 @@ class StateMapper {
     return again;
   }
 
-  static String _age(int ticks) {
-    final t = math.max(0, ticks);
-    if (t < 120) return '${t}s';
-    if (t < 7200) return '${t ~/ 60}m';
-    return '${t ~/ 3600}h';
-  }
-
   int get clockSec =>
       connectedAt == null ? tick : clock.now().difference(connectedAt!).inSeconds;
 
   // ── UI mapping ────────────────────────────────────────────────
 
-  GameState toUiState({int activeFleet = 0}) {
+  GameState toUiState() {
     final p = player;
     final hw = homeworld;
     final res = p?.resources ?? const proto.Resources();
 
     final uiFleets = fleets.map(_mapFleet).toList();
-    final active = (activeFleet >= 0 && activeFleet < fleets.length) ? fleets[activeFleet] : null;
     final home = p?.homeworld ?? hw?.location ?? proto.Hex.origin;
-    final focus = active?.location ?? home;
 
     return GameState(
       tick: tick,
@@ -514,13 +573,12 @@ class StateMapper {
       fleets: uiFleets,
       buildQueue: _mapBuildQueue(hw),
       shipyard: _mapShipyard(hw),
-      docked: _dockedSummary(hw),
+      shipCount: p?.shipCount ?? 0,
       research: _mapResearch(hw),
       events: List.of(log),
       alerts: alerts.isEmpty
           ? [Alert(icon: '.', message: 'Uplink established', detail: feed, level: AlertTone.dim)]
           : List.of(alerts),
-      sector: _mapSector(focus),
       homeworld: home,
       waypoints: [
         if (p != null) Waypoint(id: 'HW', coord: home, note: 'Homeworld'),
@@ -543,6 +601,7 @@ class StateMapper {
       outpost: outpost,
       surveys: {for (final e in surveys.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       policyActs: {for (final f in fleets) f.id: ?policyActs[f.id]?.toList()},
+      battles: {for (final b in battles.values) b.sector: b},
     );
   }
 
@@ -557,17 +616,6 @@ class StateMapper {
       proto.FleetStatus.exploring => FleetStatus.exploring,
     };
 
-    final byClass = <proto.ShipClass, ({int count, double hull, double hullMax, List<int> ids})>{};
-    for (final s in f.ships) {
-      final prev = byClass[s.shipClass];
-      byClass[s.shipClass] = (
-        count: (prev?.count ?? 0) + 1,
-        hull: (prev?.hull ?? 0) + s.hull,
-        hullMax: (prev?.hullMax ?? 0) + s.hullMax,
-        ids: [...?prev?.ids, s.id],
-      );
-    }
-
     final cap = f.cargoCapacity.round();
     final fuelPct = f.fuelMax > 0 ? ((f.fuel / f.fuelMax) * 100).round().clamp(0, 100) : 0;
     final cargoPct = cap > 0 ? ((f.cargo.total / cap) * 100).round().clamp(0, 100) : 0;
@@ -577,19 +625,17 @@ class StateMapper {
       name: _fleet(f.id),
       sector: f.location,
       status: status,
-      shipCount: f.ships.length,
+      shipCount: f.shipCount,
       cargoPercent: cargoPct,
       fuelPercent: fuelPct,
-      ships: [
-        for (final e in byClass.entries)
-          ShipState(
-            shipClass: e.key.label,
-            count: e.value.count,
-            hull: e.value.hull.round(),
-            hullMax: math.max(1, e.value.hullMax.round()),
-            ids: e.value.ids,
-          ),
-      ],
+      ships: f.ships,
+      hull: f.hull,
+      hullMax: f.hullMax,
+      attack: f.attack,
+      shield: f.shield,
+      refit: f.refit,
+      refitDue: f.refitDue,
+      repair: f.repair,
       cargo: FleetCargo(
         metal: f.cargo.metal.round(),
         crystal: f.cargo.crystal.round(),
@@ -615,6 +661,10 @@ class StateMapper {
       cargoBlocked: f.cargoBlocked,
       holdCapacity: f.cargoCapacity,
       refine: f.refine,
+      flight: f.flight,
+      fleeing: f.fleeing,
+      pursuedBy: f.pursuedBy,
+      foughtAt: _foughtAt[f.id],
     );
   }
 
@@ -668,15 +718,6 @@ class StateMapper {
     ];
   }
 
-  String _dockedSummary(proto.HomeworldState? hw) {
-    if (hw == null || hw.dockedShips.isEmpty) return 'none';
-    final counts = <String, int>{};
-    for (final s in hw.dockedShips) {
-      counts[s.shipClass.label] = (counts[s.shipClass.label] ?? 0) + 1;
-    }
-    return counts.entries.map((e) => '${e.value}x${e.key}').join('  ');
-  }
-
   ResearchState _mapResearch(proto.HomeworldState? hw) {
     final completed = [
       for (final r in hw?.research ?? const <proto.ResearchState>[])
@@ -693,43 +734,6 @@ class StateMapper {
     }
     final item = _queueItem('${a.tech.label} Lv.${a.targetLevel}', a.startTick, a.endTick);
     return ResearchState(name: item.name, time: item.time, pct: item.pct, completed: completed, waiting: waiting);
-  }
-
-  SectorInfo _mapSector(proto.Hex loc) {
-    final sec = sectors[loc.toKey()];
-    if (sec == null) return SectorInfo.unknown;
-
-    final hostiles = sec.hostiles;
-    final hostileStr = (hostiles == null || hostiles.isEmpty)
-        ? 'None in sector'
-        : hostiles
-            .map((h) => '#${h.id} ${h.ships.map((s) => '${s.count}x${s.shipClass.label}').join(' ')} ${h.behavior.wire.toLowerCase()}')
-            .join('; ');
-
-    final near = <String>[];
-    for (final c in sec.connections) {
-      final h = sectors[c.toKey()]?.hostiles;
-      if (h != null && h.isNotEmpty) {
-        near.add('${h.fold<int>(0, (s, e) => s + e.shipCount)} hostile ships at $c');
-      }
-    }
-
-    final salvage = sec.salvage;
-    final site = sec.site;
-    return SectorInfo(
-      terrain: sec.terrain.label,
-      metal: sec.resources.metal.label,
-      crystal: sec.resources.crystal.label,
-      deut: sec.resources.deuterium.label,
-      hostile: hostileStr,
-      intel: sec.live ? 'live' : 'chart, ${_age(tick - sec.lastSeen)} old',
-      adjacent: near.isEmpty ? 'none known' : near.join('; '),
-      exits: '${sec.connections.length} of 6',
-      salvage: (salvage == null || salvage.total <= 0)
-          ? 'none'
-          : '${amountsOf(salvage)}${despawnLabel(sec, tick) == null ? '' : ', ${despawnLabel(sec, tick)}'}${sec.pinsStale ? ' (stale)' : ''}',
-      site: site == null ? 'none' : 'tier ${site.tier} (${site.risk.label})',
-    );
   }
 
   static String _fmtTicks(int t) {

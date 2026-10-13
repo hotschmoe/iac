@@ -595,7 +595,8 @@ What every doctrine does:
   `at_risk`, `hull`, `hull_max` and `lost` this round), the `volleys` they
   fired by class of firing ship and of target (`shots`, `bounced`, `wasted`
   on a ship already destroyed, `absorbed` by shields, `hull_damage`,
-  `destroyed`), and their sums with `power`, the attack of every shot. It
+  `destroyed`), and their sums with `power`, the attack of every shot, and
+  `standing`, the units the side has left. It
   is the same size for five ships as for five thousand. `CombatEnded` says
   how it ended (`outcome`: `hostiles_destroyed`, `fleets_destroyed`,
   `both_destroyed`, `fled` when the last fleet jumped out under fire,
@@ -603,9 +604,10 @@ What every doctrine does:
   `rounds`, and
   in `losses` what every fleet and group lost over the whole fight by
   class. While a fight goes on, `battles` in the full state and in every
-  tick update holds it for the empires in it: `sector`, `rounds`, the
-  `last_round` and the `losses` so far. Ships that break up in a `recall`
-  are a `ShipsLost` event.
+  tick update holds it for the empires in it: `sector`, `rounds` and the
+  `losses` so far, and in the full state the `last_round`, which a tick
+  update carries as its `BattleRound` event instead. Ships that break up
+  in a `recall` are a `ShipsLost` event.
   Victors drop salvage (`FleetDestroyed.salvage`
   is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
   sector view carries `salvage_despawn_tick`, and a `SalvageDespawned` event

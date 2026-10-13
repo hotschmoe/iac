@@ -98,8 +98,60 @@ class MapPainter extends CustomPainter {
     if (preview != null && route == null) _drawPreview(canvas, preview!, t);
     if (route != null) _drawRoute(canvas, route!, t);
     _drawBrackets(canvas, t);
+    _drawChases(canvas, t);
     _drawFleets(canvas, t);
     canvas.restore();
+  }
+
+  /// A lane a group or a fleeing fleet is jumping down, from [from] to [to]:
+  /// a dashed stroke that runs toward its end, an arrowhead there and, close
+  /// in, a word for what it is.
+  void _lane(Canvas c, proto.Hex from, proto.Hex to, Color col, String word, double t) {
+    final a = vp.toScreen(from.q, from.r), b = vp.toScreen(to.q, to.r);
+    final along = b - a;
+    if (along.distance < 1) return;
+    final unit = along / along.distance, across = Offset(-unit.dy, unit.dx);
+    final tip = b - unit * rn * .55, tail = a + unit * rn * .55;
+    c.drawLine(tail, tip, Draw.line(Colors.black, 6.5, .8));
+    Draw.dashedLine(c, tail, tip, Draw.line(col, 3), 5, 3, still ? 0 : -t * 30);
+    final barb = math.max(7.0, hr * .36);
+    c.drawPath(
+        Path()
+          ..moveTo(tip.dx, tip.dy)
+          ..lineTo(tip.dx - unit.dx * barb + across.dx * barb * .6, tip.dy - unit.dy * barb + across.dy * barb * .6)
+          ..lineTo(tip.dx - unit.dx * barb - across.dx * barb * .6, tip.dy - unit.dy * barb - across.dy * barb * .6)
+          ..close(),
+        Paint()..color = col);
+    if (s >= .9) {
+      final m = (a + b) / 2 - Offset(0, hr * 1.2);
+      final size = math.max(9.0, (hr * .3).roundToDouble());
+      final plate = Rect.fromCenter(center: m, width: word.length * size * 1.25 + 8, height: size + 5);
+      c.drawRect(plate, Paint()..color = const Color(0xE607050A));
+      c.drawRect(plate, Draw.line(col, 1, .8));
+      Draw.text(c, word.split('').join(' '), m.dx, m.dy, T.cond(size: size, color: col, spacing: 0), anchor: .5);
+    }
+  }
+
+  /// Pursuit and flight as the state tells them: the lane a group on an
+  /// errand is jumping down, the lane of the group on a fleet's trail, and
+  /// the lane a fleet is leaving a fight by.
+  void _drawChases(Canvas c, double t) {
+    final trailed = <int>{};
+    for (final f in data.fleets) {
+      if (f.pursuedBy case final hunter?) {
+        trailed.add(hunter.groupId);
+        _lane(c, hunter.from, f.sector, C.ember, 'PURSUIT', t);
+      }
+      if (f.fleeing case final leaving?) _lane(c, f.sector, leaving.to, C.a300, 'FLEEING', t);
+    }
+    for (final sec in data.sectors.values) {
+      for (final g in sec.hostiles ?? const <proto.NpcFleetInfo>[]) {
+        final errand = g.errand;
+        final to = errand?.to;
+        if (errand == null || to == null || trailed.contains(g.id)) continue;
+        _lane(c, sec.location, to, errand.quarry == null ? C.threat(4) : C.ember, errand.quarry == null ? 'RETURNING' : 'PURSUIT', t);
+      }
+    }
   }
 
   Rect _viewRect(Size size, [double m = 60]) => Rect.fromLTWH(-m, -m, size.width + 2 * m, size.height + 2 * m);
@@ -540,6 +592,9 @@ class MapPainter extends CustomPainter {
                 ..lineTo(p.dx + sg.$1 * (k - l), p.dy + sg.$2 * k),
               pa);
         }
+      }
+      if (f.pursuedBy != null) {
+        c.drawCircle(p, r * 2.3, Draw.line(C.ember, 1.6, still || (t * 2).floor().isEven ? .95 : .35));
       }
       Draw.symbol(c, Sym.fleet, p.dx, p.dy, r * 1.25, rot: ang, color: col, lw: 1.5, bloom: !lowQuality);
       if (s >= .7 && (sel || s > 1.6)) {

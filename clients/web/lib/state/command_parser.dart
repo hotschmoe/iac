@@ -1,3 +1,5 @@
+import '../console/battle.dart'
+    show chaseLine, damageLine, dockRepairLine, fleeingLine, flightPrice, groupsList, hullOf, pursuitLine, pursuitVerdict, refitLevels, shipsOf, stopFlightRule;
 import '../protocol/protocol.dart';
 
 /// Stable queue ids of one queue: the running items, then the waiting ones.
@@ -65,6 +67,7 @@ class ParsedError extends ParsedCommand {
 /// What the server takes for each doctrine setting, as the help prints it.
 const _rangeBounds = '$policyRangeMin-$policyRangeMax';
 const _engageBounds = '${policyEngageRatioX10Min / 10}-${policyEngageRatioX10Max ~/ 10}';
+const _disengageBounds = '${policyDisengageRatioX10Min / 10}-${policyDisengageRatioX10Max ~/ 10}';
 const _cargoBounds = '$policyCargoReturnPctMin-$policyCargoReturnPctMax';
 const _reserveBounds = '0-$policyMinFuelPctMax';
 
@@ -152,6 +155,10 @@ final _defenceWords = _words(DefenceKind.values, (k) => k.label);
 final helpLines = [
   'fleet:  h[arvest] [metal|crystal|deut]  a[ttack] [n]  r[ecall]  s[alvage]  v|scan  x|explore  stop',
   'move:   m[ove] <e|ne|nw|w|sw|se | 1-6 | q r>      (one hop along a known lane)',
+  'flight: a move from inside a fight is flight: the fleet stops firing and is fired on until its jump lands, and a group that was',
+  '                  beating it may follow, as far as its kind does and never into home ground, the hub or an outpost\'s sector. status says what',
+  '                  leaving costs now and who would follow. stop calls the jump off: the fleet fights on and the fuel is forfeit.',
+  '                  recall is the other way out: home at once, for more fuel and at a risk to every ship',
   'base:   b[uild] <$_buildingWords>',
   '        research <$_techWords>',
   '        ship <$_shipWords> [count]',
@@ -159,7 +166,9 @@ final helpLines = [
   '        a name is typed without its spaces; the short ones work too (metal, solar, yard, tank, lab; weapons, energy, laser; lf, sc, probe, sat; rl, ll, gauss)',
   '        cancel <building|ship|research> [id]  [waiting]     a defence stands in the ship queue',
   '        buildings and research queue ahead of resources and pay when they start; a ship or a defence batch is paid in full when ordered',
-  'fleets: f[leet] [n]  select/list   split <class> [count]  detach ships into a new fleet',
+  'fleets: f[leet] [n]  select/list',
+  '        split <class> [count] [<class> [count] ...] [damaged]  detach so many ships of each class into a new fleet: whole ships first,',
+  '                  or with "damaged" the most damaged first, which is how the wounded are sent home   e.g. split lf 100 cr 20',
   '        merge <fleet id>  fold a fleet in this sector into the active one',
   'orders: p[olicy] <manual|prospect|mine|salvage|patrol>  standing orders: the active fleet flies itself and reports each act and each hold with its reason',
   '        prospect  scans, then charts the sectors in range',
@@ -171,6 +180,7 @@ final helpLines = [
   '                  fuel=<% of deuterium income it may burn, $policyFuelUnboundedPct = no bound>  cargo=<% of the hold that sends it home, $_cargoBounds>',
   '                  reserve=<% of the tank kept spare, $_reserveBounds>     e.g. policy mine range=8 fuel=40',
   '                  refine=<on|off: before it would turn home for fuel, refine the deuterium in its hold first>',
+  '                  disengage=<odds ratio below which it leaves a fight for home, $_disengageBounds, never held above engage>',
   'hub:    quote <give> <want> [amount|all]  ask the exchange what a trade would return, from anywhere   e.g. quote metal deut 400',
   '        trade <give> <want> [amount|all]  sell cargo from the hold, standing on the hub; no amount = all of it aboard',
   'hold:   load <metal|crystal|deut> [amount|all]  stockpile into the hold of the active fleet, idle at home with no standing orders;',
@@ -212,7 +222,10 @@ const _tradeUsage = '<metal|crystal|deut> <metal|crystal|deut> [amount|all]  (gi
 
 const _loadUsage = 'load: <metal|crystal|deut> [amount|all]  (the dock\'s stock into the hold of a fleet at home or at your outpost; no amount = all that fits)';
 
-const _refineUsage = 'refine: takes no argument (the active fleet turns the deuterium in its hold into fuel, as far as its tank has room)';
+const _splitUsage = 'split: <class> [count] [<class> [count] ...] [damaged]  (so many of each class into a new fleet, 1 where no count is given; '
+    'whole ships go first, the most damaged with "damaged")   e.g. split lf 100 cr 20';
+
+const _refineUsage ='refine: takes no argument (the active fleet turns the deuterium in its hold into fuel, as far as its tank has room)';
 const _foundUsage ='found: takes no argument (the active fleet founds your outpost in the sector it stands in)';
 
 const _surveyUsage = 'survey: [q r]  (what an outpost would be worth in a sector, its ore only if it is on your chart; none = where the active fleet stands)';
@@ -249,6 +262,19 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
       return ParsedLocal([
         'Tick ${ctx.tick} | fleets ${ctx.fleets.length}'
             '${f == null ? '' : ' | active F${f.id} ${f.state.wire} at ${f.location}, fuel ${f.fuel.round()}/${f.fuelMax.round()}, cooldown ${f.cooldownRemaining}'}',
+        if (f != null)
+          'F${f.id}: ${shipsOf(f.shipCount)} (${groupsList(f.ships)}), hull ${hullOf(f.hull, f.hullMax)}, fights with ${refitLevels(f.refit)}'
+              '${f.refitDue ? '; a refit waits at the home dock' : ''}',
+        if (f?.repair case final q?) ...[
+          '${damageLine(q)}; the home dock ${dockRepairLine(q, q.home)}',
+          if (q.outpost case final post?) 'your outpost ${dockRepairLine(q, post)}',
+        ],
+        if (f?.flight case final q?) ...[
+          'In a fight, ${q.label.label} (ratio ${q.ratio.toStringAsFixed(2)}): a move out costs ${flightPrice(q)}. ${chaseLine(q.chase)}',
+          if (q.refusal case final why?) 'It cannot leave now: $why',
+        ],
+        if (f?.fleeing case final leaving?) '${fleeingLine(leaving)}. $stopFlightRule',
+        if (f?.pursuedBy case final hunter?) 'Pursued: ${pursuitLine(hunter)}. ${pursuitVerdict(hunter, charging: f?.state == FleetStatus.moving)}',
       ]);
 
     case 'leaderboard' || 'lb' || 'rank' || 'score':
@@ -265,8 +291,9 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
         return ParsedLocal([
           for (var i = 0; i < ctx.fleets.length; i++)
             '${ctx.fleets[i].id == fid ? '>' : ' '}${i + 1}: F${ctx.fleets[i].id} ${ctx.fleets[i].state.wire} '
-                '${ctx.fleets[i].location} ships ${ctx.fleets[i].ships.length}'
-                '${ctx.fleets[i].policy == null ? '' : ' [${ctx.fleets[i].policy!.preset.label}]'}',
+                '${ctx.fleets[i].location} ${groupsList(ctx.fleets[i].ships)}'
+                '${ctx.fleets[i].policy == null ? '' : ' [${ctx.fleets[i].policy!.preset.label}]'}'
+                '${ctx.fleets[i].fleeing == null ? '' : ' leaving a fight'}${ctx.fleets[i].pursuedBy == null ? '' : ' PURSUED'}',
         ]);
       }
       final n = int.tryParse(args.first);
@@ -386,15 +413,19 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
     case 'split':
       final fleet = ctx.fleet;
       if (fid == null || fleet == null) return const ParsedError('No fleet selected (you have none)');
-      final c = args.isEmpty ? null : _ships[args.first];
-      if (c == null) return ParsedError('split: <$_shipWords> [count]');
-      final n = args.length > 1 ? int.tryParse(args[1]) : 1;
-      final aboard = [for (final s in fleet.ships) if (s.shipClass == c) s.id];
-      if (n == null || n < 1 || n > aboard.length) {
-        return ParsedError('split: F$fid has ${aboard.length} ${c.label}');
+      final damagedFirst = args.isNotEmpty && args.last == 'damaged';
+      final named = damagedFirst ? args.sublist(0, args.length - 1) : args;
+      final ships = <ShipCount>[];
+      for (var i = 0; i < named.length; i++) {
+        final c = _ships[named[i]];
+        if (c == null) return const ParsedError(_splitUsage);
+        final n = i + 1 < named.length ? int.tryParse(named[i + 1]) : null;
+        if (n != null) i++;
+        if (n != null && n < 1) return const ParsedError(_splitUsage);
+        ships.add(ShipCount(shipClass: c, count: n ?? 1));
       }
-      if (n >= fleet.ships.length) return const ParsedError('split: at least one ship must stay in the fleet');
-      return ParsedSend([CommandMessage(SplitCommand(fleetId: fid, shipIds: aboard.take(n).toList()))]);
+      if (ships.isEmpty) return const ParsedError(_splitUsage);
+      return ParsedSend([CommandMessage(SplitCommand(fleetId: fid, ships: ships, damagedFirst: damagedFirst))]);
 
     case 'merge':
       final fleet = ctx.fleet;
@@ -498,11 +529,13 @@ String policyCommand(PolicyPreset preset, [PolicyParams params = const PolicyPar
     if (params.cargoReturnPct != usual.cargoReturnPct) 'cargo=${params.cargoReturnPct}',
     if (params.minFuelPct != usual.minFuelPct) 'reserve=${params.minFuelPct}',
     if (params.refine != usual.refine) 'refine=${params.refine ? 'on' : 'off'}',
+    if (params.disengageRatioX10 != usual.disengageRatioX10) 'disengage=${params.disengageRatioX10 / 10}',
   ].join(' ');
 }
 
 const _policyUsage =
-    'policy: manual|prospect|mine|salvage|patrol  [range=$_rangeBounds] [engage=$_engageBounds] [fuel=0-$policyFuelUnboundedPct] [cargo=$_cargoBounds] [reserve=$_reserveBounds] [refine=on|off]';
+    'policy: manual|prospect|mine|salvage|patrol  [range=$_rangeBounds] [engage=$_engageBounds] [disengage=$_disengageBounds] [fuel=0-$policyFuelUnboundedPct] '
+    '[cargo=$_cargoBounds] [reserve=$_reserveBounds] [refine=on|off]';
 
 /// Doctrine settings typed as `key=value` over [over], the settings the
 /// fleet's orders have when the line names no doctrine, or else over the
@@ -511,7 +544,7 @@ const _policyUsage =
 PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
   final preset = over ?? const PolicyParams();
   var (reserve, cargo, range) = (preset.minFuelPct, preset.cargoReturnPct, preset.maxRange);
-  var (engage, fuel) = (preset.engageRatioX10, preset.fuelBudgetPct);
+  var (engage, disengage, fuel) = (preset.engageRatioX10, preset.disengageRatioX10, preset.fuelBudgetPct);
   var refine = preset.refine;
   for (final setting in settings) {
     final cut = setting.indexOf('=');
@@ -532,6 +565,8 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
         range = value.round();
       case 'engage':
         engage = (value * 10).round();
+      case 'disengage':
+        disengage = (value * 10).round();
       case 'fuel':
         fuel = value.round();
       default:
@@ -543,6 +578,7 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
       !within(cargo, policyCargoReturnPctMin, policyCargoReturnPctMax) ||
       !within(range, policyRangeMin, policyRangeMax) ||
       !within(engage, policyEngageRatioX10Min, policyEngageRatioX10Max) ||
+      !within(disengage, policyDisengageRatioX10Min, policyDisengageRatioX10Max) ||
       !within(fuel, 0, policyFuelUnboundedPct)) {
     return null;
   }
@@ -553,5 +589,6 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
     engageRatioX10: engage,
     fuelBudgetPct: fuel,
     refine: refine,
+    disengageRatioX10: disengage,
   );
 }

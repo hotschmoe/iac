@@ -71,6 +71,7 @@
     "hull_damage": 2280,
     "power": 3240,
     "shots": 38,
+    "standing": 27,
     "volleys": [
       {
         "absorbed": 40,
@@ -169,6 +170,7 @@
     "hull_damage": 3027,
     "power": 9000,
     "shots": 33,
+    "standing": 9,
     "volleys": [
       {
         "absorbed": 20,

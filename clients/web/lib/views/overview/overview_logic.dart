@@ -1,5 +1,7 @@
+import '../../console/battle.dart' show fleeingLine, pursuitLine, pursuitVerdict, ticksOf;
 import '../../console/economy_view.dart';
 import '../../console/intel.dart';
+import '../../models/fleet.dart' show FleetStatus;
 import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 
@@ -15,7 +17,7 @@ extension EventFilterLabel on EventFilter {
       };
 }
 
-final _combat = RegExp(r'combat|raid|destroyed|ambush|vs hostile|\blost\b|repelled', caseSensitive: false);
+final _combat = RegExp(r'combat|raid|destroyed|ambush|vs hostile|\blost\b|repelled|pursuit|gave up on|left the fight', caseSensitive: false);
 final _economy = RegExp(r'harvest|salvage|research|build|built|shipyard|collected|yielded|wreckage|storage', caseSensitive: false);
 final _intel = RegExp(r'scan|entered|sector|reveal|sync|arrived|uplink|derelict|token|boarding', caseSensitive: false);
 final _mine = RegExp(r'^(>|!+ ?your|f\d+ |your )|your |^!! your', caseSensitive: false);
@@ -220,6 +222,13 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
     }
   }
   for (final f in s.fleets) {
+    if (f.pursuedBy case final hunter?) {
+      out.add(OvAlert('${f.name} is pursued', '${pursuitLine(hunter)}. ${pursuitVerdict(hunter, charging: f.status == FleetStatus.enRoute)}',
+          critical: true, time: ticksOf(hunter.arrivesIn)));
+    }
+    if (f.fleeing case final leaving?) {
+      out.add(OvAlert('${f.name} is leaving a fight', '${fleeingLine(leaving)}.', critical: true));
+    }
     if (f.shortOfHomeFuel && f.homeFuel > 0) {
       out.add(OvAlert('${f.name} fuel is low', 'Fuel ${f.fuel} of ${f.fuelMax}; the way home needs ${f.homeFuel}.'));
     }
@@ -227,9 +236,10 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
   if (labIdle(s)) out.add(const OvAlert('Research lab idle', 'Queue something. Idle labs waste the longest timers.', tab: 'research'));
   final hasRaid = out.any((a) => a.tab == 'defence');
   final hasStorage = out.any((a) => a.tab == 'storage');
+  final pursued = s.fleets.any((f) => f.pursuedBy != null);
   for (final a in s.alerts) {
     final m = a.message.toLowerCase();
-    if ((hasRaid && m.contains('raid')) || (hasStorage && m.contains('storage'))) continue;
+    if ((hasRaid && m.contains('raid')) || (hasStorage && m.contains('storage')) || (pursued && m.contains(' is after '))) continue;
     out.add(OvAlert(a.message, a.detail, critical: a.level == AlertTone.glow));
   }
   return out;

@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../console/economy_view.dart';
-import '../../console/intel.dart' show hopCount;
+import '../../console/battle.dart' show fleeingLine, flightPrice, hullOf, pursuitLine, pursuitVerdict;
+import '../../console/intel.dart' show groupDigits, hopCount;
 import '../../console/prefs.dart';
 import '../../console/services.dart';
 import '../../design/draw.dart';
@@ -14,6 +15,7 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/overview/overview_scenes.dart';
 import '../../state/game_controller.dart';
+import '../battle_view.dart' show ClassMarks, HullBar, damagedColor;
 import '../onboarding.dart';
 import 'ov_panel.dart';
 import 'overview_cards.dart';
@@ -133,8 +135,6 @@ class _Hero extends StatelessWidget {
     final energy = s.hw?.energy;
     final buildingLevels = cat?.buildings.fold<int>(0, (a, b) => a + b.level) ?? 0;
     final researchLevels = cat?.research.fold<int>(0, (a, b) => a + b.level) ?? 0;
-    final dockedShips = RegExp(r'(\d+)x').allMatches(s.docked).fold<int>(0, (a, m) => a + int.parse(m.group(1)!));
-    final ships = s.fleets.fold<int>(0, (a, f) => a + f.shipCount) + dockedShips;
     final zone = s.homeworld.zone.label.toUpperCase();
     final name = con.game.playerName.isEmpty ? 'Homeworld' : con.game.playerName;
     final chips = <Widget>[
@@ -146,7 +146,7 @@ class _Hero extends StatelessWidget {
     final stats = <(int, String)>[
       (buildingLevels, 'Building levels'),
       (researchLevels, 'Research'),
-      (ships, 'Ships'),
+      (s.shipCount, 'Ships'),
       if (eco.defence != null) (eco.defence!.total.round(), 'Defence power'),
     ];
     return ConsolePanel(
@@ -275,8 +275,6 @@ class _NextCard extends StatelessWidget {
 
 // ── fleets ──────────────────────────────────────────────────────
 
-proto.ShipClass? _cls(String label) => proto.ShipClass.values.where((c) => c.label == label).firstOrNull;
-
 class _FleetsPanel extends StatelessWidget {
   final Console con;
   final double avail;
@@ -316,15 +314,6 @@ class _FleetCard extends StatelessWidget {
     final status = f.status;
     final chipCol = status == ui.FleetStatus.docked ? C.own : C.text2;
     final recallWhy = f.sector == con.state.homeworld ? 'Already at the homeworld' : null;
-    final ships = <proto.ShipClass>[];
-    for (final g in f.ships) {
-      final c = _cls(g.shipClass);
-      if (c != null) {
-        for (var i = 0; i < g.count; i++) {
-          ships.add(c);
-        }
-      }
-    }
     void pilot(Screen s) {
       con.game.selectFleet(index);
       con.go(s);
@@ -339,21 +328,24 @@ class _FleetCard extends StatelessWidget {
           SymIcon((c, s) => Draw.symbol(c, Sym.fleet, s.width / 2, s.height / 2, 6, color: C.a200, lw: 1.8, bloom: false), size: 14),
           const SizedBox(width: 8),
           Expanded(child: Text(f.name.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: 14, color: C.a200, spacing: 1.7))),
-          Tag(status.label, on: status == ui.FleetStatus.harvesting, color: chipCol),
+          if (f.pursuedBy != null) ...[Tag('Pursued', key: Key('fleet-pursued-tag-${f.id}'), color: C.ember), const SizedBox(width: 5)],
+          Tag(f.statusLabel, key: Key('fleet-status-${f.id}'), on: status == ui.FleetStatus.harvesting, color: f.underFire ? C.ember : chipCol),
         ]),
         const SizedBox(height: 4),
         Text('${f.sector.q},${f.sector.r} - ${f.sector.zone.label.toUpperCase()} -${home == 0 ? 'AT HOME' : '$home HOP${home == 1 ? '' : 'S'} HOME'}', style: T.mono(size: 10, color: C.text3)),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 9),
-          child: SizedBox(
-            height: 24,
-            child: SymIcon((c, s) {
-              for (var i = 0; i < ships.length && i < 10; i++) {
-                Draw.symbol(c, Sym.own(ships[i]), 12 + i * 26.0, s.height / 2, 11, color: C.own, lw: 1.3, bloom: false);
-              }
-            }, size: 24),
-          ),
-        ),
+        if (f.flight case final quote?)
+          Text('IN A FIGHT, ${quote.label.label}: A JUMP OUT COSTS ${flightPrice(quote).toUpperCase()}.',
+              key: Key('fleet-flight-${f.id}'), style: T.mono(size: 10, color: C.threat(6), height: 1.3)),
+        if (f.fleeing case final leaving?)
+          Text('${fleeingLine(leaving).toUpperCase()}.', key: Key('fleet-fleeing-${f.id}'), style: T.mono(size: 10, color: damagedColor, height: 1.3)),
+        if (f.pursuedBy case final hunter?)
+          Text('${pursuitLine(hunter)}. ${pursuitVerdict(hunter, charging: status == ui.FleetStatus.enRoute)}'.toUpperCase(),
+              key: Key('fleet-pursued-${f.id}'), style: T.mono(size: 10, color: C.ember, height: 1.3)),
+        Padding(padding: const EdgeInsets.only(top: 8, bottom: 5), child: ClassMarks(f.ships, key: Key('fleet-marks-${f.id}'))),
+        _kvr('Ships', '${groupDigits(f.shipCount)}, hull ${hullOf(f.hull, f.hullMax)}',
+            warn: switch (f.repair) { null => null, final q => '  ${groupDigits(q.ships)} DAMAGED' }),
+        if (f.repair != null) HullBar(f.hull, f.hullMax),
+        if (f.refitDue) Text('REFIT WAITS AT HOME', key: Key('fleet-refit-due-${f.id}'), style: T.mono(size: 10, color: damagedColor)),
         _kvr('Fuel', '${hops == null ? '${f.fuel}' : 'for ${hopCount(hops)}'}${_toOutpost(f)}', warn: low ? ' LOW' : null),
         LedBar(f.fuelMax > 0 ? f.fuel / f.fuelMax : 0, color: low ? C.ember : C.own, height: 6),
         _kvr('Cargo', '${f.cargo.total} / ${f.cargo.capacity}'),

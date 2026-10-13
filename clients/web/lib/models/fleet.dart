@@ -1,5 +1,6 @@
 import '../protocol/hex.dart';
-import '../protocol/protocol.dart' as proto show Refining, StandingOrders, scanBaseRange;
+import '../protocol/protocol.dart' as proto
+    show Fleeing, FlightQuote, Pursuit, Refining, Refit, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
 
 enum FleetStatus {
   docked('DOCKED'),
@@ -12,26 +13,6 @@ enum FleetStatus {
 
   final String label;
   const FleetStatus(this.label);
-}
-
-class ShipState {
-  final String shipClass;
-  final int count;
-  final int hull;
-  final int hullMax;
-
-  /// Server ids of the ships in this group, for split commands.
-  final List<int> ids;
-
-  const ShipState({
-    required this.shipClass,
-    required this.count,
-    required this.hull,
-    required this.hullMax,
-    this.ids = const [],
-  });
-
-  double get hullFraction => hullMax > 0 ? hull / hullMax : 0;
 }
 
 class FleetCargo {
@@ -58,10 +39,33 @@ class FleetState {
   final String name;
   final Hex sector;
   final FleetStatus status;
+
+  /// Every ship of every class, as the server counts them.
   final int shipCount;
   final int cargoPercent;
   final int fuelPercent;
-  final List<ShipState> ships;
+
+  /// The fleet by class, as the server sends it: a count, how many are
+  /// damaged and at risk, and the hull they hold.
+  final List<proto.ShipGroupState> ships;
+
+  /// Hull the whole fleet holds, and at full.
+  final int hull;
+  final int hullMax;
+
+  /// What the fleet fires in a round and the shield it raises at the start
+  /// of each.
+  final int attack;
+  final int shield;
+
+  /// The Weapons, Shielding and Armour levels it fights with, and whether
+  /// docking at home would raise them.
+  final proto.Refit refit;
+  final bool refitDue;
+
+  /// What mending its damaged ships would take at each dock; null when
+  /// none is damaged.
+  final proto.RepairQuote? repair;
   final FleetCargo cargo;
   final int fuel;
   final int fuelMax;
@@ -113,6 +117,21 @@ class FleetState {
   /// server would refuse it.
   final proto.Refining? refine;
 
+  /// What a jump out of the fight it is in would cost now, and who would
+  /// follow; null unless it stands in a fight and fires.
+  final proto.FlightQuote? flight;
+
+  /// The jump out of a fight it is charging; null otherwise. Its [status]
+  /// is [FleetStatus.enRoute] meanwhile.
+  final proto.Fleeing? fleeing;
+
+  /// The group on its trail; null with none.
+  final proto.Pursuit? pursuedBy;
+
+  /// Where it last stood in a fight, for the report of a fight it has left;
+  /// null when it has been in none this console saw.
+  final Hex? foughtAt;
+
   const FleetState({
     required this.id,
     required this.name,
@@ -122,6 +141,13 @@ class FleetState {
     this.cargoPercent = 0,
     this.fuelPercent = 100,
     this.ships = const [],
+    this.hull = 0,
+    this.hullMax = 0,
+    this.attack = 0,
+    this.shield = 0,
+    this.refit = const proto.Refit(weapons: 0, shielding: 0, armour: 0),
+    this.refitDue = false,
+    this.repair,
     this.cargo = const FleetCargo(capacity: 1),
     this.fuel = 0,
     this.fuelMax = 1,
@@ -142,10 +168,21 @@ class FleetState {
     this.cargoBlocked = false,
     this.holdCapacity = 0,
     this.refine,
+    this.flight,
+    this.fleeing,
+    this.pursuedBy,
+    this.foughtAt,
   });
 
   /// The doctrine's label, as the server names it; null when flown by hand.
   String? get policy => orders?.preset.label;
+
+  /// What the fleet is doing in a word: the state's, but for a fleet that
+  /// is leaving a fight, which the state calls moving.
+  String get statusLabel => fleeing == null ? status.label : 'FLEEING';
+
+  /// In a fight, firing or leaving it under fire.
+  bool get underFire => status == FleetStatus.combat || fleeing != null;
 
   int? get fuelForHops {
     final jf = jumpFuelExact ?? jumpFuel.toDouble();

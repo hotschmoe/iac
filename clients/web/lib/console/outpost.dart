@@ -13,6 +13,7 @@ bool inOutpostRings(proto.Hex h) => h.distFromOrigin >= proto.outpostMinRing && 
 String outpostDockVoice(proto.OutpostState o) =>
     '${o.inService ? 'A FLEET FLOWN BY HAND IS REFUELLED HERE FROM THE STORE, AND' : 'NO TANK IS FILLED HERE WHILE IT IS ${o.breached ? 'BREACHED' : 'NOT YET OPEN'}. A FLEET'} '
     'LOADS AND UNLOADS BY ORDER.\n'
+    '${o.inService ? 'ITS DAMAGED SHIPS ARE MENDED FROM THE STORE, AT A PRICE; NO FLEET IS REFITTED HERE.\n' : ''}'
     'IT IS IN A RAID\'S REACH: A RAID THE OUTPOST LOSES DESTROYS A QUARTER OF THE SHIPS STANDING HERE.';
 
 /// "77.9 Fe, 39.0 De" made in a game hour; "nothing" when [perTick] is zero.

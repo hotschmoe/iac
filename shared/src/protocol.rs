@@ -886,9 +886,10 @@ pub struct TickUpdate {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost: Option<OutpostState>,
     /// Every fight under way that the player has a fleet in or is present
-    /// at, whole, every tick, as in `GameState.battles`. Left out when
-    /// there is none: a client replaces its list with this one. The round
-    /// each carries is the `BattleRound` event of the same tick.
+    /// at, whole, every tick, as in `GameState.battles` but without
+    /// `last_round`: the round fought this tick is the `BattleRound` event
+    /// of the same update. Left out when there is none: a client replaces
+    /// its list with this one.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub battles: Vec<BattleState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -921,13 +922,14 @@ pub struct GameState {
     pub world: WorldInfo,
 }
 
-/// A fight under way, as `GameState.battles` carries it.
+/// A fight under way, as `GameState.battles` and `TickUpdate.battles` carry it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BattleState {
     pub sector: Hex,
     /// Rounds fought so far.
     pub rounds: u32,
-    /// The last of them; absent before the first is fought.
+    /// The last of them, in a full state; absent before the first is
+    /// fought, and in a tick update, whose events carry the round.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_round: Option<BattleRoundEvent>,
     /// What each fleet and group has lost so far, as `CombatEnded` will say.
@@ -1183,6 +1185,8 @@ pub struct PlayerState {
     pub name: String,
     pub resources: Resources,
     pub homeworld: Hex,
+    /// Every ship of every fleet the player has, docked or away.
+    pub ship_count: u32,
     /// Where the player's meter at the hub's exchange stands this tick.
     #[serde(default)]
     pub exchange: ExchangeMeter,
@@ -2640,6 +2644,8 @@ pub struct BattleSide {
     /// Every fleet or group of the side that entered the round, by id, as
     /// it stands after it.
     pub groups: Vec<BattleGroup>,
+    /// Units of the side still standing after the round, in all its groups.
+    pub standing: u32,
     /// The side's fire, one line for each pair of firing and target unit
     /// that exchanged a shot, in catalogue order.
     pub volleys: Vec<Volley>,

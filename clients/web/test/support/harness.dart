@@ -9,6 +9,7 @@ import 'package:iac_client/console/notifier.dart';
 import 'package:iac_client/console/prefs.dart';
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/design/theme.dart';
+import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/views/shell.dart';
 
@@ -67,6 +68,45 @@ Future<GameController> pumpShell(
   await tester.pump(settle);
   return c;
 }
+
+/// [count] ships of [cls] as a fleet's or a group's row lists them, on the
+/// class's base figures: [damaged] of them not whole, [atRisk] of those at
+/// risk, and [hullLost] hull gone between them.
+proto.ShipGroupState shipRow(proto.ShipClass cls, int count, {int damaged = 0, int atRisk = 0, int hullLost = 0}) => proto.ShipGroupState(
+      shipClass: cls,
+      count: count,
+      damaged: damaged,
+      atRisk: atRisk,
+      hull: count * cls.hull.round() - hullLost,
+      hullMax: count * cls.hull.round(),
+      unitAttack: cls.weapon.round(),
+      unitShield: cls.shield.round(),
+      unitHull: cls.hull.round(),
+    );
+
+/// A hostile group of [rows], counted as the server counts it: whole unless
+/// [muster] says how many ships it has when it is, with the tick it is
+/// whole again at, the hexes it follows a fleet, the ticks of its jump and
+/// the errand it is on, as a test sets them.
+proto.NpcFleetInfo hostileGroup(int id, List<proto.ShipGroupState> rows, proto.NpcBehavior behavior,
+    {int? muster, int? wholeAt, int chaseHexes = 0, int jumpTicks = 1, proto.GroupErrand? errand}) {
+  final count = rows.fold(0, (n, g) => n + g.count);
+  return proto.NpcFleetInfo(
+      id: id,
+      ships: rows,
+      shipCount: count,
+      behavior: behavior,
+      muster: muster ?? count,
+      wholeAt: wholeAt,
+      jumpTicks: jumpTicks,
+      chaseHexes: chaseHexes,
+      errand: errand);
+}
+
+/// Everything printed under [box], a line a piece of text.
+String textUnder(WidgetTester tester, Finder box) => [
+      for (final e in find.descendant(of: box, matching: find.byType(RichText)).evaluate()) (e.widget as RichText).text.toPlainText(),
+    ].join('\n');
 
 /// Every piece of text under [box] is drawn whole and inside it.
 void expectTextFits(WidgetTester tester, Finder box, {required String reason}) {

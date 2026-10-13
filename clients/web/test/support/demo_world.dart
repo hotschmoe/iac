@@ -62,6 +62,17 @@ class _Book {
   double derelictValue(int ring) => (_ring(ring)['derelict_value'] as num).toDouble();
   int derelictTier(int ring) => _ring(ring)['derelict_tier'] as int;
 
+  /// Ticks one jump takes the group a ring spawns.
+  int npcJumpTicks(int ring) => _ring(ring)['npc_jump_ticks'] as int;
+
+  /// The most jumps a group of [behavior] makes after a fleet that left it.
+  int chaseHexes(NpcBehavior behavior) => constants('CHASE_HEXES')[behavior.index].round();
+
+  /// The steps a wounded group mends in, and the ticks between two of them
+  /// for a group whose lair is at [ring], at this pace.
+  late final int healSteps = constant('NPC_HEAL_STEPS').round();
+  int healStepTicks(int ring) => _row('group_healing', (r) => r['ring'] == max(1, ring) && r['pace'] == pace)['step_ticks'] as int;
+
   Map<String, dynamic> _ringRule(int ring) => (_game['rings'] as List<dynamic>).cast<Map<String, dynamic>>().firstWhere((r) => r['ring'] == max(1, ring));
 
   ShipClass npcClass(int ring) => ShipClass.fromJson(_ringRule(ring)['npc_class']);
@@ -111,23 +122,69 @@ class _Book {
   late final List<double> raidPowers = [for (final r in (_tables['raid_power'] as List<dynamic>)) ((r as Map<String, dynamic>)['power'] as num).toDouble()];
 }
 
-/// A hostile ship while a fight is running.
-class _NpcShip {
-  final int id;
+/// The ships of one class in a scripted fleet or group, as the engine keeps
+/// them: a count, and the hull of each ship that is not whole, lowest first.
+class _Squad {
   final ShipClass cls;
-  double hull;
-  double shield;
-  final double weapon;
-  _NpcShip(this.id, this.cls, this.hull, this.shield, this.weapon);
+  int count;
+  final List<int> wounds;
+  _Squad(this.cls, this.count, [List<int>? wounds]) : wounds = wounds ?? [];
+
+  _Squad copy() => _Squad(cls, count, [...wounds]);
 }
 
+/// What one ship of a class fires, raises and holds in a round.
+typedef _Arms = ({int attack, int shield, int hull});
+
+/// A fight between one fleet and one group, a round a tick.
 class _Combat {
   final int fleetId;
   final Hex sector;
   final NpcFleetInfo npc;
-  final List<_NpcShip> ships;
+
+  /// What the group is called, as it stood when the fight began.
+  final String label;
   int round = 0;
-  _Combat(this.fleetId, this.sector, this.npc, this.ships);
+
+  /// The last round fought, for a client that arrives in the middle.
+  BattleRoundEvent? lastRound;
+
+  /// What the fleet and the group have lost so far, by class.
+  final Map<ShipClass, int> fleetLost = {}, groupLost = {};
+
+  /// The sector the fleet is jumping out to and the rounds it is still
+  /// fired on before it is gone; null while it fights.
+  Hex? fleeTo;
+  int fleeRounds = 0;
+  _Combat(this.fleetId, this.sector, this.npc, this.label);
+}
+
+/// A jump a hostile group is making: after the fleet [quarry], or back to
+/// its lair when that is null.
+class _Errand {
+  final int? quarry;
+  final Hex to;
+  final int arrives;
+  const _Errand(this.quarry, this.to, this.arrives);
+}
+
+/// What the scripted world keeps of a hostile group beside its ships: the
+/// sector it lairs in and the one it stands in, what it musters when whole,
+/// how long it has rested since its last step of mending, how many jumps it
+/// has made after a fleet since it was last home, and the jump it is making.
+class _Group {
+  final Hex lair;
+  final NpcBehavior behavior;
+  final List<_Squad> muster;
+
+  /// What it is called, from what it musters: the name does not change
+  /// with its losses.
+  final String label;
+  Hex at;
+  int rested = 0;
+  int strayed = 0;
+  _Errand? errand;
+  _Group(this.lair, this.behavior, this.muster, this.label) : at = lair;
 }
 
 class _Explore {
@@ -175,9 +232,35 @@ class _Outpost {
 /// store with load and unload, the levels, abandoning, and a raid a test
 /// announces ([raidOutpost]), which breaches it when lost and is repaired
 /// from the store. Its levels take seconds, not the hours of the engine's,
-/// and a raid there takes from the store only, not the holds. A fight is
-/// played a ship at a time on the classes' base figures, and a harvest
+/// and a raid there takes from the store only, not the holds. A harvest
 /// takes no ore out of the ground.
+///
+/// A fleet is the engine's: a count a class and the hull of each damaged
+/// ship, fighting at the Weapons, Shielding and Armour levels it last
+/// docked at home with. A fight is a round a tick and its report is shaped
+/// as the engine's, but it is played without dice ([_volley]): every ship
+/// fires once, and as often again as its rapid fire against what it hits
+/// says, at the other side's classes in proportion to their numbers; a
+/// shot under a hundredth of the shield it meets bounces, each other one
+/// meets a full shield, and a ship hit at or under the engine's share of
+/// its hull explodes. Pirates fight on their class's base figures, without
+/// their ring's multiplier. The docks mend as the engine's do.
+///
+/// A fleet in a fight may be given a `move`: it pays the jump at once, stops
+/// firing, is fired on for the engine's count of rounds and lands a tick
+/// after the last, and the fight ends `fled`. `stop` calls the jump off and
+/// the engine's alert says what it cost. A group that is not destroyed
+/// keeps its losses and its damage and mends in the engine's steps, at rest
+/// in its lair. One that was beating the fleet follows it as far as its
+/// behaviour's leash, never into home ground, the hub or the outpost's
+/// sector, fires on a fleet it finds, and goes home when it finds none.
+/// Every group of a ring jumps in the ticks the ring's own class takes.
+/// A jump out of a fight is charged before it is made, as the engine's
+/// jumps are; every other jump here is made at once and its time is a
+/// cooldown after it. So a fleet that jumps on the moment it lands is gone
+/// before its pursuer lands, whatever the two speeds, and one that stays,
+/// or whose cooldown has not run out, is caught. The odds of a fight as it
+/// stands are power against power, as every odds figure of this world is.
 ///
 /// Layout (home H=(4,-2); fleet 101 starts at S0=(6,-4)):
 ///   N (6,-5) T3 fighter patrol     NE (7,-5) nebula, derelict tier 1
@@ -230,8 +313,18 @@ class DemoWorld {
   /// hold was last said (0 before the first).
   final Map<int, int> _holdSaid = {};
   int _nextNpcFleet = 9100;
-  int _nextShip = 3000;
   int _raidArrival = 0;
+
+  /// The ships of every fleet and every hostile group, by its id, and the
+  /// levels each of the player's fleets fights with.
+  final Map<int, List<_Squad>> _squads = {};
+  final Map<int, Refit> _refits = {};
+
+  /// Every hostile group, by its id.
+  final Map<int, _Group> _groups = {};
+
+  /// The fleets the home dock has already seen to since they came in.
+  final Set<int> _tended = {};
   final Set<ResourceKind> _capAlerted = {};
   final Set<ResourceKind> _fullAlerted = {};
   _Outpost? _outpost;
@@ -268,6 +361,7 @@ class DemoWorld {
       researchActive: ResearchItem(id: 403, tech: ResearchType.weaponsTechnology, targetLevel: 4, startTick: _tick - 300, endTick: _tick + 410),
       researchPending: const [],
       dockedShips: const [],
+      dockedShipCount: 0,
       defences: [
         for (final o in catalog.defences) DefenceState(kind: o.kind, count: _defenceCount[o.kind] ?? 0, restoring: 0, power: o.power),
       ],
@@ -278,15 +372,9 @@ class DemoWorld {
       nextRaidEstimatePower: _raidEstimate,
     );
 
-    final wing = [
-      _ship(1011, ShipClass.lightFighter),
-      _ship(1012, ShipClass.lightFighter),
-      _ship(1013, ShipClass.lightFighter),
-      _ship(1014, ShipClass.espionageProbe),
-      _ship(1015, ShipClass.smallCargo),
-    ];
-    final freighters = [_ship(1021, ShipClass.smallCargo), _ship(1022, ShipClass.smallCargo)];
-    final prospectors = [_ship(1031, ShipClass.lightFighter), _ship(1032, ShipClass.lightFighter)];
+    final wing = [_Squad(ShipClass.smallCargo, 1), _Squad(ShipClass.lightFighter, 3), _Squad(ShipClass.espionageProbe, 1)];
+    final freighters = [_Squad(ShipClass.smallCargo, 2)];
+    final prospectors = [_Squad(ShipClass.lightFighter, 2)];
     _fleets = [
       _fleet(101, _s0, FleetStatus.idle, wing, tank: .8, cargo: const Resources(metal: 34, crystal: 12)),
       _fleet(102, _home, FleetStatus.docked, freighters),
@@ -296,6 +384,7 @@ class DemoWorld {
           policy: const StandingOrders(preset: PolicyPreset.prospect, params: PolicyParams(maxRange: 6, engageRatioX10: 20, fuelBudgetPct: 35))),
     ];
     _harvest[103] = HarvestResource.auto;
+    _tended.addAll([for (final f in _fleets) if (_atHomeDock(f)) f.id]);
 
     final pendingBuilds = <QueuedBuild>[];
     for (final t in const [BuildingType.metalMine, BuildingType.metalStorage]) {
@@ -341,32 +430,107 @@ class DemoWorld {
   static const _defenceCount = {DefenceKind.rocketLauncher: 6};
   static const _startingSatellites = 2;
 
-  /// A ship as the yard builds it now: its class's row of the catalogue.
-  ShipState _ship(int id, ShipClass c) {
-    final o = _shipOption(c);
-    return ShipState(id: id, shipClass: c, hull: o.hull, hullMax: o.hull, shield: o.shield, shieldMax: o.shield, weaponPower: o.weapon);
-  }
-
   ShipOption _shipOption(ShipClass c) => _hw.catalog.ships.firstWhere((o) => o.shipClass == c);
 
+  /// The Weapons, Shielding and Armour levels the empire has now, which a
+  /// fleet takes when it docks at home.
+  Refit get _levels {
+    int level(ResearchType t) => _hw.research.firstWhere((r) => r.tech == t).level;
+    return Refit(
+        weapons: level(ResearchType.weaponsTechnology), shielding: level(ResearchType.shieldingTechnology), armour: level(ResearchType.armourTechnology));
+  }
+
+  /// One ship of [c] as a fleet refitted at [r] fights: the engine's row of
+  /// the class at each of the three levels.
+  static _Arms _arms(ShipClass c, Refit r) {
+    ShipOption at(int level) => _book.byLevel[level].ships.firstWhere((o) => o.shipClass == c);
+    return (attack: at(r.weapons).weapon.round(), shield: at(r.shielding).shield.round(), hull: at(r.armour).hull.round());
+  }
+
+  /// One ship of [c] in a hostile group: the class's base figures.
+  static _Arms _npcArms(ShipClass c) => (attack: c.weapon.round(), shield: c.shield.round(), hull: c.hull.round());
+
+  /// A ship holding [hull] of [full] is at risk: it may explode when a shot
+  /// next breaks its shield.
+  static bool _atRisk(int hull, int full) => hull * 100 <= explodeBelowPct * full;
+
+  /// [squads] as the wire lists them, a row a class in catalogue order.
+  static List<ShipGroupState> _rows(List<_Squad> squads, _Arms Function(ShipClass) arms) => [
+        for (final s in [...squads]..sort((a, b) => a.cls.index.compareTo(b.cls.index)))
+          if (s.count > 0)
+            () {
+              final unit = arms(s.cls);
+              return ShipGroupState(
+                shipClass: s.cls,
+                count: s.count,
+                damaged: s.wounds.length,
+                atRisk: s.wounds.where((hull) => _atRisk(hull, unit.hull)).length,
+                hull: (s.count - s.wounds.length) * unit.hull + s.wounds.fold(0, (n, hull) => n + hull),
+                hullMax: s.count * unit.hull,
+                unitAttack: unit.attack,
+                unitShield: unit.shield,
+                unitHull: unit.hull,
+              );
+            }(),
+      ];
+
+  static int _shipsIn(List<_Squad> squads) => squads.fold(0, (n, s) => n + s.count);
+
+  /// [taken] ships moved out of [from]: whole ships first and then the
+  /// least damaged, or with [damagedFirst] the most damaged first.
+  static _Squad _take(_Squad from, int taken, {bool damagedFirst = false}) {
+    final whole = from.count - from.wounds.length;
+    final wounded = damagedFirst ? min(taken, from.wounds.length) : max(0, taken - whole);
+    final start = damagedFirst ? 0 : from.wounds.length - wounded;
+    final out = _Squad(from.cls, taken, from.wounds.sublist(start, start + wounded));
+    from.wounds.removeRange(start, start + wounded);
+    from.count -= taken;
+    return out;
+  }
+
+  /// [more] folded into [into], class by class.
+  static void _absorb(List<_Squad> into, List<_Squad> more) {
+    for (final s in more) {
+      final same = into.where((e) => e.cls == s.cls).firstOrNull;
+      if (same == null) {
+        into.add(s.copy());
+      } else {
+        same.count += s.count;
+        same.wounds
+          ..addAll(s.wounds)
+          ..sort();
+      }
+    }
+  }
+
   /// A fleet of [ships] with [fuel] aboard, or the share [tank] of what its
-  /// tanks hold. What the ships make of it is worked out in [_norm].
-  FleetState _fleet(int id, Hex at, FleetStatus state, List<ShipState> ships,
-          {double? fuel, double tank = 1, Resources cargo = const Resources(), StandingOrders? policy}) =>
-      _norm(FleetState(
-        id: id,
-        location: at,
-        state: state,
-        ships: ships,
-        cargo: cargo,
-        cargoCapacity: 0,
-        fuel: fuel ?? _tank(ships) * tank,
-        fuelMax: 0,
-        jumpTicks: 0,
-        scanRange: scanBaseRange,
-        hopsHome: 0,
-        policy: policy,
-      ));
+  /// tanks hold, refitted at the empire's levels of now. What the ships
+  /// make of it is worked out in [_norm].
+  FleetState _fleet(int id, Hex at, FleetStatus state, List<_Squad> ships,
+      {double? fuel, double tank = 1, Resources cargo = const Resources(), StandingOrders? policy, Refit? refit}) {
+    _squads[id] = ships;
+    _refits[id] = refit ?? _levels;
+    return _norm(FleetState(
+      id: id,
+      location: at,
+      state: state,
+      ships: const [],
+      shipCount: 0,
+      hull: 0,
+      hullMax: 0,
+      attack: 0,
+      shield: 0,
+      refit: _refits[id]!,
+      cargo: cargo,
+      cargoCapacity: 0,
+      fuel: fuel ?? _tank(ships) * tank,
+      fuelMax: 0,
+      jumpTicks: 0,
+      scanRange: scanBaseRange,
+      hopsHome: 0,
+      policy: policy,
+    ));
+  }
 
   RaidIncomingEvent _raidIncoming() =>
       RaidIncomingEvent(playerId: _playerId, arrivalTick: _raidArrival, threat: 'moderate', estPower: _raidEstimate);
@@ -427,7 +591,13 @@ class DemoWorld {
     return power <= base ? 1 : (1 + (log(power / base) / ln2).floor()).clamp(1, maxThreat);
   }
 
-  static double _groupPower(NpcFleetInfo g) => g.ships.fold(0.0, (n, s) => n + s.shipClass.power * s.count);
+  /// What a force's rows add up to on the scale raids and threat ratings
+  /// share: each ship counts its attack and a tenth of its shield and of
+  /// the hull it holds.
+  static double _power(List<ShipGroupState> rows) =>
+      rows.fold(0.0, (n, g) => n + g.count * g.unitAttack + (g.count * g.unitShield + g.hull) / 10);
+
+  static double _groupPower(NpcFleetInfo g) => _power(g.ships);
 
   /// Hostile groups rated by what their ships add up to. The engine rates
   /// an Aggressive or a Swarm group higher than that; the script does not.
@@ -441,10 +611,6 @@ class DemoWorld {
     final max = _book.reserveUnits(den) * _book.oreRingMult(h.distFromOrigin);
     return TileReserve(units: max, maxUnits: max);
   }
-
-  /// A fleet's power as the wire states it: each ship counts its weapon and
-  /// a tenth of its hull and shield.
-  static double _fleetPower(List<ShipState> ships) => ships.fold(0.0, (n, s) => n + s.weaponPower + (s.hull + s.shield) / 10);
 
   /// Authored opening neighbourhood (terrain, ore m/c/d, hostiles, salvage, site).
   static final Map<int, ({TerrainType t, List<int> ore, List<(ShipClass, int)>? npc, NpcBehavior? b, int tier, SiteRisk? risk, Resources? salv})> _authored = {
@@ -494,7 +660,7 @@ class DemoWorld {
 
   void _seedWorld() {
     _authored.forEach((k, au) {
-      if (au.npc != null) _hostiles[k] = [_npcGroup(au.npc!, au.b!)];
+      if (au.npc != null) _hostiles[k] = [_npcGroup(au.npc!, au.b!, Hex.fromKey(k))];
       if (au.salv != null) _salvage[k] = (au.salv!, _tick + 2400);
       if (au.risk != null) _sites[k] = SiteBrief(tier: au.tier, risk: au.risk!);
     });
@@ -509,7 +675,7 @@ class DemoWorld {
       // authored ones come at a fleet.
       if (Hex.distance(h, _home) > 2 && _h01(h.q, h.r, 5) < _book.npcPresence(d)) {
         final beh = _h01(h.q, h.r, 6) < _book.npcPassiveShare(d) ? NpcBehavior.passive : NpcBehavior.patrol;
-        _hostiles[k] = [_npcGroup([(_book.npcClass(d), _book.npcCount(d))], beh)];
+        _hostiles[k] = [_npcGroup([(_book.npcClass(d), _book.npcCount(d))], beh, h)];
       }
       if (_h01(h.q, h.r, 8) < .08) {
         _salvage[k] = (
@@ -551,8 +717,79 @@ class DemoWorld {
     }
   }
 
-  NpcFleetInfo _npcGroup(List<(ShipClass, int)> comp, NpcBehavior b) =>
-      NpcFleetInfo(id: _nextNpcFleet++, ships: [for (final c in comp) NpcShipInfo(shipClass: c.$1, count: c.$2)], behavior: b);
+  NpcFleetInfo _npcGroup(List<(ShipClass, int)> comp, NpcBehavior b, Hex lair) {
+    final id = _nextNpcFleet++;
+    _squads[id] = [for (final c in comp) _Squad(c.$1, c.$2)];
+    _groups[id] = _Group(lair, b, [for (final c in comp) _Squad(c.$1, c.$2)], _groupLabel(comp, b));
+    return _npcInfo(id);
+  }
+
+  /// Jumps group [g] may still make after a fleet before it turns back.
+  int _leash(_Group g) => max(0, _book.chaseHexes(g.behavior) - g.strayed);
+
+  int _groupJumpTicks(_Group g) => _book.npcJumpTicks(g.lair.distFromOrigin);
+
+  /// The engine's `heal_steps`: steps of mending until group [id] is its
+  /// muster again, 0 for one that is whole.
+  int _healSteps(int id) {
+    final g = _groups[id]!;
+    var steps = 0;
+    for (final theirs in g.muster) {
+      final full = _npcArms(theirs.cls).hull;
+      final here = _squads[id]!.where((s) => s.cls == theirs.cls).firstOrNull;
+      final short = theirs.count - (here?.count ?? 0);
+      final lowest = here == null || here.wounds.isEmpty ? full : here.wounds.first;
+      final ships = (short / _healShips(theirs.count)).ceil();
+      final hull = ((full - lowest) / _healHull(full)).ceil();
+      steps = max(steps, max(ships, hull));
+    }
+    return steps;
+  }
+
+  int _healShips(int muster) => max(1, (muster / _book.healSteps).ceil());
+  int _healHull(int full) => max(1, (full / _book.healSteps).ceil());
+
+  /// The engine's `group_whole_at`: the tick group [id] is whole again if
+  /// it mends undisturbed from now; null for one that is whole.
+  int? _wholeAt(int id) {
+    final steps = _healSteps(id);
+    if (steps == 0) return null;
+    final g = _groups[id]!;
+    final resting = g.errand == null && g.at == g.lair && !_combats.values.any((c) => c.npc.id == id);
+    return _tick + max(0, steps * _book.healStepTicks(g.lair.distFromOrigin) - (resting ? g.rested : 0));
+  }
+
+  /// A hostile group as a sector lists it, from the ships it has now.
+  NpcFleetInfo _npcInfo(int id) {
+    final g = _groups[id]!;
+    final errand = g.errand;
+    return NpcFleetInfo(
+      id: id,
+      ships: _rows(_squads[id]!, _npcArms),
+      shipCount: _shipsIn(_squads[id]!),
+      behavior: g.behavior,
+      muster: _shipsIn(g.muster),
+      wholeAt: _wholeAt(id),
+      jumpTicks: _groupJumpTicks(g),
+      chaseHexes: _book.chaseHexes(g.behavior),
+      errand: errand == null && g.at == g.lair
+          ? null
+          : GroupErrand(
+              home: g.lair,
+              quarry: errand?.quarry,
+              quarryOwner: errand?.quarry == null ? null : 'Demo',
+              to: errand?.to,
+              arrivesAt: errand?.arrives,
+              hexesLeft: _leash(g)),
+    );
+  }
+
+  /// List group [id] again where it stands, as it now is.
+  void _relist(int id) {
+    final k = _groups[id]!.at.toKey();
+    _hostiles[k] = [for (final h in _hostiles[k] ?? const <NpcFleetInfo>[]) h.id == id ? _npcInfo(id) : h];
+    _dirty.add(k);
+  }
 
   Set<int> _computeLive() {
     final out = <int>{};
@@ -606,6 +843,7 @@ class DemoWorld {
         homeworld: _hw,
         outpost: _outpostState(),
         knownSectors: _knownSectors(),
+        battles: [for (final c in _combats.values) _battle(c, withRound: true)],
         world: WorldInfo(
           pace: _book.pace,
           preset: _Book.preset,
@@ -617,8 +855,13 @@ class DemoWorld {
         ),
       );
 
-  PlayerState _player() =>
-      PlayerState(id: _playerId, name: 'Demo', resources: _resources, homeworld: _home, exchange: _meter(_pressureNow));
+  PlayerState _player() => PlayerState(
+      id: _playerId,
+      name: 'Demo',
+      resources: _resources,
+      homeworld: _home,
+      shipCount: _fleets.fold(0, (n, f) => n + _shipsIn(_squads[f.id]!)),
+      exchange: _meter(_pressureNow));
 
   // ── Exchange (the server's `exchange_span`, `exchange_fee` and `exchange_return`) ──
 
@@ -827,17 +1070,23 @@ class DemoWorld {
   /// What a repair of [level] takes from [store], metal first, then crystal
   /// and deuterium at their weights, and the metal the store is short of
   /// paying it.
-  static (Resources, double) _repairPayment(int level, Resources store) {
-    var owed = _repairPrice(level);
+  static (Resources, double) _repairPayment(int level, Resources store) => _payByWeight(_repairPrice(level), store);
+
+  /// The engine's `pay_by_weight`: what a price counted in metal takes from
+  /// [stock], metal first, then crystal and deuterium at their weights, and
+  /// the metal the stock is short of paying it. An outpost's own repair and
+  /// the mending of ships at a dock are both paid this way.
+  static (Resources, double) _payByWeight(double price, Resources stock) {
+    var owed = price;
     double take(ResourceKind k) {
-      final stock = k.of(store);
-      if (stock >= owed / k.weight) {
+      final held = max(0.0, k.of(stock));
+      if (held >= owed / k.weight) {
         final paid = owed / k.weight;
         owed = 0;
         return paid;
       }
-      owed -= stock * k.weight;
-      return stock;
+      owed -= held * k.weight;
+      return held;
     }
 
     final metal = take(ResourceKind.metal);
@@ -876,7 +1125,7 @@ class DemoWorld {
     final building = o.work?.kind == OutpostWork.build ? o.work!.level : null;
     final next = (building ?? o.level) + 1;
     final platform = o.breached ? 0.0 : _platform(o.level);
-    final ships = _fleetPower([for (final f in _fleets) if (f.location == o.at) ...f.ships]);
+    final ships = _fleets.where((f) => f.location == o.at).fold(0.0, (n, f) => n + f.power);
     final cap = _storeCap(o.level);
     final makes = _inService ? _siteYield(o.at, o.level) : const Resources();
     final repair = o.breached && o.work == null ? _repairPayment(o.level, o.store) : null;
@@ -894,6 +1143,7 @@ class DemoWorld {
       yieldLost: [for (final k in ResourceKind.values) if (k.of(makes) > 0 && k.of(o.store) >= k.of(cap)) k],
       grade: _siteGrade(o.at),
       platformPower: platform,
+      shipsPower: ships,
       defencePower: platform + ships,
       raidPower: _outpostRaids(o.at),
       raidArrivalTick: o.raid?.$1,
@@ -1157,6 +1407,29 @@ class DemoWorld {
     if (raid != null && _tick >= raid.$1) _resolveOutpostRaid(o, raid.$2);
   }
 
+  /// What a lost raid destroys of the fleets standing [there]: the engine's
+  /// share of their ships, at least one, and never a fleet's last.
+  int _raidToll(List<FleetState> there) {
+    final total = there.fold(0, (n, f) => n + f.shipCount);
+    var toLose = total == 0 ? 0 : max(1, (total * raidLostShipFraction).floor());
+    var lost = 0;
+    for (final f in there) {
+      final ships = _squads[f.id]!;
+      var gone = min(toLose, _shipsIn(ships) - 1);
+      if (gone <= 0) continue;
+      toLose -= gone;
+      lost += gone;
+      for (final s in ships) {
+        final n = min(gone, s.count);
+        _take(s, n);
+        gone -= n;
+      }
+      ships.removeWhere((s) => s.count == 0);
+      _setFleet(_copy(f));
+    }
+    return lost;
+  }
+
   /// A raid on the outpost arrives. Repelled, nothing is lost. Lost, a
   /// quarter of the ships standing there are destroyed (at least one, and
   /// never a fleet's last ship here), a quarter of the store above the
@@ -1168,15 +1441,7 @@ class DemoWorld {
     var lost = const Resources();
     var shipsLost = 0;
     if (!defended) {
-      final there = [for (final f in _fleets) if (f.location == o.at) f];
-      var toLose = there.isEmpty ? 0 : max(1, (there.fold(0, (n, f) => n + f.ships.length) * raidLostShipFraction).floor());
-      for (final f in there) {
-        final gone = min(toLose, f.ships.length - 1);
-        if (gone <= 0) continue;
-        _setFleet(_copy(f, ships: f.ships.sublist(gone)));
-        toLose -= gone;
-        shipsLost += gone;
-      }
+      shipsLost = _raidToll([for (final f in _fleets) if (f.location == o.at) f]);
       lost = _times(_less(o.store, state.protected), _book.constant('OUTPOST_RAID_LOSS'));
       o.store = _less(o.store, lost);
       o.breached = true;
@@ -1198,7 +1463,16 @@ class DemoWorld {
   /// The server's `policy_update`, with the reports it makes: `clear` for
   /// manual, `engage` naming the settings the orders fly with, and the end
   /// of a hold loaded by hand.
-  List<ServerMessage> _policy(int fleetId, PolicyPreset preset, PolicyParams params) {
+  List<ServerMessage> _policy(int fleetId, PolicyPreset preset, PolicyParams asked) {
+    final params = PolicyParams(
+      minFuelPct: asked.minFuelPct,
+      cargoReturnPct: asked.cargoReturnPct,
+      maxRange: asked.maxRange,
+      engageRatioX10: asked.engageRatioX10,
+      fuelBudgetPct: asked.fuelBudgetPct,
+      refine: asked.refine,
+      disengageRatioX10: min(asked.disengageRatioX10, asked.engageRatioX10),
+    );
     final f = _find(fleetId);
     if (f == null) {
       return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left); its standing orders were not changed')];
@@ -1217,7 +1491,8 @@ class DemoWorld {
         fleetId: fleetId,
         preset: preset,
         action: 'engage',
-        reason: 'doctrine set: ${preset.label} (range ${params.maxRange}, engage ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x, $fuel'
+        reason: 'doctrine set: ${preset.label} (range ${params.maxRange}, engage ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x, '
+            'disengage ${(params.disengageRatioX10 / 10).toStringAsFixed(1)}x, $fuel'
             '${params.refine ? ', refining from the hold when short of fuel' : ''})'
             '${f.laden ? '; the hold loaded by hand goes back to the stockpile' : ''}'));
     return [_tickUpdate()];
@@ -1311,8 +1586,10 @@ class DemoWorld {
     _stepHarvest();
     _stepRecall();
     _stepExplore();
+    _stepGroups();
     _stepCombat();
     _stepQueues();
+    _stepDocks();
     _stepSalvage();
     _stepRaid();
     _stepOutpost();
@@ -1369,14 +1646,47 @@ class DemoWorld {
       homeworldUpdate: _hw,
       outpost: _outpostState(),
       sectorUpdates: secs.isEmpty ? null : secs,
+      battles: [for (final c in _combats.values) _battle(c, withRound: false)],
       events: events.isEmpty ? null : events,
     );
+  }
+
+  /// A fight as the state lists it: with its last round in a full state,
+  /// without it in a tick update, whose events carry the round.
+  BattleState _battle(_Combat c, {required bool withRound}) =>
+      BattleState(sector: c.sector, rounds: c.round, lastRound: withRound ? c.lastRound : null, losses: _losses(c, fleetGone: false, groupGone: false));
+
+  /// What the fleet and the group of [c] have lost so far, fleets first.
+  static List<BattleLosses> _losses(_Combat c, {required bool fleetGone, required bool groupGone}) {
+    List<UnitCount> units(Map<ShipClass, int> lost) => [
+          for (final cls in ShipClass.values)
+            if ((lost[cls] ?? 0) > 0) UnitCount(unit: ShipyardItem.ship(cls), count: lost[cls]!),
+        ];
+    return [
+      BattleLosses(fleetId: c.fleetId, owner: 'Demo', mine: true, lost: units(c.fleetLost), destroyed: fleetGone),
+      BattleLosses(fleetId: c.npc.id, label: c.label, lost: units(c.groupLost), destroyed: groupGone),
+    ];
+  }
+
+  /// What a hostile group is called, in the words of the engine's
+  /// `hostile_label`: "light fighter patrol", "3x cruiser pack". A group of
+  /// several classes is named by its first.
+  static String _groupLabel(List<(ShipClass, int)> comp, NpcBehavior behavior) {
+    final noun = switch (behavior) {
+      NpcBehavior.passive => 'convoy',
+      NpcBehavior.patrol => 'patrol',
+      NpcBehavior.aggressive => 'pack',
+      NpcBehavior.swarm => 'swarm',
+    };
+    final cls = comp.first.$1.label.toLowerCase();
+    final count = comp.fold(0, (n, c) => n + c.$2);
+    return count > 1 ? '${count}x $cls $noun' : '$cls $noun';
   }
 
   // ── Per-tick systems ──────────────────────────────────────────
 
   /// Raw units of ore a tick the ships of [f] extract between them.
-  double _harvestPower(FleetState f) => f.ships.fold(0.0, (n, s) => n + s.shipClass.harvest);
+  double _harvestPower(FleetState f) => f.ships.fold(0.0, (n, g) => n + g.count * g.shipClass.harvest);
 
   Density _density(SectorState s, String k) => switch (k) {
         'metal' => s.resources.metal,
@@ -1427,7 +1737,7 @@ class DemoWorld {
         _recall.remove(id);
         continue;
       }
-      if (f.fuel < _jump(f.ships)) {
+      if (f.fuel < f.jumpFuel) {
         _recall.remove(id);
         _setFleet(_copy(f, state: FleetStatus.idle));
         _ev(AlertEvent(level: AlertLevel.warning, message: 'Out of fuel: fleet ${f.id} stranded', fleetId: f.id, sector: f.location));
@@ -1456,7 +1766,7 @@ class DemoWorld {
       _sites.remove(k);
       _dirty.add(k);
       if (site.risk == SiteRisk.hot && _rng.nextDouble() < .6) {
-        final g = _npcGroup([(_book.npcClass(x.sector.distFromOrigin), 2)], NpcBehavior.aggressive);
+        final g = _npcGroup([(_book.npcClass(x.sector.distFromOrigin), 2)], NpcBehavior.aggressive, x.sector);
         _hostiles[k] = [...?_hostiles[k], g];
         _ev(SiteAmbushEvent(fleetId: id, sector: x.sector, npcFleetId: g.id));
         _setFleet(_copy(f, state: FleetStatus.idle));
@@ -1470,12 +1780,15 @@ class DemoWorld {
       final roll = _rng.nextDouble();
       ShipClass? ship;
       ResearchType? tech;
-      var ships = f.ships;
       if (roll > .6) {
         tech = ResearchType.combustionDrive;
       } else if (roll > .35) {
+        // The engine recovers a hulk damaged; how badly is the script's roll.
         ship = ShipClass.lightFighter;
-        ships = [...f.ships, _ship(_nextShip++, ShipClass.lightFighter)];
+        final full = _arms(ship, _refits[id]!).hull;
+        _absorb(_squads[id]!, [
+          _Squad(ship, 1, [(full * (.4 + _rng.nextDouble() * .25)).round()]),
+        ]);
       }
       _resources = _clampCaps(Resources(
         metal: _resources.metal + res.metal,
@@ -1483,7 +1796,7 @@ class DemoWorld {
         deuterium: _resources.deuterium + res.deuterium,
       ));
       _ev(SiteExploredEvent(fleetId: id, sector: x.sector, tier: t, resources: res, recoveredShip: ship, techCache: tech));
-      _setFleet(_copy(f, state: FleetStatus.idle, ships: ships));
+      _setFleet(_copy(f, state: FleetStatus.idle));
     }
   }
 
@@ -1521,7 +1834,7 @@ class DemoWorld {
     if (s != null && _tick >= s.endTick) {
       if (s.item.ship case final cls?) {
         if (_shipOption(cls).flies) {
-          _hw = _hw.copyWith(dockedShips: [..._hw.dockedShips, _ship(_nextShip++, cls)]);
+          _deliver(cls);
         } else {
           _satellites++;
         }
@@ -1544,18 +1857,51 @@ class DemoWorld {
     _startWaiting();
   }
 
-  /// What the ships standing at the homeworld add to its defence: the
-  /// fleets there and the hulls the yard has delivered.
-  double _dockedPower() => _fleetPower([
-        for (final f in _fleets)
-          if (f.location == _home) ...f.ships,
-        ..._hw.dockedShips,
-      ]);
+  /// A ship the yard delivers joins the fleet docked at home that flies
+  /// under no orders, or forms one, as the engine's does.
+  void _deliver(ShipClass cls) {
+    final dock = _fleets.where((f) => f.location == _home && f.state == FleetStatus.docked && f.policy == null).firstOrNull;
+    if (dock == null) {
+      final id = 1 + _fleets.fold<int>(100, (n, f) => max(n, f.id));
+      _fleets = [..._fleets, _fleet(id, _home, FleetStatus.docked, [_Squad(cls, 1)])];
+    } else {
+      _absorb(_squads[dock.id]!, [_Squad(cls, 1)]);
+      _setFleet(_copy(dock));
+    }
+  }
+
+  /// The ships of every fleet standing at the homeworld, a row a class, as
+  /// the engine's homeworld state lists them.
+  List<ShipGroupState> _dockedRows() {
+    final rows = <ShipClass, ShipGroupState>{};
+    for (final f in _fleets) {
+      if (f.location != _home) continue;
+      for (final g in f.ships) {
+        rows.update(
+            g.shipClass,
+            (r) => ShipGroupState(
+                shipClass: r.shipClass,
+                count: r.count + g.count,
+                damaged: r.damaged + g.damaged,
+                atRisk: r.atRisk + g.atRisk,
+                hull: r.hull + g.hull,
+                hullMax: r.hullMax + g.hullMax,
+                unitAttack: r.unitAttack,
+                unitShield: r.unitShield,
+                unitHull: r.unitHull),
+            ifAbsent: () => g);
+      }
+    }
+    return [for (final c in ShipClass.values) ?rows[c]];
+  }
+
+  /// What the ships standing at the homeworld add to its defence.
+  double _dockedPower() => _fleets.where((f) => f.location == _home).fold(0.0, (n, f) => n + f.power);
 
   /// The scripted raid arrives, at a roll of what was announced. Held, it
   /// costs nothing. Lost, it destroys the engine's share of the Solar
-  /// Satellites and of the hulls the yard has delivered; what a raid takes
-  /// of a stockpile is not scripted, so the stockpile keeps all it has.
+  /// Satellites and of the ships standing at the homeworld; what a raid
+  /// takes of a stockpile is not scripted, so the stockpile keeps all it has.
   void _stepRaid() {
     if (_tick < _raidArrival) return;
     final least = _book.constant('RAID_POWER_ROLL_MIN'), most = _book.constant('RAID_POWER_ROLL_MAX');
@@ -1566,9 +1912,7 @@ class DemoWorld {
     if (!defended) {
       satellitesLost = (_satellites * raidLostShipFraction).ceil();
       _satellites -= satellitesLost;
-      final docked = _hw.dockedShips;
-      shipsLost = docked.isEmpty ? 0 : max(1, (docked.length * raidLostShipFraction).floor());
-      _hw = _hw.copyWith(dockedShips: docked.sublist(shipsLost));
+      shipsLost = _raidToll([for (final f in _fleets) if (f.location == _home) f]);
     }
     _ev(RaidResolvedEvent(
         playerId: _playerId,
@@ -1586,19 +1930,318 @@ class DemoWorld {
   // ── Combat ────────────────────────────────────────────────────
 
   void _startCombat(FleetState f, NpcFleetInfo npc) {
-    final ships = <_NpcShip>[];
-    var i = 0;
-    for (final g in npc.ships) {
-      final c = g.shipClass;
-      for (var n = 0; n < g.count; n++) {
-        ships.add(_NpcShip(npc.id * 100 + i++, c, c.hull, c.shield, c.weapon));
-      }
-    }
-    _combats[f.id] = _Combat(f.id, f.location, npc, ships);
+    final label = _groups[npc.id]!.label;
+    _combats[f.id] = _Combat(f.id, f.location, npc, label);
     _recall.remove(f.id);
     _explores.remove(f.id);
     _setFleet(_copy(f, state: FleetStatus.inCombat));
-    _ev(CombatStartedEvent(playerFleetId: f.id, owner: 'Demo', enemyFleetId: npc.id, sector: f.location, mine: true));
+    _ev(CombatStartedEvent(playerFleetId: f.id, owner: 'Demo', enemyFleetId: npc.id, enemy: label, sector: f.location, mine: true));
+  }
+
+  // ── Flight, pursuit and mending ───────────────────────────────
+
+  /// The engine's `is_refuge`: no group enters home ground, the hub or the
+  /// sector an outpost stands in.
+  bool _isRefuge(Hex h) => Hex.distance(h, _home) <= 1 || h == Hex.origin || _outpost?.at == h;
+
+  double _groupPowerNow(int id) => _power(_rows(_squads[id]!, _npcArms));
+
+  /// The engine's `flight_quote` for the fleet of fight [c]: what a jump
+  /// out costs a fleet that burns [jump] a jump, takes [jumpTicks] over one,
+  /// holds [fuel] and has [power], and the group that would follow it, to
+  /// [to] if a sector is named.
+  FlightQuote _flightQuote(_Combat c, {required double fuel, required double jump, required int jumpTicks, required double power, Hex? to}) {
+    final g = _groups[c.npc.id]!;
+    final rounds = max(jumpTicks - 1, fleeMinRounds);
+    final burn = jump * fleeFuelMultiplier;
+    final ratio = power / _observedThreat([_npcInfo(c.npc.id)]).estPower;
+    final follows = (to == null || !_isRefuge(to)) && _leash(g) > 0 && _groupPowerNow(c.npc.id) >= chaseMinRatio * power;
+    return FlightQuote(
+      fuel: burn,
+      ticks: rounds + 1,
+      rounds: rounds,
+      ratio: ratio,
+      label: ratioLabelFor(ratio),
+      refusal: fuel >= burn
+          ? null
+          : 'fleet ${c.fleetId} has ${_tenths(fuel)} fuel and the jump out of the fight at ${c.sector} burns ${_tenths(burn)}: it cannot leave, '
+              'except by recall if it holds the fuel for that',
+      chase: follows
+          ? ChaseForecast(
+              groupId: c.npc.id, label: g.label, hexes: _leash(g), jumpTicks: _groupJumpTicks(g), roundsPerHex: max(0, jumpTicks - _groupJumpTicks(g)))
+          : null,
+    );
+  }
+
+  /// The engine's `pursuit_of`: the first group to land of those on the
+  /// trail of the fleet [id], which stands at [at] with [cooldown] ticks
+  /// before it can jump.
+  Pursuit? _pursuitOf(int id, Hex at, int cooldown) {
+    final hunters = [
+      for (final e in _groups.entries)
+        if (e.value.errand?.quarry == id) e,
+    ]..sort((a, b) => a.value.errand!.arrives.compareTo(b.value.errand!.arrives));
+    final first = hunters.firstOrNull;
+    if (first == null) return null;
+    final errand = first.value.errand!;
+    final arrivesIn = max(0, errand.arrives - _tick);
+    return Pursuit(
+        groupId: first.key,
+        label: first.value.label,
+        from: first.value.at,
+        arrivesIn: arrivesIn,
+        catches: errand.to == at && arrivesIn <= cooldown,
+        hexesLeft: _leash(first.value));
+  }
+
+  /// The engine's `trail`: why group [g] does not go after the fleet [id],
+  /// in its sentence; null when it does.
+  String? _trail(_Group g, int id) {
+    final f = _find(id);
+    if (f == null) return 'fleet $id is gone';
+    if (_isRefuge(f.location)) return 'fleet $id has reached ${f.location}, where no group follows';
+    if (_leash(g) == 0) return 'it has followed ${g.strayed} jump${g.strayed == 1 ? '' : 's'} from its own sector at ${g.lair} and goes no further';
+    if (!_lanes(g.at).contains(f.location)) return 'fleet $id is out of its reach at ${f.location}';
+    return null;
+  }
+
+  void _pursuitEvent(int id, int quarry, PursuitPhase phase, {String? why}) {
+    final g = _groups[id]!;
+    _ev(PursuitEvent(
+        groupId: id,
+        label: g.label,
+        fleetId: quarry,
+        owner: 'Demo',
+        mine: true,
+        sector: g.at,
+        phase: phase,
+        to: g.errand?.to,
+        arrivesIn: g.errand == null ? null : g.errand!.arrives - _tick,
+        hexesLeft: _leash(g),
+        why: why));
+  }
+
+  /// The engine's `chase`: group [id] starts its jump to where the fleet
+  /// [quarry] stands.
+  void _chase(int id, int quarry, PursuitPhase phase) {
+    final g = _groups[id]!;
+    g.errand = _Errand(quarry, _find(quarry)!.location, _tick + _groupJumpTicks(g));
+    g.strayed++;
+    g.rested = 0;
+    _pursuitEvent(id, quarry, phase);
+    _relist(id);
+  }
+
+  /// The engine's `settle_group`: a group with no fight and no fleet to
+  /// follow starts the next jump of its way home, or is home.
+  void _settle(int id) {
+    final g = _groups[id]!;
+    if (g.at == g.lair) {
+      g.strayed = 0;
+    } else {
+      final lanes = _lanes(g.at);
+      final step = lanes.contains(g.lair) ? g.lair : lanes.where((n) => !_isRefuge(n) && _lanes(n).contains(g.lair)).firstOrNull;
+      if (step == null) {
+        _stand(id, g.lair);
+        g.strayed = 0;
+      } else {
+        g.errand = _Errand(null, step, _tick + _groupJumpTicks(g));
+      }
+    }
+    _relist(id);
+  }
+
+  /// Take group [id] out of the sector it is listed in and list it in [at].
+  void _stand(int id, Hex at) {
+    final g = _groups[id]!;
+    final from = g.at.toKey();
+    _hostiles[from] = [for (final h in _hostiles[from] ?? const <NpcFleetInfo>[]) if (h.id != id) h];
+    g.at = at;
+    _hostiles[at.toKey()] = [...?_hostiles[at.toKey()], _npcInfo(id)];
+    _dirty
+      ..add(from)
+      ..add(at.toKey());
+  }
+
+  /// The engine's `Ships::heal`: one step of group [id]'s mending.
+  void _heal(int id) {
+    final g = _groups[id]!;
+    final squads = _squads[id]!;
+    for (final theirs in g.muster) {
+      final full = _npcArms(theirs.cls).hull;
+      var here = squads.where((s) => s.cls == theirs.cls).firstOrNull;
+      if (here == null) {
+        here = _Squad(theirs.cls, 0);
+        squads.add(here);
+      }
+      for (var i = 0; i < here.wounds.length; i++) {
+        here.wounds[i] += _healHull(full);
+      }
+      here.wounds.removeWhere((hull) => hull >= full);
+      here.count += min(theirs.count - here.count, _healShips(theirs.count));
+    }
+    squads.sort((a, b) => a.cls.index.compareTo(b.cls.index));
+  }
+
+  /// The groups' jumps and their mending. One that lands where a fleet
+  /// stands fires on it; one that lands on an empty sector goes on after
+  /// its fleet or turns back; one at rest in its lair mends a step when its
+  /// time has come.
+  void _stepGroups() {
+    for (final id in _groups.keys.toList()) {
+      final g = _groups[id]!;
+      final errand = g.errand;
+      final fighting = _combats.values.any((c) => c.npc.id == id);
+      if (errand == null) {
+        if (fighting || g.at != g.lair || _healSteps(id) == 0) continue;
+        g.rested++;
+        if (g.rested < _book.healStepTicks(g.lair.distFromOrigin)) continue;
+        g.rested = 0;
+        _heal(id);
+        _relist(id);
+        continue;
+      }
+      if (errand.arrives > _tick) {
+        if (_healSteps(id) > 0) _relist(id);
+        continue;
+      }
+      g.errand = null;
+      _stand(id, errand.to);
+      final met = g.behavior == NpcBehavior.passive || _isRefuge(g.at)
+          ? null
+          : ([for (final f in _fleets) if (f.location == g.at && f.state != FleetStatus.docked && !_combats.containsKey(f.id)) f]
+                ..sort((a, b) => a.id == errand.quarry ? -1 : b.id == errand.quarry ? 1 : a.id.compareTo(b.id)))
+              .firstOrNull;
+      if (met != null) {
+        _startCombat(met, _npcInfo(id));
+        _relist(id);
+        continue;
+      }
+      final quarry = errand.quarry;
+      if (quarry == null) {
+        _settle(id);
+        continue;
+      }
+      final why = _trail(g, quarry);
+      if (why == null) {
+        _chase(id, quarry, PursuitPhase.continued);
+      } else {
+        _settle(id);
+        _pursuitEvent(id, quarry, PursuitPhase.abandoned, why: why);
+      }
+    }
+  }
+
+  /// The fleet of fight [c] lands in [to]: it is out of the fight, which
+  /// ends `fled`, and the group goes after it if it was beating it.
+  void _landOutOfFight(_Combat c, FleetState f, Hex to) {
+    _combats.remove(c.fleetId);
+    _hop(f, to, paid: true);
+    _ev(CombatEndedEvent(
+        sector: c.sector,
+        playerVictory: false,
+        outcome: BattleOutcome.fled,
+        rounds: c.round,
+        losses: _losses(c, fleetGone: false, groupGone: false),
+        owners: const ['Demo'],
+        mine: true));
+    final g = _groups[c.npc.id]!;
+    g.rested = 0;
+    final landed = _find(c.fleetId)!;
+    if (_trail(g, c.fleetId) == null && _groupPowerNow(c.npc.id) >= chaseMinRatio * landed.power) {
+      _chase(c.npc.id, c.fleetId, PursuitPhase.began);
+    } else {
+      _settle(c.npc.id);
+    }
+  }
+
+  /// What [from] fires at [at] in one round, class at class, and what it
+  /// does to [at], whose squads are changed. Without dice: every ship of
+  /// [from] fires once, at the classes of [at] in proportion to their
+  /// numbers, and as often again as its rapid fire against a class says. A
+  /// shot under a hundredth of the shield it meets bounces; each other one
+  /// meets a full shield and takes the rest from the hull of the class's
+  /// most damaged ship, which explodes if it was already at risk.
+  List<Volley> _volleys(List<_Squad> from, _Arms Function(ShipClass) fromArms, List<_Squad> at, _Arms Function(ShipClass) atArms) {
+    final stood = {for (final t in at) t.cls: t.count};
+    final total = _shipsIn(at);
+    final out = <Volley>[];
+    if (total == 0) return out;
+    for (final a in from) {
+      final attack = fromArms(a.cls).attack;
+      var spare = a.count - at.fold(0, (n, t) => n + a.count * stood[t.cls]! ~/ total);
+      for (final t in at) {
+        final aimed = a.count * stood[t.cls]! ~/ total + (spare-- > 0 ? 1 : 0);
+        final again = _book.rapidFire.where((r) => r.shipClass == a.cls && r.against.ship == t.cls).firstOrNull?.shots ?? 1;
+        final shots = aimed * again;
+        if (shots == 0) continue;
+        final target = atArms(t.cls);
+        var bounced = 0, wasted = 0, absorbed = 0, hullDamage = 0, destroyed = 0;
+        if (attack * 100 < target.shield) {
+          bounced = shots;
+        } else {
+          for (var i = 0; i < shots; i++) {
+            if (t.count == 0) {
+              wasted = shots - i;
+              break;
+            }
+            absorbed += min(attack, target.shield);
+            final through = attack - target.shield;
+            if (through <= 0) continue;
+            final hull = t.wounds.isEmpty ? target.hull : t.wounds.removeAt(0);
+            hullDamage += min(through, hull);
+            if (hull <= through || _atRisk(hull, target.hull)) {
+              t.count--;
+              destroyed++;
+            } else {
+              t.wounds.insert(0, hull - through);
+            }
+          }
+        }
+        out.add(Volley(
+            from: ShipyardItem.ship(a.cls),
+            at: ShipyardItem.ship(t.cls),
+            shots: shots,
+            bounced: bounced,
+            wasted: wasted,
+            absorbed: absorbed,
+            hullDamage: hullDamage,
+            destroyed: destroyed));
+      }
+    }
+    return out;
+  }
+
+  /// One side of a round as its report carries it: the force as it stands
+  /// after the round with what the round took from it, and what it fired.
+  static BattleSide _side(
+      BattleGroup Function(List<BattleUnits>) group, List<_Squad> before, List<_Squad> after, _Arms Function(ShipClass) arms, List<Volley> fired) {
+    final units = [
+      for (final was in before)
+        () {
+          final now = after.firstWhere((s) => s.cls == was.cls);
+          final unit = arms(was.cls);
+          return BattleUnits(
+            unit: ShipyardItem.ship(was.cls),
+            count: now.count,
+            damaged: now.wounds.length,
+            atRisk: now.wounds.where((hull) => _atRisk(hull, unit.hull)).length,
+            hull: (now.count - now.wounds.length) * unit.hull + now.wounds.fold(0, (n, hull) => n + hull),
+            hullMax: now.count * unit.hull,
+            lost: was.count - now.count,
+          );
+        }(),
+    ];
+    return BattleSide(
+      groups: [group(units)],
+      standing: _shipsIn(after),
+      volleys: fired,
+      shots: fired.fold(0, (n, v) => n + v.shots),
+      power: fired.fold(0, (n, v) => n + v.shots * arms(v.from.ship!).attack),
+      absorbed: fired.fold(0, (n, v) => n + v.absorbed),
+      hullDamage: fired.fold(0, (n, v) => n + v.hullDamage),
+      destroyed: fired.fold(0, (n, v) => n + v.destroyed),
+    );
   }
 
   void _stepCombat() {
@@ -1608,6 +2251,7 @@ class DemoWorld {
       final hs = _hostiles[f.location.toKey()];
       if (hs == null || hs.isEmpty) continue;
       final npc = hs.first;
+      if (_groups[npc.id]!.errand != null) continue;
       final provoked = _provoked.remove(f.id);
       final engage = npc.behavior == NpcBehavior.aggressive ||
           npc.behavior == NpcBehavior.swarm ||
@@ -1620,96 +2264,86 @@ class DemoWorld {
         _combats.remove(c.fleetId);
         continue;
       }
-      c.round++;
-      final mine = [...f.ships];
-      final foes = c.ships.where((s) => s.hull > 0).toList();
-      final hull = {for (final s in mine) s.id: s.hull};
-      final shield = {for (final s in mine) s.id: s.shield};
-      for (final a in mine) {
-        if (foes.isEmpty) break;
-        final t = foes[_rng.nextInt(foes.length)];
-        if (t.hull <= 0) continue;
-        final dmg = a.weaponPower * (.8 + _rng.nextDouble() * .4);
-        final sh = min(t.shield, dmg);
-        t.shield -= sh;
-        t.hull -= dmg - sh;
-        _ev(CombatRoundEvent(
-          sector: c.sector,
-          attackerFleetId: f.id,
-          attackerOwner: 'Demo',
-          attackerShipId: a.id,
-          targetFleetId: c.npc.id,
-          targetOwner: null,
-          targetShipId: t.id,
-          damage: dmg,
-          shieldAbsorbed: sh,
-          hullDamage: dmg - sh,
-          rapidFire: false,
-          mine: true,
-        ));
-        if (t.hull <= 0) {
-          _ev(ShipDestroyedEvent(shipId: t.id, shipClass: t.cls, ownerFleetId: c.npc.id, isNpc: true, sector: c.sector, owner: null, mine: false));
-          foes.remove(t);
-        }
-      }
-      final alive = [for (final s in mine) s];
-      for (final e in c.ships.where((s) => s.hull > 0)) {
-        if (alive.isEmpty) break;
-        final t = alive[_rng.nextInt(alive.length)];
-        final dmg = e.weapon * (.8 + _rng.nextDouble() * .4);
-        final sh = min(shield[t.id]!, dmg);
-        shield[t.id] = shield[t.id]! - sh;
-        hull[t.id] = hull[t.id]! - (dmg - sh);
-        _ev(CombatRoundEvent(
-          sector: c.sector,
-          attackerFleetId: c.npc.id,
-          attackerOwner: null,
-          attackerShipId: e.id,
-          targetFleetId: f.id,
-          targetOwner: 'Demo',
-          targetShipId: t.id,
-          damage: dmg,
-          shieldAbsorbed: sh,
-          hullDamage: dmg - sh,
-          rapidFire: false,
-          mine: true,
-        ));
-        if (hull[t.id]! <= 0) {
-          _ev(ShipDestroyedEvent(shipId: t.id, shipClass: t.shipClass, ownerFleetId: f.id, isNpc: false, sector: c.sector, owner: 'Demo', mine: true));
-          alive.remove(t);
-        }
-      }
-      final survivors = [
-        for (final s in mine)
-          if (hull[s.id]! > 0)
-            ShipState(id: s.id, shipClass: s.shipClass, hull: hull[s.id]!, hullMax: s.hullMax, shield: shield[s.id]!, shieldMax: s.shieldMax, weaponPower: s.weaponPower)
-      ];
-      final npcLeft = c.ships.any((s) => s.hull > 0);
-      if (survivors.isEmpty) {
-        _combats.remove(c.fleetId);
-        _fleets = [for (final e in _fleets) if (e.id != f.id) e];
-        _ev(FleetDestroyedEvent(fleetId: f.id, isNpc: false, sector: c.sector, owner: 'Demo', mine: true, salvage: const Resources()));
-        _ev(CombatEndedEvent(sector: c.sector, playerVictory: false, owners: const ['Demo'], mine: true));
+      final leaving = c.fleeTo;
+      if (leaving != null && c.fleeRounds == 0) {
+        _landOutOfFight(c, f, leaving);
         continue;
       }
-      f = _copy(f, ships: survivors);
-      _setFleet(f);
-      if (!npcLeft) {
-        _combats.remove(c.fleetId);
-        final worth = _book.constant('WRECK_VALUE_K') * pow(_groupPower(c.npc), _book.constant('WRECK_VALUE_EXPONENT'));
+      c.round++;
+      final refit = _refits[f.id]!;
+      _Arms arms(ShipClass cls) => _arms(cls, refit);
+      List<_Squad> ordered(List<_Squad> squads) => [for (final s in squads) s.copy()]..sort((a, b) => a.cls.index.compareTo(b.cls.index));
+      final fleetBefore = ordered(_squads[f.id]!), groupBefore = ordered(_squads[c.npc.id]!);
+      final fleet = ordered(fleetBefore), group = ordered(groupBefore);
+      final ours = leaving == null ? _volleys(fleetBefore, arms, group, _npcArms) : const <Volley>[];
+      final theirs = _volleys(groupBefore, _npcArms, fleet, arms);
+      if (leaving != null) c.fleeRounds--;
+      final round = BattleRoundEvent(
+        sector: c.sector,
+        round: c.round,
+        fleets: _side((units) => BattleGroup(fleetId: c.fleetId, owner: 'Demo', mine: true, fleeing: leaving != null, units: units), fleetBefore, fleet, arms,
+            ours),
+        hostiles: _side((units) => BattleGroup(fleetId: c.npc.id, label: c.label, units: units), groupBefore, group, _npcArms, theirs),
+        mine: true,
+      );
+      for (final u in round.fleets.groups.single.units) {
+        if (u.lost > 0) c.fleetLost.update(u.unit.ship!, (n) => n + u.lost, ifAbsent: () => u.lost);
+      }
+      for (final u in round.hostiles.groups.single.units) {
+        if (u.lost > 0) c.groupLost.update(u.unit.ship!, (n) => n + u.lost, ifAbsent: () => u.lost);
+      }
+      c.lastRound = round;
+      _ev(BattleRoundKind(round));
+      _squads[f.id] = [for (final s in fleet) if (s.count > 0) s];
+      _squads[c.npc.id] = [for (final s in group) if (s.count > 0) s];
+      final k = c.sector.toKey();
+      final fleetGone = _squads[f.id]!.isEmpty, groupGone = _squads[c.npc.id]!.isEmpty;
+      final quiet = leaving == null && round.fleets.hullDamage + round.hostiles.hullDamage == 0;
+      if (!groupGone) _relist(c.npc.id);
+      if (!fleetGone && !groupGone && !quiet) {
+        _setFleet(_copy(f));
+        continue;
+      }
+
+      _combats.remove(c.fleetId);
+      Resources? pile;
+      int? despawn;
+      if (fleetGone) {
+        _fleets = [for (final e in _fleets) if (e.id != f.id) e];
+        _squads.remove(f.id);
+        _refits.remove(f.id);
+        _ev(FleetDestroyedEvent(fleetId: f.id, isNpc: false, sector: c.sector, owner: 'Demo', mine: true, salvage: const Resources()));
+      }
+      if (groupGone) {
+        final muster = _power(_rows(_groups[c.npc.id]!.muster, _npcArms));
+        final worth = _book.constant('WRECK_VALUE_K') * pow(muster, _book.constant('WRECK_VALUE_EXPONENT'));
         final split = _book.constants('LOOT_SPLIT');
         final loot = Resources(metal: worth * split[0], crystal: worth * split[1], deuterium: worth * split[2]);
-        final k = c.sector.toKey();
-        _hostiles[k] = [for (final h in _hostiles[k] ?? <NpcFleetInfo>[]) if (h.id != c.npc.id) h];
-        final prev = _salvage[k]?.$1;
-        final total = Resources(metal: loot.metal + (prev?.metal ?? 0), crystal: loot.crystal + (prev?.crystal ?? 0), deuterium: loot.deuterium + (prev?.deuterium ?? 0));
-        final despawn = _tick + 600;
-        _salvage[k] = (total, despawn);
+        _hostiles[k] = [for (final h in _hostiles[k] ?? const <NpcFleetInfo>[]) if (h.id != c.npc.id) h];
+        _squads.remove(c.npc.id);
+        _groups.remove(c.npc.id);
+        pile = _plus(loot, _salvage[k]?.$1 ?? const Resources());
+        despawn = _tick + 600;
+        _salvage[k] = (pile, despawn);
         _dirty.add(k);
-        _ev(FleetDestroyedEvent(fleetId: c.npc.id, isNpc: true, sector: c.sector, owner: null, mine: false, salvage: loot));
-        _ev(CombatEndedEvent(sector: c.sector, playerVictory: true, owners: const ['Demo'], mine: true, salvage: total, salvageDespawnTick: despawn));
-        _setFleet(_copy(f, state: FleetStatus.idle));
+        _ev(FleetDestroyedEvent(fleetId: c.npc.id, isNpc: true, sector: c.sector, owner: null, mine: false, salvage: loot, label: c.label));
+      } else {
+        _groups[c.npc.id]!.rested = 0;
+        _settle(c.npc.id);
       }
+      _ev(CombatEndedEvent(
+          sector: c.sector,
+          playerVictory: groupGone && !fleetGone,
+          outcome: groupGone
+              ? (fleetGone ? BattleOutcome.bothDestroyed : BattleOutcome.hostilesDestroyed)
+              : (fleetGone ? BattleOutcome.fleetsDestroyed : BattleOutcome.standoff),
+          rounds: c.round,
+          losses: _losses(c, fleetGone: fleetGone, groupGone: groupGone),
+          owners: const ['Demo'],
+          mine: true,
+          salvage: pile,
+          salvageDespawnTick: despawn));
+      if (!fleetGone) _setFleet(_copy(f, state: FleetStatus.idle));
     }
   }
 
@@ -1718,38 +2352,190 @@ class DemoWorld {
   /// What a fleet of [ships] is, as the catalogue's rows for its classes
   /// add up: the fuel a jump burns, its tank and its hold are sums, and it
   /// jumps as slowly as its slowest ship.
-  double _jump(List<ShipState> ships) => ships.fold(0.0, (n, s) => n + _shipOption(s.shipClass).jumpFuel);
-  double _tank(List<ShipState> ships) => ships.fold(0.0, (n, s) => n + _shipOption(s.shipClass).tank);
-  double _hold(List<ShipState> ships) => ships.fold(0.0, (n, s) => n + _shipOption(s.shipClass).cargo);
-  int _jumpTicks(List<ShipState> ships) => ships.fold(1, (m, s) => max(m, _shipOption(s.shipClass).jumpTicks));
+  double _jump(List<_Squad> ships) => ships.fold(0.0, (n, s) => n + s.count * _shipOption(s.cls).jumpFuel);
+  double _tank(List<_Squad> ships) => ships.fold(0.0, (n, s) => n + s.count * _shipOption(s.cls).tank);
+  double _hold(List<_Squad> ships) => ships.fold(0.0, (n, s) => n + s.count * _shipOption(s.cls).cargo);
+  int _jumpTicks(List<_Squad> ships) => ships.fold(1, (m, s) => max(m, _shipOption(s.cls).jumpTicks));
 
   /// The server's `scan_range`: farther with an Espionage Probe aboard.
-  static int _scanRange(List<ShipState> ships) =>
-      ships.any((s) => s.shipClass == ShipClass.espionageProbe) ? scanProbeRange : scanBaseRange;
+  static int _scanRange(List<_Squad> ships) => ships.any((s) => s.cls == ShipClass.espionageProbe) ? scanProbeRange : scanBaseRange;
+
+  /// A fleet standing at the homeworld and not leaving it is at the home
+  /// dock: it takes the empire's levels and its damaged ships are made
+  /// whole, for nothing.
+  bool _atHomeDock(FleetState f) => f.location == _home && f.state != FleetStatus.moving && f.state != FleetStatus.inCombat;
+
+  /// The engine's `mending`: what a dock that charges [share] of a ship's
+  /// cost for a whole hull would do for the damaged ships of fleet [id]
+  /// with [stock]. The most damaged ship is mended first, and a ship the
+  /// stock does not cover is left as it is with every ship after it.
+  ({DockRepair quote, List<(ShipClass, int)> mended}) _mending(int id, double share, Resources stock, {String? refusal}) {
+    final refit = _refits[id]!;
+    final worn = [
+      for (final s in _squads[id]!)
+        for (final hull in s.wounds) (cls: s.cls, hull: hull, full: _arms(s.cls, refit).hull),
+    ]..sort((a, b) => (a.hull / a.full).compareTo(b.hull / b.full));
+    double cost(({ShipClass cls, int hull, int full}) ship) {
+      final at = _shipOption(ship.cls).unitCost;
+      final par = ResourceKind.values.fold(0.0, (n, k) => n + k.weight * k.of(at));
+      return par * share * (ship.full - ship.hull) / ship.full;
+    }
+
+    final price = worn.fold(0.0, (n, ship) => n + cost(ship));
+    if (refusal != null) {
+      return (quote: DockRepair(price: price, payment: const Resources(), ships: 0, hull: 0, refusal: refusal), mended: const []);
+    }
+    final (_, short) = _payByWeight(price, stock);
+    var budget = price - short, spent = 0.0, hull = 0;
+    final mended = <(ShipClass, int)>[];
+    for (final ship in worn) {
+      final due = cost(ship);
+      if (short > 0 && due > budget) break;
+      budget -= due;
+      spent += due;
+      hull += ship.full - ship.hull;
+      mended.add((ship.cls, ship.hull));
+    }
+    return (
+      quote: DockRepair(price: price, payment: _payByWeight(short > 0 ? spent : price, stock).$1, ships: mended.length, hull: hull),
+      mended: mended,
+    );
+  }
+
+  /// Why the outpost would mend nothing for [f], in the engine's words;
+  /// null when it would.
+  String? _outpostMendRefusal(FleetState f, _Outpost o) => o.level == 0
+      ? 'the outpost at ${o.at} is not finished'
+      : o.breached
+          ? 'the outpost at ${o.at} is breached and mends nothing until it is repaired'
+          : f.policy != null
+              ? 'a fleet under standing orders does not use the outpost'
+              : null;
+
+  ({DockRepair quote, List<(ShipClass, int)> mended}) _homeMending(int id) =>
+      _mending(id, _book.constant('REPAIR_COST_SHARE_HOME'), _resources);
+
+  ({DockRepair quote, List<(ShipClass, int)> mended}) _outpostMending(FleetState f, _Outpost o) =>
+      _mending(f.id, _book.constant('REPAIR_COST_SHARE_OUTPOST'), o.store, refusal: _outpostMendRefusal(f, o));
+
+  /// The docks' work, each tick: the home dock refits a fleet standing at
+  /// it to the empire's levels, saying so when it has just come in, and
+  /// makes its damaged ships whole; the outpost's mends what its store
+  /// pays for. Each says what it did in the engine's sentence.
+  void _stepDocks() {
+    _tended.removeWhere((id) => _fleets.every((f) => f.id != id || !_atHomeDock(f)));
+    for (final f in List.of(_fleets)) {
+      final o = _outpost;
+      if (_atHomeDock(f)) {
+        final was = _refits[f.id]!, now = _levels;
+        if (was != now) {
+          _refits[f.id] = now;
+          _rearm(_squads[f.id]!, was, now);
+          if (!_tended.contains(f.id)) {
+            _ev(AlertEvent(
+                level: AlertLevel.info,
+                message: 'fleet ${f.id} was refitted at the home dock: Weapons ${now.weapons}, Shielding ${now.shielding}, Armour ${now.armour} '
+                    '(it flew with ${was.weapons}, ${was.shielding}, ${was.armour})',
+                fleetId: f.id,
+                sector: f.location));
+          }
+        }
+        _tended.add(f.id);
+        _mend(f, _homeMending(f.id), 'the home dock', (paid) => _resources = _less(_resources, paid));
+      } else if (o != null && f.location == o.at && f.state != FleetStatus.moving && f.state != FleetStatus.inCombat) {
+        _mend(f, _outpostMending(f, o), 'your outpost', (paid) => o.store = _less(o.store, paid));
+      }
+    }
+  }
+
+  /// Ships that fought at the levels [was] now fight at [now]: a damaged
+  /// one keeps the share of its hull it held.
+  static void _rearm(List<_Squad> ships, Refit was, Refit now) {
+    for (final s in ships) {
+      final (old, full) = (_arms(s.cls, was).hull, _arms(s.cls, now).hull);
+      for (var i = 0; i < s.wounds.length; i++) {
+        s.wounds[i] = (s.wounds[i] * full / old).round().clamp(1, full - 1);
+      }
+    }
+  }
+
+  void _mend(FleetState f, ({DockRepair quote, List<(ShipClass, int)> mended}) work, String place, void Function(Resources) pay) {
+    if (work.mended.isEmpty) return;
+    final ships = _squads[f.id]!;
+    for (final (cls, hull) in work.mended) {
+      ships.firstWhere((s) => s.cls == cls).wounds.remove(hull);
+    }
+    pay(work.quote.payment);
+    final left = ships.fold(0, (n, s) => n + s.wounds.length);
+    _ev(AlertEvent(
+        level: AlertLevel.info,
+        message: 'fleet ${f.id} was mended at $place: ${work.quote.ships} ship(s) made whole, ${work.quote.hull} hull restored, '
+            '${work.quote.payment.total > 0 ? 'for ${_amount(work.quote.payment)}' : 'for nothing'}'
+            '${left > 0 ? '; $left more wait for the dock\'s stock to cover them' : ''}',
+        fleetId: f.id,
+        sector: f.location));
+    _setFleet(_copy(f));
+  }
+
+  /// What mending the damaged ships of [f] would take at each dock, as the
+  /// engine quotes it; null when none is damaged.
+  RepairQuote? _repairQuote(FleetState f) {
+    final ships = _squads[f.id]!;
+    final worn = ships.fold(0, (n, s) => n + s.wounds.length);
+    if (worn == 0) return null;
+    final refit = _refits[f.id]!;
+    final o = _outpost;
+    return RepairQuote(
+      ships: worn,
+      hull: ships.fold(0, (n, s) => n + s.wounds.fold(0, (m, hull) => m + _arms(s.cls, refit).hull - hull)),
+      home: _homeMending(f.id).quote,
+      outpost: o == null ? null : _outpostMending(f, o).quote,
+    );
+  }
 
   FleetState _norm(FleetState f) {
-    final jump = _jump(f.ships);
-    final tank = _tank(f.ships);
+    final ships = _squads[f.id]!;
+    final refit = _refits[f.id]!;
+    final rows = _rows(ships, (c) => _arms(c, refit));
+    final jump = _jump(ships);
+    final tank = _tank(ships);
     final homeHops = _pathHome(f.location)?.length ?? Hex.distance(f.location, _home);
     final homeFuel = homeHops * jump;
+    final levels = _levels;
+    final fight = _combats[f.id];
+    final leaving = fight?.fleeTo;
+    final fuel = min(f.fuel, tank);
     return FleetState(
+        flight: fight == null || leaving != null
+            ? null
+            : _flightQuote(fight, fuel: fuel, jump: jump, jumpTicks: _jumpTicks(ships), power: _power(rows)),
+        fleeing: leaving == null ? null : Fleeing(to: leaving, ticks: fight!.fleeRounds + 1, rounds: fight.fleeRounds),
+        pursuedBy: _pursuitOf(f.id, f.location, f.cooldownRemaining),
         id: f.id,
         location: f.location,
         state: f.state,
-        ships: f.ships,
+        ships: rows,
+        shipCount: _shipsIn(ships),
+        hull: rows.fold(0, (n, g) => n + g.hull),
+        hullMax: rows.fold(0, (n, g) => n + g.hullMax),
+        attack: rows.fold(0, (n, g) => n + g.count * g.unitAttack),
+        shield: rows.fold(0, (n, g) => n + g.count * g.unitShield),
+        refit: refit,
+        refitDue: refit.weapons < levels.weapons || refit.shielding < levels.shielding || refit.armour < levels.armour,
+        repair: _repairQuote(f),
         cargo: f.cargo,
-        cargoCapacity: _hold(f.ships),
+        cargoCapacity: _hold(ships),
         fuel: min(f.fuel, tank),
         fuelMax: tank,
         jumpFuel: jump,
         homeFuel: homeFuel,
         hopsHome: homeHops,
-        jumpTicks: _jumpTicks(f.ships),
-        scanRange: _scanRange(f.ships),
+        jumpTicks: _jumpTicks(ships),
+        scanRange: _scanRange(ships),
         atOutpost: _outpost?.at == f.location,
         outpostFuel: _inService ? Hex.distance(f.location, _outpost!.at) * jump : null,
         cooldownRemaining: f.cooldownRemaining,
-        power: _fleetPower(f.ships),
+        power: _power(rows),
         rangeHops: jump > 0 ? max(0, ((f.fuel - homeFuel) / (2 * jump)).floor()) : 0,
         cargoBlocked: f.cargoBlocked,
         laden: f.laden,
@@ -1812,7 +2598,6 @@ class DemoWorld {
     Resources? cargo,
     StandingOrders? policy,
     bool clearPolicy = false,
-    List<ShipState>? ships,
     double? fuel,
     int? cooldown,
     bool? laden,
@@ -1821,7 +2606,13 @@ class DemoWorld {
         id: f.id,
         location: location ?? f.location,
         state: state ?? f.state,
-        ships: ships ?? f.ships,
+        ships: f.ships,
+        shipCount: f.shipCount,
+        hull: f.hull,
+        hullMax: f.hullMax,
+        attack: f.attack,
+        shield: f.shield,
+        refit: f.refit,
         cargo: cargo ?? f.cargo,
         cargoCapacity: f.cargoCapacity,
         fuel: fuel ?? f.fuel,
@@ -1860,7 +2651,9 @@ class DemoWorld {
     return fresh;
   }
 
-  void _hop(FleetState f, Hex target, {bool returning = false}) {
+  /// The fleet stands in [target]; [paid] when its jump's fuel was burned
+  /// as it was ordered, as a jump out of a fight is.
+  void _hop(FleetState f, Hex target, {bool returning = false, bool paid = false}) {
     final first = !_seen.containsKey(target.toKey());
     final home = target == _home;
     final cur = _find(f.id) ?? f;
@@ -1868,8 +2661,8 @@ class DemoWorld {
       cur,
       location: target,
       state: home ? FleetStatus.docked : (returning ? FleetStatus.returning : FleetStatus.idle),
-      fuel: cur.fuel - _jump(cur.ships),
-      cooldown: cur.jumpTicks,
+      fuel: paid ? cur.fuel : cur.fuel - cur.jumpFuel,
+      cooldown: paid ? 0 : cur.jumpTicks,
       laden: false,
     );
     if (home) {
@@ -1950,6 +2743,7 @@ class DemoWorld {
         DefenceState(kind: d.kind, count: d.count, restoring: d.restoring, power: catalog.defences.firstWhere((o) => o.kind == d.kind).power),
     ];
     final power = _defence(defs, catalog);
+    final docked = _dockedRows();
     final computer = r.firstWhere((e) => e.tech == ResearchType.computerTechnology).level;
     final unlock = _slotUnlock(computer);
     return _hw.copyWith(
@@ -1974,6 +2768,8 @@ class DemoWorld {
       researchActive: researchItem,
       clearResearchActive: clearResearch,
       researchPending: researchPending,
+      dockedShips: docked,
+      dockedShipCount: docked.fold<int>(0, (n, g) => n + g.count),
       defences: defs,
       catalog: catalog,
     );
@@ -2470,7 +3266,16 @@ class DemoWorld {
     _harvest.remove(f.id);
     final c = _combats.remove(f.id);
     if (c != null) {
-      _ev(CombatEndedEvent(sector: c.sector, playerVictory: false, owners: const ['Demo'], mine: true));
+      _ev(CombatEndedEvent(
+          sector: c.sector,
+          playerVictory: false,
+          outcome: BattleOutcome.withdrawn,
+          rounds: c.round,
+          losses: _losses(c, fleetGone: false, groupGone: false),
+          owners: const ['Demo'],
+          mine: true));
+      _groups[c.npc.id]!.rested = 0;
+      _settle(c.npc.id);
     }
   }
 
@@ -2483,8 +3288,23 @@ class DemoWorld {
         if (!here.connections.contains(target)) {
           return [_err(ErrorCode.noConnection, 'No lane from ${f.location} to $target')];
         }
+        if (_combats[fleetId] case final fight?) {
+          if (fight.fleeTo case final to?) {
+            return [
+              _err(ErrorCode.onCooldown,
+                  'fleet $fleetId is already leaving the fight at ${f.location} for $to; stop calls the jump off, and its fuel is forfeit'),
+            ];
+          }
+          final quote = f.flight!;
+          if (quote.refusal case final why?) return [_err(ErrorCode.insufficientFuel, why)];
+          fight
+            ..fleeTo = target
+            ..fleeRounds = quote.rounds;
+          _setFleet(_copy(f, state: FleetStatus.moving, fuel: f.fuel - quote.fuel));
+          return [_tickUpdate()];
+        }
         if (f.cooldownRemaining > 0) return [_err(ErrorCode.onCooldown, 'Drive recharging: ${f.cooldownRemaining} tick(s)')];
-        if (f.fuel < _jump(f.ships)) return [_err(ErrorCode.insufficientFuel, 'Not enough fuel for a jump')];
+        if (f.fuel < f.jumpFuel) return [_err(ErrorCode.insufficientFuel, 'Not enough fuel for a jump')];
         _stopActivities(f);
         _hop(f, target);
         return [_tickUpdate()];
@@ -2498,6 +3318,7 @@ class DemoWorld {
                 _density(sec, k) != Density.none)
               k
         ];
+        if (_combats.containsKey(fleetId)) return [_err(ErrorCode.onCooldown, 'fleet $fleetId is in combat')];
         if (f.location == _home || keys.isEmpty) return [_err(ErrorCode.resourceNotPresent, 'No ${resource == HarvestResource.auto ? 'ore' : resource.name} to harvest here')];
         if (f.cargo.total >= f.cargoCapacity) return [_err(ErrorCode.cargoFull, 'Cargo hold is full')];
         _stopActivities(f);
@@ -2520,6 +3341,21 @@ class DemoWorld {
       case StopCommand(:final fleetId):
         final f = _find(fleetId);
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
+        if (_combats[fleetId] case final fight?) {
+          final to = fight.fleeTo;
+          if (to == null) return [_err(ErrorCode.onCooldown, 'fleet $fleetId is in combat')];
+          fight
+            ..fleeTo = null
+            ..fleeRounds = 0;
+          _setFleet(_copy(f, state: FleetStatus.inCombat));
+          _ev(AlertEvent(
+              level: AlertLevel.warning,
+              message: 'fleet $fleetId called off its jump to $to: the ${_tenths(f.jumpFuel * fleeFuelMultiplier)} fuel it burned for the jump is forfeit, '
+                  'and it fights on at ${f.location}',
+              fleetId: fleetId,
+              sector: f.location));
+          return [_tickUpdate()];
+        }
         _stopActivities(f);
         _setFleet(_copy(f, state: f.location == _home ? FleetStatus.docked : FleetStatus.idle));
         return [_tickUpdate()];
@@ -2527,7 +3363,7 @@ class DemoWorld {
         final f = _find(fleetId);
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
         if (f.cooldownRemaining > 0) return [_err(ErrorCode.onCooldown, 'Scanner recharging: ${f.cooldownRemaining} tick(s)')];
-        final range = _scanRange(f.ships);
+        final range = f.scanRange;
         final fresh = _reveal(f.location, range, scan: true);
         var hostile = 0;
         for (final h in hexSpiral(f.location, range)) {
@@ -2773,49 +3609,64 @@ class DemoWorld {
         _ev(QueueEvent(playerId: _playerId, queueType: queueType, id: id, item: label, action: QueueAction.cancelled, refunded: refund));
         _startWaiting();
         return [_tickUpdate()];
-      case SplitCommand(:final fleetId, :final shipIds):
+      case SplitCommand(:final fleetId, :final ships, :final damagedFirst):
         final f = _find(fleetId);
-        if (f == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
-        final taken = [for (final s in f.ships) if (shipIds.contains(s.id)) s];
-        if (taken.isEmpty || taken.length >= f.ships.length) {
-          return [_err(ErrorCode.invalidTarget, 'Split needs some ships, and one must stay')];
-        }
+        if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+        if (_combats.containsKey(fleetId)) return [_err(ErrorCode.onCooldown, 'fleet $fleetId is in combat')];
+        if (_splitRefusal(f, ships) case final why?) return [_err(ErrorCode.invalidTarget, why)];
         if (_fleets.length >= 8) return [_err(ErrorCode.fleetLimitReached, 'Fleet limit reached')];
-        final share = taken.length / f.ships.length;
+        final rest = _squads[fleetId]!;
+        final (tank, hold) = (f.fuelMax, f.cargoCapacity);
+        final taken = [for (final order in ships) _take(rest.firstWhere((s) => s.cls == order.shipClass), order.count, damagedFirst: damagedFirst)];
+        rest.removeWhere((s) => s.count == 0);
+        final tankShare = tank > 0 ? _tank(taken) / tank : 0.0, holdShare = hold > 0 ? _hold(taken) / hold : 0.0;
         final newId = 1 + _fleets.map((e) => e.id).reduce(max);
-        final rest = [for (final s in f.ships) if (!shipIds.contains(s.id)) s];
         _fleets = [
-          for (final e in _fleets) e.id == fleetId ? _copy(e, ships: rest, fuel: e.fuel * (1 - share)) : e,
-          _fleet(newId, f.location, FleetStatus.idle, taken, fuel: f.fuel * share),
+          for (final e in _fleets)
+            e.id == fleetId ? _copy(e, fuel: e.fuel * (1 - tankShare), cargo: _times(e.cargo, 1 - holdShare)) : e,
+          _fleet(newId, f.location, FleetStatus.idle, taken, fuel: f.fuel * tankShare, cargo: _times(f.cargo, holdShare), refit: _refits[fleetId]),
         ];
         _pending.add(GameEvent(
           tick: _tick,
           kind: AlertEvent(
             level: AlertLevel.info,
-            message: 'fleet $fleetId split: ${taken.length} ship(s) now fly as fleet $newId',
+            message: 'fleet $fleetId split: ${_shipsIn(taken)} ship(s) now fly as fleet $newId',
             fleetId: newId,
+            sector: f.location,
           ),
         ));
         return [_tickUpdate()];
       case MergeCommand(:final fleetId, :final otherFleetId):
         final a = _find(fleetId);
         final b = _find(otherFleetId);
-        if (a == null || b == null) return [_err(ErrorCode.fleetNotFound, 'No such fleet')];
-        if (a.id == b.id) return [_err(ErrorCode.invalidTarget, 'A fleet cannot merge with itself')];
-        if (a.location != b.location) return [_err(ErrorCode.notInSector, 'Fleets are not in the same sector')];
+        if (a == null || b == null) return [_err(ErrorCode.fleetNotFound, 'fleet ${a == null ? fleetId : otherFleetId} not found (or it has no ships left)')];
+        if (a.id == b.id) return [_err(ErrorCode.invalidTarget, 'a fleet cannot merge with itself')];
+        if (a.location != b.location) return [_err(ErrorCode.notInSector, 'fleets $fleetId and $otherFleetId are not in the same sector')];
+        if (a.shipCount + b.shipCount > maxFleetShips) return [_err(ErrorCode.invalidCommand, 'the merged fleet would exceed $maxFleetShips ships')];
+        final (ra, rb) = (_refits[fleetId]!, _refits[otherFleetId]!);
+        final refit = Refit(weapons: min(ra.weapons, rb.weapons), shielding: min(ra.shielding, rb.shielding), armour: min(ra.armour, rb.armour));
+        final joining = _squads.remove(otherFleetId)!;
+        _rearm(_squads[fleetId]!, ra, refit);
+        _rearm(joining, rb, refit);
+        _absorb(_squads[fleetId]!, joining);
+        _refits
+          ..remove(otherFleetId)
+          ..[fleetId] = refit;
         _fleets = [
           for (final e in _fleets)
-            if (e.id == fleetId)
-              _copy(a, ships: [...a.ships, ...b.ships], cargo: _plus(a.cargo, b.cargo), fuel: a.fuel + b.fuel)
-            else if (e.id != otherFleetId)
-              e,
+            if (e.id == fleetId) _copy(a, cargo: _plus(a.cargo, b.cargo), fuel: a.fuel + b.fuel) else if (e.id != otherFleetId) e,
         ];
+        final lowered = (ra != refit || rb != refit) && a.location != _home;
         _pending.add(GameEvent(
           tick: _tick,
           kind: AlertEvent(
             level: AlertLevel.info,
-            message: 'fleet $otherFleetId merged into fleet $fleetId',
+            message: 'fleet $otherFleetId merged into fleet $fleetId: ${a.shipCount + b.shipCount} ship(s)'
+                '${lowered ? ", fighting at the lower of the two fleets' levels (Weapons ${refit.weapons}, Shielding ${refit.shielding}, "
+                    "Armour ${refit.armour}) until the home dock refits them" : ''}'
+                '${b.policy != null ? "; the absorbed fleet's standing orders ended" : ''}',
             fleetId: fleetId,
+            sector: a.location,
           ),
         ));
         return [_tickUpdate()];
@@ -2879,9 +3730,14 @@ class DemoWorld {
             fuelToReturn: hops * f.jumpFuel,
             canReturn: left >= hops * f.jumpFuel,
             threat: odds.threat,
-            fleetPower: _fleetPower(f.ships),
+            fleetPower: f.power,
             ratio: odds.ratio,
             label: odds.label,
+            flight: switch (_combats[fleetId]) {
+              final fight? when fight.fleeTo == null =>
+                _flightQuote(fight, fuel: f.fuel, jump: f.jumpFuel, jumpTicks: f.jumpTicks, power: f.power, to: target),
+              _ => null,
+            },
           ),
         ];
       case OddsCommand(:final fleetId, :final sectors):
@@ -2891,11 +3747,28 @@ class DemoWorld {
     }
   }
 
+  /// The engine's `split_refusal`: why a split naming [ships] is refused
+  /// for [f]; null when it is not.
+  String? _splitRefusal(FleetState f, List<ShipCount> ships) {
+    if (ships.isEmpty) return 'split needs at least one class and a count of its ships to take';
+    for (final (i, order) in ships.indexed) {
+      final label = order.shipClass.label;
+      if (order.count == 0) return 'split names $label with a count of 0';
+      if (ships.take(i).any((earlier) => earlier.shipClass == order.shipClass)) return 'split names $label twice; give each class one count';
+      final aboard = _squads[f.id]!.where((s) => s.cls == order.shipClass).firstOrNull?.count ?? 0;
+      if (order.count > aboard) return 'fleet ${f.id} has $aboard $label, not the ${order.count} the split names';
+    }
+    if (ships.fold(0, (n, order) => n + order.count) >= f.shipCount) {
+      return 'the split would take all ${f.shipCount} ships of fleet ${f.id}; at least one ship must stay behind';
+    }
+    return null;
+  }
+
   /// The demo world's stand-in for the server's odds: power against power.
   /// The real server plays the fight out; nothing outside the demo uses this.
   SectorOdds _demoOdds(FleetState f, Hex sector) {
     final threat = _sector(sector, live: _liveNow.contains(sector.toKey())).threat;
-    final ratio = _fleetPower(f.ships) / threat.estPower;
+    final ratio = f.power / threat.estPower;
     return SectorOdds(sector: sector, threat: threat, ratio: ratio, label: ratioLabelFor(ratio));
   }
 }

@@ -187,6 +187,8 @@ fn game() -> Json {
         NPC_POWER_BASE, NPC_POWER_GROWTH, NPC_MAX_SHIPS, NPC_STAT_MULT_MAX, NPC_CRUISER_RING, NPC_BATTLECRUISER_RING,
         MAX_THREAT, RAPID_FIRE_UNARMED, RAPID_FIRE_UNARMED_DEATHSTAR,
         WRECK_VALUE_K, WRECK_VALUE_EXPONENT, LOOT_SPLIT,
+        REPAIR_COST_SHARE_HOME, REPAIR_COST_SHARE_OUTPOST,
+        CHASE_HEXES, NPC_HEAL_STEPS,
         ORE_RING_GROWTH, ORE_RING_FIRST, ORE_RING_LAST, ORE_REGEN_BASE_HOURS, ORE_REGEN_HOURS_PER_RING,
         DERELICT_SPAWN_PCT, DERELICT_RESPAWN_TICKS, DERELICT_VALUE_BASE, DERELICT_VALUE_GROWTH, DERELICT_VALUE_RING,
         AMBUSH_GUARD_SHARE,
@@ -469,12 +471,18 @@ fn tables() -> Json {
                 "ring": ring, "npc_power": npc_power(ring), "threat_rating": threat_rating(npc_power(ring)),
                 "count": count, "stat_multiplier": multiplier,
                 "group_power": ship_power(class) * multiplier * f32::from(count),
+                "npc_jump_ticks": npc_jump_ticks(class, ring),
                 "outpost_raid_power": outpost_raid_power(ring),
                 "ring_mult": ring_mult(ring), "ore_regen_hours": ore_regen_hours(ring),
                 "wreck_value": wreck_value(npc_power(ring)),
                 "derelict_value": derelict_value(ring), "derelict_tier": derelict_tier(ring),
             }
         })
+        .collect();
+
+    let group_healing: Vec<Json> = (1..=RINGS)
+        .flat_map(|ring| PACES.into_iter().map(move |p| (ring, p)))
+        .map(|(ring, p)| map! {"ring": ring, "pace": p, "step_ticks": npc_heal_step_ticks(ring, &pace(p))})
         .collect();
 
     let ratings: Vec<Json> = (1..=MAX_THREAT)
@@ -539,6 +547,7 @@ fn tables() -> Json {
         "flight": flight,
         "raid_power": raid_power,
         "rings": rings,
+        "group_healing": group_healing,
         "ratings": ratings,
         "kill_pay": kill_pay,
         "exchange_spans": exchange_spans,

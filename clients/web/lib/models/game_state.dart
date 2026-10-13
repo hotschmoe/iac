@@ -44,7 +44,16 @@ class PolicyAct {
   const PolicyAct({required this.tick, required this.since, required this.preset, required this.action, required this.reason});
 
   bool get isHold => action == 'hold';
+
+  /// The fleet left a fight because its odds fell below the doctrine's.
+  bool get isFlight => action == policyFlee;
+
+  /// The verb as a report's heading says it.
+  String get heading => isFlight ? 'left a fight' : action;
 }
+
+/// The engine's verb for a fleet under orders that jumps out of a fight.
+const policyFlee = 'flee';
 
 enum EventLevel {
   full(Color(0xFFFFB000)),
@@ -78,44 +87,6 @@ enum AlertTone {
 
   final Color color;
   const AlertTone(this.color);
-}
-
-class SectorInfo {
-  final String terrain;
-  final String metal;
-  final String crystal;
-  final String deut;
-  final String hostile;
-  final String adjacent;
-  final String exits;
-  final String salvage;
-  final String site;
-
-  /// "live", or how old the remembered intel on this sector is.
-  final String intel;
-
-  const SectorInfo({
-    required this.terrain,
-    required this.metal,
-    required this.crystal,
-    required this.deut,
-    required this.hostile,
-    required this.adjacent,
-    required this.exits,
-    this.salvage = '—',
-    this.site = '—',
-    this.intel = '—',
-  });
-
-  static const unknown = SectorInfo(
-    terrain: 'Unknown',
-    metal: '—',
-    crystal: '—',
-    deut: '—',
-    hostile: '—',
-    adjacent: '—',
-    exits: '—',
-  );
 }
 
 class Waypoint {
@@ -162,6 +133,33 @@ class SurveyEntry {
   const SurveyEntry(this.survey, this.tick);
 }
 
+/// A fight the player has a fleet in or is present at, as the console
+/// follows it: what the state says of it, the last round it was sent, and
+/// the end once it has ended. The rounds before the last are not kept.
+class Battle {
+  final proto.Hex sector;
+
+  /// Rounds fought so far, as the state counts them.
+  final int rounds;
+
+  /// The last round the server sent; null before the first is fought.
+  final proto.BattleRoundEvent? round;
+
+  /// What each fleet and group has lost so far, as the state lists it.
+  final List<proto.BattleLosses> losses;
+
+  /// How it ended and the tick it did; null while it goes on.
+  final proto.CombatEndedEvent? ended;
+  final int endedTick;
+
+  const Battle({required this.sector, required this.rounds, this.round, this.losses = const [], this.ended, this.endedTick = 0});
+
+  bool get over => ended != null;
+}
+
+/// Ticks a fight's end stays on the round panel after its last round.
+const battleReportTicks = 90;
+
 /// Ticks a preview or odds stay on screen, and how soon they are asked for
 /// again (the refresh lands well before they lapse, so the readout never
 /// blinks out).
@@ -175,11 +173,12 @@ class GameState {
   final List<FleetState> fleets;
   final List<QueueItem> buildQueue;
   final List<QueueItem> shipyard;
-  final String docked;
+
+  /// Every ship of every fleet the player has, as the server counts them.
+  final int shipCount;
   final ResearchState research;
   final List<LogEntry> events;
   final List<Alert> alerts;
-  final SectorInfo sector;
   final proto.Hex homeworld;
   final List<Waypoint> waypoints;
 
@@ -239,6 +238,10 @@ class GameState {
   /// fleet id.
   final Map<int, List<PolicyAct>> policyActs;
 
+  /// The fights under way that the player is in or present at, and those
+  /// that ended in the last [battleReportTicks], by sector.
+  final Map<proto.Hex, Battle> battles;
+
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -246,11 +249,10 @@ class GameState {
     required this.fleets,
     required this.buildQueue,
     required this.shipyard,
-    required this.docked,
+    this.shipCount = 0,
     required this.research,
     required this.events,
     required this.alerts,
-    required this.sector,
     required this.homeworld,
     required this.waypoints,
     this.sectors = const {},
@@ -270,7 +272,20 @@ class GameState {
     this.outpost,
     this.surveys = const {},
     this.policyActs = const {},
+    this.battles = const {},
   });
+
+  /// The fight in [sector], under way or just ended.
+  Battle? battleAt(proto.Hex sector) => battles[sector];
+
+  /// The fight [fleet] has to be told of: the one where it stands, or else
+  /// the one it has left, once that has ended.
+  Battle? battleOf(FleetState fleet) {
+    final here = battles[fleet.sector];
+    final left = battles[fleet.foughtAt];
+    if (left == null || !left.over || (here != null && (!here.over || here.endedTick >= left.endedTick))) return here;
+    return left;
+  }
 
   /// The survey of [sector] for [fleetId] as the server last answered it.
   SurveyEntry? surveyOf(int fleetId, proto.Hex sector) => surveys[(fleetId, sector)];
@@ -354,11 +369,10 @@ class GameState {
     List<FleetState>? fleets,
     List<QueueItem>? buildQueue,
     List<QueueItem>? shipyard,
-    String? docked,
+    int? shipCount,
     ResearchState? research,
     List<LogEntry>? events,
     List<Alert>? alerts,
-    SectorInfo? sector,
     proto.Hex? homeworld,
     List<Waypoint>? waypoints,
     Map<proto.Hex, proto.SectorState>? sectors,
@@ -378,6 +392,7 @@ class GameState {
     proto.OutpostState? outpost,
     Map<(int, proto.Hex), SurveyEntry>? surveys,
     Map<int, List<PolicyAct>>? policyActs,
+    Map<proto.Hex, Battle>? battles,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -386,11 +401,10 @@ class GameState {
         fleets: fleets ?? this.fleets,
         buildQueue: buildQueue ?? this.buildQueue,
         shipyard: shipyard ?? this.shipyard,
-        docked: docked ?? this.docked,
+        shipCount: shipCount ?? this.shipCount,
         research: research ?? this.research,
         events: events ?? this.events,
         alerts: alerts ?? this.alerts,
-        sector: sector ?? this.sector,
         homeworld: homeworld ?? this.homeworld,
         waypoints: waypoints ?? this.waypoints,
         sectors: sectors ?? this.sectors,
@@ -410,5 +424,6 @@ class GameState {
         outpost: outpost ?? this.outpost,
         surveys: surveys ?? this.surveys,
         policyActs: policyActs ?? this.policyActs,
+        battles: battles ?? this.battles,
       );
 }

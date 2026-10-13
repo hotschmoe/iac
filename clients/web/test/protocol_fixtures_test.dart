@@ -100,11 +100,11 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 28 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 29 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 28);
+      expect(kinds.length, 29);
     });
 
     test('command fixtures cover all 28 commands', () {
@@ -304,6 +304,22 @@ void main() {
       final fleet = (ServerMessage.fromJson(readJson(f)) as GameState).fleets.first;
       expect(fleet.power, 61.5);
       expect(fleet.rangeHops, 4);
+    });
+
+    test('a client that arrives in the middle of a fight has its last round from the full state; a tick update leaves the round to its event', () {
+      ServerMessage message(String name) => ServerMessage.fromJson(readJson(fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == name)));
+      const at = Hex(-5, 7);
+      final mapper = StateMapper()..apply(message('full_state'));
+      final seeded = mapper.toUiState().battleAt(at)!;
+      expect((seeded.rounds, seeded.round!.round, seeded.round!.fleets.standing, seeded.round!.hostiles.standing, seeded.over), (3, 3, 57, 83, false));
+      expect(seeded.losses, isNotEmpty);
+      expect(mapper.toUiState().shipCount, 888, reason: 'the empire\'s ships are the state\'s own count');
+
+      final update = message('tick_update') as TickUpdate;
+      expect(update.battles.single.lastRound, isNull);
+      mapper.apply(update);
+      final later = mapper.toUiState().battleAt(at)!;
+      expect((later.rounds, later.round?.round), (3, 3), reason: 'the round it was seeded with stands until an event brings the next');
     });
 
     test('full_state carries running and waiting queue items', () {
