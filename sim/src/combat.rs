@@ -186,17 +186,18 @@ fn muster(troops: &[Troop]) -> Side {
     side
 }
 
-/// Every unit of `from` fires at `at`. Returns the fire by kind of firing
-/// unit and of target, and the attack of every shot summed.
+/// Every unit of `from` fires at `at`. Returns the fire of each line of
+/// `from` at each line of `at`, and the attack of every shot summed.
 fn fire(from: &Side, at: &mut Side, dice: &mut Dice) -> (Vec<Fire>, u64) {
     let rapid = rapid_fire();
-    let mut tally = vec![Fire::default(); KINDS * KINDS];
+    let across = at.lines.len();
+    let mut tally = vec![Fire::default(); from.lines.len() * across];
     let mut power = 0u64;
     let targets = at.units.len() as u32;
     if targets == 0 {
         return (tally, power);
     }
-    for line in &from.lines {
+    for (firing, line) in from.lines.iter().enumerate() {
         let attack = line.figures.attack;
         if attack == 0 {
             continue;
@@ -205,7 +206,7 @@ fn fire(from: &Side, at: &mut Side, dice: &mut Dice) -> (Vec<Fire>, u64) {
             loop {
                 let target = &mut at.units[dice.below(targets) as usize];
                 let hit = &at.lines[usize::from(target.line)];
-                let fire = &mut tally[line.kind * KINDS + hit.kind];
+                let fire = &mut tally[firing * across + usize::from(target.line)];
                 fire.shots += 1;
                 power += u64::from(attack);
                 if target.dead {
@@ -254,7 +255,22 @@ fn fire(from: &Side, at: &mut Side, dice: &mut Dice) -> (Vec<Fire>, u64) {
     (tally, power)
 }
 
-fn report(side: &Side, troops: usize, fired: &[Fire], power: u64) -> SideReport {
+/// The hull of every unit of `line` that stands and is not whole, ascending,
+/// and how many stand in all.
+fn survivors(side: &Side, line: &Line) -> (u32, Vec<u32>) {
+    let mut left = 0u32;
+    let mut damaged: Vec<u32> = Vec::new();
+    for standing in side.units[line.start..line.start + line.len].iter().filter(|u| !u.dead) {
+        left += 1;
+        if standing.hull < line.figures.hull {
+            damaged.push(standing.hull);
+        }
+    }
+    damaged.sort_unstable();
+    (left, damaged)
+}
+
+fn report(side: &Side, troops: usize, target: &Side, fired: &[Fire], power: u64) -> SideReport {
     let mut out = SideReport {
         troops: vec![Vec::new(); troops],
         standing: vec![Vec::new(); troops],
@@ -263,34 +279,35 @@ fn report(side: &Side, troops: usize, fired: &[Fire], power: u64) -> SideReport 
     };
     for line in &side.lines {
         let Some(unit) = ShipyardItem::from_index(line.kind) else { continue };
-        let full = line.figures.hull;
-        let mut left = 0u32;
-        let mut at_risk = 0u32;
-        let mut hull = 0u64;
-        let mut damaged: Vec<u32> = Vec::new();
-        for standing in side.units[line.start..line.start + line.len].iter().filter(|u| !u.dead) {
-            left += 1;
-            hull += u64::from(standing.hull);
-            if standing.hull < full {
-                damaged.push(standing.hull);
-                at_risk += u32::from(u64::from(standing.hull) * 100 <= u64::from(full) * u64::from(EXPLODE_BELOW_PCT));
-            }
-        }
-        damaged.sort_unstable();
+        let full = u64::from(line.figures.hull);
+        let (left, damaged) = survivors(side, line);
+        let at_risk = damaged.iter().filter(|&&hull| u64::from(hull) * 100 <= full * u64::from(EXPLODE_BELOW_PCT)).count();
+        let whole = u64::from(left) - damaged.len() as u64;
         out.standing[line.troop].push(BattleUnits {
             unit,
             count: left,
             damaged: damaged.len() as u32,
-            at_risk,
-            hull,
-            hull_max: u64::from(left) * u64::from(full),
+            at_risk: at_risk as u32,
+            hull: whole * full + damaged.iter().map(|&hull| u64::from(hull)).sum::<u64>(),
+            hull_max: u64::from(left) * full,
             lost: line.len as u32 - left,
         });
         if left > 0 {
             out.troops[line.troop].push(Squad { unit, count: left, damaged });
         }
     }
+    let mut by_kind = vec![Fire::default(); KINDS * KINDS];
     for (index, fire) in fired.iter().enumerate().filter(|(_, fire)| fire.shots > 0) {
+        let (from, at) = (&side.lines[index / target.lines.len()], &target.lines[index % target.lines.len()]);
+        let sum = &mut by_kind[from.kind * KINDS + at.kind];
+        sum.shots += fire.shots;
+        sum.bounced += fire.bounced;
+        sum.wasted += fire.wasted;
+        sum.absorbed += fire.absorbed;
+        sum.hull_damage += fire.hull_damage;
+        sum.destroyed += fire.destroyed;
+    }
+    for (index, fire) in by_kind.iter().enumerate().filter(|(_, fire)| fire.shots > 0) {
         let (Some(from), Some(at)) = (ShipyardItem::from_index(index / KINDS), ShipyardItem::from_index(index % KINDS)) else {
             continue;
         };
@@ -321,7 +338,58 @@ pub fn round(fleets: &[Troop], hostiles: &[Troop], dice: &mut Dice) -> RoundRepo
     let (our_fire, our_power) = fire(&ours, &mut theirs, dice);
     let (their_fire, their_power) = fire(&theirs, &mut ours, dice);
     RoundReport {
-        fleets: report(&ours, fleets.len(), &our_fire, our_power),
-        hostiles: report(&theirs, hostiles.len(), &their_fire, their_power),
+        fleets: report(&ours, fleets.len(), &theirs, &our_fire, our_power),
+        hostiles: report(&theirs, hostiles.len(), &ours, &their_fire, their_power),
     }
+}
+
+/// Stand `side` as `muster` would stand what `report` says is left of it:
+/// the destroyed gone, every line's whole units and then its damaged ones
+/// from the least hull up, every shield full.
+fn rally(side: &mut Side) {
+    let mut next = Vec::with_capacity(side.units.len());
+    for index in 0..side.lines.len() {
+        let (left, damaged) = survivors(side, &side.lines[index]);
+        let line = &mut side.lines[index];
+        let fresh = Unit { hull: line.figures.hull, line: index as u16, shield: 100, dead: false };
+        line.start = next.len();
+        line.len = left as usize;
+        next.extend(std::iter::repeat_n(fresh, left as usize - damaged.len()));
+        next.extend(damaged.into_iter().map(|hull| Unit { hull, ..fresh }));
+    }
+    side.units = next;
+}
+
+fn standing(side: &Side, troops: usize) -> Vec<Vec<Squad>> {
+    let mut out = vec![Vec::new(); troops];
+    for line in &side.lines {
+        let (left, damaged) = survivors(side, line);
+        if let (Some(unit), true) = (ShipyardItem::from_index(line.kind), left > 0) {
+            out[line.troop].push(Squad { unit, count: left, damaged });
+        }
+    }
+    out
+}
+
+/// The rounds `round` would fight one after another on the same dice, each
+/// from what the one before left standing, until a side is gone, a round
+/// takes no hull or `rounds` have been fought; what stands of every troop.
+/// It is `round` without the reports, for the odds, which play a fight many
+/// times and read only its end.
+pub fn fight(fleets: &[Troop], hostiles: &[Troop], dice: &mut Dice, rounds: u32) -> (Vec<Vec<Squad>>, Vec<Vec<Squad>>) {
+    let mut ours = muster(fleets);
+    let mut theirs = muster(hostiles);
+    for _ in 0..rounds {
+        if ours.units.is_empty() || theirs.units.is_empty() {
+            break;
+        }
+        let (our_fire, _) = fire(&ours, &mut theirs, dice);
+        let (their_fire, _) = fire(&theirs, &mut ours, dice);
+        rally(&mut ours);
+        rally(&mut theirs);
+        if our_fire.iter().chain(&their_fire).all(|fire| fire.hull_damage == 0) {
+            break;
+        }
+    }
+    (standing(&ours, fleets.len()), standing(&theirs, hostiles.len()))
 }

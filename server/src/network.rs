@@ -740,7 +740,10 @@ mod tests {
         let in_all = t.host.engine().home_defense_power(pid) as f64;
         assert!((defence - in_all).abs() < 1e-3);
         let satellites = hw["satellite_power"].as_f64().unwrap();
-        assert!((satellites - 3.0 * (1.1 + 20.1)).abs() < 1e-3, "three Solar Satellites stand in the defence: {satellites}");
+        assert!(
+            (satellites - 3.0 * (1.0 + 20.1)).abs() < 1e-3,
+            "three Solar Satellites stand in the defence, and a weapon of 1 is still 1 a level up, cut off as the round cuts it: {satellites}"
+        );
         assert!(defence > 5.0 * launcher + satellites, "defences and satellites count toward home defence: {defence}");
         assert!(hw["next_raid_estimate_power"].as_f64().unwrap() > 50.0);
         assert_eq!(hw["catalog"]["defences"][0]["count"], 5);

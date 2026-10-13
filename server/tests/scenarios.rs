@@ -155,7 +155,14 @@ async fn a_fight_is_reported_to_the_player_in_it_and_not_to_anyone_else() {
     watcher.abort();
 
     assert!(mine.iter().any(|e| e["kind"] == "CombatStarted"));
-    let combat_kinds = ["CombatStarted", "CombatRound", "CombatEnded", "ShipDestroyed", "FleetDestroyed", "SalvageDespawned"];
+    let rounds: Vec<&Value> = mine.iter().filter(|e| e["kind"] == "BattleRound").collect();
+    assert!(
+        !rounds.is_empty() && rounds.iter().all(|round| round["mine"] == true && round["fleets"]["groups"][0]["mine"] == true),
+        "the hunter is told every round of its own fight, and that the fleet in it is its own: {rounds:?}"
+    );
+    let ended = mine.iter().find(|e| e["kind"] == "CombatEnded").unwrap();
+    assert_eq!(ended["rounds"].as_u64(), Some(rounds.len() as u64), "{ended}");
+    let combat_kinds = ["CombatStarted", "BattleRound", "CombatEnded", "ShipsLost", "FleetDestroyed", "SalvageDespawned"];
     let leaked: Vec<_> = watched.lock().unwrap().iter().filter(|e| combat_kinds.iter().any(|k| e["kind"] == *k)).cloned().collect();
     assert!(leaked.is_empty(), "the bystander was told about a fight they were not in: {leaked:?}");
     remove_world(&file);

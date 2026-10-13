@@ -24,7 +24,8 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 
 use common::*;
@@ -33,7 +34,7 @@ use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{ClientMessage, Command, HarvestResource, QueueType};
 use iac_shared::scaling::{BuildingType, ResearchType};
-use iac_shared::world::WorldGen;
+use iac_shared::world::{NpcBehaviorType, WorldGen};
 use iac_solo::Machine;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
@@ -46,8 +47,13 @@ const WORLD: [&str; 12] = [
 ];
 /// Ticks the bots play before the commander's account is stored with them.
 const SETTLE_TICKS: u64 = 4;
-/// Ticks the commander plays on both hosts.
+/// Ticks the commander plays on both hosts before it flies into a fight.
 const PLAY_TICKS: u64 = 40;
+/// Ticks between two hops of that flight: a jump of Light Fighters and the
+/// wait after it.
+const HOP_TICKS: u64 = 5;
+/// Ticks the commander stays for the fight it flew into.
+const FIGHT_TICKS: u64 = 8;
 const T0: u64 = 1_800_000_000_000;
 const ENTROPY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -163,10 +169,37 @@ fn command(command: Command) -> Value {
     serde_json::to_value(ClientMessage::Command(command)).unwrap()
 }
 
+/// The lanes from `home` to the nearest sector whose group shoots first, the
+/// sector itself last.
+fn into_a_fight(world: &WorldGen, home: Hex) -> Vec<Hex> {
+    let mut parent = HashMap::from([(home, home)]);
+    let mut frontier = VecDeque::from([home]);
+    while let Some(at) = frontier.pop_front() {
+        let shoots = world.generate_sector(at).npc_template.is_some_and(|npc| npc.behavior != NpcBehaviorType::Passive);
+        if at != home && shoots {
+            let mut route = vec![at];
+            while parent[route.last().unwrap()] != home {
+                route.push(parent[route.last().unwrap()]);
+            }
+            route.reverse();
+            return route;
+        }
+        for &next in world.connected_neighbors(at).slice() {
+            if let Entry::Vacant(unseen) = parent.entry(next) {
+                unseen.insert(at);
+                frontier.push_back(next);
+            }
+        }
+    }
+    panic!("no group that shoots first by any lane from {home}");
+}
+
 /// What the commander orders, by ticks after logging in: things that are
-/// accepted, things that are refused, questions about the whole world.
+/// accepted, things that are refused, questions about the whole world, and
+/// at the end a flight into a group that shoots first.
 fn orders(fleet_id: u64, home: Hex) -> Vec<(u64, Vec<Value>)> {
-    let next = WorldGen::init(SEED).connected_neighbors(home).slice()[0];
+    let world = WorldGen::init(SEED);
+    let next = world.connected_neighbors(home).slice()[0];
     let build = |building_type| command(Command::Build { building_type, reserve: false });
     let board = || command(Command::Leaderboard { limit: 50 });
     let standing = |preset: &str| {
@@ -175,7 +208,7 @@ fn orders(fleet_id: u64, home: Hex) -> Vec<(u64, Vec<Value>)> {
             "params": {"max_range": 6, "engage_ratio_x10": 25, "fuel_budget_pct": 35},
         })
     };
-    vec![
+    let mut script = vec![
         (1, vec![build(BuildingType::MetalMine), build(BuildingType::CrystalMine), command(Command::Scan { fleet_id }), board()]),
         (3, vec![
             command(Command::BuildShip { ship_class: ShipClass::LightFighter, count: 2 }),
@@ -194,7 +227,14 @@ fn orders(fleet_id: u64, home: Hex) -> Vec<(u64, Vec<Value>)> {
         (26, vec![build(BuildingType::DeuteriumSynthesizer), command(Command::Scan { fleet_id: 999_999 })]),
         (32, vec![standing("manual"), command(Command::Recall { fleet_id }), board()]),
         (38, vec![board()]),
-    ]
+    ];
+    let mut after = PLAY_TICKS;
+    for target in into_a_fight(&world, home) {
+        script.push((after, vec![command(Command::Move { fleet_id, target })]));
+        after += HOP_TICKS;
+    }
+    script.push((after + FIGHT_TICKS, vec![board()]));
+    script
 }
 
 /// A batch on its way: what it holds, and the tick its first full state
@@ -341,13 +381,24 @@ async fn the_server_and_the_single_player_host_play_one_world_alike() {
     let kinds = |kind: &str| played.got.iter().filter(|frame| frame["type"] == kind).count();
     assert!(kinds("tick_update") as u64 >= PLAY_TICKS && kinds("full_state") == 1 + 2 * batches);
     assert!(kinds("error") >= 3, "the script has orders that are refused: {} were", kinds("error"));
-    assert!(kinds("preview_move") == 1 && kinds("odds") == 1 && kinds("leaderboard") == 5);
+    assert!(kinds("preview_move") == 1 && kinds("odds") == 1 && kinds("leaderboard") == 6);
     let boards: Vec<&Value> = played.got.iter().filter(|frame| frame["type"] == "leaderboard").collect();
     let scores = |board: &Value| -> f64 { board["bots"].as_array().unwrap().iter().map(|row| row["score"].as_f64().unwrap()).sum() };
     assert_eq!(boards[0]["bots"].as_array().unwrap().len(), 7);
     assert!(scores(boards[4]) > scores(boards[0]) + 20.0, "the bots played on: {} to {}", scores(boards[0]), scores(boards[4]));
     let events = played.got.iter().filter(|frame| frame["type"] == "tick_update" && frame["events"].is_array()).count();
     assert!(events >= 5, "the commander's orders had consequences: {events} updates carried events");
+    let told = |kind: &str| -> Vec<&Value> {
+        let updates = played.got.iter().filter(|frame| frame["type"] == "tick_update");
+        updates.flat_map(|frame| frame["events"].as_array().into_iter().flatten()).filter(|event| event["kind"] == kind).collect()
+    };
+    let (rounds, ended) = (told("BattleRound"), told("CombatEnded"));
+    assert!(
+        !rounds.is_empty() && rounds.iter().all(|round| round["fleets"]["shots"].as_u64().unwrap() > 0) && ended.len() == 1,
+        "the commander flew into a group that shoots first and both hosts fought it: {} rounds, {} fights ended",
+        rounds.len(),
+        ended.len(),
+    );
 
     server.stop();
     let ended = stored_world(&file).tick;

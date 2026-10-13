@@ -2211,7 +2211,9 @@ impl GameEngine {
         }
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.ships = mended;
-        fleet.action_cooldown = fleet.action_cooldown.max(REPAIR_TICKS);
+        #[allow(clippy::unnecessary_min_or_max)]
+        let cooldown = fleet.action_cooldown.max(REPAIR_TICKS);
+        fleet.action_cooldown = cooldown;
         let place = match dock {
             Dock::Home => "the home dock",
             Dock::Outpost => "your outpost",

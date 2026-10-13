@@ -13,7 +13,7 @@ use iac_shared::constants::{
 };
 use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{EventKind, GameEvent, QueueType, WaitReason};
+use iac_shared::protocol::{BattleOutcome, EventKind, GameEvent, QueueType, WaitReason};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use serde::Serialize;
 
@@ -69,6 +69,14 @@ pub struct FieldTally {
     pub sites_boarded: u32,
     pub sectors_charted: u32,
     pub ships_lost: u32,
+    /// Fleets destroyed in a fight, and the ships that went with them.
+    pub fleets_lost: u32,
+    pub ships_lost_with_fleets: u32,
+    /// Fights that ended because nobody could hurt anybody.
+    pub standoffs: u32,
+    /// Rounds fought, and the most ships one fleet took into a round.
+    pub rounds: u32,
+    pub largest_fleet: u32,
     /// Deuterium paid at the homeworld to fill fleet tanks.
     pub refuel_deuterium: f64,
     /// Raids on the homeworld.
@@ -949,17 +957,28 @@ impl Counting<'_> {
                         t.sectors_charted += e.sectors;
                     }
                 }
-                EventKind::CombatEnded(e) if e.player_victory => {
+                EventKind::CombatEnded(e) => {
                     for owner in &e.owners {
                         if let Some(t) = tally_of(entries, named(owner)) {
-                            t.kills += 1;
+                            t.kills += u32::from(e.player_victory);
+                            t.standoffs += u32::from(e.outcome == BattleOutcome::Standoff);
+                        }
+                    }
+                    for loss in e.losses.iter().filter(|loss| loss.destroyed) {
+                        if let Some(t) = tally_of(entries, loss.owner.as_deref().and_then(named)) {
+                            t.fleets_lost += 1;
+                            t.ships_lost_with_fleets += loss.lost.iter().map(|u| u.count).sum::<u32>();
                         }
                     }
                 }
                 EventKind::BattleRound(e) => {
                     for group in &e.fleets.groups {
                         if let Some(t) = tally_of(entries, group.owner.as_deref().and_then(named)) {
-                            t.ships_lost += group.units.iter().map(|u| u.lost).sum::<u32>();
+                            let lost = group.units.iter().map(|u| u.lost).sum::<u32>();
+                            let left = group.units.iter().map(|u| u.count).sum::<u32>();
+                            t.ships_lost += lost;
+                            t.rounds += 1;
+                            t.largest_fleet = t.largest_fleet.max(left + lost);
                         }
                     }
                 }

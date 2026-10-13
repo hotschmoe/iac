@@ -916,7 +916,7 @@ fn pitched(
     (engine, fid, rounds, ended)
 }
 
-fn fire<'a>(side: &'a BattleSide, from: ShipClass, at: ShipClass) -> Option<&'a Volley> {
+fn fire(side: &BattleSide, from: ShipClass, at: ShipClass) -> Option<&Volley> {
     let (from, at) = (ShipyardItem::Ship(from), ShipyardItem::Ship(at));
     side.volleys.iter().find(|v| v.from == from && v.at == at)
 }

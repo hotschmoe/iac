@@ -1,10 +1,10 @@
 // What a fight is expected to cost each side.
 //
-// There is no second model of the fight. `outlook` plays `combat::round`
-// itself, `ODDS_RUNS` times or more with dice that are the same every time
-// it is asked, from the two sides as they stand, damage and arms included,
-// until one side is gone, a round takes no hull, or `ODDS_ROUNDS` have
-// passed. Two large sides are scaled down together first, so that the larger
+// There is no second model of the fight. `outlook` plays the rounds of
+// `combat::round` (`combat::fight`, the same rounds without their reports),
+// `ODDS_RUNS` times or more with dice that are the same every time it is
+// asked, from the two sides as they stand, damage and arms included, until
+// one side is gone, a round takes no hull, or `ODDS_ROUNDS` have passed. Two large sides are scaled down together first, so that the larger
 // has at most `ODDS_UNITS` units; two small ones are played more often for
 // the same work. The result is the share of its worth each side keeps (a
 // ship counts its cost at the score's weights times the share of its hull
@@ -143,19 +143,8 @@ pub fn outlook(ours: &Force, theirs: &Force) -> Outlook {
     let (mut won, mut lost) = (0u32, 0u32);
     for run in 0..runs {
         let mut dice = Dice::new(DICE ^ u64::from(run).wrapping_mul(RUN));
-        let (mut x, mut y) = (a.clone(), b.clone());
-        for _ in 0..ODDS_ROUNDS {
-            if units(&x) == 0 || units(&y) == 0 {
-                break;
-            }
-            let fought = combat::round(&x, &y, &mut dice);
-            let quiet = !fought.hull_lost();
-            x = after(&x, fought.fleets.troops);
-            y = after(&y, fought.hostiles.troops);
-            if quiet {
-                break;
-            }
-        }
+        let (x, y) = combat::fight(&a, &b, &mut dice, ODDS_ROUNDS);
+        let (x, y) = (after(&a, x), after(&b, y));
         a_kept += worth(&x);
         b_kept += worth(&y);
         won += u32::from(units(&y) == 0 && units(&x) > 0);
