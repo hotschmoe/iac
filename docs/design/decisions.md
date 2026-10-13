@@ -5,7 +5,7 @@ conflict with these need the owner's sign-off.
 
 ## 2026-10-13 (the economy's numbers are written once, in Rust; `sim.py` reads a file Rust renders)
 
-Merged into master on 2026-10-13, not pushed.
+Merged into master and pushed on 2026-10-13.
 
 The owner: "The Dart protocol mirror and sim.py could be generated from the
 Rust source instead of mirrored by hand: seems like a good idea." This is the
@@ -96,7 +96,8 @@ the same day has what was run.
 
 ## 2026-10-13 (the Dart wire types are generated from the Rust ones)
 
-Merged into master on 2026-10-13, not pushed. The journal entry of the same day has what was run.
+Merged into master and pushed on 2026-10-13. The journal entry of the same
+day has what was run.
 
 **The owner's words.** "The Dart protocol mirror and sim.py could be generated
 from the Rust source instead of mirrored by hand: seems like a good idea."
