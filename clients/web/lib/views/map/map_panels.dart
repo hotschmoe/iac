@@ -309,8 +309,6 @@ class Inspector extends StatelessWidget {
     final rated = fleet.id == 0 ? null : st.oddsFor(fleet.id, h);
     final odds = rated == null ? null : RatioInfo.fromOdds(rated);
     final d = h.distFromOrigin;
-    final rich = sec == null ? 0 : sec.resources.metal.index + sec.resources.crystal.index + sec.resources.deuterium.index;
-    final expect = 1.2 + d * .11;
     final selected = plan.selected == h;
     final onFleet = fleet.sector == h;
     final survey = fleet.id == 0 ? null : st.surveyOf(fleet.id, h);
@@ -374,10 +372,6 @@ class Inspector extends StatelessWidget {
           _oreRow('Metal', sec.resources.metal, C.metal, sec.oreReserve?.metal),
           _oreRow('Crystal', sec.resources.crystal, C.crystal, sec.oreReserve?.crystal),
           _oreRow('Deut', sec.resources.deuterium, C.deut, sec.oreReserve?.deuterium),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Text('${rich >= expect * 3 ? 'RICH' : rich <= expect ? 'POOR' : 'TYPICAL'} FOR THIS DISTANCE', style: T.mono(size: 10, color: C.text3)),
-          ),
           if (salvagePinVisible(sec, st.tick))
             Kv('Salvage',
                 vw: Text.rich(TextSpan(children: [

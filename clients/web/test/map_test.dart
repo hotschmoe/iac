@@ -241,6 +241,7 @@ void main() {
     expect(_text(tester, 'ore-reserve-Metal'), '12/22 REFILL 1:45');
     expect(_text(tester, 'ore-reserve-Crystal'), '3/3');
     expect(find.byKey(const Key('ore-reserve-Deut')), findsNothing);
+    expect(find.textContaining('FOR THIS DISTANCE'), findsNothing);
     await m.removePointer();
     await endShell(tester, g);
   });
