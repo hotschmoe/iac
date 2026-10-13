@@ -4,9 +4,15 @@
 // support building or a tech is ordered once it costs no more than its
 // appetite times that yardstick, so the ladder rises with the economy
 // instead of following a fixed script. Mines are picked by payback, with a
-// resource that sits low against its cap counting for more. Fleet value is
-// held at a share of the empire's building and research points, and home
+// resource that sits low against its cap counting for more, and no mine is
+// raised past the energy there is: the Solar Plant goes first. Fleet value
+// is held at a share of the empire's building and research points, and home
 // defence at a margin over the next raid.
+//
+// A personality names the research it wants and the ships it flies. What a
+// research or a ship requires is not written here: the planner reads it from
+// the catalogue and orders what is missing, a research before the one that
+// needs it and the Shipyard level a class asks for once its research is in.
 //
 // Building and research orders are sent with `reserve`, so a queue runs in
 // the order planned. A player who stays queues one order at a time; one
@@ -23,7 +29,7 @@ use iac_shared::constants::{ResourceKind, Resources, ShipClass};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{Command, GameState, HomeworldState};
 use iac_shared::scaling::{
-    self, BuildingLevels, BuildingType, DefenceKind, ResearchLevels, ResearchPrereqKind, ResearchType, ShipyardItem,
+    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, ResearchLevels, ResearchType, ShipyardItem,
 };
 
 use super::Personality;
@@ -37,43 +43,52 @@ pub(super) enum Hull {
     Hauler,
 }
 
+/// The line a role is filled from, heaviest first.
+const SCOUTS: &[ShipClass] = &[ShipClass::EspionageProbe];
+const WARSHIPS: &[ShipClass] =
+    &[ShipClass::Battleship, ShipClass::Cruiser, ShipClass::HeavyFighter, ShipClass::LightFighter];
+const HAULERS: &[ShipClass] = &[ShipClass::LargeCargo, ShipClass::SmallCargo];
+const MINERS: &[ShipClass] = &[ShipClass::Recycler, ShipClass::LargeCargo, ShipClass::SmallCargo];
+
 impl Hull {
     pub(super) fn of(class: ShipClass) -> Hull {
         match class {
-            ShipClass::Scout => Hull::Scout,
-            ShipClass::Hauler => Hull::Hauler,
-            ShipClass::Corvette | ShipClass::Frigate | ShipClass::Cruiser => Hull::Warship,
+            ShipClass::EspionageProbe => Hull::Scout,
+            ShipClass::SmallCargo | ShipClass::LargeCargo | ShipClass::Recycler => Hull::Hauler,
+            ShipClass::LightFighter
+            | ShipClass::HeavyFighter
+            | ShipClass::Cruiser
+            | ShipClass::Battleship
+            | ShipClass::Battlecruiser
+            | ShipClass::Bomber
+            | ShipClass::Destroyer
+            | ShipClass::Deathstar
+            | ShipClass::SolarSatellite => Hull::Warship,
         }
-    }
-
-    /// The class to order: the heaviest warship the empire can build.
-    fn class(self, research: &ResearchLevels) -> Option<ShipClass> {
-        let options: &[ShipClass] = match self {
-            Hull::Scout => &[ShipClass::Scout],
-            Hull::Hauler => &[ShipClass::Hauler],
-            Hull::Warship => &[ShipClass::Cruiser, ShipClass::Frigate, ShipClass::Corvette],
-        };
-        options.iter().copied().find(|&c| scaling::ship_class_unlocked(c, research))
     }
 }
 
 struct Profile {
-    depot: f32,
-    sensor: f32,
-    grid: f32,
+    tank: f32,
     tech: f32,
     research: &'static [(ResearchType, u8)],
     /// Fleet value held, as a share of building and research points.
     fleet_share: f32,
     hulls: &'static [(Hull, f32)],
+    /// What its haulers are: a miner's line begins with the Recycler.
+    haulers: &'static [ShipClass],
     /// Structure power held, as a multiple of the next raid's expected power.
     defence_margin: f32,
 }
 
-const MODULAR_FABRICATION_APPETITE: f32 = 2.0;
+/// Computer Technology opens building slots, which every plan is short of.
+const BUILD_SLOT_APPETITE: f32 = 6.0;
+/// A heavier class is worked toward once one ship of it costs no more than
+/// this many yardsticks.
+const CLASS_APPETITE: f32 = 6.0;
 /// Techs outside the personality's plan, bought as the economy outgrows them.
 const SPARE_TECH_APPETITE: f32 = 0.25;
-const VAULT_PRESSURE: f64 = 0.75;
+const STORAGE_PRESSURE: f64 = 0.75;
 /// Share of the income expected while away that the building queue should hold.
 const ABSORB: f32 = 0.6;
 /// How strongly a lopsided stockpile tilts the choice of mine.
@@ -81,144 +96,133 @@ const SCARCITY_PULL: f64 = 4.0;
 const MAX_SHIP_BATCH: f32 = 12.0;
 const MAX_DEFENCE_BATCH: f32 = 100.0;
 const MAX_SURPLUS_BATCH: u16 = 500;
+const MAX_SATELLITE_BATCH: f64 = 50.0;
+/// The one defence a bot builds.
+const TURRET: DefenceKind = DefenceKind::RocketLauncher;
 
 use ResearchType as T;
 
 const TURTLE: Profile = Profile {
-    depot: 0.0,
-    sensor: 0.0,
-    grid: 0.6,
-    tech: 1.0,
-    research: &[(T::ModularFabrication, 2)],
+    tank: 0.0,
+    tech: 2.0,
+    research: &[
+        (T::ComputerTechnology, 3),
+        (T::ArmourTechnology, 2),
+        (T::WeaponsTechnology, 2),
+        (T::ComputerTechnology, 6),
+        (T::ArmourTechnology, 4),
+        (T::WeaponsTechnology, 4),
+        (T::ShieldingTechnology, 3),
+    ],
     fleet_share: 0.0,
     hulls: &[],
+    haulers: HAULERS,
     defence_margin: 1.5,
 };
 
 const MINER: Profile = Profile {
-    depot: 0.5,
-    sensor: 0.5,
-    grid: 0.3,
-    tech: 1.0,
+    tank: 0.5,
+    tech: 3.0,
     research: &[
-        (T::HaulerTech, 1),
-        (T::HarvestingEfficiency, 1),
-        (T::ModularFabrication, 1),
-        (T::HarvestingEfficiency, 2),
-        (T::FuelEfficiency, 1),
-        (T::ModularFabrication, 2),
-        (T::HarvestingEfficiency, 3),
-        (T::ExtendedFuelTanks, 1),
-        (T::Navigation, 1),
-        (T::HarvestingEfficiency, 5),
-        (T::FuelEfficiency, 3),
-        (T::ExtendedFuelTanks, 3),
+        (T::CombustionDrive, 2),
+        (T::LaserTechnology, 1),
+        (T::ComputerTechnology, 3),
+        (T::LaserTechnology, 3),
+        (T::CombustionDrive, 6),
+        (T::ShieldingTechnology, 2),
+        (T::LaserTechnology, 5),
+        (T::EnergyTechnology, 5),
+        (T::ComputerTechnology, 6),
+        (T::ImpulseDrive, 5),
     ],
-    fleet_share: 0.05,
+    fleet_share: 0.10,
     hulls: &[(Hull::Hauler, 1.0)],
+    haulers: MINERS,
     defence_margin: 1.15,
 };
 
 const RAIDER: Profile = Profile {
-    depot: 1.5,
-    sensor: 0.5,
-    grid: 0.3,
-    tech: 1.5,
+    tank: 1.5,
+    tech: 4.0,
     research: &[
-        (T::CorvetteTech, 1),
-        (T::WeaponsResearch, 1),
-        (T::ModularFabrication, 1),
-        (T::ReinforcedHulls, 1),
-        (T::FuelEfficiency, 1),
-        (T::FrigateTech, 1),
-        (T::AdvancedShields, 1),
-        (T::ModularFabrication, 2),
-        (T::ExtendedFuelTanks, 1),
-        (T::HaulerTech, 1),
-        (T::WeaponsResearch, 2),
-        (T::ReinforcedHulls, 2),
-        (T::AdvancedShields, 2),
-        (T::FuelEfficiency, 2),
-        (T::CruiserTech, 1),
-        (T::ExtendedFuelTanks, 2),
-        (T::WeaponsResearch, 3),
-        (T::FuelEfficiency, 3),
-        (T::ExtendedFuelTanks, 3),
-        (T::ReinforcedHulls, 3),
-        (T::AdvancedShields, 3),
-        (T::WeaponsResearch, 5),
-        (T::ReinforcedHulls, 5),
-        (T::AdvancedShields, 5),
-        (T::FuelEfficiency, 5),
-        (T::ExtendedFuelTanks, 5),
+        (T::CombustionDrive, 1),
+        (T::WeaponsTechnology, 1),
+        (T::ArmourTechnology, 2),
+        (T::ImpulseDrive, 2),
+        (T::ComputerTechnology, 3),
+        (T::CombustionDrive, 2),
+        (T::WeaponsTechnology, 2),
+        (T::ImpulseDrive, 4),
+        (T::IonTechnology, 2),
+        (T::ShieldingTechnology, 2),
+        (T::WeaponsTechnology, 3),
+        (T::ArmourTechnology, 3),
+        (T::ComputerTechnology, 6),
+        (T::EnergyTechnology, 5),
+        (T::ShieldingTechnology, 5),
+        (T::HyperspaceTechnology, 3),
+        (T::HyperspaceDrive, 4),
+        (T::WeaponsTechnology, 5),
+        (T::ArmourTechnology, 5),
     ],
-    fleet_share: 0.20,
+    fleet_share: 0.30,
     hulls: &[(Hull::Warship, 0.85), (Hull::Hauler, 0.15)],
+    haulers: HAULERS,
     defence_margin: 1.15,
 };
 
 const EXPLORER: Profile = Profile {
-    depot: 1.5,
-    sensor: 1.0,
-    grid: 0.3,
-    tech: 1.5,
+    tank: 1.5,
+    tech: 4.0,
     research: &[
-        (T::Navigation, 1),
-        (T::CorvetteTech, 1),
-        (T::FuelEfficiency, 1),
-        (T::ModularFabrication, 1),
-        (T::ExtendedFuelTanks, 1),
-        (T::HaulerTech, 1),
-        (T::FuelEfficiency, 2),
-        (T::ExtendedFuelTanks, 2),
-        (T::ModularFabrication, 2),
-        (T::FrigateTech, 1),
-        (T::ReinforcedHulls, 2),
-        (T::AdvancedShields, 2),
-        (T::FuelEfficiency, 3),
-        (T::ExtendedFuelTanks, 3),
-        (T::CruiserTech, 1),
-        (T::WeaponsResearch, 2),
-        (T::FuelEfficiency, 5),
-        (T::ExtendedFuelTanks, 5),
-        (T::Navigation, 3),
+        (T::CombustionDrive, 1),
+        (T::EspionageTechnology, 2),
+        (T::CombustionDrive, 3),
+        (T::ComputerTechnology, 3),
+        (T::EnergyTechnology, 3),
+        (T::ArmourTechnology, 2),
+        (T::ImpulseDrive, 2),
+        (T::EspionageTechnology, 4),
+        (T::CombustionDrive, 6),
+        (T::ComputerTechnology, 6),
+        (T::ImpulseDrive, 4),
+        (T::IonTechnology, 2),
+        (T::EnergyTechnology, 6),
+        (T::WeaponsTechnology, 2),
+        (T::ShieldingTechnology, 2),
     ],
-    fleet_share: 0.10,
-    hulls: &[(Hull::Scout, 0.35), (Hull::Warship, 0.45), (Hull::Hauler, 0.20)],
+    fleet_share: 0.20,
+    hulls: &[(Hull::Scout, 0.10), (Hull::Warship, 0.60), (Hull::Hauler, 0.30)],
+    haulers: HAULERS,
     defence_margin: 1.15,
 };
 
 const MIXED: Profile = Profile {
-    depot: 1.5,
-    sensor: 0.5,
-    grid: 0.3,
-    tech: 1.5,
+    tank: 1.5,
+    tech: 4.0,
     research: &[
-        (T::CorvetteTech, 1),
-        (T::Navigation, 1),
-        (T::ModularFabrication, 1),
-        (T::FuelEfficiency, 1),
-        (T::HaulerTech, 1),
-        (T::WeaponsResearch, 1),
-        (T::FrigateTech, 1),
-        (T::ModularFabrication, 2),
-        (T::ExtendedFuelTanks, 1),
-        (T::ReinforcedHulls, 1),
-        (T::AdvancedShields, 1),
-        (T::FuelEfficiency, 2),
-        (T::CruiserTech, 1),
-        (T::ExtendedFuelTanks, 2),
-        (T::WeaponsResearch, 2),
-        (T::ReinforcedHulls, 2),
-        (T::AdvancedShields, 2),
-        (T::FuelEfficiency, 3),
-        (T::ExtendedFuelTanks, 3),
-        (T::WeaponsResearch, 3),
-        (T::FuelEfficiency, 5),
-        (T::ExtendedFuelTanks, 5),
+        (T::CombustionDrive, 1),
+        (T::ComputerTechnology, 3),
+        (T::CombustionDrive, 2),
+        (T::WeaponsTechnology, 1),
+        (T::ArmourTechnology, 2),
+        (T::ImpulseDrive, 2),
+        (T::EspionageTechnology, 2),
+        (T::CombustionDrive, 3),
+        (T::LaserTechnology, 2),
+        (T::WeaponsTechnology, 2),
+        (T::ImpulseDrive, 4),
+        (T::IonTechnology, 2),
+        (T::ComputerTechnology, 6),
+        (T::ShieldingTechnology, 2),
+        (T::EnergyTechnology, 5),
+        (T::WeaponsTechnology, 3),
+        (T::ArmourTechnology, 3),
+        (T::CombustionDrive, 6),
     ],
-    fleet_share: 0.15,
-    hulls: &[(Hull::Scout, 0.15), (Hull::Warship, 0.65), (Hull::Hauler, 0.20)],
+    fleet_share: 0.25,
+    hulls: &[(Hull::Scout, 0.05), (Hull::Warship, 0.70), (Hull::Hauler, 0.25)],
+    haulers: HAULERS,
     defence_margin: 1.15,
 };
 
@@ -235,15 +239,25 @@ impl Profile {
 
     fn appetite(&self, building: BuildingType) -> f32 {
         match building {
-            BuildingType::Shipyard | BuildingType::ResearchLab => 1.0,
-            BuildingType::Fabricator => 1.5,
-            BuildingType::FuelDepot => self.depot,
-            BuildingType::SensorArray => self.sensor,
-            BuildingType::DefenseGrid => self.grid,
+            BuildingType::Shipyard | BuildingType::ResearchLab => 2.0,
+            BuildingType::RoboticsFactory => 2.5,
+            BuildingType::NaniteFactory => 1.0,
+            BuildingType::DeuteriumTank => self.tank,
             BuildingType::MetalMine
             | BuildingType::CrystalMine
             | BuildingType::DeuteriumSynthesizer
-            | BuildingType::StorageVault => 0.0,
+            | BuildingType::SolarPlant
+            | BuildingType::FusionReactor
+            | BuildingType::MetalStorage
+            | BuildingType::CrystalStorage => 0.0,
+        }
+    }
+
+    fn line(&self, hull: Hull) -> &'static [ShipClass] {
+        match hull {
+            Hull::Scout => SCOUTS,
+            Hull::Warship => WARSHIPS,
+            Hull::Hauler => self.haulers,
         }
     }
 }
@@ -254,13 +268,12 @@ const MINES: [(BuildingType, ResourceKind); 3] = [
     (BuildingType::DeuteriumSynthesizer, ResourceKind::Deuterium),
 ];
 
-const SUPPORT: [BuildingType; 6] = [
+const SUPPORT: [BuildingType; 5] = [
+    BuildingType::RoboticsFactory,
     BuildingType::Shipyard,
     BuildingType::ResearchLab,
-    BuildingType::Fabricator,
-    BuildingType::FuelDepot,
-    BuildingType::SensorArray,
-    BuildingType::DefenseGrid,
+    BuildingType::DeuteriumTank,
+    BuildingType::NaniteFactory,
 ];
 
 fn fits(cost: Resources, cap: Resources) -> bool {
@@ -297,6 +310,15 @@ impl Projection {
             research.set(t, research.get(t).max(level));
         }
         Projection { buildings, research }
+    }
+
+    fn unlocked(&self, item: ShipyardItem) -> bool {
+        scaling::prerequisites_met(item.prerequisites(), &self.buildings, &self.research)
+    }
+
+    /// The heaviest class of `line` that can be built.
+    fn heaviest(&self, line: &[ShipClass]) -> Option<ShipClass> {
+        line.iter().copied().find(|&class| self.unlocked(ShipyardItem::Ship(class)))
     }
 }
 
@@ -413,9 +435,10 @@ impl<'a> Planner<'a> {
         if self.started.buildings.shipyard == 0 {
             return Want::Prerequisite;
         }
-        let turrets = self.turrets_wanted().map(|_| ShipyardItem::Defence(DefenceKind::PulseTurret));
+        let satellites = self.satellites_wanted().map(|_| ShipyardItem::Ship(ShipClass::SolarSatellite));
+        let turrets = self.turrets_wanted().map(|_| ShipyardItem::Defence(TURRET));
         let ships = self.ships_wanted().map(|(class, _)| ShipyardItem::Ship(class));
-        let called_for: Vec<ShipyardItem> = turrets.into_iter().chain(ships).collect();
+        let called_for: Vec<ShipyardItem> = satellites.into_iter().chain(turrets).chain(ships).collect();
         if !called_for.is_empty() {
             return Want::Order { covered: called_for.iter().any(|item| fits(item.unit_cost(), self.stock)) };
         }
@@ -482,20 +505,29 @@ impl<'a> Planner<'a> {
             .chain(rest)
             .filter_map(|(tech, goal, appetite)| {
                 let level = self.plan.research.get(tech) + 1;
-                if level > goal.min(scaling::research_max_level(tech)) {
+                if level > goal.min(scaling::research_max_level(tech)) || scaling::research_energy(tech, level) > 0 {
                     return None;
                 }
-                let appetite = if tech == T::ModularFabrication { appetite.max(MODULAR_FABRICATION_APPETITE) } else { appetite };
+                let appetite = if tech == T::ComputerTechnology { appetite.max(BUILD_SLOT_APPETITE) } else { appetite };
                 let cost = scaling::research_cost(tech, level);
                 Some(Rung { tech, cost, due: scaling::resource_weight(&cost) <= appetite * yardstick })
             })
             .collect()
     }
 
+    /// The first rung that is due and can be queued now. A rung that waits
+    /// on another research gives way to that research.
     fn next_tech(&mut self) -> Option<ResearchType> {
         let cap = self.cap();
         let ladder = self.tech_ladder();
-        ladder.into_iter().find(|rung| rung.due && self.tech_ready(rung.tech) && fits(rung.cost, cap)).map(|rung| rung.tech)
+        for rung in ladder.into_iter().filter(|rung| rung.due) {
+            if let Some(tech) = self.toward(rung.tech, 0)
+                && fits(scaling::research_cost(tech, self.plan.research.get(tech) + 1), cap)
+            {
+                return Some(tech);
+            }
+        }
+        None
     }
 
     /// Whether `tech` could be queued now, noting nothing.
@@ -505,28 +537,64 @@ impl<'a> Planner<'a> {
             && fits(scaling::research_cost(tech, self.plan.research.get(tech) + 1), self.cap())
     }
 
-    /// Whether `tech` can be queued now; what it lacks in buildings is noted.
-    fn tech_ready(&mut self, tech: ResearchType) -> bool {
+    /// What to research now to get the next level of `tech`: `tech` itself
+    /// when everything it requires stands, the research it waits on when it
+    /// does not, None while it waits on a building. The buildings missing
+    /// are noted.
+    fn toward(&mut self, tech: ResearchType, depth: u8) -> Option<ResearchType> {
+        if depth > ResearchType::COUNT as u8 {
+            return None;
+        }
         let mut ready = self.plan.buildings.research_lab >= 1;
         self.need(BuildingType::ResearchLab, 1);
-        for prereq in scaling::research_prerequisites(tech).into_iter().flatten() {
+        let mut first = None;
+        for &(prereq, level) in scaling::research_prerequisites(tech) {
             match prereq {
-                ResearchPrereqKind::Building(b) => {
-                    ready &= self.plan.buildings.get(b.building) >= b.level;
-                    self.need(b.building, b.level);
+                PrereqRef::Building(building) => {
+                    ready &= self.plan.buildings.get(building) >= level;
+                    self.need(building, level);
                 }
-                ResearchPrereqKind::Research { tech, level } => ready &= self.plan.research.get(tech) >= level,
+                PrereqRef::Research(other) if self.plan.research.get(other) < level => {
+                    first = first.or(Some(other));
+                }
+                PrereqRef::Research(_) => {}
             }
         }
-        ready
+        match first {
+            Some(other) => self.toward(other, depth + 1),
+            None => ready.then_some(tech),
+        }
     }
 
+    /// The Shipyard levels the fleet is waiting on: the first, and the one
+    /// the next class up of each line asks for once its research is in and
+    /// the economy has grown into its price.
     fn yard_needs(&mut self) {
-        if self.profile.fleet_share > 0.0 {
-            self.need(BuildingType::Shipyard, 1);
+        if self.profile.fleet_share <= 0.0 {
+            return;
         }
-        if self.plan.buildings.shipyard >= 2 {
-            self.need(BuildingType::DefenseGrid, 1);
+        self.need(BuildingType::Shipyard, 1);
+        let yardstick = self.yardstick();
+        for &(hull, _) in self.profile.hulls {
+            let line = self.profile.line(hull);
+            let have = line.iter().position(|&class| self.plan.unlocked(ShipyardItem::Ship(class))).unwrap_or(line.len());
+            let Some(&next) = have.checked_sub(1).and_then(|i| line.get(i)) else { continue };
+            if scaling::resource_weight(&next.build_cost()) > CLASS_APPETITE * yardstick {
+                continue;
+            }
+            let prereqs = scaling::ship_prerequisites(next);
+            let researched = prereqs.iter().all(|&(p, level)| match p {
+                PrereqRef::Research(tech) => self.plan.research.get(tech) >= level,
+                PrereqRef::Building(_) => true,
+            });
+            if !researched {
+                continue;
+            }
+            for &(p, level) in prereqs {
+                if let PrereqRef::Building(building) = p {
+                    self.need(building, level);
+                }
+            }
         }
     }
 
@@ -543,8 +611,11 @@ impl<'a> Planner<'a> {
         if !self.home.shipyard_pending.is_empty() {
             return;
         }
+        if let Some(count) = self.satellites_wanted() {
+            self.wanted(ShipyardItem::Ship(ShipClass::SolarSatellite), count, orders);
+        }
         if let Some(count) = self.turrets_wanted() {
-            self.wanted(ShipyardItem::Defence(DefenceKind::PulseTurret), count, orders);
+            self.wanted(ShipyardItem::Defence(TURRET), count, orders);
         }
         if let Some((class, count)) = self.ships_wanted() {
             self.wanted(ShipyardItem::Ship(class), count, orders);
@@ -585,9 +656,10 @@ impl<'a> Planner<'a> {
 
     /// What is in stock beyond every order placed would sit there scoring
     /// nothing until the next look-in. An empire that flies puts it into
-    /// Pulse Turrets, which cost no deuterium; one that does not, into the
-    /// heaviest hull it can build. Only stock no order has claimed is spent,
-    /// so no queued order is kept waiting by it.
+    /// Rocket Launchers, which cost no deuterium; one that does not, into
+    /// the heaviest warship it can build, and into Rocket Launchers while it
+    /// can build none. Only stock no order has claimed is spent, so no
+    /// queued order is kept waiting by it.
     fn surplus(&mut self, orders: &mut Vec<Order>) {
         if let Some(item) = self.surplus_item() {
             self.batch(item, MAX_SURPLUS_BATCH, self.spare, orders);
@@ -595,15 +667,10 @@ impl<'a> Planner<'a> {
     }
 
     fn surplus_item(&self) -> Option<ShipyardItem> {
-        let turret = DefenceKind::PulseTurret;
-        let item = if self.profile.fleet_share > 0.0 {
-            scaling::defence_prerequisites_met(turret, &self.started.buildings, &self.started.research)
-                .then_some(ShipyardItem::Defence(turret))?
-        } else {
-            let research = &self.started.research;
-            ShipyardItem::Ship(Hull::Warship.class(research).or(Hull::Scout.class(research))?)
-        };
-        (self.started.buildings.shipyard >= 1 && fits(item.unit_cost(), self.cap())).then_some(item)
+        let turret = ShipyardItem::Defence(TURRET);
+        let hull = self.started.heaviest(WARSHIPS).map(ShipyardItem::Ship).filter(|_| self.profile.fleet_share <= 0.0);
+        let item = hull.unwrap_or(turret);
+        (self.started.unlocked(item) && fits(item.unit_cost(), self.cap())).then_some(item)
     }
 
     fn ordered(&self) -> impl Iterator<Item = (ShipyardItem, u16)> + '_ {
@@ -612,25 +679,51 @@ impl<'a> Planner<'a> {
         running.chain(waiting)
     }
 
-    /// Pulse Turrets give the most power for their cost of the three structures.
+    /// Energy the planned buildings make and need, with the satellites that
+    /// stand and those on order.
+    fn planned_power(&self, buildings: &BuildingLevels) -> scaling::Power {
+        let coming: u32 = self
+            .ordered()
+            .filter(|(item, _)| *item == ShipyardItem::Ship(ShipClass::SolarSatellite))
+            .map(|(_, left)| u32::from(left))
+            .sum();
+        scaling::home_power(buildings, &self.plan.research, self.home.satellites + coming, true, &self.pace)
+    }
+
+    /// Solar Satellites, once the Solar Plant can rise no further and the
+    /// mines planned are still short of energy.
+    fn satellites_wanted(&self) -> Option<u16> {
+        let item = ShipyardItem::Ship(ShipClass::SolarSatellite);
+        if self.plan.buildings.solar_plant < scaling::MAX_BUILDING_LEVEL || !self.started.unlocked(item) {
+            return None;
+        }
+        let power = self.planned_power(&self.plan.buildings);
+        let short = f64::from(power.needed.saturating_sub(power.made));
+        let count = (short / f64::from(scaling::satellite_energy())).ceil().min(MAX_SATELLITE_BATCH);
+        (count >= 1.0 && fits(item.unit_cost(), self.cap())).then_some(count as u16)
+    }
+
+    /// Rocket Launchers give the most power for their cost of the defences
+    /// that need no research.
     fn turrets_wanted(&self) -> Option<u16> {
-        let kind = DefenceKind::PulseTurret;
-        if !scaling::defence_prerequisites_met(kind, &self.started.buildings, &self.started.research) {
+        if !self.started.unlocked(ShipyardItem::Defence(TURRET)) {
             return None;
         }
         let raid = scaling::raid_power_base(scaling::econ_points(&self.plan.buildings, &self.plan.research));
-        let grid = self.built.defense_grid;
+        let power_of = |kind: DefenceKind| {
+            self.home.defences.iter().find(|d| d.kind == kind).map_or(kind.power(), |d| d.power)
+        };
         let standing: f32 = self.home.defences.iter().map(|d| (d.count + d.restoring) as f32 * d.power).sum();
         let coming: f32 = self
             .ordered()
             .filter_map(|(item, left)| match item {
-                ShipyardItem::Defence(d) => Some(f32::from(left) * scaling::structure_power(d, grid)),
+                ShipyardItem::Defence(d) => Some(f32::from(left) * power_of(d)),
                 ShipyardItem::Ship(_) => None,
             })
             .sum();
         let short = self.profile.defence_margin * raid - standing - coming;
-        let count = (short / scaling::structure_power(kind, grid)).ceil().min(MAX_DEFENCE_BATCH);
-        (count >= 1.0 && fits(kind.build_cost(), self.cap())).then_some(count as u16)
+        let count = (short / power_of(TURRET)).ceil().min(MAX_DEFENCE_BATCH);
+        (count >= 1.0 && fits(TURRET.build_cost(), self.cap())).then_some(count as u16)
     }
 
     fn ships_wanted(&self) -> Option<(ShipClass, u16)> {
@@ -643,8 +736,8 @@ impl<'a> Planner<'a> {
 
         let flying = self.state.fleets.iter().flat_map(|f| f.ships.iter()).map(|s| (s.ship_class, 1.0));
         let coming = self.ordered().filter_map(|(item, left)| match item {
-            ShipyardItem::Ship(class) => Some((class, f32::from(left))),
-            ShipyardItem::Defence(_) => None,
+            ShipyardItem::Ship(class) if class.flies() => Some((class, f32::from(left))),
+            _ => None,
         });
         let mut have = [0.0f32; 3];
         for (class, count) in flying.chain(coming) {
@@ -654,7 +747,7 @@ impl<'a> Planner<'a> {
 
         let mut best: Option<(ShipClass, f32)> = None;
         for &(hull, share) in self.profile.hulls {
-            let Some(class) = hull.class(&self.started.research) else { continue };
+            let Some(class) = self.started.heaviest(self.profile.line(hull)) else { continue };
             let short = (share * target - have[hull as usize]).min(budget);
             if short >= value(class) && best.is_none_or(|(_, most)| short > most) && fits(class.build_cost(), self.cap()) {
                 best = Some((class, short));
@@ -688,22 +781,30 @@ impl<'a> Planner<'a> {
             crystal: self.spare.crystal.max(0.0),
             deuterium: self.spare.deuterium.max(0.0),
         };
-        let income = |ticks: u64| scaling::resource_weight(&self.home.production) * ticks as f32;
-        away_for.map_or(0.0, |ticks| scaling::resource_weight(&stock) + income(ticks))
+        let production = self.home.production;
+        let income = Resources { deuterium: production.deuterium.max(0.0), ..production };
+        away_for.map_or(0.0, |ticks| scaling::resource_weight(&stock) + scaling::resource_weight(&income) * ticks as f32)
     }
 
-    /// First of: a vault under pressure, what a planned tech or ship waits
+    /// First of: a store under pressure, what a planned tech or ship waits
     /// on, support buildings that are due, the best mine. `place_worth` is
-    /// what one queue place should absorb (see `mines`).
+    /// what one queue place should absorb (see `mines`). Whatever is chosen,
+    /// the Solar Plant goes before a mine that would run short of energy,
+    /// the mine an order starves for before the order, and the store a cost
+    /// does not fit before the cost.
     fn next_building(&self, place_worth: f32) -> Option<BuildingType> {
         let cap = self.cap();
-        let vault_planned = self.plan.buildings.storage_vault > self.built.storage_vault;
         let stock = self.state.player.resources;
-        let pressed = ResourceKind::ALL.into_iter().any(|k| stock.get(k) >= VAULT_PRESSURE * cap.get(k));
+        let planned = |b: BuildingType| self.plan.buildings.get(b) > self.built.get(b);
 
-        let mut wanted: Vec<BuildingType> = Vec::new();
-        if pressed && !vault_planned {
-            wanted.push(BuildingType::StorageVault);
+        let mut wanted: Vec<BuildingType> = ResourceKind::ALL
+            .into_iter()
+            .filter(|&k| stock.get(k) >= STORAGE_PRESSURE * cap.get(k))
+            .map(scaling::storage_building)
+            .filter(|&store| !planned(store))
+            .collect();
+        if self.short_of_power(&self.plan.buildings) {
+            wanted.push(BuildingType::SolarPlant);
         }
         wanted.extend(self.needs.iter().filter(|&&(b, level)| self.plan.buildings.get(b) < level).map(|&(b, _)| self.unlocks(b)));
         wanted.extend(self.support());
@@ -711,26 +812,55 @@ impl<'a> Planner<'a> {
 
         for building in wanted {
             let level = self.plan.buildings.get(building) + 1;
-            if level > scaling::MAX_BUILDING_LEVEL || !scaling::building_prerequisites_met(building, &self.plan.buildings) {
+            if level > scaling::MAX_BUILDING_LEVEL
+                || !scaling::building_prerequisites_met(building, &self.plan.buildings, &self.plan.research)
+            {
                 continue;
+            }
+            if let Some(plant) = self.power_for(building) {
+                return Some(plant);
             }
             let cost = scaling::building_cost(building, level);
             if fits(cost, cap) {
                 return Some(self.bottleneck(cost).unwrap_or(building));
             }
-            let vault = scaling::building_cost(BuildingType::StorageVault, self.plan.buildings.storage_vault + 1);
-            if !vault_planned && fits(vault, cap) {
-                return Some(BuildingType::StorageVault);
+            let store = ResourceKind::ALL
+                .into_iter()
+                .filter(|&k| cost.get(k) > cap.get(k))
+                .map(scaling::storage_building)
+                .find(|&store| !planned(store));
+            if let Some(store) = store
+                && fits(scaling::building_cost(store, self.plan.buildings.get(store) + 1), cap)
+            {
+                return Some(store);
             }
         }
         None
     }
 
+    fn short_of_power(&self, buildings: &BuildingLevels) -> bool {
+        let power = self.planned_power(buildings);
+        power.needed > power.made
+    }
+
+    /// The Solar Plant, when the next level of `building` would leave the
+    /// mines short of energy and the plant can still rise and be paid for.
+    fn power_for(&self, building: BuildingType) -> Option<BuildingType> {
+        let plant = BuildingType::SolarPlant;
+        let level = self.plan.buildings.get(plant) + 1;
+        let mut raised = self.plan.buildings.clone();
+        raised.set(building, raised.get(building) + 1);
+        (building != plant
+            && level <= scaling::MAX_BUILDING_LEVEL
+            && self.short_of_power(&raised)
+            && fits(scaling::building_cost(plant, level), self.cap()))
+        .then_some(plant)
+    }
+
     /// Ticks until the planned mines have produced what `cost` lacks, per resource.
     fn wait(&self, cost: Resources, kind: ResourceKind) -> f64 {
         let short = cost.get(kind) - self.spare.get(kind);
-        let mine = MINES.iter().find(|m| m.1 == kind).map_or(BuildingType::MetalMine, |m| m.0);
-        let rate = scaling::production_per_tick(mine, self.plan.buildings.get(mine), &self.pace);
+        let rate = scaling::production_per_tick(&self.plan.buildings, 1.0, &self.pace).get(kind);
         if cost.get(kind) <= 0.0 || short <= 0.0 {
             0.0
         } else if rate <= 0.0 {
@@ -749,15 +879,16 @@ impl<'a> Planner<'a> {
         let mine_cost = scaling::building_cost(mine, level);
         let mine_wait = ResourceKind::ALL.into_iter().map(|k| self.wait(mine_cost, k)).fold(0.0, f64::max);
         let worth_it = level <= scaling::MAX_BUILDING_LEVEL && fits(mine_cost, self.cap()) && 2.0 * mine_wait < self.wait(cost, kind);
-        worth_it.then_some(mine)
+        worth_it.then(|| self.power_for(mine).unwrap_or(mine))
     }
 
     /// `building`, or what must be built first for it to be allowed.
     fn unlocks(&self, building: BuildingType) -> BuildingType {
-        match scaling::building_prerequisites(building) {
-            Some(p) if self.plan.buildings.get(p.building) < p.level => self.unlocks(p.building),
-            _ => building,
-        }
+        let missing = scaling::building_prerequisites(building).iter().find_map(|&(p, level)| match p {
+            PrereqRef::Building(other) if self.plan.buildings.get(other) < level => Some(other),
+            _ => None,
+        });
+        missing.map_or(building, |other| self.unlocks(other))
     }
 
     /// Support buildings the economy has grown into, cheapest first.
@@ -778,24 +909,35 @@ impl<'a> Planner<'a> {
     /// (less what is already promised) sits lower against its cap than the
     /// others counts for more. A level that costs less than `place_worth` is
     /// rated as if it cost that much: with queue places scarcer than
-    /// resources, the bigger gain wins, not the cheaper level.
+    /// resources, the bigger gain wins, not the cheaper level. A level's
+    /// cost counts the Solar Plant it takes to power it.
     fn mines(&self, place_worth: f32) -> Vec<BuildingType> {
         let cap = self.cap();
         let fill = |k: ResourceKind| self.spare.get(k) / cap.get(k);
         let mean_fill = ResourceKind::ALL.into_iter().map(fill).sum::<f64>() / 3.0;
+        let energy_price = self.energy_price();
 
         let mut ranked: Vec<(f64, BuildingType)> = MINES
             .into_iter()
             .map(|(mine, kind)| {
                 let level = self.plan.buildings.get(mine);
-                let gain = scaling::production_per_tick(mine, level + 1, &self.pace)
-                    - scaling::production_per_tick(mine, level, &self.pace);
+                let gain = self.pace.rate(
+                    (scaling::mine_output_per_hour(mine, level + 1) - scaling::mine_output_per_hour(mine, level)) / 3600.0,
+                );
                 let scarcity = (1.0 + SCARCITY_PULL * (mean_fill - fill(kind))).clamp(0.25, 3.0);
-                let cost = scaling::resource_weight(&scaling::building_cost(mine, level + 1));
+                let energy = scaling::energy_needed_by(mine, level + 1) - scaling::energy_needed_by(mine, level);
+                let cost = scaling::resource_weight(&scaling::building_cost(mine, level + 1)) + energy as f32 * energy_price;
                 (gain * kind.weight() * scarcity / f64::from(cost.max(place_worth)), mine)
             })
             .collect();
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
         ranked.into_iter().map(|(_, mine)| mine).collect()
+    }
+
+    /// Points one unit of energy costs at the Solar Plant's next level.
+    fn energy_price(&self) -> f32 {
+        let level = self.plan.buildings.solar_plant.min(scaling::MAX_BUILDING_LEVEL - 1);
+        let gain = scaling::solar_plant_energy(level + 1) - scaling::solar_plant_energy(level);
+        scaling::resource_weight(&scaling::building_cost(BuildingType::SolarPlant, level + 1)) / gain.max(1) as f32
     }
 }

@@ -285,7 +285,7 @@ fn roll_damage(weapon_power: f32, rng: &mut StdRng) -> f32 {
 }
 
 fn check_rapid_fire(attacker_class: ShipClass, target_class: ShipClass, rng: &mut StdRng) -> bool {
-    let rf = attacker_class.rapid_fire_vs(target_class);
+    let rf = iac_shared::scaling::rapid_fire_vs(attacker_class, target_class);
     if rf == 0 { return false; }
     rng.random_range(0.0..1.0) < (1.0 - 1.0 / rf as f32)
 }

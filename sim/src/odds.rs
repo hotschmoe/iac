@@ -201,7 +201,7 @@ fn volley(from: &Side, at: &mut Side) -> bool {
             .iter()
             .enumerate()
             .map(|(j, t)| {
-                let rapid = ShipClass::ALL[i].rapid_fire_vs(ShipClass::ALL[j]);
+                let rapid = scaling::rapid_fire_vs(ShipClass::ALL[i], ShipClass::ALL[j]);
                 if rapid == 0 { 0.0 } else { t.count * t.alive * t.weight / total * (1.0 - 1.0 / f64::from(rapid)) }
             })
             .sum();

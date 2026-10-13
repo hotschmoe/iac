@@ -8,7 +8,7 @@
 // priced with `scaling::resource_weight`, so crystal and deuterium count
 // for more than metal.
 
-use iac_shared::constants::Resources;
+use iac_shared::constants::{Resources, ShipClass};
 use iac_shared::maths;
 use iac_shared::protocol::{LeaderboardEntry, LeaderboardReply};
 use iac_shared::scaling::{self, DefenceKind};
@@ -157,7 +157,8 @@ impl Meter {
 }
 
 /// `player`'s score: their levels, every ship of theirs docked or away,
-/// their defences and the finished levels of their outpost.
+/// their Solar Satellites as ships, their defences and the finished levels
+/// of their outpost.
 pub fn score_of(engine: &GameEngine, player: &Player) -> Score {
     let fleet: f32 = engine
         .fleets
@@ -167,13 +168,14 @@ pub fn score_of(engine: &GameEngine, player: &Player) -> Score {
         .filter(|s| s.hull > 0.0)
         .map(|s| scaling::resource_weight(&s.ship_class.build_cost()))
         .sum();
+    let satellites = player.satellites as f32 * scaling::resource_weight(&ShipClass::SolarSatellite.build_cost());
     let defence: f32 = DefenceKind::ALL
         .iter()
         .map(|&k| player.defences.count[k as usize] as f32 * scaling::resource_weight(&k.build_cost()))
         .sum();
     Score {
         econ: scaling::econ_points(&player.buildings, &player.research),
-        fleet,
+        fleet: fleet + satellites,
         defence: DEFENCE_SHARE * defence,
         outpost: scaling::outpost_points(engine.outposts.get(&player.id).map_or(0, |o| o.level)),
         combat: player.combat_points,

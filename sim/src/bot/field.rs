@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use iac_shared::constants::{
     EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL,
-    POLICY_DEFAULT_FUEL_BUDGET_PCT, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_SCOUT_RANGE, ShipClass,
+    POLICY_DEFAULT_FUEL_BUDGET_PCT, SCAN_COOLDOWN, ShipClass,
 };
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
@@ -631,8 +631,7 @@ impl<'a> Admiral<'a> {
     fn survey(&mut self, unit: Unit) -> u64 {
         let fleet = unit.fleet;
         let Some(here) = self.chart.get(fleet.location) else { return WAIT };
-        let scout = fleet.ships.iter().any(|s| s.ship_class == ShipClass::Scout);
-        let range = if scout { SCAN_SCOUT_RANGE } else { SCAN_BASE_RANGE };
+        let range = fleet.scan_range;
         if self.blind_spot(here, 1) {
             return self.scan(fleet);
         }

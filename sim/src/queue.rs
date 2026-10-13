@@ -19,7 +19,7 @@
 use iac_shared::constants::Resources;
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{BatchWait, WaitReason};
-use iac_shared::scaling::{self, BuildingLevels, BuildingType, ResearchLevels, ResearchType, ShipyardItem};
+use iac_shared::scaling::{self, BuildingLevels, BuildingType, ResearchLevels, ResearchType};
 
 use crate::engine::Player;
 
@@ -78,13 +78,14 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
         Item {
             cost: scaling::building_cost(b, target),
             reserve: q.reserve,
-            duration: scaling::building_time(b, target, player.buildings.fabricator, pace),
-            ready: Box::new(move |bl, _| bl.get(b) + 1 == target && scaling::building_prerequisites_met(b, bl)),
+            duration: scaling::building_time(b, target, &player.buildings, pace),
+            ready: Box::new(move |bl, rl| bl.get(b) + 1 == target && scaling::building_prerequisites_met(b, bl, rl)),
             finishes: Done::Building(b, target),
         }
     }).collect();
     let buildings = walk(player, &items, slots, &mut finishes, rate);
 
+    let energy = player.power(pace).made;
     let slots = vec![player.research_queue.as_ref().map_or(0, |q| q.end_tick.saturating_sub(tick))];
     if let Some(q) = &player.research_queue {
         finishes.push((q.end_tick.saturating_sub(tick), Done::Research(q.tech, q.target_level)));
@@ -94,9 +95,12 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
         Item {
             cost: scaling::research_cost(t, target),
             reserve: q.reserve,
-            duration: scaling::research_time(t, target, player.buildings.research_lab, pace),
+            duration: scaling::research_time(t, target, &player.buildings, pace),
             ready: Box::new(move |bl, rl| {
-                bl.research_lab > 0 && rl.get(t) + 1 == target && scaling::research_prerequisites_met(t, bl, rl)
+                bl.research_lab > 0
+                    && rl.get(t) + 1 == target
+                    && scaling::research_prerequisites_met(t, bl, rl)
+                    && energy >= scaling::research_energy(t, target)
             }),
             finishes: Done::Research(t, target),
         }
@@ -192,7 +196,7 @@ fn walk(
 /// delivered its last unit; each waiting batch then holds it for all of its
 /// units.
 fn batches(player: &Player, tick: u64, pace: &Pace, finishes: &[(u64, Done)]) -> Vec<BatchOutlook> {
-    let yard = player.buildings.shipyard;
+    let yard = &player.buildings;
     let mut free_at = player.ship_queue.as_ref().map_or(0, |q| {
         let later_units = u64::from(q.undelivered().saturating_sub(1));
         q.end_tick.saturating_sub(tick) + later_units * q.item.unit_ticks(yard, pace)
@@ -201,11 +205,7 @@ fn batches(player: &Player, tick: u64, pace: &Pace, finishes: &[(u64, Done)]) ->
     for q in &player.ship_pending {
         let item = q.item;
         let ready = move |bl: &BuildingLevels, rl: &ResearchLevels| {
-            bl.shipyard > 0
-                && match item {
-                    ShipyardItem::Ship(class) => scaling::ship_class_unlocked(class, rl),
-                    ShipyardItem::Defence(kind) => scaling::defence_prerequisites_met(kind, bl, rl),
-                }
+            scaling::prerequisites_met(item.prerequisites(), bl, rl)
         };
         let reason = if ready(&player.buildings, &player.research) { BatchWait::Slot } else { BatchWait::Prerequisite };
         let start = ready_at(player, finishes, &ready).map(|at| at.max(free_at));

@@ -3,10 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{Density, ResourceKind, ShipClass, TerrainType};
+use crate::constants::{Density, Drive, ResourceKind, ShipClass, TerrainType};
 use crate::scaling::{
-    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, RatioLabel, ResearchLevels, ResearchPrereqKind,
-    ResearchType, ShipyardItem,
+    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, Prereqs, RatioLabel, ResearchLevels, ResearchType,
+    ShipyardItem,
 };
 use crate::hex::Hex;
 use crate::pace::Pace;
@@ -106,9 +106,10 @@ pub enum Command {
         #[serde(default = "default_ship_count")]
         count: u16,
     },
-    /// Order `count` defence structures in the shipyard queue; same rule as
+    /// Order `count` defences in the shipyard queue; same rule as
     /// `build_ship`. They stay at home and never burn fuel; rejected with
-    /// `DefenceLocked` until the Defense Grid and research it needs are in place.
+    /// `DefenceLocked` until the Shipyard and research it needs are in
+    /// place, and with `MaxLevelReached` for a second dome of a kind.
     #[serde(rename = "build_defence")]
     BuildDefence {
         kind: DefenceKind,
@@ -927,6 +928,21 @@ pub struct WorldInfo {
     /// it offers. A hub sector has no ore, no hostile group and no derelict.
     #[serde(default)]
     pub hub: Vec<HubSite>,
+    /// Every rapid-fire figure of the catalogue: which ship class fires
+    /// again at what, ships and defences alike. It never changes.
+    #[serde(default)]
+    pub rapid_fire: Vec<RapidFire>,
+}
+
+/// After a shot at a unit of `against`, a ship of `ship_class` fires again
+/// with probability `(shots - 1) / shots`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RapidFire {
+    #[serde(rename = "class")]
+    pub ship_class: ShipClass,
+    /// A ship class or a defence: the wire carries just its name.
+    pub against: ShipyardItem,
+    pub shots: u16,
 }
 
 /// One sector of the hub.
@@ -959,6 +975,12 @@ impl WorldInfo {
                 .iter()
                 .map(|(location, services)| HubSite { location: *location, services: services.to_vec() })
                 .collect(),
+            rapid_fire: ShipClass::ALL
+                .into_iter()
+                .flat_map(|ship_class| {
+                    scaling::rapid_fire(ship_class).map(move |(against, shots)| RapidFire { ship_class, against, shots })
+                })
+                .collect(),
         }
     }
 }
@@ -987,8 +1009,8 @@ pub struct FleetState {
     pub cargo_capacity: f64,
     pub fuel: f64,
     pub fuel_max: f64,
-    /// Fuel one jump costs this fleet right now (it scales with the fleet's
-    /// hull mass and fuel research). A fleet with less than this and away
+    /// Fuel one jump costs this fleet right now: the fuel figure of each of
+    /// its ships, less Energy Technology's saving. A fleet with less than this and away
     /// from home is stranded and only regains fuel from the emergency
     /// reserve, one jump per five minutes.
     #[serde(default)]
@@ -1006,11 +1028,13 @@ pub struct FleetState {
     /// is bound: its destination while a jump is in progress, otherwise
     /// where it stands. An emergency recall does not fly these hops.
     pub hops_home: u32,
-    /// Ticks one jump takes this fleet from the order to the arrival: the
-    /// charge, which its slowest ship and Navigation set, and the tick it
-    /// lands on. A route of `n` jumps flown without a pause takes
-    /// `n * jump_ticks`.
+    /// Ticks one jump takes this fleet from the order to the arrival, set
+    /// by its slowest ship and that ship's drive. A route of `n` jumps flown
+    /// without a pause takes `n * jump_ticks`.
     pub jump_ticks: u16,
+    /// Hops a `scan` by this fleet reveals: `SCAN_PROBE_RANGE` with an
+    /// Espionage Probe aboard, `SCAN_BASE_RANGE` without.
+    pub scan_range: u8,
     /// Ticks before the fleet takes its next order. While it boards a
     /// derelict (`Exploring`) it is what the boarding has left, out of
     /// `EXPLORE_DURATION_TICKS`.
@@ -1242,25 +1266,31 @@ pub struct FleetBrief {
     pub id: u64,
     pub owner_name: String,
     pub ship_count: u16,
+    /// Its ships by class, in catalogue order; a class it has none of is left out.
     #[serde(default)]
-    pub ship_classes: ShipClassCounts,
+    pub ship_classes: Vec<ShipCount>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct ShipClassCounts {
-    pub scout: u16,
-    pub corvette: u16,
-    pub frigate: u16,
-    pub cruiser: u16,
-    pub hauler: u16,
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ShipCount {
+    #[serde(rename = "class")]
+    pub ship_class: ShipClass,
+    pub count: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HomeworldState {
     pub location: Hex,
-    /// What the mines make each tick at current levels (before the storage
-    /// cap discards the excess; see `storage`).
+    /// What the stockpile gains each tick at current levels and the energy
+    /// there is (before the storage cap discards the excess; see
+    /// `storage`): the mines at `energy.fraction`, the natural production,
+    /// less the deuterium the Fusion Reactor burns, so deuterium may be
+    /// negative.
     pub production: Resources,
+    pub energy: EnergyState,
+    /// Solar Satellites at home. They are built in the shipyard queue as
+    /// the ship class `SolarSatellite` and never join a fleet.
+    pub satellites: u32,
     pub storage: StorageState,
     pub buildings: Vec<BuildingState>,
     pub research: Vec<ResearchState>,
@@ -1270,6 +1300,9 @@ pub struct HomeworldState {
     pub build_pending: Vec<QueuedBuild>,
     /// How many buildings may be under construction at once.
     pub build_slots: u8,
+    /// What opens one more building slot; absent when every slot is open.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub build_slot_unlock: Option<Requirement>,
     /// Orders that may wait behind the running ones in each queue. An order
     /// that fits is always accepted, started or not; only a full waiting
     /// line (or an order that can never start) is refused with `QueueFull`.
@@ -1281,12 +1314,14 @@ pub struct HomeworldState {
     pub research_active: Option<ResearchItem>,
     pub research_pending: Vec<QueuedResearch>,
     pub docked_ships: Vec<ShipState>,
-    /// Structures standing at home (those being rebuilt after a raid are
+    /// Defences standing at home (those being rebuilt after a raid are
     /// counted in `restoring`, not `count`).
     pub defences: Vec<DefenceState>,
-    /// Docked ships, the Defense Grid and all structures together: what the
+    /// Docked ships, Solar Satellites and all defences together: what the
     /// next raid meets.
     pub home_defence_power: f32,
+    /// The Solar Satellites' share of `home_defence_power`.
+    pub satellite_power: f32,
     /// Typical power of the next raid, from the empire's building and
     /// research points; the actual raid rolls 0.80 to 1.15 times this.
     pub next_raid_estimate_power: f32,
@@ -1300,12 +1335,30 @@ pub struct DefenceState {
     pub count: u32,
     /// Structures a repelled raid destroyed that come back for free.
     pub restoring: u32,
-    /// Power of one structure at the current Defense Grid level.
+    /// Power of one with the owner's Weapons, Shielding and Armour Technology.
     pub power: f32,
 }
 
-/// Stockpile limits, from the Storage Vault level and the world pace.
-/// Mines stop at `cap`; docking cargo unloads only up to it.
+/// A homeworld's energy. The mines need it and the Solar Plant, the Fusion
+/// Reactor and the Solar Satellites make it; it is not stored.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EnergyState {
+    pub made: u32,
+    pub needed: u32,
+    /// The fraction of their output the mines run at: `made / needed`, at
+    /// most 1, and 1 when nothing is needed.
+    pub fraction: f64,
+    /// Energy each Solar Satellite makes.
+    pub per_satellite: u32,
+    /// Deuterium the Fusion Reactor burns each tick while it runs.
+    pub fusion_burn: f64,
+    /// The Fusion Reactor stands and makes nothing: the stockpile has no
+    /// deuterium for it to burn.
+    pub fusion_starved: bool,
+}
+
+/// Stockpile limits, each from the level of its own storage building and
+/// the world pace. Mines stop at `cap`; docking cargo unloads only up to it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorageState {
     pub cap: Resources,
@@ -1326,11 +1379,14 @@ pub struct ResourceEta {
 }
 
 /// Everything a client needs to offer homeworld actions without knowing any
-/// balance formulas: costs, build times and prerequisites, computed by the
-/// server from `scaling.rs` for the player's current levels. Resent with
-/// every `HomeworldState`, so it tracks level changes the tick they land.
-/// Whether the player can pay is left to the client (compare `cost` with the
-/// stockpile in `PlayerState.resources`).
+/// balance formulas: costs, build times, prerequisites and what each level
+/// does, computed by the server from `scaling.rs` for the player's current
+/// levels. Resent with every `HomeworldState`, so it tracks level changes
+/// the tick they land. What never changes (a class's base figures, its
+/// label, the rapid-fire table) is not here: the figures are columns of the
+/// enums and the table is `WorldInfo.rapid_fire`. Whether the player can
+/// pay is left to the client (compare `cost` with the stockpile in
+/// `PlayerState.resources`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HomeworldCatalog {
     /// One entry per `BuildingType`, in declaration order.
@@ -1343,84 +1399,265 @@ pub struct HomeworldCatalog {
     pub defences: Vec<DefenceOption>,
 }
 
-/// One prerequisite: a building or tech that must reach `need`, with the
-/// player's current level. The server's "prerequisites not met" errors are
-/// written from the same values.
+/// One prerequisite: a building or tech that must reach level `need`, with
+/// the player's current level, or (`energy`) an amount of energy the
+/// homeworld must be making, with what it makes. The server's
+/// "prerequisites not met" errors are written from the same values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Requirement {
-    /// Building or tech label ("Shipyard", "Frigate Tech").
+    /// Building or tech label ("Shipyard", "Impulse Drive"), or "Energy".
     pub name: String,
-    pub need: u8,
-    pub have: u8,
+    pub need: u32,
+    pub have: u32,
     pub met: bool,
+    /// `need` and `have` are energy made, not levels.
+    pub energy: bool,
 }
 
 impl Requirement {
-    fn new(name: &str, need: u8, have: u8) -> Self {
-        Requirement { name: name.to_string(), need, have, met: have >= need }
+    fn level(name: &str, need: u8, have: u8) -> Self {
+        Requirement { name: name.to_string(), need: need.into(), have: have.into(), met: have >= need, energy: false }
+    }
+
+    fn energy(need: u32, have: u32) -> Self {
+        Requirement { name: "Energy".to_string(), need, have, met: have >= need, energy: true }
     }
 
     /// Compact form for cards: "Shipyard >= 4".
     pub fn label(&self) -> String {
         format!("{} >= {}", self.name, self.need)
     }
+
+    fn phrase(&self) -> String {
+        if self.energy {
+            format!("{} energy made (you make {})", self.need, self.have)
+        } else {
+            format!("{} level {} (you have {})", self.name, self.need, self.have)
+        }
+    }
 }
 
-/// "Frigate needs Shipyard level 4 (you have 2) and Frigate Tech level 1
+/// "Cruiser needs Shipyard level 5 (you have 2) and Ion Technology level 2
 /// (you have 0)"; None when every requirement is met.
 pub fn missing_requirements_message(subject: &str, requires: &[Requirement]) -> Option<String> {
-    let parts: Vec<String> = requires
-        .iter()
-        .filter(|r| !r.met)
-        .map(|r| format!("{} level {} (you have {})", r.name, r.need, r.have))
-        .collect();
+    let parts: Vec<String> = requires.iter().filter(|r| !r.met).map(Requirement::phrase).collect();
     let (last, rest) = parts.split_last()?;
     let list = if rest.is_empty() { last.clone() } else { format!("{} and {}", rest.join(", "), last) };
     Some(format!("{subject} needs {list}"))
 }
 
-fn building_req(levels: &BuildingLevels, b: BuildingType, need: u8) -> Requirement {
-    Requirement::new(b.label(), need, levels.get(b))
-}
-
-fn tech_req(levels: &ResearchLevels, t: ResearchType, need: u8) -> Requirement {
-    Requirement::new(t.label(), need, levels.get(t))
-}
-
-/// Everything standing between the player and the next level of `b`.
-pub fn building_requirements(levels: &BuildingLevels, b: BuildingType) -> Vec<Requirement> {
-    scaling::building_prerequisites(b)
-        .map(|p| building_req(levels, p.building, p.level))
-        .into_iter()
+fn requirements(prereqs: Prereqs, buildings: &BuildingLevels, research: &ResearchLevels) -> Vec<Requirement> {
+    prereqs
+        .iter()
+        .map(|(p, need)| match p {
+            PrereqRef::Building(b) => Requirement::level(b.label(), *need, buildings.get(*b)),
+            PrereqRef::Research(t) => Requirement::level(t.label(), *need, research.get(*t)),
+        })
         .collect()
 }
 
-/// Prerequisites for researching `t`, including the Research Lab the server
-/// requires before any research.
-pub fn research_requirements(buildings: &BuildingLevels, research: &ResearchLevels, t: ResearchType) -> Vec<Requirement> {
-    let prereqs: Vec<_> = scaling::research_prerequisites(t).into_iter().flatten().collect();
-    // Every tech needs a lab; skip the generic entry when the tech names a lab level itself.
-    let names_lab = prereqs.iter().any(|p| {
-        matches!(p, ResearchPrereqKind::Building(b) if b.building == BuildingType::ResearchLab)
-    });
+/// Everything standing between the player and the next level of `b`.
+pub fn building_requirements(buildings: &BuildingLevels, research: &ResearchLevels, b: BuildingType) -> Vec<Requirement> {
+    requirements(scaling::building_prerequisites(b), buildings, research)
+}
+
+/// Prerequisites for researching level `level` of `t`, including the
+/// Research Lab the server requires before any research and, for Graviton
+/// Technology, the energy the homeworld must be making (`energy_made`).
+pub fn research_requirements(
+    buildings: &BuildingLevels,
+    research: &ResearchLevels,
+    t: ResearchType,
+    level: u8,
+    energy_made: u32,
+) -> Vec<Requirement> {
+    let prereqs = scaling::research_prerequisites(t);
+    let names_lab = prereqs.iter().any(|(p, _)| *p == PrereqRef::Building(BuildingType::ResearchLab));
     let mut requires = Vec::new();
     if !names_lab {
-        requires.push(building_req(buildings, BuildingType::ResearchLab, 1));
+        requires.push(Requirement::level(BuildingType::ResearchLab.label(), 1, buildings.research_lab));
     }
-    for p in prereqs {
-        requires.push(match p {
-            ResearchPrereqKind::Building(b) => building_req(buildings, b.building, b.level),
-            ResearchPrereqKind::Research { tech, level } => tech_req(research, tech, level),
-        });
+    requires.extend(requirements(prereqs, buildings, research));
+    let energy = scaling::research_energy(t, level);
+    if energy > 0 {
+        requires.push(Requirement::energy(energy, energy_made));
     }
     requires
 }
 
-/// Prerequisites for building `c`: a Shipyard plus the class's unlock tech.
+/// Prerequisites for building `c`: its Shipyard level and its research.
 pub fn ship_requirements(buildings: &BuildingLevels, research: &ResearchLevels, c: ShipClass) -> Vec<Requirement> {
-    let mut requires = vec![building_req(buildings, BuildingType::Shipyard, 1)];
-    requires.extend(scaling::ship_class_tech(c).map(|t| tech_req(research, t, 1)));
-    requires
+    requirements(scaling::ship_prerequisites(c), buildings, research)
+}
+
+/// Prerequisites for a defence: its Shipyard level and its research.
+pub fn defence_requirements(buildings: &BuildingLevels, research: &ResearchLevels, kind: DefenceKind) -> Vec<Requirement> {
+    requirements(kind.prerequisites(), buildings, research)
+}
+
+/// What a level of a building or a research does, as a figure a client
+/// prints beside its label. Rates are a tick at the world's pace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectKind {
+    /// What the mine makes with all the energy it needs; the natural
+    /// production is not counted.
+    MetalPerTick,
+    CrystalPerTick,
+    DeuteriumPerTick,
+    EnergyUsed,
+    EnergyMade,
+    /// Deuterium the Fusion Reactor burns while it runs.
+    FusionBurnPerTick,
+    /// What building, ship and defence, or research time is divided by,
+    /// with every other building as it stands.
+    BuildingSpeed,
+    ShipyardSpeed,
+    ResearchSpeed,
+    /// The cap of the building's own resource, and the share of it a raid
+    /// cannot take.
+    StorageCap,
+    StorageProtected,
+    /// What every fleet's tank is multiplied by.
+    TankFactor,
+    /// What attack, shield or hull is multiplied by, for ships built from
+    /// now on and for defences.
+    Attack,
+    Shield,
+    Hull,
+    /// What the speed of the ships on this drive is multiplied by.
+    Speed,
+    /// What a jump's burn is multiplied by.
+    JumpFuel,
+    /// Taken off the chance that an emergency jump harms a ship, as a share.
+    RecallRisk,
+    BuildSlots,
+    /// Hops around the homeworld that are seen.
+    SensorHops,
+    /// What a unit of ore yields.
+    OreYield,
+}
+
+impl EffectKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            EffectKind::MetalPerTick => "metal",
+            EffectKind::CrystalPerTick => "crystal",
+            EffectKind::DeuteriumPerTick => "deuterium",
+            EffectKind::EnergyUsed => "energy used",
+            EffectKind::EnergyMade => "energy made",
+            EffectKind::FusionBurnPerTick => "deuterium burned",
+            EffectKind::BuildingSpeed => "building speed",
+            EffectKind::ShipyardSpeed => "shipyard speed",
+            EffectKind::ResearchSpeed => "research speed",
+            EffectKind::StorageCap => "storage",
+            EffectKind::StorageProtected => "safe from raids",
+            EffectKind::TankFactor => "fleet tanks",
+            EffectKind::Attack => "attack",
+            EffectKind::Shield => "shield",
+            EffectKind::Hull => "hull",
+            EffectKind::Speed => "speed",
+            EffectKind::JumpFuel => "fuel a jump",
+            EffectKind::RecallRisk => "emergency jump risk",
+            EffectKind::BuildSlots => "building slots",
+            EffectKind::SensorHops => "sensor range",
+            EffectKind::OreYield => "ore yield",
+        }
+    }
+}
+
+/// One figure of a building or research: at the level it stands at, and at
+/// the next (absent at the highest level).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Effect {
+    pub kind: EffectKind,
+    pub now: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub next: Option<f64>,
+}
+
+fn effects(kinds: &[EffectKind], level: u8, max_level: u8, at: impl Fn(EffectKind, u8) -> f64) -> Vec<Effect> {
+    kinds
+        .iter()
+        .map(|&kind| Effect { kind, now: at(kind, level), next: (level < max_level).then(|| at(kind, level + 1)) })
+        .collect()
+}
+
+fn building_effects(b: BuildingType, buildings: &BuildingLevels, research: &ResearchLevels, pace: &Pace) -> Vec<Effect> {
+    use EffectKind as E;
+    let kinds: &[EffectKind] = match b {
+        BuildingType::MetalMine => &[E::MetalPerTick, E::EnergyUsed],
+        BuildingType::CrystalMine => &[E::CrystalPerTick, E::EnergyUsed],
+        BuildingType::DeuteriumSynthesizer => &[E::DeuteriumPerTick, E::EnergyUsed],
+        BuildingType::SolarPlant => &[E::EnergyMade],
+        BuildingType::FusionReactor => &[E::EnergyMade, E::FusionBurnPerTick],
+        BuildingType::RoboticsFactory => &[E::BuildingSpeed],
+        BuildingType::NaniteFactory => &[E::BuildingSpeed, E::ShipyardSpeed],
+        BuildingType::Shipyard => &[E::ShipyardSpeed],
+        BuildingType::MetalStorage | BuildingType::CrystalStorage => &[E::StorageCap, E::StorageProtected],
+        BuildingType::DeuteriumTank => &[E::StorageCap, E::StorageProtected, E::TankFactor],
+        BuildingType::ResearchLab => &[E::ResearchSpeed],
+    };
+    effects(kinds, buildings.get(b), scaling::MAX_BUILDING_LEVEL, |kind, level| {
+        let mut with = buildings.clone();
+        with.set(b, level);
+        match kind {
+            E::MetalPerTick | E::CrystalPerTick | E::DeuteriumPerTick => {
+                pace.rate(scaling::mine_output_per_hour(b, level) / 3600.0)
+            }
+            E::EnergyUsed => f64::from(scaling::energy_needed_by(b, level)),
+            E::EnergyMade if b == BuildingType::FusionReactor => {
+                f64::from(scaling::fusion_energy(level, research.energy_technology))
+            }
+            E::EnergyMade => f64::from(scaling::solar_plant_energy(level)),
+            E::FusionBurnPerTick => pace.rate(f64::from(scaling::fusion_burn_per_hour(level)) / 3600.0),
+            E::BuildingSpeed => scaling::building_speed(&with),
+            E::ShipyardSpeed => scaling::shipyard_speed(&with),
+            E::ResearchSpeed => scaling::research_speed(&with),
+            E::StorageCap => scaling::storage_cap_at(level, pace),
+            E::StorageProtected => scaling::storage_protected_at(level, pace),
+            E::TankFactor => scaling::tank_modifier(level),
+            _ => 0.0,
+        }
+    })
+}
+
+fn research_effects(t: ResearchType, buildings: &BuildingLevels, research: &ResearchLevels) -> Vec<Effect> {
+    use EffectKind as E;
+    let drive = match t {
+        ResearchType::CombustionDrive => Some(Drive::Combustion),
+        ResearchType::ImpulseDrive => Some(Drive::Impulse),
+        ResearchType::HyperspaceDrive => Some(Drive::Hyperspace),
+        _ => None,
+    };
+    let kinds: &[EffectKind] = match t {
+        ResearchType::EspionageTechnology => &[E::SensorHops],
+        ResearchType::ComputerTechnology => &[E::BuildSlots],
+        ResearchType::WeaponsTechnology => &[E::Attack],
+        ResearchType::ShieldingTechnology => &[E::Shield],
+        ResearchType::ArmourTechnology => &[E::Hull],
+        ResearchType::EnergyTechnology if buildings.fusion_reactor > 0 => &[E::JumpFuel, E::EnergyMade],
+        ResearchType::EnergyTechnology => &[E::JumpFuel],
+        ResearchType::HyperspaceTechnology => &[E::RecallRisk],
+        ResearchType::CombustionDrive | ResearchType::ImpulseDrive | ResearchType::HyperspaceDrive => &[E::Speed],
+        ResearchType::LaserTechnology => &[E::OreYield],
+        ResearchType::IonTechnology | ResearchType::PlasmaTechnology | ResearchType::GravitonTechnology => &[],
+    };
+    effects(kinds, research.get(t), scaling::research_max_level(t), |kind, level| {
+        let mut with = research.clone();
+        with.set(t, level);
+        match kind {
+            E::SensorHops => f64::from(scaling::sensor_range(level)),
+            E::BuildSlots => f64::from(scaling::building_slots(&with)),
+            E::Attack | E::Shield | E::Hull => 1.0 + 0.1 * f64::from(level),
+            E::JumpFuel => scaling::fuel_rate_modifier(level),
+            E::EnergyMade => f64::from(scaling::fusion_energy(buildings.fusion_reactor, level)),
+            E::RecallRisk => f64::from(scaling::recall_damage_reduction(level)),
+            E::Speed => 1.0 + drive.map_or(0.0, Drive::speed_per_level) * f64::from(level),
+            E::OreYield => scaling::harvest_yield(level),
+            _ => 0.0,
+        }
+    })
 }
 
 /// Cost and duration of the next level of a building or tech.
@@ -1441,6 +1678,8 @@ pub struct BuildingOption {
     pub next: Option<UpgradeStep>,
     /// All prerequisites with their status; the entry is locked while any is unmet.
     pub requires: Vec<Requirement>,
+    /// What the building does at its level and at the next.
+    pub effects: Vec<Effect>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1453,6 +1692,9 @@ pub struct ResearchOption {
     pub next: Option<UpgradeStep>,
     /// Includes the Research Lab the server requires before any research.
     pub requires: Vec<Requirement>,
+    /// What the research does at its level and at the next; empty for one
+    /// that is only a requirement of other things.
+    pub effects: Vec<Effect>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1461,10 +1703,35 @@ pub struct ShipOption {
     pub ship_class: ShipClass,
     /// Cost of one ship; a batch of `count` costs `count` times this.
     pub unit_cost: Resources,
-    /// Ticks to build one ship at the current shipyard level.
+    /// Ticks to build one ship at the current Shipyard and Nanite Factory levels.
     pub ticks_per_ship: u64,
-    /// Includes the Shipyard the server requires before any ship.
     pub requires: Vec<Requirement>,
+    /// What a ship built now fights with: the class's figures with the
+    /// owner's Armour, Shielding and Weapons Technology. A ship keeps what
+    /// it was built with.
+    pub hull: f32,
+    pub shield: f32,
+    pub weapon: f32,
+    /// `weapon + (hull + shield) / 10` of those.
+    pub power: f32,
+    /// One ship's hold at the world's pace.
+    pub cargo: f64,
+    /// False for the Solar Satellite: it stays at the homeworld, counted in
+    /// `HomeworldState.satellites`, and the flight figures below are 0.
+    pub flies: bool,
+    /// The drive it flies on with the owner's research; the Small Cargo and
+    /// the Bomber change theirs.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub drive: Option<Drive>,
+    pub speed: f64,
+    /// Ticks one jump takes a fleet whose slowest ship this is.
+    pub jump_ticks: u16,
+    /// Fuel one jump burns, with Energy Technology's saving.
+    pub jump_fuel: f64,
+    /// The tank one ship adds to a fleet, with the Deuterium Tank counted.
+    pub tank: f64,
+    /// Raw units of ore a tick it extracts at density multiplier 1.
+    pub harvest: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1472,24 +1739,20 @@ pub struct DefenceOption {
     pub kind: DefenceKind,
     /// Standing now.
     pub count: u32,
+    /// The most that may stand, those being rebuilt and ordered included:
+    /// 1 for a dome. Absent when there is no limit.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max: Option<u32>,
     pub unit_cost: Resources,
     pub ticks_per_unit: u64,
-    /// Power of one structure at the current Defense Grid level.
+    /// What one fights with: the kind's figures with the owner's Armour,
+    /// Shielding and Weapons Technology as they stand now.
+    pub hull: f32,
+    pub shield: f32,
+    pub weapon: f32,
+    /// `weapon + (hull + shield) / 10` of those.
     pub power: f32,
-    /// Includes the Shipyard the server requires before anything is built.
     pub requires: Vec<Requirement>,
-}
-
-/// Prerequisites for a defence structure: a Shipyard plus its own list.
-pub fn defence_requirements(buildings: &BuildingLevels, research: &ResearchLevels, kind: DefenceKind) -> Vec<Requirement> {
-    let mut requires = vec![building_req(buildings, BuildingType::Shipyard, 1)];
-    for (p, need) in kind.prerequisites() {
-        requires.push(match p {
-            PrereqRef::Building(b) => building_req(buildings, *b, *need),
-            PrereqRef::Research(t) => tech_req(research, *t, *need),
-        });
-    }
-    requires
 }
 
 impl HomeworldCatalog {
@@ -1497,10 +1760,11 @@ impl HomeworldCatalog {
         buildings: &BuildingLevels,
         research: &ResearchLevels,
         defences: &[u32; DefenceKind::COUNT],
+        energy_made: u32,
         pace: &Pace,
     ) -> Self {
-        let building_options = (0..BuildingType::COUNT)
-            .filter_map(BuildingType::from_usize)
+        let building_options = BuildingType::ALL
+            .into_iter()
             .map(|b| {
                 let level = buildings.get(b);
                 BuildingOption {
@@ -1510,16 +1774,17 @@ impl HomeworldCatalog {
                     next: (level < scaling::MAX_BUILDING_LEVEL).then(|| UpgradeStep {
                         level: level + 1,
                         cost: scaling::building_cost(b, level + 1),
-                        ticks: scaling::building_time(b, level + 1, buildings.fabricator, pace),
+                        ticks: scaling::building_time(b, level + 1, buildings, pace),
                     }),
-                    requires: building_requirements(buildings, b),
+                    requires: building_requirements(buildings, research, b),
+                    effects: building_effects(b, buildings, research, pace),
                 }
             })
             .collect();
 
         let research_options = ResearchType::ALL
-            .iter()
-            .map(|&t| {
+            .into_iter()
+            .map(|t| {
                 let level = research.get(t);
                 let max_level = scaling::research_max_level(t);
                 ResearchOption {
@@ -1529,33 +1794,56 @@ impl HomeworldCatalog {
                     next: (level < max_level).then(|| UpgradeStep {
                         level: level + 1,
                         cost: scaling::research_cost(t, level + 1),
-                        ticks: scaling::research_time(t, level + 1, buildings.research_lab, pace),
+                        ticks: scaling::research_time(t, level + 1, buildings, pace),
                     }),
-                    requires: research_requirements(buildings, research, t),
+                    requires: research_requirements(buildings, research, t, level.saturating_add(1), energy_made),
+                    effects: research_effects(t, buildings, research),
                 }
             })
             .collect();
 
         let ship_options = ShipClass::ALL
-            .iter()
-            .map(|&c| ShipOption {
-                ship_class: c,
-                unit_cost: c.build_cost(),
-                ticks_per_ship: scaling::ship_build_time(c, buildings.get(BuildingType::Shipyard), pace),
-                requires: ship_requirements(buildings, research, c),
+            .into_iter()
+            .map(|c| {
+                let built = scaling::apply_research_to_stats(c.base_stats(), research);
+                let speed = scaling::ship_speed(c, research);
+                ShipOption {
+                    ship_class: c,
+                    unit_cost: c.build_cost(),
+                    ticks_per_ship: scaling::ship_build_time(c, buildings, pace),
+                    requires: ship_requirements(buildings, research, c),
+                    hull: built.hull,
+                    shield: built.shield,
+                    weapon: built.weapon,
+                    power: built.weapon + (built.hull + built.shield) / 10.0,
+                    cargo: f64::from(built.cargo) * pace.cargo_mult(),
+                    flies: c.flies(),
+                    drive: scaling::ship_drive(c, research).map(|(drive, _, _)| drive),
+                    speed,
+                    jump_ticks: if c.flies() { scaling::jump_ticks(speed) } else { 0 },
+                    jump_fuel: scaling::ship_burn(c, research) * scaling::fuel_rate_modifier(research.energy_technology),
+                    tank: scaling::ship_tank(c, research) * scaling::tank_modifier(buildings.deuterium_tank),
+                    harvest: c.harvest_power(),
+                }
             })
             .collect();
 
-        let grid = buildings.get(BuildingType::DefenseGrid);
         let defence_options = DefenceKind::ALL
-            .iter()
-            .map(|&kind| DefenceOption {
-                kind,
-                count: defences[kind as usize],
-                unit_cost: kind.build_cost(),
-                ticks_per_unit: scaling::defence_build_time(kind, buildings.get(BuildingType::Shipyard), pace),
-                power: scaling::structure_power(kind, grid),
-                requires: defence_requirements(buildings, research, kind),
+            .into_iter()
+            .map(|kind| {
+                let built = scaling::apply_research_to_stats(kind.base_stats(), research);
+                DefenceOption {
+                    kind,
+                    count: defences[kind as usize],
+                    max: kind.max_count(),
+                    unit_cost: kind.build_cost(),
+                    ticks_per_unit: scaling::defence_build_time(kind, buildings, pace),
+                    hull: built.hull,
+                    shield: built.shield,
+                    weapon: built.weapon,
+                    power: scaling::structure_power(kind, research),
+                    requires: defence_requirements(buildings, research, kind),
+                }
             })
             .collect();
 
@@ -2178,13 +2466,16 @@ pub struct RaidResolvedEvent {
     pub salvage_despawn_tick: Option<u64>,
     pub raid_power: f32,
     pub defense_power: f32,
+    /// Solar Satellites a lost raid destroyed.
+    #[serde(default)]
+    pub satellites_lost: u32,
     /// Structures the raid destroyed.
     #[serde(default)]
     pub structures_lost: u32,
     /// Of those, how many are rebuilt for free after a short delay.
     #[serde(default)]
     pub structures_restored: u32,
-    /// What the Storage Vault kept out of reach of a successful raid, of
+    /// What the storage buildings kept out of reach of a successful raid, of
     /// the stockpile and the cargo aboard fleets at home together. At an
     /// outpost, what its protected floor kept.
     #[serde(default)]
