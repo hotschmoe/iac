@@ -527,7 +527,7 @@ and Flutter; no other tool.
 
 ```sh
 scripts/play.sh --single-player --no-serve          # just the bundle
-cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium, a fight included (about four and a half minutes)
+cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium, a flight and a fight included (about five minutes)
 cargo test -p iac-solo                               # the host natively, through the same door of bytes
 cargo test -p iac-solo --test both_targets           # the same worlds natively and as iac_solo.wasm: every reply the same bytes (about two minutes)
 ```

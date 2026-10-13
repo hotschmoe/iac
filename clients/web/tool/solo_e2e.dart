@@ -1571,10 +1571,13 @@ Future<int?> flight(Browser browser,
       await Future<void>.delayed(const Duration(milliseconds: 600));
       await browser.clickAt({'x': 759 + mapHex * 1.5 * dq, 'y': 478 + mapHex * (sqrt3 / 2 * dq + sqrt3 * dr)});
       if (await soon(() async => (await browser.text()).toUpperCase().contains('WHOLE AGAIN'), ms: 3000)) {
+        // The sector is in sensor range while the two stand beside it, so
+        // the panel shows the group as it is now, a step or two of mending
+        // on from what the chart held a moment ago.
         final panel = (await browser.text()).toUpperCase();
-        final ships = remembered['ship_count'] == remembered['muster'] ? plural(remembered['ship_count'], 'SHIP') : '${remembered['ship_count']} OF ${plural(remembered['muster'], 'SHIP')}';
-        check(panel.contains('${words(group['behavior']).toUpperCase()} - ${ships.toUpperCase()}') && panel.contains('A JUMP TAKES IT '),
-            'the map\'s panel for [$prey] lists the group against its muster, when it is whole again, how far it follows and its jump');
+        final heading = panel.split('\n').where((line) => line.startsWith('${words(group['behavior']).toUpperCase()} - ')).firstOrNull;
+        check(heading != null && heading.contains(' SHIP') && panel.contains('A JUMP TAKES IT '),
+            'the map\'s panel for [$prey] lists the group ($heading), when it is whole again, how far it follows and its jump');
         await browser.shot('39-wounded-group-1440');
         print('  a phone\'s map keeps the route in its sheet, not the sector: a wounded group at 390 px is pictured from the widget tests, in the contacts');
       } else {

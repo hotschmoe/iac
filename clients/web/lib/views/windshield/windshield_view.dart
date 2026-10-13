@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
-import '../../console/battle.dart' show fleeingLine, flightPrice, outcomeSentence, outcomeTitle, pursuitLine, roundsOf, stopFlightRule;
+import '../../console/battle.dart' show fleeingLine, flightPrice, outcomeTitle, roundsOf, stopFlightRule, ticksOf;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show inOutpostRings;
 import '../../console/route_planner.dart';
@@ -174,9 +174,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final left = con.state.battleOf(f);
       final outOfAFight = left != null && left.sector != f.sector && left.endedTick == con.state.tick;
       if (f.pursuedBy case final hunter?) {
-        _showBanner('PURSUED', '${pursuitLine(hunter)}.', true);
+        _showBanner('PURSUED', _landing(hunter), true);
       } else if (outOfAFight) {
-        _showBanner(outcomeTitle(left.ended!.outcome), 'Out of the fight at ${left.sector.q}, ${left.sector.r} after ${roundsOf(left.rounds)}, now at ${f.sector.q}, ${f.sector.r}.', true);
+        _showBanner(outcomeTitle(left.ended!.outcome), 'Out of the fight at ${left.sector.q}, ${left.sector.r}.', true);
       } else if (sim.atExchange) {
         _showBanner('THE HUB', 'Exchange open. Trade cargo for cargo.', false);
       } else if (sim.outpost case final post?) {
@@ -187,6 +187,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       }
     }
   }
+
+  /// A pursuit in the few words a banner has room for on a phone; the
+  /// panel has the rest.
+  static String _landing(proto.Pursuit hunter) => 'Lands in ${ticksOf(hunter.arrivesIn)}, from ${hunter.from.q}, ${hunter.from.r}.';
 
   void _onGame() {
     if (!mounted) return;
@@ -207,16 +211,16 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         }
       case proto.CombatEndedEvent():
         if (k.mine) {
-          _showBanner(outcomeTitle(k.outcome), 'After ${roundsOf(k.rounds)}: ${outcomeSentence(k.outcome)}.', !k.playerVictory);
+          _showBanner(outcomeTitle(k.outcome), 'After ${roundsOf(k.rounds)} at ${k.sector.q}, ${k.sector.r}.', !k.playerVictory);
           con.play(k.playerVictory ? 'ok' : 'alert');
         }
-      case proto.PursuitEvent(mine: true, :final phase, :final label, :final fleetId, :final why):
+      case proto.PursuitEvent(mine: true, :final phase, :final label, :final fleetId):
         if (fleetId != _fleet?.id) break;
         if (phase == proto.PursuitPhase.abandoned) {
-          _showBanner('PURSUIT OVER', why == null ? 'The $label turned back.' : 'The $label turned back: $why.', false);
+          _showBanner('PURSUIT OVER', 'The $label turned back.', false);
           con.play('ok');
         } else {
-          _showBanner('PURSUED', switch (_fleet?.pursuedBy) { final hunter? => '${pursuitLine(hunter)}.', null => 'The $label is on its trail.' }, true);
+          _showBanner('PURSUED', switch (_fleet?.pursuedBy) { final hunter? => _landing(hunter), null => 'The $label follows.' }, true);
           con.play('alert');
         }
       case proto.SiteExploredEvent():
