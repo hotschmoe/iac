@@ -623,18 +623,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "iac-client"
+name = "iac-headless"
 version = "0.1.0"
 dependencies = [
  "clap",
- "crossterm",
  "dirs",
  "env_logger",
  "futures-util",
  "iac-shared",
- "log",
- "ratatui",
- "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.26.2",
@@ -695,6 +691,23 @@ dependencies = [
  "serde_json",
  "wasmi",
  "xxhash-rust",
+]
+
+[[package]]
+name = "iac-tui"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crossterm",
+ "env_logger",
+ "iac-headless",
+ "iac-shared",
+ "log",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
 ]
 
 [[package]]

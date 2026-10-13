@@ -6,7 +6,6 @@ use tokio_tungstenite::{
     tungstenite::protocol::Message,
 };
 
-use iac_shared::constants::{DEFAULT_HOST, DEFAULT_PORT};
 use iac_shared::protocol::{AuthRequest, AuthResult, ClientMessage, ErrorCode, ServerMessage};
 
 use crate::token_store;
@@ -21,16 +20,6 @@ pub struct Connection {
 pub struct ConnectionConfig {
     pub host: String,
     pub port: u16,
-}
-
-impl ConnectionConfig {
-    #[allow(dead_code)]
-    pub fn default_config() -> Self {
-        Self {
-            host: DEFAULT_HOST.to_string(),
-            port: DEFAULT_PORT,
-        }
-    }
 }
 
 impl Connection {
@@ -104,42 +93,10 @@ impl Connection {
         reply.ok_or_else(|| "the server closed the connection during login".into())
     }
 
-    #[allow(dead_code)]
-    pub async fn send_command(&self, cmd: ClientMessage) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.send_message(cmd).await
-    }
-
-    #[allow(dead_code)]
-    pub async fn request_full_state(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let msg = ClientMessage::RequestFullState;
-        self.send_message(msg).await
-    }
-
     pub async fn send_message(&self, msg: ClientMessage) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let json = serde_json::to_string(&msg)?;
         self.tx.send(Message::Text(json.into()))?;
         Ok(())
-    }
-
-    /// Poll for incoming messages. Returns None if no messages available.
-    #[allow(dead_code)]
-    pub async fn poll(&self) -> Option<ServerMessage> {
-        let mut rx = self.rx.lock().await;
-        match rx.try_recv() {
-            Ok(text) => serde_json::from_str(&text).ok(),
-            Err(mpsc::error::TryRecvError::Empty) => None,
-            Err(mpsc::error::TryRecvError::Disconnected) => None,
-        }
-    }
-
-    /// Block until the next message arrives (used in background task).
-    #[allow(dead_code)]
-    pub async fn recv(&self) -> Option<ServerMessage> {
-        let mut rx = self.rx.lock().await;
-        match rx.recv().await {
-            Some(text) => serde_json::from_str(&text).ok(),
-            None => None,
-        }
     }
 }
 
@@ -148,8 +105,8 @@ pub fn parse_server_message(text: &str) -> Result<ServerMessage, Box<dyn std::er
     serde_json::from_str(text).map_err(|e| e.into())
 }
 
-/// The server said no. `raw` is its auth_result line, which headless mode
-/// still echoes to stdout so an agent can read the code.
+/// The server said no. `raw` is its auth_result line, which the headless
+/// client still prints so an agent can read the code.
 #[derive(Debug)]
 pub struct LoginRefused {
     pub raw: String,
@@ -164,35 +121,40 @@ impl std::fmt::Display for LoginRefused {
 
 impl std::error::Error for LoginRefused {}
 
+/// A login the server accepted. `auth_line` is its auth_result as it was
+/// sent, which the headless client prints. `notice` is the caller's to put
+/// on stderr under its own name: where a token issued at this login was
+/// saved, or that it could not be saved and what it is.
+pub struct Login {
+    pub connection: Connection,
+    pub auth_line: String,
+    pub notice: Option<String>,
+}
+
 /// Connect and log in as `name`. The token comes from `--token`, else from
 /// the saved token file for this server and name; a token issued by the
-/// server is saved there. Returns the connection and the raw auth_result
-/// line (headless mode echoes it). Notices go to stderr.
+/// server is saved there.
 pub async fn login(
     config: &ConnectionConfig,
     name: &str,
     cli_token: Option<&str>,
     agent: bool,
-) -> Result<(Connection, String), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Login, Box<dyn std::error::Error + Send + Sync>> {
     let server = token_store::server_key(&config.host, config.port);
     let token = cli_token.map(str::to_string).or_else(|| token_store::load(&server, name));
 
-    let conn = Connection::connect(config).await?;
-    let (raw, result) = conn.authenticate(name, token.as_deref(), agent).await?;
+    let connection = Connection::connect(config).await?;
+    let (auth_line, result) = connection.authenticate(name, token.as_deref(), agent).await?;
 
     if !result.success {
         let reason = login_error(&result, token.is_some(), cli_token.is_some());
-        return Err(LoginRefused { raw, reason }.into());
+        return Err(LoginRefused { raw: auth_line, reason }.into());
     }
-    if let Some(issued) = &result.token {
-        match token_store::save(&server, name, issued) {
-            Ok(path) => eprintln!("iac-client: new token for '{name}' saved to {}", path.display()),
-            Err(e) => eprintln!(
-                "iac-client: could not save the token ({e}); keep it and pass --token next time: {issued}"
-            ),
-        }
-    }
-    Ok((conn, raw))
+    let notice = result.token.as_ref().map(|issued| match token_store::save(&server, name, issued) {
+        Ok(path) => format!("new token for '{name}' saved to {}", path.display()),
+        Err(e) => format!("could not save the token ({e}); keep it and pass --token next time: {issued}"),
+    });
+    Ok(Login { connection, auth_line, notice })
 }
 
 fn login_error(result: &AuthResult, sent_token: bool, from_cli: bool) -> String {

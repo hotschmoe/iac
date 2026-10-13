@@ -1,5 +1,5 @@
-// Headless NDJSON mode: the game as a pipe, so LLM agents (or scripts,
-// or `jq`) can play without a terminal.
+// The headless client: the game as an NDJSON pipe, so LLM agents (or
+// scripts, or `jq`) can play without a terminal.
 //
 //   stdout — every server message, one JSON object per line, verbatim.
 //   stdin  — one JSON command per line. Accepts either a full client
@@ -12,27 +12,61 @@
 
 use std::io::Write;
 
+use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_tungstenite::tungstenite::protocol::Message;
 
+use iac_headless::connection::{self, ConnectionConfig, Login};
+use iac_shared::constants::{DEFAULT_HOST, DEFAULT_PORT};
 use iac_shared::protocol::{ClientMessage, Command};
 
-use crate::connection::{self, ConnectionConfig};
+/// IAC headless client: server messages on stdout (one JSON per line),
+/// commands from stdin. Built for LLM agents and scripts.
+#[derive(Parser, Debug)]
+#[command(name = "iac-headless", version, about)]
+struct Cli {
+    /// Server host
+    #[arg(long, default_value = DEFAULT_HOST)]
+    host: String,
 
-pub async fn run(
-    config: &ConnectionConfig,
-    name: &str,
-    token: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (conn, auth_line) = match connection::login(config, name, token, true).await {
-        Ok(ok) => ok,
-        Err(e) => {
-            if let Some(refused) = e.downcast_ref::<connection::LoginRefused>() {
-                println!("{}", refused.raw);
+    /// Server port
+    #[arg(long, default_value_t = DEFAULT_PORT)]
+    port: u16,
+
+    /// Player name
+    #[arg(long, default_value = "Admiral")]
+    name: String,
+
+    /// Auth token for this name. Defaults to the one saved for this server
+    /// and name; a token issued on first login is saved automatically.
+    #[arg(long)]
+    token: Option<String>,
+}
+
+#[tokio::main]
+async fn main() {
+    env_logger::init();
+    if let Err(e) = run(Cli::parse()).await {
+        eprintln!("iac-headless: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let config = ConnectionConfig { host: cli.host, port: cli.port };
+    let Login { connection: conn, auth_line, notice } =
+        match connection::login(&config, &cli.name, cli.token.as_deref(), true).await {
+            Ok(login) => login,
+            Err(e) => {
+                if let Some(refused) = e.downcast_ref::<connection::LoginRefused>() {
+                    println!("{}", refused.raw);
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
-    };
+        };
+    if let Some(notice) = notice {
+        eprintln!("iac-headless: {notice}");
+    }
     println!("{auth_line}");
 
     let conn_tx = conn.tx.clone();

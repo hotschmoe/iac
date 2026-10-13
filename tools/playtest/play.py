@@ -14,7 +14,7 @@ import json, os, re, sys, time, subprocess, pathlib, threading
 HERE = pathlib.Path(__file__).resolve().parent
 LIVE = pathlib.Path(os.environ.get("IAC_RUN") or HERE / "run").resolve()
 LOGS, FIFOS, STATE = LIVE / "logs", LIVE / "fifo", LIVE / "state"
-CLIENT = HERE.parent.parent / "target/release/iac-client"
+CLIENT = HERE.parent.parent / "target/release/iac-headless"
 PORT = int(os.environ.get("IAC_PORT", "7777"))
 DIRS = {(1, 0): "E", (1, -1): "NE", (0, -1): "NW", (-1, 0): "W", (-1, 1): "SW", (0, 1): "SE"}
 RES = ("metal", "crystal", "deuterium")
@@ -1578,7 +1578,7 @@ def daemon(name):
     threading.Thread(target=poll_board, daemon=True).start()
     threading.Thread(target=watch_watchdog, daemon=True).start()
     pidfile = STATE / f"{name}.client.pid"
-    if proc_alive(pidfile, "iac-client"):
+    if proc_alive(pidfile, "iac-headless"):
         try:
             os.kill(int(pidfile.read_text()), 15)
             hlog(f"killed stale client of {name} left by an earlier daemon")
@@ -1586,7 +1586,7 @@ def daemon(name):
             pass
     while True:
         with open(LOGS / f"{name}.ndjson", "ab") as out, open(LOGS / f"{name}.stderr", "ab") as err:
-            p = subprocess.Popen([str(CLIENT), "--headless", "--port", str(PORT), "--name", name],
+            p = subprocess.Popen([str(CLIENT), "--port", str(PORT), "--name", name],
                                  stdin=keeper, stdout=out, stderr=err, env=env)
             pidfile.write_text(str(p.pid))
             code = p.wait()
