@@ -1609,7 +1609,7 @@ Future<int?> flight(Browser browser,
     await browser.shot('38-fled-ending-1440');
     await browser.resize(390, 844);
     await sheet(browser, open: true);
-    await soon(() async => (await browser.toasts()).isEmpty, ms: 9000);
+    await soon(() async => !(await browser.text()).contains('Alert. '), ms: 11000);
     await browser.shot('38-fled-ending-390');
     await browser.resize(1440, 900);
   } else {
