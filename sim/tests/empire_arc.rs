@@ -63,7 +63,7 @@ fn chart_the_neighbourhood(e: &mut Empire) {
     assert_eq!(e.engine.players[&e.pid].explore_points, paid, "the same sector never pays twice");
 }
 
-const HALF: f32 = scaling::CANCEL_REFUND_FRACTION;
+const HALF: f64 = scaling::CANCEL_REFUND_FRACTION;
 
 fn item_started(events: &[QueueEvent], item: &str) -> Option<usize> {
     events.iter().position(|q| q.action == QueueAction::Started && q.item.starts_with(item))
@@ -137,7 +137,7 @@ fn a_batch_larger_than_the_vault_is_refused_though_refunds_would_pay_for_it() {
     let cap = e.state().homeworld.storage.cap;
     let unit = ShipClass::Scout.build_cost();
     let fits = (cap.metal / unit.metal).floor() as u16;
-    let whole = unit.scale(f32::from(fits));
+    let whole = unit.scale(f64::from(fits));
 
     e.set_stockpile(cap);
     let mark = e.mark();
@@ -150,7 +150,7 @@ fn a_batch_larger_than_the_vault_is_refused_though_refunds_would_pay_for_it() {
     e.run(3);
     assert_eq!(e.stockpile(), hoard, "and stays there: the mines add nothing over the cap and take nothing away");
 
-    let over = unit.scale(f32::from(fits + 1));
+    let over = unit.scale(f64::from(fits + 1));
     assert!(over.metal > cap.metal && hoard.can_afford(over), "{over:?} against {cap:?} and {hoard:?}");
     let (code, message) = e.refusal(scouts(fits + 1));
     assert_eq!(code, ErrorCode::StorageTooSmall);
@@ -272,7 +272,7 @@ fn corvettes(count: u16) -> Command {
 
 fn build_a_battle_group(e: &mut Empire, count: u16) {
     let unit = ShipClass::Corvette.build_cost();
-    let batch = unit.scale(f32::from(count));
+    let batch = unit.scale(f64::from(count));
     let pair = unit.scale(2.0);
     let mark = e.mark();
 
@@ -319,7 +319,7 @@ fn build_a_battle_group(e: &mut Empire, count: u16) {
     let cancel_mark = e.mark();
     e.order(Command::CancelBuild { queue_type: QueueType::Ship, id: running.id }).expect("cancel the part-built batch");
     let cancelled = e.queue_events(cancel_mark);
-    let refund = unit.scale(f32::from(running.count - running.built)).scale(HALF);
+    let refund = unit.scale(f64::from(running.count - running.built)).scale(HALF);
     assert_eq!(cancelled[0].refunded, refund, "half of every unit not delivered, the one under way included");
     assert!(cancelled[0].item.contains(&format!("{} already built and kept", running.built)), "{}", cancelled[0].item);
     assert_eq!(e.stockpile(), before.add(refund));
@@ -331,7 +331,7 @@ fn build_a_battle_group(e: &mut Empire, count: u16) {
 
     let rest = count.saturating_sub(running.built + 2);
     if rest > 0 {
-        e.set_stockpile(unit.scale(f32::from(rest)));
+        e.set_stockpile(unit.scale(f64::from(rest)));
         e.order(corvettes(rest)).expect("the rest of the group");
     }
     e.run_until(2000, yard_idle);
@@ -475,7 +475,7 @@ fn reinforce(e: &mut Empire) -> bool {
         let unit = ShipClass::Corvette.build_cost();
         let stock = e.stockpile();
         let covered = (stock.metal / unit.metal).min(stock.crystal / unit.crystal).min(stock.deuterium / unit.deuterium).floor();
-        let count = lacking.min(covered) as u16;
+        let count = f64::from(lacking).min(covered) as u16;
         if count > 0 {
             e.order(corvettes(count)).expect("reinforcements the stockpile covers");
         }

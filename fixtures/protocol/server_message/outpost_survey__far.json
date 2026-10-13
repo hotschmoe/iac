@@ -26,8 +26,8 @@
     "grade": 3.0,
     "production": {
       "crystal": 0.0,
-      "deuterium": 0.01082600001245737,
-      "metal": 0.02165200002491474
+      "deuterium": 0.010826,
+      "metal": 0.021652
     }
   },
   "type": "outpost_survey"

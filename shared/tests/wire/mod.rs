@@ -89,6 +89,13 @@ impl From<f32> for Cell {
     }
 }
 
+/// As it is: an amount, and what scales one, is an `f64` in Rust and in Dart.
+impl From<f64> for Cell {
+    fn from(x: f64) -> Cell {
+        Cell::Real(x)
+    }
+}
+
 /// One value for each variant of an enum, in declaration order.
 pub struct Column {
     pub name: &'static str,

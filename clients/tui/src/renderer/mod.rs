@@ -402,7 +402,7 @@ fn hold_lines(state: &ClientState, fleet: &iac_shared::protocol::FleetState) -> 
 
 /// "38.9 metal, 19.4 deuterium" made in a game hour; "nothing" for none.
 fn yield_an_hour(per_tick: &iac_shared::Resources) -> String {
-    let rate = |per_tick: f32| {
+    let rate = |per_tick: f64| {
         let an_hour = per_tick * 3600.0;
         if an_hour >= 100.0 { format!("{an_hour:.0}") } else { format!("{an_hour:.1}") }
     };

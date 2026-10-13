@@ -33,7 +33,7 @@ use ResourceKind::{Crystal, Deuterium, Metal};
 
 const COST: Resources = Resources { metal: 1000.0, crystal: 500.0, deuterium: 200.0 };
 
-fn res(metal: f32, crystal: f32, deuterium: f32) -> Resources {
+fn res(metal: f64, crystal: f64, deuterium: f64) -> Resources {
     Resources { metal, crystal, deuterium }
 }
 
@@ -73,7 +73,7 @@ fn stow(e: &mut Empire, fid: u64, cargo: Resources) {
 }
 
 /// Haulers enough to hold `load` at this world's pace.
-fn haulers_for(engine: &GameEngine, load: f32) -> usize {
+fn haulers_for(engine: &GameEngine, load: f64) -> usize {
     (load / (200.0 * engine.pace().cargo_mult())).ceil() as usize
 }
 
@@ -90,7 +90,7 @@ fn crew(e: &mut Empire, fid: u64, classes: &[(ShipClass, usize)], at: Hex) {
     muster(&mut e.engine, fid, classes, at);
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
-        let tank: f32 = fleet.ships[..fleet.ship_count].iter().map(|s| s.ship_class.base_stats().fuel as f32).sum();
+        let tank: f64 = fleet.ships[..fleet.ship_count].iter().map(|s| f64::from(s.ship_class.base_stats().fuel)).sum();
         fleet.fuel_max = tank;
         fleet.fuel = tank;
     });
@@ -150,7 +150,7 @@ fn completed(e: &Empire, mark: usize) -> Vec<u8> {
     })
 }
 
-fn near(a: Resources, b: Resources, tolerance: f32) -> bool {
+fn near(a: Resources, b: Resources, tolerance: f64) -> bool {
     ResourceKind::ALL.into_iter().all(|k| (a.get(k) - b.get(k)).abs() <= tolerance)
 }
 
@@ -434,8 +434,8 @@ fn a_survey_reads_any_charted_sector_and_says_what_stands_in_the_way() {
         (template.metal_density, template.crystal_density, template.deut_density),
     );
     assert_eq!(read.grade, grade_of(&template));
-    let ring_factor = maths::powi(1.1f32, 9);
-    let per_tick = |d: Density| 2.0 / 3600.0 * d.harvest_multiplier() * ring_factor * 10.0;
+    let ring_factor = maths::powi(1.1f64, 9);
+    let per_tick = |d: Density| 2.0 / 3600.0 * f64::from(d.harvest_multiplier()) * ring_factor * 10.0;
     let quoted = res(per_tick(template.metal_density), per_tick(template.crystal_density), per_tick(template.deut_density));
     assert!(near(read.production, quoted, 1e-6), "{:?} against {quoted:?}", read.production);
     assert_eq!(
@@ -459,7 +459,7 @@ fn a_survey_reads_any_charted_sector_and_says_what_stands_in_the_way() {
 #[test]
 fn the_extractor_makes_what_the_survey_said_at_every_pace() {
     for (pace, p, ticks, cap) in [
-        ("persistent", 1.0f32, 54_000u64, res(3000.0, 1500.0, 750.0)),
+        ("persistent", 1.0f64, 54_000u64, res(3000.0, 1500.0, 750.0)),
         ("season", 10.0, 5400, res(9486.833, 4743.4165, 2371.7083)),
         ("blitz", 600.0, 90, res(73_484.69, 36_742.346, 18_371.173)),
     ] {
@@ -469,7 +469,7 @@ fn the_extractor_makes_what_the_survey_said_at_every_pace() {
         haul(&mut e, at, COST);
         let quote = survey(&mut e, None);
         let quoted = quote.site.as_ref().expect("the fleet stands in the sector").production;
-        let per_tick = |d: Density| 2.0 / 3600.0 * d.harvest_multiplier() * maths::powi(1.1f32, 9) * p;
+        let per_tick = |d: Density| 2.0 / 3600.0 * f64::from(d.harvest_multiplier()) * maths::powi(1.1f64, 9) * p;
         let rate = res(per_tick(template.metal_density), per_tick(template.crystal_density), per_tick(template.deut_density));
         assert!(near(quoted, rate, rate.total() * 1e-5), "{pace}: {quoted:?} against {rate:?}");
         assert_eq!(quote.build_ticks, ticks, "{pace}");
@@ -568,8 +568,8 @@ fn a_convoy_round_trip_makes_nothing_but_the_yield() {
     e.run(2);
     assert_eq!(e.fleet().fuel, 200.0, "the outpost fills the tank from what the convoy brought");
 
-    let burned = jump * (out.len() + back.len()) as f32;
-    let made = rate.scale((e.engine.current_tick() - started) as f32);
+    let burned = jump * (out.len() + back.len()) as f64;
+    let made = rate.scale((e.engine.current_tick() - started) as f64);
     let after = owned(&e);
     let spent = res(0.0, 0.0, burned * FUEL_DEUT_PER_UNIT);
     assert!(
@@ -1112,7 +1112,7 @@ fn thirty_days_of_raids_never_destroy_an_undefended_outpost() {
     let core = e.score_row().core;
 
     let mark = e.mark();
-    let (mut breached, mut lowest) = (0u64, f32::MAX);
+    let (mut breached, mut lowest) = (0u64, f64::MAX);
     for _ in 0..30 * 24 {
         e.run(360);
         let post = &e.engine.outposts[&pid];
@@ -1211,7 +1211,8 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     assert_eq!((field.outpost_repairs, field.outpost_ticks_waiting, field.outpost_hauled), (0.0, 0, 0.0));
     let site = report.outpost.expect("the report says where it stands");
     assert_eq!((site.sector, site.ring, site.level, site.breached, site.waiting), (post.sector, 10, 2, false, false));
-    assert!((site.payback_hours - 1700.0 / (2.0 * site.grade * scaling::ring_mult(10))).abs() < 0.05, "{site:?}");
+    let payback = 1700.0 / (2.0 * f64::from(site.grade) * scaling::ring_mult(10));
+    assert!((f64::from(site.payback_hours) - payback).abs() < 0.05, "{site:?}");
     assert_eq!(site.next_mine_level, 2, "an idle empire's next Metal Mine level");
 
     let (fid, at) = (held.engine.fleets.values().find(|f| f.owner_id == keeper).unwrap().id, post.sector);

@@ -117,9 +117,9 @@
       "metal": 1200.0
     },
     "store_cap": {
-      "crystal": 29646.353515625,
-      "deuterium": 14823.1767578125,
-      "metal": 59292.70703125
+      "crystal": 29646.354,
+      "deuterium": 14823.177,
+      "metal": 59292.707
     },
     "upgrade_refusal": "your outpost at [10,-2] is breached; it repairs itself first, once its store covers the repair: 3360 metal, or crystal at 1.5 and deuterium at 2 a unit in its place",
     "yield_lost": []
@@ -164,8 +164,8 @@
           "units": 19.5
         },
         "metal": {
-          "max_units": 42.900001525878906,
-          "units": 42.900001525878906
+          "max_units": 42.9,
+          "units": 42.9
         }
       },
       "outpost": {

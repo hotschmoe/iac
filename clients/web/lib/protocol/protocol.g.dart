@@ -4622,6 +4622,9 @@ enum ShipClass {
   String toJson() => wire;
 }
 
+/// Amounts of the three resources. An amount is 64-bit wherever it is held,
+/// carried, priced or sent, and so is a fleet's fuel: a 32-bit float steps by
+/// a quarter at two and a half million, and a mine adds less than that a tick.
 class Resources {
   final double metal;
   final double crystal;
@@ -4838,7 +4841,7 @@ const double siteGradeMax = 12;
 const laneSearchHops = 64;
 
 /// `StorageNearCap` fires at this fill ratio.
-const double storageNearCapRatio = 0.8500000238418579;
+const double storageNearCapRatio = 0.85;
 
 /// Active scan: hops revealed from the scanning fleet's position.
 /// Fleets carrying a Scout get the extended range; signals are faint

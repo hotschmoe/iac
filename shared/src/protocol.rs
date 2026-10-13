@@ -194,7 +194,7 @@ pub enum Command {
         give: ResourceKind,
         want: ResourceKind,
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        amount: Option<f32>,
+        amount: Option<f64>,
     },
     /// Ask what `exchange` with the same fields would give, without trading.
     /// The reply is an `exchange_quote` message. It answers for a fleet
@@ -206,7 +206,7 @@ pub enum Command {
         give: ResourceKind,
         want: ResourceKind,
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        amount: Option<f32>,
+        amount: Option<f64>,
     },
     /// Move `amount` units of `resource` from the stockpile into the hold of
     /// `fleet_id`; without `amount`, all the stockpile holds and the hold
@@ -230,7 +230,7 @@ pub enum Command {
         fleet_id: u64,
         resource: ResourceKind,
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        amount: Option<f32>,
+        amount: Option<f64>,
     },
     /// End what `load` began: the hold of `fleet_id`, docked at home, goes
     /// back to the stockpile as far as the caps allow, and the rest follows
@@ -509,13 +509,13 @@ pub struct ExchangeTerms {
     pub give: ResourceKind,
     pub want: ResourceKind,
     /// Units of `give` handed over.
-    pub amount: f32,
+    pub amount: f64,
     /// Units of `want` that come back: whole units, rounded down.
-    pub receive: f32,
+    pub receive: f64,
     /// Units of `want` the same `amount` is worth at par, with no fee.
-    pub par: f32,
+    pub par: f64,
     /// The share of par the exchange keeps on this trade, `1 - receive / par`.
-    pub fee: f32,
+    pub fee: f64,
     /// The player's meter before the trade.
     pub meter: ExchangeMeter,
     /// And after it.
@@ -526,14 +526,14 @@ pub struct ExchangeTerms {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExchangeMeter {
     /// Weight sold and not yet forgotten.
-    pub pressure: f32,
+    pub pressure: f64,
     /// The pressure at which the fee stops rising: 15 percent of what the
     /// player's own mines make in one window, in weight units. It grows
     /// with the mines; 0 for an empire with no mine output, which pays the
     /// top fee.
-    pub span: f32,
+    pub span: f64,
     /// The fee on the next unit of weight sold, 0.25 to 0.75.
-    pub fee: f32,
+    pub fee: f64,
     /// The meter forgets one `span` every this many ticks.
     pub window_ticks: u64,
     /// Ticks until the meter is empty again; 0 when it is, absent when it
@@ -616,9 +616,9 @@ pub struct MovePreview {
     pub fleet_id: u64,
     pub target: Hex,
     /// Fuel the jump burns.
-    pub fuel_cost: f32,
+    pub fuel_cost: f64,
     /// Fuel left afterwards (0 when the fleet cannot afford the jump).
-    pub fuel_after: f32,
+    pub fuel_after: f64,
     /// The fleet holds enough fuel for the jump.
     pub can_jump: bool,
     /// Hops from `target` back to the homeworld by the shortest real route,
@@ -632,7 +632,7 @@ pub struct MovePreview {
     #[serde(default)]
     pub route_unexplored: bool,
     /// Fuel the `hops_home` route costs.
-    pub fuel_to_return: f32,
+    pub fuel_to_return: f64,
     /// After the jump the fleet still holds enough fuel to get home.
     pub can_return: bool,
     pub threat: ThreatInfo,
@@ -964,15 +964,15 @@ pub struct FleetState {
     pub ships: Vec<ShipState>,
     pub cargo: Resources,
     /// Hold size: the most `cargo` can total, as the server enforces it.
-    pub cargo_capacity: f32,
-    pub fuel: f32,
-    pub fuel_max: f32,
+    pub cargo_capacity: f64,
+    pub fuel: f64,
+    pub fuel_max: f64,
     /// Fuel one jump costs this fleet right now (it scales with the fleet's
     /// hull mass and fuel research). A fleet with less than this and away
     /// from home is stranded and only regains fuel from the emergency
     /// reserve, one jump per five minutes.
     #[serde(default)]
-    pub jump_fuel: f32,
+    pub jump_fuel: f64,
     /// Fuel the way home costs: the fewest hops over the real lanes, charted
     /// or not, times `jump_fuel`. That is the way a fleet flies one jump at
     /// a time, and what standing orders budget for. 0 at the homeworld.
@@ -980,7 +980,7 @@ pub struct FleetState {
     /// jumps straight home and burns twice `jump_fuel` per hex of straight
     /// distance.
     #[serde(default)]
-    pub home_fuel: f32,
+    pub home_fuel: f64,
     /// Fewest hops home over the real lanes, charted or not. `home_fuel` is
     /// the fuel for these. 0 at the homeworld. Counted from where the fleet
     /// is bound: its destination while a jump is in progress, otherwise
@@ -1023,7 +1023,7 @@ pub struct FleetState {
     /// there times `jump_fuel`, 0 at the outpost. Present while that
     /// outpost is in service, which is when it fills a tank.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub outpost_fuel: Option<f32>,
+    pub outpost_fuel: Option<f64>,
     /// Standing orders currently flying this fleet, if any: the doctrine
     /// with its settings, so the two cannot be told apart or disagree.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1168,9 +1168,9 @@ pub struct OreReserve {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TileReserve {
     /// Raw units left to harvest.
-    pub units: f32,
+    pub units: f64,
     /// Units the tile holds when full (0 for a sector without this ore).
-    pub max_units: f32,
+    pub max_units: f64,
     /// Seconds until the tile is full again, if it is not.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub refills_in_s: Option<u64>,
@@ -1804,7 +1804,7 @@ pub struct StorageNearCapEvent {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub player_id: Option<u64>,
     pub resource: ResourceKind,
-    pub ratio: f32,
+    pub ratio: f64,
     /// Seconds until full at the current production; absent when not filling.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub full_in_s: Option<u64>,

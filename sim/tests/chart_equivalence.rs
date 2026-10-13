@@ -27,6 +27,14 @@
 // homeworld [-5,1]. The recall used to halt the harvest; refused, the fleet
 // mines on and the sector's ore reads lower from tick 112. The script does
 // the same at ticks 427 and 1615.
+//
+// And when amounts became 64-bit: every line changed, because an ore figure
+// is written as itself (42.9) and no longer as the nearest `f32`
+// (42.900001525878906). The two engines were played side by side with what
+// this test hashes written out. They sent the same events on the same
+// ticks, and the charts differed in three ways: ore figures in their last
+// digits, `refills_in_s` by one second, and six times in the 4000 ticks a
+// refilling tile reached its next level one tick apart.
 
 #[allow(dead_code)]
 mod common;

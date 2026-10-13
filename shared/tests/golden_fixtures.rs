@@ -85,7 +85,7 @@ fn h(q: i16, r: i16) -> Hex {
     Hex::new(q, r)
 }
 
-fn res(metal: f32, crystal: f32, deuterium: f32) -> Resources {
+fn res(metal: f64, crystal: f64, deuterium: f64) -> Resources {
     Resources { metal, crystal, deuterium }
 }
 
@@ -501,7 +501,7 @@ fn sample_player() -> PlayerState {
     PlayerState {
         id: 42,
         name: "Admiral".into(),
-        resources: res(1200.5, 600.0, 150.25),
+        resources: res(2_500_000.216, 600.0, 150.25),
         homeworld: h(4, -2),
         exchange: sold_meter(),
     }

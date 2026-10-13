@@ -3,6 +3,71 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (amounts are 64-bit: where the line runs)
+
+Slice 0b of `docs/design/ogame.md`, section 12. The owner decided that
+`Resources` becomes three `f64` (the study's default, section 8.1). Where the
+64 bits stop was left to the agent that built it, and is recorded here because
+every later slice writes numbers on one side of the line or the other. None
+of it was put to the owner.
+
+**64-bit: an amount, and what only ever scales one.**
+
+- `Resources` wherever it is used: the stockpile, production a tick, the
+  storage caps and what a raid cannot take, a hold and its capacity, the
+  outpost's store, its caps and its yield, salvage, loot, a group's bounty,
+  costs, payments and refunds, what a raid takes.
+- Ore in the ground: a tile's units, its steps and reserve, what has been
+  harvested from it, what it regains a tick.
+- Fuel: a fleet's fuel and tank, what a jump, a way home and a recall cost, a
+  doctrine's fuel credit and income. The tank is filled from the deuterium
+  stockpile and the outpost's store, so the two are one kind of number, and
+  `FUEL_DEUT_PER_UNIT` between them is an `f64`: no width is crossed at a
+  dock.
+- The exchange's figures on the wire (`ExchangeTerms`, `ExchangeMeter`), the
+  fee included. The engine already worked them out in 64 bits and narrowed
+  them to send them.
+- The fill of a stockpile against its cap (`StorageNearCapEvent.ratio`,
+  `STORAGE_NEAR_CAP_RATIO`): one amount divided by another, compared as it is
+  computed. The web client's `storageNearCap` is now that same division.
+- Constants and curves whose only use is to multiply an amount: the raid's
+  shares of a stockpile, the refund on a cancelled order, the Vault's growth
+  and protected share, the loot split, the wreck and derelict values, the
+  ring's ore factor, the fuel a unit of mass burns and the three fuel
+  modifiers, the harvest yield, `ResourceKind::weight`, the pace's
+  multipliers for caps, holds and finds, `Pace::rate`. Each keeps the figure
+  it was declared with (0.08 is 0.08); as an `f64` it is the nearest double
+  to that figure and no longer the nearest float.
+
+**Still 32-bit: what is not an amount.** Hull, shield and weapon; power,
+threat and the odds ratio; score and every point; chances and every roll of
+the dice; site grade; hours of regeneration and respawn. The fight is replaced
+in slice 2 and these go with it or stay as they are.
+
+**Where the two meet**, each in one place:
+
+- `scaling::resource_weight`: an amount becomes points (`as f32`). Score, the
+  doctrines' judgment of whether a seam repays its fuel, and the bots'
+  budgets are points from there on.
+- A jump's fuel: the fleet's mass is its hulls, 32-bit, widened exactly, then
+  multiplied in 64 bits (`fleet_fuel_cost`).
+- Loot: a group's power, a kill's farm factor and a derelict's roll are
+  32-bit and are widened exactly where they scale an amount.
+- No roll of the dice changed type. A draw that was an `f32` is still one and
+  is widened after it is drawn, so every random stream gives what it gave.
+
+**JSON.** `serde_json` reads an `f64` back exactly only with its
+`float_roundtrip` feature; without it one in ten comes back a unit in the last
+place away (measured: 200,843 of 2,000,000). A 32-bit float never showed
+this. The feature is on in `shared/Cargo.toml` and `sim/Cargo.toml`, and a
+stored world, an order and the cross-language fixtures depend on it.
+
+**`WORLDGEN_VERSION` stays 3.** The generator rolls the same sectors. The
+units a full tile holds are its density's reserve times the ring's factor,
+now multiplied in 64 bits, so they differ from before in the eighth digit;
+that is the economy's arithmetic, and `ECONOMY_VERSION` (8) and `SAVE_FORMAT`
+(6) refuse every older world as it is.
+
 ## 2026-10-13 (the OGame study's eleven questions: the defaults)
 
 The owner was shown the eleven questions of `docs/design/ogame.md`, section 14,

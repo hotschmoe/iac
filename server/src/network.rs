@@ -401,10 +401,10 @@ mod tests {
             fleet.ships[fleet.ship_count].ship_class = ShipClass::Hauler;
             fleet.ship_count += 1;
         }
-        let expected_cap: f32 = {
+        let expected_cap: f64 = {
             let e = t.engine();
             e.fleets[&fid].ships[..e.fleets[&fid].ship_count].iter()
-                .map(|s| s.ship_class.base_stats().cargo as f32).sum()
+                .map(|s| f64::from(s.ship_class.base_stats().cargo)).sum()
         };
         assert!(expected_cap > 200.0, "hauler must be counted: {expected_cap}");
 
@@ -412,13 +412,13 @@ mod tests {
         let update = t.tick();
         let grown = t.engine().players[&pid].resources;
 
-        assert_eq!(update["fleets"][0]["cargo_capacity"].as_f64().unwrap() as f32, expected_cap);
+        assert_eq!(update["fleets"][0]["cargo_capacity"].as_f64().unwrap(), expected_cap);
         let prod = &update["homeworld_update"]["production"];
         assert!(prod["metal"].as_f64().unwrap() > 0.0);
-        assert!((grown.metal - before.metal - prod["metal"].as_f64().unwrap() as f32).abs() < 1e-3,
+        assert!((grown.metal - before.metal - prod["metal"].as_f64().unwrap()).abs() < 1e-3,
             "advertised production must equal the stockpile change");
-        assert!((grown.crystal - before.crystal - prod["crystal"].as_f64().unwrap() as f32).abs() < 1e-3);
-        assert!((grown.deuterium - before.deuterium - prod["deuterium"].as_f64().unwrap() as f32).abs() < 1e-3);
+        assert!((grown.crystal - before.crystal - prod["crystal"].as_f64().unwrap()).abs() < 1e-3);
+        assert!((grown.deuterium - before.deuterium - prod["deuterium"].as_f64().unwrap()).abs() < 1e-3);
     }
 
     #[test]

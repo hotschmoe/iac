@@ -105,9 +105,9 @@ pub struct LoadOffer {
     pub resource: ResourceKind,
     /// The most the dock's stock holds and the hold has room for, as the
     /// client last saw them.
-    pub fits: f32,
+    pub fits: f64,
     /// What the order asks for; None for all that fits.
-    pub amount: Option<f32>,
+    pub amount: Option<f64>,
 }
 
 /// Exchange overlay: the trade being put together for the active fleet, and
@@ -504,7 +504,7 @@ impl ClientState {
         let room = fleet.cargo_capacity - fleet.cargo.total();
         let fits = stock.min(room).max(0.0);
         let pct = HOLD_SHARES[panel.share];
-        let amount = (pct < 100 && fits > 0.0).then(|| fits * f32::from(pct) / 100.0);
+        let amount = (pct < 100 && fits > 0.0).then(|| fits * f64::from(pct) / 100.0);
         Some(LoadOffer { fleet_id: fleet.id, resource: panel.resource, fits, amount })
     }
 
@@ -557,7 +557,7 @@ impl ClientState {
     /// The trade the overlay shows: fleet, give, want and the amount (None
     /// for all the hold carries of `give`). No trade while the hold has
     /// none of `give`.
-    fn exchange_order(&self) -> Option<(u64, ResourceKind, ResourceKind, Option<f32>)> {
+    fn exchange_order(&self) -> Option<(u64, ResourceKind, ResourceKind, Option<f64>)> {
         let panel = self.exchange_panel.as_ref()?;
         let fleet = self.active_fleet()?;
         let held = fleet.cargo.get(panel.give);
@@ -565,7 +565,7 @@ impl ClientState {
             return None;
         }
         let pct = HOLD_SHARES[panel.share];
-        let amount = (pct < 100).then(|| held * f32::from(pct) / 100.0);
+        let amount = (pct < 100).then(|| held * f64::from(pct) / 100.0);
         Some((fleet.id, panel.give, panel.want, amount))
     }
 
@@ -1049,7 +1049,7 @@ impl ClientState {
                     HomeworldTab::Shipyard => {
                         let count = self.ship_build_count;
                         let stock = self.player.as_ref()?.resources;
-                        let covered = |unit: iac_shared::constants::Resources| stock.can_afford(unit.scale(f32::from(count)));
+                        let covered = |unit: iac_shared::constants::Resources| stock.can_afford(unit.scale(f64::from(count)));
                         if let Some(o) = cat.ships.get(i) {
                             let open = o.requires.iter().all(|r| r.met) && covered(o.unit_cost);
                             return open.then_some(Command::BuildShip { ship_class: o.ship_class, count });

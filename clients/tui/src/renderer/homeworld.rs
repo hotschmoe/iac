@@ -118,7 +118,7 @@ fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &Hom
             };
             content.push_str(&extra);
             requires = reqs;
-            let short = state.player.as_ref().map(|p| p.resources.shortfall(unit_cost.scale(batch as f32)));
+            let short = state.player.as_ref().map(|p| p.resources.shortfall(unit_cost.scale(f64::from(batch))));
             if requires.iter().any(|r| !r.met) {
                 content.push_str(" LOCKED\n");
             } else if let Some(short) = short.filter(|s| s.total() > 0.0) {
@@ -129,7 +129,7 @@ fn render_card(frame: &mut Frame<'_>, area: &Rect, state: &ClientState, hw: &Hom
                 content.push_str(" READY\n");
             }
             maxed = false;
-            cost_info = Some((unit_cost.scale(batch as f32), unit_ticks * batch as u64));
+            cost_info = Some((unit_cost.scale(f64::from(batch)), unit_ticks * batch as u64));
         }
         HomeworldTab::Research => {
             let Some(o) = catalog.research.get(idx) else { return };
