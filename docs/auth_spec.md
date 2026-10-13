@@ -38,7 +38,7 @@ matters for a LAN game, with these differences:
   `last_login_at`, and the multi-device recovery ideas. Online guessing of a
   256-bit token is infeasible, so lockout buys little; registration spam is
   the open gap if the server is ever exposed beyond a trusted network.
-- Clients store the token per server and name: TUI/headless in
+- Clients store the token per server and name: the headless client in
   `~/.config/iac/tokens.json`, the web client in `localStorage`.
 
 ## Design Principles

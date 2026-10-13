@@ -6450,3 +6450,23 @@ client is not touched and its checks were not run.
 
 **Not verified.** The TUI in a terminal, and anything in `tools/playtest`,
 whose two files were edited by reading.
+
+## 2026-10-13: the TUI is out of the workspace
+
+By the owner's word ("yes take tui out of workspace after the split is
+committed"). `clients/tui` was moved to `.archive/clients/tui` at
+2026-10-13T07:08:12Z (`mv clients/tui .archive/clients/tui`) and is no longer
+a member of the workspace; its last state in git is the merge `6c22e2d`.
+`Cargo.lock` lost `iac-tui`, ratatui, crossterm and what only they brought.
+With its one other user gone, the headless library lost
+`parse_server_message` and the `agent` argument of `login` and
+`authenticate`: a headless client always logs in as an agent. `README.md`,
+`CLAUDE.md` and one line of `docs/auth_spec.md` no longer present a terminal
+client; the rest of `auth_spec.md` is a design of its day and is left.
+
+**Run.** `cargo build --workspace --all-targets`, no warning; `cargo clippy
+--workspace --all-targets` silent; `cargo test --workspace --no-fail-fast`: 158
+passed, 0 failed (the nine of `server/tests/scenarios.rs`, which drive the
+headless binary, among them).
+
+**Not verified.** `tools/playtest` was not run.
