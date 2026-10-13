@@ -122,7 +122,7 @@ fn render_footer(frame: &mut Frame<'_>, state: &ClientState, area: Rect) {
     }
 
     let text: &str = if state.fleet_panel.is_some() {
-        " FLEETS | [Up/Down] Ship  [Space] Mark  [s] Split  [g] Merge in  [r] Resource  [Left/Right] Amount  [l] Load  [u] Unload  [d] Refine  [Tab] Fleet  [f] Close"
+        " FLEETS | [Up/Down] Ship  [Space] Mark  [s] Split  [g] Merge in  [r] Resource  [Left/Right] Amount  [l] Load  [u] Unload  [Tab] Fleet  [f] Close"
     } else if state.exchange_panel.is_some() {
         " EXCHANGE | [g] Give  [w] Want  [Left/Right] Amount  [Enter] Trade  [Tab] Fleet  [e] Close"
     } else if state.outpost_panel.is_some_and(|panel| panel.abandon_armed) {
@@ -187,10 +187,7 @@ f         Fleet panel: split ships
           outpost, load the hold
           from the dock's stock
           (r, arrows, l) or
-          unload it (u);
-          anywhere, refine the
-          deuterium in the hold
-          into fuel (d)
+          unload it (u)
 o         Outpost: yours, or the
           survey of this sector.
           F surveys, Enter founds,
@@ -344,19 +341,6 @@ fn hold_lines(state: &ClientState, fleet: &iac_shared::protocol::FleetState) -> 
         ),
         if fleet.laden { GREEN_GOOD } else { AMBER_BRIGHT },
     )];
-    lines.push(match fleet.refine {
-        Some(refining) => Line::styled(
-            format!(
-                " [d] Refine   {:.1} deuterium from the hold makes {:.1} fuel, {:.0}% less than a dock gives for it (tank {:.0}/{:.0})",
-                refining.deuterium, refining.fuel, iac_shared::constants::REFINE_LOSS * 100.0, fleet.fuel, fleet.fuel_max,
-            ),
-            AMBER_FULL,
-        ),
-        None => Line::styled(
-            " [d] Refine   nothing to refine now: it takes deuterium in the hold and room in the tank, out of a fight and not charging a jump",
-            AMBER_DIM,
-        ),
-    });
     let Some(offer) = state.load_offer() else { return lines; };
     let (Some(dock), Some(stock)) = (state.active_dock(), state.dock_stock()) else {
         lines.push(Line::styled(

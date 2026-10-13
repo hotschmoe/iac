@@ -55,8 +55,7 @@ can be left out. None of what follows is the owner's.
    `refine=off` in the typed `policy`.** The panel has room for one row and
    no sentence under it at 900 pixels of height, so the row's label says what
    it does. The settings line above the form does not show it. The TUI was
-   left alone: it keeps the switch of a fleet whose orders it changes and
-   cannot set it.
+   left alone.
 
 ## 2026-10-13 (fuel from the hold: what building `refine` had to settle)
 
@@ -115,9 +114,10 @@ it.
     hold in the windshield's fleet status, always there and greyed without an
     offer, and `refine` in the command bar. No key and no tile in the dock
     row: it is offered where the hold and the tank are shown, and a tile
-    there was not tried against the phone layout. The TUI: `d` in the fleet panel,
-    which shows the offer. `tools/playtest/play.py` prints the offer in the
-    fleet row.
+    there was not tried against the phone layout. `tools/playtest/play.py`
+    prints the offer in the fleet row. The TUI has neither: a `d` key in its
+    fleet panel was written first and taken out again the same day, when the
+    owner retired the TUI.
 
 ## 2026-10-13 (the web client is the interface; the TUI is secondary)
 

@@ -116,9 +116,7 @@ Enter trades when the fleet is at the hub (marked `X` on the star map). `f`
 opens the fleet panel (split, merge); with the fleet at home it also loads
 the hold from the stockpile: `r` picks the resource, Left/Right the share of
 what fits, `l` loads and `u` unloads. With the fleet at your outpost the same
-keys load from the outpost's store and unload into it. Anywhere, the panel
-says what refining the deuterium in the hold would make and `d` orders it.
-`o` opens the outpost
+keys load from the outpost's store and unload into it. `o` opens the outpost
 overlay: your outpost's level and job, store, yield, defence against the raid
 estimate, the raid on its way and the next level, with `U` to upgrade and `A`
 then `y` to abandon; with no outpost it is the founding survey of the sector
