@@ -284,9 +284,10 @@ def collapse_events(msgs, mine_only=False, errors=True):
             elif k == "BattleRound":
                 key = (e["sector"]["q"], e["sector"]["r"])
                 g = fights.setdefault(key, {"t0": tick, "t1": tick, "rounds": 0, "shots": 0, "mine": False, "took": 0, "dealt": 0,
-                                            "lost": 0, "killed": 0, "silent": 0})
+                                            "lost": 0, "killed": 0, "silent": 0, "raid": False})
                 ours, theirs = e["fleets"], e["hostiles"]
                 g["t1"] = tick; g["rounds"] += 1; g["mine"] = g["mine"] or bool(e.get("mine"))
+                g["raid"] = g["raid"] or bool(e.get("raid"))
                 g["silent"] += any(group.get("fleeing") and group.get("mine") for group in ours["groups"])
                 g["shots"] += ours["shots"] + theirs["shots"]
                 g["took"] += theirs["hull_damage"]; g["dealt"] += ours["hull_damage"]
@@ -309,10 +310,12 @@ def collapse_events(msgs, mine_only=False, errors=True):
         elif key[0] == "fight":
             g = fights[key[1]]
             span = f"ticks {g['t0']}-{g['t1']}" if g["t1"] != g["t0"] else f"tick {g['t0']}"
-            sides = (f"took {g['took']} hull and lost {g['lost']} ship(s), dealt {g['dealt']} and destroyed {g['killed']}")
+            what = "unit(s), ships and defences" if g["raid"] else "ship(s)"
+            sides = (f"took {g['took']} hull and lost {g['lost']} {what}, dealt {g['dealt']} and destroyed {g['killed']}")
             who = f"your side {sides}" if g["mine"] else f"witnessed: the fleets {sides}"
             left = f"; in {g['silent']} of them a fleet of yours was leaving and did not fire" if g["silent"] else ""
-            items[i] = f"  combat @{key[1][0]},{key[1][1]} {span}: {g['rounds']} round(s), {g['shots']} shots, {who}{left}"
+            kind = "RAID fought" if g["raid"] else "combat"
+            items[i] = f"  {kind} @{key[1][0]},{key[1][1]} {span}: {g['rounds']} round(s), {g['shots']} shots, {who}{left}"
         elif key[0] == "policy":
             g, f = policy[key[1]], key[1]
             span = f"x{g['n']}, ticks {g['t0']}-{g['t1']}" if g["n"] > 1 else f"tick {g['t0']}"
@@ -363,6 +366,30 @@ def event_text(e):
     if k == "ShipsLost":
         ships = ", ".join(f"{s['count']}x {s['class']}" for s in e["ships"])
         return f"fleet {e['fleet_id']} lost {ships} at {hexs(e['sector'])}"
+    if k == "RaidIncoming":
+        where = f"your outpost at {hexs(e['outpost'])}" if e.get("outpost") else "your homeworld"
+        odds = f"; forecast {odds_words(e['odds'])}" if e.get("odds") else ""
+        return (f"RAID INCOMING on {where}: arrives tick {e['arrival_tick']} (in {age(e['arrival_tick'] - e.get('tick', 0))}), "
+                f"power {e.get('est_power', 0):.0f}, flying {units_text(e.get('ships'), 'class')}{odds}. "
+                f"A fleet that stays is in the fight; one that leaves before it arrives is not")
+    if k == "RaidResolved":
+        where = f"your outpost at {hexs(e['outpost'])}" if e.get("outpost") else "your homeworld"
+        how = {"hostiles_destroyed": "REPELLED, the raiders destroyed", "both_destroyed": "REPELLED, both sides destroyed",
+               "outlasted": "REPELLED, outlasted: the raiders left", "fleets_destroyed": "LOST, no defender left",
+               "fled": "LOST, the last defender left", "withdrawn": "LOST, the last defender left",
+               None: "LOST without a fight, nothing stood in its way"}[e.get("outcome")]
+        fought = f" after {e['rounds']} round(s)" if e.get("rounds") else ""
+        parts = [f"you lost {units_text(e.get('lost'))}"]
+        if e.get("rebuilt"):
+            parts.append(f"rebuilt at once {units_text(e['rebuilt'])}")
+        parts.append(f"the raiders lost {units_text(e.get('raiders_lost'), 'class')} of {units_text(e.get('raiders'), 'class')}")
+        if sum((e.get("resources_lost") or {}).values()) > 0:
+            parts.append(f"it took {res(e['resources_lost'])}")
+        if e.get("salvage_dropped"):
+            parts.append(f"wreckage {res(e['salvage_dropped'])}")
+        if e.get("breached"):
+            parts.append("the outpost is BREACHED")
+        return f"raid on {where} {how}{fought}: " + "; ".join(parts)
     if k == "Pursuit":
         whose = "your fleet" if e.get("mine") else f"{e['owner']}'s fleet"
         jump = f", jumping to {hexs(e['to'])}, there in {e['arrives_in']} tick(s)" if e.get("to") else ""
@@ -434,8 +461,10 @@ def survey_line(m):
     home = site.get("hops_home") if site else None
     seen = (f"grade {site['grade']:g}: makes {res_rate(site['production'])} an hour at level 1" if site
             else "not on your chart, its ore is not known")
+    raid = m.get("raid")
+    fight = (f" (a typical one flies {units_text(raid['ships'], 'class')}: {odds_words(raid['odds'])})" if raid else "")
     return (f"survey {s['q']},{s['r']} ring {m['ring']} {seen}; "
-            f"raids of {raid_range(m['raid_power'])} against a platform of {m['platform_power']:.0f}; "
+            f"raids of {raid_range(m['raid_power'])} against a platform of {units_text(m.get('platform'))}{fight}; "
             f"costs {res(m['cost'])}, built in {age(m['build_ticks'])}"
             + (f"; {home} hops from home" if home is not None else "")
             + (f"  CANNOT FOUND NOW: {m['refusal']}" if m.get("refusal") else "  CAN BE FOUNDED NOW"))
@@ -444,6 +473,25 @@ def survey_line(m):
 def raid_range(r):
     """The weakest and the strongest raid a ring sends."""
     return f"{r['least']:.0f} to {r['most']:.0f}"
+
+
+def units_text(units, key="unit"):
+    """'12x LightFighter, 2x Cruiser' for a list of counts by class or unit; 'nothing' when empty."""
+    return ", ".join(f"{u['count']}x {u[key]}" for u in units or []) or "nothing"
+
+
+def odds_words(o):
+    """A raid's odds as the server played them: the label and how the fights it played ended."""
+    return (f"{o['label'].upper().replace('_', ' ')} (destroyed {o['destroyed'] * 100:.0f}%, outlasted {o['outlasted'] * 100:.0f}%, "
+            f"lost {o['lost'] * 100:.0f}% of the fights played; you keep {o['kept'] * 100:.0f}% of what stands there, "
+            f"the raiders {o['raiders_kept'] * 100:.0f}% of theirs)")
+
+
+def forecast_words(raid, now):
+    """The raid a `raid` forecast describes: when, what it flies, and how it would end against what stands there now."""
+    when = (f"RAID ARRIVES in {age(raid['arrival_tick'] - now)}" if raid.get("arrival_tick") is not None
+            else "next raid, at its typical size")
+    return f"{when}: power {raid['power']:.0f}, flying {units_text(raid['ships'], 'class')}; forecast {odds_words(raid['odds'])}"
 
 
 def res_rate(per_tick):
@@ -457,8 +505,8 @@ def outpost_mark(o):
 
 
 def outpost_line(o, now):
-    """One line for the player's outpost: level and state, store, yield, defence against the next raid."""
-    work, raid = o.get("work"), o.get("raid_arrival_tick")
+    """One line for the player's outpost: level and state, store, yield, its platform and the next raid."""
+    work, raid = o.get("work"), o.get("raid")
     state = "BREACHED" if o["breached"] else "in service" if o["in_service"] else "under construction"
     doing = f", {work['kind']} of level {work['level']} done in {age(work['end_tick'] - now)}" if work else ""
     owed = (f", repair waits for {o['repair_waiting_for']['metal']:.0f} more metal (or crystal at 1.5, deuterium at 2 a unit)"
@@ -466,8 +514,8 @@ def outpost_line(o, now):
     lost = f", FULL of {'/'.join(o['yield_lost'])} (that yield is lost)" if o.get("yield_lost") else ""
     return (f"Outpost at {o['location']['q']},{o['location']['r']} level {o['level']}/{o['max_level']} {state}{doing}{owed}: "
             f"store {res(o['store'])} of {res(o['store_cap'])} (raid-protected {res(o['protected'])}){lost}, "
-            f"makes {res_rate(o['production'])} an hour, defence {o['defence_power']:.0f} against raids of "
-            f"{raid_range(o['raid_power'])}" + (f", RAID ARRIVES in {age(raid - now)}" if raid else "")
+            f"makes {res_rate(o['production'])} an hour, platform {units_text(o.get('platform'))} against raids of "
+            f"{raid_range(o['raid_power'])}" + (f"; {forecast_words(raid, now)}" if raid else "")
             + (f"; upgrade refused now: {o['upgrade_refusal']}" if o.get("upgrade_refusal") and o.get("next_level") else ""))
 
 
@@ -803,8 +851,9 @@ def derived_alerts(fs, fleets):
             out.append(f"{k} stockpile FULL: production is being wasted, spend it")
         elif cap and have / cap >= 0.85:
             out.append(f"{k} stockpile at {100 * have / cap:.0f}% of cap")
-    if hw.get("next_raid_estimate_power", 0) > hw.get("home_defence_power", 0):
-        out.append(f"expected raid power {hw['next_raid_estimate_power']:.0f} exceeds home defence {hw.get('home_defence_power', 0):.0f}")
+    raid = hw.get("raid")
+    if raid and raid["odds"]["label"] in ("lost", "at_risk"):
+        out.append(forecast_words(raid, fs["tick"]))
     for f in fleets:
         if f.get("cargo_blocked"):
             out.append(f"fleet {f['id']} cargo blocked: stockpile full")
@@ -883,7 +932,7 @@ def build_state(fs, board=None, left=None, alerts=None):
         "levels": {"buildings": {b["building_type"]: b["level"] for b in hw["buildings"]},
                    "research": {r["tech"]: r["level"] for r in hw["research"]}},
         "queues": qs, "idle": idle, "next": nxt, "fleets": fleets, "docked": docked,
-        "defence": {"power": round(hw.get("home_defence_power", 0)), "raid_estimate": round(hw.get("next_raid_estimate_power", 0))},
+        "defence": {"power": round(hw.get("home_defence_power", 0)), "raid": hw.get("raid")},
         "world": {"pace": world.get("pace"), "preset": world.get("preset")},
         "alerts": derived_alerts(fs, fleets) + list(alerts or []),
     }
@@ -1008,7 +1057,7 @@ def cmd_status(name, brief=False):
     if brief:
         st = doc["stock"]
         print("Stock " + " ".join(f"{k[0]}={st[k]:.0f}/{doc['cap'][k]}" for k in RES) + "  income/s " + "/".join(f"{doc['per_s'][k]:.4g}" for k in RES)
-              + f"  defence {doc['defence']['power']} vs raid ~{doc['defence']['raid_estimate']}")
+              + (f"  raid forecast {doc['defence']['raid']['odds']['label'].upper().replace('_', ' ')}" if doc["defence"]["raid"] else ""))
         for n, q in doc["queues"].items():
             print("  " + queue_line(n, q))
         if fs.get("outpost"):
@@ -1069,10 +1118,10 @@ def summarize(fs, doc, odds):
             tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
             hold = " RESERVE (holds the line)" if w.get("reserve") else ""
             print(f"    waiting {tag}: {what}{w['item']}{to} ({age(w['ticks'])}{' each' if what else ''}){need}{why}{hold}")
-    stand = [f"{d['count']}x {d['kind']}" + (f" (+{d['restoring']} being rebuilt)" if d.get("restoring") else "")
-             for d in hw.get("defences") or [] if d["count"] or d.get("restoring")]
-    print(f"Defence power {hw.get('home_defence_power', 0):.0f} against an expected raid of about "
-          f"{hw.get('next_raid_estimate_power', 0):.0f}; structures: " + (", ".join(stand) or "none"))
+    stand = [f"{d['count']}x {d['kind']}" for d in hw.get("defences") or [] if d["count"]]
+    print("Defences: " + (", ".join(stand) or "none") + f"; Solar Satellites: {hw.get('satellites', 0)}")
+    if hw.get("raid"):
+        print("  " + forecast_words(hw["raid"], fs["tick"]))
     docked = {s["class"]: s["count"] for s in hw.get("docked_ships") or []}
     print("Docked ships: " + (", ".join(f"{n}x {c}" for c, n in docked.items()) or "none"))
     if fs.get("outpost"):

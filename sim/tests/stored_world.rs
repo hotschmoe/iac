@@ -6,8 +6,9 @@
 // scan and a jump at once; a boarding; an outpost being built, or warned of
 // a raid). The two must be the same world at every stop and at the end.
 // A second world does the same to a fight of large fleets, stopped between
-// every two rounds, and a third to a flight and the pursuit that follows it,
-// stopped after every tick.
+// every two rounds, a third to a flight and the pursuit that follows it,
+// stopped after every tick, and a fourth to a raid fought at a homeworld,
+// stopped from its warning to the tick after it is settled.
 
 #[allow(dead_code)]
 mod common;
@@ -477,4 +478,73 @@ fn a_flight_and_a_pursuit_stopped_after_every_tick_are_flown_as_if_the_host_had_
     let whole_at = whole_at.expect("the pack came back wounded");
     assert!(whole_at <= 400, "in a season a pack a convoy scratched is whole within the run: tick {whole_at}");
     assert!(!stopped.npc_fleets.contains_key(&PACK), "and whole again it has stood down");
+}
+
+/// A raid on a homeworld with a docked fleet, Solar Satellites, a dome and
+/// two kinds of defence, and the host stops after every tick: during the
+/// warning, on the tick the raid arrives, between every two rounds and
+/// after the fight is settled. The raiders are no group of the map: what
+/// they are, the hull of their damaged ships and of the damaged defences
+/// are the fight's own, so the document holds them with the fight.
+#[test]
+fn a_raid_stopped_after_every_round_is_fought_as_if_the_host_had_never_stopped() {
+    use DefenceKind::{IonCannon, LargeShieldDome, RocketLauncher};
+    use ShipClass::{Cruiser, LightFighter};
+    let stage = || {
+        let mut engine = GameEngine::new(DEFAULT_WORLD_SEED, Pace::parse("season").unwrap());
+        let (pid, fid) = common::join(&mut engine, "Warden");
+        let home = engine.players[&pid].homeworld;
+        common::muster(&mut engine, fid, &[(Cruiser, 12), (LightFighter, 40)], home);
+        common::fortify(&mut engine, pid, &[(LargeShieldDome, 1), (IonCannon, 30), (RocketLauncher, 60)], 25);
+        common::send_raid(&mut engine, pid, &[(Cruiser, 40), (LightFighter, 120)], 1.0, 3);
+        (engine, pid, fid)
+    };
+    let (mut straight, pid, fid) = stage();
+    let (mut stopped, ..) = stage();
+    let mut place = Memory::default();
+
+    let (mut warned, mut between_rounds, mut damaged_most) = (0u32, 0u32, 0usize);
+    let mut settled = None;
+    for tick in 1..=14u64 {
+        straight.tick().unwrap();
+        stopped.tick().unwrap();
+        let (told, told_stopped) = (straight.drain_events(), stopped.drain_events());
+        assert_eq!(
+            serde_json::to_value(&told).unwrap(),
+            serde_json::to_value(&told_stopped).unwrap(),
+            "tick {tick}: the restarted world told another story",
+        );
+        for event in told {
+            if let EventKind::RaidResolved(raid) = event.kind {
+                settled = Some(raid);
+            }
+        }
+
+        let world = stored_in(&mut place, &stopped);
+        assert_same(&stopped.snapshot(), &world, &format!("stored after tick {tick}"));
+        assert_eq!(world.hash(), straight.snapshot().hash(), "the restarted world left the other by tick {tick}");
+        warned += u32::from(world.raid_states[&pid].incoming.is_some());
+        if let Some(fight) = world.combats.values().next() {
+            let siege = fight.siege.as_ref().expect("the fight at home is the raid's");
+            assert_eq!((siege.owner, fight.npc_fleet_ids.len()), (pid, 0), "its raiders are the fight's own");
+            assert!(fight.player_fleet_ids.contains(&fid), "and the docked fleet is in it");
+            between_rounds += 1;
+            let hurt = siege.raiders.damaged() as usize
+                + siege.battery.iter().map(|squad| squad.damaged.len()).sum::<usize>()
+                + world.fleets[&fid].ships.damaged() as usize;
+            damaged_most = damaged_most.max(hurt);
+        }
+        stopped = GameEngine::restore(world);
+    }
+
+    assert_eq!(stopped.snapshot().hash(), straight.snapshot().hash(), "restarts changed the course of the raid");
+    let settled = settled.expect("the raid was settled within the run");
+    assert!(settled.rounds >= 3, "the fight was to last: {} rounds", settled.rounds);
+    assert!(
+        warned >= 2 && between_rounds >= settled.rounds && damaged_most >= 20,
+        "the host was to stop during the warning ({warned}), on the tick of the arrival and between the rounds \
+         ({between_rounds} for {} rounds), with damage carried from round to round ({damaged_most} hulls)",
+        settled.rounds,
+    );
+    assert!(stopped.active_combats.is_empty() && stopped.snapshot().raid_states[&pid].incoming.is_none());
 }

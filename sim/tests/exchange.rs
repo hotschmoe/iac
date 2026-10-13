@@ -674,9 +674,9 @@ fn stores_at_two() -> scaling::BuildingLevels {
 }
 
 /// Eight wings docked under storage at level 2 with `RAIDED_STOCK`, loaded
-/// as `loads` say, the stockpile then changed by `restock`, and a raid no
-/// defence stops: the empire after it, the raid's report and the alerts it
-/// raised.
+/// as `loads` say, the stockpile then changed by `restock`, and a raid of
+/// five hundred Battleships, which leaves no ship of them standing: the
+/// empire after it, the raid's report and the alerts it raised.
 fn raided(
     loads: &[(ResourceKind, Option<f64>)],
     restock: impl FnOnce(Resources, Resources) -> Resources,
@@ -710,23 +710,26 @@ fn owned_pile(e: &Empire) -> Resources {
 }
 
 #[test]
-fn a_lost_raid_counts_cargo_at_home_with_the_stockpile() {
+fn a_hold_at_the_dock_hides_nothing_from_a_lost_raid() {
     let pile = owned_pile;
-    let near = |a: Resources, b: Resources| ResourceKind::ALL.into_iter().all(|k| (a.get(k) - b.get(k)).abs() < 0.05);
+    let near = |a: Resources, b: Resources| ResourceKind::ALL.into_iter().all(|k| (a.get(k) - b.get(k)).abs() < 1.0);
 
     let aboard = stock(2000.0, 1000.0, 500.0);
-    let start = RAIDED_STOCK;
     let (plain, plain_raid, _) = raided(&[], |as_loaded, _| as_loaded);
     let loads = ResourceKind::ALL.map(|kind| (kind, Some(aboard.get(kind))));
     let (laden, laden_raid, told) = raided(&loads, |as_loaded, _| as_loaded);
-    assert!(!told.iter().any(|m| m.contains("lost carried")), "the six holds left carry all of it: {told:?}");
     assert!(!plain_raid.defended && !laden_raid.defended);
-    assert_eq!((plain_raid.ships_lost, laden_raid.ships_lost), (8, 8), "a quarter of the docked ships");
+    assert_eq!((plain_raid.ships_lost, laden_raid.ships_lost), (32, 32), "a lost raid left no ship standing: eight wings of four");
+    assert!(
+        told.iter().any(|m| m.contains("lost carried 2000 metal, 1000 crystal and 500 deuterium: it went to the stockpile")),
+        "what the ships carried is in the stockpile before the raid takes its share: {told:?}",
+    );
+    assert!(laden.engine.fleets.values().all(|f| f.owner_id != laden.pid || f.ships.is_empty()));
 
     let pace = laden.engine.pace();
     let protected = scaling::storage_protected(&stores_at_two(), &pace);
-    let whole = start.add(laden.engine.players[&laden.pid].production_per_tick(&pace));
-    let exposed = whole.sub(protected);
+    let made = laden.engine.players[&laden.pid].production_per_tick(&pace).scale(f64::from(laden_raid.rounds));
+    let exposed = RAIDED_STOCK.add(made).sub(protected);
     let expected = stock(
         exposed.metal * RAID_LOSS_CAP_METAL,
         exposed.crystal * RAID_LOSS_CAP_CRYSTAL,
@@ -736,47 +739,30 @@ fn a_lost_raid_counts_cargo_at_home_with_the_stockpile() {
     assert!(near(plain_raid.resources_lost, laden_raid.resources_lost), "a hold hides nothing from a raid");
     assert!(near(plain_raid.protected_kept, laden_raid.protected_kept) && near(laden_raid.protected_kept, protected));
     assert!(near(pile(&plain), pile(&laden)), "{:?} against {:?}", pile(&plain), pile(&laden));
-
-    let fleet = laden.fleet();
-    assert!(fleet.laden, "what the raid left stays aboard");
-    for kind in ResourceKind::ALL {
-        let lost = aboard.get(kind) - fleet.cargo.get(kind);
-        let share = laden_raid.resources_lost.get(kind) * aboard.get(kind) / whole.get(kind);
-        assert!(lost > 1.0, "the hold paid for its {}: {lost}", kind.label());
-        assert!((lost - share).abs() < 0.05, "{}: the hold lost {lost}, its share is {share}", kind.label());
-    }
 }
 
 #[test]
-fn ships_lost_to_a_raid_at_the_dock_leave_their_share_of_the_hold_in_the_stockpile_or_nowhere() {
+fn what_ships_lost_to_a_raid_carried_goes_to_the_stockpile_or_nowhere() {
     let (plain, plain_raid, _) = raided(&[], |as_loaded, _| as_loaded);
     let (roomy, roomy_raid, roomy_told) = raided(&[(Metal, None)], |as_loaded, _| as_loaded);
     let (full, full_raid, full_told) = raided(&[(Metal, None)], |as_loaded, cap| Resources { metal: cap.metal, ..as_loaded });
-    assert_eq!((roomy_raid.ships_lost, full_raid.ships_lost), (8, 8), "a quarter of the eight wings");
+    assert_eq!((roomy_raid.ships_lost, full_raid.ships_lost), (32, 32), "every ship that stayed");
 
-    for e in [&roomy, &full] {
-        let fleet = e.fleet();
-        assert_eq!(fleet.ship_count, 24);
-        assert!(fleet.cargo.total() <= fleet.cargo_capacity, "{} aboard a hold of {}", fleet.cargo.total(), fleet.cargo_capacity);
-        assert!(fleet.cargo.total() > 0.9 * fleet.cargo_capacity, "the six holds left stay loaded");
-    }
-    let hold = roomy.fleet().cargo_capacity;
-    let shed = hold / 3.0;
-
-    assert!((owned_pile(&roomy).metal - owned_pile(&plain).metal).abs() < 0.5, "with room in the stockpile nothing is lost but the raid's take");
-    assert!((roomy_raid.resources_lost.metal - plain_raid.resources_lost.metal).abs() < 0.5);
+    assert!((owned_pile(&roomy).metal - owned_pile(&plain).metal).abs() < 1.0, "with room in the stockpile nothing is lost but the raid's take");
+    assert!((roomy_raid.resources_lost.metal - plain_raid.resources_lost.metal).abs() < 1.0);
     assert!(roomy_told.iter().any(|m| m.contains("lost carried") && m.ends_with("it went to the stockpile")), "{roomy_told:?}");
 
-    let cap = scaling::storage_cap(&stores_at_two(), &full.engine.pace());
-    let had = cap.metal + hold + shed;
-    let kept = owned_pile(&full).metal;
+    let pace = full.engine.pace();
+    let cap = scaling::storage_cap(&stores_at_two(), &pace);
+    let protected = scaling::storage_protected(&stores_at_two(), &pace);
+    let took = (cap.metal - protected.metal) * RAID_LOSS_CAP_METAL;
     assert!(
-        (had - shed - full_raid.resources_lost.metal - kept).abs() < 0.5,
-        "a full stockpile takes none of the {shed} metal two holds carried: {had} before, {kept} after, the raid took {}",
+        (full_raid.resources_lost.metal - took).abs() < 1.0,
+        "a full stockpile takes none of the metal the holds carried, and the raid takes its share of the stockpile alone: {} against {took}",
         full_raid.resources_lost.metal,
     );
+    assert!((full.stockpile().metal - (cap.metal - took)).abs() < 2.0, "{} left of {}", full.stockpile().metal, cap.metal);
     assert!(full_told.iter().any(|m| m.contains("lost carried") && m.ends_with("it was lost, the stockpile is full")), "{full_told:?}");
-    assert!(full.stockpile().metal <= cap.metal, "and the stockpile is not pushed over its cap");
 }
 
 #[test]

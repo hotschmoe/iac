@@ -9,7 +9,8 @@
 // and logarithms from the system's libm, the wasm build from Rust's own): a
 // blitz of hands-on bots past tick 2400 and a season day, with their fights,
 // wrecks, raids and scores, and a commander who trades at the hub, founds an
-// outpost and stays away while it is raided.
+// outpost, stays away while it is raided, and comes back to stand at it
+// through the rounds of the next raid.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -496,4 +497,21 @@ fn a_commander_who_trades_at_the_hub_and_founds_an_outpost_plays_one_world() {
     );
     let snapshot = twin.checkpoint();
     assert_eq!(rows(&snapshot["outposts"]).len(), 1, "no raid destroys an outpost");
+
+    twin.fly(fleet, site);
+    let fought = |f: &Value| {
+        let settled = f["events"].as_array().into_iter().flatten().find(|event| event["kind"] == "RaidResolved");
+        f["type"] == "tick_update" && settled.is_some_and(|raid| raid["outpost"].is_object() && raid["rounds"].as_u64() >= Some(1))
+    };
+    let watched = twin.play_until(1500, fought);
+    let rounds = events(&watched, "BattleRound");
+    assert!(
+        !rounds.is_empty() && rounds.iter().all(|round| round["raid"] == true && hex_of(&round["sector"]) == site),
+        "with the commander's fleet standing at the outpost the next raid on it is a fight, round by round, on both targets",
+    );
+    assert!(
+        watched.iter().any(|f| f["battles"][0]["raid"]["outpost"] == true && f["battles"][0]["raid"]["mine"] == true),
+        "and the state said whose fight it was while it lasted",
+    );
+    twin.checkpoint();
 }

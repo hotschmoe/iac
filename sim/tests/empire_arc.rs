@@ -6,9 +6,12 @@
 mod common;
 
 use common::*;
-use iac_shared::constants::{Resources, ShipClass};
+use iac_shared::constants::{Resources, ShipClass, RAID_ROUNDS};
 use iac_shared::hex::Hex;
-use iac_shared::protocol::{BatchWait, Command, ErrorCode, EventKind, QueueAction, QueueEvent, QueueType, ServerMessage, WaitReason};
+use iac_shared::protocol::{
+    BatchWait, BattleOutcome, Command, ErrorCode, EventKind, QueueAction, QueueEvent, QueueType, RaidLabel, ServerMessage,
+    WaitReason,
+};
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{template_npc_id, AuthError};
@@ -425,8 +428,10 @@ fn withstand_a_raid(e: &mut Empire) {
         }
         e.run(1);
     }
-    let home = e.state().homeworld;
-    assert!(home.home_defence_power >= 1.6 * home.next_raid_estimate_power);
+    let expected = e.state().homeworld.raid;
+    assert_eq!(expected.odds.label, RaidLabel::Repelled, "the fighters at home destroy the raid the server forecasts: {expected:?}");
+    let fighters_only = |ships: &[iac_shared::protocol::ShipCount]| ships.len() == 1 && ships[0].ship_class == ShipClass::LightFighter;
+    assert!(expected.arrival_tick.is_none() && fighters_only(&expected.ships), "an empire with no defence is raided by Light Fighters");
 
     e.run_until(5000, |e| e.log[mark..].iter().any(|ev| matches!(ev.kind, EventKind::RaidIncoming(_))));
     let forecast = e.since(mark, |k| match k {
@@ -435,6 +440,9 @@ fn withstand_a_raid(e: &mut Empire) {
     });
     let warned_at = e.engine.current_tick();
     assert_eq!(forecast[0].arrival_tick - warned_at, e.engine.pace().raid_warning_ticks());
+    assert!(forecast[0].threat == "light" && fighters_only(&forecast[0].ships), "{:?}", forecast[0]);
+    let announced = e.state().homeworld.raid;
+    assert_eq!((announced.arrival_tick, announced.power), (Some(forecast[0].arrival_tick), forecast[0].est_power));
 
     e.run_until(100, |e| e.log[mark..].iter().any(|ev| matches!(ev.kind, EventKind::RaidResolved(_))));
     let resolved = e.since(mark, |k| match k {
@@ -442,9 +450,11 @@ fn withstand_a_raid(e: &mut Empire) {
         _ => None,
     });
     assert!(resolved[0].defended, "{:?}", resolved[0]);
+    assert_eq!(resolved[0].outcome, Some(BattleOutcome::HostilesDestroyed), "it was fought, and no raider was left");
+    assert!((1..=RAID_ROUNDS).contains(&resolved[0].rounds));
     assert_eq!((resolved[0].ships_lost, resolved[0].resources_lost), (0, Resources::default()));
     assert!((resolved[0].raid_power - forecast[0].est_power).abs() < 1e-3, "the forecast was the raid");
-    let pile = resolved[0].salvage_dropped.expect("a repelled raid leaves wreckage");
+    let pile = resolved[0].salvage_dropped.expect("a raid destroyed leaves wreckage");
 
     e.run(2);
     let scooped = e.since(mark, |k| match k {
@@ -487,16 +497,17 @@ fn settle_the_score(e: &mut Empire) {
     assert!(table.you.is_none());
 }
 
-/// Order the Light Fighters home defence still lacks, as many as the
-/// stockpile covers, once the yard is clear. True while more are wanted.
+/// Order Light Fighters while the server's forecast of the next raid is
+/// worse than a raid destroyed with nearly all that stands at home kept: as
+/// many as the raid's power comes to, as far as the stockpile covers them,
+/// once the yard is clear. True while more are wanted.
 fn reinforce(e: &mut Empire) -> bool {
-    let home = e.state().homeworld;
-    let wanted = 1.6 * home.next_raid_estimate_power;
-    if home.home_defence_power >= wanted {
+    let raid = e.state().homeworld.raid;
+    if raid.odds.label == RaidLabel::Repelled && raid.odds.kept >= 0.95 {
         return false;
     }
     if yard_idle(e) {
-        let lacking = ((wanted - home.home_defence_power) / scaling::ship_power(ShipClass::LightFighter)).ceil();
+        let lacking = (raid.power / scaling::ship_power(ShipClass::LightFighter)).ceil();
         let unit = ShipClass::LightFighter.build_cost();
         let stock = e.stockpile();
         let covered = (stock.metal / unit.metal).min(stock.crystal / unit.crystal).floor();
@@ -519,5 +530,9 @@ fn hold_the_line(e: &mut Empire, ticks: u64) {
         _ => None,
     });
     assert!(raids.len() >= 2, "a long watch sees several raids: {}", raids.len());
-    assert!(raids.iter().all(|r| r.defended && r.ships_lost == 0), "{raids:?}");
+    assert!(raids.iter().all(|r| r.defended && r.outcome == Some(BattleOutcome::HostilesDestroyed)), "{raids:?}");
+    let (fell, felled): (u32, u32) = raids.iter().fold((0, 0), |(fell, felled), r| {
+        (fell + r.ships_lost, felled + r.raiders_lost.iter().map(|s| s.count).sum::<u32>())
+    });
+    assert!(fell < felled, "the fighters destroyed more than they lost: {fell} for {felled}");
 }

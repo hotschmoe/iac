@@ -10,6 +10,10 @@
 // host loads those bytes, its world and its checksum as the server wrote
 // them, once the header's own part names a commander and a clock, which is
 // all a server's file lacks. The server is then started again on the file.
+// Before either host loads it the test puts one thing into that file which
+// the server would take two hundred ticks to make: a raid on its way to the
+// commander's homeworld and defences for it to fight, so the rounds of a
+// raid, its forecast and what it leaves are among the frames compared.
 //
 // How the orders land on known ticks although the server ticks by the wall
 // clock. Nothing is assumed about when the server takes a message: it is
@@ -30,11 +34,14 @@ use std::path::Path;
 
 use common::*;
 use futures_util::SinkExt;
+use iac_server::store::Beside;
 use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{ClientMessage, Command, HarvestResource, QueueType};
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::scaling::{Arms, BuildingType, DefenceKind, ResearchType};
 use iac_shared::world::{NpcBehaviorType, WorldGen};
+use iac_sim::engine::{IncomingRaid, RaidState, Ships};
+use iac_sim::store;
 use iac_solo::Machine;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
@@ -59,8 +66,37 @@ const FLEE_AFTER: u64 = 2;
 /// Ticks the commander is watched after the jump out: what follows it, and
 /// for how long.
 const CHASE_TICKS: u64 = 8;
+/// Ticks after the stored world's at which the raid put on its way to the
+/// commander's homeworld arrives: after the commander has logged in on both
+/// hosts, and early enough for its six rounds to be over before the fleet
+/// is ordered anywhere from home.
+const RAID_ARRIVES: u64 = 16;
 const T0: u64 = 1_800_000_000_000;
 const ENTROPY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// The world `file` holds, with a raid on its way to `commander`'s
+/// homeworld and defences standing there for it to fight. At this pace an
+/// empire is raided two hundred ticks after it begins; the hosts are
+/// watched for seventy. The file is written as the server writes it, and
+/// both hosts load what it then holds.
+fn with_a_raid_on_its_way(file: &Path, commander: u64) {
+    let mut world = stored_world(file);
+    let (ships, arms) = (Ships::of(&[(ShipClass::LightFighter, 8), (ShipClass::Cruiser, 1)]), Arms::BASE);
+    let raid = IncomingRaid { arrival_tick: world.tick + RAID_ARRIVES, power: ships.power(arms), ships, arms };
+    world.raid_states.insert(commander, RaidState {
+        first_seen_tick: world.tick,
+        next_roll_tick: u64::MAX,
+        last_raid_tick: 0,
+        suppress_until: 0,
+        missed_rolls: 0,
+        incoming: Some(raid),
+    });
+    let player = world.players.get_mut(&commander).expect("the commander's account");
+    player.defences.count[DefenceKind::RocketLauncher as usize] = 12;
+    player.defences.count[DefenceKind::LightLaser as usize] = 6;
+    player.satellites = 4;
+    std::fs::write(file, store::encode(&Beside {}, &world)).expect("the world file is written again");
+}
 
 fn call(machine: &mut Machine, now_ms: u64, mut head: Value, body: &[u8]) -> (Value, Vec<u8>) {
     head["now_ms"] = json!(now_ms);
@@ -366,6 +402,7 @@ async fn the_server_and_the_single_player_host_play_one_world_alike() {
         server.stop();
         (token, auth["player_id"].as_u64().unwrap())
     };
+    with_a_raid_on_its_way(&file, commander);
 
     let stored = stored_world(&file);
     assert!(stored.tick >= SETTLE_TICKS && stored.players.contains_key(&commander), "tick {}", stored.tick);
@@ -404,7 +441,23 @@ async fn the_server_and_the_single_player_host_play_one_world_alike() {
         let updates = played.got.iter().filter(|frame| frame["type"] == "tick_update");
         updates.flat_map(|frame| frame["events"].as_array().into_iter().flatten()).filter(|event| event["kind"] == kind).collect()
     };
-    let (rounds, ended) = (told("BattleRound"), told("CombatEnded"));
+    let raided = told("RaidResolved");
+    let raid_rounds = told("BattleRound").into_iter().filter(|round| round["raid"] == true).count() as u64;
+    assert_eq!(raided.len(), 1, "the raid on the commander's homeworld arrived and was settled on both hosts");
+    assert!(
+        raid_rounds >= 1 && raided[0]["rounds"].as_u64() == Some(raid_rounds) && raided[0]["outcome"].is_string(),
+        "and it was fought, round by round, against the defences standing there: {} rounds told, {}",
+        raid_rounds,
+        raided[0],
+    );
+    let forecast = |frame: &&Value| frame["type"] == "tick_update" && frame["homeworld_update"]["raid"]["arrival_tick"].is_u64();
+    let fought = |frame: &&Value| frame["battles"].as_array().is_some_and(|battles| battles.iter().any(|b| b["raid"]["mine"] == true));
+    assert!(
+        played.got.iter().any(|frame| forecast(&frame)) && played.got.iter().any(|frame| fought(&frame)),
+        "the states carried its forecast while it was on its way and its battle while it was fought",
+    );
+    let rounds: Vec<&Value> = told("BattleRound").into_iter().filter(|round| round["raid"] != true).collect();
+    let ended: Vec<&Value> = told("CombatEnded").into_iter().filter(|fight| fight["raid"] != true).collect();
     let fired = |round: &&&Value| round["fleets"]["shots"].as_u64().unwrap() > 0;
     let leaving = |round: &&&Value| round["fleets"]["groups"].as_array().unwrap().iter().any(|group| group["fleeing"] == true);
     assert!(
