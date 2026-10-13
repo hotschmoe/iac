@@ -13,7 +13,7 @@ use crate::maths;
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 5;
+pub const ECONOMY_VERSION: u32 = 6;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 3;
 

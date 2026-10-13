@@ -486,7 +486,9 @@ impl<'a> Admiral<'a> {
         let fleet = unit.fleet;
         let cooldown = u64::from(fleet.cooldown_remaining);
         match fleet.state {
-            FleetStatus::Moving | FleetStatus::Exploring => return cooldown + 1,
+            // A jump lands the tick after the view shows its timer at 0.
+            FleetStatus::Moving => return cooldown + 1,
+            FleetStatus::Exploring => return cooldown,
             FleetStatus::InCombat | FleetStatus::Returning => return 2,
             FleetStatus::Harvesting => return REST,
             FleetStatus::Idle | FleetStatus::Docked if cooldown > 0 => return cooldown,
@@ -503,7 +505,7 @@ impl<'a> Admiral<'a> {
             }
             if here.site.is_some_and(|site| boardable(self.odds, fleet, here, site)) {
                 self.command(Command::ExploreSite { fleet_id: fleet.id });
-                return u64::from(EXPLORE_DURATION_TICKS) + 1;
+                return u64::from(EXPLORE_DURATION_TICKS);
             }
         }
         if fleet.fuel < fleet.jump_fuel {

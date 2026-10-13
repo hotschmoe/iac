@@ -6,7 +6,9 @@ mod common;
 
 use common::*;
 use iac_shared::hex::Hex;
-use iac_shared::constants::{Density, Resources, ShipClass, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS};
+use iac_shared::constants::{
+    Density, Resources, ShipClass, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, STRANDED_RECOVERY_TICKS,
+};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ClientMessage, Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset,
@@ -714,6 +716,60 @@ fn a_jump_called_off_tells_its_owner_what_fuel_is_forfeit_and_a_halted_harvest_i
     assert!(alerts_since(&e, mark).is_empty(), "halting a harvest costs nothing and says nothing");
     let (code, why) = e.refusal(Command::Stop { fleet_id: fid });
     assert_eq!((code, why), (ErrorCode::InvalidCommand, format!("fleet {fid} has nothing to stop")));
+}
+
+#[test]
+fn a_boarding_pays_on_the_tick_it_announces() {
+    let mut e = Empire::join(world("test"), "Boarder");
+    let fid = e.fid;
+    let site = (-30i16..30)
+        .flat_map(|q| (-30i16..30).map(move |r| Hex { q, r }))
+        .find(|&h| e.engine.derelict_site_at(h).is_some() && e.engine.world_gen.generate_sector(h).npc_template.is_none())
+        .expect("a derelict with no hostile group over it");
+    deploy(&mut e.engine, fid, site, None);
+    edit(&mut e.engine, |s| {
+        for npc in s.npc_fleets.values_mut() {
+            npc.patrol_timer = 1_000;
+        }
+    });
+
+    let mark = e.mark();
+    e.order(Command::ExploreSite { fleet_id: fid }).expect("a boarding party goes in");
+    let (announced_at, end_tick) = e.log[mark..]
+        .iter()
+        .find_map(|ev| match &ev.kind {
+            EventKind::SiteExplorationStarted(s) => Some((ev.tick, s.end_tick)),
+            _ => None,
+        })
+        .expect("the boarding announces when it pays");
+    assert_eq!(end_tick, announced_at + u64::from(EXPLORE_DURATION_TICKS));
+    assert_eq!(e.engine.current_tick(), announced_at);
+
+    let mut saw_exploring = false;
+    e.run_until(u64::from(EXPLORE_DURATION_TICKS) + 5, |e| {
+        let fleet = &e.engine.fleets[&fid];
+        if fleet.state == FleetStatus::Exploring {
+            saw_exploring = true;
+            assert_eq!(
+                u64::from(e.fleet().cooldown_remaining),
+                end_tick - e.engine.current_tick(),
+                "the ring counts down to the announced tick, at tick {}",
+                e.engine.current_tick(),
+            );
+            return false;
+        }
+        true
+    });
+    assert!(saw_exploring, "the boarding was visible before it paid");
+    let paid: Vec<u64> = e.log[mark..]
+        .iter()
+        .filter(|ev| matches!(ev.kind, EventKind::SiteExplored(_) | EventKind::SiteAmbush(_)))
+        .map(|ev| ev.tick)
+        .collect();
+    assert_eq!(paid, vec![end_tick], "loot or the ambush comes on the tick the boarding announced");
+    let fleet = &e.engine.fleets[&fid];
+    assert_ne!(fleet.state, FleetStatus::Exploring);
+    assert_eq!(fleet.action_cooldown, 0, "the timer does not outlive the boarding");
 }
 
 #[test]

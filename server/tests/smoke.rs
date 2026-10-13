@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use common::*;
 use futures_util::SinkExt;
 use iac_server::store::Beside;
+use iac_shared::constants::ECONOMY_VERSION;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -45,7 +46,7 @@ async fn auth_state_and_command_roundtrip() {
     );
     assert_eq!(state["world"]["pace"], 1.0, "default world is persistent: {state}");
     assert_eq!(state["world"]["preset"], "persistent");
-    assert_eq!(state["world"]["economy_version"], 5);
+    assert_eq!(state["world"]["economy_version"], json!(ECONOMY_VERSION));
 
     // Server should stream tick updates (1 Hz tick loop).
     let tick = loop {
@@ -322,11 +323,12 @@ async fn a_server_refuses_a_world_another_holds_or_this_build_does_not_play() {
     let text = String::from_utf8(document.clone()).unwrap();
     let write = |bytes: &[u8]| std::fs::write(&file, bytes).unwrap();
 
-    write(text.replacen("\"economy_version\":5", "\"economy_version\":4", 1).as_bytes());
+    write(text.replacen(&format!("\"economy_version\":{ECONOMY_VERSION}"), "\"economy_version\":4", 1).as_bytes());
     let old_economy = refusal(&file, &[]);
     assert!(
-        old_economy.contains("this world file is economy version 4, this build runs version 5; old worlds are not migrated")
-            && old_economy.contains("new --world path"),
+        old_economy.contains(&format!(
+            "this world file is economy version 4, this build runs version {ECONOMY_VERSION}; old worlds are not migrated"
+        )) && old_economy.contains("new --world path"),
         "unclear refusal: {old_economy}",
     );
     write(text.replacen("\"worldgen_version\":3", "\"worldgen_version\":1", 1).as_bytes());

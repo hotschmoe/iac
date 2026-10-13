@@ -4956,13 +4956,18 @@ impl GameEngine {
         Ok(())
     }
 
-    /// Resolve boardings whose timer has run out.
+    /// Resolve a boarding on the tick its start event named. The cooldown
+    /// pass later this tick is what brings a timer of 1 down to 0, so a
+    /// timer of 1 is due now.
     fn process_exploration(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let due: Vec<u64> = self.fleets.values()
-            .filter(|f| f.state == FleetStatus::Exploring && f.action_cooldown == 0)
+            .filter(|f| f.state == FleetStatus::Exploring && f.action_cooldown <= 1)
             .map(|f| f.id)
             .collect();
         for fleet_id in due {
+            if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+                fleet.action_cooldown = 0;
+            }
             self.resolve_exploration(fleet_id)?;
         }
         Ok(())
