@@ -676,7 +676,8 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
           for (final s in splitSteps)
             Padding(
                 padding: const EdgeInsets.only(left: 4),
-                child: ConsoleButton('x$s', key: ValueKey('fm-step-$s'), small: true, active: _step == s, onPressed: () => setState(() => _step = s))),
+                child: ConsoleButton('x$s',
+                    key: ValueKey('fm-step-$s'), small: true, active: _step == s, semanticsLabel: 'Split step $s', onPressed: () => setState(() => _step = s))),
         ]),
         for (final g in fleet.ships) _pickRow(g),
         const SizedBox(height: 8),
@@ -719,11 +720,26 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
             style: T.mono(size: 10, color: C.text3),
           ),
         ])),
-        ConsoleButton('-', key: ValueKey('fm-minus-${cls.wire}'), small: true, onPressed: n > 0 ? () => set(n - _step) : null, reason: 'None picked'),
+        ConsoleButton('-',
+            key: ValueKey('fm-minus-${cls.wire}'),
+            small: true,
+            semanticsLabel: 'Split off fewer ${cls.label}',
+            onPressed: n > 0 ? () => set(n - _step) : null,
+            reason: 'None picked'),
         SizedBox(width: 44, child: Text(groupDigits(n), key: Key('fm-count-${cls.wire}'), textAlign: TextAlign.center, style: T.mono(size: 11, color: n > 0 ? C.a300 : C.text3))),
-        ConsoleButton('+', key: ValueKey('fm-plus-${cls.wire}'), small: true, onPressed: n < g.count ? () => set(n + _step) : null, reason: 'All picked'),
+        ConsoleButton('+',
+            key: ValueKey('fm-plus-${cls.wire}'),
+            small: true,
+            semanticsLabel: 'Split off more ${cls.label}',
+            onPressed: n < g.count ? () => set(n + _step) : null,
+            reason: 'All picked'),
         const SizedBox(width: 4),
-        ConsoleButton('All', key: ValueKey('fm-all-${cls.wire}'), small: true, active: n == g.count, onPressed: () => set(n == g.count ? 0 : g.count)),
+        ConsoleButton('All',
+            key: ValueKey('fm-all-${cls.wire}'),
+            small: true,
+            active: n == g.count,
+            semanticsLabel: 'Split off all ${cls.label}',
+            onPressed: () => set(n == g.count ? 0 : g.count)),
       ]),
     );
   }
@@ -732,7 +748,7 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
         padding: const EdgeInsets.only(top: 4),
         child: Row(children: [
           Expanded(child: Text('${p.name.toUpperCase()} - ${shipsOf(p.shipCount).toUpperCase()}', style: T.mono(size: 11, color: C.text2))),
-          ConsoleButton('Merge', key: ValueKey('fm-merge-${p.id}'), small: true, onPressed: () => c.mergeFleet(p.id)),
+          ConsoleButton('Merge', key: ValueKey('fm-merge-${p.id}'), small: true, semanticsLabel: 'Merge ${p.name} in', onPressed: () => c.mergeFleet(p.id)),
         ]),
       );
 
