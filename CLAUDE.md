@@ -233,4 +233,5 @@ Single player (one browser tab, no server)
 - `SPEC.md` -- original technical specification
 - `docs/journal.md` -- Rust development log and decisions
 - `docs/data_architecture.md` -- what a stored world is and what each host does to store one; `docs/design/storage.md` -- the study behind it, with the journal that was not built
+- `docs/design/ogame.md` -- the study for moving the buildings, research, ships, defences and the fight to classic OGame's, with its tables, its slices and the questions still open; `docs/design/decisions.md` has what the owner has decided of it. Nothing of it is built
 - `docs/auth_spec.md` -- auth design
