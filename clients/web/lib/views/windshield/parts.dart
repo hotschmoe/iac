@@ -35,11 +35,9 @@ const outpostVoice = 'A station holds this sector. Raiders come for it.';
 
 /// What the dock does for a fleet and what it does not: nothing in the field
 /// reaches a docked fleet, a raid that beats the home defence does.
-const dockVoice = 'A DOCKED FLEET REFUELS AND UNLOADS, AND NOTHING IN THE FIELD REACHES IT.\n'
-    'ITS DAMAGED SHIPS ARE MENDED HERE AND IT IS REFITTED TO YOUR LEVELS.\n'
+const dockVoice = 'A DOCKED FLEET REFUELS, UNLOADS, IS MENDED AND REFITTED, AND NOTHING IN THE FIELD REACHES IT.\n'
     'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS.';
-const dockVoiceLaden = 'A DOCKED FLEET REFUELS, AND NOTHING IN THE FIELD REACHES IT.\n'
-    'ITS DAMAGED SHIPS ARE MENDED HERE AND IT IS REFITTED TO YOUR LEVELS.\n'
+const dockVoiceLaden = 'A DOCKED FLEET REFUELS, IS MENDED AND REFITTED, AND NOTHING IN THE FIELD REACHES IT.\n'
     'HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.\n'
     'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS AND TAKES ITS SHARE OF THE HOLD.';
 
@@ -460,9 +458,10 @@ class ContactsPanel extends StatelessWidget {
         _Diamond(th),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           _t(threat.groups.length == 1 ? 'Hostile group' : '${threat.groups.length} hostile groups', trail: ThreatBadge(th, sm: true)),
-          _d(Text('POWER ${shortCount(threat.power.round())}${combat ? ' - ENGAGED' : ''}', style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
+          _d(Text('POWER ${shortCount(threat.power.round())}${combat ? ' - ENGAGED' : ''}',
+              key: const Key('contact-hostile-power'), style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
           for (final g in threat.groups) ...[
-            _d(Text('${g.behavior.wire.toUpperCase()} - ${shipsOf(g.shipCount).toUpperCase()}', key: Key('contact-hostile-${g.id}'), style: _ds.copyWith(color: C.text2))),
+            Text('${g.behavior.wire.toUpperCase()} - ${shipsOf(g.shipCount).toUpperCase()}', key: Key('contact-hostile-${g.id}'), style: _ds.copyWith(color: C.text2)),
             ShipRows(g.ships, color: C.ember, tag: 'contact-hostile-${g.id}'),
           ],
           if (o == null)

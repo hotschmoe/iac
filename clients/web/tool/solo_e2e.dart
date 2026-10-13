@@ -171,6 +171,9 @@ class Browser {
   final Directory _shots;
   String? _worker;
 
+  /// The height of the window, which starts as a desktop's.
+  int _height = 900;
+
   /// Milliseconds the worker's clock runs ahead of the real one.
   int skewMs = 0;
 
@@ -350,6 +353,7 @@ class Browser {
 
   /// The viewport of a desktop window or of a phone held upright.
   Future<void> resize(int width, int height) async {
+    _height = height;
     await _send('Emulation.setDeviceMetricsOverride', {'width': width, 'height': height, 'deviceScaleFactor': 1, 'mobile': false});
     await Future<void>.delayed(const Duration(milliseconds: 700));
   }
@@ -390,8 +394,18 @@ class Browser {
     await _send('Input.dispatchMouseEvent', {'type': 'mouseReleased', ...at});
   }
 
-  /// A real click on the control whose label contains [label].
-  Future<void> click(String label) async => clickAt(await find(label));
+  /// A real click on the control whose label contains [label]. One that a
+  /// scrolling column holds below or above the window is wheeled into it
+  /// first, as a player would.
+  Future<void> click(String label) async {
+    var node = await find(label);
+    for (var tries = 0; tries < 3 && ((node['y'] as num) < 8 || (node['y'] as num) > _height - 8); tries++) {
+      await wheel(((node['y'] as num) - _height / 2).round(), x: (node['x'] as num).round());
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      node = await find(label);
+    }
+    await clickAt(node);
+  }
 
   Future<void> wheel(int deltaY, {int x = 720}) =>
       _send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': 500, 'deltaX': 0, 'deltaY': deltaY});
@@ -1097,10 +1111,13 @@ Future<void> catalogue(Browser browser) async {
   }
 
   await browser.type('1');
-  final tiles = (await browser.text()).toLowerCase();
   final buildings = list('buildings');
-  check(buildings.length == 12 && buildings.every((o) => tiles.contains('${words(o['building_type']).toLowerCase()} level ${o['level']}')),
-      'the plan has a tile for each of the twelve buildings, at the level the engine gives it');
+  check(buildings.length == 12, 'the catalogue has twelve buildings');
+  await browser.until('a tile for each building at the level the engine gives it', () async {
+    final tiles = (await browser.text()).toLowerCase();
+    return buildings.every((o) => tiles.contains('${words(o['building_type']).toLowerCase()} level ${o['level']}'));
+  });
+  check(true, 'the plan has a tile for each of the twelve buildings, at the level the engine gives it');
   final nanite = buildings.indexWhere((o) => o['building_type'] == 'NaniteFactory');
   await select('1', nanite);
   final million = buildings[nanite]['next']['cost'] as Map<String, dynamic>;
@@ -1306,6 +1323,15 @@ Future<void> jumpTo(Browser browser, int id, String hop) async {
   await Future<void>.delayed(const Duration(milliseconds: 1400));
 }
 
+/// At a phone's width, have the windshield's status sheet open or shut. It
+/// keeps the state it was last left in, and only an open one prints the
+/// fleet status.
+Future<void> sheet(Browser browser, {required bool open}) async {
+  if ((await browser.text()).toLowerCase().contains('fleet status') == open) return;
+  await browser.click('status');
+  await browser.until('the status sheet ${open ? 'open' : 'shut'}', () async => (await browser.text()).toLowerCase().contains('fleet status') == open);
+}
+
 int research(Map<String, dynamic> homeworld, String tech) =>
     ((homeworld['research'] as List).firstWhere((r) => r['tech'] == tech) as Map<String, dynamic>)['level'] as int;
 
@@ -1359,12 +1385,8 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   await browser.command('ship lf $batch');
   await browser.until('$batch Light Fighters ordered as one batch',
       () => browser.tap('t.sent.some((m) => m.action === "build_ship" && m.ship_class === "LightFighter" && m.count === $batch)'));
-  await passUntil(browser, 'the $batch to be built', () async =>
-      (await browser.tap('t.events.filter((e) => e.kind === "ShipBuilt" && e.ship_class === "LightFighter").reduce((n, e) => n + e.count, 0)') as int) >= batch);
-  final built = (await browser.until('the fleet of $all', () async {
-    final f = await fleetWith(browser, main);
-    return f != null && f['ship_count'] == all ? f : null;
-  }));
+  await passUntil(browser, 'the $batch to be built', () async => (await fleetWith(browser, main))?['ship_count'] == all);
+  final built = (await fleetWith(browser, main))!;
   final row = (built['ships'] as List).single as Map<String, dynamic>;
   check(
       row['class'] == 'LightFighter' && row['count'] == all && row['damaged'] == 0 && row['hull'] == row['hull_max'] && !row.containsKey('id'),
@@ -1378,17 +1400,27 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   check((await browser.text()).toUpperCase().contains('LIGHT FIGHTER'), 'the fleet status lists the fleet by class and says $all ships');
   await browser.click('manage fleet');
   await browser.untilText('whole first');
-  await browser.click('split off more light fighter');
-  await browser.click('split off more light fighter');
-  await browser.untilText('split off 2');
+  // The picks live in the panel, and a phone's sheet that is shut holds no
+  // panel: they are made again wherever the panel has been opened anew.
+  Future<void> pickTwo() async {
+    for (var picked = 0; picked < 2 && !(await browser.text()).toLowerCase().contains('split off 2'); picked++) {
+      await browser.click('split off more light fighter');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    await browser.untilText('split off 2');
+  }
+
+  await pickTwo();
   await browser.shot('23b-split-picker-1440');
   await browser.resize(390, 844);
-  await browser.click('status');
+  await sheet(browser, open: true);
+  await browser.untilText('fleet management');
   await browser.wheel(900, x: 195);
   await Future<void>.delayed(const Duration(milliseconds: 500));
+  await pickTwo();
   await browser.shot('23b-split-picker-390');
-  await browser.click('status');
   await browser.resize(1440, 900);
+  await pickTwo();
   await browser.click('split off 2');
   await browser.until('the split on the wire, by class and count', () => browser.tap('''t.sent.some((m) => m.action === "split" && m.fleet_id === $main &&
       JSON.stringify(m.ships) === '[{"class":"LightFighter","count":2}]' && m.damaged_first === false && !("ship_ids" in m))'''));
@@ -1503,13 +1535,17 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   await browser.untilText('hostiles fired');
   await browser.shot('31b-fight-last-round-1440');
   await browser.resize(390, 844);
-  await Future<void>.delayed(const Duration(milliseconds: 400));
+  await sheet(browser, open: false);
   await browser.shot('31-fight-end-strip-390');
-  await browser.click('status');
-  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await sheet(browser, open: true);
+  await browser.shot('31-fight-end-390');
+  if (!(await browser.text()).toLowerCase().contains('hostiles fired')) await browser.click('show last round');
+  await browser.untilText('hostiles fired');
   await browser.shot('31b-fight-last-round-390');
-  await browser.click('status');
   await browser.resize(1440, 900);
+  await browser.click('dismiss');
+  await browser.until('the report put away', () async => !(await browser.text()).toUpperCase().contains('ENDED - '));
+  check(true, 'Dismiss puts the report of the fight away');
 
   final worn = await browser.until('the fleet with its damage', () async {
     final f = await fleetWith(browser, main);
@@ -1526,16 +1562,20 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   await browser.until('Armour Technology researched while the fleet is away', () async => (await fleetWith(browser, main))?['refit_due'] == true,
       timeout: const Duration(seconds: 120));
   await browser.untilText('a refit waits at the home dock');
-  final away = (await fleetWith(browser, main))!, docked = (await fleetWith(browser, wing))!;
-  check((away['refit'] as Map)['armour'] == 0 && (docked['refit'] as Map)['armour'] == 1 && docked['refit_due'] == false,
+  final docked = await browser.until('the dock to refit the two that stayed', () async {
+    final f = await fleetWith(browser, wing);
+    return f != null && f['refit_due'] == false && (f['refit'] as Map)['armour'] == 1 ? f : null;
+  });
+  final away = (await fleetWith(browser, main))!;
+  check((away['refit'] as Map)['armour'] == 0 && away['refit_due'] == true && (docked['refit'] as Map)['armour'] == 1,
       'the fleet in the field fights with Armour 0 and a refit waits for it; the two at the dock have Armour 1 already');
   await browser.shot('32-damaged-refit-waiting-1440');
   await browser.resize(390, 844);
-  await browser.click('status');
-  await browser.wheel(380, x: 195);
+  await sheet(browser, open: true);
+  await browser.wheel(480, x: 195);
   await Future<void>.delayed(const Duration(milliseconds: 500));
   await browser.shot('32-damaged-refit-waiting-390');
-  await browser.click('status');
+  await browser.wheel(-480, x: 195);
   await browser.resize(1440, 900);
 
   for (final hop in [...flown.reversed, home]) {

@@ -57,6 +57,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _outpost = false;
   DateTime? _armedUntil;
   DateTime? _scanAt;
+
+  /// The tick at which the fight ended whose report the player put away.
+  int? _dismissed;
   String? _dockHint;
   String _bannerH = '', _bannerP = '';
   bool _bannerRed = false;
@@ -559,7 +562,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final combat = f.status == ui.FleetStatus.combat;
       final harvesting = f.status == ui.FleetStatus.harvesting;
       final exploring = f.status == ui.FleetStatus.exploring;
-      final battle = st.battleAt(f.sector);
+      final fight = st.battleAt(f.sector);
+      final battle = fight != null && fight.over && fight.endedTick == _dismissed ? null : fight;
       final mine = st.outpost;
       final atOutpost = f.atOutpost;
 
@@ -581,7 +585,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final feedCeiling = g.cardCenter(dirs[4]).dy + GateCard.tallest / 2;
 
       final rightCol = Column(key: _panels, mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        if (battle != null) ...[BattlePanel(key: ValueKey(battle.sector), battle: battle), const SizedBox(height: 8)],
+        if (battle != null) ...[
+          BattlePanel(key: ValueKey(battle.sector), battle: battle, onDismiss: () => setState(() => _dismissed = battle.endedTick)),
+          const SizedBox(height: 8),
+        ],
         if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
         if (_trade) ...[ExchangePanel(controller: con.game), const SizedBox(height: 8)],
         if (_outpost && mine == null) ...[FoundingPanel(controller: con.game), const SizedBox(height: 8)],

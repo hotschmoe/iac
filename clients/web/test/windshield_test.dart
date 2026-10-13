@@ -678,6 +678,10 @@ void main() {
       expect(find.byKey(const Key('battle-fire-fleets')), findsNothing, reason: 'the last round is behind its button once the fight is over');
       expectTextFits(tester, panel, reason: 'the end of the fight at ${size.width.round()}');
       await shot(tester, 'ws-combat-end-${size.width.round()}');
+      await tester.ensureVisible(find.byKey(const ValueKey('battle-dismiss')));
+      await tester.tap(find.byKey(const ValueKey('battle-dismiss')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(panel, findsNothing, reason: 'Dismiss puts the report away');
       await tester.pump(const Duration(seconds: 4));
       await finish(tester, c);
     }

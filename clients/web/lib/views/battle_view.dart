@@ -168,7 +168,10 @@ const volleysShown = 3;
 /// cost to each side. Every figure is the round's or the state's.
 class BattlePanel extends StatefulWidget {
   final Battle battle;
-  const BattlePanel({super.key, required this.battle});
+
+  /// Puts the report of a fight that has ended away.
+  final VoidCallback? onDismiss;
+  const BattlePanel({super.key, required this.battle, this.onDismiss});
 
   @override
   State<BattlePanel> createState() => _BattlePanelState();
@@ -212,13 +215,15 @@ class _BattlePanelState extends State<BattlePanel> {
         ..._losses(e.losses, key: 'battle-end-losses'),
         if (e.salvage case final pile?)
           Padding(padding: const EdgeInsets.only(top: 5), child: Text('WRECKAGE LEFT: ${amountsOf(pile).toUpperCase()}', key: const Key('battle-wreckage'), style: _small.copyWith(color: C.gold))),
-        if (b.round != null)
-          Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: ConsoleButton(_lastRound ? 'Hide last round' : 'Show last round',
-                      key: const ValueKey('battle-last-round'), small: true, active: _lastRound, onPressed: () => setState(() => _lastRound = !_lastRound)))),
+        Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Wrap(spacing: 6, runSpacing: 6, children: [
+              if (b.round != null)
+                ConsoleButton(_lastRound ? 'Hide last round' : 'Show last round',
+                    key: const ValueKey('battle-last-round'), small: true, active: _lastRound, onPressed: () => setState(() => _lastRound = !_lastRound)),
+              if (widget.onDismiss != null)
+                ConsoleButton('Dismiss', key: const ValueKey('battle-dismiss'), small: true, onPressed: widget.onDismiss),
+            ])),
         if (_lastRound) const SizedBox(height: 8),
       ];
 

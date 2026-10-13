@@ -71,7 +71,8 @@ move: nothing here changes what a stored world holds or plays.
 - *Where it stands.* At desktop width the Battle panel opens at the top of
   the windshield's right column, over the fleet status, while the state
   lists a fight in the fleet's sector, and stays for 90 ticks after the
-  fight's end (`battleReportTicks`). On a phone a line over the fleet rail
+  fight's end (`battleReportTicks`) or until its Dismiss is pressed. On a
+  phone a line over the fleet rail
   says the round and what stands and fell on each side, and opens the panel
   in the status sheet. Undo: the two places in `windshield_view.dart`.
 - *What it shows first.* Standing is a table, a row a class: left, lost this
@@ -137,8 +138,8 @@ move: nothing here changes what a stored world holds or plays.
 - Whether sixteen marks and one scale for both sides is the picture the
   owner wants until slice 5: a fleet of 512 against a swarm of 3,230 is
   three marks against eight.
-- Whether the panel should stay a minute and a half after a fight, or until
-  dismissed.
+- Whether a fight's report should leave by itself after a minute and a half
+  or stay until it is dismissed.
 - The outpost's quote in the fleet status is shown wherever the fleet is,
   not only at the outpost.
 
