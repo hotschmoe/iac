@@ -56,6 +56,12 @@ pub fn tick_update(engine: &GameEngine, player_id: u64, events: &[GameEvent]) ->
     }
 }
 
+/// The fights of the player `player_id` as a full state lists them, for a
+/// view that is folded from tick updates without their events.
+pub fn battles_of(engine: &GameEngine, player_id: u64) -> Vec<BattleState> {
+    engine.players.get(&player_id).map(|player| battles(engine, player, true)).unwrap_or_default()
+}
+
 /// The fights `player` is in or present at, marked as theirs where they
 /// are, each with its last round only when `with_round`: a tick update
 /// carries that round as an event.

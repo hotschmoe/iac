@@ -137,10 +137,6 @@ extension MovePreviewOdds on MovePreview {
   SectorOdds get odds => SectorOdds(sector: target, threat: threat, ratio: ratio, label: label);
 }
 
-extension NpcFleetInfoCount on NpcFleetInfo {
-  int get shipCount => ships.fold(0, (s, e) => s + e.count);
-}
-
 extension RequirementLabel on Requirement {
   /// As cards and captions print it, in the engine's words: "Shipyard level
   /// 4", or "300000 energy made" for one that asks for energy.
@@ -190,7 +186,8 @@ extension HomeworldStateEdit on HomeworldState {
     StorageState? storage,
     List<BuildingState>? buildings,
     List<ResearchState>? research,
-    List<ShipState>? dockedShips,
+    List<ShipGroupState>? dockedShips,
+    int? dockedShipCount,
     List<DefenceState>? defences,
     double? homeDefencePower,
     double? dockedPower,
@@ -227,6 +224,7 @@ extension HomeworldStateEdit on HomeworldState {
         researchActive: clearResearchActive ? null : (researchActive ?? this.researchActive),
         researchPending: researchPending ?? this.researchPending,
         dockedShips: dockedShips ?? this.dockedShips,
+        dockedShipCount: dockedShipCount ?? this.dockedShipCount,
         defences: defences ?? this.defences,
         homeDefencePower: homeDefencePower ?? this.homeDefencePower,
         dockedPower: dockedPower ?? this.dockedPower,

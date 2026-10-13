@@ -1,4 +1,5 @@
 import '../protocol/protocol.dart' as proto;
+import 'battle.dart' show shortCount;
 
 /// Threat model (economy spec 5.1 and 7.2). A sector's rating and power are
 /// the server's `threat` (observed groups count 25 percent more when they
@@ -27,9 +28,9 @@ class SectorThreat {
   /// 0 = clear, else 1..9.
   final int rating;
   final double power;
-  final int shipCount;
-  final proto.NpcBehavior? behavior;
-  final List<(proto.ShipClass, int)> composition;
+
+  /// The hostile groups in the sector, each by class as the server lists it.
+  final List<proto.NpcFleetInfo> groups;
 
   /// The server's rating for the sector even when no hostile is in it (the
   /// ring's group power, or the rating last seen on the chart).
@@ -38,31 +39,26 @@ class SectorThreat {
   /// What the server's threat for the sector rests on, and its power.
   final proto.ThreatBasis? basis;
   final double estPower;
-  const SectorThreat(this.rating, this.power, this.shipCount, this.behavior, this.composition, [this.ringRating = 1, this.basis, this.estPower = 0]);
+  const SectorThreat(this.rating, this.power, this.groups, [this.ringRating = 1, this.basis, this.estPower = 0]);
 
-  static const clear = SectorThreat(0, 0, 0, null, []);
+  static const clear = SectorThreat(0, 0, []);
   bool get hostile => rating > 0;
+
+  /// How the first group behaves; null with none.
+  proto.NpcBehavior? get behavior => groups.firstOrNull?.behavior;
 
   static SectorThreat of(proto.SectorState? s) {
     final hs = s?.hostiles;
     if (s == null || hs == null || hs.isEmpty) {
-      return s == null ? clear : SectorThreat(0, 0, 0, null, const [], s.threat.rating, s.threat.basis, s.threat.estPower);
+      return s == null ? clear : SectorThreat(0, 0, const [], s.threat.rating, s.threat.basis, s.threat.estPower);
     }
-    final comp = <proto.ShipClass, int>{};
-    proto.NpcBehavior? beh;
-    var n = 0;
-    for (final h in hs) {
-      beh ??= h.behavior;
-      for (final sh in h.ships) {
-        comp[sh.shipClass] = (comp[sh.shipClass] ?? 0) + sh.count;
-        n += sh.count;
-      }
-    }
-    return SectorThreat(s.threat.rating, s.threat.estPower, n, beh, [for (final e in comp.entries) (e.key, e.value)], s.threat.rating, s.threat.basis, s.threat.estPower);
+    return SectorThreat(s.threat.rating, s.threat.estPower, hs, s.threat.rating, s.threat.basis, s.threat.estPower);
   }
 
   /// "OBSERVED", "TEMPLATE" or "ESTIMATE": how far to trust [ringRating].
   String get basisLabel => basis?.wire.toUpperCase() ?? '';
 
-  String get compLabel => composition.map((e) => '${e.$2}${shipAbbr(e.$1)}').join(' ');
+  /// "32LFT 4CRU", group after group: what a narrow card has room for.
+  String get compLabel =>
+      [for (final g in groups) g.ships.map((s) => '${shortCount(s.count)}${shipAbbr(s.shipClass)}').join(' ')].join(' + ');
 }

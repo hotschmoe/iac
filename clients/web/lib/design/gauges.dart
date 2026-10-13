@@ -197,13 +197,7 @@ class RatioInfo {
   bool get deadly => verdict == proto.RatioLabel.deadly;
 
   /// What the verdict means for the fleet, in the server's words.
-  String get outcome => switch (verdict) {
-        proto.RatioLabel.safe => 'keeps 98% of the hull or more',
-        proto.RatioLabel.favourable => 'a sure win, 1 to 15% of the hull lost',
-        proto.RatioLabel.even => 'a win in practice, 15 to 50% of the hull lost',
-        proto.RatioLabel.risky => 'from a lost fleet to a win with half the hull',
-        proto.RatioLabel.deadly => 'the fleet is lost',
-      };
+  String get outcome => verdict.outcome;
 
   static RatioInfo ofLabel(double r, proto.RatioLabel v) => RatioInfo(
       r,
