@@ -6349,3 +6349,89 @@ another `memcpy` and nothing would reach the SVE trap. Neither a newer kernel
 nor that parameter was tried: both are changes to the machine and the
 owner's. Twenty runs of the suite after either would say whether the flake is
 this fault.
+
+## 2026-10-13: the headless client is a crate of its own
+
+The owner asked for the headless client and the TUI to be two crates, so that
+the TUI can be archived later by taking one crate out (`docs/design/
+decisions.md`, the entry on the web client and its paragraph on the split).
+This is the split; the TUI is not archived here and still builds and runs.
+
+**Read.** All of `clients/tui/src` (5,041 lines). The headless path used
+three files and nothing else: `connection.rs` (221 lines), `token_store.rs`
+(76) and `headless.rs` (126), with the four arguments and the exit code of
+`main.rs`. `state.rs`, `input.rs` and `renderer/` hold nothing it uses:
+`input.rs` is crossterm keys, `state.rs` is what the screens remember, and
+neither is named by the three files.
+
+**The line.** `clients/headless`, package and binary `iac-headless`: a library
+of `connection` (the WebSocket, `login`, the wording of a refused login) and
+`token_store` (the token file), and a binary, `main.rs`, that is the NDJSON
+pipe with its own `clap` arguments (421 lines in all). `clients/tui`, package
+and binary `iac-tui`: the screens, the keys, the client state and the event
+loop (4,611 lines), taking `iac_headless::connection`. The pipe is the binary
+and not a library function, because it is a process's stdin and stdout and no
+Rust caller could use it otherwise. `iac-client` and `--headless` exist
+nowhere.
+
+**Moved, then edited.** Commit `be08a05` is three `git mv` and no edit
+(`connection.rs`, `token_store.rs`, and `headless.rs` to
+`clients/headless/src/main.rs`); the workspace does not build at that commit.
+Commit `6a45bcd` makes the crate and migrates the callers. Two edits go beyond
+the move. `login` printed `iac-client: new token ... saved to ...` itself; it
+now returns a `Login` (the connection, the `auth_result` line, the notice) and
+each binary prints the notice under its own name, in the place it was printed
+before. And five items of `connection.rs` that nothing called and that sat
+under `#[allow(dead_code)]` are removed (`ConnectionConfig::default_config`,
+`Connection::send_command`, `request_full_state`, `poll`, `recv`): in a
+library a public item is never linted as dead, so they would have stayed
+unseen. The TUI's manifest loses `futures-util` and `dirs`, which only the
+moved files used.
+
+**Callers.** `server/tests/common/mod.rs` (`HeadlessClient` builds
+`-p iac-headless` and runs it without the flag; `scenarios.rs` itself is not
+touched), `tools/playtest/play.py` (the binary's path, the marker
+`proc_alive` looks for in a command line, the arguments) and `start.sh` (the
+package it builds), `README.md` (layout table, quick start, the headless
+section, the example pipe, the list of crates), the workspace `Cargo.toml` and
+`Cargo.lock`. `tools/playtest/RULES.md` and `README.md` beside it speak of
+"the headless client" and needed nothing. `docs/auth_spec.md`,
+`docs/design/outposts.md` and `docs/design/ogame.md` name the TUI or its
+directory, which are still there, and are left. `CLAUDE.md` is not edited;
+its changes are in `claude-md.patch` in the scratch directory.
+
+**The dependency graph.** `cargo tree -p iac-headless` is 132 lines, none of
+which names ratatui or crossterm; its eight direct dependencies are clap,
+dirs, env_logger, futures-util, iac-shared, serde_json, tokio and
+tokio-tungstenite. `cargo tree --workspace -i iac-tui` prints `iac-tui` alone:
+nothing depends on it. Outside `clients/tui`, `iac-tui` is named by
+`Cargo.lock`, by `README.md` and by this entry only. `cargo tree --workspace --exclude
+iac-tui` names neither ratatui nor crossterm, and `cargo build --workspace
+--exclude iac-tui --all-targets` builds with no warning (3 m 24 s): 32
+packages of the 157 in the graph on this machine are the TUI's alone,
+`iac-tui` among them.
+
+**Ran.** `cargo build --workspace --all-targets`: no warning (3 m 28 s cold,
+and again from the cache after merging master). `cargo clippy --workspace --all-targets`: silent.
+`cargo test --workspace --no-fail-fast`: 158 passed, none failed, as on
+master; the nine of `scenarios.rs` in 92 s, where the test's own
+`cargo build -p iac-headless` built the crate by itself. By hand, a server on
+`--port 0` (it took 45783) with its world in the scratch directory, and
+`iac-headless --port 45783 --name Probe` with `XDG_CONFIG_HOME` there: stderr
+`iac-headless: new token for 'Probe' saved to .../cfg/iac/tokens.json`
+(mode 0600), stdout the `auth_result` with the token, the `full_state`,
+`tick_update`s, the `leaderboard` reply to the bare command
+`{"action":"leaderboard","limit":5}` and a `client_error` for a line that was
+not JSON; exit 0. A second run logged in on the saved token with no notice. A
+wrong `--token` printed the refusal on stdout, the reason and hint on stderr,
+and left 1. The server was stopped by its PID. `iac-tui --help` prints its
+four arguments and `iac-tui --headless` is refused by clap.
+
+**Not verified.** The TUI was not given a terminal: that it logs in and draws
+as before rests on the compiler and on its `main.rs` differing only in its
+module list, the flag that is gone and the lines of the login. Nothing in `tools/playtest` was run; its two files were
+edited by reading them. No release build was made, so the `--release` arm of
+`client_binary` and `start.sh`'s build line are unrun. The tests were not run
+again after the merge of master, which brought one paragraph of
+`docs/design/decisions.md`. The web client is not touched, so no Flutter
+check was run.
