@@ -26,6 +26,16 @@ screens need not follow new features and may fall behind. Nothing is removed.
 If the screens ever stop being worth compiling, the headless client is split
 out first.
 
+**The same day, the split and the TUI's leaving.** The owner asked for the
+headless client and the TUI to become two crates ("strip out headless client
+to its own crate, and TUI as its own crate. then we can archive TUI later (and
+its in history to pull if we ever want a TUI again)"), and, told that the
+OGame catalogue would otherwise have to keep the TUI's screens compiling
+through every change of type, answered: "yes take tui out of workspace after
+the split is committed". So once the split is merged, the TUI's crate leaves
+the workspace and the tree, moved to the gitignored `.archive/` as every
+retired file is; the commit of the split is where it can be had back from.
+
 ## 2026-10-13 (the Flutter test flake is left alone)
 
 `docs/design/flutter_test_flake.md` found that this machine's kernel loses
