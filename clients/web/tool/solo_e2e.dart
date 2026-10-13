@@ -30,8 +30,8 @@
 // of its resources shown with its shortfall, mines short of energy and the
 // warning of it, a Solar Satellite built in the yard and counted at home, a
 // batch the stockpile does not cover with its order button off, the
-// engine's refusal of a typed order shown on screen with nothing charged, a
-// defence ordered by typed command), the catalogue in the homeworld's tabs
+// engine's refusal of a typed order shown on screen with nothing charged),
+// the catalogue in the homeworld's tabs
 // and their inspector, every screen pictured at
 // both widths, a flight and a fight (Light Fighters built by the batch into
 // the docked fleet, two split off by count through the picker and flown
@@ -40,8 +40,13 @@
 // on their trail if it follows, the group's losses and when it mends; then
 // the rest flown at the same group, which they outweigh, the round panel
 // during the fight and at its end, the damage and the home dock's quote for
-// it, a refit waiting, and the mending and the refit at home), the bots on
-// the board and acting, a reload that
+// it, a refit waiting, and the mending and the refit at home), a raid on the
+// homeworld (the forecast on the Defence tab with none on its way, the first
+// defence ordered by typed command, the raid announced and counted down,
+// standing at home with the docked fleet in its fight, fought a round a tick
+// with the defences as a group of their own, and its ending with the
+// wreckage, the rebuild and what was taken as the engine says them), the
+// bots on the board and acting, a reload that
 // restores the
 // world, a two-hour absence caught up and reported with the page staying
 // responsive, a stall of the running page, a second tab kept out,
@@ -857,6 +862,11 @@ Future<void> founding(Browser browser) async {
     return ['metal', 'crystal', 'deuterium'].every((k) => text.contains(grouped((cost[k] as num).round())));
   });
   check(true, 'and the founding panel prints that price');
+  final platform = [for (final u in survey['platform'] as List) '${u['count']}X ${words(u['unit']).toUpperCase()}'].join(', ');
+  await browser.untilText(platform);
+  check(platform.isNotEmpty && (survey['raid'] != null) == (ring >= 9 && ring <= 20),
+      'the panel names the platform of level 1 as the defences it is ($platform), and the survey forecasts '
+      '${survey['raid'] == null ? 'no raid outside the rings an outpost stands in' : 'a raid of the ring against it'}');
   final refusal = survey['refusal'] as String?;
   check(refusal != null && (ring >= 9 || refusal == 'fleet $id is at ring $ring; an outpost stands in rings 9 to 20'),
       'and says why no outpost can be founded there now: $refusal');
@@ -895,17 +905,19 @@ Future<Map<String, dynamic>> stockpile(Browser browser) async {
 Future<Map<String, dynamic>> homeworld(Browser browser) async =>
     (await browser.last('tick_update'))!['homeworld_update'] as Map<String, dynamic>;
 
-/// Four minutes of the world at once: the worker's clock is moved on and the
-/// engine plays the ticks it owes. So short a gap is a stalled page to the
-/// engine, not an absence, and nothing is said of it.
-Future<void> passFourMinutes(Browser browser) async {
+/// So many [seconds] of the world at once: the worker's clock is moved on
+/// and the engine plays the ticks it owes. So short a gap is a stalled page
+/// to the engine, not an absence, and nothing is said of it.
+Future<void> pass(Browser browser, int seconds) async {
   final states = await browser.tap('t.counts.full_state') as int;
-  await browser.jumpClock(240 * 1000);
+  await browser.jumpClock(seconds * 1000);
   await browser.until('the world brought up to date', () async => (await browser.tap('t.counts.full_state') as int) > states,
       timeout: const Duration(minutes: 3));
   final tick = (await browser.last('full_state'))!['tick'] as int;
   await browser.until('a tick after it', () async => ((await browser.last('tick_update'))!['tick'] as int) >= tick);
 }
+
+Future<void> passFourMinutes(Browser browser) => pass(browser, 240);
 
 /// Let the world run on, four minutes at a time, until [done] holds.
 Future<void> passUntil(Browser browser, String what, Future<bool> Function() done) async {
@@ -934,11 +946,12 @@ Map<String, dynamic> option(Map<String, dynamic> homeworld, String list, String 
 ///   ten the stockpile does not cover has its order button off and says
 ///   what is missing; one is ordered and paid for at once, is counted at
 ///   home when built and adds its energy; a batch of a hundred typed is
-///   refused by the engine and costs nothing;
-/// - a Rocket Launcher is ordered with the typed `defence` command and
-///   stands in the home defence.
+///   refused by the engine and costs nothing.
 ///
-/// The hour or so of the world this takes is passed four minutes at a time.
+/// No defence is ordered here and the Shipyard stays at 1: the engine raids
+/// no empire as poor as that, so none comes while the world is passed four
+/// minutes at a time, which is how the hour or so this takes goes by. The
+/// first defence is ordered in [raid].
 Future<void> firstSteps(Browser browser) async {
   print('first steps: a waiting building, energy, the yard');
   await browser.click('homeworld');
@@ -987,13 +1000,12 @@ Future<void> firstSteps(Browser browser) async {
   for (final order in ['build robotics', 'build shipyard']) {
     await browser.command(order);
   }
-  await passUntil(browser, 'a Shipyard, and a stockpile that covers a Solar Satellite and a Rocket Launcher', () async {
+  await passUntil(browser, 'a Shipyard, and a stockpile that covers a Solar Satellite', () async {
     final hw = await homeworld(browser);
     if (level(hw, 'Shipyard') < 1) return false;
     final stock = await stockpile(browser);
     final satellite = option(hw, 'ships', 'ship_class', 'SolarSatellite')['unit_cost'] as Map<String, dynamic>;
-    final launcher = option(hw, 'defences', 'kind', 'RocketLauncher')['unit_cost'] as Map<String, dynamic>;
-    return ['metal', 'crystal', 'deuterium'].every((k) => (stock[k] as num) >= (satellite[k] as num) + (launcher[k] as num));
+    return ['metal', 'crystal', 'deuterium'].every((k) => (stock[k] as num) >= (satellite[k] as num));
   });
   final yard = await homeworld(browser);
   final satellite = option(yard, 'ships', 'ship_class', 'SolarSatellite');
@@ -1041,8 +1053,8 @@ Future<void> firstSteps(Browser browser) async {
       () => browser.tap('t.events.some((e) => e.kind === "ShipBuilt" && e.ship_class === "SolarSatellite")'), timeout: const Duration(minutes: 2));
   await browser.until('it counted at home', () async => (await homeworld(browser))['satellites'] == 1);
   final withOne = await homeworld(browser);
-  check(((withOne['energy'] as Map<String, dynamic>)['made'] as int) == madeBefore + perSatellite && (withOne['satellite_power'] as num) > 0,
-      'it is counted at the homeworld, adds $perSatellite energy and stands in the home defence');
+  check(((withOne['energy'] as Map<String, dynamic>)['made'] as int) == madeBefore + perSatellite,
+      'it is counted at the homeworld and adds $perSatellite energy');
   check(((await browser.last('tick_update'))!['fleets'] as List).every((f) => (f['ships'] as List).every((s) => s['class'] != 'SolarSatellite')),
       'and it joined no fleet');
   await browser.until('the inspector to count it', () async => RegExp(r'AT HOME\s+1\b').hasMatch((await browser.text()).toUpperCase()));
@@ -1067,27 +1079,6 @@ Future<void> firstSteps(Browser browser) async {
   final after = await stockpile(browser);
   check(['metal', 'crystal', 'deuterium'].every((k) => (after[k] as num) >= (before[k] as num)), 'nothing was charged for it: $before then $after');
   check((await browser.tap('t.events.filter((e) => e.kind === "Queue" && e.queue_type === "Ship").length')) == 1, 'and nothing was ordered');
-
-  await browser.command('defence rl');
-  await browser.until('the typed defence order on the wire',
-      () => browser.tap('t.sent.some((m) => m.action === "build_defence" && m.kind === "RocketLauncher" && m.count === 1)'));
-  await browser.until('the Rocket Launcher to stand',
-      () => browser.tap('t.events.some((e) => e.kind === "DefenceBuilt" && e.defence === "RocketLauncher")'), timeout: const Duration(minutes: 2));
-  final defended = await homeworld(browser);
-  final launcher = (defended['defences'] as List).firstWhere((d) => d['kind'] == 'RocketLauncher') as Map<String, dynamic>;
-  check(launcher['count'] == 1 && (defended['structure_power'] as num) == (launcher['power'] as num),
-      'a typed defence order builds a Rocket Launcher, which stands in the home defence at ${launcher['power']}');
-  await browser.press('4', 'Digit4', 52, text: '4');
-  await browser.until('the defence tab with its three parts', () async {
-    final text = (await browser.text()).toUpperCase();
-    return text.contains('DOCKED SHIPS ${grouped((defended['docked_power'] as num).round())}') &&
-        text.contains('SOLAR SATELLITES ${grouped((defended['satellite_power'] as num).round())}') &&
-        text.contains('DEFENCES ${grouped((defended['structure_power'] as num).round())}');
-  });
-  check(true, 'and the defence tab prints the three parts of it as the engine counts them');
-  final kinds = ((defended['catalog'] as Map<String, dynamic>)['defences'] as List).length;
-  check(kinds == 8 && RegExp(r'ONE OF A KIND').allMatches((await browser.text()).toUpperCase()).length == 2,
-      'it lists the eight defences, the two domes as one of a kind');
 
   await browser.press('1', 'Digit1', 49, text: '1');
   await browser.click('overview');
@@ -1976,6 +1967,245 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   await browser.shotBoth('34-overview-after-the-fight');
 }
 
+/// Ticks the world is passed at a time while a raid is waited for: fewer
+/// than the warning a raid gives at this pace, so that one announced is
+/// seen before it arrives.
+const raidWatchTicks = 20;
+
+/// "3x LightFighter (power 335), repelled: destroyed 100%, outlasted 0%,
+/// lost 0%, 78% kept": a forecast as this check prints it.
+String forecastWords(Map<String, dynamic> raid) {
+  final odds = raid['odds'] as Map<String, dynamic>;
+  String pct(String share) => '${((odds[share] as num) * 100).round()}%';
+  return '${[for (final s in raid['ships'] as List) '${s['count']}x ${s['class']}'].join(', ')} (power ${(raid['power'] as num).round()}), '
+      '${odds['label']}: destroyed ${pct('destroyed')}, outlasted ${pct('outlasted')}, lost ${pct('lost')}, ${pct('kept')} kept';
+}
+
+/// The Defence tab printing the forecast of the newest state under the
+/// heading [stands]: the label, what the raid flies and its power, the three
+/// shares and what each side keeps. The forecast it was read against.
+Future<Map<String, dynamic>> forecastOnPage(Browser browser, String stands) =>
+    browser.until('the Defence tab to print the state\'s forecast under "$stands"', () async {
+      String plain(String text) => text.toUpperCase().replaceAll(RegExp(r'\s+'), ' ');
+      final raid = (await homeworld(browser))['raid'] as Map<String, dynamic>;
+      final odds = raid['odds'] as Map<String, dynamic>;
+      String pct(String share) => '${((odds[share] as num) * 100).round()}%';
+      final page = plain(await browser.text());
+      final wanted = [
+        stands,
+        '${odds['label']}'.replaceAll('_', ' '),
+        'IT FLIES ${[for (final s in raid['ships'] as List) '${grouped(s['count'] as int)}X ${words(s['class'])}'].join(', ')} '
+            'POWER ${grouped((raid['power'] as num).round())}',
+        'DESTROYED ${pct('destroyed')}',
+        'OUTLASTED ${pct('outlasted')}',
+        'LOST ${pct('lost')}',
+        'YOU KEEP ${pct('kept')} OF WHAT STANDS HERE, THE RAIDERS ${pct('raiders_kept')} OF THEIRS',
+      ];
+      return wanted.every((line) => page.contains(plain(line))) ? raid : null;
+    });
+
+/// A raid on the homeworld, against the engine itself. Until here the empire
+/// was not worth raiding (a Shipyard at 1, no defence), so none came while
+/// the world was passed four minutes at a time.
+///
+/// - The Defence tab prints the forecast the state carries while no raid is
+///   on its way: one of typical size, what it flies, the engine's label for
+///   how it would end against what stands at home, the three shares and what
+///   is kept. No two powers are compared.
+/// - A Rocket Launcher is ordered with the typed `defence` command and
+///   stands at home. From then the engine rolls for raids.
+/// - The world is passed [raidWatchTicks] ticks at a time until the state
+///   says a raid is on its way. The tab and the top bar count down to it.
+/// - It arrives and stands at home; the fleet docked there is in its fight
+///   and is offered the way out on the tab. A round a tick follows, the
+///   defences as a group of their own beside the fleet, and the fight ends
+///   as the engine says: destroyed, outlasted or lost. Whichever it is, the
+///   page is held to the wire: the ending, the rounds, the wreckage, what
+///   was rebuilt and what was taken.
+///
+/// A raid on so small an empire is a ship or two and its fight a round or
+/// two, a second or two of the page: the raid standing at home before its
+/// first round is pictured when it is caught and said to have been missed
+/// when it is not, and the rounds are read after the end, from the report's
+/// last round.
+Future<void> raid(Browser browser) async {
+  print('a raid');
+  await browser.type('gh');
+  await browser.untilText('build slot a');
+  await browser.type('4');
+  final quiet = await forecastOnPage(browser, 'NO RAID ANNOUNCED');
+  check(quiet['arrival_tick'] == null && quiet['rounds_left'] == null && (quiet['ships'] as List).isNotEmpty,
+      'with no raid on its way the state forecasts one of typical size and the Defence tab prints it: ${forecastWords(quiet)}');
+  final listed = (await browser.text()).toUpperCase();
+  check(listed.contains('WHAT STANDS AT HOME FIGHTS THE RAID') && !listed.contains('X THE RAID') && !listed.contains('RESTORING'),
+      'the tab lists what will fight and compares no two powers');
+  await browser.shotBoth('35-defence-forecast');
+
+  await browser.command('defence rl');
+  await browser.until('the typed defence order on the wire',
+      () => browser.tap('t.sent.some((m) => m.action === "build_defence" && m.kind === "RocketLauncher" && m.count === 1)'));
+  await browser.until('the Rocket Launcher to stand',
+      () => browser.tap('t.events.some((e) => e.kind === "DefenceBuilt" && e.defence === "RocketLauncher")'), timeout: const Duration(minutes: 2));
+  final defended = await homeworld(browser);
+  final launcher = (defended['defences'] as List).firstWhere((d) => d['kind'] == 'RocketLauncher') as Map<String, dynamic>;
+  check(launcher['count'] == 1, 'a typed defence order builds a Rocket Launcher, which stands at home');
+  final kinds = ((defended['catalog'] as Map<String, dynamic>)['defences'] as List).length;
+  check(kinds == 8 && RegExp(r'ONE OF A KIND').allMatches((await browser.text()).toUpperCase()).length == 2,
+      'the tab lists the eight defences, the two domes as one of a kind');
+  check((await browser.text()).toLowerCase().contains('in a hundred stand again'), 'and says at what rate defences are rebuilt after a raid');
+
+  var waited = 0;
+  Map<String, dynamic> coming;
+  while (true) {
+    coming = (await homeworld(browser))['raid'] as Map<String, dynamic>;
+    if (coming['arrival_tick'] != null || coming['rounds_left'] != null) break;
+    if (waited >= 3600) fail('no raid was announced in an hour of the world after a defence stood');
+    await pass(browser, raidWatchTicks);
+    waited += raidWatchTicks;
+  }
+  check(coming['rounds_left'] == null, 'a raid is seen on its way before it arrives');
+  final arrival = coming['arrival_tick'] as int;
+  final seenAt = (await browser.last('tick_update'))!['tick'] as int;
+  check(arrival > seenAt && arrival - seenAt <= 30,
+      'after $waited ticks of waiting the state says a raid arrives in ${arrival - seenAt} ticks: ${forecastWords(coming)}');
+  final announced = await forecastOnPage(browser, 'RAID IN ');
+  check('${announced['ships']}' == '${coming['ships']}' && announced['power'] == coming['power'],
+      'the Defence tab counts down to it, with what it flies and the forecast as the state has them');
+  final bar = RegExp(r'RAID ON YOUR HOMEWORLD: [0-9:]+, FORECAST ' '${'${coming['odds']['label']}'.replaceAll('_', ' ').toUpperCase()}');
+  check(bar.hasMatch((await browser.text()).toUpperCase()), 'and the top bar counts down to it with the forecast\'s label');
+  await browser.shotBoth('36-raid-announced');
+
+  final before = await homeworld(browser);
+  final docked = [
+    for (final f in ((await browser.last('tick_update'))!['fleets'] as List).cast<Map<String, dynamic>>())
+      if ('${f['location']}' == '${before['location']}') f['id'] as int,
+  ];
+  const mine = '(b) => b.raid && b.raid.mine && !b.raid.outpost';
+  final resolutions = 't.events.filter((e) => e.kind === "RaidResolved" && !e.outpost && e.tick >= $arrival)';
+  final standing = await browser.until('the raid to arrive', () async {
+    final found = await browser.tap('JSON.stringify({tick: t.last.tick_update.tick, fight: (t.last.tick_update.battles || []).find($mine) ?? null, '
+        'forecast: t.last.tick_update.homeworld_update.raid, over: $resolutions.length})') as String;
+    final seen = jsonDecode(found) as Map<String, dynamic>;
+    return seen['fight'] != null || seen['over'] != 0 ? seen : null;
+  }, timeout: const Duration(seconds: 90));
+  if (standing['fight'] case final Map<String, dynamic> fight) {
+    final forecast = standing['forecast'] as Map<String, dynamic>;
+    check(
+        '${fight['sector']}' == '${before['location']}' &&
+            (fight['rounds'] as int) + ((fight['raid'] as Map)['rounds_left'] as int) == 6 &&
+            forecast['arrival_tick'] == null &&
+            forecast['rounds_left'] == (fight['raid'] as Map)['rounds_left'],
+        'at tick ${standing['tick']} the raid stands at home as a fight, ${fight['rounds']} round(s) fought and ${(fight['raid'] as Map)['rounds_left']} left, '
+        'and the forecast is that raid: ${forecastWords(forecast)}');
+    final inIt = await soon(() async {
+      final page = (await browser.text()).toUpperCase();
+      return page.contains('RAID BEING FOUGHT') && (docked.isEmpty || page.contains('LEAVE THE FIGHT'));
+    }, ms: 700);
+    if (inIt) {
+      await browser.shot('36b-raid-standing-1440');
+      check(true, 'while it is fought the tab says so${docked.isEmpty ? '' : ', and offers the docked fleet the way out of the fight'}');
+    } else {
+      print('  the fight was over before the page was read: the raid standing at home is not pictured');
+    }
+  } else {
+    print('  the raid was over within the tick it was first seen in: its fight under way was not read off the state');
+  }
+
+  final resolved = jsonDecode(await browser.until('the raid\'s end',
+      () => browser.tap('JSON.stringify($resolutions[0] ?? null)').then((found) => found == 'null' ? null : found),
+      timeout: const Duration(seconds: 60)) as String) as Map<String, dynamic>;
+  final over = resolved['tick'] as int;
+  final rounds = (jsonDecode(await browser.tap(
+          'JSON.stringify(t.events.filter((e) => e.kind === "BattleRound" && e.raid && e.mine && e.tick > $arrival && e.tick <= $over))') as String) as List)
+      .cast<Map<String, dynamic>>();
+  final ends = (jsonDecode(await browser.tap('JSON.stringify(t.events.filter((e) => e.kind === "CombatEnded" && e.raid && e.mine && e.tick === $over))') as String)
+          as List)
+      .cast<Map<String, dynamic>>();
+  final outcome = resolved['outcome'] as String?;
+  final defendedIt = resolved['defended'] == true;
+  final ending = !defendedIt
+      ? (outcome == null ? 'RAID LOST WITHOUT A FIGHT' : 'RAID LOST')
+      : outcome == 'outlasted'
+          ? 'RAID OUTLASTED'
+          : 'RAID DESTROYED';
+  String units(Object? list, String key) => [for (final u in list as List) '${u['count']}x ${u[key]}'].join(', ');
+  print('  the raid of ${units(resolved['raiders'], 'class')} ended at tick $over: $ending after ${resolved['rounds']} round(s); '
+      'raiders lost ${units(resolved['raiders_lost'], 'class')}; we lost ${units(resolved['lost'], 'unit')}; rebuilt ${units(resolved['rebuilt'], 'unit')}; '
+      'taken ${resolved['resources_lost']}; wreckage ${resolved['salvage_dropped']}');
+  check(
+      rounds.length == resolved['rounds'] &&
+          rounds.length <= 6 &&
+          (outcome == null ? ends.isEmpty && rounds.isEmpty : ends.length == 1 && ends.single['outcome'] == outcome && ends.single['rounds'] == rounds.length),
+      'the fight was told a round a tick, ${rounds.length} of them on ticks ${[for (final r in rounds) r['tick']]}, and ended as the raid did ($outcome)');
+  if (rounds.isNotEmpty) {
+    final first = rounds.first;
+    final groups = ((first['fleets'] as Map)['groups'] as List).cast<Map<String, dynamic>>();
+    final battery = groups.where((g) => g['battery'] == true).toList();
+    final raiders = ((first['hostiles'] as Map)['groups'] as List).cast<Map<String, dynamic>>();
+    check(
+        first['tick'] == arrival + 1 &&
+            battery.length == 1 &&
+            battery.single['fleet_id'] == 0 &&
+            battery.single['label'] == 'home defences' &&
+            docked.every((id) => groups.any((g) => g['fleet_id'] == id && g['battery'] != true)) &&
+            raiders.length == 1 &&
+            '${raiders.single['label']}'.startsWith('raid of '),
+        'the first round is fought the tick after it arrives: the docked fleet${docked.length == 1 ? '' : 's'} $docked and the defences, '
+        'a group of their own, against "${raiders.single['label']}"');
+  }
+
+  await browser.untilText(ending);
+  final told = (await browser.text()).toUpperCase();
+  check(outcome == null || told.contains('ENDED - ${plural(resolved['rounds'], 'ROUND')}'), 'the page says how the raid ended and after how many rounds: $ending');
+  check(told.contains('WRECKAGE LEFT') == (resolved['salvage_dropped'] != null),
+      'wreckage is on the page ${resolved['salvage_dropped'] != null ? 'as the raid left it' : 'only when a raid leaves it'}');
+  check(told.contains('REBUILT AT ONCE') == (resolved['rebuilt'] as List).isNotEmpty && told.contains('TAKEN:') == !defendedIt,
+      'and so are what was rebuilt at once and what was taken, each only when the raid says so');
+  final after = await browser.until('a state after the raid', () async {
+    final update = (await browser.last('tick_update'))!;
+    return (update['tick'] as int) >= over ? update['homeworld_update'] as Map<String, dynamic> : null;
+  });
+  int counted(Object? list, String key, String name) =>
+      (list as List).cast<Map<String, dynamic>>().where((u) => u[key] == name).fold(0, (n, u) => n + (u['count'] as int));
+  check(
+      (after['raid'] as Map)['rounds_left'] == null &&
+          after['satellites'] == (before['satellites'] as int) - (resolved['satellites_lost'] as int) &&
+          (before['defences'] as List).every((d) =>
+              counted(after['defences'], 'kind', d['kind'] as String) ==
+              (d['count'] as int) - counted(resolved['lost'], 'unit', d['kind'] as String) + counted(resolved['rebuilt'], 'unit', d['kind'] as String)),
+      'afterwards the forecast is of the next raid again, and what stands at home is what stood less what fell plus what was rebuilt');
+  await browser.shot('37-raid-ended-1440');
+  if (rounds.isNotEmpty) {
+    await browser.click('show last round');
+    await browser.untilText('raiders fired');
+    final last = (await browser.text()).toUpperCase();
+    check(last.contains('DEFENDERS') && last.contains('HOME DEFENCES') && last.contains('RAIDERS'),
+        'the last round is the raid\'s: defenders with the home defences named apart from the fleet, against the raiders');
+    await browser.shot('37b-raid-last-round-1440');
+  }
+  // A phone's page is a column: the report is wheeled into the window, and
+  // pictured once the alerts raised over it have left.
+  await browser.resize(390, 844);
+  await soon(() async => !(await browser.text()).contains('Alert. '), ms: 11000);
+  final report = await browser.find(ending);
+  await browser.wheel(((report['y'] as num) - 260).round(), x: 195);
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await browser.shot('37-raid-ended-390');
+  if (rounds.isNotEmpty) {
+    if (!(await browser.text()).toLowerCase().contains('raiders fired')) await browser.click('show last round');
+    await browser.untilText('raiders fired');
+    await browser.wheel(260, x: 195);
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await browser.shot('37b-raid-last-round-390');
+  }
+  await browser.wheel(-4000, x: 195);
+  await browser.resize(1440, 900);
+  if (((await browser.last('tick_update'))!['fleets'] as List).isEmpty) fail('the raid left the empire no fleet: the rest of this check needs one');
+  await browser.type('1');
+  await browser.type('go');
+  await browser.untilText('admiral');
+}
+
 /// The page as a player on the LAN gets it: over plain http from a name that
 /// is not this machine's, which is no secure context. The browser gives such
 /// a page no locks, so a second tab is not kept out and finds the save the
@@ -2120,6 +2350,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   await firstSteps(browser);
   await screens(browser);
   await fight(browser, home as Map<String, dynamic>);
+  await raid(browser);
 
   print('bots');
   final board = (jsonDecode(await browser.until('a leaderboard', () => browser.tap('t.boards.length ? JSON.stringify(t.boards[0]) : null')) as String)

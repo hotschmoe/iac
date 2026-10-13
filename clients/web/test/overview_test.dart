@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:iac_client/console/battle.dart' show flightPrice, raidForce, raidKept;
+import 'package:iac_client/console/battle.dart' show flightPrice, raidForce, raidKept, roundsLeftOf;
 import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/console/kv_store.dart';
@@ -123,6 +123,31 @@ void main() {
     await tester.tap(btn);
     await tester.pump(const Duration(milliseconds: 100));
     expect(c.hwTab, HomeworldTab.defence);
+    await endShell(tester, c);
+  });
+
+  testWidgets('a raid that has arrived is on the card, in the top bar and in status as being fought, and the bar opens the Defence tab with its fight',
+      (tester) async {
+    final c = await _boot(tester);
+    final bar = find.byKey(const ValueKey('hud-raid'));
+    expect(find.descendant(of: bar, matching: find.textContaining('REPELLED')), findsOneWidget, reason: 'a raid on its way stands in the top bar with its label');
+    c.raidHome(c.state.hw!.raid.power, inTicks: 2);
+    for (var i = 0; i < 4 && c.state.raidAtHome == null; i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final raid = c.state.hw!.raid;
+    expect((raid.roundsLeft, raid.arrivalTick), (proto.raidRounds, null), reason: 'the forecast is the raid being fought');
+    final card = find.byKey(const Key('raid-card'));
+    expect(find.descendant(of: card, matching: find.text('RAID BEING FOUGHT')), findsOneWidget);
+    expect(find.descendant(of: card, matching: find.textContaining(roundsLeftOf(proto.raidRounds))), findsOneWidget);
+    expect(find.descendant(of: bar, matching: find.textContaining('FOUGHT')), findsOneWidget);
+    c.handleCommand('status');
+    expect(c.state.events.map((e) => e.message), contains(startsWith('Raid on your homeworld. Being fought, ${roundsLeftOf(proto.raidRounds)}: a raid of ')));
+    await tester.tap(bar);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.hwTab, HomeworldTab.defence);
+    expect(find.byKey(const Key('raid-forecast')), findsOneWidget, reason: 'the bar opens the Defence tab');
+    expect(find.byKey(const Key('battle-panel')), findsOneWidget, reason: 'where the fight is told');
     await endShell(tester, c);
   });
 

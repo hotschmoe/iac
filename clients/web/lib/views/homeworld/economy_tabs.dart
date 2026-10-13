@@ -105,7 +105,7 @@ class DefenceTab extends StatelessWidget {
         ConsolePanel(
           key: const Key('raid-forecast'),
           title: 'Raid forecast',
-          subText: d.fought ? 'the fight as it stands' : d.raidInTicks != null ? 'on its way' : 'none on its way',
+          subText: d.fought ? 'as it stands' : d.raidInTicks != null ? 'on its way' : 'none on its way',
           border: d.pressing ? C.ember : null,
           mark: d.pressing ? C.ember : null,
           padding: const EdgeInsets.all(14),

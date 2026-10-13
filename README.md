@@ -383,7 +383,7 @@ down and a ring round the fleet. The log has a line for a pursuit begun,
 continued and given up, the last with the server's reason. On a phone each
 of these is a line over the fleets that opens the status sheet. `status` in
 the command bar prints the quote, the flight and the pursuit of the active
-fleet.
+fleet, and the forecast of the raid on the homeworld and on the outpost.
 
 The homeworld (`G` then `H`) has five tabs, each drawn from the catalogue the
 server sends. Buildings is a plan of the twelve buildings around the core
@@ -397,11 +397,30 @@ want of deuterium. The same share is in the top bar and on the Overview.
 Research draws the fourteen researches in four lanes with a line from each
 research to those that require it, the lines of the selected one brightest.
 Shipyard has a card a class with what a ship built now would be, the Solar
-Satellite among them, which stays at home. Defence sets the raid forecast
-against the home's defence in the three parts the server counts (docked
-ships, Solar Satellites, defences), and has a row to order each of the eight
-defences from; a dome is marked as one of a kind and its order is off once
-one stands or is on order. Storage lists the three stockpiles, each with the
+Satellite among them, which stays at home. Defence opens on the raid
+forecast, which is the server's (`homeworld.raid`): where the raid stands
+(none announced and one of typical size, on its way with a countdown, or
+being fought with the rounds it has left), what it flies and its power, the
+server's label for how it would end against what stands at home with the
+sentence for it, the three shares of the fights the server played
+(destroyed, outlasted, lost) as a bar, and what each side keeps. No two
+powers are compared anywhere in the client. While a raid is fought the tab
+has the fight under the forecast, round by round as any fight is told: the
+defenders, each docked fleet and the home defences as a group of their own
+that is no fleet, against the raiders, with the rounds left of six and the
+odds as the fight stands; and for each fleet in it the way out of the fight
+(a lane, the price, that nothing follows, Stop while the jump charges). The
+ending is worded as a raid's: `RAID DESTROYED` with its wreckage, `RAID
+OUTLASTED`, the raiders gone with nothing, or `RAID LOST` with what was
+taken, and under the losses what was rebuilt at once. When the report is
+put away the last raid stays on the tab as a summary for as long as the
+page is open. Under that the tab lists what stands at home and fights:
+the docked ships by class, the Solar Satellites, and a row to order each of
+the eight defences from, with the rate at which defences are rebuilt after a
+raid in the engine's figures; a dome is marked as one of a kind and its
+order is off once one stands or is on order. A raid on its way or being
+fought also stands in the top bar (under it on a phone) and on the
+Overview's card, each of which opens the tab. Storage lists the three stockpiles, each with the
 building that holds it and the order that raises it, beside the hold panel.
 The inspector beside a tab says what a level does now and at the next, what
 the item costs and requires (an amount of energy made, for Graviton
@@ -414,14 +433,19 @@ without the spaces, and the short names work too: `build solarplant` or
 
 Outposts: in rings 9 to 20 the windshield's dock has a Found tile, and `O`
 opens the founding panel anywhere: the server's survey of the sector the
-fleet stands in, the cost of level 1 set against its hold, and a Found
+fleet stands in (the platform of level 1 as the defences it is, and in the
+rings an outpost stands in how a raid of the ring would go against that
+platform alone), the cost of level 1 set against its hold, and a Found
 button that is off, with the server's sentence under it, while the server
 would refuse. Once you have an outpost `O` opens its panel instead (level and
 job with its countdown, the store against cap and protected floor, the yield
-an hour, the defence against the raid estimate and the raid on its way, the
-next level with Upgrade, Abandon behind a second press) with the hold panel
+an hour, what fights a raid there, the platform as rows of defences and the
+fleets standing at it, the raid forecast as on the Defence tab, the
+next level with its platform and Upgrade, Abandon behind a second press) with the hold panel
 under it, pointed at the outpost's store for the fleets standing there. The
-outpost also has a screen of its own on the rail (`G` then `P`) and a line in
+outpost also has a screen of its own on the rail (`G` then `P`), where a
+raid's fight is told round by round under the panel with the way out for
+the fleets in it and the last raid's summary after, and a line in
 the HUD while it stands, a mark on the map (filled for your own) with a note
 in the sector inspector, which has a Survey site button for any charted
 sector. From the command bar: `found`, `survey [q r]`, `outpost upgrade`,
@@ -446,7 +470,8 @@ sector. From the command bar: `found`, `survey [q r]`, `outpost upgrade`,
   turns it off; `?` (Keys and settings) turns it back on. Progress is kept per
   account in the browser.
 - **Notifications.** While the tab is in the background, a finished or idle
-  queue, a raid (announced, 60 ticks out, resolved), a lost fleet, a critical
+  queue, a raid (announced with what it flies and its forecast, 60 ticks
+  out, and ended with its summary), a lost fleet, a critical
   alert or full storage, and at the outpost a raid, a breach, a finished
   level, a full store or a repair that waits for its materials, is counted in
   the tab title, `(2) IN AMBER CLAD`, and,
@@ -527,7 +552,7 @@ and Flutter; no other tool.
 
 ```sh
 scripts/play.sh --single-player --no-serve          # just the bundle
-cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium, a flight and a fight included (about five minutes)
+cd clients/web && dart run tool/solo_e2e.dart        # the bundle end to end in headless Chromium, a flight, a fight and a raid at home included (about five and a half minutes)
 cargo test -p iac-solo                               # the host natively, through the same door of bytes
 cargo test -p iac-solo --test both_targets           # the same worlds natively and as iac_solo.wasm: every reply the same bytes (about two minutes)
 ```

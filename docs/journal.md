@@ -8596,3 +8596,218 @@ not timed.
 - `homeworld.raid` during the fight, above.
 - Whether satellites falling by the dozen to every raid is the game the
   owner wants. It is OGame's, and the bots pay for it.
+
+## 2026-10-14: the web client on raids fought as battles (slice 4 of the OGame work, stage 2)
+
+Stage 2 of slice 4, on the branch stage 1 left
+(`worktree-agent-aa04d228ab8d3a0d5`): first master was merged into it, then
+the hand-written Dart of `clients/web` was brought onto what the engine
+sends since a raid is a fight. `SAVE_FORMAT` and `ECONOMY_VERSION` are as
+stage 1 left them, 11 and 12. One wire field was added, and what
+`homeworld.raid` and `outpost.raid` say while a raid is fought changed
+(below). The windshield as a picture of class marks and a battle view are
+slice 5 and were not built.
+
+**The merge.** `git merge master` (`dcc1ba7`, slices 2 and 3 with their web
+clients) into the branch (`f1e2f2d`), a merge commit, `0068b5f`. Git merged
+`README.md`, `tools/playtest/RULES.md`, `protocol.g.dart`, `numbers.json`,
+`CLAUDE.md` and every Rust file but one by itself; `CLAUDE.md` is master's,
+whole. It stopped on four things.
+
+- `docs/journal.md` and `docs/design/decisions.md`, where both sides had
+  added at the same place. Both keep every entry: the journal has master's
+  entries first and stage 1's after them, the decisions have stage 1's on
+  top. They were put together with `git merge-file --union` on the three
+  stages of each file, and a blank line was added by hand where the two
+  sides meet.
+- One hunk of `shared/tests/golden_fixtures.rs`: master had given a tick
+  update's `battles` no `last_round`, stage 1 had given them `raid`. Both
+  hold: `last_round: None, raid: None`.
+- Thirty-eight generated fixtures. The branch's side was taken for each
+  and `UPDATE_FIXTURES=1 cargo test -p iac-shared` rendered them again; no
+  file was removed.
+
+Two things the merge left wrong without a conflict, both in the fixtures
+written by hand. `raid_round()` did not build: master's
+`BattleSide.standing` was missing from the two sides of a raid's round, and
+they have it now (27 and 9). The tick update of a raid being fought carried
+a `last_round`, which a tick update no longer does after master's change;
+it carries none. On the merged tree: `cargo build --workspace
+--all-targets` without a warning, `cargo test --workspace --no-fail-fast -j
+4` 196 passed and 0 failed, clippy silent, `tools/check_sim_constants.py`
+agreeing on 4,410 values. The web client did not compile then.
+
+**Changed in Rust.**
+
+- `RaidForecast.rounds_left`, and with it what the forecast is during a
+  fight: `homeworld.raid` and `outpost.raid` are the raid being fought
+  until it ends, with what it flew in with, the odds from where the fight
+  stands, the rounds it may still be fought and no `arrival_tick`
+  (`GameEngine::raid_fought`). Stage 1 had left the forecast of the next
+  raid there and called it a surprise; a screen, an agent and a bot now
+  read one field to know where a raid stands. `scenarios_raids.rs` and
+  `outposts.rs` assert it, and that the forecast is of the next raid again
+  once the fight is over. The bots read the forecast, so worlds of bots
+  moved: a season week, sixteen seats, 414 raids, 412 destroyed, none
+  outlasted, 2 lost, a cost of 3,280 points, 12,943 of wreckage, the
+  fifteen totals summing to 121,845, at 3,413 ticks a second (stage 1: 406,
+  6 and 2, 3,844, 12,475, 119,526); a blitz day, 1,170 raids, 1,158, 8 and
+  4, a cost of 78,431, a sum of 241,081, at 877 ticks a second (1,169
+  raids, 1,158, 6 and 5, 80,723, 241,241). `ECONOMY_VERSION` stays 12: no
+  world of that version exists outside this branch.
+- The refusal of a defence past its limit said "stand, are being rebuilt
+  or are on order"; nothing is being rebuilt any more, and it says "stand
+  or are on order".
+- The generated constants have `defenceRebuildEachBelow`
+  (`DEFENCE_REBUILD_EACH_BELOW`, one line of `wire/mod.rs`).
+- `numbers.json` names `DEFENCE_REBUILD_EACH_BELOW`, the three
+  `RAID_LOSS_CAP_*` and `RAID_DEFENSE_SALVAGE_FRACTION`, and each outpost
+  level's row has `platform_units`: the scripted world of the widget tests
+  reads them.
+- The raid fixtures written by hand stand at the sample player's homeworld
+  (they stood in another sector, which no raid on that player could), the
+  state of a raid being fought carries its forecast with `rounds_left`, and
+  the sample homeworld's raid arrives after the sample tick.
+- `play.py` words a forecast with `rounds_left` as "RAID BEING FOUGHT";
+  `RULES.md` and the README's passage on the forecast say the same. No test
+  of `tools/playtest` was run.
+
+**Built, screen by screen.** Every figure is a field of the state; the
+phrases are in `lib/console/battle.dart`, the widgets every screen shares
+in `lib/views/battle_view.dart`.
+
+- *The Defence tab.* A forecast panel from `homeworld.raid`: "RAID IN
+  m:ss" from `arrival_tick`, "RAID BEING FOUGHT" with the rounds left from
+  `rounds_left`, or "NO RAID ANNOUNCED" for the typical raid the state
+  forecasts when none is on its way; the label and its sentence
+  (`RaidLabel`'s generated `label` and `outcome`); what it flies (`ships`)
+  and its `power`; a bar of the three shares (`odds.destroyed`,
+  `outlasted`, `lost`), each printed as a percent; what each side keeps
+  (`odds.kept`, `raiders_kept`); and what the three endings mean. Under it,
+  while a raid is fought and after it, the round panel (below); then what
+  stands: every fleet docked at home by class with its hull, the Solar
+  Satellites, the defences with their counts. `restoring` is gone, and the
+  rule of the rebuild is printed from the generated `defenceRebuildPct`,
+  `defenceRebuildSpread` and `defenceRebuildEachBelow`.
+- *The fight.* `GameState.raidAtHome` and `raidAtOutpost` are the `battles`
+  entry with `raid` set at that sector. The round panel every fight has is
+  headed "Raid", says the round of `raidRounds` and the rounds left
+  (`battles[].raid.rounds_left`), the label from where the fight stands
+  (`raid.odds`), names the sides Defenders and Raiders, and heads a group
+  marked `battery` with its engine label and "NO FLEET: THEY STAND WHERE
+  THEY ARE". The volleys, the losses and the last round are the panel's as
+  for any fight. The tick a raid arrives it says that the raid stands
+  there and the first round is fought on the next tick.
+- *The ending.* From `RaidResolved`: `defended` and `outcome` give one of
+  four (`RaidEnding`: destroyed, outlasted, lost, lost without a fight)
+  with a title and a sentence and `rounds`; the losses by unit (`lost`,
+  `raiders_lost`), what stood again at once (`rebuilt`), what was taken
+  (`resources_lost`), the wreckage (`salvage_dropped`) and, at an outpost,
+  the breach (`breached`). `CombatEnded.outcome` has `outlasted`, worded
+  for the windshield's panel and banner. The report is attached to the
+  ended fight in the panel, and kept as "Last raid" on the Defence tab and
+  the outpost's screen once that panel is dismissed, for as long as the
+  page lives: the state has nothing of a raid that is over.
+- *Leaving.* A fleet docked where a raid is fought is in its fight and has
+  `flight`: the Defence tab and the outpost's screen show the windshield's
+  flee control for each such fleet (`RaidExits`): the odds as the fight
+  stands, the price, that nothing follows, a button a lane, the engine's
+  `refusal` as a sentence with the buttons greyed, and Stop while the jump
+  charges. A fleet flown out during the warning leaves by an ordinary jump
+  from the windshield or the map; the tab says such a fleet is not in the
+  fight.
+- *The outpost.* Its panel has "What fights a raid here": the platform
+  unit by unit (`platform`), or that a breached outpost has none; the
+  fleets standing there; the range a raid of the ring moves in
+  (`raid_power`); the forecast (`outpost.raid`), as on the Defence tab; the
+  next level's platform (`next_level.platform`). The founding panel and
+  the typed `survey` name level 1's platform (`OutpostSurvey.platform`) and
+  the forecast against that platform alone (`OutpostSurvey.raid`, absent
+  outside the rings an outpost stands in). The outpost's screen shows the
+  fight, the ways out and the last raid as the Defence tab does. The
+  outpost's field in the top bar says "RAID m:ss" or "RAID FOUGHT".
+- *The overview* has the raid as its first card while one is on its way or
+  fought: the countdown or the rounds left, the label, the sentence, the
+  shares, what is kept. Its alerts and its "next up" say the same from the
+  forecast. The figure "Defence power" became a count of defences.
+- *The top bar* gives the world's name up for the raid while one is on its
+  way or fought: the countdown or "FOUGHT" and the label, and a press
+  opens the Defence tab. On a phone it is a line under the bar.
+- *Notices and the log.* `RaidIncoming` is a line and an alert with what
+  flies, its power and the forecast (`ships`, `est_power`, `odds`);
+  `RaidResolved` is a headline short enough for a toast and a summary line
+  under it; a raid's own `CombatEnded` is not logged beside them. A
+  background tab's notices are titled by the ending.
+- *The command bar.* `status` prints the forecast of the homeworld's raid
+  and the outpost's in one line each, and `help` has a paragraph on raids.
+
+**Nothing compares two powers.** `home_defence_power` and its three parts,
+`next_raid_estimate_power`, the outpost's `platform_power`, `ships_power`,
+`defence_power` and `raid_arrival_tick`, `OutpostSurvey.platform_power`,
+`OutpostLevel.platform_power`, `RaidResolved.raid_power` and
+`defense_power` and `RaidIncoming.threat` are read by no screen. The
+client-side `RaidCover` and `raidLostShipPct` are gone. A forecast's
+`power`, `RaidIncoming.est_power` and the outpost's `raid_power` range are
+printed, each as what a force is.
+
+**The scripted world** (`test/support/demo_world.dart`) fights its raids:
+a raid announced with what it flies, standing at the dock on the tick it
+arrives, a round a tick against the docked fleets and a battery of the
+defences and satellites (or the outpost's platform), for at most the
+engine's rounds, with the three endings, the wreckage, the share taken, the
+rebuild and the breach, and the forecast in the state being the raid
+fought. It answers `move` and Stop from a fleet in a raid in the engine's
+sentences. The rounds, the rebuild's rate and threshold, the shares taken,
+the wreckage's fraction and the platforms are read from `numbers.json` and
+the generated constants. Where it is not the engine, its header says so:
+its fights are played without dice, so its forecast is that one fight
+played forward and a share is all or nothing (no `at_risk`); a raid flies
+one class at its base figures; the rebuild is the engine's rate cut off to
+a whole number.
+
+**Tests.** Moved, in the files that were there, each because what it
+asserted is gone or changed: the Defence tab's test (no `restoring`, no
+cover against an estimate), the outpost's panel, founding panel, typed
+`survey` and story (platform as units, forecast, a raid fought and lost),
+the two background-notice tests, the overview's raid card and alerts, the
+onboarding test (the sample forecast now arrives in the future, so its
+fresh empire is given none on its way), the windshield's dock wording, and
+the fixture tests for the forecast. Added: a raid at home destroyed round
+by round with its panel, its wreckage and the forecast returning to the
+next raid; a raid lost with what is taken and the defences rebuilt at
+once; a dome outlasting a raid; leaving a raid from the Defence tab by a
+lane, with Stop and a second leaving, at 390; the fixture of a raid being
+fought read into
+the model; and the raid in the top bar, on the overview's card and in
+`status`, with the bar opening the Defence tab.
+
+**The end-to-end check** (`tool/solo_e2e.dart`) has a raid at home. An
+empire with a defence or a Shipyard at level 2 is raided, and the check
+passes the world four minutes at a time, where a raid would be fought
+unseen: the Rocket Launcher it used to order in its first steps is ordered
+in the raid step. It reads the forecast of a typical raid off the state
+and the Defence tab, orders the launcher, passes the world twenty ticks at
+a time (less than the warning) until `homeworld.raid.arrival_tick` is set,
+reads the announcement off the tab and the top bar, waits for the raid to
+stand at home as a fight with its forecast carrying `rounds_left`, holds
+`RaidResolved`, the rounds and `CombatEnded` to one another, and reads the
+ending, the wreckage and the forecast of the next raid off the page. In
+the founding step it reads level 1's platform off the panel, and that a
+survey outside the rings forecasts no raid.
+
+**Looked at**, at 1440 and 390, the check's shots of the Defence tab's
+forecast with none on its way, the raid announced, the raid standing, the
+ending and its last round, and the widget tests' `IAC_SHOTS` of the tab
+with a raid on its way, fought, destroyed, outlasted and lost, leaving at
+390, the outpost's screen and panel, a raid arrived at and lost at an
+outpost, the founding panel and the overview. Changed for what was seen:
+the bar of the three shares had no height and did not show; the raid
+panel's heading was cut off in the windshield's column and lost the
+sector; a raid's end as one line was too long for a toast and became a
+headline and a summary; the engine's refusal of a defence still spoke of
+rebuilding; the forecast panel's corner read "the fight as it stan…" on a
+phone and says "as it stands"; the check's phone pictures of the ending
+lay under the arrival's alert, and it waits for the alert to leave.
+
+**Unsure of** is in `docs/design/decisions.md` under today's date, with
+the decisions and what undoes each.
