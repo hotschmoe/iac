@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../console/battle.dart' show damageLine, dockRepairLine, shipsOf, shortCount;
+import '../console/battle.dart' show damageLine, dockRepairLine, platformList, shipsOf;
 import '../console/intel.dart';
 import '../console/outpost.dart';
 import '../console/services.dart';
@@ -12,22 +12,18 @@ import '../design/tokens.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
 import '../state/state_mapper.dart' show amountsOf, shortBy;
-import 'battle_view.dart' show ShipRows, damagedColor;
+import 'battle_view.dart' show BattlePanel, RaidForecastReadout, RaidSummary, ShipRows, UnitRows, damagedColor;
+import 'windshield/parts.dart' show RaidExits;
 import 'homeworld/economy_tabs.dart' show HoldDock, HoldPanel;
 
 const _abbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr', proto.ResourceKind.deuterium: 'De'};
 
 String _whole(double v) => groupDigits(v.floor());
 
-Color _coverColor(RaidCover cover) => switch (cover) {
-      RaidCover.above => C.ok,
-      RaidCover.within => C.a300,
-      RaidCover.below => C.ember,
-    };
-
 /// What a survey says of a site, as rows: the ore and its grade, what level
-/// 1 would make, the raids against the platform, the way home, the time,
-/// and the cost set against what [hold] carries.
+/// 1 would make, the way home, the platform of level 1 and how a typical
+/// raid of the ring would go against it alone, the time, and the cost set
+/// against what [hold] carries.
 class SurveyReadout extends StatelessWidget {
   final proto.OutpostSurvey survey;
   final proto.Resources hold;
@@ -60,8 +56,15 @@ class SurveyReadout extends StatelessWidget {
         Kv('Level 1 makes', key: const Key('survey-yield'), v: '${yieldAnHour(site.production).toUpperCase()} AN HOUR'),
         Kv('Way home', v: hopsHome(site.hopsHome).toUpperCase()),
       ],
-      Kv('Raids of this ring', key: const Key('survey-raid'), v: raidRange(s.raidPower).toUpperCase(), vc: _coverColor(RaidCover.of(s.platformPower, s.raidPower))),
-      Kv('Platform at level 1', key: const Key('survey-platform'), v: groupDigits(s.platformPower.round())),
+      Kv('Platform at level 1', key: const Key('survey-platform'), v: platformList(s.platform).toUpperCase()),
+      Kv('Raids of this ring, power', key: const Key('survey-raid'), v: raidRange(s.raidPower).toUpperCase()),
+      if (s.raid case final raid?) ...[
+        const SizedBox(height: 6),
+        const Lbl('A raid of this ring against that platform alone'),
+        const SizedBox(height: 3),
+        RaidForecastReadout(raid, tick: 0, tag: 'survey-forecast', rule: false, headline: false),
+        const SizedBox(height: 6),
+      ],
       Kv('Level 1 takes', key: const Key('survey-time'), v: clockFmt(s.buildTicks)),
       const SizedBox(height: 6),
       const Lbl('Level 1 costs, from this hold'),
@@ -118,8 +121,8 @@ class FoundingPanel extends StatelessWidget {
         ),
         if (why != null) WhyText(why, key: const Key('found-why')),
         const WhyText('One outpost an empire, on a sector of $outpostRings. Its first level is paid from this hold; until it is '
-            'finished it has a store and nothing else. Raiders come for it as they do for the homeworld, and a raid it loses '
-            'breaches it and destroys a quarter of the ships standing there.'),
+            'finished it has a store and nothing else. Raiders come for it as they do for the homeworld: its platform and the ships '
+            'standing there fight them, and a raid that leaves none of them standing breaches it and takes its share of the store.'),
       ]),
     );
   }
@@ -156,8 +159,7 @@ class _OutpostPanelState extends State<OutpostPanel> {
       );
     }
     final work = o.work;
-    final raid = o.raidArrivalTick;
-    final cover = RaidCover.of(o.defencePower, o.raidPower);
+    final raid = o.raid;
     final repair = o.repairCost;
     final repairShort = o.repairWaitingFor;
     return ConsolePanel(
@@ -200,10 +202,16 @@ class _OutpostPanelState extends State<OutpostPanel> {
         Kv('Site grade', v: gradeOfMax(o.grade)),
         Kv('Way home', v: hopsHome(o.hopsHome).toUpperCase()),
         const SizedBox(height: 8),
-        const Lbl('Defence'),
-        Kv('Platform and ships here',
-            key: const Key('outpost-defence'),
-            v: '${shortCount(o.platformPower.round())} + ${shortCount(o.shipsPower.round())} = ${shortCount(o.defencePower.round())}'),
+        const Lbl('What fights a raid here'),
+        if (o.platform.isEmpty)
+          Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text('NO PLATFORM: ${o.breached ? 'BREACHED' : 'NOT YET OPEN'}',
+                  key: const Key('outpost-platform-none'), style: T.mono(size: 10.5, color: o.breached ? C.ember : C.text3)))
+        else ...[
+          Padding(padding: const EdgeInsets.only(top: 4), child: Text('THE PLATFORM', style: T.mono(size: 10.5, color: C.text2))),
+          UnitRows(o.platform, tag: 'outpost-platform'),
+        ],
         for (final f in st.fleets)
           if (f.atOutpost) ...[
             Padding(
@@ -215,18 +223,18 @@ class _OutpostPanelState extends State<OutpostPanel> {
                 Text('${damageLine(q)}; the outpost ${dockRepairLine(q, dock)}'.toUpperCase(),
                     key: Key('outpost-mend-${f.id}'), style: T.mono(size: 10, color: damagedColor, height: 1.35)),
           ],
-        Kv('Raids of this ring', key: const Key('outpost-raid-range'), v: raidRange(o.raidPower).toUpperCase()),
-        Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Wrap(spacing: 10, runSpacing: 2, crossAxisAlignment: WrapCrossAlignment.center, children: [
-            Text(raid == null ? 'NO RAID ANNOUNCED' : 'RAID ARRIVES IN ${clockFmt(raid - st.tick)}',
-                key: const Key('outpost-raid'), style: T.cond(size: 13, color: raid == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 1.6)),
-            Text('DEFENCE ${cover.label.toUpperCase()}', key: const Key('outpost-cover'), style: T.cond(size: 11, color: _coverColor(cover), spacing: 1.3)),
-          ]),
-        ),
-        const WhyText('A raid is decided by the defence, taken up to a tenth higher or lower by chance, against the raid\'s power. A raid '
-            'the outpost loses breaches it, takes a quarter of what the store and the holds here carry above the protected floor, and '
-            'destroys a quarter of the ships standing here.'),
+        const SizedBox(height: 4),
+        Kv('Raids of this ring, power', key: const Key('outpost-raid-range'), v: raidRange(o.raidPower).toUpperCase()),
+        const SizedBox(height: 8),
+        const Lbl('Raid forecast'),
+        const SizedBox(height: 4),
+        if (raid == null)
+          Text('NOTHING RAIDS AN OUTPOST BEFORE ITS FIRST LEVEL IS FINISHED.', key: const Key('outpost-raid-none'), style: T.mono(size: 10.5, color: C.text3))
+        else
+          RaidForecastReadout(raid, tick: st.tick, tag: 'outpost-raid', rule: false),
+        const WhyText('A raid is a fight, a round a tick for at most ${proto.raidRounds}: the raiders against the platform and every ship of '
+            'yours standing here. The platform stands whole again after every fight that does not breach the outpost. A raid that leaves '
+            'no defender standing breaches it and takes its share of what the store holds above the protected floor.'),
         const SizedBox(height: 10),
         ..._next(o),
         const SizedBox(height: 12),
@@ -274,7 +282,7 @@ class _OutpostPanelState extends State<OutpostPanel> {
       Kv('Takes', v: clockFmt(next.ticks)),
       Kv('Makes an hour', v: yieldAnHour(next.production).toUpperCase()),
       Kv('Store takes', v: amountsOf(next.storeCap).toUpperCase()),
-      Kv('Platform', v: groupDigits(next.platformPower.round())),
+      Kv('Platform', key: const Key('outpost-next-platform'), v: platformList(next.platform).toUpperCase(), size: 10),
       const SizedBox(height: 8),
       Align(
         alignment: Alignment.centerLeft,
@@ -311,8 +319,39 @@ class _OutpostPanelState extends State<OutpostPanel> {
       ];
 }
 
-/// The outpost's screen: its panel and the dock's load controls, side by
-/// side where there is the width.
+/// What a raid on the outpost is doing and did, under the outpost's panel
+/// on its own screen: the fight round by round while it lasts and its report
+/// after, the ways out for the fleets standing there, and the last raid's
+/// summary.
+class OutpostRaid extends StatelessWidget {
+  final GameController controller;
+  const OutpostRaid({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final st = controller.state;
+    final post = st.outpost;
+    if (post == null) return const SizedBox.shrink();
+    final fight = st.raidAtOutpost;
+    final last = st.lastOutpostRaid;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      if (fight != null) Padding(padding: const EdgeInsets.only(top: 10), child: BattlePanel(key: ValueKey(fight.sector), battle: fight)),
+      RaidExits(controller: controller, at: post.location),
+      if (last != null && !(fight?.over ?? false))
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: ConsolePanel(
+            title: 'Last raid',
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+            child: RaidSummary(last, tick: st.tick, tag: 'outpost-last-raid'),
+          ),
+        ),
+    ]);
+  }
+}
+
+/// The outpost's screen: its panel with a raid's fight under it, and the
+/// dock's load controls, side by side where there is the width.
 class OutpostView extends StatelessWidget {
   const OutpostView({super.key});
 
@@ -324,7 +363,10 @@ class OutpostView extends StatelessWidget {
     return ListenableBuilder(
       listenable: con.game,
       builder: (context, _) => LayoutBuilder(builder: (context, box) {
-        final station = OutpostPanel(controller: con.game);
+        final station = Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+          OutpostPanel(controller: con.game),
+          OutpostRaid(controller: con.game),
+        ]);
         final dock = con.state.outpost == null ? null : HoldPanel(state: con.state, ctrl: con.game, dock: HoldDock.outpost);
         final wide = box.maxWidth >= _twoColumns && dock != null;
         return Container(

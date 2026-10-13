@@ -37,7 +37,7 @@ int defenceBatch(proto.DefenceOption o, int batch) => switch (o.room) {
 
 /// Why no more of [o] can be ordered, when its limit is reached; else null.
 String? limitReason(proto.DefenceOption o) =>
-    o.room == 0 ? 'At most ${o.max} may stand, counting those on order and being rebuilt' : null;
+    o.room == 0 ? 'At most ${o.max} may stand, counting those on order' : null;
 
 /// Presentation model for the economy side of the protocol: pace, storage
 /// caps, build slots and queues, defences and raids, score. Views read only
@@ -145,43 +145,42 @@ String slotLetter(int index) => String.fromCharCode(0x41 + index);
 class DefenceRow {
   final proto.DefenceKind kind;
   final int count;
-  final int restoring;
 
   /// Power of one with the owner's research.
   final double unitPower;
   final proto.DefenceOption? option;
-  const DefenceRow(this.kind, this.count, this.restoring, this.unitPower, this.option);
+  const DefenceRow(this.kind, this.count, this.unitPower, this.option);
 }
 
-/// What the next raid meets at home, in the three parts the server counts.
+/// The raid on the homeworld as the server forecasts it, and what stands at
+/// home to fight it.
 class DefenceView {
-  final double total;
-  final double docked;
-  final double satellites;
-  final double structures;
-  final double raidEstimate;
+  /// The raid being fought, announced, or of typical size: the state's.
+  final proto.RaidForecast raid;
+
+  /// Ticks until the announced raid lands; null when none is announced or
+  /// one is being fought.
+  final int? raidInTicks;
 
   /// Solar Satellites at home.
   final int satelliteCount;
 
-  /// Ticks until the announced raid lands, or null when none is announced.
-  final int? raidInTicks;
+  /// Defences standing at home, of every kind.
+  final int defenceCount;
   final List<DefenceRow> rows;
   const DefenceView({
-    required this.total,
-    required this.docked,
-    required this.satellites,
-    required this.structures,
-    required this.raidEstimate,
-    required this.satelliteCount,
+    required this.raid,
     required this.raidInTicks,
+    required this.satelliteCount,
+    required this.defenceCount,
     required this.rows,
   });
 
-  double get ratio => total / math.max(1, raidEstimate);
+  /// The raid has arrived and its fight is not over.
+  bool get fought => raid.roundsLeft != null;
 
-  /// "docked ships 182, satellites 63, defences 612".
-  String get parts => 'docked ships ${docked.round()}, satellites ${satellites.round()}, defences ${structures.round()}';
+  /// A raid is on its way or being fought.
+  bool get pressing => fought || raidInTicks != null;
 }
 
 class RankView {
@@ -207,7 +206,6 @@ class EconomyView {
   static const empty = EconomyView();
 
   static EconomyView of(GameState s, {String? me}) {
-    final raid = s.raid;
     final hw = s.hw;
     final w = s.world;
     final lb = s.leaderboard;
@@ -246,17 +244,13 @@ class EconomyView {
     );
 
     final rows = [
-      for (final d in hw.defences)
-        DefenceRow(d.kind, d.count, d.restoring, d.power, s.catalog?.defences.where((o) => o.kind == d.kind).firstOrNull),
+      for (final d in hw.defences) DefenceRow(d.kind, d.count, d.power, s.catalog?.defences.where((o) => o.kind == d.kind).firstOrNull),
     ];
     final defence = DefenceView(
-      total: hw.homeDefencePower,
-      docked: hw.dockedPower,
-      satellites: hw.satellitePower,
-      structures: hw.structurePower,
-      raidEstimate: raid != null && raid.estPower > 0 ? raid.estPower : hw.nextRaidEstimatePower,
+      raid: hw.raid,
+      raidInTicks: switch (hw.raid.arrivalTick) { null => null, final at => math.max(0, at - tick) },
       satelliteCount: hw.satellites,
-      raidInTicks: raid == null ? null : math.max(0, raid.arrivalTick - tick),
+      defenceCount: hw.defences.fold(0, (n, d) => n + d.count),
       rows: rows,
     );
     return EconomyView(world: world, storage: storage, slots: slots, defence: defence, rank: rank);

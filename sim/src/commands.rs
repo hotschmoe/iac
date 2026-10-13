@@ -507,7 +507,7 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
             let most = kind.max_count().unwrap_or(0);
             let have = engine.players.get(&player_id).map_or(0, |p| GameEngine::defences_owned_and_ordered(p, *kind));
             format!(
-                "no more than {most} {} may stand; {have} stand, are being rebuilt or are on order",
+                "no more than {most} {} may stand; {have} stand or are on order",
                 kind.label()
             )
         }

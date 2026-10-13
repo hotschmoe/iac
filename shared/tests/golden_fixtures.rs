@@ -293,7 +293,7 @@ fn raid_round() -> BattleRoundEvent {
         destroyed,
     };
     BattleRoundEvent {
-        sector: h(8, -3),
+        sector: h(4, -2),
         round: 2,
         fleets: BattleSide {
             groups: vec![
@@ -1292,7 +1292,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                         refusal: None,
                         chase: None,
                     }),
-                    ..sample_fleet(3, h(8, -3), FleetStatus::InCombat, None)
+                    ..sample_fleet(3, h(4, -2), FleetStatus::InCombat, None)
                 }],
                 sector_updates: None,
                 homeworld_update: Some(HomeworldState {
@@ -1307,7 +1307,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 }),
                 outpost: None,
                 battles: vec![BattleState {
-                    sector: h(8, -3),
+                    sector: h(4, -2),
                     rounds: 2,
                     last_round: None,
                     losses: raid_losses(),
@@ -1852,7 +1852,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             salvage_despawn_tick: None,
         })),
         ("raid_outlasted", EventKind::CombatEnded(CombatEndedEvent {
-            sector: h(8, -3),
+            sector: h(4, -2),
             player_victory: false,
             outcome: BattleOutcome::Outlasted,
             raid: true,

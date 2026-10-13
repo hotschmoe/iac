@@ -185,7 +185,7 @@ ItemSpec? specFor(GameController c, {int? index}) {
         note: o.flies
             ? 'The whole batch is paid when ordered. Ships join the dock fleet when built.'
             : 'The whole batch is paid when ordered. It stays at the homeworld and joins no fleet: it makes energy, '
-                'stands in the home defence, and a raid that breaks through destroys ${proto.raidLostShipPct}% of them.',
+                'stands in every raid\'s fight, and one that falls there is not rebuilt.',
         ship: o,
       );
     case HomeworldTab.defence:

@@ -5,8 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/battle.dart'
+    show RaidEnding, flightPrice, raidKept, raidSummary, roundsLeftOf, roundsOf, shipsList, unitsList;
+import 'package:iac_client/models/fleet.dart' show FleetStatus;
+import 'package:iac_client/state/state_mapper.dart' show amountsOf;
 import 'package:iac_client/console/economy_view.dart';
-import 'package:iac_client/console/intel.dart' show groupDigits;
+import 'package:iac_client/console/intel.dart' show clockFmt, groupDigits;
 import 'package:iac_client/console/notifier.dart';
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/console/prefs.dart';
@@ -27,6 +31,15 @@ import 'support/demo_controller.dart';
 import 'support/harness.dart';
 
 final _rootKey = GlobalKey();
+
+/// What the text keyed [key] says.
+String said(WidgetTester tester, String key) {
+  final text = tester.widget<Text>(find.byKey(Key(key)));
+  return text.data ?? text.textSpan!.toPlainText();
+}
+
+/// The caption keyed [key], which stands in a padded box of its own.
+String why(WidgetTester tester, String key) => tester.widget<Text>(find.descendant(of: find.byKey(Key(key)), matching: find.byType(Text))).data!;
 
 Future<void> snap(WidgetTester tester, String name) async {
   final dir = Platform.environment['IAC_SHOTS'];
@@ -214,7 +227,22 @@ void main() {
     final c = await open(tester) as DemoController;
     await tester.tap(find.byKey(const ValueKey('hw-tab-defence')));
     await tester.pump();
-    expect(find.textContaining('RAID'), findsWidgets);
+    final raid = c.state.hw!.raid;
+    expect(said(tester, 'raid-when'), 'RAID IN ${clockFmt(raid.arrivalTick! - c.state.tick)}', reason: 'the countdown is to the tick the state announces');
+    expect((said(tester, 'raid-label'), said(tester, 'raid-sentence')), ('REPELLED', proto.RaidLabel.repelled.outcome.toUpperCase()),
+        reason: 'the forecast is the server\'s label with Rust\'s sentence for it, and no comparison of two powers');
+    expect(said(tester, 'raid-ships'), 'IT FLIES  ${shipsList(raid.ships).toUpperCase()}   POWER ${groupDigits(raid.power.round())}');
+    expect(textUnder(tester, find.byKey(const Key('raid-shares'))), 'DESTROYED 100%\nOUTLASTED 0%\nLOST 0%');
+    expect(said(tester, 'raid-kept'), '${raidKept(raid.odds).toUpperCase()}, BEFORE ANY DEFENCE IS REBUILT.');
+    expect(find.byKey(const Key('defence-cover')), findsNothing);
+    expect(
+        why(tester, 'defence-rebuild'),
+        allOf(contains('about ${proto.defenceRebuildPct} in a hundred'), contains('fewer than ${proto.defenceRebuildEachBelow} of a kind'),
+            contains('within ${proto.defenceRebuildSpread} either side')),
+        reason: 'the rebuild is told from the engine\'s three figures');
+    expect(find.textContaining('restoring'), findsNothing);
+    expect(said(tester, 'defence-standing'), contains('EVERY FLEET DOCKED HERE, EVERY SOLAR SATELLITE AND EVERY DEFENCE'));
+    expect(find.byKey(Key('docked-${proto.ShipClass.smallCargo.wire}')), findsOneWidget, reason: 'the fleet at the dock is listed as part of what fights');
     final defences = c.state.catalog!.defences;
     for (var i = 0; i < defences.length; i++) {
       final row = find.byKey(ValueKey('hw-card-$i'));
@@ -223,9 +251,6 @@ void main() {
     }
     expect(find.text('ONE OF A KIND'), findsNWidgets(2), reason: 'the two domes');
     expect(find.descendant(of: find.byKey(const Key('defence-satellites')), matching: find.text('x2')), findsOneWidget);
-    expect(find.text('DOCKED SHIPS ${groupDigits(c.state.hw!.dockedPower.round())}'), findsOneWidget, reason: 'the three parts of the defence are the server\'s figures');
-    expect(find.text('SOLAR SATELLITES ${groupDigits(c.state.hw!.satellitePower.round())}'), findsOneWidget);
-    expect(find.text('DEFENCES ${groupDigits(c.state.hw!.structurePower.round())}'), findsOneWidget);
     await snap(tester, 'homeworld/defence-1440');
 
     c.learn(proto.ResearchType.shieldingTechnology, 2);
@@ -242,7 +267,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(c.state.events.map((e) => e.message), contains('> defence Small Shield Dome x1'));
     expect(c.state.catalog!.defences[dome].room, 0);
-    expect(find.descendant(of: find.byKey(ValueKey('hw-card-$dome')), matching: find.text('At most 1 may stand, counting those on order and being rebuilt')), findsOneWidget);
+    expect(find.descendant(of: find.byKey(ValueKey('hw-card-$dome')), matching: find.text('At most 1 may stand, counting those on order')), findsOneWidget);
     await snap(tester, 'homeworld/defence-dome-1440');
 
     await tester.tap(find.byKey(const ValueKey('hw-tab-storage')));
@@ -256,6 +281,189 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('hw-upgrade-crystal')));
     await tester.pump();
     expect(c.state.hw!.buildPending.last.buildingType, proto.BuildingType.crystalStorage);
+    await endShell(tester, c);
+  });
+
+  /// The Defence tab of the scripted world with a raid of [power] arriving
+  /// in two ticks, at the tick it arrives.
+  Future<DemoController> raided(WidgetTester tester, double power, {Size size = const Size(1440, 900)}) async {
+    final c = await open(tester, size: size) as DemoController;
+    c.selectHomeworldTab(HomeworldTab.defence);
+    c.raidHome(power, inTicks: 2);
+    for (var i = 0; i < 4 && c.state.raidAtHome == null; i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    return c;
+  }
+
+  /// Ticks until the raid at home has ended, and what it came to.
+  Future<proto.RaidResolvedEvent> fought(WidgetTester tester, DemoController c) async {
+    for (var i = 0; i <= proto.raidRounds && !(c.state.raidAtHome?.over ?? false); i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    return c.state.raidAtHome!.resolved!;
+  }
+
+  testWidgets(
+      'a raid on the homeworld is fought round by round on the Defence tab: the forecast becomes the fight, the defences stand apart from the fleet, '
+      'and a raid destroyed leaves its wreckage (demo)', (tester) async {
+    final c = await open(tester) as DemoController;
+    c.selectHomeworldTab(HomeworldTab.defence);
+    await tester.pump();
+    final announced = c.state.hw!.raid;
+    c.raidHome(announced.power, inTicks: 2);
+    for (var i = 0; i < 4 && c.state.raidAtHome == null; i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final home = c.state.homeworld;
+    final panel = find.byKey(const Key('battle-panel'));
+    expect((said(tester, 'raid-when'), said(tester, 'raid-note')), ('RAID BEING FOUGHT', '${proto.raidRounds} ROUNDS LEFT AT THE MOST'),
+        reason: 'on the tick it arrives the forecast is the fight, and no round is fought yet');
+    expect(textUnder(tester, panel), allOf(contains('RAID\n'), contains('ROUND 0 OF ${proto.raidRounds}\n'), contains('THE RAID STANDS HERE')));
+    final docked = c.state.fleets.singleWhere((f) => f.sector == home);
+    expect((docked.status, docked.flight?.chase), (FleetStatus.combat, null), reason: 'the fleet at the dock is in the fight, and may leave it');
+    expect(find.byKey(const Key('flight-panel')), findsOneWidget, reason: 'the way out is offered here, without the windshield');
+    expect(find.descendant(of: find.byKey(const Key('flight-panel')), matching: find.textContaining('Recall (R)')), findsNothing);
+    expect(c.state.events.first.message, startsWith('! the raid of ${announced.ships.single.count} Light Fighter has arrived at your homeworld'));
+
+    await tester.pump(const Duration(seconds: 1));
+    final round = c.state.raidAtHome!.round!;
+    expect((round.raid, round.round), (true, 1));
+    expect(round.fleets.groups.map((g) => (g.fleetId, g.battery)), [(docked.id, false), (0, true)]);
+    expect(said(tester, 'battle-fleets-battery'), 'HOME DEFENCES  NO FLEET: THEY STAND WHERE THEY ARE');
+    expect(find.byKey(Key('battle-fleets-group-${docked.id}')), findsOneWidget);
+    expect(textUnder(tester, find.byKey(const Key('battle-fleets'))),
+        allOf(contains('DEFENDERS'), contains('SMALL CARGO'), contains('SOLAR SATELLITE'), contains('ROCKET LAUNCHER')));
+    expect(textUnder(tester, find.byKey(const Key('battle-hostiles'))), allOf(contains('RAIDERS'), contains('LIGHT FIGHTER')));
+    expect(textUnder(tester, panel), allOf(contains('ROUND 1 OF ${proto.raidRounds}'), contains('DEFENDERS FIRED'), contains('RAIDERS FIRED')));
+    final standing = c.state.raidAtHome!.raid!;
+    expect(said(tester, 'battle-raid'), startsWith('${roundsLeftOf(standing.roundsLeft).toUpperCase()}.  AS IT STANDS  ${standing.odds.label.label}'));
+    expect(said(tester, 'raid-note'), roundsLeftOf(c.state.hw!.raid.roundsLeft!).toUpperCase());
+    expect(tester.takeException(), isNull);
+    await snap(tester, 'homeworld/raid-fought-1440');
+
+    final resolved = await fought(tester, c);
+    expect((RaidEnding.of(resolved), resolved.defended, resolved.outcome), (RaidEnding.destroyed, true, proto.BattleOutcome.hostilesDestroyed));
+    expect(said(tester, 'battle-outcome'), 'RAID DESTROYED');
+    expect(said(tester, 'battle-wreckage'), 'WRECKAGE LEFT: ${amountsOf(resolved.salvageDropped!).toUpperCase()}');
+    expect(find.byKey(const Key('battle-taken')), findsNothing, reason: 'a raid repelled takes nothing');
+    expect(resolved.raidersLost.single.count, resolved.raiders.single.count);
+    expect(c.state.hw!.satellites, 2 - resolved.satellitesLost, reason: 'a Solar Satellite that fell is gone');
+    expect(c.state.hw!.defences.first.count, 6 - resolved.structuresLost + resolved.structuresRestored);
+    expect(c.state.hw!.raid.roundsLeft, isNull, reason: 'with the raid over the forecast is of the next one');
+    expect(c.state.fleets.singleWhere((f) => f.id == docked.id).status, FleetStatus.docked);
+    expect(find.byKey(const Key('flight-panel')), findsNothing);
+    final told = c.state.events.map((e) => e.message).toList();
+    expect(told, contains('! Raid on your homeworld destroyed after ${roundsOf(resolved.rounds)}: no raider is left'));
+    expect(told, contains('${raidSummary(resolved, tick: c.state.lastRaid!.tick).join('. ')}.'), reason: 'the log has the summary under its headline');
+    expect(c.state.events.where((e) => e.message.contains('Combat ended')), isEmpty);
+    expect(find.byKey(const Key('last-raid')), findsNothing, reason: 'the fight\'s own report says it while it is on show');
+    await snap(tester, 'homeworld/raid-destroyed-1440');
+
+    for (var i = 0; i <= battleReportTicks; i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    expect(panel, findsNothing);
+    expect(said(tester, 'last-raid-ending'), 'RAID DESTROYED', reason: 'the last raid stays on the tab once the fight\'s report is put away');
+    expect(textUnder(tester, find.byKey(const Key('last-raid'))), contains('WRECKAGE LEFT: ${amountsOf(resolved.salvageDropped!).toUpperCase()}'));
+    await endShell(tester, c);
+  });
+
+  testWidgets(
+      'a raid that leaves no defender is lost: the fleet that stayed is destroyed, the defences that fell are rebuilt at the engine\'s rate, '
+      'and the raid takes its share (demo)', (tester) async {
+    final c = await raided(tester, 60 * proto.ShipClass.lightFighter.power);
+    final forecast = c.state.hw!.raid.odds;
+    expect((forecast.label, forecast.lost, said(tester, 'raid-label')), (proto.RaidLabel.lost, 1, 'LOST'));
+    final full = c.state.hw!.storage.cap;
+    c.stock(full);
+    final resolved = await fought(tester, c);
+    expect((RaidEnding.of(resolved), resolved.defended), (RaidEnding.lost, false));
+    expect(said(tester, 'battle-outcome'), 'RAID LOST');
+    expect(resolved.structuresRestored, resolved.structuresLost * proto.defenceRebuildPct ~/ 100, reason: 'the scripted world rebuilds the engine\'s share, cut off');
+    expect(said(tester, 'battle-rebuilt'), 'REBUILT AT ONCE: ${unitsList(resolved.rebuilt).toUpperCase()}.');
+    expect(said(tester, 'battle-taken'), 'TAKEN: ${amountsOf(resolved.resourcesLost).toUpperCase()}.');
+    expect(find.byKey(const Key('battle-wreckage')), findsNothing, reason: 'only a raid destroyed to its last ship leaves wreckage');
+    expect(c.state.hw!.defences.first.count, resolved.structuresRestored, reason: 'what was rebuilt stands at once');
+    expect((c.state.hw!.satellites, c.state.fleets.where((f) => f.sector == c.state.homeworld).length), (0, 0),
+        reason: 'ships and satellites lost are lost');
+    expect(resolved.resourcesLost.metal, greaterThan(0), reason: 'a full stockpile holds more than its storage protects');
+    expect(c.state.stock.metal, lessThan(full.metal - resolved.resourcesLost.metal * .9), reason: 'what was taken is gone from the stockpile');
+    expect(c.state.events.any((e) => e.message.contains('YOUR FLEET F102 DESTROYED')), isTrue);
+    expect(tester.takeException(), isNull);
+    await snap(tester, 'homeworld/raid-lost-1440');
+    await endShell(tester, c);
+  });
+
+  testWidgets('a dome the raiders cannot scratch outlasts them: the raid leaves with nothing and no wreckage (demo)', (tester) async {
+    final c = await open(tester) as DemoController;
+    c.selectHomeworldTab(HomeworldTab.defence);
+    c.place(102, const proto.Hex(3, -1), const proto.Resources());
+    c.garrison({proto.DefenceKind.largeShieldDome: 1});
+    c.raidHome(c.state.hw!.raid.power, inTicks: 2);
+    await tester.pump(const Duration(seconds: 1));
+    final forecast = c.state.hw!.raid.odds;
+    expect((forecast.label, forecast.outlasted, said(tester, 'raid-label'), said(tester, 'raid-sentence')),
+        (proto.RaidLabel.held, 1, 'HELD', proto.RaidLabel.held.outcome.toUpperCase()));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byKey(const Key('flight-panel')), findsNothing, reason: 'no fleet is at the dock');
+    final resolved = await fought(tester, c);
+    expect((RaidEnding.of(resolved), resolved.defended, resolved.outcome), (RaidEnding.outlasted, true, proto.BattleOutcome.outlasted));
+    expect(said(tester, 'battle-outcome'), 'RAID OUTLASTED');
+    expect(textUnder(tester, find.byKey(const Key('battle-panel'))), contains('THE RAIDERS GAVE UP WITH A DEFENDER STILL STANDING AND TOOK NOTHING'));
+    for (final key in ['battle-wreckage', 'battle-taken', 'battle-rebuilt']) {
+      expect(find.byKey(Key(key)), findsNothing, reason: key);
+    }
+    expect(resolved.raidersLost, isEmpty);
+    expect(c.state.hw!.defences.singleWhere((d) => d.kind == proto.DefenceKind.largeShieldDome).count, 1);
+    expect(tester.takeException(), isNull);
+    await snap(tester, 'homeworld/raid-outlasted-1440');
+    await endShell(tester, c);
+  });
+
+  testWidgets('a fleet in a raid\'s fight leaves from the Defence tab: a lane, the rounds under fire, Stop, and out before the raid is settled (demo)',
+      (tester) async {
+    final c = await raided(tester, 3 * proto.ShipClass.lightFighter.power, size: const Size(390, 844));
+    final home = c.state.homeworld;
+    final quote = c.state.fleets.singleWhere((f) => f.sector == home).flight!;
+    expect(said(tester, 'flight-price'), flightPrice(quote).toUpperCase());
+    expect(said(tester, 'flight-chase'), 'NOTHING FOLLOWS.');
+    expect(tester.takeException(), isNull);
+    await snap(tester, 'homeworld/raid-arrived-390');
+    final lane = find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key! as ValueKey<String>).value.startsWith('flee-'));
+    expect(lane, findsWidgets);
+    await tester.ensureVisible(lane.first);
+    await tester.tap(lane.first);
+    await tester.pump();
+    final leaving = c.state.fleets.singleWhere((f) => f.id == 102);
+    expect((leaving.status, leaving.fleeing!.rounds), (FleetStatus.enRoute, quote.rounds));
+    expect(find.byKey(const Key('leaving-panel')), findsOneWidget);
+    expect(find.byKey(const Key('flight-panel')), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('battle-panel')));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await snap(tester, 'homeworld/raid-leaving-390');
+
+    await tester.ensureVisible(find.byKey(const ValueKey('leaving-stop')));
+    await tester.tap(find.byKey(const ValueKey('leaving-stop')));
+    await tester.pump();
+    expect(c.state.fleets.singleWhere((f) => f.id == 102).status, FleetStatus.combat, reason: 'Stop calls the jump off and the fleet fights on');
+    expect(c.state.events.first.message, contains('called off its jump'));
+
+    await tester.ensureVisible(lane.first);
+    await tester.tap(lane.first);
+    await tester.pump();
+    final ships = c.state.fleets.singleWhere((f) => f.id == 102).shipCount;
+    for (var i = 0; i <= quote.rounds + 1 && c.state.fleets.any((f) => f.id == 102 && f.sector == home); i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final away = c.state.fleets.singleWhere((f) => f.id == 102);
+    expect((away.sector == home, away.status, away.fleeing), (false, FleetStatus.idle, null),
+        reason: 'the fleet is out of the raid\'s reach, with what the parting rounds left of it');
+    expect(away.shipCount, lessThanOrEqualTo(ships));
+    final resolved = await fought(tester, c);
+    expect(resolved.lost.where((u) => u.unit.ship == proto.ShipClass.smallCargo), isEmpty, reason: 'the defences fought on without it');
+    expect(find.byKey(const Key('leaving-panel')), findsNothing);
     await endShell(tester, c);
   });
 

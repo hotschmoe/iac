@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../console/economy_view.dart';
-import '../../console/battle.dart' show fleeingLine, flightPrice, hullOf, pursuitLine, pursuitVerdict;
+import '../../console/battle.dart' show fleeingLine, flightPrice, hullOf, pursuitLine, pursuitVerdict, raidKept;
 import '../../console/intel.dart' show groupDigits, hopCount;
 import '../../console/prefs.dart';
 import '../../console/services.dart';
@@ -15,7 +15,7 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/overview/overview_scenes.dart';
 import '../../state/game_controller.dart';
-import '../battle_view.dart' show ClassMarks, HullBar, damagedColor;
+import '../battle_view.dart' show ClassMarks, HullBar, RaidShares, damagedColor, raidLabelColor;
 import '../onboarding.dart';
 import 'ov_panel.dart';
 import 'overview_cards.dart';
@@ -147,7 +147,7 @@ class _Hero extends StatelessWidget {
       (buildingLevels, 'Building levels'),
       (researchLevels, 'Research'),
       (s.shipCount, 'Ships'),
-      if (eco.defence != null) (eco.defence!.total.round(), 'Defence power'),
+      if (eco.defence != null) (eco.defence!.defenceCount, 'Defences'),
     ];
     return ConsolePanel(
       key: const Key('hero'),
@@ -251,26 +251,22 @@ class _NextCard extends StatelessWidget {
         Text(n.why, style: T.mono(size: 11.5, color: C.text2, height: 1.5)),
         const SizedBox(height: 12),
         if (raid) ...[
-          _kv('Your defence', '${d.total.round()}', C.threat(1)),
-          LedBar(1, color: C.own, height: 8),
-          const SizedBox(height: 10),
-          _kv('Raid (est.)', '${d.raidEstimate.round()}', C.threat(5)),
-          LedBar((d.raidEstimate / (d.total <= 0 ? 1 : d.total)).clamp(0.0, 1.0), color: C.threat(5), height: 8),
-          const SizedBox(height: 10),
-          _kv('Ratio', '${d.ratio.toStringAsFixed(2)} ${d.ratio >= 1 ? 'HELD' : 'BREACH'}', d.ratio >= 1 ? C.own : C.ember),
+          Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 10, runSpacing: 2, children: [
+            Text(d.raid.odds.label.label,
+                key: const Key('raid-card-label'),
+                style: T.cond(size: 17, color: raidLabelColor(d.raid.odds.label), weight: FontWeight.w700, spacing: 2.2)),
+            Text(d.raid.odds.label.outcome.toUpperCase(), key: const Key('raid-card-sentence'), style: T.mono(size: 10, color: C.text2, height: 1.35)),
+          ]),
           const SizedBox(height: 8),
+          RaidShares(d.raid.odds, tag: 'raid-card'),
+          const SizedBox(height: 6),
+          Text('${raidKept(d.raid.odds).toUpperCase()}.', key: const Key('raid-card-kept'), style: T.mono(size: 10, color: C.text3, height: 1.35)),
+          const SizedBox(height: 10),
         ],
         if (n.cost != null) Padding(padding: const EdgeInsets.only(bottom: 8), child: costRow(n.cost!)),
       ]),
     ));
   }
-
-  Widget _kv(String k, String v, Color c) => Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Text(k.toUpperCase(), style: T.mono(size: 10.5, color: C.text3)),
-        Text(v, style: T.mono(size: 10.5, color: c, weight: FontWeight.w600)),
-      ]));
 }
 
 // ── fleets ──────────────────────────────────────────────────────

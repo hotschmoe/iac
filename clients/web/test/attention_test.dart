@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/battle.dart' show raidForce, raidLine, raidVerdict;
 import 'package:iac_client/console/kv_store.dart';
 import 'package:iac_client/console/notifier.dart';
 import 'package:iac_client/console/prefs.dart';
@@ -70,7 +71,10 @@ void main() {
 
     await _background(tester, const Duration(seconds: 5));
     expect(browser.shown.single.title, 'Raid incoming - In Amber Clad');
-    expect(browser.shown.single.body, contains('reaches your homeworld in 4:3'));
+    final announced = c.state.hw!.raid;
+    expect(browser.shown.single.body,
+        allOf(startsWith('${raidForce(announced.ships, announced.power, opening: true)} reaches your homeworld in 4:3'), endsWith('Forecast ${raidVerdict(announced.odds)}.')),
+        reason: 'the notice says what flies and how the server expects it to end, not two powers');
     expect(title.value, '(1) IN AMBER CLAD');
 
     await tester.pump(const Duration(seconds: 170));
@@ -79,13 +83,15 @@ void main() {
     await tester.pump(const Duration(seconds: 50));
     final closing = browser.shown[2];
     expect(closing.title, 'Raid closing - In Amber Clad');
-    expect(closing.body, contains('arrives in 1:00'));
-    expect(c.state.events.any((e) => e.message.startsWith('! Raid of estimated power')), isTrue, reason: 'the closing raid is in the log, which is what toasts it in front');
+    expect(closing.body, allOf(contains('arrives in 1:00'), contains('Forecast REPELLED')));
+    expect(c.state.events.any((e) => e.message.startsWith('! Raid closing: a raid of ')), isTrue, reason: 'the closing raid is in the log, which is what toasts it in front');
 
     await tester.pump(const Duration(seconds: 60));
-    expect(browser.shown.skip(3).map((n) => n.title.replaceAll(' - In Amber Clad', '')), ['Building complete', 'Raid repelled', 'Raid incoming'],
-        reason: 'the mine finishes, the raid lands, and the next one is announced; the raid closes only once');
+    expect(browser.shown.skip(3).map((n) => n.title.replaceAll(' - In Amber Clad', '')), ['Building complete', 'Raid destroyed', 'Raid incoming'],
+        reason: 'the mine finishes, the raid is fought and destroyed, and the next one is announced; the raid closes only once');
     expect(browser.shown[3].body, 'Crystal Mine level 8. The next order is under way.');
+    expect(browser.shown[4].body, '${raidLine(c.state.lastRaid!.raid, tick: c.state.lastRaid!.tick)}.', reason: 'the raid\'s end is its summary');
+    expect(browser.shown[4].body, allOf(startsWith('Raid on your homeworld destroyed after '), contains('You lost '), contains('Wreckage left: ')));
 
     final lastHull = c.state.hw!.shipyardQueue!.endTick - c.state.tick;
     await tester.pump(Duration(seconds: lastHull + 1));
@@ -95,7 +101,7 @@ void main() {
     await _foreground(tester);
     expect(title.value, 'IN AMBER CLAD');
     final toasts = find.byType(ToastLayer);
-    for (final missed in ['BUILDING COMPLETE', 'RAID REPELLED', 'RAID INCOMING', 'SHIPYARD IDLE']) {
+    for (final missed in ['BUILDING COMPLETE', 'RAID DESTROYED', 'RAID INCOMING', 'SHIPYARD IDLE']) {
       expect(find.descendant(of: toasts, matching: find.text(missed)), findsOneWidget);
     }
     await tester.pump(const Duration(seconds: 150));
@@ -171,14 +177,20 @@ void main() {
     await _background(tester, const Duration(seconds: 21));
     expect(outpost(), [(title: 'Outpost open', body: 'Level 1 of your outpost at 10, 0 is finished.', tag: 'outpost-level')]);
 
+    c.place(101, const proto.Hex(4, -2), const proto.Resources());
     c.raidOutpost(5000, inTicks: 3);
     await tester.pump(const Duration(seconds: 1));
     expect(outpost().last.title, 'Raid on your outpost');
-    expect(outpost().last.body, allOf(startsWith('A raid of estimated power 5000 reaches your outpost at 10, 0 in 0:0'), contains('Its platform and the ships standing there come to ')));
+    expect(outpost().last.body,
+        allOf(startsWith('A raid of 7x Cruiser (power 5,000) reaches your outpost at 10, 0 in 0:0'), endsWith('Forecast ${raidVerdict(c.state.outpost!.raid!.odds)}.')));
+    expect(c.state.outpost!.raid!.odds.label, proto.RaidLabel.lost, reason: 'with the fleet flown home the platform of level 1 stands alone');
 
     await tester.pump(const Duration(seconds: 4));
     expect(outpost().skip(2).map((n) => n.title), ['Outpost breached', 'Outpost repair waiting']);
-    expect(outpost()[2].body, allOf(contains('beat the defence of'), contains('destroyed 1 ship standing there'), contains('until it has repaired itself from its store')));
+    expect(
+        outpost()[2].body,
+        allOf(startsWith('Raid on your outpost at 10, 0 lost after 1 round: no defender was left standing.'), contains('You lost 4x Rocket Launcher'),
+            contains('until it has repaired itself from its store')));
     expect(outpost()[3].body,
         allOf(startsWith('Your outpost at 10, 0 is breached and cannot repair itself: the repair costs 1,612 Fe and its store is short by 1,613 Fe.'),
             endsWith('until a fleet unloads that, or crystal or deuterium in its place.')));

@@ -2,8 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../console/battle.dart' show raidClock, shipsList;
 import '../console/economy_view.dart';
-import '../console/intel.dart' show clockFmt, signedAnHour;
+import '../console/intel.dart' show signedAnHour;
 import '../console/outpost.dart';
 import '../models/game_state.dart';
 import '../console/services.dart';
@@ -13,6 +14,8 @@ import '../design/icons.dart';
 import '../design/panel.dart';
 import '../design/tokens.dart';
 import '../protocol/protocol.dart' as proto;
+import '../state/game_controller.dart' show HomeworldTab;
+import 'battle_view.dart' show raidLabelColor;
 
 class Hud extends StatelessWidget {
   final bool narrow;
@@ -85,7 +88,10 @@ class Hud extends StatelessWidget {
               ),
             ),
             if (!narrow) ...[
-              _Field('World', con.game.isLive ? (eco.world?.label ?? con.game.linkLabel) : con.game.linkLabel, alert: !con.game.isLive),
+              switch ((con.state.hw?.raid, raidClock(con.state.hw?.raid, con.state.tick))) {
+                (final raid?, final clock?) when con.game.isLive => _RaidField(raid, clock),
+                _ => _Field('World', con.game.isLive ? (eco.world?.label ?? con.game.linkLabel) : con.game.linkLabel, alert: !con.game.isLive),
+              },
               if (con.state.outpost case final post? when width >= outpostFrom) _OutpostField(post, con.state.tick),
               _TickField(),
               ...buttons.map((b) => Padding(padding: const EdgeInsets.symmetric(horizontal: 3), child: b)),
@@ -144,7 +150,7 @@ class _OutpostField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final con = Console.of(context);
-    final raid = o.raidArrivalTick;
+    final raid = outpostRaidMark(o, tick);
     final hot = o.breached || raid != null;
     return Semantics(
       button: true,
@@ -166,7 +172,7 @@ class _OutpostField extends StatelessWidget {
               Text(
                   [
                     '${outpostLevelMark(o)} STORE ${(storeFill(o) * 100).round()}%',
-                    if (raid != null) 'RAID ${clockFmt(raid - tick)}' else if (o.breached) 'BREACHED',
+                    if (raid != null) raid else if (o.breached) 'BREACHED',
                   ].join(' '),
                   style: T.mono(size: 13, color: hot ? C.ember : C.a200, spacing: .5)),
             ]),
@@ -189,7 +195,7 @@ class OutpostStrip extends StatelessWidget {
       builder: (context, _) {
         final o = con.state.outpost;
         if (o == null) return const SizedBox.shrink();
-        final hot = o.breached || o.raidArrivalTick != null;
+        final hot = o.breached || outpostRaidMark(o, con.state.tick) != null;
         return Semantics(
           button: true,
           onTap: () => con.go(Screen.outpost),
@@ -204,6 +210,101 @@ class OutpostStrip extends StatelessWidget {
               decoration: const BoxDecoration(color: C.hud, border: Border(bottom: BorderSide(color: C.line))),
               child: Text(outpostHudLine(o, con.state.tick),
                   maxLines: 1, overflow: TextOverflow.ellipsis, style: T.mono(size: 10.5, color: hot ? C.ember : C.a200, spacing: .4)),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The raid on the homeworld in the bar, while one is on its way or being
+/// fought: its clock and the forecast's label. It stands where the world's
+/// name does at other times, and opens the Defence tab.
+class _RaidField extends StatelessWidget {
+  final proto.RaidForecast raid;
+  final String clock;
+  const _RaidField(this.raid, this.clock);
+
+  @override
+  Widget build(BuildContext context) {
+    final con = Console.of(context);
+    void open() {
+      con.game.selectHomeworldTab(HomeworldTab.defence);
+      con.go(Screen.homeworld);
+    }
+
+    return Semantics(
+      button: true,
+      label: 'Raid on your homeworld: $clock, forecast ${raid.odds.label.label}',
+      excludeSemantics: true,
+      onTap: open,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          key: const ValueKey('hud-raid'),
+          behavior: HitTestBehavior.opaque,
+          onTap: open,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: const BoxDecoration(border: Border(left: BorderSide(color: C.lineLo))),
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Lbl('Raid on home', size: 9, color: C.ember),
+              const SizedBox(height: 2),
+              Text.rich(
+                  TextSpan(children: [
+                    TextSpan(text: '$clock  ', style: const TextStyle(color: C.ember)),
+                    TextSpan(text: raid.odds.label.label, style: TextStyle(color: raidLabelColor(raid.odds.label))),
+                  ]),
+                  style: T.mono(size: 13, spacing: .5)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The raid on the homeworld where the bar has no room for it: one row
+/// under the bar while one is on its way or being fought, which opens the
+/// Defence tab.
+class RaidStrip extends StatelessWidget {
+  const RaidStrip({super.key});
+  @override
+  Widget build(BuildContext context) {
+    final con = Console.of(context);
+    return ListenableBuilder(
+      listenable: con.game,
+      builder: (context, _) {
+        final raid = con.state.hw?.raid;
+        final clock = raidClock(raid, con.state.tick);
+        if (raid == null || clock == null) return const SizedBox.shrink();
+        void open() {
+          con.game.selectHomeworldTab(HomeworldTab.defence);
+          con.go(Screen.homeworld);
+        }
+
+        return Semantics(
+          button: true,
+          onTap: open,
+          child: GestureDetector(
+            key: const ValueKey('hud-raid'),
+            behavior: HitTestBehavior.opaque,
+            onTap: open,
+            child: Container(
+              height: 22,
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: const BoxDecoration(color: C.hud, border: Border(bottom: BorderSide(color: C.line))),
+              child: Text.rich(
+                  TextSpan(children: [
+                    TextSpan(text: 'RAID ON HOME $clock  ', style: const TextStyle(color: C.ember)),
+                    TextSpan(text: raid.odds.label.label, style: TextStyle(color: raidLabelColor(raid.odds.label))),
+                    TextSpan(text: '  ${shipsList(raid.ships).toUpperCase()}', style: const TextStyle(color: C.text2)),
+                  ]),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: T.mono(size: 10.5, spacing: .4)),
             ),
           ),
         );

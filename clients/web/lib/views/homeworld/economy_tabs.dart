@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../console/battle.dart' show rebuildRule;
 import '../../console/economy_view.dart';
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show storeAtCap;
@@ -13,7 +14,8 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
 import '../../state/state_mapper.dart' show amountsOf;
-import '../battle_view.dart' show ShipRows;
+import '../battle_view.dart' show BattlePanel, RaidForecastReadout, RaidSummary, ShipRows;
+import '../windshield/parts.dart' show RaidExits;
 import 'spec.dart';
 
 Widget _notReported(String what) => Padding(
@@ -94,35 +96,36 @@ class DefenceTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final d = eco.defence;
     if (d == null) return _notReported('Defence');
-    final cover = d.ratio;
-    final raidIn = d.raidInTicks;
+    final st = ctrl.state;
+    final fight = st.raidAtHome;
+    final last = st.lastRaid;
     return Padding(
       padding: const EdgeInsets.all(12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         ConsolePanel(
+          key: const Key('raid-forecast'),
           title: 'Raid forecast',
-          subText: 'estimate',
+          subText: d.fought ? 'the fight as it stands' : d.raidInTicks != null ? 'on its way' : 'none on its way',
+          border: d.pressing ? C.ember : null,
+          mark: d.pressing ? C.ember : null,
           padding: const EdgeInsets.all(14),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Wrap(crossAxisAlignment: WrapCrossAlignment.end, spacing: 8, runSpacing: 2, children: [
-              Text(raidIn == null ? 'NO RAID ANNOUNCED' : 'RAID IN ${clockFmt(raidIn)}',
-                  style: T.cond(size: 26, color: raidIn == null ? C.text2 : C.ember, weight: FontWeight.w700, spacing: 2)),
-              Text('DEFENCE ${cover.toStringAsFixed(2)}X THE RAID',
-                  key: const Key('defence-cover'), style: T.cond(size: 13, color: cover >= 1 ? C.ok : C.ember, spacing: 1.4)),
-            ]),
-            const SizedBox(height: 10),
-            _breakdown(d),
-            const SizedBox(height: 6),
-            Wrap(spacing: 14, runSpacing: 4, children: [
-              _legend('Docked ships', d.docked, C.own),
-              _legend('Solar satellites', d.satellites, C.a400),
-              _legend('Defences', d.structures, C.crystal),
-              _legend('Next raid est.', d.raidEstimate, C.ember),
-            ]),
-          ]),
+          child: RaidForecastReadout(d.raid, tick: st.tick, tag: 'raid'),
         ),
-        if (ctrl.state.hw case final hw?) ...[
+        if (fight != null) ...[const SizedBox(height: 10), BattlePanel(key: ValueKey(fight.sector), battle: fight)],
+        RaidExits(controller: ctrl, at: st.homeworld),
+        if (last != null && !(fight?.over ?? false)) ...[
           const SizedBox(height: 10),
+          ConsolePanel(
+            title: 'Last raid',
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+            child: RaidSummary(last, tick: st.tick, tag: 'last-raid'),
+          ),
+        ],
+        const SizedBox(height: 14),
+        Text('WHAT STANDS AT HOME FIGHTS THE RAID: EVERY FLEET DOCKED HERE, EVERY SOLAR SATELLITE AND EVERY DEFENCE.',
+            key: const Key('defence-standing'), style: T.cond(size: 11, color: C.text2, spacing: 1.4, height: 1.3)),
+        if (st.hw case final hw?) ...[
+          const SizedBox(height: 8),
           ConsolePanel(
             key: const Key('defence-docked'),
             title: 'Docked ships',
@@ -133,8 +136,9 @@ class DefenceTab extends StatelessWidget {
                 Padding(padding: const EdgeInsets.only(top: 3), child: Text('NO FLEET STANDS AT THE DOCK.', style: T.mono(size: 11, color: C.text3)))
               else
                 ShipRows(hw.dockedShips, tag: 'docked'),
-              WhyText('Every fleet standing at the homeworld, by class. The home dock mends a fleet and refits it to your Weapons, Shielding and '
-                  'Armour levels when it arrives. A raid that breaks through destroys ${proto.raidLostShipPct}% of the ships here.'),
+              const WhyText('Every fleet standing at the homeworld, by class. The home dock mends a fleet and refits it to your Weapons, Shielding and '
+                  'Armour levels when it arrives. A fleet that is here when a raid arrives is in its fight and fires in it; one flown out '
+                  'during the warning is not, and one in the fight may still jump out under fire.'),
             ]),
           ),
         ],
@@ -145,9 +149,8 @@ class DefenceTab extends StatelessWidget {
           subText: 'x${d.satelliteCount}',
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('POWER ${groupDigits(d.satellites.round())} IN THE HOME DEFENCE', style: T.mono(size: 11, color: C.text2)),
-            WhyText('They stand at the homeworld and join no fleet. A raid that breaks through destroys ${proto.raidLostShipPct}% of them, '
-                'as it does of the ships docked here. They are built in the shipyard.'),
+            const WhyText('They stand at the homeworld and join no fleet. They are in every raid\'s fight, and one that falls is not rebuilt. '
+                'They are built in the shipyard.'),
             const SizedBox(height: 6),
             ConsoleButton('Open shipyard', key: const ValueKey('defence-open-shipyard'), small: true, onPressed: () => ctrl.selectHomeworldTab(HomeworldTab.shipyard)),
           ]),
@@ -156,34 +159,13 @@ class DefenceTab extends StatelessWidget {
         ConsolePanel(
           title: 'Defences',
           subText: 'BATCH x${ctrl.shipBatch}',
-          child: Column(children: [for (var i = 0; i < d.rows.length; i++) _structure(i, d.rows[i])]),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            for (var i = 0; i < d.rows.length; i++) _structure(i, d.rows[i]),
+            const Padding(padding: EdgeInsets.fromLTRB(12, 4, 12, 10), child: WhyText(rebuildRule, key: Key('defence-rebuild'))),
+          ]),
         ),
       ]),
     );
-  }
-
-  Widget _legend(String n, double v, Color c) => Row(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 8, height: 8, color: c),
-        const SizedBox(width: 5),
-        Text('${n.toUpperCase()} ${groupDigits(v.round())}', style: T.mono(size: 10.5, color: C.text2)),
-      ]);
-
-  Widget _breakdown(DefenceView d) {
-    final max = math.max(1.0, (d.total > d.raidEstimate ? d.total : d.raidEstimate) * 1.05);
-    Widget seg(double v, Color c) => Expanded(flex: (v / max * 1000).round().clamp(1, 1000), child: Container(height: 12, color: c.withValues(alpha: .75)));
-    return Column(children: [
-      Row(children: [
-        seg(d.docked, C.own),
-        seg(d.satellites, C.a400),
-        seg(d.structures, C.crystal),
-        Expanded(flex: ((max - d.total) / max * 1000).round().clamp(1, 1000), child: const SizedBox()),
-      ]),
-      const SizedBox(height: 4),
-      Row(children: [
-        Expanded(flex: (d.raidEstimate / max * 1000).round().clamp(1, 1000), child: Container(height: 12, color: C.ember.withValues(alpha: .75))),
-        Expanded(flex: ((max - d.raidEstimate) / max * 1000).round().clamp(1, 1000), child: const SizedBox()),
-      ]),
-    ]);
   }
 
   Widget _structure(int i, DefenceRow r) {
@@ -201,7 +183,7 @@ class DefenceTab extends StatelessWidget {
           Row(children: [
             Expanded(child: Text(r.kind.label.toUpperCase(), style: T.cond(size: 13, color: sel ? C.a100 : C.a200, spacing: 1.2))),
             if (o?.max == 1) ...[const Tag('One of a kind'), const SizedBox(width: 8)],
-            Text('x${r.count}${r.restoring > 0 ? ' (+${r.restoring} restoring)' : ''}', style: T.mono(size: 12, color: C.a100)),
+            Text('x${r.count}', style: T.mono(size: 12, color: C.a100)),
           ]),
           const SizedBox(height: 2),
           if (o != null)
@@ -376,10 +358,11 @@ class _HoldPanelState extends State<HoldPanel> {
         WhyText(
             atHome
                 ? 'A loaded hold stays aboard while the fleet is docked: fly it to the hub and trade. What the fleet brings home '
-                    'unloads as always. A raid counts cargo at home with the stockpile.'
+                    'unloads as always. A fleet at home is in a raid\'s fight: what a ship destroyed there carried falls to the stockpile, '
+                    'as far as it has room, before a lost raid takes its share.'
                 : 'Nothing moves by itself here: Unload puts the whole hold into the store, as far as the store has room. '
-                    'A raid the outpost loses takes its share of the store and of the holds here above the protected floor, '
-                    'and destroys a quarter of the ships standing here.',
+                    'A fleet standing here is in a raid\'s fight: what a ship destroyed there carried falls to the store, as far as it has room, '
+                    'before a lost raid takes its share of what lies above the protected floor.',
             key: const Key('hold-rule')),
       ]),
     );

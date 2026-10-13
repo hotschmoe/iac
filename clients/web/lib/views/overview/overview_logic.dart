@@ -1,4 +1,4 @@
-import '../../console/battle.dart' show fleeingLine, pursuitLine, pursuitVerdict, ticksOf;
+import '../../console/battle.dart' show fleeingLine, pursuitLine, pursuitVerdict, raidForce, raidVerdict, roundsLeftOf, ticksOf;
 import '../../console/economy_view.dart';
 import '../../console/intel.dart';
 import '../../models/fleet.dart' show FleetStatus;
@@ -113,11 +113,22 @@ String? queuesShort(proto.Resources stock, proto.Resources cost) => switch (shor
 NextUp nextUp(GameState s, EconomyView eco) {
   final d = eco.defence;
   final raidIn = d?.raidInTicks;
+  if (d != null && d.fought) {
+    return NextUp(
+      'RAID',
+      'Raid being fought',
+      'The raiders stand at ${s.homeworld}: ${raidForce(d.raid.ships, d.raid.power)}, ${roundsLeftOf(d.raid.roundsLeft ?? 0)}. '
+          'The Defence tab has the fight round by round.',
+      'Open defence',
+      NextAction.openDefence,
+      urgent: true,
+    );
+  }
   if (d != null && raidIn != null && raidIn > 0 && raidIn < 600) {
     return NextUp(
       'RAID WARNING',
       'Raid in ${clockFmt(raidIn)}',
-      'Raid fleet vectoring for ${s.homeworld}. Home defence is ${d.total.round()} power: ${d.parts}. Estimated raid power ${d.raidEstimate.round()}.',
+      'Vectoring for ${s.homeworld}: ${raidForce(d.raid.ships, d.raid.power)}. It fights every fleet docked there, every Solar Satellite and every defence.',
       'Open defence',
       NextAction.openDefence,
       urgent: true,
@@ -198,8 +209,13 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
   final out = <OvAlert>[];
   final d = eco.defence;
   final raidIn = d?.raidInTicks;
-  if (d != null && raidIn != null && raidIn > 0) {
-    out.add(OvAlert('Raid incoming', 'Power est. ${d.raidEstimate.round()} vs your defence ${d.total.round()}.', critical: true, time: clockFmt(raidIn), tab: 'defence'));
+  if (d != null && d.fought) {
+    out.add(OvAlert('Raid being fought',
+        '${raidForce(d.raid.ships, d.raid.power, opening: true)}, ${roundsLeftOf(d.raid.roundsLeft ?? 0)}. As it stands ${raidVerdict(d.raid.odds)}.',
+        critical: true, tab: 'defence'));
+  } else if (d != null && raidIn != null && raidIn > 0) {
+    out.add(OvAlert('Raid incoming', '${raidForce(d.raid.ships, d.raid.power, opening: true)}. Forecast ${raidVerdict(d.raid.odds)}.',
+        critical: true, time: clockFmt(raidIn), tab: 'defence'));
   }
   final energy = s.hw?.energy;
   if (energy != null && energy.short) {

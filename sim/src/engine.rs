@@ -5901,7 +5901,7 @@ impl GameEngine {
         self.order_shipyard(player_id, ShipyardItem::Defence(kind), count)
     }
 
-    /// Defences of `kind` standing, being rebuilt and paid for in the yard.
+    /// Defences of `kind` standing and paid for in the yard.
     pub fn defences_owned_and_ordered(player: &Player, kind: DefenceKind) -> u32 {
         let item = ShipyardItem::Defence(kind);
         let building = player.ship_queue.iter().filter(|q| q.item == item).map(|q| u32::from(q.undelivered()));

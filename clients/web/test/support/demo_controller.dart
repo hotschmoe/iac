@@ -55,6 +55,18 @@ class DemoController extends GameController {
   /// in [inTicks].
   void raidOutpost(double power, {int inTicks = 10}) => _world!.raidOutpost(power, inTicks: inTicks);
 
+  /// Announce a raid of [power] on the scripted world's homeworld, arriving
+  /// in [inTicks], in place of the one the script had on its way.
+  void raidHome(double power, {int inTicks = 10}) => _world!.raidHome(power, inTicks: inTicks);
+
+  /// Make what stands at the scripted homeworld that is no fleet [defences]
+  /// and [satellites].
+  void garrison(Map<proto.DefenceKind, int> defences, {int satellites = 0}) {
+    final world = _world!;
+    world.garrison(defences, satellites: satellites);
+    receive(world.initial());
+  }
+
   @override
   String? get account => 'demo';
 

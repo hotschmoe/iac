@@ -152,9 +152,40 @@ class Battle {
   final proto.CombatEndedEvent? ended;
   final int endedTick;
 
-  const Battle({required this.sector, required this.rounds, this.round, this.losses = const [], this.ended, this.endedTick = 0});
+  /// The fight is a raid on a homeworld or an outpost: what the state says
+  /// of it while it is fought, and the last of that once it has ended.
+  final proto.RaidBattle? raid;
+
+  /// What the raid came to, once it has ended: the player's own raids only.
+  final proto.RaidResolvedEvent? resolved;
+
+  const Battle({
+    required this.sector,
+    required this.rounds,
+    this.round,
+    this.losses = const [],
+    this.ended,
+    this.endedTick = 0,
+    this.raid,
+    this.resolved,
+  });
 
   bool get over => ended != null;
+
+  /// A raid's fight, as the state, its rounds or its end mark it.
+  bool get isRaid => raid != null || (round?.raid ?? false) || (ended?.raid ?? false);
+
+  /// This fight with what its raid came to.
+  Battle resolvedAs(proto.RaidResolvedEvent how) => Battle(
+      sector: sector, rounds: rounds, round: round, losses: losses, ended: ended, endedTick: endedTick, raid: raid, resolved: how);
+}
+
+/// A raid on the player's homeworld or outpost that has ended, and the tick
+/// it did. The console keeps the last of each for as long as it is open.
+class RaidReport {
+  final proto.RaidResolvedEvent raid;
+  final int tick;
+  const RaidReport(this.raid, this.tick);
 }
 
 /// Ticks a fight's end stays on the round panel after its last round.
@@ -225,8 +256,10 @@ class GameState {
   /// The last score table the server sent, if asked for.
   final proto.LeaderboardReply? leaderboard;
 
-  /// The announced, unresolved raid on the homeworld.
-  final proto.RaidIncomingEvent? raid;
+  /// The last raid on the homeworld that ended while the console was open,
+  /// and the last on the outpost.
+  final RaidReport? lastRaid;
+  final RaidReport? lastOutpostRaid;
 
   /// The player's outpost as the server last sent it; null with none.
   final proto.OutpostState? outpost;
@@ -268,7 +301,8 @@ class GameState {
     this.hw,
     this.world,
     this.leaderboard,
-    this.raid,
+    this.lastRaid,
+    this.lastOutpostRaid,
     this.outpost,
     this.surveys = const {},
     this.policyActs = const {},
@@ -277,6 +311,15 @@ class GameState {
 
   /// The fight in [sector], under way or just ended.
   Battle? battleAt(proto.Hex sector) => battles[sector];
+
+  /// The raid on the homeworld as a fight, while it is fought and for
+  /// [battleReportTicks] after; null when there is none.
+  Battle? get raidAtHome => _raidAt(homeworld);
+
+  /// The same for the player's outpost.
+  Battle? get raidAtOutpost => switch (outpost) { final post? => _raidAt(post.location), null => null };
+
+  Battle? _raidAt(proto.Hex sector) => switch (battles[sector]) { final fight? when fight.isRaid => fight, _ => null };
 
   /// The fight [fleet] has to be told of: the one where it stands, or else
   /// the one it has left, once that has ended.
@@ -388,7 +431,8 @@ class GameState {
     proto.HomeworldState? hw,
     proto.WorldInfo? world,
     proto.LeaderboardReply? leaderboard,
-    proto.RaidIncomingEvent? raid,
+    RaidReport? lastRaid,
+    RaidReport? lastOutpostRaid,
     proto.OutpostState? outpost,
     Map<(int, proto.Hex), SurveyEntry>? surveys,
     Map<int, List<PolicyAct>>? policyActs,
@@ -420,7 +464,8 @@ class GameState {
         hw: hw ?? this.hw,
         world: world ?? this.world,
         leaderboard: leaderboard ?? this.leaderboard,
-        raid: raid ?? this.raid,
+        lastRaid: lastRaid ?? this.lastRaid,
+        lastOutpostRaid: lastOutpostRaid ?? this.lastOutpostRaid,
         outpost: outpost ?? this.outpost,
         surveys: surveys ?? this.surveys,
         policyActs: policyActs ?? this.policyActs,

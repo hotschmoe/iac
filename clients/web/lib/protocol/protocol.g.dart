@@ -4107,12 +4107,12 @@ class DefenceOption {
   /// Standing now.
   final int count;
 
-  /// The most that may stand, those being rebuilt and ordered included:
-  /// 1 for a dome. Absent when there is no limit.
+  /// The most that may stand, those on order included: 1 for a dome.
+  /// Absent when there is no limit.
   final int? max;
 
-  /// How many more may be ordered now: `max` less those standing, being
-  /// rebuilt and on order. Absent when there is no limit.
+  /// How many more may be ordered now: `max` less those standing and on
+  /// order. Absent when there is no limit.
   final int? room;
   final Resources unitCost;
   final int ticksPerUnit;

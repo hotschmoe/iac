@@ -34,12 +34,12 @@ const hubVoice = 'Neutral post. No ore, no hostiles. The exchange is open.';
 const outpostVoice = 'A station holds this sector. Raiders come for it.';
 
 /// What the dock does for a fleet and what it does not: nothing in the field
-/// reaches a docked fleet, a raid that beats the home defence does.
+/// reaches a docked fleet, a raid does, and the fleet is in its fight.
 const dockVoice = 'A DOCKED FLEET REFUELS, UNLOADS, IS MENDED AND REFITTED, AND NOTHING IN THE FIELD REACHES IT.\n'
-    'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS.';
+    'A RAID IS FOUGHT HERE: A FLEET DOCKED WHEN ONE ARRIVES IS IN THE FIGHT.';
 const dockVoiceLaden = 'A DOCKED FLEET REFUELS, IS MENDED AND REFITTED, AND NOTHING IN THE FIELD REACHES IT.\n'
     'HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.\n'
-    'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS AND TAKES ITS SHARE OF THE HOLD.';
+    'A RAID IS FOUGHT HERE: A FLEET DOCKED WHEN ONE ARRIVES IS IN THE FIGHT, AND WHAT A SHIP LOST IN IT CARRIED FALLS TO THE STOCKPILE.';
 
 /// What refining is, for the control that orders it while it is greyed.
 const refineRule = 'Refining turns the deuterium in the hold into fuel, ${proto.refineLossPct}% less of it than a dock gives. '
@@ -667,7 +667,12 @@ class FlightPanel extends StatelessWidget {
   final proto.FlightQuote quote;
   final List<FlightWay> ways;
   final void Function(Dir) onLeave;
-  const FlightPanel({super.key, required this.fleet, required this.quote, required this.ways, required this.onLeave});
+
+  /// The panel stands on the windshield, where each lane has its gate key
+  /// and Recall its own. Off for a fleet in a raid's fight read from the
+  /// homeworld's or the outpost's screen.
+  final bool keys;
+  const FlightPanel({super.key, required this.fleet, required this.quote, required this.ways, required this.onLeave, this.keys = true});
 
   @override
   Widget build(BuildContext context) {
@@ -711,7 +716,7 @@ class FlightPanel extends StatelessWidget {
               ConsoleButton('${w.to.q}, ${w.to.r}${w.home ? ' HOME' : ''}',
                   key: ValueKey('flee-${w.dir.key}'),
                   small: true,
-                  keyHint: w.dir.key.toUpperCase(),
+                  keyHint: keys ? w.dir.key.toUpperCase() : null,
                   semanticsLabel: 'Leave the fight ${w.dir.name}',
                   onPressed: quote.refusal == null ? () => onLeave(w.dir) : null,
                   reason: quote.refusal),
@@ -720,7 +725,7 @@ class FlightPanel extends StatelessWidget {
           Padding(
               padding: const EdgeInsets.only(top: 5),
               child: Text(why, key: const Key('flight-refusal'), style: T.mono(size: 10.5, color: C.ember, height: 1.3))),
-        const WhyText('Recall (R) is the other way out: home at once, for more fuel and at a risk to every ship.'),
+        if (keys) const WhyText('Recall (R) is the other way out: home at once, for more fuel and at a risk to every ship.'),
       ]),
     );
   }
@@ -733,7 +738,10 @@ class LeavingPanel extends StatelessWidget {
   final ui.FleetState fleet;
   final proto.Fleeing leaving;
   final VoidCallback onStop;
-  const LeavingPanel({super.key, required this.fleet, required this.leaving, required this.onStop});
+
+  /// As [FlightPanel.keys]: Stop has its key on the windshield only.
+  final bool keys;
+  const LeavingPanel({super.key, required this.fleet, required this.leaving, required this.onStop, this.keys = true});
 
   @override
   Widget build(BuildContext context) => ConsolePanel(
@@ -752,10 +760,51 @@ class LeavingPanel extends StatelessWidget {
           const SizedBox(height: 7),
           Align(
               alignment: Alignment.centerLeft,
-              child: ConsoleButton('Stop and fight on', key: const ValueKey('leaving-stop'), small: true, danger: true, keyHint: 'X', onPressed: onStop)),
+              child: ConsoleButton('Stop and fight on',
+                  key: const ValueKey('leaving-stop'), small: true, danger: true, keyHint: keys ? 'X' : null, onPressed: onStop)),
           const WhyText(stopFlightRule, key: Key('leaving-stop-rule')),
         ]),
       );
+}
+
+/// The ways out of a raid's fight at the dock [at], the homeworld or the
+/// outpost, for a screen that is not the windshield: for every fleet of the
+/// player's standing there, the panel to leave by a lane while the state
+/// quotes its flight, and the one to stop while it charges the jump. A
+/// press sends the fleet's own `move` or `stop`; nothing of it is decided
+/// here.
+class RaidExits extends StatelessWidget {
+  final GameController controller;
+  final proto.Hex at;
+  const RaidExits({super.key, required this.controller, required this.at});
+
+  @override
+  Widget build(BuildContext context) {
+    final st = controller.state;
+    final lanes = st.sectors[at]?.connections ?? const <proto.Hex>[];
+    final ways = [
+      for (final d in dirs)
+        if (lanes.contains(at + d.v)) FlightWay(d, at + d.v),
+    ];
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      for (final f in st.fleets)
+        if (f.sector == at) ...[
+          if (f.fleeing case final leaving?)
+            Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: LeavingPanel(fleet: f, leaving: leaving, keys: false, onStop: () => controller.sendCommand(proto.StopCommand(fleetId: f.id)))),
+          if (f.flight case final quote?)
+            Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: FlightPanel(
+                    fleet: f,
+                    quote: quote,
+                    ways: ways,
+                    keys: false,
+                    onLeave: (d) => controller.sendCommand(proto.MoveCommand(fleetId: f.id, target: at + d.v)))),
+        ],
+    ]);
+  }
 }
 
 /// The group on the fleet's trail: what it is, when it lands and from

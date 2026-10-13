@@ -872,6 +872,8 @@ class GameController extends ChangeNotifier {
       cursor: cursorHex,
       tick: _mapper.tick,
       queues: {for (final q in proto.QueueType.values) q: _mapper.queueIds(q)},
+      homeRaid: _mapper.homeworld?.raid,
+      outpostRaid: _mapper.outpost?.raid,
     );
     final result = parseCommand(cmd, ctx);
     switch (result) {

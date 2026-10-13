@@ -2145,12 +2145,12 @@ pub struct DefenceOption {
     pub kind: DefenceKind,
     /// Standing now.
     pub count: u32,
-    /// The most that may stand, those being rebuilt and ordered included:
-    /// 1 for a dome. Absent when there is no limit.
+    /// The most that may stand, those on order included: 1 for a dome.
+    /// Absent when there is no limit.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max: Option<u32>,
-    /// How many more may be ordered now: `max` less those standing, being
-    /// rebuilt and on order. Absent when there is no limit.
+    /// How many more may be ordered now: `max` less those standing and on
+    /// order. Absent when there is no limit.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub room: Option<u32>,
     pub unit_cost: Resources,
@@ -2167,7 +2167,7 @@ pub struct DefenceOption {
 
 impl HomeworldCatalog {
     /// `defences` is what stands of each kind; `committed` adds to it those
-    /// being rebuilt and those on order, which is what a limit counts.
+    /// on order, which is what a limit counts.
     pub fn new(
         buildings: &BuildingLevels,
         research: &ResearchLevels,

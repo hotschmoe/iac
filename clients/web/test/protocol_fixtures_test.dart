@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iac_client/console/battle.dart' show RaidEnding, raidLine, raidRebuilt, raidSummary, raidTaken;
 import 'package:iac_client/console/economy_view.dart' show EconomyView;
 import 'package:iac_client/protocol/protocol.dart';
 import 'package:iac_client/state/state_mapper.dart';
@@ -119,7 +120,13 @@ void main() {
       expect((outpost.level, outpost.maxLevel, outpost.inService, outpost.breached), (1, 3, true, false));
       expect((outpost.work!.kind, outpost.work!.level, outpost.nextLevel!.level), (OutpostWork.build, 2, 3));
       expect((outpost.raidArrivalTick, outpost.repairCost, outpost.hopsHome), (4990, null, 7));
-      expect((outpost.raidPower.least.round(), outpost.raidPower.most.round()), (38, 55));
+      expect((outpost.raidPower.least.round(), outpost.raidPower.most.round()), (383, 551));
+      expect(outpost.platform.map((u) => (u.unit.defence, u.count)), [(DefenceKind.rocketLauncher, 4)], reason: 'the platform is defences, by kind');
+      expect(outpost.nextLevel!.platform.map((u) => (u.unit.defence, u.count)),
+          [(DefenceKind.rocketLauncher, 16), (DefenceKind.lightLaser, 8), (DefenceKind.heavyLaser, 4)]);
+      final raid = outpost.raid!;
+      expect((raid.arrivalTick, raid.roundsLeft, raid.odds.label, raid.odds.lost), (4990, null, RaidLabel.atRisk, 0.375));
+      expect(raid.ships.map((s) => (s.shipClass, s.count)), [(ShipClass.cruiser, 1)]);
       expect(outpost.yieldLost, isEmpty);
       expect(outpost.repairWaitingFor, isNull);
       expect(outpost.upgradeRefusal, 'your outpost at [10,-2] is building level 2 until tick 18200; it does one job at a time');
@@ -131,7 +138,7 @@ void main() {
       expect(mapped.outpost!.location, outpost.location);
       final t = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update__outpost_breached');
       mapped.apply(ServerMessage.fromJson(readJson(t)));
-      expect((mapped.outpost!.breached, mapped.outpost!.repairCost!.metal, mapped.raid), (true, 2187.5, null));
+      expect((mapped.outpost!.breached, mapped.outpost!.repairCost!.metal), (true, 2187.5));
       expect((mapped.outpost!.repairWaitingFor!.metal, mapped.outpost!.repairWaitingFor!.deuterium), (987.5, 0));
       expect((mapped.fleets.single.atOutpost, mapped.fleets.single.outpostFuel), (true, null), reason: 'at a breached outpost, which fills no tank');
       final full = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update__outpost_store_full');
@@ -144,7 +151,10 @@ void main() {
     test('a survey of a sector never seen carries no site and says why', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'outpost_survey__unseen');
       final survey = ServerMessage.fromJson(readJson(f)) as OutpostSurvey;
-      expect((survey.site, survey.ring, survey.raidPower.most.round()), (null, 10, 55));
+      expect((survey.site, survey.ring, survey.raidPower.most.round()), (null, 10, 551));
+      expect((survey.platform.single.unit.defence, survey.platform.single.count, survey.raid!.arrivalTick, survey.raid!.odds.label),
+          (DefenceKind.rocketLauncher, 4, null, RaidLabel.atRisk),
+          reason: 'what follows from where the sector lies is told of a sector never seen: the platform and how a raid of the ring would go against it');
       expect(survey.refusal, '[10,-2] is not on your chart; a survey reads the site of a sector you have seen');
     });
 
@@ -254,15 +264,26 @@ void main() {
       expect(mapper.log, isEmpty);
     });
 
-    test('the homeworld lists defences, defence power and the next raid estimate', () {
+    test('the homeworld lists its defences and the forecast of the raid on its way: what it flies, the label, the three shares and what is kept', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
-      final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;
+      final state = ServerMessage.fromJson(readJson(f)) as GameState;
+      final hw = state.homeworld;
       expect(hw.defences.first.kind, DefenceKind.rocketLauncher);
       expect(hw.defences.first.count, 12);
-      expect(hw.defences.first.restoring, 2);
-      expect(hw.homeDefencePower, 2340.5);
-      expect([hw.dockedPower, hw.satellitePower, hw.structurePower], [444, closeTo(126.6, 1e-4), closeTo(1769.9, 1e-4)]);
-      expect(hw.nextRaidEstimatePower, 300.25);
+      final raid = hw.raid;
+      expect((raid.arrivalTick! - state.tick, raid.roundsLeft, raid.power), (170, null, 1350.5));
+      expect(raid.ships.map((s) => (s.shipClass, s.count)), [(ShipClass.lightFighter, 12), (ShipClass.cruiser, 2)]);
+      expect((raid.odds.label, raid.odds.label.label, raid.odds.label.outcome),
+          (RaidLabel.held, 'HELD', 'a defender stands when the raiders give up; what falls before that is lost'));
+      expect((raid.odds.destroyed, raid.odds.outlasted, raid.odds.lost), (0.25, 0.75, 0));
+      expect([raid.odds.kept, raid.odds.raidersKept], [closeTo(0.62, 1e-6), closeTo(0.31, 1e-6)]);
+      final view = EconomyView.of((StateMapper()..apply(state)).toUiState()).defence!;
+      expect((view.raid.odds.label, view.raidInTicks, view.fought, view.pressing), (RaidLabel.held, 170, false, true));
+
+      final idle = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state__empty');
+      final quiet = EconomyView.of((StateMapper()..apply(ServerMessage.fromJson(readJson(idle)))).toUiState()).defence!;
+      expect((quiet.raid.arrivalTick, quiet.raidInTicks, quiet.pressing, quiet.raid.odds.label), (null, null, false, RaidLabel.lost),
+          reason: 'with no raid on its way the forecast is of one of typical size, and nothing counts down');
       expect(hw.catalog.defences.map((d) => d.count), [12, 0, 0, 3, 0, 0, 1, 0]);
       expect(hw.catalog.defences.map((d) => (d.max, d.room)), [for (var i = 0; i < 6; i++) (null, null), (1, 0), (1, 0)],
           reason: 'a dome is one of a kind, and one that stands or is on order leaves room for no more');
@@ -320,6 +341,67 @@ void main() {
       mapper.apply(update);
       final later = mapper.toUiState().battleAt(at)!;
       expect((later.rounds, later.round?.round), (3, 3), reason: 'the round it was seeded with stands until an event brings the next');
+    });
+
+    test('a raid being fought is the homeworld\'s forecast and a fight with a battery; its end is kept with what the raid came to', () {
+      ServerMessage message(String name) => ServerMessage.fromJson(readJson(fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == name)));
+      GameEvent event(String name) => GameEvent.fromJson(readJson(fixtureFiles('protocol/event_kind').firstWhere((f) => baseName(f) == name)));
+      const home = Hex(4, -2);
+      final mapper = StateMapper()..apply(message('full_state'));
+      final fought = message('tick_update__raid_fought') as TickUpdate;
+      mapper.apply(fought);
+      final state = mapper.toUiState();
+      final forecast = state.hw!.raid;
+      expect((forecast.arrivalTick, forecast.roundsLeft, forecast.odds.label), (null, 4, RaidLabel.held),
+          reason: 'while the raid is fought the forecast is that raid, with the rounds it has left');
+      final fight = state.battleAt(home)!;
+      expect((fight.isRaid, fight.raid!.mine, fight.raid!.outpost, fight.raid!.roundsLeft, fight.rounds), (true, true, false, 4, 2));
+      final round = fight.round!;
+      expect((round.raid, round.round), (true, 2), reason: 'the round came as the update\'s event');
+      final battery = round.fleets.groups.singleWhere((g) => g.battery);
+      expect((battery.fleetId, battery.label, battery.mine), (0, 'home defences', true));
+      expect(battery.units.map((u) => (u.unit.ship, u.unit.defence, u.count, u.lost)), [
+        (ShipClass.solarSatellite, null, 2, 2),
+        (null, DefenceKind.rocketLauncher, 9, 11),
+        (null, DefenceKind.lightLaser, 10, 2),
+        (null, DefenceKind.smallShieldDome, 1, 0),
+      ]);
+      expect(round.hostiles.groups.single.label, 'raid of 12 Light Fighter, 2 Cruiser');
+      expect(mapper.fleets.single.flight!.chase, isNull, reason: 'a fleet in a raid\'s fight may leave, and nothing follows');
+
+      final ended = event('combat_ended__raid_outlasted').kind as CombatEndedEvent;
+      final resolved = event('raid_resolved__defended').kind as RaidResolvedEvent;
+      expect((ended.raid, ended.outcome, ended.playerVictory, resolved.defended), (true, BattleOutcome.outlasted, false, true),
+          reason: 'an outlasted raid is repelled, though the fight was not won');
+      mapper
+        ..apply(EventMessage(GameEvent(tick: 1646, kind: ended)))
+        ..apply(EventMessage(GameEvent(tick: 1646, kind: resolved)));
+      final over = mapper.toUiState();
+      expect((over.raidAtHome!.over, identical(over.raidAtHome!.resolved, resolved), identical(over.lastRaid!.raid, resolved), over.lastRaid!.tick),
+          (true, true, true, 1646));
+      expect(RaidEnding.of(resolved), RaidEnding.outlasted);
+      expect(mapper.log.first.message, startsWith('! Raid on your homeworld outlasted after 6 rounds: the raiders gave up with a defender still standing'));
+      expect(mapper.log.where((line) => line.message.contains('Combat ended')), isEmpty, reason: 'a raid\'s end is told once, by what it came to');
+
+      final destroyed = event('raid_resolved__destroyed').kind as RaidResolvedEvent;
+      expect((destroyed.defended, destroyed.outcome, destroyed.rounds, RaidEnding.of(destroyed)), (true, BattleOutcome.hostilesDestroyed, 3, RaidEnding.destroyed));
+      expect(raidSummary(destroyed, tick: 1943), [
+        'The raiders flew 12x Light Fighter, 2x Cruiser and lost 12x Light Fighter, 2x Cruiser',
+        'You lost 5x Rocket Launcher',
+        'Rebuilt at once: 3x Rocket Launcher',
+        'Wreckage left: 22,800 Fe, 7,800 Cr, 1,200 De, which drifts away in 10:00 unless a fleet docked at home scoops it',
+      ]);
+      final lost = event('raid_resolved').kind as RaidResolvedEvent;
+      expect((RaidEnding.of(lost), raidTaken(lost), raidRebuilt(lost)), (RaidEnding.lost, 'Taken: 2,500,000 Fe, 50 Cr, 25 De', 'Rebuilt at once: 4x Rocket Launcher'));
+      final undefended = event('raid_resolved__undefended').kind as RaidResolvedEvent;
+      expect((undefended.outcome, undefended.rounds, RaidEnding.of(undefended)), (null, 0, RaidEnding.unopposed),
+          reason: 'a raid that met nothing was lost without a round');
+      expect(
+          raidLine(undefended),
+          'Raid on your homeworld lost without a fight: nothing stood in its way. The raiders flew 2x Light Fighter and lost nothing. '
+          'You lost nothing. Taken: 812 Fe, 407 Cr, 90 De');
+      final breached = event('raid_resolved__outpost').kind as RaidResolvedEvent;
+      expect(raidLine(breached), allOf(startsWith('Raid on your outpost at 10, -2 lost after 3 rounds: no defender was left standing.'), contains('The outpost is breached')));
     });
 
     test('full_state carries running and waiting queue items', () {

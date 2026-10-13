@@ -6,7 +6,7 @@ import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
 import '../state/state_mapper.dart' show amountsOf, shortBy;
-import 'battle.dart' show ticksOf;
+import 'battle.dart' show RaidEnding, raidForce, raidLine, raidVerdict, ticksOf;
 import 'intel.dart' show clockFmt;
 import 'notifier.dart';
 import 'prefs.dart';
@@ -150,33 +150,25 @@ class Attention extends ChangeNotifier {
           (finished[proto.QueueType.ship] ??= []).add('$count x ${defence.label}');
         case proto.QueueEvent(action: proto.QueueAction.started):
           _offer();
-        case proto.RaidIncomingEvent(outpost: null, :final arrivalTick, :final estPower):
+        case proto.RaidIncomingEvent(:final outpost, :final arrivalTick, :final ships, :final estPower, :final odds):
           final left = arrivalTick - s.tick;
-          if (left <= raidClosingTicks) _raidWarned = arrivalTick;
-          out.add(Notice('raid', 'Raid incoming', 'A raid of estimated power ${estPower.round()} reaches your homeworld in ${clockFmt(left)}.${_defence(s)}', critical: true));
-        case proto.RaidResolvedEvent(outpost: null, :final defended, :final raidPower, :final defensePower, :final resourcesLost, :final shipsLost):
-          out.add(defended
-              ? Notice('raid', 'Raid repelled', 'Your defence of ${defensePower.round()} held against a raid of ${raidPower.round()}.')
-              : Notice(
-                  'raid',
-                  'Raid broke through',
-                  'A raid of ${raidPower.round()} beat your defence of ${defensePower.round()}: lost ${resourcesLost.metal.round()} Fe, ${resourcesLost.crystal.round()} Cr, ${resourcesLost.deuterium.round()} De'
-                      '${shipsLost > 0 ? ' and $shipsLost docked ship${shipsLost == 1 ? '' : 's'}' : ''}.',
-                  critical: true));
-        case proto.RaidIncomingEvent(outpost: final at?, :final arrivalTick, :final estPower):
-          out.add(Notice('outpost-raid', 'Raid on your outpost',
-              'A raid of estimated power ${estPower.round()} reaches your outpost at ${at.q}, ${at.r} in ${clockFmt(arrivalTick - s.tick)}.${_outpostDefence(s)}',
+          if (outpost == null && left <= raidClosingTicks) _raidWarned = arrivalTick;
+          final where = outpost == null ? 'your homeworld' : 'your outpost at ${outpost.q}, ${outpost.r}';
+          out.add(Notice(outpost == null ? 'raid' : 'outpost-raid', outpost == null ? 'Raid incoming' : 'Raid on your outpost',
+              '${raidForce(ships, estPower, opening: true)} reaches $where in ${clockFmt(left)}.${odds == null ? '' : ' Forecast ${raidVerdict(odds)}.'}',
               critical: true));
-        case proto.RaidResolvedEvent(outpost: final at?, :final defended, :final raidPower, :final defensePower, :final resourcesLost, :final shipsLost):
-          out.add(defended
-              ? Notice('outpost-raid', 'Outpost raid repelled', 'The defence of ${defensePower.round()} at your outpost at ${at.q}, ${at.r} held against a raid of ${raidPower.round()}.')
-              : Notice(
-                  'outpost-raid',
-                  'Outpost breached',
-                  'A raid of ${raidPower.round()} beat the defence of ${defensePower.round()} at your outpost at ${at.q}, ${at.r}: it took ${amountsOf(resourcesLost)}'
-                      '${shipsLost > 0 ? ' and destroyed $shipsLost ship${shipsLost == 1 ? '' : 's'} standing there' : ''}. '
-                      'It makes nothing, fills no tank and has no platform until it has repaired itself from its store.',
-                  critical: true));
+        case proto.RaidResolvedEvent() && final raid:
+          final ending = RaidEnding.of(raid);
+          final home = raid.outpost == null;
+          out.add(Notice(
+              home ? 'raid' : 'outpost-raid',
+              switch (ending) {
+                RaidEnding.destroyed => home ? 'Raid destroyed' : 'Outpost raid destroyed',
+                RaidEnding.outlasted => home ? 'Raid outlasted' : 'Outpost raid outlasted',
+                RaidEnding.lost || RaidEnding.unopposed => raid.breached ? 'Outpost breached' : home ? 'Raid lost' : 'Outpost raid lost',
+              },
+              '${raidLine(raid, tick: s.tick)}.',
+              critical: !raid.defended));
         case proto.OutpostCompletedEvent(:final sector, :final level):
           out.add(Notice('outpost-level', level == 1 ? 'Outpost open' : 'Outpost level finished', 'Level $level of your outpost at ${sector.q}, ${sector.r} is finished.'));
         case proto.PursuitEvent(mine: true, phase: proto.PursuitPhase.began, :final label, :final fleetId, :final arrivesIn):
@@ -233,12 +225,13 @@ class Attention extends ChangeNotifier {
     _storeFull = full;
     _repairWaits = short != null;
 
-    final raid = s.raid;
-    if (raid != null && _raidWarned != raid.arrivalTick) {
-      final left = raid.arrivalTick - s.tick;
+    final raid = s.hw?.raid;
+    final arrival = raid?.arrivalTick;
+    if (raid != null && arrival != null && _raidWarned != arrival) {
+      final left = arrival - s.tick;
       if (left > 0 && left <= raidClosingTicks) {
-        _raidWarned = raid.arrivalTick;
-        final text = 'Raid of estimated power ${raid.estPower.round()} arrives in ${clockFmt(left)}.${_defence(s)}';
+        _raidWarned = arrival;
+        final text = 'Raid closing: ${raidForce(raid.ships, raid.power)} arrives in ${clockFmt(left)}. Forecast ${raidVerdict(raid.odds)}.';
         out.add(Notice('raid', 'Raid closing', text, critical: true));
         game.note('! $text', level: EventLevel.bright);
       }
@@ -252,16 +245,6 @@ class Attention extends ChangeNotifier {
       if (enabled) notifier.show('${n.title} - In Amber Clad', n.body, tag: n.tag);
     }
     notifyListeners();
-  }
-
-  static String _defence(GameState s) {
-    final hw = s.hw;
-    return hw == null ? '' : ' Home defence is ${hw.homeDefencePower.round()}.';
-  }
-
-  static String _outpostDefence(GameState s) {
-    final post = s.outpost;
-    return post == null ? '' : ' Its platform and the ships standing there come to ${post.defencePower.round()}.';
   }
 
   @override

@@ -1,5 +1,18 @@
 import '../console/battle.dart'
-    show chaseLine, damageLine, dockRepairLine, fleeingLine, flightPrice, groupsList, hullOf, pursuitLine, pursuitVerdict, refitLevels, shipsOf, stopFlightRule;
+    show
+        chaseLine,
+        damageLine,
+        dockRepairLine,
+        fleeingLine,
+        flightPrice,
+        groupsList,
+        hullOf,
+        pursuitLine,
+        pursuitVerdict,
+        raidForecastLine,
+        refitLevels,
+        shipsOf,
+        stopFlightRule;
 import '../protocol/protocol.dart';
 
 /// Stable queue ids of one queue: the running items, then the waiting ones.
@@ -18,6 +31,10 @@ class CommandContext {
   final Hex cursor;
   final int tick;
   final Map<QueueType, QueueIds> queues;
+
+  /// The state's forecast of the raid on the homeworld, and on the outpost.
+  final RaidForecast? homeRaid;
+  final RaidForecast? outpostRaid;
   const CommandContext({
     required this.fleetId,
     required this.fleetSector,
@@ -26,6 +43,8 @@ class CommandContext {
     required this.cursor,
     required this.tick,
     this.queues = const {},
+    this.homeRaid,
+    this.outpostRaid,
   });
 
   FleetState? get fleet {
@@ -159,6 +178,9 @@ final helpLines = [
   '                  beating it may follow, as far as its kind does and never into home ground, the hub or an outpost\'s sector. status says what',
   '                  leaving costs now and who would follow. stop calls the jump off: the fleet fights on and the fuel is forfeit.',
   '                  recall is the other way out: home at once, for more fuel and at a risk to every ship',
+  'raids:  a raid on your homeworld or your outpost is a fight, a round a tick for at most $raidRounds: the raiders against every fleet of yours standing there,',
+  '                  the defences and the Solar Satellites, or the outpost\'s platform. status prints the forecast of each. A fleet in it leaves as it',
+  '                  leaves any fight, and no raider follows',
   'base:   b[uild] <$_buildingWords>',
   '        research <$_techWords>',
   '        ship <$_shipWords> [count]',
@@ -275,6 +297,8 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
         ],
         if (f?.fleeing case final leaving?) '${fleeingLine(leaving)}. $stopFlightRule',
         if (f?.pursuedBy case final hunter?) 'Pursued: ${pursuitLine(hunter)}. ${pursuitVerdict(hunter, charging: f?.state == FleetStatus.moving)}',
+        if (ctx.homeRaid case final raid?) 'Raid on your homeworld. ${raidForecastLine(raid, ctx.tick)}',
+        if (ctx.outpostRaid case final raid?) 'Raid on your outpost. ${raidForecastLine(raid, ctx.tick)}',
       ]);
 
     case 'leaderboard' || 'lb' || 'rank' || 'score':
