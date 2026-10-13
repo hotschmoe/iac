@@ -182,7 +182,7 @@ fn a_reload_plays_the_unsaved_ticks_again_and_arrives_at_the_same_world() {
         flown["policy"],
         json!({
             "preset": "patrol_home",
-            "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 2, "engage_ratio_x10": 100, "fuel_budget_pct": 50},
+            "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 2, "engage_ratio_x10": 100, "fuel_budget_pct": 50, "refine": false},
         }),
         "the console that opens the save reads the orders and every setting in force: {flown}",
     );

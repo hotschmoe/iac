@@ -666,7 +666,7 @@ Future<void> standingOrders(Browser browser) async {
   await browser.click('set patrol home');
   await browser.until('the orders on the wire', () => browser.tap('''t.sent.some((m) => m.type === "policy_update" && m.fleet_id === ${before['id']} &&
       m.preset === "patrol_home" && JSON.stringify(m.params) ===
-      JSON.stringify({min_fuel_pct: 10, cargo_return_pct: 85, max_range: 1, engage_ratio_x10: 100, fuel_budget_pct: 20}))'''));
+      JSON.stringify({min_fuel_pct: 10, cargo_return_pct: 85, max_range: 1, engage_ratio_x10: 100, fuel_budget_pct: 20, refine: false}))'''));
   check(true, 'Set sends the doctrine with its settings, as the typed policy does');
 
   Future<String> report(String action) async => await browser.until(
@@ -691,7 +691,7 @@ Future<void> standingOrders(Browser browser) async {
       jsonEncode(flown) ==
           jsonEncode({
             'preset': 'patrol_home',
-            'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 1, 'engage_ratio_x10': 100, 'fuel_budget_pct': 20},
+            'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 1, 'engage_ratio_x10': 100, 'fuel_budget_pct': 20, 'refine': false},
           }),
       'the fleet row carries patrol home with the settings in force: ${jsonEncode(flown)}');
   await browser.untilText('range 1 hex - engage 10.0x - fuel 20%');
@@ -1203,7 +1203,7 @@ Future<void> play(Devtools devtools, StaticHost host, Directory bundle, Director
   print('reload');
   const kept = {
     'preset': 'prospect',
-    'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 2, 'engage_ratio_x10': 15, 'fuel_budget_pct': 35},
+    'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 2, 'engage_ratio_x10': 15, 'fuel_budget_pct': 35, 'refine': false},
   };
   await browser.type('gw');
   await browser.untilText('fleet status');

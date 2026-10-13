@@ -6481,3 +6481,60 @@ another `memcpy` and nothing would reach the SVE trap. Neither a newer kernel
 nor that parameter was tried: both are changes to the machine and the
 owner's. Twenty runs of the suite after either would say whether the flake is
 this fault.
+
+## 2026-10-13: `refine` and the standing orders' switch, checked on the merged tree
+
+Master (`5dc7a37`: the web client is the interface, the TUI secondary, the
+flake study) was merged into the branch after the two commits; the journal
+and the decisions log conflicted, both sides having appended, and keep both.
+
+**What the first full run after the switch found.** Three places compare a
+fleet's orders with a literal of exactly five settings and so did not know
+the sixth: `server/tests/scenarios.rs` (which waited 90 seconds for orders
+that never matched and said "the boarding never started"),
+`solo/tests/single_player.rs`, and three literals in
+`clients/web/tool/solo_e2e.dart`. Each got `refine: false`. They are in a
+commit after the merge, so the commit of the switch alone fails those two
+tests; taking the switch means taking that commit with it.
+
+**Run on the merged tree, with those fixes.**
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 163 passed, 0 failed. Master
+  has 158; the five more are the four scenarios of the order and the one of
+  the switch. `fleet_logistics` 33, `hosts_agree` 2 in 45.13 s,
+  `both_targets` 3 in 106.91 s, server `scenarios` 9 in 66.46 s, `smoke` 9,
+  `single_player` 7, `golden_fixtures` 2, `chart_equivalence` 1. The run
+  before the fixes: 161 passed and the 2 named above failed.
+- `cargo clippy --workspace --all-targets`: silent.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 pass.
+- `flutter pub get --offline`, `flutter analyze`: no issues.
+- `flutter test`, three full runs in a shell pinned to CPUs 0, 1 and 6 to 11,
+  each under `timeout 300`. First: 485 passed. Second: 484 passed and 1
+  failed, `map_test.dart`'s route priced from the unrounded jump cost, on two
+  `RenderFlex` overflows in `lib/views/hud.dart`, one of 791 pixels and one
+  of 3,441; that file is not touched by this work, and `map_test.dart` alone
+  then passed, 15 of 15. Third: 485 passed. The brief gives master 480. Three of
+  the five more are this work's by name (two for the Refine button, one
+  fixture test); the other two were not traced, and the two new fixture
+  files, which the fixture tests read one by one, are the likely source. An
+  earlier full run, while
+  the switch's row still had a sentence under it, failed four: two of this
+  work's own (the settings literal, and the orders form no longer fitting a
+  900 pixel window, which is why the row has no sentence) and two in
+  `order_fit_test.dart` that passed in every run since.
+- `scripts/play.sh --single-player --no-serve`: built, 48M.
+- `dart run tool/solo_e2e.dart --port 8101`: `SOLO E2E OK in 191 s`.
+
+**How they were run.** As the entry of the first commit says: this shell
+refuses `nice`, `taskset` or `timeout -k` in front of a test command, so
+cargo ran with `-j 4` and no `nice`, and Flutter in a shell pinned with
+`taskset -cp` and lowered with `renice`, under a plain `timeout 300`.
+
+**Not verified.** No person or agent played, and `tools/playtest` was not
+run. The end-to-end run passed with the new field and the new row in the
+bundle, but it does not press Refine or set the switch: in a browser neither
+has been used. No world was played for days with the switch on, so what it
+does to a miner's deuterium income is reasoned and not measured. The TUI was
+built and not run.
