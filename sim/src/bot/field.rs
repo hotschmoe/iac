@@ -49,8 +49,12 @@ use super::Personality;
 use crate::engine::MAX_SHIPS_PER_FLEET;
 use crate::script::Order;
 
-/// Odds ratio (`SectorOdds::ratio`) at which a pilot accepts a fight.
-const SAFE_ODDS: f32 = 3.0;
+/// Odds ratio (`SectorOdds::ratio`) at which a pilot accepts a fight: a sure
+/// win that keeps about 97 percent of the hull. OGame's ships carry a
+/// shield a fifth of their weapon, so a fight that costs no hull at all
+/// takes a fleet many times its enemy, and a pilot who waited for one would
+/// not fight.
+const SAFE_ODDS: f32 = 2.0;
 /// How far around a fleet its pilot asks the server for odds. A guarded
 /// sector farther off stays closed to it until it is nearer.
 const ODDS_HORIZON: u16 = 12;
@@ -58,9 +62,8 @@ const ODDS_HORIZON: u16 = 12;
 /// (the game's default).
 const DOCTRINE_RATIO_X10: u8 = 15;
 /// The ratio a wing of at least `CAREFUL_WING_SHIPS` ships flies at when its
-/// doctrine or its hulls take it into fights: SAFE, a fight that keeps 98
-/// percent of the hull or more.
-const CAREFUL_RATIO_X10: u8 = 25;
+/// doctrine or its hulls take it into fights: the pilot's own.
+const CAREFUL_RATIO_X10: u8 = 20;
 const CAREFUL_WING_SHIPS: usize = 4;
 /// Doctrines are leashed by odds and fuel, not by distance.
 const DOCTRINE_RANGE: u8 = 30;

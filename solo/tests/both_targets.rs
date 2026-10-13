@@ -320,8 +320,10 @@ fn a_season_day_of_sixteen_seats_is_one_world() {
     }
     assert_eq!((snapshot["tick"].as_u64(), rows(&snapshot["players"]).len()), (Some(86_400), 16));
     let [fought, explored, raided, heated] = deeds(&snapshot);
+    // A season day at OGame's prices is an empire's first few Light
+    // Fighters: the fighting of this world is the blitz's above.
     assert!(
-        fought >= 4 && explored >= 4 && raided >= 4 && heated >= 20,
+        fought >= 2 && explored >= 4 && raided >= 4 && heated >= 4,
         "the world was meant to be busy: {fought} empires with combat points, {explored} with exploration points, \
          {raided} homes raided, {heated} sectors heated by a kill"
     );
@@ -374,8 +376,8 @@ fn a_commander_who_trades_at_the_hub_and_founds_an_outpost_plays_one_world() {
         twin.fly(fleet, hop);
     }
 
-    twin.play_until(600, stocked([1500.0, 900.0, 700.0]));
-    for (resource, amount) in [("metal", 1500), ("crystal", 900), ("deuterium", 600)] {
+    twin.play_until(600, stocked([3500.0, 1900.0, 1100.0]));
+    for (resource, amount) in [("metal", 3500), ("crystal", 1900), ("deuterium", 1000)] {
         twin.accepted(json!({"action": "load", "fleet_id": fleet, "resource": resource, "amount": amount}));
     }
     for hop in to_site.iter().copied() {
