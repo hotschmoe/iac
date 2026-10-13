@@ -5,7 +5,7 @@ import 'package:flutter/material.dart' show Tooltip;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/console/services.dart';
-import 'package:iac_client/design/panel.dart' show KeyCap;
+import 'package:iac_client/design/panel.dart' show KeyCap, Kv;
 import 'package:iac_client/hex/hex_math.dart' as hm;
 import 'package:iac_client/models/fleet.dart' as ui;
 import 'package:iac_client/models/game_state.dart';
@@ -242,6 +242,16 @@ void main() {
     expect(_text(tester, 'ore-reserve-Crystal'), '3/3');
     expect(find.byKey(const Key('ore-reserve-Deut')), findsNothing);
     expect(find.textContaining('FOR THIS DISTANCE'), findsNothing);
+
+    await m.moveTo(at(const proto.Hex(3, 0), _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<Kv>(find.byKey(const Key('inspector-hostile-9'))).v, 'AGGRESSIVE - 1 SHIP');
+    expect(textUnder(tester, find.byKey(const Key('inspector-hostile-9-Cruiser'))), 'CRUISER\n1\n2,700 / 2,700',
+        reason: 'a group in sight is listed by class: its count and its hull against full hull');
+    await shot(tester, 'map-hostile-group-1440');
+    await m.moveTo(at(const proto.Hex(1, 0), _win));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<Kv>(find.byKey(const Key('inspector-fleet-7'))).v, '3 SHIPS - HULL 1,200 / 1,200');
     await m.removePointer();
     await endShell(tester, g);
   });

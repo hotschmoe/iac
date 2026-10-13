@@ -306,6 +306,22 @@ void main() {
       expect(fleet.rangeHops, 4);
     });
 
+    test('a client that arrives in the middle of a fight has its last round from the full state; a tick update leaves the round to its event', () {
+      ServerMessage message(String name) => ServerMessage.fromJson(readJson(fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == name)));
+      const at = Hex(-5, 7);
+      final mapper = StateMapper()..apply(message('full_state'));
+      final seeded = mapper.toUiState().battleAt(at)!;
+      expect((seeded.rounds, seeded.round!.round, seeded.round!.fleets.standing, seeded.round!.hostiles.standing, seeded.over), (3, 3, 57, 83, false));
+      expect(seeded.losses, isNotEmpty);
+      expect(mapper.toUiState().shipCount, 888, reason: 'the empire\'s ships are the state\'s own count');
+
+      final update = message('tick_update') as TickUpdate;
+      expect(update.battles.single.lastRound, isNull);
+      mapper.apply(update);
+      final later = mapper.toUiState().battleAt(at)!;
+      expect((later.rounds, later.round?.round), (3, 3), reason: 'the round it was seeded with stands until an event brings the next');
+    });
+
     test('full_state carries running and waiting queue items', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
       final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;

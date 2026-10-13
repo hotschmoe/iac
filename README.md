@@ -319,6 +319,35 @@ status has a Refine button under the hold, lit while the server says what
 refining would make and showing that figure; `refine` does the same from
 the command bar.
 
+A fleet is listed plainly and by class wherever it is shown: for each class
+its count and the hull it holds against its full hull, and under a class
+with damage a bar and how many ships are damaged and how many at risk of
+exploding; the windshield's fleet status has the list with the fleet's
+count, its hull, what it fires and the shield it raises in a round, the
+Weapons, Shielding and Armour levels it fights with (and that a refit waits
+at the home dock, when one does), and, once a ship is damaged, what the home
+dock and the outpost would mend and for what, or the server's reason why
+not. A hostile group is listed the same way among the contacts and in the
+map's sector panel. The scope beside the list never draws a ship each: a
+side is at most sixteen marks, a class with a ship in it always has one, a
+mark stands for 1, 2, 5, 10 and so on ships on both sides alike, and the
+scope says what a mark stands for when that is more than one. Manage fleet
+opens the split picker: a count for each class, moved by steps of 1, 10 or
+100 or set to all, whole ships first or the damaged first, and a Merge
+button for each fleet in the sector; `split lf 100 cr 20` and
+`split lf 3 damaged` do the same from the command bar. While a fleet
+fights, the Battle panel tells the round as text: for each side what stands
+after it and what it lost, by class, with the damaged and those at risk;
+what each side fired with its totals, the three volleys that decided most
+first and the rest behind a button; and the fight's losses so far. When the
+fight ends the panel says how, after how many rounds and at what cost to
+each side, with the last round behind a button, and stays for a minute and
+a half. The scope draws the round's volleys as strokes of fire between the
+marks and takes away the marks the round's losses leave nothing for. On a
+phone the fight is a line over the fleets that opens the panel in the
+status sheet. The log keeps one line for a fight's rounds, the last round's,
+and a line for its end.
+
 The homeworld (`G` then `H`) has five tabs, each drawn from the catalogue the
 server sends. Buildings is a plan of the twelve buildings around the core
 (the mines, the two power plants and the lab in the ring, the factories and

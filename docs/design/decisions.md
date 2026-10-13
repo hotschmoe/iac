@@ -3,6 +3,145 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the web client on the new fleet and fight: what the agent decided)
+
+Slice 2 of `docs/design/ogame.md`, section 12, stage 2: the hand-written Dart
+of `clients/web` on the fleet and the round stage 1 built. Its part of the
+study's table is "plain fleet lists and a text round"; the windshield in
+class marks and the battle view are slice 5 and were not built. What follows
+is what the agent that built it chose. None of it was put to the owner. Each
+line ends with what undoes it. `SAVE_FORMAT` and `ECONOMY_VERSION` did not
+move: nothing here changes what a stored world holds or plays.
+
+**What the state now says, for the views.**
+
+- `PlayerState.ship_count`: every ship of every fleet the player has. The
+  Overview's Ships figure prints it; it used to add the fleets' counts to a
+  count it parsed out of a string. Undo: the field in
+  `shared/src/protocol.rs` and its line in `sim/src/views.rs`; the Overview
+  would then have to sum `FleetState.ship_count` itself.
+- `BattleSide.standing`: the units a side has left after a round, in all its
+  groups. The round panel and a phone's line for a fight print it. Undo: the
+  field and its line in `battle_side` (`sim/src/engine.rs`).
+- A tick update's `battles` no longer carry `last_round`; a full state's do.
+  Stage 1 left this open: a fighting tick carried the round twice, as the
+  `BattleRound` event and inside `battles`. The client needs `last_round`
+  only to seed itself when it arrives in the middle of a fight, which is a
+  full state. `Seat`, the in-process client the bots play through, is handed
+  no events, so it reads its fights with `views::battles_of`, as a full
+  state lists them; `the_view_a_bot_folds_from_tick_updates_is_the_full_state`
+  holds it to that. Undo: `battles(engine, player, true)` in `tick_update`.
+- `REPAIR_COST_SHARE_HOME` and `REPAIR_COST_SHARE_OUTPOST` are in
+  `docs/design/economy/numbers.json` (the `named!` list of
+  `sim/tests/economy_numbers.rs`). The scripted world of the widget tests
+  quotes a dock's repair with them and types neither. `sim.py` does not read
+  them. Undo: the two names in the list.
+- No column and no constant was added to `shared/tests/wire/mod.rs`.
+
+**The scope.**
+
+- *A mark, not a ship.* A side is drawn with at most sixteen marks
+  (`WindshieldSim.marksASide`). One mark stands for 1, 2, 5, 10, 20, 50 and
+  so on ships, the smallest of those steps that fits both sides, and the
+  same for both, so the scope shows which is the larger; a class with a ship
+  in it always has a mark, which sixteen has room for. The scope prints
+  "EACH MARK: UP TO n SHIPS" when n is more than one, and the list beside it
+  has the counts. Undo: `markScale` in `lib/console/battle.dart` and
+  `marksASide`.
+- *Rows that fit.* The marks of a side stand in rows, the fleet below the
+  centre and the hostiles above it, drawn at the largest of seven sizes whose
+  rows fit the ground (`WindshieldSim._rows`). The wedge of eight slots is
+  gone: a ninth ship used to run off the scope, and twelve classes of
+  different sizes overlapped in it. Undo: `_rows` and the two `_form`
+  functions.
+- *Fire and losses come from the round.* A `BattleRound` in the fleet's
+  sector draws strokes of fire for the six heaviest volleys of each side,
+  one to three strokes a volley by its shots, between marks of the two
+  classes; a stroke that reached no hull lights the target's shield. The
+  marks a round's losses leave nothing for explode once the fire has landed,
+  and the loss is printed over the class ("-12"). Between rounds the marks
+  are set from the state without a sound. The client keeps no hull, no
+  shield and no count of its own; the bars over each ship and the shield
+  gauge it kept by subtraction are gone, and the fleet status prints what
+  the fleet fires and the shield it raises in a round instead. Undo: none
+  that keeps the rule; the gauge had no state behind it.
+
+**The round as text.**
+
+- *Where it stands.* At desktop width the Battle panel opens at the top of
+  the windshield's right column, over the fleet status, while the state
+  lists a fight in the fleet's sector, and stays for 90 ticks after the
+  fight's end (`battleReportTicks`). On a phone a line over the fleet rail
+  says the round and what stands and fell on each side, and opens the panel
+  in the status sheet. Undo: the two places in `windshield_view.dart`.
+- *What it shows first.* Standing is a table, a row a class: left, lost this
+  round, damaged, at risk. A side's fire is its totals and then its volleys
+  ordered by units destroyed, then hull damage, then shots; three are shown
+  (`volleysShown`) and a button opens the rest. A round of twelve classes at
+  twelve is 144 volleys a side and reads as two tables and six volleys.
+  Undo: `volleysByWeight` and `volleysShown`.
+- *The log.* A fight keeps one line of the log for its rounds, the last
+  round's, and a line for its end; a line a round would fill the log of a
+  long fight. The shell now tells a new line by the lines it has seen, not
+  by the newest one, since a replaced line is no longer where it was. Undo:
+  `_roundLines` in `state_mapper.dart`.
+
+**Lists, the picker and the words.**
+
+- *One list everywhere.* `ShipRows` is the list of the fleet status, the
+  contacts, the map's sector panel and its hold panel, the outpost and the
+  docked ships: a class, its count, its hull against full hull, and under a
+  class with damage a bar and "n DAMAGED  n AT RISK". Damaged is amber
+  (`C.a300`) and at risk ember, here and in the round panel; a list with a
+  ship at risk says once what that means, with the engine's 70 percent.
+  Undo: `lib/views/battle_view.dart`.
+- *Figures.* A count or a hull figure in these rows is exact up to 99,999
+  and three figures with K, M or G above ("164,160", "165K", "1.28M"), so a
+  row is as wide for five thousand ships as for five. Undo: `shortCount`.
+- *The picker.* A row a class with - and +, the count between them and All;
+  the step of - and + is 1, 10 or 100, chosen once above the rows; two
+  buttons choose whole ships first or the damaged first. Split is off while
+  nothing is picked or every ship is. A merge the engine would refuse (more
+  than `MAX_FLEET_SHIPS` together) is sent and answered. Undo:
+  `FleetManagePanel` in `lib/views/windshield/parts.dart`.
+- *The console.* `split <class> [count] [<class> [count] ...] [damaged]`; a
+  class with no count is one ship. The parser no longer checks the counts
+  against the fleet: the engine does and says which class is at fault.
+  `status` prints the fleet by class, its hull, what it fights with and each
+  dock's answer to its damage.
+- *The hull dial* rounds down, so it reads 100 only for a whole fleet.
+
+**Removed.**
+
+- `SectorInfo`, the strings the mapper made of the focused sector, which no
+  view read; and `GameState.docked`, the docked ships as a string, which
+  only the Overview parsed. Both restated the state.
+
+**The scripted world of the widget tests.**
+
+- Its fleets are the engine's: a count a class and the hull of each damaged
+  ship. Its fight sends `BattleRound`, `CombatEnded` and `battles` shaped as
+  the engine's, but is played without dice: every ship fires once at the
+  other side's classes in proportion to their numbers, and as often again as
+  its rapid fire says; a shot under a hundredth of a shield bounces, each
+  other one meets a full shield, and a ship hit while at risk explodes.
+  Pirates fight on their class's base figures. It is not OGame's round and
+  no test reads it as one.
+- A ship the yard delivers joins the fleet docked at home, as the engine's
+  does; it used to stand in a list of its own. `move` is refused in a fight
+  in the engine's sentence. A hulk recovered from a derelict arrives
+  damaged, by a roll of the script's own.
+
+**Unsure of.**
+
+- Whether sixteen marks and one scale for both sides is the picture the
+  owner wants until slice 5: a fleet of 512 against a swarm of 3,230 is
+  three marks against eight.
+- Whether the panel should stay a minute and a half after a fight, or until
+  dismissed.
+- The outpost's quote in the fleet status is shown wherever the fleet is,
+  not only at the outpost.
+
 ## 2026-10-13 (the fleet and the fight are OGame's: what the agent decided)
 
 Slice 2 of `docs/design/ogame.md`, section 12, stage 1: everything that is
