@@ -68,7 +68,10 @@ class _ShellState extends State<Shell> {
   DateTime? _gAt;
   int _gToast = 0;
   StreamSubscription<proto.ErrorMessage>? _refusals;
-  String _lastLogKey = '';
+  /// The log's lines as they stood when it was last looked through. A line
+  /// that is not among them is new, wherever the log has put it: a fight's
+  /// line for its last round takes the place of the one before it.
+  Set<String> _seenLog = {};
   int _titled = 0;
 
   @override
@@ -81,7 +84,7 @@ class _ShellState extends State<Shell> {
     HardwareKeyboard.instance.addHandler(_onKey);
     widget.controller.addListener(_onGame);
     _refusals = widget.controller.refusals.listen(_onRefusal);
-    _lastLogKey = _logKey();
+    _seenLog = _logKeys();
     _con.attention.addListener(_onAttention);
     _lifecycle = AppLifecycleListener(onStateChange: _onLifecycle);
     final now = WidgetsBinding.instance.lifecycleState;
@@ -114,10 +117,14 @@ class _ShellState extends State<Shell> {
 
   void _onPrefs() => Beat.instance.interval = Duration(milliseconds: _prefs.quality == Quality.low ? 250 : 100);
 
+  static String _keyOf(LogEntry e) => '${e.tick}|${e.message}';
+
   String _logKey() {
     final e = widget.controller.state.events;
-    return e.isEmpty ? '' : '${e.first.tick}|${e.first.message}';
+    return e.isEmpty ? '' : _keyOf(e.first);
   }
+
+  Set<String> _logKeys() => {for (final e in widget.controller.state.events) _keyOf(e)};
 
   /// A refused order is answered where the player is looking, in the world's
   /// own sentence, and stays long enough to be read.
@@ -130,14 +137,9 @@ class _ShellState extends State<Shell> {
   /// Surface notable log lines as toasts.
   void _onGame() {
     final events = widget.controller.state.events;
-    final key = _logKey();
-    if (key == _lastLogKey) return;
-    final fresh = <LogEntry>[];
-    for (final e in events) {
-      if ('${e.tick}|${e.message}' == _lastLogKey) break;
-      fresh.add(e);
-    }
-    _lastLogKey = key;
+    final fresh = [for (final e in events.takeWhile((e) => !_seenLog.contains(_keyOf(e)))) e];
+    if (fresh.isEmpty) return;
+    _seenLog = _logKeys();
     for (final e in fresh.take(2).toList().reversed) {
       if (e.message.startsWith('!')) {
         _toasts.show('Alert', e.message.replaceFirst(RegExp(r'^!+\s*'), ''), tone: ToastTone.red, life: const Duration(seconds: 9));
