@@ -1,5 +1,7 @@
 # In Amber Clad: economy, pacing and exploration spec
 
+This document describes the economy as it was tuned before OGame's catalogue replaced the game's own (2026-10-13, `docs/design/ogame.md`). Its tables are a record of that tuning and are no longer the game's numbers. The current numbers are in `numbers.json` beside it, and the current report is what `sim.py` prints.
+
 Status: proposal for owner review. Implements the 2026-10-09 owner decisions (`docs/design/decisions.md`, items 1 to 5) and the proposals in `docs/design/gap-analysis-2026-10-09.md` sections 3 and 4. No game code was changed. Every number in this document is exercised by `sim.py` (same directory), and the simulation output is pasted at the end (section 16).
 
 How to read it: section 1 is the pacing maths, which drives everything else. Sections 2 to 9 are the design, each with old to new values. Sections 10 to 14 are the implementation map, protocol, migration and commit order. Section 15 lists the hooks for chat, trade, PvE and PvP. Section 17 holds the open questions.
