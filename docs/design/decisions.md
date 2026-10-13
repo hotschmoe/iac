@@ -70,6 +70,31 @@ work comes back ("be sure to clean stale worktrees as work comes back").
    rules are the study's to propose: what leaving costs, who chases, how far,
    and what becomes of damage when a fight breaks off.
 
+**And then, on what the study had been told to ask:**
+
+> yes i would have penalties for fleeing, the ships will be damaged until
+> home. sheild recharge at whatever rate is. i would have pirates heal over
+> time slowly, so its an active guerilla warfare, not just "fight them once
+> per day for a week". pirates should heal over a few hours maybe? or less,
+> maybe an hour? these are all knobs we'll need to work on in balancing. i
+> want buildings, ships, defenses, research to be like ogame, but our current
+> gameplay and other setup i really like. we will keep everything as it is,
+> just migrate the buildings, shipyard, research and such to the ogame stuff
+
+5. **The scope is the catalogue, not the game.** The buildings, the ships,
+   the defences, the research and what they do to one another become
+   OGame's. Everything else stays as it is: the map and its jumps, fuel,
+   mining, derelicts, pirates and their raids, outposts, standing orders, the
+   hub, pace. Where an OGame item has no place in that game, the study says
+   so item by item; it does not bring OGame's other systems in to give it one.
+6. **Fleeing has a price.**
+7. **Damage lasts until the fleet is home.** This departs from OGame, where a
+   survivor is whole after a battle, and is the owner's choice.
+8. **Shields recharge at OGame's rate.**
+9. **Pirates heal slowly, over about an hour to a few hours**, so that a
+   group worn down must be pressed and cannot be finished at leisure over a
+   week. The figure is a knob for balancing, as are the others here.
+
 ## 2026-10-13 (the web client stops working the rules out for itself)
 
 Merged into master and pushed on 2026-10-13.
