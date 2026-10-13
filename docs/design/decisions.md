@@ -3,9 +3,55 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (OGame's ships, defences, buildings and research; refit at home; fuel from the hold)
+
+The owner's words, after being shown what each research does today:
+
+> i think i would like to actually do exact ships, defense, buildings, and
+> research as ogame. identical and ship to ship and ship to defense
+> interactions (which ones get bonus hits on others etc). (i enivsion fleets
+> of hundreds of ships so we would need to make windsheild UI be
+> representative, not literaly for number of ships. (maybe starting a fight
+> opens a modal showing actual ships and firings? idk). i actually quite like
+> ships getting refit when they get home, not automatically in the field (but
+> if its a problem, we can make it easy and an upgrade works game wide.
+> whatever). it would be nice if fleets could use the dueterium they
+> collect/salvage/mine from their cargo and put in their fuel so they can fly
+> longer (maybe have an option to 'clean duet and refuel' which allows cargo
+> duet to refuel ships but at a cost like 15% what do you think?)
+
+**Decided: the direction.** The ships, the defences, the buildings and the
+research are to be OGame's, with its numbers, and so is what one does to
+another in a fight (rapid fire among ships and against defences). A fleet may
+be hundreds of ships, so the windshield shows a fleet and not each hull, and
+a fight may open a view of the ships and their fire.
+
+**Not decided, and nothing is built.** What "exact" means where this game has
+what OGame lacks (the hex map and its jumps, fuel tanks, harvesting,
+derelicts, pirates, raids, outposts, standing orders, the hub, pace) and where
+OGame has what this game lacks (energy, fields, moons, espionage, debris) is
+the work of a study, `docs/design/ogame.md`, commissioned the same day. It
+ends in questions for the owner, as `outposts.md` and `storage.md` did.
+
+**Refit.** The owner likes a ship taking new research when it comes home and
+not in the field, and accepts research that works everywhere at once if refit
+turns out to be a problem. The study recommends one.
+
+**Fuel from the hold.** The owner's proposal: deuterium in a fleet's hold may
+be made into fuel at a loss, "like 15%". An opinion was asked for, not an
+order given.
+
+**What this overtakes.** What the reading of research found (Navigation's
+levels 3 to 5 do nothing, hull, shield and weapon research never reach ships
+already built, Reinforced Hulls raises the fuel a jump costs, defences take
+nothing from research) is not patched on its own: it falls to the OGame work.
+
+**Standing instruction.** A worktree whose work is merged is removed as the
+work comes back ("be sure to clean stale worktrees as work comes back").
+
 ## 2026-10-13 (the web client stops working the rules out for itself)
 
-Merged into master on 2026-10-13, not pushed.
+Merged into master and pushed on 2026-10-13.
 The journal entry of the same day has what was run.
 
 **The owner's request.** The sweep that came with the generated wire types
