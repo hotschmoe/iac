@@ -1113,8 +1113,9 @@ worldgen rolls inside `shared/src/world.rs`.
   `RaidIncoming` warns `600 / sqrt(P)` ticks ahead (30 to 600) with the
   raid's `est_power`, its `ships`, and `odds`; power and ships are fixed
   from then on.
-  **The forecast.** `homeworld.raid` is in every state: the raid announced
-  (`arrival_tick` set) or, with none on its way, one of typical size were it
+  **The forecast.** `homeworld.raid` is in every state: the raid being
+  fought (`rounds_left` set), else the raid announced (`arrival_tick` set),
+  else, with none on its way, one of typical size were it
   announced now; its `power`, its `ships`, and `odds` against everything
   standing at home this tick. The server plays the fight itself 8 to 64 times
   over, as it does for a sector's odds: `destroyed`, `outlasted` and `lost`
@@ -1131,7 +1132,8 @@ worldgen rolls inside `shared/src/world.rs`.
   with their refit, satellites and defences with your research as it
   stands. `battles` holds the fight while it lasts, with `raid` (`mine`,
   `outpost`, `power`, `ships`, `rounds_left`, `odds` from where it
-  stands); `homeworld.raid` is by then the forecast of the one after it.
+  stands); `homeworld.raid` is that raid too until it ends, with the same
+  `rounds_left` and odds, and no `arrival_tick`.
   Each round is a `BattleRound` with `raid: true`, your fleets as
   groups and your defences and satellites as one more group marked
   `battery` (label "home defences"). It ends one of three ways:
@@ -1286,8 +1288,9 @@ worldgen rolls inside `shared/src/world.rs`.
     price in anything pays. No raid destroys it.
   - **State**: `outpost` in `full_state` and every `tick_update` (with
     `raid_power`, the weakest and the strongest raid of its ring; `platform`
-    and `raid`, the defences it stands with and the forecast of the next
-    raid with its ships and its odds;
+    and `raid`, the defences it stands with and the forecast of the raid
+    being fought, on its way or typical of the ring, with its ships and
+    its odds;
     `upgrade_refusal`, why an upgrade would be refused now; `yield_lost` and
     `repair_waiting_for`), `at_outpost` and `outpost_fuel` on each fleet,
     `outpost` on a sector that holds one (its `threat` is rated 0), the

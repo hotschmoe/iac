@@ -490,7 +490,8 @@ def odds_words(o):
 
 def forecast_words(raid, now):
     """The raid a `raid` forecast describes: when, what it flies, and how it would end against what stands there now."""
-    when = (f"RAID ARRIVES in {age(raid['arrival_tick'] - now)}" if raid.get("arrival_tick") is not None
+    when = (f"RAID BEING FOUGHT, {raid['rounds_left']} round(s) left at the most" if raid.get("rounds_left") is not None
+            else f"RAID ARRIVES in {age(raid['arrival_tick'] - now)}" if raid.get("arrival_tick") is not None
             else "next raid, at its typical size")
     return f"{when}: power {raid['power']:.0f}, flying {units_text(raid['ships'], 'class')}; forecast {odds_words(raid['odds'])}"
 

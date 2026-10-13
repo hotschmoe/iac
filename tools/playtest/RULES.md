@@ -707,8 +707,9 @@ What every doctrine does:
   `RaidIncoming` warns `600 / sqrt(P)` ticks ahead (30 to 600) with the
   raid's `est_power`, its `ships`, and `odds`; power and ships are fixed
   from then on.
-  **The forecast.** `homeworld.raid` is in every state: the raid announced
-  (`arrival_tick` set) or, with none on its way, one of typical size were it
+  **The forecast.** `homeworld.raid` is in every state: the raid being
+  fought (`rounds_left` set), else the raid announced (`arrival_tick` set),
+  else, with none on its way, one of typical size were it
   announced now; its `power`, its `ships`, and `odds` against everything
   standing at home this tick. The server plays the fight itself 8 to 64 times
   over, as it does for a sector's odds: `destroyed`, `outlasted` and `lost`
@@ -725,7 +726,8 @@ What every doctrine does:
   with their refit, satellites and defences with your research as it
   stands. `battles` holds the fight while it lasts, with `raid` (`mine`,
   `outpost`, `power`, `ships`, `rounds_left`, `odds` from where it
-  stands); `homeworld.raid` is by then the forecast of the one after it.
+  stands); `homeworld.raid` is that raid too until it ends, with the same
+  `rounds_left` and odds, and no `arrival_tick`.
   Each round is a `BattleRound` with `raid: true`, your fleets as
   groups and your defences and satellites as one more group marked
   `battery` (label "home defences"). It ends one of three ways:
@@ -901,8 +903,9 @@ What every doctrine does:
     `next_level`). It stands whole again after every fight
     that is not lost: nothing of it is rolled for or paid for. A breached
     outpost has none. `outpost.raid` is the forecast, as `homeworld.raid`
-    is: the raid on its way or a typical one of the ring, its ships, and
-    the odds against the platform and the ships there now. Alone, level 1
+    is: the raid being fought, the one on its way or a typical one of the
+    ring, its ships, and the odds against the platform and the ships there
+    now. Alone, level 1
     does not hold any ring, level 2 holds a typical raid to about ring 16,
     and level 3 holds every ring; a fleet standing there is what the
     difference is made of. Repelled (destroyed or outlasted): the outpost
@@ -941,8 +944,8 @@ What every doctrine does:
     `store_cap`, `protected`, `production`, `yield_lost` (the resources the
     extractor makes and the store is full of, so that yield is lost),
     `grade`, `platform` (the defences it stands with, none while breached),
-    `raid` (the forecast: `arrival_tick` when one is on its way, `power`,
-    `ships`, `odds`), `platform_power`, `ships_power` (your ships standing
+    `raid` (the forecast: `rounds_left` while one is fought, `arrival_tick`
+    when one is on its way, `power`, `ships`, `odds`), `platform_power`, `ships_power` (your ships standing
     there), `defence_power` (the two together; three sums on the power
     scale that decide nothing), `raid_power` (`least`,
     `most`), `raid_arrival_tick`, `next_level` (what `upgrade_outpost` would

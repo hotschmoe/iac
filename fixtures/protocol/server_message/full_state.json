@@ -2304,7 +2304,7 @@
     },
     "queue_waiting_max": 3,
     "raid": {
-      "arrival_tick": 1640,
+      "arrival_tick": 4990,
       "odds": {
         "destroyed": 0.25,
         "kept": 0.6200000047683716,

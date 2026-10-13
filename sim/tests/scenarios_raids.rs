@@ -144,7 +144,13 @@ fn a_raid_destroyed_at_home_is_fought_round_by_round_and_leaves_its_wreckage() {
     assert_eq!((battle.sector, battle.rounds, raid.rounds_left), (home, 0, RAID_ROUNDS));
     assert!(raid.mine && !raid.outpost && raid.ships == forecast.ships && raid.power == forecast.power);
     assert_eq!(raid.odds.label, RaidLabel::Repelled);
-    assert!(state.homeworld.raid.arrival_tick.is_none(), "the forecast is of the next raid again");
+    let fought = &state.homeworld.raid;
+    assert_eq!(
+        (fought.arrival_tick, fought.rounds_left),
+        (None, Some(RAID_ROUNDS)),
+        "the forecast is the raid being fought until it ends",
+    );
+    assert!(fought.ships == forecast.ships && fought.power == forecast.power && fought.odds == raid.odds);
     let fleet = e.fleet();
     assert_eq!(fleet.state, iac_shared::protocol::FleetStatus::InCombat);
     let quote = fleet.flight.expect("a fleet may leave a raid's fight as it leaves any");
@@ -202,6 +208,8 @@ fn a_raid_destroyed_at_home_is_fought_round_by_round_and_leaves_its_wreckage() {
     assert_eq!(outcome.ships_lost, lost_of(&told, Cruiser));
 
     assert!(e.state().battles.is_empty() && e.fleet().flight.is_none());
+    let next = e.state().homeworld.raid;
+    assert_eq!((next.arrival_tick, next.rounds_left), (None, None), "with the raid over the forecast is of the next one");
     e.run(2);
     assert!(e.fleet().repair.is_none(), "the home dock mends what the fight left of the fleet");
     let scooped = e.since(mark, |k| match k {

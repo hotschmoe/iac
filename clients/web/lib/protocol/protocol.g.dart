@@ -1092,10 +1092,16 @@ class OutpostSurvey extends ServerMessage {
 /// rounds are over and a defender still stands; it is lost only when no
 /// defender is left.
 class RaidForecast {
-  /// The tick an announced raid arrives. Absent while none is on its way:
-  /// `power` and `ships` are then those of a raid of typical size were
-  /// one announced now.
+  /// The tick an announced raid arrives. Absent while none is on its way
+  /// and while one is being fought: with neither, `power` and `ships` are
+  /// those of a raid of typical size were one announced now.
   final int? arrivalTick;
+
+  /// The raid has arrived and is being fought: the rounds still to fight
+  /// at the most, as `BattleState.raid` of the fight says them. `power`
+  /// and `ships` are then what it flew in with, and `odds` how the fight
+  /// would end from where it stands. Absent otherwise.
+  final int? roundsLeft;
 
   /// The raid's power on the scale `FleetState.power` uses. It is fixed
   /// when the raid is announced.
@@ -1107,12 +1113,13 @@ class RaidForecast {
   /// How it would end against what stands in its way this tick.
   final RaidOdds odds;
 
-  const RaidForecast({this.arrivalTick, required this.power, required this.ships, required this.odds});
+  const RaidForecast({this.arrivalTick, this.roundsLeft, required this.power, required this.ships, required this.odds});
 
   factory RaidForecast.fromJson(Object? json) {
     final m = _obj(json);
     return RaidForecast(
       arrivalTick: _opt(m['arrival_tick'], _int),
+      roundsLeft: _opt(m['rounds_left'], _int),
       power: _double(m['power']),
       ships: _list(m['ships'], ShipCount.fromJson),
       odds: RaidOdds.fromJson(m['odds']),
@@ -1121,6 +1128,7 @@ class RaidForecast {
 
   Json toJson() => {
     'arrival_tick': ?arrivalTick,
+    'rounds_left': ?roundsLeft,
     'power': power,
     'ships': ships.map((e) => e.toJson()).toList(),
     'odds': odds.toJson(),
@@ -2026,9 +2034,10 @@ class OutpostState {
   /// Tick an announced raid arrives; absent when none is on its way.
   final int? raidArrivalTick;
 
-  /// The raid announced, or one of typical size for the ring, against the
-  /// platform and the ships standing there now. Absent before level 1 is
-  /// finished: nothing raids a building site.
+  /// The raid being fought, else the one announced, else one of typical
+  /// size for the ring, against the platform and the ships standing there
+  /// now. Absent before level 1 is finished: nothing raids a building
+  /// site.
   final RaidForecast? raid;
 
   /// What `upgrade_outpost` would build; absent at `max_level`.
@@ -3491,7 +3500,8 @@ class HomeworldState {
   /// research points; the actual raid rolls 0.80 to 1.15 times this.
   final double nextRaidEstimatePower;
 
-  /// The raid announced, or one of typical size were it announced now:
+  /// The raid being fought (`rounds_left`), else the one announced
+  /// (`arrival_tick`), else one of typical size were it announced now:
   /// what it flies, and how it would end against the ships, satellites
   /// and defences standing at home this tick.
   final RaidForecast raid;
@@ -6868,6 +6878,8 @@ const raidRounds = 6;
 const defenceRebuildPct = 70;
 
 const defenceRebuildSpread = 10;
+
+const defenceRebuildEachBelow = 10;
 
 /// The most ships one fleet holds. It bounds the worst round of a fight.
 const maxFleetShips = 5000;

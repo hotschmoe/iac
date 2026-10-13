@@ -538,11 +538,17 @@ pub struct OutpostSurvey {
 /// defender is left.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RaidForecast {
-    /// The tick an announced raid arrives. Absent while none is on its way:
-    /// `power` and `ships` are then those of a raid of typical size were
-    /// one announced now.
+    /// The tick an announced raid arrives. Absent while none is on its way
+    /// and while one is being fought: with neither, `power` and `ships` are
+    /// those of a raid of typical size were one announced now.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub arrival_tick: Option<u64>,
+    /// The raid has arrived and is being fought: the rounds still to fight
+    /// at the most, as `BattleState.raid` of the fight says them. `power`
+    /// and `ships` are then what it flew in with, and `odds` how the fight
+    /// would end from where it stands. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rounds_left: Option<u32>,
     /// The raid's power on the scale `FleetState.power` uses. It is fixed
     /// when the raid is announced.
     pub power: f32,
@@ -1030,9 +1036,10 @@ pub struct OutpostState {
     /// Tick an announced raid arrives; absent when none is on its way.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub raid_arrival_tick: Option<u64>,
-    /// The raid announced, or one of typical size for the ring, against the
-    /// platform and the ships standing there now. Absent before level 1 is
-    /// finished: nothing raids a building site.
+    /// The raid being fought, else the one announced, else one of typical
+    /// size for the ring, against the platform and the ships standing there
+    /// now. Absent before level 1 is finished: nothing raids a building
+    /// site.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub raid: Option<RaidForecast>,
     /// What `upgrade_outpost` would build; absent at `max_level`.
@@ -1719,7 +1726,8 @@ pub struct HomeworldState {
     /// Typical power of the next raid, from the empire's building and
     /// research points; the actual raid rolls 0.80 to 1.15 times this.
     pub next_raid_estimate_power: f32,
-    /// The raid announced, or one of typical size were it announced now:
+    /// The raid being fought (`rounds_left`), else the one announced
+    /// (`arrival_tick`), else one of typical size were it announced now:
     /// what it flies, and how it would end against the ships, satellites
     /// and defences standing at home this tick.
     pub raid: RaidForecast,

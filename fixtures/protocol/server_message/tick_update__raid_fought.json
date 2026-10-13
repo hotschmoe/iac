@@ -2248,7 +2248,6 @@
     },
     "queue_waiting_max": 3,
     "raid": {
-      "arrival_tick": 1640,
       "odds": {
         "destroyed": 0.25,
         "kept": 0.6200000047683716,
@@ -2258,6 +2257,7 @@
         "raiders_kept": 0.3100000023841858
       },
       "power": 1350.5,
+      "rounds_left": 4,
       "ships": [
         {
           "class": "LightFighter",

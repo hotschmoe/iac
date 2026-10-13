@@ -1143,6 +1143,9 @@ fn a_lost_raid_destroys_what_stood_there_takes_a_quarter_above_the_floor_and_bre
     let battle = e.state().battles.into_iter().next().expect("the raid's fight is in the state");
     let raid = battle.raid.expect("and says it is a raid on the outpost");
     assert!(raid.outpost && raid.mine && battle.sector == at && raid.odds.label == RaidLabel::Lost);
+    let fought = outpost(&e).raid.expect("the outpost's forecast is the raid being fought");
+    assert_eq!((fought.arrival_tick, fought.rounds_left), (None, Some(raid.rounds_left)));
+    assert!(fought.ships == raid.ships && fought.odds == raid.odds);
     assert_eq!(e.refusal(Command::AbandonOutpost), (ErrorCode::OnCooldown, "your outpost is under raid; it cannot be abandoned until the fight is over".to_string()));
     e.run_until(10, |e| !outcomes(e, mark).is_empty());
     let (resolved, outcome) = outcomes(&e, mark).pop().unwrap();

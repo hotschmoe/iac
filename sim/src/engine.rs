@@ -1790,8 +1790,12 @@ impl GameEngine {
     }
 
     /// The raid on `player`'s homeworld as a client is told of it: the one
-    /// announced, or one at the middle of its roll were it announced now.
+    /// being fought, else the one announced, else one at the middle of its
+    /// roll were it announced now.
     pub fn home_raid_forecast(&self, player: &Player) -> RaidForecast {
+        if let Some(fought) = self.raid_fought(player.id, Dock::Home) {
+            return fought;
+        }
         let announced = self.raid_states.get(&player.id).and_then(|state| state.incoming.as_ref());
         match announced {
             Some(raid) => self.forecast(player.id, Dock::Home, Some(raid.arrival_tick), raid),
@@ -1806,6 +1810,9 @@ impl GameEngine {
     /// finished, when nothing raids it.
     pub fn outpost_raid_forecast(&self, owner: u64) -> Option<RaidForecast> {
         let outpost = self.outposts.get(&owner).filter(|outpost| outpost.level >= 1)?;
+        if let Some(fought) = self.raid_fought(owner, Dock::Outpost) {
+            return Some(fought);
+        }
         Some(match outpost.raid.incoming.as_ref() {
             Some(raid) => self.forecast(owner, Dock::Outpost, Some(raid.arrival_tick), raid),
             None => {
@@ -1816,9 +1823,28 @@ impl GameEngine {
         })
     }
 
+    /// The raid being fought at `owner`'s `dock`, as its forecast: what it
+    /// flew in with, the rounds left, and how the fight would end from
+    /// where it stands.
+    fn raid_fought(&self, owner: u64, dock: Dock) -> Option<RaidForecast> {
+        let combat = self
+            .active_combats
+            .values()
+            .find(|c| c.siege.as_ref().is_some_and(|siege| siege.owner == owner && siege.dock == dock))?;
+        let siege = combat.siege.as_ref()?;
+        Some(RaidForecast {
+            arrival_tick: None,
+            rounds_left: Some(RAID_ROUNDS.saturating_sub(combat.round)),
+            power: siege.power,
+            ships: siege.muster.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect(),
+            odds: self.siege_outlook(combat)?.raid(),
+        })
+    }
+
     fn forecast(&self, owner: u64, dock: Dock, arrival_tick: Option<u64>, raid: &IncomingRaid) -> RaidForecast {
         RaidForecast {
             arrival_tick,
+            rounds_left: None,
             power: raid.power,
             ships: raid.ships.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect(),
             odds: self.raid_odds(owner, dock, &raid.ships, raid.arms),
@@ -3907,6 +3933,7 @@ impl GameEngine {
                 let ours = Force::of(Arms::BASE, platform);
                 RaidForecast {
                     arrival_tick: None,
+                    rounds_left: None,
                     power,
                     ships: raid.ships.counts().map(|(ship_class, count)| ShipCount { ship_class, count }).collect(),
                     odds: self.odds_outlook(&ours, &Force::of(raid.arms, raid.ships.squads()), RAID_ROUNDS).raid(),

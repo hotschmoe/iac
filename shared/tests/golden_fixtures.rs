@@ -439,6 +439,7 @@ fn sample_outpost() -> OutpostState {
         raid_arrival_tick: Some(4990),
         raid: Some(RaidForecast {
             arrival_tick: Some(4990),
+            rounds_left: None,
             power: 512.5,
             ships: vec![ShipCount { ship_class: ShipClass::Cruiser, count: 1 }],
             odds: RaidOdds { label: RaidLabel::AtRisk, destroyed: 0.0, outlasted: 0.625, lost: 0.375, kept: 0.21, raiders_kept: 0.97 },
@@ -480,6 +481,7 @@ fn breached_outpost() -> OutpostState {
         raid_arrival_tick: None,
         raid: Some(RaidForecast {
             arrival_tick: None,
+            rounds_left: None,
             power: 467.0,
             ships: vec![ShipCount { ship_class: ShipClass::Cruiser, count: 1 }],
             odds: RaidOdds { label: RaidLabel::Lost, destroyed: 0.0, outlasted: 0.0, lost: 1.0, kept: 0.0, raiders_kept: 1.0 },
@@ -536,6 +538,7 @@ fn sample_survey() -> OutpostSurvey {
         platform: vec![UnitCount { unit: ShipyardItem::Defence(DefenceKind::RocketLauncher), count: 4 }],
         raid: Some(RaidForecast {
             arrival_tick: None,
+            rounds_left: None,
             power: 467.0,
             ships: vec![ShipCount { ship_class: ShipClass::Cruiser, count: 1 }],
             odds: RaidOdds { label: RaidLabel::AtRisk, destroyed: 0.0, outlasted: 0.5, lost: 0.5, kept: 0.17, raiders_kept: 0.98 },
@@ -806,7 +809,7 @@ fn sample_homeworld() -> HomeworldState {
         satellite_power: 126.6,
         structure_power: 1769.9,
         next_raid_estimate_power: 300.25,
-        raid: RaidForecast { arrival_tick: Some(1_640), power: 1_350.5, ships: raid_ships(), odds: held_odds() },
+        raid: RaidForecast { arrival_tick: Some(4_990), rounds_left: None, power: 1_350.5, ships: raid_ships(), odds: held_odds() },
         catalog: HomeworldCatalog::new(
             &levels,
             &researched,
@@ -851,6 +854,7 @@ fn idle_homeworld() -> HomeworldState {
         next_raid_estimate_power: 55.5,
         raid: RaidForecast {
             arrival_tick: None,
+            rounds_left: None,
             power: 55.5,
             ships: vec![ShipCount { ship_class: ShipClass::LightFighter, count: 1 }],
             odds: RaidOdds { label: RaidLabel::Lost, destroyed: 0.0, outlasted: 0.0, lost: 1.0, kept: 0.0, raiders_kept: 1.0 },
@@ -1291,7 +1295,16 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     ..sample_fleet(3, h(8, -3), FleetStatus::InCombat, None)
                 }],
                 sector_updates: None,
-                homeworld_update: Some(sample_homeworld()),
+                homeworld_update: Some(HomeworldState {
+                    raid: RaidForecast {
+                        arrival_tick: None,
+                        rounds_left: Some(4),
+                        power: 1_350.5,
+                        ships: raid_ships(),
+                        odds: held_odds(),
+                    },
+                    ..sample_homeworld()
+                }),
                 outpost: None,
                 battles: vec![BattleState {
                     sector: h(8, -3),
