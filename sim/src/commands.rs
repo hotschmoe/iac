@@ -271,14 +271,16 @@ fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command)
         .copied()
         .max_by(|&a, &b| (cost.get(a) / cap.get(a)).total_cmp(&(cost.get(b) / cap.get(b))))
         .unwrap_or(ResourceKind::Metal);
-    let needs: Vec<String> = over
-        .iter()
-        .map(|&k| match storage_level_for(cost.get(k), &engine.pace()) {
-            Some(level) => format!("needs {} level {level}", storage_building(k).label()),
-            None => format!("no {} can hold it", storage_building(k).label()),
-        })
-        .collect();
-    let fix = needs.join(" and ");
+    let levels: Vec<(&str, Option<u8>)> =
+        over.iter().map(|&k| (storage_building(k).label(), storage_level_for(cost.get(k), &engine.pace()))).collect();
+    let fix = match levels.iter().find(|(_, level)| level.is_none()) {
+        Some((building, _)) => format!("no {building} can hold it"),
+        None => {
+            let each: Vec<String> =
+                levels.iter().map(|(building, level)| format!("{building} level {}", level.unwrap_or(0))).collect();
+            format!("needs {}", listed(&each))
+        }
+    };
     let smaller = match batch_of(cmd) {
         Some((unit, count)) if count > 1 => match units_covered(cap, unit) {
             0 => String::new(),
@@ -319,8 +321,13 @@ pub(crate) fn amount_words(amount: Resources) -> String {
         .filter(|&k| amount.get(k) > 0.0)
         .map(|k| format!("{} {}", amount.get(k).ceil(), k.label()))
         .collect();
-    match parts.as_slice() {
-        [] => "nothing".to_string(),
+    if parts.is_empty() { "nothing".to_string() } else { listed(&parts) }
+}
+
+/// "a", "a and b", "a, b and c".
+fn listed(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
         [one] => one.clone(),
         [first @ .., last] => format!("{} and {last}", first.join(", ")),
     }

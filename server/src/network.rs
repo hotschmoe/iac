@@ -396,9 +396,9 @@ mod tests {
             let e = t.engine();
             e.players.get_mut(&pid).unwrap().buildings.metal_mine = 3;
             e.players.get_mut(&pid).unwrap().buildings.deuterium_synthesizer = 2;
-            // Starting scouts plus one hauler.
+            // The starting fighters plus one cargo ship.
             let fleet = e.fleets.get_mut(&fid).unwrap();
-            fleet.ships[fleet.ship_count].ship_class = ShipClass::Hauler;
+            fleet.ships[fleet.ship_count].ship_class = ShipClass::SmallCargo;
             fleet.ship_count += 1;
         }
         let expected_cap: f64 = {
@@ -406,7 +406,7 @@ mod tests {
             e.fleets[&fid].ships[..e.fleets[&fid].ship_count].iter()
                 .map(|s| f64::from(s.ship_class.base_stats().cargo)).sum()
         };
-        assert!(expected_cap > 200.0, "hauler must be counted: {expected_cap}");
+        assert!(expected_cap > 5000.0, "the cargo ship must be counted: {expected_cap}");
 
         let before = t.engine().players[&pid].resources;
         let update = t.tick();
@@ -430,14 +430,22 @@ mod tests {
         assert_eq!(mine["building_type"], "MetalMine");
         assert_eq!(mine["level"], 1);
         assert_eq!(mine["next"]["level"], 2);
-        let yard = &update["homeworld_update"]["catalog"]["buildings"][3];
+        assert_eq!(mine["effects"][1], serde_json::json!({"kind": "energy_used", "now": 11.0, "next": 25.0}));
+        let yard = &update["homeworld_update"]["catalog"]["buildings"][7];
+        assert_eq!((&yard["building_type"], &yard["requires"][0]["name"]), (&"Shipyard".into(), &"Robotics Factory".into()));
         assert_eq!(yard["requires"][0]["met"], false);
+        let energy = &update["homeworld_update"]["energy"];
+        assert_eq!((&energy["made"], &energy["needed"], &energy["fraction"]), (&22.into(), &22.into(), &1.0.into()));
 
-        t.engine().players.get_mut(&pid).unwrap().buildings.metal_mine = 2;
+        let buildings = &mut t.engine().players.get_mut(&pid).unwrap().buildings;
+        (buildings.metal_mine, buildings.robotics_factory) = (2, 2);
         let update = t.update();
         let catalog = &update["homeworld_update"]["catalog"];
         assert_eq!(catalog["buildings"][0]["level"], 2);
-        assert_eq!(catalog["buildings"][3]["requires"][0]["met"], true);
+        assert_eq!(catalog["buildings"][7]["requires"][0]["met"], true);
+        let energy = &update["homeworld_update"]["energy"];
+        assert_eq!((&energy["made"], &energy["needed"]), (&22.into(), &36.into()), "a mine raised past its power");
+        assert!(energy["fraction"].as_f64().unwrap() < 1.0);
     }
 
     #[test]
@@ -447,20 +455,30 @@ mod tests {
         t.engine().players.get_mut(&pid).unwrap().buildings.shipyard = 2;
         let e = t.host.engine();
 
-        let cmd = Command::BuildShip { ship_class: ShipClass::Frigate, count: 1 };
+        let cmd = Command::BuildShip { ship_class: ShipClass::Cruiser, count: 1 };
         assert_eq!(
             command_error_message(e, pid, &cmd, ErrorCode::ShipLocked),
-            "Frigate needs Frigate Tech level 1 (you have 0)"
+            "Cruiser needs Shipyard level 5 (you have 2), Impulse Drive level 4 (you have 0) and Ion Technology level 2 (you have 0)"
         );
-        let cmd = Command::Build { building_type: BuildingType::DefenseGrid, reserve: false };
+        let cmd = Command::Build { building_type: BuildingType::FusionReactor, reserve: false };
         assert_eq!(
             command_error_message(e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
-            "Defense Grid needs Shipyard level 3 (you have 2)"
+            "Fusion Reactor needs Deuterium Synthesizer level 5 (you have 0) and Energy Technology level 3 (you have 0)"
         );
-        let cmd = Command::Research { tech: ResearchType::FrigateTech, reserve: false };
+        let cmd = Command::Research { tech: ResearchType::CombustionDrive, reserve: false };
         assert_eq!(
             command_error_message(e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
-            "Frigate Tech needs Research Lab level 1 (you have 0), Corvette Tech level 1 (you have 0) and Shipyard level 4 (you have 2)"
+            "Combustion Drive needs Research Lab level 1 (you have 0) and Energy Technology level 1 (you have 0)"
+        );
+        let cmd = Command::Research { tech: ResearchType::GravitonTechnology, reserve: false };
+        assert_eq!(
+            command_error_message(e, pid, &cmd, ErrorCode::PrerequisitesNotMet),
+            "Graviton Technology needs Research Lab level 12 (you have 0) and 300000 energy made (you make 22)"
+        );
+        let cmd = Command::BuildDefence { kind: iac_shared::scaling::DefenceKind::LightLaser, count: 1 };
+        assert_eq!(
+            command_error_message(e, pid, &cmd, ErrorCode::DefenceLocked),
+            "Light Laser needs Energy Technology level 1 (you have 0) and Laser Technology level 3 (you have 0)"
         );
     }
 
@@ -649,17 +667,24 @@ mod tests {
     }
 
     #[test]
-    fn storage_errors_name_the_vault_level_needed() {
+    fn storage_errors_name_the_storage_level_needed() {
         let mut t = table();
         let pid = t.pid;
         let e = t.engine();
         e.players.get_mut(&pid).unwrap().resources = iac_shared::Resources { metal: 100.0, crystal: 40.0, deuterium: 0.0 };
 
         e.players.get_mut(&pid).unwrap().buildings.research_lab = 4;
-        let cmd = Command::Research { tech: ResearchType::CruiserTech, reserve: false };
+        e.players.get_mut(&pid).unwrap().research.weapons_technology = 8;
+        let cmd = Command::Research { tech: ResearchType::WeaponsTechnology, reserve: false };
         assert_eq!(
             command_error_message(e, pid, &cmd, ErrorCode::StorageTooSmall),
-            "Cruiser Tech Lv.1 costs 8000 metal, more than the 5000 metal your stockpile holds; needs Storage Vault level 2"
+            "Weapons Technology Lv.9 costs 204800 metal, more than the 100000 metal your stockpile holds; needs Metal Storage level 3"
+        );
+        let cmd = Command::BuildShip { ship_class: ShipClass::Deathstar, count: 1 };
+        assert_eq!(
+            command_error_message(e, pid, &cmd, ErrorCode::StorageTooSmall),
+            "Deathstar x1 costs 5000000 metal, more than the 100000 metal your stockpile holds; \
+             needs Metal Storage level 10, Crystal Storage level 10 and Deuterium Tank level 7"
         );
     }
 
@@ -683,8 +708,8 @@ mod tests {
 
         let tick = t.update();
         let fleet = &tick["fleets"][0];
-        // 2 Scouts: 120 fuel, 6 per jump -> 10 round trips out and back.
-        assert_eq!(fleet["range_hops"], 10, "{fleet}");
+        // 2 Light Fighters: 400 fuel, 40 a jump -> 5 hops out and back.
+        assert_eq!(fleet["range_hops"], 5, "{fleet}");
         assert!(fleet["power"].as_f64().unwrap() > 0.0);
     }
 
@@ -694,21 +719,26 @@ mod tests {
         let pid = t.pid;
         {
             let p = t.engine().players.get_mut(&pid).unwrap();
-            p.buildings.defense_grid = 2;
+            p.research.weapons_technology = 1;
             p.defences.count[0] = 5;
             p.defences.restoring[0] = 1;
+            p.satellites = 3;
         }
         let tick = t.update();
         let hw = &tick["homeworld_update"];
-        assert_eq!(hw["defences"][0]["kind"], "PulseTurret");
+        assert_eq!(hw["defences"][0]["kind"], "RocketLauncher");
         assert_eq!(hw["defences"][0]["count"], 5);
         assert_eq!(hw["defences"][0]["restoring"], 1);
-        assert!((hw["defences"][0]["power"].as_f64().unwrap() - 17.0 * 1.08).abs() < 1e-3);
+        let launcher = 80.0 * 1.1 + (200.0 + 20.0) / 10.0;
+        assert!((hw["defences"][0]["power"].as_f64().unwrap() - launcher).abs() < 1e-3, "Weapons Technology reaches a defence");
         let defence = hw["home_defence_power"].as_f64().unwrap();
-        let ships_and_grid = t.host.engine().home_defense_power(pid) as f64;
-        assert!((defence - ships_and_grid).abs() < 1e-3);
-        assert!(defence > 5.0 * 17.0 * 1.08, "structures count toward home defence: {defence}");
-        assert!(hw["next_raid_estimate_power"].as_f64().unwrap() > 5.0);
+        let in_all = t.host.engine().home_defense_power(pid) as f64;
+        assert!((defence - in_all).abs() < 1e-3);
+        let satellites = hw["satellite_power"].as_f64().unwrap();
+        assert!((satellites - 3.0 * (1.1 + 20.1)).abs() < 1e-3, "three Solar Satellites stand in the defence: {satellites}");
+        assert!(defence > 5.0 * launcher + satellites, "defences and satellites count toward home defence: {defence}");
+        assert!(hw["next_raid_estimate_power"].as_f64().unwrap() > 50.0);
         assert_eq!(hw["catalog"]["defences"][0]["count"], 5);
+        assert_eq!((&hw["satellites"], &hw["energy"]["made"]), (&3.into(), &(22 + 3 * 30).into()));
     }
 }
