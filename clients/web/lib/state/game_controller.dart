@@ -78,8 +78,8 @@ class GameController extends ChangeNotifier {
   final StateMapper _mapper = StateMapper();
   final StreamController<proto.GameEvent> _events = StreamController.broadcast(sync: true);
 
-  /// Every server game event as it arrives (combat rounds included, which
-  /// the log drops), for scenes that animate them.
+  /// Every server game event as it arrives, a fight's rounds among them,
+  /// for scenes that animate them.
   Stream<proto.GameEvent> get gameEvents => _events.stream;
 
   final StreamController<proto.ErrorMessage> _refusals = StreamController.broadcast(sync: true);

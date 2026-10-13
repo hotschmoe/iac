@@ -44,9 +44,6 @@ class SectorThreat {
   static const clear = SectorThreat(0, 0, []);
   bool get hostile => rating > 0;
 
-  /// How the first group behaves; null with none.
-  proto.NpcBehavior? get behavior => groups.firstOrNull?.behavior;
-
   static SectorThreat of(proto.SectorState? s) {
     final hs = s?.hostiles;
     if (s == null || hs == null || hs.isEmpty) {

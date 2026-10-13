@@ -7472,3 +7472,192 @@ moved are in the decisions entry with the reason for each.
 of the two events that are gone (`CombatRound`, `ShipDestroyed`, hand-written
 and generated); copies from git are in `.archive/slice2/fixtures/` in the
 branch's worktree.
+
+## 2026-10-14: the web client on the new fleet and fight (slice 2 of the OGame work, stage 2)
+
+Stage 2 of slice 2: the hand-written Dart of `clients/web`, which stage 1
+left not compiling against the new `protocol.g.dart` (145 analyzer errors in
+eight files). The branch is still `worktree-agent-ace3232f861723403` and is
+not merged. `SAVE_FORMAT` and `ECONOMY_VERSION` are as stage 1 left them:
+what was added to Rust is view fields and two names in `numbers.json`, and
+nothing a world holds or plays by. The study's row for this slice asks the
+clients for "plain fleet lists and a text round"; the windshield in class
+marks, flight on it and the battle view are slice 5 and were not built.
+
+**Built, screen by screen.**
+
+- The model. `ui.FleetState.ships` is the wire's rows
+  (`ShipGroupState`), with `shipCount`, `hull`, `hullMax`, `attack`,
+  `shield`, `refit`, `refitDue` and `repair` beside them, all carried from
+  `FleetState`; `ui.ShipState` with its ship ids is gone. The mapper keeps
+  the fights (`StateMapper.battles`, a `Battle` a sector): a full state
+  seeds each with its `last_round`, a tick update brings the rounds fought
+  and the losses so far, a `BattleRound` event the round, `CombatEnded` the
+  end, which is kept for 90 ticks.
+- One list. `ShipRows` (`lib/views/battle_view.dart`) prints a fleet, a
+  hostile group or the docked ships by class: the count, the hull against
+  full hull, and under a class with damage a bar and how many are damaged
+  and at risk, with the engine's 70 percent said once where a ship is at
+  risk. It is the list of the windshield's fleet status and contacts, the
+  map's sector panel and its hold panel, the outpost's fleets and the
+  homeworld's Defence tab (`docked_ships`, `docked_ship_count`).
+- The windshield's fleet status: `ship_count` in its head, the hull dial
+  from `hull` and `hull_max`, the list, the levels the fleet fights with
+  (`refit`) and that a refit waits at the home dock (`refit_due`), what its
+  damaged ships lack and what the home dock and the outpost would mend and
+  for what, or the engine's reason why not (`repair`), and what it fires and
+  the shield it raises in a round (`attack`, `shield`). The shield bar is
+  gone.
+- The contacts: each hostile group with its behaviour, `ship_count` and its
+  rows; the odds with `RatioLabel.outcome` for the verdict's sentence, here
+  and wherever odds are shown (`RatioInfo.outcome` had five sentences of
+  its own, written for the old fight).
+- The Battle panel (`BattlePanel`): while the state lists a fight in the
+  fleet's sector, the round it stands at; for each side a table, a row a
+  class, of what is left, lost this round, damaged and at risk
+  (`BattleSide.groups`, `standing`, the other side's `destroyed`); what each
+  side fired, its totals and then its volleys, three shown and the rest
+  behind a button; the losses so far (`BattleState.losses`). When
+  `CombatEnded` comes: `outcome` as a heading and a sentence, `rounds`,
+  `losses` for each fleet and group, the wreckage, the last round behind a
+  button, and Dismiss. On a phone a line over the fleet rail (`BattleStrip`)
+  opens it in the status sheet.
+- The scope (`scenes/windshield/sim.dart`, `painter.dart`): marks set from
+  the state's rows, at most sixteen a side, in rows at a size that fits;
+  strokes of fire and the marks a round's losses take, from `BattleRound`
+  events only; "EACH MARK: UP TO n SHIPS" when a mark is more than a ship.
+- The split picker (`FleetManagePanel`): a count a class with - and +, a
+  step of 1, 10 or 100, All, whole or damaged first; it sends
+  `SplitCommand(ships, damagedFirst)`. Merge is a button a fleet in the
+  sector. The console's `split lf 100 cr 20 damaged` sends the same, and
+  `status` prints the fleet by class, its hull, its refit and each dock's
+  answer.
+- The map: the sector panel lists each group with `ShipRows`, the fight
+  there as the phone's line, and each of the player's fleets standing
+  there with a mark a class (`ClassMarks`); the hold panel of a held route
+  lists the group ahead.
+- The Overview: Ships is `PlayerState.ship_count`; a fleet's card has a mark
+  a class with its count, the fleet's count and hull, a bar and the damaged
+  count when `repair` is there, and "REFIT WAITS AT HOME".
+- The outpost: the defence line adds `ships_power`, not a difference; each
+  fleet standing there is listed, with the outpost dock's quote for it.
+- The log: one line for a fight's rounds (the last round's, from the two
+  sides' totals), a line for its end with the outcome, the rounds, the
+  player's losses and the wreckage, and a line for ships lost in an
+  emergency jump (`ShipsLost`).
+
+**Rust.** Four things, none a rule: `PlayerState.ship_count`;
+`BattleSide.standing`; a tick update's `battles` without `last_round`, with
+`views::battles_of` for `Seat`, which is handed no events; and
+`REPAIR_COST_SHARE_HOME` and `REPAIR_COST_SHARE_OUTPOST` in the `named!`
+list of `sim/tests/economy_numbers.rs`. The decisions entry has each with
+what undoes it. The README's and `RULES.md`'s paragraph on the round says
+`standing` and where `last_round` is.
+
+**The scripted world of the widget tests** (`test/support/demo_world.dart`)
+keeps the engine's fleet (a count a class and the hull of each damaged
+ship), quotes and does the docks' mending with the engine's `mending` and
+`pay_by_weight`, stamps and applies the refit, splits by class and count
+with the engine's refusals, and fights a round a tick whose `BattleRound`,
+`battles` and `CombatEnded` are shaped as the engine's. The round itself is
+played without dice and is not OGame's. Ships the yard delivers join the
+docked fleet. It still types no number of the game.
+
+**Tests.** `flutter test`: 492 (master 486). Moved onto the new fleet:
+`windshield_test.dart`, `map_test.dart`, `overview_test.dart`,
+`homeworld_test.dart` (helpers `shipRow`, `hostileGroup` and `textUnder` in
+`test/support/harness.dart`). The case that drew a shot a ship from
+`CombatRound` and killed one with `ShipDestroyed` is now the round panel's
+(a round on the scope and in the panel at 1440 and 390, the end, Dismiss).
+New cases, all in files that existed: a round of twelve classes at twelve
+(three volleys of 144, the rest behind the button, no text cut); a fleet of
+512 against 3,230 as three marks against eight with exact counts in the
+lists; split and merge by class and count through the picker on the
+scripted world; a scripted fight followed to its end, its damage and the
+home dock's quote, a refit waiting, the mending and the refit at home; the
+map's panel for a group and for a fleet; a fight seeded from the full
+state's fixture and a tick update's battle without a round. No test file
+was added and none removed. Nothing tested a ship id or the shield gauge
+apart from the case that was rewritten.
+
+**The end-to-end check** (`tool/solo_e2e.dart`) fights: a lab, Energy
+Technology and the Combustion Drive, six Light Fighters ordered as one
+batch and built into the docked fleet (8 by count on the wire and the
+page); two split off through the picker (`split` with a class and a count
+on the wire, the engine's sentence back); the six flown by the gate keys to
+the nearest group they outweigh about two to one; the group read on the
+map's panel and the windshield where it does not attack first; the round
+panel during the fight and at its end; the damage and the home dock's
+quote; Armour Technology researched meanwhile and a refit waiting; home,
+the engine's sentences for the mending and the refit; the two merged back.
+Its `click` now wheels a control into the window before it clicks it, and
+the catalogue's first check waits for the plan instead of reading the page
+once.
+
+**Run**, on the branch:
+
+- `flutter analyze`: no issues.
+- `flutter test` (`timeout -k 20 300 nice -n 10`), full runs: the first, 489
+  passed and 1 failed (the split case, which tapped a key the picker no
+  longer has: the test's); the second, 491 passed; the third, after the
+  last change to a screen, 492 passed; the fourth, 492 passed. No run
+  showed the machine's flake.
+- `cargo test --workspace --no-fail-fast -j 4`: the first run after the
+  view fields, 172 passed and 1 failed,
+  `the_view_a_bot_folds_from_tick_updates_is_the_full_state`, which was
+  right: a seat's folded view lacked the round. With `views::battles_of`,
+  and again at the end: 173 passed, 0 failed.
+  `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo clippy --workspace --all-targets`: silent.
+  `UPDATE_FIXTURES=1 cargo test -p iac-shared` and `-p iac-sim --test
+  economy_numbers`, then `python3 tools/check_sim_constants.py`: agrees on
+  4,410 values.
+- `scripts/play.sh --single-player --no-serve`: built, 47 MB.
+- `dart run tool/solo_e2e.dart --port 7961`, seven runs. Five failed on the
+  way: the catalogue's first check read the page before the tab had drawn
+  (the tool's; it passed on master by timing); my fight counted `ShipBuilt`
+  events across a four-minute catch-up, which sends none; the picks of the
+  picker are lost when a phone's sheet is shut, and the check had shut it;
+  a world whose home sector held a passive group pushed the dock's Load
+  hold button under the window, where the check's click missed it; and the
+  dock refits the fleet that stayed a tick after the research ends, not in
+  the same one. The sixth passed in 270 s, and the seventh, on the bundle
+  as it is committed, in 250 s (exit 0; master took about 200 s without the
+  fight). The world's seed is drawn anew each run, so each run fought a
+  different group: two Light Fighters in each of the three that reached the
+  fight, two convoys that were read on the map first and a patrol that
+  attacked on arrival; the fights took 2, 3 and 2 rounds and left 3, 3 and
+  2 of the six damaged.
+
+**Looked at** (the check's shots and the widget tests' `IAC_SHOTS`, at 1440
+and 390): the windshield with 2, 8 and 512 ships; the picker; the round
+panel in a fight of 6 against 2 from the engine and of 12 classes a side
+from a test; the end; the damaged fleet with its quote and the refit
+waiting; the map's panel for a group; the Overview's fleet cards; the
+outpost with a damaged fleet of 414; the Defence tab's docked ships.
+Changed for what was seen: the standing lists of the round panel became a
+table (two lines a class made a wall of 48 lines before the first volley);
+the scope's wedge became rows at a size that fits (twelve classes
+overlapped in it); a volley's figures wrap between two figures, not inside
+one; the hull column of `ShipRows` was narrowed where it cut "LIGHT
+FIGHTER" short in the contacts; the phone's line for a fight names the
+sides; a fight's report got a Dismiss, since it stood over the fleet
+status; the dock's sentence in the contacts was shortened again. Two alert
+toasts for one fight led to the shell's new way of telling a new log line.
+
+**Not verified.**
+
+- No person played. No fight of hundreds was fought by the engine in a
+  browser: the check's fight is six Light Fighters against two, and the
+  screens with hundreds and with twelve classes are widget tests on states
+  written for them.
+- The round under way was pictured at 1440 only; at 390 the pictures are of
+  the fight's end and its last round, and of a test's round.
+- The outpost dock's quote and refusal are shown from the fixture's state
+  and the scripted world; no outpost was founded in a browser.
+- A fight with another empire's fleet on the player's side, a stand-off and
+  a lost fleet were not played in the client; the panel words them from the
+  same fields.
+- `tools/playtest` was not run.
+
+**Kept out of the tree.** Nothing was moved to `.archive/` in this stage.
