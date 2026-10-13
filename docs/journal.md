@@ -6639,3 +6639,25 @@ client is not touched and its checks were not run.
 
 **Not verified.** The TUI in a terminal, and anything in `tools/playtest`,
 whose two files were edited by reading.
+
+## 2026-10-13: `refine` after the clients were split
+
+The coordinator's word, while the checks above ran: the headless client is
+its own crate and the TUI is to leave the tree. So the `d` key and the offer
+line written into the TUI's fleet panel with the first commit were taken out
+again by hand, and the README's sentence about them with them; `clients/tui`
+is byte for byte what master has, so its removal on master meets nothing of
+this branch. Master `6c22e2d` (the split) was then merged; the journal
+conflicted again and keeps both. The commit that takes the TUI out of the
+tree had not reached master when this was written.
+
+**Run on this tree.** `cargo build --workspace --all-targets -j 4`, no
+warning; `cargo test --workspace --no-fail-fast -j 4`: 163 passed, 0 failed;
+`cargo clippy --workspace --all-targets` silent;
+`tools/check_sim_constants.py` agrees on 2,390 values; the play tool's own 36
+tests pass. The merge changed nothing under `clients/web`, `fixtures`,
+`shared`, `sim`, `solo` or `server/src`, so the three Flutter runs, the
+bundle and the browser run of the entry before the split were not repeated.
+
+**Not verified.** As that entry lists. And the tree without the TUI: when
+master drops `clients/tui`, the workspace wants one more build and test run.
