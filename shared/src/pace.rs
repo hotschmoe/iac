@@ -70,13 +70,13 @@ pub fn timer_class(name: &str) -> Option<PaceClass> {
 
 /// Named multipliers; any positive number in range is also accepted.
 pub const PRESETS: &[Preset] = &[
-    Preset { name: "persistent", pace: 1.0, first_cruiser_s: 1_839_000, endgame_s: 5_172_900 },
-    Preset { name: "fortnight", pace: 5.0, first_cruiser_s: 433_320, endgame_s: 1_048_380 },
-    Preset { name: "season", pace: 10.0, first_cruiser_s: 209_460, endgame_s: 576_960 },
-    Preset { name: "sprint", pace: 70.0, first_cruiser_s: 26_715, endgame_s: 71_230 },
-    Preset { name: "dev", pace: 100.0, first_cruiser_s: 18_735, endgame_s: 49_940 },
-    Preset { name: "blitz", pace: 600.0, first_cruiser_s: 3_210, endgame_s: 8_450 },
-    Preset { name: "test", pace: 8000.0, first_cruiser_s: 262, endgame_s: 665 },
+    Preset { name: "persistent", pace: 1.0, first_cruiser_s: 1_956_600, endgame_s: 5_172_900 },
+    Preset { name: "fortnight", pace: 5.0, first_cruiser_s: 435_000, endgame_s: 1_084_800 },
+    Preset { name: "season", pace: 10.0, first_cruiser_s: 215_640, endgame_s: 566_070 },
+    Preset { name: "sprint", pace: 70.0, first_cruiser_s: 26_880, endgame_s: 73_690 },
+    Preset { name: "dev", pace: 100.0, first_cruiser_s: 18_855, endgame_s: 50_080 },
+    Preset { name: "blitz", pace: 600.0, first_cruiser_s: 3_231, endgame_s: 8_482 },
+    Preset { name: "test", pace: 8000.0, first_cruiser_s: 264, endgame_s: 667 },
 ];
 
 /// A named pace with the simulation's milestone estimates for a competent

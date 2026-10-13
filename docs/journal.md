@@ -6982,9 +6982,10 @@ ten times what they were). The outpost's platform is 408 / 1306 / 3972.
   has every mine at 20 and nothing left to order for most of the day; the
   check-in and hybrid bots turn 25 to 58 percent of what their mines make
   away at a full store.
-- The planning simulation: first Cruiser and endgame kit at 21.3 and 59.9
-  days (persistent), 2.4 and 6.7 days (season), 54 minutes and 2.3 hours
-  (blitz). Its competent player's docked fleet is several times the
+- The planning simulation: first Cruiser and endgame kit at 22.6 and 59.9
+  days (persistent), 2.5 and 6.6 days (season), 54 minutes and 2.4 hours
+  (blitz); the raid law at 5 a point gave 21.3 and 59.9 days, 2.4 and 6.7
+  days, 54 minutes and 2.3 hours. Its competent player's docked fleet is several times the
   strongest raid, it never picks the Fusion Reactor, and the map is 2 to 5
   percent of its income.
 
@@ -7024,7 +7025,7 @@ tree in `c3499da`.
 - `cargo clippy --workspace --all-targets`: silent, after three warnings the
   catalogue brought were mended (a `Force` of thirteen classes made
   `Opposing` 264 bytes; it is boxed).
-- `iac_solo.wasm`, release: 2,518,678 bytes; master 2,446,176; 72,502 more
+- `iac_solo.wasm`, release: 2,518,679 bytes; master 2,446,176; 72,503 more
   (3.0 percent).
 - `UPDATE_FIXTURES=1 cargo test -p iac-sim --test economy_numbers`, then
   `python3 tools/check_sim_constants.py`: agrees on 4,410 values (master:
