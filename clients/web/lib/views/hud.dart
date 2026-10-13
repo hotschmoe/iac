@@ -25,10 +25,13 @@ class Hud extends StatelessWidget {
   /// The three stockpiles keep the width they need to be read. On a window
   /// narrower than these the name beside the logo goes first, then the
   /// commander's name and rank; a chip narrower than [_chipWithRate] drops
-  /// its rate per tick.
+  /// its rate an hour. The energy chip stands beside them where they keep
+  /// [_chipAlone] each, and wherever the mines are short of energy.
   static const _brandFrom = 1240.0;
   static const _whoFrom = 980.0;
-  static const _chipWithRate = 178.0;
+  static const _chipWithRate = 196.0;
+  static const _chipAlone = 132.0;
+  static const _energyChip = 84.0;
 
   /// From this width the outpost's line stands in the bar; narrower, the
   /// shell prints it as a strip of its own under the bar ([OutpostStrip]).
@@ -70,11 +73,15 @@ class Hud extends StatelessWidget {
             ),
             Expanded(
               child: LayoutBuilder(
-                builder: (context, box) => Row(children: [
-                  for (final s in stockpiles)
-                    Expanded(child: _ResChip(s, eco, narrow, showRate: !narrow && box.maxWidth >= 3 * _chipWithRate)),
-                  if (con.state.hw?.energy case final energy? when !narrow || energy.short) _EnergyChip(energy, narrow),
-                ]),
+                builder: (context, box) {
+                  final energy = con.state.hw?.energy;
+                  final showEnergy = energy != null && (energy.short || (!narrow && box.maxWidth >= 3 * _chipAlone + _energyChip));
+                  final stocks = box.maxWidth - (showEnergy ? _energyChip : 0);
+                  return Row(children: [
+                    for (final s in stockpiles) Expanded(child: _ResChip(s, eco, narrow, showRate: !narrow && stocks >= 3 * _chipWithRate)),
+                    if (showEnergy) SizedBox(width: narrow ? null : _energyChip, child: _EnergyChip(energy, narrow)),
+                  ]);
+                },
               ),
             ),
             if (!narrow) ...[

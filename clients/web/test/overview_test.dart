@@ -153,7 +153,10 @@ void main() {
   });
 
   testWidgets('near cap and full lamps carry text, not only colour', (tester) async {
-    final c = await _boot(tester, stock: const proto.Resources(metal: 11200, crystal: 6930, deuterium: 100));
+    final c = await _boot(tester);
+    final cap = c.state.hw!.storage.cap;
+    c.stock(proto.Resources(metal: cap.metal, crystal: cap.crystal * .88, deuterium: 100));
+    await tester.pump(const Duration(milliseconds: 100));
     final crystal = find.byKey(const Key('res-tile-crystal'));
     expect(find.descendant(of: crystal, matching: find.text('NEAR CAP 88%')), findsWidgets);
     final metal = find.byKey(const Key('res-tile-metal'));

@@ -147,11 +147,17 @@ class _ResourceTileState extends State<ResourceTile> {
               Container(padding: const EdgeInsets.symmetric(horizontal: 5), color: color, child: Text(gem.toUpperCase(), style: T.cond(size: 11, color: const Color(0xFF120A02), weight: FontWeight.w700, spacing: .7))),
               const SizedBox(width: 10),
               Lbl(name, size: 11, color: C.text2),
-              const Spacer(),
-              if (near || full)
-                Lamp(lampText, color: warnCol, blink: true)
-              else if (st != null)
-                Flexible(child: Text(st.buildingTag(kind).toUpperCase(), overflow: TextOverflow.ellipsis, style: T.mono(size: 9.5, color: C.text3))),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: near || full
+                      ? Lamp(lampText, color: warnCol, blink: true)
+                      : st == null
+                          ? null
+                          : Text(st.buildingTag(kind).toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: T.mono(size: 9.5, color: C.text3)),
+                ),
+              ),
             ]),
             const SizedBox(height: 8),
             Wrap(crossAxisAlignment: WrapCrossAlignment.end, children: [

@@ -28,12 +28,12 @@ const _phone = Size(390, 844);
 /// The narrowest window that still gets the windshield's desktop layout.
 const _least = Size(1167, 800);
 
-/// A site of the scripted world an outpost can be founded on, one a patrol
-/// holds, and the scripted homeworld, at ring 4.
+/// A site of the scripted world an outpost can be founded on, one a group
+/// holds, the scripted homeworld, at ring 4, and what level 1 costs there.
 const _site = proto.Hex(10, 0);
 const _held = proto.Hex(10, -3);
 const _demoHome = proto.Hex(4, -2);
-const _levelOne = proto.Resources(metal: 1000, crystal: 500, deuterium: 200);
+const _levelOne = proto.Resources(metal: 3000, crystal: 1500, deuterium: 600);
 
 Map<String, dynamic> _recorded(String name) =>
     readJson(File('${fixturesDir().path}/protocol/server_message/$name.json')) as Map<String, dynamic>;
@@ -391,7 +391,7 @@ void main() {
     expect(c.state.outpost!.location, _site);
     expect(c.state.holds[101]!.total, 0, reason: 'the hold paid level 1');
     expect(c.state.events.map((e) => e.message),
-        contains(startsWith('fleet 101 founded your outpost at [10,0] for 1000 metal, 500 crystal and 200 deuterium: level 1 is finished at tick')));
+        contains(startsWith('fleet 101 founded your outpost at [10,0] for 3000 metal, 1500 crystal and 600 deuterium: level 1 is finished at tick')));
     expect(_said(tester, 'outpost-standing'), startsWith('NOT YET OPEN - BUILDING LEVEL 1, 0:'));
     expect(find.descendant(of: find.byKey(const Key('outpost-yield')), matching: find.text('NOTHING: NOT YET OPEN')), findsOneWidget);
     expect(find.descendant(of: _hudLine, matching: find.text('NOT OPEN STORE 0%')), findsOneWidget, reason: 'no level stands yet, so the bar names none');
@@ -408,16 +408,16 @@ void main() {
     c.handleCommand('outpost upgrade');
     await tester.pump(const Duration(milliseconds: 300));
     final short = c.state.events.first.message;
-    expect(short, startsWith('Refused: outpost level 2 costs 2500 metal, 1250 crystal and 500 deuterium; the store at [10,0] is short by 2500 metal, 12'));
+    expect(short, startsWith('Refused: outpost level 2 costs 7500 metal, 3750 crystal and 1500 deuterium; the store at [10,0] is short by 7500 metal, 37'));
     expect(find.descendant(of: find.byType(ToastLayer), matching: find.text(short.substring('Refused: '.length))), findsOneWidget,
         reason: 'the refusal is shown as the world worded it');
     expect(_why(tester, 'outpost-upgrade-why'), short.substring('Refused: '.length), reason: 'and the panel had said it beforehand, in the same sentence');
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('outpost-upgrade'))).onPressed, isNull);
 
-    c.place(101, _site, const proto.Resources(metal: 2600, crystal: 1300, deuterium: 600));
+    c.place(101, _site, const proto.Resources(metal: 7600, crystal: 3800, deuterium: 1600));
     c.handleCommand('unload');
     await tester.pump(const Duration(milliseconds: 300));
-    expect(c.state.events.map((e) => e.message), contains('fleet 101 unloaded 2600 metal, 1300 crystal and 600 deuterium into the outpost\'s store'));
+    expect(c.state.events.map((e) => e.message), contains('fleet 101 unloaded 7600 metal, 3800 crystal and 1600 deuterium into the outpost\'s store'));
     expect(find.byKey(const Key('outpost-upgrade-why')), findsNothing);
     await _press(tester, 'outpost-upgrade');
     expect(_said(tester, 'outpost-standing'), startsWith('LEVEL 1 OF 3 - BUILDING LEVEL 2, 0:'));
@@ -426,7 +426,8 @@ void main() {
     await _press(tester, 'hold-load');
     expect(c.state.holds[101]!.metal, 100, reason: 'what the level left of the metal in the store');
     expect(c.state.outpost!.store.metal, 0);
-    expect(c.state.events.map((e) => e.message), contains('fleet 101 loaded 100 metal from the outpost\'s store: it carries 100 of 250'));
+    expect(c.state.events.map((e) => e.message),
+        contains('fleet 101 loaded 100 metal from the outpost\'s store: it carries 100 of ${c.currentFleet.holdCapacity.round()}'));
     expect(c.state.fleets.first.laden, isFalse, reason: 'nothing is marked at the outpost: no hold empties by itself there');
 
     await tester.pump(const Duration(seconds: 51));
@@ -444,9 +445,9 @@ void main() {
     expect(c.state.fleets.first.shipCount, 4, reason: 'a quarter of the five ships standing there');
     expect(_said(tester, 'outpost-standing'), 'LEVEL 2 OF 3 - BREACHED, THE REPAIR WAITS FOR ITS STORE');
     expect(_said(tester, 'outpost-repair'), contains('WHICH IS SHORT BY'));
-    expect(c.state.events.map((e) => e.message), contains(startsWith('! your outpost at [10,0] is breached and cannot repair itself: the repair costs 1344 metal, or crystal at 1.5 and deuterium at 2 a unit in its place, and its store is short by ')));
+    expect(c.state.events.map((e) => e.message), contains(startsWith('! your outpost at [10,0] is breached and cannot repair itself: the repair costs 4032 metal, or crystal at 1.5 and deuterium at 2 a unit in its place, and its store is short by ')));
 
-    c.place(101, _site, const proto.Resources(metal: 700, crystal: 400, deuterium: 100));
+    c.place(101, _site, const proto.Resources(metal: 3600, crystal: 400, deuterium: 100));
     c.handleCommand('unload');
     await tester.pump(const Duration(seconds: 2));
     await tester.pump(const Duration(milliseconds: 300));
@@ -488,11 +489,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.byKey(const ValueKey('dock-outpost')), findsOneWidget);
-    expect(_why(tester, 'found-why'), 'a patrol group holds [10,-3]; an outpost is founded on a sector its founder has won');
+    final temper = c.state.sectors[_held]!.hostiles!.first.behavior.wire.toLowerCase();
+    expect(_why(tester, 'found-why'), 'a $temper group holds [10,-3]; an outpost is founded on a sector its founder has won');
     c.handleCommand('found');
     await tester.pump(const Duration(milliseconds: 300));
     expect(c.state.outpost, isNull);
-    expect(c.state.events.first.message, 'Refused: a patrol group holds [10,-3]; an outpost is founded on a sector its founder has won');
+    expect(c.state.events.first.message, 'Refused: a $temper group holds [10,-3]; an outpost is founded on a sector its founder has won');
 
     await _key(tester, LogicalKeyboardKey.escape, '');
     expect(find.byKey(const ValueKey('founding-panel')), findsNothing);
@@ -508,9 +510,9 @@ void main() {
 
     c.handleCommand('survey');
     expect(log().take(5), [
-      'Site [10,0], ring 10: grade 1.5, level 1 makes 3.9 Cr, 1.9 De an hour, 8 hops from home',
-      'Raids of 38 to 55 against a platform of 40',
-      'Level 1 costs 1,000 Fe, 500 Cr, 200 De from the founding hold and takes 0:20',
+      'Site [10,0], ring 10: grade 1.5, level 1 makes 117 Cr, 58.5 De an hour, 8 hops from home',
+      'Raids of 383 to 551 against a platform of 408',
+      'Level 1 costs 3,000 Fe, 1,500 Cr, 600 De from the founding hold and takes 0:20',
       'F101 can found it now',
       '> survey',
     ]);
@@ -519,8 +521,8 @@ void main() {
     c.handleCommand('survey 20 -10');
     expect(log().take(4), [
       'Site [20,-10], ring 20: not on your chart, so its ore and its yield are not known',
-      'Raids of 280 to 402 against a platform of 40',
-      'Level 1 costs 1,000 Fe, 500 Cr, 200 De from the founding hold and takes 0:20',
+      'Raids of 2,799 to 4,024 against a platform of 408',
+      'Level 1 costs 3,000 Fe, 1,500 Cr, 600 De from the founding hold and takes 0:20',
       'Cannot be founded now: [20,-10] is not on your chart; a survey reads the site of a sector you have seen',
     ], reason: 'a sector never seen is answered with what its ring decides and nothing of what is there');
     c.handleCommand('survey here');

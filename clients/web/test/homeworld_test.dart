@@ -217,10 +217,10 @@ void main() {
     expect(find.textContaining('RAID'), findsWidgets);
     final defences = c.state.catalog!.defences;
     for (var i = 0; i < defences.length; i++) {
-      expect(find.descendant(of: find.byKey(ValueKey('hw-card-$i')), matching: find.text(defences[i].kind.label.toUpperCase())), findsOneWidget,
-          reason: '${defences[i].kind.label} has a row to order it from');
+      final row = find.byKey(ValueKey('hw-card-$i'));
+      expect(find.descendant(of: row, matching: find.text(defences[i].kind.label.toUpperCase())), findsOneWidget, reason: '${defences[i].kind.label} has a row');
+      expect(find.descendant(of: row, matching: find.textContaining('BUILD X')), findsOneWidget, reason: 'and is ordered from it');
     }
-    expect(find.textContaining('BUILD X'), findsNWidgets(defences.length));
     expect(find.text('ONE OF A KIND'), findsNWidgets(2), reason: 'the two domes');
     expect(find.descendant(of: find.byKey(const Key('defence-satellites')), matching: find.text('x2')), findsOneWidget);
     expect(find.text('DOCKED SHIPS ${groupDigits(c.state.hw!.dockedPower.round())}'), findsOneWidget, reason: 'the three parts of the defence are the server\'s figures');

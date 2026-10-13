@@ -100,7 +100,10 @@ class BuildingsTab extends StatelessWidget {
                     maxLines: 2, textAlign: TextAlign.center, style: T.cond(size: 9, color: C.text2, weight: FontWeight.w500, spacing: narrow ? .2 : 1)),
                 Register(o.level, width: 2, size: narrow ? 14 : 20, color: locked ? C.text3 : C.a100),
                 if (!narrow && caption != null)
-                  FittedBox(fit: BoxFit.scaleDown, child: Text(caption.toUpperCase(), maxLines: 1, style: T.mono(size: 8.5, color: C.text3))),
+                  SizedBox(
+                    width: tw * .52,
+                    child: FittedBox(fit: BoxFit.scaleDown, child: Text(caption.toUpperCase(), maxLines: 1, style: T.mono(size: 8.5, color: C.text3))),
+                  ),
               ]),
             ),
           ),

@@ -504,18 +504,11 @@ class DemoWorld {
       if (_authored.containsKey(k)) continue;
       final d = h.distFromOrigin;
       // Whether a ring's sector holds a group, what flies in it and how
-      // often it is passive are the engine's; the rolls, and which of the
-      // other three tempers it has, are the script's.
+      // often it is passive are the engine's; the rolls are the script's,
+      // and a group it scatters that is not passive patrols. Only the
+      // authored ones come at a fleet.
       if (Hex.distance(h, _home) > 2 && _h01(h.q, h.r, 5) < _book.npcPresence(d)) {
-        final roll = _h01(h.q, h.r, 6);
-        final passive = _book.npcPassiveShare(d);
-        final beh = roll < passive
-            ? NpcBehavior.passive
-            : roll < passive + (1 - passive) * .5
-                ? NpcBehavior.patrol
-                : roll < passive + (1 - passive) * .85
-                    ? NpcBehavior.aggressive
-                    : NpcBehavior.swarm;
+        final beh = _h01(h.q, h.r, 6) < _book.npcPassiveShare(d) ? NpcBehavior.passive : NpcBehavior.patrol;
         _hostiles[k] = [_npcGroup([(_book.npcClass(d), _book.npcCount(d))], beh)];
       }
       if (_h01(h.q, h.r, 8) < .08) {
@@ -808,24 +801,9 @@ class DemoWorld {
   /// Empty the laden hold of [f] into the stockpile as far as the caps
   /// allow and end the mark; returns what went back.
   Resources _unload(FleetState f) {
-    final before = _resources;
-    _resources = _clampCaps(Resources(
-      metal: before.metal + f.cargo.metal,
-      crystal: before.crystal + f.cargo.crystal,
-      deuterium: before.deuterium + f.cargo.deuterium,
-    ));
-    final back = Resources(
-      metal: _resources.metal - before.metal,
-      crystal: _resources.crystal - before.crystal,
-      deuterium: _resources.deuterium - before.deuterium,
-    );
-    _setFleet(_copy(_find(f.id)!,
-        laden: false,
-        cargo: Resources(
-          metal: f.cargo.metal - back.metal,
-          crystal: f.cargo.crystal - back.crystal,
-          deuterium: f.cargo.deuterium - back.deuterium,
-        )));
+    final back = _least(f.cargo, _less(_hw.storage.cap, _resources));
+    _resources = _plus(_resources, back);
+    _setFleet(_copy(_find(f.id)!, laden: false, cargo: _less(f.cargo, back)));
     return back;
   }
 

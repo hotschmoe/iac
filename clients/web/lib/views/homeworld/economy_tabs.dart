@@ -183,7 +183,7 @@ class DefenceTab extends StatelessWidget {
           Row(children: [
             Expanded(child: Text(r.kind.label.toUpperCase(), style: T.cond(size: 13, color: sel ? C.a100 : C.a200, spacing: 1.2))),
             if (o?.max == 1) ...[const Tag('One of a kind'), const SizedBox(width: 8)],
-            Flexible(child: Text('x${r.count}${r.restoring > 0 ? ' (+${r.restoring} restoring)' : ''}', overflow: TextOverflow.ellipsis, style: T.mono(size: 12, color: C.a100))),
+            Text('x${r.count}${r.restoring > 0 ? ' (+${r.restoring} restoring)' : ''}', style: T.mono(size: 12, color: C.a100)),
           ]),
           const SizedBox(height: 2),
           if (o != null)
@@ -361,7 +361,7 @@ class _HoldPanelState extends State<HoldPanel> {
                     'unloads as always. A raid counts cargo at home with the stockpile.'
                 : 'Nothing moves by itself here: Unload puts the whole hold into the store, as far as the store has room. '
                     'A raid the outpost loses takes its share of the store and of the holds here above the protected floor, '
-                    'and destroys ${proto.raidLostShipPct}% of the ships standing here.',
+                    'and destroys a quarter of the ships standing here.',
             key: const Key('hold-rule')),
       ]),
     );
@@ -438,9 +438,16 @@ class StorageTab extends StatelessWidget {
           Text(name.toUpperCase(), style: T.cond(size: 12, color: c, spacing: 1.6)),
           const SizedBox(width: 10),
           Register(stock, size: 20, glow: true),
-          Flexible(child: Text(' / ${groupDigits(cap.round())}', overflow: TextOverflow.ellipsis, style: T.mono(size: 12, color: C.text3))),
-          const Spacer(),
-          if (near) Lamp(st.capped(k) ? 'Full' : 'Near cap', color: C.ember, blink: true) else Text(st.buildingTag(k).toUpperCase(), style: T.mono(size: 9.5, color: C.text3)),
+          Text(' / ${groupDigits(cap.round())}', style: T.mono(size: 12, color: C.text3)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: near
+                  ? Lamp(st.capped(k) ? 'Full' : 'Near cap', color: C.ember, blink: true)
+                  : Text(st.buildingTag(k).toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: T.mono(size: 9.5, color: C.text3)),
+            ),
+          ),
         ]),
         const SizedBox(height: 4),
         LedBar(cap > 0 ? stock / cap : 0, color: near ? C.ember : c, height: 10, mark: C.ember, markAt: proto.storageNearCapRatio),
