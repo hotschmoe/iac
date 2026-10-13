@@ -6378,3 +6378,106 @@ on working; and with 0.4 deuterium, which is not enough, it refines and then
 turns home with the engine's usual reason. In the web client the demo flow
 sets the switch through the panel, reads the engine's report of it, and
 clears it by typing.
+
+## 2026-10-13: the flutter test flake: a C program loses a callee-saved double on this kernel
+
+Read `CLAUDE.md` (the Flutter paragraph blames the A520s and tells the run to
+pin to the A720s), the journal entry above, `clients/web/lib/state/state_mapper.dart`
+(`_mapFleet` gained `jumpTicks: f.jumpTicks`, an integer), and
+`clients/web/test/support/demo_world.dart` (`_ticksFor` at line 2089 is a
+`ceil` of constants). The Flutter tool and engine sources under
+`~/development/flutter` were read and not modified: `flutter_tester_device.dart`
+never passes `--dart-flags`, `DebuggingOptions.enabled` turns
+`enableDartProfiling` on, and `dart_vm.cc` then requests `--profile_period=1000`.
+The engine allowlist in `switches.cc` accepts `--profile_period` and rejects
+`--no-profiler` and the optimisation switches.
+
+**No client change.** The fault is outside the repository. The record is
+`docs/design/flutter_test_flake.md`, and the C program that fails is
+`docs/design/flutter_test_flake/fp_probe_bits.c`. `CLAUDE.md` was not edited.
+The replacement for its Flutter paragraph is `claude-md.patch` in the scratch
+directory of this investigation.
+
+**What the C program does.** Built `-O2 -march=armv8.2-a+sve`. Six threads sum
+a thousand `1.0`s and compare against `1000.0` kept in callee-saved `d8`
+across an inlined SVE `index`. A thread sends `SIGUSR1` at about 1 kHz. On a
+failure, `d0` is `0x408f400000000000` (exactly 1000.0), `d8` is 0, and NZCV is
+`0x20000000` (greater than). NEON, the SVE data check, and an 8 MB memory
+check stayed at 0 in every failing run. SVE vector length is 16 bytes on every
+CPU, A720 (`0x410fd811`) and A520 (`0x410fd801`). glibc `memcpy` at offset
+`0x9d340` is the SVE implementation (`cntb`, `whilelo`, `ld1b`).
+
+**Counts, interleaved.** Mode `big` (hop the A720s) failed every run, including
+four controls of 4 seconds beside the negative arm: 67974, 16370, 73931 and
+67686 scalar failures, even thread ids only. Mode `little` (A520s only) failed
+18475 times in 3 seconds. Skipping SVE, sending no signal, or building
+`-fno-inline` failed 0 times. Mode `stay`, which never calls
+`sched_setaffinity`: 0 failures in four 12-second runs on CPU 0 (about 42
+thousand signals) and four on CPUs 6-11 (about 233 thousand). The kernel's own
+migration did not reproduce it. The program's own `sched_setaffinity` did.
+
+**The suite.** Eight pairs, full 479 tests, `timeout -k 20 300`, nice 10.
+`taskset -c 0`: 3 failed of 8 (`ft-one-03` a 793 px and a 2065 px overflow in
+`hud.dart`, `ft-one-04` a 15 px overflow in `onboarding_test.dart`,
+`ft-one-08` `Infinity or NaN toInt` in `_ticksFor`). `taskset -c 6-11`: 0 of 8.
+The one-core runs took about four times as long. A live `flutter_tester` on
+CPUs 6-11 had a `Dart Profiler T` thread and `SigCgt` `0000000104000000`
+(SIGPROF). The string `DART_VM_OPTIONS` is absent from `flutter_tester`, so
+the `--profile_period=100000000` on those commands did nothing.
+`flutter_tester` imports `pthread_setaffinity_np`; whether a test calls it was
+not traced.
+
+**Pure Dart.** `dart_fp.dart`, four isolates, 5 seconds, four rounds, JIT,
+JIT with `--optimization_counter_threshold=-1`, JIT with
+`--no_background_compilation`, and AOT, each on CPU 0 and on CPUs 6-11. 32
+runs, 0 failures. Those processes did not catch SIGPROF. A pass bounds that
+loop.
+
+**The merge.** `cc9cebb` against `06aa24a` was not remeasured. The earlier
+logs are 1 of 13 and 9 of 25, not an interleaved pair, and the one new line in
+`_mapFleet` is an integer. The `_f32` rewrite had already failed 2 of 8.
+
+**Not verified.** That the suite's NaN is this kernel bug. The `stay` probe
+says a process that only gets preempted, or only migrated by the scheduler,
+did not lose `d8` in 12 seconds, and the suite did fail while pinned to one
+CPU. `d9` to `d15` were not sampled. The profiler period was not measured
+(the engine source asks for 1000 microseconds). No newer kernel or Flutter
+was installed, and no upstream issue was found that describes this symptom.
+The little-core suite, `--concurrency=1`, and a tester started without
+`--enable-dart-profiling` were not run. No person played.
+
+## 2026-10-13: the flake study is merged
+
+The branch `grok-flakes` (a Grok agent, headless in a worktree; it stopped
+before its write-up and was resumed once to finish from its logs) merged into
+master with `--no-ff` and pushed. It is a document, `docs/design/
+flutter_test_flake.md`, and a C program beside it; no code of the game or the
+client changed. Added at the merge: `CLAUDE.md`'s paragraph on Flutter (the
+branch's `claude-md.patch`, applied clean), and the heading of the branch's
+journal entry, which said the suite flakes because of the kernel fault; the
+branch's own report says that link is the best fit and is not shown.
+
+**Checked at the merge.** The reproducer was compiled again from the merged
+source (`gcc -O2 -march=armv8.2-a+sve -pthread`) and run for 3 seconds a mode
+under `taskset -c 0,1,6-11`: `big` 11,267 and 11,546 failures in two runs,
+every sample with `d0` at 1000.0 and `d8` at 0; `int` (a handler that touches
+no float) 11,368; `nosve` 0 of 710,681 iterations; `stay` (no
+`sched_setaffinity`) 0 of 1,050,744. So the fault is as the document says: on
+this kernel a thread that has used SVE, moves itself with `sched_setaffinity`
+and takes a signal can find a callee-saved double zeroed. Its other counts
+were not run again.
+
+**Tried and of no use.** `GLIBC_TUNABLES=glibc.cpu.name=` with `generic`,
+`ares` and `thunderxt88` leaves `memcpy` at `libc+0x9d340`, the SVE one
+(glibc 2.36), so the SVE copy cannot be switched off for one process that way.
+
+**Not verified, and the reviewer's recollection only.** Mainline fixed a loss
+of FPSIMD and SVE state around the SVE access trap and preemption in late
+2024 ("arm64/sve: Discard stale CPU state when handling SVE traps"), sent to
+the stable series; 6.6.10 is older than that. Whether it is this fault was not
+checked against the kernel's source. The kernel has a boot parameter,
+`arm64.nosve`, that hides SVE from user space; with it glibc would choose
+another `memcpy` and nothing would reach the SVE trap. Neither a newer kernel
+nor that parameter was tried: both are changes to the machine and the
+owner's. Twenty runs of the suite after either would say whether the flake is
+this fault.

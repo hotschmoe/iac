@@ -119,6 +119,54 @@ it.
     which shows the offer. `tools/playtest/play.py` prints the offer in the
     fleet row.
 
+## 2026-10-13 (the web client is the interface; the TUI is secondary)
+
+The owner:
+
+> also update docs where needed, flutter UI is primary ui, TUI is not
+> secondary and not necessariliy supported. (humans via flutter ui, llms
+> interact with engine directly)
+
+Read as "now secondary"; he then asked whether the TUI should be kept in play
+after all, and was advised not, for these reasons. The first players come
+from a static page, where only the web client and the engine in the tab
+exist; the TUI needs a server. Agents use the headless NDJSON mode, not the
+screens. The TUI has no tests of its own. And the move to OGame's catalogue
+would have every screen built twice.
+
+So: people play through the Flutter web client. Agents play against the wire
+protocol. A feature is done when the protocol and the web client have it. The
+`clients/tui` crate keeps building, because the headless client (about 400 of
+its 5,000 lines) and the server's scenario tests live in it; its ratatui
+screens need not follow new features and may fall behind. Nothing is removed.
+If the screens ever stop being worth compiling, the headless client is split
+out first.
+
+**The same day, the split and the TUI's leaving.** The owner asked for the
+headless client and the TUI to become two crates ("strip out headless client
+to its own crate, and TUI as its own crate. then we can archive TUI later (and
+its in history to pull if we ever want a TUI again)"), and, told that the
+OGame catalogue would otherwise have to keep the TUI's screens compiling
+through every change of type, answered: "yes take tui out of workspace after
+the split is committed". So once the split is merged, the TUI's crate leaves
+the workspace and the tree, moved to the gitignored `.archive/` as every
+retired file is; the commit of the split is where it can be had back from.
+
+## 2026-10-13 (the Flutter test flake is left alone)
+
+`docs/design/flutter_test_flake.md` found that this machine's kernel loses
+floating-point state around SVE, in a C program with no Dart in it, and that
+this is the likely cause of `flutter test` failing some runs. The owner:
+
+> thats a arm specific problem so no issue in wasm or on other machines
+> (probably). we can ignore it for now, add a note in claudemd as needed
+
+So nothing is done about it: no kernel parameter, no new kernel, no retry
+around the suite, no change to the client. The suite is run with a timeout
+and a failure is run again before it is read as the client's (`CLAUDE.md`).
+"Probably" is the owner's word and stands: that the fault is what breaks the
+suite was not shown, and no other machine has run the suite to compare.
+
 ## 2026-10-13 (the OGame study's eleven questions: the defaults)
 
 The owner was shown the eleven questions of `docs/design/ogame.md`, section 14,
