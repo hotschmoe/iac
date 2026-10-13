@@ -3,6 +3,179 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (flight, pursuit and pirates that mend: what the agent decided)
+
+Slice 3 of `docs/design/ogame.md`, section 12, stage 1: everything that is
+not hand-written Dart. The owner chose the study's defaults, questions 4, 5
+and 11 among them, and said in his own words that a fleet may run to the
+next hex, that more dangerous enemies chase a hex or two, that slower ships
+pay for it, that fleeing has a price and the damage stays until home, and
+that pirates heal slowly, "over a few hours maybe? or less, maybe an hour".
+What follows is what the study left open or what was done otherwise than it
+says. None of it was put to the owner. Each line ends with what undoes it.
+`SAVE_FORMAT` is 10 and `ECONOMY_VERSION` 11; nothing is migrated.
+
+**Where the work departs from the study.**
+
+- *One disengage rule for every doctrine.* The study (7.4) has the
+  doctrines that pick no fight, mining and salvage, "flee any fight they are
+  caught in". They do pick fights: with no lane free of one they take a
+  fight their fleet rates at its engage ratio (`Reach::path_worth`), and a
+  doctrine that entered a fight on purpose and left it at once would pay
+  parting rounds for nothing. So every doctrine leaves a fight when its odds
+  in it are below `disengage_ratio_x10`, and none otherwise. A cargo wing
+  caught by something it cannot hurt rates DEADLY and leaves. Undo: a match
+  on the preset at the head of `GameEngine::policy_disengage`.
+- *Groups do not wander.* The study speaks of wandering groups
+  (`process_npc_behavior` moved a Patrol or an Aggressive group to a random
+  neighbour every 15 ticks). That code only ever ran on a group that was not
+  in a fight, and until this slice no group outlived its fight, so it moved
+  nothing in play. With groups that keep their losses it would have come
+  alive on every wounded patrol, which would then have left the sector it
+  is to mend in. It is removed, with `NPC_PATROL_INTERVAL` and
+  `NpcFleet.patrol_timer`: nothing moves a group but a pursuit and the way
+  back. Undo: the loop is in git at `8e21928`; it would need a rule for
+  where a group that has wandered mends.
+- *The leash counts jumps, not hexes.* The study calls `CHASE_HEXES` "the
+  most hexes the group will stand from its own sector". A fleet as fast as
+  its pursuer could then lead a pack round its own lair for ever. The leash
+  is the jumps a group has made after a fleet since it was last home
+  (`NpcFleet.strayed`, `leash`): a patrol makes one, a pack two, and it is
+  home again before it makes another. Undo: `NpcFleet::leash` on
+  `Hex::distance` to `home_sector`.
+- *A fleet that any fight catches while it charges a jump keeps the jump.*
+  The study gives this for the pursuer that lands on a fleeing fleet. It is
+  made the rule for every fight: the fleet is in the fight as one that is
+  leaving, fired on and silent until it lands. The old rule (the jump
+  abandoned, its fuel forfeit) is gone with its alert. Undo:
+  `GameEngine::engage_fleet`.
+- *A fleet that is charging a jump takes no second `move`.* It used to take
+  one in the last tick of its charge, paying again and starting over; a
+  fleeing fleet could have used that to change its mind for the price of a
+  jump. `stop` is the order that calls a jump off. Undo: the first refusal
+  of `GameEngine::handle_move`.
+- *`mends_in` and the pursuer's arrival are ticks, not countdowns.* The
+  study (10.1) names `mends_in` and "ticks until it arrives" on a group in
+  sight. A sector is remembered as it was seen, and a countdown in a
+  remembered sector is wrong the tick after. A hostile carries `whole_at`
+  and its errand `arrives_at`; the fleet's own `pursued_by` carries
+  `arrives_in`, since a fleet's row is never remembered. Undo: the two
+  fields of `NpcFleetInfo` and `GroupErrand`.
+
+**What the study left to the builder.**
+
+- *No fleet status for flight.* A fleeing fleet is `Moving` and still in its
+  fight's list; a round stands it as a silent troop (`combat::Troop.silent`)
+  and `process_movement` takes it out of the fight when it lands. So the
+  stored world holds no second note of who is leaving, and `FleetStatus` on
+  the wire is as it was; `FleetState.fleeing` says it. Undo: a status of its
+  own, and every place that asks for `Moving`.
+- *When the group fires on a fleet it catches.* `process_pursuit` runs after
+  `process_movement` and before `process_combat`: a fleet that lands is gone
+  before the group lands, and a group that lands fires the same tick. That
+  order is what makes the study's arithmetic true (a fleet as fast is never
+  caught, a slower one is fired on for the difference). Undo: the order of
+  the three calls in `GameEngine::tick`, and the two speeds part by a tick.
+- *Whom a group follows.* The strongest of the fleets that jumped out of
+  the fight which it can reach (next door, not a refuge), and that one only
+  if the group's power, as it stands when the fight breaks off, is at least
+  `CHASE_MIN_RATIO` times the fleet's. It is not weighed again at the next
+  hex. A fight that ends with the last fleet destroyed or recalled still
+  sends the group after one that had jumped out earlier. A stand-off sends
+  it after nobody. Undo: `GameEngine::begin_pursuit`.
+- *A group on its way fights what it lands on.* Its quarry, or any other
+  fleet standing there, another empire's included: the study's "a second
+  fleet waiting in that sector joins it" and what a wandering group did.
+  Not a convoy, and not in a refuge. Undo: `met` in `process_pursuit`.
+- *A group that is whole, at rest and at home is taken out of the world.*
+  The lair is its template again, as it was before the fight; an ambush
+  party at a derelict is gone, as it was when a fight broke off before this
+  slice. So only wounded groups are stored. Undo: the removal at the end of
+  `GameEngine::settle_group`.
+- *The mending clock.* `rested` counts ticks at rest in the group's own
+  sector, the tick the fight ended being the first; at
+  `scaling::npc_heal_step_ticks` a step is taken and it starts again. A
+  fight or a pursuit sets it to nothing, which is the study's "starts again
+  from the last step it reached". Of a group's ships `ceil(muster / 10)`
+  return at a step, at least one, and a damaged ship regains
+  `ceil(hull / 10)`. Undo: `Ships::heal`, `scaling::npc_heal_ships` and
+  `npc_heal_hull`.
+- *A kill is paid by lair.* A group destroyed in a fight another group
+  survives is paid when the fight ends, wreckage in the sector of the fight
+  and score once for its lair; the lair of a group destroyed away from home
+  is the one that is cleared. Before, only a fight in which every group
+  fell paid anything. Undo: `kills` in `GameEngine::end_combat`.
+- *What a fleet under orders does about a pursuer.* It runs for home before
+  anything else (`policy_pursued`), and a group that sets out after it wakes
+  its orders at once. The study says only that it flees toward home. Undo:
+  the first branch of `process_policies`.
+- *When a doctrine reads the odds.* At its first turn in the fight, which is
+  the tick after the fight began, and every `POLICY_EVAL_INTERVAL` ticks
+  after. The odds are of the fleets that are firing against every group in
+  the fight, as they stand (`GameEngine::fight_ratio`). A fleet that cannot
+  leave says why, once a minute. Undo: `engage_fleet` waking the orders.
+- *The odds of a remembered sector.* A group seen wounded is rated as it was
+  seen until its `whole_at`, and whole from that tick; one seen passing
+  through on an errand is not counted where it was seen. Without the first a
+  chart would send a fleet back into a group long since mended. Undo:
+  `remembered_opposing`.
+- *An outpost is not founded on a lair whose group is away.* Its sector is
+  empty while it follows a fleet, and it comes back. The refusal names
+  where it is. Undo: the second group check of `GameEngine::outpost_site`.
+- *The pilots.* A bot flying by hand leaves a fight whose odds as it stands
+  are under RISKY (`bot::field::LEAVE_ODDS`), where the doctrines' default
+  leaves too, and runs for home when pursued. And a wing with no warship in
+  it picks no fight at any odds (`bot::field::armed`). The study (8.7) has
+  the bots flee "through the disengage ratio of the policies they already
+  set", which covers the check-in styles and not the hands-on ones. The
+  second rule is this slice's own and was measured: see the journal. Undo:
+  `Admiral::fight`, and `armed` out of `beats` and `boardable`.
+- *No event when a group does not follow.* `Pursuit` says began, continued
+  and abandoned; a fight left by a fleet nobody follows says `fled` and the
+  fleet's row has no `pursued_by`. Undo: an event from `begin_pursuit`.
+
+**The knobs**, each at the study's starting value: `FLEE_MIN_ROUNDS` 1,
+`FLEE_FUEL_MULTIPLIER` 1.0, `CHASE_HEXES` 0, 1, 2, 2 (convoy, patrol, pack,
+swarm), `CHASE_MIN_RATIO` 1.0, the groups' drive (`NPC_DRIVE_FREE_RINGS` 8,
+`NPC_DRIVE_RINGS_PER_LEVEL` 4), `NPC_HEAL_SHARE` 0.5, `NPC_HEAL_STEPS` 10,
+`POLICY_DEFAULT_DISENGAGE_RATIO_X10` 9 (bounds 1 to 100, never above the
+engage ratio). This slice's own: the pilots' `LEAVE_ODDS`, RISKY's edge.
+`STANDOFF_ROUNDS` stays 1 and `JUMP_SPEED_REF` 50,000. None was tuned.
+
+**What the healing rate means at each pace.** It is an economy timer, as
+the study recommends, so it shortens with the pace: at ring 8 a group that
+has to take all ten steps is whole in two hours at pace 1, twelve minutes
+in a season and twenty seconds in a blitz (a step is a whole number of
+ticks, two there; at the test pace one, so ten ticks). A group that lost
+a third of its ships or of a hull takes four steps and not ten. A fleet that goes home to be mended and comes
+back finds the group still hurt in a season (played over a real server: the
+journal) and whole in a blitz, where a visit and the next have to be a few
+seconds apart. The other class the study names (attention) would give a
+blitz about a minute. That is the owner's knob.
+
+**Bands and guards that moved, and why.** For each: the test is still worth
+having, it agrees with the design, and the code was not wrong.
+
+- `scenarios_world.rs`, the jump a fight catches: it asserted the old rule
+  (the jump abandoned, the fuel forfeit, the fleet in the fight). It asserts
+  the new one: the jump goes on, the fleet stands one round without firing,
+  is shown as leaving, takes no second jump, and its owner is told once.
+- `exchange.rs`, the hub: it proved "no group enters the hub" with forty
+  ticks of wandering patrols beside it. With wandering gone it proves it
+  with a pack that would follow a fleet two hexes anywhere else and does
+  not follow it into the hub, by the preview and by twenty ticks of play.
+- `fleet_logistics.rs`, the boarding a fight catches: the patrol that walked
+  into it was a wandering one found by searching the patrol dice. It is a
+  group landing in its own sector on its way back.
+- `hosts_agree.rs`: the commander jumps out of the fight it flew into, and
+  both hosts must send the same parting round, `fled`, the flight quote and
+  the fleet's `fleeing`; it used to require a fight to its end in which
+  every round had shots from the fleets.
+- `smoke.rs` and `single_player.rs` name format 9 as the one refused, and a
+  later format is 11; two tests that compare a fleet's standing orders
+  whole name the seventh setting.
+- `chart_golden.txt` is recorded again, as in every slice.
+
 ## 2026-10-13 (the fleet and the fight are OGame's: what the agent decided)
 
 Slice 2 of `docs/design/ogame.md`, section 12, stage 1: everything that is
